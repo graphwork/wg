@@ -1,35 +1,38 @@
 //! Per-mode renderers for the per-task Log pane (right panel tab 4).
 //!
-//! Four view modes are supported (cycled with the `4` key):
+//! Five view modes are supported (cycled with the `4` key):
 //!
 //! 1. **Events** — one structured line per event (tool calls, results,
 //!    errors). Quick operational view.
 //! 2. **HighLevel** — collapses adjacent same-kind activity into a
 //!    coarse summary ("Editing src/cli.rs", "Running cargo test",
 //!    "Reading config.toml"). Useful for monitoring multiple agents.
-//! 3. **RawPretty** — full pretty-printed transcript: every event
+//! 3. **Pretty** — full parsed/formatted transcript: every event
 //!    rendered with its own formatter, NEVER as a JSON dump. Each
 //!    event-kind has a distinct prefix and visual treatment.
-//! 4. **WgLog** — WG-level log entries only: `wg log` writes,
+//! 4. **Raw** — exact retained bytes from the selected attempt's
+//!    authoritative source, with reversible terminal-safety escapes only.
+//! 5. **WgLog** — WG-level log entries only: `wg log` writes,
 //!    dispatcher status updates, and task lifecycle transitions sourced
 //!    from the task's `log` field on the graph. Contains no LLM-stream
 //!    content (no tool calls, tokens, thinking, etc.) — useful for
 //!    seeing only the structured WG-side narrative.
 //!
-//! The first three modes consume the same `&[AgentStreamEvent]` produced
-//! by `parse_raw_stream_line`; WgLog consumes the pre-rendered
-//! `[<rel-time>] <message>` strings populated by `load_log_pane()` from
-//! `task.log`. Adding a new mode means adding one more function here —
-//! no extra parsing or storage.
+//! Events/HighLevel/Pretty consume `&[AgentStreamEvent]` produced by
+//! `parse_raw_stream_line`; Raw consumes an exact cached byte window; WgLog
+//! consumes the pre-rendered `[<rel-time>] <message>` strings populated by
+//! `load_log_pane()` from `task.log`.
 //!
 //! Pure functions — no `VizApp` dependency — so they unit-test cleanly.
+use std::fmt::Write as _;
+
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use super::chat_palette;
 use super::state::{AgentStreamEvent, AgentStreamEventKind, EventDetails};
 
-/// Default head/tail counts for summary mode in the RawPretty view.
+/// Default head/tail counts for summary mode in the Pretty view.
 /// Tuned to fit typical cargo error context on either end (3 felt too
 /// tight when first piloted on real outputs).
 pub const SUMMARY_HEAD_LINES: usize = 5;
@@ -327,7 +330,7 @@ pub fn render_high_level_view(events: &[AgentStreamEvent]) -> Vec<Line<'static>>
 }
 
 /// Coarse semantic grouping used to decide where blank-line gaps go in
-/// the RawPretty view. Same-category neighbors run together; different
+/// the Pretty view. Same-category neighbors run together; different
 /// categories are separated by one blank line. See `render_raw_pretty_view`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EventCategory {
@@ -351,7 +354,7 @@ fn categorize(kind: &AgentStreamEventKind) -> EventCategory {
     }
 }
 
-/// Render the RawPretty view: full pretty-printed transcript of every
+/// Render the Pretty view: full pretty-printed transcript of every
 /// event. Crucially: NO raw JSON dumps — each event kind gets its own
 /// formatter so the output reads as a clean transcript.
 ///
@@ -382,6 +385,69 @@ pub fn render_raw_pretty_view(
     }
 
     out
+}
+
+/// Escape raw bytes for terminal-safe, reversible display.
+///
+/// Printable UTF-8 and record-separating LF bytes are copied exactly. Every
+/// other Unicode control and every byte that is not part of valid UTF-8 is
+/// emitted as an uppercase `\\xNN` byte escape. Decoding those generated
+/// escapes reconstructs the retained source window byte-for-byte; in
+/// particular ESC/CSI/control bytes can never reach the terminal backend.
+pub fn escape_raw_bytes(bytes: &[u8]) -> String {
+    fn push_valid(out: &mut String, text: &str) {
+        for ch in text.chars() {
+            if ch == '\n' || !ch.is_control() {
+                out.push(ch);
+            } else {
+                let mut encoded = [0u8; 4];
+                for byte in ch.encode_utf8(&mut encoded).as_bytes() {
+                    let _ = write!(out, "\\x{byte:02X}");
+                }
+            }
+        }
+    }
+
+    let mut out = String::with_capacity(bytes.len());
+    let mut remaining = bytes;
+    while !remaining.is_empty() {
+        match std::str::from_utf8(remaining) {
+            Ok(text) => {
+                push_valid(&mut out, text);
+                break;
+            }
+            Err(error) => {
+                let valid = error.valid_up_to();
+                if valid > 0 {
+                    let prefix = std::str::from_utf8(&remaining[..valid])
+                        .expect("Utf8Error::valid_up_to guarantees the prefix");
+                    push_valid(&mut out, prefix);
+                }
+                let invalid_len = error.error_len().unwrap_or(remaining.len() - valid);
+                for byte in &remaining[valid..valid + invalid_len] {
+                    let _ = write!(out, "\\x{byte:02X}");
+                }
+                remaining = &remaining[valid + invalid_len..];
+            }
+        }
+    }
+    out
+}
+
+/// Render true Raw mode without parsing, trimming, deduplication, or semantic
+/// styling. Splitting only on retained LF bytes preserves blank-record
+/// multiplicity; joining the logical lines with LF reconstructs the escaped
+/// window exactly, including a trailing empty line after a final newline.
+pub fn render_raw_view(bytes: &[u8]) -> Vec<Line<'static>> {
+    escape_raw_bytes(bytes)
+        .split('\n')
+        .map(|line| {
+            Line::from(Span::styled(
+                line.to_string(),
+                Style::default().fg(Color::Gray),
+            ))
+        })
+        .collect()
 }
 
 /// Render the WgLog view: WG-level entries only, sourced from
@@ -473,7 +539,7 @@ fn emit_event(out: &mut Vec<Line<'static>>, event: &AgentStreamEvent, summary_mo
     }
 }
 
-/// Emit the section header used by every event-kind in raw mode.
+/// Emit the section header used by every event-kind in Pretty mode.
 fn push_header(out: &mut Vec<Line<'static>>, kind: &AgentStreamEventKind, tag: &str) {
     let color = event_color(kind);
     out.push(Line::from(Span::styled(
@@ -583,7 +649,7 @@ fn basename(p: &str) -> String {
     parts.into_iter().rev().collect::<Vec<_>>().join("/")
 }
 
-/// Format the single-line label for a tool call in raw mode, e.g.
+/// Format the single-line label for a tool call in Pretty mode, e.g.
 /// `Bash → "cargo test"` or `Edit → src/main.rs`.
 fn format_tool_call_label(name: &str, input: &serde_json::Value) -> String {
     match name {
@@ -618,7 +684,7 @@ fn format_tool_call_label(name: &str, input: &serde_json::Value) -> String {
     }
 }
 
-/// Format the body of a tool call for raw mode. Returns a possibly-empty
+/// Format the body of a tool call for Pretty mode. Returns a possibly-empty
 /// string formatted as a transcript, NEVER as a JSON dump. For tools
 /// where the call label already conveys everything (Bash one-liner,
 /// Read), the body is empty and only the label is shown.
@@ -790,10 +856,10 @@ mod tests {
             .join("\n")
     }
 
-    /// RAW mode must render user messages with the [user] header and
+    /// Pretty mode must render user messages with the [user] header and
     /// the prompt body — pretty-printed, NOT as JSON.
     #[test]
-    fn test_raw_mode_renders_user_messages_pretty() {
+    fn test_pretty_mode_renders_user_messages() {
         let events = vec![user_event("please add a feature flag")];
         let lines = render_raw_pretty_view(&events, false);
         let text = lines_to_text(&lines);
@@ -821,10 +887,10 @@ mod tests {
         );
     }
 
-    /// RAW mode must render tool calls with their tool name, parameters
+    /// Pretty mode must render tool calls with their tool name, parameters
     /// formatted as a transcript — never as a JSON blob.
     #[test]
-    fn test_raw_mode_renders_tool_calls_pretty_not_json() {
+    fn test_pretty_mode_renders_tool_calls_not_json() {
         let events = vec![
             tool_call_bash("cargo test"),
             tool_call_edit("src/main.rs", "old text", "new text"),
@@ -963,7 +1029,7 @@ mod tests {
     /// content line, 2-space pure padding on continuation lines, with no
     /// bare "result" header line.
     #[test]
-    fn test_raw_mode_tool_result_uses_hanging_indent() {
+    fn test_pretty_mode_tool_result_uses_hanging_indent() {
         let body = "1 #!/usr/bin/env bash\n\
                     2 # Helpers shared by smoke-gate scenarios.\n\
                     3 #\n\
@@ -1013,7 +1079,7 @@ mod tests {
 
     /// Hanging indent must also apply to error tool results.
     #[test]
-    fn test_raw_mode_error_tool_result_uses_hanging_indent() {
+    fn test_pretty_mode_error_tool_result_uses_hanging_indent() {
         let body = "line one\nline two";
         let events = vec![tool_result(body, true)];
         let lines = render_raw_pretty_view(&events, false);
@@ -1028,7 +1094,7 @@ mod tests {
     /// foreground so the view isn't a wall of green. Errors keep red on
     /// both the marker and the body so failures still pop visually.
     #[test]
-    fn test_raw_mode_tool_pass_colors_only_checkmark() {
+    fn test_pretty_mode_tool_pass_colors_only_checkmark() {
         let pass = vec![tool_result("ok body\nmore", false)];
         let pass_lines = render_raw_pretty_view(&pass, false);
 
@@ -1083,7 +1149,7 @@ mod tests {
     /// Blank lines appear ONLY at category boundaries: text→tool and
     /// tool→text. No blank between a tool call and its result.
     #[test]
-    fn test_raw_mode_inserts_blank_at_text_to_tool_boundary() {
+    fn test_pretty_mode_inserts_blank_at_text_to_tool_boundary() {
         let events = vec![
             text_output("here is the plan"),
             tool_call_bash("cargo test"),
@@ -1123,7 +1189,7 @@ mod tests {
     /// Consecutive same-category events render with no blank lines
     /// between them — only one continuous text section.
     #[test]
-    fn test_raw_mode_no_blank_between_consecutive_text_events() {
+    fn test_pretty_mode_no_blank_between_consecutive_text_events() {
         let events = vec![
             text_output("part 1"),
             text_output("part 2"),
@@ -1143,7 +1209,7 @@ mod tests {
     /// A run of consecutive ToolCall events should render without blank
     /// lines between them either.
     #[test]
-    fn test_raw_mode_no_blank_between_consecutive_tool_events() {
+    fn test_pretty_mode_no_blank_between_consecutive_tool_events() {
         let events = vec![
             tool_call_bash("cargo build"),
             tool_call_bash("cargo test"),
@@ -1640,6 +1706,69 @@ mod tests {
     /// Summary mode also truncates long assistant text bodies (push_indented
     /// path), not just tool results — assert this so a refactor that only
     /// applies summarization to one body type gets caught.
+    #[test]
+    fn raw_view_is_byte_faithful_and_terminal_safe_without_interpretation() {
+        fn decode_generated_escapes(text: &str) -> Vec<u8> {
+            let bytes = text.as_bytes();
+            let mut decoded = Vec::new();
+            let mut index = 0usize;
+            while index < bytes.len() {
+                if bytes.get(index) == Some(&b'\\')
+                    && bytes.get(index + 1) == Some(&b'x')
+                    && bytes.get(index + 2).is_some_and(u8::is_ascii_hexdigit)
+                    && bytes.get(index + 3).is_some_and(u8::is_ascii_hexdigit)
+                {
+                    decoded.push(u8::from_str_radix(&text[index + 2..index + 4], 16).unwrap());
+                    index += 4;
+                } else {
+                    let ch = text[index..].chars().next().unwrap();
+                    let mut encoded = [0u8; 4];
+                    decoded.extend_from_slice(ch.encode_utf8(&mut encoded).as_bytes());
+                    index += ch.len_utf8();
+                }
+            }
+            decoded
+        }
+
+        let mut source = Vec::new();
+        source.extend_from_slice(br#"{"type":"assistant","text":"valid"}"#);
+        source.push(b'\n');
+        source.extend_from_slice(b"{malformed json\nplain text exactly  \n");
+        source.extend_from_slice(b"duplicate\nduplicate\n\n");
+        source.extend_from_slice("Unicode: λ 雪 🚀\n".as_bytes());
+        source.extend(std::iter::repeat_n(b'L', ACTIVE_LONG_LINE_PROBE));
+        source.push(b'\n');
+        source.extend_from_slice(b"terminal=");
+        source.extend_from_slice(&[0x1b, b'[', b'3', b'1', b'm', b'\t', 0xff, 0x80]);
+        source.push(b'\n');
+
+        let escaped = escape_raw_bytes(&source);
+        let rendered = render_raw_view(&source);
+        let visible = rendered
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert_eq!(
+            visible, escaped,
+            "rendering must not drop or relabel records"
+        );
+        assert_eq!(decode_generated_escapes(&visible), source);
+        assert_eq!(visible.matches("duplicate").count(), 2);
+        assert!(visible.contains("\n\nUnicode: λ 雪 🚀\n"));
+        assert!(visible.contains("{malformed json\nplain text exactly  \n"));
+        assert!(visible.contains("terminal=\\x1B[31m\\x09\\xFF\\x80"));
+        assert!(!visible.as_bytes().contains(&0x1b));
+    }
+
+    const ACTIVE_LONG_LINE_PROBE: usize = 64 * 1024;
+
     #[test]
     fn test_summary_mode_truncates_long_assistant_text() {
         let body: String = (1..=50)

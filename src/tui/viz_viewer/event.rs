@@ -3948,7 +3948,7 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
         KeyCode::Char('D') if app.right_panel_tab == RightPanelTab::Settings => {
             app.clear_launcher_history();
         }
-        // Log tab: 's' toggles head/tail summary mode (RawPretty view).
+        // Log tab: 's' toggles head/tail summary mode (Pretty view only).
         // Long tool/command outputs collapse to first 5 + last 5 lines
         // with a `… N lines elided …` marker between them.
         KeyCode::Char('s') if app.right_panel_tab == RightPanelTab::Log => {

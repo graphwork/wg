@@ -5804,6 +5804,209 @@ struct TailLogPage {
     source_identity: LogFileIdentity,
 }
 
+/// The true Raw view retains a larger, but still fixed, history window than a
+/// single storage page. Reads remain capped by `ACTIVE_LOG_PAGE_MAX_*`; older
+/// pages are prepended only on explicit history navigation.
+const RAW_LOG_RETAIN_MAX_BYTES: usize = ACTIVE_LOG_PAGE_MAX_BYTES * 4;
+const RAW_LOG_RETAIN_MAX_RECORDS: usize = ACTIVE_LOG_PAGE_MAX_RECORDS * 10;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RawLogSourceKind {
+    RawStream,
+    OutputLogFallback,
+}
+
+impl RawLogSourceKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::RawStream => "raw_stream.jsonl",
+            Self::OutputLogFallback => "output.log fallback",
+        }
+    }
+}
+
+/// Exact retained byte window for the true Raw Session Log view.
+///
+/// `bytes` are never parsed as JSON or converted through a lossy string. The
+/// renderer applies only the reversible terminal-safety escaping documented by
+/// `log_render::escape_raw_bytes`.
+#[derive(Clone, Debug, Default)]
+pub struct RawLogWindow {
+    pub bytes: Vec<u8>,
+    pub window_start: u64,
+    pub window_end: u64,
+    pub file_len: u64,
+    pub first_record_partial: bool,
+    pub last_record_partial: bool,
+    pub source_path: Option<PathBuf>,
+    pub source_kind: Option<RawLogSourceKind>,
+    pub source_generation: u64,
+    source_identity: Option<LogFileIdentity>,
+    initialized: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RawBytePage {
+    bytes: Vec<u8>,
+    window_start: u64,
+    window_end: u64,
+    file_len: u64,
+    first_record_partial: bool,
+    last_record_partial: bool,
+    source_identity: LogFileIdentity,
+}
+
+fn raw_record_count(data: &[u8]) -> usize {
+    data.iter().filter(|byte| **byte == b'\n').count()
+        + usize::from(!data.is_empty() && data.last() != Some(&b'\n'))
+}
+
+/// Keep the newest `max_records` without interpreting any record. The cut is
+/// always immediately after a retained-out newline, so blank and malformed
+/// records retain their original multiplicity.
+fn raw_tail_record_cut(data: &[u8], max_records: usize) -> usize {
+    let records = raw_record_count(data);
+    if records <= max_records {
+        return 0;
+    }
+    let remove = records - max_records;
+    let mut seen = 0usize;
+    for (index, byte) in data.iter().enumerate() {
+        if *byte == b'\n' {
+            seen += 1;
+            if seen == remove {
+                return index + 1;
+            }
+        }
+    }
+    0
+}
+
+fn raw_prefix_record_end(data: &[u8], max_records: usize) -> usize {
+    let mut seen = 0usize;
+    for (index, byte) in data.iter().enumerate() {
+        if *byte == b'\n' {
+            seen += 1;
+            if seen == max_records {
+                return index + 1;
+            }
+        }
+    }
+    data.len()
+}
+
+fn byte_before_is_record_boundary(file: &mut std::fs::File, offset: u64) -> std::io::Result<bool> {
+    if offset == 0 {
+        return Ok(true);
+    }
+    file.seek(SeekFrom::Start(offset - 1))?;
+    let mut previous = [0u8; 1];
+    file.read_exact(&mut previous)?;
+    Ok(previous[0] == b'\n')
+}
+
+/// Read an exact bounded raw byte range. This primitive performs no JSON
+/// parsing, UTF-8 conversion, trimming, normalization, or record filtering.
+fn read_raw_byte_range(path: &Path, start: u64, end: u64) -> std::io::Result<RawBytePage> {
+    let mut file = std::fs::File::open(path)?;
+    let metadata = file.metadata()?;
+    let source_identity = log_file_identity(&metadata);
+    let file_len = metadata.len();
+    let start = start.min(file_len);
+    let end = end.min(file_len).max(start);
+    let first_record_partial = !byte_before_is_record_boundary(&mut file, start)?;
+    file.seek(SeekFrom::Start(start))?;
+    let mut bytes = vec![0u8; (end - start) as usize];
+    file.read_exact(&mut bytes)?;
+    let last_record_partial = !bytes.is_empty() && bytes.last() != Some(&b'\n');
+    Ok(RawBytePage {
+        bytes,
+        window_start: start,
+        window_end: end,
+        file_len,
+        first_record_partial,
+        last_record_partial,
+        source_identity,
+    })
+}
+
+/// Reverse-tail the authoritative source with one byte-capped read. Record
+/// capping chooses a newline boundary inside that bounded buffer; no prefix
+/// scan and no semantic record handling is involved.
+fn read_bounded_raw_tail(path: &Path) -> std::io::Result<RawBytePage> {
+    let file_len = std::fs::metadata(path)?.len();
+    let start = file_len.saturating_sub(ACTIVE_LOG_PAGE_MAX_BYTES as u64);
+    let mut page = read_raw_byte_range(path, start, file_len)?;
+    let cut = raw_tail_record_cut(&page.bytes, ACTIVE_LOG_PAGE_MAX_RECORDS);
+    if cut > 0 {
+        page.bytes.drain(..cut);
+        page.window_start = page.window_start.saturating_add(cut as u64);
+        page.first_record_partial = false;
+    }
+    Ok(page)
+}
+
+fn read_bounded_raw_before(path: &Path, before: u64) -> std::io::Result<RawBytePage> {
+    let file_len = std::fs::metadata(path)?.len();
+    let end = before.min(file_len);
+    let start = end.saturating_sub(ACTIVE_LOG_PAGE_MAX_BYTES as u64);
+    let mut page = read_raw_byte_range(path, start, end)?;
+    let cut = raw_tail_record_cut(&page.bytes, ACTIVE_LOG_PAGE_MAX_RECORDS);
+    if cut > 0 {
+        page.bytes.drain(..cut);
+        page.window_start = page.window_start.saturating_add(cut as u64);
+        page.first_record_partial = false;
+    }
+    Ok(page)
+}
+
+fn read_bounded_raw_page(path: &Path, offset: u64) -> std::io::Result<RawBytePage> {
+    let file_len = std::fs::metadata(path)?.len();
+    let start = offset.min(file_len);
+    let requested_end = start
+        .saturating_add(ACTIVE_LOG_PAGE_MAX_BYTES as u64)
+        .min(file_len);
+    let mut page = read_raw_byte_range(path, start, requested_end)?;
+    let end = raw_prefix_record_end(&page.bytes, ACTIVE_LOG_PAGE_MAX_RECORDS);
+    if end < page.bytes.len() {
+        page.bytes.truncate(end);
+        page.window_end = page.window_start.saturating_add(end as u64);
+        page.last_record_partial = false;
+    }
+    Ok(page)
+}
+
+/// Enforce the fixed retained-window budget after prepend/append. The removed
+/// prefix is represented by `window_start` + `first_record_partial`; retained
+/// bytes themselves remain exact.
+fn bound_raw_window(window: &mut RawLogWindow) {
+    let byte_cut = window.bytes.len().saturating_sub(RAW_LOG_RETAIN_MAX_BYTES);
+    let record_cut = raw_tail_record_cut(&window.bytes, RAW_LOG_RETAIN_MAX_RECORDS);
+    let cut = byte_cut.max(record_cut);
+    if cut == 0 {
+        return;
+    }
+    let boundary = window.bytes.get(cut.wrapping_sub(1)) == Some(&b'\n');
+    window.bytes.drain(..cut);
+    window.window_start = window.window_start.saturating_add(cut as u64);
+    window.first_record_partial = !boundary;
+}
+
+/// While explicitly paging toward older history, retain the newly-fetched
+/// prefix and discard the newest suffix at the fixed budget. Returning to End
+/// performs a fresh bounded EOF tail, so this moving history window never
+/// causes a prefix walk or an append cursor ambiguity.
+fn bound_raw_history_window(window: &mut RawLogWindow) {
+    let record_end = raw_prefix_record_end(&window.bytes, RAW_LOG_RETAIN_MAX_RECORDS);
+    let keep = RAW_LOG_RETAIN_MAX_BYTES.min(record_end);
+    if keep >= window.bytes.len() {
+        return;
+    }
+    window.bytes.truncate(keep);
+    window.window_end = window.window_start.saturating_add(keep as u64);
+    window.last_record_partial = window.bytes.last() != Some(&b'\n');
+}
+
 /// Return complete JSONL record ranges in `data[start..]` and the local byte
 /// immediately after the last complete record. A valid final JSON value is a
 /// complete record even when a fixture omitted its trailing newline; a
@@ -6136,6 +6339,32 @@ mod active_log_page_tests {
     }
 
     #[test]
+    fn raw_reverse_tail_of_sparse_large_source_is_bounded_and_keeps_exact_window() {
+        use std::io::{Seek, Write};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("raw_stream.jsonl");
+        let mut file = std::fs::File::create(&path).unwrap();
+        let sparse_prefix = 600_u64 * 1024 * 1024;
+        file.set_len(sparse_prefix).unwrap();
+        file.seek(SeekFrom::Start(sparse_prefix - 8)).unwrap();
+        file.write_all(b"prefix\nRAW_TAIL_A\n\nRAW_TAIL_B_PARTIAL")
+            .unwrap();
+        let file_len = file.stream_position().unwrap();
+        file.set_len(file_len).unwrap();
+        drop(file);
+
+        let started = Instant::now();
+        let page = read_bounded_raw_tail(&path).unwrap();
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(page.bytes.len() <= ACTIVE_LOG_PAGE_MAX_BYTES);
+        assert_eq!(page.window_end, file_len);
+        assert!(page.first_record_partial);
+        assert!(page.last_record_partial);
+        assert!(page.bytes.ends_with(b"RAW_TAIL_A\n\nRAW_TAIL_B_PARTIAL"));
+    }
+
+    #[test]
     fn reverse_tail_represents_single_oversized_record_without_wedging_cursor() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("raw_stream.jsonl");
@@ -6240,7 +6469,7 @@ pub enum AgentStreamEventKind {
     UserInput,
 }
 
-/// Richer payload for an agent-stream event, used by the RAW pretty-printer
+/// Richer payload for an agent-stream event, used by the Pretty formatter
 /// in the log pane. The `summary` field on `AgentStreamEvent` is kept for
 /// backward-compatible event-mode rendering; `details` carries the
 /// untruncated source so renderers can format full transcripts.
@@ -6275,11 +6504,11 @@ pub struct AgentStreamEvent {
     pub agent_id: String,
     pub summary: String,
     /// Optional rich payload for renderers that need more than the summary
-    /// line (notably the RAW pretty-printer).
+    /// line (notably the Pretty formatter).
     pub details: Option<EventDetails>,
 }
 
-/// Four view modes available in the per-task Log pane (right panel tab 4).
+/// Five view modes available in the per-task Log pane (right panel tab 4).
 /// Cycled with the `4` key while the Log pane is active.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LogViewMode {
@@ -6290,7 +6519,10 @@ pub enum LogViewMode {
     HighLevel,
     /// Pretty-printed full transcript: every event rendered with its own
     /// formatter, NOT a JSON dump.
-    RawPretty,
+    Pretty,
+    /// Byte-faithful authoritative attempt source. This never derives text
+    /// from parsed or canonical stream events.
+    Raw,
     /// WG-level log entries only: `wg log` writes, dispatcher
     /// status updates, and task lifecycle transitions sourced from the
     /// task's `log` field on the graph. NO LLM stream content.
@@ -6338,12 +6570,13 @@ impl LogHeaderHit {
 
 impl LogViewMode {
     /// Cycle to the next mode in the order
-    /// Events -> HighLevel -> RawPretty -> WgLog -> Events.
+    /// Events -> HighLevel -> Pretty -> Raw -> WgLog -> Events.
     pub fn next(self) -> Self {
         match self {
             Self::Events => Self::HighLevel,
-            Self::HighLevel => Self::RawPretty,
-            Self::RawPretty => Self::WgLog,
+            Self::HighLevel => Self::Pretty,
+            Self::Pretty => Self::Raw,
+            Self::Raw => Self::WgLog,
             Self::WgLog => Self::Events,
         }
     }
@@ -6353,7 +6586,8 @@ impl LogViewMode {
         match self {
             Self::Events => "events",
             Self::HighLevel => "high-level",
-            Self::RawPretty => "raw",
+            Self::Pretty => "pretty",
+            Self::Raw => "raw",
             Self::WgLog => "wg-log",
         }
     }
@@ -6480,7 +6714,7 @@ pub fn parse_raw_stream_line(line: &str, default_agent_id: &str) -> Option<Agent
         "user" => {
             // Two cases:
             //   1. Plain user input (string content OR text-block content) — surfaced
-            //      as UserInput so the RAW pretty view can render the prompt going IN.
+            //      as UserInput so the Pretty view can render the prompt going IN.
             //   2. Tool results (assistant tool_use replies) — surfaced as ToolResult / Error.
             let content = val.get("message").and_then(|m| m.get("content"))?;
 
@@ -6962,6 +7196,17 @@ struct LogPaneSourceKey {
     viewing_iteration: Option<usize>,
 }
 
+#[derive(Clone, Debug)]
+struct LogPaneRequestIdentity {
+    generation: u64,
+    viewing_iteration: Option<usize>,
+    mode: LogViewMode,
+    agent_id: Option<String>,
+    source_key: Option<LogPaneSourceKey>,
+    raw_identity: Option<LogFileIdentity>,
+    raw_generation: u64,
+}
+
 /// State for the log pane (now embedded as right panel tab 2).
 #[derive(Clone)]
 pub struct LogPaneState {
@@ -6971,12 +7216,13 @@ pub struct LogPaneState {
     pub auto_tail: bool,
     /// Whether to show raw JSON format (toggled by `J`).
     pub json_mode: bool,
-    /// Which of the four view modes is active. Cycled by pressing `4`
-    /// while the Log pane is focused: events → high-level → raw → wg-log → events.
+    /// Which of the five view modes is active. Cycled by pressing `4`
+    /// while the Log pane is focused: events → high-level → pretty → raw → wg-log → events.
     pub view_mode: LogViewMode,
-    /// In RawPretty view, when true, long multi-line bodies (tool result
+    /// In Pretty view, when true, long multi-line bodies (tool result
     /// content, assistant text, etc.) collapse to head + elision marker
     /// + tail. Toggled with `s` while the Log pane is active.
+    ///
     /// In-session only — does not persist across TUI restarts.
     pub summary_mode: bool,
     /// Cached rendered log lines for the currently selected task.
@@ -7010,6 +7256,8 @@ pub struct LogPaneState {
     viewing_iteration: Option<usize>,
     /// Structured events parsed from raw_stream.jsonl.
     pub stream_events: Vec<AgentStreamEvent>,
+    /// Authoritative, byte-faithful source window used only by true Raw mode.
+    pub raw_window: RawLogWindow,
     /// Byte offset for incremental reads from raw_stream.jsonl.
     pub raw_stream_offset: u64,
     /// First byte represented by the retained stream window. Used for bounded
@@ -7054,6 +7302,7 @@ impl Default for LogPaneState {
             has_new_content: false,
             viewing_iteration: None,
             stream_events: Vec::new(),
+            raw_window: RawLogWindow::default(),
             raw_stream_offset: 0,
             stream_window_start: 0,
             source_key: None,
@@ -7074,6 +7323,9 @@ impl LogPaneState {
     fn reset_source_buffers(&mut self) {
         self.agent_output = OutputAgentText::default();
         self.stream_events.clear();
+        let next_raw_generation = self.raw_window.source_generation.wrapping_add(1).max(1);
+        self.raw_window = RawLogWindow::default();
+        self.raw_window.source_generation = next_raw_generation;
         self.raw_stream_offset = 0;
         self.stream_window_start = 0;
         self.stream_source_identity = None;
@@ -7132,7 +7384,12 @@ impl LogPaneState {
     pub(crate) fn scroll_to_top(&mut self) {
         self.scroll = 0;
         self.auto_tail = false;
-        if self.stream_window_start > 0 {
+        let window_start = if self.view_mode == LogViewMode::Raw {
+            self.raw_window.window_start
+        } else {
+            self.stream_window_start
+        };
+        if window_start > 0 {
             self.history_page_pending = true;
         }
     }
@@ -14872,9 +15129,14 @@ impl VizApp {
         let Some(source) = self.log_pane.source_key.as_ref() else {
             return "load";
         };
+        let initialized = if self.log_pane.view_mode == LogViewMode::Raw {
+            self.log_pane.raw_window.initialized
+        } else {
+            self.log_pane.stream_initialized || self.log_pane.output_initialized
+        };
         if self.log_pane.task_id.as_deref() != Some(source.task_id.as_str())
             || self.log_pane.agent_id.as_deref() != Some(source.agent_id.as_str())
-            || !(self.log_pane.stream_initialized || self.log_pane.output_initialized)
+            || !initialized
         {
             "load"
         } else if source.viewing_iteration.is_some() {
@@ -14882,6 +15144,33 @@ impl VizApp {
         } else {
             "now"
         }
+    }
+
+    /// Exact Raw source provenance, cached by the auxiliary reader. The
+    /// renderer never stats or opens this path.
+    pub fn log_pane_raw_provenance(&self) -> Option<String> {
+        let raw = &self.log_pane.raw_window;
+        let path = raw.source_path.as_ref()?;
+        let kind = raw.source_kind?;
+        Some(format!(
+            "source={} path={} bytes={}..{}/{} first={} last={} source-gen={}",
+            kind.label(),
+            path.display(),
+            raw.window_start,
+            raw.window_end,
+            raw.file_len,
+            if raw.first_record_partial {
+                "partial"
+            } else {
+                "whole"
+            },
+            if raw.last_record_partial {
+                "partial"
+            } else {
+                "whole"
+            },
+            raw.source_generation,
+        ))
     }
 
     /// Scroll log pane up.
@@ -14921,27 +15210,50 @@ impl VizApp {
         }
     }
 
-    /// Toggle log pane JSON mode.
+    /// Toggle log pane JSON mode. True Raw bytes are never transformed.
     pub fn toggle_log_json(&mut self) {
+        if self.log_pane.view_mode == LogViewMode::Raw {
+            return;
+        }
         self.log_pane.json_mode = !self.log_pane.json_mode;
         self.invalidate_log_pane();
+        self.request_log_pane();
     }
 
-    /// Cycle the log pane through its four view modes:
-    /// Events → HighLevel → RawPretty → WgLog → Events.
-    /// Resets scroll position to keep the most recent content visible
-    /// (auto-tail enabled).
+    /// Cycle the log pane through its five view modes:
+    /// Events → HighLevel → Pretty → Raw → WgLog → Events.
+    /// Every mode change mints a new async identity generation, so a slow
+    /// completion from the previous semantic contract cannot repaint the body.
     pub fn cycle_log_view(&mut self) {
-        self.log_pane.view_mode = self.log_pane.view_mode.next();
-        self.log_scroll_to_bottom();
+        let next = self.log_pane.view_mode.next();
+        if next == LogViewMode::Raw {
+            // Raw may not reuse a cached window from an earlier visit: the
+            // authoritative file could have rotated while a semantic mode was
+            // active. Clear synchronously, then let the auxiliary lane install
+            // a freshly identity-checked source generation.
+            let source_generation = self
+                .log_pane
+                .raw_window
+                .source_generation
+                .wrapping_add(1)
+                .max(1);
+            self.log_pane.raw_window = RawLogWindow::default();
+            self.log_pane.raw_window.source_generation = source_generation;
+            self.log_pane.tail_jump_pending = true;
+            self.log_pane.history_page_pending = false;
+        }
+        self.log_pane.view_mode = next;
+        self.log_pane.scroll_to_bottom();
+        self.invalidate_log_pane();
+        self.request_log_pane();
     }
 
-    /// Toggle the log pane's summary (head/tail) rendering for the
-    /// RawPretty view. Long multi-line bodies collapse to head + elision
-    /// marker + tail when on. Affects only RawPretty rendering — toggling
-    /// in another view mode is a no-op visually until the user cycles
-    /// back to raw. Resets scroll to keep the latest content visible.
+    /// Toggle the log pane's summary (head/tail) rendering for Pretty mode.
+    /// True Raw bytes are never summarized or otherwise transformed.
     pub fn toggle_log_summary(&mut self) {
+        if self.log_pane.view_mode == LogViewMode::Raw {
+            return;
+        }
         self.log_pane.summary_mode = !self.log_pane.summary_mode;
         self.log_scroll_to_bottom();
     }
@@ -17109,6 +17421,160 @@ impl VizApp {
                 text_entry.full_text = text_entry.full_text[boundary..].to_string();
             }
             text_entry.dirty = true;
+        }
+    }
+
+    fn selected_raw_log_source(&self, agent_id: &str) -> Option<(PathBuf, RawLogSourceKind)> {
+        let agents_dir = self.workgraph_dir.join("agents");
+        let base = if let Some(iter_idx) = self.viewing_iteration {
+            self.iteration_archives
+                .get(iter_idx)
+                .map(|(_, dir)| dir.clone())
+                .unwrap_or_else(|| agents_dir.join(agent_id))
+        } else {
+            agents_dir.join(agent_id)
+        };
+        let raw_stream = base.join("raw_stream.jsonl");
+        if raw_stream.is_file() {
+            return Some((raw_stream, RawLogSourceKind::RawStream));
+        }
+        // This fallback is deliberately exact and loudly named in the header.
+        // Do not use output.txt or synthesize bytes from canonical events.
+        let output_log = base.join("output.log");
+        output_log
+            .is_file()
+            .then_some((output_log, RawLogSourceKind::OutputLogFallback))
+    }
+
+    /// Update true Raw mode from the exact selected attempt source. All calls
+    /// run on the auxiliary storage lane; rendering consumes only `raw_window`.
+    pub fn update_log_raw_bytes(&mut self) {
+        let Some(agent_id) = self.log_pane.agent_id.clone() else {
+            return;
+        };
+        let Some((source_path, source_kind)) = self.selected_raw_log_source(&agent_id) else {
+            self.log_pane.raw_window.bytes.clear();
+            self.log_pane.raw_window.source_path = None;
+            self.log_pane.raw_window.source_kind = None;
+            self.log_pane.raw_window.initialized = false;
+            return;
+        };
+        let Ok(metadata) = std::fs::metadata(&source_path) else {
+            return;
+        };
+        let identity = log_file_identity(&metadata);
+        let source_changed = self.log_pane.raw_window.source_path.as_ref() != Some(&source_path)
+            || self.log_pane.raw_window.source_kind != Some(source_kind)
+            || self
+                .log_pane
+                .raw_window
+                .source_identity
+                .is_some_and(|old| old != identity)
+            || metadata.len() < self.log_pane.raw_window.window_end;
+        if source_changed {
+            let generation = self
+                .log_pane
+                .raw_window
+                .source_generation
+                .wrapping_add(1)
+                .max(1);
+            self.log_pane.raw_window = RawLogWindow::default();
+            self.log_pane.raw_window.source_generation = generation;
+            self.log_pane.raw_window.source_path = Some(source_path.clone());
+            self.log_pane.raw_window.source_kind = Some(source_kind);
+            self.log_pane.tail_jump_pending = true;
+            self.log_pane.history_page_pending = false;
+        }
+
+        if self.log_pane.history_page_pending && self.log_pane.raw_window.initialized {
+            let Ok(page) =
+                read_bounded_raw_before(&source_path, self.log_pane.raw_window.window_start)
+            else {
+                return;
+            };
+            self.log_pane.history_page_pending = false;
+            if page.source_identity != identity {
+                self.log_pane.tail_jump_pending = true;
+                return;
+            }
+            if !page.bytes.is_empty() {
+                let added_records = raw_record_count(&page.bytes);
+                let mut combined = page.bytes;
+                combined.append(&mut self.log_pane.raw_window.bytes);
+                self.log_pane.raw_window.bytes = combined;
+                self.log_pane.raw_window.window_start = page.window_start;
+                self.log_pane.raw_window.first_record_partial = page.first_record_partial;
+                self.log_pane.raw_window.source_identity = Some(page.source_identity);
+                bound_raw_history_window(&mut self.log_pane.raw_window);
+                self.log_pane.scroll = self.log_pane.scroll.saturating_add(added_records);
+            }
+            return;
+        }
+
+        if self.log_pane.raw_window.initialized && !self.log_pane.auto_tail {
+            if metadata.len() > self.log_pane.raw_window.window_end {
+                self.log_pane.has_new_content = true;
+            }
+            return;
+        }
+
+        let backlog = metadata
+            .len()
+            .saturating_sub(self.log_pane.raw_window.window_end);
+        let initial_tail = !self.log_pane.raw_window.initialized
+            || self.log_pane.tail_jump_pending
+            || backlog > ACTIVE_LOG_PAGE_MAX_BYTES as u64;
+        if initial_tail {
+            let Ok(page) = read_bounded_raw_tail(&source_path) else {
+                return;
+            };
+            if page.source_identity != identity {
+                self.log_pane.tail_jump_pending = true;
+                return;
+            }
+            let generation = self.log_pane.raw_window.source_generation.max(1);
+            self.log_pane.raw_window = RawLogWindow {
+                bytes: page.bytes,
+                window_start: page.window_start,
+                window_end: page.window_end,
+                file_len: page.file_len,
+                first_record_partial: page.first_record_partial,
+                last_record_partial: page.last_record_partial,
+                source_path: Some(source_path),
+                source_kind: Some(source_kind),
+                source_generation: generation,
+                source_identity: Some(page.source_identity),
+                initialized: true,
+            };
+            self.log_pane.tail_jump_pending = false;
+            self.log_pane.has_new_content = false;
+            return;
+        }
+
+        let prior_end = self.log_pane.raw_window.window_end;
+        let Ok(page) = read_bounded_raw_page(&source_path, prior_end) else {
+            return;
+        };
+        if page.source_identity != identity {
+            self.log_pane.tail_jump_pending = true;
+            return;
+        }
+        self.log_pane.raw_window.file_len = page.file_len;
+        if page.window_end == prior_end {
+            return;
+        }
+        self.log_pane
+            .raw_window
+            .bytes
+            .extend_from_slice(&page.bytes);
+        self.log_pane.raw_window.window_end = page.window_end;
+        self.log_pane.raw_window.last_record_partial = page.last_record_partial;
+        self.log_pane.raw_window.source_identity = Some(page.source_identity);
+        bound_raw_window(&mut self.log_pane.raw_window);
+        if page.window_end < page.file_len && self.log_pane.auto_tail {
+            // Coalesce a burst larger than one bounded page into a fresh EOF
+            // window on the next tick; never walk its prefix.
+            self.log_pane.tail_jump_pending = true;
         }
     }
 
@@ -21969,27 +22435,43 @@ impl VizApp {
     fn apply_log_pane_snapshot(
         &mut self,
         target: &str,
-        generation: u64,
-        viewing_iteration: Option<usize>,
+        request: &LogPaneRequestIdentity,
         mut panel: LogPaneState,
     ) {
         if self.selected_task_id() != Some(target)
-            || self.log_pane.generation != generation
-            || self.viewing_iteration != viewing_iteration
+            || self.log_pane.generation != request.generation
+            || self.viewing_iteration != request.viewing_iteration
+            || self.log_pane.view_mode != request.mode
+            || request
+                .agent_id
+                .as_deref()
+                .is_some_and(|agent| self.log_pane.agent_id.as_deref() != Some(agent))
+            || request
+                .source_key
+                .as_ref()
+                .is_some_and(|key| self.log_pane.source_key.as_ref() != Some(key))
+            || request
+                .raw_identity
+                .is_some_and(|identity| self.log_pane.raw_window.source_identity != Some(identity))
+            || self.log_pane.raw_window.source_generation != request.raw_generation
         {
             return;
         }
-        // Scroll/mode changes are presentation-only and may occur while
-        // storage is in flight. Preserve them without mixing the old body's
-        // task/attempt/archive identity.
+        // Scroll state may change while storage is in flight. The semantic
+        // mode itself is fenced above rather than copied across contracts.
         panel.scroll = self.log_pane.scroll;
         panel.auto_tail = self.log_pane.auto_tail;
         panel.json_mode = self.log_pane.json_mode;
-        panel.view_mode = self.log_pane.view_mode;
+        panel.view_mode = request.mode;
         panel.summary_mode = self.log_pane.summary_mode;
         panel.has_new_content |= self.log_pane.has_new_content;
         panel.generation = self.log_pane.generation;
-        let needs_followup = panel.auto_tail && panel.stream_initialized && panel.tail_jump_pending;
+        let source_initialized = if request.mode == LogViewMode::Raw {
+            panel.raw_window.initialized
+        } else {
+            panel.stream_initialized
+        };
+        let needs_followup = panel.auto_tail && source_initialized && panel.tail_jump_pending;
         self.log_pane = panel;
         if needs_followup {
             self.invalidate_log_pane();
@@ -22015,7 +22497,16 @@ impl VizApp {
         let viewing_iteration = self.viewing_iteration;
         let iteration_archives = self.iteration_archives.clone();
         let iteration_archives_task_id = self.iteration_archives_task_id.clone();
-        let generation = self.log_pane.generation;
+        let requested_mode = self.log_pane.view_mode;
+        let request_identity = LogPaneRequestIdentity {
+            generation: self.log_pane.generation,
+            viewing_iteration,
+            mode: requested_mode,
+            agent_id: self.log_pane.agent_id.clone(),
+            source_key: self.log_pane.source_key.clone(),
+            raw_identity: self.log_pane.raw_window.source_identity,
+            raw_generation: self.log_pane.raw_window.source_generation,
+        };
         // Carry the exact bounded cursor/window forward. `task_id = None`
         // forces graph/attempt metadata to be rebuilt while source buffers,
         // file identities, offsets, and manual pin remain coherent.
@@ -22033,11 +22524,17 @@ impl VizApp {
                 loader.log_pane = carried_panel;
                 loader.load_agent_monitor();
                 loader.load_log_pane();
-                loader.update_log_output();
-                loader.update_log_stream_events();
+                match requested_mode {
+                    LogViewMode::Events | LogViewMode::HighLevel | LogViewMode::Pretty => {
+                        loader.update_log_output();
+                        loader.update_log_stream_events();
+                    }
+                    LogViewMode::Raw => loader.update_log_raw_bytes(),
+                    LogViewMode::WgLog => {}
+                }
                 let panel = loader.log_pane;
                 Box::new(move |app| {
-                    app.apply_log_pane_snapshot(&target, generation, viewing_iteration, panel);
+                    app.apply_log_pane_snapshot(&target, &request_identity, panel);
                 })
             });
     }
@@ -34880,11 +35377,10 @@ mod agent_stream_tests {
     }
 
     /// Pressing the `4` key while focused on the Log pane must cycle
-    /// the view through four modes in stable order:
-    /// Events → HighLevel → RawPretty → WgLog → Events. Required by the
-    /// per-task Log "four view modes" feature.
+    /// the view through five modes in stable order:
+    /// Events → HighLevel → Pretty → Raw → WgLog → Events.
     #[test]
-    fn test_log_view_cycles_through_four_modes() {
+    fn test_log_view_cycles_through_five_modes() {
         use crate::commands::viz::ascii::generate_ascii;
         use crate::commands::viz::{LayoutMode, VizOutput};
         use std::collections::{HashMap, HashSet};
@@ -34917,7 +35413,14 @@ mod agent_stream_tests {
         assert_eq!(app.log_pane.view_mode, LogViewMode::HighLevel);
 
         app.cycle_log_view();
-        assert_eq!(app.log_pane.view_mode, LogViewMode::RawPretty);
+        assert_eq!(app.log_pane.view_mode, LogViewMode::Pretty);
+
+        app.log_pane.raw_window.bytes = b"STALE_PRIOR_RAW_VISIT".to_vec();
+        app.log_pane.raw_window.source_path = Some("/old/source".into());
+        app.cycle_log_view();
+        assert_eq!(app.log_pane.view_mode, LogViewMode::Raw);
+        assert!(app.log_pane.raw_window.bytes.is_empty());
+        assert!(app.log_pane.raw_window.source_path.is_none());
 
         app.cycle_log_view();
         assert_eq!(app.log_pane.view_mode, LogViewMode::WgLog);
@@ -34926,13 +35429,14 @@ mod agent_stream_tests {
         assert_eq!(
             app.log_pane.view_mode,
             LogViewMode::Events,
-            "after four cycles we should be back at Events"
+            "after five cycles we should be back at Events"
         );
 
         // The mode label exposed in the pane header must match.
         assert_eq!(LogViewMode::Events.label(), "events");
         assert_eq!(LogViewMode::HighLevel.label(), "high-level");
-        assert_eq!(LogViewMode::RawPretty.label(), "raw");
+        assert_eq!(LogViewMode::Pretty.label(), "pretty");
+        assert_eq!(LogViewMode::Raw.label(), "raw");
         assert_eq!(LogViewMode::WgLog.label(), "wg-log");
     }
 
@@ -37591,6 +38095,25 @@ mod retry_log_pane_tests {
         app
     }
 
+    fn request_identity(
+        generation: u64,
+        viewing_iteration: Option<usize>,
+        mode: LogViewMode,
+        agent_id: Option<&str>,
+        raw_identity: Option<LogFileIdentity>,
+        raw_generation: u64,
+    ) -> LogPaneRequestIdentity {
+        LogPaneRequestIdentity {
+            generation,
+            viewing_iteration,
+            mode,
+            agent_id: agent_id.map(str::to_string),
+            source_key: None,
+            raw_identity,
+            raw_generation,
+        }
+    }
+
     /// The core fix: load_log_pane must default to the LIVE (assigned) agent,
     /// not the first (failed) agent mentioned in the task log.
     #[test]
@@ -37825,6 +38348,183 @@ mod retry_log_pane_tests {
     }
 
     #[test]
+    fn async_semantic_snapshot_keeps_live_append_under_raw_identity_fence() {
+        use std::io::Write;
+
+        let (viz, tmp) = build_retried_task_graph();
+        let live_dir = tmp.path().join("agents/agent-280");
+        std::fs::create_dir_all(&live_dir).unwrap();
+        std::fs::write(live_dir.join("output.log"), b"").unwrap();
+        let stream = live_dir.join("raw_stream.jsonl");
+        std::fs::write(
+            &stream,
+            b"{\"type\":\"turn_end\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"ASYNC_FIRST\"}]}}\n",
+        )
+        .unwrap();
+        let mut app = build_app(&viz, "retry-task", tmp.path());
+        app.request_log_pane();
+        app.wait_for_auxiliary_snapshot();
+        assert!(
+            app.log_pane
+                .stream_events
+                .iter()
+                .any(|event| event.summary == "ASYNC_FIRST")
+        );
+
+        let mut append = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&stream)
+            .unwrap();
+        writeln!(append, "\n{{\"type\":\"turn_end\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"ASYNC_APPEND\"}}]}}}}").unwrap();
+        drop(append);
+        app.invalidate_log_pane();
+        app.request_log_pane();
+        app.wait_for_auxiliary_snapshot();
+        assert!(
+            app.log_pane
+                .stream_events
+                .iter()
+                .any(|event| event.summary == "ASYNC_APPEND"),
+            "same attempt/source async continuation was rejected"
+        );
+    }
+
+    #[test]
+    fn true_raw_prefers_authoritative_stream_and_names_exact_output_fallback() {
+        let (viz, tmp) = build_retried_task_graph();
+        let live_dir = tmp.path().join("agents/agent-280");
+        std::fs::create_dir_all(&live_dir).unwrap();
+        let raw_path = live_dir.join("raw_stream.jsonl");
+        let raw_bytes = b"{\"type\":\"known\"}\n{malformed\nplain  text\ndup\ndup\n\nUnicode: \xce\xbb \xe9\x9b\xaa\nterminal:\x1b[31m\xff\n";
+        std::fs::write(&raw_path, raw_bytes).unwrap();
+        std::fs::write(live_dir.join("output.log"), b"FALLBACK_MUST_NOT_WIN\n").unwrap();
+
+        let mut app = build_app(&viz, "retry-task", tmp.path());
+        app.log_pane.view_mode = LogViewMode::Raw;
+        app.load_log_pane();
+        app.update_log_raw_bytes();
+        assert_eq!(app.log_pane.raw_window.bytes, raw_bytes);
+        assert_eq!(
+            app.log_pane.raw_window.source_kind,
+            Some(RawLogSourceKind::RawStream)
+        );
+        assert_eq!(app.log_pane.raw_window.window_start, 0);
+        assert_eq!(app.log_pane.raw_window.window_end, raw_bytes.len() as u64);
+        assert!(!app.log_pane.raw_window.first_record_partial);
+        assert!(!app.log_pane.raw_window.last_record_partial);
+        let provenance = app.log_pane_raw_provenance().unwrap();
+        assert!(provenance.contains("source=raw_stream.jsonl"));
+        assert!(provenance.contains(raw_path.to_string_lossy().as_ref()));
+        assert!(provenance.contains("first=whole last=whole"));
+        let stream_generation = app.log_pane.raw_window.source_generation;
+
+        std::fs::remove_file(&raw_path).unwrap();
+        let fallback = b"plain fallback\n\ninvalid:\xfe\n";
+        std::fs::write(live_dir.join("output.log"), fallback).unwrap();
+        app.update_log_raw_bytes();
+        assert_eq!(app.log_pane.raw_window.bytes, fallback);
+        assert_eq!(
+            app.log_pane.raw_window.source_kind,
+            Some(RawLogSourceKind::OutputLogFallback)
+        );
+        assert!(app.log_pane.raw_window.source_generation > stream_generation);
+        let provenance = app.log_pane_raw_provenance().unwrap();
+        assert!(provenance.contains("source=output.log fallback"));
+        assert!(provenance.contains("output.log"));
+
+        std::fs::remove_file(live_dir.join("output.log")).unwrap();
+        std::fs::write(live_dir.join("output.txt"), b"MUST_NOT_BE_RAW\n").unwrap();
+        app.update_log_raw_bytes();
+        assert!(app.log_pane.raw_window.bytes.is_empty());
+        assert!(app.log_pane.raw_window.source_path.is_none());
+        assert!(app.log_pane.raw_window.source_kind.is_none());
+    }
+
+    #[test]
+    fn true_raw_tail_history_append_partial_and_rotation_are_bounded() {
+        use std::io::Write;
+
+        let (viz, tmp) = build_retried_task_graph();
+        let live_dir = tmp.path().join("agents/agent-280");
+        std::fs::create_dir_all(&live_dir).unwrap();
+        std::fs::write(live_dir.join("output.log"), b"fallback\n").unwrap();
+        let stream = live_dir.join("raw_stream.jsonl");
+        let mut file = std::fs::File::create(&stream).unwrap();
+        for index in 0..350 {
+            writeln!(file, "RAW_HISTORY_{index:03}").unwrap();
+        }
+        drop(file);
+
+        let mut app = build_app(&viz, "retry-task", tmp.path());
+        app.log_pane.view_mode = LogViewMode::Raw;
+        app.load_log_pane();
+        app.update_log_raw_bytes();
+        assert_eq!(raw_record_count(&app.log_pane.raw_window.bytes), 200);
+        assert!(
+            app.log_pane
+                .raw_window
+                .bytes
+                .starts_with(b"RAW_HISTORY_150\n")
+        );
+        assert!(app.log_pane.raw_window.window_start > 0);
+
+        let mut append = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&stream)
+            .unwrap();
+        append.write_all(b"PARTIAL_RAW").unwrap();
+        drop(append);
+        app.update_log_raw_bytes();
+        assert!(app.log_pane.raw_window.bytes.ends_with(b"PARTIAL_RAW"));
+        assert!(app.log_pane.raw_window.last_record_partial);
+        let partial_end = app.log_pane.raw_window.window_end;
+
+        let mut append = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&stream)
+            .unwrap();
+        append.write_all(b"_FINISH\n").unwrap();
+        drop(append);
+        app.update_log_raw_bytes();
+        assert!(app.log_pane.raw_window.window_end > partial_end);
+        assert_eq!(
+            app.log_pane
+                .raw_window
+                .bytes
+                .windows(b"PARTIAL_RAW_FINISH".len())
+                .filter(|window| *window == b"PARTIAL_RAW_FINISH")
+                .count(),
+            1
+        );
+        assert!(!app.log_pane.raw_window.last_record_partial);
+
+        app.log_pane.scroll_to_top();
+        app.update_log_raw_bytes();
+        assert!(
+            app.log_pane
+                .raw_window
+                .bytes
+                .windows(b"RAW_HISTORY_000".len())
+                .any(|window| window == b"RAW_HISTORY_000")
+        );
+        assert!(app.log_pane.raw_window.bytes.len() <= RAW_LOG_RETAIN_MAX_BYTES);
+
+        let history_generation = app.log_pane.raw_window.source_generation;
+        std::fs::write(&stream, b"TRUNCATED_RAW\n").unwrap();
+        app.log_pane.auto_tail = true;
+        app.update_log_raw_bytes();
+        assert_eq!(app.log_pane.raw_window.bytes, b"TRUNCATED_RAW\n");
+        assert!(app.log_pane.raw_window.source_generation > history_generation);
+
+        let truncated_generation = app.log_pane.raw_window.source_generation;
+        std::fs::rename(&stream, live_dir.join("raw_stream.old")).unwrap();
+        std::fs::write(&stream, b"ROTATED_RAW\n").unwrap();
+        app.update_log_raw_bytes();
+        assert_eq!(app.log_pane.raw_window.bytes, b"ROTATED_RAW\n");
+        assert!(app.log_pane.raw_window.source_generation > truncated_generation);
+    }
+
+    #[test]
     fn archive_and_current_switch_reset_to_the_exact_stream_source() {
         let (viz, tmp) = build_retried_task_graph();
         let live_dir = tmp.path().join("agents/agent-280");
@@ -37879,22 +38579,108 @@ mod retry_log_pane_tests {
         stale.stream_events[0].summary = "STALE_BODY".to_string();
 
         app.invalidate_log_pane();
-        app.apply_log_pane_snapshot("retry-task", old_generation, None, stale.clone());
+        app.apply_log_pane_snapshot(
+            "retry-task",
+            &request_identity(old_generation, None, LogViewMode::Events, None, None, 0),
+            stale.clone(),
+        );
         assert_eq!(app.log_pane.agent_id.as_deref(), Some("agent-280"));
         assert_eq!(app.log_pane.stream_events[0].summary, "LIVE_BODY");
 
         app.viewing_iteration = Some(0);
-        app.apply_log_pane_snapshot("retry-task", app.log_pane.generation, None, stale.clone());
+        let generation = app.log_pane.generation;
+        app.apply_log_pane_snapshot(
+            "retry-task",
+            &request_identity(generation, None, LogViewMode::Events, None, None, 0),
+            stale.clone(),
+        );
         assert_eq!(app.log_pane.stream_events[0].summary, "LIVE_BODY");
         app.viewing_iteration = None;
 
         app.selected_task_idx = None;
-        app.apply_log_pane_snapshot("retry-task", app.log_pane.generation, None, stale);
+        let generation = app.log_pane.generation;
+        app.apply_log_pane_snapshot(
+            "retry-task",
+            &request_identity(generation, None, LogViewMode::Events, None, None, 0),
+            stale,
+        );
         assert_eq!(app.log_pane.stream_events[0].summary, "LIVE_BODY");
         app.request_log_pane();
         assert!(app.log_pane.stream_events.is_empty());
         assert!(app.log_pane.agent_id.is_none());
         assert!(app.log_pane.source_key.is_none());
+    }
+
+    #[test]
+    fn raw_async_completion_rejects_mode_attempt_file_identity_and_source_generation_drift() {
+        let (viz, tmp) = build_retried_task_graph();
+        let mut app = build_app(&viz, "retry-task", tmp.path());
+        app.load_log_pane();
+        app.log_pane.view_mode = LogViewMode::Raw;
+        app.log_pane.raw_window.bytes = b"CURRENT_RAW".to_vec();
+        app.log_pane.raw_window.source_identity = Some(LogFileIdentity(22));
+        app.log_pane.raw_window.source_generation = 9;
+        let generation = app.log_pane.generation;
+        let mut stale = app.log_pane.clone();
+        stale.raw_window.bytes = b"STALE_RAW".to_vec();
+
+        app.log_pane.view_mode = LogViewMode::Pretty;
+        app.apply_log_pane_snapshot(
+            "retry-task",
+            &request_identity(
+                generation,
+                None,
+                LogViewMode::Raw,
+                Some("agent-280"),
+                Some(LogFileIdentity(22)),
+                9,
+            ),
+            stale.clone(),
+        );
+        assert_eq!(app.log_pane.raw_window.bytes, b"CURRENT_RAW");
+
+        app.log_pane.view_mode = LogViewMode::Raw;
+        app.apply_log_pane_snapshot(
+            "retry-task",
+            &request_identity(
+                generation,
+                None,
+                LogViewMode::Raw,
+                Some("agent-275"),
+                Some(LogFileIdentity(22)),
+                9,
+            ),
+            stale.clone(),
+        );
+        assert_eq!(app.log_pane.raw_window.bytes, b"CURRENT_RAW");
+
+        app.apply_log_pane_snapshot(
+            "retry-task",
+            &request_identity(
+                generation,
+                None,
+                LogViewMode::Raw,
+                Some("agent-280"),
+                Some(LogFileIdentity(11)),
+                9,
+            ),
+            stale.clone(),
+        );
+        assert_eq!(app.log_pane.raw_window.bytes, b"CURRENT_RAW");
+
+        app.apply_log_pane_snapshot(
+            "retry-task",
+            &request_identity(
+                generation,
+                None,
+                LogViewMode::Raw,
+                Some("agent-280"),
+                Some(LogFileIdentity(22)),
+                8,
+            ),
+            stale,
+        );
+        assert_eq!(app.log_pane.raw_window.bytes, b"CURRENT_RAW");
     }
 
     /// The attempt label reflects the displayed attempt and its liveness.

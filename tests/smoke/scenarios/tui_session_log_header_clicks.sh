@@ -50,8 +50,12 @@ r={"next_agent_id":2,"agents":{
 }}
 open(p,"w").write(json.dumps(r))
 PY
-printf '%s\n' '{"type":"turn_end","message":{"content":[{"type":"text","text":"OLD_ATTEMPT"}]}}' >"$G/agents/agent-old/raw_stream.jsonl"
-printf '%s\n' '{"type":"turn_end","message":{"content":[{"type":"text","text":"NEW_ATTEMPT"}]}}' >"$G/agents/agent-new/raw_stream.jsonl"
+printf '%s\n' \
+  '{"type":"turn_end","message":{"content":[{"type":"text","text":"OLD_ATTEMPT"}]}}' \
+  'RAW_AUTH_OLD_PLAIN' >"$G/agents/agent-old/raw_stream.jsonl"
+printf '%s\n' \
+  '{"type":"turn_end","message":{"content":[{"type":"text","text":"NEW_ATTEMPT"}]}}' \
+  'RAW_AUTH_NEW_PLAIN' >"$G/agents/agent-new/raw_stream.jsonl"
 : >"$G/agents/agent-old/output.log"; : >"$G/agents/agent-new/output.log"
 cat >"$G/tui-state.json" <<'JSON'
 {"layout":{"dock":"right","size_percent":85,"mode":"split"},"right_panel_tab":"Detail"}
@@ -85,7 +89,7 @@ click_text() {
 }
 
 # Select the real graph row, enter Session Log with the documented key, then
-# click the actual view/value cells through the complete four-mode cycle.
+# click the actual view/value cells through the complete five-mode cycle.
 tmux new-session -d -s "$session" -x 220 -y 40 \
   "cd '$scratch/project' && env HOME='$HOME' XDG_CONFIG_HOME='$XDG_CONFIG_HOME' WG_GLOBAL_DIR='$WG_GLOBAL_DIR' '$WG_BIN' --dir '$G' tui"
 tmux set-option -t "$session" mouse on
@@ -96,8 +100,9 @@ tmux send-keys -t "$session" 4
 wait_screen "view=[Events]"
 for transition in \
   'view=[Events]|view=[HighLevel]' \
-  'view=[HighLevel]|view=[RawPretty]' \
-  'view=[RawPretty]|view=[WgLog]' \
+  'view=[HighLevel]|view=[Pretty]' \
+  'view=[Pretty]|view=[Raw]' \
+  'view=[Raw]|view=[WgLog]' \
   'view=[WgLog]|view=[Events]'; do
   before=${transition%%|*}; after=${transition#*|}
   click_text "$before"
@@ -113,15 +118,38 @@ click_text "[s] summary" 5
 wait_screen "summary=on" "summary label did not toggle summary mode"
 click_text "[J] json" 4
 wait_screen "json=on" "JSON label did not toggle JSON mode"
-click_text "[{] older" 4
-wait_screen "OLD_ATTEMPT" "older-attempt label did not pin the failed source"
-click_text "[}] newer" 4
-wait_screen "NEW_ATTEMPT" "newer-attempt label did not restore the live source"
+# Enter true Raw via the same click control. Its body must be the plain source
+# record that semantic parsing would discard, and transforms must disappear.
+for expected in HighLevel Pretty Raw; do
+  current=$(capture | grep -o 'view=\[[^]]*\]' | head -1)
+  click_text "$current"
+  wait_screen "view=[$expected]"
+done
+wait_screen "RAW_AUTH_NEW_PLAIN" "true Raw did not expose the authoritative plain record"
+wait_screen "source=raw_stream.jsonl" "true Raw header did not name raw_stream.jsonl"
+wait_screen "path=$G/agents/agent-new/raw_stream.jsonl" "true Raw header did not own the exact live-attempt path"
+if capture | grep -Fq '[s] summary'; then loud_fail "true Raw exposed summary transform"; fi
+if capture | grep -Fq '[J] json'; then loud_fail "true Raw exposed JSON transform"; fi
 
-# Phone/Termux width keeps all five compact controls complete and tappable.
+printf '%s\n' 'RAW_AUTH_LIVE_APPEND' >>"$G/agents/agent-new/raw_stream.jsonl"
+wait_screen "RAW_AUTH_LIVE_APPEND" "true Raw did not live-tail the appended source record"
+click_text "[{] older" 4
+wait_screen "RAW_AUTH_OLD_PLAIN" "older Raw attempt did not pin its exact source"
+wait_screen "path=$G/agents/agent-old/raw_stream.jsonl" "older Raw path provenance is wrong"
+click_text "[}] newer" 4
+wait_screen "RAW_AUTH_LIVE_APPEND" "newer Raw attempt did not return to the current retained tail"
+wait_screen "path=$G/agents/agent-new/raw_stream.jsonl" "newer Raw path provenance is wrong"
+
+# Phone/Termux width keeps complete Raw attempt controls and no transform hits.
 tmux resize-window -t "$session" -x 40 -y 24
+wait_screen "view=[Raw] [{] [}]" "40-column true Raw controls were clipped"
+if capture | grep -Fq '[s]'; then loud_fail "compact true Raw exposed summary transform"; fi
+if capture | grep -Fq '[J]'; then loud_fail "compact true Raw exposed JSON transform"; fi
+click_text "view=[Raw]"
+wait_screen "view=[WgLog]"
+click_text "view=[WgLog]"
 wait_screen "view=[Events]"
-wait_screen "[s] [J] [{] [}]" "40-column compact Log controls were clipped"
+wait_screen "[s] [J] [{] [}]" "40-column compact semantic controls were clipped"
 click_text "view=[Events]"
 wait_screen "view=[HighLevel]"
 click_text "[s]" 1
@@ -131,10 +159,10 @@ wait_screen "summary=off" "compact summary tap did not reach the same action"
 
 # Repeat the mode sequence by keyboard after resize; pointer support must not
 # alter the established `4` ownership or task/attempt identity.
-for expected in RawPretty WgLog Events HighLevel; do
+for expected in Pretty Raw WgLog Events HighLevel; do
   tmux send-keys -t "$session" 4
   wait_screen "view=[$expected]" "keyboard 4 failed after pointer/resize flow"
 done
 wait_screen "agent=agent-new"
 
-echo "PASS: Session Log same-frame view/summary/JSON/attempt controls click at wide and Termux widths; resize and key 4 retain exact ownership"
+echo "PASS: Session Log cycles five modes; true Raw owns exact attempt source/path/live bytes and hides transforms at wide and Termux widths"

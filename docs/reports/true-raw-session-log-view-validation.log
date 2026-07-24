@@ -1,0 +1,35 @@
+Validation: add-true-raw-log-view
+=================================
+
+PASS  cargo fmt --check
+PASS  cargo clippy
+      Completed with the repository's existing warning baseline; no errors.
+PASS  cargo build
+PASS  cargo install --path . --locked
+
+PASS  env -u WG_AGENT_ID -u WG_TASK_ID -u WG_DIR -u WG_EXECUTOR_TYPE \
+      -u WG_MODEL -u WG_TIER cargo test -- --test-threads=1
+      Full serial Rust suite and doctests completed with zero failures
+      (credential-gated tests remained ignored as declared).
+
+PASS  cargo test --bin wg true_raw -- --test-threads=1
+PASS  cargo test --bin wg raw_view_is_byte_faithful -- --test-threads=1
+PASS  cargo test --bin wg pretty_raw_and_attempt_frames -- --test-threads=1
+PASS  cargo test --bin wg raw_async_completion_rejects -- --test-threads=1
+PASS  cargo test --bin wg raw_reverse_tail_of_sparse -- --test-threads=1
+PASS  cargo test --bin wg tui::viz_viewer::render::tests:: -- --test-threads=1
+      Focused byte fidelity, source selection/fallback, bounded paging/live tail,
+      truncation/rotation, async fencing, control/hit-map, and two-frame repaint
+      coverage completed with zero failures.
+
+PASS  WG_SMOKE_CANDIDATE_BIN=$PWD/target/debug/wg \
+      tests/smoke/scenarios/tui_session_log_header_clicks.sh
+      Five-mode wide/40-column tmux click+keyboard flow, exact attempt path,
+      live plain-record append, attempt switching, and hidden Raw transforms.
+
+PASS  PATH=$PWD/target/debug:$PATH \
+      tests/smoke/scenarios/tui_log_pane_live_retry_tail.sh
+      600 MiB sparse reverse tail, live completion, and retry-attempt cycling.
+
+PASS  git diff --check
+PASS  bash -n tests/smoke/scenarios/tui_session_log_header_clicks.sh

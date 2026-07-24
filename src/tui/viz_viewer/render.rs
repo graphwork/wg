@@ -6359,18 +6359,18 @@ fn render_editor_word_wrap(
     }
 }
 
-/// Draw the per-task Log tab. Four view modes are available, cycled
+/// Draw the per-task Log tab. Five view modes are available, cycled
 /// with the `4` key while the Log pane is focused:
 ///   * `Events` — one structured event per line (legacy view)
 ///   * `HighLevel` — coarse activity summaries
-///   * `RawPretty` — full pretty-printed transcript
+///   * `Pretty` — full parsed/formatted transcript (NOT a JSON dump)
+///   * `Raw` — byte-faithful authoritative attempt source
 ///   * `WgLog` — WG-level log entries only (`wg log` writes,
 ///     dispatcher status, lifecycle transitions). NO LLM stream content.
 ///
-/// The first three modes consume `app.log_pane.stream_events` (parsed
-/// raw_stream.jsonl); when no stream events have been parsed yet, they
-/// fall back to the raw agent output buffer. `WgLog` instead consumes
-/// `app.log_pane.rendered_lines` (populated from `task.log`).
+/// Events/HighLevel/Pretty consume parsed `stream_events`; Raw consumes only
+/// the cached `raw_window` read by the auxiliary storage lane; WgLog consumes
+/// `rendered_lines` populated from `task.log`.
 fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     use super::state::{LogHeaderAction, LogHeaderHit};
     use ratatui::widgets::Paragraph;
@@ -6382,17 +6382,30 @@ fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         return;
     }
 
-    let [header_area, body_area] =
-        Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
-
-    // Controls lead the row so the phone/Termux layout preserves touch parity
-    // before optional identity/provenance text. Wide panes use descriptive
-    // labels; narrow panes use the same keyboard glyphs without dead prose.
-    let compact_controls = header_area.width < 72;
+    // This is the pane width (often half the terminal), not the terminal
+    // width. Keep action prose compact until there is also room for attempt
+    // and authoritative source provenance. Compact true Raw gets a dedicated
+    // provenance row so complete controls never crowd source ownership away.
+    let compact_controls = area.width < 120;
+    let separate_raw_provenance =
+        app.log_pane.view_mode == super::state::LogViewMode::Raw && area.height > 1;
+    let header_height = if separate_raw_provenance { 2 } else { 1 };
+    let [header_block, body_area] =
+        Layout::vertical([Constraint::Length(header_height), Constraint::Min(0)]).areas(area);
+    let control_area = Rect::new(header_block.x, header_block.y, header_block.width, 1);
+    let provenance_area = separate_raw_provenance.then(|| {
+        Rect::new(
+            header_block.x,
+            header_block.y.saturating_add(1),
+            header_block.width,
+            1,
+        )
+    });
     let mode_name = match app.log_pane.view_mode {
         super::state::LogViewMode::Events => "Events",
         super::state::LogViewMode::HighLevel => "HighLevel",
-        super::state::LogViewMode::RawPretty => "RawPretty",
+        super::state::LogViewMode::Pretty => "Pretty",
+        super::state::LogViewMode::Raw => "Raw",
         super::state::LogViewMode::WgLog => "WgLog",
     };
     let owner = LogHeaderHit {
@@ -6416,33 +6429,37 @@ fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             let width = UnicodeWidthStr::width(text.as_str()) as u16;
             // An action is rendered only when its complete label fits. A partially
             // clipped bracket/button must never retain a partial hit rectangle.
-            if width > 0 && cursor.saturating_add(width) <= header_area.width {
+            if width > 0 && cursor.saturating_add(width) <= control_area.width {
                 spans.push(Span::styled(text, action_style));
                 let mut hit = owner.clone();
                 hit.action = action;
-                hit.area = Rect::new(header_area.x + cursor, header_area.y, width, 1);
+                hit.area = Rect::new(control_area.x + cursor, control_area.y, width, 1);
                 hits.push(hit);
                 cursor += width;
             }
         };
 
         push_action(format!("view=[{mode_name}]"), LogHeaderAction::CycleView);
-        push_action(
-            if compact_controls {
-                " [s]".to_string()
-            } else {
-                "  [s] summary".to_string()
-            },
-            LogHeaderAction::ToggleSummary,
-        );
-        push_action(
-            if compact_controls {
-                " [J]".to_string()
-            } else {
-                "  [J] json".to_string()
-            },
-            LogHeaderAction::ToggleJson,
-        );
+        // Transform controls do not exist in true Raw mode: hiding their
+        // spans also guarantees they own no stale/clickable hit rectangle.
+        if app.log_pane.view_mode != super::state::LogViewMode::Raw {
+            push_action(
+                if compact_controls {
+                    " [s]".to_string()
+                } else {
+                    "  [s] summary".to_string()
+                },
+                LogHeaderAction::ToggleSummary,
+            );
+            push_action(
+                if compact_controls {
+                    " [J]".to_string()
+                } else {
+                    "  [J] json".to_string()
+                },
+                LogHeaderAction::ToggleJson,
+            );
+        }
         if app.log_pane.attempt_agent_ids.len() > 1 {
             push_action(
                 if compact_controls {
@@ -6475,45 +6492,103 @@ fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         .unwrap_or_else(|| "no agent src=load".to_string());
     let attempt_label = app.log_pane_attempt_label();
     let mut metadata = String::new();
-    if let Some(label) = attempt_label {
+    if let Some(label) = attempt_label.as_deref() {
         metadata.push_str("  ");
-        metadata.push_str(&label);
+        metadata.push_str(label);
     }
-    metadata.push_str(&format!(
-        "  {}  task={}  tail={}  summary={}  json={}",
-        agent_label,
-        task_label,
-        if app.log_pane.auto_tail { "on" } else { "off" },
-        if app.log_pane.summary_mode {
-            "on"
+    if app.log_pane.view_mode == super::state::LogViewMode::Raw {
+        metadata.push_str(&format!(
+            "  {}  {}  task={}  tail={}",
+            app.log_pane_raw_provenance()
+                .unwrap_or_else(|| "source=unavailable".to_string()),
+            agent_label,
+            task_label,
+            if app.log_pane.auto_tail { "on" } else { "off" },
+        ));
+    } else {
+        metadata.push_str(&format!(
+            "  {}  task={}  tail={}  summary={}  json={}",
+            agent_label,
+            task_label,
+            if app.log_pane.auto_tail { "on" } else { "off" },
+            if app.log_pane.summary_mode {
+                "on"
+            } else {
+                "off"
+            },
+            if app.log_pane.json_mode { "on" } else { "off" },
+        ));
+    }
+    if let Some(provenance_area) = provenance_area {
+        if let Some(label) = attempt_label.as_deref() {
+            spans.push(Span::styled(
+                format!("  {label}"),
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+        frame.render_widget(Paragraph::new(Line::from(spans)), control_area);
+        let raw = &app.log_pane.raw_window;
+        let provenance = if compact_controls {
+            match (
+                app.log_pane.agent_id.as_deref(),
+                raw.source_kind,
+                raw.source_path.as_ref(),
+            ) {
+                (Some(agent), Some(kind), Some(path)) => format!(
+                    "agent={} source={} path={} bytes={}..{}",
+                    agent,
+                    kind.label(),
+                    path.display(),
+                    raw.window_start,
+                    raw.window_end,
+                ),
+                _ => "source=unavailable".to_string(),
+            }
         } else {
-            "off"
-        },
-        if app.log_pane.json_mode { "on" } else { "off" },
-    ));
-    spans.push(Span::styled(metadata, Style::default().fg(Color::DarkGray)));
-    frame.render_widget(Paragraph::new(Line::from(spans)), header_area);
+            app.log_pane_raw_provenance()
+                .unwrap_or_else(|| "source=unavailable".to_string())
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                provenance,
+                Style::default().fg(Color::DarkGray),
+            ))),
+            provenance_area,
+        );
+    } else {
+        spans.push(Span::styled(metadata, Style::default().fg(Color::DarkGray)));
+        frame.render_widget(Paragraph::new(Line::from(spans)), control_area);
+    }
 
     app.log_pane.viewport_height = body_area.height as usize;
 
     use super::log_render::{
-        render_events_view, render_high_level_view, render_raw_pretty_view, render_wg_log_view,
+        render_events_view, render_high_level_view, render_raw_pretty_view, render_raw_view,
+        render_wg_log_view,
     };
     use super::state::LogViewMode;
 
-    // Collect display lines for whichever view is active. The first
-    // three modes share the same data source (parsed raw_stream events);
-    // WgLog reads WG-level entries from `task.log`.
+    // Collect display lines for whichever view is active. True Raw is a
+    // separate byte lane and can never fall through to translated events.
     let raw_lines: Vec<Line> = if app.log_pane.view_mode == LogViewMode::WgLog {
         render_wg_log_view(&app.log_pane.rendered_lines)
+    } else if app.log_pane.view_mode == LogViewMode::Raw {
+        if app.log_pane.raw_window.source_path.is_none() {
+            vec![Line::from(Span::styled(
+                "(no authoritative raw_stream.jsonl or output.log source)",
+                Style::default().fg(Color::DarkGray),
+            ))]
+        } else {
+            render_raw_view(&app.log_pane.raw_window.bytes)
+        }
     } else if !app.log_pane.stream_events.is_empty() {
         match app.log_pane.view_mode {
             LogViewMode::Events => render_events_view(&app.log_pane.stream_events),
             LogViewMode::HighLevel => render_high_level_view(&app.log_pane.stream_events),
-            LogViewMode::RawPretty => {
+            LogViewMode::Pretty => {
                 render_raw_pretty_view(&app.log_pane.stream_events, app.log_pane.summary_mode)
             }
-            LogViewMode::WgLog => unreachable!("handled above"),
+            LogViewMode::Raw | LogViewMode::WgLog => unreachable!("handled above"),
         }
     } else {
         let text = &app.log_pane.agent_output.full_text;
@@ -19989,7 +20064,8 @@ mod tests {
         let expected = [
             (LogViewMode::Events, "view=[Events]"),
             (LogViewMode::HighLevel, "view=[HighLevel]"),
-            (LogViewMode::RawPretty, "view=[RawPretty]"),
+            (LogViewMode::Pretty, "view=[Pretty]"),
+            (LogViewMode::Raw, "view=[Raw]"),
             (LogViewMode::WgLog, "view=[WgLog]"),
         ];
 
@@ -20076,6 +20152,140 @@ mod tests {
             click_log_hit(&mut newer, LogHeaderAction::NextAttempt);
             assert_eq!(newer.log_pane.manual_pin.as_deref(), Some("agent-new"));
         }
+    }
+
+    #[test]
+    fn true_raw_hides_transform_controls_and_their_hit_regions_at_all_widths() {
+        use super::super::state::{LogHeaderAction, LogViewMode};
+
+        for width in [120, 70, 40] {
+            let mut app = log_header_test_app();
+            app.log_pane.view_mode = LogViewMode::Raw;
+            app.log_pane.summary_mode = true;
+            app.log_pane.json_mode = true;
+            let row = render_log_header(&mut app, width);
+            assert!(row.contains("view=[Raw]"));
+            assert!(!row.contains("[s]"));
+            assert!(!row.contains("[J]"));
+            assert!(app.log_header_hits.iter().all(|hit| !matches!(
+                hit.action,
+                LogHeaderAction::ToggleSummary | LogHeaderAction::ToggleJson
+            )));
+            let summary = app.log_pane.summary_mode;
+            let json = app.log_pane.json_mode;
+            app.toggle_log_summary();
+            app.toggle_log_json();
+            assert_eq!(app.log_pane.summary_mode, summary);
+            assert_eq!(app.log_pane.json_mode, json);
+        }
+
+        let mut compact = log_header_test_app();
+        compact.log_pane.view_mode = LogViewMode::Raw;
+        compact.log_pane.raw_window.source_kind =
+            Some(super::super::state::RawLogSourceKind::RawStream);
+        compact.log_pane.raw_window.source_path = Some("/exact/agent-new/raw_stream.jsonl".into());
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 8)).unwrap();
+        terminal
+            .draw(|frame| draw_log_tab(frame, &mut compact, frame.area()))
+            .unwrap();
+        let screen = buffer_to_string(terminal.backend().buffer());
+        assert!(screen.contains("view=[Raw] [{] [}]"));
+        assert!(screen.contains("agent=agent-new source=raw_stream"));
+    }
+
+    #[test]
+    fn pretty_raw_and_attempt_frames_fully_repaint_same_back_buffer() {
+        use super::super::state::{
+            AgentStreamEvent, AgentStreamEventKind, EventDetails, LogViewMode, RawLogSourceKind,
+        };
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut app = log_header_test_app();
+        app.log_pane.stream_events = vec![AgentStreamEvent {
+            kind: AgentStreamEventKind::TextOutput,
+            agent_id: "agent-new".to_string(),
+            summary: "PRETTY_FRAME_ONLY".to_string(),
+            details: Some(EventDetails::TextOutput {
+                text: "PRETTY_FRAME_ONLY".to_string(),
+            }),
+        }];
+        app.log_pane.view_mode = LogViewMode::Pretty;
+        let mut terminal = Terminal::new(TestBackend::new(120, 10)).unwrap();
+        terminal
+            .draw(|frame| draw_log_tab(frame, &mut app, frame.area()))
+            .unwrap();
+        let pretty = buffer_to_string(terminal.backend().buffer());
+        assert!(pretty.contains("view=[Pretty]"));
+        assert!(pretty.contains("PRETTY_FRAME_ONLY"));
+        let pretty_body_fg = (1..10)
+            .flat_map(|y| (0..120).map(move |x| (x, y)))
+            .find_map(|(x, y)| {
+                let cell = &terminal.backend().buffer()[(x, y)];
+                (cell.symbol() == "P").then_some(cell.fg)
+            })
+            .expect("Pretty body cell");
+        assert_eq!(pretty_body_fg, Color::White);
+
+        app.log_pane.view_mode = LogViewMode::Raw;
+        app.log_pane.raw_window.bytes = b"RAW_FRAME_ONLY\x1b[31m".to_vec();
+        app.log_pane.raw_window.source_path = Some("/exact/agent-new/raw_stream.jsonl".into());
+        app.log_pane.raw_window.source_kind = Some(RawLogSourceKind::RawStream);
+        app.log_pane.raw_window.window_end = app.log_pane.raw_window.bytes.len() as u64;
+        app.log_pane.raw_window.file_len = app.log_pane.raw_window.window_end;
+        terminal
+            .draw(|frame| draw_log_tab(frame, &mut app, frame.area()))
+            .unwrap();
+        let raw = buffer_to_string(terminal.backend().buffer());
+        assert!(raw.contains("view=[Raw]"));
+        assert!(raw.contains("RAW_FRAME_ONLY\\x1B[31m"));
+        assert!(!raw.contains("PRETTY_FRAME_ONLY"));
+        assert!(!raw.as_bytes().contains(&0x1b));
+        let raw_body_fg = (1..10)
+            .flat_map(|y| (0..120).map(move |x| (x, y)))
+            .find_map(|(x, y)| {
+                let cell = &terminal.backend().buffer()[(x, y)];
+                (cell.symbol() == "R").then_some(cell.fg)
+            })
+            .expect("Raw body cell");
+        assert_eq!(raw_body_fg, Color::Gray);
+        assert_ne!(raw_body_fg, pretty_body_fg);
+
+        app.log_pane.agent_id = Some("agent-old".to_string());
+        app.log_pane.raw_window.bytes = b"OLD_ATTEMPT_RAW".to_vec();
+        app.log_pane.raw_window.source_path = Some("/exact/agent-old/raw_stream.jsonl".into());
+        terminal
+            .draw(|frame| draw_log_tab(frame, &mut app, frame.area()))
+            .unwrap();
+        let old_attempt = buffer_to_string(terminal.backend().buffer());
+        assert!(old_attempt.contains("OLD_ATTEMPT_RAW"));
+        assert!(!old_attempt.contains("RAW_FRAME_ONLY"));
+        assert!(old_attempt.contains("path=/exact/agent-old/raw_stream.jsonl"));
+
+        app.selected_task_idx = app.task_order.iter().position(|id| id == "b");
+        app.log_pane.task_id = Some("b".to_string());
+        app.log_pane.agent_id = Some("agent-task-b".to_string());
+        app.log_pane.attempt_agent_ids = vec!["agent-task-b".to_string()];
+        app.log_pane.raw_window.bytes = b"TASK_B_RAW".to_vec();
+        app.log_pane.raw_window.source_path = Some("/exact/task-b/raw_stream.jsonl".into());
+        terminal
+            .draw(|frame| draw_log_tab(frame, &mut app, frame.area()))
+            .unwrap();
+        let task_b = buffer_to_string(terminal.backend().buffer());
+        assert!(task_b.contains("TASK_B_RAW"));
+        assert!(task_b.contains("path=/exact/task-b/raw_stream.jsonl"));
+        assert!(!task_b.contains("OLD_ATTEMPT_RAW"));
+        assert!(!task_b.contains("agent-old"));
+
+        app.log_pane.view_mode = LogViewMode::Pretty;
+        terminal
+            .draw(|frame| draw_log_tab(frame, &mut app, frame.area()))
+            .unwrap();
+        let pretty_again = buffer_to_string(terminal.backend().buffer());
+        assert!(pretty_again.contains("PRETTY_FRAME_ONLY"));
+        assert!(!pretty_again.contains("OLD_ATTEMPT_RAW"));
+        assert!(!pretty_again.contains("TASK_B_RAW"));
     }
 
     #[test]
