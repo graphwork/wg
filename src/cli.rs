@@ -6122,6 +6122,50 @@ pub enum ConfigSubcommand {
         force: bool,
     },
 
+    /// Set any config key by dotted TOML path, project-scoped by default.
+    ///
+    /// Writes the value into the local `.wg/config.toml` (`--global` writes
+    /// `~/.wg/config.toml`). Known typed keys are validated; unknown paths are
+    /// written as raw TOML so every knob is reachable without hand-editing.
+    /// Reloads the running daemon and prints the resolved effective value +
+    /// its source.
+    ///
+    /// Examples:
+    ///   wg config set coordinator.max_agents 4
+    ///   wg config set coordinator.registry_refresh_interval 0
+    ///   wg config set agency.auto_evaluate true --global
+    ///   wg config set tiers.fast "pi:openrouter:deepseek/deepseek-chat"
+    Set {
+        /// Dotted TOML key (e.g. `coordinator.max_agents`, `agency.auto_assign`).
+        key: String,
+
+        /// Value as a string; parsed to bool/int/float/string by the setter.
+        value: String,
+
+        /// Write to the global config (`~/.wg/config.toml`).
+        #[arg(long, conflicts_with = "local")]
+        global: bool,
+
+        /// Write to the local project config (`.wg/config.toml`) — the default.
+        #[arg(long, conflicts_with = "global")]
+        local: bool,
+
+        /// Skip the daemon reload signal (just write the file).
+        #[arg(long)]
+        no_reload: bool,
+    },
+
+    /// Read the effective value of any config key by dotted TOML path, with
+    /// the winning source annotated (global / local / project-profile / default).
+    ///
+    /// Examples:
+    ///   wg config get coordinator.max_agents
+    ///   wg config get --json coordinator.registry_refresh_interval
+    Get {
+        /// Dotted TOML key (e.g. `coordinator.max_agents`).
+        key: String,
+    },
+
     /// Read-only companion to `wg migrate config`. Walks the chosen
     /// config file(s) and reports everything `wg migrate config`
     /// would change — deprecated keys, legacy field names, stale

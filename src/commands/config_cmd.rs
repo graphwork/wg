@@ -2772,6 +2772,22 @@ fn apply_setting(config: &mut Config, key: &str, value: &str) -> Result<()> {
                 .parse::<u64>()
                 .map_err(|_| anyhow::anyhow!("expected positive integer (seconds)"))?;
         }
+        "coordinator.registry_refresh_interval" => {
+            config.coordinator.registry_refresh_interval = v.parse::<u64>().map_err(|_| {
+                anyhow::anyhow!("expected non-negative integer (seconds; 0 disables refresh)")
+            })?;
+        }
+        "coordinator.archive_retention_days" => {
+            config.coordinator.archive_retention_days = v.parse::<u64>().map_err(|_| {
+                anyhow::anyhow!("expected non-negative integer (days; 0 disables archival)")
+            })?;
+        }
+        "coordinator.worktree_isolation" => {
+            config.coordinator.worktree_isolation = parse_bool(v)?;
+        }
+        "coordinator.verify_mode" => {
+            config.coordinator.verify_mode = v.to_string();
+        }
         "coordinator.max_agents" | "dispatcher.max_agents" => {
             config.coordinator.max_agents = v
                 .parse::<usize>()
@@ -2856,6 +2872,339 @@ fn apply_setting(config: &mut Config, key: &str, value: &str) -> Result<()> {
             "set_setting_value: unsupported key '{}'. Add a match arm in apply_setting() if this is a valid Config field.",
             other
         ),
+    }
+    Ok(())
+}
+
+/// Keys whose value must be a valid handler-first model spec (`provider:model`);
+/// `set_dotted` validates these before writing so a typo is caught at the CLI
+/// instead of wedging dispatch on the next reload.
+const DOTTED_MODEL_SPEC_KEYS: &[&str] = &[
+    "agent.model",
+    "dispatcher.model",
+    "tiers.fast",
+    "tiers.standard",
+    "tiers.premium",
+];
+
+/// Parse a CLI value string into a typed `toml::Value` using simple inference:
+/// `true`/`false` → bool, `123` → integer, `1.5` → float, anything else → string.
+/// (Array/table values are not supported by the generic setter; use the
+/// dedicated `--registry-add` / `--tier` paths for those.)
+fn infer_toml_scalar(value: &str) -> toml::Value {
+    let v = value.trim();
+    match v.to_ascii_lowercase().as_str() {
+        "true" => return toml::Value::Boolean(true),
+        "false" => return toml::Value::Boolean(false),
+        _ => {}
+    }
+    if let Ok(i) = v.parse::<i64>() {
+        return toml::Value::Integer(i);
+    }
+    if let Ok(f) = v.parse::<f64>() {
+        return toml::Value::Float(f);
+    }
+    toml::Value::String(value.to_string())
+}
+
+/// Set a dotted TOML key on the chosen scope's config file. Known typed keys
+/// are validated (model specs, bool/int fields); unknown paths are written as
+/// raw TOML so EVERY knob is reachable without hand-editing files. The file is
+/// edited as a TOML tree (not via `Config::save`) so unrelated keys, comments,
+/// and unknown sections are preserved. Reloads the running daemon and prints
+/// the resolved effective value + its source.
+pub fn set_dotted(
+    workgraph_dir: &Path,
+    scope: ConfigScope,
+    key: &str,
+    value: &str,
+    no_reload: bool,
+    json: bool,
+) -> Result<()> {
+    if key.trim().is_empty() {
+        anyhow::bail!("config set: <key> must not be empty");
+    }
+    let normalized_key = normalize_dotted_key(key);
+
+    // 1. Validate known typed keys up front so a bad value never reaches disk.
+    let typed_value = infer_toml_scalar(value);
+    validate_dotted_value(&normalized_key, value, &typed_value)?;
+
+    // 2. Load the scope file as a raw TOML tree (preserves everything).
+    let path = scope_config_path(workgraph_dir, scope)?;
+    let mut doc = Config::load_toml_value(&path)?;
+    if !path.exists() {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                anyhow::anyhow!("Failed to create config dir {}: {}", parent.display(), e)
+            })?;
+        }
+    }
+
+    // 3. Apply the dotted key to the tree, creating intermediate tables.
+    set_dotted_value(&mut doc, &normalized_key, typed_value.clone());
+
+    // 4. Validate the whole document still deserializes (catches type errors
+    //    on known fields, e.g. setting max_agents to a non-integer).
+    let scope_label = scope_label(scope);
+    if let Err(e) = doc.clone().try_into::<Config>() {
+        anyhow::bail!(
+            "config set: writing '{}' = '{}' would make the {} config invalid: {}",
+            normalized_key,
+            value,
+            scope_label,
+            e
+        );
+    }
+
+    // 5. Write back atomically.
+    let body = toml::to_string_pretty(&doc)
+        .map_err(|e| anyhow::anyhow!("Failed to serialize config: {}", e))?;
+    worksgood::atomic_file::write_atomic(&path, body.as_bytes())
+        .map_err(|e| anyhow::anyhow!("Failed to write {}: {}", path.display(), e))?;
+
+    // 6. Reload the daemon (soft Reconfigure re-reads config.toml) unless
+    //    the change needs a full restart (model/endpoint edits respawn the
+    //    coordinator). `--no-reload` skips both.
+    let restart = !no_reload && needs_restart(&normalized_key) && scope == ConfigScope::Local;
+    let soft_reload = !no_reload && !restart;
+    let reload_note = reload_after_write(workgraph_dir, restart, soft_reload)?;
+
+    // 7. Print the resolved effective value + source (from the merged config).
+    print_effective_value(
+        workgraph_dir,
+        &normalized_key,
+        value,
+        &reload_note,
+        json,
+        true,
+    )?;
+    Ok(())
+}
+
+/// Read the effective value of a dotted key from the merged config and print
+/// it with the winning source (global / local / project-profile / default).
+pub fn get_dotted(workgraph_dir: &Path, key: &str, json: bool) -> Result<()> {
+    let normalized_key = normalize_dotted_key(key);
+    let (config, sources) = Config::load_with_sources(workgraph_dir)?;
+    let merged_val = toml::Value::try_from(&config)?;
+    let source = sources
+        .get(normalized_key.as_str())
+        .copied()
+        .unwrap_or(ConfigSource::Default);
+    let Some(leaf) = lookup_dotted(&merged_val, &normalized_key) else {
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "key": normalized_key,
+                    "value": null,
+                    "source": "unset",
+                    "note": "key is not present in any config layer"
+                }))?
+            );
+        } else {
+            println!("{} = <unset>", normalized_key);
+            println!("  (key is not present in any config layer)");
+        }
+        return Ok(());
+    };
+    let json_val = toml_value_to_json(&leaf);
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "key": normalized_key,
+                "value": json_val,
+                "source": source.to_string(),
+            }))?
+        );
+    } else {
+        println!("{} = {}", normalized_key, format_toml_value(&json_val));
+        println!("  [source: {}]", source);
+    }
+    Ok(())
+}
+
+/// The config file path for a given scope.
+fn scope_config_path(workgraph_dir: &Path, scope: ConfigScope) -> Result<std::path::PathBuf> {
+    Ok(match scope {
+        ConfigScope::Global => Config::global_config_path()?,
+        ConfigScope::Local => workgraph_dir.join("config.toml"),
+    })
+}
+
+fn scope_label(scope: ConfigScope) -> &'static str {
+    match scope {
+        ConfigScope::Global => "global",
+        ConfigScope::Local => "local",
+    }
+}
+
+/// Normalize a user key to the CANONICAL serde name. The dispatch table serializes
+/// as `dispatcher` (`#[serde(rename = "dispatcher", alias = "coordinator")]`), so a
+/// user-typed `coordinator.*` is rewritten to `dispatcher.*` for both the write
+/// and the effective-value lookup. This keeps the written file lint-clean (no
+/// `[coordinator]` deprecation warning on every load) and makes `get` find the
+/// value regardless of which spelling the user typed.
+fn normalize_dotted_key(key: &str) -> String {
+    let parts: Vec<&str> = key.split('.').collect();
+    if parts.len() >= 2 && parts[0] == "coordinator" {
+        let mut out = vec!["dispatcher"];
+        out.extend_from_slice(&parts[1..]);
+        out.join(".")
+    } else {
+        key.to_string()
+    }
+}
+
+/// Validate the value for known typed keys (model specs, registry interval).
+fn validate_dotted_value(key: &str, raw: &str, typed: &toml::Value) -> Result<()> {
+    if DOTTED_MODEL_SPEC_KEYS.contains(&key) {
+        worksgood::config::parse_model_spec_strict(raw).map_err(|e| {
+            anyhow::anyhow!(
+                "Invalid model spec for '{}': {}. Use provider:model (e.g. 'claude:opus').",
+                key,
+                e
+            )
+        })?;
+        return Ok(());
+    }
+    // coordinator.registry_refresh_interval must be a non-negative integer.
+    if matches!(key, "dispatcher.registry_refresh_interval") {
+        match typed {
+            toml::Value::Integer(i) if *i >= 0 => {}
+            other => anyhow::bail!(
+                "dispatcher.registry_refresh_interval expects a non-negative integer (seconds; 0 disables); got '{}'",
+                other
+            ),
+        }
+    }
+    Ok(())
+}
+
+/// Set a dotted key (`table.sub.leaf`) on a TOML tree, creating intermediate
+/// tables as needed. Replaces any existing value at the leaf.
+fn set_dotted_value(doc: &mut toml::Value, dotted: &str, value: toml::Value) {
+    let segments: Vec<&str> = dotted.split('.').collect();
+    let (path_segs, leaf) = segments.split_at(segments.len() - 1);
+    let leaf = leaf[0];
+    let mut cursor = doc;
+    for seg in path_segs {
+        let entry = match cursor.as_table_mut() {
+            Some(t) => t
+                .entry(seg.to_string())
+                .or_insert_with(|| toml::Value::Table(toml::map::Map::new())),
+            None => return,
+        };
+        cursor = entry;
+    }
+    if let Some(table) = cursor.as_table_mut() {
+        table.insert(leaf.to_string(), value);
+    }
+}
+
+/// Look up a dotted key on a TOML tree; returns `None` if any segment is absent
+/// or not a table along the way.
+fn lookup_dotted(doc: &toml::Value, dotted: &str) -> Option<toml::Value> {
+    let segments: Vec<&str> = dotted.split('.').collect();
+    let (path_segs, leaf) = segments.split_at(segments.len() - 1);
+    let leaf = leaf[0];
+    let mut cursor = doc;
+    for seg in path_segs {
+        cursor = cursor.as_table()?.get(*seg)?;
+    }
+    cursor.as_table()?.get(leaf).cloned()
+}
+
+/// Model/endpoint edits require a full daemon restart (running coordinator
+/// subprocesses keep their spawn-time env). Everything else is picked up by a
+/// soft Reconfigure (re-read config.toml).
+fn needs_restart(key: &str) -> bool {
+    DOTTED_MODEL_SPEC_KEYS.contains(&key)
+        || key.starts_with("agent.model")
+        || key == "agent.executor"
+        || key == "coordinator.executor"
+        || key == "dispatcher.executor"
+}
+
+/// Send a soft reload (Reconfigure with no flags → re-read config.toml) and/or
+/// a full restart. Returns a human-readable note for the caller to print.
+fn reload_after_write(workgraph_dir: &Path, restart: bool, soft_reload: bool) -> Result<String> {
+    if restart {
+        match try_restart_daemon(workgraph_dir) {
+            Ok(true) => Ok("daemon restarted".to_string()),
+            Ok(false) => Ok("no daemon running (config on disk for next start)".to_string()),
+            Err(e) => Ok(format!("config saved but daemon restart failed ({})", e)),
+        }
+    } else if soft_reload {
+        match crate::commands::service::run_reload(workgraph_dir, None, None, None, None, false) {
+            Ok(()) => Ok("daemon reloaded".to_string()),
+            Err(e) => Ok(format!("config saved but daemon reload failed ({})", e)),
+        }
+    } else {
+        Ok("no reload (--no-reload)".to_string())
+    }
+}
+
+/// Print the effective value of a key from the merged config plus its source,
+/// so the user can see what actually took effect (and from where) after a write.
+fn print_effective_value(
+    workgraph_dir: &Path,
+    key: &str,
+    written_value: &str,
+    reload_note: &str,
+    json: bool,
+    is_set: bool,
+) -> Result<()> {
+    let (config, sources) = Config::load_with_sources(workgraph_dir)?;
+    let merged_val = toml::Value::try_from(&config)?;
+    let source = sources.get(key).copied().unwrap_or(ConfigSource::Default);
+    if json {
+        let entry = match lookup_dotted(&merged_val, key) {
+            Some(v) => serde_json::json!({
+                "key": key,
+                "written_value": written_value,
+                "effective_value": toml_value_to_json(&v),
+                "source": source.to_string(),
+                "reload": reload_note,
+            }),
+            None => serde_json::json!({
+                "key": key,
+                "written_value": written_value,
+                "effective_value": null,
+                "source": "unset",
+                "reload": reload_note,
+                "note": "written but not present in merged config (may be a profile-owned routing key that was overlaid away; use `wg profile select`/`wg profile clear` to change routing under an active profile)",
+            }),
+        };
+        println!("{}", serde_json::to_string_pretty(&entry)?);
+        return Ok(());
+    }
+    let verb = if is_set { "Set" } else { "Effective" };
+    match lookup_dotted(&merged_val, key) {
+        Some(v) => {
+            println!(
+                "{} {} = {}  [source: {}]",
+                verb,
+                key,
+                format_toml_value(&toml_value_to_json(&v)),
+                source
+            );
+        }
+        None => {
+            println!(
+                "{} {} = {} (written) but effective value is unset",
+                verb, key, written_value
+            );
+            println!("  note: this key is profile-owned routing under the active project profile;");
+            println!(
+                "        use `wg profile select <name>` / `wg profile clear` to change routing."
+            );
+        }
+    }
+    if is_set {
+        println!("  {}", reload_note);
     }
     Ok(())
 }

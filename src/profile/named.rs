@@ -465,22 +465,80 @@ pub fn overlay_project_profile(mut existing: toml::Value, profile: &toml::Value)
         root.remove("profile");
         root.remove("tiers");
         root.remove("models");
+        // Only ROUTING keys (model, executor, provider) are stripped so a later
+        // local route edit cannot masquerade as the selected reusable profile.
+        // `max_agents` and other non-routing capacity/tuning knobs are NOT
+        // stripped — they stay in the merged tree so an explicit `wg config
+        // --max-agents N --local` write authority-sticks for this project even
+        // when a profile is active (the profile's value is a default, not an
+        // override). See `merge_tables_existing_wins` below.
         let mut ignored = Vec::new();
         remove_section_keys(root, "agent", &["model", "executor"], &mut ignored);
         remove_section_keys(
             root,
             "dispatcher",
-            &["model", "executor", "provider", "max_agents"],
+            &["model", "executor", "provider"],
             &mut ignored,
         );
         remove_section_keys(
             root,
             "coordinator",
-            &["model", "executor", "provider", "max_agents"],
+            &["model", "executor", "provider"],
             &mut ignored,
         );
     }
-    overlay_profile_onto_global(existing, profile)
+    overlay_profile_for_project(existing, profile)
+}
+
+/// Project-profile overlay: like [`overlay_profile_onto_global`] (used by the
+/// legacy global profile swap, where the profile is authoritative for the
+/// whole snapshot) EXCEPT non-routing knobs in `agent`/`dispatcher`/`coordinator`
+/// preserve an explicitly-set value from the global/local merge. Combined with
+/// the routing-key strip in [`overlay_project_profile`], this realizes the
+/// documented precedence: the project profile AUTHORITY-owns routing (model,
+/// executor, provider, tiers, models) while an explicit `wg config --<knob>
+/// --local` write sticks for non-routing tuning (max_agents, intervals, …).
+/// The profile supplies a DEFAULT for any non-routing key nobody set.
+pub(crate) fn overlay_profile_for_project(
+    mut existing: toml::Value,
+    profile: &toml::Value,
+) -> toml::Value {
+    let prof_table = match profile.as_table() {
+        Some(t) => t,
+        None => return existing,
+    };
+    let dst = match existing.as_table_mut() {
+        Some(t) => t,
+        None => return existing,
+    };
+
+    // Scalar top-level routing keys: profile wins (replace).
+    for key in ["description", "profile"] {
+        if let Some(v) = prof_table.get(key) {
+            dst.insert(key.to_string(), v.clone());
+        }
+    }
+
+    // Subtable routing keys: merge existing-wins. Routing scalars were
+    // stripped up front and tiers/models tables removed, so the profile still
+    // authoritatively supplies them; non-routing knobs an explicit write set
+    // survive.
+    for key in ["agent", "dispatcher", "tiers", "models"] {
+        if let Some(prof_sub) = prof_table.get(key) {
+            let entry = dst
+                .entry(key.to_string())
+                .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+            merge_tables_existing_wins(entry, prof_sub);
+        }
+    }
+
+    // `llm_endpoints`: profile-declared → replace; profile-omitted → preserve
+    if let Some(prof_ep) = prof_table.get("llm_endpoints") {
+        dst.insert("llm_endpoints".to_string(), prof_ep.clone());
+    }
+
+    let _ = PROFILE_ROUTING_TOP_KEYS;
+    existing
 }
 
 /// Overlay a profile's routing keys onto an existing config TOML tree while
@@ -539,6 +597,46 @@ fn merge_tables_field_by_field(existing: &mut toml::Value, profile: &toml::Value
         }
         _ => {
             *existing = profile.clone();
+        }
+    }
+}
+
+/// Recursively merge `profile` into `existing`, but PRESERVE any key already
+/// present in `existing` (`existing` wins on conflict). Keys that only the
+/// profile declares are inserted (so the profile still supplies defaults for
+/// unset knobs). When both sides hold a sub-table, recurse so new nested
+/// profile keys are added without clobbering existing nested values.
+///
+/// Used by [`overlay_profile_onto_global`] for the routing subtables
+/// (`agent`/`dispatcher`/`tiers`/`models`): because [`overlay_project_profile`]
+/// strips routing scalars and the whole `tiers`/`models` tables first, those
+/// come from the profile, while non-routing capacity knobs (e.g.
+/// `dispatcher.max_agents`) an explicit `wg config`/global/local write set
+/// survive — the profile is the DEFAULT, not the authority, for non-routing
+/// keys. Contrast with [`merge_tables_field_by_field`] (profile wins), still
+/// used by `apply_profile_as_global_config` for the legacy global swap where
+/// the profile IS authoritative for the whole snapshot.
+fn merge_tables_existing_wins(existing: &mut toml::Value, profile: &toml::Value) {
+    let (Some(dst), Some(src)) = (existing.as_table_mut(), profile.as_table()) else {
+        // Non-table existing: a global profile swap path replaces wholesale;
+        // the project-overlay path never reaches here (the merged tree is a
+        // table at every routing prefix). Keep existing untouched to be safe.
+        return;
+    };
+    for (k, v) in src {
+        match dst.get_mut(k) {
+            Some(cur) => {
+                // existing already sets this key — preserve it. If both
+                // are tables, still recurse so profile-only nested keys
+                // (e.g. `[dispatcher.resource_management]`) are added.
+                if cur.is_table() && v.is_table() {
+                    merge_tables_existing_wins(cur, v);
+                }
+                // otherwise: keep the existing scalar/array as-is.
+            }
+            None => {
+                dst.insert(k.clone(), v.clone());
+            }
         }
     }
 }
@@ -2484,5 +2582,129 @@ reasoning = "high"
             assert!(error.to_string().contains("Invalid Pi route"));
             assert!(!profile_path("pi").unwrap().exists());
         });
+    }
+
+    // ── Project-profile precedence: routing keys are profile-owned, non-routing
+    //    knobs (max_agents) are local-owned. These exercise `overlay_project_profile`
+    //    + `overlay_profile_for_project` directly (no HOME/filesystem needed). ──
+
+    /// A profile's routing keys (model/executor/provider) win over local config
+    /// after the project overlay — the masquerading-protection invariant.
+    #[test]
+    fn project_profile_overlay_profile_owns_routing_keys() {
+        let existing = r#"
+[agent]
+model = "local-only:model"
+executor = "native"
+
+[dispatcher]
+model = "local-only:model"
+executor = "native"
+provider = "local"
+max_agents = 99
+"#
+        .parse::<toml::Value>()
+        .unwrap();
+        let profile = r#"
+[agent]
+model = "pi:openrouter:z-ai/glm-5.2"
+
+[dispatcher]
+model = "pi:openrouter:z-ai/glm-5.2"
+max_agents = 8
+
+[tiers]
+fast = "pi:openrouter:deepseek/deepseek-chat"
+"#
+        .parse::<toml::Value>()
+        .unwrap();
+        let merged = overlay_project_profile(existing, &profile);
+        // routing keys come from the profile
+        assert_eq!(
+            merged
+                .get("agent")
+                .and_then(|a| a.get("model"))
+                .and_then(|m| m.as_str()),
+            Some("pi:openrouter:z-ai/glm-5.2")
+        );
+        assert_eq!(
+            merged
+                .get("dispatcher")
+                .and_then(|d| d.get("model"))
+                .and_then(|m| m.as_str()),
+            Some("pi:openrouter:z-ai/glm-5.2")
+        );
+        // tiers come entirely from the profile
+        assert_eq!(
+            merged
+                .get("tiers")
+                .and_then(|t| t.get("fast"))
+                .and_then(|m| m.as_str()),
+            Some("pi:openrouter:deepseek/deepseek-chat")
+        );
+        // local routing leftovers (provider) are stripped
+        assert!(
+            merged
+                .get("dispatcher")
+                .and_then(|d| d.as_table())
+                .map(|t| !t.contains_key("provider"))
+                .unwrap_or(true)
+        );
+    }
+
+    /// The fix: an explicit local `max_agents` survives the profile overlay —
+    /// the profile is the DEFAULT, not the authority, for non-routing capacity.
+    #[test]
+    fn project_profile_overlay_local_max_agents_wins_over_profile_default() {
+        let existing = r#"
+[dispatcher]
+model = "pi:openrouter:z-ai/glm-5.2"
+max_agents = 2
+"#
+        .parse::<toml::Value>()
+        .unwrap();
+        let profile = r#"
+[dispatcher]
+model = "pi:openrouter:z-ai/glm-5.2"
+max_agents = 8
+"#
+        .parse::<toml::Value>()
+        .unwrap();
+        let merged = overlay_project_profile(existing, &profile);
+        assert_eq!(
+            merged
+                .get("dispatcher")
+                .and_then(|d| d.get("max_agents"))
+                .and_then(|m| m.as_integer()),
+            Some(2),
+            "explicit local max_agents must win over the profile default"
+        );
+    }
+
+    /// When local does NOT set max_agents, the profile supplies the default.
+    #[test]
+    fn project_profile_overlay_supplies_max_agents_default_when_local_unset() {
+        let existing = r#"
+[dispatcher]
+model = "pi:openrouter:z-ai/glm-5.2"
+"#
+        .parse::<toml::Value>()
+        .unwrap();
+        let profile = r#"
+[dispatcher]
+model = "pi:openrouter:z-ai/glm-5.2"
+max_agents = 8
+"#
+        .parse::<toml::Value>()
+        .unwrap();
+        let merged = overlay_project_profile(existing, &profile);
+        assert_eq!(
+            merged
+                .get("dispatcher")
+                .and_then(|d| d.get("max_agents"))
+                .and_then(|m| m.as_integer()),
+            Some(8),
+            "profile max_agents is the default when local does not set it"
+        );
     }
 }

@@ -2927,6 +2927,32 @@ fn main() -> Result<()> {
                         };
                         return commands::config_cmd::lint_config(&workgraph_dir, target, cli.json);
                     }
+                    ConfigSubcommand::Set {
+                        key,
+                        value,
+                        global: set_global,
+                        local: set_local,
+                        no_reload: set_no_reload,
+                    } => {
+                        let scope = if set_global {
+                            commands::config_cmd::ConfigScope::Global
+                        } else {
+                            // default is local (project-scoped)
+                            commands::config_cmd::ConfigScope::Local
+                        };
+                        let _ = set_local; // accepted for symmetry; local is the default
+                        return commands::config_cmd::set_dotted(
+                            &workgraph_dir,
+                            scope,
+                            &key,
+                            &value,
+                            set_no_reload,
+                            cli.json,
+                        );
+                    }
+                    ConfigSubcommand::Get { key } => {
+                        return commands::config_cmd::get_dotted(&workgraph_dir, &key, cli.json);
+                    }
                 }
             }
 

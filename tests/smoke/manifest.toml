@@ -2567,3 +2567,10 @@ script = "scenarios/predictive_build_admission_opt_in.sh"
 owners = ["disable-predictive-build"]
 description = "Installed-binary terminal flow proving the availability-first false default ignores an impossible historical build high-water and preserves a dirty source plus warm recovery target; explicit true deterministically refuses the same projection; human/JSON service status names admission-deferred and the five-tick dispatch watchdog never misdiagnoses that intentional opt-in refusal as a wedge."
 timeout_seconds = 45
+
+[[scenario]]
+name = "config_local_sticks_under_profile"
+script = "scenarios/config_local_sticks_under_profile.sh"
+owners = ["make-wg-config"]
+description = "Pins make-wg-config: `wg config set/get <dotted.key>` works for arbitrary TOML paths (coordinator.max_agents, coordinator.registry_refresh_interval, agency.auto_evaluate) project-scoped; a non-routing knob (dispatcher.max_agents) set locally PERSISTS across a merged-config re-read (what `wg service reload` does) even with an active project profile whose template pins a different default (pi => 8) — before the fix the profile overlay silently reset 2 -> 8 on every reload; routing keys (agent.model) stay profile-owned; source annotations label the local override `local` not `project-profile`; bad model specs / non-integer ints are rejected before writing; and no `wg config` path invalidates the profile fingerprint or disables execution. Credential-free (no daemon/LLM)."
+timeout_seconds = 45

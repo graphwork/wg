@@ -5162,7 +5162,7 @@ impl MatrixConfig {
 }
 
 /// Indicates where a configuration value came from
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ConfigSource {
     Global,
@@ -5441,6 +5441,77 @@ fn record_sources(
             }
         }
     }
+}
+
+/// Correct source labels by value-matching: for each leaf `layer` declares, if
+/// the merged config holds the SAME value at that path, then `layer` is the
+/// truthful source (its value survived the merge/overlay). Used by
+/// [`Config::load_with_sources`] so a locally-overridden non-routing knob
+/// (e.g. `dispatcher.max_agents`) is labeled `local` rather than
+/// `project-profile` after the profile overlay — matching the actual
+/// precedence where an explicit local write beats the profile default.
+///
+/// Called for `local` then `global`, so a value present in both still resolves
+/// to `local` (the higher-precedence layer), consistent with `merge_toml`.
+fn refine_sources_by_value(
+    merged: &toml::Value,
+    layer: &toml::Value,
+    source: ConfigSource,
+    sources: &mut BTreeMap<String, ConfigSource>,
+) {
+    refine_walk(merged, layer, "", source, sources);
+}
+
+/// Enumerate every leaf in `layer` (recursing into sub-tables) and, for each,
+/// compare it to the value at the same dotted path in the ROOT `merged` config.
+/// When they are equal, `layer` is the truthful source for that key (its value
+/// survived the global/local merge plus the project-profile overlay). Lookups
+/// always resolve against the root `merged` (not a recursed sub-table) so the
+/// dotted path stays absolute.
+fn refine_walk(
+    merged_root: &toml::Value,
+    layer: &toml::Value,
+    prefix: &str,
+    source: ConfigSource,
+    sources: &mut BTreeMap<String, ConfigSource>,
+) {
+    let Some(table) = layer.as_table() else {
+        return;
+    };
+    for (key, v) in table {
+        let full_key = if prefix.is_empty() {
+            key.clone()
+        } else {
+            format!("{}.{}", prefix, key)
+        };
+        match v {
+            toml::Value::Table(_) => {
+                refine_walk(merged_root, v, &full_key, source, sources);
+            }
+            leaf => {
+                if let Some(merged_leaf) = lookup_path(merged_root, &full_key)
+                    && leaves_equal(merged_leaf, leaf)
+                {
+                    sources.insert(full_key, source);
+                }
+            }
+        }
+    }
+}
+
+/// Look up a dotted path in a TOML table tree, returning the value (table or
+/// leaf) if every segment exists.
+fn lookup_path<'a>(root: &'a toml::Value, dotted: &str) -> Option<&'a toml::Value> {
+    let mut cursor = root;
+    for seg in dotted.split('.') {
+        cursor = cursor.as_table()?.get(seg)?;
+    }
+    Some(cursor)
+}
+
+/// Structural equality for two TOML values (covers scalar/array/table leaves).
+fn leaves_equal(a: &toml::Value, b: &toml::Value) -> bool {
+    a == b
 }
 
 impl Config {
@@ -6446,6 +6517,10 @@ impl Config {
         } else {
             strip_global_only_model_roles(&mut merged, &global_val, &local_val);
         }
+        // Source-label accuracy: re-derive labels by value-matching BEFORE
+        // `merged` is consumed by deserialization (see `refine_sources_by_value`).
+        refine_sources_by_value(&merged, &local_val, ConfigSource::Local, &mut sources);
+        refine_sources_by_value(&merged, &global_val, ConfigSource::Global, &mut sources);
         let mut config: Config = merged
             .try_into()
             .map_err(|e| anyhow::anyhow!("Failed to deserialize merged config: {}", e))?;
@@ -6866,6 +6941,71 @@ mod tests {
     use super::*;
     use serial_test::serial;
     use tempfile::TempDir;
+
+    #[test]
+    fn refine_sources_relabeled_local_when_local_value_survives_profile_overlay() {
+        // Merged config (after a project-profile overlay) where a local override
+        // won for a non-routing knob (max_agents = 2) while the profile owns
+        // routing (model).
+        let merged = r#"
+[dispatcher]
+model = "pi:openrouter:z-ai/glm-5.2"
+max_agents = 2
+"#
+        .parse::<toml::Value>()
+        .unwrap();
+        let local = r#"
+[dispatcher]
+max_agents = 2
+"#
+        .parse::<toml::Value>()
+        .unwrap();
+        // record_sources(profile) would have labeled max_agents as project-profile;
+        // simulate that, then refine and confirm local wins the label.
+        let mut sources = BTreeMap::new();
+        sources.insert("dispatcher.model".to_string(), ConfigSource::ProjectProfile);
+        sources.insert(
+            "dispatcher.max_agents".to_string(),
+            ConfigSource::ProjectProfile,
+        );
+        refine_sources_by_value(&merged, &local, ConfigSource::Local, &mut sources);
+        assert_eq!(
+            sources.get("dispatcher.max_agents"),
+            Some(&ConfigSource::Local),
+            "a locally-overridden non-routing knob must be labeled local"
+        );
+        assert_eq!(
+            sources.get("dispatcher.model"),
+            Some(&ConfigSource::ProjectProfile),
+            "profile-owned routing key keeps the project-profile label (local does not declare it)"
+        );
+    }
+
+    #[test]
+    fn refine_sources_no_relabel_when_local_value_differs_from_merged() {
+        // If local set a routing key that the overlay stripped (so merged holds
+        // the profile's value, not local's), the label must NOT flip to local.
+        let merged = r#"
+[dispatcher]
+model = "pi:openrouter:z-ai/glm-5.2"
+"#
+        .parse::<toml::Value>()
+        .unwrap();
+        let local = r#"
+[dispatcher]
+model = "claude:opus"
+"#
+        .parse::<toml::Value>()
+        .unwrap();
+        let mut sources = BTreeMap::new();
+        sources.insert("dispatcher.model".to_string(), ConfigSource::ProjectProfile);
+        refine_sources_by_value(&merged, &local, ConfigSource::Local, &mut sources);
+        assert_eq!(
+            sources.get("dispatcher.model"),
+            Some(&ConfigSource::ProjectProfile),
+            "local routing value that did not survive the overlay must not steal the source label"
+        );
+    }
 
     #[test]
     fn tag_routing_entries_are_inert_legacy_config() {
