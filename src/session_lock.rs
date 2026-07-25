@@ -581,20 +581,32 @@ mod tests {
     use tempfile::tempdir;
 
     /// Spawn a foreign (`sleep`) child for the PID-reuse tests, then — on Linux —
-    /// wait until its `/proc/<pid>/comm` reflects the post-`exec` image rather
-    /// than the still-shared parent (test-harness) comm.
+    /// wait until the *exact* identity predicate the downstream assertion checks
+    /// reads `true` (rather than only a `comm` proxy), so the helper never hands
+    /// back a child the production check still classifies as "ours".
     ///
     /// A freshly `spawn()`ed child is `fork`ed from the test binary and, until
-    /// its `exec` of `sleep` completes, transiently shares the parent's `comm`
-    /// (`worksgood-<hash>` / the cargo test binary). During that window
-    /// `pid_reused_by_foreign`'s "same executable as us" guard
-    /// (src/session_lock.rs:578-584) sees `their_comm == mine_comm` and returns
-    /// `false` — so asserting foreignness during the window flakes on loaded CI
-    /// runners where the `exec` is delayed (observed on graphwork/wg CI runs
-    /// 29090834963, 29090740682, 29102594830). Production PID reuse involves
-    /// stable, long-lived recycled processes and is unaffected; this raciness is
-    /// purely a test-harness artifact. Waiting for `exec` to land removes the
-    /// race without weakening the real identity/liveness checks.
+    /// its `exec` of `sleep` completes, shares the parent's `/proc` image — both
+    /// `comm` and `cmdline`. The `cmdline` is the full argv, whose first element
+    /// is the absolute path to the test binary; because the repo lives at a path
+    /// containing `wg` (…/wg/target/…), the inherited `cmdline` contains `wg`.
+    /// `pid_reused_by_foreign`'s "wg/nex family" guard scans the full identity
+    /// (comm + cmdline) and returns `false` while that inherited argv is still
+    /// visible, so asserting foreignness during the window flakes on loaded CI
+    /// runners.
+    ///
+    /// The kernel updates `comm` and `cmdline` around `exec` independently
+    /// enough that waiting only on `comm` (the previous synchronization) was
+    /// insufficient: on a saturated runner `comm` settled on `sleep` while
+    /// `cmdline` still leaked the harness argv, the helper returned early, and
+    /// the foreignness assertion read `false` (graphwork/wg CI run 29241204349
+    /// job 86787423187; the rerun passed). Polling the real predicate
+    /// `pid_reused_by_foreign(pid)` — which is precisely what the assertion
+    /// evaluates — removes any comm/cmdline ordering sensitivity without
+    /// weakening the production identity/liveness checks: the helper simply does
+    /// not return until the same verdict the test asserts is `true`. Production
+    /// PID reuse involves stable, long-lived recycled processes and is
+    /// unaffected; this raciness is purely a test-harness artifact.
     fn spawn_foreign_child() -> std::process::Child {
         // `sleep 120` (not 30): the child must outlive the exec-wait below plus
         // the rest of the test even on a badly starved runner. Every caller
@@ -606,46 +618,81 @@ mod tests {
         #[cfg(target_os = "linux")]
         {
             let pid = child.id();
-            let comm_of = |p: u32| {
-                pid_process_identity(p)
-                    .and_then(|id| id.split_whitespace().next().map(str::to_owned))
-            };
-            let mine_comm = comm_of(std::process::id()).unwrap_or_default();
-            // Wait until the child's comm is readable and differs from ours,
-            // i.e. `exec` of `sleep` has replaced the still-shared parent image.
-            // This is bounded by a *wall-clock* deadline, not an iteration count:
-            // the earlier 2000×1ms budget could elapse in real time before a
-            // forked-but-unscheduled child ever ran its `exec` on a saturated CI
-            // runner, so the helper returned a child whose comm still shadowed
-            // the harness's — `pid_reused_by_foreign`'s "same executable as us"
-            // guard then read `false` and the foreignness assert flaked
-            // (graphwork/wg CI runs 29137074236, 29162578216). A 30s deadline is
-            // orders of magnitude longer than a real `exec` and well inside the
-            // child's 120s lifetime; exceeding it is a genuine environment fault,
-            // surfaced as a clear panic rather than a confusing downstream assert.
+            // Wait until the production predicate the assertion checks reads
+            // `true`. Bounded by a *wall-clock* deadline, not an iteration
+            // count: an iteration budget can elapse in real time before a
+            // forked-but-unscheduled child ever runs its `exec` on a saturated CI
+            // runner. 30s is orders of magnitude longer than a real `exec` and
+            // well inside the child's 120s lifetime; exceeding it is a genuine
+            // environment fault, surfaced as a clear panic rather than a
+            // confusing downstream assert.
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
             loop {
-                match comm_of(pid) {
-                    Some(their_comm)
-                        if !their_comm.is_empty()
-                            && !mine_comm.is_empty()
-                            && their_comm != mine_comm =>
-                    {
-                        break;
-                    }
-                    _ => {
-                        assert!(
-                            std::time::Instant::now() < deadline,
-                            "foreign child (pid {pid}) never completed `exec` within 30s: \
-                             comm still reads {:?} vs ours {mine_comm:?}",
-                            comm_of(pid)
-                        );
-                        std::thread::sleep(std::time::Duration::from_millis(2));
-                    }
+                if pid_reused_by_foreign(pid) {
+                    break;
                 }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "foreign child (pid {pid}) never settled into a foreign `/proc` \
+                     identity within 30s: alive={}, identity={:?}",
+                    pid_is_alive(pid),
+                    pid_process_identity(pid),
+                );
+                std::thread::sleep(std::time::Duration::from_millis(2));
             }
         }
         child
+    }
+
+    /// High-iteration regression guard for the comm/cmdline exec
+    /// synchronization race (graphwork/wg CI run 29241204349 job 86787423187).
+    ///
+    /// For each iteration this spawns a foreign child via the synchronized
+    /// `spawn_foreign_child` helper and asserts BOTH:
+    ///   (a) the production predicate `pid_reused_by_foreign(pid)` reads `true`
+    ///       — exactly what `foreign_pid_identity_defeats_pid_reuse` checks, and
+    ///   (b) the child's full `/proc` identity contains neither `wg` nor `nex`
+    ///       at the moment of the check — the exact transient that flakes the
+    ///       assertion when `comm` lands before `cmdline` and the helper returns
+    ///       early with the inherited harness argv still visible.
+    ///
+    /// With the predicate-based wait in `spawn_foreign_child`, (b) cannot fire:
+    /// the helper does not return until (a) holds, and once `exec` settles the
+    /// identity is stable (no oscillation), so the real assertion is also `true`.
+    /// On a fast dev machine the loop may never observe the race; on a saturated
+    /// multi-tenant CI runner the high iteration count raises the odds of
+    /// catching any regression in the synchronization, which then fails loudly
+    /// here (with the leaking identity in the message) instead of as a confusing
+    /// downstream assert. Crank the count with
+    /// `WG_SESSION_LOCK_STRESS_ITERS=N cargo +nightly test` for an explicit
+    /// stress run; the default keeps the regular suite fast.
+    #[test]
+    fn foreign_child_identity_stable_across_exec_stress() {
+        if !cfg!(target_os = "linux") {
+            return;
+        }
+        let iters = std::env::var("WG_SESSION_LOCK_STRESS_ITERS")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(100);
+        for i in 0..iters {
+            let mut child = spawn_foreign_child();
+            let pid = child.id();
+            let identity = pid_process_identity(pid).unwrap_or_default();
+            assert!(
+                pid_reused_by_foreign(pid),
+                "[{i}] foreignness predicate read `false` after synchronized spawn \
+                 — identity={identity:?} still leaked the harness image"
+            );
+            let id_l = identity.to_ascii_lowercase();
+            assert!(
+                !id_l.contains("wg") && !id_l.contains("nex"),
+                "[{i}] child identity leaked the harness image after \
+                 spawn_foreign_child returned: {identity:?} (comm/cmdline exec race)"
+            );
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 
     #[test]
