@@ -170,26 +170,69 @@ pub fn load(workgraph_dir: &Path) -> Result<Registry> {
     Ok(reg)
 }
 
-/// Atomically save the registry. Writes to a temp file then renames
-/// so a concurrent reader never sees a half-written file.
+/// Atomically save the registry. Writes to a **per-call unique** temp file
+/// then renames it over `sessions.json`, so a concurrent reader never sees a
+/// half-written file *and* concurrent writers never collide.
+///
+/// The unique temp file is the fix for the user-visible
+/// `register_coordinator_session failed: No such file or directory`: the
+/// daemon restarts many coordinator supervisors at once, each calling
+/// `register_coordinator_session`, while a live TUI (or the daemon's own
+/// non-coordinator session paths) may call `create_session`/`add_alias` at
+/// the same time. With a single shared `sessions.json.tmp`, one writer's
+/// `rename(&tmp, &path)` removed the temp file out from under the other,
+/// surfacing as ENOENT. A per-call temp name makes every rename independent,
+/// so the only remaining concurrency concern is the read-modify-write lost
+/// update, which the process-wide `CoordinatorRegistrationLock` (flock) keeps
+/// closed for the high-frequency coordinator path.
 pub fn save(workgraph_dir: &Path, reg: &Registry) -> Result<()> {
     let path = registry_path(workgraph_dir);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let tmp = path.with_extension("json.tmp");
+    let tmp = unique_tmp_path(&path);
     {
         let mut f = OpenOptions::new()
-            .create(true)
+            .create_new(true)
             .write(true)
             .truncate(true)
             .open(&tmp)?;
         let json = serde_json::to_string_pretty(reg)?;
         f.write_all(json.as_bytes())?;
+        // fsync the data so the rename-after-sync is durable on disk.
         f.sync_all()?;
     }
     fs::rename(&tmp, &path)?;
     Ok(())
+}
+
+/// Build a per-call unique temp-file path next to `path`. Uniqueness comes
+/// from `(pid, thread id, monotonic nonce)` so two concurrent `save()` calls —
+/// even in the same process on the same thread racing a re-entrant path — can
+/// never pick the same name. The leading dot keeps the file out of
+/// `is_orphan_chat_dir`'s consideration and hides it from casual `ls chat/`.
+fn unique_tmp_path(path: &Path) -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NONCE: AtomicU64 = AtomicU64::new(0);
+    let nonce = NONCE.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    let tid = thread_id();
+    path.with_file_name(format!(".sessions.json.tmp.{pid}.{tid}.{nonce}"))
+}
+
+/// Best-effort, stable-within-process identifier for the current thread. Used
+/// only to disambiguate concurrent temp-file names; the value itself is
+/// opaque. Uses the `ThreadId`'s debug form so it is unique per thread within
+/// the process.
+fn thread_id() -> u64 {
+    // `ThreadId` exposes `as_u64()` only on newer toolchains; format-and-parse
+    // keeps this stable across the pinned rustc without a version dance.
+    let s = format!("{:?}", std::thread::current().id());
+    let mut hash: u64 = 0;
+    for byte in s.bytes() {
+        hash = hash.wrapping_mul(31).wrapping_add(byte as u64);
+    }
+    hash
 }
 
 /// Create a new session UUID, directory, and registry entry.
@@ -1172,6 +1215,46 @@ mod tests {
             assert!(chat_dir_for_uuid(&wg, &uuid).is_dir());
             assert_eq!(resolve_ref(&wg, &id.to_string()).unwrap(), uuid);
         }
+    }
+
+    /// fix-chat-coordinator-2: the root cause of the user-visible
+    /// `register_coordinator_session failed: No such file or directory` was a
+    /// shared `sessions.json.tmp` in `save()`. Concurrent UNCOORDINATED writers
+    /// (a TUI `create_session`/`add_alias` while the daemon registers many
+    /// coordinators on restart) collided: one writer's `rename(&tmp, &path)`
+    /// removed the temp file out from under the other, surfacing as ENOENT.
+    /// `save()` now uses a per-call unique temp name, so every rename is
+    /// independent regardless of whether callers hold the coordinator flock.
+    /// This test stresses `save()` directly (no flock) — it FAILED before the
+    /// fix and pins the regression.
+    #[test]
+    fn save_concurrent_without_lock_does_not_collide_tmp() {
+        let dir = tempdir().unwrap();
+        let wg = dir.path().to_path_buf();
+        // seed a registry so each thread performs a real load/modify/save
+        register_coordinator_session(&wg, 0).unwrap();
+
+        let n = 24;
+        let threads: Vec<_> = (0..n)
+            .map(|i| {
+                let wg = wg.clone();
+                std::thread::spawn(move || {
+                    create_session(&wg, SessionKind::Interactive, &[format!("probe-{i}")], None)
+                })
+            })
+            .collect();
+
+        let mut errors = 0;
+        for t in threads {
+            if let Err(e) = t.join().expect("save thread panicked") {
+                errors += 1;
+                eprintln!("save error: {e}");
+            }
+        }
+        assert_eq!(
+            errors, 0,
+            "concurrent save() must not ENOENT on tmp collision"
+        );
     }
 
     #[test]

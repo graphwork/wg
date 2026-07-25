@@ -2574,3 +2574,12 @@ script = "scenarios/config_local_sticks_under_profile.sh"
 owners = ["make-wg-config"]
 description = "Pins make-wg-config: `wg config set/get <dotted.key>` works for arbitrary TOML paths (coordinator.max_agents, coordinator.registry_refresh_interval, agency.auto_evaluate) project-scoped; a non-routing knob (dispatcher.max_agents) set locally PERSISTS across a merged-config re-read (what `wg service reload` does) even with an active project profile whose template pins a different default (pi => 8) — before the fix the profile overlay silently reset 2 -> 8 on every reload; routing keys (agent.model) stay profile-owned; source annotations label the local override `local` not `project-profile`; bad model specs / non-integer ints are rejected before writing; and no `wg config` path invalidates the profile fingerprint or disables execution. Credential-free (no daemon/LLM)."
 timeout_seconds = 45
+
+[[scenario]]
+name = "chat_create_while_stopped_starts_clean"
+script = "scenarios/chat_create_while_stopped_starts_clean.sh"
+owners = [
+    "fix-chat-coordinator-2",
+]
+description = "Regression for fix-chat-coordinator-2: `wg chat create` while the service is DOWN (direct path) must produce a .chat-N task the supervisor can register on the next `wg service start`. Before the fix, the sessions.json atomic save() shared one sessions.json.tmp; concurrent uncoordinated writes (a TUI session create racing the daemon registering many coordinators on restart) collided and the daemon logged `Coordinator-N: register_coordinator_session failed: No such file or directory`, leaving the chat un-attachable and `wg chat resume` hung on a dir that was never created. The scenario creates a Pi chat (pi:openai-codex:gpt-5.6-sol) while stopped, starts the service, asserts the supervisor registers the session with NO missing-directory error, the UUID chat dir + sessions.json entry exist (attachable), and `wg chat list` returns within a bounded window. Credential-free: the supervisor registers BEFORE spawning the LLM handler."
+timeout_seconds = 60

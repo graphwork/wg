@@ -3803,6 +3803,147 @@ poll_interval = 120
         );
     }
 
+    /// fix-chat-coordinator-2 regression: a chat created while the service is
+    /// DOWN (the direct `run_create_direct` → `create_chat_in_graph` path)
+    /// writes only the graph task + per-chat CoordinatorState — it does NOT
+    /// register a session in `chat/sessions.json` nor create `chat/<uuid>/`.
+    /// The supervisor performs that registration on the next `service start`.
+    /// This test pins the full create-while-stopped → register-on-start →
+    /// attachable flow, including that Pi model routing on the task survives
+    /// the registration and the canonical chat dir resolves for the TUI/resume.
+    #[test]
+    fn create_while_stopped_then_register_is_attachable() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        fs::create_dir_all(dir.join("service")).unwrap();
+        worksgood::parser::save_graph(
+            &worksgood::graph::WorkGraph::new(),
+            &dir.join("graph.jsonl"),
+        )
+        .unwrap();
+        fs::write(
+            dir.join("config.toml"),
+            "[dispatcher]\nmodel = \"pi:openai-codex:gpt-5.6-sol\"\n",
+        )
+        .unwrap();
+
+        // Service is down: no service/state.json. Direct create path.
+        let cid = create_chat_in_graph(dir, Some("alpha"), None, None, None, None)
+            .expect("service-down create must succeed");
+
+        // Precondition: the session is NOT yet registered (supervisor owns it).
+        assert!(
+            worksgood::chat_sessions::resolve_ref(dir, &format!("chat-{cid}")).is_err(),
+            "service-down create must not pre-register the session"
+        );
+
+        // Supervisor registers on start. Must not log
+        // `register_coordinator_session failed: No such file or directory`.
+        let uuid = worksgood::chat_sessions::register_coordinator_session(dir, cid)
+            .expect("supervisor registration must succeed for a service-down-created chat");
+
+        // Attachable invariants: UUID chat dir exists, all three aliases
+        // resolve to it, and the chat_dir_for_ref helper (TUI/resume) lands on
+        // a real directory.
+        assert!(
+            worksgood::chat_sessions::chat_dir_for_uuid(dir, &uuid).is_dir(),
+            "UUID chat dir must exist after registration"
+        );
+        assert_eq!(
+            worksgood::chat_sessions::resolve_ref(dir, &format!("chat-{cid}")).unwrap(),
+            uuid
+        );
+        assert_eq!(
+            worksgood::chat_sessions::resolve_ref(dir, &cid.to_string()).unwrap(),
+            uuid,
+            "bare numeric alias (legacy IPC writer path) must resolve"
+        );
+        let resolved = worksgood::chat::chat_dir_for_ref(dir, &format!("chat-{cid}"));
+        assert!(
+            resolved.is_dir(),
+            "chat_dir_for_ref must resolve to an existing dir: {}",
+            resolved.display()
+        );
+
+        // Pi model routing on the task is untouched by registration.
+        let graph = worksgood::parser::load_graph(&dir.join("graph.jsonl")).unwrap();
+        let task = graph
+            .get_task(&worksgood::chat_id::format_chat_task_id(cid))
+            .expect("chat task survives registration");
+        assert_eq!(task.executor_preset_name.as_deref(), Some("pi"));
+        assert_eq!(
+            task.model.as_deref(),
+            Some("pi:openai-codex:gpt-5.6-sol"),
+            "Pi model routing must be preserved across registration"
+        );
+
+        // Re-registering (supervisor restart cycle) is idempotent and keeps
+        // the SAME uuid + dir — no duplicate session, no missing-directory.
+        let uuid_again = worksgood::chat_sessions::register_coordinator_session(dir, cid)
+            .expect("re-registration is idempotent");
+        assert_eq!(
+            uuid_again, uuid,
+            "re-registration must not mint a new session"
+        );
+    }
+
+    /// fix-chat-coordinator-2 regression: `service start` spawns one supervisor
+    /// thread per persisted chat, each calling `register_coordinator_session`
+    /// concurrently. Every service-down-created chat must end up registered
+    /// with its own UUID chat dir — none lost, no ENOENT. This is the
+    /// daemon-restart fan-out that surfaced the lost `sessions.json.tmp` race.
+    #[test]
+    fn concurrent_registration_of_service_down_chats_preserves_all() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().to_path_buf();
+        fs::create_dir_all(dir.join("service")).unwrap();
+        worksgood::parser::save_graph(
+            &worksgood::graph::WorkGraph::new(),
+            &dir.join("graph.jsonl"),
+        )
+        .unwrap();
+        fs::write(
+            dir.join("config.toml"),
+            "[dispatcher]\nmodel = \"pi:openai-codex:gpt-5.6-sol\"\n",
+        )
+        .unwrap();
+
+        let ids: Vec<u32> = (0..12)
+            .map(|_| {
+                create_chat_in_graph(&dir, None, None, None, None, None)
+                    .expect("service-down create")
+            })
+            .collect();
+
+        // Fan out the supervisor registrations exactly as `service start` does.
+        let handles: Vec<_> = ids
+            .iter()
+            .map(|id| {
+                let dir = dir.clone();
+                let id = *id;
+                std::thread::spawn(move || {
+                    worksgood::chat_sessions::register_coordinator_session(&dir, id)
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join()
+                .expect("registration thread panicked")
+                .expect("concurrent registration must not ENOENT or lose a session");
+        }
+
+        let reg = worksgood::chat_sessions::load(&dir).unwrap();
+        for id in &ids {
+            let uuid = worksgood::chat_sessions::resolve_ref(&dir, &format!("chat-{id}"))
+                .expect("every chat must be registered");
+            assert!(
+                worksgood::chat_sessions::chat_dir_for_uuid(&dir, &uuid).is_dir(),
+                "every chat must have its UUID dir on disk"
+            );
+            assert!(reg.sessions.contains_key(&uuid));
+        }
+    }
+
     #[test]
     fn test_create_chat_rejects_worker_only_external_executor() {
         let tmp = TempDir::new().unwrap();
