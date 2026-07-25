@@ -1032,6 +1032,15 @@ description = "Pins allow-one-line and fix-wg-config: the real terminal flow `wg
 timeout_seconds = 60
 
 [[scenario]]
+name = "config_load_no_stderr_spam"
+script = "scenarios/config_load_no_stderr_spam.sh"
+owners = [
+    "deduplicate-config-deprecation",
+]
+description = "Pins deduplicate-config-deprecation: reusable config-load paths (Config::load / load_merged / load_with_sources / load_or_default) are side-effect-free w.r.t. terminal output. A config with deprecated keys ([coordinator] section alias, explicit executor key, retired compaction key) surfaces each finding AT MOST ONCE on a CLI inspect surface (wg config --show / wg status) — never once per internal load; wg config lint --local still surfaces the COMPLETE copy-pasteable migration findings; a migrated-clean config is SILENT on every surface (must-not-over-block); and the daemon logs the deprecation at most once across startup + repeated hot reloads (no per-tick / per-reload log growth)."
+timeout_seconds = 60
+
+[[scenario]]
 name = "purge_chats_skips_active_by_default"
 script = "scenarios/purge_chats_skips_active_by_default.sh"
 owners = [

@@ -124,6 +124,14 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
         None => Config::load_merged(dir)?,
     };
 
+    // Surface collected config-load diagnostics once (deduplicated) for the
+    // human-facing view. JSON mode stays silent on stderr so machine
+    // consumers aren't disturbed; a clean config has no diagnostics, so this
+    // is a no-op for migrated configs (the must-not-over-block requirement).
+    if !json {
+        config.emit_load_diagnostics();
+    }
+
     if json {
         println!("{}", serde_json::to_string_pretty(&config)?);
     } else {

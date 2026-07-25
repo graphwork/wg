@@ -2273,7 +2273,8 @@ pub fn run_daemon(
         cli_model.map(|m| (m, false)),
         "wg service daemon",
     )?;
-    Config::load_merged(dir)?
+    let startup_config = Config::load_merged(dir)?;
+    startup_config
         .validate_pi_model_plane()
         .context("daemon refused: incomplete or non-Pi role routing")?;
     let socket = PathBuf::from(socket_path);
@@ -2281,6 +2282,22 @@ pub fn run_daemon(
     // --- Persistent logging setup ---
     let logger = DaemonLogger::open(dir).context("Failed to initialise daemon logger")?;
     logger.install_panic_hook();
+
+    // Log collected config-load diagnostics ONCE at startup (not per tick).
+    // The daemon does not reload the full config each tick, so this is the
+    // single place the deprecation findings reach the daemon log; hot-reload
+    // (IPC) re-evaluates and only logs on a fingerprint change. A clean
+    // config has no diagnostics, so migrated graphs stay silent.
+    for d in &startup_config.load_diagnostics.items {
+        match d.severity {
+            worksgood::config::ConfigLoadDiagnosticSeverity::Error => {
+                logger.error(&format!("{}: {}", d.severity, d.message));
+            }
+            worksgood::config::ConfigLoadDiagnosticSeverity::Warning => {
+                logger.warn(&format!("{}: {}", d.severity, d.message));
+            }
+        }
+    }
 
     // Handler-first: re-assert the bare-provider `--model` warning inside the
     // forked daemon so it lands in the daemon log too (run_start warned on the
@@ -3608,6 +3625,18 @@ pub fn run_restart(dir: &Path, json: bool) -> Result<()> {
 
 /// Show service status
 pub fn run_status(dir: &Path, json: bool) -> Result<()> {
+    // Surface collected config-load diagnostics once (deduplicated) for the
+    // human-facing status view — BEFORE any early return so a graph with no
+    // daemon still reports config health. JSON mode stays silent on stderr
+    // so machine consumers aren't disturbed; a clean config has no
+    // diagnostics, so this is a no-op for migrated configs (the
+    // must-not-over-block requirement). This preserves the
+    // `handler-stdout-pristine` contract: the deprecation reaches stderr
+    // (never a handler protocol stream) without being re-emitted on every
+    // internal config load.
+    if !json {
+        Config::load_or_default(dir).emit_load_diagnostics();
+    }
     let state = match ServiceState::load(dir)? {
         Some(s) => s,
         None => {

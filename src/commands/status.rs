@@ -142,6 +142,17 @@ struct StatusOutput {
 }
 
 pub fn run(dir: &Path, json: bool, show_all: bool) -> Result<()> {
+    // Surface collected config-load diagnostics once (deduplicated) for the
+    // human-facing status view — BEFORE gather_status so a graph with no
+    // daemon still reports config health. JSON mode stays silent on stderr
+    // so machine consumers aren't disturbed; a clean config has no
+    // diagnostics, so this is a no-op for migrated configs (the
+    // must-not-over-block requirement). Preserves the `handler-stdout-
+    // pristine` contract: the deprecation reaches stderr (never a handler
+    // protocol stream) without being re-emitted on every internal load.
+    if !json {
+        worksgood::config::Config::load_or_default(dir).emit_load_diagnostics();
+    }
     let status = gather_status(dir, show_all)?;
 
     if json {

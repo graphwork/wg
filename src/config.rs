@@ -43,6 +43,165 @@ pub fn claude_cli_model_arg(model_id: &str) -> String {
     }
 }
 
+/// Severity of a config-load diagnostic.
+///
+/// All deprecation / stale-key findings are [`ConfigLoadDiagnosticSeverity::Warning`];
+/// a load that fell back to defaults because the file was unreadable uses
+/// [`ConfigLoadDiagnosticSeverity::Error`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ConfigLoadDiagnosticSeverity {
+    /// A soft finding (deprecated key, stale model string, legacy section).
+    #[default]
+    Warning,
+    /// The config could not be loaded as-is; defaults are in effect.
+    Error,
+}
+
+impl std::fmt::Display for ConfigLoadDiagnosticSeverity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Warning => write!(f, "warning"),
+            Self::Error => write!(f, "error"),
+        }
+    }
+}
+
+/// One structured diagnostic collected during a config load.
+///
+/// Historically `Config::load` / `load_merged` printed these directly with
+/// `eprintln!` on **every** load, so TUI refreshes, daemon ticks, smoke runs
+/// and worker raw streams repeated the same paragraph and corrupted the
+/// terminal. They are now **collected** into [`ConfigLoadDiagnostics`] and
+/// attached to [`Config`] as `load_diagnostics` (a `#[serde(skip)]` field);
+/// load paths are side-effect-free w.r.t. terminal output. A caller at a
+/// user-facing CLI boundary decides when (and how often) to emit via
+/// [`ConfigLoadDiagnostics::emit`] / [`Config::emit_load_diagnostics`].
+///
+/// `code` is a stable identifier for the diagnostic kind so callers can
+/// dedup and the TUI can render a compact config-health indicator without
+/// echoing the full paragraph.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfigLoadDiagnostic {
+    pub severity: ConfigLoadDiagnosticSeverity,
+    /// Stable code classifying the diagnostic kind — used as a dedup key
+    /// alongside the message. Values: `legacy-section`,
+    /// `deprecated-executor-key`, `deprecated-model-prefix`,
+    /// `deprecated-compaction-key`, `handler-first-bare-provider`,
+    /// `legacy-matrix-config-path`, `config-load-error`.
+    pub code: String,
+    /// Human-readable message (includes the source path/label where
+    /// relevant). Emitted verbatim at CLI boundaries.
+    pub message: String,
+}
+
+impl ConfigLoadDiagnostic {
+    pub fn warning(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            severity: ConfigLoadDiagnosticSeverity::Warning,
+            code: code.into(),
+            message: message.into(),
+        }
+    }
+
+    pub fn error(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            severity: ConfigLoadDiagnosticSeverity::Error,
+            code: code.into(),
+            message: message.into(),
+        }
+    }
+}
+
+/// Collected diagnostics from a config load, attached to [`Config`] as the
+/// `load_diagnostics` field (`#[serde(skip)]`, so it never reaches TOML and
+/// never perturbs [`crate::service_identity::config_fingerprint`]).
+///
+/// Load paths push into this; nothing is printed until a user-facing caller
+/// invokes [`ConfigLoadDiagnostics::emit`]. [`ConfigLoadDiagnostics::dedup`] makes a
+/// repeated-load-within-one-invocation emit each finding at most once.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfigLoadDiagnostics {
+    pub items: Vec<ConfigLoadDiagnostic>,
+}
+
+impl ConfigLoadDiagnostics {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.items.len()
+    }
+
+    pub fn push(&mut self, diag: ConfigLoadDiagnostic) {
+        self.items.push(diag);
+    }
+
+    /// Push a warning-severity diagnostic.
+    pub fn push_warning(&mut self, code: impl Into<String>, message: impl Into<String>) {
+        self.push(ConfigLoadDiagnostic::warning(code, message));
+    }
+
+    /// Append a borrowed slice of plain warning strings under one `code`.
+    /// Convenience for the `deprecated_*_warnings_for_toml` helpers that still
+    /// return `Vec<String>`.
+    pub fn push_warnings(&mut self, code: &str, messages: &[String]) {
+        for m in messages {
+            self.push(ConfigLoadDiagnostic::warning(code, m.clone()));
+        }
+    }
+
+    /// Append another diagnostics collection (cloned).
+    pub fn extend(&mut self, other: &ConfigLoadDiagnostics) {
+        self.items.extend(other.items.iter().cloned());
+    }
+
+    /// Remove duplicate diagnostics (same `code`+`message`), preserving
+    /// first-seen order.
+    pub fn dedup(&mut self) {
+        let mut seen = std::collections::HashSet::new();
+        self.items
+            .retain(|d| seen.insert((d.code.clone(), d.message.clone())));
+    }
+
+    /// Count of warning-severity diagnostics.
+    pub fn warning_count(&self) -> usize {
+        self.items
+            .iter()
+            .filter(|d| d.severity == ConfigLoadDiagnosticSeverity::Warning)
+            .count()
+    }
+
+    /// Emit each diagnostic to stderr once, deduplicating first. Intended for
+    /// user-facing **CLI command** boundaries — NOT for reusable load paths,
+    /// daemon ticks, or TUI refreshes. Those read [`ConfigLoadDiagnostics`]
+    /// directly (e.g. for a compact health indicator) without printing raw
+    /// paragraphs into the terminal / alternate screen.
+    pub fn emit(&mut self) {
+        if self.is_empty() {
+            return;
+        }
+        self.dedup();
+        for d in &self.items {
+            eprintln!("{}: {}", d.severity, d.message);
+        }
+    }
+}
+
+impl std::fmt::Display for ConfigLoadDiagnostics {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for d in &self.items {
+            writeln!(f, "{}: {}", d.severity, d.message)?;
+        }
+        Ok(())
+    }
+}
+
 /// Main configuration structure
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
@@ -181,6 +340,15 @@ pub struct Config {
     /// Used by `resolve_model_for_role` to skip tier defaults in favor of agent.model.
     #[serde(skip)]
     pub agent_model_is_local: bool,
+
+    /// Structured diagnostics collected during the most recent `load*`
+    /// (deprecated keys, stale model strings, legacy section renames, load
+    /// fallback). `#[serde(skip)]` so it never reaches TOML and never
+    /// perturbs [`crate::service_identity::config_fingerprint`]. Load paths
+    /// are side-effect-free: a user-facing CLI boundary decides when to emit
+    /// via [`Config::emit_load_diagnostics`] / [`ConfigLoadDiagnostics::emit`].
+    #[serde(skip)]
+    pub load_diagnostics: ConfigLoadDiagnostics,
 }
 
 /// MCP server configuration. Populated from:
@@ -4919,21 +5087,29 @@ impl MatrixConfig {
     }
 
     /// Load Matrix configuration from ~/.config/worksgood/matrix.toml.
-    /// Returns default (empty) config if file doesn't exist
-    pub fn load() -> anyhow::Result<Self> {
+    /// Returns default (empty) config if file doesn't exist.
+    ///
+    /// Side-effect-free: any legacy-path notice is collected into the
+    /// returned [`ConfigLoadDiagnostics`] rather than printed, so callers at a
+    /// user-facing boundary decide when (and how often) to surface it.
+    pub fn load_with_diagnostics() -> anyhow::Result<(Self, ConfigLoadDiagnostics)> {
+        let mut diag = ConfigLoadDiagnostics::new();
         let canonical = Self::config_path()?;
         let legacy = Self::legacy_config_path()?;
         let config_path = if canonical.exists() {
             canonical
         } else if legacy.exists() {
-            eprintln!(
-                "warning: using legacy Matrix config at {}; move it to {} (create the parent directory first)",
-                legacy.display(),
-                canonical.display()
+            diag.push_warning(
+                "legacy-matrix-config-path",
+                format!(
+                    "using legacy Matrix config at {}; move it to {} (create the parent directory first)",
+                    legacy.display(),
+                    canonical.display()
+                ),
             );
             legacy
         } else {
-            return Ok(Self::default());
+            return Ok((Self::default(), diag));
         };
 
         let content = fs::read_to_string(&config_path)
@@ -4942,7 +5118,15 @@ impl MatrixConfig {
         let config: MatrixConfig = toml::from_str(&content)
             .map_err(|e| anyhow::anyhow!("Failed to parse Matrix config: {}", e))?;
 
-        Ok(config)
+        Ok((config, diag))
+    }
+
+    /// Load Matrix configuration, discarding any structured diagnostics.
+    /// Side-effect-free (never prints). Use [`MatrixConfig::load_with_diagnostics`]
+    /// when the caller is at a user-facing boundary that wants to surface a
+    /// legacy-path notice.
+    pub fn load() -> anyhow::Result<Self> {
+        Ok(Self::load_with_diagnostics()?.0)
     }
 
     /// Save Matrix configuration to ~/.config/worksgood/matrix.toml
@@ -5060,12 +5244,14 @@ fn normalize_dispatcher_interval_alias(table: &mut toml::map::Map<String, toml::
     }
 }
 
-/// Print accumulated legacy-section deprecation warnings to stderr.
-/// Called at the tail of each `load_*` entry point so users see the message
-/// once per load (and per legacy file) instead of on every config field read.
-fn emit_legacy_warnings(warnings: &[String]) {
+/// Fold accumulated legacy-section deprecation strings into a structured
+/// [`ConfigLoadDiagnostics`] (under the `legacy-section` code) instead of
+/// printing them. Load paths are side-effect-free; a user-facing CLI
+/// boundary emits later. Each legacy-section message already carries its
+/// originating file label, so the `(code, message)` dedup key is stable.
+fn collect_legacy_warnings(diag: &mut ConfigLoadDiagnostics, warnings: &[String]) {
     for w in warnings {
-        eprintln!("warning: {}", w);
+        diag.push_warning("legacy-section", w.clone());
     }
 }
 
@@ -5287,28 +5473,38 @@ impl Config {
     }
 
     fn global_config_read_path() -> anyhow::Result<PathBuf> {
+        Ok(Self::global_config_read_path_with_notice()?.0)
+    }
+
+    /// Like [`global_config_read_path`] but also returns a structured
+    /// `legacy-global-config-path` diagnostic when the config was found at
+    /// the legacy `~/.workgraph/config.toml` location (instead of the
+    /// canonical `~/.wg/config.toml`). Side-effect-free: callers at
+    /// user-facing boundaries decide when to surface the notice (collected
+    /// into `load_diagnostics`) rather than printing on every load.
+    fn global_config_read_path_with_notice()
+    -> anyhow::Result<(PathBuf, Option<ConfigLoadDiagnostic>)> {
         let canonical = Self::global_config_path()?;
         // An explicit test/operator override is authoritative. Never escape it
         // to a legacy file under the ambient HOME.
         if canonical.exists() || std::env::var_os("WG_GLOBAL_DIR").is_some() {
-            return Ok(canonical);
+            return Ok((canonical, None));
         }
         let home = dirs::home_dir()
             .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
         let legacy = home.join(".workgraph").join("config.toml");
         if legacy.exists() {
-            static WARNED: std::sync::atomic::AtomicBool =
-                std::sync::atomic::AtomicBool::new(false);
-            if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                eprintln!(
-                    "warning: reading legacy WorksGood global config at {}; migrate it to {} (for example, stop wg services and move the file)",
+            let notice = ConfigLoadDiagnostic::warning(
+                "legacy-global-config-path",
+                format!(
+                    "reading legacy WorksGood global config at {}; migrate it to {} (for example, stop wg services and move the file)",
                     legacy.display(),
                     canonical.display()
-                );
-            }
-            return Ok(legacy);
+                ),
+            );
+            return Ok((legacy, Some(notice)));
         }
-        Ok(canonical)
+        Ok((canonical, None))
     }
 
     /// Return the global config file path.
@@ -5319,7 +5515,7 @@ impl Config {
     /// Load global configuration from ~/.wg/config.toml.
     /// Returns None if the file doesn't exist, Err on parse failure.
     pub fn load_global() -> anyhow::Result<Option<Self>> {
-        let global_path = Self::global_config_read_path()?;
+        let (global_path, legacy_notice) = Self::global_config_read_path_with_notice()?;
         if !global_path.exists() {
             return Ok(None);
         }
@@ -5339,8 +5535,22 @@ impl Config {
         })?;
         let mut warnings = Vec::new();
         normalize_legacy_tables(&mut val, &global_path.display().to_string(), &mut warnings);
-        emit_legacy_warnings(&warnings);
-        let config: Config = val.try_into().map_err(|e| {
+        let mut diag = ConfigLoadDiagnostics::new();
+        collect_legacy_warnings(&mut diag, &warnings);
+        if let Some(notice) = legacy_notice {
+            diag.push(notice);
+        }
+        // Collect (do NOT print) deprecated executor/model-prefix findings
+        // for parity with `load` / `load_merged`.
+        diag.push_warnings(
+            "deprecated-executor-key",
+            &deprecated_executor_warnings_for_toml(&content),
+        );
+        diag.push_warnings(
+            "deprecated-model-prefix",
+            &deprecated_model_prefix_warnings_for_toml(&content),
+        );
+        let mut config: Config = val.try_into().map_err(|e| {
             anyhow::anyhow!(
                 "Failed to parse global config at {}: {}",
                 global_path.display(),
@@ -5348,6 +5558,7 @@ impl Config {
             )
         })?;
         config.validate_model_format()?;
+        config.load_diagnostics = diag;
         Ok(Some(config))
     }
 
@@ -5380,7 +5591,7 @@ impl Config {
         workgraph_dir: &Path,
         mut profile: toml::Value,
     ) -> anyhow::Result<Self> {
-        let global_path = Self::global_config_read_path()?;
+        let (global_path, legacy_notice) = Self::global_config_read_path_with_notice()?;
         let local_path = workgraph_dir.join("config.toml");
         let mut global_val = Self::load_toml_value(&global_path)?;
         let mut local_val = Self::load_toml_value(&local_path)?;
@@ -5396,16 +5607,21 @@ impl Config {
             &mut warnings,
         );
         normalize_legacy_tables(&mut profile, "planned project profile", &mut warnings);
-        emit_legacy_warnings(&warnings);
+        let mut diag = ConfigLoadDiagnostics::new();
+        collect_legacy_warnings(&mut diag, &warnings);
+        if let Some(notice) = legacy_notice {
+            diag.push(notice);
+        }
         apply_endpoint_inheritance_policy(&mut global_val, &local_val, true);
         let merged = crate::profile::named::overlay_project_profile(
             merge_toml(global_val, local_val),
             &profile,
         );
-        let config: Self = merged.try_into().map_err(|error| {
+        let mut config: Self = merged.try_into().map_err(|error| {
             anyhow::anyhow!("Failed to parse config with planned project profile: {error}")
         })?;
         config.validate_model_format()?;
+        config.load_diagnostics = diag;
         Ok(config)
     }
 
@@ -5414,22 +5630,25 @@ impl Config {
         let local_path = workgraph_dir.join("config.toml");
         let mut global_val = Self::load_toml_value(&global_path)?;
         let mut local_val = Self::load_toml_value(&local_path)?;
-        let mut warnings = Vec::new();
+        let mut _legacy_warnings = Vec::new();
         normalize_legacy_tables(
             &mut global_val,
             &global_path.display().to_string(),
-            &mut warnings,
+            &mut _legacy_warnings,
         );
         normalize_legacy_tables(
             &mut local_val,
             &local_path.display().to_string(),
-            &mut warnings,
+            &mut _legacy_warnings,
         );
         let mut project_profile = crate::profile::project::selected_profile_toml(workgraph_dir)?;
         if let Some(profile) = project_profile.as_mut() {
-            normalize_legacy_tables(profile, "selected project profile", &mut warnings);
+            normalize_legacy_tables(profile, "selected project profile", &mut _legacy_warnings);
         }
-        emit_legacy_warnings(&warnings);
+        // Side-effect-free: the legacy tables are still migrated in `merged`,
+        // but the warning is surfaced by the `Config`-returning loaders
+        // (`load_merged` / `load_with_sources`) that user-facing commands use.
+        // This helper returns a raw TOML value for key resolution, not display.
         let active_named_profile =
             crate::profile::named::active().ok().flatten().is_some() || project_profile.is_some();
         apply_endpoint_inheritance_policy(&mut global_val, &local_val, active_named_profile);
@@ -5477,7 +5696,7 @@ impl Config {
     /// Load merged configuration: global config deep-merged with local config.
     /// Local keys override global keys. Missing files are treated as empty.
     pub fn load_merged(workgraph_dir: &Path) -> anyhow::Result<Self> {
-        let global_path = Self::global_config_read_path()?;
+        let (global_path, legacy_notice) = Self::global_config_read_path_with_notice()?;
         let local_path = workgraph_dir.join("config.toml");
 
         let mut global_val = Self::load_toml_value(&global_path)?;
@@ -5502,19 +5721,24 @@ impl Config {
         if let Some(profile) = project_profile.as_mut() {
             normalize_legacy_tables(profile, "selected project profile", &mut warnings);
         }
-        emit_legacy_warnings(&warnings);
+        let mut diag = ConfigLoadDiagnostics::new();
+        collect_legacy_warnings(&mut diag, &warnings);
+        if let Some(notice) = legacy_notice {
+            diag.push(notice);
+        }
 
         // Surface deprecated `executor` keys regardless of which file
         // they live in. Read each file's raw content directly (we already
         // have it as TOML values, but `deprecated_executor_warnings_for_toml`
-        // takes the raw string for symmetry with `Config::load`).
+        // takes the raw string for symmetry with `Config::load`). Collected
+        // into `diag` (side-effect-free) rather than printed on every load.
         for (label, path) in [("global", &global_path), ("local", &local_path)] {
             if let Ok(content) = fs::read_to_string(path) {
                 for w in deprecated_executor_warnings_for_toml(&content) {
-                    eprintln!("warning: ({}) {}", label, w);
+                    diag.push_warning("deprecated-executor-key", format!("({label}) {w}"));
                 }
                 for w in deprecated_model_prefix_warnings_for_toml(&content) {
-                    eprintln!("warning: ({}) {}", label, w);
+                    diag.push_warning("deprecated-model-prefix", format!("({label}) {w}"));
                 }
             }
         }
@@ -5547,6 +5771,7 @@ impl Config {
         // mutates global state, and drift/missing definitions fail closed.
 
         config.validate_model_format()?;
+        config.load_diagnostics = diag;
 
         Ok(config)
     }
@@ -5621,31 +5846,39 @@ impl Config {
         })?;
         let mut warnings = Vec::new();
         normalize_legacy_tables(&mut val, &config_path.display().to_string(), &mut warnings);
-        emit_legacy_warnings(&warnings);
-        let config: Config = val.try_into().map_err(|e| {
+        let mut diag = ConfigLoadDiagnostics::new();
+        collect_legacy_warnings(&mut diag, &warnings);
+        let mut config: Config = val.try_into().map_err(|e| {
             anyhow::anyhow!("Failed to parse config at {}: {}", config_path.display(), e)
         })?;
 
         config.validate_model_format()?;
 
-        for warning in config.deprecated_compaction_warnings() {
-            eprintln!("warning: {}", warning);
-        }
+        // Collect (do NOT print) deprecated-key diagnostics. Load paths are
+        // side-effect-free; a user-facing CLI boundary emits via
+        // [`Config::emit_load_diagnostics`] / [`ConfigLoadDiagnostics::emit`].
+        diag.push_warnings(
+            "deprecated-compaction-key",
+            &config.deprecated_compaction_warnings(),
+        );
 
         // The `executor` taxonomy has been deprecated as a user-facing
-        // concept in favor of model+endpoint. Warn loudly (once per load)
-        // when explicit `executor = …` keys are still in config.toml so
-        // users have one release to migrate.
-        for warning in deprecated_executor_warnings_for_toml(&content) {
-            eprintln!("warning: {}", warning);
-        }
+        // concept in favor of model+endpoint. Collect (once per load, not
+        // print) when explicit `executor = …` keys are still in config.toml
+        // so users have one release to migrate.
+        diag.push_warnings(
+            "deprecated-executor-key",
+            &deprecated_executor_warnings_for_toml(&content),
+        );
 
         // Same one-release deprecation window for the legacy `local:` /
         // `oai-compat:` model-spec prefixes, replaced by the canonical
         // `nex:` (matches the `wg nex` subcommand).
-        for warning in deprecated_model_prefix_warnings_for_toml(&content) {
-            eprintln!("warning: {}", warning);
-        }
+        diag.push_warnings(
+            "deprecated-model-prefix",
+            &deprecated_model_prefix_warnings_for_toml(&content),
+        );
+        config.load_diagnostics = diag;
 
         Ok(config)
     }
@@ -5694,23 +5927,48 @@ impl Config {
 
     /// Load configuration with global+local merge, falling back to defaults on error.
     ///
-    /// Unlike `.load().unwrap_or_default()`, this emits a stderr warning
-    /// when a config file exists but is corrupt, so the user knows
-    /// their configuration is being ignored.
+    /// Side-effect-free: when a config file exists but is corrupt, the
+    /// fallback is recorded as a structured diagnostic on the returned
+    /// `Config.load_diagnostics` (severity `error`) instead of printed to
+    /// stderr — so daemon ticks / TUI refreshes don't repeat the message on
+    /// every load. A user-facing CLI boundary emits via
+    /// [`Config::emit_load_diagnostics`].
     pub fn load_or_default(workgraph_dir: &Path) -> Self {
         match Self::load_merged(workgraph_dir) {
             Ok(config) => config,
             Err(e) if crate::profile::project::association_path(workgraph_dir).exists() => {
-                eprintln!(
-                    "ERROR: {e}. Explicit project profile selection is invalid; execution is disabled (no global/provider fallback)."
-                );
-                Self::profile_selection_blocked_config(&e.to_string())
+                let mut config = Self::profile_selection_blocked_config(&e.to_string());
+                config.load_diagnostics.push(ConfigLoadDiagnostic::error(
+                    "config-load-error",
+                    format!(
+                        "{e}. Explicit project profile selection is invalid; execution is disabled (no global/provider fallback)."
+                    ),
+                ));
+                config
             }
             Err(e) => {
-                eprintln!("Warning: {}, using defaults", e);
-                Self::default()
+                let mut config = Self::default();
+                config.load_diagnostics.push(ConfigLoadDiagnostic::warning(
+                    "config-load-error",
+                    format!("{e}, using defaults"),
+                ));
+                config
             }
         }
+    }
+
+    /// Emit the collected `load_diagnostics` to stderr once, deduplicated.
+    ///
+    /// Intended for **user-facing CLI command** boundaries (e.g. `wg status`,
+    /// `wg config --show`) — NOT for reusable load paths, daemon ticks, or
+    /// TUI refreshes. Those read [`Config::load_diagnostics`] directly (e.g.
+    /// for a compact health indicator) without printing raw paragraphs.
+    /// Safe to call unconditionally: a clean config has no diagnostics, so it
+    /// is silent (preserves the must-not-over-block requirement that a
+    /// migrated-clean config stays quiet on every surface).
+    pub fn emit_load_diagnostics(&self) {
+        let mut diag = self.load_diagnostics.clone();
+        diag.emit();
     }
 
     /// Save configuration to .wg/config.toml
@@ -6112,7 +6370,7 @@ impl Config {
     pub fn load_with_sources(
         workgraph_dir: &Path,
     ) -> anyhow::Result<(Self, BTreeMap<String, ConfigSource>)> {
-        let global_path = Self::global_config_read_path()?;
+        let (global_path, legacy_notice) = Self::global_config_read_path_with_notice()?;
         let local_path = workgraph_dir.join("config.toml");
 
         let mut global_val = Self::load_toml_value(&global_path)?;
@@ -6139,7 +6397,24 @@ impl Config {
         if let Some(profile) = project_profile.as_mut() {
             normalize_legacy_tables(profile, "selected project profile", &mut warnings);
         }
-        emit_legacy_warnings(&warnings);
+        let mut diag = ConfigLoadDiagnostics::new();
+        collect_legacy_warnings(&mut diag, &warnings);
+        if let Some(notice) = legacy_notice {
+            diag.push(notice);
+        }
+        // Collect (do NOT print) deprecated executor/model-prefix findings so
+        // `wg config --list` / `--show` (the surfaces that use this loader)
+        // can surface them once per invocation via [`Config::emit_load_diagnostics`].
+        for (label, path) in [("global", &global_path), ("local", &local_path)] {
+            if let Ok(content) = fs::read_to_string(path) {
+                for w in deprecated_executor_warnings_for_toml(&content) {
+                    diag.push_warning("deprecated-executor-key", format!("({label}) {w}"));
+                }
+                for w in deprecated_model_prefix_warnings_for_toml(&content) {
+                    diag.push_warning("deprecated-model-prefix", format!("({label}) {w}"));
+                }
+            }
+        }
 
         // Apply endpoint inheritance policy BEFORE recording sources, so the
         // source map reflects the effective merged config: a global endpoint
@@ -6190,6 +6465,7 @@ impl Config {
         for (key, src) in default_sources {
             sources.entry(key).or_insert(src);
         }
+        config.load_diagnostics = diag;
 
         Ok((config, sources))
     }
@@ -9460,6 +9736,163 @@ model = "pi:openrouter:anthropic/claude-opus-4-7"
         assert!(handler_first_warning("pi:openrouter:z-ai/glm-5.2").is_none());
         assert!(handler_first_warning("claude:opus").is_none());
         assert!(handler_first_warning("opus").is_none());
+    }
+
+    /// `ConfigDiagnostics` dedups by `(code, message)` and preserves order.
+    #[test]
+    fn test_config_diagnostics_dedup_preserves_order() {
+        let mut diag = ConfigLoadDiagnostics::new();
+        diag.push_warning("legacy-section", "[coordinator] table is now [dispatcher]");
+        diag.push_warning(
+            "deprecated-executor-key",
+            "agent.executor is migration-only",
+        );
+        // Duplicate of the first.
+        diag.push_warning("legacy-section", "[coordinator] table is now [dispatcher]");
+        diag.push_warning("deprecated-model-prefix", "model spec openrouter:x: ...");
+        diag.dedup();
+        assert_eq!(
+            diag.len(),
+            3,
+            "dedup keeps first-seen order, drops exact dupes"
+        );
+        assert_eq!(diag.items[0].code, "legacy-section");
+        assert_eq!(diag.items[1].code, "deprecated-executor-key");
+        assert_eq!(diag.items[2].code, "deprecated-model-prefix");
+        assert_eq!(diag.warning_count(), 3);
+    }
+
+    /// `ConfigDiagnostics::is_empty` and a clean collection emit nothing.
+    #[test]
+    fn test_config_diagnostics_empty_emit_is_noop() {
+        let mut diag = ConfigLoadDiagnostics::new();
+        assert!(diag.is_empty());
+        // emit() on an empty collection must not panic or print.
+        diag.emit();
+        assert!(diag.is_empty());
+    }
+
+    /// A migrated-clean config collects NO load diagnostics (the must-not-
+    /// over-block bound: handler-first pi: routes with no legacy keys stay
+    /// silent on every surface).
+    #[test]
+    fn test_load_collects_no_diagnostics_for_clean_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let wg = dir.path().join(".wg");
+        std::fs::create_dir_all(&wg).unwrap();
+        std::fs::write(
+            wg.join("config.toml"),
+            r#"
+[agent]
+model = "pi:openrouter:anthropic/claude-opus-4-7"
+
+[dispatcher]
+model = "pi:openrouter:anthropic/claude-opus-4-7"
+"#,
+        )
+        .unwrap();
+        let config = Config::load(&wg).unwrap();
+        assert!(
+            config.load_diagnostics.is_empty(),
+            "clean config must collect no diagnostics, got: {:?}",
+            config.load_diagnostics.items
+        );
+    }
+
+    /// A config with legacy/deprecated keys COLLECTS diagnostics into
+    /// `load_diagnostics` instead of printing them. This is the core fix:
+    /// load paths are side-effect-free w.r.t. terminal output.
+    #[test]
+    fn test_load_collects_diagnostics_for_legacy_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let wg = dir.path().join(".wg");
+        std::fs::create_dir_all(&wg).unwrap();
+        std::fs::write(
+            wg.join("config.toml"),
+            r#"
+[coordinator]
+executor = "claude"
+model = "pi:openrouter:anthropic/claude-opus-4-7"
+"#,
+        )
+        .unwrap();
+        let config = Config::load(&wg).unwrap();
+        // Legacy `[coordinator]` section + explicit `executor` key both surface.
+        assert!(!config.load_diagnostics.is_empty());
+        let codes: Vec<&str> = config
+            .load_diagnostics
+            .items
+            .iter()
+            .map(|d| d.code.as_str())
+            .collect();
+        assert!(
+            codes.contains(&"legacy-section"),
+            "expected a legacy-section diagnostic, got codes: {codes:?}"
+        );
+        assert!(
+            codes.contains(&"deprecated-executor-key"),
+            "expected a deprecated-executor-key diagnostic, got codes: {codes:?}"
+        );
+        // The model is handler-first pi:, so no model-prefix diagnostic.
+        assert!(
+            !codes.contains(&"deprecated-model-prefix"),
+            "handler-first pi: model must not warn, got codes: {codes:?}"
+        );
+    }
+
+    /// Repeated config load (100x) is side-effect-free at the API level:
+    /// diagnostics are COLLECTED (not lost) on every load, and the load path
+    /// contains no `eprintln!`. The full "100x writes nothing to stderr"
+    /// guarantee is proven by the `config_load_no_stderr_spam` smoke scenario
+    /// (a separate process that captures fd 2 in isolation), since capturing
+    /// fd 2 inside threaded `cargo test` would corrupt sibling tests' output.
+    #[test]
+    fn test_repeated_load_collects_diagnostics_each_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let wg = dir.path().join(".wg");
+        std::fs::create_dir_all(&wg).unwrap();
+        std::fs::write(
+            wg.join("config.toml"),
+            r#"
+[coordinator]
+executor = "claude"
+model = "pi:openrouter:anthropic/claude-opus-4-7"
+"#,
+        )
+        .unwrap();
+        let mut last = 0;
+        for _ in 0..100 {
+            let cfg = Config::load(&wg).unwrap();
+            last = cfg.load_diagnostics.len();
+        }
+        assert!(
+            last > 0,
+            "diagnostics are still collected on each of 100 loads ({last})"
+        );
+    }
+
+    /// `load_diagnostics` is `#[serde(skip)]`: it never reaches TOML and never
+    /// perturbs `config_fingerprint` (the service-identity digest).
+    #[test]
+    fn test_load_diagnostics_skipped_from_serialization_and_fingerprint() {
+        let mut clean = Config::default();
+        let mut dirty = Config::default();
+        dirty
+            .load_diagnostics
+            .push_warning("legacy-section", "[coordinator] table is now [dispatcher]");
+        // TOML serialization skips the field entirely.
+        let toml_str = toml::to_string(&dirty).unwrap();
+        assert!(
+            !toml_str.contains("load_diagnostics"),
+            "load_diagnostics must be #[serde(skip)]; found in TOML: {toml_str}"
+        );
+        // JSON fingerprint is identical regardless of diagnostics.
+        let fp_clean = worksgood::service_identity::config_fingerprint(&clean).unwrap();
+        let fp_dirty = worksgood::service_identity::config_fingerprint(&dirty).unwrap();
+        assert_eq!(
+            fp_clean, fp_dirty,
+            "config_fingerprint must not depend on load_diagnostics"
+        );
     }
 
     #[test]
