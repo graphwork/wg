@@ -3036,6 +3036,12 @@ pub fn lint_config(workgraph_dir: &Path, target: LintTarget, json: bool) -> Resu
         || !merged.llm_endpoints.endpoints.is_empty()
         || merged.openrouter.is_some())
         .then_some("legacy WG model/provider data is retained for migration only and has no Pi dispatch authority");
+    let predictive_admission_enabled = merged.coordinator.resource_management.disk_sentinel_enabled;
+    let predictive_admission_guidance = if predictive_admission_enabled {
+        "advanced explicit opt-in: historical build high-water projections may intentionally defer launches; set dispatcher.resource_management.disk_sentinel_enabled = false (or remove the key) to use the availability-first default"
+    } else {
+        "disabled (default): dispatch/recovery is not blocked by hypothetical cold-build reservations; explicit cleanup and preservation safeguards remain available"
+    };
 
     if json {
         let payload = serde_json::json!({
@@ -3054,6 +3060,11 @@ pub fn lint_config(workgraph_dir: &Path, target: LintTarget, json: bool) -> Resu
             "pi_route_warning": pi_warning,
             "pi_model_plane_error": pi_plane_error,
             "legacy_model_plane_warning": legacy_model_plane,
+            "predictive_build_admission": {
+                "enabled": predictive_admission_enabled,
+                "mode": if predictive_admission_enabled { "advanced-opt-in" } else { "disabled-default" },
+                "guidance": predictive_admission_guidance,
+            },
             "selection_error": selection_error,
         });
         println!("{}", serde_json::to_string_pretty(&payload)?);
@@ -3088,6 +3099,17 @@ pub fn lint_config(workgraph_dir: &Path, target: LintTarget, json: bool) -> Resu
         println!("  legacy route rejected: {error}");
         total_findings += 1;
     }
+    println!();
+    println!("predictive-build-admission:");
+    println!(
+        "  state: {}",
+        if predictive_admission_enabled {
+            "enabled (advanced explicit opt-in)"
+        } else {
+            "disabled (default)"
+        }
+    );
+    println!("  {predictive_admission_guidance}");
     for r in &results {
         print_lint_one(r);
         total_findings += r.removed_keys.len() + r.renamed_keys.len() + r.rewritten_values.len();

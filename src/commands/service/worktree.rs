@@ -2715,6 +2715,10 @@ mod tests {
         assert!(config.cleanup_job_queue);
         assert_eq!(config.cleanup_queue_size, 50);
         assert_eq!(config.recovery_prune_interval, 3600); // 1 hour
+        assert!(
+            !config.disk_sentinel_enabled,
+            "predictive build admission is advanced opt-in"
+        );
     }
 
     #[test]

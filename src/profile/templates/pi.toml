@@ -12,6 +12,11 @@ model = "pi:openrouter:z-ai/glm-5.2"
 model = "pi:openrouter:z-ai/glm-5.2"
 max_agents = 8
 
+# Predictive build admission is an advanced opt-in. Recovery must not be
+# blocked by a historical cold-build projection for an already-warm target.
+[dispatcher.resource_management]
+disk_sentinel_enabled = false
+
 [tiers]
 fast = "pi:openrouter:deepseek/deepseek-chat"
 fast_reasoning = "low"

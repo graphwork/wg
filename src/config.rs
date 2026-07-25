@@ -4387,7 +4387,11 @@ pub struct ResourceManagementConfig {
     #[serde(default = "default_recovery_prune_interval")]
     pub recovery_prune_interval: u64,
 
-    /// Enable periodic disk observation and build-class admission control.
+    /// Enable predictive disk/build admission control. This advanced gate is
+    /// opt-in because historical high-water projections can over-reserve a
+    /// preserved warm target and block recovery before process creation.
+    /// Explicit cleanup and owned-cache/stream safeguards remain independent.
+    /// Default: false.
     #[serde(default = "default_disk_sentinel_enabled")]
     pub disk_sentinel_enabled: bool,
     /// Additional target/tmp paths whose backing mounts must have headroom.
@@ -4650,7 +4654,7 @@ fn default_recovery_prune_interval() -> u64 {
 }
 
 fn default_disk_sentinel_enabled() -> bool {
-    true
+    false
 }
 fn default_disk_warning_bytes() -> u64 {
     64 * 1024 * 1024 * 1024
@@ -6621,7 +6625,37 @@ mod tests {
         assert_eq!(config.agent.executor, "pi");
         assert!(config.agent.model.is_empty());
         assert_eq!(config.agent.interval, 10);
+        assert!(
+            !config.coordinator.resource_management.disk_sentinel_enabled,
+            "predictive build admission must be opt-in"
+        );
         assert!(config.validate_pi_model_plane().is_err());
+    }
+
+    #[test]
+    fn disk_sentinel_old_explicit_values_and_absent_key_parse_deterministically() {
+        let absent: Config = toml::from_str("").unwrap();
+        assert!(!absent.coordinator.resource_management.disk_sentinel_enabled);
+
+        let enabled: Config =
+            toml::from_str("[dispatcher.resource_management]\ndisk_sentinel_enabled = true\n")
+                .unwrap();
+        assert!(
+            enabled
+                .coordinator
+                .resource_management
+                .disk_sentinel_enabled
+        );
+
+        let disabled: Config =
+            toml::from_str("[dispatcher.resource_management]\ndisk_sentinel_enabled = false\n")
+                .unwrap();
+        assert!(
+            !disabled
+                .coordinator
+                .resource_management
+                .disk_sentinel_enabled
+        );
     }
 
     #[test]

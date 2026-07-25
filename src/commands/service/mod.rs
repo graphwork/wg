@@ -729,6 +729,14 @@ pub struct CoordinatorState {
     pub tasks_ready: usize,
     /// Number of agents spawned in last tick
     pub agents_spawned: usize,
+    /// Ready tasks intentionally deferred by the advanced opt-in disk/build
+    /// admission gate during the last tick. Non-zero is a deliberate refusal,
+    /// not evidence that the dispatcher is wedged.
+    #[serde(default)]
+    pub admission_deferred_tasks: usize,
+    /// First intentional admission refusal from the last tick.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admission_deferred_reason: Option<String>,
     /// Whether the coordinator is paused (no new agent spawns)
     #[serde(default)]
     pub paused: bool,
@@ -2451,6 +2459,8 @@ pub fn run_daemon(
         agents_alive: 0,
         tasks_ready: 0,
         agents_spawned: 0,
+        admission_deferred_tasks: 0,
+        admission_deferred_reason: None,
         paused: false,
         frozen: false,
         frozen_pids: Vec::new(),
@@ -3185,6 +3195,9 @@ pub fn run_daemon(
                     coord_state.agents_alive = result.agents_alive;
                     coord_state.tasks_ready = result.tasks_ready;
                     coord_state.agents_spawned = result.agents_spawned;
+                    coord_state.admission_deferred_tasks = result.admission_deferred_tasks;
+                    coord_state.admission_deferred_reason =
+                        result.admission_deferred_reason.clone();
                     // Reload accumulated_tokens from disk before saving to avoid clobbering
                     // increments written by the coordinator agent thread.
                     if let Some(disk) = CoordinatorState::load(&dir) {
@@ -3196,8 +3209,12 @@ pub fn run_daemon(
                     record_tick_events(&dir, &event_log, &logger);
 
                     logger.info(&format!(
-                        "Coordinator tick #{} complete: agents_alive={}, tasks_ready={}, spawned={}",
-                        coord_state.ticks, result.agents_alive, result.tasks_ready, result.agents_spawned
+                        "Coordinator tick #{} complete: agents_alive={}, tasks_ready={}, spawned={}, admission_deferred={}",
+                        coord_state.ticks,
+                        result.agents_alive,
+                        result.tasks_ready,
+                        result.agents_spawned,
+                        result.admission_deferred_tasks
                     ));
 
                     // Dispatch watchdog (fix-wedge): detect a starved dispatcher —
@@ -3205,6 +3222,7 @@ pub fn run_daemon(
                     if result.tasks_ready > 0
                         && result.agents_spawned == 0
                         && result.agents_alive == 0
+                        && result.admission_deferred_tasks == 0
                     {
                         no_dispatch_progress_ticks = no_dispatch_progress_ticks.saturating_add(1);
                         if no_dispatch_progress_ticks == WATCHDOG_STALL_TICKS
@@ -3220,6 +3238,9 @@ pub fn run_daemon(
                             ));
                         }
                     } else {
+                        // Intentional opt-in admission deferral is progress in
+                        // the dispatch decision, not a stuck dispatcher. Reset
+                        // the wedge counter so status/logs never conflate them.
                         no_dispatch_progress_ticks = 0;
                     }
 
@@ -3701,6 +3722,13 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
                 "agents_alive": coord.agents_alive,
                 "tasks_ready": coord.tasks_ready,
                 "agents_spawned_last_tick": coord.agents_spawned,
+                "admission_deferred_tasks": coord.admission_deferred_tasks,
+                "admission_deferred_reason": coord.admission_deferred_reason,
+                "dispatch_state": if coord.admission_deferred_tasks > 0 {
+                    "admission-deferred"
+                } else {
+                    "normal"
+                },
             },
             "retained_worktree_cleanup": cleanup,
             "log": {
@@ -3712,7 +3740,11 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
             output["warning"] =
                 serde_json::json!("No agents defined — run 'wg agency init' or 'wg agent create'");
         }
-        if agency_agents_defined
+        if coord.admission_deferred_tasks > 0 {
+            output["agents"]["note"] = serde_json::json!(
+                "ready build work was intentionally deferred by explicitly enabled predictive admission; the dispatcher is not wedged"
+            );
+        } else if agency_agents_defined
             && alive_count == 0
             && coord.ticks > 0
             && coord.agents_spawned == 0
@@ -3755,7 +3787,8 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
                 idle_count,
                 registry.agents.len()
             );
-            if alive_count == 0
+            if coord.admission_deferred_tasks == 0
+                && alive_count == 0
                 && coord.ticks > 0
                 && coord.agents_spawned == 0
                 && coord.tasks_ready > 0
@@ -3763,6 +3796,15 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
                 println!(
                     "  Note: tasks are ready but no agents have been spawned — possible causes: (a) agent configuration; (b) stale `assigned` claims from dead agents (run `wg list --status open` to inspect; `wg unclaim <task>` clears one claim, `wg reset <task> --yes` clears + reopens)"
                 );
+            }
+        }
+        if coord.admission_deferred_tasks > 0 {
+            println!(
+                "  Admission deferred: {} ready build task(s) by advanced opt-in predictive admission — dispatcher is not wedged",
+                coord.admission_deferred_tasks
+            );
+            if let Some(reason) = coord.admission_deferred_reason.as_deref() {
+                println!("    Reason: {reason}");
             }
         }
         let model_str = coord.model.as_deref().unwrap_or("default");
@@ -3792,13 +3834,14 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
         }
         if let Some(ref last) = coord.last_tick {
             println!(
-                "  Last tick: {} (#{}, agents_alive={}/{}, tasks_ready={}, spawned={})",
+                "  Last tick: {} (#{}, agents_alive={}/{}, tasks_ready={}, spawned={}, admission_deferred={})",
                 last,
                 coord.ticks,
                 coord.agents_alive,
                 coord.max_agents,
                 coord.tasks_ready,
-                coord.agents_spawned
+                coord.agents_spawned,
+                coord.admission_deferred_tasks
             );
         } else {
             println!("  No ticks yet");

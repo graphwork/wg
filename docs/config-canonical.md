@@ -126,7 +126,7 @@ The whole table renames `[coordinator]` → `[dispatcher]` automatically (`LEGAC
 
 ### `[dispatcher.resource_management]` — worktree cleanup (`src/config.rs:3002-3038`)
 
-All G-scope, all current. Defaults: `cleanup_verification = true`, `recovery_branch_max_age = 604800` (7d), `recovery_branch_max_count = 10`, `cleanup_job_queue = true`, `cleanup_queue_size = 50`, `recovery_prune_interval = 3600` (1h). Code: `src/config.rs:3204-3239`.
+All G-scope, all current. Defaults: `cleanup_verification = true`, `recovery_branch_max_age = 604800` (7d), `recovery_branch_max_count = 10`, `cleanup_job_queue = true`, `cleanup_queue_size = 50`, `recovery_prune_interval = 3600` (1h), and `disk_sentinel_enabled = false`. Predictive cold-build admission is an advanced explicit opt-in because historical high-water can over-reserve a preserved warm recovery target; explicit cleanup, ownership accounting, stream bounds, and source/artifact preservation remain independent. Code: `src/config.rs` (`ResourceManagementConfig`).
 
 ### `[project]` — project metadata (`src/config.rs:3287-3301`)
 

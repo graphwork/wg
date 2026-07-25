@@ -12,6 +12,13 @@ project="$scratch/project"
 mkdir -p "$project"
 cd "$project"
 wg init --no-agency >/dev/null
+# Keep this credential-free disk fixture independent of any ambient/global
+# agency profile before tasks are added/published.
+cat > .wg/config.toml <<'EOF'
+[agency]
+auto_assign = false
+auto_evaluate = false
+EOF
 wg add "disk sentinel visible row cargo test" \
   --exec "printf resumed > '$project/resumed'" >/dev/null
 wg add "stale owned cache evidence" >/dev/null

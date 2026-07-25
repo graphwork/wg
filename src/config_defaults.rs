@@ -645,6 +645,37 @@ mod tests {
         );
     }
 
+    #[test]
+    fn every_generated_setup_route_disables_predictive_build_admission() {
+        for route in [
+            SetupRoute::Openrouter,
+            SetupRoute::ClaudeCli,
+            SetupRoute::CodexCli,
+            SetupRoute::Pi,
+            SetupRoute::Local,
+            SetupRoute::NexCustom,
+        ] {
+            let config = config_for_route(route, RouteParams::default());
+            assert!(
+                !config.coordinator.resource_management.disk_sentinel_enabled,
+                "{} setup config unexpectedly enabled predictive admission",
+                route.as_name()
+            );
+            let encoded = toml::to_string_pretty(&config).unwrap();
+            assert!(
+                encoded.contains("disk_sentinel_enabled = false"),
+                "{} generated TOML did not declare the safe default",
+                route.as_name()
+            );
+            assert!(
+                !round_trip(&config)
+                    .coordinator
+                    .resource_management
+                    .disk_sentinel_enabled
+            );
+        }
+    }
+
     // ── openrouter ───────────────────────────────────────────────────
 
     #[test]

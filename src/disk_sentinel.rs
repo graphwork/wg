@@ -1838,6 +1838,60 @@ mod tests {
     }
 
     #[test]
+    fn default_admission_ignores_historical_cold_build_high_water() {
+        let root = TempDir::new().unwrap();
+        let dir = root.path().join(".wg");
+        fs::create_dir_all(sentinel_dir(&dir)).unwrap();
+        save_high_water(
+            &dir,
+            &BuildHighWater {
+                build_capable_bytes: u64::MAX,
+                build_heavy_bytes: u64::MAX,
+            },
+        )
+        .unwrap();
+
+        let cfg = ResourceManagementConfig::default();
+        assert!(!cfg.disk_sentinel_enabled);
+        let admission = build_admission(&dir, &cfg, BuildClass::BuildHeavy);
+        assert!(admission.allowed);
+        assert_eq!(admission.candidate_bytes, 0);
+        assert_eq!(admission.concurrent_reserved_bytes, 0);
+        assert_eq!(admission.reason, "disk admission not required");
+    }
+
+    #[test]
+    fn explicit_opt_in_still_enforces_predictive_admission() {
+        let root = TempDir::new().unwrap();
+        let dir = root.path().join(".wg");
+        fs::create_dir_all(sentinel_dir(&dir)).unwrap();
+        save_high_water(
+            &dir,
+            &BuildHighWater {
+                build_capable_bytes: u64::MAX,
+                build_heavy_bytes: u64::MAX,
+            },
+        )
+        .unwrap();
+        let cfg = ResourceManagementConfig {
+            disk_sentinel_enabled: true,
+            disk_warning_bytes: 0,
+            disk_pause_build_bytes: 0,
+            disk_hard_refuse_bytes: 0,
+            disk_warning_percent: 0.0,
+            disk_pause_build_percent: 0.0,
+            disk_hard_refuse_percent: 0.0,
+            build_link_test_safety_bytes: 0,
+            ..Default::default()
+        };
+
+        let admission = build_admission(&dir, &cfg, BuildClass::BuildHeavy);
+        assert!(!admission.allowed);
+        assert_eq!(admission.candidate_bytes, u64::MAX);
+        assert!(admission.reason.contains("projected build growth"));
+    }
+
+    #[test]
     fn incident_scale_projection_refuses_then_allows_after_cleanup_and_serializes() {
         const GIB: u64 = 1024 * 1024 * 1024;
         let cfg = ResourceManagementConfig {

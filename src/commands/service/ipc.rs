@@ -882,6 +882,13 @@ fn handle_status(dir: &Path) -> IpcResponse {
             "agents_alive": coord.agents_alive,
             "tasks_ready": coord.tasks_ready,
             "agents_spawned_last_tick": coord.agents_spawned,
+            "admission_deferred_tasks": coord.admission_deferred_tasks,
+            "admission_deferred_reason": coord.admission_deferred_reason,
+            "dispatch_state": if coord.admission_deferred_tasks > 0 {
+                "admission-deferred"
+            } else {
+                "normal"
+            },
         }
     }))
 }

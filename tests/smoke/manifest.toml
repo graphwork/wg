@@ -2383,6 +2383,7 @@ script = "scenarios/disk_sentinel_admission_cleanup.sh"
 owners = [
     "add-disk-sentinel",
     "fix-disk-cleanup-recurrence",
+    "disable-predictive-build",
 ]
 description = "Real CLI + tmux/TUI disk-pressure regression: synthesizes warn/pause/hard-refuse/cleanup/resume relative to measured free bytes without filling disk; pins cached status and TUI state; proves unknown targets survive. Rust companions pin marker-vs-real-source safety, cache-only cleanup, 40–60 GiB measured projection/concurrency, terminal lease release, bounded Pi/Claude/Codex evidence streams, and idempotent reporting."
 timeout_seconds = 45
@@ -2538,3 +2539,10 @@ owners = [
 ]
 description = "Candidate-binary live tmux human flow: an external CLI with ambient worker/chat identity adds an ordinary visible draft while TUI is already running; file-watch refresh shows it within a bounded interval, exact keyboard search commits it, add never makes it ready or scaffolds LLM work, publish --only is the sole release edge, root/worker/independent tasks remain unplaced=false, lifecycle/retry/done stay graph-visible, and the removed hidden-work option hard-refuses with copy-pasteable guidance. Never globally installs the candidate."
 timeout_seconds = 180
+
+[[scenario]]
+name = "predictive_build_admission_opt_in"
+script = "scenarios/predictive_build_admission_opt_in.sh"
+owners = ["disable-predictive-build"]
+description = "Installed-binary terminal flow proving the availability-first false default ignores an impossible historical build high-water and preserves a dirty source plus warm recovery target; explicit true deterministically refuses the same projection; human/JSON service status names admission-deferred and the five-tick dispatch watchdog never misdiagnoses that intentional opt-in refusal as a wedge."
+timeout_seconds = 45

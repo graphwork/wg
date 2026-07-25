@@ -38,6 +38,18 @@ pub struct TickResult {
     pub tasks_ready: usize,
     /// Number of agents spawned in this tick
     pub agents_spawned: usize,
+    /// Number of ready tasks intentionally deferred by the explicitly enabled
+    /// disk/build admission gate. This is not a dispatcher wedge.
+    pub admission_deferred_tasks: usize,
+    /// First admission refusal recorded during the tick, for status output.
+    pub admission_deferred_reason: Option<String>,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct SpawnSummary {
+    spawned: usize,
+    admission_deferred_tasks: usize,
+    admission_deferred_reason: Option<String>,
 }
 
 /// Clean up dead agents and count alive ones. Returns `None` with an early
@@ -129,6 +141,8 @@ fn cleanup_and_count_alive(
             agents_alive: alive_count,
             tasks_ready: 0,
             agents_spawned: 0,
+            admission_deferred_tasks: 0,
+            admission_deferred_reason: None,
         }));
     }
 
@@ -206,6 +220,8 @@ fn check_ready_or_return(
             agents_alive: alive_count,
             tasks_ready: 0,
             agents_spawned: 0,
+            admission_deferred_tasks: 0,
+            admission_deferred_reason: None,
         });
     }
     None
@@ -4234,16 +4250,20 @@ fn spawn_agents_for_ready_tasks(
     default_model: Option<&str>,
     slots_available: usize,
     auto_assign: bool,
-) -> usize {
+) -> SpawnSummary {
     let cycle_analysis = graph.compute_cycle_analysis();
     let ready_tasks_raw = ready_tasks_with_peers_cycle_aware(graph, dir, &cycle_analysis);
     let agents_dir = dir.join("agency").join("cache/agents");
     let gp = graph_path(dir);
-    let mut spawned = 0;
+    let mut summary = SpawnSummary::default();
     let disk_snapshot = worksgood::disk_sentinel::load_snapshot(dir).ok().flatten();
-    let builds_blocked = disk_snapshot
-        .as_ref()
-        .is_some_and(|snapshot| snapshot.level.blocks_builds());
+    // A stale snapshot from a prior opt-in must never keep blocking launches
+    // after admission is disabled. Observation, accounting, and explicit
+    // cleanup remain independent; only an explicitly enabled gate can defer.
+    let builds_blocked = config.coordinator.resource_management.disk_sentinel_enabled
+        && disk_snapshot
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.level.blocks_builds());
     let mut active_build_heavy = disk_snapshot
         .as_ref()
         .map(|snapshot| snapshot.active_build_heavy)
@@ -4256,7 +4276,7 @@ fn spawn_agents_for_ready_tasks(
     let final_ready = sort_tasks_by_priority_with_features(graph, ready_tasks_raw, config);
 
     for task in final_ready.iter() {
-        if spawned >= slots_available {
+        if summary.spawned >= slots_available {
             break;
         }
         // Skip if already claimed
@@ -4331,6 +4351,11 @@ fn spawn_agents_for_ready_tasks(
                 "[dispatcher] Deferring '{}' while ordinary/evaluator tasks remain eligible: {}",
                 task.id, reason
             );
+            if build_class.is_build_capable() && (builds_blocked || !projected.allowed) {
+                summary.admission_deferred_tasks =
+                    summary.admission_deferred_tasks.saturating_add(1);
+                summary.admission_deferred_reason.get_or_insert(reason);
+            }
             continue;
         }
 
@@ -4349,7 +4374,7 @@ fn spawn_agents_for_ready_tasks(
             match spawn_shell_inline(dir, &task_id) {
                 Ok((agent_id, pid)) => {
                     eprintln!("[dispatcher] Spawned shell {} (PID {})", agent_id, pid);
-                    spawned += 1;
+                    summary.spawned += 1;
                     if build_class.is_heavy() {
                         active_build_heavy += 1;
                     }
@@ -4400,7 +4425,7 @@ fn spawn_agents_for_ready_tasks(
                     Ok((agent_id, pid)) => {
                         eprintln!("[dispatcher] Spawned assignment {} (PID {})", agent_id, pid);
                         record_dispatch(&gp, &task_id);
-                        spawned += 1;
+                        summary.spawned += 1;
                     }
                     Err(e) => {
                         eprintln!(
@@ -4432,7 +4457,7 @@ fn spawn_agents_for_ready_tasks(
                     Ok((agent_id, pid)) => {
                         eprintln!("[dispatcher] Spawned eval {} (PID {})", agent_id, pid);
                         record_dispatch(&gp, &task_id);
-                        spawned += 1;
+                        summary.spawned += 1;
                     }
                     Err(e) => {
                         eprintln!("[dispatcher] Failed to spawn eval for {}: {}", task_id, e);
@@ -4542,7 +4567,7 @@ fn spawn_agents_for_ready_tasks(
             Ok((agent_id, pid)) => {
                 eprintln!("[dispatcher] Spawned {} (PID {})", agent_id, pid);
                 record_dispatch(&gp, &task.id);
-                spawned += 1;
+                summary.spawned += 1;
                 if build_class.is_heavy() {
                     active_build_heavy += 1;
                 }
@@ -4561,7 +4586,7 @@ fn spawn_agents_for_ready_tasks(
         }
     }
 
-    spawned
+    summary
 }
 
 fn record_dispatch(graph_path: &Path, task_id: &str) {
@@ -5034,6 +5059,8 @@ pub fn coordinator_tick(
             agents_alive: alive_count,
             tasks_ready: ready_count,
             agents_spawned: 0,
+            admission_deferred_tasks: 0,
+            admission_deferred_reason: None,
         });
     }
 
@@ -5052,6 +5079,8 @@ pub fn coordinator_tick(
                 agents_alive: alive_count,
                 tasks_ready: ready_count,
                 agents_spawned: 0,
+                admission_deferred_tasks: 0,
+                admission_deferred_reason: None,
             });
         }
         Err(e) => {
@@ -5075,7 +5104,7 @@ pub fn coordinator_tick(
             .resolve_model_for_role(worksgood::config::DispatchRole::TaskAgent)
             .spawn_model_spec()
     });
-    let spawned = spawn_agents_for_ready_tasks(
+    let spawn_summary = spawn_agents_for_ready_tasks(
         dir,
         &graph,
         executor,
@@ -5086,9 +5115,11 @@ pub fn coordinator_tick(
     );
 
     Ok(TickResult {
-        agents_alive: alive_count + spawned,
+        agents_alive: alive_count + spawn_summary.spawned,
         tasks_ready: ready_count,
-        agents_spawned: spawned,
+        agents_spawned: spawn_summary.spawned,
+        admission_deferred_tasks: spawn_summary.admission_deferred_tasks,
+        admission_deferred_reason: spawn_summary.admission_deferred_reason,
     })
 }
 
@@ -6559,7 +6590,7 @@ mod tests {
 
         // Task should be skipped (no agent), so nothing spawned
         assert_eq!(
-            result, 0,
+            result.spawned, 0,
             "unassigned task should NOT be spawned when auto_assign=true"
         );
     }
