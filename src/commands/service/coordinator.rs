@@ -1875,37 +1875,17 @@ fn build_auto_evaluate_tasks(
         modified = true;
     }
 
-    // Unblock evaluation tasks whose source task has Failed or FailedPendingEval.
-    // `ready_tasks()` only unblocks when the blocker is Done. For Failed and
-    // FailedPendingEval tasks we still want evaluation to proceed (§4.3:
-    // "Failed tasks also get evaluated"), so we remove the blocker explicitly.
-    let eval_fixups: Vec<(String, String)> = graph
-        .tasks()
-        .filter(|t| t.id.starts_with(".evaluate-") && t.status == Status::Open)
-        .filter_map(|t| {
-            // The eval task blocks on a single task: the original
-            if t.after.len() == 1 {
-                let source_id = &t.after[0];
-                if let Some(source) = graph.get_task(source_id)
-                    && matches!(source.status, Status::Failed | Status::FailedPendingEval)
-                {
-                    return Some((t.id.clone(), source_id.clone()));
-                }
-            }
-            None
-        })
-        .collect();
-
-    for (eval_id, source_id) in &eval_fixups {
-        if let Some(t) = graph.get_task_mut(eval_id) {
-            t.after.retain(|b| b != source_id);
-            modified = true;
-            eprintln!(
-                "[dispatcher] Unblocked evaluation task '{}' (source '{}' failed)",
-                eval_id, source_id,
-            );
-        }
-    }
+    // NOTE: evaluation tasks whose source has Failed / FailedPendingEval used
+    // to be unblocked here by DESTRUCTIVELY stripping their `after` edge.
+    // That strip was permanent, so once the source was later reset to Open
+    // (bulk retry / `wg recover` / manual reset) the `.evaluate-*` satellite
+    // stayed permanently ready and respawned every tick, failing instantly
+    // with "task is open — can't evaluate" (the resolve-prophage-source
+    // incident). Eval eligibility now lives in `query::dependency_disposition`,
+    // which bypasses Done | Failed | PendingEval | FailedPendingEval for the
+    // owning `.flip-X` / `.evaluate-X` satellites while PRESERVING the `after`
+    // edge — so a reset-to-Open source correctly re-blocks its satellite. No
+    // graph mutation is needed here.
 
     modified
 }
@@ -4145,6 +4125,65 @@ pub(crate) fn check_spawn_circuit_breaker(
     ))
 }
 
+/// The statuses against which `wg evaluate run` / `wg flip` will actually
+/// score a source task. An evaluation satellite must NEVER be spawned (or
+/// fail-charged) against a source outside this set — `wg evaluate` would
+/// bail instantly with "task is open — can't evaluate", and the inline
+/// wrapper would record a failure against either the satellite or, via the
+/// repair loop, the source. Scheduling against an open/incomplete task is a
+/// bug, not a verdict.
+///
+/// This is the single source of truth mirrored from
+/// `commands::evaluate::{run, run_flip}`; keep them in lock-step.
+pub(crate) fn is_eval_eligible_status(status: worksgood::graph::Status) -> bool {
+    matches!(
+        status,
+        worksgood::graph::Status::Done
+            | worksgood::graph::Status::Failed
+            | worksgood::graph::Status::PendingEval
+            | worksgood::graph::Status::FailedPendingEval
+    )
+}
+
+/// Extract the source task id from an agency satellite id (`.evaluate-X`,
+/// `.flip-X`). Returns `None` for `.assign-*` (which runs BEFORE its source)
+/// and anything that is not an evaluation satellite.
+pub(crate) fn evaluation_satellite_source_id(task_id: &str) -> Option<&str> {
+    task_id
+        .strip_prefix(".evaluate-")
+        .or_else(|| task_id.strip_prefix(".flip-"))
+}
+
+/// Defense-in-depth gate evaluated before an inline `.evaluate-*` / `.flip-*`
+/// spawn: never spawn (and therefore never fail-charge) an evaluation
+/// satellite whose source is not in an eval-eligible terminal/post-work
+/// state. Returns `Ok(())` to proceed, or `Err(reason)` to DEFER (skip without
+/// charging) this tick. The dispatcher reconciliation in
+/// `query::dependency_disposition` is the primary guard (it keeps the
+/// satellite blocked while the source is open); this catches the residual
+/// cases — legacy rows whose `after` edge was destructively stripped before
+/// the disposition fix, and the inherent spawn/run race where the source is
+/// reset to Open between readiness and the inline claim.
+fn check_evaluation_satellite_eligibility(
+    graph: &worksgood::graph::WorkGraph,
+    satellite_id: &str,
+) -> std::result::Result<(), String> {
+    let Some(source_id) = evaluation_satellite_source_id(satellite_id) else {
+        return Ok(());
+    };
+    match graph.get_task(source_id) {
+        Some(source) if is_eval_eligible_status(source.status) => Ok(()),
+        Some(source) => Err(format!(
+            "deferring evaluation satellite '{}': source '{}' is {:?} (not eval-eligible); would fail \"task is open — can't evaluate\"",
+            satellite_id, source_id, source.status
+        )),
+        None => Err(format!(
+            "deferring evaluation satellite '{}': source '{}' is missing",
+            satellite_id, source_id
+        )),
+    }
+}
+
 /// Record a spawn failure: increment the counter, log the error, and auto-fail
 /// the task if the threshold is reached. Returns true if the task was auto-failed.
 fn record_spawn_failure(
@@ -4546,6 +4585,19 @@ fn spawn_agents_for_ready_tasks(
                     }
                 }
             } else {
+                // Eval / FLIP satellite spawn gate: never spawn (and therefore
+                // never fail-charge) `.evaluate-*` / `.flip-*` against a source
+                // that is not eval-eligible. The readiness layer
+                // (`dependency_disposition`) is the primary guard and keeps the
+                // satellite blocked while the source is open; this catches the
+                // residual legacy-stripped-edge and spawn/run-race cases. A
+                // defer here is a silent no-op for this tick — NOT a charged
+                // failure — so it cannot inflate the satellite's or the
+                // source's spawn_failures.
+                if let Err(reason) = check_evaluation_satellite_eligibility(graph, &task_id) {
+                    eprintln!("[dispatcher] {reason}");
+                    continue;
+                }
                 eprintln!(
                     "[dispatcher] Spawning eval inline for: {} - {}{}",
                     task_id,
@@ -7302,6 +7354,142 @@ mod tests {
             check_spawn_circuit_breaker(&task, 5, None),
             SpawnBreakerState::Tripped(_)
         ));
+    }
+
+    // ===== Evaluation-satellite eligibility gate (fix-evaluation-satellite) =====
+
+    #[test]
+    fn eval_eligible_status_matches_wg_evaluate_contract() {
+        // Must mirror commands::evaluate::{run, run_flip} exactly: these are
+        // the statuses `wg evaluate run` will score. Anything else would bail
+        // with "task is open - can't evaluate".
+        for eligible in [
+            Status::Done,
+            Status::Failed,
+            Status::PendingEval,
+            Status::FailedPendingEval,
+        ] {
+            assert!(
+                is_eval_eligible_status(eligible),
+                "{:?} must be eval-eligible",
+                eligible
+            );
+        }
+        for ineligible in [
+            Status::Open,
+            Status::InProgress,
+            Status::Blocked,
+            Status::Waiting,
+            Status::Incomplete,
+            Status::PendingValidation,
+            Status::Abandoned,
+        ] {
+            assert!(
+                !is_eval_eligible_status(ineligible),
+                "{:?} must NOT be eval-eligible",
+                ineligible
+            );
+        }
+    }
+
+    #[test]
+    fn satellite_source_id_extracts_eval_and_flip_only() {
+        // `.assign-*` runs BEFORE its source, so it is intentionally NOT an
+        // evaluation satellite for this gate.
+        assert_eq!(evaluation_satellite_source_id(".evaluate-foo"), Some("foo"));
+        assert_eq!(evaluation_satellite_source_id(".flip-foo"), Some("foo"));
+        assert_eq!(evaluation_satellite_source_id(".assign-foo"), None);
+        assert_eq!(evaluation_satellite_source_id("foo"), None);
+        assert_eq!(evaluation_satellite_source_id(".verify-foo"), None);
+    }
+
+    #[test]
+    fn eligibility_gate_defers_open_source_no_charge() {
+        // Core resolve-prophage-source invariant: a `.evaluate-X` satellite
+        // whose source is OPEN must be DEFERRED (Err), not spawned. The
+        // dispatcher turns this Err into a silent `continue` — never a
+        // record_spawn_failure — so neither the satellite nor the source
+        // accumulates spawn_failures.
+        let mut graph = WorkGraph::new();
+        let mut src = Task::default();
+        src.id = "resolve-prophage-source".to_string();
+        src.status = Status::Open;
+        let mut sat = Task::default();
+        sat.id = ".evaluate-resolve-prophage-source".to_string();
+        sat.status = Status::Open;
+        graph.add_node(Node::Task(src));
+        graph.add_node(Node::Task(sat));
+
+        let result =
+            check_evaluation_satellite_eligibility(&graph, ".evaluate-resolve-prophage-source");
+        assert!(result.is_err(), "open source must defer the satellite");
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("deferring"),
+            "defer reason must be explicit: {msg}"
+        );
+        assert!(msg.contains("not eval-eligible"));
+        // No mutation occurred — the gate is read-only.
+        assert_eq!(
+            graph
+                .get_task(".evaluate-resolve-prophage-source")
+                .unwrap()
+                .spawn_failures,
+            0
+        );
+        assert_eq!(
+            graph
+                .get_task("resolve-prophage-source")
+                .unwrap()
+                .spawn_failures,
+            0
+        );
+    }
+
+    #[test]
+    fn eligibility_gate_proceeds_for_eval_eligible_source() {
+        for status in [
+            Status::Done,
+            Status::Failed,
+            Status::PendingEval,
+            Status::FailedPendingEval,
+        ] {
+            let mut graph = WorkGraph::new();
+            let mut src = Task::default();
+            src.id = "X".to_string();
+            src.status = status;
+            let mut sat = Task::default();
+            sat.id = ".flip-X".to_string();
+            graph.add_node(Node::Task(src));
+            graph.add_node(Node::Task(sat));
+            assert!(
+                check_evaluation_satellite_eligibility(&graph, ".flip-X").is_ok(),
+                "proceed when source is {:?}",
+                status
+            );
+        }
+    }
+
+    #[test]
+    fn eligibility_gate_assign_satellite_is_noop() {
+        // `.assign-*` is not gated (it runs before the source completes).
+        let mut graph = WorkGraph::new();
+        let mut src = Task::default();
+        src.id = "X".to_string();
+        src.status = Status::Open;
+        let mut sat = Task::default();
+        sat.id = ".assign-X".to_string();
+        graph.add_node(Node::Task(src));
+        graph.add_node(Node::Task(sat));
+        assert!(check_evaluation_satellite_eligibility(&graph, ".assign-X").is_ok());
+    }
+
+    #[test]
+    fn eligibility_gate_missing_source_defers() {
+        let graph = WorkGraph::new();
+        let result = check_evaluation_satellite_eligibility(&graph, ".evaluate-ghost");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("missing"));
     }
 
     #[test]

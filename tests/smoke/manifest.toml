@@ -2388,6 +2388,15 @@ description = "Credential-free live-service regression for the 2026-07-24 retry 
 timeout_seconds = 120
 
 [[scenario]]
+name = "evaluation_satellite_not_charged_against_open_task"
+script = "scenarios/evaluation_satellite_not_charged_against_open_task.sh"
+owners = [
+    "fix-evaluation-satellite",
+]
+description = "Credential-free regression for the resolve-prophage-source incident: a stale `.evaluate-*` satellite is never scheduled or fail-charged against an open/incomplete source. Pins that `.evaluate-X` is ready for failed-pending-eval AND failed sources with the `after` edge PRESERVED (no destructive strip), that a reset-to-Open source re-blocks the satellite (zombie invariant, spawn_failures stay 0 on both sides), that `wg reset` cancels the stale `.evaluate-*`/`.flip-*`/`.assign-*` even without `--also-strip-meta`, and that `wg recover` abandons the stale satellite and regenerates on re-completion."
+timeout_seconds = 60
+
+[[scenario]]
 name = "disk_sentinel_admission_cleanup"
 script = "scenarios/disk_sentinel_admission_cleanup.sh"
 owners = [

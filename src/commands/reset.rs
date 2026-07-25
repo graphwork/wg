@@ -116,7 +116,7 @@ pub fn run(dir: &Path, seeds: &[String], opts: ResetOptions) -> Result<ResetRepo
 
     // First pass (read-only) to compute closure + meta tasks so we can
     // report / ask for confirmation before we mutate.
-    let (closure, meta_to_strip, missing) = {
+    let (closure, meta_to_strip, stale_eval_satellites, missing) = {
         let (g, _) = super::load_workgraph(dir)?;
         let missing: Vec<String> = seeds
             .iter()
@@ -132,7 +132,15 @@ pub fn run(dir: &Path, seeds: &[String], opts: ResetOptions) -> Result<ResetRepo
         } else {
             HashSet::new()
         };
-        (closure, meta, missing)
+        // Always cancel stale agency satellites whose source is being reset,
+        // independent of --also-strip-meta (see find_stale_eval_satellites_for_sources).
+        let non_system_closure: HashSet<String> = closure
+            .iter()
+            .filter(|id| !worksgood::graph::is_system_task(id))
+            .cloned()
+            .collect();
+        let stale_satellites = find_stale_eval_satellites_for_sources(&g, &non_system_closure);
+        (closure, meta, stale_satellites, missing)
     };
 
     let _ = missing; // checked above
@@ -142,15 +150,18 @@ pub fn run(dir: &Path, seeds: &[String], opts: ResetOptions) -> Result<ResetRepo
     closure_sorted.sort();
     let mut meta_sorted: Vec<String> = meta_to_strip.iter().cloned().collect();
     meta_sorted.sort();
+    let mut satellites_sorted: Vec<String> = stale_eval_satellites.iter().cloned().collect();
+    satellites_sorted.sort();
 
     // Dry-run / pre-confirm report.
     eprintln!(
         "\x1b[1mwg reset\x1b[0m — seeds={}, direction={:?}, closure={} task(s), \
-         meta-to-strip={}",
+         meta-to-strip={}, stale-eval-satellites={}",
         seeds.join(","),
         opts.direction,
         closure_sorted.len(),
         meta_sorted.len(),
+        satellites_sorted.len(),
     );
     for id in &closure_sorted {
         eprintln!("  • {}", id);
@@ -158,6 +169,14 @@ pub fn run(dir: &Path, seeds: &[String], opts: ResetOptions) -> Result<ResetRepo
     if opts.also_strip_meta && !meta_sorted.is_empty() {
         eprintln!("  meta tasks that would be stripped:");
         for id in &meta_sorted {
+            eprintln!("    - {}", id);
+        }
+    }
+    if !satellites_sorted.is_empty() {
+        eprintln!(
+            "  stale agency satellites that would be cancelled (regenerate on next completion):"
+        );
+        for id in &satellites_sorted {
             eprintln!("    - {}", id);
         }
     }
@@ -174,7 +193,7 @@ pub fn run(dir: &Path, seeds: &[String], opts: ResetOptions) -> Result<ResetRepo
     }
 
     // Destructive confirmation: require --yes if touching more than one task.
-    let destructive_count = closure_sorted.len() + meta_sorted.len();
+    let destructive_count = closure_sorted.len() + meta_sorted.len() + satellites_sorted.len();
     if destructive_count > 1 && !opts.yes {
         anyhow::bail!(
             "refusing to reset {} tasks without --yes (use --dry-run first to \
@@ -185,6 +204,7 @@ pub fn run(dir: &Path, seeds: &[String], opts: ResetOptions) -> Result<ResetRepo
 
     let closure_set: HashSet<String> = closure_sorted.iter().cloned().collect();
     let meta_set: HashSet<String> = meta_sorted.iter().cloned().collect();
+    let satellites_set: HashSet<String> = satellites_sorted.iter().cloned().collect();
     let seeds_owned: Vec<String> = seeds.to_vec();
 
     let mut reset_count = 0usize;
@@ -232,13 +252,23 @@ pub fn run(dir: &Path, seeds: &[String], opts: ResetOptions) -> Result<ResetRepo
         // the agency pipeline still wants them). Also clean up any
         // references to these stripped meta tasks from remaining tasks'
         // before/after lists so the graph stays edge-consistent.
+        //
+        // The stale-eval-satellite set is folded in here: those satellites
+        // (`.evaluate-X` / `.flip-X` / `.assign-X` whose source was reset) are
+        // deleted and edge-cleaned exactly like --also-strip-meta meta, but
+        // they are cancelled ALWAYS (not gated on --also-strip-meta) because
+        // a stale evaluation scaffold on a reset source is the zombie behind
+        // the resolve-prophage-source incident regardless of the broader meta
+        // strip opt-in.
+        let mut purge_set: HashSet<String> = meta_set.clone();
+        purge_set.extend(satellites_set.iter().cloned());
         let all_task_ids: Vec<String> = graph.tasks().map(|t| t.id.clone()).collect();
-        for id in &meta_set {
+        for id in &purge_set {
             if graph.remove_node(id).is_some() {
                 stripped_count += 1;
             }
             for tid in &all_task_ids {
-                if meta_set.contains(tid) {
+                if purge_set.contains(tid) {
                     continue; // already deleted
                 }
                 if let Some(t) = graph.get_task_mut(tid) {
@@ -338,6 +368,39 @@ fn find_meta_attached_to_closure(graph: &WorkGraph, closure: &HashSet<String>) -
         .filter(|t| {
             t.after.iter().any(|a| closure.contains(a))
                 || t.before.iter().any(|b| closure.contains(b))
+        })
+        .map(|t| t.id.clone())
+        .collect()
+}
+
+/// Find the agency-pipeline satellites (`.evaluate-X` / `.flip-X` /
+/// `.assign-X`) that are stale because their source `X` is being reset.
+///
+/// These are the zombies behind the resolve-prophage-source incident: a
+/// reset/retry of `X` left an already-scheduled `.evaluate-X` behind, which
+/// respawned against the now-open source and failed instantly with "task is
+/// open — can't evaluate". Cancelling them on reset (so the agency pipeline
+/// regenerates a fresh one when `X` next completes) is required for a clean
+/// retry regardless of `--also-strip-meta` — the broader meta strip is
+/// opt-in, but a stale evaluation scaffold on a reset source is always a bug.
+///
+/// Only satellites whose source is a NON-SYSTEM closure member are returned:
+/// resetting `.evaluate-t` must not cascade onto `.evaluate-.evaluate-t`.
+fn find_stale_eval_satellites_for_sources(
+    graph: &WorkGraph,
+    closure_sources: &HashSet<String>,
+) -> HashSet<String> {
+    let prefixes = [".evaluate-", ".flip-", ".assign-"];
+    graph
+        .tasks()
+        .filter(|t| prefixes.iter().any(|p| t.id.starts_with(p)))
+        .filter(|t| {
+            t.id.strip_prefix(".evaluate-")
+                .or_else(|| t.id.strip_prefix(".flip-"))
+                .or_else(|| t.id.strip_prefix(".assign-"))
+                .is_some_and(|source| {
+                    !worksgood::graph::is_system_task(source) && closure_sources.contains(source)
+                })
         })
         .map(|t| t.id.clone())
         .collect()
@@ -686,5 +749,117 @@ mod tests {
         );
         assert_eq!(Direction::from_str("both").unwrap(), Direction::Both);
         assert!(Direction::from_str("sideways").is_err());
+    }
+
+    // ===== Stale evaluation-satellite cancellation (fix-evaluation-satellite) =====
+
+    fn write_source_with_eval_satellite(dir: &Path) {
+        // source X (Failed) with a stale .evaluate-X / .flip-X / .assign-X
+        // already scaffolded against it (the resolve-prophage-source shape).
+        let mut x = make("X", Status::Failed);
+        x.failure_reason = Some("boom".to_string());
+        let mut eval = make(".evaluate-X", Status::Open);
+        eval.after = vec!["X".into()];
+        let mut flip = make(".flip-X", Status::Open);
+        flip.after = vec!["X".into()];
+        let mut assign = make(".assign-X", Status::Open);
+        assign.before = vec!["X".into()];
+        setup_workgraph(dir, vec![x, eval, flip, assign]);
+    }
+
+    #[test]
+    fn reset_cancels_stale_eval_satellites_without_strip_meta_flag() {
+        // Bulk-retry shape: `wg reset X` (NO --also-strip-meta) must still
+        // cancel the stale `.evaluate-X` / `.flip-X` / `.assign-X` so a fresh
+        // agency pipeline regenerates when X next completes. Without this, the
+        // zombie satellite respawns against the now-open X and fails instantly
+        // with "task is open - can't evaluate".
+        let dir = tempdir().unwrap();
+        write_source_with_eval_satellite(dir.path());
+
+        let report = run(
+            dir.path(),
+            &["X".to_string()],
+            ResetOptions {
+                direction: Direction::Forward,
+                also_strip_meta: false,
+                dry_run: false,
+                yes: true,
+            },
+        )
+        .unwrap();
+
+        let g = load_graph(&super::super::graph_path(dir.path())).unwrap();
+        assert_eq!(g.get_task("X").unwrap().status, Status::Open);
+        assert!(
+            g.get_task(".evaluate-X").is_none(),
+            "stale .evaluate-X must be cancelled on reset"
+        );
+        assert!(
+            g.get_task(".flip-X").is_none(),
+            "stale .flip-X must be cancelled on reset"
+        );
+        assert!(
+            g.get_task(".assign-X").is_none(),
+            "stale .assign-X must be cancelled on reset"
+        );
+        // The three cancelled satellites are reported in the stripped count.
+        assert_eq!(report.stripped_count, 3);
+    }
+
+    #[test]
+    fn reset_dry_run_reports_stale_satellites_without_mutating() {
+        let dir = tempdir().unwrap();
+        write_source_with_eval_satellite(dir.path());
+
+        let report = run(
+            dir.path(),
+            &["X".to_string()],
+            ResetOptions {
+                direction: Direction::Forward,
+                also_strip_meta: false,
+                dry_run: true,
+                yes: true,
+            },
+        )
+        .unwrap();
+        assert!(report.was_dry_run);
+        let g = load_graph(&super::super::graph_path(dir.path())).unwrap();
+        assert!(g.get_task(".evaluate-X").is_some());
+        assert!(g.get_task(".flip-X").is_some());
+    }
+
+    #[test]
+    fn reset_does_not_cancel_unrelated_eval_satellites() {
+        // Resetting X must not touch `.evaluate-Y` for an unrelated source Y.
+        let dir = tempdir().unwrap();
+        write_source_with_eval_satellite(dir.path());
+        let mut y = make("Y", Status::Done);
+        let mut eval_y = make(".evaluate-Y", Status::Open);
+        eval_y.after = vec!["Y".into()];
+        let path = super::super::graph_path(dir.path());
+        let mut g = load_graph(&path).unwrap();
+        g.add_node(worksgood::graph::Node::Task(y));
+        g.add_node(worksgood::graph::Node::Task(eval_y));
+        worksgood::parser::save_graph(&g, &path).unwrap();
+
+        let _ = run(
+            dir.path(),
+            &["X".to_string()],
+            ResetOptions {
+                direction: Direction::Forward,
+                also_strip_meta: false,
+                dry_run: false,
+                yes: true,
+            },
+        )
+        .unwrap();
+
+        let g = load_graph(&path).unwrap();
+        assert!(
+            g.get_task(".evaluate-Y").is_some(),
+            "unrelated .evaluate-Y must survive resetting X"
+        );
+        assert_eq!(g.get_task("Y").unwrap().status, Status::Done);
     }
 }

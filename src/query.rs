@@ -385,9 +385,20 @@ pub fn dependency_disposition(
             }
         };
     };
+    // The owning `.flip-X` / `.evaluate-X` satellites ARE the mechanism that
+    // resolves a source in a post-work evaluation state, so they must be
+    // schedulable against it. The eval-eligible set (the statuses `wg evaluate
+    // run` / `wg flip` accept) is exactly Done | Failed | PendingEval |
+    // FailedPendingEval. Bypassing ALL of them here - rather than only the soft
+    // states - means the `after` edge from the satellite to its source is
+    // PRESERVED instead of being destructively stripped by the dispatcher.
+    // That preservation is what makes a reset-to-Open source correctly
+    // RE-BLOCK its eval satellite, so a stale `.evaluate-*` can never respawn
+    // (and fail "task is open - can't evaluate") against an open source.
+    // `Done`/`Abandoned` fall through to the ordinary satisfied path below.
     if matches!(
         blocker.status,
-        Status::PendingEval | Status::FailedPendingEval
+        Status::Failed | Status::PendingEval | Status::FailedPendingEval
     ) && is_owning_evaluation_satellite(dependent_id, blocker_id)
     {
         return DependencyDisposition::EvalSystemBypass {
@@ -1960,6 +1971,135 @@ mod tests {
 
         let ready = ready_tasks(&graph);
         assert!(ready.is_empty(), "Failed tasks should not be ready");
+    }
+
+    // ===== Evaluation-satellite eligibility (fix-evaluation-satellite) =====
+    // An evaluation satellite (`.flip-X` / `.evaluate-X`) must be schedulable
+    // against exactly the eval-eligible source states (Done | Failed |
+    // PendingEval | FailedPendingEval) and BLOCKED against everything else
+    // (Open / InProgress / Blocked / Waiting / Incomplete / PendingValidation).
+    // The `after` edge is preserved — a reset-to-Open source must re-block its
+    // satellite so the zombie "task is open - can't evaluate" loop cannot form.
+
+    fn make_source(id: &str, status: Status) -> Task {
+        let mut t = make_task(id, id);
+        t.status = status;
+        t
+    }
+
+    fn make_satellite(id: &str, source_id: &str) -> Task {
+        let mut t = make_task(id, id);
+        t.status = Status::Open;
+        t.after = vec![source_id.to_string()];
+        t
+    }
+
+    #[test]
+    fn eval_satellite_ready_when_source_failed() {
+        // Regression core: `.evaluate-X` with after=[X] is READY when X is
+        // Failed (eval of failed tasks must proceed, §4.3), without stripping
+        // the after edge.
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_source("X", Status::Failed)));
+        graph.add_node(Node::Task(make_satellite(".evaluate-X", "X")));
+        let ready = ready_tasks(&graph);
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].id, ".evaluate-X");
+        // after edge preserved — not destructively stripped
+        assert_eq!(
+            graph.get_task(".evaluate-X").unwrap().after,
+            vec!["X".to_string()]
+        );
+    }
+
+    #[test]
+    fn flip_satellite_ready_when_source_failed_pending_eval() {
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_source("X", Status::FailedPendingEval)));
+        graph.add_node(Node::Task(make_satellite(".flip-X", "X")));
+        let ready = ready_tasks(&graph);
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].id, ".flip-X");
+    }
+
+    #[test]
+    fn eval_satellite_blocked_when_source_open() {
+        // The resolve-prophage-source zombie invariant: with the after edge
+        // preserved, an OPEN source re-blocks its satellite, so it can never
+        // be ready (let alone spawned / fail-charged) against an open task.
+        // (The source X itself is ready here — it has no deps — but the
+        // satellite must not be.)
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_source("X", Status::Open)));
+        graph.add_node(Node::Task(make_satellite(".evaluate-X", "X")));
+        let ready = ready_tasks(&graph);
+        assert!(
+            ready.iter().all(|t| t.id != ".evaluate-X"),
+            "eval satellite must NOT be ready against an open source"
+        );
+    }
+
+    #[test]
+    fn eval_satellite_blocked_for_non_eval_eligible_states() {
+        for status in [
+            Status::InProgress,
+            Status::Blocked,
+            Status::Waiting,
+            Status::Incomplete,
+            Status::PendingValidation,
+        ] {
+            let mut graph = WorkGraph::new();
+            graph.add_node(Node::Task(make_source("X", status)));
+            graph.add_node(Node::Task(make_satellite(".evaluate-X", "X")));
+            let ready = ready_tasks(&graph);
+            assert!(
+                ready.iter().all(|t| t.id != ".evaluate-X"),
+                "eval satellite must NOT be ready when source is {:?}",
+                status
+            );
+        }
+    }
+
+    #[test]
+    fn eval_satellite_reset_source_reblocks_satellite() {
+        // Full resolve-prophage-source shape: X is FailedPendingEval (satellite
+        // ready), then a bulk retry resets X to Open. The satellite must
+        // become blocked again with no edge surgery — no zombie respawn.
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_source("X", Status::FailedPendingEval)));
+        graph.add_node(Node::Task(make_satellite(".evaluate-X", "X")));
+        assert!(
+            ready_tasks(&graph).iter().any(|t| t.id == ".evaluate-X"),
+            "satellite is ready while source is FailedPendingEval"
+        );
+        // bulk-retry / wg recover resets X to Open
+        graph.get_task_mut("X").unwrap().status = Status::Open;
+        assert!(
+            ready_tasks(&graph).iter().all(|t| t.id != ".evaluate-X"),
+            "after reset, the eval satellite must be re-blocked by the open source"
+        );
+        assert_eq!(
+            graph.get_task(".evaluate-X").unwrap().after,
+            vec!["X".to_string()],
+            "after edge preserved across the reset"
+        );
+    }
+
+    #[test]
+    fn non_owning_dependent_still_blocked_by_failed_source() {
+        // The bypass is relation-scoped: only the owning `.flip-X` /
+        // `.evaluate-X` edge may cross a Failed source. An ordinary dependent
+        // (or `.assign-*` / `.verify-*`) must stay blocked — a failed upstream
+        // produced no valid artifact.
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_source("X", Status::Failed)));
+        graph.add_node(Node::Task(make_satellite("downstream", "X")));
+        assert!(
+            ready_tasks(&graph).is_empty(),
+            "ordinary dependents stay blocked by a Failed source"
+        );
+        let disp = dependency_disposition("X", "downstream", &graph, None);
+        assert!(matches!(disp, DependencyDisposition::Blocked { .. }));
     }
 
     #[test]
