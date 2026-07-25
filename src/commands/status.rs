@@ -105,6 +105,19 @@ struct VerifyFailingTask {
     verify_command: String,
 }
 
+/// A task whose per-task spawn circuit breaker is tripped (spawn_failures
+/// at/above the threshold and the cooldown has not decayed it). Surfaced in
+/// `wg status` so a blocked task is visible without inspecting the graph or
+/// the daemon log.
+#[derive(Debug, Clone, serde::Serialize)]
+struct SpawnBreakerTask {
+    task_id: String,
+    failures: u32,
+    threshold: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_spawn_failure_at: Option<String>,
+}
+
 /// Active cycle timing info
 #[derive(Debug, Clone, serde::Serialize)]
 struct CycleTimingInfo {
@@ -134,6 +147,9 @@ struct StatusOutput {
     dangling_deps: Vec<DanglingDep>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     verify_failing: Vec<VerifyFailingTask>,
+    /// Tasks whose per-task spawn circuit breaker is tripped.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    spawn_breaker: Vec<SpawnBreakerTask>,
     /// Cached periodic sentinel snapshot. `wg status` never walks the
     /// filesystem; the daemon/doctor refreshes this bounded snapshot off the
     /// input/render path.
@@ -243,6 +259,9 @@ fn gather_status(dir: &Path, show_all: bool) -> Result<StatusOutput> {
     // 8. Verify-failing tasks
     let verify_failing = gather_verify_failing(dir, show_all);
 
+    // 8b. Spawn-circuit-breaker tripped tasks (per-task, self-healing).
+    let spawn_breaker = gather_spawn_breakers(dir, show_all);
+
     // 9. Disk state is a cached, bounded sentinel snapshot. Do not refresh or
     // scan here: status/TUI latency must not scale with target size.
     let disk = worksgood::disk_sentinel::load_snapshot(dir).ok().flatten();
@@ -256,6 +275,7 @@ fn gather_status(dir: &Path, show_all: bool) -> Result<StatusOutput> {
         recent,
         dangling_deps,
         verify_failing,
+        spawn_breaker,
         disk,
     })
 }
@@ -698,6 +718,58 @@ fn gather_verify_failing(dir: &Path, show_all: bool) -> Vec<VerifyFailingTask> {
         .collect()
 }
 
+/// Gather tasks whose per-task spawn circuit breaker is currently tripped
+/// (`spawn_failures >= threshold`, threshold > 0). Excludes tasks whose
+/// breaker has decayed past the cooldown (the dispatcher will reset them on
+/// the next tick) — those are not actionable from `wg status`. The breaker is
+/// per-task: other tasks dispatch normally.
+fn gather_spawn_breakers(dir: &Path, show_all: bool) -> Vec<SpawnBreakerTask> {
+    let path = super::graph_path(dir);
+    if !path.exists() {
+        return Vec::new();
+    }
+
+    let graph = match load_graph(&path) {
+        Ok(g) => g,
+        Err(_) => return Vec::new(),
+    };
+
+    let threshold = worksgood::config::Config::load_or_default(dir)
+        .coordinator
+        .max_spawn_failures;
+    if threshold == 0 {
+        return Vec::new(); // breaker disabled
+    }
+    let cooldown = crate::commands::worktree_cmd::parse_duration(
+        &worksgood::config::Config::load_or_default(dir)
+            .coordinator
+            .spawn_failure_cooldown,
+    )
+    .ok()
+    .filter(|d| d.as_secs() > 0);
+
+    graph
+        .tasks()
+        .filter(|t| show_all || !t.id.starts_with('.'))
+        .filter(|t| t.spawn_failures >= threshold)
+        // Exclude decayed tasks (the next tick resets them; not actionable).
+        .filter(|t| {
+            !matches!(
+                crate::commands::service::coordinator::check_spawn_circuit_breaker(
+                    t, threshold, cooldown,
+                ),
+                crate::commands::service::coordinator::SpawnBreakerState::Decayable
+            )
+        })
+        .map(|t| SpawnBreakerTask {
+            task_id: t.id.clone(),
+            failures: t.spawn_failures,
+            threshold,
+            last_spawn_failure_at: t.last_spawn_failure_at.clone(),
+        })
+        .collect()
+}
+
 fn print_status(status: &StatusOutput) {
     // Line 1: Service status
     if status.service.running {
@@ -883,6 +955,22 @@ fn print_status(status: &StatusOutput) {
             println!(
                 "  VERIFY FAILING: \x1b[33m{}\x1b[0m — verify command has failed {} times: {}",
                 vf.task_id, vf.failures, cmd_snippet
+            );
+        }
+    }
+
+    // Attention: per-task spawn circuit breaker tripped (self-heals via
+    // cooldown decay / `wg retry` / clear-on-success; never blocks other tasks).
+    if !status.spawn_breaker.is_empty() {
+        println!();
+        println!(
+            "\x1b[33m⚠ Attention:\x1b[0m {} task(s) have a tripped spawn circuit breaker (per-task; `wg retry <id>` to clear):",
+            status.spawn_breaker.len()
+        );
+        for sb in &status.spawn_breaker {
+            println!(
+                "  SPAWN BREAKER: \x1b[33m{}\x1b[0m — {}/{} consecutive spawn failures",
+                sb.task_id, sb.failures, sb.threshold
             );
         }
     }
@@ -1315,5 +1403,96 @@ mod tests {
 
         let recent = gather_recent_activity(temp_dir.path(), true).unwrap();
         assert_eq!(recent.len(), 2);
+    }
+
+    fn write_coordinator_config(dir: &Path, max_spawn_failures: u32, cooldown: &str) {
+        let cfg = format!(
+            "[coordinator]\nmax_spawn_failures = {max_spawn_failures}\nspawn_failure_cooldown = \"{cooldown}\"\n"
+        );
+        std::fs::write(dir.join("config.toml"), cfg).unwrap();
+    }
+
+    #[test]
+    fn test_gather_spawn_breakers_finds_tripped_task() {
+        // fix-spawn-failures: a tripped breaker must be visible in `wg status`.
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("graph.jsonl");
+        write_coordinator_config(temp_dir.path(), 5, "5m");
+
+        let mut graph = WorkGraph::new();
+        let mut t = make_task("bricked", "Bricked by transient burst");
+        t.spawn_failures = 5;
+        // recent failure → NOT decayed
+        t.last_spawn_failure_at = Some(Utc::now().to_rfc3339());
+        graph.add_node(Node::Task(t));
+        save_graph(&graph, &path).unwrap();
+
+        let breakers = gather_spawn_breakers(temp_dir.path(), true);
+        assert_eq!(breakers.len(), 1);
+        assert_eq!(breakers[0].task_id, "bricked");
+        assert_eq!(breakers[0].failures, 5);
+        assert_eq!(breakers[0].threshold, 5);
+    }
+
+    #[test]
+    fn test_gather_spawn_breakers_excludes_decayed() {
+        // A breaker past the cooldown is NOT actionable from `wg status` — the
+        // next dispatcher tick resets it. So it must not be listed.
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("graph.jsonl");
+        write_coordinator_config(temp_dir.path(), 5, "5m");
+
+        let mut graph = WorkGraph::new();
+        let mut t = make_task("decayed", "Past cooldown");
+        t.spawn_failures = 5;
+        t.last_spawn_failure_at = Some((Utc::now() - chrono::Duration::hours(1)).to_rfc3339());
+        graph.add_node(Node::Task(t));
+        save_graph(&graph, &path).unwrap();
+
+        let breakers = gather_spawn_breakers(temp_dir.path(), true);
+        assert!(
+            breakers.is_empty(),
+            "a decayed breaker should not appear in status (it self-heals on next tick)"
+        );
+    }
+
+    #[test]
+    fn test_gather_spawn_breakers_per_task_isolation() {
+        // The breaker is per-task: a tripped task does NOT suppress other
+        // tasks from appearing in status (they simply have spawn_failures=0).
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("graph.jsonl");
+        write_coordinator_config(temp_dir.path(), 5, "5m");
+
+        let mut graph = WorkGraph::new();
+        let mut tripped = make_task("tripped", "tripped");
+        tripped.spawn_failures = 5;
+        tripped.last_spawn_failure_at = Some(Utc::now().to_rfc3339());
+        let healthy = make_task("healthy", "healthy");
+        graph.add_node(Node::Task(tripped));
+        graph.add_node(Node::Task(healthy));
+        save_graph(&graph, &path).unwrap();
+
+        let breakers = gather_spawn_breakers(temp_dir.path(), true);
+        assert_eq!(breakers.len(), 1, "only the tripped task appears");
+        assert_eq!(breakers[0].task_id, "tripped");
+    }
+
+    #[test]
+    fn test_gather_spawn_breakers_disabled() {
+        // max_spawn_failures=0 disables the breaker entirely.
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("graph.jsonl");
+        write_coordinator_config(temp_dir.path(), 0, "5m");
+
+        let mut graph = WorkGraph::new();
+        let mut t = make_task("x", "x");
+        t.spawn_failures = 100;
+        t.last_spawn_failure_at = Some(Utc::now().to_rfc3339());
+        graph.add_node(Node::Task(t));
+        save_graph(&graph, &path).unwrap();
+
+        let breakers = gather_spawn_breakers(temp_dir.path(), true);
+        assert!(breakers.is_empty(), "disabled breaker never reports");
     }
 }

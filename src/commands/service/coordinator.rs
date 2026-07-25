@@ -38,6 +38,11 @@ pub struct TickResult {
     pub tasks_ready: usize,
     /// Number of agents spawned in this tick
     pub agents_spawned: usize,
+    /// Tasks skipped this tick because their per-task spawn circuit breaker
+    /// is tripped (and the cooldown has not elapsed). Non-zero explains a
+    /// "spawned=0" tick without a wedged dispatcher: the breaker is per-task
+    /// and self-heals (cooldown decay / `wg retry` / clear-on-success).
+    pub spawn_breaker_tripped_tasks: usize,
     /// Number of ready tasks intentionally deferred by the explicitly enabled
     /// disk/build admission gate. This is not a dispatcher wedge.
     pub admission_deferred_tasks: usize,
@@ -50,6 +55,10 @@ struct SpawnSummary {
     spawned: usize,
     admission_deferred_tasks: usize,
     admission_deferred_reason: Option<String>,
+    /// Tasks skipped this tick because their per-task spawn circuit breaker
+    /// is tripped (and the cooldown has not elapsed). Other tasks dispatch
+    /// normally — the breaker is per-task.
+    spawn_breaker_tripped_tasks: usize,
 }
 
 /// Clean up dead agents and count alive ones. Returns `None` with an early
@@ -141,6 +150,7 @@ fn cleanup_and_count_alive(
             agents_alive: alive_count,
             tasks_ready: 0,
             agents_spawned: 0,
+            spawn_breaker_tripped_tasks: 0,
             admission_deferred_tasks: 0,
             admission_deferred_reason: None,
         }));
@@ -220,6 +230,7 @@ fn check_ready_or_return(
             agents_alive: alive_count,
             tasks_ready: 0,
             agents_spawned: 0,
+            spawn_breaker_tripped_tasks: 0,
             admission_deferred_tasks: 0,
             admission_deferred_reason: None,
         });
@@ -1758,6 +1769,7 @@ fn build_auto_assign_tasks(
                     agency_dispatch: None,
                     evaluation_lifecycle: None,
                     spawn_failures: 0,
+                    last_spawn_failure_at: None,
                     dispatch_count: 0,
                     tier: None,
                     no_tier_escalation: false,
@@ -2155,6 +2167,7 @@ fn build_flip_verification_tasks(
             agency_dispatch: None,
             evaluation_lifecycle: None,
             spawn_failures: 0,
+            last_spawn_failure_at: None,
             dispatch_count: 0,
             tier: None,
             no_tier_escalation: false,
@@ -2433,6 +2446,7 @@ fn build_separate_verify_tasks(
             agency_dispatch: None,
             evaluation_lifecycle: None,
             spawn_failures: 0,
+            last_spawn_failure_at: None,
             dispatch_count: 0,
             tier: None,
             no_tier_escalation: false,
@@ -2643,6 +2657,7 @@ fn build_auto_evolve_task(
         agency_dispatch: None,
         evaluation_lifecycle: None,
         spawn_failures: 0,
+        last_spawn_failure_at: None,
         dispatch_count: 0,
         tier: None,
         no_tier_escalation: false,
@@ -2856,6 +2871,7 @@ fn build_auto_create_task(
         agency_dispatch: None,
         evaluation_lifecycle: None,
         spawn_failures: 0,
+        last_spawn_failure_at: None,
         dispatch_count: 0,
         tier: None,
         no_tier_escalation: false,
@@ -4077,24 +4093,55 @@ fn check_respawn_throttle(task: &Task, graph_path: &Path) -> std::result::Result
 
 /// Check if a task has exceeded the spawn failure threshold and should be skipped.
 ///
-/// Returns:
-/// - `Ok(())` if spawning should proceed
-/// - `Err(reason)` if spawning should be skipped (already failed by circuit breaker)
-fn check_spawn_circuit_breaker(
+/// State of the per-task spawn circuit breaker for one dispatch tick.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum SpawnBreakerState {
+    /// Counter is below threshold (or the breaker is disabled) — proceed to
+    /// spawn. A successful spawn will clear the counter (clear-on-success).
+    Ok,
+    /// Counter is at/above threshold AND the cooldown has NOT elapsed — skip
+    /// this task this tick. Other tasks are unaffected (the breaker is
+    /// per-task).
+    Tripped(String),
+    /// Counter is at/above threshold BUT the cooldown HAS elapsed since the
+    /// last failure — the breaker has **decayed**. The caller resets
+    /// `spawn_failures` (and `last_spawn_failure_at`) and then proceeds to
+    /// spawn, so a transient burst does not permanently brick a task.
+    Decayable,
+}
+
+/// Check if a task's spawn circuit breaker blocks dispatch this tick.
+///
+/// The breaker is per-task: it only ever skips the task whose counter
+/// tripped, never the whole dispatcher.
+///
+/// `cooldown` is the decay window (parsed from
+/// `coordinator.spawn_failure_cooldown`); `None` disables decay.
+pub(crate) fn check_spawn_circuit_breaker(
     task: &Task,
     max_spawn_failures: u32,
-) -> std::result::Result<(), String> {
+    cooldown: Option<std::time::Duration>,
+) -> SpawnBreakerState {
     if max_spawn_failures == 0 {
-        return Ok(()); // circuit breaker disabled
+        return SpawnBreakerState::Ok; // circuit breaker disabled
     }
-    if task.spawn_failures >= max_spawn_failures {
-        Err(format!(
-            "spawn circuit breaker: {} consecutive spawn failures (threshold: {})",
-            task.spawn_failures, max_spawn_failures,
-        ))
-    } else {
-        Ok(())
+    if task.spawn_failures < max_spawn_failures {
+        return SpawnBreakerState::Ok;
     }
+    // At/above threshold. Offer the self-healing cooldown decay before
+    // declaring the task blocked.
+    if let (Some(cooldown), Some(ts)) = (cooldown, task.last_spawn_failure_at.as_ref())
+        && let Ok(last) = ts.parse::<chrono::DateTime<chrono::Utc>>()
+    {
+        let elapsed_secs = chrono::Utc::now().signed_duration_since(last).num_seconds();
+        if elapsed_secs >= cooldown.as_secs() as i64 {
+            return SpawnBreakerState::Decayable;
+        }
+    }
+    SpawnBreakerState::Tripped(format!(
+        "spawn circuit breaker: {} consecutive spawn failures (threshold: {}). Will retry after the cooldown or a `wg retry`.",
+        task.spawn_failures, max_spawn_failures,
+    ))
 }
 
 /// Record a spawn failure: increment the counter, log the error, and auto-fail
@@ -4120,6 +4167,7 @@ fn record_spawn_failure(
             None => return false,
         };
         task.spawn_failures += 1;
+        task.last_spawn_failure_at = Some(now.to_rfc3339());
         let failures = task.spawn_failures;
 
         let mode_str = exec_mode_owned.as_deref().unwrap_or("default");
@@ -4162,6 +4210,32 @@ fn record_spawn_failure(
     });
 
     tripped
+}
+
+/// Reset a task's spawn circuit breaker: zero out `spawn_failures` and clear
+/// `last_spawn_failure_at`, logging why. This is the shared primitive behind
+/// cooldown-decay, `wg retry`, edit, and clear-on-success — the four ways the
+/// breaker clears so a transient burst never permanently bricks a task.
+fn reset_spawn_failures(graph_path: &Path, task_id: &str, why: &str) {
+    let task_id_owned = task_id.to_string();
+    let why_owned = why.to_string();
+    let _ = modify_graph(graph_path, |graph| {
+        let Some(task) = graph.get_task_mut(&task_id_owned) else {
+            return false;
+        };
+        if task.spawn_failures == 0 && task.last_spawn_failure_at.is_none() {
+            return false;
+        }
+        task.spawn_failures = 0;
+        task.last_spawn_failure_at = None;
+        task.log.push(LogEntry {
+            timestamp: Utc::now().to_rfc3339(),
+            actor: Some("spawn-circuit-breaker".to_string()),
+            user: None,
+            message: format!("Spawn circuit breaker reset ({why_owned})."),
+        });
+        true
+    });
 }
 
 /// Keep an agency satellite retryable when execution selection/readiness fails
@@ -4297,12 +4371,34 @@ fn spawn_agents_for_ready_tasks(
             continue;
         }
 
-        // Spawn circuit breaker: skip tasks that have already hit the spawn failure threshold
-        if let Err(reason) =
-            check_spawn_circuit_breaker(task, config.coordinator.max_spawn_failures)
-        {
-            eprintln!("[dispatcher] Skipping '{}': {}", task.id, reason);
-            continue;
+        // Spawn circuit breaker: per-task. A tripped breaker skips ONLY this
+        // task (never the whole dispatcher). After the cooldown it DECAYS so a
+        // transient burst (e.g. a registry/key outage) does not permanently
+        // brick the task. `wg retry` and a successful spawn also clear it.
+        let breaker_cooldown = crate::commands::worktree_cmd::parse_duration(
+            &config.coordinator.spawn_failure_cooldown,
+        )
+        .ok()
+        .filter(|d| d.as_secs() > 0);
+        match check_spawn_circuit_breaker(
+            task,
+            config.coordinator.max_spawn_failures,
+            breaker_cooldown,
+        ) {
+            SpawnBreakerState::Ok => {}
+            SpawnBreakerState::Tripped(reason) => {
+                eprintln!("[dispatcher] Skipping '{}': {}", task.id, reason);
+                summary.spawn_breaker_tripped_tasks =
+                    summary.spawn_breaker_tripped_tasks.saturating_add(1);
+                continue;
+            }
+            SpawnBreakerState::Decayable => {
+                eprintln!(
+                    "[dispatcher] Spawn circuit breaker for '{}' decayed after cooldown — resetting spawn_failures and dispatching",
+                    task.id
+                );
+                reset_spawn_failures(&gp, &task.id, "cooldown decay");
+            }
         }
 
         // Skip system tasks whose source task is abandoned (defense-in-depth)
@@ -4596,6 +4692,21 @@ fn record_dispatch(graph_path: &Path, task_id: &str) {
     let _ = modify_graph(graph_path, |graph| {
         if let Some(task) = graph.get_task_mut(&task_id_owned) {
             task.dispatch_count += 1;
+            // Clear-on-success self-heal: a successful spawn means the spawn
+            // path works again, so reset the per-task circuit breaker. This
+            // is what lets a task recover from a transient burst (e.g. a
+            // registry/key outage) without a `wg retry` or graph edit.
+            let cleared = task.spawn_failures > 0;
+            task.spawn_failures = 0;
+            task.last_spawn_failure_at = None;
+            if cleared {
+                task.log.push(LogEntry {
+                    timestamp: Utc::now().to_rfc3339(),
+                    actor: Some("spawn-circuit-breaker".to_string()),
+                    user: None,
+                    message: "Spawn succeeded — circuit breaker cleared.".to_string(),
+                });
+            }
             true
         } else {
             false
@@ -5067,6 +5178,7 @@ pub fn coordinator_tick(
             agents_alive: alive_count,
             tasks_ready: ready_count,
             agents_spawned: 0,
+            spawn_breaker_tripped_tasks: 0,
             admission_deferred_tasks: 0,
             admission_deferred_reason: None,
         });
@@ -5087,6 +5199,7 @@ pub fn coordinator_tick(
                 agents_alive: alive_count,
                 tasks_ready: ready_count,
                 agents_spawned: 0,
+                spawn_breaker_tripped_tasks: 0,
                 admission_deferred_tasks: 0,
                 admission_deferred_reason: None,
             });
@@ -5126,6 +5239,7 @@ pub fn coordinator_tick(
         agents_alive: alive_count + spawn_summary.spawned,
         tasks_ready: ready_count,
         agents_spawned: spawn_summary.spawned,
+        spawn_breaker_tripped_tasks: spawn_summary.spawn_breaker_tripped_tasks,
         admission_deferred_tasks: spawn_summary.admission_deferred_tasks,
         admission_deferred_reason: spawn_summary.admission_deferred_reason,
     })
@@ -7104,10 +7218,16 @@ mod tests {
         let mut task = Task::default();
         task.id = "t1".to_string();
         task.spawn_failures = 0;
-        assert!(check_spawn_circuit_breaker(&task, 5).is_ok());
+        assert_eq!(
+            check_spawn_circuit_breaker(&task, 5, None),
+            SpawnBreakerState::Ok
+        );
 
         task.spawn_failures = 4;
-        assert!(check_spawn_circuit_breaker(&task, 5).is_ok());
+        assert_eq!(
+            check_spawn_circuit_breaker(&task, 5, None),
+            SpawnBreakerState::Ok
+        );
     }
 
     #[test]
@@ -7115,11 +7235,12 @@ mod tests {
         let mut task = Task::default();
         task.id = "t1".to_string();
         task.spawn_failures = 5;
-        let result = check_spawn_circuit_breaker(&task, 5);
-        assert!(result.is_err());
-        let msg = result.unwrap_err();
-        assert!(msg.contains("spawn circuit breaker"), "msg: {}", msg);
-        assert!(msg.contains("5 consecutive"), "msg: {}", msg);
+        let result = check_spawn_circuit_breaker(&task, 5, None);
+        assert!(matches!(result, SpawnBreakerState::Tripped(_)));
+        if let SpawnBreakerState::Tripped(msg) = result {
+            assert!(msg.contains("spawn circuit breaker"), "msg: {}", msg);
+            assert!(msg.contains("5 consecutive"), "msg: {}", msg);
+        }
     }
 
     #[test]
@@ -7128,7 +7249,56 @@ mod tests {
         task.id = "t1".to_string();
         task.spawn_failures = 100;
         // threshold=0 means disabled
-        assert!(check_spawn_circuit_breaker(&task, 0).is_ok());
+        assert_eq!(
+            check_spawn_circuit_breaker(&task, 0, None),
+            SpawnBreakerState::Ok
+        );
+    }
+
+    #[test]
+    fn test_spawn_circuit_breaker_decays_after_cooldown() {
+        // Self-heal: a tripped breaker DECAYS once the cooldown has elapsed,
+        // so a transient burst (e.g. a registry/key outage) does not
+        // permanently brick a task.
+        let mut task = Task::default();
+        task.id = "t1".to_string();
+        task.spawn_failures = 5;
+        // last failure well in the past → cooldown elapsed
+        task.last_spawn_failure_at =
+            Some((chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339());
+        let cooldown = std::time::Duration::from_secs(300); // 5m
+        assert_eq!(
+            check_spawn_circuit_breaker(&task, 5, Some(cooldown)),
+            SpawnBreakerState::Decayable
+        );
+    }
+
+    #[test]
+    fn test_spawn_circuit_breaker_stays_tripped_within_cooldown() {
+        let mut task = Task::default();
+        task.id = "t1".to_string();
+        task.spawn_failures = 5;
+        // last failure just now → cooldown NOT elapsed
+        task.last_spawn_failure_at = Some(chrono::Utc::now().to_rfc3339());
+        let cooldown = std::time::Duration::from_secs(300); // 5m
+        assert!(matches!(
+            check_spawn_circuit_breaker(&task, 5, Some(cooldown)),
+            SpawnBreakerState::Tripped(_)
+        ));
+    }
+
+    #[test]
+    fn test_spawn_circuit_breaker_decay_disabled_when_no_cooldown() {
+        // No cooldown configured → breaker only clears via retry/edit/success.
+        let mut task = Task::default();
+        task.id = "t1".to_string();
+        task.spawn_failures = 5;
+        task.last_spawn_failure_at =
+            Some((chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339());
+        assert!(matches!(
+            check_spawn_circuit_breaker(&task, 5, None),
+            SpawnBreakerState::Tripped(_)
+        ));
     }
 
     #[test]
@@ -7212,6 +7382,94 @@ mod tests {
         assert!(
             t.log.iter().any(|e| e.message.contains("evaluator review")),
             "Circuit breaker log should mention evaluator review"
+        );
+    }
+
+    #[test]
+    fn test_record_spawn_failure_stamps_last_failure_time() {
+        // record_spawn_failure must stamp last_spawn_failure_at so the
+        // cooldown-decay self-heal can measure elapsed time.
+        let dir = tempdir().unwrap();
+        let wg_dir = dir.path().join(".wg");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+        let gp = wg_dir.join("graph.jsonl");
+
+        let mut graph = WorkGraph::new();
+        let mut task = Task::default();
+        task.id = "t".to_string();
+        task.status = Status::Open;
+        graph.add_node(Node::Task(task));
+        save_graph(&graph, &gp).unwrap();
+
+        record_spawn_failure(&gp, "t", "boom", "claude", None, 5);
+        let g = load_graph(&gp).unwrap();
+        let t = g.get_task("t").unwrap();
+        assert_eq!(t.spawn_failures, 1);
+        assert!(
+            t.last_spawn_failure_at.is_some(),
+            "last_spawn_failure_at must be stamped"
+        );
+    }
+
+    #[test]
+    fn test_record_dispatch_clears_breaker_on_success() {
+        // Clear-on-success self-heal: a successful spawn resets spawn_failures
+        // and last_spawn_failure_at so a transient burst self-corrects.
+        let dir = tempdir().unwrap();
+        let wg_dir = dir.path().join(".wg");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+        let gp = wg_dir.join("graph.jsonl");
+
+        let mut graph = WorkGraph::new();
+        let mut task = Task::default();
+        task.id = "t".to_string();
+        task.status = Status::Open;
+        task.spawn_failures = 4;
+        task.last_spawn_failure_at = Some(chrono::Utc::now().to_rfc3339());
+        graph.add_node(Node::Task(task));
+        save_graph(&graph, &gp).unwrap();
+
+        record_dispatch(&gp, "t");
+        let g = load_graph(&gp).unwrap();
+        let t = g.get_task("t").unwrap();
+        assert_eq!(t.spawn_failures, 0, "success must clear spawn_failures");
+        assert_eq!(t.dispatch_count, 1);
+        assert!(
+            t.last_spawn_failure_at.is_none(),
+            "success must clear last_spawn_failure_at"
+        );
+        assert!(
+            t.log.iter().any(|e| e.message.contains("Spawn succeeded")),
+            "should log clear-on-success"
+        );
+    }
+
+    #[test]
+    fn test_reset_spawn_failures_helper() {
+        // The shared primitive behind cooldown-decay / wg retry / edit.
+        let dir = tempdir().unwrap();
+        let wg_dir = dir.path().join(".wg");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+        let gp = wg_dir.join("graph.jsonl");
+
+        let mut graph = WorkGraph::new();
+        let mut task = Task::default();
+        task.id = "t".to_string();
+        task.status = Status::Incomplete;
+        task.spawn_failures = 5;
+        task.last_spawn_failure_at = Some(chrono::Utc::now().to_rfc3339());
+        graph.add_node(Node::Task(task));
+        save_graph(&graph, &gp).unwrap();
+
+        reset_spawn_failures(&gp, "t", "test");
+        let g = load_graph(&gp).unwrap();
+        let t = g.get_task("t").unwrap();
+        assert_eq!(t.spawn_failures, 0);
+        assert!(t.last_spawn_failure_at.is_none());
+        assert!(
+            t.log
+                .iter()
+                .any(|e| e.message.contains("Spawn circuit breaker reset"))
         );
     }
 

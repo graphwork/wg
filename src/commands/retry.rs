@@ -90,6 +90,7 @@ pub fn run(
     let mut was_incomplete = false;
     let mut tier_escalation_msg: Option<String> = None;
     let mut downstream_cleared: Vec<String> = Vec::new();
+    let mut breaker_reset = false;
 
     // Snapshot the registry once outside the graph lock — eager
     // downstream walk consults it to decide whether each downstream
@@ -138,6 +139,12 @@ pub fn run(
         task.failure_reason = None;
         task.assigned = None;
         task.ready_after = None;
+        // Reset the per-task spawn circuit breaker so dispatch resumes WITHOUT
+        // a graph.jsonl edit (fix-spawn-failures). The breaker may have tripped
+        // (status was Incomplete) and left spawn_failures at the threshold.
+        let breaker_was_tripped = task.spawn_failures > 0;
+        task.spawn_failures = 0;
+        task.last_spawn_failure_at = None;
         if !preserve_session {
             task.session_id = None;
             task.checkpoint = None;
@@ -184,6 +191,15 @@ pub fn run(
                 reason_suffix
             ),
         });
+        if breaker_was_tripped {
+            breaker_reset = true;
+            task.log.push(LogEntry {
+                timestamp: Utc::now().to_rfc3339(),
+                actor: Some("spawn-circuit-breaker".to_string()),
+                user: Some(worksgood::current_user()),
+                message: "Spawn circuit breaker reset via `wg retry` — dispatch will resume.".to_string(),
+            });
+        }
 
         retry_count = task.retry_count;
         max_retries = task.max_retries;
@@ -272,6 +288,10 @@ pub fn run(
             downstream_cleared.len(),
             downstream_cleared.join(", ")
         );
+    }
+
+    if breaker_reset {
+        println!("  Spawn circuit breaker cleared — worker will dispatch on the next tick.");
     }
 
     if let Some(p) = fresh_removed_path {
@@ -398,6 +418,10 @@ fn retry_in_progress(
         task.assigned = None;
         task.failure_reason = None;
         task.ready_after = None;
+        // Reset the per-task spawn circuit breaker (fix-spawn-failures) so an
+        // in-progress retry dispatches instead of being skipped forever.
+        task.spawn_failures = 0;
+        task.last_spawn_failure_at = None;
         if !preserve_session {
             task.session_id = None;
             task.checkpoint = None;
@@ -861,6 +885,63 @@ mod tests {
         let graph = load_graph(&path).unwrap();
         let task = graph.get_task("t1").unwrap();
         assert_eq!(task.failure_reason, None);
+    }
+
+    /// fix-spawn-failures: `wg retry` MUST clear the per-task spawn circuit
+    /// breaker so dispatch resumes WITHOUT a graph.jsonl edit. The breaker
+    /// trips on Incomplete (its terminal state), so retry from Incomplete is
+    /// the canonical recovery path.
+    #[test]
+    fn test_retry_clears_spawn_failures() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+        let mut task = make_task("t1", "Test task", Status::Incomplete);
+        task.retry_count = 1;
+        task.spawn_failures = 5;
+        task.last_spawn_failure_at = Some(Utc::now().to_rfc3339());
+        setup_workgraph(dir_path, vec![task]);
+
+        run(dir_path, "t1", false, false, None).unwrap();
+
+        let path = graph_path(dir_path);
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("t1").unwrap();
+        assert_eq!(task.spawn_failures, 0, "retry must clear spawn_failures");
+        assert_eq!(task.status, Status::Open);
+        assert!(
+            task.last_spawn_failure_at.is_none(),
+            "retry must clear last_spawn_failure_at"
+        );
+        assert!(
+            task.log.iter().any(|e| e
+                .message
+                .contains("Spawn circuit breaker reset via `wg retry`")),
+            "retry should log the breaker reset"
+        );
+    }
+
+    /// fix-spawn-failures: `wg retry` on an in-progress task also clears the
+    /// breaker so the next tick dispatches instead of being skipped.
+    #[test]
+    fn test_retry_in_progress_clears_spawn_failures() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+        let mut task = make_task("t1", "Test task", Status::InProgress);
+        task.retry_count = 0;
+        task.spawn_failures = 5;
+        task.last_spawn_failure_at = Some(Utc::now().to_rfc3339());
+        setup_workgraph(dir_path, vec![task]);
+
+        run(dir_path, "t1", false, false, Some("hung")).unwrap();
+
+        let path = graph_path(dir_path);
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("t1").unwrap();
+        assert_eq!(
+            task.spawn_failures, 0,
+            "in-progress retry must clear breaker"
+        );
+        assert!(task.last_spawn_failure_at.is_none());
     }
 
     #[test]

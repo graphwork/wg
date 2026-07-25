@@ -17,7 +17,7 @@
 //!   executor = "claude"  # Executor for spawned agents
 
 pub(crate) mod assignment;
-mod coordinator;
+pub(crate) mod coordinator;
 pub(crate) mod coordinator_agent;
 pub(crate) mod human_dispatch;
 pub mod ipc;
@@ -3226,12 +3226,13 @@ pub fn run_daemon(
                     record_tick_events(&dir, &event_log, &logger);
 
                     logger.info(&format!(
-                        "Coordinator tick #{} complete: agents_alive={}, tasks_ready={}, spawned={}, admission_deferred={}",
+                        "Coordinator tick #{} complete: agents_alive={}, tasks_ready={}, spawned={}, admission_deferred={}, spawn_breaker_tripped={}",
                         coord_state.ticks,
                         result.agents_alive,
                         result.tasks_ready,
                         result.agents_spawned,
-                        result.admission_deferred_tasks
+                        result.admission_deferred_tasks,
+                        result.spawn_breaker_tripped_tasks
                     ));
 
                     // Dispatch watchdog (fix-wedge): detect a starved dispatcher —
@@ -3241,18 +3242,32 @@ pub fn run_daemon(
                         && result.agents_alive == 0
                         && result.admission_deferred_tasks == 0
                     {
-                        no_dispatch_progress_ticks = no_dispatch_progress_ticks.saturating_add(1);
-                        if no_dispatch_progress_ticks == WATCHDOG_STALL_TICKS
-                            || (no_dispatch_progress_ticks > WATCHDOG_STALL_TICKS
-                                && no_dispatch_progress_ticks.is_multiple_of(WATCHDOG_STALL_TICKS))
-                        {
-                            logger.warn(&format!(
+                        // A per-task spawn circuit breaker tripping explains a
+                        // "spawned=0" tick without a wedge: the breaker skips
+                        // ONLY the affected task (and self-heals). Don't ramp
+                        // the wedge counter on account of it; surface it instead.
+                        if result.spawn_breaker_tripped_tasks > 0 {
+                            logger.info(&format!(
+                                "Spawn circuit breaker tripped on {} task(s) this tick — they are skipped (per-task) and self-heal via cooldown / `wg retry` / clear-on-success. Other tasks dispatch normally.",
+                                result.spawn_breaker_tripped_tasks
+                            ));
+                            no_dispatch_progress_ticks = 0;
+                        } else {
+                            no_dispatch_progress_ticks =
+                                no_dispatch_progress_ticks.saturating_add(1);
+                            if no_dispatch_progress_ticks == WATCHDOG_STALL_TICKS
+                                || (no_dispatch_progress_ticks > WATCHDOG_STALL_TICKS
+                                    && no_dispatch_progress_ticks
+                                        .is_multiple_of(WATCHDOG_STALL_TICKS))
+                            {
+                                logger.warn(&format!(
                                 "DISPATCH WATCHDOG: {} consecutive ticks with {} ready task(s) but \
                                  0 spawned and 0 live agents — dispatcher appears wedged. Check for a \
                                  stuck coordinator sub-loop / stale session sentinels; `wg service \
                                  restart` clears it if this persists.",
                                 no_dispatch_progress_ticks, result.tasks_ready
                             ));
+                            }
                         }
                     } else {
                         // Intentional opt-in admission deferral is progress in

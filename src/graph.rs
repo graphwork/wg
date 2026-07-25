@@ -672,6 +672,12 @@ pub struct Task {
     /// Number of consecutive spawn failures (spawn circuit breaker counter)
     #[serde(default, skip_serializing_if = "is_zero")]
     pub spawn_failures: u32,
+    /// RFC3339 timestamp of the most recent spawn failure. Drives the spawn
+    /// circuit breaker's cooldown-decay self-heal so a transient burst
+    /// (e.g. a registry/key outage) does not permanently brick a task. Cleared
+    /// alongside `spawn_failures` by `wg retry` / edit / a successful spawn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_spawn_failure_at: Option<String>,
     /// Quality tier override set by tier escalation on retry.
     /// When present, overrides the role's default_tier() during dispatch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -806,6 +812,7 @@ impl Default for Task {
             agency_dispatch: None,
             evaluation_lifecycle: None,
             spawn_failures: 0,
+            last_spawn_failure_at: None,
             tier: None,
             no_tier_escalation: false,
             tried_models: vec![],
@@ -1832,6 +1839,8 @@ struct TaskHelper {
     #[serde(default)]
     spawn_failures: u32,
     #[serde(default)]
+    last_spawn_failure_at: Option<String>,
+    #[serde(default)]
     tier: Option<String>,
     #[serde(default)]
     no_tier_escalation: bool,
@@ -1959,6 +1968,7 @@ impl<'de> Deserialize<'de> for Task {
             agency_dispatch: helper.agency_dispatch,
             evaluation_lifecycle: helper.evaluation_lifecycle,
             spawn_failures: helper.spawn_failures,
+            last_spawn_failure_at: helper.last_spawn_failure_at,
             tier: helper.tier,
             no_tier_escalation: helper.no_tier_escalation,
             tried_models: helper.tried_models,

@@ -77,6 +77,16 @@ struct TaskDetails {
     failure_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     failure_class: Option<FailureClass>,
+    /// Per-task spawn circuit breaker counter (0 = healthy).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    spawn_failures: u32,
+    /// Threshold from coordinator.max_spawn_failures, for rendering the
+    /// breaker state in `wg show`. 0 = breaker disabled.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    max_spawn_failures: u32,
+    /// RFC3339 of the most recent spawn failure (for the cooldown-decay self-heal).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_spawn_failure_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -635,6 +645,11 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         max_retries: task.max_retries,
         failure_reason: task.failure_reason.clone(),
         failure_class: task.failure_class,
+        spawn_failures: task.spawn_failures,
+        max_spawn_failures: worksgood::config::Config::load_or_default(dir)
+            .coordinator
+            .max_spawn_failures,
+        last_spawn_failure_at: task.last_spawn_failure_at.clone(),
         model: task.model.clone(),
         reasoning: task.reasoning.map(|r| r.to_string()),
         resolved_reasoning,
@@ -871,6 +886,39 @@ fn print_human_readable(details: &TaskDetails) {
         && let Some(ref reason) = details.failure_reason
     {
         println!("Failure reason: {}", reason);
+    }
+    if details.spawn_failures > 0 {
+        // Surface the per-task spawn circuit breaker so a tripped breaker is
+        // visible in `wg show` (not just a silent "spawned=0" in the daemon
+        // log). The threshold comes from coordinator.max_spawn_failures.
+        let max = details.max_spawn_failures.max(1);
+        let tripped = details.max_spawn_failures > 0 && details.spawn_failures >= max;
+        let cooldown_note = match details.last_spawn_failure_at.as_deref() {
+            Some(ts) => chrono::DateTime::parse_from_rfc3339(ts)
+                .ok()
+                .map(|t| {
+                    let secs = chrono::Utc::now()
+                        .signed_duration_since(t.with_timezone(&chrono::Utc))
+                        .num_seconds();
+                    format!(
+                        ", last failure {} ago",
+                        worksgood::format_duration(secs, true)
+                    )
+                })
+                .unwrap_or_default(),
+            None => String::new(),
+        };
+        if tripped {
+            println!(
+                "\x1b[33m⚠ Spawn circuit breaker TRIPPED: {}/{} consecutive spawn failures{} — blocked; run `wg retry {}` or wait for cooldown decay\x1b[0m",
+                details.spawn_failures, max, cooldown_note, details.id
+            );
+        } else {
+            println!(
+                "Spawn failures: {}/{}{} (breaker not yet tripped)",
+                details.spawn_failures, max, cooldown_note
+            );
+        }
     }
     if let Some(class) = details.failure_class {
         println!("failure_class: {}", class);
@@ -1564,6 +1612,9 @@ mod tests {
             max_retries: None,
             failure_reason: None,
             failure_class: None,
+            spawn_failures: 0,
+            max_spawn_failures: 0,
+            last_spawn_failure_at: None,
             model: None,
             reasoning: None,
             resolved_reasoning: None,

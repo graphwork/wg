@@ -158,6 +158,7 @@ pub(crate) fn defer_self_mutation(
         agency_dispatch: None,
         evaluation_lifecycle: None,
         spawn_failures: 0,
+        last_spawn_failure_at: None,
         dispatch_count: 0,
         tier: None,
         no_tier_escalation: false,

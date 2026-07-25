@@ -4452,6 +4452,16 @@ pub struct CoordinatorConfig {
     #[serde(default = "default_max_spawn_failures")]
     pub max_spawn_failures: u32,
 
+    /// Cooldown after which a tripped spawn circuit breaker **decays**: its
+    /// `spawn_failures` counter is reset so dispatch resumes WITHOUT a
+    /// `wg retry` or a graph edit. Accepts a duration string (s/m/h/d/w, e.g.
+    /// `"5m"`). Default: `"5m"`. Set to `"0"` to disable decay (the breaker
+    /// then only clears via `wg retry`, edit, or a successful spawn).
+    /// This makes the breaker self-healing so a transient burst (e.g. a
+    /// registry/key outage) does not permanently brick a task.
+    #[serde(default = "default_spawn_failure_cooldown")]
+    pub spawn_failure_cooldown: String,
+
     /// Maximum tier escalation depth for model fallback on retry.
     /// When a task fails and the active profile has a ranked model list,
     /// the coordinator tries the next model in the tier. If the entire tier
@@ -4745,6 +4755,10 @@ fn default_max_spawn_failures() -> u32 {
     5
 }
 
+fn default_spawn_failure_cooldown() -> String {
+    "5m".to_string()
+}
+
 fn default_max_escalation_depth() -> u32 {
     3
 }
@@ -4953,6 +4967,7 @@ impl Default for CoordinatorConfig {
             verify_autospawn_enabled: false,
             max_verify_failures: default_max_verify_failures(),
             max_spawn_failures: default_max_spawn_failures(),
+            spawn_failure_cooldown: default_spawn_failure_cooldown(),
             max_escalation_depth: default_max_escalation_depth(),
             auto_test_discovery: default_auto_test_discovery(),
             scoped_verify_enabled: default_scoped_verify_enabled(),
