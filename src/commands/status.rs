@@ -77,6 +77,8 @@ struct TaskSummaryInfo {
     evaluation_active: usize,
     evaluation_repairable: usize,
     evaluation_operator_required: usize,
+    evaluation_migration_required: usize,
+    evaluation_migrated_rearmed: usize,
 }
 
 /// Recent activity entry
@@ -396,6 +398,8 @@ fn gather_task_summary(dir: &Path, show_all: bool) -> Result<TaskSummaryInfo> {
             evaluation_active: 0,
             evaluation_repairable: 0,
             evaluation_operator_required: 0,
+            evaluation_migration_required: 0,
+            evaluation_migrated_rearmed: 0,
         });
     }
 
@@ -414,6 +418,8 @@ fn gather_task_summary(dir: &Path, show_all: bool) -> Result<TaskSummaryInfo> {
     let mut evaluation_active = 0;
     let mut evaluation_repairable = 0;
     let mut evaluation_operator_required = 0;
+    let mut evaluation_migration_required = 0;
+    let mut evaluation_migrated_rearmed = 0;
 
     let today_start = now
         .date_naive()
@@ -489,6 +495,12 @@ fn gather_task_summary(dir: &Path, show_all: bool) -> Result<TaskSummaryInfo> {
                     Some(
                         worksgood::eval_lifecycle::EvaluationHealthState::RepairablePipelineDrift,
                     ) => evaluation_repairable += 1,
+                    Some(worksgood::eval_lifecycle::EvaluationHealthState::MigrationRequired) => {
+                        evaluation_migration_required += 1
+                    }
+                    Some(worksgood::eval_lifecycle::EvaluationHealthState::MigratedRearmed) => {
+                        evaluation_migrated_rearmed += 1
+                    }
                     Some(
                         worksgood::eval_lifecycle::EvaluationHealthState::OperatorRequiredAmbiguity,
                     ) => evaluation_operator_required += 1,
@@ -508,6 +520,8 @@ fn gather_task_summary(dir: &Path, show_all: bool) -> Result<TaskSummaryInfo> {
         evaluation_active,
         evaluation_repairable,
         evaluation_operator_required,
+        evaluation_migration_required,
+        evaluation_migrated_rearmed,
     })
 }
 
@@ -779,12 +793,16 @@ fn print_status(status: &StatusOutput) {
     );
     let evaluation_total = status.tasks.evaluation_active
         + status.tasks.evaluation_repairable
-        + status.tasks.evaluation_operator_required;
+        + status.tasks.evaluation_operator_required
+        + status.tasks.evaluation_migration_required
+        + status.tasks.evaluation_migrated_rearmed;
     if evaluation_total > 0 {
         println!(
-            "Evaluation: {} active, {} repairable pipeline drift, {} operator-required ambiguity",
+            "Evaluation: {} active, {} repairable pipeline drift, {} migration-required, {} migrated/rearmed, {} operator-required ambiguity",
             status.tasks.evaluation_active,
             status.tasks.evaluation_repairable,
+            status.tasks.evaluation_migration_required,
+            status.tasks.evaluation_migrated_rearmed,
             status.tasks.evaluation_operator_required
         );
     }

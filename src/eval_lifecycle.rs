@@ -9,7 +9,8 @@
 
 use crate::agency::Evaluation;
 use crate::config::{
-    Config, DispatchRole, ExecutionSystemKey, ReasoningLevel, execution_system_key,
+    Config, DispatchRole, ExecutionSystemKey, ReasoningLevel, ReasoningProvenance,
+    execution_system_key, parse_exact_pi_route,
 };
 use crate::graph::{LogEntry, Status, Task, WorkGraph};
 use anyhow::{Context, Result};
@@ -26,6 +27,12 @@ pub const EVAL_LIFECYCLE_SCHEMA: u16 = 1;
 /// Schema 2 pins the exact durable evaluation file instead.
 pub const EVALUATION_DIGEST_DURABLE_BYTES_SCHEMA: u16 = 2;
 pub const MAX_EXECUTION_ATTEMPTS_PER_ROUTE_GENERATION: u32 = 2;
+pub const AGENCY_REASONING_MIGRATION_SCHEMA: u16 = 1;
+const MAX_REASONING_MIGRATIONS_PER_SOURCE_ATTEMPT: usize = 1;
+
+fn is_zero_u32(value: &u32) -> bool {
+    *value == 0
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -76,9 +83,54 @@ pub struct AgencyDispatchPlan {
     pub pipeline_id: String,
     pub source_task: String,
     pub source_attempt: u32,
+    /// A route/reasoning migration mints a new generation without pretending
+    /// that the completed source worker ran again. Generation zero is omitted
+    /// so pre-migration plan hashes remain byte-for-byte verifiable.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub route_generation: u32,
     pub task_id: String,
     pub calls: Vec<AgencyCallPlan>,
     pub plan_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgencyReasoningResolution {
+    pub stage: AgencyStage,
+    pub route: String,
+    pub reasoning: ReasoningLevel,
+    pub was_missing: bool,
+    pub provenance: ReasoningProvenance,
+    pub config_source: String,
+}
+
+/// Immutable audit row for the explicit pre-Pi reasoning migration boundary.
+/// The original plan and its failed producer identity remain embedded even
+/// after the mutable satellite is rearmed with the new executable plan.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgencyPlanMigration {
+    pub schema: u16,
+    pub boundary: String,
+    pub migrated_at: String,
+    pub source_task: String,
+    pub source_attempt: u32,
+    pub route_generation: u32,
+    pub task_id: String,
+    pub old_pipeline_id: String,
+    pub new_pipeline_id: String,
+    pub old_plan: AgencyDispatchPlan,
+    pub new_plan: AgencyDispatchPlan,
+    pub reasoning: Vec<AgencyReasoningResolution>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prior_producer_run_id: Option<String>,
+    pub prior_status: Status,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prior_started_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prior_completed_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prior_failure_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prior_source_diagnostic: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -121,6 +173,10 @@ pub struct EvaluationLifecycle {
     /// consumed once for the atomic repair transaction.
     #[serde(default)]
     pub repair_attempts: u16,
+    /// Append-only audit history for explicit reasoning migrations. A source
+    /// attempt may cross this boundary at most once.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub plan_migrations: Vec<AgencyPlanMigration>,
     /// Stable, actionable fail-closed diagnostic. This is deliberately kept
     /// separate from `Task.failure_reason`: FailedPendingEval still needs to
     /// retain the worker's original failure evidence.
@@ -155,6 +211,7 @@ impl EvaluationLifecycle {
             consumed_verdict: None,
             repair_version: 0,
             repair_attempts: 0,
+            plan_migrations: Vec::new(),
             diagnostic: None,
         }
     }
@@ -266,6 +323,7 @@ pub fn build_plan(
         pipeline_id: pipeline_id(&source_task.id, source_attempt, source_task.loop_iteration),
         source_task: source_task.id.clone(),
         source_attempt,
+        route_generation: 0,
         task_id: task_id.to_string(),
         calls,
         plan_hash: String::new(),
@@ -318,6 +376,7 @@ pub fn migrate_legacy_plan(source_task: &Task, satellite: &Task) -> Result<Agenc
         pipeline_id: pipeline_id(&source_task.id, source_attempt, source_task.loop_iteration),
         source_task: source_task.id.clone(),
         source_attempt,
+        route_generation: 0,
         task_id: satellite.id.clone(),
         calls,
         plan_hash: String::new(),
@@ -353,6 +412,29 @@ pub fn validate_plan(plan: &AgencyDispatchPlan) -> Result<()> {
             );
         }
         validate_fallbacks(&call.system, &call.fallbacks)?;
+    }
+    Ok(())
+}
+
+/// Validate the stricter model-plane boundary immediately before a persisted
+/// plan can be claimed or invoked. Structural validation intentionally still
+/// accepts a pre-Pi plan so the explicit migration boundary can authenticate
+/// its old hash; executable validation never does.
+pub fn validate_executable_plan(plan: &AgencyDispatchPlan) -> Result<()> {
+    validate_plan(plan)?;
+    for call in &plan.calls {
+        parse_exact_pi_route(&call.route).map_err(|error| {
+            anyhow::anyhow!(
+                "error[WG-PI-ROUTE-REQUIRED]: persisted agency plan route {:?} is not an exact Pi route: {error}",
+                call.route
+            )
+        })?;
+        if call.reasoning.is_none() {
+            anyhow::bail!(
+                "error[WG-PI-REASONING-MISSING]: persisted agency plan route {:?} has no reasoning; coordinator migration must resolve the authoritative role/tier value before execution",
+                call.route
+            );
+        }
     }
     Ok(())
 }
@@ -791,6 +873,7 @@ fn lifecycle_for_plan(plan: &AgencyDispatchPlan) -> EvaluationLifecycle {
         consumed_verdict: None,
         repair_version: 0,
         repair_attempts: 0,
+        plan_migrations: Vec::new(),
         diagnostic: None,
     }
 }
@@ -1065,7 +1148,17 @@ fn rebind_plan_to_source(plan: &AgencyDispatchPlan, source: &Task) -> Result<Age
     }
     let mut rebound = plan.clone();
     rebound.source_attempt = source_attempt_for_plan(source);
-    rebound.pipeline_id = pipeline_id(&source.id, rebound.source_attempt, source.loop_iteration);
+    if let Some(lifecycle) = source.evaluation_lifecycle.as_ref()
+        && lifecycle.source_attempt == rebound.source_attempt
+        && lifecycle.consumed_verdict.is_none()
+    {
+        rebound.route_generation = lifecycle.route_generation;
+        rebound.pipeline_id = lifecycle.pipeline_id.clone();
+    } else {
+        rebound.route_generation = 0;
+        rebound.pipeline_id =
+            pipeline_id(&source.id, rebound.source_attempt, source.loop_iteration);
+    }
     rebound.plan_hash = compute_plan_hash(&rebound)?;
     validate_plan(&rebound)?;
     Ok(rebound)
@@ -1115,6 +1208,343 @@ fn apply_rearm_plan(task: &mut Task, plan: AgencyDispatchPlan, actor: &str) {
             plan.source_attempt, plan.plan_hash
         ),
     });
+}
+
+fn reasoning_migration_pipeline_id(
+    old_pipeline_id: &str,
+    source_attempt: u32,
+    route_generation: u32,
+    plans: &[(String, AgencyDispatchPlan, Vec<AgencyReasoningResolution>)],
+) -> String {
+    let mut identity = plans
+        .iter()
+        .map(|(task_id, plan, resolutions)| {
+            let calls = resolutions
+                .iter()
+                .map(|resolution| {
+                    format!(
+                        "{:?}\0{}\0{}",
+                        resolution.stage, resolution.route, resolution.reasoning
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\0");
+            format!("{task_id}\0{}\0{calls}", plan.plan_hash)
+        })
+        .collect::<Vec<_>>();
+    identity.sort();
+    let material = format!(
+        "wg-eval-pi-reasoning-migration-v1\0{old_pipeline_id}\0{source_attempt}\0{route_generation}\0{}",
+        identity.join("\0")
+    );
+    format!(
+        "evalp-{}",
+        &blake3::hash(material.as_bytes()).to_hex()[..24]
+    )
+}
+
+fn reasoning_migration_error(graph: &mut WorkGraph, source_id: &str, error: anyhow::Error) -> bool {
+    let source = graph
+        .get_task_mut(source_id)
+        .expect("reasoning migration source snapshot came from graph");
+    if source.evaluation_lifecycle.is_none() {
+        source.evaluation_lifecycle = Some(EvaluationLifecycle::for_source(source));
+    }
+    lifecycle_conflict(
+        source,
+        format!(
+            "error[WG-EVAL-PI-REASONING-MIGRATION-AMBIGUOUS]: operator action required; no agency call was rearmed: {error:#}"
+        ),
+    )
+}
+
+/// Explicit, bounded migration boundary for pre-Pi persisted agency plans.
+///
+/// This runs in the coordinator's single graph transaction before ordinary
+/// pipeline repair. It authenticates every old plan hash, accepts only exact
+/// `pi:<provider>:<model>` routes, resolves each absent effort from the
+/// authoritative stage role/tier configuration, and then atomically moves the
+/// source plus all of its satellites to one newly hashed generation. No model
+/// call is made here. Original plans, producer ids and failures are retained in
+/// append-only `plan_migrations` audit rows.
+pub fn migrate_missing_pi_reasoning(graph: &mut WorkGraph, config: &Config) -> bool {
+    let source_ids = graph
+        .tasks()
+        .filter(|task| matches!(task.status, Status::PendingEval | Status::FailedPendingEval))
+        .map(|task| task.id.clone())
+        .collect::<Vec<_>>();
+    let mut modified = false;
+
+    for source_id in source_ids {
+        let source_snapshot = graph
+            .get_task(&source_id)
+            .expect("collected reasoning migration source")
+            .clone();
+        let mut source_lifecycle = source_snapshot
+            .evaluation_lifecycle
+            .clone()
+            .unwrap_or_else(|| EvaluationLifecycle::for_source(&source_snapshot));
+        if source_lifecycle.consumed_verdict.is_some() {
+            continue;
+        }
+
+        // Do not overwrite an unrelated verdict or active-run ambiguity. The
+        // historical repair-exhausted diagnostic is specifically recoverable
+        // because it was caused by replaying these same invalid bytes.
+        if let Some(diagnostic) = source_lifecycle.diagnostic.as_deref()
+            && !diagnostic.contains("WG-EVAL-PIPELINE-REPAIR-EXHAUSTED")
+            && !diagnostic.contains("WG-PI-REASONING-MISSING")
+            && !diagnostic.contains("WG-EVAL-PI-REASONING-MIGRATION")
+        {
+            continue;
+        }
+
+        let satellite_ids = [
+            format!(".flip-{source_id}"),
+            format!(".evaluate-{source_id}"),
+        ];
+        let mut old_rows = Vec::new();
+        let mut has_missing_reasoning = false;
+        let mut preparation_error = None;
+
+        for task_id in satellite_ids {
+            let Some(task) = graph.get_task(&task_id).cloned() else {
+                if task_id.starts_with(".evaluate-") {
+                    preparation_error = Some(anyhow::anyhow!(
+                        "required evaluator satellite {task_id:?} is missing"
+                    ));
+                }
+                continue;
+            };
+            let Some(old_plan) = task.agency_dispatch.clone() else {
+                preparation_error = Some(anyhow::anyhow!(
+                    "satellite {task_id:?} has no persisted agency plan"
+                ));
+                break;
+            };
+            if let Err(error) = validate_plan(&old_plan) {
+                preparation_error = Some(anyhow::anyhow!(
+                    "satellite {task_id:?} has an invalid historical plan: {error:#}"
+                ));
+                break;
+            }
+            if old_plan.task_id != task_id
+                || old_plan.source_task != source_id
+                || old_plan.source_attempt != source_lifecycle.source_attempt
+                || old_plan.pipeline_id != source_lifecycle.pipeline_id
+                || old_plan.route_generation != source_lifecycle.route_generation
+            {
+                preparation_error = Some(anyhow::anyhow!(
+                    "satellite {task_id:?} plan identity does not match authoritative pipeline {} attempt {} generation {}",
+                    source_lifecycle.pipeline_id,
+                    source_lifecycle.source_attempt,
+                    source_lifecycle.route_generation
+                ));
+                break;
+            }
+            if task.status == Status::InProgress {
+                preparation_error = Some(anyhow::anyhow!(
+                    "satellite {task_id:?} is still active; refusing to relabel its producer run"
+                ));
+                break;
+            }
+            has_missing_reasoning |= old_plan.calls.iter().any(|call| call.reasoning.is_none());
+            old_rows.push((task, old_plan));
+        }
+
+        if !has_missing_reasoning {
+            continue;
+        }
+        if source_lifecycle
+            .plan_migrations
+            .iter()
+            .filter(|migration| migration.source_attempt == source_lifecycle.source_attempt)
+            .count()
+            >= MAX_REASONING_MIGRATIONS_PER_SOURCE_ATTEMPT
+        {
+            preparation_error = Some(anyhow::anyhow!(
+                "source attempt {} already crossed its one allowed reasoning migration boundary",
+                source_lifecycle.source_attempt
+            ));
+        }
+        if let Some(error) = preparation_error {
+            modified |= reasoning_migration_error(graph, &source_id, error);
+            continue;
+        }
+
+        let mut prepared = Vec::new();
+        for (task, old_plan) in &old_rows {
+            let mut new_plan = old_plan.clone();
+            let mut resolutions = Vec::new();
+            for call in &mut new_plan.calls {
+                if let Err(error) = parse_exact_pi_route(&call.route) {
+                    preparation_error = Some(anyhow::anyhow!(
+                        "satellite {:?} stage {:?} route {:?} is not an exact Pi route: {error}; legacy non-Pi/malformed plans cannot be migrated",
+                        task.id,
+                        call.stage,
+                        call.route
+                    ));
+                    break;
+                }
+                let was_missing = call.reasoning.is_none();
+                let (reasoning, provenance, config_source) = if let Some(reasoning) = call.reasoning
+                {
+                    (
+                        reasoning,
+                        ReasoningProvenance::Explicit,
+                        "persisted-plan".to_string(),
+                    )
+                } else {
+                    let resolved = config.resolve_reasoning_detail(call.stage.role());
+                    let Some(reasoning) = resolved.level else {
+                        preparation_error = Some(anyhow::anyhow!(
+                            "stage {:?} route {:?} has no authoritative reasoning; set models.{}.reasoning or tiers.{}_reasoning, then retry the coordinator tick",
+                            call.stage,
+                            call.route,
+                            call.stage.role(),
+                            call.stage.role().default_tier()
+                        ));
+                        break;
+                    };
+                    let Some(config_source) = resolved.source else {
+                        preparation_error = Some(anyhow::anyhow!(
+                            "stage {:?} resolved reasoning without auditable configuration provenance",
+                            call.stage
+                        ));
+                        break;
+                    };
+                    (reasoning, resolved.provenance, config_source)
+                };
+                call.reasoning = Some(reasoning);
+                resolutions.push(AgencyReasoningResolution {
+                    stage: call.stage,
+                    route: call.route.clone(),
+                    reasoning,
+                    was_missing,
+                    provenance,
+                    config_source,
+                });
+            }
+            if preparation_error.is_some() {
+                break;
+            }
+            prepared.push((task.id.clone(), new_plan, resolutions));
+        }
+        if let Some(error) = preparation_error {
+            modified |= reasoning_migration_error(graph, &source_id, error);
+            continue;
+        }
+
+        let route_generation = source_lifecycle.route_generation.saturating_add(1);
+        let new_pipeline_id = reasoning_migration_pipeline_id(
+            &source_lifecycle.pipeline_id,
+            source_lifecycle.source_attempt,
+            route_generation,
+            &prepared,
+        );
+        for (_, plan, _) in &mut prepared {
+            plan.route_generation = route_generation;
+            plan.pipeline_id = new_pipeline_id.clone();
+            match compute_plan_hash(plan).and_then(|hash| {
+                plan.plan_hash = hash;
+                validate_executable_plan(plan)
+            }) {
+                Ok(()) => {}
+                Err(error) => {
+                    preparation_error = Some(error);
+                    break;
+                }
+            }
+        }
+        if let Some(error) = preparation_error {
+            modified |= reasoning_migration_error(graph, &source_id, error);
+            continue;
+        }
+
+        let migrated_at = Utc::now().to_rfc3339();
+        let boundary = format!(
+            "evalm-{}",
+            &blake3::hash(new_pipeline_id.as_bytes()).to_hex()[..24]
+        );
+        let prior_source_diagnostic = source_lifecycle.diagnostic.clone();
+        let old_pipeline_id = source_lifecycle.pipeline_id.clone();
+        let mut audit_rows = Vec::new();
+        for ((old_task, old_plan), (_, new_plan, resolutions)) in
+            old_rows.into_iter().zip(prepared.into_iter())
+        {
+            let audit = AgencyPlanMigration {
+                schema: AGENCY_REASONING_MIGRATION_SCHEMA,
+                boundary: boundary.clone(),
+                migrated_at: migrated_at.clone(),
+                source_task: source_id.clone(),
+                source_attempt: source_lifecycle.source_attempt,
+                route_generation,
+                task_id: old_task.id.clone(),
+                old_pipeline_id: old_pipeline_id.clone(),
+                new_pipeline_id: new_pipeline_id.clone(),
+                old_plan,
+                new_plan: new_plan.clone(),
+                reasoning: resolutions,
+                prior_producer_run_id: old_task.assigned.clone(),
+                prior_status: old_task.status,
+                prior_started_at: old_task.started_at.clone(),
+                prior_completed_at: old_task.completed_at.clone(),
+                prior_failure_reason: old_task.failure_reason.clone(),
+                prior_source_diagnostic: prior_source_diagnostic.clone(),
+            };
+            let task = graph
+                .get_task_mut(&old_task.id)
+                .expect("prepared reasoning migration satellite");
+            apply_rearm_plan(task, new_plan.clone(), "eval-reasoning-migration");
+            if let Some(lifecycle) = task.evaluation_lifecycle.as_mut() {
+                lifecycle.route_generation = route_generation;
+            }
+            task.log.push(LogEntry {
+                timestamp: migrated_at.clone(),
+                actor: Some("eval-reasoning-migration".to_string()),
+                user: None,
+                message: format!(
+                    "Migrated pre-Pi reasoning atomically: boundary={boundary} generation={route_generation} old_plan={} new_plan={} old_pipeline={old_pipeline_id} new_pipeline={new_pipeline_id}; prior producer/failure retained in source audit",
+                    audit.old_plan.plan_hash, audit.new_plan.plan_hash
+                ),
+            });
+            audit_rows.push(audit);
+        }
+
+        source_lifecycle.pipeline_id = new_pipeline_id.clone();
+        source_lifecycle.route_generation = route_generation;
+        source_lifecycle.schedule_attempts = 0;
+        source_lifecycle.transport_attempts = 0;
+        source_lifecycle.semantic_attempts = 0;
+        source_lifecycle.execution_state = EvaluationExecutionState::Ready;
+        source_lifecycle.linked_flip_verdict = None;
+        source_lifecycle.linked_eval_verdict = None;
+        source_lifecycle.consumed_verdict = None;
+        source_lifecycle.repair_attempts = 0;
+        source_lifecycle.repair_version = EVAL_LIFECYCLE_SCHEMA;
+        source_lifecycle.diagnostic = None;
+        source_lifecycle.plan_migrations.extend(audit_rows);
+        let source = graph
+            .get_task_mut(&source_id)
+            .expect("prepared reasoning migration source");
+        source.evaluation_lifecycle = Some(source_lifecycle);
+        source.log.push(LogEntry {
+            timestamp: migrated_at,
+            actor: Some("eval-reasoning-migration".to_string()),
+            user: None,
+            message: format!(
+                "Migrated/rearmed agency reasoning exactly once without rerunning source work: boundary={boundary} source_attempt={} generation={route_generation} old_pipeline={old_pipeline_id} new_pipeline={new_pipeline_id}",
+                source
+                    .evaluation_lifecycle
+                    .as_ref()
+                    .expect("installed migration lifecycle")
+                    .source_attempt
+            ),
+        });
+        modified = true;
+    }
+
+    modified
 }
 
 fn reset_satellite_for_source(graph: &mut WorkGraph, task_id: &str, source: &Task) -> Result<bool> {
@@ -1287,6 +1717,8 @@ fn satellite_has_linked_stage(task: &Task) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum EvaluationHealthState {
+    MigrationRequired,
+    MigratedRearmed,
     ActiveEvaluation,
     RepairablePipelineDrift,
     OperatorRequiredAmbiguity,
@@ -1295,6 +1727,8 @@ pub enum EvaluationHealthState {
 impl std::fmt::Display for EvaluationHealthState {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let label = match self {
+            Self::MigrationRequired => "migration-required",
+            Self::MigratedRearmed => "migrated-rearmed",
             Self::ActiveEvaluation => "active-evaluation",
             Self::RepairablePipelineDrift => "repairable-pipeline-drift",
             Self::OperatorRequiredAmbiguity => "operator-required-ambiguity",
@@ -1308,6 +1742,10 @@ pub struct EvaluationHealth {
     pub state: EvaluationHealthState,
     pub pipeline_id: String,
     pub source_attempt: u32,
+    pub route_generation: u32,
+    pub migration_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub consumed_verdict: Option<String>,
     pub diagnostic: String,
 }
 
@@ -1324,14 +1762,82 @@ pub fn evaluation_health(graph: &WorkGraph, source_id: &str) -> Option<Evaluatio
             state: EvaluationHealthState::RepairablePipelineDrift,
             pipeline_id: "unminted".to_string(),
             source_attempt: 0,
+            route_generation: 0,
+            migration_count: 0,
+            consumed_verdict: None,
             diagnostic: "source lifecycle is missing; coordinator repair must mint it".to_string(),
         });
     };
+
+    let mut migration_required = Vec::new();
+    let mut migration_rejected = Vec::new();
+    for task_id in [
+        format!(".flip-{source_id}"),
+        format!(".evaluate-{source_id}"),
+    ] {
+        let Some(plan) = graph
+            .get_task(&task_id)
+            .and_then(|task| task.agency_dispatch.as_ref())
+        else {
+            continue;
+        };
+        if !plan.calls.iter().any(|call| call.reasoning.is_none()) {
+            continue;
+        }
+        let exact_pi = validate_plan(plan).is_ok()
+            && plan
+                .calls
+                .iter()
+                .all(|call| parse_exact_pi_route(&call.route).is_ok());
+        if exact_pi {
+            migration_required.push(format!(
+                "{task_id} plan {} has exact Pi route(s) but missing reasoning",
+                plan.plan_hash
+            ));
+        } else {
+            migration_rejected.push(format!(
+                "{task_id} missing-reasoning plan is non-Pi, malformed, or hash-invalid"
+            ));
+        }
+    }
+    if !migration_rejected.is_empty() {
+        return Some(EvaluationHealth {
+            state: EvaluationHealthState::OperatorRequiredAmbiguity,
+            pipeline_id: lifecycle.pipeline_id.clone(),
+            source_attempt: lifecycle.source_attempt,
+            route_generation: lifecycle.route_generation,
+            migration_count: lifecycle.plan_migrations.len(),
+            consumed_verdict: lifecycle.consumed_verdict.clone(),
+            diagnostic: migration_rejected.join("; "),
+        });
+    }
+    if !migration_required.is_empty()
+        && lifecycle.diagnostic.as_deref().is_none_or(|diagnostic| {
+            diagnostic.contains("WG-EVAL-PIPELINE-REPAIR-EXHAUSTED")
+                || diagnostic.contains("WG-PI-REASONING-MISSING")
+        })
+    {
+        return Some(EvaluationHealth {
+            state: EvaluationHealthState::MigrationRequired,
+            pipeline_id: lifecycle.pipeline_id.clone(),
+            source_attempt: lifecycle.source_attempt,
+            route_generation: lifecycle.route_generation,
+            migration_count: lifecycle.plan_migrations.len(),
+            consumed_verdict: lifecycle.consumed_verdict.clone(),
+            diagnostic: format!(
+                "{}; coordinator must resolve authoritative role/tier reasoning at the explicit migration boundary before execution",
+                migration_required.join("; ")
+            ),
+        });
+    }
     if let Some(diagnostic) = lifecycle.diagnostic.as_ref() {
         return Some(EvaluationHealth {
             state: EvaluationHealthState::OperatorRequiredAmbiguity,
             pipeline_id: lifecycle.pipeline_id.clone(),
             source_attempt: lifecycle.source_attempt,
+            route_generation: lifecycle.route_generation,
+            migration_count: lifecycle.plan_migrations.len(),
+            consumed_verdict: lifecycle.consumed_verdict.clone(),
             diagnostic: diagnostic.clone(),
         });
     }
@@ -1401,6 +1907,17 @@ pub fn evaluation_health(graph: &WorkGraph, source_id: &str) -> Option<Evaluatio
         }
     }
 
+    let freshly_rearmed = lifecycle
+        .plan_migrations
+        .iter()
+        .any(|migration| migration.source_attempt == lifecycle.source_attempt)
+        && [
+            format!(".flip-{source_id}"),
+            format!(".evaluate-{source_id}"),
+        ]
+        .into_iter()
+        .filter_map(|task_id| graph.get_task(&task_id))
+        .all(|task| task.status == Status::Open && task.assigned.is_none());
     let (state, diagnostic) = if !operator.is_empty() {
         (
             EvaluationHealthState::OperatorRequiredAmbiguity,
@@ -1410,6 +1927,11 @@ pub fn evaluation_health(graph: &WorkGraph, source_id: &str) -> Option<Evaluatio
         (
             EvaluationHealthState::RepairablePipelineDrift,
             repairable.join("; "),
+        )
+    } else if freshly_rearmed {
+        (
+            EvaluationHealthState::MigratedRearmed,
+            "reasoning migration committed atomically; repaired satellites are ready and the source worker was not rerun".to_string(),
         )
     } else {
         (
@@ -1421,6 +1943,9 @@ pub fn evaluation_health(graph: &WorkGraph, source_id: &str) -> Option<Evaluatio
         state,
         pipeline_id: lifecycle.pipeline_id.clone(),
         source_attempt: lifecycle.source_attempt,
+        route_generation: lifecycle.route_generation,
+        migration_count: lifecycle.plan_migrations.len(),
+        consumed_verdict: lifecycle.consumed_verdict.clone(),
         diagnostic,
     })
 }
@@ -2766,6 +3291,637 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("EVIDENCE")
+        );
+    }
+
+    // ---- pre-Pi reasoning migration coverage ----
+
+    /// A source stranded exactly like the live `make-hashed-project` incident:
+    /// `PendingEval`, a `REPAIR-EXHAUSTED` diagnostic, and the authoritative
+    /// lifecycle minted for its current source attempt.
+    fn stranded_source(id: &str) -> Task {
+        let mut task = Task {
+            id: id.into(),
+            title: id.into(),
+            status: Status::PendingEval,
+            ..Task::default()
+        };
+        let mut lifecycle = EvaluationLifecycle::for_source(&task);
+        lifecycle.diagnostic = Some(
+            "error[WG-EVAL-PIPELINE-REPAIR-EXHAUSTED]: bounded repair replayed \
+             invalid missing-reasoning bytes"
+                .to_string(),
+        );
+        lifecycle.execution_state = EvaluationExecutionState::Blocked;
+        task.evaluation_lifecycle = Some(lifecycle);
+        task
+    }
+
+    /// A satellite whose persisted plan carries an exact `pi:<provider>:<model>`
+    /// route but no reasoning — the exact shape of pre-Pi scaffolding. The plan
+    /// is structurally valid (`validate_plan`) but never executable
+    /// (`validate_executable_plan`).
+    fn pre_pi_satellite(id: &str, source: &Task, route: &str) -> Task {
+        let mut config = Config::default();
+        let role_model = RoleModelConfig {
+            provider: None,
+            model: Some(route.into()),
+            tier: None,
+            endpoint: None,
+            reasoning: Some(ReasoningLevel::High),
+        };
+        config.models.evaluator = Some(role_model.clone());
+        config.models.flip_inference = Some(role_model.clone());
+        config.models.flip_comparison = Some(role_model);
+        let mut plan =
+            build_plan(&config, source, id, DispatchSelectionSource::PersistedPlan).unwrap();
+        // Strip reasoning to simulate a plan scaffolded before Pi reasoning
+        // became mandatory, then re-hash so the historical bytes are authentic.
+        for call in &mut plan.calls {
+            call.reasoning = None;
+        }
+        plan.plan_hash = compute_plan_hash(&plan).unwrap();
+        validate_plan(&plan).expect("structural validation still accepts pre-Pi plan");
+        Task {
+            id: id.into(),
+            title: id.into(),
+            status: Status::Failed,
+            assigned: Some("producer-run-prior".into()),
+            failure_reason: Some(
+                "error[WG-PI-REASONING-MISSING]: persisted agency plan route has no reasoning"
+                    .into(),
+            ),
+            agency_dispatch: Some(plan),
+            ..Task::default()
+        }
+    }
+
+    /// Config whose agency roles resolve explicit `High` reasoning at `route`.
+    fn migration_config(route: &str) -> Config {
+        let mut config = Config::default();
+        let role_model = RoleModelConfig {
+            provider: None,
+            model: Some(route.into()),
+            tier: None,
+            endpoint: None,
+            reasoning: Some(ReasoningLevel::High),
+        };
+        config.models.evaluator = Some(role_model.clone());
+        config.models.flip_inference = Some(role_model.clone());
+        config.models.flip_comparison = Some(role_model);
+        config
+    }
+
+    fn generation_verdict(source: &Task, stage: AgencyStage, score: f64) -> DurableEvalVerdict {
+        let lifecycle = source
+            .evaluation_lifecycle
+            .as_ref()
+            .expect("source has authoritative lifecycle after migration");
+        DurableEvalVerdict {
+            schema: EVAL_LIFECYCLE_SCHEMA,
+            verdict_id: format!("verdict-gen-{stage:?}"),
+            verdict_digest: String::new(),
+            evaluation_id: format!("evaluation-gen-{stage:?}"),
+            pipeline_id: lifecycle.pipeline_id.clone(),
+            source_task: source.id.clone(),
+            source_attempt: lifecycle.source_attempt,
+            stage,
+            producer_run_id: format!("run-gen-{}", lifecycle.route_generation),
+            score,
+            evaluation_digest_schema: EVALUATION_DIGEST_DURABLE_BYTES_SCHEMA,
+            evaluation_digest: format!("b3:gen-{stage:?}-{score}"),
+            created_at: Utc::now().to_rfc3339(),
+        }
+    }
+
+    #[test]
+    fn validate_executable_plan_boundary_separates_structural_from_executable() {
+        let source = stranded_source("source");
+        let satellite = pre_pi_satellite(".evaluate-source", &source, "pi:openrouter:z-ai/glm-5.2");
+        let plan = satellite.agency_dispatch.unwrap();
+        // Structural validation authenticates the historical hash; it must NOT
+        // reject the pre-Pi plan, or the migration boundary could never audit it.
+        validate_plan(&plan).expect("structural validation accepts pre-Pi plan");
+        let error = validate_executable_plan(&plan).unwrap_err().to_string();
+        assert!(error.contains("WG-PI-REASONING-MISSING"), "{error}");
+        // A reasoning-armed exact Pi plan clears the executable boundary.
+        let armed = migration_config("pi:openrouter:z-ai/glm-5.2");
+        let armed_plan = build_plan(
+            &armed,
+            &source,
+            ".evaluate-source",
+            DispatchSelectionSource::PersistedPlan,
+        )
+        .unwrap();
+        validate_executable_plan(&armed_plan).expect("armed exact Pi plan is executable");
+    }
+
+    #[test]
+    fn migrate_missing_pi_reasoning_resolves_route_preservingly_and_rearms_without_rerunning_source()
+     {
+        let route = "pi:openrouter:z-ai/glm-5.2";
+        let source = stranded_source("source");
+        let flip = pre_pi_satellite(".flip-source", &source, route);
+        let eval = pre_pi_satellite(".evaluate-source", &source, route);
+        let old_flip_plan = flip.agency_dispatch.clone().unwrap();
+        let old_eval_plan = eval.agency_dispatch.clone().unwrap();
+        let old_pipeline = source
+            .evaluation_lifecycle
+            .as_ref()
+            .unwrap()
+            .pipeline_id
+            .clone();
+        let mut graph = WorkGraph::new();
+        graph.add_node(crate::graph::Node::Task(source));
+        graph.add_node(crate::graph::Node::Task(flip));
+        graph.add_node(crate::graph::Node::Task(eval));
+        let config = migration_config(route);
+
+        assert!(
+            migrate_missing_pi_reasoning(&mut graph, &config),
+            "the migration boundary must report a graph modification"
+        );
+
+        let source = graph.get_task("source").unwrap();
+        // The completed source worker is never rerun: its status, assignee, and
+        // retry counters are unchanged. Only the lifecycle identity advanced.
+        assert_eq!(source.status, Status::PendingEval);
+        assert_eq!(source.retry_count, 0);
+        let lifecycle = source.evaluation_lifecycle.as_ref().unwrap();
+        assert_eq!(lifecycle.route_generation, 1);
+        assert_eq!(lifecycle.diagnostic, None);
+        assert_eq!(lifecycle.execution_state, EvaluationExecutionState::Ready);
+        assert_eq!(lifecycle.consumed_verdict, None);
+        assert_ne!(lifecycle.pipeline_id, old_pipeline);
+        assert_eq!(lifecycle.plan_migrations.len(), 2);
+        assert!(lifecycle.schedule_attempts == 0 && lifecycle.transport_attempts == 0);
+
+        for (task_id, old_plan, stages) in [
+            (
+                ".flip-source",
+                old_flip_plan.clone(),
+                [AgencyStage::FlipInference, AgencyStage::FlipComparison],
+            ),
+            (
+                ".evaluate-source",
+                old_eval_plan.clone(),
+                [AgencyStage::Evaluate, AgencyStage::Evaluate],
+            ),
+        ] {
+            let task = graph.get_task(task_id).unwrap();
+            assert_eq!(task.status, Status::Open, "{task_id} rearmed to Open");
+            assert_eq!(task.assigned, None, "{task_id} cleared prior producer");
+            assert_eq!(task.failure_reason, None, "{task_id} cleared prior failure");
+            let plan = task.agency_dispatch.as_ref().unwrap();
+            assert_eq!(plan.route_generation, 1, "{task_id} carries new generation");
+            assert_eq!(plan.pipeline_id, lifecycle.pipeline_id);
+            assert_eq!(plan.source_attempt, lifecycle.source_attempt);
+            assert_eq!(plan.calls.len(), old_plan.calls.len());
+            for (idx, call) in plan.calls.iter().enumerate() {
+                assert_eq!(call.route, old_plan.calls[idx].route, "route preserved");
+                assert_eq!(
+                    call.reasoning,
+                    Some(ReasoningLevel::High),
+                    "reasoning resolved"
+                );
+                assert_eq!(call.stage, stages[idx], "stage identity preserved");
+            }
+            assert_ne!(plan.plan_hash, old_plan.plan_hash, "plan re-hashed");
+            validate_executable_plan(plan).unwrap();
+        }
+
+        // Audit rows retain the original plan, producer, and prior failure so
+        // the pre-migration history stays immutable and queryable.
+        let flip_audit = lifecycle
+            .plan_migrations
+            .iter()
+            .find(|row| row.task_id == ".flip-source")
+            .unwrap();
+        assert_eq!(flip_audit.old_plan.plan_hash, old_flip_plan.plan_hash);
+        assert_eq!(flip_audit.old_plan.calls[0].reasoning, None);
+        assert_eq!(
+            flip_audit.prior_producer_run_id.as_deref(),
+            Some("producer-run-prior")
+        );
+        assert_eq!(flip_audit.prior_status, Status::Failed);
+        assert!(
+            flip_audit
+                .prior_failure_reason
+                .as_deref()
+                .unwrap()
+                .contains("WG-PI-REASONING-MISSING")
+        );
+        assert!(flip_audit.source_task == "source" && flip_audit.source_attempt == 1);
+        assert_eq!(flip_audit.old_pipeline_id, old_pipeline);
+        assert_eq!(flip_audit.new_pipeline_id, lifecycle.pipeline_id);
+        assert_eq!(flip_audit.reasoning.len(), 2);
+        assert!(
+            flip_audit
+                .reasoning
+                .iter()
+                .all(|r| r.was_missing && r.reasoning == ReasoningLevel::High)
+        );
+        assert!(flip_audit.reasoning.iter().all(|r| r.route == route));
+    }
+
+    #[test]
+    fn migrate_missing_pi_reasoning_is_bounded_and_idempotent_across_restart() {
+        let route = "pi:openai-codex:gpt-5.6-sol";
+        let source = stranded_source("source");
+        let flip = pre_pi_satellite(".flip-source", &source, route);
+        let eval = pre_pi_satellite(".evaluate-source", &source, route);
+        let mut graph = WorkGraph::new();
+        graph.add_node(crate::graph::Node::Task(source));
+        graph.add_node(crate::graph::Node::Task(flip));
+        graph.add_node(crate::graph::Node::Task(eval));
+        let config = migration_config(route);
+
+        assert!(migrate_missing_pi_reasoning(&mut graph, &config));
+        let after_first = graph
+            .get_task("source")
+            .unwrap()
+            .evaluation_lifecycle
+            .as_ref()
+            .unwrap()
+            .clone();
+        let flip_plan_after_first = graph
+            .get_task(".flip-source")
+            .unwrap()
+            .agency_dispatch
+            .clone()
+            .unwrap();
+        let logs_after_first = graph.get_task("source").unwrap().log.len();
+
+        // Daemon restart: round-trip through the graph store, then re-tick.
+        let restart_dir = tempfile::tempdir().unwrap();
+        let graph_path = restart_dir.path().join("graph.jsonl");
+        crate::parser::save_graph(&graph, &graph_path).unwrap();
+        let mut graph = crate::parser::load_graph(&graph_path).unwrap();
+
+        // A second tick (concurrent coordinator / retry) must be a no-op: the
+        // source already crossed its one allowed boundary, and no call is
+        // re-armed or duplicated.
+        assert!(
+            !migrate_missing_pi_reasoning(&mut graph, &config),
+            "re-tick after a completed migration must not modify the graph"
+        );
+        let after_second = graph
+            .get_task("source")
+            .unwrap()
+            .evaluation_lifecycle
+            .as_ref()
+            .unwrap()
+            .clone();
+        assert_eq!(after_second.pipeline_id, after_first.pipeline_id);
+        assert_eq!(after_second.route_generation, after_first.route_generation);
+        assert_eq!(
+            after_second.plan_migrations.len(),
+            after_first.plan_migrations.len()
+        );
+        let flip_plan_after_second = graph
+            .get_task(".flip-source")
+            .unwrap()
+            .agency_dispatch
+            .clone()
+            .unwrap();
+        assert_eq!(
+            flip_plan_after_second.plan_hash, flip_plan_after_first.plan_hash,
+            "plan identity is stable across restart; no duplicate migration"
+        );
+        assert_eq!(
+            graph.get_task("source").unwrap().log.len(),
+            logs_after_first,
+            "idempotent re-tick logs nothing"
+        );
+    }
+
+    #[test]
+    fn migrate_missing_pi_reasoning_fails_closed_without_authoritative_reasoning() {
+        let route = "pi:openrouter:z-ai/glm-5.2";
+        let source = stranded_source("source");
+        let flip = pre_pi_satellite(".flip-source", &source, route);
+        let eval = pre_pi_satellite(".evaluate-source", &source, route);
+        let mut graph = WorkGraph::new();
+        graph.add_node(crate::graph::Node::Task(source));
+        graph.add_node(crate::graph::Node::Task(flip));
+        graph.add_node(crate::graph::Node::Task(eval));
+        // Config resolves NO reasoning for any role/tier — the operator forgot
+        // to set it. Migration must fail closed, never synthesize a default.
+        let config = Config::default();
+
+        assert!(migrate_missing_pi_reasoning(&mut graph, &config));
+
+        let source = graph.get_task("source").unwrap();
+        let lifecycle = source.evaluation_lifecycle.as_ref().unwrap();
+        assert_eq!(
+            lifecycle.execution_state,
+            EvaluationExecutionState::Blocked,
+            "ambiguous migration parks fail-closed"
+        );
+        let diagnostic = lifecycle.diagnostic.as_deref().unwrap();
+        assert!(
+            diagnostic.contains("WG-EVAL-PI-REASONING-MIGRATION-AMBIGUOUS"),
+            "{diagnostic}"
+        );
+        assert!(
+            diagnostic.contains("models.") && diagnostic.contains("_reasoning"),
+            "diagnostic must name the actionable config key: {diagnostic}"
+        );
+        assert_eq!(
+            lifecycle.plan_migrations.len(),
+            0,
+            "no audit row is minted when reasoning cannot be resolved"
+        );
+        assert_eq!(
+            lifecycle.route_generation, 0,
+            "generation must not advance on failure"
+        );
+
+        // Satellites are NOT re-armed: the prior producer/failure is intact.
+        for task_id in [".flip-source", ".evaluate-source"] {
+            let task = graph.get_task(task_id).unwrap();
+            assert_eq!(task.status, Status::Failed, "{task_id} left as-is");
+            assert_eq!(task.assigned.as_deref(), Some("producer-run-prior"));
+            assert_eq!(task.agency_dispatch.as_ref().unwrap().route_generation, 0);
+        }
+        let health = evaluation_health(&graph, "source").unwrap();
+        assert_eq!(
+            health.state,
+            EvaluationHealthState::OperatorRequiredAmbiguity
+        );
+    }
+
+    #[test]
+    fn migrate_missing_pi_reasoning_rejects_non_pi_and_malformed_legacy_plans() {
+        // A legacy non-Pi plan (codex handler) with missing reasoning must not
+        // be migrated or silently rerouted; there is no cross-system fallback.
+        let source = stranded_source("source");
+        let lifecycle = source.evaluation_lifecycle.clone().unwrap();
+        let non_pi_system = crate::config::execution_system_key("codex:gpt-5").unwrap();
+        let build_non_pi = |task_id: &str| {
+            let mut plan = AgencyDispatchPlan {
+                schema: AGENCY_PLAN_SCHEMA,
+                pipeline_id: lifecycle.pipeline_id.clone(),
+                source_task: "source".into(),
+                source_attempt: lifecycle.source_attempt,
+                route_generation: 0,
+                task_id: task_id.into(),
+                calls: vec![AgencyCallPlan {
+                    stage: if task_id.starts_with(".flip-") {
+                        AgencyStage::FlipInference
+                    } else {
+                        AgencyStage::Evaluate
+                    },
+                    route: "codex:gpt-5".into(),
+                    endpoint: None,
+                    reasoning: None,
+                    system: non_pi_system.clone(),
+                    source: DispatchSelectionSource::LegacyCodexSplit,
+                    fallbacks: Vec::new(),
+                }],
+                plan_hash: String::new(),
+            };
+            plan.plan_hash = compute_plan_hash(&plan).unwrap();
+            Task {
+                id: task_id.into(),
+                title: task_id.into(),
+                status: Status::Failed,
+                agency_dispatch: Some(plan),
+                ..Task::default()
+            }
+        };
+        let flip = build_non_pi(".flip-source");
+        let eval = build_non_pi(".evaluate-source");
+        let mut graph = WorkGraph::new();
+        graph.add_node(crate::graph::Node::Task(source));
+        graph.add_node(crate::graph::Node::Task(flip));
+        graph.add_node(crate::graph::Node::Task(eval));
+        let config = migration_config("pi:openrouter:z-ai/glm-5.2");
+
+        assert!(migrate_missing_pi_reasoning(&mut graph, &config));
+        let source = graph.get_task("source").unwrap();
+        let lifecycle = source.evaluation_lifecycle.as_ref().unwrap();
+        assert_eq!(lifecycle.route_generation, 0, "non-Pi plan never migrates");
+        assert_eq!(lifecycle.plan_migrations.len(), 0);
+        let diagnostic = lifecycle.diagnostic.as_deref().unwrap();
+        assert!(
+            diagnostic.contains("WG-EVAL-PI-REASONING-MIGRATION-AMBIGUOUS"),
+            "{diagnostic}"
+        );
+        assert!(diagnostic.contains("not an exact Pi route"), "{diagnostic}");
+        // No satellite was rerouted to a synthesized Pi/Claude/Nex route.
+        for task_id in [".flip-source", ".evaluate-source"] {
+            assert_eq!(
+                graph
+                    .get_task(task_id)
+                    .unwrap()
+                    .agency_dispatch
+                    .as_ref()
+                    .unwrap()
+                    .calls[0]
+                    .route,
+                "codex:gpt-5",
+                "non-Pi route is never rewritten by the migration"
+            );
+        }
+        let health = evaluation_health(&graph, "source").unwrap();
+        assert_eq!(
+            health.state,
+            EvaluationHealthState::OperatorRequiredAmbiguity
+        );
+    }
+
+    #[test]
+    fn migrate_missing_pi_reasoning_health_distinguishes_all_states() {
+        let route = "pi:openrouter:z-ai/glm-5.2";
+
+        // (1) migration-required: exact Pi routes, missing reasoning, parked on
+        // the recoverable REPAIR-EXHAUSTED diagnostic.
+        let source = stranded_source("source");
+        let flip = pre_pi_satellite(".flip-source", &source, route);
+        let eval = pre_pi_satellite(".evaluate-source", &source, route);
+        let mut graph = WorkGraph::new();
+        graph.add_node(crate::graph::Node::Task(source));
+        graph.add_node(crate::graph::Node::Task(flip));
+        graph.add_node(crate::graph::Node::Task(eval));
+        let health = evaluation_health(&graph, "source").unwrap();
+        assert_eq!(health.state, EvaluationHealthState::MigrationRequired);
+        assert_eq!(health.route_generation, 0);
+        assert_eq!(health.migration_count, 0);
+
+        // (2) migrated/rearmed: satellites re-armed Open + unassigned.
+        let config = migration_config(route);
+        migrate_missing_pi_reasoning(&mut graph, &config);
+        let health = evaluation_health(&graph, "source").unwrap();
+        assert_eq!(health.state, EvaluationHealthState::MigratedRearmed);
+        assert_eq!(health.route_generation, 1);
+        assert_eq!(health.migration_count, 2);
+
+        // (3) active evaluation: once a satellite is claimed, the state leaves
+        // the freshly-rearmed band and reports active evaluation.
+        {
+            let eval = graph.get_task_mut(".evaluate-source").unwrap();
+            eval.status = Status::InProgress;
+            eval.assigned = Some("producer-run-new".into());
+        }
+        let health = evaluation_health(&graph, "source").unwrap();
+        assert_eq!(health.state, EvaluationHealthState::ActiveEvaluation);
+
+        // (4) operator-required ambiguity is the fail-closed terminal for a
+        // missing-reasoning plan whose route is non-Pi (no fallback).
+        let source_b = stranded_source("source-b");
+        let lc = source_b.evaluation_lifecycle.clone().unwrap();
+        let non_pi_system = crate::config::execution_system_key("codex:gpt-5").unwrap();
+        let mut malformed = AgencyDispatchPlan {
+            schema: AGENCY_PLAN_SCHEMA,
+            pipeline_id: lc.pipeline_id.clone(),
+            source_task: "source-b".into(),
+            source_attempt: lc.source_attempt,
+            route_generation: 0,
+            task_id: ".evaluate-source-b".into(),
+            calls: vec![AgencyCallPlan {
+                stage: AgencyStage::Evaluate,
+                route: "codex:gpt-5".into(),
+                endpoint: None,
+                reasoning: None,
+                system: non_pi_system,
+                source: DispatchSelectionSource::LegacyCodexSplit,
+                fallbacks: Vec::new(),
+            }],
+            plan_hash: String::new(),
+        };
+        malformed.plan_hash = compute_plan_hash(&malformed).unwrap();
+        let eval_b = Task {
+            id: ".evaluate-source-b".into(),
+            title: ".evaluate-source-b".into(),
+            status: Status::Failed,
+            agency_dispatch: Some(malformed),
+            ..Task::default()
+        };
+        let mut graph_b = WorkGraph::new();
+        graph_b.add_node(crate::graph::Node::Task(source_b));
+        graph_b.add_node(crate::graph::Node::Task(eval_b));
+        let health = evaluation_health(&graph_b, "source-b").unwrap();
+        assert_eq!(
+            health.state,
+            EvaluationHealthState::OperatorRequiredAmbiguity
+        );
+    }
+
+    #[test]
+    fn migrate_missing_pi_reasoning_consumes_new_generation_verdict_exactly_once() {
+        let route = "pi:openrouter:z-ai/glm-5.2";
+        let source = stranded_source("source");
+        let flip = pre_pi_satellite(".flip-source", &source, route);
+        let eval = pre_pi_satellite(".evaluate-source", &source, route);
+        let old_pipeline = source
+            .evaluation_lifecycle
+            .as_ref()
+            .unwrap()
+            .pipeline_id
+            .clone();
+        let mut graph = WorkGraph::new();
+        graph.add_node(crate::graph::Node::Task(source));
+        graph.add_node(crate::graph::Node::Task(flip));
+        graph.add_node(crate::graph::Node::Task(eval));
+        let config = migration_config(route);
+        migrate_missing_pi_reasoning(&mut graph, &config);
+
+        let source = graph.get_task("source").unwrap().clone();
+        let lifecycle = source.evaluation_lifecycle.as_ref().unwrap();
+        let new_pipeline = lifecycle.pipeline_id.clone();
+        assert_ne!(new_pipeline, old_pipeline);
+
+        // A stale verdict carrying the pre-migration pipeline id must NEVER
+        // score the repaired attempt.
+        let stale = DurableEvalVerdict {
+            schema: EVAL_LIFECYCLE_SCHEMA,
+            verdict_id: "verdict-stale".into(),
+            verdict_digest: String::new(),
+            evaluation_id: "evaluation-stale".into(),
+            pipeline_id: old_pipeline,
+            source_task: "source".into(),
+            source_attempt: lifecycle.source_attempt,
+            stage: AgencyStage::Evaluate,
+            producer_run_id: "run-prior".into(),
+            score: 1.0,
+            evaluation_digest_schema: EVALUATION_DIGEST_DURABLE_BYTES_SCHEMA,
+            evaluation_digest: "b3:stale".into(),
+            created_at: Utc::now().to_rfc3339(),
+        };
+        assert!(!reconcile_durable_verdicts(
+            &mut graph,
+            &[stale],
+            0.7,
+            true,
+            3,
+            |_| true,
+        ));
+        assert_eq!(
+            graph
+                .get_task("source")
+                .unwrap()
+                .evaluation_lifecycle
+                .as_ref()
+                .unwrap()
+                .consumed_verdict,
+            None,
+            "stale old-pipeline verdict must never be consumed"
+        );
+
+        // New-pipeline evidence under the migrated generation promotes once.
+        let flip_verdict = generation_verdict(
+            graph.get_task("source").unwrap(),
+            AgencyStage::FlipComparison,
+            0.96,
+        );
+        let eval_verdict = generation_verdict(
+            graph.get_task("source").unwrap(),
+            AgencyStage::Evaluate,
+            0.92,
+        );
+        assert!(reconcile_durable_verdicts(
+            &mut graph,
+            &[flip_verdict.clone(), eval_verdict.clone()],
+            0.7,
+            true,
+            3,
+            |_| true,
+        ));
+        let consumed = graph
+            .get_task("source")
+            .unwrap()
+            .evaluation_lifecycle
+            .as_ref()
+            .unwrap()
+            .consumed_verdict
+            .clone();
+        assert!(consumed.is_some(), "verdict consumed after migration");
+        assert_eq!(
+            graph.get_task("source").unwrap().status,
+            Status::Done,
+            "high-scoring migrated evidence promotes the source"
+        );
+
+        // Re-feeding the same verdicts is idempotent: consumed exactly once.
+        assert!(!reconcile_durable_verdicts(
+            &mut graph,
+            &[flip_verdict, eval_verdict],
+            0.7,
+            true,
+            3,
+            |_| true,
+        ));
+        assert_eq!(
+            graph
+                .get_task("source")
+                .unwrap()
+                .evaluation_lifecycle
+                .as_ref()
+                .unwrap()
+                .consumed_verdict,
+            consumed,
+            "verdict is consumed exactly once across re-ticks"
         );
     }
 }

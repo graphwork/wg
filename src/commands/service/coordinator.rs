@@ -3216,7 +3216,7 @@ fn spawn_eval_inline(
                 schema: worksgood::eval_lifecycle::EVAL_LIFECYCLE_SCHEMA,
                 pipeline_id: plan.pipeline_id.clone(),
                 source_attempt: plan.source_attempt,
-                route_generation: 0,
+                route_generation: plan.route_generation,
                 schedule_attempts: 0,
                 transport_attempts: 0,
                 semantic_attempts: 0,
@@ -3226,6 +3226,7 @@ fn spawn_eval_inline(
                 consumed_verdict: None,
                 repair_version: 0,
                 repair_attempts: 0,
+                plan_migrations: Vec::new(),
                 diagnostic: None,
             }
         });
@@ -4198,7 +4199,7 @@ fn park_agency_execution_error(graph_path: &Path, task_id: &str, error: &anyhow:
                 schema: worksgood::eval_lifecycle::EVAL_LIFECYCLE_SCHEMA,
                 pipeline_id: plan.pipeline_id.clone(),
                 source_attempt: plan.source_attempt,
-                route_generation: 0,
+                route_generation: plan.route_generation,
                 schedule_attempts: 0,
                 transport_attempts: 0,
                 semantic_attempts: 0,
@@ -4208,6 +4209,7 @@ fn park_agency_execution_error(graph_path: &Path, task_id: &str, error: &anyhow:
                 consumed_verdict: None,
                 repair_version: 0,
                 repair_attempts: 0,
+                plan_migrations: Vec::new(),
                 diagnostic: None,
             }
         });
@@ -4891,10 +4893,16 @@ pub fn coordinator_tick(
         // they would have run `wg reject` already."
         modified |= migrate_pending_validation_tasks(graph);
 
-        // Phases 2.46–2.47: route-stable evaluation lifecycle repair and
+        // Phase 2.46: explicit pre-Pi reasoning migration. This is deliberately
+        // before ordinary lifecycle repair: invalid missing-reasoning bytes are
+        // never replayed against the bounded repair budget. The transaction
+        // atomically re-identifies source + satellites or changes nothing.
+        modified |= worksgood::eval_lifecycle::migrate_missing_pi_reasoning(graph, &config);
+
+        // Phases 2.47–2.48: route-stable evaluation lifecycle repair and
         // verdict-required parent resolution. A terminal/missing evaluator is
-        // never treated as a score. Historical pre-claim Codex rows are
-        // normalized once; ambiguous provider-only rows park for an operator.
+        // never treated as a score. Historical pre-claim rows are normalized
+        // once; ambiguous routes park for an operator.
         if eval_evidence_usable {
             modified |= worksgood::eval_lifecycle::repair_historical_rows(graph);
             modified |= worksgood::eval_lifecycle::reconcile_durable_verdicts(
