@@ -279,9 +279,6 @@ fn print_function_details(func: &TraceFunction, func_dir: &Path) {
         } else if let Some(max) = constraints.max_tasks {
             println!("  Max tasks: {}", max);
         }
-        if let Some(depth) = constraints.max_depth {
-            println!("  Max depth: {}", depth);
-        }
         if constraints.allow_cycles {
             println!("  Cycles: allowed");
             if let Some(max_iter) = constraints.max_total_iterations {
@@ -1029,7 +1026,7 @@ mod tests {
             min_tasks: Some(2),
             max_tasks: Some(20),
             required_skills: vec!["implementation".to_string(), "testing".to_string()],
-            max_depth: Some(4),
+            obsolete_max_depth: None,
             allow_cycles: false,
             max_total_iterations: None,
             required_phases: vec!["implement".to_string(), "test".to_string()],

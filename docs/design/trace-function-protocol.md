@@ -150,7 +150,6 @@ pub struct StructuralConstraints {
     pub min_tasks: Option<u32>,
     pub max_tasks: Option<u32>,
     pub required_skills: Vec<String>,
-    pub max_depth: Option<u32>,
     pub allow_cycles: bool,
     pub max_total_iterations: Option<u32>,
     pub required_phases: Vec<String>,
@@ -163,6 +162,10 @@ pub struct ForbiddenPattern {
     pub reason: String,
 }
 ```
+
+Dependency depth is intentionally unlimited. Readers accept a legacy
+`constraints.max_depth` key for compatibility, ignore it, and omit it when
+serializing the function again.
 
 ### 3.4 Trace Memory (Layer 3)
 
@@ -282,7 +285,6 @@ constraints:
   max_tasks: 20
   required_skills: [implementation, testing]
   required_phases: [implement, test]
-  max_depth: 4
 tasks:  # fallback
   - template_id: implement
     title: "Implement API"
@@ -546,7 +548,7 @@ The spec (§4.2) describes an abstract "align traces: identify shared vs variabl
 1. Collect subgraphs for each trace.
 2. Compare task counts and ordered skill-set tuples across all traces.
 3. If all traces have identical topology (same count AND same skills in order), fall back to static extraction.
-4. Otherwise: compute `min_tasks`/`max_tasks` from trace sizes, `common_skills` (intersection), `all_skills` (union), and `max_depth`. Pick the median-size trace as the static fallback.
+4. Otherwise: compute `min_tasks`/`max_tasks` from trace sizes, `common_skills` (intersection), and `all_skills` (union). Pick the median-size trace as the static fallback. No dependency-depth ceiling is inferred.
 5. Synthesize a planning prompt describing the observed pattern variation.
 
 This is more heuristic than a formal structural alignment algorithm but works well for typical extraction scenarios.
@@ -572,9 +574,12 @@ The spec (§3.4) defines `InterventionSummary` but doesn't specify which provena
 
 The `TaskTemplate` struct accepts both `after` and `blocked_by` (via `#[serde(alias = "blocked_by")]`) as the field name for dependency lists in YAML. This mirrors the graph model's edge rename from `blocked_by` to `after`.
 
-### 9.7 Plan Validation: Depth Calculation
+### 9.7 Plan Validation: Unlimited Dependency Depth
 
-The spec (§3.3) mentions `max_depth` as a constraint but doesn't detail the algorithm. The implementation (`plan_validator::validate_plan()`) computes depth via BFS from root nodes (tasks with zero in-degree), tracking the longest path. This is the standard topological-order longest-path computation.
+Plan validation applies task-count, skill, phase, forbidden-pattern, and cycle
+constraints, but no dependency-depth ceiling. A legacy `max_depth` key is
+accepted and ignored so old saved functions continue to load; the serializer
+drops it on the next write.
 
 ### 9.8 Phase Detection via Tags
 

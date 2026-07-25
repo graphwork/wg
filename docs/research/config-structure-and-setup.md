@@ -151,7 +151,7 @@ Top-level string, e.g., `"anthropic"`, `"openrouter"`. Supplies tier defaults.
 - `[help]` — ordering: "usage"/"alphabetical"/"curated"
 - `[log]` — rotation_threshold (bytes, default 10MB)
 - `[replay]` — keep_done_threshold (0.0-1.0), snapshot_agent_output
-- `[guardrails]` — max_child_tasks_per_agent, max_task_depth, max_triage_attempts
+- `[guardrails]` — max_child_tasks_per_agent, max_triage_attempts (legacy max_task_depth is ignored/migrated; graph depth is unlimited)
 - `[viz]` — edge_color, animations
 - `[tui]` — 15+ UI settings (layout, theme, timestamps, panel ratios, etc.)
 - `[checkpoint]` — auto_interval_turns, auto_interval_mins, max_checkpoints, retry_context_tokens
@@ -217,7 +217,7 @@ Config setters via flags (all apply to `wg config` directly):
 - `--auto-evaluate`, `--auto-assign`, `--auto-triage`, `--auto-place`, `--auto-create` (agency)
 - `--assigner-agent`, `--evaluator-agent`, `--evolver-agent`, `--creator-agent` (agency agents)
 - `--retention-heuristics`, `--triage-timeout`, `--triage-max-log-bytes` (agency)
-- `--max-child-tasks`, `--max-task-depth` (guardrails)
+- `--max-child-tasks` (task-creation budget; dependency depth is unlimited)
 - `--viz-edge-color` (viz)
 - `--eval-gate-threshold`, `--eval-gate-all` (eval gate)
 - `--flip-enabled`, `--flip-verification-threshold` (FLIP)

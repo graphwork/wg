@@ -13116,6 +13116,12 @@ impl VizApp {
             && self.graph_reload_pending
             && let Some((graph, graph_mtime)) = self.async_fs.cached_graph()
         {
+            // The latest requested bytes are now parsed. Do not keep the
+            // stale bit set while their CPU snapshot is in flight: with a
+            // large graph that caused every refresh tick to parse a new Arc,
+            // invalidate the just-built snapshot by pointer identity, and
+            // livelock forever. A later watcher event sets the bit again.
+            self.graph_viz_stale = false;
             self.request_graph_snapshot_from(graph, graph_mtime);
             return true;
         }
@@ -13388,11 +13394,18 @@ impl VizApp {
             .values()
             .any(|s| s.last_seen.elapsed() >= hold);
 
-        if graph_changed {
+        let parsed_bytes_are_current = self
+            .async_fs
+            .cached_graph_mtime()
+            .is_some_and(|parsed_mtime| Some(parsed_mtime) == current_mtime);
+        if graph_changed
+            && !(self.graph_reload_pending && !self.graph_viz_stale && parsed_bytes_are_current)
+        {
             // Dispatch a background graph reload and apply it only after the
-            // async worker has populated the cache. Applying the old cached
-            // graph here would make the TUI record the new mtime while still
-            // showing stale rows, losing the refresh.
+            // async worker has populated the cache. Once those exact bytes
+            // are parsed, keep their one snapshot generation alive instead
+            // of continuously replacing it while `last_graph_mtime` still
+            // describes the previously published generation.
             self.graph_reload_pending = true;
             self.graph_viz_stale = true;
             self.async_fs.request_graph_load(graph_path.clone());
@@ -24117,13 +24130,6 @@ impl VizApp {
             edit_kind: ConfigEditKind::TextInput,
             section: ConfigSection::Guardrails,
         });
-        entries.push(ConfigEntry {
-            key: "guardrails.max_task_depth".into(),
-            label: "Max chain depth".into(),
-            value: config.guardrails.max_task_depth.to_string(),
-            edit_kind: ConfigEditKind::TextInput,
-            section: ConfigSection::Guardrails,
-        });
 
         // ── 8. Model Tiers ──
         {
@@ -24916,11 +24922,6 @@ impl VizApp {
             "guardrails.max_child_tasks_per_agent" => {
                 if let Ok(v) = new_value.parse::<u32>() {
                     config.guardrails.max_child_tasks_per_agent = v;
-                }
-            }
-            "guardrails.max_task_depth" => {
-                if let Ok(v) = new_value.parse::<u32>() {
-                    config.guardrails.max_task_depth = v;
                 }
             }
             "coordinator.max_coordinators" => {
@@ -29231,7 +29232,6 @@ mod tui_config_panel_tests {
                         | "agency.triage_max_log_bytes"
                         | "tui.message_name_threshold"
                         | "guardrails.max_child_tasks_per_agent"
-                        | "guardrails.max_task_depth"
                         | "tui.chat_history_max"
                         | "tui.session_gap_minutes"
                         | "checkpoint.retry_context_tokens"
@@ -29396,7 +29396,6 @@ mod tui_config_panel_tests {
             "coordinator.escalate_on_retry",
             // Guardrails
             "guardrails.max_child_tasks_per_agent",
-            "guardrails.max_task_depth",
             // Model tiers
             "tiers.fast",
             "tiers.standard",

@@ -85,25 +85,21 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
         .map(|t| t.id.as_str())
         .collect();
 
-    // Calculate longest path from each entry point using dynamic programming
-    // longest_path[task_id] = (total_hours, path_as_vec)
-    let mut memo: HashMap<&str, (f64, Vec<String>)> = HashMap::new();
+    // Calculate longest paths with an iterative reverse-topological pass.
+    // Memo entries hold only a next pointer, avoiding O(N²) path-prefix clones
+    // on a deep linear graph.
+    let mut memo: HashMap<&str, PathState<'_>> = HashMap::new();
 
     for entry in &entry_points {
         calculate_longest_path(entry, &graph, &forward_index, &mut memo, &cycle_nodes);
     }
 
-    // Find the overall longest path
-    let (critical_path, total_hours) = if let Some((_, (hours, path))) =
-        memo.iter().max_by(|a, b| {
-            a.1.0
-                .partial_cmp(&b.1.0)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        }) {
-        (path.clone(), *hours)
-    } else {
-        (vec![], 0.0)
-    };
+    // Find the overall longest path and reconstruct it once.
+    let (critical_path, total_hours) = memo
+        .iter()
+        .max_by(|a, b| compare_path_state(a.1, b.1))
+        .map(|(&id, state)| (reconstruct_path(id, &memo), state.hours))
+        .unwrap_or_default();
 
     // Build critical task info
     let critical_set: HashSet<&str> = critical_path.iter().map(String::as_str).collect();
@@ -265,116 +261,164 @@ fn build_forward_index<'a>(
     index
 }
 
-/// Calculate longest path starting from this task using memoization
+#[derive(Clone, Copy, Debug)]
+struct PathState<'a> {
+    hours: f64,
+    hops: usize,
+    next: Option<&'a str>,
+}
+
+fn compare_path_state(a: &PathState<'_>, b: &PathState<'_>) -> std::cmp::Ordering {
+    a.hours
+        .partial_cmp(&b.hours)
+        .unwrap_or(std::cmp::Ordering::Equal)
+        .then_with(|| a.hops.cmp(&b.hops))
+}
+
+fn reconstruct_path(start: &str, memo: &HashMap<&str, PathState<'_>>) -> Vec<String> {
+    let mut path = Vec::new();
+    let mut seen = HashSet::new();
+    let mut current = Some(start);
+    while let Some(id) = current {
+        if !seen.insert(id) {
+            break;
+        }
+        path.push(id.to_string());
+        current = memo.get(id).and_then(|state| state.next);
+    }
+    path
+}
+
+/// Calculate the longest path starting at `task_id` with no recursive calls.
 fn calculate_longest_path<'a>(
     task_id: &'a str,
     graph: &'a WorkGraph,
     forward_index: &HashMap<&'a str, Vec<&'a str>>,
-    memo: &mut HashMap<&'a str, (f64, Vec<String>)>,
+    memo: &mut HashMap<&'a str, PathState<'a>>,
     cycle_nodes: &HashSet<&str>,
 ) -> (f64, Vec<String>) {
-    // Skip cycle nodes
-    if cycle_nodes.contains(task_id) {
+    if cycle_nodes.contains(task_id) || graph.get_task(task_id).is_none() {
         return (0.0, vec![]);
     }
-
-    // Return memoized result if available
-    if let Some(result) = memo.get(task_id) {
-        return result.clone();
+    if let Some(state) = memo.get(task_id) {
+        return (state.hours, reconstruct_path(task_id, memo));
     }
 
-    let task = match graph.get_task(task_id) {
-        Some(t) => t,
-        None => return (0.0, vec![]),
-    };
-
-    let task_hours = task
-        .estimate
-        .as_ref()
-        .and_then(|e| e.hours)
-        .unwrap_or(1.0)
-        .max(0.0); // Clamp negative estimates to zero
-
-    // Get tasks blocked by this one
-    let blocked_tasks = forward_index.get(task_id);
-
-    let (longest_child_hours, longest_child_path) = if let Some(children) = blocked_tasks {
-        children
-            .iter()
-            .map(|child_id| {
-                calculate_longest_path(child_id, graph, forward_index, memo, cycle_nodes)
-            })
-            .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
-            .unwrap_or((0.0, vec![]))
-    } else {
-        (0.0, vec![])
-    };
-
-    let total_hours = task_hours + longest_child_hours;
-    let mut path = vec![task_id.to_string()];
-    path.extend(longest_child_path);
-
-    memo.insert(task_id, (total_hours, path.clone()));
-    (total_hours, path)
-}
-
-/// Detect cycles among active tasks using DFS
-fn detect_cycles_among_active(graph: &WorkGraph, active_ids: &HashSet<&str>) -> Vec<Vec<String>> {
-    let mut cycles = Vec::new();
-    let mut visited = HashSet::new();
-    let mut rec_stack = HashSet::new();
-    let mut path = Vec::new();
-
-    for task_id in active_ids {
-        if !visited.contains(*task_id) {
-            find_cycles_dfs(
-                graph,
-                task_id,
-                active_ids,
-                &mut visited,
-                &mut rec_stack,
-                &mut path,
-                &mut cycles,
-            );
+    // Discover the reachable active DAG.
+    let mut reachable = HashSet::new();
+    let mut work = vec![task_id];
+    while let Some(id) = work.pop() {
+        if cycle_nodes.contains(id) || !reachable.insert(id) {
+            continue;
+        }
+        for &child in forward_index.get(id).map(Vec::as_slice).unwrap_or(&[]) {
+            if !cycle_nodes.contains(child) {
+                work.push(child);
+            }
         }
     }
 
-    cycles
+    let mut remaining_children: HashMap<&str, usize> = HashMap::new();
+    let mut parents: HashMap<&str, Vec<&str>> = HashMap::new();
+    for &id in &reachable {
+        let children: Vec<&str> = forward_index
+            .get(id)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+            .iter()
+            .copied()
+            .filter(|child| reachable.contains(child) && !cycle_nodes.contains(child))
+            .collect();
+        remaining_children.insert(id, children.len());
+        for child in children {
+            parents.entry(child).or_default().push(id);
+        }
+    }
+
+    let mut queue: std::collections::VecDeque<&str> = remaining_children
+        .iter()
+        .filter_map(|(&id, &remaining)| (remaining == 0).then_some(id))
+        .collect();
+    let mut best_child: HashMap<&str, PathState<'a>> = HashMap::new();
+
+    while let Some(id) = queue.pop_front() {
+        let own_hours = graph
+            .get_task(id)
+            .and_then(|task| task.estimate.as_ref())
+            .and_then(|estimate| estimate.hours)
+            .unwrap_or(1.0);
+        let own_hours = if own_hours.is_finite() {
+            own_hours.max(0.0)
+        } else {
+            0.0
+        };
+        let child = best_child.get(id).copied();
+        // `best_child.next` names the child chosen by this node. Leaf nodes
+        // have no next pointer.
+        let state = PathState {
+            hours: own_hours + child.map(|value| value.hours).unwrap_or(0.0),
+            hops: 1 + child.map(|value| value.hops).unwrap_or(0),
+            next: child.and_then(|value| value.next),
+        };
+        memo.insert(id, state);
+
+        for &parent in parents.get(id).map(Vec::as_slice).unwrap_or(&[]) {
+            let candidate = PathState {
+                hours: state.hours,
+                hops: state.hops,
+                next: Some(id),
+            };
+            match best_child.get(parent) {
+                Some(current)
+                    if compare_path_state(current, &candidate) != std::cmp::Ordering::Less => {}
+                _ => {
+                    best_child.insert(parent, candidate);
+                }
+            }
+            let remaining = remaining_children
+                .get_mut(parent)
+                .expect("reachable parent has child count");
+            *remaining -= 1;
+            if *remaining == 0 {
+                queue.push_back(parent);
+            }
+        }
+    }
+
+    memo.get(task_id)
+        .map(|state| (state.hours, reconstruct_path(task_id, memo)))
+        .unwrap_or((0.0, vec![]))
 }
 
-fn find_cycles_dfs(
-    graph: &WorkGraph,
-    node_id: &str,
-    active_ids: &HashSet<&str>,
-    visited: &mut HashSet<String>,
-    rec_stack: &mut HashSet<String>,
-    path: &mut Vec<String>,
-    cycles: &mut Vec<Vec<String>>,
-) {
-    visited.insert(node_id.to_string());
-    rec_stack.insert(node_id.to_string());
-    path.push(node_id.to_string());
-
-    if let Some(task) = graph.get_task(node_id) {
-        for dep_id in &task.after {
-            if !active_ids.contains(dep_id.as_str()) {
-                continue;
-            }
-
-            if !visited.contains(dep_id) {
-                find_cycles_dfs(graph, dep_id, active_ids, visited, rec_stack, path, cycles);
-            } else if rec_stack.contains(dep_id) {
-                // Found a cycle
-                if let Some(pos) = path.iter().position(|x| x == dep_id) {
-                    let cycle: Vec<String> = path[pos..].to_vec();
-                    cycles.push(cycle);
+/// Detect SCCs in the active induced subgraph using the shared iterative
+/// Tarjan implementation.
+fn detect_cycles_among_active(graph: &WorkGraph, active_ids: &HashSet<&str>) -> Vec<Vec<String>> {
+    let mut named = worksgood::cycle::NamedGraph::new();
+    let mut ids: Vec<&str> = active_ids.iter().copied().collect();
+    ids.sort_unstable();
+    for id in &ids {
+        named.add_node(id);
+    }
+    for id in &ids {
+        if let Some(task) = graph.get_task(id) {
+            for dep in &task.after {
+                if active_ids.contains(dep.as_str()) {
+                    named.add_edge(dep, id);
                 }
             }
         }
     }
-
-    path.pop();
-    rec_stack.remove(node_id);
+    named
+        .analyze_cycles()
+        .into_iter()
+        .map(|cycle| {
+            cycle
+                .members
+                .into_iter()
+                .map(|id| named.get_name(id).to_string())
+                .collect()
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -706,11 +750,7 @@ mod tests {
             calculate_longest_path(entry, &graph, &forward_index, &mut memo, &cycle_nodes);
         }
 
-        let result = memo.iter().max_by(|a, b| {
-            a.1.0
-                .partial_cmp(&b.1.0)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        let result = memo.iter().max_by(|a, b| compare_path_state(a.1, b.1));
         // Just verify we don't crash — the exact result with NaN is implementation-defined
         assert!(result.is_some());
     }
@@ -764,6 +804,27 @@ mod tests {
             "negative estimate should not reduce path length, got {}",
             hours
         );
+    }
+
+    #[test]
+    fn deep_chain_critical_path_is_stack_safe_and_linear_storage() {
+        let mut graph = WorkGraph::new();
+        for index in 0..2_000usize {
+            let mut task = make_task_with_hours(&format!("deep-{index:04}"), "deep", 1.0);
+            if index > 0 {
+                task.after = vec![format!("deep-{:04}", index - 1)];
+            }
+            graph.add_node(Node::Task(task));
+        }
+        let active_ids: HashSet<&str> = graph.tasks().map(|task| task.id.as_str()).collect();
+        let cycle_nodes = HashSet::new();
+        let forward = build_forward_index(&graph, &active_ids, &cycle_nodes);
+        let mut memo = HashMap::new();
+        let (hours, path) =
+            calculate_longest_path("deep-0000", &graph, &forward, &mut memo, &cycle_nodes);
+        assert_eq!(hours, 2_000.0);
+        assert_eq!(path.len(), 2_000);
+        assert_eq!(memo.len(), 2_000);
     }
 
     #[test]

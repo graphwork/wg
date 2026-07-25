@@ -581,7 +581,7 @@ pub fn generate_viz_output_from_graph(
 
     // Filter out internal tasks (assign-*, evaluate-*) unless --show-internal
     let empty_annotations: HashMap<String, AnnotationInfo> = HashMap::new();
-    let (tasks_to_show, annotations) = if options.show_internal {
+    let (tasks_to_show, mut annotations) = if options.show_internal {
         (tasks_to_show, empty_annotations)
     } else if options.show_internal_running_only {
         filter_internal_tasks_running_only(graph, tasks_to_show, &empty_annotations)
@@ -618,11 +618,50 @@ pub fn generate_viz_output_from_graph(
         peers
     };
 
-    // Extend tasks_to_show with peer task references
+    // Extend tasks_to_show with peer task references.
     let mut tasks_to_show = tasks_to_show;
     for pt in &peer_tasks {
         tasks_to_show.push(pt);
     }
+
+    // Materialize only archived boundaries adjacent to the induced active
+    // view. This keeps long archived prefixes collapsed while making every
+    // cut edge explicit and discoverable. The full historical tasks and exact
+    // edges remain in archive.jsonl and reappear on restore.
+    let visible_ids: HashSet<&str> = tasks_to_show.iter().map(|task| task.id.as_str()).collect();
+    let boundary_tasks: Vec<Task> = graph
+        .archived_boundaries()
+        .filter(|boundary| {
+            boundary
+                .predecessors
+                .iter()
+                .chain(boundary.successors.iter())
+                .any(|id| visible_ids.contains(id.as_str()))
+        })
+        .map(|boundary| Task {
+            id: boundary.id.clone(),
+            title: boundary.title.clone(),
+            status: boundary.status,
+            after: boundary
+                .predecessors
+                .iter()
+                .filter(|id| visible_ids.contains(id.as_str()))
+                .cloned()
+                .collect(),
+            ..Task::default()
+        })
+        .collect();
+    for boundary in &boundary_tasks {
+        annotations.insert(
+            boundary.id.clone(),
+            AnnotationInfo {
+                text: "[archived boundary]".to_string(),
+                dot_task_ids: Vec::new(),
+            },
+        );
+        tasks_to_show.push(boundary);
+    }
+
     let task_ids: HashSet<&str> = tasks_to_show.iter().map(|t| t.id.as_str()).collect();
 
     // Calculate critical path if requested
@@ -894,100 +933,88 @@ pub fn run_json(dir: &Path, options: &VizOptions) -> Result<()> {
     Ok(())
 }
 
-/// Calculate the critical path (longest dependency chain by hours)
+/// Calculate the critical path (longest dependency chain by hours) with an
+/// iterative Kahn pass. Cyclic remainders are left out of this DAG metric (the
+/// cycle renderer still shows them); no call-stack depth follows graph depth.
 fn calculate_critical_path(graph: &WorkGraph, active_ids: &HashSet<&str>) -> HashSet<String> {
-    // Build forward index: task_id -> tasks that it blocks
-    let mut forward_index: HashMap<&str, Vec<&str>> = HashMap::new();
-
+    let mut forward: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut indegree: HashMap<&str, usize> = active_ids.iter().map(|&id| (id, 0usize)).collect();
     for task in graph.tasks() {
         if !active_ids.contains(task.id.as_str()) {
             continue;
         }
-
-        for blocker_id in &task.after {
-            if active_ids.contains(blocker_id.as_str()) {
-                forward_index
-                    .entry(blocker_id.as_str())
+        for blocker in &task.after {
+            if active_ids.contains(blocker.as_str()) {
+                forward
+                    .entry(blocker.as_str())
                     .or_default()
                     .push(task.id.as_str());
+                *indegree.entry(task.id.as_str()).or_default() += 1;
             }
         }
     }
 
-    // Find entry points (tasks with no active blockers)
-    let entry_points: Vec<&str> = graph
-        .tasks()
-        .filter(|t| active_ids.contains(t.id.as_str()))
-        .filter(|t| t.after.iter().all(|b| !active_ids.contains(b.as_str())))
-        .map(|t| t.id.as_str())
+    let mut queue: std::collections::VecDeque<&str> = indegree
+        .iter()
+        .filter_map(|(&id, &degree)| (degree == 0).then_some(id))
         .collect();
-
-    // Calculate longest path from each entry point
-    let mut memo: HashMap<&str, (f64, Vec<String>)> = HashMap::new();
-    let mut visited: HashSet<&str> = HashSet::new();
-
-    for entry in &entry_points {
-        calc_longest_path(entry, graph, &forward_index, &mut memo, &mut visited);
+    let mut hours: HashMap<&str, f64> = HashMap::new();
+    let mut previous: HashMap<&str, &str> = HashMap::new();
+    while let Some(id) = queue.pop_front() {
+        let own = graph
+            .get_task(id)
+            .and_then(|task| task.estimate.as_ref())
+            .and_then(|estimate| estimate.hours)
+            .unwrap_or(1.0);
+        let own = if own.is_finite() { own.max(0.0) } else { 0.0 };
+        hours.entry(id).or_insert(own);
+        let base = hours[id];
+        for &child in forward.get(id).map(Vec::as_slice).unwrap_or(&[]) {
+            let child_own = graph
+                .get_task(child)
+                .and_then(|task| task.estimate.as_ref())
+                .and_then(|estimate| estimate.hours)
+                .unwrap_or(1.0);
+            let child_own = if child_own.is_finite() {
+                child_own.max(0.0)
+            } else {
+                0.0
+            };
+            let candidate = base + child_own;
+            if hours.get(child).is_none_or(|current| candidate > *current) {
+                hours.insert(child, candidate);
+                previous.insert(child, id);
+            }
+            let degree = indegree.get_mut(child).expect("active child has indegree");
+            *degree -= 1;
+            if *degree == 0 {
+                queue.push_back(child);
+            }
+        }
     }
 
-    // Find the overall longest path
-    memo.into_values()
-        .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
-        .map(|(_, path)| path.into_iter().collect())
-        .unwrap_or_default()
-}
-
-fn calc_longest_path<'a>(
-    task_id: &'a str,
-    graph: &'a WorkGraph,
-    forward_index: &HashMap<&'a str, Vec<&'a str>>,
-    memo: &mut HashMap<&'a str, (f64, Vec<String>)>,
-    visited: &mut HashSet<&'a str>,
-) -> (f64, Vec<String>) {
-    // Cycle detection
-    if visited.contains(task_id) {
-        return (0.0, vec![]);
-    }
-
-    if let Some(result) = memo.get(task_id) {
-        return result.clone();
-    }
-
-    let task = match graph.get_task(task_id) {
-        Some(t) => t,
-        None => return (0.0, vec![]),
+    let Some((&end, _)) = hours
+        .iter()
+        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+    else {
+        return HashSet::new();
     };
-
-    visited.insert(task_id);
-
-    let task_hours = task.estimate.as_ref().and_then(|e| e.hours).unwrap_or(1.0);
-
-    let (longest_child_hours, longest_child_path) =
-        if let Some(children) = forward_index.get(task_id) {
-            children
-                .iter()
-                .map(|child_id| calc_longest_path(child_id, graph, forward_index, memo, visited))
-                .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
-                .unwrap_or((0.0, vec![]))
-        } else {
-            (0.0, vec![])
-        };
-
-    visited.remove(task_id);
-
-    let total_hours = task_hours + longest_child_hours;
-    let mut path = vec![task_id.to_string()];
-    path.extend(longest_child_path);
-
-    memo.insert(task_id, (total_hours, path.clone()));
-    (total_hours, path)
+    let mut path = HashSet::new();
+    let mut cursor = Some(end);
+    while let Some(id) = cursor {
+        if !path.insert(id.to_string()) {
+            break;
+        }
+        cursor = previous.get(id).copied();
+    }
+    path
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use worksgood::format_hours;
-    use worksgood::graph::{Estimate, Node, Task};
+    use worksgood::graph::{ArchivedBoundary, Estimate, Node, Task};
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {
@@ -1040,6 +1067,41 @@ mod tests {
         assert_eq!(
             "ASCII".parse::<OutputFormat>().unwrap(),
             OutputFormat::Ascii
+        );
+    }
+
+    #[test]
+    fn active_induced_view_collapses_archived_prefix_to_honest_boundary() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::ArchivedBoundary(ArchivedBoundary {
+            id: "old-prefix".to_string(),
+            title: "Old prefix".to_string(),
+            status: Status::Done,
+            predecessors: Vec::new(),
+            successors: vec!["old-middle".to_string()],
+            archived_at: "2024-01-01T00:00:00Z".to_string(),
+        }));
+        graph.add_node(Node::ArchivedBoundary(ArchivedBoundary {
+            id: "old-middle".to_string(),
+            title: "Old middle".to_string(),
+            status: Status::Done,
+            predecessors: vec!["old-prefix".to_string()],
+            successors: vec!["active".to_string()],
+            archived_at: "2024-01-02T00:00:00Z".to_string(),
+        }));
+        let mut active = make_task("active", "Active");
+        active.after = vec!["old-middle".to_string()];
+        graph.add_node(Node::Task(active));
+
+        let output = generate_viz_output_from_graph(&graph, dir.path(), &VizOptions::default())
+            .expect("boundary-aware active view should render");
+        assert!(output.text.contains("active"));
+        assert!(output.text.contains("old-middle"));
+        assert!(output.text.contains("archived boundary"));
+        assert!(
+            !output.text.contains("old-prefix"),
+            "archived prefix should collapse behind the adjacent boundary"
         );
     }
 

@@ -191,17 +191,21 @@ pub fn graph_path(dir: &Path) -> std::path::PathBuf {
 /// Collect all transitive dependents of a task using a reverse dependency index.
 ///
 /// Given a `reverse_index` mapping task IDs to their direct dependents,
-/// recursively collects all tasks that transitively depend on `task_id`.
-/// Results are accumulated in `visited` (which also prevents cycles).
+/// iteratively collects every transitive dependent of `task_id`.
+/// Results are accumulated in `visited` (which also prevents cycles). The
+/// explicit work stack keeps impact/reset/replay analysis safe on deep chains.
 pub fn collect_transitive_dependents(
     reverse_index: &HashMap<String, Vec<String>>,
     task_id: &str,
     visited: &mut HashSet<String>,
 ) {
-    if let Some(dependents) = reverse_index.get(task_id) {
-        for dep_id in dependents {
-            if visited.insert(dep_id.clone()) {
-                collect_transitive_dependents(reverse_index, dep_id, visited);
+    let mut work = vec![task_id.to_string()];
+    while let Some(id) = work.pop() {
+        if let Some(dependents) = reverse_index.get(&id) {
+            for dep_id in dependents {
+                if visited.insert(dep_id.clone()) {
+                    work.push(dep_id.clone());
+                }
             }
         }
     }

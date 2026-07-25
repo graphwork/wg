@@ -121,12 +121,8 @@ fn test_executor_prompt_no_validation_flag() {
         guide
     );
 
-    let guidance = worksgood::service::executor::build_decomposition_guidance(
-        "multi-step task",
-        "task-1",
-        10,
-        8,
-    );
+    let guidance =
+        worksgood::service::executor::build_decomposition_guidance("multi-step task", "task-1", 10);
     assert!(
         !guidance.contains("--validation"),
         "build_decomposition_guidance output must not contain --validation flag, got:\n{}",

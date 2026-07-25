@@ -133,7 +133,7 @@ The `wg func` system (`src/function.rs`, `src/plan_validator.rs`) already has st
 - `required_phases`: tags (phases) that must be present
 - `forbidden_patterns`: tag combinations that are banned
 - `allow_cycles` / `max_total_iterations`: cycle control
-- `max_depth`: dependency chain limit
+- legacy `max_depth` input is accepted but ignored; valid dependency depth is unlimited
 
 ### 4.2 Missing Constraint: Required Validation Phase
 

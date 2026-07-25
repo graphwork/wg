@@ -13,7 +13,13 @@ struct BlockingNode {
     failure_reason: Option<String>,
     evaluation_health: Option<worksgood::eval_lifecycle::EvaluationHealth>,
     eval_bypasses: Vec<(String, Status)>,
-    children: Vec<BlockingNode>,
+    children: Vec<usize>,
+}
+
+#[derive(Debug, Clone)]
+struct BlockingTree {
+    nodes: Vec<BlockingNode>,
+    root: usize,
 }
 
 /// Root blocker information
@@ -84,61 +90,68 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
     Ok(())
 }
 
+fn blocking_node(graph: &WorkGraph, task_id: &str) -> BlockingNode {
+    let task = graph.get_task(task_id);
+    BlockingNode {
+        id: task_id.to_string(),
+        status: task.map(|task| task.status).unwrap_or(Status::Open),
+        is_phantom: task.is_none() && worksgood::federation::parse_remote_ref(task_id).is_none(),
+        failure_reason: task.and_then(|task| task.failure_reason.clone()),
+        evaluation_health: task
+            .and_then(|task| worksgood::eval_lifecycle::evaluation_health(graph, &task.id)),
+        eval_bypasses: Vec::new(),
+        children: Vec::new(),
+    }
+}
+
 fn build_blocking_tree(
     graph: &WorkGraph,
     task_id: &str,
     visited: &mut HashSet<String>,
     dir: &Path,
-) -> BlockingNode {
-    let task = graph.get_task(task_id);
-    let is_phantom = task.is_none() && worksgood::federation::parse_remote_ref(task_id).is_none();
-    let status = task.map(|t| t.status).unwrap_or(Status::Open);
-
-    let mut node = BlockingNode {
-        id: task_id.to_string(),
-        status,
-        is_phantom,
-        failure_reason: task.and_then(|task| task.failure_reason.clone()),
-        evaluation_health: task
-            .and_then(|task| worksgood::eval_lifecycle::evaluation_health(graph, &task.id)),
-        eval_bypasses: vec![],
-        children: vec![],
+) -> BlockingTree {
+    let mut tree = BlockingTree {
+        nodes: vec![blocking_node(graph, task_id)],
+        root: 0,
     };
-
-    if visited.contains(task_id) {
-        return node; // Avoid cycles
-    }
-    visited.insert(task_id.to_string());
-
-    if let Some(task) = task {
+    let mut work = vec![0usize];
+    while let Some(index) = work.pop() {
+        let id = tree.nodes[index].id.clone();
+        if !visited.insert(id.clone()) {
+            continue;
+        }
+        let Some(task) = graph.get_task(&id) else {
+            continue;
+        };
+        let mut recurse = Vec::new();
         for blocker_id in &task.after {
-            // Skip if already visited (cycle detection)
             if visited.contains(blocker_id) {
                 continue;
             }
-
-            if let Some((_peer_name, _remote_task_id)) =
+            if let Some((peer_name, remote_task_id)) =
                 worksgood::federation::parse_remote_ref(blocker_id)
             {
-                // Cross-repo dependency — resolve remote status
                 let remote = worksgood::federation::resolve_remote_task_status(
-                    _peer_name,
-                    _remote_task_id,
+                    peer_name,
+                    remote_task_id,
                     dir,
                 );
                 if !remote.status.is_terminal() {
-                    let child = BlockingNode {
+                    let child = tree.nodes.len();
+                    tree.nodes.push(BlockingNode {
                         id: blocker_id.clone(),
                         status: remote.status,
                         is_phantom: false,
                         failure_reason: None,
                         evaluation_health: None,
-                        eval_bypasses: vec![],
-                        children: vec![], // Don't recurse into remote graphs
-                    };
-                    node.children.push(child);
+                        eval_bypasses: Vec::new(),
+                        children: Vec::new(),
+                    });
+                    tree.nodes[index].children.push(child);
                 }
-            } else if graph.get_task(blocker_id).is_some() {
+            } else if graph.get_task(blocker_id).is_some()
+                || graph.get_archived_boundary(blocker_id).is_some()
+            {
                 match worksgood::query::dependency_disposition(
                     blocker_id,
                     &task.id,
@@ -148,47 +161,39 @@ fn build_blocking_tree(
                     worksgood::query::DependencyDisposition::Satisfied => {}
                     worksgood::query::DependencyDisposition::EvalSystemBypass {
                         blocker_status,
-                    } => node
+                    } => tree.nodes[index]
                         .eval_bypasses
                         .push((blocker_id.clone(), blocker_status)),
                     worksgood::query::DependencyDisposition::Blocked { .. } => {
-                        let child = build_blocking_tree(graph, blocker_id, visited, dir);
-                        node.children.push(child);
+                        let child = tree.nodes.len();
+                        tree.nodes.push(blocking_node(graph, blocker_id));
+                        tree.nodes[index].children.push(child);
+                        recurse.push(child);
                     }
                 }
             } else {
-                // Phantom dependency — task doesn't exist in the graph
-                let child = BlockingNode {
-                    id: blocker_id.clone(),
-                    status: Status::Open,
-                    is_phantom: true,
-                    failure_reason: None,
-                    evaluation_health: None,
-                    eval_bypasses: vec![],
-                    children: vec![],
-                };
-                node.children.push(child);
+                let child = tree.nodes.len();
+                tree.nodes.push(blocking_node(graph, blocker_id));
+                tree.nodes[index].children.push(child);
             }
         }
+        work.extend(recurse.into_iter().rev());
     }
-
-    node
+    tree
 }
 
-fn collect_root_blockers(graph: &WorkGraph, node: &BlockingNode, roots: &mut HashSet<String>) {
-    if node.children.is_empty() {
-        if node.is_phantom {
-            // Phantom dependency is always a root blocker
-            roots.insert(node.id.clone());
-        } else if let Some(task) = graph.get_task(&node.id) {
-            // It's a root blocker if it's not terminal (still open, in-progress, or blocked)
-            if !task.status.is_terminal() {
-                roots.insert(node.id.clone());
-            }
+fn collect_root_blockers(graph: &WorkGraph, tree: &BlockingTree, roots: &mut HashSet<String>) {
+    for node in &tree.nodes {
+        if !node.children.is_empty() {
+            continue;
         }
-    } else {
-        for child in &node.children {
-            collect_root_blockers(graph, child, roots);
+        if node.is_phantom {
+            roots.insert(node.id.clone());
+        } else if graph
+            .get_task(&node.id)
+            .is_some_and(|task| !task.status.is_terminal())
+        {
+            roots.insert(node.id.clone());
         }
     }
 }
@@ -203,44 +208,32 @@ fn is_task_ready(graph: &WorkGraph, task: &Task, dir: &Path) -> bool {
     })
 }
 
-fn count_blockers(node: &BlockingNode) -> usize {
-    let mut count = 0;
-    let mut visited = HashSet::new();
-    count_blockers_recursive(node, &mut count, &mut visited);
-    count
-}
-
-fn count_blockers_recursive(node: &BlockingNode, count: &mut usize, visited: &mut HashSet<String>) {
-    for child in &node.children {
-        if !visited.contains(&child.id) {
-            visited.insert(child.id.clone());
-            *count += 1;
-            count_blockers_recursive(child, count, visited);
-        }
-    }
+fn count_blockers(tree: &BlockingTree) -> usize {
+    tree.nodes.len().saturating_sub(1)
 }
 
 fn print_human(
     graph: &WorkGraph,
     task: &Task,
-    tree: &BlockingNode,
+    tree: &BlockingTree,
     root_blockers: &[RootBlocker],
     phantom_roots: &[String],
     total: usize,
 ) {
     println!("Task: {}", task.id);
+    let root = &tree.nodes[tree.root];
 
-    if tree.children.is_empty() {
+    if root.children.is_empty() {
         println!("Status: {:?}", task.status);
         println!();
-        if tree.eval_bypasses.is_empty() {
+        if root.eval_bypasses.is_empty() {
             println!("{} has no blockers.", task.id);
         } else {
             println!(
                 "{} is dispatcher-ready via evaluation-system bypass.",
                 task.id
             );
-            for (blocker, status) in &tree.eval_bypasses {
+            for (blocker, status) in &root.eval_bypasses {
                 println!(
                     "  {}: {} — evaluation-system bypass (this satellite is part of {}'s gate)",
                     blocker, status, blocker
@@ -264,7 +257,7 @@ fn print_human(
     println!();
     println!("Blocking chain:");
     println!();
-    print_tree(tree, "", 0);
+    print_tree(tree);
 
     if !root_blockers.is_empty() || !phantom_roots.is_empty() {
         println!();
@@ -318,55 +311,53 @@ fn print_human(
     }
 }
 
-fn print_tree(node: &BlockingNode, prefix: &str, depth: usize) {
-    if depth == 0 {
-        // Root node - just print the ID
-        println!("{}", node.id);
-    } else if node.is_phantom {
-        // Phantom dependency — clearly label as non-existent
-        println!(
-            "{} \\-- blocked by: {} (DOES NOT EXIST — phantom dependency) <-- ROOT CAUSE",
-            prefix, node.id
-        );
-    } else {
-        // Child node - print with tree connector and status
-        let status_str = format!("(status: {:?})", node.status);
-        let root_marker = if node.children.is_empty() && !node.status.is_terminal() {
-            " <-- ROOT CAUSE"
+fn print_tree(tree: &BlockingTree) {
+    const MAX_VISUAL_INDENT: usize = 32;
+    let mut work = vec![(tree.root, 0usize)];
+    while let Some((index, depth)) = work.pop() {
+        let node = &tree.nodes[index];
+        let prefix = if depth <= 1 {
+            String::new()
+        } else if depth > MAX_VISUAL_INDENT {
+            "… ".to_string()
         } else {
-            ""
+            "     ".repeat(depth - 1)
         };
-        println!(
-            "{} \\-- blocked by: {} {}{}",
-            prefix, node.id, status_str, root_marker
-        );
-        if let Some(reason) = node.failure_reason.as_deref() {
-            println!("{}     lifecycle health: {}", prefix, reason);
-        }
-        if let Some(health) = node.evaluation_health.as_ref() {
+        if depth == 0 {
+            println!("{}", node.id);
+        } else if node.is_phantom {
             println!(
-                "{}     evaluation health: {} — {}",
-                prefix, health.state, health.diagnostic
+                "{} \\-- blocked by: {} (DOES NOT EXIST — phantom dependency) <-- ROOT CAUSE",
+                prefix, node.id
             );
+        } else {
+            let root_marker = if node.children.is_empty() && !node.status.is_terminal() {
+                " <-- ROOT CAUSE"
+            } else {
+                ""
+            };
+            println!(
+                "{} \\-- blocked by: {} (status: {:?}){}",
+                prefix, node.id, node.status, root_marker
+            );
+            if let Some(reason) = node.failure_reason.as_deref() {
+                println!("{}     lifecycle health: {}", prefix, reason);
+            }
+            if let Some(health) = node.evaluation_health.as_ref() {
+                println!(
+                    "{}     evaluation health: {} — {}",
+                    prefix, health.state, health.diagnostic
+                );
+            }
         }
-    }
-
-    // Calculate the prefix for children
-    let child_prefix = if depth == 0 {
-        "".to_string()
-    } else {
-        format!("{}     ", prefix)
-    };
-
-    for child in &node.children {
-        print_tree(child, &child_prefix, depth + 1);
+        work.extend(node.children.iter().rev().map(|&child| (child, depth + 1)));
     }
 }
 
 fn print_json(
     graph: &WorkGraph,
     task: &Task,
-    tree: &BlockingNode,
+    tree: &BlockingTree,
     root_blockers: &[RootBlocker],
     phantom_roots: &[String],
     total: usize,
@@ -390,15 +381,43 @@ fn print_json(
             "status": "DOES NOT EXIST",
         }));
     }
+    let root = &tree.nodes[tree.root];
+    let blocking_chain = if tree.nodes.len() <= 256 {
+        tree_to_json(tree, tree.root)
+    } else {
+        // serde_json values are recursively represented. For a very deep
+        // chain, preserve every node in a flat parent-indexed form rather than
+        // risking serializer/drop stack overflow or truncating graph truth.
+        let mut parent: Vec<Option<usize>> = vec![None; tree.nodes.len()];
+        for (index, node) in tree.nodes.iter().enumerate() {
+            for &child in &node.children {
+                parent[child] = Some(index);
+            }
+        }
+        serde_json::json!({
+            "format": "flat-deep-chain",
+            "root": tree.root,
+            "nodes": tree.nodes.iter().enumerate().map(|(index, node)| serde_json::json!({
+                "index": index,
+                "parent": parent[index],
+                "id": node.id,
+                "status": format!("{:?}", node.status),
+                "phantom": node.is_phantom,
+                "failure_reason": node.failure_reason,
+                "evaluation_health": node.evaluation_health,
+                "evaluation_system_bypasses": node.eval_bypasses,
+            })).collect::<Vec<_>>(),
+        })
+    };
     let output = serde_json::json!({
         "task": {
             "id": task.id,
             "title": task.title,
             "status": task.status,
         },
-        "dispatcher_ready_via_evaluation_system_bypass": tree.children.is_empty() && !tree.eval_bypasses.is_empty(),
-        "is_blocked": !tree.children.is_empty(),
-        "blocking_chain": tree_to_json(tree),
+        "dispatcher_ready_via_evaluation_system_bypass": root.children.is_empty() && !root.eval_bypasses.is_empty(),
+        "is_blocked": !root.children.is_empty(),
+        "blocking_chain": blocking_chain,
         "root_blockers": all_root_blockers,
         "total_blockers": total,
         "evaluation_health": worksgood::eval_lifecycle::evaluation_health(graph, &task.id),
@@ -407,11 +426,12 @@ fn print_json(
     Ok(())
 }
 
-fn tree_to_json(node: &BlockingNode) -> serde_json::Value {
+fn tree_to_json(tree: &BlockingTree, index: usize) -> serde_json::Value {
+    let node = &tree.nodes[index];
     let mut obj = serde_json::json!({
         "id": node.id,
         "status": format!("{:?}", node.status),
-        "after": node.children.iter().map(tree_to_json).collect::<Vec<_>>(),
+        "after": node.children.iter().map(|&child| tree_to_json(tree, child)).collect::<Vec<_>>(),
     });
     if node.is_phantom {
         obj["phantom"] = serde_json::Value::Bool(true);
@@ -453,8 +473,8 @@ mod tests {
         let dir = Path::new("/tmp");
         let tree = build_blocking_tree(&graph, "t1", &mut visited, dir);
 
-        assert_eq!(tree.id, "t1");
-        assert!(tree.children.is_empty());
+        assert_eq!(tree.nodes[tree.root].id, "t1");
+        assert!(tree.nodes[tree.root].children.is_empty());
     }
 
     #[test]
@@ -472,9 +492,10 @@ mod tests {
         let dir = Path::new("/tmp");
         let tree = build_blocking_tree(&graph, "blocked", &mut visited, dir);
 
-        assert_eq!(tree.id, "blocked");
-        assert_eq!(tree.children.len(), 1);
-        assert_eq!(tree.children[0].id, "blocker");
+        let root = &tree.nodes[tree.root];
+        assert_eq!(root.id, "blocked");
+        assert_eq!(root.children.len(), 1);
+        assert_eq!(tree.nodes[root.children[0]].id, "blocker");
     }
 
     #[test]
@@ -495,11 +516,13 @@ mod tests {
         let dir = Path::new("/tmp");
         let tree = build_blocking_tree(&graph, "t3", &mut visited, dir);
 
-        assert_eq!(tree.id, "t3");
-        assert_eq!(tree.children.len(), 1);
-        assert_eq!(tree.children[0].id, "t2");
-        assert_eq!(tree.children[0].children.len(), 1);
-        assert_eq!(tree.children[0].children[0].id, "t1");
+        let root = &tree.nodes[tree.root];
+        assert_eq!(root.id, "t3");
+        assert_eq!(root.children.len(), 1);
+        let middle = &tree.nodes[root.children[0]];
+        assert_eq!(middle.id, "t2");
+        assert_eq!(middle.children.len(), 1);
+        assert_eq!(tree.nodes[middle.children[0]].id, "t1");
     }
 
     #[test]
@@ -519,8 +542,8 @@ mod tests {
         let dir = Path::new("/tmp");
         let tree = build_blocking_tree(&graph, "blocked", &mut visited, dir);
 
-        assert_eq!(tree.id, "blocked");
-        assert!(tree.children.is_empty()); // Done blocker excluded
+        assert_eq!(tree.nodes[tree.root].id, "blocked");
+        assert!(tree.nodes[tree.root].children.is_empty()); // Done blocker excluded
     }
 
     #[test]
@@ -541,11 +564,13 @@ mod tests {
         let tree = build_blocking_tree(&graph, "t1", &mut visited, dir);
 
         // Should not infinite loop - t2 will be a child but t1 won't be repeated
-        assert_eq!(tree.id, "t1");
-        assert_eq!(tree.children.len(), 1);
-        assert_eq!(tree.children[0].id, "t2");
+        let root = &tree.nodes[tree.root];
+        assert_eq!(root.id, "t1");
+        assert_eq!(root.children.len(), 1);
+        let child = &tree.nodes[root.children[0]];
+        assert_eq!(child.id, "t2");
         // t2's children should be empty because t1 was already visited
-        assert!(tree.children[0].children.is_empty());
+        assert!(child.children.is_empty());
     }
 
     #[test]
@@ -637,8 +662,11 @@ mod tests {
 
             let mut visited = HashSet::new();
             let tree = build_blocking_tree(&graph, ".flip-source", &mut visited, Path::new("/tmp"));
-            assert!(tree.children.is_empty());
-            assert_eq!(tree.eval_bypasses, vec![("source".to_string(), status)]);
+            assert!(tree.nodes[tree.root].children.is_empty());
+            assert_eq!(
+                tree.nodes[tree.root].eval_bypasses,
+                vec![("source".to_string(), status)]
+            );
             assert!(is_task_ready(&graph, &flip, Path::new("/tmp")));
         }
     }
@@ -655,6 +683,25 @@ mod tests {
             graph.add_node(Node::Task(dependent.clone()));
             assert!(!is_task_ready(&graph, &dependent, Path::new("/tmp")));
         }
+    }
+
+    #[test]
+    fn deep_blocking_chain_uses_iterative_arena() {
+        let mut graph = WorkGraph::new();
+        for index in 0..2_000usize {
+            let mut task = make_task(&format!("deep-{index:04}"), "Deep blocker");
+            if index > 0 {
+                task.after = vec![format!("deep-{:04}", index - 1)];
+            }
+            graph.add_node(Node::Task(task));
+        }
+        let mut visited = HashSet::new();
+        let tree = build_blocking_tree(&graph, "deep-1999", &mut visited, Path::new("/tmp"));
+        assert_eq!(tree.nodes.len(), 2_000);
+        assert_eq!(count_blockers(&tree), 1_999);
+        let mut roots = HashSet::new();
+        collect_root_blockers(&graph, &tree, &mut roots);
+        assert_eq!(roots, HashSet::from(["deep-0000".to_string()]));
     }
 
     #[test]

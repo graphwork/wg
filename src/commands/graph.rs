@@ -135,7 +135,8 @@ pub fn run(
         .map(|t| (t.clone(), false))
         .collect();
 
-    // Load archived tasks if requested
+    // Load full archived tasks when requested. Otherwise, derive only compact
+    // archived-boundary markers adjacent to the active induced subgraph.
     if include_archive {
         let arch_path = archive_path(dir);
         let archived = load_archive(&arch_path)?;
@@ -143,6 +144,32 @@ pub fn run(
             if in_date_range(&task, since_dt.as_ref(), until_dt.as_ref()) {
                 all_tasks.push((task, true));
             }
+        }
+    } else if since_dt.is_none() && until_dt.is_none() {
+        let active_ids: std::collections::HashSet<&str> =
+            graph.tasks().map(|task| task.id.as_str()).collect();
+        for boundary in graph.archived_boundaries().filter(|boundary| {
+            boundary
+                .predecessors
+                .iter()
+                .chain(boundary.successors.iter())
+                .any(|id| active_ids.contains(id.as_str()))
+        }) {
+            all_tasks.push((
+                Task {
+                    id: boundary.id.clone(),
+                    title: format!("[archived boundary] {}", boundary.title),
+                    status: boundary.status,
+                    after: boundary
+                        .predecessors
+                        .iter()
+                        .filter(|id| active_ids.contains(id.as_str()))
+                        .cloned()
+                        .collect(),
+                    ..Task::default()
+                },
+                true,
+            ));
         }
     }
 

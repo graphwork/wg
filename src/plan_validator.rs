@@ -3,7 +3,7 @@
 //! Validates that a planner-generated task graph satisfies the structural
 //! constraints declared in a generative function definition.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::HashSet;
 
 use crate::function::{ForbiddenPattern, StructuralConstraints, TaskTemplate};
 use crate::graph::{CycleAnalysis, Node, Task, WorkGraph};
@@ -18,7 +18,6 @@ pub enum ValidationError {
     ForbiddenPatternFound { tags: Vec<String>, reason: String },
     CyclesNotAllowed { cycle_count: usize },
     TooManyCycleIterations { total: u32, max: u32 },
-    DepthExceeded { depth: u32, max: u32 },
 }
 
 impl std::fmt::Display for ValidationError {
@@ -40,9 +39,6 @@ impl std::fmt::Display for ValidationError {
             }
             Self::TooManyCycleIterations { total, max } => {
                 write!(f, "total cycle iterations {total} exceeds maximum {max}")
-            }
-            Self::DepthExceeded { depth, max } => {
-                write!(f, "dependency depth {depth} exceeds maximum {max}")
             }
         }
     }
@@ -122,17 +118,6 @@ pub fn validate_plan(
         }
     }
 
-    // --- Dependency depth (BFS) ---
-    if let Some(max_depth) = constraints.max_depth {
-        let depth = compute_max_depth(tasks);
-        if depth > max_depth {
-            errors.push(ValidationError::DepthExceeded {
-                depth,
-                max: max_depth,
-            });
-        }
-    }
-
     if errors.is_empty() {
         Ok(())
     } else {
@@ -179,66 +164,6 @@ fn build_temp_graph(templates: &[TaskTemplate]) -> WorkGraph {
     graph
 }
 
-/// Compute max dependency depth via BFS from root nodes (zero in-degree).
-fn compute_max_depth(tasks: &[TaskTemplate]) -> u32 {
-    if tasks.is_empty() {
-        return 0;
-    }
-
-    let ids: HashSet<&str> = tasks.iter().map(|t| t.template_id.as_str()).collect();
-
-    // Build adjacency: parent → children
-    let mut children: HashMap<&str, Vec<&str>> = HashMap::new();
-    let mut in_degree: HashMap<&str, usize> = HashMap::new();
-
-    for t in tasks {
-        in_degree.entry(t.template_id.as_str()).or_insert(0);
-        children.entry(t.template_id.as_str()).or_default();
-        for dep in &t.after {
-            if ids.contains(dep.as_str()) {
-                children
-                    .entry(dep.as_str())
-                    .or_default()
-                    .push(t.template_id.as_str());
-                *in_degree.entry(t.template_id.as_str()).or_insert(0) += 1;
-            }
-        }
-    }
-
-    // BFS tracking depth per level
-    let mut queue: VecDeque<(&str, u32)> = VecDeque::new();
-    for (&id, &deg) in &in_degree {
-        if deg == 0 {
-            queue.push_back((id, 0));
-        }
-    }
-
-    let mut max_depth: u32 = 0;
-    let mut best: HashMap<&str, u32> = HashMap::new();
-
-    while let Some((id, depth)) = queue.pop_front() {
-        if let Some(&prev) = best.get(id)
-            && depth <= prev
-        {
-            continue;
-        }
-        best.insert(id, depth);
-        if depth > max_depth {
-            max_depth = depth;
-        }
-        if let Some(kids) = children.get(id) {
-            for &kid in kids {
-                let new_depth = depth + 1;
-                if best.get(kid).is_none_or(|&d| d < new_depth) {
-                    queue.push_back((kid, new_depth));
-                }
-            }
-        }
-    }
-
-    max_depth
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -264,7 +189,7 @@ mod tests {
             min_tasks: None,
             max_tasks: None,
             required_skills: vec![],
-            max_depth: None,
+            obsolete_max_depth: None,
             allow_cycles: false,
             max_total_iterations: None,
             required_phases: vec![],
@@ -478,58 +403,23 @@ mod tests {
     }
 
     #[test]
-    fn depth_exceeded() {
-        // a → b → c → d (depth 3)
-        let a = template("a");
-        let mut b = template("b");
-        b.after = vec!["a".to_string()];
-        let mut c = template("c");
-        c.after = vec!["b".to_string()];
-        let mut d = template("d");
-        d.after = vec!["c".to_string()];
-        let tasks = vec![a, b, c, d];
-        let constraints = StructuralConstraints {
-            max_depth: Some(2),
-            ..empty_constraints()
-        };
-        let errs = validate_plan(&tasks, &constraints).unwrap_err();
+    fn legacy_max_depth_is_accepted_but_ignored_and_not_serialized() {
+        let constraints: StructuralConstraints =
+            serde_yaml::from_str("max_depth: 1\nallow_cycles: false\n").unwrap();
+        assert_eq!(constraints.obsolete_max_depth, Some(1));
+
+        let mut tasks = vec![template("deep-0")];
+        for index in 1..1_100 {
+            let mut task = template(&format!("deep-{index}"));
+            task.after = vec![format!("deep-{}", index - 1)];
+            tasks.push(task);
+        }
+        assert!(validate_plan(&tasks, &constraints).is_ok());
         assert!(
-            errs.iter()
-                .any(|e| matches!(e, ValidationError::DepthExceeded { depth: 3, max: 2 }))
+            !serde_yaml::to_string(&constraints)
+                .unwrap()
+                .contains("max_depth")
         );
-    }
-
-    #[test]
-    fn depth_within_bounds() {
-        let a = template("a");
-        let mut b = template("b");
-        b.after = vec!["a".to_string()];
-        let mut c = template("c");
-        c.after = vec!["a".to_string()]; // parallel to b, both depth 1
-        let tasks = vec![a, b, c];
-        let constraints = StructuralConstraints {
-            max_depth: Some(1),
-            ..empty_constraints()
-        };
-        assert!(validate_plan(&tasks, &constraints).is_ok());
-    }
-
-    #[test]
-    fn diamond_depth() {
-        // a → b, a → c, b → d, c → d  (depth 2)
-        let a = template("a");
-        let mut b = template("b");
-        b.after = vec!["a".to_string()];
-        let mut c = template("c");
-        c.after = vec!["a".to_string()];
-        let mut d = template("d");
-        d.after = vec!["b".to_string(), "c".to_string()];
-        let tasks = vec![a, b, c, d];
-        let constraints = StructuralConstraints {
-            max_depth: Some(2),
-            ..empty_constraints()
-        };
-        assert!(validate_plan(&tasks, &constraints).is_ok());
     }
 
     #[test]

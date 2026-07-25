@@ -1861,8 +1861,8 @@ pub enum Commands {
         #[arg(long)]
         max_child_tasks: Option<u32>,
 
-        /// Max depth of task dependency chains from root (default: 8)
-        #[arg(long)]
+        /// Obsolete compatibility flag; graph dependency depth is unlimited.
+        #[arg(long, hide = true)]
         max_task_depth: Option<u32>,
 
         /// Viz edge color style: 'gray' (default), 'white', or 'mixed'

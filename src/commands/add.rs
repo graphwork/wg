@@ -570,7 +570,6 @@ pub fn run_with_remote_provider(
     // Atomic load-modify-save under file lock
     let mut error: Option<anyhow::Error> = None;
     let mut task_id_out = String::new();
-    let max_depth = guardrails.max_task_depth;
 
     let _graph = modify_graph(&path, |graph| {
     // For --subtask, don't add implicit --after on the parent (the parent→child
@@ -581,28 +580,6 @@ pub fn run_with_remote_provider(
     } else {
         default_parent_after(graph, after)
     };
-
-    // 2. User-visible task depth limit (enforced when --after is specified)
-    if !effective_after.is_empty() {
-        // The new task's visible depth = max(visible depth of each parent) + 1.
-        // Internal agency scaffolding collapses onto the user task it gates.
-        let max_parent_depth = effective_after
-            .iter()
-            .map(|parent_id| graph.user_visible_task_depth(parent_id))
-            .max()
-            .unwrap_or(0);
-        let new_depth = max_parent_depth + 1;
-        if new_depth > max_depth {
-            error = Some(anyhow::anyhow!(
-                "Task would be at user-visible depth {} (configured max_task_depth: {}). \
-                 Internal agency scaffold tasks (.assign-*, .flip-*, .evaluate-*) do not count toward this limit. \
-                 Consider creating tasks at the current level instead.",
-                new_depth,
-                max_depth
-            ));
-            return false;
-        }
-    }
 
     // Generate ID if not provided
     let task_id = match id {
@@ -1525,14 +1502,6 @@ mod tests {
         )
     }
 
-    fn write_max_task_depth_config(dir: &Path, max_depth: u32) {
-        std::fs::write(
-            dir.join("config.toml"),
-            format!("[guardrails]\nmax_task_depth = {}\n", max_depth),
-        )
-        .unwrap();
-    }
-
     // ---- parse_guard_expr tests ----
 
     #[test]
@@ -2262,65 +2231,15 @@ mod tests {
     }
 
     #[test]
-    fn max_task_depth_uses_user_visible_depth_through_agency_scaffold() {
+    fn legacy_max_task_depth_is_accepted_but_never_enforced() {
         let dir = tempfile::tempdir().unwrap();
         let dir_path = dir.path();
         std::fs::create_dir_all(dir_path).unwrap();
-        write_max_task_depth_config(dir_path, 2);
-        let path = super::graph_path(dir_path);
-
-        let mut graph = WorkGraph::new();
-        graph.add_node(Node::Task(stub_task(".assign-visible-root")));
-        graph.add_node(Node::Task(stub_task_after(
-            "visible-root",
-            &[".assign-visible-root"],
-        )));
-        graph.add_node(Node::Task(stub_task_after(
-            ".flip-visible-root",
-            &["visible-root"],
-        )));
-        graph.add_node(Node::Task(stub_task_after(
-            ".evaluate-visible-root",
-            &[".flip-visible-root"],
-        )));
-        graph.add_node(Node::Task(stub_task(".assign-visible-one")));
-        graph.add_node(Node::Task(stub_task_after(
-            "visible-one",
-            &[".evaluate-visible-root", ".assign-visible-one"],
-        )));
-        graph.add_node(Node::Task(stub_task_after(
-            ".flip-visible-one",
-            &["visible-one"],
-        )));
-        graph.add_node(Node::Task(stub_task_after(
-            ".evaluate-visible-one",
-            &[".flip-visible-one"],
-        )));
-        save_graph(&graph, &path).unwrap();
-
-        let result = add_minimal_task(
-            dir_path,
-            "Visible two",
-            "visible-two",
-            &[".evaluate-visible-one".to_string()],
-        );
-
-        assert!(
-            result.is_ok(),
-            "internal assignment/flip/evaluation scaffold should not make visible depth 2 exceed max_task_depth=2: {:?}",
-            result
-        );
-
-        let graph = load_graph(&path).unwrap();
-        assert_eq!(graph.user_visible_task_depth("visible-two"), 2);
-    }
-
-    #[test]
-    fn max_task_depth_still_rejects_deep_user_dependency_chain() {
-        let dir = tempfile::tempdir().unwrap();
-        let dir_path = dir.path();
-        std::fs::create_dir_all(dir_path).unwrap();
-        write_max_task_depth_config(dir_path, 2);
+        std::fs::write(
+            dir_path.join("config.toml"),
+            "[guardrails]\nmax_task_depth = 2\n",
+        )
+        .unwrap();
         let path = super::graph_path(dir_path);
 
         let mut graph = WorkGraph::new();
@@ -2332,23 +2251,16 @@ mod tests {
         graph.add_node(Node::Task(stub_task_after("visible-two", &["visible-one"])));
         save_graph(&graph, &path).unwrap();
 
-        let result = add_minimal_task(
+        add_minimal_task(
             dir_path,
             "Visible three",
             "visible-three",
             &["visible-two".to_string()],
-        );
+        )
+        .expect("obsolete max_task_depth must not reject valid graph structure");
 
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains("user-visible depth 3"),
-            "depth error should report user-visible depth, got: {err}"
-        );
-        assert!(
-            err.contains("configured max_task_depth: 2"),
-            "depth error should report configured limit, got: {err}"
-        );
+        let graph = load_graph(&path).unwrap();
+        assert_eq!(graph.task_depth("visible-three"), 3);
     }
 
     // ── resolve_model_input tests ──────────────────────────────────────

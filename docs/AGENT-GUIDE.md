@@ -1179,24 +1179,25 @@ wg add "Refactor: extract shared validation logic" --after <current-task> \
 
 ### 12.3 Guardrails
 
-Two guardrails prevent runaway task creation:
+One task-creation guardrail prevents a single agent execution from creating an
+unbounded number of tasks:
 
 | Guardrail | Default | What it prevents | Error message |
 |-----------|---------|-----------------|---------------|
 | `max_child_tasks_per_agent` | 10 | A single agent creating unbounded tasks | "Agent {id} has already created {n}/{max} tasks" |
-| `max_task_depth` | 8 | Infinite decomposition chains (tasks creating subtasks creating sub-subtasks...) | "Task would be at depth {d} (max: {max})" |
 
-**Rationale:**
-- **Per-agent limit** catches agents stuck in a decomposition loop. If an agent genuinely needs more than 10 subtasks, it should `wg fail` with an explanation — the human can raise the limit.
-- **Depth limit** prevents vertical explosion. Real work rarely needs more than 8 levels of nesting. If you hit this, create tasks at the current level instead of nesting deeper.
+Dependency depth is **not** a validity constraint. Chains and subgraphs may be
+as deep as the work requires. WG keeps graph operations stack-safe and bounds
+resource use by total work/cancellation; archive completed history when the
+active visualization becomes noisy. Cycles remain validated independently.
 
-Configure via:
+Configure the per-execution creation budget via:
 ```bash
-wg config --max-child-tasks 15    # raise per-agent limit
-wg config --max-task-depth 10     # raise depth limit
+wg config --max-child-tasks 15
 ```
 
-Guardrails only apply when `WG_AGENT_ID` is set (agent context). Human-initiated `wg add` commands bypass the per-agent limit.
+The creation-count guard applies when `WG_AGENT_ID` is set (agent context).
+Human-initiated `wg add` commands bypass it.
 
 ### 12.4 Decision Tree: Should I Decompose?
 

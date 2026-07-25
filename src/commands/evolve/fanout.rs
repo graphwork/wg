@@ -495,10 +495,7 @@ Evaluate the results of the evolution run.
     modify_graph(&graph_path, |existing_graph| {
         // Re-apply all nodes we created
         for node in graph_snapshot.nodes() {
-            let nid = match node {
-                worksgood::graph::Node::Task(t) => t.id.clone(),
-                worksgood::graph::Node::Resource(r) => r.id.clone(),
-            };
+            let nid = node.id().to_string();
             if existing_graph.get_node(&nid).is_none() {
                 existing_graph.add_node(node.clone());
             }

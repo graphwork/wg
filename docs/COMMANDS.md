@@ -3659,7 +3659,11 @@ wg viz --no-tui
 
 ### `wg archive`
 
-Archive completed tasks to a separate file.
+Archive completed tasks to a separate file. Archiving may cut through a deep
+historical chain: the active visualization keeps a compact `[archived boundary]`
+marker at each cut, while `archive.jsonl` preserves the full task and exact
+predecessor/successor history. Active successors remain ready when their
+archived predecessor was complete; restore/undo reinstates the original edges.
 
 ```bash
 wg archive [OPTIONS] [IDS]...
@@ -3785,7 +3789,6 @@ and registry flags are hidden migration compatibility.
 | `--creator-model <MODEL>` | **[DEPRECATED]** Use `--set-model creator <MODEL>` instead |
 | `--retention-heuristics <TEXT>` | Set retention heuristics (prose policy for evolver) |
 | `--max-child-tasks <N>` | Max tasks a single agent can create per execution (default: 10) |
-| `--max-task-depth <N>` | Max depth of task dependency chains from root (default: 8) |
 | `--auto-triage <BOOL>` | Enable/disable automatic triage of dead agents |
 | `--triage-model <MODEL>` | **[DEPRECATED]** Use `--set-model triage <MODEL>` instead |
 | `--triage-timeout <SECS>` | Set timeout for triage calls (default: 30) |

@@ -3,7 +3,7 @@ use chrono::{DateTime, Duration, Utc};
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
-use worksgood::graph::{Node, Status, Task};
+use worksgood::graph::{ArchivedBoundary, Node, Status, Task};
 use worksgood::parser::{load_graph, modify_graph};
 
 use super::graph_path;
@@ -101,17 +101,31 @@ fn should_archive(task: &Task, older_than: Option<&Duration>) -> bool {
     true
 }
 
-/// Check if a task has active (non-terminal) downstream dependents.
-/// Tasks with active dependents should not be archived.
-pub fn has_active_dependents(task: &Task, graph: &worksgood::graph::WorkGraph) -> bool {
-    for dep_id in &task.before {
-        if let Some(dep) = graph.get_task(dep_id)
-            && !dep.status.is_terminal()
-        {
-            return true;
-        }
+/// Build the compact active-view marker for an archived task.
+///
+/// Successors are derived from both sides of the stored edge because old graph
+/// files may have only canonical `after` edges or a stale/missing `before`
+/// cache. The archived `Task` itself remains byte-for-byte complete in
+/// `archive.jsonl`; this record exists only to preserve readiness and render an
+/// honest cut edge in the induced active view.
+fn archived_boundary_for(task: &Task, graph: &worksgood::graph::WorkGraph) -> ArchivedBoundary {
+    let mut successors = task.before.clone();
+    successors.extend(
+        graph
+            .tasks()
+            .filter(|candidate| candidate.after.contains(&task.id))
+            .map(|candidate| candidate.id.clone()),
+    );
+    successors.sort();
+    successors.dedup();
+    ArchivedBoundary {
+        id: task.id.clone(),
+        title: task.title.clone(),
+        status: task.status,
+        predecessors: task.after.clone(),
+        successors,
+        archived_at: Utc::now().to_rfc3339(),
     }
-    false
 }
 
 /// Append tasks to the archive file
@@ -436,12 +450,6 @@ pub fn run(
                         id
                     );
                 }
-                if has_active_dependents(task, &graph) {
-                    anyhow::bail!(
-                        "Task '{}' has active downstream dependents — cannot archive.",
-                        id
-                    );
-                }
                 tasks.push(task.clone());
             } else {
                 anyhow::bail!("Task '{}' not found in the graph.", id);
@@ -452,7 +460,6 @@ pub fn run(
         graph
             .tasks()
             .filter(|t| should_archive(t, older_duration.as_ref()))
-            .filter(|t| !has_active_dependents(t, &graph))
             .cloned()
             .collect()
     };
@@ -493,11 +500,17 @@ pub fn run(
     let archived_ids: Vec<String> = tasks_to_archive.iter().map(|t| t.id.clone()).collect();
     save_batch_metadata(dir, &archived_ids)?;
 
-    // 3. Remove archived tasks from the main graph atomically
-    let archive_ids: Vec<String> = tasks_to_archive.iter().map(|t| t.id.clone()).collect();
+    // 3. Replace archived tasks with compact boundary markers atomically.
+    // Never call `remove_node` here: it rewrites adjacent `after`/`before`
+    // lists, which would erase the historical cut we need to restore and show.
+    let boundaries: Vec<ArchivedBoundary> = tasks_to_archive
+        .iter()
+        .map(|task| archived_boundary_for(task, &graph))
+        .collect();
     modify_graph(&path, |graph| {
-        for id in &archive_ids {
-            graph.remove_node(id);
+        for boundary in &boundaries {
+            graph.take_node(&boundary.id);
+            graph.add_node(Node::ArchivedBoundary(boundary.clone()));
         }
         true
     })
@@ -525,7 +538,8 @@ pub fn run(
 }
 
 /// Run automatic archival (called by the daemon's archive cycle).
-/// Archives done/abandoned tasks older than `retention_days` that have no active dependents.
+/// Archives done/abandoned tasks older than `retention_days` while leaving
+/// durable boundary markers for any active-view cut edges.
 /// Returns the number of tasks archived.
 pub fn run_automatic(dir: &Path, retention_days: u64) -> Result<usize> {
     if retention_days == 0 {
@@ -541,11 +555,10 @@ pub fn run_automatic(dir: &Path, retention_days: u64) -> Result<usize> {
     let graph = load_graph(&path).context("Failed to load graph")?;
     let arch_path = archive_path(dir);
 
-    // Find archivable tasks: done/abandoned, old enough, no active dependents, not system tasks
+    // Find archivable tasks: done/abandoned, old enough, not system tasks.
     let tasks_to_archive: Vec<Task> = graph
         .tasks()
         .filter(|t| should_archive(t, Some(&older_duration)))
-        .filter(|t| !has_active_dependents(t, &graph))
         .filter(|t| !t.id.starts_with('.')) // Skip system/internal tasks
         .cloned()
         .collect();
@@ -561,11 +574,16 @@ pub fn run_automatic(dir: &Path, retention_days: u64) -> Result<usize> {
     let archived_ids: Vec<String> = tasks_to_archive.iter().map(|t| t.id.clone()).collect();
     save_batch_metadata(dir, &archived_ids)?;
 
-    // Remove from main graph atomically
-    let auto_archive_ids: Vec<String> = tasks_to_archive.iter().map(|t| t.id.clone()).collect();
+    // Replace full tasks with compact boundary markers. Exact task records
+    // and edges remain in the archive for restoration.
+    let boundaries: Vec<ArchivedBoundary> = tasks_to_archive
+        .iter()
+        .map(|task| archived_boundary_for(task, &graph))
+        .collect();
     modify_graph(&path, |graph| {
-        for id in &auto_archive_ids {
-            graph.remove_node(id);
+        for boundary in &boundaries {
+            graph.take_node(&boundary.id);
+            graph.add_node(Node::ArchivedBoundary(boundary.clone()));
         }
         true
     })
@@ -742,6 +760,62 @@ mod tests {
         let archived = load_archive(&arch_path).unwrap();
         assert_eq!(archived.len(), 1);
         assert_eq!(archived[0].id, "t1");
+    }
+
+    #[test]
+    fn archive_prefix_and_restore_preserve_exact_edges() {
+        let dir = tempdir().unwrap();
+        let wg_dir = dir.path();
+        std::fs::create_dir_all(wg_dir).unwrap();
+        let graph_file = wg_dir.join("graph.jsonl");
+
+        let mut first = make_task("first", "First", Status::Done, Some("2024-01-01T00:00:00Z"));
+        first.before = vec!["middle".to_string()];
+        let mut middle = make_task(
+            "middle",
+            "Middle",
+            Status::Done,
+            Some("2024-01-02T00:00:00Z"),
+        );
+        middle.after = vec!["first".to_string()];
+        middle.before = vec!["active".to_string()];
+        let mut active = make_task("active", "Active", Status::Open, None);
+        active.after = vec!["middle".to_string()];
+        let original_first = first.clone();
+        let original_middle = middle.clone();
+
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(first));
+        graph.add_node(Node::Task(middle));
+        graph.add_node(Node::Task(active));
+        save_graph(&graph, &graph_file).unwrap();
+
+        run(
+            wg_dir,
+            false,
+            None,
+            false,
+            true,
+            &["first".to_string(), "middle".to_string()],
+            false,
+        )
+        .unwrap();
+        let graph = load_graph(&graph_file).unwrap();
+        assert!(graph.get_archived_boundary("first").is_some());
+        assert!(graph.get_archived_boundary("middle").is_some());
+        assert_eq!(graph.get_task("active").unwrap().after, vec!["middle"]);
+        assert_eq!(worksgood::query::ready_tasks(&graph)[0].id, "active");
+
+        restore(wg_dir, "middle", false).unwrap();
+        restore(wg_dir, "first", false).unwrap();
+        let graph = load_graph(&graph_file).unwrap();
+        let restored_first = graph.get_task("first").unwrap();
+        let restored_middle = graph.get_task("middle").unwrap();
+        assert_eq!(restored_first.after, original_first.after);
+        assert_eq!(restored_first.before, original_first.before);
+        assert_eq!(restored_middle.after, original_middle.after);
+        assert_eq!(restored_middle.before, original_middle.before);
+        assert_eq!(graph.get_task("active").unwrap().after, vec!["middle"]);
     }
 
     #[test]
@@ -1441,48 +1515,23 @@ mod tests {
     }
 
     #[test]
-    fn test_has_active_dependents_blocks_archive() {
+    fn archived_boundary_records_active_successor_without_rewriting_edge() {
         let mut graph = WorkGraph::new();
-
-        // t1 is done, t2 (depends on t1 via t1.before) is still open
-        let mut t1 = make_task(
+        let mut archived = make_task(
             "t1",
             "Done Task",
             Status::Done,
             Some("2024-01-01T00:00:00Z"),
         );
-        t1.before = vec!["t2".to_string()];
-        let t2 = make_task("t2", "Open Task", Status::Open, None);
+        archived.before = vec!["t2".to_string()];
+        let mut active = make_task("t2", "Open Task", Status::Open, None);
+        active.after = vec!["t1".to_string()];
+        graph.add_node(Node::Task(archived.clone()));
+        graph.add_node(Node::Task(active));
 
-        graph.add_node(Node::Task(t1.clone()));
-        graph.add_node(Node::Task(t2));
-
-        assert!(has_active_dependents(&t1, &graph));
-    }
-
-    #[test]
-    fn test_no_active_dependents_allows_archive() {
-        let mut graph = WorkGraph::new();
-
-        // t1 is done, t2 (depends on t1) is also done
-        let mut t1 = make_task(
-            "t1",
-            "Done Task",
-            Status::Done,
-            Some("2024-01-01T00:00:00Z"),
-        );
-        t1.before = vec!["t2".to_string()];
-        let t2 = make_task(
-            "t2",
-            "Also Done",
-            Status::Done,
-            Some("2024-01-02T00:00:00Z"),
-        );
-
-        graph.add_node(Node::Task(t1.clone()));
-        graph.add_node(Node::Task(t2));
-
-        assert!(!has_active_dependents(&t1, &graph));
+        let boundary = archived_boundary_for(&archived, &graph);
+        assert_eq!(boundary.successors, vec!["t2"]);
+        assert_eq!(graph.get_task("t2").unwrap().after, vec!["t1"]);
     }
 
     #[test]
@@ -1578,7 +1627,7 @@ mod tests {
     }
 
     #[test]
-    fn test_run_automatic_skips_tasks_with_active_dependents() {
+    fn test_run_automatic_keeps_boundary_for_active_dependents() {
         let dir = tempdir().unwrap();
         let wg_dir = dir.path();
         std::fs::create_dir_all(wg_dir).unwrap();
@@ -1595,16 +1644,16 @@ mod tests {
         done_task.before = vec!["t2".to_string()];
         graph.add_node(Node::Task(done_task));
 
-        // t2 is still in progress — t1 should not be archived
-        graph.add_node(Node::Task(make_task(
-            "t2",
-            "In Progress Task",
-            Status::InProgress,
-            None,
-        )));
+        let mut active = make_task("t2", "In Progress Task", Status::InProgress, None);
+        active.after = vec!["t1".to_string()];
+        graph.add_node(Node::Task(active));
         save_graph(&graph, &graph_file).unwrap();
 
         let count = run_automatic(wg_dir, 7).unwrap();
-        assert_eq!(count, 0);
+        assert_eq!(count, 1);
+        let graph = load_graph(&graph_file).unwrap();
+        assert!(graph.get_task("t1").is_none());
+        assert!(graph.get_archived_boundary("t1").is_some());
+        assert_eq!(graph.get_task("t2").unwrap().after, vec!["t1"]);
     }
 }

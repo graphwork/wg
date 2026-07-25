@@ -310,7 +310,6 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
             "  max_child_tasks_per_agent = {}",
             config.guardrails.max_child_tasks_per_agent
         );
-        println!("  max_task_depth = {}", config.guardrails.max_task_depth);
         println!();
         println!("[tui]");
         println!("  chat_history = {}", config.tui.chat_history);
@@ -1119,10 +1118,11 @@ pub fn update_with_reasoning(
         changed = true;
     }
 
-    if let Some(v) = max_task_depth {
-        config.guardrails.max_task_depth = v;
-        println!("Set guardrails.max_task_depth = {}", v);
-        changed = true;
+    if max_task_depth.is_some() {
+        eprintln!(
+            "warning: --max-task-depth is obsolete and ignored; task dependency depth is unlimited. \
+             Use total-size/work budgets and archive completed history to manage large views."
+        );
     }
 
     // Eval gate settings

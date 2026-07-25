@@ -2016,13 +2016,33 @@ pub struct Resource {
     pub unit: Option<String>,
 }
 
-/// A node in the WG task graph (task or resource)
+/// A durable marker left in the active graph when a task moves to
+/// `archive.jsonl`.
+///
+/// The full task (including its exact historical edges) lives in the archive.
+/// This compact record keeps active dependencies honest: an active successor
+/// can still show that it crosses an archived boundary and readiness can treat
+/// the completed predecessor as satisfied without rewriting history.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ArchivedBoundary {
+    pub id: String,
+    pub title: String,
+    pub status: Status,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub predecessors: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub successors: Vec<String>,
+    pub archived_at: String,
+}
+
+/// A node in the WG graph (task, resource, or archived-history boundary).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 #[allow(clippy::large_enum_variant)]
 pub enum Node {
     Task(Task),
     Resource(Resource),
+    ArchivedBoundary(ArchivedBoundary),
 }
 
 impl Node {
@@ -2030,6 +2050,7 @@ impl Node {
         match self {
             Node::Task(t) => &t.id,
             Node::Resource(r) => &r.id,
+            Node::ArchivedBoundary(boundary) => &boundary.id,
         }
     }
 }
@@ -2268,10 +2289,18 @@ impl WorkGraph {
         }
     }
 
-    /// Look up a resource by ID, returning `None` if the node is a task.
+    /// Look up a resource by ID, returning `None` for other node kinds.
     pub fn get_resource(&self, id: &str) -> Option<&Resource> {
         match self.nodes.get(id) {
             Some(Node::Resource(r)) => Some(r),
+            _ => None,
+        }
+    }
+
+    /// Look up an archived-history boundary by exact task ID.
+    pub fn get_archived_boundary(&self, id: &str) -> Option<&ArchivedBoundary> {
+        match self.nodes.get(id) {
+            Some(Node::ArchivedBoundary(boundary)) => Some(boundary),
             _ => None,
         }
     }
@@ -2297,10 +2326,18 @@ impl WorkGraph {
         })
     }
 
-    /// Iterate over all resources in the graph, skipping task nodes.
+    /// Iterate over all resources in the graph, skipping other node kinds.
     pub fn resources(&self) -> impl Iterator<Item = &Resource> {
         self.nodes.values().filter_map(|n| match n {
             Node::Resource(r) => Some(r),
+            _ => None,
+        })
+    }
+
+    /// Iterate over archived-history boundary markers.
+    pub fn archived_boundaries(&self) -> impl Iterator<Item = &ArchivedBoundary> {
+        self.nodes.values().filter_map(|n| match n {
+            Node::ArchivedBoundary(boundary) => Some(boundary),
             _ => None,
         })
     }
@@ -2352,121 +2389,107 @@ impl WorkGraph {
         self.cycle_analysis.as_ref().unwrap()
     }
 
-    /// Compute the depth of a task by walking its `after` dependency chain.
+    /// Compute the longest dependency distance to a task without recursion.
     ///
-    /// Depth is the length of the longest path from any root task (a task with
-    /// no `after` dependencies) to this task. A root task has depth 0, its
-    /// direct dependents have depth 1, etc.
-    ///
-    /// Returns 0 for unknown task IDs or tasks with no dependencies.
+    /// This is descriptive graph metadata, never a validity constraint. The
+    /// explicit work stack and Kahn pass are stack-safe for very deep chains;
+    /// unresolved cycle members conservatively retain the greatest acyclic
+    /// prefix depth discovered for them.
     pub fn task_depth(&self, task_id: &str) -> u32 {
-        let mut memo: HashMap<String, u32> = HashMap::new();
-        self.task_depth_inner(task_id, &mut memo, &mut HashSet::new())
+        self.weighted_task_depth(task_id, false)
     }
 
-    /// Compute the user-visible depth of a task.
+    /// Compute display depth while collapsing agency lifecycle scaffolding.
     ///
-    /// This is the depth used by task-creation guardrails. It collapses agency
-    /// lifecycle scaffolding (`.assign-*`, `.flip-*`, `.evaluate-*`, and legacy
-    /// `.place-*`) so those internal nodes do not consume graph depth. If a
-    /// visible task depends on `.evaluate-parent`, the edge counts as depending
-    /// on `parent`; if it only depends on its own root `.assign-*`, it remains
-    /// depth 0.
+    /// Kept for diagnostics and compatibility only. Graph creation never
+    /// consults this value and valid dependency depth is unlimited.
     pub fn user_visible_task_depth(&self, task_id: &str) -> u32 {
-        let mut memo: HashMap<String, u32> = HashMap::new();
-        self.user_visible_task_depth_inner(task_id, &mut memo, &mut HashSet::new())
+        self.weighted_task_depth(task_id, true)
     }
 
-    fn task_depth_inner(
-        &self,
-        task_id: &str,
-        memo: &mut HashMap<String, u32>,
-        visiting: &mut HashSet<String>,
-    ) -> u32 {
-        if let Some(&cached) = memo.get(task_id) {
-            return cached;
-        }
-
-        // Cycle detection: if we're already visiting this node, return 0
-        if !visiting.insert(task_id.to_string()) {
+    fn weighted_task_depth(&self, task_id: &str, collapse_scaffolding: bool) -> u32 {
+        if self.get_task(task_id).is_none() {
             return 0;
         }
 
-        let depth = match self.get_task(task_id) {
-            Some(task) if !task.after.is_empty() => {
-                let max_parent_depth = task
-                    .after
-                    .iter()
-                    .map(|parent_id| self.task_depth_inner(parent_id, memo, visiting))
-                    .max()
-                    .unwrap_or(0);
-                max_parent_depth + 1
+        // First collect the existing ancestor-induced subgraph iteratively.
+        let mut included: HashSet<&str> = HashSet::new();
+        let mut work = vec![task_id];
+        while let Some(id) = work.pop() {
+            if !included.insert(id) {
+                continue;
             }
-            _ => 0,
-        };
-
-        visiting.remove(task_id);
-        memo.insert(task_id.to_string(), depth);
-        depth
-    }
-
-    fn user_visible_task_depth_inner(
-        &self,
-        task_id: &str,
-        memo: &mut HashMap<String, u32>,
-        visiting: &mut HashSet<String>,
-    ) -> u32 {
-        if let Some(&cached) = memo.get(task_id) {
-            return cached;
+            if let Some(task) = self.get_task(id) {
+                for dep in &task.after {
+                    if self.get_task(dep).is_some() {
+                        work.push(dep);
+                    }
+                }
+            }
         }
 
-        if !visiting.insert(task_id.to_string()) {
-            return 0;
+        let mut indegree: HashMap<&str, usize> = included.iter().map(|id| (*id, 0usize)).collect();
+        let mut children: HashMap<&str, Vec<&str>> = HashMap::new();
+        let mut depth: HashMap<&str, Option<u32>> = included
+            .iter()
+            .map(|id| {
+                let initial = if collapse_scaffolding && is_agency_scaffold_task(id) {
+                    None
+                } else {
+                    Some(0)
+                };
+                (*id, initial)
+            })
+            .collect();
+
+        for &id in &included {
+            let Some(task) = self.get_task(id) else {
+                continue;
+            };
+            for dep in &task.after {
+                if included.contains(dep.as_str()) {
+                    *indegree.get_mut(id).expect("included task has indegree") += 1;
+                    children.entry(dep.as_str()).or_default().push(id);
+                } else if !collapse_scaffolding || !is_agency_scaffold_task(&task.id) {
+                    // Preserve historical behavior for phantom/archived roots:
+                    // one dependency edge still contributes one level.
+                    depth.insert(id, Some(1));
+                }
+            }
         }
 
-        let depth = match self.get_task(task_id) {
-            Some(task) if is_agency_scaffold_task(&task.id) => task
-                .after
-                .iter()
-                .filter_map(|parent_id| {
-                    self.user_visible_dependency_depth(parent_id, memo, visiting)
-                })
-                .max()
-                .unwrap_or(0),
-            Some(task) => task
-                .after
-                .iter()
-                .filter_map(|parent_id| {
-                    self.user_visible_dependency_depth(parent_id, memo, visiting)
-                        .map(|parent_depth| parent_depth + 1)
-                })
-                .max()
-                .unwrap_or(0),
-            None => 0,
-        };
-
-        visiting.remove(task_id);
-        memo.insert(task_id.to_string(), depth);
-        depth
-    }
-
-    fn user_visible_dependency_depth(
-        &self,
-        task_id: &str,
-        memo: &mut HashMap<String, u32>,
-        visiting: &mut HashSet<String>,
-    ) -> Option<u32> {
-        if is_agency_scaffold_task(task_id) {
-            let task = self.get_task(task_id)?;
-            task.after
-                .iter()
-                .filter_map(|parent_id| {
-                    self.user_visible_dependency_depth(parent_id, memo, visiting)
-                })
-                .max()
-        } else {
-            Some(self.user_visible_task_depth_inner(task_id, memo, visiting))
+        let mut queue: std::collections::VecDeque<&str> = indegree
+            .iter()
+            .filter_map(|(&id, &degree)| (degree == 0).then_some(id))
+            .collect();
+        while let Some(id) = queue.pop_front() {
+            let parent_depth = depth.get(id).copied().flatten();
+            for &child in children.get(id).map(Vec::as_slice).unwrap_or(&[]) {
+                if let Some(parent_depth) = parent_depth {
+                    let edge_weight = if collapse_scaffolding && is_agency_scaffold_task(child) {
+                        0
+                    } else {
+                        1
+                    };
+                    let candidate = parent_depth.saturating_add(edge_weight);
+                    let child_depth = depth.entry(child).or_insert(None);
+                    *child_depth = Some(child_depth.unwrap_or(0).max(candidate));
+                }
+                let degree = indegree.get_mut(child).expect("included task has indegree");
+                *degree -= 1;
+                if *degree == 0 {
+                    if collapse_scaffolding
+                        && !is_agency_scaffold_task(child)
+                        && depth.get(child).copied().flatten().is_none()
+                    {
+                        depth.insert(child, Some(0));
+                    }
+                    queue.push_back(child);
+                }
+            }
         }
+
+        depth.get(task_id).copied().flatten().unwrap_or(0)
     }
 }
 
@@ -4432,6 +4455,25 @@ cache_read_discount = 0.5
         assert_eq!(graph.user_visible_task_depth(".flip-root"), 0);
         assert_eq!(graph.user_visible_task_depth(".evaluate-root"), 0);
         assert_eq!(graph.user_visible_task_depth("child"), 1);
+    }
+
+    #[test]
+    fn deep_chain_depth_and_cycle_analysis_are_iterative() {
+        let mut graph = WorkGraph::new();
+        for index in 0..5_000usize {
+            let mut task = make_task(&format!("deep-{index:04}"), "Deep chain task");
+            if index > 0 {
+                task.after = vec![format!("deep-{:04}", index - 1)];
+            }
+            graph.add_node(Node::Task(task));
+        }
+
+        assert_eq!(graph.task_depth("deep-4999"), 4_999);
+        assert_eq!(graph.user_visible_task_depth("deep-4999"), 4_999);
+        assert!(graph.compute_cycle_analysis().cycles.is_empty());
+        let ready = crate::query::ready_tasks(&graph);
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].id, "deep-0000");
     }
 
     #[test]

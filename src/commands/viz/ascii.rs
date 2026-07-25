@@ -494,11 +494,18 @@ pub(crate) fn generate_ascii(
         all_ids.iter().enumerate().map(|(i, &id)| (id, i)).collect();
     let mut parent_uf: Vec<usize> = (0..all_ids.len()).collect();
 
-    fn find(parent: &mut Vec<usize>, i: usize) -> usize {
-        if parent[i] != i {
-            parent[i] = find(parent, parent[i]);
+    fn find(parent: &mut [usize], i: usize) -> usize {
+        let mut root = i;
+        while parent[root] != root {
+            root = parent[root];
         }
-        parent[i]
+        let mut cursor = i;
+        while parent[cursor] != cursor {
+            let next = parent[cursor];
+            parent[cursor] = root;
+            cursor = next;
+        }
+        root
     }
     fn union(parent: &mut Vec<usize>, a: usize, b: usize) {
         let ra = find(parent, a);
@@ -651,146 +658,110 @@ pub(crate) fn generate_ascii(
             lines.push(String::new());
         }
 
-        // Pre-compute invisible visits via DFS simulation
+        // Pre-compute invisible visits via an explicit DFS stack. ALL
+        // re-visits are invisible (both back-edges and fan-in).
         let mut invisible_visits: HashSet<(String, String)> = HashSet::new();
-        {
-            fn simulate_dfs<'a>(
-                id: &'a str,
-                parent_id: Option<&'a str>,
-                sim_rendered: &mut HashSet<&'a str>,
-                invisible: &mut HashSet<(String, String)>,
-                forward: &HashMap<&str, Vec<&'a str>>,
-            ) {
-                if sim_rendered.contains(id) {
-                    // ALL re-visits are invisible (both back-edges and fan-in)
-                    if let Some(pid) = parent_id {
-                        invisible.insert((pid.to_string(), id.to_string()));
+        let mut sim_rendered: HashSet<&str> = HashSet::new();
+        for &root in &roots {
+            let mut stack = vec![(root, None::<&str>)];
+            while let Some((id, parent_id)) = stack.pop() {
+                if !sim_rendered.insert(id) {
+                    if let Some(parent_id) = parent_id {
+                        invisible_visits.insert((parent_id.to_string(), id.to_string()));
                     }
-                    return;
+                    continue;
                 }
-                sim_rendered.insert(id);
-                for &child in forward.get(id).map(Vec::as_slice).unwrap_or(&[]) {
-                    simulate_dfs(child, Some(id), sim_rendered, invisible, forward);
+                for &child in forward
+                    .get(id)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[])
+                    .iter()
+                    .rev()
+                {
+                    stack.push((child, Some(id)));
                 }
-            }
-            let mut sim_rendered: HashSet<&str> = HashSet::new();
-            for root in &roots {
-                simulate_dfs(
-                    root,
-                    None,
-                    &mut sim_rendered,
-                    &mut invisible_visits,
-                    &forward,
-                );
             }
         }
 
-        // DFS from each root
-        for root in &roots {
-            #[allow(clippy::too_many_arguments, clippy::only_used_in_recursion)]
-            fn render_tree<'a>(
-                id: &'a str,
-                parent_id: Option<&str>,
-                prefix: &str,
-                is_last: bool,
-                is_root: bool,
-                lines: &mut Vec<String>,
-                rendered: &mut HashSet<&'a str>,
-                forward: &HashMap<&str, Vec<&'a str>>,
-                format_node: &dyn Fn(&str) -> String,
-                task_map: &HashMap<&str, &Task>,
-                use_color: bool,
-                node_line_map: &mut HashMap<&'a str, usize>,
-                back_edge_arcs: &mut Vec<BackEdgeArc>,
-                invisible_visits: &HashSet<(String, String)>,
-                tree_color: &str,
-                color_reset: &str,
-            ) {
-                let connector = if is_root {
+        // Render the same pre-order traversal iteratively. Beyond a bounded
+        // visual indentation the `…` gutter is reused: every legitimate task
+        // remains present and searchable, while a 1,000-node chain no longer
+        // allocates quadratic whitespace or blocks the TUI layout worker.
+        const MAX_VISUAL_TREE_DEPTH: usize = 32;
+        struct RenderFrame<'a> {
+            id: &'a str,
+            parent_id: Option<&'a str>,
+            prefix: String,
+            is_last: bool,
+            is_root: bool,
+            depth: usize,
+        }
+
+        for &root in &roots {
+            let mut stack = vec![RenderFrame {
+                id: root,
+                parent_id: None,
+                prefix: String::new(),
+                is_last: true,
+                is_root: true,
+                depth: 0,
+            }];
+            while let Some(frame) = stack.pop() {
+                let connector = if frame.is_root {
                     String::new()
-                } else if is_last {
-                    format!("{}└→{} ", tree_color, color_reset)
+                } else if frame.is_last {
+                    format!("{}└→{} ", tree_color, reset)
                 } else {
-                    format!("{}├→{} ", tree_color, color_reset)
+                    format!("{}├→{} ", tree_color, reset)
                 };
 
-                // Already rendered: record arc, emit nothing
-                if rendered.contains(id) {
-                    if let Some(pid) = parent_id
-                        && let Some(&blocker_line) = node_line_map.get(pid)
-                        && let Some(&dependent_line) = node_line_map.get(id)
+                if !rendered.insert(frame.id) {
+                    if let Some(parent_id) = frame.parent_id
+                        && let Some(&blocker_line) = node_line_map.get(parent_id)
+                        && let Some(&dependent_line) = node_line_map.get(frame.id)
                     {
                         back_edge_arcs.push(BackEdgeArc {
                             blocker_line,
                             dependent_line,
-                            from_id: pid.to_string(),
-                            to_id: id.to_string(),
+                            from_id: parent_id.to_string(),
+                            to_id: frame.id.to_string(),
                         });
                     }
-                    return;
+                    continue;
                 }
 
-                rendered.insert(id);
+                lines.push(format!(
+                    "{}{}{}",
+                    frame.prefix,
+                    connector,
+                    format_node(frame.id)
+                ));
+                node_line_map.insert(frame.id, lines.len() - 1);
 
-                let node_str = format_node(id);
-                lines.push(format!("{}{}{}", prefix, connector, node_str));
-                node_line_map.insert(id, lines.len() - 1);
-
-                // Compute child prefix
-                let child_prefix = if is_root {
-                    prefix.to_string()
-                } else if is_last {
-                    format!("{}  ", prefix)
+                let child_prefix = if frame.depth >= MAX_VISUAL_TREE_DEPTH {
+                    format!("{}…{} ", tree_color, reset)
+                } else if frame.is_root {
+                    frame.prefix.clone()
+                } else if frame.is_last {
+                    format!("{}  ", frame.prefix)
                 } else {
-                    format!("{}{}│{} ", prefix, tree_color, color_reset)
+                    format!("{}{}│{} ", frame.prefix, tree_color, reset)
                 };
-
-                // Get children and recurse
-                let children = forward.get(id).map(Vec::as_slice).unwrap_or(&[]);
-                for (i, &child) in children.iter().enumerate() {
-                    // Effective is_last: skip invisible subsequent siblings
-                    let child_is_last = children[i + 1..]
-                        .iter()
-                        .all(|&sib| invisible_visits.contains(&(id.to_string(), sib.to_string())));
-                    render_tree(
-                        child,
-                        Some(id),
-                        &child_prefix,
-                        child_is_last,
-                        false,
-                        lines,
-                        rendered,
-                        forward,
-                        format_node,
-                        task_map,
-                        use_color,
-                        node_line_map,
-                        back_edge_arcs,
-                        invisible_visits,
-                        tree_color,
-                        color_reset,
-                    );
+                let children = forward.get(frame.id).map(Vec::as_slice).unwrap_or(&[]);
+                for (index, &child) in children.iter().enumerate().rev() {
+                    let child_is_last = children[index + 1..].iter().all(|&sibling| {
+                        invisible_visits.contains(&(frame.id.to_string(), sibling.to_string()))
+                    });
+                    stack.push(RenderFrame {
+                        id: child,
+                        parent_id: Some(frame.id),
+                        prefix: child_prefix.clone(),
+                        is_last: child_is_last,
+                        is_root: false,
+                        depth: frame.depth + 1,
+                    });
                 }
             }
-
-            render_tree(
-                root,
-                None,
-                "",
-                true,
-                true,
-                &mut lines,
-                &mut rendered,
-                &forward,
-                &format_node,
-                &task_map,
-                use_color,
-                &mut node_line_map,
-                &mut back_edge_arcs,
-                &invisible_visits,
-                tree_color,
-                reset,
-            );
         }
     }
 
@@ -1006,11 +977,13 @@ fn build_tree_char_edge_map(
                     None => continue,
                 };
 
-                // Collect edges for ALL remaining children below (j > i)
-                let remaining_edges: Vec<(String, String)> = children[i + 1..]
-                    .iter()
-                    .map(|cid| (parent_id.clone(), cid.clone()))
-                    .collect();
+                // A trunk cell is attributed to the next child edge. Mapping
+                // it to *every* remaining sibling made this metadata O(n²)
+                // for broad trees (and for deep trees after indentation is
+                // visually capped). The next segment is the precise edge the
+                // cell leads into and keeps edge hit-testing/highlighting
+                // bounded by the number of rendered connector cells.
+                let next_edge = (parent_id.clone(), next_child_id.clone());
 
                 // Lines from child_line+1 to next_child_line-1 at connector_col
                 for l in (child_line + 1)..next_child_line {
@@ -1018,10 +991,8 @@ fn build_tree_char_edge_map(
                         let chars: Vec<char> = plain_lines[l].chars().collect();
                         if connector_col < chars.len() && chars[connector_col] == '│' {
                             let entries = map.entry((l, connector_col)).or_default();
-                            for edge in &remaining_edges {
-                                if !entries.contains(edge) {
-                                    entries.push(edge.clone());
-                                }
+                            if !entries.contains(&next_edge) {
+                                entries.push(next_edge.clone());
                             }
                         }
                     }
@@ -5093,6 +5064,45 @@ mod tests {
             result.node_line_map.len() > 50,
             "Should have > 50 tasks rendered, got {}",
             result.node_line_map.len()
+        );
+    }
+
+    #[test]
+    fn two_thousand_node_chain_keeps_all_tasks_with_bounded_visual_indent() {
+        let mut graph = WorkGraph::new();
+        for index in 0..2_000usize {
+            let mut task = make_task(&format!("deep-{index:04}"), "Deep");
+            if index > 0 {
+                task.after = vec![format!("deep-{:04}", index - 1)];
+            }
+            graph.add_node(Node::Task(task));
+        }
+        let tasks: Vec<_> = graph.tasks().collect();
+        let ids: HashSet<&str> = tasks.iter().map(|task| task.id.as_str()).collect();
+        let output = generate_ascii(
+            &graph,
+            &tasks,
+            &ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::default(),
+            &HashSet::new(),
+            "gray",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(output.node_line_map.len(), 2_000);
+        assert!(output.text.contains("deep-0000"));
+        assert!(output.text.contains("deep-1999"));
+        assert!(
+            output.text.lines().map(str::len).max().unwrap_or(0) < 256,
+            "visual indentation must be capped rather than quadratic"
+        );
+        let mapped_edges: usize = output.char_edge_map.values().map(Vec::len).sum();
+        assert!(
+            mapped_edges < 8_000,
+            "connector hit metadata must remain linear, got {mapped_edges} entries"
         );
     }
 

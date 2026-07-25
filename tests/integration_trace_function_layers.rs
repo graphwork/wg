@@ -62,7 +62,7 @@ fn empty_constraints() -> StructuralConstraints {
         min_tasks: None,
         max_tasks: None,
         required_skills: vec![],
-        max_depth: None,
+        obsolete_max_depth: None,
         allow_cycles: false,
         max_total_iterations: None,
         required_phases: vec![],
@@ -276,7 +276,7 @@ fn sample_v2_generative() -> TraceFunction {
             min_tasks: Some(2),
             max_tasks: Some(20),
             required_skills: vec!["implementation".to_string(), "testing".to_string()],
-            max_depth: Some(4),
+            obsolete_max_depth: None,
             allow_cycles: false,
             max_total_iterations: None,
             required_phases: vec!["implement".to_string(), "test".to_string()],
@@ -469,7 +469,8 @@ fn layer2_v2_yaml_round_trip() {
         constraints.required_skills,
         vec!["implementation", "testing"]
     );
-    assert_eq!(constraints.max_depth, Some(4));
+    assert!(constraints.obsolete_max_depth.is_none());
+    assert!(!yaml.contains("max_depth"));
     assert!(!constraints.allow_cycles);
     assert_eq!(constraints.required_phases, vec!["implement", "test"]);
     assert_eq!(constraints.forbidden_patterns.len(), 1);
@@ -493,7 +494,6 @@ fn layer2_validate_plan_passes_valid_plan() {
         max_tasks: Some(10),
         required_skills: vec!["implementation".to_string(), "testing".to_string()],
         required_phases: vec!["implement".to_string(), "test".to_string()],
-        max_depth: Some(3),
         ..empty_constraints()
     };
 
@@ -590,25 +590,19 @@ fn layer2_validate_plan_forbidden_pattern_partial_match_ok() {
 }
 
 #[test]
-fn layer2_validate_plan_depth_exceeded() {
-    // a → b → c → d  (depth 3)
-    let a = make_template("a");
-    let mut b = make_template("b");
-    b.after = vec!["a".to_string()];
-    let mut c = make_template("c");
-    c.after = vec!["b".to_string()];
-    let mut d = make_template("d");
-    d.after = vec!["c".to_string()];
-
-    let constraints = StructuralConstraints {
-        max_depth: Some(2),
-        ..empty_constraints()
-    };
-
-    let errs = plan_validator::validate_plan(&[a, b, c, d], &constraints).unwrap_err();
+fn layer2_legacy_max_depth_is_ignored() {
+    let constraints: StructuralConstraints = serde_yaml::from_str("max_depth: 2\n").unwrap();
+    let mut tasks = vec![make_template("deep-0")];
+    for index in 1..1_100 {
+        let mut task = make_template(&format!("deep-{index}"));
+        task.after = vec![format!("deep-{}", index - 1)];
+        tasks.push(task);
+    }
+    assert!(plan_validator::validate_plan(&tasks, &constraints).is_ok());
     assert!(
-        errs.iter()
-            .any(|e| matches!(e, ValidationError::DepthExceeded { depth: 3, max: 2 }))
+        !serde_yaml::to_string(&constraints)
+            .unwrap()
+            .contains("max_depth")
     );
 }
 
@@ -702,7 +696,7 @@ fn layer2_constraints_defaults() {
     assert!(c.min_tasks.is_none());
     assert!(c.max_tasks.is_none());
     assert!(c.required_skills.is_empty());
-    assert!(c.max_depth.is_none());
+    assert!(c.obsolete_max_depth.is_none());
     assert!(!c.allow_cycles);
     assert!(c.max_total_iterations.is_none());
     assert!(c.required_phases.is_empty());

@@ -2543,6 +2543,15 @@ description = "Candidate-binary live tmux human flow: an external CLI with ambie
 timeout_seconds = 180
 
 [[scenario]]
+name = "deep_graph_archive_tui"
+script = "scenarios/deep_graph_archive_tui.sh"
+owners = [
+    "remove-graph-depth-guard",
+]
+description = "Candidate-only bounded-performance + real tmux/TUI human flow for unlimited graph depth: a 1,001-node visible chain with legacy max_task_depth=2 loads and accepts another dependent; readiness, critical-path, impact, why-blocked, reset, cycle handling, ASCII/spatial/HTML derivation, and reload complete under per-command bounds; the already-running TUI asynchronously pulses and exact-jumps to a newly inserted offscreen tail; archiving a 600-task completed prefix through an active successor leaves only an honest adjacent archived-boundary marker in the induced active view, keeps readiness correct, and undo restores every exact edge. The obsolete config key is hidden from UX but read-only lint/migration-visible. Never globally installs the candidate."
+timeout_seconds = 180
+
+[[scenario]]
 name = "predictive_build_admission_opt_in"
 script = "scenarios/predictive_build_admission_opt_in.sh"
 owners = ["disable-predictive-build"]

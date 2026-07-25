@@ -75,6 +75,9 @@ const DEPRECATED_KEYS: &[(&str, &str)] = &[
     ("coordinator", "verify_mode"),
     // Old FLIP threshold knob — replaced by per-agent eval thresholds.
     ("agency", "flip_verification_threshold"),
+    // Graph depth is structural data, not a guardrail. Deep chains remain valid;
+    // resource safety is enforced by iterative/bounded algorithms instead.
+    ("guardrails", "max_task_depth"),
 ];
 
 pub(crate) fn drop_deprecated(doc: &mut toml::Value, removed: &mut Vec<String>) {
@@ -339,6 +342,30 @@ mod tests {
 
     fn parse(s: &str) -> toml::Value {
         s.parse().expect("valid TOML")
+    }
+
+    #[test]
+    fn canonicalize_drops_obsolete_graph_depth_guard() {
+        let mut doc = parse(
+            r#"
+[guardrails]
+max_child_tasks_per_agent = 12
+max_task_depth = 8
+"#,
+        );
+        let report = canonicalize_in_place(&mut doc);
+        let body = toml::to_string_pretty(&doc).unwrap();
+        assert!(
+            !body.contains("max_task_depth"),
+            "obsolete key remained: {body}"
+        );
+        assert!(body.contains("max_child_tasks_per_agent = 12"));
+        assert!(
+            report
+                .removed
+                .iter()
+                .any(|key| key == "guardrails.max_task_depth")
+        );
     }
 
     #[test]

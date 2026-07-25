@@ -213,16 +213,29 @@ fn config_non_pi_one_line_update_fails_without_mutating_legacy_file() {
 }
 
 #[test]
-fn config_set_guardrails() {
+fn config_depth_guard_is_hidden_ignored_and_migratable() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(&tmp);
 
-    let output = wg_ok(
-        &wg_dir,
-        &["config", "--max-child-tasks", "15", "--max-task-depth", "5"],
-    );
+    let output = wg_ok(&wg_dir, &["config", "--max-child-tasks", "15"]);
     assert!(output.contains("Set guardrails.max_child_tasks_per_agent"));
-    assert!(output.contains("Set guardrails.max_task_depth"));
+
+    std::fs::write(
+        wg_dir.join("config.toml"),
+        "[guardrails]\nmax_child_tasks_per_agent = 15\nmax_task_depth = 5\n",
+    )
+    .unwrap();
+    let shown = wg_ok(&wg_dir, &["config", "--show", "--local"]);
+    assert!(!shown.contains("max_task_depth"));
+    let lint = wg_ok(&wg_dir, &["config", "lint", "--local"]);
+    assert!(lint.contains("guardrails.max_task_depth"));
+    let migrated = wg_ok(&wg_dir, &["migrate", "config", "--local"]);
+    assert!(migrated.contains("removed deprecated key: guardrails.max_task_depth"));
+    assert!(
+        !std::fs::read_to_string(wg_dir.join("config.toml"))
+            .unwrap()
+            .contains("max_task_depth")
+    );
 }
 
 // ===========================================================================

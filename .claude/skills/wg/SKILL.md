@@ -132,15 +132,12 @@ wg add "Integrate modules A, B, C" --after implement-module-a,implement-module-b
 
 ### Guardrails
 
-Two guardrails prevent runaway decomposition:
+- **`max_child_tasks_per_agent`** (default: 10) bounds how many tasks one agent execution can create via `wg add`. If you hit this limit, use `wg fail` or `wg log` to explain why more decomposition is needed.
+- Dependency chains have no semantic depth maximum. Keep operations bounded by total work and cancellation, and archive completed history when the active view becomes noisy; never flatten valid graph structure merely for presentation.
 
-- **`max_child_tasks_per_agent`** (default: 10) — max tasks a single agent can create via `wg add`. If you hit this limit, the system tells you. Use `wg fail` or `wg log` to explain why more decomposition is needed.
-- **`max_task_depth`** (default: 8) — max depth of `--after` chains from root tasks. Prevents infinite decomposition chains. If you hit this, create tasks at the current level instead of nesting deeper.
-
-Configure with:
+Configure the creation-count budget with:
 ```bash
 wg config --max-child-tasks 15
-wg config --max-task-depth 10
 ```
 
 Record output files so downstream tasks can find them:
@@ -701,7 +698,6 @@ wg service resume           # Resume dispatching
 | `wg config --chat-history-max 100` | Max chat history entries |
 | `wg config --retry-context-tokens 2000` | Max tokens of previous-attempt context on retry |
 | `wg config --max-child-tasks 15` | Max tasks a single agent can create per execution |
-| `wg config --max-task-depth 10` | Max depth of task dependency chains from root |
 | `wg config --install-global` | Install project config as global default |
 | `wg config --install-global --force` | Skip confirmation when overwriting existing global config |
 | `wg config --viz-edge-color mixed` | Viz edge color style (gray/white/mixed) |

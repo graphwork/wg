@@ -69,7 +69,7 @@ Injected when `decomp_guidance = false`:
 - "When to decompose vs implement directly"
 - Good/bad reasons to decompose
 - How to decompose (fan-out, pipeline, synthesis patterns)
-- Guardrails: {{max_child_tasks}} and {{max_task_depth}} placeholders
+- Guardrail: {{max_child_tasks}} creation-budget placeholder; dependency depth is unlimited
 - "When NOT to decompose"
 
 #### Adaptive build_decomposition_guidance() (`src/service/executor.rs:419-505`)
@@ -149,7 +149,6 @@ Phase guidance varies:
 | Config Key | Default | Purpose |
 |------------|---------|---------|
 | `max_child_tasks_per_agent` | 10 | Max tasks a single agent can create via `wg add` |
-| `max_task_depth` | 8 | Max depth of task dependency chains |
 | `max_triage_attempts` | 3 | Max times a task can be requeued via failed-dep triage |
 | `decomp_guidance` | true | Whether to use adaptive (true) or static (false) decomposition guidance |
 
@@ -167,38 +166,17 @@ if count >= max_child {
 
 Uses the provenance log to count how many `add_task` operations the agent has performed.
 
-### 3.3 Enforcement: Task Depth Limit
+### 3.3 Dependency Depth Is Not a Guardrail
 
-**File:** `src/commands/add.rs:394-412`
-
-Enforced at `wg add` time when `--after` is specified:
-```rust
-let max_parent_depth = effective_after.iter()
-    .map(|parent_id| graph.task_depth(parent_id))
-    .max().unwrap_or(0);
-let new_depth = max_parent_depth + 1;
-if new_depth > max_depth {
-    anyhow::bail!("Task would be at depth {} (max: {})...");
-}
-```
-
-**File:** `src/graph.rs:1456-1492` — `task_depth()`
-
-Depth computed recursively with memoization and cycle detection. Depth = longest path from any root task.
+WG permits chains and subgraphs as deep as the work requires. The obsolete
+`guardrails.max_task_depth` key is accepted and ignored for compatibility, and
+`wg config lint` / `wg migrate config` report/remove it. Graph algorithms use
+iterative traversal and total-work bounds instead of rejecting structure.
 
 ### 3.4 Guardrail Values in Agent Prompts
 
-**File:** `src/service/executor.rs:1032-1033`
-
-TemplateVars gets populated from config:
-```rust
-max_child_tasks: guardrails.max_child_tasks_per_agent,
-max_task_depth: guardrails.max_task_depth,
-```
-
-These appear in the agent prompt via either:
-- `AUTOPOIETIC_GUIDANCE` template: `{{max_child_tasks}}` and `{{max_task_depth}}` placeholders (line 252-253)
-- `build_decomposition_guidance()`: formatted directly into the string (lines 491-492)
+Agent prompts include only the `{{max_child_tasks}}` creation budget. They do
+not advertise or imply a dependency-depth ceiling.
 
 ---
 
@@ -232,7 +210,7 @@ When detected in the task description, the `PATTERN_KEYWORDS_GLOSSARY` is inject
 
 1. **Adaptive decomposition** (`decomp_guidance=true`): Classifies task as atomic/multi-step and tailors guidance
 2. **Pattern keywords**: Detects organizational patterns in task descriptions and injects glossary
-3. **Hard guardrails**: max_child_tasks_per_agent=10, max_task_depth=8 (enforced at `wg add`)
+3. **Creation guardrail**: max_child_tasks_per_agent=10 (enforced at `wg add`); graph depth is unlimited
 4. **Tiered knowledge**: Different guide detail levels based on model context window size
 5. **Decision framework** (in essential guide): "Implement Directly If" / "Decompose If" criteria
 
@@ -257,7 +235,7 @@ When detected in the task description, the `PATTERN_KEYWORDS_GLOSSARY` is inject
 The WG system already has reasonable decomposition guidance:
 - The adaptive classifier (`classify_task_complexity`) tries to discourage decomposition for atomic tasks
 - The essential guide has a clear "Implement Directly If / Decompose If" framework
-- Hard guardrails (10 tasks, depth 8) prevent runaway decomposition
+- A 10-task per-execution creation budget prevents runaway decomposition without invalidating deep graphs
 
 But there are gaps:
 - **No context-pressure signal**: Agents can't detect when they're approaching context limits
@@ -280,7 +258,7 @@ Decompose when the task has genuinely independent parts...
 
 ### Guardrails
 - You can create up to **10** subtasks per session
-- Task chains have a maximum depth of **8** levels
+- Valid dependency depth is unlimited; traversal cost is bounded by total work
 ```
 
 No mention of: trying direct implementation first, context pressure detection, file-scope constraints, or depth-1 prohibition for workers.

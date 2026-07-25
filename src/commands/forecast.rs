@@ -309,110 +309,92 @@ fn find_key_blockers(graph: &WorkGraph) -> Vec<Blocker> {
     blockers.into_iter().take(5).collect()
 }
 
-/// Find the critical path (longest dependency chain by hours)
+/// Find the critical path (longest dependency chain by hours) with an
+/// iterative topological pass. Cyclic remainders are not a DAG critical path
+/// and are omitted without recursing or rejecting the graph.
 fn find_critical_path(graph: &WorkGraph) -> Option<CriticalPath> {
-    // Find all entry points (tasks with no incomplete dependencies)
-    let mut entry_points: Vec<&str> = Vec::new();
-
-    for task in graph.tasks() {
-        if task.status.is_terminal() {
-            continue;
-        }
-
-        // Check if all blockers are resolved (terminal or nonexistent)
-        let all_blockers_done = task.after.iter().all(|bid| {
-            graph
-                .get_task(bid)
-                .map(|t| t.status.is_terminal())
-                .unwrap_or(true)
-        });
-
-        if all_blockers_done {
-            entry_points.push(&task.id);
-        }
-    }
-
-    if entry_points.is_empty() {
+    let active: HashSet<&str> = graph
+        .tasks()
+        .filter(|task| !task.status.is_terminal())
+        .map(|task| task.id.as_str())
+        .collect();
+    if active.is_empty() {
         return None;
     }
 
-    // Build reverse index for traversal
-    let reverse_index = build_reverse_index(graph);
-
-    // Find longest path from each entry point
-    let mut longest_path: Vec<String> = Vec::new();
-    let mut longest_hours: f64 = 0.0;
-
-    for entry_id in entry_points {
-        let mut visited = HashSet::new();
-        let (path, hours) = find_longest_path_from(graph, &reverse_index, entry_id, &mut visited);
-        if hours > longest_hours || (hours == longest_hours && path.len() > longest_path.len()) {
-            longest_path = path;
-            longest_hours = hours;
+    let mut forward: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut indegree: HashMap<&str, usize> = active.iter().map(|&id| (id, 0usize)).collect();
+    for task in graph
+        .tasks()
+        .filter(|task| active.contains(task.id.as_str()))
+    {
+        for dependency in &task.after {
+            if active.contains(dependency.as_str()) {
+                forward
+                    .entry(dependency.as_str())
+                    .or_default()
+                    .push(task.id.as_str());
+                *indegree.get_mut(task.id.as_str()).unwrap() += 1;
+            }
         }
     }
 
-    if longest_path.is_empty() {
-        None
-    } else {
-        Some(CriticalPath {
-            path: longest_path,
-            total_hours: longest_hours,
-        })
-    }
-}
-
-/// Find the longest path starting from a given task (by total hours)
-fn find_longest_path_from(
-    graph: &WorkGraph,
-    reverse_index: &HashMap<String, Vec<String>>,
-    start_id: &str,
-    visited: &mut HashSet<String>,
-) -> (Vec<String>, f64) {
-    let task = match graph.get_task(start_id) {
-        Some(t) if !t.status.is_terminal() => t,
-        _ => return (vec![], 0.0),
-    };
-
-    // Cycle protection: skip nodes we've already visited in this path
-    if !visited.insert(start_id.to_string()) {
-        return (vec![], 0.0);
-    }
-
-    let my_hours = task.estimate.as_ref().and_then(|e| e.hours).unwrap_or(0.0);
-
-    // Get dependents
-    let dependents = reverse_index.get(start_id);
-
-    let deps = match dependents {
-        Some(d) if !d.is_empty() => d,
-        _ => {
-            // No dependents, this is the end of the path
-            visited.remove(start_id);
-            return (vec![start_id.to_string()], my_hours);
-        }
-    };
-
-    // Find the longest path among all dependents
-    let mut best_path: Vec<String> = Vec::new();
-    let mut best_hours: f64 = 0.0;
-
-    for dep_id in deps {
-        let (path, hours) = find_longest_path_from(graph, reverse_index, dep_id, visited);
-        if hours > best_hours || (hours == best_hours && path.len() > best_path.len()) {
-            best_path = path;
-            best_hours = hours;
+    let mut queue: std::collections::VecDeque<&str> = indegree
+        .iter()
+        .filter_map(|(&id, &degree)| (degree == 0).then_some(id))
+        .collect();
+    let mut totals: HashMap<&str, (f64, usize)> = HashMap::new();
+    let mut previous: HashMap<&str, &str> = HashMap::new();
+    while let Some(id) = queue.pop_front() {
+        let own = graph
+            .get_task(id)
+            .and_then(|task| task.estimate.as_ref())
+            .and_then(|estimate| estimate.hours)
+            .unwrap_or(0.0);
+        let own = if own.is_finite() { own.max(0.0) } else { 0.0 };
+        totals.entry(id).or_insert((own, 1));
+        let base = totals[id];
+        for &child in forward.get(id).map(Vec::as_slice).unwrap_or(&[]) {
+            let child_hours = graph
+                .get_task(child)
+                .and_then(|task| task.estimate.as_ref())
+                .and_then(|estimate| estimate.hours)
+                .unwrap_or(0.0);
+            let child_hours = if child_hours.is_finite() {
+                child_hours.max(0.0)
+            } else {
+                0.0
+            };
+            let candidate = (base.0 + child_hours, base.1 + 1);
+            if totals
+                .get(child)
+                .is_none_or(|current| candidate.0 > current.0 || candidate > *current)
+            {
+                totals.insert(child, candidate);
+                previous.insert(child, id);
+            }
+            let degree = indegree.get_mut(child).unwrap();
+            *degree -= 1;
+            if *degree == 0 {
+                queue.push_back(child);
+            }
         }
     }
 
-    // Remove from visited so other paths can explore this node
-    visited.remove(start_id);
-
-    // Prepend current task to the best path
-    let mut full_path = vec![start_id.to_string()];
-    full_path.extend(best_path);
-
-    (full_path, my_hours + best_hours)
+    let (&end, &(total_hours, _)) = totals.iter().max_by(|a, b| {
+        a.1.0
+            .partial_cmp(&b.1.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.1.1.cmp(&b.1.1))
+    })?;
+    let mut path = Vec::new();
+    let mut cursor = Some(end);
+    while let Some(id) = cursor {
+        path.push(id.to_string());
+        cursor = previous.get(id).copied();
+    }
+    path.reverse();
+    Some(CriticalPath { path, total_hours })
 }
 
 fn print_human_output(forecast: &ForecastOutput) {

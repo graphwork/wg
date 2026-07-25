@@ -1,6 +1,6 @@
 use anyhow::Result;
 use serde::Serialize;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 use worksgood::graph::Status;
 use worksgood::query::build_reverse_index;
@@ -152,50 +152,54 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
     Ok(())
 }
 
-/// Build dependency chains for display (BFS to show paths)
+/// Build one representative dependency chain to each reachable leaf.
+///
+/// The old implementation cloned the entire prefix for every traversal step,
+/// making a simple N-node chain O(N²). This BFS stores one predecessor per
+/// visited node and reconstructs paths only for leaves, so discovery is
+/// O(V+E), iterative, and cycle-safe.
 fn build_dependency_chains(
     reverse_index: &HashMap<String, Vec<String>>,
     start_id: &str,
 ) -> Vec<Vec<String>> {
-    let mut chains: Vec<Vec<String>> = Vec::new();
-    let mut visited: HashSet<String> = HashSet::new();
+    let mut parent: HashMap<String, String> = HashMap::new();
+    let mut queue = VecDeque::from([start_id.to_string()]);
+    let mut leaves = Vec::new();
 
-    // Use a queue of (current_id, current_chain)
-    let mut queue: Vec<(String, Vec<String>)> = Vec::new();
-
-    if let Some(direct_deps) = reverse_index.get(start_id) {
-        for dep_id in direct_deps {
-            queue.push((dep_id.clone(), vec![dep_id.clone()]));
+    while let Some(current) = queue.pop_front() {
+        let mut children = reverse_index.get(&current).cloned().unwrap_or_default();
+        children.sort();
+        let mut discovered_child = false;
+        for child in children {
+            if child == start_id || parent.contains_key(&child) {
+                continue;
+            }
+            parent.insert(child.clone(), current.clone());
+            queue.push_back(child);
+            discovered_child = true;
+        }
+        if current != start_id && !discovered_child {
+            leaves.push(current);
         }
     }
 
-    while let Some((current_id, current_chain)) = queue.pop() {
-        if let Some(next_deps) = reverse_index.get(&current_id) {
-            if next_deps.is_empty() || visited.contains(&current_id) {
-                // End of chain
-                if current_chain.len() > 1 {
-                    chains.push(current_chain);
-                }
-            } else {
-                visited.insert(current_id.clone());
-                for next_id in next_deps {
-                    let mut new_chain = current_chain.clone();
-                    new_chain.push(next_id.clone());
-                    queue.push((next_id.clone(), new_chain));
-                }
+    let mut chains = Vec::with_capacity(leaves.len());
+    for leaf in leaves {
+        let mut chain = vec![leaf.clone()];
+        let mut cursor = leaf.as_str();
+        while let Some(previous) = parent.get(cursor) {
+            if previous == start_id {
+                break;
             }
-        } else {
-            // No further dependents, this is an end chain
-            if current_chain.len() > 1 {
-                chains.push(current_chain);
-            }
+            chain.push(previous.clone());
+            cursor = previous;
+        }
+        chain.reverse();
+        if chain.len() > 1 {
+            chains.push(chain);
         }
     }
-
-    // Deduplicate chains (keep unique paths)
     chains.sort();
-    chains.dedup();
-
     chains
 }
 

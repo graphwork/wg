@@ -725,10 +725,14 @@ pub struct GuardrailsConfig {
     #[serde(default = "default_max_child_tasks_per_agent")]
     pub max_child_tasks_per_agent: u32,
 
-    /// Maximum depth of task chains (counting --after hops from root).
-    /// Prevents infinite decomposition chains. Default: 8.
-    #[serde(default = "default_max_task_depth")]
-    pub max_task_depth: u32,
+    /// Obsolete compatibility input. Graph depth has no semantic maximum.
+    ///
+    /// Keep accepting old project files so an upgrade never breaks config
+    /// deserialization, but never serialize or consult this value. `wg config
+    /// lint` / `wg migrate config` surface and remove the stale key.
+    #[serde(default, rename = "max_task_depth", skip_serializing)]
+    #[allow(dead_code)]
+    obsolete_max_task_depth: Option<u32>,
 
     /// Maximum times a task can be requeued via failed-dependency triage.
     /// Prevents infinite triage loops. Default: 3.
@@ -747,10 +751,6 @@ fn default_max_child_tasks_per_agent() -> u32 {
     10
 }
 
-fn default_max_task_depth() -> u32 {
-    8
-}
-
 fn default_max_triage_attempts() -> u32 {
     3
 }
@@ -763,7 +763,7 @@ impl Default for GuardrailsConfig {
     fn default() -> Self {
         Self {
             max_child_tasks_per_agent: default_max_child_tasks_per_agent(),
-            max_task_depth: default_max_task_depth(),
+            obsolete_max_task_depth: None,
             max_triage_attempts: default_max_triage_attempts(),
             decomp_guidance: default_decomp_guidance(),
         }

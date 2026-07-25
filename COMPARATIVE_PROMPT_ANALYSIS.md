@@ -61,7 +61,7 @@ All prompts include:
   - Fan-out-merge (parallel + integration): `wg add 'Part A' --after parent` + `wg add 'Integrate' --after part-a,part-b`
   - Iterate-until-pass (refinement): `wg add 'Refine' --max-iterations 3`
 - Validation requirements for subtasks with `--verify` flags
-- Guardrails (max 10 subtasks, depth limits)
+- Guardrails (max 10 subtasks; dependency depth is unlimited)
 - When NOT to decompose guidelines
 
 ### 4. Are there differences based on model selection?

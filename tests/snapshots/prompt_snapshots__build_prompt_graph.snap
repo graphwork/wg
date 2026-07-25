@@ -1,5 +1,6 @@
 ---
 source: tests/prompt_snapshots.rs
+assertion_line: 339
 expression: output
 ---
 # Task Assignment
@@ -267,7 +268,7 @@ wg add 'Fix: <user-visible bug>' --after test-task-123 \
 
 ### Guardrails
 - You can create up to **10** subtasks per session (configurable via `wg config`)
-- Task chains have a maximum depth of **8** levels
+- Keep graph operations bounded by total work, cancellation, and iterative traversal — valid dependency depth is unlimited
 - Always include an integrator at join points — don't leave parallel work unmerged
 
 ### When NOT to decompose

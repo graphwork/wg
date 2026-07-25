@@ -177,9 +177,12 @@ let status = task.map(|t| t.status).unwrap_or(Status::Open);
 
 A phantom blocker is shown as `Open` (the default), which is misleading — it doesn't exist at all, but the user sees it listed as a blocker with `Open` status.
 
-### Failure Scenario 6: `task_depth()` treats phantoms as depth 0
+### Historical note: `task_depth()` and phantom roots
 
-`graph.rs:1350`: "Returns 0 for unknown task IDs or tasks with no dependencies." When computing depth limits for the guardrails system, a phantom parent contributes depth 0, which can allow tasks to be created at incorrect depths.
+Older releases used `task_depth()` for an add-time graph-depth guard, so a
+phantom predecessor's depth-0 fallback affected admission. Dependency depth is
+now unlimited and that semantic guard is gone; phantom edges still need the
+integrity and diagnostic handling described above.
 
 ## 5. Coordinator Behavior
 

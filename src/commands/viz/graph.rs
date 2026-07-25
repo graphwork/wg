@@ -112,45 +112,36 @@ pub fn generate_graph_with_overrides(
         }
     };
 
-    // Assign layers via BFS from roots
-    let roots: Vec<&str> = tasks
+    // Assign layers with Kahn's algorithm. The previous relaxation queue
+    // incremented layers forever on a cycle. Kahn is iterative and linear for
+    // arbitrarily deep DAGs; cyclic remainders render safely in layer zero.
+    let mut indegree: HashMap<&str, usize> = tasks
         .iter()
-        .filter(|t| {
-            reverse
-                .get(t.id.as_str())
-                .map(Vec::is_empty)
-                .unwrap_or(true)
+        .map(|task| {
+            (
+                task.id.as_str(),
+                reverse.get(task.id.as_str()).map(Vec::len).unwrap_or(0),
+            )
         })
-        .map(|t| t.id.as_str())
         .collect();
-
-    let mut layer_of: HashMap<&str, usize> = HashMap::new();
-    let mut queue: std::collections::VecDeque<&str> = std::collections::VecDeque::new();
-
-    for &root in &roots {
-        if !layer_of.contains_key(root) {
-            layer_of.insert(root, 0);
-            queue.push_back(root);
-        }
-    }
-    // Also seed any tasks not reachable from roots (cycles)
-    for task in tasks {
-        if !layer_of.contains_key(task.id.as_str()) {
-            layer_of.insert(task.id.as_str(), 0);
-            queue.push_back(task.id.as_str());
-        }
-    }
+    let mut layer_of: HashMap<&str, usize> = tasks
+        .iter()
+        .map(|task| (task.id.as_str(), 0usize))
+        .collect();
+    let mut queue: std::collections::VecDeque<&str> = indegree
+        .iter()
+        .filter_map(|(&id, &degree)| (degree == 0).then_some(id))
+        .collect();
 
     while let Some(id) = queue.pop_front() {
         let my_layer = layer_of[id];
-        if let Some(children) = forward.get(id) {
-            for &child in children {
-                let new_layer = my_layer + 1;
-                let entry = layer_of.entry(child).or_insert(0);
-                if *entry < new_layer {
-                    *entry = new_layer;
-                    queue.push_back(child);
-                }
+        for &child in forward.get(id).map(Vec::as_slice).unwrap_or(&[]) {
+            let child_layer = layer_of.entry(child).or_insert(0);
+            *child_layer = (*child_layer).max(my_layer.saturating_add(1));
+            let degree = indegree.get_mut(child).expect("visible child has indegree");
+            *degree -= 1;
+            if *degree == 0 {
+                queue.push_back(child);
             }
         }
     }

@@ -747,27 +747,18 @@ pub fn run_recursive(dir: &Path, root_id: &str, timeline: bool, json: bool) -> R
     if timeline {
         print_timeline(&descendants, &interventions, dir, wall_clock);
     } else {
-        print_recursive_tree(
-            root_id,
-            &graph,
-            &descendants,
-            &intervention_map,
-            dir,
-            wall_clock,
-        );
+        print_recursive_tree(root_id, &graph, &descendants, &intervention_map, wall_clock);
     }
 
     Ok(())
 }
 
-/// Print the recursive execution tree with ASCII rendering.
-#[allow(clippy::only_used_in_recursion)]
+/// Print the recursive execution tree with stack-safe ASCII rendering.
 fn print_recursive_tree(
     root_id: &str,
     graph: &WorkGraph,
     descendants: &[&Task],
     intervention_map: &HashMap<&str, Vec<HumanIntervention>>,
-    dir: &Path,
     wall_clock: Option<i64>,
 ) {
     let use_color = std::io::stdout().is_terminal();
@@ -778,6 +769,7 @@ fn print_recursive_tree(
     let green = if use_color { "\x1b[32m" } else { "" };
     let yellow = if use_color { "\x1b[33m" } else { "" };
     let magenta = if use_color { "\x1b[35m" } else { "" };
+    let cyan = if use_color { "\x1b[36m" } else { "" };
 
     // Header
     let root = graph.get_task(root_id);
@@ -834,200 +826,154 @@ fn print_recursive_tree(
     let task_map: HashMap<&str, &&Task> = descendants.iter().map(|t| (t.id.as_str(), t)).collect();
 
     let mut rendered: HashSet<&str> = HashSet::new();
+    const MAX_TRACE_VISUAL_DEPTH: usize = 32;
 
-    #[allow(clippy::too_many_arguments, clippy::only_used_in_recursion)]
-    fn render_tree_recursive<'a>(
+    let status_color = |status: &Status| -> &str {
+        if !use_color {
+            return "";
+        }
+        match status {
+            Status::Done => "\x1b[32m",
+            Status::InProgress => "\x1b[33m",
+            Status::Failed => "\x1b[31m",
+            Status::Open => "\x1b[37m",
+            Status::Blocked | Status::Abandoned | Status::Waiting | Status::PendingValidation => {
+                "\x1b[90m"
+            }
+            Status::PendingEval => "\x1b[38;5;154m",
+            Status::FailedPendingEval | Status::Incomplete => "\x1b[38;5;208m",
+        }
+    };
+    let status_label = |status: &Status| -> &str {
+        match status {
+            Status::Done => "done",
+            Status::InProgress => "in-progress",
+            Status::Failed => "failed",
+            Status::Open => "open",
+            Status::Blocked => "blocked",
+            Status::Abandoned => "abandoned",
+            Status::Waiting | Status::PendingValidation => "waiting",
+            Status::PendingEval => "pending-eval",
+            Status::FailedPendingEval => "failed-pending-eval",
+            Status::Incomplete => "incomplete",
+        }
+    };
+
+    struct TraceFrame<'a> {
         id: &'a str,
-        prefix: &str,
+        prefix: String,
         is_last: bool,
         is_root: bool,
-        rendered: &mut HashSet<&'a str>,
-        forward: &HashMap<&str, Vec<&'a str>>,
-        reverse: &HashMap<&str, Vec<&'a str>>,
-        task_map: &HashMap<&str, &&Task>,
-        intervention_map: &HashMap<&str, Vec<HumanIntervention>>,
-        dir: &Path,
-        use_color: bool,
-    ) -> Vec<String> {
-        let mut lines = Vec::new();
+        depth: usize,
+    }
 
-        let connector = if is_root {
-            String::new()
-        } else if is_last {
-            "└→ ".to_string()
-        } else {
-            "├→ ".to_string()
-        };
-
-        let reset = if use_color { "\x1b[0m" } else { "" };
-        let dim = if use_color { "\x1b[2m" } else { "" };
-        let cyan = if use_color { "\x1b[36m" } else { "" };
-        let magenta = if use_color { "\x1b[35m" } else { "" };
-
-        let status_color_fn = |s: &Status| -> &str {
-            if !use_color {
-                return "";
-            }
-            match s {
-                Status::Done => "\x1b[32m",
-                Status::InProgress => "\x1b[33m",
-                Status::Failed => "\x1b[31m",
-                Status::Open => "\x1b[37m",
-                Status::Blocked
-                | Status::Abandoned
-                | Status::Waiting
-                | Status::PendingValidation => "\x1b[90m",
-                Status::PendingEval => "\x1b[38;5;154m", // chartreuse (xterm-256: 154 ~ light green)
-                Status::FailedPendingEval => "\x1b[38;5;208m", // orange (xterm-256: 208 ~ warm coral)
-                Status::Incomplete => "\x1b[38;5;208m",
-            }
-        };
-
-        let status_label_fn = |s: &Status| -> &str {
-            match s {
-                Status::Done => "done",
-                Status::InProgress => "in-progress",
-                Status::Failed => "failed",
-                Status::Open => "open",
-                Status::Blocked => "blocked",
-                Status::Abandoned => "abandoned",
-                Status::Waiting | Status::PendingValidation => "waiting",
-                Status::PendingEval => "pending-eval",
-                Status::FailedPendingEval => "failed-pending-eval",
-                Status::Incomplete => "incomplete",
-            }
-        };
-
-        // Back-reference for already-rendered nodes (fan-in)
-        if rendered.contains(id) {
-            if let Some(task) = task_map.get(id) {
-                lines.push(format!(
-                    "{}{}{}{}  ({}) ...{}",
-                    prefix,
-                    connector,
-                    status_color_fn(&task.status),
-                    id,
-                    status_label_fn(&task.status),
-                    reset
-                ));
-            }
-            return lines;
+    for (root_index, &root_node) in roots.iter().enumerate() {
+        if root_index > 0 {
+            println!();
         }
-        rendered.insert(id);
+        let mut stack = vec![TraceFrame {
+            id: root_node,
+            prefix: String::new(),
+            is_last: true,
+            is_root: true,
+            depth: 0,
+        }];
 
-        // Fan-in annotation
-        let parents = reverse.get(id).map(Vec::as_slice).unwrap_or(&[]);
-        let fan_in = if parents.len() > 1 {
-            format!("  {}(← {}){}", dim, parents.join(", "), reset)
-        } else {
-            String::new()
-        };
+        while let Some(frame) = stack.pop() {
+            let connector = if frame.is_root {
+                ""
+            } else if frame.is_last {
+                "└→ "
+            } else {
+                "├→ "
+            };
 
-        // Build node display
-        if let Some(task) = task_map.get(id) {
-            let dur = task_duration_secs(task)
-                .map(|s| format!("  {}[{}]{}", dim, format_duration(s), reset))
-                .unwrap_or_default();
+            // Fan-in/cycle back-reference. `rendered` makes the walk finite
+            // without tying validity to an arbitrary dependency depth.
+            if !rendered.insert(frame.id) {
+                if let Some(task) = task_map.get(frame.id) {
+                    println!(
+                        "{}{}{}{}  ({}) ...{}",
+                        frame.prefix,
+                        connector,
+                        status_color(&task.status),
+                        frame.id,
+                        status_label(&task.status),
+                        reset
+                    );
+                }
+                continue;
+            }
 
-            let assigned = task
-                .assigned
-                .as_ref()
-                .map(|a| format!("  {}({}){}", cyan, a, reset))
-                .unwrap_or_default();
-
-            let artifacts_str = if !task.artifacts.is_empty() {
-                format!("  {}→ {}{}", dim, task.artifacts.join(", "), reset)
+            let parents = reverse.get(frame.id).map(Vec::as_slice).unwrap_or(&[]);
+            let fan_in = if parents.len() > 1 {
+                format!("  {}(← {}){}", dim, parents.join(", "), reset)
             } else {
                 String::new()
             };
 
-            lines.push(format!(
-                "{}{}{}{}{}  ({}){}{}{}{}",
-                prefix,
-                connector,
-                status_color_fn(&task.status),
-                id,
-                reset,
-                status_label_fn(&task.status),
-                dur,
-                assigned,
-                artifacts_str,
-                fan_in,
-            ));
-
-            // Show interventions on this task
-            if let Some(ivs) = intervention_map.get(id) {
-                let child_prefix = if is_root {
-                    prefix.to_string()
-                } else if is_last {
-                    format!("{}  ", prefix)
+            if let Some(task) = task_map.get(frame.id) {
+                let duration = task_duration_secs(task)
+                    .map(|seconds| format!("  {}[{}]{}", dim, format_duration(seconds), reset))
+                    .unwrap_or_default();
+                let assigned = task
+                    .assigned
+                    .as_ref()
+                    .map(|agent| format!("  {cyan}({agent}){reset}"))
+                    .unwrap_or_default();
+                let artifacts = if task.artifacts.is_empty() {
+                    String::new()
                 } else {
-                    format!("{}│ ", prefix)
+                    format!("  {}→ {}{}", dim, task.artifacts.join(", "), reset)
                 };
-                for iv in ivs {
-                    lines.push(format!(
+                println!(
+                    "{}{}{}{}{}  ({}){}{}{}{}",
+                    frame.prefix,
+                    connector,
+                    status_color(&task.status),
+                    frame.id,
+                    reset,
+                    status_label(&task.status),
+                    duration,
+                    assigned,
+                    artifacts,
+                    fan_in,
+                );
+            } else {
+                println!(
+                    "{}{}{}  (unknown){}",
+                    frame.prefix, connector, frame.id, fan_in
+                );
+            }
+
+            let child_prefix = if frame.depth >= MAX_TRACE_VISUAL_DEPTH {
+                "… ".to_string()
+            } else if frame.is_root {
+                frame.prefix.clone()
+            } else if frame.is_last {
+                format!("{}  ", frame.prefix)
+            } else {
+                format!("{}│ ", frame.prefix)
+            };
+            if let Some(interventions) = intervention_map.get(frame.id) {
+                for intervention in interventions {
+                    println!(
                         "{}{}⚠ {} — {}{}",
-                        child_prefix, magenta, iv.kind, iv.detail, reset
-                    ));
+                        child_prefix, magenta, intervention.kind, intervention.detail, reset
+                    );
                 }
             }
-        } else {
-            lines.push(format!(
-                "{}{}{}  (unknown){}",
-                prefix, connector, id, fan_in
-            ));
-        }
 
-        // Recurse into children
-        let child_prefix = if is_root {
-            prefix.to_string()
-        } else if is_last {
-            format!("{}  ", prefix)
-        } else {
-            format!("{}│ ", prefix)
-        };
-
-        let children = forward.get(id).map(Vec::as_slice).unwrap_or(&[]);
-        for (i, &child) in children.iter().enumerate() {
-            let child_is_last = i == children.len() - 1;
-            let child_lines = render_tree_recursive(
-                child,
-                &child_prefix,
-                child_is_last,
-                false,
-                rendered,
-                forward,
-                reverse,
-                task_map,
-                intervention_map,
-                dir,
-                use_color,
-            );
-            lines.extend(child_lines);
-        }
-
-        lines
-    }
-
-    for (i, root_node) in roots.iter().enumerate() {
-        if i > 0 {
-            println!();
-        }
-        let tree_lines = render_tree_recursive(
-            root_node,
-            "",
-            true,
-            true,
-            &mut rendered,
-            &forward,
-            &reverse,
-            &task_map,
-            intervention_map,
-            dir,
-            use_color,
-        );
-        for line in &tree_lines {
-            println!("{}", line);
+            let children = forward.get(frame.id).map(Vec::as_slice).unwrap_or(&[]);
+            for (index, &child) in children.iter().enumerate().rev() {
+                stack.push(TraceFrame {
+                    id: child,
+                    prefix: child_prefix.clone(),
+                    is_last: index == children.len() - 1,
+                    is_root: false,
+                    depth: frame.depth + 1,
+                });
+            }
         }
     }
 
@@ -1900,6 +1846,22 @@ mod tests {
 
         let result = run_recursive(&dir, "root", true, false);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn recursive_trace_is_stack_safe_for_two_thousand_node_chain() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join(".wg");
+        let mut graph = WorkGraph::new();
+        for index in 0..2_000usize {
+            let mut task = make_done_task(&format!("deep-{index:04}"), "Deep");
+            if index > 0 {
+                task.after = vec![format!("deep-{:04}", index - 1)];
+            }
+            graph.add_node(Node::Task(task));
+        }
+        setup_graph(&dir, &graph);
+        assert!(run_recursive(&dir, "deep-0000", false, false).is_ok());
     }
 
     #[test]

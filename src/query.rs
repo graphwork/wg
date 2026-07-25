@@ -377,8 +377,12 @@ pub fn dependency_disposition(
     }
 
     let Some(blocker) = graph.get_task(blocker_id) else {
-        return DependencyDisposition::Blocked {
-            reason: "dependency does not exist".to_string(),
+        return if graph.get_archived_boundary(blocker_id).is_some() {
+            DependencyDisposition::Satisfied
+        } else {
+            DependencyDisposition::Blocked {
+                reason: "dependency does not exist".to_string(),
+            }
         };
     };
     if matches!(
@@ -433,6 +437,7 @@ pub fn is_blocker_satisfied(
         graph
             .get_task(blocker_id)
             .map(|t| t.status.is_dep_satisfied())
+            .or_else(|| graph.get_archived_boundary(blocker_id).map(|_| true))
             .unwrap_or(false)
     }
 }
@@ -729,41 +734,29 @@ pub fn after<'a>(graph: &'a WorkGraph, task_id: &str) -> Vec<&'a Task> {
 pub fn phantom_blockers(task: &Task, graph: &WorkGraph) -> Vec<String> {
     task.after
         .iter()
-        .filter(|id| graph.get_task(id).is_none())
+        .filter(|id| graph.get_task(id).is_none() && graph.get_archived_boundary(id).is_none())
         .filter(|id| crate::federation::parse_remote_ref(id).is_none())
         .cloned()
         .collect()
 }
 
-/// Calculate total cost of a task and all its transitive dependencies
+/// Calculate total cost of a task and all its transitive dependencies.
+/// Uses an explicit work stack so a deep chain cannot overflow the call stack.
 pub fn cost_of(graph: &WorkGraph, task_id: &str) -> f64 {
     let mut visited = std::collections::HashSet::new();
-    cost_of_recursive(graph, task_id, &mut visited)
-}
-
-fn cost_of_recursive(
-    graph: &WorkGraph,
-    task_id: &str,
-    visited: &mut std::collections::HashSet<String>,
-) -> f64 {
-    if visited.contains(task_id) {
-        return 0.0;
+    let mut work = vec![task_id];
+    let mut total = 0.0;
+    while let Some(id) = work.pop() {
+        if !visited.insert(id) {
+            continue;
+        }
+        let Some(task) = graph.get_task(id) else {
+            continue;
+        };
+        total += task.estimate.as_ref().and_then(|e| e.cost).unwrap_or(0.0);
+        work.extend(task.after.iter().map(String::as_str));
     }
-    visited.insert(task_id.to_string());
-
-    let Some(task) = graph.get_task(task_id) else {
-        return 0.0;
-    };
-
-    let self_cost = task.estimate.as_ref().and_then(|e| e.cost).unwrap_or(0.0);
-
-    let deps_cost: f64 = task
-        .after
-        .iter()
-        .map(|dep_id| cost_of_recursive(graph, dep_id, visited))
-        .sum();
-
-    self_cost + deps_cost
+    total
 }
 
 #[cfg(test)]

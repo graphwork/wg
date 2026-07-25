@@ -210,7 +210,7 @@ Use `wg add` to create what comes next.\n";
 
 /// Autopoietic guidance section: concrete task decomposition patterns and guardrails.
 /// Injected at task+ scope to teach agents when and how to create subtasks.
-/// Contains {{task_id}}, {{max_child_tasks}}, and {{max_task_depth}} placeholders.
+/// Contains {{task_id}} and {{max_child_tasks}} placeholders.
 pub const AUTOPOIETIC_GUIDANCE: &str = "\
 ## Task Decomposition
 
@@ -298,7 +298,6 @@ wg add 'Fix: <user-visible bug>' --after {{task_id}} \
 
 ### Guardrails
 - You can create up to **{{max_child_tasks}}** subtasks per session (configurable via `wg config`)
-- Task chains have a maximum depth of **{{max_task_depth}}** levels
 - Always include an integrator at join points — don't leave parallel work unmerged
 
 ### When NOT to decompose
@@ -468,7 +467,6 @@ pub fn build_decomposition_guidance(
     task_description: &str,
     task_id: &str,
     max_child_tasks: u32,
-    max_task_depth: u32,
 ) -> String {
     let complexity = classify_task_complexity(task_description);
     let mut parts = Vec::new();
@@ -571,7 +569,7 @@ pub fn build_decomposition_guidance(
     parts.push(format!(
         "\n### Guardrails\n\
          - You can create up to **{max_child_tasks}** subtasks per session (configurable via `wg config`)\n\
-         - Task chains have a maximum depth of **{max_task_depth}** levels\n\
+         - Keep graph operations bounded by total work, cancellation, and iterative traversal — valid dependency depth is unlimited\n\
          - Always include an integrator at join points — don't leave parallel work unmerged",
     ));
 
@@ -1121,7 +1119,6 @@ pub fn build_prompt(vars: &TemplateVars, scope: ContextScope, ctx: &ScopeContext
                 &vars.task_description,
                 &vars.task_id,
                 vars.max_child_tasks,
-                vars.max_task_depth,
             ));
         } else {
             parts.push(vars.apply(AUTOPOIETIC_GUIDANCE));
@@ -1207,7 +1204,6 @@ pub struct TemplateVars {
     pub task_loop_info: String,
     pub task_verify: Option<String>,
     pub max_child_tasks: u32,
-    pub max_task_depth: u32,
     /// True when any dependency of the task has status=Failed (triggers triage mode)
     pub has_failed_deps: bool,
     /// Info about failed dependencies for triage prompt injection
@@ -1286,7 +1282,6 @@ impl TemplateVars {
             task_loop_info,
             task_verify: task.verify.clone(),
             max_child_tasks: guardrails.max_child_tasks_per_agent,
-            max_task_depth: guardrails.max_task_depth,
             has_failed_deps: false,
             failed_deps_info: String::new(),
             in_worktree: false,
@@ -1448,7 +1443,6 @@ impl TemplateVars {
             .replace("{{task_loop_info}}", &self.task_loop_info)
             .replace("{{task_verify}}", self.task_verify.as_deref().unwrap_or(""))
             .replace("{{max_child_tasks}}", &self.max_child_tasks.to_string())
-            .replace("{{max_task_depth}}", &self.max_task_depth.to_string())
     }
 }
 
@@ -3570,7 +3564,7 @@ args = ["--custom-flag"]
 
     #[test]
     fn test_adaptive_guidance_atomic_task() {
-        let guidance = build_decomposition_guidance("Fix typo in the README", "fix-typo", 10, 8);
+        let guidance = build_decomposition_guidance("Fix typo in the README", "fix-typo", 10);
         assert!(
             guidance.contains("single-step task"),
             "Atomic task should get single-step guidance"
@@ -3591,7 +3585,6 @@ args = ["--custom-flag"]
             "Build pipeline to parse and transform data, then write output",
             "build-pipeline",
             10,
-            8,
         );
         assert!(
             guidance.contains("multi-step task"),
@@ -3621,7 +3614,7 @@ args = ["--custom-flag"]
 
     #[test]
     fn test_adaptive_guidance_includes_task_id() {
-        let guidance = build_decomposition_guidance("Fix typo in README", "my-task-42", 10, 8);
+        let guidance = build_decomposition_guidance("Fix typo in README", "my-task-42", 10);
         assert!(
             guidance.contains("my-task-42"),
             "Guidance should reference the task ID"
@@ -3630,15 +3623,16 @@ args = ["--custom-flag"]
 
     #[test]
     fn test_adaptive_guidance_includes_guardrails() {
-        let guidance = build_decomposition_guidance("Build a system", "sys-task", 15, 12);
+        let guidance = build_decomposition_guidance("Build a system", "sys-task", 15);
         assert!(
             guidance.contains("**15**"),
             "Guardrails should show max_child_tasks"
         );
         assert!(
-            guidance.contains("**12**"),
-            "Guardrails should show max_task_depth"
+            guidance.contains("valid dependency depth is unlimited"),
+            "Guidance should describe work bounds rather than a depth ceiling"
         );
+        assert!(!guidance.contains("maximum depth"));
     }
 
     #[test]

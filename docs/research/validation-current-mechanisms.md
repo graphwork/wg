@@ -250,7 +250,8 @@ Beyond the basic DFS cycle detection, `check.rs` also computes Tarjan's SCC and 
 | Required phases | `required_phases` | Tags that must appear (e.g., "test", "review") |
 | Forbidden patterns | `forbidden_patterns` | Tag combinations that must NOT appear |
 | Cycle control | `allow_cycles`, `max_total_iterations` | Whether cycles are permitted and iteration limits |
-| Depth limit | `max_depth` | Maximum dependency chain depth |
+
+Legacy function YAML may contain `max_depth`; current readers ignore it and writers drop it because valid dependency depth is unlimited.
 
 **Effectiveness: STRONG** — Well-designed constraint system for generative functions. Comprehensive test coverage (18 tests). However, this only applies to trace functions, not to manually created task graphs.
 

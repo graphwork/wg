@@ -1810,7 +1810,7 @@ mod tests {
             min_tasks: Some(2),
             max_tasks: Some(10),
             required_skills: vec![],
-            max_depth: None,
+            obsolete_max_depth: None,
             allow_cycles: false,
             max_total_iterations: None,
             required_phases: vec![],

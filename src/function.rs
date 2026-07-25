@@ -240,8 +240,12 @@ pub struct StructuralConstraints {
     pub max_tasks: Option<u32>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub required_skills: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_depth: Option<u32>,
+    /// Obsolete compatibility input. Dependency depth is intentionally
+    /// unbounded; legacy function YAML may still contain `max_depth`, which
+    /// is accepted on read and omitted on every write.
+    #[doc(hidden)]
+    #[serde(default, rename = "max_depth", skip_serializing)]
+    pub obsolete_max_depth: Option<u32>,
     #[serde(default)]
     pub allow_cycles: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1549,7 +1553,12 @@ redacted_fields:
             vec!["implementation", "testing"]
         );
         assert_eq!(constraints.required_phases, vec!["implement", "test"]);
-        assert_eq!(constraints.max_depth, Some(4));
+        assert_eq!(constraints.obsolete_max_depth, Some(4));
+        assert!(
+            !serde_yaml::to_string(&constraints)
+                .unwrap()
+                .contains("max_depth")
+        );
         assert!(!constraints.allow_cycles);
         assert_eq!(constraints.forbidden_patterns.len(), 1);
         assert_eq!(
@@ -1649,7 +1658,7 @@ tasks:
             min_tasks: Some(2),
             max_tasks: Some(10),
             required_skills: vec!["implementation".to_string()],
-            max_depth: None,
+            obsolete_max_depth: None,
             allow_cycles: false,
             max_total_iterations: None,
             required_phases: vec![],
@@ -1710,7 +1719,7 @@ planner_template:
         assert!(c.min_tasks.is_none());
         assert!(c.max_tasks.is_none());
         assert!(c.required_skills.is_empty());
-        assert!(c.max_depth.is_none());
+        assert!(c.obsolete_max_depth.is_none());
         assert!(!c.allow_cycles);
         assert!(c.max_total_iterations.is_none());
         assert!(c.required_phases.is_empty());

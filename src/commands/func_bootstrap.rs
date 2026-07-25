@@ -165,7 +165,7 @@ pub fn run(dir: &Path, force: bool) -> Result<()> {
             min_tasks: Some(2),
             max_tasks: Some(8),
             required_skills: vec!["analysis".to_string()],
-            max_depth: Some(5),
+            obsolete_max_depth: None,
             allow_cycles: false,
             max_total_iterations: None,
             required_phases: vec!["analyze".to_string(), "validate".to_string()],

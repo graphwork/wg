@@ -189,11 +189,13 @@ A large block. Only the keys most likely to matter to set are listed; full schem
 | `[replay]` | `keep_done_threshold` | `:510, 518` | `0.9` | B |
 | `[replay]` | `snapshot_agent_output` | `:514` | `false` | B |
 | `[guardrails]` | `max_child_tasks_per_agent` | `:537, 558` | `10` | G |
-| `[guardrails]` | `max_task_depth` | `:542, 562` | `8` | G |
 | `[guardrails]` | `max_triage_attempts` | `:547, 566` | `3` | G |
 | `[guardrails]` | `decomp_guidance` | `:554, 570` | `true` | G |
 | `[viz]` | `edge_color` | `:589, 596` | `"gray"` | G |
 | `[viz]` | `animations` | `:592, 600` | `"normal"` | G |
+
+Legacy `[guardrails].max_task_depth` is accepted only for compatibility,
+ignored, and removed by `wg migrate config`; valid graph depth is unlimited.
 
 ### `[tui]` — TUI settings (`src/config.rs:614-730`)
 

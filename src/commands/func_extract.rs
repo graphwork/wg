@@ -944,12 +944,6 @@ pub fn run_generative(
     sorted_indices.sort_by_key(|&i| traces[i].len());
     let median_idx = sorted_indices[sorted_indices.len() / 2];
 
-    let max_depth = traces
-        .iter()
-        .map(|trace| compute_max_depth(trace))
-        .max()
-        .unwrap_or(0) as u32;
-
     let has_cycles = traces
         .iter()
         .any(|trace| trace.iter().any(|t| t.cycle_config.is_some()));
@@ -1010,7 +1004,7 @@ pub fn run_generative(
         min_tasks: Some(min_tasks),
         max_tasks: Some(max_tasks),
         required_skills: common_skills.clone(),
-        max_depth: if max_depth > 0 { Some(max_depth) } else { None },
+        obsolete_max_depth: None,
         allow_cycles: has_cycles,
         max_total_iterations: if has_cycles {
             traces
@@ -1126,37 +1120,6 @@ pub fn run_generative(
     println!("Saved to: {}", saved_path.display());
 
     Ok(())
-}
-
-/// Compute the maximum dependency depth in a set of tasks.
-fn compute_max_depth(tasks: &[&Task]) -> usize {
-    let ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
-    let mut depths: HashMap<&str, usize> = HashMap::new();
-
-    for task in tasks {
-        depths.insert(task.id.as_str(), 0);
-    }
-
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for task in tasks {
-            let max_dep = task
-                .after
-                .iter()
-                .filter(|d| ids.contains(d.as_str()))
-                .map(|d| depths.get(d.as_str()).copied().unwrap_or(0) + 1)
-                .max()
-                .unwrap_or(0);
-
-            if max_dep > *depths.get(task.id.as_str()).unwrap_or(&0) {
-                depths.insert(task.id.as_str(), max_dep);
-                changed = true;
-            }
-        }
-    }
-
-    depths.values().copied().max().unwrap_or(0)
 }
 
 /// Build FunctionOutput entries from task artifacts.
@@ -2246,39 +2209,6 @@ mod tests {
 
         let template = build_template(&task, "t1", &subgraph_ids, tmp.path(), &graph);
         assert!(template.loops_to.is_empty());
-    }
-
-    #[test]
-    fn test_compute_max_depth_linear() {
-        let a = Task {
-            id: "a".to_string(),
-            title: "A".to_string(),
-            status: Status::Done,
-            ..Task::default()
-        };
-        let b = Task {
-            id: "b".to_string(),
-            title: "B".to_string(),
-            status: Status::Done,
-            after: vec!["a".to_string()],
-            ..Task::default()
-        };
-        let c = Task {
-            id: "c".to_string(),
-            title: "C".to_string(),
-            status: Status::Done,
-            after: vec!["b".to_string()],
-            ..Task::default()
-        };
-
-        let tasks: Vec<&Task> = vec![&a, &b, &c];
-        assert_eq!(compute_max_depth(&tasks), 2);
-    }
-
-    #[test]
-    fn test_compute_max_depth_single() {
-        let a = make_task("a", "A");
-        assert_eq!(compute_max_depth(&[&a]), 0);
     }
 
     #[test]
