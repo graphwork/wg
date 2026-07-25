@@ -2427,6 +2427,15 @@ description = "Candidate-binary real tmux/SGR mouse flow for the maintainer-appr
 timeout_seconds = 300
 
 [[scenario]]
+name = "tui_hashed_project_colors"
+script = "scenarios/tui_hashed_project_colors.sh"
+owners = [
+    "make-hashed-project",
+]
+description = "Candidate-binary real tmux/SGR color-buffer audit: rich hashed project identity is stable across root/nested/linked-worktree invocations and distinct across projects; dark/light-theme truecolor, explicit mosh-like 256, Termux portrait 16, and mono/NO_COLOR pairs remain WCAG-readable; active/focus inverse cues and semantic failure red survive; repeated resize/capture rejects settled-color flicker."
+timeout_seconds = 240
+
+[[scenario]]
 name = "tui_pi_durable_exit_recovery"
 script = "scenarios/tui_pi_durable_exit_recovery.sh"
 owners = [
@@ -2499,6 +2508,7 @@ name = "tui_authoritative_service_context"
 script = "scenarios/tui_authoritative_service_context.sh"
 owners = [
     "show-authoritative-service",
+    "make-hashed-project",
 ]
 description = "Candidate-binary credential-free real tmux/SGR flow for the one-row authoritative destination: two same-host project daemons and three TUI clients launched from forged/nested/other-project shell contexts must render the authenticated OS-account host + canonical project; wide-to-Termux resizing preserves exact .chat identity/primary controls while optional context degrades whole; same-frame click and command-mode I open full copyable graph/socket/PID-birth/build/protocol/profile-route details; daemon restart replaces the birth owner; graph bytes remain unchanged."
 timeout_seconds = 180

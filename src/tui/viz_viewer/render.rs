@@ -14,8 +14,8 @@ use super::state::{
     LayoutControlPage, LayoutMode, ResponsiveBreakpoint, RightPanelTab, ServiceHealthLevel,
     ServiceIdentityHit, SettingsEditScope, SinglePanelView, SortMode, SymbolMode, TabBarEntryKind,
     TaskFormField, TaskFormState, TextPromptAction, ToastSeverity, VitalsStaleness, VizApp,
-    WAVE_BOLT, WAVE_NUM_BOLTS, extract_section_name, format_duration_compact, format_relative_time,
-    spinner_wave_pos, vitals_staleness_color,
+    WAVE_BOLT, WAVE_NUM_BOLTS, ansi_index_rgb, extract_section_name, format_duration_compact,
+    format_relative_time, spinner_wave_pos, vitals_staleness_color,
 };
 use worksgood::AgentStatus;
 use worksgood::graph::{TokenUsage, format_tokens};
@@ -2159,11 +2159,6 @@ fn ansi16_color(index: u8) -> Color {
     }
 }
 
-fn rgb_to_ansi256((r, g, b): (u8, u8, u8)) -> u8 {
-    let component = |value: u8| ((value as u16 * 5 + 127) / 255) as u8;
-    16 + 36 * component(r) + 6 * component(g) + component(b)
-}
-
 fn rgb_luminance((r, g, b): (u8, u8, u8)) -> f64 {
     let channel = |value: u8| {
         let value = value as f64 / 255.0;
@@ -2187,41 +2182,6 @@ fn contrast_foreground(rgb: (u8, u8, u8)) -> Color {
     }
 }
 
-fn ansi_index_rgb(index: u8) -> (u8, u8, u8) {
-    const BASE: [(u8, u8, u8); 16] = [
-        (0, 0, 0),
-        (128, 0, 0),
-        (0, 128, 0),
-        (128, 128, 0),
-        (0, 0, 128),
-        (128, 0, 128),
-        (0, 128, 128),
-        (192, 192, 192),
-        (128, 128, 128),
-        (255, 0, 0),
-        (0, 255, 0),
-        (255, 255, 0),
-        (0, 0, 255),
-        (255, 0, 255),
-        (0, 255, 255),
-        (255, 255, 255),
-    ];
-    if index < 16 {
-        return BASE[index as usize];
-    }
-    if index >= 232 {
-        let value = 8 + (index - 232) * 10;
-        return (value, value, value);
-    }
-    let value = index - 16;
-    let component = |part: u8| if part == 0 { 0 } else { 55 + part * 40 };
-    (
-        component(value / 36),
-        component((value % 36) / 6),
-        component(value % 6),
-    )
-}
-
 fn workspace_bar_styles(app: &VizApp) -> (Style, Style) {
     let appearance = &app.workspace_appearance;
     let unresolved = appearance.context_rows_rendered == 0
@@ -2242,38 +2202,64 @@ fn workspace_bar_styles(app: &VizApp) -> (Style, Style) {
         );
     }
 
-    let (background, rgb) = match appearance.choice {
+    let (background, rgb, black, white) = match appearance.choice {
         AppearanceChoice::Ansi(index) => match appearance.capability {
-            ColorCapability::TrueColor | ColorCapability::Ansi256 => {
-                (Color::Indexed(index), ansi_index_rgb(index))
-            }
+            ColorCapability::TrueColor => (
+                Color::Indexed(index),
+                ansi_index_rgb(index),
+                Color::Rgb(0, 0, 0),
+                Color::Rgb(255, 255, 255),
+            ),
+            ColorCapability::Ansi256 => (
+                Color::Indexed(index),
+                ansi_index_rgb(index),
+                Color::Indexed(16),
+                Color::Indexed(231),
+            ),
             ColorCapability::Ansi16 => {
                 let mapped = index % 16;
-                (ansi16_color(mapped), ansi_index_rgb(mapped))
+                (
+                    ansi16_color(mapped),
+                    ansi_index_rgb(mapped),
+                    Color::Black,
+                    Color::White,
+                )
             }
-            ColorCapability::Mono => (Color::Reset, (0, 0, 0)),
+            ColorCapability::Mono => unreachable!("handled above"),
         },
         AppearanceChoice::Auto | AppearanceChoice::Rgb(_, _, _) => {
-            let rgb = appearance.effective_rgb().unwrap_or((192, 192, 192));
+            let palette = appearance
+                .effective_palette()
+                .expect("resolved workspace appearance has a cached palette");
             match appearance.capability {
-                ColorCapability::TrueColor => (Color::Rgb(rgb.0, rgb.1, rgb.2), rgb),
-                ColorCapability::Ansi256 => {
-                    let index = rgb_to_ansi256(rgb);
-                    (Color::Indexed(index), ansi_index_rgb(index))
-                }
-                ColorCapability::Ansi16 => {
-                    let digest = rgb.0 ^ rgb.1.rotate_left(2) ^ rgb.2.rotate_left(4);
-                    // Restrict the auto fallback to bright backgrounds whose
-                    // conventional ANSI palettes retain black-text contrast.
-                    let index = [11, 14, 15, 10][(digest % 4) as usize];
-                    (ansi16_color(index), ansi_index_rgb(index))
-                }
-                ColorCapability::Mono => (Color::Reset, (0, 0, 0)),
+                ColorCapability::TrueColor => (
+                    Color::Rgb(palette.rgb.0, palette.rgb.1, palette.rgb.2),
+                    palette.rgb,
+                    Color::Rgb(0, 0, 0),
+                    Color::Rgb(255, 255, 255),
+                ),
+                ColorCapability::Ansi256 => (
+                    Color::Indexed(palette.ansi256),
+                    ansi_index_rgb(palette.ansi256),
+                    Color::Indexed(16),
+                    Color::Indexed(231),
+                ),
+                ColorCapability::Ansi16 => (
+                    ansi16_color(palette.ansi16),
+                    ansi_index_rgb(palette.ansi16),
+                    Color::Black,
+                    Color::White,
+                ),
+                ColorCapability::Mono => unreachable!("handled above"),
             }
         }
         AppearanceChoice::None => unreachable!("handled above"),
     };
-    let foreground = contrast_foreground(rgb);
+    let foreground = match contrast_foreground(rgb) {
+        Color::Black => black,
+        Color::White => white,
+        _ => unreachable!("contrast selector returns black or white"),
+    };
     (
         Style::default().fg(foreground).bg(background),
         Style::default()
@@ -18137,13 +18123,92 @@ mod tests {
     }
 
     #[test]
+    fn hash_palette_contrast_is_wcag_safe_on_emitted_truecolor_256_and_16_colors() {
+        fn nominal_rgb(color: Color) -> (u8, u8, u8) {
+            match color {
+                Color::Rgb(r, g, b) => (r, g, b),
+                Color::Indexed(index) => ansi_index_rgb(index),
+                Color::Black => ansi_index_rgb(0),
+                Color::Red => ansi_index_rgb(1),
+                Color::Green => ansi_index_rgb(2),
+                Color::Yellow => ansi_index_rgb(3),
+                Color::Blue => ansi_index_rgb(4),
+                Color::Magenta => ansi_index_rgb(5),
+                Color::Cyan => ansi_index_rgb(6),
+                Color::Gray => ansi_index_rgb(7),
+                Color::DarkGray => ansi_index_rgb(8),
+                Color::LightRed => ansi_index_rgb(9),
+                Color::LightGreen => ansi_index_rgb(10),
+                Color::LightYellow => ansi_index_rgb(11),
+                Color::LightBlue => ansi_index_rgb(12),
+                Color::LightMagenta => ansi_index_rgb(13),
+                Color::LightCyan => ansi_index_rgb(14),
+                Color::White => ansi_index_rgb(15),
+                other => panic!("workspace pair used non-measurable color {other:?}"),
+            }
+        }
+
+        let (mut app, _tmp) = build_app_for_tab_color_test(&[1]);
+        app.workspace_appearance.context_rows_rendered = 1;
+        app.workspace_appearance.set_choice(AppearanceChoice::Auto);
+        let mut saw_dark_background = false;
+        let mut saw_light_background = false;
+
+        for index in 0..16_384 {
+            let rgb = super::super::state::workspace_color_rgb(&format!(
+                "sample@host:/projects/{index}/.git"
+            ));
+            app.workspace_appearance
+                .install_auto_palette(super::super::state::workspace_palette(rgb));
+            for is_light_theme in [false, true] {
+                app.is_light_theme = is_light_theme;
+                for capability in [
+                    ColorCapability::TrueColor,
+                    ColorCapability::Ansi256,
+                    ColorCapability::Ansi16,
+                ] {
+                    app.workspace_appearance.capability = capability;
+                    let (bar, tile) = workspace_bar_styles(&app);
+                    let background = nominal_rgb(bar.bg.expect("bar background"));
+                    let foreground = nominal_rgb(bar.fg.expect("bar foreground"));
+                    let dark = rgb_luminance(background);
+                    let light = rgb_luminance(foreground);
+                    let ratio = if dark >= light {
+                        (dark + 0.05) / (light + 0.05)
+                    } else {
+                        (light + 0.05) / (dark + 0.05)
+                    };
+                    assert!(
+                        ratio >= 4.5,
+                        "sample={index} theme_light={is_light_theme} capability={capability:?} bg={background:?} fg={foreground:?} ratio={ratio}"
+                    );
+                    assert_eq!(tile.fg, bar.bg, "inverse tile must retain project color");
+                    assert_eq!(tile.bg, bar.fg, "inverse tile must retain safe foreground");
+                    assert!(
+                        tile.add_modifier
+                            .contains(Modifier::BOLD | Modifier::UNDERLINED),
+                        "selection/focus needs non-color cues"
+                    );
+                    if capability == ColorCapability::TrueColor {
+                        saw_dark_background |= matches!(bar.fg, Some(Color::Rgb(255, 255, 255)));
+                        saw_light_background |= matches!(bar.fg, Some(Color::Rgb(0, 0, 0)));
+                    }
+                }
+            }
+        }
+        assert!(saw_dark_background, "dark hash tones must use light text");
+        assert!(saw_light_background, "light hash tones must use dark text");
+    }
+
+    #[test]
     fn workspace_bar_color_falls_back_truecolor_256_16_and_mono() {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
         let (mut app, _tmp) = build_app_for_tab_color_test(&[1]);
         app.task_counts.resumable_chats = 1;
         app.workspace_appearance.context_rows_rendered = 1;
-        app.workspace_appearance.auto_rgb = Some((184, 216, 240));
+        app.workspace_appearance
+            .install_auto_palette(super::super::state::workspace_palette((184, 216, 240)));
         app.workspace_appearance.set_choice(AppearanceChoice::Auto);
 
         let render_cell = |app: &mut VizApp| {
@@ -18161,13 +18226,16 @@ mod tests {
         app.workspace_appearance.capability = ColorCapability::Ansi16;
         assert!(matches!(
             render_cell(&mut app).bg,
-            Color::LightRed
+            Color::Green
+                | Color::Blue
+                | Color::Magenta
+                | Color::Cyan
+                | Color::Gray
+                | Color::DarkGray
                 | Color::LightGreen
-                | Color::LightYellow
                 | Color::LightBlue
                 | Color::LightMagenta
                 | Color::LightCyan
-                | Color::White
         ));
         app.workspace_appearance.set_choice(AppearanceChoice::None);
         assert_eq!(render_cell(&mut app).bg, Color::Reset);
@@ -18232,7 +18300,8 @@ mod tests {
             executor: Some("pi".into()),
             model: Some("m".into()),
         });
-        app.workspace_appearance.auto_rgb = Some((184, 216, 240));
+        app.workspace_appearance
+            .install_auto_palette(super::super::state::workspace_palette((184, 216, 240)));
         app.workspace_appearance.context_rows_rendered = 1;
 
         for symbols in [SymbolMode::Workshop, SymbolMode::Letters] {

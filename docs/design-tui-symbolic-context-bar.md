@@ -349,22 +349,22 @@ The raw user, host, and path are never rendered, included in telemetry, or writt
 
 ### 10.3 Truecolor generation and contrast
 
-1. Start with `OKLCH(L=0.82, C=0.10, h=hue)`.
-2. Convert to sRGB. If out of gamut, reduce chroma by `0.005` until all channels are in range; do not independently clamp channels.
-3. Compute WCAG 2.1 relative luminance from linearized sRGB. Use black foreground when contrast is >= 7:1. If it is lower, increase `L` by `0.01` (maximum `0.94`) and repeat. The automatic palette must pass 7:1 for normal text.
-4. The active tile uses the dark shell background and the same light color as foreground; if that pair is below 4.5:1, use white foreground. Focus/active meaning remains shape/modifier backed.
+1. Preserve the complete hash hue: the documented little-endian `digest[0..8]` value selects the HSL hue over the full circle.
+2. Let `digest[8]` select saturation from `0.66..=0.94` and `digest[9]` select lightness from `0.28..=0.74`. This intentionally produces rich dark, middle, and light project colors rather than collapsing every identity into a pastel cube.
+3. Convert the selected HSL color to sRGB once on the appearance worker. Compute WCAG relative luminance from the emitted sRGB and choose whichever of true black or true white has higher contrast. The resulting pair is required to reach at least 4.5:1.
+4. The active tile swaps that exact safe foreground/background pair and adds bold+underline. Focus/active meaning remains modifier backed, and a dark hash therefore uses light text instead of being mixed toward white.
 
-This produces a light inverse bar with perceptually similar lightness across hues, rather than an HSL rainbow whose blue entries can become unreadably dark.
+The hash derivation and canonical identity contract remain unchanged; only the overly narrow pastel tone mapping is replaced.
 
 ### 10.4 Capability fallbacks
 
-Capability is detected once at startup and stored with the appearance snapshot. Rendering emits only the selected cached style.
+Capability is detected once at startup and stored with the appearance snapshot. `WG_TUI_COLOR_CAPABILITY=auto|truecolor|256|16|mono` is the explicit compatibility override; `NO_COLOR` always wins. Rendering emits only the selected cached style and never probes palette or font appearance.
 
 | Capability | Behavior |
 |---|---|
-| Truecolor | Use generated RGB when `COLORTERM=truecolor/24bit` or terminfo/tmux capability confirms RGB. |
-| 256 color | Enumerate canonical xterm indices 16-255, reject candidates with black-text contrast < 7:1, then choose nearest OKLab color to the truecolor target; tie-break on lower index. |
-| 16 color | Use `digest[8] mod 4` to select, in order, ANSI bright green (background 102), bright yellow (103), bright cyan (106), or bright white (107), with black foreground and bold. These are the canonical ANSI candidates whose xterm RGB values reach 7:1 against black. Because users may redefine them, pixel contrast cannot be proven; inverse/active styling and text identity remain authoritative. |
+| Truecolor | Emit the generated RGB and true RGB black/white foreground selected from its measured luminance. |
+| 256 color | Choose the nearest canonical xterm index 16-255 (including grayscale), tie-breaking on the lower index. Re-measure that emitted palette RGB and use fixed indexed black 16 or white 231 for >=4.5:1 contrast. |
+| 16 color | Choose the nearest of ten conventional project candidates (green/blue/magenta/cyan/gray, normal and bright). Red/yellow remain reserved for failure/active status. Measure the nominal palette RGB and select ANSI black/white adaptively; textual IDs and bold/underline remain authoritative when a user-customized terminal palette differs. |
 | Monochrome / `NO_COLOR` / `TERM=dumb` | Use reverse video for the row, bold active control, underline focus, and literal `!` warnings. No workspace distinction relies on hue. |
 
 Terminal-specific policy:
@@ -387,7 +387,7 @@ Accepted values are `auto`, `none`, `#RRGGBB`, and `ansi:N`. Config/Settings val
 
 ### 10.6 Non-blocking ownership
 
-At process start, the UI immediately uses a neutral cached inverse style. A bootstrap job may read user/hostname/repository/config metadata and compute `WorkspaceAppearance`. It publishes one immutable snapshot through the existing async state channel. A config reload or project switch schedules another job; it does not compute in the event handler.
+At process start, the UI immediately uses a neutral cached inverse style. A bootstrap job may read user/hostname/repository/config metadata and compute the truecolor plus 256/16-color `WorkspaceAppearance` palette. It publishes one immutable, graph-and-generation-owned snapshot through the existing async state channel. A config reload or project switch schedules another job, neutralizes an old auto color immediately, and rejects any late result that does not own the current graph; it does not compute in the renderer.
 
 **Render and input must perform zero hostname calls, environment scans, path resolution, filesystem metadata reads, Git subprocesses, palette queries, or hashing.** They only read the cached appearance/model. The worker's reads are non-mutating: it creates no chat, graph row, route, tmux session, or state file.
 

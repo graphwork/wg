@@ -105,10 +105,34 @@ pub enum ColorCapability {
     Mono,
 }
 
+impl ColorCapability {
+    fn parse(value: &str) -> std::result::Result<Option<Self>, String> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "auto" => Ok(None),
+            "truecolor" | "24bit" => Ok(Some(Self::TrueColor)),
+            "256" | "ansi256" => Ok(Some(Self::Ansi256)),
+            "16" | "ansi16" => Ok(Some(Self::Ansi16)),
+            "mono" | "none" => Ok(Some(Self::Mono)),
+            other => Err(format!(
+                "invalid color capability '{other}'; expected auto, truecolor, 256, 16, or mono"
+            )),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct WorkspacePalette {
+    pub rgb: (u8, u8, u8),
+    pub ansi256: u8,
+    pub ansi16: u8,
+}
+
 #[derive(Clone, Debug)]
 struct ResolvedWorkspaceAppearance {
+    request_generation: u64,
+    workgraph_dir: PathBuf,
     identity: String,
-    auto_rgb: (u8, u8, u8),
+    auto_palette: WorkspacePalette,
     choice: AppearanceChoice,
     symbols: SymbolMode,
     capability: ColorCapability,
@@ -124,9 +148,14 @@ pub struct WorkspaceAppearance {
     pub symbols: SymbolMode,
     pub capability: ColorCapability,
     pub auto_rgb: Option<(u8, u8, u8)>,
+    pub auto_ansi256: Option<u8>,
+    pub auto_ansi16: Option<u8>,
     pub identity: Option<String>,
     pub context_rows_rendered: u64,
     worker: Option<mpsc::Receiver<std::result::Result<ResolvedWorkspaceAppearance, String>>>,
+    requested_workgraph_dir: Option<PathBuf>,
+    request_generation: u64,
+    choice_palette: Option<WorkspacePalette>,
     user_choice_override: bool,
     user_symbol_override: bool,
 }
@@ -138,9 +167,14 @@ impl Default for WorkspaceAppearance {
             symbols: SymbolMode::Workshop,
             capability: ColorCapability::Mono,
             auto_rgb: None,
+            auto_ansi256: None,
+            auto_ansi16: None,
             identity: None,
             context_rows_rendered: 0,
             worker: None,
+            requested_workgraph_dir: None,
+            request_generation: 0,
+            choice_palette: None,
             user_choice_override: false,
             user_symbol_override: false,
         }
@@ -149,27 +183,54 @@ impl Default for WorkspaceAppearance {
 
 impl WorkspaceAppearance {
     fn start(&mut self, workgraph_dir: PathBuf) {
-        if self.worker.is_some() || self.auto_rgb.is_some() {
+        if self.requested_workgraph_dir.as_ref() == Some(&workgraph_dir) {
             return;
         }
+
+        // Replacing the receiver drops any previous generation. Clearing only
+        // the auto identity makes a graph switch neutral immediately while an
+        // explicit user color remains an intentional cross-project override.
+        self.request_generation = self.request_generation.wrapping_add(1);
+        let request_generation = self.request_generation;
+        self.requested_workgraph_dir = Some(workgraph_dir.clone());
+        self.identity = None;
+        self.auto_rgb = None;
+        self.auto_ansi256 = None;
+        self.auto_ansi16 = None;
+
         let (tx, rx) = mpsc::sync_channel(1);
         self.worker = Some(rx);
         let _ = std::thread::Builder::new()
             .name("wg-tui-appearance".into())
             .spawn(move || {
-                let _ = tx.send(resolve_workspace_appearance(&workgraph_dir));
+                let _ = tx.send(resolve_workspace_appearance(
+                    &workgraph_dir,
+                    request_generation,
+                ));
             });
     }
 
-    fn poll(&mut self) -> Option<std::result::Result<(), String>> {
+    fn poll(&mut self, current_workgraph_dir: &Path) -> Option<std::result::Result<(), String>> {
         let result = self.worker.as_ref()?.try_recv().ok()?;
         self.worker = None;
         Some(result.map(|resolved| {
+            if resolved.request_generation != self.request_generation
+                || resolved.workgraph_dir != current_workgraph_dir
+                || self.requested_workgraph_dir.as_deref() != Some(current_workgraph_dir)
+            {
+                // A late result owns neither the current request nor graph. It
+                // is deliberately discarded without a toast or stale repaint.
+                return;
+            }
             self.identity = Some(resolved.identity);
-            self.auto_rgb = Some(resolved.auto_rgb);
+            self.install_auto_palette(resolved.auto_palette);
             self.capability = resolved.capability;
             if !self.user_choice_override {
                 self.choice = resolved.choice;
+                self.choice_palette = match resolved.choice {
+                    AppearanceChoice::Rgb(r, g, b) => Some(workspace_palette((r, g, b))),
+                    _ => None,
+                };
             }
             if !self.user_symbol_override {
                 self.symbols = resolved.symbols;
@@ -177,8 +238,18 @@ impl WorkspaceAppearance {
         }))
     }
 
+    pub(super) fn install_auto_palette(&mut self, palette: WorkspacePalette) {
+        self.auto_rgb = Some(palette.rgb);
+        self.auto_ansi256 = Some(palette.ansi256);
+        self.auto_ansi16 = Some(palette.ansi16);
+    }
+
     pub fn set_choice(&mut self, choice: AppearanceChoice) {
         self.choice = choice;
+        self.choice_palette = match choice {
+            AppearanceChoice::Rgb(r, g, b) => Some(workspace_palette((r, g, b))),
+            _ => None,
+        };
         self.user_choice_override = true;
     }
 
@@ -187,11 +258,15 @@ impl WorkspaceAppearance {
         self.user_symbol_override = true;
     }
 
-    pub fn effective_rgb(&self) -> Option<(u8, u8, u8)> {
+    pub(super) fn effective_palette(&self) -> Option<WorkspacePalette> {
         match self.choice {
-            AppearanceChoice::Auto => self.auto_rgb,
+            AppearanceChoice::Auto => Some(WorkspacePalette {
+                rgb: self.auto_rgb?,
+                ansi256: self.auto_ansi256?,
+                ansi16: self.auto_ansi16?,
+            }),
+            AppearanceChoice::Rgb(_, _, _) => self.choice_palette,
             AppearanceChoice::None | AppearanceChoice::Ansi(_) => None,
-            AppearanceChoice::Rgb(r, g, b) => Some((r, g, b)),
         }
     }
 }
@@ -202,37 +277,129 @@ fn workspace_color_hash(identity: &str) -> [u8; 32] {
     blake3::derive_key(WORKSPACE_COLOR_DERIVE_CONTEXT, identity.as_bytes())
 }
 
-fn workspace_color_rgb(identity: &str) -> (u8, u8, u8) {
+fn hsl_to_rgb(hue: f64, saturation: f64, lightness: f64) -> (u8, u8, u8) {
+    let chroma = (1.0 - (2.0 * lightness - 1.0).abs()) * saturation;
+    let sector = (hue * 6.0).rem_euclid(6.0);
+    let x = chroma * (1.0 - (sector.rem_euclid(2.0) - 1.0).abs());
+    let (r, g, b) = match sector as u8 {
+        0 => (chroma, x, 0.0),
+        1 => (x, chroma, 0.0),
+        2 => (0.0, chroma, x),
+        3 => (0.0, x, chroma),
+        4 => (x, 0.0, chroma),
+        _ => (chroma, 0.0, x),
+    };
+    let offset = lightness - chroma / 2.0;
+    let byte = |value: f64| ((value + offset) * 255.0).round().clamp(0.0, 255.0) as u8;
+    (byte(r), byte(g), byte(b))
+}
+
+pub(super) fn workspace_color_rgb(identity: &str) -> (u8, u8, u8) {
     let digest = workspace_color_hash(identity);
-    // A light bar is part of the grammar. Keeping every channel in this range
-    // guarantees strong black-text contrast while the digest still chooses a
-    // stable, visibly project-specific tint.
+    // Hue is unconstrained, while saturation and lightness retain enough
+    // range for materially different projects to look different. Foreground
+    // is selected adaptively from the *emitted* palette color, so rich dark
+    // tones no longer need to be washed toward white for readability.
+    let hue_bits = u64::from_le_bytes(digest[0..8].try_into().expect("fixed hash prefix"));
+    let hue = hue_bits as f64 / (u64::MAX as f64 + 1.0);
+    let saturation = 0.66 + (digest[8] as f64 / 255.0) * 0.28;
+    let lightness = 0.28 + (digest[9] as f64 / 255.0) * 0.46;
+    hsl_to_rgb(hue, saturation, lightness)
+}
+
+pub(super) fn ansi_index_rgb(index: u8) -> (u8, u8, u8) {
+    const BASE: [(u8, u8, u8); 16] = [
+        (0, 0, 0),
+        (128, 0, 0),
+        (0, 128, 0),
+        (128, 128, 0),
+        (0, 0, 128),
+        (128, 0, 128),
+        (0, 128, 128),
+        (192, 192, 192),
+        (128, 128, 128),
+        (255, 0, 0),
+        (0, 255, 0),
+        (255, 255, 0),
+        (0, 0, 255),
+        (255, 0, 255),
+        (0, 255, 255),
+        (255, 255, 255),
+    ];
+    if index < 16 {
+        return BASE[index as usize];
+    }
+    if index >= 232 {
+        let value = 8 + (index - 232) * 10;
+        return (value, value, value);
+    }
+    let value = index - 16;
+    let component = |part: u8| if part == 0 { 0 } else { 55 + part * 40 };
     (
-        176 + digest[0] % 64,
-        176 + digest[1] % 64,
-        176 + digest[2] % 64,
+        component(value / 36),
+        component((value % 36) / 6),
+        component(value % 6),
     )
 }
 
-fn terminal_color_capability() -> ColorCapability {
+fn rgb_distance(left: (u8, u8, u8), right: (u8, u8, u8)) -> u32 {
+    let channel = |a: u8, b: u8| (i32::from(a) - i32::from(b)).unsigned_abs().pow(2);
+    channel(left.0, right.0) + channel(left.1, right.1) + channel(left.2, right.2)
+}
+
+fn rgb_to_ansi256(rgb: (u8, u8, u8)) -> u8 {
+    (16..=255)
+        .min_by_key(|index| (rgb_distance(rgb, ansi_index_rgb(*index)), *index))
+        .expect("canonical xterm palette is non-empty")
+}
+
+fn rgb_to_ansi16(rgb: (u8, u8, u8)) -> u8 {
+    // Red/yellow are reserved for the packed failure/active status segment.
+    // The remaining conventional colors still provide ten deterministic
+    // project identities, while textual IDs and modifiers remain authoritative.
+    const PROJECT_COLORS: [u8; 10] = [2, 4, 5, 6, 7, 8, 10, 12, 13, 14];
+    PROJECT_COLORS
+        .into_iter()
+        .min_by_key(|index| (rgb_distance(rgb, ansi_index_rgb(*index)), *index))
+        .expect("project ANSI palette is non-empty")
+}
+
+pub(super) fn workspace_palette(rgb: (u8, u8, u8)) -> WorkspacePalette {
+    WorkspacePalette {
+        rgb,
+        ansi256: rgb_to_ansi256(rgb),
+        ansi16: rgb_to_ansi16(rgb),
+    }
+}
+
+fn terminal_color_capability() -> std::result::Result<ColorCapability, String> {
     if std::env::var_os("NO_COLOR").is_some() {
-        return ColorCapability::Mono;
+        return Ok(ColorCapability::Mono);
+    }
+    if let Some(explicit) = std::env::var("WG_TUI_COLOR_CAPABILITY")
+        .ok()
+        .map(|value| ColorCapability::parse(&value))
+        .transpose()?
+        .flatten()
+    {
+        return Ok(explicit);
+    }
+
+    let term = std::env::var("TERM")
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if term.is_empty() || term == "dumb" {
+        return Ok(ColorCapability::Mono);
     }
     let colorterm = std::env::var("COLORTERM")
         .unwrap_or_default()
         .to_ascii_lowercase();
     if colorterm.contains("truecolor") || colorterm.contains("24bit") {
-        return ColorCapability::TrueColor;
-    }
-    let term = std::env::var("TERM")
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    if term.contains("256color") {
-        ColorCapability::Ansi256
-    } else if term.is_empty() || term == "dumb" {
-        ColorCapability::Mono
+        Ok(ColorCapability::TrueColor)
+    } else if term.contains("256color") {
+        Ok(ColorCapability::Ansi256)
     } else {
-        ColorCapability::Ansi16
+        Ok(ColorCapability::Ansi16)
     }
 }
 
@@ -297,6 +464,7 @@ fn canonical_git_common_identity(project_root: &Path) -> String {
 
 fn resolve_workspace_appearance(
     workgraph_dir: &Path,
+    request_generation: u64,
 ) -> std::result::Result<ResolvedWorkspaceAppearance, String> {
     let project_root = workgraph_dir.parent().unwrap_or(workgraph_dir);
     let user = std::env::var("USER")
@@ -319,11 +487,13 @@ fn resolve_workspace_appearance(
         .transpose()?
         .unwrap_or_default();
     Ok(ResolvedWorkspaceAppearance {
-        auto_rgb: workspace_color_rgb(&identity),
+        request_generation,
+        workgraph_dir: workgraph_dir.to_path_buf(),
+        auto_palette: workspace_palette(workspace_color_rgb(&identity)),
         identity,
         choice,
         symbols,
-        capability: terminal_color_capability(),
+        capability: terminal_color_capability()?,
     })
 }
 
@@ -347,6 +517,16 @@ mod workspace_appearance_tests {
         assert!(AppearanceChoice::parse("ansi:999").is_err());
         assert_eq!(SymbolMode::parse("workshop"), Ok(SymbolMode::Workshop));
         assert_eq!(SymbolMode::parse("letters"), Ok(SymbolMode::Letters));
+        assert_eq!(
+            ColorCapability::parse("truecolor"),
+            Ok(Some(ColorCapability::TrueColor))
+        );
+        assert_eq!(
+            ColorCapability::parse("256"),
+            Ok(Some(ColorCapability::Ansi256))
+        );
+        assert_eq!(ColorCapability::parse("auto"), Ok(None));
+        assert!(ColorCapability::parse("looks-light").is_err());
         assert!(
             SymbolMode::parse("detect").is_err(),
             "font auto-detection is forbidden"
@@ -373,6 +553,15 @@ mod workspace_appearance_tests {
             workspace_color_hash("erik@host:/srv/other-clone/.git")
         );
         let rgb = workspace_color_rgb(identity);
+        assert_eq!(rgb, (17, 224, 102));
+        assert_eq!(
+            workspace_palette(rgb),
+            WorkspacePalette {
+                rgb,
+                ansi256: 41,
+                ansi16: 6,
+            }
+        );
         let channel = |value: u8| {
             let value = value as f64 / 255.0;
             if value <= 0.04045 {
@@ -386,6 +575,68 @@ mod workspace_appearance_tests {
         assert!(
             contrast_with_black >= 4.5,
             "rgb={rgb:?}, contrast={contrast_with_black}"
+        );
+    }
+
+    #[test]
+    fn rich_hash_palette_has_broad_lightness_chroma_and_compatibility_palette_distinction() {
+        let mut unique_rgb = HashSet::new();
+        let mut unique_256 = HashSet::new();
+        let mut unique_16 = HashSet::new();
+        let mut lightness_buckets = HashSet::new();
+        let mut min_lightness = 1.0_f64;
+        let mut max_lightness = 0.0_f64;
+        let mut chroma_sum = 0.0_f64;
+        let mut richly_chromatic = 0_usize;
+        const SAMPLES: usize = 16_384;
+
+        for index in 0..SAMPLES {
+            let rgb = workspace_color_rgb(&format!("sample@host:/projects/{index}/.git"));
+            let palette = workspace_palette(rgb);
+            unique_rgb.insert(rgb);
+            unique_256.insert(palette.ansi256);
+            unique_16.insert(palette.ansi16);
+
+            let max = *[rgb.0, rgb.1, rgb.2].iter().max().unwrap() as f64 / 255.0;
+            let min = *[rgb.0, rgb.1, rgb.2].iter().min().unwrap() as f64 / 255.0;
+            let lightness = (max + min) / 2.0;
+            let chroma = max - min;
+            min_lightness = min_lightness.min(lightness);
+            max_lightness = max_lightness.max(lightness);
+            lightness_buckets.insert((lightness * 20.0).floor() as u8);
+            chroma_sum += chroma;
+            richly_chromatic += usize::from(chroma >= 0.35);
+        }
+
+        assert!(min_lightness <= 0.30, "minimum lightness={min_lightness}");
+        assert!(max_lightness >= 0.72, "maximum lightness={max_lightness}");
+        assert!(
+            lightness_buckets.len() >= 9,
+            "lightness buckets={lightness_buckets:?}"
+        );
+        assert!(
+            chroma_sum / SAMPLES as f64 >= 0.50,
+            "mean chroma={}",
+            chroma_sum / SAMPLES as f64
+        );
+        assert!(
+            richly_chromatic * 100 / SAMPLES >= 90,
+            "only {richly_chromatic}/{SAMPLES} colors reached chroma 0.35"
+        );
+        assert!(
+            unique_rgb.len() >= 16_000,
+            "RGB uniqueness={}",
+            unique_rgb.len()
+        );
+        assert!(
+            unique_256.len() >= 150,
+            "256-color spread={}",
+            unique_256.len()
+        );
+        assert_eq!(
+            unique_16,
+            HashSet::from([2, 4, 5, 6, 7, 8, 10, 12, 13, 14]),
+            "16-color compatibility palette must use every non-status project color"
         );
     }
 
@@ -426,19 +677,58 @@ mod workspace_appearance_tests {
         appearance.set_symbols(SymbolMode::Letters);
         let (tx, rx) = mpsc::sync_channel(1);
         appearance.worker = Some(rx);
+        let graph = PathBuf::from("/repo/.wg");
+        appearance.request_generation = 1;
+        appearance.requested_workgraph_dir = Some(graph.clone());
         tx.send(Ok(ResolvedWorkspaceAppearance {
+            request_generation: 1,
+            workgraph_dir: graph.clone(),
             identity: "user@host:/repo/.git".into(),
-            auto_rgb: (200, 210, 220),
+            auto_palette: workspace_palette((200, 210, 220)),
             choice: AppearanceChoice::Rgb(1, 2, 3),
             symbols: SymbolMode::Workshop,
             capability: ColorCapability::TrueColor,
         }))
         .unwrap();
-        assert_eq!(appearance.poll(), Some(Ok(())));
+        assert_eq!(appearance.poll(&graph), Some(Ok(())));
         assert_eq!(appearance.choice, AppearanceChoice::None);
         assert_eq!(appearance.symbols, SymbolMode::Letters);
         assert_eq!(appearance.auto_rgb, Some((200, 210, 220)));
         assert_eq!(appearance.capability, ColorCapability::TrueColor);
+    }
+
+    #[test]
+    fn graph_switch_neutralizes_old_auto_color_and_rejects_stale_completion() {
+        let old_graph = PathBuf::from("/projects/old/.wg");
+        let new_graph = PathBuf::from("/projects/new/.wg");
+        let mut appearance = WorkspaceAppearance::default();
+        appearance.request_generation = 7;
+        appearance.requested_workgraph_dir = Some(old_graph.clone());
+        appearance.identity = Some("user@host:/projects/old/.git".into());
+        appearance.install_auto_palette(workspace_palette((12, 34, 56)));
+
+        appearance.start(new_graph.clone());
+        assert_eq!(appearance.identity, None);
+        assert_eq!(appearance.auto_rgb, None);
+        assert_eq!(appearance.request_generation, 8);
+
+        // Model a completion from the replaced generation arriving through a
+        // current receiver: owner checks still reject it fail-closed.
+        let (tx, rx) = mpsc::sync_channel(1);
+        appearance.worker = Some(rx);
+        tx.send(Ok(ResolvedWorkspaceAppearance {
+            request_generation: 7,
+            workgraph_dir: old_graph,
+            identity: "stale".into(),
+            auto_palette: workspace_palette((255, 0, 0)),
+            choice: AppearanceChoice::Auto,
+            symbols: SymbolMode::Workshop,
+            capability: ColorCapability::TrueColor,
+        }))
+        .unwrap();
+        assert_eq!(appearance.poll(&new_graph), Some(Ok(())));
+        assert_eq!(appearance.identity, None);
+        assert_eq!(appearance.auto_rgb, None);
     }
 
     #[test]
@@ -12772,7 +13062,11 @@ impl VizApp {
     /// Check if the graph has changed on disk and refresh if needed.
     /// Returns `true` if any work was done (graph reloaded, service polled, etc.).
     pub fn maybe_refresh(&mut self) -> bool {
-        let appearance_changed = match self.workspace_appearance.poll() {
+        // Cheap request-owner comparison only; every path/Git/hash/palette
+        // operation remains on the appearance worker. A runtime graph switch
+        // drops the previous receiver before polling it.
+        self.workspace_appearance.start(self.workgraph_dir.clone());
+        let appearance_changed = match self.workspace_appearance.poll(&self.workgraph_dir) {
             Some(Ok(())) => true,
             Some(Err(message)) => {
                 self.push_toast(message, ToastSeverity::Warning);

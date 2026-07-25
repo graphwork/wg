@@ -50,6 +50,10 @@ for graph in "$G1" "$G2"; do
   cat >"$graph/config.toml" <<'TOML'
 [dispatcher]
 model = "pi:openrouter:example/model"
+
+[models.default]
+model = "pi:openrouter:example/model"
+reasoning = "high"
 TOML
   "${clean_env[@]}" "$WG_BIN" --dir "$graph" chat create --name destination --command cat >/dev/null
   cat >"$graph/tui-state.json" <<'JSON'
