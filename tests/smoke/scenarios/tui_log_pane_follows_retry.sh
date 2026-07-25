@@ -27,7 +27,13 @@ set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/_helpers.sh"
 
-require_wg
+if [[ -n "${WG_SMOKE_CANDIDATE_BIN:-}" ]]; then
+    WG_BIN="$WG_SMOKE_CANDIDATE_BIN"
+else
+    require_wg
+    WG_BIN="$(command -v wg)"
+fi
+[[ -x "$WG_BIN" ]] || loud_fail "wg binary is not executable: $WG_BIN"
 
 if ! command -v tmux >/dev/null 2>&1; then
     loud_skip "MISSING TMUX" "tmux not on PATH; cannot drive interactive TUI"
@@ -43,19 +49,26 @@ kill_tmux_session() {
 }
 add_cleanup_hook kill_tmux_session
 
-cd "$scratch"
+project="$scratch/project"
+graph_dir="$project/.wg"
+export HOME="$scratch/home"
+export XDG_CONFIG_HOME="$HOME/.config"
+export WG_GLOBAL_DIR="$HOME/.wg"
+unset TMUX TMUX_TMPDIR WG_DIR WG_PROJECT_ROOT WG_WORKTREE_PATH WG_WORKTREE_ACTIVE WG_BRANCH
+unset WG_TASK_ID WG_AGENT_ID WG_SPAWN_EPOCH WG_EXECUTOR_TYPE WG_MODEL WG_TIER
+mkdir -p "$project" "$HOME" "$XDG_CONFIG_HOME" "$WG_GLOBAL_DIR"
 
-if ! wg init -x claude >init.log 2>&1; then
-    loud_fail "wg init failed during smoke setup: $(tail -5 init.log)"
+init_log="$scratch/init.log"
+if ! "$WG_BIN" --dir "$graph_dir" init --no-agency >"$init_log" 2>&1; then
+    loud_fail "wg init failed during smoke setup: $(tail -5 "$init_log")"
 fi
-
-graph_dir="$scratch/.wg"
 if [[ ! -f "$graph_dir/graph.jsonl" ]]; then
-    loud_fail "could not locate graph.jsonl under .wg/ after init"
+    loud_fail "could not locate the explicitly initialized graph at $graph_dir"
 fi
 
-if ! wg add "Retried task" --id smoke-retry >add.log 2>&1; then
-    loud_fail "wg add failed during smoke setup: $(tail -5 add.log)"
+add_log="$scratch/add.log"
+if ! "$WG_BIN" --dir "$graph_dir" add "Retried task" --id smoke-retry >"$add_log" 2>&1; then
+    loud_fail "wg add failed during smoke setup: $(tail -5 "$add_log")"
 fi
 
 fail_marker="WG_RETRY_SMOKE_FAILED_$$"
@@ -128,17 +141,17 @@ EOF
 done
 
 # Launch wg tui in tmux. Wide window so the Log header fits on one line.
-tmux new-session -d -s "$session" -x 220 -y 60 "cd $scratch && wg tui"
+tmux new-session -d -s "$session" -x 220 -y 60 \
+    "cd '$project' && env HOME='$HOME' XDG_CONFIG_HOME='$XDG_CONFIG_HOME' WG_GLOBAL_DIR='$WG_GLOBAL_DIR' WG_USER=unknown '$WG_BIN' --dir '$graph_dir' tui"
 sleep 4
 
-# Esc out of the chat PTY focus, then '4' switches the right panel to Log.
-tmux send-keys -t "$session" 'Escape'
-sleep 1
+# The isolated graph has no chat PTY, so startup is already in command mode.
+# '4' switches the right panel to Log without an Escape that would quit TUI.
 tmux send-keys -t "$session" '4'
 sleep 3
 
 dump1="$scratch/dump1.txt"
-if ! ( cd "$scratch" && wg tui-dump >"$dump1" 2>&1 ); then
+if ! "$WG_BIN" --dir "$graph_dir" tui-dump >"$dump1" 2>&1; then
     loud_fail "wg tui-dump failed:\n$(cat "$dump1")"
 fi
 
@@ -161,7 +174,7 @@ tmux send-keys -t "$session" -l '{'
 sleep 2
 
 dump2="$scratch/dump2.txt"
-( cd "$scratch" && wg tui-dump >"$dump2" 2>&1 ) || true
+"$WG_BIN" --dir "$graph_dir" tui-dump >"$dump2" 2>&1 || true
 
 if ! grep -q "$fail_marker" "$dump2"; then
     loud_fail "After '{' the Log pane should show the FAILED attempt's marker.\nDump:\n$(cat "$dump2")"

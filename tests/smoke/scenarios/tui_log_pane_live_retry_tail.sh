@@ -12,7 +12,13 @@ set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/_helpers.sh"
 
-require_wg
+if [[ -n "${WG_SMOKE_CANDIDATE_BIN:-}" ]]; then
+    WG_BIN="$WG_SMOKE_CANDIDATE_BIN"
+else
+    require_wg
+    WG_BIN="$(command -v wg)"
+fi
+[[ -x "$WG_BIN" ]] || loud_fail "wg binary is not executable: $WG_BIN"
 command -v tmux >/dev/null 2>&1 || loud_skip "MISSING TMUX" "tmux is required for the live TUI flow"
 command -v python3 >/dev/null 2>&1 || loud_skip "MISSING PYTHON3" "python3 is required for the sparse fixture"
 
@@ -25,11 +31,21 @@ cleanup_live_retry_tail() {
 }
 add_cleanup_hook cleanup_live_retry_tail
 
-cd "$scratch"
-wg init -x claude >init.log 2>&1 || loud_fail "wg init failed: $(tail -5 init.log)"
-wg add "Retried Pi task" --id live-retry-tail >add.log 2>&1 \
-    || loud_fail "wg add failed: $(tail -5 add.log)"
-graph_dir="$scratch/.wg"
+project="$scratch/project"
+graph_dir="$project/.wg"
+export HOME="$scratch/home"
+export XDG_CONFIG_HOME="$HOME/.config"
+export WG_GLOBAL_DIR="$HOME/.wg"
+unset TMUX TMUX_TMPDIR WG_DIR WG_PROJECT_ROOT WG_WORKTREE_PATH WG_WORKTREE_ACTIVE WG_BRANCH
+unset WG_TASK_ID WG_AGENT_ID WG_SPAWN_EPOCH WG_EXECUTOR_TYPE WG_MODEL WG_TIER
+mkdir -p "$project" "$HOME" "$XDG_CONFIG_HOME" "$WG_GLOBAL_DIR"
+
+init_log="$scratch/init.log"
+"$WG_BIN" --dir "$graph_dir" init --no-agency >"$init_log" 2>&1 \
+    || loud_fail "wg init failed: $(tail -5 "$init_log")"
+add_log="$scratch/add.log"
+"$WG_BIN" --dir "$graph_dir" add "Retried Pi task" --id live-retry-tail >"$add_log" 2>&1 \
+    || loud_fail "wg add failed: $(tail -5 "$add_log")"
 
 python3 - "$graph_dir/graph.jsonl" <<'PY'
 import json, sys
@@ -124,7 +140,7 @@ PY
 writer_pid=$!
 
 tmux new-session -d -s "$session" -x 220 -y 60 \
-    "cd $scratch && env -u WG_AGENT_ID -u WG_EXECUTOR_TYPE -u WG_MODEL -u WG_TIER WG_USER=unknown wg tui"
+    "cd '$project' && env HOME='$HOME' XDG_CONFIG_HOME='$XDG_CONFIG_HOME' WG_GLOBAL_DIR='$WG_GLOBAL_DIR' WG_USER=unknown '$WG_BIN' --dir '$graph_dir' tui"
 sleep 4
 # This isolated graph has no live chat PTY, so startup is already in command
 # mode. Drive the exact documented '4' Log-tab key directly.
@@ -133,7 +149,7 @@ sleep 2
 
 dump_screen() {
     local out="$1"
-    (cd "$scratch" && wg tui-dump >"$out" 2>&1) || loud_fail "tui-dump failed: $(cat "$out")"
+    "$WG_BIN" --dir "$graph_dir" tui-dump >"$out" 2>&1 || loud_fail "tui-dump failed: $(cat "$out")"
 }
 
 live_dump="$scratch/live.txt"

@@ -1,0 +1,40 @@
+Session Log smoke graph isolation validation
+Date: 2026-07-25
+Candidate: target/debug/wg
+
+PASS  bash -n (five changed scenario scripts)
+PASS  git diff --check
+PASS  cargo fmt --check
+PASS  cargo clippy (existing warnings only)
+PASS  cargo build --bin wg
+PASS  CARGO_BUILD_JOBS=1 cargo install --path . --locked
+PASS  CARGO_BUILD_JOBS=1 cargo test --lib smoke::tests::manifest_loader_filters_owners -- --exact
+PASS  CARGO_BUILD_JOBS=1 cargo test --lib profile::named::tests::test_set_role_model_override_dry_run_writes_nothing -- --exact
+
+PASS  WG_SMOKE_SCENARIO=tui_log_pane_renders_raw_stream \
+      WG_SMOKE_CANDIDATE_BIN=$PWD/target/debug/wg \
+      tests/smoke/scenarios/tui_log_pane_renders_raw_stream.sh
+      Result: real tmux Log tab rendered the initial stream and live append.
+
+PASS  WG_SMOKE_SCENARIO=tui_log_smoke_graph_isolation \
+      WG_SMOKE_CANDIDATE_BIN=$PWD/target/debug/wg \
+      tests/smoke/scenarios/tui_log_smoke_graph_isolation.sh
+      Result: invoked from caller/nested/deeper below a live sentinel graph;
+      graph SHA-256, task count, sentinel, and service registry SHA-256 stayed
+      unchanged on pass, forced failure, TERM, and early exit-77 SKIP. Target
+      scratch, tmux, and process checks were empty after every path.
+
+PASS  tui_log_pane_follows_retry.sh (candidate binary)
+PASS  tui_log_scroll_controls.sh (candidate binary)
+PASS  tui_log_pane_live_retry_tail.sh (candidate binary; sparse 600 MB fixture)
+
+BASELINE/UNRELATED  cargo test
+  First default-parallel run encountered rust-lld SIGBUS while several test
+  binaries linked concurrently. CARGO_BUILD_JOBS=1 completed compilation.
+  The serial lib run then exposed 7 global profile-test ordering failures; the
+  first test passed alone. A fully serial bin run completed 3,745 tests and
+  reported 47 existing failures: legacy claude/openrouter model expectations
+  now rejected by the Pi-only route contract, retired recover endpoint/model
+  expectations, and spawn tests refused by the current 24 GiB disk-admission
+  projection. No changed file is Rust production/test code. Relevant Session
+  Log paging/retry/raw identity tests all passed in that run.

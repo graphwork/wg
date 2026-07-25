@@ -539,9 +539,19 @@ owners = [
     "tui-agent-activity",
     "tui-log-view",
     "smoke-gate-is",
+    "fix-log-smoke-graph-isolation",
 ]
-description = "wg tui's '4: Log' pane renders raw_stream.jsonl events for an in-progress task's assigned agent on first draw, and picks up new events as they're appended. Regression for the tui-agent-activity merge that surfaced 'no agent output yet' to users despite stream files existing."
+description = "wg tui's '4: Log' pane renders raw_stream.jsonl events for an in-progress task's assigned agent on first draw, and picks up new events as they're appended. Regression for the tui-agent-activity merge that surfaced 'no agent output yet' to users despite stream files existing. The fixture is explicitly pinned to a scratch graph and isolated HOME/config state."
 timeout_seconds = 60
+
+[[scenario]]
+name = "tui_log_smoke_graph_isolation"
+script = "scenarios/tui_log_smoke_graph_isolation.sh"
+owners = [
+    "fix-log-smoke-graph-isolation",
+]
+description = "Runs the real Session Log raw-stream scenario from beneath a live sentinel WG graph while its smoke root is also nested under that graph. Pass, forced failure, TERM, and pre-fixture SKIP must leave caller graph bytes/task count/service registry unchanged and reap only scratch-owned tmux/process/directory state."
+timeout_seconds = 120
 
 [[scenario]]
 name = "tui_log_pane_follows_retry"

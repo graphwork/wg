@@ -26,7 +26,13 @@ set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/_helpers.sh"
 
-require_wg
+if [[ -n "${WG_SMOKE_CANDIDATE_BIN:-}" ]]; then
+    WG_BIN="$WG_SMOKE_CANDIDATE_BIN"
+else
+    require_wg
+    WG_BIN="$(command -v wg)"
+fi
+[[ -x "$WG_BIN" ]] || loud_fail "wg binary is not executable: $WG_BIN"
 
 if ! command -v tmux >/dev/null 2>&1; then
     loud_skip "MISSING TMUX" "tmux not on PATH; cannot drive interactive TUI"
@@ -42,25 +48,29 @@ kill_tmux_session() {
 }
 add_cleanup_hook kill_tmux_session
 
-cd "$scratch"
+# Treat CWD discovery and inherited worker/user state as hostile. The scratch
+# may itself be nested below a live graph, so every WG process receives the
+# exact fixture graph and a scratch-owned user/config home.
+project="$scratch/project"
+graph_dir="$project/.wg"
+export HOME="$scratch/home"
+export XDG_CONFIG_HOME="$HOME/.config"
+export WG_GLOBAL_DIR="$HOME/.wg"
+unset TMUX TMUX_TMPDIR WG_DIR WG_PROJECT_ROOT WG_WORKTREE_PATH WG_WORKTREE_ACTIVE WG_BRANCH
+unset WG_TASK_ID WG_AGENT_ID WG_SPAWN_EPOCH WG_EXECUTOR_TYPE WG_MODEL WG_TIER
+mkdir -p "$project" "$HOME" "$XDG_CONFIG_HOME" "$WG_GLOBAL_DIR"
 
-if ! wg init -x claude >init.log 2>&1; then
-    loud_fail "wg init failed during smoke setup: $(tail -5 init.log)"
+init_log="$scratch/init.log"
+if ! "$WG_BIN" --dir "$graph_dir" init --no-agency >"$init_log" 2>&1; then
+    loud_fail "wg init failed during smoke setup: $(tail -5 "$init_log")"
+fi
+if [[ ! -f "$graph_dir/graph.jsonl" ]]; then
+    loud_fail "could not locate the explicitly initialized graph at $graph_dir"
 fi
 
-graph_dir=""
-for cand in .wg .wg; do
-    if [[ -f "$scratch/$cand/graph.jsonl" ]]; then
-        graph_dir="$scratch/$cand"
-        break
-    fi
-done
-if [[ -z "$graph_dir" ]]; then
-    loud_fail "could not locate graph.jsonl under .wg/ or .wg/ after init"
-fi
-
-if ! wg add "Live agent task" --id smoke-live >add.log 2>&1; then
-    loud_fail "wg add failed during smoke setup: $(tail -5 add.log)"
+add_log="$scratch/add.log"
+if ! "$WG_BIN" --dir "$graph_dir" add "Live agent task" --id smoke-live >"$add_log" 2>&1; then
+    loud_fail "wg add failed during smoke setup: $(tail -5 "$add_log")"
 fi
 
 # Mark the task in-progress and assigned to agent-fake.
@@ -91,20 +101,20 @@ EOF
 : >"$graph_dir/agents/agent-fake/output.log"
 
 # Launch wg tui in tmux. Wide window so the Log pane has room.
-tmux new-session -d -s "$session" -x 200 -y 60 "cd $scratch && wg tui"
+tui_err="$scratch/tui.err"
+tmux new-session -d -s "$session" -x 200 -y 60 \
+    "cd '$project' && env HOME='$HOME' XDG_CONFIG_HOME='$XDG_CONFIG_HOME' WG_GLOBAL_DIR='$WG_GLOBAL_DIR' WG_USER=unknown '$WG_BIN' --dir '$graph_dir' tui 2>'$tui_err'; printf '%s\\n' \$? >'$scratch/tui.exit'"
 sleep 4
 
-# Esc out of the chat PTY focus that the chat tab grabs by default,
-# then '4' switches the right panel to Log.
-tmux send-keys -t "$session" 'Escape'
-sleep 1
+# The isolated graph has no chat PTY, so startup is already in command mode.
+# '4' switches the right panel to Log without an Escape that would quit TUI.
 tmux send-keys -t "$session" '4'
 sleep 3
 
 # Pull the rendered screen back out via the dump server.
 dump_out="$scratch/dump.txt"
-if ! ( cd "$scratch" && wg tui-dump >"$dump_out" 2>&1 ); then
-    loud_fail "wg tui-dump failed:\n$(cat "$dump_out")"
+if ! "$WG_BIN" --dir "$graph_dir" tui-dump >"$dump_out" 2>&1; then
+    loud_fail "wg tui-dump failed:\n$(cat "$dump_out")\nTUI exit: $(cat "$scratch/tui.exit" 2>/dev/null || echo running)\nTUI screen:\n$(tmux capture-pane -p -t "$session" 2>/dev/null)\nTUI stderr:\n$(cat "$tui_err" 2>/dev/null)"
 fi
 
 if grep -q "no agent output yet" "$dump_out"; then
@@ -118,15 +128,17 @@ fi
 # Auto-refresh check: append a new event and verify it shows up on a
 # subsequent dump (within a few ticks).
 marker2="WG_TUI_LOG_SMOKE_NEW_$$"
-printf '\n{"type":"assistant","message":{"content":[{"type":"text","text":"%s"}]}}\n' "$marker2" \
+printf '{"type":"assistant","message":{"content":[{"type":"text","text":"%s"}]}}\n' "$marker2" \
     >>"$graph_dir/agents/agent-fake/raw_stream.jsonl"
-sleep 3
-
 dump_out2="$scratch/dump2.txt"
-( cd "$scratch" && wg tui-dump >"$dump_out2" 2>&1 ) || true
+for _ in $(seq 1 15); do
+    sleep 1
+    "$WG_BIN" --dir "$graph_dir" tui-dump >"$dump_out2" 2>&1 || true
+    grep -q "$marker2" "$dump_out2" && break
+done
 
 if ! grep -q "$marker2" "$dump_out2"; then
-    loud_fail "Log pane did not pick up newly-appended stream event '$marker2' after 3s.\nDump:\n$(cat "$dump_out2")"
+    loud_fail "Log pane did not pick up newly-appended stream event '$marker2' within 15s.\nDump:\n$(cat "$dump_out2")"
 fi
 
 echo "PASS: Log tab renders raw_stream.jsonl events and auto-refreshes"
