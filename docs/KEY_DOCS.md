@@ -11,6 +11,7 @@ Last updated: 2026-04-29 (verified by doc-sync-audit, fan-out of 12 per-zone aud
 | File | Purpose | Audience |
 |------|---------|----------|
 | `README.md` | Project overview, install, setup, usage patterns, feature summary | Everyone (entry point) |
+| `docs/quickstart-pi-openrouter.md` | Verified pushbutton quickstart: install WG + Pi, OpenRouter auth, free-model discovery, `pi-worksgood` install, route selection, TUI | New users (canonical quickstart) |
 | `.claude/skills/wg/SKILL.md` | Claude Code skill definition — teaches AI agents to use wg | AI agents (Claude Code) |
 | `docs/COMMANDS.md` | Complete CLI command reference with examples | Users, agents |
 | `docs/AGENT-GUIDE.md` | How spawned agents should think about task graphs: patterns, structures, retry/kill mechanics, anti-patterns | AI agents, advanced users |

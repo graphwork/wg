@@ -90,26 +90,69 @@ institutional work:
 
 ## Start the OS
 
+The fastest first look is graph-only and needs no credentials:
+
 ```bash
 cargo install --git https://github.com/graphwork/wg
 wg init
 wg tui
 ```
 
-### Select Pi as the model plane
+`wg init` and `wg tui` are **non-mutating** — they never select a model,
+authenticate, install packages, or start a service. To actually drive LLM
+work you select the **Pi** model plane explicitly.
+
+### Quickstart: drive a free OpenRouter model through Pi
+
+Pi is WorksGood's sole model plane: Pi owns provider login, model discovery,
+endpoints, availability, and cost; WG owns the task graph plus exact per-role
+`pi:<provider>:<model>` routes. The full, verified, copy-paste path —
+install WG and Pi, authenticate with OpenRouter, discover and validate a
+current free model, install the `pi-worksgood` integration, optionally add
+web plugins, select the route, and open the TUI — lives in
+[**docs/quickstart-pi-openrouter.md**](docs/quickstart-pi-openrouter.md)
+(and the same path, as a styled standalone page, ships in
+[`website/quickstart-pi-openrouter.html`](website/quickstart-pi-openrouter.html)
+for the graphwork.github.io site).
+The spine:
 
 ```bash
-wg init                                      # graph-only; no credentials or route
-wg setup --route pi --yes \
-  --model pi:<provider>:<model>              # exact Pi identity
-wg config --models                           # every role + effective reasoning
+# 1. install WG (needs Rust) and Pi (needs Node 20+)
+cargo install --git https://github.com/graphwork/wg
+npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+
+# 2. authenticate Pi with OpenRouter (once, in Pi — WG never sees the key)
+pi
+/login openrouter          # -> "Sign in with OpenRouter" (PKCE OAuth)
+
+# 3. discover a CURRENT free model and validate it works in Pi
+pi --list-models ":free"
+pi --model "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free" -p "Reply OK"
+
+# 4. install the WorksGood Pi integration (pi-worksgood, embedded in wg)
+wg pi-plugin install && wg pi-plugin status
+
+# 5. initialize a project and select the Pi route (project-scoped; global untouched)
+wg init
+wg profile init-starters
+wg profile pi --strong "pi:openrouter/nvidia/nemotron-3-ultra-550b-a55b:free" \
+              --weak   "pi:openrouter/nvidia/nemotron-3-ultra-550b-a55b:free"
+wg profile select pi
+wg config --models         # every role shows handler=pi, exact route, reasoning
+
+# 6. start the service and open the operating surface
+wg service start
+wg tui
 ```
 
-Pi owns provider authentication, model discovery, endpoint details, model
-availability, and support validation. WG owns graph orchestration plus exact
-per-role `pi:<provider>:<model>` routes and inherited reasoning. Legacy WG
-model catalogs/endpoints remain migration-only and never authorize dispatch.
-See [Pi model-plane configuration](docs/pi-model-plane.md).
+Replace the model id with whatever `pi --list-models ":free"` currently
+returns — free-model availability, limits, context, and tool support change
+frequently. See the [full quickstart](docs/quickstart-pi-openrouter.md) for
+macOS/Termux notes, optional `pi-web-access` / `pi-agent-browser-native`
+plugins, the `pi-worksgood`/hermetic details, and troubleshooting
+(PATH, `Failed to run wg`, missing Pi/plugin/model/auth). Legacy WG model
+catalogs/endpoints remain migration-only and never authorize dispatch; see
+[Pi model-plane configuration](docs/pi-model-plane.md).
 
 ### Then let agents work
 
@@ -148,6 +191,9 @@ tomorrow, the work would still be there.
 
 ## Documentation
 
+- **[docs/quickstart-pi-openrouter.md](docs/quickstart-pi-openrouter.md)** — verified
+  pushbutton path: install WG + Pi, authenticate with OpenRouter, find a free
+  model, install `pi-worksgood`, select the Pi route, open `wg tui`
 - **[docs/GUIDE.md](docs/GUIDE.md)** — operator manual: configuration, the
   service, agent management, models, TUI, troubleshooting, AI assistants
 - **[docs/AGENT-GUIDE.md](docs/AGENT-GUIDE.md)** — how agents should use

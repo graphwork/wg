@@ -1,5 +1,13 @@
 # OpenRouter Setup Guide
 
+> **Current path: the Pi model plane.** WorksGood now reaches OpenRouter
+> through Pi as `pi:openrouter:<model>`, and Pi owns all auth (via `/login
+> openrouter`). The **verified, copy-paste quickstart** is
+> [`docs/quickstart-pi-openrouter.md`](../quickstart-pi-openrouter.md). The
+> `wg endpoints` / `OPENROUTER_API_KEY`-in-WG / `wg models search` flow
+> documented below describes the **legacy native executor** and is retained
+> for migration/reference only — it no longer authorizes dispatch.
+
 Use [OpenRouter](https://openrouter.ai/) to access hundreds of models from a single API key. wg treats OpenRouter as an OpenAI-compatible provider, so any model available on OpenRouter works with the native executor.
 
 ---

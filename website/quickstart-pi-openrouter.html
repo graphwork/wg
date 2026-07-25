@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WG — Quickstart with Pi + a free OpenRouter model</title>
+  <meta name="description" content="Copy-paste path from a clean machine to a live wg tui driving a free OpenRouter model through Pi, at zero cost.">
+  <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
+  <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16x16.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="assets/apple-touch-icon.png">
+  <style>
+    :root {
+      --wg-bg: #0d1117;
+      --wg-surface: #161b22;
+      --wg-border: #30363d;
+      --wg-text: #e6edf3;
+      --wg-muted: #8b949e;
+      --wg-accent: #58a6ff;
+      --wg-green: #3fb950;
+      --wg-warn: #d29922;
+      --wg-danger: #f85149;
+      --mono: 'SF Mono', 'Fira Code', 'JetBrains Mono', 'Cascadia Code', Consolas, monospace;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0; background: var(--wg-bg); color: var(--wg-text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+      line-height: 1.6; font-size: 16px;
+    }
+    .wg-page { max-width: 880px; margin: 0 auto; padding: 2.5rem 1.25rem 4rem; }
+    header.wg-head { border-bottom: 1px solid var(--wg-border); padding-bottom: 1.25rem; margin-bottom: 2rem; }
+    .wg-kicker { color: var(--wg-accent); font-family: var(--mono); font-size: 0.78rem; letter-spacing: 0.08em; text-transform: uppercase; }
+    h1 { font-size: 1.9rem; margin: 0.5rem 0 0.6rem; line-height: 1.2; }
+    .wg-lede { color: var(--wg-muted); font-size: 1.02rem; margin: 0; }
+    h2 { font-size: 1.3rem; margin: 2.4rem 0 0.9rem; padding-top: 0.5rem; border-top: 1px solid var(--wg-border); scroll-margin-top: 1rem; }
+    h2 .num { color: var(--wg-accent); font-family: var(--mono); margin-right: 0.5rem; }
+    h3 { font-size: 1.05rem; margin: 1.4rem 0 0.5rem; color: var(--wg-text); }
+    p { margin: 0.7rem 0; }
+    a { color: var(--wg-accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    code { font-family: var(--mono); font-size: 0.86em; background: rgba(110,118,129,0.18); padding: 0.12em 0.38em; border-radius: 4px; color: var(--wg-text); }
+    pre {
+      background: var(--wg-surface); border: 1px solid var(--wg-border); border-radius: 8px;
+      padding: 0.95rem 1.05rem; overflow-x: auto; margin: 0.9rem 0; font-size: 0.85rem; line-height: 1.55;
+    }
+    pre code { background: none; padding: 0; font-size: inherit; color: var(--wg-text); }
+    .c-comment { color: var(--wg-muted); } /* comment hint inside code blocks */
+    .wg-callout {
+      border-left: 3px solid var(--wg-accent); background: rgba(88,166,255,0.06);
+      padding: 0.8rem 1rem; border-radius: 0 6px 6px 0; margin: 1.1rem 0; font-size: 0.92rem;
+    }
+    .wg-callout.warn { border-left-color: var(--wg-warn); background: rgba(210,153,34,0.08); }
+    .wg-callout.danger { border-left-color: var(--wg-danger); background: rgba(248,81,73,0.08); }
+    .wg-callout.ok { border-left-color: var(--wg-green); background: rgba(63,185,80,0.07); }
+    .wg-callout strong { color: var(--wg-text); }
+    table { width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: 0.9rem; }
+    th, td { text-align: left; padding: 0.55rem 0.7rem; border-bottom: 1px solid var(--wg-border); vertical-align: top; }
+    th { color: var(--wg-muted); font-weight: 600; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; }
+    td code { white-space: nowrap; }
+    .wg-toc { background: var(--wg-surface); border: 1px solid var(--wg-border); border-radius: 8px; padding: 1rem 1.25rem; margin: 1.5rem 0; }
+    .wg-toc ol { margin: 0.4rem 0 0; padding-left: 1.4rem; }
+    .wg-toc li { margin: 0.2rem 0; }
+    .wg-steps { counter-reset: step; list-style: none; padding-left: 0; margin: 1rem 0; }
+    footer { margin-top: 3rem; padding-top: 1.25rem; border-top: 1px solid var(--wg-border); color: var(--wg-muted); font-size: 0.85rem; }
+    footer a { color: var(--wg-muted); }
+    @media (max-width: 640px) {
+      .wg-page { padding: 1.5rem 0.9rem 3rem; }
+      h1 { font-size: 1.5rem; }
+      pre { font-size: 0.78rem; padding: 0.8rem; }
+    }
+  </style>
+</head>
+<body>
+<main class="wg-page">
+  <header class="wg-head">
+    <div class="wg-kicker">WorksGood · Quickstart</div>
+    <h1>WG + Pi + a free OpenRouter model, in 9 steps</h1>
+    <p class="wg-lede">
+      The canonical copy-paste path from a clean machine to a live <code>wg tui</code>
+      driving a <strong>free</strong> OpenRouter model through <strong>Pi</strong>, at
+      zero cost — so you can confirm the whole wiring before spending credits.
+      The <a href="https://github.com/graphwork/wg/blob/main/docs/quickstart-pi-openrouter.md">same path lives in the repo</a>;
+      if anything disagrees, the markdown file is the source of truth.
+    </p>
+  </header>
+
+  <div class="wg-callout">
+    <strong>Verified against</strong> <code>wg 0.1.0</code> and
+    <code>@earendil-works/pi-coding-agent</code> <code>0.82.0</code>. Re-check
+    commands against your installed versions — see <a href="#troubleshooting">Troubleshooting</a>
+    when something differs.
+  </div>
+
+  <nav class="wg-toc" aria-label="Quickstart contents">
+    <strong>Contents</strong>
+    <ol>
+      <li><a href="#names">The four names</a></li>
+      <li><a href="#install-wg">Install WorksGood</a></li>
+      <li><a href="#install-pi">Install Pi</a></li>
+      <li><a href="#auth">Authenticate Pi with OpenRouter</a></li>
+      <li><a href="#discover">Find a free model</a></li>
+      <li><a href="#plugin">Install the WorksGood Pi integration</a></li>
+      <li><a href="#web">(Optional) Pi web capabilities</a></li>
+      <li><a href="#init">Initialize a project</a></li>
+      <li><a href="#route">Select the Pi route</a> + <a href="#start">start</a></li>
+      <li><a href="#troubleshooting">Troubleshooting</a></li>
+    </ol>
+  </nav>
+
+  <section id="names">
+    <h2><span class="num">0</span>The four names</h2>
+    <table>
+      <thead><tr><th>Identity</th><th>What it is</th></tr></thead>
+      <tbody>
+        <tr><td><strong>WorksGood</strong></td><td>the product / project</td></tr>
+        <tr><td><code>wg</code></td><td>the WorksGood CLI binary (<code>cargo install</code>)</td></tr>
+        <tr><td><code>@worksgood/pi</code></td><td>npm name of the WorksGood↔Pi integration. <strong>Not</strong> installed from npm today — the version-locked build is embedded in the <code>wg</code> binary and installed by <code>wg pi-plugin install</code>.</td></tr>
+        <tr><td><code>pi-worksgood</code></td><td>the label Pi shows for the integration (tools, <code>/wg</code> commands).</td></tr>
+      </tbody>
+    </table>
+    <p><strong>Pi</strong> (<code>@earendil-works/pi-coding-agent</code>) is a separate product.
+    WorksGood uses Pi as its sole LLM model plane: Pi owns provider login, model discovery,
+    endpoints, availability, and cost; WorksGood owns the task graph plus exact per-role
+    <code>pi:&lt;provider&gt;:&lt;model&gt;</code> routes.</p>
+    <div class="wg-callout warn">
+      <strong>Heads-up on the <code>wg</code> name.</strong> It collides with WireGuard's
+      <code>wg(8)</code>. If you also use WireGuard, install WorksGood's <code>wg</code> on a
+      private path. A future one-command concierge (<code>wg onboard</code> / <code>worksg</code>)
+      is <strong>design-only, not shipped</strong> — see <a href="#future">Future UX</a>.
+    </div>
+  </section>
+
+  <section id="install-wg">
+    <h2><span class="num">1</span>Install WorksGood (<code>wg</code>)</h2>
+    <p>Requires the Rust toolchain (<a href="https://rustup.rs">rustup</a>).</p>
+<pre><code>cargo install --git https://github.com/graphwork/wg
+wg --version</code></pre>
+    <p>From a source checkout: <code>cargo install --path . --locked</code>. Make
+    <code>~/.cargo/bin</code> reachable:</p>
+<pre><code><span class="c-comment"># bash/zsh — add once, then: source ~/.bashrc</span>
+echo 'export PATH="$HOME/.cargo/bin:$PATH"' &gt;&gt; ~/.bashrc</code></pre>
+  </section>
+
+  <section id="install-pi">
+    <h2><span class="num">2</span>Install Pi</h2>
+    <p>Pi is an npm package. Requires Node.js 20+.</p>
+<pre><code>npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+pi --version</code></pre>
+    <p><strong>macOS</strong> — install Node first (<code>brew install node</code>, or
+      <a href="https://github.com/nvm-sh/nvm">nvm</a>), then the same line.</p>
+    <p><strong>Termux (Android)</strong> — see Pi's
+      <a href="https://pi.dev/docs/latest/termux">Termux guide</a>:</p>
+<pre><code>pkg update &amp;&amp; pkg upgrade
+pkg install nodejs git
+npm install -g --ignore-scripts @earendil-works/pi-coding-agent</code></pre>
+  </section>
+
+  <section id="auth">
+    <h2><span class="num">3</span>Authenticate Pi with OpenRouter</h2>
+    <p>Do this <strong>once</strong>, in Pi — WorksGood never sees or stores your key.</p>
+<pre><code>cd /path/to/any/project
+pi                              <span class="c-comment"># start an interactive Pi session</span></code></pre>
+    <p>Inside Pi:</p>
+<pre><code>/login openrouter</code></pre>
+    <p>then choose <strong>Sign in with OpenRouter</strong>. This opens OpenRouter's PKCE
+    OAuth flow in your browser; Pi stores a <strong>user-controlled API key</strong>
+    (minted from your OpenRouter credits) in <code>~/.pi/agent/auth.json</code> with
+    <code>0600</code> permissions. Sign out any time with <code>/logout</code>.</p>
+    <div class="wg-callout danger">
+      <strong>Safe key handling — never put a secret in shell history.</strong>
+      Prefer <code>/login</code>. If you can't use OAuth, store the key in Pi's
+      <code>auth.json</code> (via <code>/login</code> → “Use an API key”) or export it
+      from your shell rc — <strong>never</strong> type <code>pi --api-key sk-or-...</code>,
+      which lands in history and the process list. Resolution order in Pi:
+      <code>--api-key</code> flag → <code>~/.pi/agent/auth.json</code> → env var →
+      <code>models.json</code>. See Pi's <a href="https://pi.dev/docs/latest/providers">Providers</a>.
+    </div>
+    <p>You may need a small amount of OpenRouter credit even for <code>:free</code> models;
+    free models also have per-day/per-minute caps. Check your allowance at
+    <a href="https://openrouter.ai/keys">openrouter.ai/keys</a>.</p>
+  </section>
+
+  <section id="discover">
+    <h2><span class="num">4</span>Find a currently-available free model</h2>
+    <p>Free OpenRouter models carry a <code>:free</code> suffix. <strong>Availability,
+    context, rate limits, and tool support change frequently</strong> — discover them at
+    run time, never hard-code one.</p>
+<pre><code>pi --list-models ":free"</code></pre>
+    <p>A credential-free listing of every currently-free OpenRouter model Pi knows:</p>
+<pre><code>provider    model                                               context  max-out  thinking  images
+openrouter  google/gemma-4-31b-it:free                          262.1K   32.8K    yes       yes
+openrouter  nvidia/nemotron-3-ultra-550b-a55b:free              1M       65.5K    yes       no
+openrouter  openai/gpt-oss-20b:free                             131.1K   32.8K    yes       no
+...                                                  <span class="c-comment">(the list rotates over time)</span></code></pre>
+    <div class="wg-callout warn">
+      <code>nvidia/nemotron-3-ultra-550b-a55b:free</code> is a <strong>dated snapshot</strong>,
+      not an eternal default. Re-run <code>pi --list-models ":free"</code> and read the model
+      card at <a href="https://openrouter.ai/models">openrouter.ai/models</a> for current
+      limits, context size, vision, and <strong>tool/function-call support</strong>
+      (some free models lack tool support, which affects agent dispatch).
+    </div>
+    <p>Validate the model actually works in Pi (needs the auth from step 3):</p>
+<pre><code>pi --model "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free" -p "Reply with the single word OK"</code></pre>
+    <p>A 401 means re-do <code>/login</code>; a 404 means the id is wrong/withdrawn — re-list
+    and pick another. <strong>This is the exact point that requires interactive OpenRouter
+    login;</strong> everything before it is credential-free.</p>
+  </section>
+
+  <section id="plugin">
+    <h2><span class="num">5</span>Install the WorksGood Pi integration (<code>pi-worksgood</code>)</h2>
+    <p>One command materializes the version-locked build embedded in your <code>wg</code>
+    binary and wires it into Pi's global settings:</p>
+<pre><code>wg pi-plugin install</code></pre>
+    <p>Expected:</p>
+<pre><code>Installed pi-worksgood (npm: @worksgood/pi, compat 0.2.0) from embedded → versioned cache.
+  extension: ~/.cache/wg/worksgood-pi/0.2.0/pi-worksgood/index.js
+  wired into pi settings: ~/.pi/agent/settings.json</code></pre>
+    <p>Verify:</p>
+<pre><code>wg pi-plugin status          <span class="c-comment"># source, cache path, compat, console wired: yes</span>
+wg pi-plugin path            <span class="c-comment"># scriptable resolved index.js path</span>
+wg pi-plugin compat-version  <span class="c-comment"># the compat version the plugin asserts</span></code></pre>
+    <p>A human-run <code>pi</code> now auto-loads the <code>pi-worksgood</code> tools
+    (<code>wg_ready</code>, <code>wg_show</code>, <code>wg_add</code>, <code>wg_done</code>, …)
+    and <code>/wg</code> commands.</p>
+    <div class="wg-callout ok">
+      <strong>Idempotent + self-healing.</strong> Re-run <code>wg pi-plugin install</code>
+      any time; it no-ops when correct and repairs drift. <strong>Hermetic for WG-spawned
+      workers:</strong> WorksGood loads exactly the embedded build by absolute path
+      (<code>pi --mode rpc -e &lt;cache&gt;/pi-worksgood/index.js -ne</code>) and never reads
+      <code>~/.pi</code> on that path. Only the human-console direction uses the global
+      settings entry written here.
+    </div>
+    <p><strong>Legacy migration.</strong> If you had the old <code>@worksgood/wg-pi-plugin</code>,
+    <code>wg pi-plugin install</code> keeps it inert, points Pi at the one compatible
+    <code>pi-worksgood/index.js</code>, and prints a one-time
+    <code>pi remove npm:@worksgood/wg-pi-plugin</code> command.</p>
+  </section>
+
+  <section id="web">
+    <h2><span class="num">6</span>(Optional) Give Pi web capabilities</h2>
+    <p>Two separate official Pi packages — they are <strong>not</strong> the same thing:</p>
+    <table>
+      <thead><tr><th>Package</th><th>What it adds</th></tr></thead>
+      <tbody>
+        <tr><td><code>pi-web-access</code></td><td>web <strong>search</strong>, URL/page <strong>fetching</strong>, GitHub repo cloning, PDF extraction, YouTube &amp; local video understanding</td></tr>
+        <tr><td><code>pi-agent-browser-native</code></td><td><strong>interactive browser automation</strong> (open, click, fill, screenshot, drive real web apps)</td></tr>
+      </tbody>
+    </table>
+<pre><code>pi install npm:pi-web-access               <span class="c-comment"># search + fetch + clone + video</span>
+pi install npm:pi-agent-browser-native     <span class="c-comment"># real browser driving</span>
+pi list                                    <span class="c-comment"># confirm what's installed</span></code></pre>
+    <p><strong>Search/content access</strong> is read-only research; <strong>browser automation</strong>
+    actively drives a real browser (log in, click, submit). Independent of the WorksGood
+    integration. Remove with <code>pi remove npm:&lt;name&gt;</code>.</p>
+  </section>
+
+  <section id="init">
+    <h2><span class="num">7</span>Initialize a WorksGood project</h2>
+<pre><code>cd /path/to/your/project
+wg init</code></pre>
+    <p>Creates <code>.wg/</code> (task graph as JSONL, config, agency, service state). A fresh
+    project is <strong>graph-only</strong> — no LLM route, no credentials. You can open the
+    TUI now, but dispatching LLM work needs step 8.</p>
+    <div class="wg-callout">
+      <strong>Existing users:</strong> the commands below <strong>select</strong> a route;
+      they do not delete profiles you already configured. Project-scoped selection
+      (<code>wg profile select</code>) leaves your global <code>~/.wg/config.toml</code> untouched.
+    </div>
+  </section>
+
+  <section id="route">
+    <h2><span class="num">8</span>Select the Pi route with your free model</h2>
+    <p>For a zero-cost smoke test, set <strong>both</strong> the strong (worker) and weak
+    (agency one-shots) tiers to the free model. <strong>Path A — project-scoped (recommended;
+    does not change global state):</strong></p>
+<pre><code>wg profile init-starters
+wg profile pi --strong "pi:openrouter/nvidia/nemotron-3-ultra-550b-a55b:free" \
+              --weak   "pi:openrouter/nvidia/nemotron-3-ultra-550b-a55b:free"
+wg profile select pi      <span class="c-comment"># this project only; global config untouched</span></code></pre>
+    <p><strong>Path B — global</strong> (make Pi your default everywhere): same first two
+    lines, then <code>wg profile use pi</code> (rewrites <code>~/.wg/config.toml</code>,
+    ensures the plugin, hot-reloads the daemon).</p>
+    <p><strong>Path C — one explicit route:</strong></p>
+<pre><code>wg setup --route pi --yes --model "pi:openrouter/nvidia/nemotron-3-ultra-550b-a55b:free"</code></pre>
+    <p>Note: Path C sets worker tiers to your model but leaves the weak/agency tier on paid
+    <code>deepseek/deepseek-chat</code>. Use A or B for a fully free test. Preview any path
+    with <code>--dry-run</code>. Replace the id with whatever
+    <code>pi --list-models ":free"</code> returns and you validated in step 4.</p>
+    <p><strong>Verify the effective policy:</strong></p>
+<pre><code>wg config --models</code></pre>
+    <p>Every displayed LLM role must show handler <code>pi</code>, an exact
+    <code>pi:openrouter/&lt;model&gt;:free</code> route, and a visible reasoning level. A
+    missing/non-Pi route or omitted reasoning <strong>fails closed</strong> — no silent fallback.</p>
+    <div class="wg-callout warn">
+      <strong>Opening the TUI never selects a route.</strong> <code>wg tui</code> is
+      graph-only and non-mutating: it will not initialize a graph, install packages,
+      authenticate, pick a model, or start/reload the service. You must select Pi explicitly.
+    </div>
+  </section>
+
+  <section id="start">
+    <h2><span class="num">9</span>Start the service and open the TUI</h2>
+<pre><code>wg service start        <span class="c-comment"># start the coordinator/dispatcher</span>
+wg service status       <span class="c-comment"># health, daemon PID, dispatcher state</span>
+wg tui                  <span class="c-comment"># the operating surface</span></code></pre>
+    <p>Add a task, then explicitly release it for dispatch:</p>
+<pre><code>wg add "Smoke test: print hello from a free model" --exec-mode shell
+wg publish &lt;task-id&gt; --only</code></pre>
+    <p>Restart after config/package changes:</p>
+<pre><code>wg service reload       <span class="c-comment"># pick up config.toml edits</span>
+wg service stop &amp;&amp; wg service start   <span class="c-comment"># full restart</span></code></pre>
+  </section>
+
+  <section id="troubleshooting">
+    <h2>Troubleshooting</h2>
+
+    <h3><code>wg: command not found</code> / <code>pi: command not found</code></h3>
+    <p><code>~/.cargo/bin</code> (wg) or your npm global bin (pi) isn't on <code>PATH</code>:</p>
+<pre><code>echo 'export PATH="$HOME/.cargo/bin:$(npm config get prefix)/bin:$PATH"' &gt;&gt; ~/.bashrc
+source ~/.bashrc</code></pre>
+    <p>Confirm the right binary wins — WorksGood's <code>wg</code> can be shadowed by
+    WireGuard's <code>wg(8)</code>. Check <code>command -v wg</code>.</p>
+
+    <h3><code>Failed to run wg: No such file or directory (os error 2)</code> (from the TUI)</h3>
+    <p>A long-running installed <code>wg tui</code> couldn't re-exec itself after the binary
+    was replaced (e.g. a <code>cargo install</code> while the TUI was open). WorksGood now
+    self-execs via <code>/proc/self/exe</code> on Linux — restart the TUI from the installed
+    binary after reinstalling:</p>
+<pre><code>wg service stop 2&gt;/dev/null; pkill -f 'wg tui' 2&gt;/dev/null
+cargo install --git https://github.com/graphwork/wg
+wg tui</code></pre>
+
+    <h3><code>role=default has no explicit Pi route</code> / <code>WG-PI-ROUTE-MISSING</code></h3>
+    <p>You queried a project before selecting Pi. Run step 8, then
+    <code>wg config --models</code>.</p>
+
+    <h3><code>compatible plugin build missing</code> / <code>pi-worksgood</code> not loaded</h3>
+    <p><code>wg pi-plugin install</code>, then <code>wg pi-plugin status</code>
+    (expect <code>console wired: yes</code>).</p>
+
+    <h3>Pi compat mismatch (<code>extension=X wg=Y</code>)</h3>
+    <p><code>wg pi-plugin install</code> re-materializes the build matching this <code>wg</code>.</p>
+
+    <h3>401 / unauthorized from the model</h3>
+    <p>Pi's OpenRouter auth is missing or stale. In a <code>pi</code> session:
+    <code>/login openrouter</code> (or <code>/logout</code> then <code>/login</code>).
+    WorksGood does not handle provider credentials — all auth lives in Pi's
+    <code>~/.pi/agent/auth.json</code>.</p>
+
+    <h3>404 / model not available</h3>
+    <p>The free id is wrong/withdrawn. Re-run <code>pi --list-models ":free"</code>,
+    re-validate with <code>pi --model ... -p "..."</code>, then update your route.</p>
+
+    <h3>Config changes not taking effect</h3>
+<pre><code>wg service reload            <span class="c-comment"># or stop+start for a full restart</span>
+wg config lint              <span class="c-comment"># read-only check for stale keys</span>
+wg migrate config --dry-run <span class="c-comment"># preview legacy-key rewrites</span></code></pre>
+  </section>
+
+  <section id="future">
+    <h2>Future UX (not shipped)</h2>
+    <p>A one-command "push-button" configurator (working name <code>wg onboard</code> /
+    <code>worksg</code>) is <strong>design/research only</strong> — no command or binary name
+    is approved for release. It does not exist today; the explicit steps above are the
+    supported path. When it ships it will be an explicitly mutating verb; bare
+    <code>wg</code> and <code>wg tui</code> will remain non-mutating.</p>
+  </section>
+
+  <footer>
+    Reference: <a href="https://github.com/graphwork/wg/blob/main/docs/pi-model-plane.md">Pi model-plane ownership</a> ·
+    <a href="https://pi.dev/docs/latest/providers">Pi Providers</a> ·
+    <a href="https://pi.dev/packages">Pi Packages</a> ·
+    <a href="https://openrouter.ai/models">OpenRouter models</a> ·
+    <a href="https://github.com/graphwork/wg">WG on GitHub</a>
+  </footer>
+</main>
+</body>
+</html>
