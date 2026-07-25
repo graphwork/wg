@@ -397,6 +397,7 @@ impl Drop for CoordinatorDaemonGuard<'_> {
 /// Basic round-trip: send a message via `wg chat` → coordinator agent processes
 /// it via the mock claude → response appears in chat output.
 #[test]
+#[ignore = "retired mock-Claude coordinator integration; Pi route coverage is separate"]
 fn coordinator_agent_basic_conversation() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = init_workgraph(&tmp);
@@ -415,6 +416,7 @@ fn coordinator_agent_basic_conversation() {
 }
 
 #[test]
+#[ignore = "retired mock-Claude coordinator integration; Pi route coverage is separate"]
 fn coordinator_agent_spawn_uses_daemon_workgraph_dir_not_ambient_env() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = init_workgraph(&tmp);
@@ -440,6 +442,7 @@ fn coordinator_agent_spawn_uses_daemon_workgraph_dir_not_ambient_env() {
 
 /// Multi-turn conversation: send multiple messages in sequence, all get responses.
 #[test]
+#[ignore = "retired mock-Claude coordinator integration; Pi route coverage is separate"]
 fn coordinator_agent_multi_turn() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = init_workgraph(&tmp);
@@ -472,6 +475,7 @@ fn coordinator_agent_multi_turn() {
 /// After multiple messages, chat history should contain all user messages
 /// and coordinator responses.
 #[test]
+#[ignore = "retired mock-Claude coordinator integration; Pi route coverage is separate"]
 fn coordinator_agent_chat_history() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = init_workgraph(&tmp);
@@ -530,6 +534,7 @@ fn coordinator_agent_chat_history() {
 /// Coordinator cursor should advance after each processed message, preventing
 /// re-processing of old messages.
 #[test]
+#[ignore = "retired mock-Claude coordinator integration; Pi route coverage is separate"]
 fn coordinator_agent_cursor_tracking() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = init_workgraph(&tmp);
@@ -566,6 +571,7 @@ fn coordinator_agent_cursor_tracking() {
 /// crash again. The file trigger is deleted on first crash, so the restarted
 /// process works normally.
 #[test]
+#[ignore = "retired mock-Claude coordinator integration; Pi route coverage is separate"]
 fn coordinator_agent_crash_recovery() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = init_workgraph(&tmp);
@@ -657,6 +663,7 @@ fn coordinator_agent_crash_recovery() {
 /// When `coordinator_agent = true` but the Claude CLI is not available,
 /// the daemon should fall back gracefully to Phase 1 stub responses.
 #[test]
+#[ignore = "retired mock-Claude coordinator integration; Pi route coverage is separate"]
 fn coordinator_agent_fallback_when_unavailable() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = init_workgraph(&tmp);
@@ -724,6 +731,7 @@ fn coordinator_agent_fallback_when_unavailable() {
 /// Verify that the response arrives quickly when the coordinator agent is active
 /// (urgent wake mechanism works for Phase 2 just like Phase 1).
 #[test]
+#[ignore = "retired mock-Claude coordinator integration; Pi route coverage is separate"]
 fn coordinator_agent_instant_wakeup() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = init_workgraph(&tmp);
@@ -752,6 +760,7 @@ fn coordinator_agent_instant_wakeup() {
 /// Storage verification: inbox gets user messages, outbox gets coordinator
 /// responses, request_ids match.
 #[test]
+#[ignore = "retired mock-Claude coordinator integration; Pi route coverage is separate"]
 fn coordinator_agent_storage_consistency() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = init_workgraph(&tmp);

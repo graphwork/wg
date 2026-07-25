@@ -96,13 +96,20 @@ wg init
 wg tui
 ```
 
-### Pick your executor
+### Select Pi as the model plane
 
 ```bash
-wg init --route claude-cli                                  # Claude (default)
-wg init --route codex-cli                                   # Codex
-wg init -m nex:qwen3-coder -e https://your-endpoint:8080    # any OpenAI-compatible
+wg init                                      # graph-only; no credentials or route
+wg setup --route pi --yes \
+  --model pi:<provider>:<model>              # exact Pi identity
+wg config --models                           # every role + effective reasoning
 ```
+
+Pi owns provider authentication, model discovery, endpoint details, model
+availability, and support validation. WG owns graph orchestration plus exact
+per-role `pi:<provider>:<model>` routes and inherited reasoning. Legacy WG
+model catalogs/endpoints remain migration-only and never authorize dispatch.
+See [Pi model-plane configuration](docs/pi-model-plane.md).
 
 ### Then let agents work
 

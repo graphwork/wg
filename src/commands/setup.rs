@@ -76,8 +76,7 @@ pub struct SetupArgs {
     /// Repair/migrate project AGENTS.md + CLAUDE.md and ~/.claude/CLAUDE.md,
     /// then exit without changing model configuration.
     pub repair_guides: bool,
-    /// One of the 5 named routes (preferred): openrouter, claude-cli,
-    /// codex-cli, local, nex-custom.
+    /// Supported setup route: pi.
     pub route: Option<String>,
     /// [Legacy] Provider name: "anthropic", "openrouter", "openai", "local", "custom".
     /// Maps onto the closest route when used.
@@ -143,14 +142,10 @@ impl SetupArgs {
         if let Some(name) = self.route.as_deref() {
             return SetupRoute::from_name(name);
         }
-        match self.provider.as_deref() {
-            Some("anthropic") | Some("claude") => Some(SetupRoute::ClaudeCli),
-            Some("openrouter") => Some(SetupRoute::Openrouter),
-            Some("codex") => Some(SetupRoute::CodexCli),
-            Some("local") | Some("ollama") => Some(SetupRoute::Local),
-            Some("custom") | Some("openai") | Some("oai-compat") => Some(SetupRoute::NexCustom),
-            _ => None,
-        }
+        // `--provider` belonged to WG's retired provider plane. Keep the
+        // field parseable for deterministic diagnostics, but never translate
+        // it into dispatch authority.
+        None
     }
 
     /// Resolve `--scope` into a `SetupScope`. Returns `Err` for an
@@ -201,6 +196,22 @@ pub struct EndpointChoices {
 pub fn build_config(choices: &SetupChoices, base: Option<&Config>) -> Config {
     use worksgood::config::{EndpointConfig, EndpointsConfig};
 
+    if choices.executor == "pi" {
+        let mut config = config_for_route(
+            SetupRoute::Pi,
+            RouteParams {
+                model: Some(choices.model.clone()),
+                ..Default::default()
+            },
+        );
+        config.coordinator.max_agents = choices.max_agents;
+        config.agency.auto_assign = choices.agency_enabled;
+        config.agency.auto_evaluate = choices.agency_enabled;
+        return config;
+    }
+
+    // Deprecated compatibility construction for old callers. It is not
+    // reachable from the supported setup surface.
     let mut config = base.cloned().unwrap_or_default();
 
     config.coordinator.executor = Some(choices.executor.clone());
@@ -1366,23 +1377,16 @@ pub fn run_with_args(args: &SetupArgs) -> Result<()> {
     let non_interactive = !std::io::stdin().is_terminal() || args.yes || args.dry_run;
     if non_interactive && args.route.is_none() && args.provider.is_none() {
         if let Some(model) = args.model.as_deref() {
-            let handler = model.split_once(':').map(|(h, _)| h).unwrap_or("");
-            let route = match handler {
-                "claude" => "claude-cli",
-                "codex" => "codex-cli",
-                "pi" => "pi",
-                "nex" | "native" if model.contains(":openrouter:") => "openrouter",
-                "nex" | "native" => "nex-custom",
-                _ => bail!(
-                    "--model must be handler-first (for example `claude:opus` or `pi:openrouter:vendor/model`)"
-                ),
-            };
+            worksgood::config::parse_exact_pi_route(model).map_err(|error| {
+                anyhow::anyhow!("--model must be an exact `pi:<provider>:<model>` route; {error}")
+            })?;
+            let route = "pi";
             let mut routed = args.clone();
             routed.route = Some(route.to_string());
             return run_route(&routed);
         }
         bail!(
-            "non-interactive setup requires an explicit route. Try `wg setup --route claude-cli --yes`, `wg setup --route codex-cli --yes`, `wg setup --route pi --yes`, or `wg setup --route openrouter --yes`."
+            "non-interactive setup requires Pi. Use `wg setup --route pi --yes --model pi:<provider>:<model>`; Pi owns login and model discovery."
         );
     }
 
@@ -1395,17 +1399,13 @@ pub fn run_with_args(args: &SetupArgs) -> Result<()> {
     run()
 }
 
-/// Non-interactive route-driven setup: writes one of the 5 named routes'
-/// complete defaults to the global config. Used by:
+/// Non-interactive route-driven setup: writes complete Pi defaults. Used by:
 ///
 /// - `wg setup --route <name> --yes`
 /// - `wg setup --route <name> --dry-run` (prints, does not write)
 fn run_route(args: &SetupArgs) -> Result<()> {
     let route = args.resolved_route().ok_or_else(|| {
-        anyhow::anyhow!(
-            "--route is required for non-interactive setup. \
-             Valid routes: openrouter, claude-cli, codex-cli, pi, local, nex-custom"
-        )
+        anyhow::anyhow!("--route is required for non-interactive setup. The supported route is: pi")
     })?;
 
     // Required-input validation per route.
@@ -1460,113 +1460,19 @@ fn run_route(args: &SetupArgs) -> Result<()> {
     // (non-interactive run_route is reached only when --route or --yes
     // is given, in which case "global" is the canonical target).
     let scope = args.resolved_scope()?.unwrap_or(SetupScope::Global);
-    let mut new_config = config_for_route(route, params);
-
-    let global_openrouter =
-        configured_openrouter_login_at(&Config::global_config_path()?).or_else(|| {
-            Config::load_global()
-                .ok()
-                .flatten()
-                .as_ref()
-                .and_then(configured_openrouter_login)
-        });
-    match route {
-        SetupRoute::Openrouter => {
-            if args.from_stdin {
-                let mode = super::login::resolve_openrouter_credential_mode(
-                    true,
-                    None,
-                    args.backend.clone(),
-                )?;
-                new_config.llm_endpoints.inherit_global = false;
-                new_config.llm_endpoints.endpoints = vec![EndpointConfig {
-                    name: "openrouter".to_string(),
-                    provider: "openrouter".to_string(),
-                    url: Some(args.url.clone().unwrap_or_else(|| {
-                        EndpointConfig::default_url_for_provider("openrouter").to_string()
-                    })),
-                    model: None,
-                    api_key: None,
-                    api_key_file: None,
-                    api_key_env: None,
-                    api_key_ref: Some(mode.api_key_ref().to_string()),
-                    is_default: true,
-                    context_window: None,
-                }];
-            } else if args.api_key_env.is_none()
-                && args.api_key_file.is_none()
-                && matches!(scope, SetupScope::Local)
-                && global_openrouter.is_some()
-            {
-                new_config.llm_endpoints.inherit_global = true;
-                new_config.llm_endpoints.endpoints.clear();
-            } else if args.api_key_env.is_none()
-                && args.api_key_file.is_none()
-                && matches!(scope, SetupScope::Global)
-                && let Some(existing) = global_openrouter.clone()
-            {
-                new_config.llm_endpoints.inherit_global = false;
-                new_config.llm_endpoints.endpoints = vec![EndpointConfig {
-                    name: "openrouter".to_string(),
-                    provider: "openrouter".to_string(),
-                    url: Some(existing.url),
-                    model: None,
-                    api_key: None,
-                    api_key_file: None,
-                    api_key_env: None,
-                    api_key_ref: Some(existing.api_key_ref),
-                    is_default: true,
-                    context_window: None,
-                }];
-            }
-        }
-        SetupRoute::Pi => {
-            if args.from_stdin {
-                let mode = super::login::resolve_openrouter_credential_mode(
-                    true,
-                    None,
-                    args.backend.clone(),
-                )?;
-                new_config.llm_endpoints.inherit_global = false;
-                new_config.llm_endpoints.endpoints = vec![EndpointConfig {
-                    name: "openrouter".to_string(),
-                    provider: "openrouter".to_string(),
-                    url: Some(args.url.clone().unwrap_or_else(|| {
-                        EndpointConfig::default_url_for_provider("openrouter").to_string()
-                    })),
-                    model: None,
-                    api_key: None,
-                    api_key_file: None,
-                    api_key_env: None,
-                    api_key_ref: Some(mode.api_key_ref().to_string()),
-                    is_default: true,
-                    context_window: None,
-                }];
-            } else if args.api_key_env.is_none()
-                && args.api_key_file.is_none()
-                && matches!(scope, SetupScope::Local)
-                && global_openrouter.is_some()
-            {
-                new_config.llm_endpoints.inherit_global = true;
-                new_config.llm_endpoints.endpoints.clear();
-            } else if let Some(existing) = global_openrouter.clone() {
-                new_config.llm_endpoints.inherit_global = false;
-                new_config.llm_endpoints.endpoints = vec![EndpointConfig {
-                    name: "openrouter".to_string(),
-                    provider: "openrouter".to_string(),
-                    url: Some(existing.url),
-                    model: None,
-                    api_key: None,
-                    api_key_file: None,
-                    api_key_env: None,
-                    api_key_ref: Some(existing.api_key_ref),
-                    is_default: true,
-                    context_window: None,
-                }];
-            }
-        }
-        _ => {}
+    if args.provider.is_some()
+        || args.api_key_env.is_some()
+        || args.api_key_file.is_some()
+        || args.url.is_some()
+        || args.from_stdin
+        || args.backend.is_some()
+    {
+        bail!(
+            "WG no longer configures providers, endpoints, or API keys. Configure/login in Pi, then pass only `--route pi --model pi:<provider>:<model>`."
+        );
     }
+    let new_config = config_for_route(route, params);
+    new_config.validate_pi_model_plane()?;
 
     let global_path = Config::global_config_path()?;
     let local_path = std::env::current_dir()
@@ -1637,13 +1543,10 @@ fn run_route(args: &SetupArgs) -> Result<()> {
 
     println!();
     println!("{}", format_delta_summary(&new_config));
-    if route == SetupRoute::Openrouter
-        && !args.from_stdin
-        && !new_config.llm_endpoints.inherit_global
-    {
-        let auth_env = args.api_key_env.as_deref().or(Some(OPENROUTER_ENV_VAR));
-        finalize_openrouter_onboarding(auth_env, args.api_key_file.as_deref(), scope)?;
-    }
+    println!("Pi owns provider login, endpoints, model availability, and model discovery.");
+    println!(
+        "Use Pi's model picker/login to change those details; WG stores only exact role routes and reasoning."
+    );
     Ok(())
 }
 
@@ -1799,14 +1702,13 @@ pub fn run() -> Result<()> {
     let existing_local = load_config_at(&local_path).unwrap_or_default();
 
     println!("Hey! Welcome to WG setup.");
-    println!("We'll get this repo wired to a working backend and auth flow.");
+    println!("WG configures orchestration; Pi owns the complete LLM model plane.");
     println!("(Press Ctrl-C at any prompt to exit without saving.)");
     println!();
 
-    // Auto-detection phase — show what's already in place
+    // Detect graph/config files only. Provider auth/model discovery belongs to
+    // Pi and is intentionally not presented by this wizard.
     let detection = detect_environment();
-    println!("{}", format_detection_summary(&detection));
-    println!();
 
     let scope_labels = vec![
         format!("Project only ({})", local_path.display()),
@@ -1897,96 +1799,16 @@ pub fn run() -> Result<()> {
     }
     let route = route_choices[route_idx - 1];
 
-    // Map the chosen route back into the legacy `provider` string so the
-    // rest of the wizard (which is parameterized by `provider`) still
-    // works. The route also drives the executor and tier defaults below.
-    let provider = match route {
-        SetupRoute::Openrouter => "openrouter".to_string(),
-        SetupRoute::ClaudeCli => "anthropic".to_string(),
-        SetupRoute::CodexCli => "openai".to_string(),
-        SetupRoute::Pi => "pi".to_string(),
-        SetupRoute::Local => "local".to_string(),
-        SetupRoute::NexCustom => "custom".to_string(),
-    };
-
-    // 2. Auto-set executor based on provider, with override option
-    let default_executor = match provider.as_str() {
-        "anthropic" => "claude",
-        "pi" => "pi",
-        "openrouter" | "oai-compat" | "openai" | "local" => "native",
-        _ => "native",
-    };
-
+    debug_assert_eq!(route, SetupRoute::Pi);
+    let provider = "pi".to_string();
+    let executor = "pi".to_string();
     println!();
-    let executor_ok = match (default_executor, detection.claude_cli) {
-        ("claude", true) => {
-            println!(
-                "  Using '{}' executor — you've got the claude CLI, perfect.",
-                default_executor
-            );
-            true
-        }
-        ("claude", false) => {
-            println!("  Note: claude CLI isn't installed yet.");
-            println!(
-                "  You'll need it before running agents. Install from: https://docs.anthropic.com/claude-code"
-            );
-            true
-        }
-        _ => {
-            println!(
-                "  Using '{}' executor for {} provider.",
-                default_executor, provider
-            );
-            true
-        }
-    };
+    println!(
+        "Pi is the sole LLM execution system. Pi owns login, providers, endpoints, and model discovery."
+    );
 
-    let override_executor = if executor_ok {
-        Confirm::new()
-            .with_prompt("Want to change the executor?")
-            .default(false)
-            .interact()?
-    } else {
-        Confirm::new()
-            .with_prompt("Override executor?")
-            .default(true)
-            .interact()?
-    };
-
-    let executor = if override_executor {
-        let executor_options = &["claude", "native", "custom"];
-        let current_idx = executor_options
-            .iter()
-            .position(|&e| e == default_executor)
-            .unwrap_or(0);
-        let idx = Select::new()
-            .with_prompt("Which executor backend?")
-            .items(executor_options)
-            .default(current_idx)
-            .interact()?;
-        if idx == executor_options.len() - 1 {
-            let custom: String = Input::new()
-                .with_prompt("Custom executor name")
-                .interact_text()?;
-            custom
-        } else {
-            executor_options[idx].to_string()
-        }
-    } else {
-        default_executor.to_string()
-    };
-
-    // 3. Provider-specific configuration
     let (endpoint, inherit_global_endpoints, mut model_registry_entries, model) =
-        match provider.as_str() {
-            "openrouter" => configure_openrouter(existing, scope, &existing_global)?,
-            "pi" => configure_pi(scope, &existing_global, existing)?,
-            "openai" => configure_openai(existing)?,
-            "local" => configure_local(existing)?,
-            "custom" => configure_custom_provider(existing)?,
-            _ => configure_anthropic(existing)?,
-        };
+        configure_pi(scope, &existing_global, existing)?;
 
     // 3b. Validate API key if an endpoint is configured
     if let Some(ref ep) = endpoint {
@@ -2183,11 +2005,8 @@ pub fn run() -> Result<()> {
     println!("Next verification commands:");
     println!("  wg setup --help");
     println!("  wg status");
-    if choices.provider == "openrouter" || choices.provider == "pi" {
-        println!("  wg login openrouter --check");
-        println!("  wg models fetch --no-cache");
-    }
     if choices.provider == "pi" {
+        println!("  pi                 # use Pi's own login/model picker");
         println!("  wg profile pi --show");
     }
 
@@ -2399,6 +2218,44 @@ fn configure_openrouter(
 }
 
 fn configure_pi(
+    _scope: SetupScope,
+    _existing_global: &Config,
+    existing: &Config,
+) -> Result<(
+    Option<EndpointChoices>,
+    bool,
+    Vec<ModelRegistryEntry>,
+    String,
+)> {
+    println!();
+    println!("Pi model plane");
+    println!("──────────────");
+    println!("Choose an exact route from Pi's own model picker/catalog.");
+    println!("WG will not inspect Pi credentials, endpoints, or model availability.");
+    let configured = existing
+        .coordinator
+        .model
+        .as_deref()
+        .filter(|model| worksgood::config::parse_exact_pi_route(model).is_ok())
+        .or_else(|| {
+            worksgood::config::parse_exact_pi_route(&existing.agent.model)
+                .is_ok()
+                .then_some(existing.agent.model.as_str())
+        });
+    let model: String = Input::new()
+        .with_prompt("Exact Pi route (pi:<provider>:<model>)")
+        .default(
+            configured
+                .unwrap_or("pi:openrouter:z-ai/glm-5.2")
+                .to_string(),
+        )
+        .interact_text()?;
+    worksgood::config::parse_exact_pi_route(&model)?;
+    Ok((None, false, vec![], model))
+}
+
+#[allow(dead_code)]
+fn configure_pi_legacy(
     scope: SetupScope,
     existing_global: &Config,
     existing: &Config,
@@ -2409,7 +2266,7 @@ fn configure_pi(
     String,
 )> {
     println!();
-    println!("Pi configuration");
+    println!("Legacy Pi configuration");
     println!("────────────────");
     println!("Pi handles its own auth for `pi:` worker/chat routes.");
     println!(
@@ -4619,7 +4476,7 @@ mod tests {
         std::env::set_current_dir(&work_dir).unwrap();
 
         let args = SetupArgs {
-            route: Some("claude-cli".to_string()),
+            route: Some("pi".to_string()),
             scope: Some("global".to_string()),
             yes: true,
             ..Default::default()
@@ -4664,7 +4521,7 @@ mod tests {
         std::env::set_current_dir(&work_dir).unwrap();
 
         let args = SetupArgs {
-            route: Some("claude-cli".to_string()),
+            route: Some("pi".to_string()),
             scope: Some("local".to_string()),
             yes: true,
             ..Default::default()
@@ -4704,7 +4561,7 @@ mod tests {
         std::env::set_current_dir(&work_dir).unwrap();
 
         let args = SetupArgs {
-            route: Some("claude-cli".to_string()),
+            route: Some("pi".to_string()),
             scope: Some("both".to_string()),
             yes: true,
             ..Default::default()

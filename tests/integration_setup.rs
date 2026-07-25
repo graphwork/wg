@@ -556,6 +556,6 @@ fn setup_no_provider_in_non_tty_requires_explicit_route() {
     let output = wg_setup_cmd(&fake_home, &wg_dir, &["--skip-validation"]);
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("requires an explicit route"), "{stderr}");
+    assert!(stderr.contains("requires Pi"), "{stderr}");
     assert!(!fake_home.join(".wg/config.toml").exists());
 }

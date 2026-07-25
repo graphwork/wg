@@ -40,11 +40,23 @@ pub fn run_with_route(
     route: Option<&str>,
     dry_run: bool,
 ) -> Result<()> {
-    // 0. If `--executor` was supplied, emit a single deprecation line and
-    //    keep going. We never refuse the flag: existing scripts / tests
-    //    must keep working for one release.
-    if executor.is_some() {
-        emit_executor_deprecation_warning(executor.unwrap());
+    if endpoint.is_some() {
+        anyhow::bail!("WG does not configure LLM endpoints; configure the provider in Pi");
+    }
+    if let Some(model) = model {
+        worksgood::config::parse_exact_pi_route(model).with_context(|| {
+            format!("wg init model must be an exact `pi:<provider>:<model>` route, got {model:?}")
+        })?;
+    }
+    // Retain deterministic diagnostics for the hidden compatibility flag, but
+    // never let it authorize a non-Pi LLM route.
+    if let Some(executor) = executor {
+        emit_executor_deprecation_warning(executor);
+        if executor != "pi" && executor != "shell" {
+            anyhow::bail!(
+                "legacy executor {executor:?} is unsupported; Pi is the sole LLM handler"
+            );
+        }
     }
 
     // 1. If only `-m` is given (no `-x`, no `--route`), derive the route
@@ -65,7 +77,7 @@ pub fn run_with_route(
     let resolved_route: Option<SetupRoute> = if let Some(name) = route {
         Some(SetupRoute::from_name(name).ok_or_else(|| {
             anyhow::anyhow!(
-                "Unknown route '{}'. Valid routes: openrouter, claude-cli, codex-cli, local, nex-custom",
+                "Unknown/legacy route '{}'. The supported route is: pi",
                 name,
             )
         })?)
@@ -259,7 +271,7 @@ fn run_graph_only(dir: &Path, no_agency: bool) -> Result<()> {
         }
     }
     println!("\nNo LLM execution system selected. Graph commands are ready.");
-    println!("Run `wg setup` or `wg profile use <name>` before LLM dispatch.");
+    println!("Run `wg setup --route pi` or `wg profile select pi` before LLM dispatch.");
     Ok(())
 }
 
@@ -271,10 +283,9 @@ fn run_graph_only(dir: &Path, no_agency: bool) -> Result<()> {
 /// recognized provider prefix → `None` (caller falls back to the
 /// legacy required-executor path with a migration hint).
 fn executor_for_model_spec(model: &str) -> Option<&'static str> {
-    let spec = worksgood::config::parse_model_spec(model);
-    spec.provider
-        .as_deref()
-        .map(worksgood::config::provider_to_executor)
+    worksgood::config::parse_exact_pi_route(model)
+        .ok()
+        .map(|_| "pi")
 }
 
 /// Emit a one-line deprecation warning when `--executor` (`-x`) is supplied
@@ -294,11 +305,9 @@ fn emit_executor_deprecation_warning(executor: &str) {
 /// Suggest a sensible `-m` value for a deprecated `-x <exec>` invocation.
 fn suggested_model_for_executor(executor: &str) -> &'static str {
     match executor {
-        "claude" => "claude:opus",
-        "codex" => "codex:gpt-5.5",
-        "nex" | "native" => "nex:qwen3-coder -e <ENDPOINT>",
-        "shell" => "shell  # exec_mode, not a model — keep the route",
-        _ => "<provider>:<model>",
+        "pi" => "pi:<provider>:<model>",
+        "shell" => "shell  # exec_mode, not an LLM model",
+        _ => "pi:<provider>:<model>",
     }
 }
 

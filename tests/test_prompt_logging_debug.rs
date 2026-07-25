@@ -118,7 +118,7 @@ fn init_wg() -> (TempDir, PathBuf) {
         .output()
         .expect("Failed to git commit");
 
-    wg_ok(&wg_dir, &["init", "--route", "claude-cli"]);
+    wg_ok(&wg_dir, &["init", "--route", "pi"]);
     (tmp, wg_dir)
 }
 

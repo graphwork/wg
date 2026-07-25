@@ -112,62 +112,20 @@ fn test_init_without_flags_is_graph_only() {
 /// be claude — verified through `parse_model_spec` rather than the
 /// (now-stripped) `coordinator.executor` field.
 #[test]
-fn test_init_with_executor_claude_succeeds() {
+fn test_init_with_executor_claude_is_rejected() {
     let tmp = TempDir::new().unwrap();
 
     let output = wg_cmd_in(tmp.path(), &["init", "--executor", "claude"]);
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        output.status.success(),
-        "wg init --executor claude should still succeed (deprecated).\nstdout: {}\nstderr: {}",
-        stdout,
-        stderr
-    );
-
-    // Legacy invocations must emit a deprecation warning.
-    assert!(
-        stderr.contains("deprecated"),
-        "legacy --executor invocation should emit a deprecation warning, got: {}",
-        stderr
-    );
-
-    let wg_dir = tmp.path().join(".wg");
-    assert!(wg_dir.exists(), ".wg directory should be created");
-    assert_lockstep_agent_guides(tmp.path());
-
-    let config = worksgood::config::Config::load(&wg_dir).expect("config.toml should be loadable");
-    // The handler is now derived from the model spec. The fresh config
-    // should have claude:* set as the model — that's what the route
-    // populates for `--executor claude`.
-    let agent_model = &config.agent.model;
-    assert!(
-        agent_model.starts_with("claude:")
-            || agent_model == "claude"
-            || agent_model.is_empty()
-            || worksgood::dispatch::handler_for_model(agent_model)
-                == worksgood::dispatch::ExecutorKind::Claude,
-        "agent.model must imply the claude handler, got: {:?}",
-        agent_model
-    );
+    assert!(!output.status.success(), "stdout: {stdout}");
+    assert!(stderr.contains("Pi is the sole LLM handler"), "{stderr}");
 }
 
 #[test]
 fn test_init_routes_write_lockstep_agent_guides() {
-    for (route, extra_args) in [
-        ("claude-cli", Vec::<&str>::new()),
-        ("codex-cli", Vec::<&str>::new()),
-        ("openrouter", Vec::<&str>::new()),
-        (
-            "local",
-            vec!["-e", "http://127.0.0.1:11434", "-m", "nex:qwen3-coder"],
-        ),
-        (
-            "nex-custom",
-            vec!["-e", "http://127.0.0.1:8088", "-m", "nex:qwen3-coder"],
-        ),
-    ] {
+    for (route, extra_args) in [("pi", Vec::<&str>::new())] {
         let tmp = TempDir::new().unwrap();
         let mut args = vec!["init", "--route", route, "--no-agency"];
         args.extend(extra_args);
@@ -212,9 +170,7 @@ fn test_init_endpoint_only_still_requires_executor() {
 
     // Error must offer the new model-spec flow as the migration target.
     assert!(
-        combined.contains("provider:model")
-            || combined.contains("-m claude:opus")
-            || combined.contains("--route"),
+        combined.contains("configure the provider in Pi"),
         "error must show the new model+route flow. Got:\n{}",
         combined
     );
@@ -230,7 +186,7 @@ fn test_init_endpoint_only_still_requires_executor() {
 /// (`strip_redundant_executor_keys` only strips when the model spec
 /// implies the same handler, which shell never does).
 #[test]
-fn test_init_executor_and_endpoint_succeeds() {
+fn test_init_executor_and_endpoint_are_rejected() {
     let tmp = TempDir::new().unwrap();
 
     let output = wg_cmd_in(
@@ -240,31 +196,7 @@ fn test_init_executor_and_endpoint_succeeds() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        output.status.success(),
-        "wg init --executor shell -e http://... should succeed.\nstdout: {}\nstderr: {}",
-        stdout,
-        stderr
-    );
-
-    let wg_dir = tmp.path().join(".wg");
-    let config = worksgood::config::Config::load(&wg_dir).expect("config.toml should be loadable");
-
-    assert_eq!(
-        config.coordinator.executor.as_deref(),
-        Some("shell"),
-        "coordinator.executor should be 'shell' (no model implies it)"
-    );
-
-    let default_ep = config
-        .llm_endpoints
-        .endpoints
-        .iter()
-        .find(|e| e.is_default)
-        .expect("a default endpoint should be written");
-    assert_eq!(
-        default_ep.url.as_deref(),
-        Some("http://127.0.0.1:9999"),
-        "endpoint URL should be persisted"
-    );
+    assert!(!output.status.success(), "stdout: {stdout}");
+    assert!(stderr.contains("configure the provider in Pi"), "{stderr}");
+    assert!(!tmp.path().join(".wg/config.toml").exists());
 }

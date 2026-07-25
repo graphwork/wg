@@ -357,6 +357,7 @@ fn mixed_endpoints_different_roles_different_providers() {
 }
 
 #[test]
+#[ignore = "retired WG endpoint configuration authority"]
 fn endpoint_cascades_from_default_role() {
     // If only `default` has an endpoint, other roles inherit it
     let mut config = Config::default();
@@ -727,6 +728,7 @@ fn cli_endpoints_test_with_mock_server() {
 // ===========================================================================
 
 #[test]
+#[ignore = "retired WG endpoint configuration authority"]
 fn cli_set_endpoint_for_role() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(&tmp);

@@ -2,6 +2,13 @@
 
 Complete reference for all `wg` commands. Most query commands support `--json` for machine-readable output. All commands support `--dir <path>` to specify a custom WG directory.
 
+> **Pi-only model plane:** Pi is the sole supported LLM handler. Executable
+> routes have the exact form `pi:<provider>:<model>` and every LLM role needs
+> explicit or inherited reasoning. Provider/model login, discovery, endpoints,
+> availability, usage, and cost belong to Pi. Legacy model/endpoint/key commands
+> documented below are hidden migration-compatibility surfaces, not dispatch
+> authority. See [Pi model-plane ownership](pi-model-plane.md).
+
 ## Table of Contents
 
 - [Task Management](#task-management)
@@ -52,14 +59,14 @@ wg publish <TASK> --only
 | `--deliverable <PATH>` | Expected output (repeatable) |
 | `--max-retries <N>` | Maximum retry attempts |
 | `--visibility <LEVEL>` | Task visibility zone for trace exports: `internal` (default), `peer`, `public` |
-| `--model <MODEL>` | Preferred model for this task (haiku, sonnet, opus) |
+| `--model <MODEL>` | Exact Pi route for this task (`pi:<provider>:<model>`) |
+| `--reasoning <LEVEL>` | Explicit Pi thinking level |
 | `--max-iterations <N>` | Maximum cycle iterations — sets `CycleConfig` on this task, making it a cycle header |
 | `--cycle-guard <EXPR>` | Guard condition for cycle iteration: `task:<id>=<status>` or `always` |
 | `--cycle-delay <DUR>` | Delay between cycle iterations (e.g., `30s`, `5m`, `1h`) |
 | `--exec-mode <MODE>` | Execution weight: `full` (default), `light` (read-only tools), `bare` (wg CLI only), `shell` (no LLM) |
 | `--exec <CMD>` | Shell command to execute for this task (auto-sets exec_mode=shell) |
 | `--timeout <DUR>` | Per-task timeout (e.g., `30s`, `5m`, `1h`, `4h`, `1d`) |
-| `--provider <PROVIDER>` | **[DEPRECATED]** Provider — use `provider:model` format in `--model` instead |
 | `--allow-phantom` | Allow phantom (forward-reference) dependencies without error |
 | `--independent` | Suppress implicit `--after` dependency on the creating task (alias: `--no-after`) |
 | `--propagation <POLICY>` | Retry propagation policy: `conservative`, `aggressive`, or `conditional:<float>` |
@@ -101,7 +108,7 @@ wg add "Implement user auth" \
   --deliverable src/auth.rs
 
 # Task with model override
-wg add "Quick formatting fix" --model haiku
+wg add "Quick formatting fix" --model pi:<provider>:<model> --reasoning low
 
 # Task requiring acceptance criteria — put criteria in description under `## Validation`
 wg add "Security audit" -d $'## Description\nReview surface for vulns.\n\n## Validation\n- [ ] All findings documented with severity ratings'
@@ -142,14 +149,14 @@ wg edit <ID> [OPTIONS]
 | `--remove-tag <TAG>` | Remove a tag (repeatable) |
 | `--add-skill <SKILL>` | Add a required skill (repeatable) |
 | `--remove-skill <SKILL>` | Remove a required skill (repeatable) |
-| `--model <MODEL>` | Update preferred model |
+| `--model <MODEL>` | Update exact Pi route |
+| `--reasoning <LEVEL>` | Update explicit Pi thinking |
 | `--max-iterations <N>` | Set maximum cycle iterations (creates or updates `CycleConfig`) |
 | `--cycle-guard <EXPR>` | Set guard condition for cycle iteration |
 | `--cycle-delay <DUR>` | Set delay between cycle iterations |
 | `--visibility <LEVEL>` | Set task visibility zone: `internal`, `peer`, `public` |
 | `--context-scope <SCOPE>` | Set context scope for prompt assembly: `clean`, `task`, `graph`, `full` |
 | `--exec-mode <MODE>` | Set execution weight: `full` (default), `light` (read-only tools), `bare` (wg CLI only), `shell` (no LLM) |
-| `--provider <PROVIDER>` | **[DEPRECATED]** Update provider — use `provider:model` format in `--model` instead |
 | `--delay <DUR>` | Delay before task becomes ready (e.g., `30s`, `5m`, `1h`, `1d`) |
 | `--not-before <TIMESTAMP>` | Absolute timestamp before which task won't be dispatched (ISO 8601) |
 | `--no-converge` | Force all cycle iterations to run (agents cannot signal convergence) |
@@ -173,7 +180,7 @@ wg edit my-task --add-after other-task
 wg edit my-task --remove-tag stale --add-tag urgent
 
 # Change model
-wg edit my-task --model opus
+wg edit my-task --model pi:<provider>:<model> --reasoning high
 
 # Set cycle configuration (makes this task a cycle header)
 wg edit my-task --max-iterations 5
@@ -1198,7 +1205,7 @@ wg func apply impl-feature --from alice:impl-feature \
 
 # Instantiate with dependency
 wg func apply bug-fix --input bug_name=login-crash \
-  --after design-phase --model sonnet
+  --after design-phase --model pi:<provider>:<model> --reasoning high
 
 # Preview without creating
 wg func apply impl-feature --input feature_name=auth --dry-run
@@ -1737,7 +1744,7 @@ wg agency create [OPTIONS]
 
 **Example:**
 ```bash
-wg agency create --model opus
+wg agency create --model pi:<provider>:<model>
 # Use LLM to discover and add new roles/tradeoffs
 
 wg agency create --dry-run
@@ -1846,9 +1853,7 @@ wg agent create <NAME> [OPTIONS]
 | `--capacity <FLOAT>` | Maximum concurrent task capacity |
 | `--trust-level <LEVEL>` | `verified`, `provisional` (default), or `unknown` |
 | `--contact <STRING>` | Contact info (email, Matrix ID, etc.) |
-| `--executor <NAME>` | Executor backend: `claude` (default), `matrix`, `email`, `shell` |
-| `--model <MODEL>` | Preferred model (e.g., opus, sonnet, haiku, or full model ID) |
-| `--provider <PROVIDER>` | Preferred provider (e.g., anthropic, openrouter) |
+| `--executor <NAME>` | Agent interaction backend: `pi` (default), `matrix`, `email`, `shell` |
 
 IDs can be prefixes (minimum unique match).
 
@@ -2104,26 +2109,22 @@ wg agent run --actor claude --interval 30 --max-tasks 5
 
 ### `wg spawn`
 
-Spawn an agent to work on a specific task.
+Spawn Pi for an LLM task, or run an explicit graph-only shell task.
 
 ```bash
-wg spawn <TASK> --executor <NAME> [--model <MODEL>] [--timeout <DURATION>]
+wg spawn <TASK> --executor pi [--model pi:<provider>:<model>] [--reasoning high]
+wg spawn <SHELL_TASK> --executor shell
 ```
 
 **Options:**
 | Option | Description |
 |--------|-------------|
-| `--executor <NAME>` | Executor to use: claude, amplifier, shell, or custom config name (required) |
-| `--model <MODEL>` | Model override (haiku, sonnet, opus) |
+| `--executor <MODE>` | `pi` or `shell` (required) |
+| `--model <MODEL>` | Exact Pi route override |
+| `--reasoning <LEVEL>` | Explicit Pi thinking level |
 | `--timeout <DURATION>` | Timeout (e.g., 30m, 1h, 90s) |
 
-Model selection priority: CLI `--model` > task's `.model` > `coordinator.model` > `agent.model`.
-
-**Example:**
-```bash
-wg spawn fix-bug --executor claude --model sonnet --timeout 30m
-# Spawn a Claude agent to work on fix-bug with a 30 minute timeout
-```
+Missing/non-Pi identity or missing effective thinking fails before launch.
 
 ---
 
@@ -2469,16 +2470,15 @@ wg service start [OPTIONS]
 | `--port <PORT>` | Port for HTTP API (optional) |
 | `--socket <PATH>` | Unix socket path (default: `.wg/service/daemon.sock`) |
 | `--max-agents <N>` | Max parallel agents (overrides config) |
-| `--executor <NAME>` | Executor for spawned agents (overrides config) |
 | `--interval <SECS>` | Background poll interval in seconds (overrides config) |
-| `--model <MODEL>` | Model for spawned agents (overrides config) |
+| `--model <MODEL>` | Exact Pi route for spawned agents (overrides config) |
 | `--force` | Kill existing daemon before starting (prevents stacked daemons) |
 | `--no-coordinator-agent` | Disable the persistent coordinator agent (LLM chat session) |
 
 **Example:**
 ```bash
-wg service start --max-agents 3 --executor claude --model sonnet
-# Start the daemon with up to 3 parallel Claude agents using Sonnet
+wg service start --max-agents 3 --model pi:<provider>:<model>
+# Start the daemon after validating the complete Pi role/thinking policy
 ```
 
 ---
@@ -2542,16 +2542,15 @@ wg service status
 Re-read config.toml without restarting (or apply specific overrides).
 
 ```bash
-wg service reload [--max-agents <N>] [--executor <NAME>] [--interval <SECS>] [--model <MODEL>]
+wg service reload [--max-agents <N>] [--interval <SECS>] [--model pi:<provider>:<model>]
 ```
 
 **Options:**
 | Option | Description |
 |--------|-------------|
 | `--max-agents <N>` | Maximum parallel agents |
-| `--executor <NAME>` | Executor for spawned agents |
 | `--interval <SECS>` | Background poll interval |
-| `--model <MODEL>` | Model for spawned agents |
+| `--model <MODEL>` | Exact Pi route for spawned agents |
 
 Without flags, re-reads config.toml from disk.
 
@@ -2603,20 +2602,19 @@ wg service resume
 Run a single coordinator tick and exit (debug mode).
 
 ```bash
-wg service tick [--max-agents <N>] [--executor <NAME>] [--model <MODEL>]
+wg service tick [--max-agents <N>] [--model pi:<provider>:<model>]
 ```
 
 **Options:**
 | Option | Description |
 |--------|-------------|
 | `--max-agents <N>` | Maximum parallel agents (overrides config) |
-| `--executor <NAME>` | Executor for spawned agents (overrides config) |
-| `--model <MODEL>` | Model for spawned agents (overrides config) |
+| `--model <MODEL>` | Exact Pi route for spawned agents (overrides config) |
 
 **Example:**
 ```bash
-wg service tick --executor claude --model haiku
-# Run one coordinator tick: check ready tasks, spawn agents, then exit
+wg service tick --model pi:<provider>:<model>
+# Validate Pi policy, check ready tasks, spawn, then exit
 ```
 
 ---
@@ -2651,14 +2649,12 @@ wg service create-chat [OPTIONS]
 | Option | Description |
 |--------|-------------|
 | `--name <NAME>` | Optional name for the chat agent |
-| `--executor <NAME>` | Per-chat executor override |
-| `-m, --model <MODEL>` | Per-chat model override |
-| `-e, --endpoint <URL>` | Per-chat endpoint override |
+| `-m, --model <MODEL>` | Exact per-chat Pi route (otherwise inherit policy) |
 
 **Example:**
 ```bash
-wg service create-chat --name "release-v2" --executor codex -m codex:gpt-5.5
-# Creates a new chat agent with name and per-chat executor/model overrides
+wg service create-chat --name "release-v2" -m pi:<provider>:<model>
+# Creates a Pi chat with an exact route
 ```
 
 ---
@@ -2689,22 +2685,11 @@ wg service archive-chat <ID>
 
 ---
 
-### `wg service set-executor`
+### `wg service set-executor` (hidden migration compatibility)
 
-Hot-swap a chat agent's executor and/or model. SIGTERMs the live handler; the supervisor respawns it with the new settings. Conversation history is preserved via `chat/<ref>/{inbox,outbox}.jsonl` — the new handler sees prior turns on startup.
-
-```bash
-wg service set-executor <ID> [--executor <NAME>] [-m <MODEL>]
-```
-
-**Arguments:**
-- `ID` — Chat agent ID to reconfigure (required)
-
-**Options:**
-| Option | Description |
-|--------|-------------|
-| `--executor <NAME>` | New executor (claude, codex, nex, shell, ...) |
-| `-m, --model <MODEL>` | New model spec (`provider:model`) |
+This legacy command remains parseable for migration tooling but is not a
+supported configuration surface. Create/select an exact Pi chat route instead;
+no live handler hot-swap may select a non-Pi system.
 
 ---
 
@@ -2976,7 +2961,7 @@ wg chat <SUBCOMMAND>
 
 | Subcommand | Description |
 |------------|-------------|
-| `create` | Create a new chat agent task in the graph. Works with the service running or stopped — the supervisor picks up the new chat on next start. Flags: `--name`, `--executor`, `-m/--model`, `-e/--endpoint` |
+| `create` | Create a Pi chat task. Flags: `--name`, `-m/--model pi:<provider>:<model>`; otherwise inherits complete Pi policy |
 | `list` | List all chat agents with their runtime status |
 | `show <id>` | Detailed view of one chat: task, runtime, executor, model |
 | `attach <id>` | Open an interactive view of the chat session (TUI on TTY; `--cli` forces read-only stream) |
@@ -3013,8 +2998,8 @@ wg chat -i
 wg chat list
 # List active chat agents
 
-wg chat create --name research --executor codex -m codex:gpt-5.5
-# Create a new chat agent with a non-default executor / model
+wg chat create --name research -m pi:<provider>:<model>
+# Create a Pi chat with an exact route
 
 wg chat send 1 "Reset the failed worker on task X"
 # Send a message to chat 1 (does not wait for response)
@@ -3027,11 +3012,24 @@ wg chat --history --history-depth 50
 
 ---
 
-## Model and Endpoint Management
+## Pi model-plane configuration
 
-See [docs/models.md](models.md) for the full guide including architecture, security model, and common configurations.
+Supported configuration is limited to exact Pi routes and thinking:
 
-### `wg model`
+```bash
+wg setup --route pi --yes --model pi:<provider>:<model>
+wg profile select pi
+wg profile pi --strong pi:<provider>:<model> --weak pi:<provider>:<model>
+wg config --models
+wg config --role-model reviewer=pi:<provider>:<model>
+wg config --set-reasoning reviewer low
+```
+
+Use Pi itself for login, model discovery/search, endpoints, and availability.
+The legacy commands documented below are retained only as a migration reference;
+they are hidden from normal help and have no dispatch or accounting authority.
+
+### `wg model` (hidden migration compatibility)
 
 Model registry and routing management.
 
@@ -3153,7 +3151,7 @@ wg model set triage haiku --provider openrouter
 
 ---
 
-### `wg key`
+### `wg key` (hidden migration compatibility)
 
 Manage API keys for LLM providers.
 
@@ -3224,7 +3222,7 @@ wg key list
 
 ---
 
-### `wg models`
+### `wg models` (hidden migration compatibility)
 
 Browse and search available models.
 
@@ -3266,7 +3264,7 @@ wg models set-default "anthropic/claude-sonnet-4-6"
 
 ---
 
-### `wg endpoints`
+### `wg endpoints` (hidden migration compatibility)
 
 Manage LLM endpoints (connection targets with URL + auth).
 
@@ -3312,67 +3310,20 @@ wg endpoints add openrouter --provider openrouter --global
 
 ### `wg profile`
 
-Manage provider profiles (model tier presets).
+Manage reusable Pi route/thinking policy.
 
 ```bash
-wg profile <COMMAND>
+wg profile init-starters
+wg profile select pi
+wg profile show pi
+wg profile pi --strong pi:<provider>:<model> --weak pi:<provider>:<model>
+wg profile set-model pi reviewer pi:<provider>:<model>
 ```
 
-**Subcommands:**
-| Subcommand | Description |
-|------------|-------------|
-| `set <NAME>` | Set the active provider profile |
-| `show` | Show current profile and resolved model mappings |
-| `list` | List available profiles |
-| `refresh` | Refresh model data from OpenRouter and recompute rankings |
-
-#### `wg profile set`
-
-```bash
-wg profile set <NAME> [OPTIONS]
-```
-
-**Arguments:**
-- `NAME` — Profile name (e.g., `anthropic`, `openrouter`, `openai`)
-
-**Options:**
-| Option | Description |
-|--------|-------------|
-| `--fast <MODEL>` | Pin the fast tier to a specific model (e.g., `openrouter:qwen/qwen3-coder`) |
-| `--standard <MODEL>` | Pin the standard tier to a specific model (e.g., `openrouter:deepseek/deepseek-r1`) |
-| `--premium <MODEL>` | Pin the premium tier to a specific model (e.g., `openrouter:qwen/qwen3-max`) |
-
-#### `wg profile show`
-
-```bash
-wg profile show [--verbose]
-```
-
-**Options:**
-| Option | Description |
-|--------|-------------|
-| `-v, --verbose` | Show raw metrics (pricing, context length, benchmark scores) per model |
-
-**Examples:**
-```bash
-# Set active profile to OpenRouter
-wg profile set openrouter
-
-# Pin specific models per tier
-wg profile set openrouter --fast openrouter:qwen/qwen3-coder --premium openrouter:qwen/qwen3-max
-
-# Show current profile with resolved model mappings
-wg profile show
-
-# Show detailed model metrics
-wg profile show --verbose
-
-# List available profiles
-wg profile list
-
-# Refresh model data from OpenRouter
-wg profile refresh
-```
+`wg profile pi` edits orchestration policy only. Model listing, login, endpoint
+configuration, and availability remain Pi-owned. The only shipped starter is
+`pi`; loading a legacy profile remains possible for migration inspection but it
+cannot authorize non-Pi dispatch.
 
 ---
 
@@ -3406,7 +3357,7 @@ wg spend --json
 
 ---
 
-### `wg openrouter`
+### `wg openrouter` (hidden migration compatibility)
 
 OpenRouter cost monitoring and management.
 
@@ -3483,7 +3434,7 @@ wg which
 
 ---
 
-### `wg executors`
+### `wg executors` (hidden migration compatibility)
 
 List executors `wg` knows about, which are usable on this system, and where their backing binaries live. Useful for seeing what `--executor` values `wg spawn`, worker agent identities, and config overrides can target.
 
@@ -3803,7 +3754,9 @@ View or modify project configuration.
 wg config [OPTIONS]
 ```
 
-With no options (or `--show`), displays current configuration.
+With no options (or `--show`), displays current configuration. Supported LLM
+fields are exact Pi routes and effective thinking only; provider/auth/endpoint
+and registry flags are hidden migration compatibility.
 
 **Options:**
 | Option | Description |
@@ -3813,21 +3766,18 @@ With no options (or `--show`), displays current configuration.
 | `--global` | Target global config (`~/.wg/config.toml`) instead of local |
 | `--local` | Explicitly target local config (default for writes) |
 | `--list` | Show merged config with source annotations (global/local/default) |
-| `--executor <NAME>` | Set executor (claude, amplifier, shell, or custom config name) |
-| `--model <MODEL>` | Set agent model |
+| `--model <MODEL>` | Set complete strong/weak policy to an exact `pi:<provider>:<model>` route |
 | `--set-interval <SECS>` | Set agent sleep interval |
 | `--max-agents <N>` | Set coordinator max agents |
 | `--coordinator-interval <SECS>` | Set coordinator tick interval |
 | `--poll-interval <SECS>` | Set service daemon background poll interval |
-| `--coordinator-executor <NAME>` | Set coordinator executor |
-| `--coordinator-model <MODEL>` | Set coordinator model (e.g., opus, sonnet, haiku) |
-| `--coordinator-provider <PROVIDER>` | **[DEPRECATED]** Set coordinator provider — use `provider:model` format in `--coordinator-model` instead |
+| `--coordinator-model <MODEL>` | Set exact dispatcher Pi route |
 | `--max-coordinators <N>` | Set max concurrent coordinator agents (LLM sessions). Default: 4 |
 | `--auto-evaluate <BOOL>` | Enable/disable automatic evaluation |
 | `--auto-assign <BOOL>` | Enable/disable automatic identity assignment |
 | `--auto-place <BOOL>` | Enable/disable automatic placement analysis on new tasks |
 | `--auto-create <BOOL>` | Enable/disable automatic creator agent invocation |
-| `--flip-model <MODEL>` | Set both FLIP inference and comparison models to the same value |
+| `--flip-model <MODEL>` | Set both FLIP roles to the same exact Pi route |
 | `--assigner-agent <HASH>` | Set assigner agent (content-hash) |
 | `--evaluator-agent <HASH>` | Set evaluator agent (content-hash) |
 | `--evolver-agent <HASH>` | Set evolver agent (content-hash) |
@@ -3859,19 +3809,12 @@ With no options (or `--show`), displays current configuration.
 | `--password <PASS>` | Set Matrix password |
 | `--access-token <TOKEN>` | Set Matrix access token |
 | `--room <ROOM>` | Set Matrix default room |
-| `--models` | Show all model routing assignments (per-role model+provider) |
-| `--set-model <ROLE> <MODEL>` | Set model for a dispatch role |
-| `--set-provider <ROLE> <PROVIDER>` | **[DEPRECATED]** Set provider for a dispatch role — use `provider:model` format in `--set-model` instead |
-| `--set-endpoint <ROLE> <ENDPOINT>` | Bind a named endpoint to a dispatch role |
-| `--role-model <ROLE=MODEL>` | Set model for a role (key=value syntax) |
-| `--role-provider <ROLE=PROVIDER>` | **[DEPRECATED]** Set provider for a role — use `provider:model` format in `--role-model` instead |
-| `--registry` | Show all model registry entries (built-in + user-defined) |
-| `--registry-add` | Add a model to the registry (use with `--id`, `--provider`, `--reg-model`, `--reg-tier`, `--endpoint`, `--context-window`, `--cost-input`, `--cost-output`) |
-| `--registry-remove <ID>` | Remove a model from the registry |
-| `--tiers` | Show current tier→model assignments |
-| `--tier <TIER=MODEL_ID>` | Set which model a tier uses (e.g., `--tier standard=gpt-4o`) |
-| `--set-key <PROVIDER>` | Set API key file for a provider (use with `--file`) |
-| `--check-key` | Check OpenRouter API key validity and credit status |
+| `--models` | Show every role's exact Pi route, handler, thinking, and source |
+| `--set-model <ROLE> <MODEL>` | Set an exact Pi route for a dispatch role |
+| `--set-reasoning <ROLE> <LEVEL>` | Set explicit/inherited Pi thinking |
+| `--role-model <ROLE=MODEL>` | Set exact Pi role route (key=value syntax) |
+| `--tiers` | Show current strong/weak Pi tier assignments |
+| `--tier <TIER=MODEL_ID>` | Set a tier to an exact Pi route |
 
 **Examples:**
 
@@ -3882,38 +3825,24 @@ wg config
 # Show merged config with source annotations
 wg config --list
 
-# Set executor and model
-wg config --executor claude --model opus
-
-# Set a global default (applies to all projects)
-wg config --global --model claude:opus
+# Set a complete exact Pi route (applies strong/weak initially)
+wg config --global --model pi:<provider>:<model>
 
 # Enable the full agency automation loop
 wg config --auto-evaluate true --auto-assign true
 
-# Set per-role model overrides
-wg config --set-model assigner haiku
-wg config --set-model evaluator opus
-wg config --set-model evolver opus
-
-# Model routing: show and set per-role model assignments
+# Exact role routes and visible thinking
 wg config --models
-wg config --set-model evaluator sonnet
-wg config --set-model triage haiku
-wg config --role-model evaluator=sonnet
+wg config --set-model evaluator pi:<provider>:<weak-model>
+wg config --set-reasoning evaluator low
+wg config --role-model reviewer=pi:<provider>:<weak-model>
 
-# Tier management
+# Strong/weak tier management
 wg config --tiers
-wg config --tier fast=haiku
-wg config --tier standard=sonnet
+wg config --tier fast=pi:<provider>:<weak-model>
+wg config --tier standard=pi:<provider>:<strong-model>
 
-# Model registry
-wg config --registry
-wg config --registry-add --id gpt-4o --provider openai --reg-model gpt-4o --reg-tier standard
-
-# API key management
-wg config --set-key openrouter --file ~/.secrets/openrouter.key
-wg config --check-key
+# Configure provider login, endpoints, and model availability in Pi itself
 
 # Eval gate and FLIP
 wg config --eval-gate-threshold 0.7 --eval-gate-all true
@@ -3957,7 +3886,7 @@ wg quickstart
 
 Launch the interactive terminal dashboard. Opening the TUI is graph-only: an
 empty or terminal-only graph shows **No chat selected** and does not create a
-chat, resolve a route, or start a provider. Create one explicitly with
+chat, resolve a route, or start Pi. Create one explicitly with
 command-mode `n`, the visible **New chat** control, or `wg chat create`.
 
 ```bash
@@ -3993,16 +3922,12 @@ wg tui --no-history --no-mouse
 
 ### `wg setup`
 
-Interactive configuration wizard for first-time setup. Walks through executor, model, agency, and service configuration.
+Configure complete Pi route/thinking policy. Provider login, endpoints, model
+search, and support validation stay in Pi.
 
 ```bash
-wg setup
-```
-
-**Example:**
-```bash
-wg setup
-# Launches interactive prompts to configure your wg project
+wg setup --route pi --yes --model pi:<provider>:<model>
+wg setup --route pi --model pi:<provider>:<model> --dry-run
 ```
 
 ---
@@ -4018,7 +3943,7 @@ wg replay [OPTIONS]
 **Options:**
 | Option | Description |
 |--------|-------------|
-| `--model <MODEL>` | Model to use for replayed tasks |
+| `--model <MODEL>` | Exact Pi route for replayed tasks |
 | `--failed-only` | Only reset failed/abandoned tasks |
 | `--below-score <SCORE>` | Only reset tasks with evaluation score below this threshold |
 | `--tasks <IDS>` | Reset specific tasks (comma-separated) plus their transitive dependents |
@@ -4028,11 +3953,11 @@ wg replay [OPTIONS]
 
 **Examples:**
 ```bash
-wg replay --failed-only --model opus
-# Re-run all failed tasks with Opus
+wg replay --failed-only --model pi:<provider>:<model>
+# Re-run failed tasks with an exact Pi route
 
-wg replay --below-score 0.7 --model sonnet
-# Reset tasks scoring below 0.7 and replay with Sonnet
+wg replay --below-score 0.7 --model pi:<provider>:<model>
+# Reset low-scoring tasks and replay through Pi
 
 wg replay --tasks auth-impl,auth-test --plan-only
 # Preview which tasks would be reset

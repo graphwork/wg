@@ -617,18 +617,35 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
     // native-executor argv flags below; there is no fallback ad-hoc lookup.
     let config = Config::load_merged(dir)
         .context("Cannot spawn while the project profile selection is invalid")?;
+    if executor_name != "shell" && resolve_task_exec_mode(task, dir) != "shell" {
+        config.validate_pi_model_plane().context(
+            "spawn refused: every LLM role must have an exact Pi route and effective reasoning",
+        )?;
+    }
     // Get task model preference. Freeform task tags are inert labels, so they
     // never participate in executor/model routing.
     let task_model = task.model.clone().or_else(|| {
-        if let Some(ref tier_str) = task.tier
-            && let Ok(tier) = tier_str.parse::<worksgood::config::Tier>()
-            && let Some(resolved) = config.resolve_tier(tier)
-        {
-            return Some(resolved.model);
-        }
-        None
+        task.tier
+            .as_deref()
+            .and_then(|tier| tier.parse::<worksgood::config::Tier>().ok())
+            .and_then(|tier| config.configured_tier_spec(tier))
     });
     let plan_default_model = task_model.as_deref().or(model);
+    if executor_name != "shell" && resolve_task_exec_mode(task, dir) != "shell" {
+        let selected_route = match plan_default_model {
+            Some(route) => route.to_string(),
+            None => {
+                config
+                    .resolve_pi_route_for_role(worksgood::config::DispatchRole::TaskAgent)?
+                    .route
+            }
+        };
+        worksgood::config::parse_exact_pi_route(&selected_route).with_context(|| {
+            format!(
+                "spawn refused: selected route {selected_route:?} is not `pi:<provider>:<model>`"
+            )
+        })?;
+    }
     let explicit_reasoning = reasoning
         .map(str::parse::<ReasoningLevel>)
         .transpose()
@@ -643,6 +660,20 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
     let resolved_executor_name = plan.executor.as_str();
     let resolved_model_for_spawn = Some(plan.model.raw.clone());
     let resolved_reasoning = explicit_reasoning.or(task.reasoning).or(plan.reasoning);
+    if plan.executor != worksgood::dispatch::ExecutorKind::Shell {
+        if plan.executor != worksgood::dispatch::ExecutorKind::Pi {
+            anyhow::bail!(
+                "spawn refused: resolved handler={} is not Pi; no fallback was attempted",
+                plan.executor.as_str()
+            );
+        }
+        if resolved_reasoning.is_none() {
+            anyhow::bail!(
+                "spawn refused: Pi route {:?} has no explicit/inherited reasoning",
+                plan.model.raw
+            );
+        }
+    }
     // One opaque run identity ties the spawned route, completion outcome, and
     // dead-agent triage together. Unlike PID/timestamps, it cannot collide on
     // a fast restart or PID reuse.
@@ -3069,7 +3100,9 @@ fn resolve_spawn_model_via_registry(
     config: &Config,
     dir: &Path,
 ) -> Result<(Option<String>, Option<String>, Option<String>)> {
-    if executor_name == "pi" {
+    if matches!(executor_name, "pi" | "shell") {
+        // Pi owns its model identity; shell tasks have no model at all. Neither
+        // path may consult the legacy WG model registry.
         return Ok((effective_model, None, None));
     }
     resolve_model_via_registry(effective_model, task_model, config, dir)
@@ -4277,6 +4310,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "retired non-Pi execution compatibility behavior"]
     fn test_registry_keeps_builtin_alias_unchanged() {
         let tmp = setup_registry_dir();
         let dir = tmp.path();
@@ -4390,6 +4424,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "retired non-Pi execution compatibility behavior"]
     fn test_registry_passes_through_non_task_model() {
         let tmp = setup_registry_dir();
         let dir = tmp.path();
@@ -4419,6 +4454,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "retired non-Pi execution compatibility behavior"]
     fn test_registry_claude_fable_expands_to_full_cli_id() {
         let tmp = setup_registry_dir();
         let dir = tmp.path();

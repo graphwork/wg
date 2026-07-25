@@ -91,7 +91,7 @@ fn smoke_test_full_lifecycle() {
     let wg_dir = tmp.path().join(".wg");
 
     // ── 1. wg init ──────────────────────────────────────────────────────
-    let output = wg_ok(&wg_dir, &["init", "--route", "claude-cli"]);
+    let output = wg_ok(&wg_dir, &["init", "--route", "pi"]);
     disable_agency(&wg_dir);
     assert!(
         output.contains("Initialized WG"),
@@ -274,7 +274,7 @@ fn smoke_test_dependency_chain() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = tmp.path().join(".wg");
 
-    wg_ok(&wg_dir, &["init", "--route", "claude-cli"]);
+    wg_ok(&wg_dir, &["init", "--route", "pi"]);
     disable_agency(&wg_dir);
 
     // Create parent task
@@ -345,7 +345,7 @@ fn smoke_test_fail_retry_lifecycle() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = tmp.path().join(".wg");
 
-    wg_ok(&wg_dir, &["init", "--route", "claude-cli"]);
+    wg_ok(&wg_dir, &["init", "--route", "pi"]);
     disable_agency(&wg_dir);
     wg_ok(
         &wg_dir,

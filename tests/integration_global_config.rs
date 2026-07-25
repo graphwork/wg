@@ -138,7 +138,7 @@ fn global_config_creation() {
 
     let loaded: Config =
         toml::from_str(&fs::read_to_string(global_dir.join("config.toml")).unwrap()).unwrap();
-    assert_eq!(loaded.agent.executor, "claude");
+    assert_eq!(loaded.agent.executor, "pi");
     assert_eq!(loaded.coordinator.max_agents, 8);
 }
 
@@ -166,7 +166,7 @@ max_agents = 2
     let config = load_merged_custom(&global_dir, &local_dir);
     assert_eq!(config.agent.model, "haiku");
     assert_eq!(config.coordinator.max_agents, 2);
-    assert_eq!(config.agent.executor, "claude"); // default
+    assert_eq!(config.agent.executor, "pi"); // graph-only Pi handler shape
 }
 
 // ===========================================================================
@@ -193,7 +193,7 @@ max_agents = 8
     let config = load_merged_custom(&global_dir, &local_dir);
     assert_eq!(config.agent.model, "sonnet");
     assert_eq!(config.coordinator.max_agents, 8);
-    assert_eq!(config.agent.executor, "claude"); // default
+    assert_eq!(config.agent.executor, "pi"); // graph-only Pi handler shape
 }
 
 // ===========================================================================
@@ -301,8 +301,8 @@ executor = "native"
     );
     assert_eq!(
         sources.get("agent.model"),
-        Some(&ConfigSource::Default),
-        "agent.model should be default (not in either file)"
+        None,
+        "route-free agent.model should not be synthesized into source metadata"
     );
 }
 
@@ -645,8 +645,8 @@ fn merge_empty_both_yields_defaults() {
     let local_dir = setup_local_dir(&tmp, None);
 
     let config = load_merged_custom(&global_dir, &local_dir);
-    assert_eq!(config.agent.executor, "claude");
-    assert_eq!(config.agent.model, "claude:opus");
+    assert_eq!(config.agent.executor, "pi");
+    assert!(config.agent.model.is_empty());
     assert_eq!(config.coordinator.max_agents, 8);
     assert_eq!(config.coordinator.interval, 30);
 }

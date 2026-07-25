@@ -385,8 +385,8 @@ fn patch_two_tier_content(
     strong_reasoning: ReasoningLevel,
     weak_reasoning: ReasoningLevel,
 ) -> Result<String> {
-    crate::config::parse_model_spec_strict(strong)?;
-    crate::config::parse_model_spec_strict(weak)?;
+    crate::config::parse_exact_pi_route(strong)?;
+    crate::config::parse_exact_pi_route(weak)?;
     for key in Config::PI_STRONG_TOML_KEYS {
         content = named::set_toml_string_value(&content, key, strong);
     }
@@ -554,12 +554,13 @@ fn reasoning_label(reasoning: Option<ReasoningLevel>) -> &'static str {
 fn print_catalog(graph: &Path) -> Result<Vec<project::ProfileCatalogEntry>> {
     let all = project::catalog(graph)?;
     let (catalog, advanced): (Vec<_>, Vec<_>) = all.into_iter().partition(|entry| {
-        entry.readiness.handlers.iter().all(|handler| {
-            matches!(
-                handler.handler.as_str(),
-                "pi" | "codex" | "claude" | "native" | "opencode"
-            )
-        })
+        entry
+            .readiness
+            .handlers
+            .iter()
+            .all(|handler| handler.handler == "pi")
+            && entry.readiness.strong_reasoning.is_some()
+            && entry.readiness.weak_reasoning.is_some()
     });
     println!("\nChoose how this repository should run (nothing is selected automatically):");
     println!("  0. Continue without AI — no LLM service");
@@ -591,7 +592,7 @@ fn print_catalog(graph: &Path) -> Result<Vec<project::ProfileCatalogEntry>> {
     }
     if !advanced.is_empty() {
         println!(
-            "  Advanced: {} specialized worker/chat adapter profile(s); use the complete `wg profile list` surface",
+            "  Legacy: {} non-Pi profile definition(s) are hidden from supported execution; use `wg profile list --installed-only` for migration inspection",
             advanced.len()
         );
     }
@@ -767,18 +768,11 @@ fn customize_core_profile(
             "Manual core-profile configuration requires both --strong-model and --weak-model; no agency route was inferred"
         ),
     };
-    crate::config::parse_model_spec_strict(&strong)?;
-    crate::config::parse_model_spec_strict(&weak)?;
-    let configured_handler = crate::dispatch::handler_for_model(&configured_strong);
-    if crate::dispatch::handler_for_model(&strong) != configured_handler
-        || crate::dispatch::handler_for_model(&weak) != configured_handler
-    {
-        anyhow::bail!(
-            "Profile '{}' is owned by handler '{}'; cross-system fallback/routes were refused",
-            base,
-            configured_handler.as_str()
-        );
-    }
+    crate::config::parse_exact_pi_route(&strong)?;
+    crate::config::parse_exact_pi_route(&weak)?;
+    crate::config::parse_exact_pi_route(&configured_strong).with_context(|| {
+        format!("profile {base:?} is legacy/non-Pi and unavailable in WorksGood")
+    })?;
     let strong_reasoning = resolve_effort_choice(
         "Worker/chat",
         options.strong_reasoning,
@@ -806,6 +800,11 @@ fn choose_mode_and_profile(
         return Ok((ConciergeMode::ContinueWithoutAi, None));
     }
     if let Some(profile) = &options.requested_profile {
+        let content = profile_content(profile)?;
+        let config: Config = toml::from_str(&content)?;
+        config
+            .validate_pi_model_plane()
+            .with_context(|| format!("requested profile {profile:?} is legacy/non-Pi"))?;
         return Ok((ConciergeMode::Profile, Some(profile.clone())));
     }
     let catalog = print_catalog(&target.graph)?;
@@ -1947,6 +1946,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "WorksGood concierge now offers Pi profiles only"]
     fn core_profile_persists_separate_default_effort_without_model_overrides() {
         let content = customize_core_profile(
             "codex",
@@ -2014,6 +2014,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "WorksGood concierge now offers Pi profiles only"]
     fn core_profile_yes_requires_missing_effort_instead_of_silent_defaults() {
         let error = customize_core_profile(
             "claude",

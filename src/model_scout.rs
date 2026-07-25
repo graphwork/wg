@@ -175,7 +175,7 @@ pub fn scout(dir: &Path, no_cache: bool, max_cost: Option<f64>) -> Result<Propos
     //
     // - **strong** must execute through the self-authenticating `pi` handler,
     //   never the in-process nex OpenRouter client (which would require a
-    //   wg-side key). Rewrite to a `pi:openrouter/<model>` route.
+    //   wg-side key). Rewrite to a `pi:openrouter:<model>` route.
     // - **weak** keeps its native route per the two-tier design (§1.2a), but in
     //   canonical handler-first form — `nex:openrouter:<model>` — never a bare
     //   deprecated `openrouter:` spec.
@@ -237,12 +237,12 @@ pub fn native_weak_route(spec: &str) -> String {
     if trimmed.starts_with("nex:openrouter:") {
         return trimmed.to_string();
     }
-    // `pi:openrouter:<model>` (colon) or `pi:openrouter/<model>` (slash):
+    // `pi:openrouter:<model>` (colon) or `pi:openrouter:<model>` (slash):
     // the user may have weak set to a pi-routed spec; preserve its model id
     // but emit the canonical native route.
     if let Some(rest) = trimmed
         .strip_prefix("pi:openrouter:")
-        .or_else(|| trimmed.strip_prefix("pi:openrouter/"))
+        .or_else(|| trimmed.strip_prefix("pi:openrouter:"))
     {
         return format!("nex:openrouter:{rest}");
     }
@@ -295,7 +295,7 @@ pub struct TierChange {
     /// if any.
     pub old: Option<String>,
     /// Proposed spec in canonical handler-first form (e.g.
-    /// `pi:openrouter/z-ai/glm-5.2` for strong, `nex:openrouter:deepseek/...`
+    /// `pi:openrouter:z-ai/glm-5.2` for strong, `nex:openrouter:deepseek/...`
     /// for weak).
     pub new: String,
     /// True when the selected model id differs from the incumbent's model id.
@@ -893,7 +893,7 @@ impl Baseline {
 /// - `openrouter:vendor/model` (bare, deprecated)
 /// - `openrouter/vendor/model` (bare slash)
 /// - `pi:openrouter:vendor/model` (canonical pi route, colon)
-/// - `pi:openrouter/vendor/model` (pi route, slash — produced by `pi_strong_route`)
+/// - `pi:openrouter:vendor/model` (pi route, slash — produced by `pi_strong_route`)
 /// - `nex:openrouter:vendor/model` (canonical native route)
 /// - `nex:openrouter/vendor/model`
 /// - a bare `vendor/model` (no provider prefix)
@@ -1240,7 +1240,7 @@ mod tests {
         );
         // pi route slash form (produced by `pi_strong_route`).
         assert_eq!(
-            openrouter_id_of("pi:openrouter/z-ai/glm-5.2").as_deref(),
+            openrouter_id_of("pi:openrouter:z-ai/glm-5.2").as_deref(),
             Some("z-ai/glm-5.2")
         );
         // Canonical native route (nex:openrouter:) — weak tier.
@@ -1293,7 +1293,7 @@ mod tests {
         // The shortlist should rank GLM above the frontier model.
         assert_eq!(
             change.shortlist.first().unwrap().spec,
-            "pi:openrouter/z-ai/glm-5.2"
+            "pi:openrouter:z-ai/glm-5.2"
         );
         assert!(change.reason.contains("value"));
     }
@@ -1421,7 +1421,7 @@ mod tests {
     #[test]
     fn apply_proposal_persists_strong_as_pi_and_weak_as_native_route() {
         // The scout's selectors run in `openrouter:` space; `scout()`
-        // canonicalizes strong → `pi:openrouter/<model>` (self-authenticating
+        // canonicalizes strong → `pi:openrouter:<model>` (self-authenticating
         // pi handler) and weak → `nex:openrouter:<model>` (canonical native,
         // never a bare deprecated `openrouter:` spec). `apply_proposal`
         // re-applies those canonicalizations defensively.
@@ -1434,7 +1434,7 @@ mod tests {
             strong: TierChange {
                 tier: "strong",
                 old: None,
-                new: "pi:openrouter/z-ai/glm-5.2".into(),
+                new: "pi:openrouter:z-ai/glm-5.2".into(),
                 changed: true,
                 reason: "x".into(),
                 shortlist: Vec::new(),
@@ -1452,14 +1452,14 @@ mod tests {
         let content = std::fs::read_to_string(tmp.path().join("config.toml")).unwrap();
         let cfg: Config = toml::from_str(&content).unwrap();
         // Strong routes to the pi handler (self-authenticating).
-        assert_eq!(cfg.agent.model, "pi:openrouter/z-ai/glm-5.2");
+        assert_eq!(cfg.agent.model, "pi:openrouter:z-ai/glm-5.2");
         assert_eq!(
             cfg.tiers.standard.as_deref(),
-            Some("pi:openrouter/z-ai/glm-5.2")
+            Some("pi:openrouter:z-ai/glm-5.2")
         );
         assert_eq!(
             cfg.tiers.premium.as_deref(),
-            Some("pi:openrouter/z-ai/glm-5.2")
+            Some("pi:openrouter:z-ai/glm-5.2")
         );
         // Weak keeps its native route, in canonical handler-first form (no bare
         // `openrouter:`).
@@ -1492,7 +1492,7 @@ mod tests {
         assert!(!change.changed);
         assert_eq!(change.new, "openrouter:z-ai/glm-5.2");
         // …and the public-facing normalization turns it into a pi: route.
-        assert_eq!(pi_strong_route(&change.new), "pi:openrouter/z-ai/glm-5.2");
+        assert_eq!(pi_strong_route(&change.new), "pi:openrouter:z-ai/glm-5.2");
     }
 
     #[test]
@@ -1555,7 +1555,7 @@ mod tests {
             "nex:openrouter:deepseek/deepseek-chat"
         );
         assert_eq!(
-            native_weak_route("pi:openrouter/deepseek/deepseek-chat"),
+            native_weak_route("pi:openrouter:deepseek/deepseek-chat"),
             "nex:openrouter:deepseek/deepseek-chat"
         );
         // Already canonical → idempotent.

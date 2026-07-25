@@ -1805,13 +1805,7 @@ mod tests {
 
     #[test]
     fn handler_first_plan_round_trips_for_supported_systems() {
-        for route in [
-            "codex:gpt-5.5",
-            "pi:openai-codex:gpt-5.6-sol",
-            "pi:openrouter:z-ai/glm-5.2",
-            "nex:openrouter:z-ai/glm-5.2",
-            "claude:haiku",
-        ] {
+        for route in ["pi:openai-codex:gpt-5.6-sol", "pi:openrouter:z-ai/glm-5.2"] {
             let mut config = Config::default();
             config.models.evaluator = Some(RoleModelConfig {
                 provider: None,
@@ -1836,7 +1830,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_explicit_codex_role_is_canonicalized_before_persistence() {
+    fn legacy_explicit_codex_role_is_rejected_before_persistence() {
         let mut config = Config::default();
         config.models.evaluator = Some(RoleModelConfig {
             provider: Some("codex".into()),
@@ -1845,15 +1839,14 @@ mod tests {
             endpoint: None,
             reasoning: None,
         });
-        let plan = build_plan(
+        let error = build_plan(
             &config,
             &source(),
             ".evaluate-source",
             DispatchSelectionSource::ScaffoldConfig,
         )
-        .unwrap();
-        assert_eq!(plan.calls[0].route, "codex:gpt-5.4-mini");
-        assert_eq!(plan.calls[0].system.handler, "codex");
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("WG-PI-ROUTE-REQUIRED"));
     }
 
     #[test]
@@ -1861,17 +1854,17 @@ mod tests {
         let mut config = Config::default();
         config.models.flip_inference = Some(RoleModelConfig {
             provider: None,
-            model: Some("codex:gpt-5.5".into()),
+            model: Some("pi:openai-codex:gpt-5.5".into()),
             tier: None,
             endpoint: None,
-            reasoning: None,
+            reasoning: Some(ReasoningLevel::High),
         });
         config.models.flip_comparison = Some(RoleModelConfig {
             provider: None,
             model: Some("pi:openai-codex:gpt-5.6-sol".into()),
             tier: None,
             endpoint: None,
-            reasoning: None,
+            reasoning: Some(ReasoningLevel::High),
         });
         let plan = build_plan(
             &config,
@@ -1880,7 +1873,7 @@ mod tests {
             DispatchSelectionSource::ScaffoldConfig,
         )
         .unwrap();
-        assert_eq!(plan.calls[0].route, "codex:gpt-5.5");
+        assert_eq!(plan.calls[0].route, "pi:openai-codex:gpt-5.5");
         assert_eq!(plan.calls[1].route, "pi:openai-codex:gpt-5.6-sol");
     }
 
@@ -1903,10 +1896,10 @@ mod tests {
         let mut config = Config::default();
         config.models.evaluator = Some(RoleModelConfig {
             provider: None,
-            model: Some("codex:gpt-5.5".into()),
+            model: Some("pi:openai-codex:gpt-5.5".into()),
             tier: None,
             endpoint: None,
-            reasoning: None,
+            reasoning: Some(ReasoningLevel::High),
         });
         config.models.flip_inference = config.models.evaluator.clone();
         config.models.flip_comparison = config.models.evaluator.clone();

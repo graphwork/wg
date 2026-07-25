@@ -126,7 +126,7 @@ fn wg_ok(wg_dir: &Path, args: &[&str]) -> String {
 
 fn init_workgraph(tmp: &TempDir) -> PathBuf {
     let wg_dir = tmp.path().join(".wg");
-    wg_ok(&wg_dir, &["init", "--route", "claude-cli"]);
+    wg_ok(&wg_dir, &["init", "--route", "pi"]);
     wg_dir
 }
 
@@ -1330,6 +1330,7 @@ async fn native_coordinator_journal_with_openrouter_model() {
 /// The daemon starts, but the coordinator agent logs a provider creation error.
 /// Chat falls back to stub responses.
 #[test]
+#[ignore = "retired native WG LLM execution plane"]
 fn native_coordinator_service_startup_no_api_key() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = init_workgraph(&tmp);
@@ -1379,6 +1380,7 @@ fn native_coordinator_service_startup_no_api_key() {
 /// Service startup with executor = "native" and a fake API key.
 /// The daemon starts and the native coordinator initializes (provider creation succeeds).
 #[test]
+#[ignore = "retired native WG LLM execution plane"]
 fn native_coordinator_service_startup_with_api_key() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = init_workgraph(&tmp);
@@ -1451,6 +1453,7 @@ fn native_coordinator_executor_only_is_unselected() {
 /// This test requires a fake API key and checks that the coordinator
 /// processes the message (even though the API call will fail with a fake key).
 #[test]
+#[ignore = "retired native WG LLM execution plane"]
 fn native_coordinator_chat_routing() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = init_workgraph(&tmp);
@@ -1525,6 +1528,7 @@ fn native_coordinator_chat_routing() {
 /// executor is "native", task agents still get dispatched via the configured
 /// task executor.
 #[test]
+#[ignore = "retired native WG LLM execution plane"]
 fn native_coordinator_task_dispatch_with_shell_executor() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = init_workgraph(&tmp);
@@ -1695,6 +1699,7 @@ PATH = "{}"
 /// no env vars, no follow-up edits — just the init invocation, then a graph
 /// op (`wg list`) that doesn't crash on credential resolution.
 #[test]
+#[ignore = "retired native WG LLM execution plane"]
 fn wg_init_qwen3_with_endpoint_is_sufficient() {
     let tmp = TempDir::new().unwrap();
     let project = tmp.path();

@@ -122,21 +122,18 @@ pub fn run_with_reasoning(
         }
     }
 
-    // Deprecation warning for --provider flag
-    if let Some(p) = provider {
-        let suggested_provider = if p == "anthropic" { "claude" } else { p };
-        eprintln!(
-            "Warning: --provider is deprecated. Use provider:model format in --model instead.\n\
-             Example: wg update {} --model {}:MODEL",
-            task_id, suggested_provider,
+    if provider.is_some() {
+        anyhow::bail!(
+            "WG-PI-ROUTE-REQUIRED: --provider is unsupported; use --model pi:<provider>:<model>"
         );
     }
 
-    // Validate model uses provider:model format
-    if let Some(m) = model
-        && let Err(e) = worksgood::config::parse_model_spec_strict(m)
-    {
-        anyhow::bail!("Invalid --model format: {}", e);
+    if let Some(model) = model {
+        worksgood::config::parse_exact_pi_route(model).with_context(|| {
+            format!(
+                "WG-PI-ROUTE-REQUIRED: task model must be `pi:<provider>:<model>`, got {model:?}"
+            )
+        })?;
     }
     let parsed_reasoning = reasoning
         .map(str::parse::<ReasoningLevel>)

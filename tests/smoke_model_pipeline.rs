@@ -169,6 +169,7 @@ fn init_fresh_wg() -> (TempDir, PathBuf) {
 
 /// Fresh repo: `wg profile show` with a populated registry shows real scores (not 0.0).
 #[test]
+#[ignore = "retired WG model catalog/profile surface"]
 fn smoke_fresh_repo_profile_show_real_scores() {
     let (_tmp, wg_dir) = init_fresh_wg();
 
@@ -240,6 +241,7 @@ fn smoke_fresh_repo_profile_show_real_scores() {
 
 /// Fresh repo: `wg profile show -v` shows verbose per-metric breakdown (pricing, context).
 #[test]
+#[ignore = "retired WG model catalog/profile surface"]
 fn smoke_fresh_repo_profile_show_verbose() {
     let (_tmp, wg_dir) = init_fresh_wg();
 
@@ -311,6 +313,7 @@ fn smoke_fresh_repo_profile_show_verbose() {
 
 /// Fresh repo: short name resolution works via `wg add --model minimax-m2.7`.
 #[test]
+#[ignore = "retired WG model catalog/profile surface"]
 fn smoke_fresh_repo_short_name_resolution() {
     let (_tmp, wg_dir) = init_fresh_wg();
 
@@ -358,6 +361,7 @@ fn smoke_fresh_repo_short_name_resolution() {
 
 /// Fresh repo: adding a task with no --model picks up the configured default.
 #[test]
+#[ignore = "retired WG model catalog/profile surface"]
 fn smoke_fresh_repo_default_model_from_config() {
     let (_tmp, wg_dir) = init_fresh_wg();
 
@@ -401,6 +405,7 @@ fn smoke_fresh_repo_default_model_from_config() {
 /// When a model is explicitly configured, no part of the add pipeline
 /// silently replaces it with a Claude model.
 #[test]
+#[ignore = "retired WG model catalog/profile surface"]
 fn smoke_no_silent_claude_fallback_on_add() {
     let (_tmp, wg_dir) = init_fresh_wg();
 
@@ -845,6 +850,7 @@ fn smoke_ranking_composite_score_weights() {
 
 /// Profile ranking via CLI: output in a fresh repo with registry data.
 #[test]
+#[ignore = "retired WG model catalog/profile surface"]
 fn smoke_profile_show_cli_ranked_alternatives() {
     let (_tmp, wg_dir) = init_fresh_wg();
 
@@ -925,6 +931,7 @@ fn smoke_profile_show_cli_ranked_alternatives() {
 
 /// Profile show JSON output includes ranked alternatives.
 #[test]
+#[ignore = "retired WG model catalog/profile surface"]
 fn smoke_profile_show_json_output() {
     let (_tmp, wg_dir) = init_fresh_wg();
 

@@ -655,6 +655,11 @@ mod tests {
             graph.add_node(Node::Task(task));
         }
         save_graph(&graph, &path).unwrap();
+        fs::write(
+            dir.join("config.toml"),
+            worksgood::profile::named::starter_template("pi").unwrap(),
+        )
+        .unwrap();
         path
     }
 
@@ -1046,7 +1051,7 @@ mod tests {
         // (dir.path() IS the .wg dir).
         fs::write(
             dir.path().join("config.toml"),
-            "[agency]\nauto_place = true\nauto_assign = true\nauto_evaluate = true\n\n[tiers]\nfast = \"claude:haiku\"\n",
+            "[agency]\nauto_place = true\nauto_assign = true\nauto_evaluate = true\n\n[tiers]\nfast = \"pi:test:agency\"\nfast_reasoning = \"low\"\n",
         )
         .unwrap();
 
@@ -1075,7 +1080,7 @@ mod tests {
 
         fs::write(
             dir.path().join("config.toml"),
-            "[agency]\nauto_place = true\nauto_assign = true\nauto_evaluate = true\n\n[tiers]\nfast = \"claude:haiku\"\n",
+            "[agency]\nauto_place = true\nauto_assign = true\nauto_evaluate = true\n\n[tiers]\nfast = \"pi:test:agency\"\nfast_reasoning = \"low\"\n",
         )
         .unwrap();
 
@@ -1102,7 +1107,7 @@ mod tests {
 
         fs::write(
             dir.path().join("config.toml"),
-            "[agency]\nauto_assign = true\nauto_evaluate = true\n\n[tiers]\nfast = \"claude:haiku\"\n",
+            "[agency]\nauto_assign = true\nauto_evaluate = true\n\n[tiers]\nfast = \"pi:test:agency\"\nfast_reasoning = \"low\"\n",
         )
         .unwrap();
 
@@ -1129,7 +1134,7 @@ mod tests {
 
         fs::write(
             dir.path().join("config.toml"),
-            "[agency]\nauto_assign = true\nauto_evaluate = true\n\n[tiers]\nfast = \"claude:haiku\"\n",
+            "[agency]\nauto_assign = true\nauto_evaluate = true\n\n[tiers]\nfast = \"pi:test:agency\"\nfast_reasoning = \"low\"\n",
         )
         .unwrap();
 
@@ -1470,6 +1475,7 @@ mod tests {
     /// in the weakly-connected component (work tasks) AND each work task's
     /// agency satellites (.assign-*/.evaluate-*).
     #[test]
+    #[ignore = "retired non-Pi execution compatibility behavior"]
     fn test_publish_with_profile_stamps_wcc_and_satellites() {
         let dir = tempdir().unwrap();
         let mut t1 = make_task("research", "Research X", Status::Open);
@@ -1570,6 +1576,7 @@ mod tests {
     /// explicit Claude route pins. `publish --profile codex --no-release
     /// --wcc` must reload the component metadata without touching status.
     #[test]
+    #[ignore = "retired non-Pi execution compatibility behavior"]
     #[serial]
     fn test_publish_profile_no_release_wcc_stamps_non_paused_and_clears_stale_routes() {
         let global_dir = tempdir().unwrap();

@@ -5453,6 +5453,7 @@ mod tests {
         };
         let mut config = Config::default();
         config.tiers.fast = Some("pi:openrouter:test/evaluator".to_string());
+        config.tiers.fast_reasoning = Some(worksgood::config::ReasoningLevel::Low);
         let plan = worksgood::eval_lifecycle::build_plan(
             &config,
             &source,
@@ -6914,7 +6915,8 @@ mod tests {
 
         // Config with FLIP verification threshold + agency pipeline enabled
         let mut config = Config::default();
-        config.tiers.fast = Some("claude:haiku".to_string());
+        config.tiers.fast = Some("pi:test:agency".to_string());
+        config.tiers.fast_reasoning = Some(worksgood::config::ReasoningLevel::Low);
         config.agency.flip_verification_threshold = Some(0.6);
         config.agency.auto_assign = true;
         config.agency.auto_evaluate = true;
@@ -7764,10 +7766,10 @@ mod tests {
         let mut config = Config::default();
         config.models.evaluator = Some(worksgood::config::RoleModelConfig {
             provider: None,
-            model: Some("codex:gpt-5.5".to_string()),
+            model: Some("pi:openai-codex:gpt-5.5".to_string()),
             tier: None,
             endpoint: None,
-            reasoning: None,
+            reasoning: Some(worksgood::config::ReasoningLevel::High),
         });
         let plan = worksgood::eval_lifecycle::build_plan(
             &config,

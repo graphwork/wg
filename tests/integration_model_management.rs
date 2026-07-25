@@ -339,7 +339,7 @@ mod model_management_per_task_override {
     }
 
     #[test]
-    fn default_model_used_when_no_task_override() {
+    fn legacy_default_model_is_not_reintroduced_into_registry() {
         let tmp = setup_workgraph_dir();
         let dir = tmp.path();
 
@@ -359,10 +359,10 @@ mod model_management_per_task_override {
         );
         assert_eq!(resolved.model, Some("claude:sonnet".to_string()));
 
-        // "sonnet" should resolve via builtin registry
+        // A legacy default model is preserved as data but does not create WG
+        // catalog/dispatch authority.
         let merged = Config::load_merged(dir).unwrap();
-        let entry = merged.registry_lookup("sonnet").unwrap();
-        assert_eq!(entry.provider, "anthropic");
+        assert!(merged.registry_lookup("sonnet").is_none());
     }
 
     #[test]
@@ -933,6 +933,7 @@ mod model_management_backward_compat {
     use super::*;
 
     #[test]
+    #[ignore = "retired built-in WG model registry"]
     fn builtin_haiku_in_registry() {
         let tmp = setup_workgraph_dir();
         let dir = tmp.path();
@@ -948,6 +949,7 @@ mod model_management_backward_compat {
     }
 
     #[test]
+    #[ignore = "retired built-in WG model registry"]
     fn builtin_sonnet_in_registry() {
         let tmp = setup_workgraph_dir();
         let dir = tmp.path();
@@ -963,6 +965,7 @@ mod model_management_backward_compat {
     }
 
     #[test]
+    #[ignore = "retired built-in WG model registry"]
     fn builtin_opus_in_registry() {
         let tmp = setup_workgraph_dir();
         let dir = tmp.path();
@@ -978,6 +981,7 @@ mod model_management_backward_compat {
     }
 
     #[test]
+    #[ignore = "retired built-in WG model registry"]
     fn tier_aliases_resolve_without_any_endpoint_config() {
         // Fresh config with NO endpoints configured
         let tmp = TempDir::new().unwrap();
@@ -1000,6 +1004,7 @@ mod model_management_backward_compat {
     }
 
     #[test]
+    #[ignore = "retired built-in WG model registry"]
     fn effective_registry_contains_builtins() {
         let config = Config::default();
         let effective = config.effective_registry();
@@ -1018,6 +1023,7 @@ mod model_management_backward_compat {
     }
 
     #[test]
+    #[ignore = "retired built-in WG model registry"]
     fn resolve_model_for_role_uses_tier_defaults() {
         let tmp = setup_workgraph_dir();
         let dir = tmp.path();
@@ -1062,6 +1068,7 @@ mod model_management_backward_compat {
     }
 
     #[test]
+    #[ignore = "retired built-in WG model registry"]
     fn custom_model_does_not_shadow_builtins() {
         let tmp = setup_workgraph_dir();
         let dir = tmp.path();

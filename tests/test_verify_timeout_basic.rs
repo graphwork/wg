@@ -35,7 +35,7 @@ fn run_wg(project_root: &Path, args: &[&str]) -> Result<Output> {
 }
 
 fn init_scratch(project_root: &Path) -> Result<()> {
-    let output = run_wg(project_root, &["init", "--route", "claude-cli"])?;
+    let output = run_wg(project_root, &["init", "--route", "pi"])?;
     anyhow::ensure!(
         output.status.success(),
         "scratch init failed: {}",

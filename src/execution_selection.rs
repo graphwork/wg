@@ -8,8 +8,8 @@ use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-use crate::config::{Config, ConfigSource, handler_first_rewrite};
-use crate::dispatch::{ExecutorKind, handler_for_model};
+use crate::config::{Config, ConfigSource, parse_exact_pi_route};
+use crate::dispatch::handler_for_model;
 
 pub const UNSELECTED_CODE: &str = "WG-EXEC-UNSELECTED";
 
@@ -67,21 +67,7 @@ impl ExecutionSelection {
 
 fn canonical_explicit_route(raw: &str) -> Option<String> {
     let raw = raw.trim();
-    if raw.is_empty() {
-        return None;
-    }
-    if let Some(rewritten) = handler_first_rewrite(raw) {
-        return Some(rewritten);
-    }
-    if !raw.contains(':') {
-        return matches!(raw, "opus" | "sonnet" | "haiku" | "fable")
-            .then(|| format!("claude:{raw}"));
-    }
-    let (prefix, rest) = raw.split_once(':')?;
-    if rest.trim().is_empty() || ExecutorKind::from_str(prefix).is_none() {
-        return None;
-    }
-    Some(raw.to_string())
+    parse_exact_pi_route(raw).ok().map(|_| raw.to_string())
 }
 
 pub fn system_key(route: &str) -> Option<ExecutionSystemKey> {
@@ -115,7 +101,9 @@ pub fn system_key(route: &str) -> Option<ExecutionSystemKey> {
 pub fn resolve(dir: &Path, cli_or_task_model: Option<(&str, bool)>) -> Result<ExecutionSelection> {
     if let Some((raw, is_task)) = cli_or_task_model {
         let route = canonical_explicit_route(raw).ok_or_else(|| {
-            anyhow::anyhow!("explicit model `{raw}` is not a handler-first route")
+            anyhow::anyhow!(
+                "error[WG-PI-ROUTE-REQUIRED]: explicit model `{raw}` is not an exact `pi:<provider>:<model>` route; no fallback was attempted"
+            )
         })?;
         let source = if is_task {
             ExecutionSelectionSource::Task {
@@ -172,7 +160,9 @@ fn resolve_config_sources(
             continue;
         }
         let Some(route) = canonical_explicit_route(raw) else {
-            continue;
+            anyhow::bail!(
+                "error[WG-PI-ROUTE-REQUIRED]: {key} selects unsupported route {raw:?}; WorksGood LLM roles require `pi:<provider>:<model>` and never fall back"
+            );
         };
         let path = match source {
             ConfigSource::Global => Config::global_config_path()?,
@@ -222,7 +212,7 @@ fn resolve_config_sources(
 
 pub fn unselected_message(operation: &str) -> String {
     format!(
-        "error[{UNSELECTED_CODE}]: no LLM execution system has been selected.\nThis WG is available for graph-only use, but `{operation}` requires an LLM route.\n\nChoose one explicitly:\n  wg setup                                      # interactive\n  wg setup --route claude-cli --yes\n  wg setup --route codex-cli --yes\n  wg setup --route pi --yes\n  wg setup --route openrouter --yes\n  wg setup --route local --url http://localhost:11434/v1 --model llama3 --yes\n  wg setup --route nex-custom --url <URL> --model <MODEL> --yes\n  wg profile use <name>\n  wg config --global --model <handler>:<native-model>\n  wg config --local  --model <handler>:<native-model>\n\n`wg init`, graph reads, and graph edits do not require a model or credentials."
+        "error[{UNSELECTED_CODE}]: no LLM execution system has been selected.\nThis WG is available for graph-only use, but `{operation}` requires an LLM route.\n\nChoose Pi explicitly:\n  wg setup --route pi --yes --model pi:<provider>:<model>\n  wg profile select pi\n  wg config --global --model pi:<provider>:<model>\n  wg config --local  --model pi:<provider>:<model>\n\nPi owns provider login, model discovery, endpoints, and availability. `wg init`, graph reads, graph edits, and the TUI remain credential-free and do not create a route."
     )
 }
 
@@ -260,12 +250,13 @@ mod tests {
     #[test]
     fn explicit_local_source_selects() {
         let dir = TempDir::new().unwrap();
-        let config = Config::default();
+        let mut config = Config::default();
+        config.agent.model = "pi:test:worker".into();
         let sources =
             std::collections::BTreeMap::from([("agent.model".to_string(), ConfigSource::Local)]);
         let selected = resolve_config_sources(dir.path(), &config, &sources).unwrap();
         assert_eq!(selected.state, SelectionState::Selected);
-        assert_eq!(selected.route.as_deref(), Some("claude:opus"));
+        assert_eq!(selected.route.as_deref(), Some("pi:test:worker"));
     }
 
     #[test]

@@ -253,72 +253,40 @@ pub fn resolve_agency_dispatch(config: &Config, role: DispatchRole) -> Result<Ag
         is_agency_oneshot_role(role),
         "resolve_agency_dispatch is only valid for agency one-shot roles"
     );
-
-    let raw_spec = if let Some(configured) = config
-        .models
-        .get_role(role)
-        .and_then(|role_config| role_config.model.as_deref())
-    {
-        if execution_system_key(configured).is_ok() {
-            // A complete handler-first route is already authoritative. Do not
-            // decompose nested dialects such as nex:openrouter:… or pi:… .
-            configured.trim().to_string()
-        } else {
-            // Legacy generated profiles persisted `provider = "codex"` beside
-            // a bare `model = "gpt-…"`. Reconstruct that explicit selection
-            // once at the configuration boundary; callers persist/use only the
-            // canonical handler-first route from here onward.
-            config.resolve_model_for_role(role).spawn_model_spec()
-        }
-    } else {
-        config.weak_tier_spec().ok_or_else(|| {
-            anyhow::anyhow!(
-                "error[WG-EXEC-UNSELECTED]: no explicit LLM route for agency role={role}; configure models.{role}.model or tiers.fast"
-            )
-        })?
-    };
-    execution_system_key(&raw_spec)
-        .with_context(|| format!("invalid explicit agency route for role={role}: {raw_spec:?}"))?;
+    let resolved = config.resolve_pi_route_for_role(role)?;
     Ok(agency_dispatch_for_spec(
-        &raw_spec,
-        config.resolve_reasoning_for_role(role),
+        &resolved.route,
+        Some(resolved.reasoning),
     ))
 }
 
-/// Whether a usable credential exists for the content reviewer's weak **or** strong
-/// tier. Used by `review::reviewer::model_review_available` to decide whether the
-/// live model-review path runs (a real deployment with a key) or the deterministic
-/// decode-then-detect fallback does (credential-free CI / claude-CLI-only).
-///
-/// Mirrors [`agency_native_creds_available`]: only native-HTTP providers that
-/// genuinely need a key are gated; the self-authenticating CLIs (claude / codex)
-/// report `false` here so a claude-CLI-only deployment stays on the deterministic
-/// path unless it explicitly opts in via `WG_REVIEW_MODEL=1`.
+/// Whether the live Pi reviewer path is structurally available. WG does not
+/// preflight provider credentials or endpoints; Pi owns that validation when
+/// invoked. Credential-free CI can still force the deterministic reviewer.
 pub fn review_native_creds_available(config: &Config) -> bool {
-    [config.weak_tier_spec(), config.strong_tier_spec()]
-        .into_iter()
-        .flatten()
-        .any(|spec| {
-            handler_for_model(&spec) == ExecutorKind::Native
-                && agency_native_creds_available(config, &spec)
-        })
+    config
+        .resolve_pi_route_for_role(DispatchRole::Reviewer)
+        .is_ok()
+        && crate::executor_discovery::pi_route_availability()
+            .pi_binary
+            .is_some()
 }
 
 fn call_dispatch_route(
     config: &Config,
     dispatch: &AgencyDispatch,
-    endpoint: Option<&str>,
+    _endpoint: Option<&str>,
     prompt: &str,
     timeout_secs: u64,
 ) -> Result<LlmCallResult> {
+    crate::config::parse_exact_pi_route(&dispatch.raw_spec)?;
+    if dispatch.reasoning.is_none() {
+        anyhow::bail!(
+            "error[WG-PI-REASONING-MISSING]: lightweight route {:?} has no effective reasoning",
+            dispatch.raw_spec
+        );
+    }
     match dispatch.handler {
-        ExecutorKind::Claude => call_claude_cli(&dispatch.model_id, prompt, timeout_secs),
-        ExecutorKind::Codex => {
-            call_codex_cli(&dispatch.model_id, dispatch.reasoning, prompt, timeout_secs)
-        }
-        ExecutorKind::Native => {
-            agency_native_call_for_spec(config, &dispatch.raw_spec, endpoint, prompt, timeout_secs)
-        }
         ExecutorKind::Pi => call_pi_cli(
             config,
             &dispatch.raw_spec,
@@ -327,7 +295,7 @@ fn call_dispatch_route(
             timeout_secs,
         ),
         other => anyhow::bail!(
-            "handler {} does not support lightweight one-shot calls for route {:?}",
+            "error[WG-PI-ROUTE-REQUIRED]: handler {} is unsupported for lightweight role route {:?}; no fallback was attempted",
             other.as_str(),
             dispatch.raw_spec
         ),
@@ -418,16 +386,8 @@ pub fn run_review_llm_call(
     timeout_secs: u64,
 ) -> Result<LlmCallResult> {
     let dispatch = if strong {
-        let spec = config.strong_tier_spec().ok_or_else(|| {
-            anyhow::anyhow!(
-                "error[WG-EXEC-UNSELECTED]: no explicit strong reviewer route; configure tiers.premium or tiers.standard"
-            )
-        })?;
-        execution_system_key(&spec)?;
-        agency_dispatch_for_spec(
-            &spec,
-            config.resolve_reasoning_for_role(DispatchRole::Verification),
-        )
+        let resolved = config.resolve_pi_route_for_role(DispatchRole::Verification)?;
+        agency_dispatch_for_spec(&resolved.route, Some(resolved.reasoning))
     } else {
         resolve_agency_dispatch(config, DispatchRole::Reviewer)?
     };
@@ -458,8 +418,11 @@ pub fn run_model_oneshot(
     prompt: &str,
     timeout_secs: u64,
 ) -> Result<LlmCallResult> {
-    let dispatch = agency_dispatch_for_spec(model_spec, None);
-    execution_system_key(model_spec)?;
+    crate::config::parse_exact_pi_route(model_spec)?;
+    let reasoning = config
+        .resolve_pi_route_for_role(DispatchRole::TaskAgent)?
+        .reasoning;
+    let dispatch = agency_dispatch_for_spec(model_spec, Some(reasoning));
     run_dispatch_with_same_system_fallback(config, DispatchRole::TaskAgent, dispatch, |route| {
         call_dispatch_route(config, route, None, prompt, timeout_secs)
     })
@@ -529,36 +492,11 @@ fn inject_claude_oauth_token(cmd: &mut process::Command) {
     }
 }
 
-fn configured_lightweight_route(config: &Config, role: DispatchRole) -> Result<String> {
-    if let Some(route) = config
-        .models
-        .get_role(role)
-        .and_then(|model| model.model.clone())
-    {
-        return Ok(route);
-    }
-    if let Some(tier) = config.models.get_role(role).and_then(|model| model.tier)
-        && let Some(route) = config.configured_tier_spec(tier)
-    {
-        return Ok(route);
-    }
-    if let Some(route) = config.configured_tier_spec(role.default_tier()) {
-        return Ok(route);
-    }
-    if let Some(route) = config
-        .models
-        .get_role(DispatchRole::Default)
-        .and_then(|model| model.model.clone())
-    {
-        return Ok(route);
-    }
-    if let Some(route) = config.coordinator.model.clone() {
-        return Ok(route);
-    }
-    if config.agent_model_is_local && !config.agent.model.trim().is_empty() {
-        return Ok(config.agent.model.clone());
-    }
-    anyhow::bail!("error[WG-EXEC-UNSELECTED]: no explicit LLM route for lightweight role={role}")
+fn configured_lightweight_route(
+    config: &Config,
+    role: DispatchRole,
+) -> Result<crate::config::ResolvedPiRoute> {
+    config.resolve_pi_route_for_role(role)
 }
 
 /// Run a lightweight (no tool-use) LLM call without crossing execution
@@ -575,8 +513,7 @@ pub fn run_lightweight_llm_call(
         resolve_agency_dispatch(config, role)?
     } else {
         let route = configured_lightweight_route(config, role)?;
-        execution_system_key(&route)?;
-        agency_dispatch_for_spec(&route, config.resolve_reasoning_for_role(role))
+        agency_dispatch_for_spec(&route.route, Some(route.reasoning))
     };
 
     run_dispatch_with_same_system_fallback(config, role, dispatch, |route| {
@@ -595,10 +532,11 @@ pub fn run_lightweight_llm_call_for_route(
     prompt: &str,
     timeout_secs: u64,
 ) -> Result<LlmCallResult> {
-    execution_system_key(route).with_context(|| {
-        format!("invalid explicit lightweight route for role={role}: {route:?}")
+    crate::config::parse_exact_pi_route(route).with_context(|| {
+        format!("invalid explicit Pi lightweight route for role={role}: {route:?}")
     })?;
-    let dispatch = agency_dispatch_for_spec(route, config.resolve_reasoning_for_role(role));
+    let reasoning = config.resolve_pi_route_for_role(role)?.reasoning;
+    let dispatch = agency_dispatch_for_spec(route, Some(reasoning));
     run_dispatch_with_same_system_fallback(config, role, dispatch, |candidate| {
         call_dispatch_route(config, candidate, None, prompt, timeout_secs)
     })
@@ -614,6 +552,13 @@ pub fn run_lightweight_llm_call_for_plan(
     prompt: &str,
     timeout_secs: u64,
 ) -> Result<LlmCallResult> {
+    crate::config::parse_exact_pi_route(&call.route)?;
+    if call.reasoning.is_none() {
+        anyhow::bail!(
+            "error[WG-PI-REASONING-MISSING]: persisted agency plan route {:?} has no reasoning",
+            call.route
+        );
+    }
     let actual_system = execution_system_key(&call.route)?;
     if actual_system != call.system {
         anyhow::bail!(
@@ -628,6 +573,7 @@ pub fn run_lightweight_llm_call_for_plan(
     let mut seen = HashSet::new();
     routes.retain(|route| seen.insert(route.clone()));
     for route in &routes {
+        crate::config::parse_exact_pi_route(route)?;
         if execution_system_key(route)? != call.system {
             anyhow::bail!(
                 "error[WG-EXEC-FALLBACK-CROSS-SYSTEM]: planned primary={} candidate={route:?}",
@@ -1009,35 +955,6 @@ fn pi_one_shot_model_arg(raw_spec: &str) -> Option<PiOneShotModelArg> {
     })
 }
 
-/// Resolve the WG endpoint + api key for a pi provider and return the env var
-/// pairs to inject into the spawned pi process (credentials by env ONLY, never
-/// argv). Only a matching provider endpoint is eligible; a default endpoint
-/// for another provider must never leak credentials or change the selected
-/// wire. The daemon's ambient provider env remains available to pi.
-fn pi_env_pairs_for(
-    config: &Config,
-    workgraph_dir: Option<&std::path::Path>,
-    pi_provider: &str,
-) -> Vec<(String, String)> {
-    let mut pairs = Vec::new();
-    let resolved_key = config
-        .llm_endpoints
-        .find_for_provider(pi_provider)
-        .and_then(|ep| {
-            let key = ep.resolve_api_key(workgraph_dir).ok().flatten();
-            key.map(|k| (ep.url.clone(), k))
-        });
-    if let Some((url, key)) = resolved_key {
-        for var_name in crate::config::EndpointConfig::env_var_names_for_provider(pi_provider) {
-            pairs.push((var_name.to_string(), key.clone()));
-        }
-        if let Some(url) = url {
-            pairs.push(("WG_ENDPOINT_URL".to_string(), url));
-        }
-    }
-    pairs
-}
-
 /// One-shot LLM call via the Pi CLI (`pi --mode json --print`).
 ///
 /// The agency / FLIP one-shot path honors a handler-first `pi:` route (e.g.
@@ -1049,13 +966,10 @@ fn pi_env_pairs_for(
 /// session is not persisted (`--no-session`), making the call hermetic with
 /// respect to user-installed Pi extensions.
 ///
-/// Credentials are supplied by environment ONLY (never `--api-key`): a
-/// WG-resolved endpoint key is injected as the provider's env var
-/// (`OPENROUTER_API_KEY` / `ANTHROPIC_API_KEY` / …) so pi's own provider
-/// clients discover it, mirroring `wg pi-handler`. When no WG endpoint key
-/// resolves, pi falls back to its own auth (env / OAuth / `~/.pi` login).
+/// WG supplies no credential or endpoint environment. Pi resolves provider
+/// authentication, endpoint details, availability, and model support itself.
 fn call_pi_cli(
-    config: &Config,
+    _config: &Config,
     raw_spec: &str,
     reasoning: Option<ReasoningLevel>,
     prompt: &str,
@@ -1063,15 +977,10 @@ fn call_pi_cli(
 ) -> Result<LlmCallResult> {
     use std::io::Write as _;
 
-    let marg = pi_one_shot_model_arg(raw_spec).with_context(|| {
-        format!("pi one-shot could not resolve provider/model from {raw_spec:?} — expected a `pi:<provider>/<model>` or `<vendor>/<model>` spec")
+    let (provider, model) = crate::config::parse_exact_pi_route(raw_spec).with_context(|| {
+        format!("pi one-shot requires exact route `pi:<provider>:<model>`, got {raw_spec:?}")
     })?;
-
-    let workgraph_dir = std::env::current_dir()
-        .ok()
-        .map(|p| p.join(".workgraph"))
-        .filter(|p| p.exists());
-    let env_pairs = pi_env_pairs_for(config, workgraph_dir.as_deref(), &marg.provider);
+    let marg = PiOneShotModelArg { provider, model };
 
     let (mut child, _killer) = crate::platform_timeout::spawn_with_timeout(
         "pi",
@@ -1082,9 +991,6 @@ fn call_pi_cli(
             cmd.stdin(process::Stdio::piped())
                 .stdout(process::Stdio::piped())
                 .stderr(process::Stdio::piped());
-            for (k, v) in &env_pairs {
-                cmd.env(k, v);
-            }
             cmd
         },
         timeout_secs,
@@ -1508,6 +1414,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "legacy registry resolver; supported Pi resolver is tested separately"]
     fn test_lightweight_llm_dispatch_resolves_model() {
         let config = Config::default();
         let resolved = config.resolve_model_for_role(DispatchRole::Triage);
@@ -1551,6 +1458,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "retired non-Pi LLM dispatch compatibility behavior"]
     fn test_resolve_agency_dispatch_without_explicit_role_or_weak_tier_is_unselected() {
         let mut config = Config::default();
         config.coordinator.model = Some("nex:openrouter:anthropic/claude-sonnet-4-6".into());
@@ -1560,6 +1468,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "retired non-Pi LLM dispatch compatibility behavior"]
     fn test_explicit_cli_routes_are_preserved_for_every_agency_role() {
         for (route, expected_handler, expected_model) in [
             ("codex:gpt-5.4-mini", ExecutorKind::Codex, "gpt-5.4-mini"),
@@ -1598,6 +1507,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "retired non-Pi LLM dispatch compatibility behavior"]
     fn test_openrouter_claude_model_stays_on_openrouter_native_handler() {
         let mut config = Config::default();
         config.models.set_model(
@@ -1649,6 +1559,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "retired non-Pi LLM dispatch compatibility behavior"]
     fn test_claude_fable_normalizes_only_on_explicit_claude_handler() {
         let dispatch = agency_dispatch_for_spec("claude:fable", None);
         assert_eq!(dispatch.handler, ExecutorKind::Claude);
@@ -1660,6 +1571,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "retired non-Pi LLM dispatch compatibility behavior"]
     fn test_agency_role_ignores_project_worker_route_without_fabricating_claude() {
         let mut config = Config::default();
         config.coordinator.model = Some("codex:gpt-5.5".to_string());
@@ -1876,6 +1788,7 @@ mod tests {
     ];
 
     #[test]
+    #[ignore = "retired non-Pi LLM dispatch compatibility behavior"]
     #[serial_test::serial]
     fn test_resolve_agency_dispatch_weak_tier_deepseek_with_key() {
         // The two-tier setter wrote the handler-first OpenRouter route into
@@ -1899,6 +1812,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "retired non-Pi LLM dispatch compatibility behavior"]
     #[serial_test::serial]
     fn test_resolve_agency_dispatch_weak_tier_key_from_endpoint() {
         // The credential can come from a configured endpoint instead of an env
@@ -1930,6 +1844,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "retired non-Pi LLM dispatch compatibility behavior"]
     #[serial_test::serial]
     fn test_resolve_agency_dispatch_missing_native_key_does_not_switch_handler() {
         let _o = EnvGuard::set("OPENROUTER_API_KEY", None);
@@ -1945,6 +1860,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "retired non-Pi LLM dispatch compatibility behavior"]
     #[serial_test::serial]
     fn test_resolve_agency_dispatch_explicit_override_wins_over_weak_tier() {
         // tiers.fast points weak at DeepSeek, but an explicit [models.evaluator]
@@ -1974,6 +1890,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "retired non-Pi LLM dispatch compatibility behavior"]
     #[serial_test::serial]
     fn test_resolve_agency_dispatch_explicit_codex_override_unaffected_by_weak_tier() {
         // A codex override routes to the codex CLI regardless of the weak tier;
@@ -2124,6 +2041,7 @@ mod tests {
         let _a = EnvGuard::set("OPENAI_API_KEY", None);
         let mut config = Config::default();
         config.tiers.fast = Some("pi:openrouter:deepseek/deepseek-chat".to_string());
+        config.tiers.fast_reasoning = Some(ReasoningLevel::Low);
 
         for role in ALL_AGENCY_ROLES {
             let dispatch = resolve_agency_dispatch(&config, role).unwrap();
@@ -2216,6 +2134,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    #[ignore = "persisted non-Pi plans are migration data, not executable routes"]
     #[serial_test::serial]
     fn persisted_plan_invokes_exact_codex_pi_and_claude_handlers() {
         use std::os::unix::fs::PermissionsExt;
@@ -2330,6 +2249,7 @@ mod tests {
 
         let mut config = Config::default();
         config.tiers.fast = Some("pi:openai-codex:gpt-5.6-terra".into());
+        config.tiers.fast_reasoning = Some(ReasoningLevel::Low);
         let error =
             run_lightweight_llm_call(&config, DispatchRole::Evaluator, "return a verdict", 10)
                 .unwrap_err();
@@ -2351,6 +2271,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    #[ignore = "retired non-Pi LLM dispatch compatibility behavior"]
     #[serial_test::serial]
     fn test_generic_lightweight_routes_never_cross_system_and_explicit_claude_still_runs() {
         use std::os::unix::fs::PermissionsExt;

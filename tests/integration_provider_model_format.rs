@@ -111,6 +111,7 @@ fn setup_workgraph_under(tmp: &TempDir, rel: &str) -> PathBuf {
 }
 
 #[test]
+#[ignore = "retired non-Pi profile/registry behavior"]
 fn named_profile_use_is_authoritative_over_local_model_routing() {
     // Regression for make-profile-switching: a repo-local config can pin
     // Claude models in [agent], [dispatcher], [tiers], and [models.*].
@@ -250,6 +251,7 @@ assigner_agent = "local-assigner"
 }
 
 #[test]
+#[ignore = "retired non-Pi profile/registry behavior"]
 fn config_models_displays_codex_provider_for_codex_profile_roles() {
     let tmp = TempDir::new().unwrap();
     let home = tmp.path().join("home");
@@ -277,6 +279,7 @@ fn config_models_displays_codex_provider_for_codex_profile_roles() {
 }
 
 #[test]
+#[ignore = "retired non-Pi profile/registry behavior"]
 fn fresh_home_profile_starters_resolve_top_default_worker_routes() {
     let tmp = TempDir::new().unwrap();
     let home = tmp.path().join("home");
@@ -379,6 +382,7 @@ fn fresh_home_profile_starters_resolve_top_default_worker_routes() {
 }
 
 #[test]
+#[ignore = "retired non-Pi profile/registry behavior"]
 fn direct_global_model_edit_clears_active_profile_and_pins_default_route() {
     let tmp = TempDir::new().unwrap();
     let home = tmp.path().join("home");
@@ -432,6 +436,7 @@ fn direct_global_model_edit_clears_active_profile_and_pins_default_route() {
 }
 
 #[test]
+#[ignore = "retired non-Pi profile/registry behavior"]
 fn model_qualified_profile_use_pins_exact_default_route_and_clear_show_output() {
     let tmp = TempDir::new().unwrap();
     let home = tmp.path().join("home");
@@ -499,6 +504,7 @@ fn model_qualified_profile_use_pins_exact_default_route_and_clear_show_output() 
 }
 
 #[test]
+#[ignore = "retired non-Pi profile/registry behavior"]
 fn project_local_model_override_still_wins_after_profile_activation() {
     let tmp = TempDir::new().unwrap();
     let home = tmp.path().join("home");
@@ -990,18 +996,13 @@ fn model_choices_with_descriptions_use_provider_prefix() {
 // ===========================================================================
 
 #[test]
-fn cli_config_set_model_accepts_provider_format() {
+fn cli_config_set_model_accepts_exact_pi_format() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(&tmp);
-    wg_ok(&wg_dir, &["config", "--model", "claude:haiku"]);
+    wg_ok(&wg_dir, &["config", "--model", "pi:test:worker"]);
 
-    // Verify it persisted
     let show = wg_ok(&wg_dir, &["config", "--show"]);
-    assert!(
-        show.contains("claude:haiku"),
-        "Config should contain claude:haiku: {}",
-        show
-    );
+    assert!(show.contains("pi:test:worker"), "{show}");
 }
 
 #[test]
@@ -1022,30 +1023,25 @@ fn cli_config_set_model_rejects_bare_name() {
 }
 
 #[test]
-fn cli_config_set_model_accepts_openrouter_format() {
+fn cli_config_set_model_rejects_non_pi_openrouter_format() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(&tmp);
-    wg_ok(
+    let output = wg_cmd(
         &wg_dir,
         &["config", "--model", "openrouter:deepseek/deepseek-chat"],
     );
+    assert!(!output.status.success());
 }
 
 // ===========================================================================
-// Default config uses provider:model
+// Default config is graph-only
 // ===========================================================================
 
 #[test]
-fn default_agent_model_has_provider_prefix() {
+fn default_agent_model_does_not_synthesize_a_route() {
     let config = Config::default();
-    let spec = parse_model_spec_strict(&config.agent.model).unwrap_or_else(|e| {
-        panic!(
-            "Default agent.model '{}' should be valid provider:model: {}",
-            config.agent.model, e
-        )
-    });
-    assert_eq!(spec.provider.as_deref(), Some("claude"));
-    assert_eq!(spec.model_id, "opus");
+    assert!(config.agent.model.is_empty());
+    assert!(config.validate_pi_model_plane().is_err());
 }
 
 // ===========================================================================
@@ -1106,17 +1102,13 @@ fn cli_config_set_coordinator_model_rejects_bare_name() {
 }
 
 #[test]
-fn cli_config_set_coordinator_model_accepts_provider_format() {
+fn cli_config_set_coordinator_model_accepts_exact_pi_format() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(&tmp);
-    wg_ok(&wg_dir, &["config", "--coordinator-model", "claude:sonnet"]);
+    wg_ok(&wg_dir, &["config", "--coordinator-model", "pi:test:chat"]);
 
     let show = wg_ok(&wg_dir, &["config", "--show"]);
-    assert!(
-        show.contains("claude:sonnet"),
-        "Config should contain claude:sonnet: {}",
-        show
-    );
+    assert!(show.contains("pi:test:chat"), "{show}");
 }
 
 // ===========================================================================
@@ -1141,12 +1133,12 @@ fn cli_config_set_model_role_rejects_bare_name() {
 }
 
 #[test]
-fn cli_config_set_model_role_accepts_provider_format() {
+fn cli_config_set_model_role_accepts_exact_pi_format() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(&tmp);
     wg_ok(
         &wg_dir,
-        &["config", "--set-model", "default", "claude:opus"],
+        &["config", "--set-model", "default", "pi:test:worker"],
     );
 }
 
@@ -1214,6 +1206,7 @@ fn strict_rejects_various_legacy_slash_formats() {
 // ===========================================================================
 
 #[test]
+#[ignore = "retired non-Pi profile/registry behavior"]
 fn compaction_threshold_parses_provider_prefix() {
     let mut config = Config::default();
     config.coordinator.model = Some("claude:haiku".to_string());
@@ -1224,6 +1217,7 @@ fn compaction_threshold_parses_provider_prefix() {
 }
 
 #[test]
+#[ignore = "retired non-Pi profile/registry behavior"]
 fn compaction_threshold_from_agent_model_with_prefix() {
     let config = Config::default();
     // Default agent.model is "claude:opus" → registry lookup "opus" → 200_000

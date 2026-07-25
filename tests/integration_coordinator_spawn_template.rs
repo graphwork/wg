@@ -286,6 +286,7 @@ fn read_captured_args(args_file: &Path) -> Vec<String> {
 // ===========================================================================
 
 #[test]
+#[ignore = "retired non-Pi coordinator handler template"]
 fn coordinator_spawn_default_command() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = init_workgraph(&tmp);
@@ -340,6 +341,7 @@ fn coordinator_spawn_default_command() {
 // ===========================================================================
 
 #[test]
+#[ignore = "retired non-Pi coordinator handler template"]
 fn coordinator_spawn_custom_executor_command() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = init_workgraph(&tmp);
@@ -399,6 +401,7 @@ args = ["--print", "--verbose", "--permission-mode", "bypassPermissions", "--out
 // ===========================================================================
 
 #[test]
+#[ignore = "retired non-Pi coordinator handler template"]
 fn coordinator_spawn_with_provider() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = init_workgraph(&tmp);
@@ -462,6 +465,7 @@ fn coordinator_spawn_with_provider() {
 // ===========================================================================
 
 #[test]
+#[ignore = "retired non-Pi coordinator handler template"]
 fn coordinator_spawn_executor_config_overrides_default() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = init_workgraph(&tmp);
@@ -530,6 +534,7 @@ args = ["--print", "--verbose", "--permission-mode", "bypassPermissions", "--out
 // ===========================================================================
 
 #[test]
+#[ignore = "retired non-Pi coordinator handler template"]
 fn coordinator_spawn_model_passthrough() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = init_workgraph(&tmp);

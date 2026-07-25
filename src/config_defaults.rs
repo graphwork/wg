@@ -64,26 +64,15 @@ impl SetupRoute {
     /// Parse a route name from the CLI. Accepts a few aliases.
     pub fn from_name(name: &str) -> Option<Self> {
         match name {
-            "openrouter" | "openrouter-cli" | "or" => Some(Self::Openrouter),
-            "claude-cli" | "claude" | "anthropic" => Some(Self::ClaudeCli),
-            "codex-cli" | "codex" | "openai-cli" => Some(Self::CodexCli),
             "pi" => Some(Self::Pi),
-            "local" | "ollama" | "llama" | "vllm" => Some(Self::Local),
-            "nex-custom" | "nex" | "custom" | "oai-compat" => Some(Self::NexCustom),
             _ => None,
         }
     }
 
-    /// All six routes, in display order.
+    /// Supported setup routes. Legacy route builders remain private
+    /// compatibility/migration code and are intentionally not discoverable.
     pub fn all() -> &'static [SetupRoute] {
-        &[
-            Self::Pi,
-            Self::Openrouter,
-            Self::ClaudeCli,
-            Self::CodexCli,
-            Self::Local,
-            Self::NexCustom,
-        ]
+        &[Self::Pi]
     }
 
     /// Canonical executor name written into `agent.executor` / `dispatcher.executor`.
@@ -106,7 +95,7 @@ impl SetupRoute {
     /// caller can fall through to the legacy path instead of writing
     /// claude defaults to a shell-executor project.
     pub fn from_executor(executor: &str) -> Self {
-        Self::try_from_executor(executor).unwrap_or(Self::ClaudeCli)
+        Self::try_from_executor(executor).unwrap_or(Self::Pi)
     }
 
     /// Conservative version of [`SetupRoute::from_executor`]: returns
@@ -115,13 +104,7 @@ impl SetupRoute {
     /// to the legacy path when this returns `None` rather than
     /// substituting a default route.
     pub fn try_from_executor(executor: &str) -> Option<Self> {
-        match executor {
-            "claude" => Some(Self::ClaudeCli),
-            "codex" => Some(Self::CodexCli),
-            "pi" => Some(Self::Pi),
-            "native" | "nex" => Some(Self::Openrouter),
-            _ => None,
-        }
+        (executor == "pi").then_some(Self::Pi)
     }
 }
 
@@ -345,52 +328,21 @@ fn pi_config(params: &RouteParams) -> Config {
     let mut config: Config =
         toml::from_str(crate::profile::named::STARTER_PI).expect("pi starter must parse");
 
-    config.coordinator.executor = Some("pi".to_string());
+    // Legacy executor fields remain readable, but the exact `pi:` routes are
+    // the sole dispatch authority. Pi owns provider auth/endpoints/catalogs.
+    config.coordinator.executor = None;
     config.agent.executor = "pi".to_string();
+    config.llm_endpoints = EndpointsConfig::default();
+    config.model_registry.clear();
 
-    if let Some(model) = params.model.clone() {
-        let strong = if model.starts_with("pi:") {
-            model
-        } else if let Some(inner) = model.strip_prefix("openrouter:") {
-            format!("pi:{inner}")
-        } else {
-            format!("pi:{model}")
-        };
-        config.agent.model = strong.clone();
-        config.coordinator.model = Some(strong.clone());
-        config.tiers.standard = Some(strong.clone());
-        config.tiers.premium = Some(strong.clone());
-        if let Some(task_agent) = &mut config.models.task_agent {
-            task_agent.model = Some(strong.clone());
-        }
-        if let Some(default_model) = &mut config.models.default {
-            default_model.model = Some(strong);
-        }
+    if let Some(model) = params.model.as_deref() {
+        let strong = crate::config::pi_strong_route(model);
+        config.set_pi_tiers(Some(&strong), None);
     }
 
-    if params.api_key_env.is_some() || params.api_key_file.is_some() || params.url.is_some() {
-        config.llm_endpoints = EndpointsConfig {
-            inherit_global: false,
-            endpoints: vec![EndpointConfig {
-                name: "openrouter".to_string(),
-                provider: "openrouter".to_string(),
-                url: Some(
-                    params
-                        .url
-                        .clone()
-                        .unwrap_or_else(|| "https://openrouter.ai/api/v1".to_string()),
-                ),
-                model: None,
-                api_key: None,
-                api_key_file: params.api_key_file.clone(),
-                api_key_env: params.api_key_env.clone(),
-                api_key_ref: None,
-                is_default: true,
-                context_window: None,
-            }],
-        };
-    }
-
+    config
+        .validate_pi_model_plane()
+        .expect("pi setup route must fully specify route + reasoning");
     config
 }
 
@@ -1067,30 +1019,23 @@ mod tests {
     // ── route metadata ───────────────────────────────────────────────
 
     #[test]
-    fn test_route_from_name_accepts_aliases() {
-        assert_eq!(SetupRoute::from_name("claude"), Some(SetupRoute::ClaudeCli));
-        assert_eq!(
-            SetupRoute::from_name("claude-cli"),
-            Some(SetupRoute::ClaudeCli)
-        );
-        assert_eq!(SetupRoute::from_name("codex"), Some(SetupRoute::CodexCli));
+    fn test_route_from_name_accepts_only_pi() {
         assert_eq!(SetupRoute::from_name("pi"), Some(SetupRoute::Pi));
-        assert_eq!(SetupRoute::from_name("local"), Some(SetupRoute::Local));
-        assert_eq!(SetupRoute::from_name("ollama"), Some(SetupRoute::Local));
-        assert_eq!(
-            SetupRoute::from_name("openrouter"),
-            Some(SetupRoute::Openrouter)
-        );
-        assert_eq!(
-            SetupRoute::from_name("nex-custom"),
-            Some(SetupRoute::NexCustom)
-        );
-        assert_eq!(SetupRoute::from_name("nope"), None);
+        for retired in [
+            "claude",
+            "claude-cli",
+            "codex",
+            "local",
+            "openrouter",
+            "nex-custom",
+        ] {
+            assert_eq!(SetupRoute::from_name(retired), None);
+        }
     }
 
     #[test]
-    fn test_route_all_returns_six_routes() {
-        assert_eq!(SetupRoute::all().len(), 6);
+    fn test_route_all_returns_only_pi() {
+        assert_eq!(SetupRoute::all(), &[SetupRoute::Pi]);
     }
 
     #[test]
@@ -1105,13 +1050,11 @@ mod tests {
 
     #[test]
     fn test_route_from_executor_reverse_mapping() {
-        assert_eq!(SetupRoute::from_executor("claude"), SetupRoute::ClaudeCli);
-        assert_eq!(SetupRoute::from_executor("codex"), SetupRoute::CodexCli);
         assert_eq!(SetupRoute::from_executor("pi"), SetupRoute::Pi);
-        assert_eq!(SetupRoute::from_executor("native"), SetupRoute::Openrouter);
-        assert_eq!(SetupRoute::from_executor("nex"), SetupRoute::Openrouter);
-        // Unknown -> claude-cli (sane default for new users)
-        assert_eq!(SetupRoute::from_executor("unknown"), SetupRoute::ClaudeCli);
+        assert_eq!(SetupRoute::try_from_executor("pi"), Some(SetupRoute::Pi));
+        for retired in ["claude", "codex", "native", "nex", "unknown"] {
+            assert_eq!(SetupRoute::try_from_executor(retired), None);
+        }
     }
 
     // ── [openrouter] section presence per route ─────────────────────

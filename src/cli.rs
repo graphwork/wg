@@ -43,8 +43,8 @@ pub enum Commands {
         no_agency: bool,
 
         /// Initialize the GLOBAL WG directory at `~/.wg` instead of
-        /// the current directory. Useful for `wg nex`-style interactive
-        /// usage from arbitrary directories without littering WG
+        /// the current directory. Useful for graph commands from arbitrary
+        /// directories without littering WG
         /// dirs everywhere. Resolver precedence: --dir > $WG_DIR >
         /// project discovery (`.wg` preferred, legacy `.workgraph` accepted) >
         /// global (`~/.wg` preferred, legacy `~/.workgraph` accepted) > ./.wg
@@ -56,33 +56,21 @@ pub enum Commands {
         /// model spec's provider prefix — you should not need this flag.
         /// Kept for one release with a deprecation warning so existing
         /// scripts keep working. Migrate to `-m <provider>:<model>`.
-        #[arg(short = 'x', long)]
+        #[arg(short = 'x', long, hide = true)]
         executor: Option<String>,
 
-        /// Model spec for this project. Use `provider:model` form
-        /// (e.g. `claude:opus`, `nex:qwen3-coder`,
-        /// `openrouter:anthropic/claude-opus-4-6`).
-        /// The provider prefix tells wg which handler to spawn — claude
-        /// CLI for `claude:*`, codex CLI for `codex:*`, in-process nex
-        /// for `nex:*` / `openrouter:*` / etc.
-        /// Bare aliases (`opus`, `sonnet`, `haiku`) default to claude.
-        /// (Legacy: `local:` and `oai-compat:` are deprecated aliases for
-        /// `nex:` and emit a warning; `wg migrate config` rewrites them.)
+        /// Exact Pi model route for this project: `pi:<provider>:<model>`.
+        /// Pi owns authentication, provider/model discovery, endpoints, and
+        /// model availability; WG stores only the exact route and reasoning.
         #[arg(short = 'm', long)]
         model: Option<String>,
 
-        /// Inline LLM endpoint URL. Required for `nex:*` models and
-        /// any other model whose handler needs an explicit URL (nex /
-        /// native). Ignored for handlers that auth themselves
-        /// (claude / codex CLIs).
-        /// Example: `wg init -m nex:qwen3-coder -e http://127.0.0.1:8088`
-        #[arg(short = 'e', long)]
+        /// [DEPRECATED/UNSUPPORTED] Legacy WG-managed endpoint input.
+        /// Configure endpoints in Pi instead.
+        #[arg(short = 'e', long, hide = true)]
         endpoint: Option<String>,
 
-        /// Pick one of the named setup routes (openrouter, claude-cli,
-        /// codex-cli, local, nex-custom) for a complete fill-in of
-        /// tiers + endpoint + model registry. Equivalent to picking a
-        /// model+endpoint pair; routes are the canonical entry point.
+        /// Select the supported setup route (`pi`). Pi is the sole model plane.
         #[arg(long)]
         route: Option<String>,
 
@@ -247,7 +235,7 @@ pub enum Commands {
         #[arg(long)]
         max_retries: Option<u32>,
 
-        /// Preferred model for this task (haiku, sonnet, opus)
+        /// Exact Pi route for this task (`pi:<provider>:<model>`)
         #[arg(long)]
         model: Option<String>,
 
@@ -255,8 +243,8 @@ pub enum Commands {
         #[arg(long)]
         reasoning: Option<String>,
 
-        /// [DEPRECATED] Provider for this task — use provider:model format in --model instead
-        #[arg(long)]
+        /// [DEPRECATED/UNSUPPORTED] Provider is part of the exact Pi route.
+        #[arg(long, hide = true)]
         provider: Option<String>,
 
         /// Typed remote execution provider (`wgid:`). Freeform tags are labels only and do not route work.
@@ -721,12 +709,12 @@ pub enum Commands {
         #[arg(long, value_name = "EXPR")]
         filter: Vec<String>,
 
-        /// Override model on each user-task before retry (provider:model format)
+        /// Exact Pi route to apply before retry (`pi:<provider>:<model>`)
         #[arg(long, value_name = "MODEL")]
         set_model: Option<String>,
 
-        /// Override endpoint on each user-task before retry
-        #[arg(long, value_name = "ENDPOINT")]
+        /// [DEPRECATED/UNSUPPORTED] Configure endpoints in Pi.
+        #[arg(long, value_name = "ENDPOINT", hide = true)]
         set_endpoint: Option<String>,
 
         /// Don't abandon agency followups (`.evaluate-*` / `.flip-*` / `.assign-*` / `.verify-*`)
@@ -808,7 +796,7 @@ pub enum Commands {
 
     /// Publish a draft task (validates dependencies, then resumes entire subgraph)
     #[command(
-        after_help = "Recovery workflow:\n  wg publish <TASK> --profile codex --no-release --wcc\n      Reload/stamp a named profile across TASK's weakly-connected component\n      without publishing, resuming, unpausing, or changing task statuses. Use\n      this after switching profiles when existing open/failed/done tasks still\n      carry stale explicit model pins."
+        after_help = "Recovery workflow:\n  wg publish <TASK> --profile pi --no-release --wcc\n      Reload/stamp the Pi profile across TASK's weakly-connected component\n      without publishing, resuming, unpausing, or changing task statuses."
     )]
     Publish {
         /// Task ID to publish
@@ -823,12 +811,9 @@ pub enum Commands {
         /// fan-out + synthesis batch with one command.
         #[arg(long)]
         wcc: bool,
-        /// Pin a named profile (e.g. `claude`, `codex`, `nex`) onto every
-        /// task in the released set and propagate it across the whole
-        /// weakly-connected component — both work tasks AND their agency
-        /// satellites (.assign/.flip/.evaluate) route through this profile's
-        /// (executor, model, endpoint) at dispatch. Defaults to WCC scope
-        /// unless `--only` narrows it. Omit to use the globally-active profile.
+        /// Pin the complete `pi` profile onto every task in the released set
+        /// and propagate its exact routes/thinking across the component.
+        /// Defaults to WCC scope unless `--only` narrows it.
         #[arg(long, value_name = "NAME")]
         profile: Option<String>,
         /// Stamp the profile WITHOUT unpausing or changing task status.
@@ -1328,7 +1313,8 @@ pub enum Commands {
         json: bool,
     },
 
-    /// OpenRouter cost monitoring and management
+    /// [DEPRECATED] Legacy provider-specific cost monitor; Pi reports supported costs.
+    #[command(hide = true)]
     Openrouter {
         #[command(subcommand)]
         command: OpenRouterCommands,
@@ -1470,12 +1456,10 @@ pub enum Commands {
         command: ResourceCommands,
     },
 
-    /// Manage nex chat sessions (list, attach, alias).
+    /// Manage persistent Pi chat sessions (list, attach, alias).
     ///
-    /// Every `wg nex` session — interactive, coordinator,
-    /// task-agent — lives under `chat/<uuid>/` and is addressable by
-    /// UUID, UUID prefix, or alias. These subcommands are the UX for
-    /// inspecting and attaching to them.
+    /// Sessions live under `chat/<uuid>/` and are addressable by UUID,
+    /// prefix, or alias.
     Session {
         #[command(subcommand)]
         command: SessionCommands,
@@ -1650,7 +1634,7 @@ pub enum Commands {
         #[arg(long, conflicts_with = "worktree")]
         no_worktree: bool,
 
-        /// Model to use for the executor (e.g., opus, sonnet, haiku)
+        /// Exact Pi route override (`pi:<provider>:<model>`)
         #[arg(long)]
         model: Option<String>,
     },
@@ -1669,15 +1653,15 @@ pub enum Commands {
         /// Task ID to spawn an agent for
         task: String,
 
-        /// Executor to use (claude, codex, native, shell, or custom config name)
-        #[arg(long)]
+        /// Execution mode: `pi` for LLM work, or `shell` for an explicit task command
+        #[arg(long, value_parser = ["pi", "shell"])]
         executor: String,
 
         /// Timeout duration (e.g., 30m, 1h, 90s)
         #[arg(long)]
         timeout: Option<String>,
 
-        /// Model to use (haiku, sonnet, opus) - overrides task/executor defaults
+        /// Exact Pi route override (`pi:<provider>:<model>`)
         #[arg(long)]
         model: Option<String>,
 
@@ -1698,7 +1682,7 @@ pub enum Commands {
         command: EvolveCommands,
     },
 
-    /// Manage provider profiles (model tier presets)
+    /// Manage Pi routing/reasoning profiles
     Profile {
         #[command(subcommand)]
         command: ProfileCommands,
@@ -1717,8 +1701,7 @@ pub enum Commands {
         show: bool,
 
         /// Show the effective merged config (global + local) — exactly what
-        /// the running daemon and agents will see. Use this to debug e.g.
-        /// "why is openrouter still in my routing when I removed it locally?"
+        /// the running daemon and agents will see.
         /// Equivalent to `wg config show` with no scope, but explicit.
         #[arg(long)]
         merged: bool,
@@ -1739,16 +1722,12 @@ pub enum Commands {
         #[arg(long)]
         list: bool,
 
-        /// Set executor (core: native/claude/codex/shell; stable external:
-        /// opencode/aider/goose/qwen/cline; provider-specific: gemini;
-        /// experimental: crush/amplifier; or a custom
-        /// .wg/executors/<name>.toml config)
-        #[arg(long)]
+        /// [DEPRECATED/UNSUPPORTED] LLM execution is Pi-only.
+        #[arg(long, hide = true)]
         executor: Option<String>,
 
-        /// Set model. Accepts `provider:model` (e.g. `claude:opus`) or
-        /// a bare name when combined with `-e URL` (implies nex).
-        /// Updates `agent.model` and `dispatcher.model`.
+        /// Set the exact default Pi route (`pi:<provider>:<model>`).
+        /// Updates strong/weak orchestration routing and dispatcher.model.
         #[arg(short = 'm', long)]
         model: Option<String>,
 
@@ -1761,11 +1740,11 @@ pub enum Commands {
         /// entry named `default` with `provider = "local"`, marked
         /// `is_default = true`. Pair with `-m MODEL` to also set the
         /// model in one shot.
-        #[arg(short = 'e', long)]
+        #[arg(short = 'e', long, hide = true)]
         endpoint: Option<String>,
 
         /// Skip the auto-reload signal to the running daemon. By default
-        /// `wg config -m/-e` sends a reconfigure IPC so the change takes
+        /// `wg config -m` sends a reconfigure IPC so the change takes
         /// effect immediately — set this flag to just write the file.
         #[arg(long)]
         no_reload: bool,
@@ -1790,11 +1769,11 @@ pub enum Commands {
         #[arg(long)]
         poll_interval: Option<u64>,
 
-        /// Set dispatcher executor (legacy alias: --coordinator-executor)
-        #[arg(long, alias = "coordinator-executor")]
+        /// [DEPRECATED/UNSUPPORTED] LLM execution is Pi-only.
+        #[arg(long, alias = "coordinator-executor", hide = true)]
         dispatcher_executor: Option<String>,
 
-        /// Set dispatcher model (e.g., claude:opus or codex:gpt-5.5); legacy alias: --coordinator-model
+        /// Set the dispatcher's exact Pi route; legacy alias: --coordinator-model
         #[arg(
             long = "dispatcher-model",
             alias = "coordinator-model",
@@ -1803,7 +1782,7 @@ pub enum Commands {
         coordinator_model: Option<String>,
 
         /// [DEPRECATED] Set coordinator provider — use provider:model in --dispatcher-model instead
-        #[arg(long)]
+        #[arg(long, hide = true)]
         coordinator_provider: Option<String>,
 
         /// Matrix configuration subcommand
@@ -1904,19 +1883,19 @@ pub enum Commands {
         #[arg(long, name = "flip-enabled")]
         flip_enabled: Option<bool>,
 
-        /// Set FLIP inference model (Phase 1: prompt reconstruction). Shorthand for --set-model flip_inference <model>
+        /// Exact Pi route for FLIP inference (shorthand for --set-model flip_inference <route>)
         #[arg(long, name = "flip-inference-model")]
         flip_inference_model: Option<String>,
 
-        /// Set FLIP comparison model (Phase 2: similarity scoring). Shorthand for --set-model flip_comparison <model>
+        /// Exact Pi route for FLIP comparison (shorthand for --set-model flip_comparison <route>)
         #[arg(long, name = "flip-comparison-model")]
         flip_comparison_model: Option<String>,
 
-        /// Set both FLIP inference and comparison models to the same value
+        /// Set both FLIP roles to the same exact Pi route
         #[arg(long, name = "flip-model")]
         flip_model: Option<String>,
 
-        /// FLIP score threshold for triggering Opus verification (default: 0.7)
+        /// FLIP score threshold for triggering strong-tier Pi verification (default: 0.7)
         #[arg(long, name = "flip-verification-threshold")]
         flip_verification_threshold: Option<f64>,
 
@@ -1932,59 +1911,59 @@ pub enum Commands {
         #[arg(long, name = "tui-counters")]
         tui_counters: Option<String>,
 
-        /// Show all model registry entries (built-in + user-defined)
-        #[arg(long = "registry")]
+        /// [DEPRECATED] Show migration-only WG registry data.
+        #[arg(long = "registry", hide = true)]
         show_registry: bool,
 
         /// Add a new model to the registry (use with --id, --provider, --reg-model, --reg-tier)
-        #[arg(long = "registry-add")]
+        #[arg(long = "registry-add", hide = true)]
         registry_add: bool,
 
         /// Remove a model from the registry by ID
-        #[arg(long = "registry-remove", value_name = "ID")]
+        #[arg(long = "registry-remove", value_name = "ID", hide = true)]
         registry_remove: Option<String>,
 
         /// Show current tier→model assignments
         #[arg(long = "tiers")]
         show_tiers: bool,
 
-        /// Set which model a tier uses; repeat for multiple tiers (e.g., --tier fast=claude:haiku --tier standard=claude:opus)
+        /// Set an exact Pi route for a tier; repeat (e.g. --tier fast=pi:<provider>:<model>)
         #[arg(long = "tier", value_name = "TIER=MODEL_ID", action = ArgAction::Append)]
         set_tier: Vec<String>,
 
         /// Registry entry short ID (for --registry-add)
-        #[arg(long = "id", requires = "registry_add")]
+        #[arg(long = "id", requires = "registry_add", hide = true)]
         reg_id: Option<String>,
 
         /// Provider name (for --registry-add, e.g., openai, anthropic)
-        #[arg(long = "provider", requires = "registry_add")]
+        #[arg(long = "provider", requires = "registry_add", hide = true)]
         reg_provider: Option<String>,
 
         /// Full API model identifier (for --registry-add, e.g., gpt-4o)
-        #[arg(long = "reg-model", requires = "registry_add")]
+        #[arg(long = "reg-model", requires = "registry_add", hide = true)]
         reg_model: Option<String>,
 
         /// Quality tier for registry entry (for --registry-add: fast, standard, premium)
-        #[arg(long = "reg-tier", requires = "registry_add")]
+        #[arg(long = "reg-tier", requires = "registry_add", hide = true)]
         reg_tier: Option<String>,
 
         /// API endpoint URL (for --registry-add)
-        #[arg(long = "reg-endpoint", requires = "registry_add")]
+        #[arg(long = "reg-endpoint", requires = "registry_add", hide = true)]
         reg_endpoint: Option<String>,
 
         /// Context window in tokens (for --registry-add)
-        #[arg(long = "context-window", requires = "registry_add")]
+        #[arg(long = "context-window", requires = "registry_add", hide = true)]
         reg_context_window: Option<u64>,
 
         /// Cost per million input tokens in USD (for --registry-add)
-        #[arg(long = "cost-input", requires = "registry_add")]
+        #[arg(long = "cost-input", requires = "registry_add", hide = true)]
         cost_input: Option<f64>,
 
         /// Cost per million output tokens in USD (for --registry-add)
-        #[arg(long = "cost-output", requires = "registry_add")]
+        #[arg(long = "cost-output", requires = "registry_add", hide = true)]
         cost_output: Option<f64>,
 
-        /// Show all model routing assignments (per-role model+provider)
+        /// Show every effective role's exact Pi route, reasoning, and source
         #[arg(long = "models")]
         show_models: bool,
 
@@ -1999,12 +1978,12 @@ pub enum Commands {
         set_reasoning: Vec<String>,
 
         /// [DEPRECATED] Set provider for a dispatch role; repeat for multiple roles — use provider:model in --set-model instead
-        #[arg(long = "set-provider", num_args = 2, value_names = ["ROLE", "PROVIDER"], action = ArgAction::Append)]
+        #[arg(long = "set-provider", num_args = 2, value_names = ["ROLE", "PROVIDER"], action = ArgAction::Append, hide = true)]
         set_provider: Vec<String>,
 
         /// Set endpoint for a dispatch role; repeat for multiple roles: --set-endpoint <role> <endpoint-name>
         /// Binds a named endpoint (from `wg endpoints list`) to a dispatch role.
-        #[arg(long = "set-endpoint", num_args = 2, value_names = ["ROLE", "ENDPOINT"], action = ArgAction::Append)]
+        #[arg(long = "set-endpoint", num_args = 2, value_names = ["ROLE", "ENDPOINT"], action = ArgAction::Append, hide = true)]
         set_endpoint: Vec<String>,
 
         /// Set model for a dispatch role; repeat for multiple roles: --role-model <role>=<model>
@@ -2014,7 +1993,7 @@ pub enum Commands {
 
         /// [DEPRECATED] Set provider for a dispatch role; repeat for multiple roles — use provider:model in --set-model instead
         /// Equivalent to --set-provider but uses key=value syntax.
-        #[arg(long = "role-provider", value_name = "ROLE=PROVIDER", action = ArgAction::Append)]
+        #[arg(long = "role-provider", value_name = "ROLE=PROVIDER", action = ArgAction::Append, hide = true)]
         role_provider: Vec<String>,
 
         /// Max tokens of previous-attempt context to inject on retry (default: 2000, 0 = disabled)
@@ -2022,15 +2001,15 @@ pub enum Commands {
         retry_context_tokens: Option<u32>,
 
         /// Set API key file for a provider: --set-key <provider> --file <path>
-        #[arg(long = "set-key", value_name = "PROVIDER")]
+        #[arg(long = "set-key", value_name = "PROVIDER", hide = true)]
         set_key: Option<String>,
 
         /// File path for --set-key (the key file to reference)
-        #[arg(long = "file", requires = "set_key", value_name = "PATH")]
+        #[arg(long = "file", requires = "set_key", value_name = "PATH", hide = true)]
         key_file: Option<String>,
 
         /// Check OpenRouter API key validity and credit status
-        #[arg(long, name = "check-key")]
+        #[arg(long, name = "check-key", hide = true)]
         check_key: bool,
 
         /// Install project config as global default (~/.wg/config.toml)
@@ -2041,20 +2020,18 @@ pub enum Commands {
         #[arg(long)]
         force: bool,
 
-        /// Reset config to defaults. With `--route <name>` resets to that route's
-        /// defaults; without a route, picks the closest route based on the current
-        /// executor. Always backs up to config.toml.bak-<timestamp> first.
+        /// Reset config to complete Pi routing/reasoning defaults.
+        /// Always backs up to config.toml.bak-<timestamp> first.
         /// Also reachable as `wg config reset` (positional alias).
         #[arg(long)]
         reset: bool,
 
-        /// One of the 5 named routes for `--reset`: openrouter, claude-cli, codex-cli,
-        /// local, nex-custom.
+        /// Supported reset route: `pi`.
         #[arg(long = "route", value_name = "NAME")]
         reset_route: Option<String>,
 
         /// Preserve existing `[[llm_endpoints.endpoints]]` entries when resetting.
-        #[arg(long = "keep-keys")]
+        #[arg(long = "keep-keys", hide = true)]
         reset_keep_keys: bool,
 
         /// Print the diff that `--reset` would apply, but don't actually write.
@@ -2315,14 +2292,12 @@ pub enum Commands {
         /// and ~/.claude/CLAUDE.md, preserving all user-authored surrounding text.
         #[arg(long)]
         repair_guides: bool,
-        /// One of the named routes: openrouter, claude-cli, codex-cli, pi, local, nex-custom.
-        /// Picks a complete, working config end-to-end (executor + tiers + login/profile wiring
-        /// when applicable). Use with `--yes` for non-interactive setup.
+        /// The supported route is `pi`. Writes exact strong/weak Pi routes and reasoning;
+        /// provider login/model discovery remain in Pi. Use with `--yes` for non-interactive setup.
         #[arg(long)]
         route: Option<String>,
-        /// [DEPRECATED] Use `--route` instead. Still accepted: anthropic, openrouter,
-        /// openai, local, custom. Maps internally onto the closest route.
-        #[arg(long)]
+        /// [DEPRECATED/UNSUPPORTED] WG no longer selects providers; use Pi.
+        #[arg(long, hide = true)]
         provider: Option<String>,
         /// Where to write the config: `global` (~/.wg/config.toml),
         /// `local` (./.wg/config.toml), or `both`. When omitted, the
@@ -2330,20 +2305,20 @@ pub enum Commands {
         /// `global`.
         #[arg(long)]
         scope: Option<String>,
-        /// Path to API key file (route-dependent: openrouter / nex-custom).
-        #[arg(long)]
+        /// [DEPRECATED/UNSUPPORTED] Configure provider credentials in Pi.
+        #[arg(long, hide = true)]
         api_key_file: Option<String>,
-        /// Environment variable name for API key (route-dependent).
-        #[arg(long)]
+        /// [DEPRECATED/UNSUPPORTED] Configure provider credentials in Pi.
+        #[arg(long, hide = true)]
         api_key_env: Option<String>,
-        /// API endpoint URL (route-dependent: local / nex-custom).
-        #[arg(long)]
+        /// [DEPRECATED/UNSUPPORTED] Configure endpoints in Pi.
+        #[arg(long, hide = true)]
         url: Option<String>,
-        /// Default model ID (route-dependent).
+        /// Exact `pi:<provider>:<model>` route.
         #[arg(long)]
         model: Option<String>,
-        /// Skip API key validation
-        #[arg(long)]
+        /// [DEPRECATED/UNSUPPORTED] Pi performs provider/model validation.
+        #[arg(long, hide = true)]
         skip_validation: bool,
         /// Non-interactive: write the route's config without prompting.
         #[arg(long)]
@@ -2351,11 +2326,11 @@ pub enum Commands {
         /// Print the config that would be written but don't write it.
         #[arg(long)]
         dry_run: bool,
-        /// Read a provider API key from stdin for secret-backed onboarding.
-        #[arg(long)]
+        /// [DEPRECATED/UNSUPPORTED] WG does not ingest provider API keys.
+        #[arg(long, hide = true)]
         from_stdin: bool,
-        /// Secret backend for stored provider credentials (keyring|keystore|plaintext).
-        #[arg(long)]
+        /// [DEPRECATED/UNSUPPORTED] Pi owns provider credentials.
+        #[arg(long, hide = true)]
         backend: Option<String>,
     },
 
@@ -2426,7 +2401,8 @@ pub enum Commands {
         command: TelegramCommands,
     },
 
-    /// Manage LLM endpoints (add, remove, list, test)
+    /// [DEPRECATED] Legacy WG endpoint compatibility surface; configure Pi instead.
+    #[command(hide = true)]
     Endpoints {
         #[command(subcommand)]
         command: EndpointsCommands,
@@ -2439,7 +2415,8 @@ pub enum Commands {
         command: EndpointsCommands,
     },
 
-    /// Browse and search available models from OpenRouter
+    /// [DEPRECATED] Legacy WG catalog compatibility surface; use Pi discovery.
+    #[command(hide = true)]
     Models {
         #[command(subcommand)]
         command: ModelsCommands,
@@ -2455,7 +2432,7 @@ pub enum Commands {
     /// `strong: <old> -> <new> because …` / `weak: <old> -> <new> because …`.
     /// Default is dry-run (prints the copy-pasteable apply command); `--apply`
     /// writes the tiers. This is the engine behind `wg profile pi --scout`.
-    #[command(name = "model-scout")]
+    #[command(name = "model-scout", hide = true)]
     ModelScout {
         /// Write the proposed tiers (default is dry-run preview only)
         #[arg(long)]
@@ -2468,19 +2445,22 @@ pub enum Commands {
         max_cost: Option<f64>,
     },
 
-    /// Model registry and routing management
+    /// [DEPRECATED] Legacy WG model registry compatibility surface.
+    #[command(hide = true)]
     Model {
         #[command(subcommand)]
         command: ModelCommands,
     },
 
-    /// Manage API keys for LLM providers
+    /// [DEPRECATED] Legacy WG provider-key compatibility surface; authenticate in Pi.
+    #[command(hide = true)]
     Key {
         #[command(subcommand)]
         command: KeyCommands,
     },
 
-    /// One-command provider login / credential setup
+    /// [DEPRECATED] Legacy WG provider login compatibility surface; authenticate in Pi.
+    #[command(hide = true)]
     Login {
         #[command(subcommand)]
         command: LoginCommands,
@@ -2565,8 +2545,8 @@ pub enum Commands {
     /// substrate verbatim (no second system).
     ///
     /// Quick start (the six-step spark flow):
-    ///   wg provider enroll <wgid> --trust verified --model claude:opus --isolation container
-    ///   wg provider offer  --as agentG --task T --model claude:opus --isolation container \
+    ///   wg provider enroll <wgid> --trust verified --model pi:<provider>:<model> --isolation container
+    ///   wg provider offer  --as agentG --task T --model pi:<provider>:<model> --isolation container \
     ///     --sensitivity normal --provider <wgid> --store ./L --out offer.json
     ///   wg provider claim  --as providerP --offer offer.json --store ./L --out claim.json
     ///   wg provider grant  --as agentG --claim claim.json --task-input ./T.txt \
@@ -2642,19 +2622,12 @@ pub enum Commands {
         resume: Option<String>,
     },
 
-    /// Spawn the handler for a task — the single entry point that
-    /// resolves executor type, chat session, and role, then launches
-    /// the right command (replaces the current process via exec).
+    /// Spawn Pi for an LLM-backed task, or the explicit shell command for a
+    /// graph-only shell task (replaces the current process via exec).
     ///
-    /// This is what the TUI PTY pane runs when you focus a task,
-    /// what humans run at a terminal to interact with a task, and
-    /// what the daemon supervisor runs to (re)start a handler.
-    ///
-    /// Per design (docs/design/sessions-as-identity.md), the
-    /// abstraction point is here: per-executor adapters live in
-    /// `commands/spawn_task.rs`. When a CLI vendor changes flags or
-    /// adds a new executor, we change one adapter; the TUI and the
-    /// daemon don't need to know.
+    /// This is the single task/session boundary used by the TUI and daemon.
+    /// Exact Pi route and thinking are validated before launch; no other LLM
+    /// handler or fallback is selected.
     #[command(name = "spawn-task")]
     SpawnTask {
         /// Task id in the graph. Resolves to a chat session
@@ -2678,7 +2651,7 @@ pub enum Commands {
     /// by `wg spawn-task` when the session's executor is `claude`.
     /// Not typically invoked directly — use `wg spawn-task <task-id>`
     /// or `wg service create-coordinator --executor claude`.
-    #[command(name = "claude-handler")]
+    #[command(name = "claude-handler", hide = true)]
     ClaudeHandler {
         /// Chat session reference (alias, task id, or UUID).
         #[arg(long = "chat")]
@@ -2706,7 +2679,7 @@ pub enum Commands {
     /// Codex executor. Codex is single-shot (`codex exec` runs a
     /// turn and exits), so this handler re-runs codex per inbox
     /// message with the full conversation history prepended.
-    #[command(name = "codex-handler")]
+    #[command(name = "codex-handler", hide = true)]
     CodexHandler {
         #[arg(long = "chat")]
         chat: String,
@@ -2728,7 +2701,7 @@ pub enum Commands {
     /// opencode per inbox message with the full conversation history
     /// replayed into the prompt. ALWAYS passes the resolved model
     /// explicitly via `--model`; refuses to start without one.
-    #[command(name = "opencode-handler")]
+    #[command(name = "opencode-handler", hide = true)]
     OpenCodeHandler {
         #[arg(long = "chat")]
         chat: String,
@@ -2785,7 +2758,7 @@ pub enum Commands {
     /// system, and where their backing binaries live. Useful for
     /// seeing what `--executor` values `wg service create-coordinator`
     /// and `wg edit --model` can target.
-    #[command(name = "executors")]
+    #[command(name = "executors", hide = true)]
     Executors {
         /// Show all executors, including unusable ones.
         #[arg(long)]
@@ -3785,8 +3758,8 @@ pub enum ProviderCommands {
         /// Authorizer-asserted trust: verified | provisional | unknown.
         #[arg(long, default_value = "provisional")]
         trust: String,
-        /// The model/handler the provider offers.
-        #[arg(long, default_value = "claude:opus")]
+        /// The exact Pi route the provider offers.
+        #[arg(long, default_value = "pi:openrouter:z-ai/glm-5.2")]
         model: String,
         /// Advertised isolation class: process | container | vm | tee.
         #[arg(long, default_value = "container")]
@@ -3807,8 +3780,8 @@ pub enum ProviderCommands {
         /// The task id to place.
         #[arg(long)]
         task: String,
-        /// Required model/handler.
-        #[arg(long, default_value = "claude:opus")]
+        /// Required exact Pi route.
+        #[arg(long, default_value = "pi:openrouter:z-ai/glm-5.2")]
         model: String,
         /// Minimum isolation class.
         #[arg(long, default_value = "container")]
@@ -4422,7 +4395,8 @@ pub enum EvaluateCommands {
 
 #[derive(Subcommand)]
 pub enum ProfileCommands {
-    /// Set the active provider profile (deprecated alias for `use`)
+    /// [DEPRECATED] Legacy provider-tier profile compatibility command.
+    #[command(hide = true)]
     Set {
         /// Profile name (e.g., anthropic, openrouter, openai)
         name: String,
@@ -4486,8 +4460,8 @@ pub enum ProfileCommands {
         /// Profile name to show (defaults to active profile)
         profile_name: Option<String>,
 
-        /// Show raw metrics (pricing, context length, benchmark scores) per model
-        #[arg(long, short = 'v')]
+        /// [DEPRECATED] Legacy WG catalog metrics (not Pi dispatch authority).
+        #[arg(long, short = 'v', hide = true)]
         verbose: bool,
 
         /// Also show what this profile changes vs base config
@@ -4505,12 +4479,12 @@ pub enum ProfileCommands {
         /// Profile name
         name: String,
 
-        /// Primary model for this profile (e.g., claude:opus, codex:gpt-5.5)
+        /// Exact Pi route for this profile (`pi:<provider>:<model>`).
         #[arg(long, short = 'm')]
         model: Option<String>,
 
-        /// Endpoint URL (e.g., http://127.0.0.1:8088)
-        #[arg(long, short = 'e')]
+        /// [DEPRECATED/UNSUPPORTED] Configure endpoints in Pi.
+        #[arg(long, short = 'e', hide = true)]
         endpoint: Option<String>,
 
         /// Copy an existing profile as the starting point
@@ -4562,25 +4536,26 @@ pub enum ProfileCommands {
         /// Second profile name (optional; if omitted, diff is base vs a)
         b: Option<String>,
     },
-    /// Write the three starter profiles (claude, codex, nex) to ~/.wg/profiles/
+    /// Write the supported Pi starter profile to ~/.wg/profiles/
     InitStarters {
         /// Overwrite existing starter files
         #[arg(long)]
         force: bool,
     },
-    /// Refresh model data from OpenRouter and recompute rankings
+    /// [DEPRECATED] Legacy WG catalog refresh; use Pi's model discovery.
+    #[command(hide = true)]
     Refresh,
 
     /// Set or show a profile's two model/reasoning tiers (strong / weak).
     ///
-    /// Defaults to the built-in `pi` profile for backward compatibility. Use
-    /// `--profile NAME` to edit any existing named profile. `strong` drives
+    /// Defaults to the built-in `pi` profile. Use `--profile NAME` to edit a
+    /// Pi-compatible profile. `strong` drives
     /// chat + workers + heavy generative roles; `weak` drives the recoverable
     /// agency one-shots (.flip / .assign / eval). Examples:
     ///
     ///   wg profile pi <STRONG> <WEAK>          # pi; '-' skips a tier
     ///   wg profile pi --strong X --weak Y      # pi partial update
-    ///   wg profile pi --profile codex-56 --strong X --weak-reasoning low
+    ///   wg profile pi --profile team-pi --strong X --weak-reasoning low
     ///
     /// With no args (or --show) it prints the current tiers and routing; --list
     /// shows the models configured for the selected profile. See
@@ -4634,9 +4609,9 @@ pub enum ProfileCommands {
     /// edited profile is the active one, it is re-applied as the global
     /// config and the daemon is hot-reloaded so the next spawned worker sees
     /// the change. Handler-first model specs are preserved exactly — a
-    /// `pi:openrouter/...` route stays a `pi:` route.
+    /// exact `pi:<provider>:<model>` routes are preserved.
     ///
-    ///   wg profile set-model pi task_agent pi:openrouter/deepseek/deepseek-v4-flash
+    ///   wg profile set-model pi task_agent pi:openrouter:deepseek/deepseek-v4-flash
     ///
     /// This is user-global profile state: it affects every project on this
     /// host that activates the profile. Use `--dry-run` to preview. Per-role
@@ -4644,7 +4619,7 @@ pub enum ProfileCommands {
     /// key-set, so this command is the escape hatch when a single role needs
     /// to diverge from its tier.
     SetModel {
-        /// Named profile to edit (e.g., pi, claude, codex, nex).
+        /// Named Pi-compatible profile to edit.
         profile: String,
 
         /// Dispatch role (e.g., default, task_agent, evaluator, assigner,
@@ -4652,8 +4627,7 @@ pub enum ProfileCommands {
         /// creator, compactor, placer, chat_compactor, reviewer).
         role: String,
 
-        /// Model spec in handler-first form (e.g., `claude:opus`,
-        /// `pi:openrouter/z-ai/glm-5.2`, `openrouter:deepseek/deepseek-chat`).
+        /// Exact Pi route (`pi:<provider>:<model>`).
         model: String,
 
         /// Print what would change without writing any files.
@@ -5470,27 +5444,16 @@ pub enum ChatCommands {
         #[arg(long)]
         name: Option<String>,
 
-        /// Live chat executor shortcut: "claude", "codex", "pi", "opencode",
-        /// "octomind", "dexto", or "nex"/"native". `opencode`, `octomind`,
-        /// and `dexto` run an OpenRouter (or other supported) model route and
-        /// `pi` uses Pi's own default unless `--model` is supplied. They
-        /// need no `--endpoint`; `nex`/`native` is the only executor that
-        /// takes one. `octomind`/`dexto` are line-oriented (tmux-scrollback
-        /// safe) and currently launch via the TUI live-chat PTY path.
-        #[arg(long = "exec", alias = "executor")]
+        /// [DEPRECATED/UNSUPPORTED] Live LLM chats are Pi-only.
+        #[arg(long = "exec", alias = "executor", hide = true)]
         executor: Option<String>,
 
-        /// Per-chat model override (e.g. "claude:opus",
-        /// "opencode:openrouter/stepfun/step-3.7-flash",
-        /// "openai:qwen3-coder-30b").
+        /// Exact per-chat Pi route (`pi:<provider>:<model>`).
         #[arg(long, short = 'm')]
         model: Option<String>,
 
-        /// Per-chat LLM endpoint URL (e.g.
-        /// "https://lambda01.tail334fe6.ts.net:30000"). Mirrors
-        /// `wg nex -e <URL>` and pins this single chat to a specific
-        /// server. Persists across daemon / TUI restarts.
-        #[arg(long, short = 'e')]
+        /// [DEPRECATED/UNSUPPORTED] Configure endpoints in Pi.
+        #[arg(long, short = 'e', hide = true)]
         endpoint: Option<String>,
 
         /// Arbitrary command line to run in a persistent chat pane.
@@ -5866,16 +5829,16 @@ pub enum AgentCommands {
         #[arg(long)]
         contact: Option<String>,
 
-        /// Executor backend (claude, matrix, email, shell)
-        #[arg(long, default_value = "claude")]
+        /// Agent interaction backend (`pi`, `matrix`, `email`, or `shell`)
+        #[arg(long, default_value = "pi", value_parser = ["pi", "matrix", "email", "shell"])]
         executor: String,
 
-        /// Preferred model (e.g., opus, sonnet, haiku, or full model ID)
-        #[arg(long)]
+        /// [DEPRECATED/UNSUPPORTED] Configure exact routes in Pi role policy.
+        #[arg(long, hide = true)]
         model: Option<String>,
 
-        /// Preferred provider (e.g., anthropic, openrouter)
-        #[arg(long)]
+        /// [DEPRECATED/UNSUPPORTED] Provider identity belongs in the Pi route.
+        #[arg(long, hide = true)]
         provider: Option<String>,
     },
 
@@ -6130,10 +6093,7 @@ pub enum MigrateCommands {
 /// The subcommand form (`wg config init …`) takes priority when present.
 #[derive(Subcommand)]
 pub enum ConfigSubcommand {
-    /// Write a minimal canonical config file for a chosen route.
-    ///
-    /// The file contains only keys the design picked as 'always-set' for
-    /// the route — every other key falls through to the built-in default.
+    /// Write a complete Pi routing/reasoning config, or graph-only `--bare` config.
     /// This is the modern replacement for `wg config --init`, which
     /// continues to work for one release as a deprecated alias.
     Init {
@@ -6147,14 +6107,11 @@ pub enum ConfigSubcommand {
         #[arg(long, conflicts_with = "global")]
         local: bool,
 
-        /// Explicit setup route. One of: `claude-cli`, `codex-cli`,
-        /// `openrouter`, `pi`, `local`, `nex-custom`. Required unless --bare.
+        /// Explicit setup route (`pi`). Required unless --bare.
         #[arg(long)]
         route: Option<String>,
 
-        /// Write only the absolute minimum (`[project]` for local,
-        /// just `agent.model` for global). Use this when you want
-        /// the file to exist but be as close to empty as possible.
+        /// Write graph-only configuration with no LLM execution route.
         #[arg(long)]
         bare: bool,
 
@@ -6205,15 +6162,15 @@ pub enum ServiceCommands {
         #[arg(long)]
         max_agents: Option<usize>,
 
-        /// Executor to use for spawned agents (overrides config.toml)
-        #[arg(long)]
+        /// [DEPRECATED/UNSUPPORTED] LLM execution is Pi-only.
+        #[arg(long, hide = true)]
         executor: Option<String>,
 
         /// Background poll interval in seconds (overrides config.toml coordinator.poll_interval)
         #[arg(long)]
         interval: Option<u64>,
 
-        /// Model to use for spawned agents (overrides config.toml dispatcher.model)
+        /// Exact Pi route override (`pi:<provider>:<model>`).
         #[arg(long)]
         model: Option<String>,
 
@@ -6249,15 +6206,15 @@ pub enum ServiceCommands {
         #[arg(long)]
         max_agents: Option<usize>,
 
-        /// Executor to use for spawned agents
-        #[arg(long)]
+        /// [DEPRECATED/UNSUPPORTED] LLM execution is Pi-only.
+        #[arg(long, hide = true)]
         executor: Option<String>,
 
         /// Background poll interval in seconds
         #[arg(long)]
         interval: Option<u64>,
 
-        /// Model to use for spawned agents
+        /// Exact Pi route override (`pi:<provider>:<model>`).
         #[arg(long)]
         model: Option<String>,
     },
@@ -6299,11 +6256,11 @@ pub enum ServiceCommands {
         #[arg(long)]
         max_agents: Option<usize>,
 
-        /// Executor to use for spawned agents (overrides config.toml)
-        #[arg(long)]
+        /// [DEPRECATED/UNSUPPORTED] LLM execution is Pi-only.
+        #[arg(long, hide = true)]
         executor: Option<String>,
 
-        /// Model to use for spawned agents (overrides config.toml)
+        /// Exact Pi route override (`pi:<provider>:<model>`).
         #[arg(long)]
         model: Option<String>,
     },
@@ -6314,18 +6271,14 @@ pub enum ServiceCommands {
         /// Optional name for the chat agent
         #[arg(long)]
         name: Option<String>,
-        /// Model for this chat agent (e.g., "openai:qwen3-coder-30b")
+        /// Exact Pi route for this chat (`pi:<provider>:<model>`)
         #[arg(long)]
         model: Option<String>,
-        /// Executor for this chat agent: "claude", "codex", "pi",
-        /// "opencode", or "native"/"nex". `pi` uses Pi's own default unless
-        /// `--model` is supplied; `opencode` runs an OpenRouter model route
-        /// with no endpoint; only "native"/"nex" uses `--endpoint`.
-        #[arg(long = "exec", alias = "executor")]
+        /// [DEPRECATED/UNSUPPORTED] Chat execution is Pi-only.
+        #[arg(long = "exec", alias = "executor", hide = true)]
         executor: Option<String>,
-        /// LLM endpoint URL for this chat (mirrors `wg nex -e <URL>`).
-        /// Only used by the "native"/"nex" executor.
-        #[arg(long, short = 'e')]
+        /// [DEPRECATED/UNSUPPORTED] Configure endpoints in Pi.
+        #[arg(long, short = 'e', hide = true)]
         endpoint: Option<String>,
         /// Arbitrary command line to run in a persistent chat pane.
         #[arg(long, conflicts_with_all = ["executor", "model", "endpoint"])]
@@ -6337,7 +6290,7 @@ pub enum ServiceCommands {
     /// the new settings. Conversation history is preserved via
     /// chat/<ref>/{inbox,outbox}.jsonl — the new handler sees
     /// prior turns on startup.
-    #[command(name = "set-executor", alias = "switch")]
+    #[command(name = "set-executor", alias = "switch", hide = true)]
     SetChatExecutor {
         /// Chat agent ID (0, 1, ...)
         id: u32,

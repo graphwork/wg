@@ -6,744 +6,195 @@ const QUICKSTART_TEXT: &str = r###"
 ╚══════════════════════════════════════════════════════════════════════════════╝
 
 GETTING STARTED
-─────────────────────────────────────────
-  wg init                     # Create a .wg directory
-  wg setup                    # Interactive config wizard (routes: claude-cli, openrouter, codex-cli, pi, local, nex-custom)
-  wg setup --route claude-cli --yes   # Non-interactive: pick a route and accept defaults
-  wg agency init              # Bootstrap roles, tradeoffs, and a default agent
-  wg service start            # Start the dispatcher daemon
-  wg add "My first task"      # Create a visible draft
-  wg publish my-first-task --only  # Explicitly release it for dispatch
-  wg status                   # Quick one-screen overview of your project
-  wg dev-check                # Check branch and installed wg binary freshness
+  wg init
+  wg setup --route pi --yes --model pi:<provider>:<model>
+  wg agency init
+  wg service start
+  wg add "My first task"
+  wg publish my-first-task --only
+  wg status
 
-SKILL & BUNDLE SETUP (required for agents to use wg)
-─────────────────────────────────────────
-  Spawned agents need to know how to use the `wg` CLI. Without the right
-  skill or bundle installed, agents won't know that command surface exists.
+Pi is the sole LLM model plane. Pi owns provider login, model discovery,
+availability, endpoint details, support validation, and reported cost. WG owns
+exact per-role `pi:<provider>:<model>` routes plus inherited reasoning. Opening a
+graph or TUI never creates a route and never requires credentials.
 
-  Claude Code executor:
-    wg skill install             # Installs ~/.claude/skills/wg/SKILL.md
-                                 # This is injected into every Claude Code session
-
-  Custom executor:
-    Ensure your executor's agent prompt includes wg CLI instructions.
-    See 'wg quickstart' (this text) for the command reference.
-
-  ⚠ If agents are spawned without the skill/bundle, they will not know
-    how to call wg log, wg done, wg artifact, etc. — and tasks will fail.
+SKILL & BUNDLE SETUP
+  wg skill install
+  Spawned agents need the WG guide/bundle for task-management commands.
 
 AGENCY SETUP
-─────────────────────────────────────────
-  'wg agency init' creates sensible defaults so the service can auto-assign
-  agents to tasks immediately. It sets up:
+  `wg agency init` creates Roles, Tradeoffs, and an agent identity.
+  wg config --models              # effective Pi route + reasoning for every role
+  wg config --set-model <role> pi:<provider>:<model>
+  wg config --set-reasoning <role> <level>
 
-  • Roles     — what agents do (Programmer, Reviewer, Documenter, Architect)
-  • Tradeoffs — constraints on how (Careful, Fast, Thorough, Balanced)
-  • Agent     — a role+tradeoff pairing (default: Careful Programmer)
-  • Config    — enables auto_assign and auto_evaluate
+DISPATCHER SERVICE REMINDER
+  If the service is running, define/publish work; do not manually claim/spawn.
 
-  Additional agency toggles:
-    wg config --auto-place true      # Auto-place new tasks in the graph
-    wg config --auto-create true     # Auto-invoke creator agent for new primitives
+SERVICE MODE
+  wg service start --max-agents 5
+  wg service status
+  wg agents
+  wg agents kill <agent-id> --force
+  wg screencast
+  wg tui-dump
+  wg server
 
-  Placement: when auto_place is enabled, the assignment step also decides
-  dependency edges for each task (merged into the .assign-* LLM call).
-
-  Model registry: each dispatch role has a tier-based model default. View and
-  configure per-role models:
-    wg config --models                # Show all role→model assignments
-    wg config --set-model <role> <m>  # Set model for a role (e.g., evolver opus)
-    wg config --registry              # Show registered models and tiers
-    wg config --tier <tier>=<model>   # Change which model a tier uses
-
-  You can also set up manually:
-    wg role add "Name" --outcome "What it produces" --skill skill-name
-    wg tradeoff add "Name" --accept "Slow" --reject "Untested"
-    wg agent create "Name" --role <hash> --tradeoff <hash>
-    wg config --auto-assign true --auto-evaluate true
-
-⚠ DISPATCHER SERVICE REMINDER ⚠
-─────────────────────────────────────────
-  Check if the dispatcher is running:  wg service status
-
-  If it IS running, your job is to DEFINE work, not DISPATCH it.
-  Add tasks and dependencies — the dispatcher handles the rest.
-  Never manually 'wg spawn' or 'wg claim' while the service is running;
-  you'll collide with the dispatcher and get 'already claimed' errors.
-
-  If it is NOT running, choose a mode below.
-
-SERVICE MODE (recommended for parallel work)
-─────────────────────────────────────────
-  wg service start --max-agents 5  # Start dispatcher with parallelism limit
-  wg service install               # Generate a systemd user service file
-
-  The dispatcher automatically spawns worker agents on published, ready tasks:
-
-  wg add "Do the thing" --after prerequisite-task
-  wg publish do-the-thing --only
-
-  Monitor with wg agents and wg list. Do NOT manually wg spawn or wg claim —
-  the dispatcher handles this.
-
-  wg service status           # Check if running, see last tick
-  wg service restart          # Graceful stop then start
-  wg service pause            # Pause dispatcher (no new spawns, running agents continue)
-  wg service resume           # Resume dispatcher
-  wg service freeze           # SIGSTOP all agents and pause service
-  wg service thaw             # SIGCONT agents and resume service
-  wg agents                   # Who's working on what
-  wg agents kill <agent-id>   # SIGTERM agent process; task stays open for respawn
-  wg agents kill <agent-id> --force   # SIGKILL immediately
-  wg kill <agent-id>          # Kill agent + pause its task (prevents re-dispatch)
-  wg kill <agent-id> --redispatch  # Kill agent, leave task open for re-dispatch
-  wg kill --tree <agent-id>   # Kill agent + cascade-abandon all downstream tasks
-  wg kill --all               # Kill all agents + pause their tasks
-  wg list                     # What's done, what's pending
-  wg tui                      # Interactive dashboard
-  wg reap                     # Garbage-collect dead/done/failed agents from the registry
-
-  Multi-chat sessions (the canonical surface is `wg chat`; `wg service` aliases below
-  preserve back-compat with the old coordinator-named subcommands):
-
-  wg service create-chat          # Create a new chat agent (alias: create-coordinator)
-  wg service stop-chat <n>        # Stop a chat agent (alias: stop-coordinator)
-  wg service archive-chat <n>     # Archive a chat agent (alias: archive-coordinator)
-  wg service delete-chat <n>      # Delete a chat agent (alias: delete-coordinator)
-  wg service interrupt-chat <n>   # SIGINT the chat's current generation (preserves context)
-  wg service set-executor <id>    # Hot-swap a chat agent's executor and/or model
-                                  # (SIGTERM + respawn; conversation history preserved)
-  wg service purge-chats          # Bulk-purge all chat agents (archive all, kill all)
-
-  Chat with the chat agent:
-
-  wg chat "message"               # Send a message to the chat agent
-  wg chat -i                      # Interactive REPL mode
-  wg chat --attachment file.txt   # Attach a file to the message
-  wg chat --coordinator 1         # Target a specific chat session (legacy flag)
-  wg chat --history               # Show chat history
-  wg chat --clear                 # Clear chat history
-
-  Advanced service tools:
-
-  wg screencast                       # Render TUI event traces into screencasts
-  wg tui-dump                         # Dump TUI screen contents (requires running wg tui)
-  wg server                           # Multi-user server setup automation
-
-MANUAL MODE (no service running)
-─────────────────────────────────────────
-  wg ready                    # See tasks available to work on
-  wg claim <task-id>          # Claim a task (sets status to in-progress)
-  wg log <task-id> "message"  # Log progress as you work
-  wg done <task-id>           # Mark task complete
+MANUAL MODE
+  wg ready
+  wg claim <task-id>
+  wg done <task-id>
 
 DISCOVERING & ADDING WORK
-─────────────────────────────────────────
-  wg list                     # List all tasks
-  wg list --status open       # Filter by status (open, in-progress, done, etc.)
-  wg show <task-id>           # View task details and context
-  wg add "Title" -d "Desc"    # Add new task
-  wg add "X" --after Y        # Add task blocked by another
-  wg edit <task-id>           # Edit title, description, deps, model, tags, etc.
-
-  Provider-specific models (use provider:model format):
-
-  wg add "X" --model openrouter:google/gemini-2.5-flash
-
-  Per-task timeout and scheduling:
-
-  wg add "X" --timeout 30m             # Task agent killed after 30 minutes
-  wg add "X" --cron "0 0 9 * * *"      # Recurring task (6-field cron: sec min hour day month dow)
-
-  Skills, inputs, and deliverables:
-
-  wg add "X" --skill rust --input src/lib.rs --deliverable report.md
-
-  Suppress implicit dependency on the creating task:
-
-  wg add "X" --independent              # No --after on the creating task
-
-  Execution modes control the agent's capabilities:
-
-  wg add "X" --exec-mode full    # Default: full agent with all tools
-  wg add "X" --exec-mode light   # Read-only tools (research/review tasks)
-  wg add "X" --exec-mode bare    # Only wg CLI (coordination-only tasks)
-  wg add "X" --exec-mode shell   # Shell command, no LLM (exit 0 = done, non-zero = failed; no eval rescue)
-
-  Context scopes control how much context the dispatcher injects into the
-  agent's prompt when dispatching a task:
-
-  wg add "X" --context-scope clean  # Minimal: just the task description
-  wg add "X" --context-scope task   # Standard default: task + predecessor context
-  wg add "X" --context-scope graph  # Task + transitive dependency chain
-  wg add "X" --context-scope full   # Everything: full graph state
-
-  Scheduling — delay dispatch or set an absolute start time:
-
-  wg add "X" --delay 1h              # Ready after 1 hour
-  wg add "X" --not-before 2026-04-01T09:00:00Z  # ISO 8601 timestamp
-
-  Placement hints — control where visible draft tasks land in the graph:
-
-  wg add "X" --place-near task-a    # Place near related tasks
-  wg add "X" --place-before task-b  # Place before specific tasks
-  wg publish <task-id> --only        # Explicitly release just this draft
+  wg list --status open
+  wg show <task-id>
+  wg add "X" --after Y
+  wg add "X" --model pi:<provider>:<model> --reasoning high
+  wg add "X" --timeout 30m --cron "0 0 9 * * *" --independent
+  wg add "X" --context-scope clean
+  wg add "X" --context-scope task
+  wg add "X" --context-scope graph
+  wg add "X" --context-scope full
+  wg add-dep <task> <dependency>
+  wg rm-dep <task> <dependency>
 
 TASK STATE COMMANDS
-─────────────────────────────────────────
-  wg done <task-id>           # Mark task complete (loop fires if present)
+  wg done <task-id>
   wg done <task-id> --converged  # Complete and STOP the loop
-  wg fail <task-id> --reason  # Mark failed (can be retried)
-  wg retry <task-id>          # Retry a failed/incomplete task (resets to open)
-  wg abandon <task-id>        # Give up permanently
-  wg pause <task-id>          # Pause task (dispatcher skips it until resumed)
-  wg wait <task-id> --until "condition"  # Park task until condition is met
-  wg resume <task-id>         # Resume a paused/waiting task
-  wg unclaim <task-id>        # Release a claimed task (back to open)
-  wg incomplete <task-id> --reason "..." # Mark incomplete (retryable — needs another pass)
-  wg requeue <task-id> --reason "..."  # Requeue in-progress task for triage
-  wg reprioritize <task-id> <level>    # Change priority (critical, high, normal, low, idle)
-
-  failed-pending-eval is an intermediate status that applies ONLY to LLM
-  agent tasks (full / light / bare exec modes): the agent exited non-zero
-  with auto_evaluate=true, awaiting an `.evaluate-X` verdict before becoming
-  terminal failed. 'wg fail <id>' on a failed-pending-eval task forces
-  the terminal status.
-
-  Shell tasks (--exec-mode shell or --exec '<cmd>') do NOT participate in
-  this rescue path: failure semantics are 'exit code 0 = done, non-zero =
-  failed (terminal)'. They are exempt from the agency pipeline so no
-  .assign-*, .flip-*, or .evaluate-* lifecycle tasks are scaffolded for
-  them. Cron / recurring shell tasks follow the same rule: each invocation
-  succeeds or fails terminally, with no rescue attempt.
-
-  KNOWN GAP (2026-05-01): coordinator-dispatched shell tasks that fail via
-  the agent wrapper (which calls 'wg fail --class agent-exit-nonzero') can
-  currently land in failed-pending-eval and stay there because no
-  .evaluate-X exists to resolve the rescue. 'wg exec --shell' is the
-  recommended path for now; tracked under 'fix-shell-pending-eval'.
-
-  Wait conditions:
-    --until "task:dep-a=done"   # Wait for another task to reach a status
-    --until "timer:5m"          # Wait for a timer (e.g., 5m, 1h, 2d)
-    --until "message"           # Wait for a message to arrive
-    --until "human-input"       # Wait for a human message
-    --until "file:path/to/file" # Wait for a file to change
-
-  wg reschedule <task-id> --after 24   # Ready after 24 hours from now
-  wg reschedule <task-id> --at <ISO>   # Ready at a specific timestamp
-
-  Dependency edge management:
-    wg add-dep <task> <dependency>     # Add a dependency: task waits for dependency
-    wg rm-dep <task> <dependency>      # Remove a dependency edge
+  wg fail <task-id> --reason "..."
+  wg unclaim <task-id>
+  wg requeue <task-id> --reason "..."
+  wg wait <task-id> --until "task:dep-a=done"
+  wg wait <task-id> --until "timer:5m"
 
 VALIDATION (## Validation section in task description)
-─────────────────────────────────────────
-  Put validation criteria in a ## Validation section of each code task's description.
-  The agency evaluator (auto_evaluate + FLIP) reads this section and scores the
-  agent's output against it — no CLI flag needed.
-
-  wg add "Task" -d "## Validation\n- [ ] cargo test passes"
-  wg done <task-id>           # Agency evaluator scores against the ## Validation section
-
-  Include concrete acceptance criteria as a checklist. The evaluator routes
-  work to `pending-validation` when fidelity is low (FLIP score), where
-  `wg approve` / `wg reject` provide the human review path.
-
-INCOMPLETE STATUS (retryable work)
-─────────────────────────────────────────
-  Use 'incomplete' when an agent's work landed but isn't quite right and
-  should be retried rather than failed:
-
-  wg incomplete <task-id> --reason "Tests pass but edge case X not handled"
-
-  Incomplete vs Failed:
-    incomplete = retryable, work needs another pass (rendered orange)
-    failed     = hard failure, abandon or escalate
-
-  Incomplete vs pending-validation:
-    pending-validation = awaiting evaluation (hasn't been judged yet)
-    incomplete         = evaluated and found wanting (needs redo)
-
-  Incomplete tasks automatically retry (up to max_incomplete_retries, default 3).
-  Each retry gets a fresh agent with prior attempt's diff + eval rationale.
-  After exhausting retries, the task transitions to Failed.
-  Use 'wg retry <task>' to manually force another attempt.
-  Configure: wg config --max-incomplete-retries N --incomplete-retry-delay "30s"
+  Put concrete checks under `## Validation`; the evaluator reads them.
 
 MESSAGING
-─────────────────────────────────────────
-  Inter-agent and task-scoped messaging:
-
-  wg msg send <task-id> "message"    # Send a message to a task
-  wg msg list <task-id>              # List all messages for a task
-  wg msg read <task-id>              # Read unread messages (marks as read)
-  wg msg poll <task-id>              # Poll for new messages (exit code 0/1)
-
-  Agents MUST check messages before and after working on a task. Unreplied
-  messages mean the task is not complete. Use --agent <id> with read/poll
-  to filter by your agent identity.
+  wg msg send <task-id> "message"
+  wg msg read <task-id>
+  wg msg poll <task-id>
 
 CONTEXT & ARTIFACTS
-─────────────────────────────────────────
-  wg context <task-id>        # See context from dependencies
-  wg artifact <task-id> path  # Record output file/artifact
-  wg log <task-id> --list     # View task's progress log
+  wg context <task-id>
+  wg artifact <task-id> path
+  wg log <task-id> "progress"
 
-CYCLES (repeating workflows)
-─────────────────────────────────────────
-  The WG task graph is a directed graph, NOT a DAG. It supports cycles natively.
-  Use cycles instead of duplicating tasks (e.g., don't create "pass 1",
-  "pass 2", "pass 3" — create one cycle that iterates).
-
-  A cycle is formed when task A depends on task C, and task C (transitively)
-  depends back on task A. The --after flag creates the back-edge, and
-  --max-iterations caps how many times the cycle runs.
-
-  CREATING A CYCLE — step by step:
-
-    # 1. Create the first task in the loop
-    wg add "Cleanup code"
-
-    # 2. Chain the next steps
-    wg add "Commit changes" --after cleanup-code
-    wg add "Verify build" --after commit-changes
-
-    # 3. Close the loop: edit the FIRST task to add a back-edge + iteration cap
-    wg edit cleanup-code --add-after verify-build --max-iterations 5
-
-    This creates: cleanup → commit → verify → cleanup (up to 5 iterations)
-
-    NOTE: Do NOT use 'wg add "Cleanup code" --after verify-build' here — that
-    creates a NEW task instead of adding a back-edge to the existing one.
-    Always use 'wg edit <id> --add-after <last-task>' to close cycles.
-
-  ANOTHER EXAMPLE — write/review cycle:
-
-    wg add "Write draft"
-    wg add "Review draft" --after write-draft
-    wg edit write-draft --add-after review-draft --max-iterations 3
-
-  INSPECTING CYCLES:
-
-    wg cycles                   # List detected cycles
-    wg show <task-id>           # See loop_iteration to know which pass you're on
-
+CYCLES
+  The task graph supports explicit cycles with --max-iterations.
   IMPORTANT — Signaling convergence:
-  Agents in a cycle MUST check whether the work has converged (i.e., no
-  further changes are needed). When converged:
-
-    wg done <task-id> --converged
-
-  This stops the loop/cycle. Using plain 'wg done' causes the cycle to
-  iterate again. Only use plain 'wg done' if you want the next iteration.
-
-  ADVANCED CYCLE OPTIONS:
-
-    wg add "X" --after Y --max-iterations 5 --no-converge
-      # Force all iterations to run — agents cannot signal early stop
-
-    wg add "X" --after Y --max-iterations 10 --no-restart-on-failure
-      # Don't restart the cycle if an iteration fails
-
-    wg add "X" --after Y --max-iterations 10 --max-failure-restarts 1
-      # Allow at most 1 failure-triggered restart (default: 3)
-
-  KEY RULES:
-  • One cycle, not N copies of tasks — let the iteration mechanism repeat
-  • Use --max-iterations to prevent runaway loops (always set a cap)
-  • Each agent in the cycle sees its loop_iteration count via wg show
-  • Check for convergence: if nothing changed, use --converged to stop
-
-SHELL EXECUTION
-─────────────────────────────────────────
-  Run tasks as shell commands instead of LLM agents:
-
-  wg exec --set build-task "cargo build --release"  # Set shell command
-  wg exec build-task                                 # Run it (claim + exec + done/fail)
-  wg exec --dry-run build-task                       # Preview without running
-  wg exec --clear build-task                         # Remove the shell command
-
-  Use with --exec-mode shell on task creation for fully automated steps.
-  Shell tasks are exempt from the agency pipeline (no .assign-*, .flip-*,
-  or .evaluate-* siblings) and from LLM evaluation. Failure is terminal:
-  exit 0 → done, non-zero → failed. 'wg exec --shell <task>' is the
-  preferred entrypoint — it transitions directly to failed without going
-  through failed-pending-eval.
-
-COMPACT, SWEEP & CHECKPOINT
-─────────────────────────────────────────
-  wg compact                    # Distill graph state into context.md
-  wg sweep                      # Detect and recover orphaned in-progress tasks
-  wg sweep --dry-run            # Preview what sweep would fix
-  wg checkpoint <task-id> -s "Progress summary"  # Save checkpoint
-  wg checkpoint <task-id> --list                 # List checkpoints for a task
-  wg stats                      # Show time counters and agent statistics
-
-RECOVERY (hung agents, failed tasks, mass failures)
-─────────────────────────────────────────
-  Hung worker agent (CPU=0%, no progress)?
-    wg retry <task-id>          # Kills assigned agent, resets task to open,
-                                # increments attempt counter; dispatcher respawns
-    wg retry <task-id> --reason "stalled at 0% CPU 20min"
-    wg retry <task-id> --fresh  # Discard prior worktree, start over from main
-
-  Lower-level building block (`wg retry` calls this internally):
-    wg agents kill <agent-id>          # SIGTERM agent; task stays open for respawn
-    wg agents kill <agent-id> --force  # SIGKILL immediately
-
-  Failed task — single retry:
-    wg retry <task-id>                # Resets failed/incomplete to open
-
-  Mass failure (credit exhaustion, model outage):
-    wg recover                  # Dry-run: show recovery plan
-    wg recover --yes            # Apply: retry user tasks, abandon followups so
-                                #   agency pipeline regenerates them fresh
-    wg recover --filter id-prefix=tui- --yes
-    wg recover --set-model openrouter:anthropic/claude-sonnet-4-6 --yes
-
-  Dispatcher reconciliation (automatic; no command needed):
-    Every dispatcher tick, in-progress tasks whose assigned agent is dead
-    (registry status=Dead OR PID exited) get reset to open and re-dispatched.
-    `wg retry` triggers this immediately rather than waiting for the tick.
-
-HOUSEKEEPING
-─────────────────────────────────────────
-  wg archive                    # Archive completed tasks to a separate file
-  wg archive --older 7d         # Only archive tasks completed more than 7 days ago
-  wg archive --list             # List previously archived tasks
-  wg gc                         # Garbage collect failed/abandoned tasks
-  wg gc --dry-run               # Preview what would be removed
-  wg gc --include-done          # Also remove done tasks (default: only failed+abandoned)
-  wg gc --older 7d              # Only gc tasks older than 7 days
-  wg cleanup orphaned           # Clean up orphaned worktrees
-  wg cleanup recovery-branches  # Clean up old recovery branches
-  wg cleanup nightly            # Comprehensive nightly cleanup
-  wg metrics                    # Display cleanup and monitoring metrics
+  wg done <task-id> --converged
 
 DISCOVERY & PUBLISHING
-─────────────────────────────────────────
-  wg discover                       # Show tasks completed in the last 24h
-  wg discover --since 7d            # Completed in the last 7 days
-  wg discover --with-artifacts      # Include artifact paths in output
+  wg discover --with-artifacts
+  wg publish <task-id> --only
+  wg reclaim <task-id> --from <actor> --to <actor>
 
-  wg publish <task-id>              # Publish a draft task (validates deps, resumes subgraph)
-  wg publish <task-id> --only       # Publish just this task (skip subgraph propagation)
+RECOVERY
+  Hung worker agent: wg agents kill <agent-id>
+  wg retry <task-id> --reason "stalled"
+  wg recover --yes
 
-  wg html publish add <name> --rsync user@host:/path/  # Register an html rsync deployment
-  wg html publish run <name>        # Run the html rsync deployment now
-  wg html publish list              # List configured rsync deployments
-
-  wg reclaim <task-id> --from <actor> --to <actor>  # Reclaim task from dead agent
+HOUSEKEEPING
+  wg archive --older 7d
+  wg gc --dry-run
+  wg cleanup orphaned
+  wg cleanup nightly
+  wg metrics
 
 GROWING THE GRAPH
-─────────────────────────────────────────
-  The graph is a shared medium. Artifacts you write are read by other agents.
-  Tasks you explicitly publish get dispatched to other agents. You are not isolated —
-  you are part of a living system.
-
-  Your job is not just to complete your task. It is to leave the system
-  better than you found it:
-
-  Found a bug while implementing?
-    wg add "Fix: edge case in parser" --id fix-parser --after my-current-task -d "Found during impl"
-    wg publish fix-parser --only
-
-  Documentation wrong or missing?
-    wg add "Fix docs for X" --id fix-docs-x -d "Spotted while reading auth.rs"
-    wg publish fix-docs-x --only
-
-  Follow-up verification needed?
-    wg add "Verify fix works end-to-end" --id verify-e2e --after my-current-task
-    wg publish verify-e2e --only
-
-  The loop: spec → implement → verify → improve → spec.
-  You may be any node. Use 'wg context' to see what came before.
-  Use 'wg add' to create what comes next.
-
-  The dispatcher dispatches anything you explicitly publish. You don't need permission.
-  Use judgment on size — if a fix takes 5 minutes, just do it inline.
-  Create tasks for work that benefits from separate focus.
+  Grow the graph when a prerequisite, follow-up, or independent investigation appears.
 
 TIPS
-─────────────────────────────────────────
-• If the dispatcher is running: add visible drafts, then publish them explicitly
-• If no dispatcher: ready → claim → work → done
-• Run 'wg log' BEFORE starting work to track progress
-• Use 'wg context' to understand what dependencies produced
-• Check 'wg blocked <task-id>' if a task isn't appearing in ready list
-• Use 'wg why-blocked <task-id>' for the full transitive blocking chain
-• Confused which graph wg is talking to? Run 'wg which' (prints resolved dir + resolver step)
+  Use `wg show`, log progress, validate, commit, push, check messages, then `wg done`.
 
-EXECUTORS & MODELS
-─────────────────────────────────────────
-  wg derives the handler from the model spec's provider prefix. The CLI
-  flag (--executor / --coordinator-executor) is a deprecated legacy alias.
-  Pick a (model, endpoint) pair instead:
-
-  wg config -m claude:opus                                  # claude CLI handler
-  wg config -m codex:gpt-5.5                                # codex CLI handler
-  wg config -m nex:qwen3-coder -e http://127.0.0.1:8088     # in-process nex handler
-  wg config -m openrouter:anthropic/claude-opus-4-7         # in-process nex handler
-
-  Reuse a named profile in only the current project (recommended for
-  concurrent projects; fingerprint-pinned, never rewrites global config):
-
-  wg profile select claude      # Current project only
-  wg profile select codex       # Another project may select something else
-  wg profile list               # Project selection pinned first + readiness
-  wg profile select --clear     # Clear only this project's association
-  wg profile history --clear    # Clear privacy-bounded local usage labels
-
-  The legacy machine-global activation remains explicit and available:
-
-  wg profile use claude         # GLOBAL: writes ~/.wg/active-profile/config.toml
-  wg profile use codex          # Starter profile: codex:gpt-5.5
-  wg profile use codex:gpt-5.5  # Codex profile with exact default/task-agent route
-  wg profile use nex            # Starter profile: in-process nex endpoint
-  wg profile show               # Inspect active profile
-  wg profile init-starters      # Re-write the three starter profiles
-
-  Set a default model for all agents:
-
-  wg service start --model claude:sonnet-4-6                # CLI override
-  # Or in .wg/config.toml under [dispatcher]: model = "claude:sonnet-4-6"
-
-  Per-task model selection (overrides the default):
-
-  wg add "Fast task" --model openrouter:google/gemini-2.5-flash
-  wg add "Heavy task" --model opus
-
-  Model format: use provider:model (e.g., openrouter:deepseek/deepseek-v3.2).
-  Short names (opus, sonnet, haiku) are also accepted.
-
-  Model hierarchy: task --model > executor model > dispatcher model > 'default'
-
-  wg executors                  # List which handler binaries are installed/usable
-  wg config lint                # Read-only check for deprecated/stale config keys
-
-MODEL REGISTRY & API KEYS
-─────────────────────────────────────────
-  Model registry — manage models and per-role routing:
-
-  wg model list                  # Show all models (built-in + user-defined)
-  wg model add <id> --tier <t>  # Add/update a model in the registry
-  wg model remove <id>          # Remove a model from the registry
-  wg model set-default <id>     # Set the default dispatch model
-  wg model routing              # Show per-role model routing
-  wg model set <role> <model>   # Set model for a specific dispatch role
-
-  Browse and search models from OpenRouter:
-
-  wg models list                 # List models from local registry
-  wg models search <query>       # Search OpenRouter by name/description
-  wg models remote               # List all models available on OpenRouter
-  wg models add <id>             # Add a model from OpenRouter to local registry
-  wg models set-default <id>     # Set default model
-  wg models init                 # Initialize models.yaml with defaults
-
-  Endpoint management (for OpenRouter, custom hosts, etc.):
-
-  wg endpoints list              # List all configured endpoints
-  wg endpoints add               # Add a new endpoint
-  wg endpoints remove <name>     # Remove an endpoint
-  wg endpoints set-default <name>  # Set default endpoint
-  wg endpoints test <name>       # Test endpoint connectivity
-
-  API key management:
-
-  wg key set <provider>          # Configure an API key for a provider
-  wg key check <provider>        # Validate API key availability
-  wg key list                    # Show key status for all providers
+PI MODEL PLANE
+  Supported LLM handler: Pi only.
+  Exact model format: pi:<provider>:<model>
+  wg config -m pi:<provider>:<model>
+  wg add "Task" --model pi:<provider>:<model> --reasoning high
+  Use Pi itself to list/search models and manage provider login.
 
 REUSABLE FUNCTIONS
-─────────────────────────────────────────
-  Functions capture proven workflow patterns for reuse:
-
-  wg func list                        # Discover available functions
-  wg func show <id>                   # View function details and inputs
-  wg func apply <id> --input k=v      # Instantiate a function into tasks
-  wg func extract a b c               # Extract a pattern from completed tasks
+  wg func list
+  wg func apply <id> --input key=value
 
 VISUALIZATION
-─────────────────────────────────────────
-  wg viz                              # ASCII tree of active subgraphs
-  wg viz --all                        # Include fully-done trees
-  wg viz <task-id>...                 # Focus on specific task subgraphs
-  wg viz --critical-path              # Highlight longest dependency chain
-  wg viz --dot                        # Output Graphviz DOT format
-  wg viz --mermaid                    # Output Mermaid diagram format
-  wg viz --show-internal              # Show assign-*/evaluate-* tasks
-  wg viz --no-tui                     # Force static output (skip interactive TUI)
-  wg tui                              # Interactive TUI dashboard
+  wg viz --show-internal
+  wg viz --no-tui
+  wg tui
 
 CONFIGURATION
-─────────────────────────────────────────
-  wg config --show                    # Show current configuration
-  wg config --list                    # Show merged config with source annotations
-  wg config --merged                  # Show effective merged config (debug routing)
-  wg config init --global             # Write minimal canonical ~/.wg/config.toml
-  wg config init --local --bare       # Write minimal canonical .wg/config.toml
-  wg config init --route openrouter --global   # Write openrouter-route config
-                                                # Routes: claude-cli, codex-cli, openrouter, local, nex-custom
-  wg config --global --model claude:opus    # Update global default/task-agent route (auto-reloads daemon)
-  wg config --local --model codex:gpt-5.5   # Update local default/task-agent route (auto-reloads daemon)
-  wg config -m opus --no-reload       # Skip the auto-reload IPC; just write the file
-  wg config lint                      # Read-only audit: report deprecated keys, stale model strings
-  wg config --creator-agent <hash>    # Set agent used for task creation
-  wg config --creator-model <model>   # Set model used for task creation
-  wg migrate config --dry-run         # Preview what `wg migrate config` would change
-  wg migrate config --all             # Rewrite stale global+local configs to canonical
-  wg migrate secrets --dry-run        # Preview migration of api_key_env → keyring:<name>
-  wg migrate secrets                  # Migrate api_key_env → keyring:<name> (prompts each)
-
-API KEYS & SECRETS
-─────────────────────────────────────────
-  Manage credentials in a backend (keyring | keystore | plaintext) plus
-  passthrough URI schemes (op:// pass: env: literal:):
-
-  wg secret set <name>                # Store a secret in the credential store
-  wg secret get <name>                # Show a secret (redacted by default)
-  wg secret list                      # List stored secret names (never values)
-  wg secret rm <name>                 # Delete a stored secret
-  wg secret check <ref>               # Pre-flight: is this ref reachable?
-  wg secret backend show              # Which backends are active and reachable
-  wg secret backend set <kind>        # Set the default backend for new `wg secret set`
-
-  Reference secrets from endpoint config via `api_key_ref = "keyring:<name>"`
-  (preferred). The older `api_key_env = "VAR"` is still accepted; run
-  `wg migrate secrets` to rewrite existing configs.
+  wg config --list
+  wg config --models
+  wg config --global --model pi:<provider>:<model>
+  wg config --creator-agent <hash>
+  wg config --creator-model pi:<provider>:<model>
+  wg config lint
+  Legacy model-plane fields are migration-only and never Pi dispatch authority.
 
 TRACE, RUNS & REPLAY
-─────────────────────────────────────────
-  wg trace show <task-id>             # Show execution history of a task
-  wg trace export --visibility public # Export trace data filtered by zone
-  wg trace import <file>              # Import a trace export as read-only context
-
-  wg runs list                        # List all run snapshots
-  wg runs show <run>                  # Show details of a specific run
-  wg runs diff <run>                  # Diff current graph against a snapshot
-  wg runs restore <run>               # Restore graph from a snapshot
-
-  wg replay --failed-only             # Re-execute only failed tasks
-  wg replay --model <model>           # Replay with a different model
-  wg replay --below-score 0.7         # Replay tasks scoring below threshold
-  wg replay --subgraph <task-id>      # Replay only within a subgraph
-  wg replay --keep-done 0.9           # Preserve high-scoring done tasks
+  wg trace show <task-id>
+  wg runs list
+  wg replay --below-score 0.7 --subgraph <task-id>
 
 ANALYSIS
-─────────────────────────────────────────
-  wg analyze                          # Comprehensive health report
-  wg structure                        # Entry points, dead ends, fan-out
-  wg bottlenecks                      # Tasks blocking the most downstream work
-  wg critical-path                    # Longest dependency chain
-  wg forecast                         # Completion date estimate from velocity
-  wg velocity                         # Task completion rate per week
-  wg aging                            # Task age distribution (stale work detection)
-  wg workload                         # Agent workload balance
-  wg coordinate                       # Coordination status: ready, in-progress, parallel opportunities
-  wg impact <task-id>                 # What tasks depend on this one (downstream impact)
-  wg plan --hours 8                   # Plan work that fits within a time budget
-  wg cost <task-id>                   # Calculate cost including dependencies
+  wg analyze
+  wg bottlenecks
+  wg critical-path
+  wg forecast
+  wg velocity
+  wg aging
+  wg workload
+  wg coordinate
+  wg impact <task-id>
+  wg plan --hours 8
+  wg cost <task-id>
 
 DEAD AGENT DETECTION
-─────────────────────────────────────────
-  wg dead-agents                      # List dead/unresponsive agents
-  wg dead-agents --cleanup            # Mark dead agents and unclaim their tasks
-  wg dead-agents --purge              # Purge dead/done/failed agents from registry
-  wg dead-agents --purge --delete-dirs  # Also delete agent work directories
-  wg dead-agents --threshold 30       # Override heartbeat timeout (minutes)
+  wg dead-agents --purge --delete-dirs
 
 PEER WG PROJECTS
-─────────────────────────────────────────
-  Cross-repo communication between WG instances:
-
-  wg peer add <name> <path>           # Register a path-based peer (same host)
-  wg peer add <name> --wgid <W> --endpoint <U>  # Key-based peer (cross-graph)
-  wg peer list                        # List all peers with service status
-  wg peer status                      # Quick health check of all peers
-  wg add "Task" --repo <peer>         # Create a task in a peer WG project
+  wg peer add <name> <path>
+  wg add "Task" --repo <peer>
 
 WG-FED IDENTITY & CROSS-GRAPH FEDERATION
-─────────────────────────────────────────
-  Self-certifying key identity (wgid:), signed messages, portable state:
-
-  wg identity new <name>              # Mint a wgid: (root key → wg secret)
-  wg identity show <name> | list      # Inspect / list local identities
-  wg identity publish <name> --store <L>          # Publish record + sigchain
-  wg identity fetch <wgid> --store <L> [--save N] # Fetch + verify OFFLINE by wgid
-  wg fed-node serve --addr <H:P>      # Run the store-and-forward inbox node
-  wg msg send --to <wgid> --from <id> --body "…" [--seal]   # Cross-graph message
-  wg msg poll --as <id> [--store <url>] [--require-fresh high-value]
-  wg identity rotate|revoke|recover|fork|enroll-signer    # Rotation & recovery
-  wg identity delegate|verify-cap|revoke-cap              # UCAN capabilities
-  wg identity load-state <name> --store <L>  # Fail-closed loadable-state gate
+  wg identity list
+  wg msg poll --as <identity>
 
 CONTENT-SAFETY REVIEW GATE
-─────────────────────────────────────────
-  Screen inbound content (task/code/state/msg) BEFORE an agent consumes it:
-
-  wg review check --class IC1 --trust unknown --content-file <f> [--author <wgid>]
-                                      # accept / quarantine / reject (strictest wins)
-  wg review depth --trust <t> [--sensitivity low|high]   # trust-proportional depth
-  wg review reviewer-scope            # the dual-LLM no-scope bound
-  wg review log                       # the hash-linked verdict sigchain (audit)
-  wg review consume --content-file <f>  # digest-pinned consumption (MUST-2)
-  wg review revoke --cid <b3:…>       # loud revoke: trace author, lower trust, re-run
+  wg review check --class IC1 --content-file <file>
 
 EVALUATION & MONITORING
-─────────────────────────────────────────
-  wg evaluate run <task-id>           # Trigger LLM evaluation of a completed task
-  wg evaluate show                    # View evaluation history
-  wg watch                            # Stream WG events as JSON lines
-  wg watch --task <id>                # Stream events for a specific task
+  wg evaluate run <task-id>
+  wg watch --task <id>
 
 NOTIFICATION & COMMUNICATION
-─────────────────────────────────────────
-  Telegram (human escalation):
-
-  wg telegram send "message"          # Send a message to the configured chat
-  wg telegram ask "question"          # Send and wait for reply
-  wg telegram poll                    # Poll for replies
-  wg telegram status                  # Show Telegram configuration status
-
-  Matrix (team notifications):
-
-  wg matrix                           # Matrix integration commands
-  wg notify                           # Send task notification to Matrix room
+  wg telegram send "message"
+  wg telegram ask "question"
 
 RESOURCE MANAGEMENT
-─────────────────────────────────────────
-  wg resource add                     # Add a new resource
-  wg resource list                    # List all resources
-  wg resources                        # Show resource utilization (committed vs available)
+  wg resource add
+  wg resources
 
 PROVIDER PROFILES
-─────────────────────────────────────────
-  wg profile list                     # List available provider profiles
-  wg profile show                     # Show current profile and model mappings
-  wg profile set <name>               # Set the active provider profile
-  wg profile refresh                  # Refresh model data from OpenRouter
+  wg profile list                  # supported Pi orchestration profiles
+  wg profile select pi
+  wg profile pi --show
 
 USER BOARDS
-─────────────────────────────────────────
-  wg user init                        # Create a user conversation board
-  wg user list                        # List all user boards
-  wg user archive                     # Archive active board and create successor
+  wg user init
 
 COST & SPENDING
-─────────────────────────────────────────
-  wg spend                            # Show token usage and cost summaries
-  wg spend --today                    # Show only today's spend
-  wg openrouter                       # OpenRouter cost monitoring
+  wg spend                         # Pi-reported usage/cost only
 "###;
 
 fn json_output() -> serde_json::Value {
     serde_json::json!({
         "getting_started": [
             "wg init",
-            "wg setup",
+            "wg setup --route pi --yes --model pi:<provider>:<model>",
             "wg agency init",
             "wg service start",
             "wg add \"My first task\"",
@@ -780,11 +231,10 @@ fn json_output() -> serde_json::Value {
                 "description": "When auto_create is enabled, the dispatcher invokes the creator agent to discover and add new primitives when the store needs expansion.",
                 "enable": "wg config --auto-create true"
             },
-            "model_registry": {
-                "show_models": "wg config --models",
-                "set_model": "wg config --set-model <role> <model>",
-                "show_registry": "wg config --registry",
-                "set_tier": "wg config --tier <tier>=<model>"
+            "pi_routing": {
+                "show_roles": "wg config --models",
+                "set_model": "wg config --set-model <role> pi:<provider>:<model>",
+                "set_reasoning": "wg config --set-reasoning <role> <level>"
             }
         },
         "modes": {
@@ -816,7 +266,7 @@ fn json_output() -> serde_json::Value {
             "discovery": {
                 "list": "List all tasks",
                 "show": "View task details and context",
-                "add": "Add a visible draft task (supports --context-scope, --exec-mode, --model provider:model, --delay, --not-before, --place-near, --place-before, --cron, --timeout, --skill, --independent); release with wg publish <task-id> --only",
+                "add": "Add a visible draft task (supports --context-scope, --exec-mode, --model pi:<provider>:<model>, --reasoning, scheduling, placement, skills, and --independent); release with wg publish <task-id> --only",
                 "edit": "Edit an existing task (title, description, deps, model, tags, etc.)",
                 "ready": "See tasks available to work on (manual mode)",
                 "status": "Quick one-screen status overview"
@@ -928,20 +378,6 @@ fn json_output() -> serde_json::Value {
             "Use 'wg why-blocked <task-id>' for the full transitive blocking chain",
             "Confused which graph wg is talking to? Run 'wg which'"
         ],
-        "executors_and_models": {
-            "model_spec_routing": "wg derives the handler from the model spec's provider prefix; --executor / --coordinator-executor is a deprecated legacy alias.",
-            "claude": "wg config -m claude:opus (claude CLI handler)",
-            "codex": "wg config -m codex:gpt-5.5 (codex CLI handler)",
-            "nex_local": "wg config -m nex:qwen3-coder -e http://127.0.0.1:8088 (in-process nex handler)",
-            "openrouter": "wg config -m openrouter:anthropic/claude-opus-4-7 (in-process nex handler)",
-            "set_model_cli": "wg service start --model claude:sonnet-4-6",
-            "set_model_config": "[dispatcher] model = \"claude:sonnet-4-6\"",
-            "per_task_model": "wg add \"task\" --model openrouter:google/gemini-2.5-flash",
-            "model_format": "provider:model (e.g., openrouter:deepseek/deepseek-v3.2). Short names (opus, sonnet, haiku) also accepted.",
-            "hierarchy": "task --model > executor model > dispatcher model > 'default'",
-            "executors_cmd": "wg executors (list which handlers are installed/usable on this system)",
-            "config_lint": "wg config lint (read-only audit for deprecated keys / stale model strings)"
-        },
         "named_profiles": {
             "description": "Reusable global profile definitions with explicit fingerprint-pinned per-project selection; legacy global activation remains separate.",
             "select": "wg profile select <name> (current project only; never rewrites global config)",
@@ -953,50 +389,13 @@ fn json_output() -> serde_json::Value {
             "create": "wg profile create <name>",
             "edit": "wg profile edit <name>",
             "diff": "wg profile diff <a> <b>",
-            "init_starters": "wg profile init-starters (writes built-in starters: claude, codex, nex, opencode, pi)",
-            "starters": ["claude (opus worker)", "codex (gpt-5.5)", "nex (in-process endpoint)", "opencode (openrouter workers)", "pi (pi coding agent)"]
+            "init_starters": "wg profile init-starters (writes the Pi starter)",
+            "starters": ["pi (sole supported LLM model plane)"]
         },
-        "secrets": {
-            "description": "Manage credentials in a backend (keyring | keystore | plaintext) plus passthrough URI schemes (op:// pass: env: literal:).",
-            "set": "wg secret set <name>",
-            "get": "wg secret get <name>",
-            "list": "wg secret list",
-            "rm": "wg secret rm <name>",
-            "check": "wg secret check <ref>",
-            "backend_show": "wg secret backend show",
-            "backend_set": "wg secret backend set <kind>",
-            "endpoint_ref": "Reference secrets via api_key_ref = \"keyring:<name>\" in [[llm_endpoints.endpoints]]; the older api_key_env still works.",
-            "migrate": "wg migrate secrets (rewrite api_key_env → keyring:<name>, prompts each)"
-        },
-        "model_registry": {
-            "model": {
-                "list": "wg model list",
-                "add": "wg model add <id> --tier <tier>",
-                "remove": "wg model remove <id>",
-                "set_default": "wg model set-default <id>",
-                "routing": "wg model routing",
-                "set_role": "wg model set <role> <model>"
-            },
-            "models": {
-                "list": "wg models list",
-                "search": "wg models search <query>",
-                "remote": "wg models remote",
-                "add": "wg models add <id>",
-                "set_default": "wg models set-default <id>",
-                "init": "wg models init"
-            }
-        },
-        "endpoints": {
-            "list": "wg endpoints list",
-            "add": "wg endpoints add",
-            "remove": "wg endpoints remove <name>",
-            "set_default": "wg endpoints set-default <name>",
-            "test": "wg endpoints test <name>"
-        },
-        "api_keys": {
-            "set": "wg key set <provider>",
-            "check": "wg key check <provider>",
-            "list": "wg key list"
+        "pi_model_plane": {
+            "owner": "Pi",
+            "wg_retains": ["exact per-role route", "effective reasoning", "audit identity", "Pi-reported usage/cost"],
+            "pi_retains": ["provider auth", "model discovery", "availability", "endpoint details", "support validation"]
         },
         "shell_execution": {
             "set_command": "wg exec --set <task> \"command\"",
@@ -1019,7 +418,7 @@ fn json_output() -> serde_json::Value {
             "archive": "wg chat archive <id> (or: wg service archive-chat <n>)",
             "delete": "wg chat delete <id> (or: wg service delete-chat <n>)",
             "interrupt": "wg service interrupt-chat <n>",
-            "set_executor": "wg service set-executor <id> --executor <kind> -m <model> (hot-swap; respawn preserves history)",
+            "set_route": "wg chat model <id> pi:<provider>:<model> (hot-swap; respawn preserves history)",
             "purge": "wg service purge-chats (bulk-purge all chat agents; reversible via wg chat create)"
         },
         "chat": {
@@ -1185,8 +584,8 @@ fn json_output() -> serde_json::Value {
         "profiles": {
             "list": "wg profile list",
             "show": "wg profile show",
-            "set": "wg profile set <name>",
-            "refresh": "wg profile refresh"
+            "select": "wg profile select pi",
+            "configure": "wg profile pi --show"
         },
         "user_boards": {
             "init": "wg user init",
@@ -1194,9 +593,8 @@ fn json_output() -> serde_json::Value {
             "archive": "wg user archive"
         },
         "cost_spending": {
-            "spend": "wg spend",
-            "spend_today": "wg spend --today",
-            "openrouter": "wg openrouter"
+            "spend": "wg spend (Pi-reported cost only)",
+            "spend_today": "wg spend --today"
         },
         "advanced_service": {
             "screencast": "wg screencast",
@@ -1332,11 +730,9 @@ mod tests {
         assert!(!tips.is_empty());
         assert!(tips.len() >= 5);
 
-        // Check executors_and_models section
-        let em = output.get("executors_and_models").unwrap();
-        assert!(em.get("model_spec_routing").is_some());
-        assert!(em.get("per_task_model").is_some());
-        assert!(em.get("hierarchy").is_some());
+        // Check the sole Pi model-plane section.
+        let plane = output.get("pi_model_plane").unwrap();
+        assert_eq!(plane["owner"], "Pi");
 
         // Check housekeeping section
         let hk = output.get("housekeeping").unwrap();
@@ -1354,10 +750,11 @@ mod tests {
     }
 
     #[test]
-    fn test_quickstart_text_contains_executors_and_models() {
-        assert!(QUICKSTART_TEXT.contains("EXECUTORS & MODELS"));
-        assert!(QUICKSTART_TEXT.contains("wg config -m claude:opus"));
+    fn test_quickstart_text_contains_pi_model_plane() {
+        assert!(QUICKSTART_TEXT.contains("PI MODEL PLANE"));
+        assert!(QUICKSTART_TEXT.contains("wg config -m pi:<provider>:<model>"));
         assert!(QUICKSTART_TEXT.contains("--model"));
+        assert!(!QUICKSTART_TEXT.contains("wg model list"));
     }
 
     #[test]
@@ -1530,7 +927,7 @@ mod tests {
             "HOUSEKEEPING",
             "GROWING THE GRAPH",
             "TIPS",
-            "EXECUTORS & MODELS",
+            "PI MODEL PLANE",
             "REUSABLE FUNCTIONS",
             "VISUALIZATION",
             "CONFIGURATION",
@@ -1673,10 +1070,9 @@ mod tests {
 
     #[test]
     fn test_quickstart_text_provider_model_format() {
-        assert!(QUICKSTART_TEXT.contains("provider:model"));
-        assert!(QUICKSTART_TEXT.contains("openrouter:google/gemini-2.5-flash"));
-        // Deprecated --provider flag should NOT appear
-        assert!(!QUICKSTART_TEXT.contains("--provider openrouter"));
+        assert!(QUICKSTART_TEXT.contains("pi:<provider>:<model>"));
+        assert!(QUICKSTART_TEXT.contains("--reasoning high"));
+        assert!(!QUICKSTART_TEXT.contains("--provider"));
     }
 
     #[test]
@@ -1711,11 +1107,10 @@ mod tests {
         assert!(hk.get("cleanup_orphaned").is_some());
         assert!(hk.get("metrics").is_some());
 
-        // Check executors has model_format
-        let em = output.get("executors_and_models").unwrap();
-        assert!(em.get("model_format").is_some());
-        // No deprecated provider field
-        assert!(em.get("per_task_provider").is_none());
+        // Check the Pi model-plane owner and retained policy fields.
+        let plane = output.get("pi_model_plane").unwrap();
+        assert_eq!(plane["owner"], "Pi");
+        assert!(plane.get("wg_retains").is_some());
 
         // Check commands has dependencies section
         let commands = output.get("commands").unwrap();

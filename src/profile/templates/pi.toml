@@ -1,101 +1,50 @@
-description = "WorksGood profile — Pi Coding Agent: GLM 5.2 workers/chat via OpenRouter, DeepSeek Chat for agency/meta checks"
+description = "WorksGood Pi profile — Pi owns providers, authentication, model discovery, endpoints, availability, usage, and cost"
 
-# Pi routes for worker/chat roles. The default and task-agent route use GLM 5.2
-# through Pi's OpenRouter provider:
-#
-#   pi:openrouter/z-ai/glm-5.2
-#
-# The `pi:` prefix is load-bearing, NOT cosmetic. `handler_for_model`
-# (src/dispatch/handler_for_model.rs, the single source of truth) routes a `pi:`
-# route to the pi handler, which runs the model through pi using PI'S OWN LOGIN
-# — exactly like the claude:/codex: CLIs auth themselves — so wg needs NO
-# OpenRouter key of its own for strong-tier work. A RAW `openrouter:z-ai/glm-5.2`
-# spec would instead route to the in-process nex/native handler, making wg itself
-# the OpenRouter HTTP client and REQUIRING a wg-side OpenRouter key; absent it,
-# strong-tier workers die at spawn (wrapper-internal exit 1). `wg profile pi`
-# and the model-scout therefore normalize the strong tier to a `pi:` route on
-# write (config::pi_strong_route). See docs/design-two-tier-pi-profile.md §1.2a.
-#
-# The agency/meta roles below are intentionally explicit OpenRouter routes, not
-# `pi:` routes. They are short one-shot checks (assign/evaluate/flip/triage/etc.)
-# and do not need Pi's interactive handler; the native OpenRouter path is faster
-# and cheaper for this traffic (and keeps the loud keyless-native claude:haiku
-# fallback in resolve_agency_dispatch).
+# WG owns orchestration policy only. Every route is an exact
+# `pi:<provider>:<model>` identity; Pi validates and executes it. Change these
+# IDs with `wg profile pi` after selecting them through Pi's own model catalog.
+# No WG endpoint, API key, or model-registry entry is required.
 
 [agent]
-model = "pi:openrouter/z-ai/glm-5.2"
+model = "pi:openrouter:z-ai/glm-5.2"
 
 [dispatcher]
-model = "pi:openrouter/z-ai/glm-5.2"
+model = "pi:openrouter:z-ai/glm-5.2"
 max_agents = 8
 
 [tiers]
-fast = "openrouter:deepseek/deepseek-chat"
-standard = "pi:openrouter/z-ai/glm-5.2"
-premium = "pi:openrouter/z-ai/glm-5.2"
+fast = "pi:openrouter:deepseek/deepseek-chat"
+fast_reasoning = "low"
+standard = "pi:openrouter:z-ai/glm-5.2"
+standard_reasoning = "high"
+premium = "pi:openrouter:z-ai/glm-5.2"
+premium_reasoning = "xhigh"
 
 [models.default]
-model = "pi:openrouter/z-ai/glm-5.2"
+model = "pi:openrouter:z-ai/glm-5.2"
+reasoning = "high"
 
 [models.task_agent]
-model = "pi:openrouter/z-ai/glm-5.2"
+model = "pi:openrouter:z-ai/glm-5.2"
+reasoning = "high"
 
-# Agency one-shot roles (the "weak" tier). These are short, recoverable
-# judgment calls — assign / evaluate / flip — pinned explicitly because they
-# currently ignore the tier cascade (resolve_agency_dispatch). Explicit per-role
-# overrides win over the default claude:haiku agency pin, so they route through
-# the native OpenRouter handler. The other fast-tier roles (triage / placer /
-# compactor / chat_compactor) ride `tiers.fast` and need no explicit pin; the
-# premium roles (evolver / creator / verification) are quality-critical
-# generative work and ride `tiers.premium` = strong (see
-# docs/design-two-tier-pi-profile.md §4). Set both tiers as a unit with
-# `wg profile pi <strong> <weak>` (or `--strong`/`--weak`).
+# Weak/recoverable judgment roles remain explicit and Pi-routed.
 [models.evaluator]
-model = "openrouter:deepseek/deepseek-chat"
+model = "pi:openrouter:deepseek/deepseek-chat"
+reasoning = "low"
 
 [models.assigner]
-model = "openrouter:deepseek/deepseek-chat"
+model = "pi:openrouter:deepseek/deepseek-chat"
+reasoning = "low"
 
 [models.flip_inference]
-model = "openrouter:deepseek/deepseek-chat"
+model = "pi:openrouter:deepseek/deepseek-chat"
+reasoning = "low"
 
 [models.flip_comparison]
-model = "openrouter:deepseek/deepseek-chat"
+model = "pi:openrouter:deepseek/deepseek-chat"
+reasoning = "low"
 
-# ─────────────────────────────────────────────────────────────────────────────
-# WORKSGOOD PI INSTALL / PLACEMENT (`@worksgood/pi`, display: pi-worksgood)
-# ─────────────────────────────────────────────────────────────────────────────
-# Routing a `pi:` model spec to the pi handler is only half the integration:
-# pi gains its WG tools (`wg_ready`/`wg_show`/`wg_add`/`wg_done`/… and the `/wg`
-# command) from the `@worksgood/pi` extension, which must be present in
-# the pi process WG spawns. There are three placement options (see
-# docs/pi-integration/integration-plan-v2.md §2.1 + §4):
-#
-# 1. GLOBAL extensions dir (Topology A — recommended, ship-first):
-#      ~/.pi/agent/extensions/
-#    Drop (or symlink) the built plugin bundle here and pi auto-loads it for
-#    every session. Global placement SIDESTEPS pi's project trust gate — no
-#    per-repo prompt — which is what we want for unattended WG-spawned workers.
-#    Equivalent ad-hoc forms: `pi -e <plugin>` on the spawn command line, or a
-#    `packages` entry in pi settings.
-#
-# 2. PROJECT extensions dir (per-repo, trust-gated):
-#      <repo>/.pi/extensions
-#    Pi only loads project-local extensions when the project is trusted
-#    (`project_trust`). Use this when you want the plugin version-locked to a
-#    checkout, but note the trust gate must be satisfied first or the plugin is
-#    silently skipped — avoid for headless workers that cannot answer a prompt.
-#
-# 3. NODE-HOST BUNDLE (Topology B — default for unattended workers/chat):
-#    WG spawns `node wg-pi-host.mjs` instead of the `pi` binary; the host loads
-#    the plugin in-process as a JS object via
-#      DefaultResourceLoader({ extensionFactories: [wgPlugin], eventBus })
-#    so there is no extensions-dir lookup and no terminal at all. This is the
-#    deterministic-version path (the bundle ships alongside the wg binary at
-#    worksgood-pi/) and the clean event-bus ↔ WG-IPC bridge. Discovery accepts a
-#    `pi:` route satisfied by EITHER a `pi` binary (Topology A/C) OR Node +
-#    wg-pi-host + the plugin bundle (Topology B); see src/executor_discovery.rs.
-#
-# Topology C (attended front-end: a human runs `pi` directly and it drives WG)
-# relies on the SAME global auto-discovered plugin from option 1.
-# ─────────────────────────────────────────────────────────────────────────────
+[models.reviewer]
+model = "pi:openrouter:deepseek/deepseek-chat"
+reasoning = "low"

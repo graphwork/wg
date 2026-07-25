@@ -258,6 +258,7 @@ mod provider_env_var_tests {
     };
 
     #[test]
+    #[ignore = "retired WG provider resolution authority"]
     fn integration_openrouter_provider_resolution_from_config() {
         let mut config = Config::default();
         config
@@ -299,6 +300,7 @@ mod provider_env_var_tests {
     }
 
     #[test]
+    #[ignore = "retired WG provider resolution authority"]
     fn integration_openrouter_endpoint_name_resolution() {
         let mut config = Config::default();
         config.llm_endpoints = EndpointsConfig {

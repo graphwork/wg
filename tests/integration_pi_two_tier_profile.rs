@@ -50,8 +50,11 @@ fn test_pi_list_reports_configured_models_not_hardcoded() {
     // hardcoded constant.
     let cfg: Config = toml::from_str(STARTER_PI).expect("pi starter parses");
     let (strong, weak) = cfg.pi_tiers();
-    assert_eq!(strong.as_deref(), Some("pi:openrouter/z-ai/glm-5.2"));
-    assert_eq!(weak.as_deref(), Some("openrouter:deepseek/deepseek-chat"));
+    assert_eq!(strong.as_deref(), Some("pi:openrouter:z-ai/glm-5.2"));
+    assert_eq!(
+        weak.as_deref(),
+        Some("pi:openrouter:deepseek/deepseek-chat")
+    );
 }
 
 #[test]
@@ -59,30 +62,33 @@ fn test_pi_select_and_apply_updates_both_tiers_and_persists() {
     // SELECT + APPLY: pick new strong/weak and patch the profile TOML.
     let patched = patch_in_memory(
         STARTER_PI,
-        Some("openrouter:qwen/qwen3-max"),
-        Some("openrouter:deepseek/deepseek-v3.1"),
+        Some("pi:openrouter:qwen/qwen3-max"),
+        Some("pi:openrouter:deepseek/deepseek-v3.1"),
     );
 
     // PERSISTS ACROSS RELOAD: re-parse the patched TOML (simulating the daemon
     // re-reading config.toml) and confirm the tiers stuck across every key.
     let reloaded: Config = toml::from_str(&patched).expect("patched pi profile re-parses");
     let (strong, weak) = reloaded.pi_tiers();
-    assert_eq!(strong.as_deref(), Some("openrouter:qwen/qwen3-max"));
-    assert_eq!(weak.as_deref(), Some("openrouter:deepseek/deepseek-v3.1"));
+    assert_eq!(strong.as_deref(), Some("pi:openrouter:qwen/qwen3-max"));
+    assert_eq!(
+        weak.as_deref(),
+        Some("pi:openrouter:deepseek/deepseek-v3.1")
+    );
 
     // Every strong key followed the strong tier...
-    assert_eq!(reloaded.agent.model, "openrouter:qwen/qwen3-max");
+    assert_eq!(reloaded.agent.model, "pi:openrouter:qwen/qwen3-max");
     assert_eq!(
         reloaded.coordinator.model.as_deref(),
-        Some("openrouter:qwen/qwen3-max")
+        Some("pi:openrouter:qwen/qwen3-max")
     );
     assert_eq!(
         reloaded.tiers.standard.as_deref(),
-        Some("openrouter:qwen/qwen3-max")
+        Some("pi:openrouter:qwen/qwen3-max")
     );
     assert_eq!(
         reloaded.tiers.premium.as_deref(),
-        Some("openrouter:qwen/qwen3-max")
+        Some("pi:openrouter:qwen/qwen3-max")
     );
     assert_eq!(
         reloaded
@@ -90,13 +96,13 @@ fn test_pi_select_and_apply_updates_both_tiers_and_persists() {
             .task_agent
             .as_ref()
             .and_then(|m| m.model.as_deref()),
-        Some("openrouter:qwen/qwen3-max")
+        Some("pi:openrouter:qwen/qwen3-max")
     );
 
     // ...and every weak agency one-shot followed the weak tier.
     assert_eq!(
         reloaded.tiers.fast.as_deref(),
-        Some("openrouter:deepseek/deepseek-v3.1")
+        Some("pi:openrouter:deepseek/deepseek-v3.1")
     );
     for role in [
         reloaded.models.evaluator.as_ref(),
@@ -106,7 +112,7 @@ fn test_pi_select_and_apply_updates_both_tiers_and_persists() {
     ] {
         assert_eq!(
             role.and_then(|m| m.model.as_deref()),
-            Some("openrouter:deepseek/deepseek-v3.1")
+            Some("pi:openrouter:deepseek/deepseek-v3.1")
         );
     }
 }
@@ -114,30 +120,30 @@ fn test_pi_select_and_apply_updates_both_tiers_and_persists() {
 #[test]
 fn test_pi_partial_apply_leaves_other_tier_unchanged() {
     // Apply only weak; strong must remain the starter value.
-    let patched = patch_in_memory(STARTER_PI, None, Some("openrouter:deepseek/deepseek-v3.1"));
+    let patched = patch_in_memory(
+        STARTER_PI,
+        None,
+        Some("pi:openrouter:deepseek/deepseek-v3.1"),
+    );
     let reloaded: Config = toml::from_str(&patched).unwrap();
     let (strong, weak) = reloaded.pi_tiers();
     assert_eq!(
         strong.as_deref(),
-        Some("pi:openrouter/z-ai/glm-5.2"),
+        Some("pi:openrouter:z-ai/glm-5.2"),
         "strong tier must be untouched by a weak-only update"
     );
-    assert_eq!(weak.as_deref(), Some("openrouter:deepseek/deepseek-v3.1"));
+    assert_eq!(
+        weak.as_deref(),
+        Some("pi:openrouter:deepseek/deepseek-v3.1")
+    );
 }
 
 #[test]
-fn test_pi_reasoning_reports_omitted_inherited_explicit_and_all_levels() {
-    let omitted: Config = toml::from_str(STARTER_PI).unwrap();
-    let detail = omitted.resolve_reasoning_detail(DispatchRole::TaskAgent);
-    assert_eq!(detail.level, None);
-    assert_eq!(detail.provenance, ReasoningProvenance::Omitted);
-
-    let inherited_text =
-        named::set_toml_string_value(STARTER_PI, "tiers.standard_reasoning", "high");
-    let inherited: Config = toml::from_str(&inherited_text).unwrap();
-    let detail = inherited.resolve_reasoning_detail(DispatchRole::TaskAgent);
+fn test_pi_reasoning_reports_explicit_and_all_levels() {
+    let starter: Config = toml::from_str(STARTER_PI).unwrap();
+    let detail = starter.resolve_reasoning_detail(DispatchRole::TaskAgent);
     assert_eq!(detail.level, Some(ReasoningLevel::High));
-    assert_eq!(detail.provenance, ReasoningProvenance::Inherited);
+    assert_eq!(detail.provenance, ReasoningProvenance::Explicit);
 
     for level in ReasoningLevel::ALL {
         let before: Config = toml::from_str(STARTER_PI).unwrap();
@@ -160,22 +166,17 @@ fn test_pi_reasoning_reports_omitted_inherited_explicit_and_all_levels() {
         );
         assert_eq!(
             after.resolve_reasoning_for_role(DispatchRole::Evaluator),
-            None,
+            Some(ReasoningLevel::Low),
             "partial strong update must not change weak effort"
         );
     }
 }
 
 #[test]
-fn test_pi_apply_preserves_worksgood_integration_comment_block() {
-    // The hand-written integration-placement documentation must survive a write
-    // (this is why the patcher is line-based, not a toml round-trip).
-    let patched = patch_in_memory(STARTER_PI, Some("openrouter:z-ai/glm-5.2"), None);
-    assert!(patched.contains("WORKSGOOD PI INSTALL"));
-    assert!(patched.contains("@worksgood/pi"));
-    assert!(patched.contains("pi-worksgood"));
-    assert!(patched.contains("wg-pi-host.mjs"));
-    assert!(patched.contains("~/.pi/agent/extensions/"));
+fn test_pi_apply_preserves_model_plane_ownership_comment_block() {
+    let patched = patch_in_memory(STARTER_PI, Some("pi:openrouter:z-ai/glm-5.2"), None);
+    assert!(patched.contains("Pi owns providers, authentication, model discovery"));
+    assert!(patched.contains("No WG endpoint, API key, or model-registry entry is required"));
 }
 
 #[test]

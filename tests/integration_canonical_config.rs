@@ -66,10 +66,8 @@ fn fresh_workgraph(tmp: &TempDir) -> PathBuf {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn defaults_no_user_config_run_claude_opus() {
-    // With NO ~/.wg/config.toml at all, `wg config --merged` must show
-    // claude executor + opus model. Otherwise the binary's defaults are
-    // not the canonical ones the design picked.
+fn defaults_no_user_config_are_graph_only_and_unselected() {
+    // With no config, read-only inspection works but no LLM route is created.
     let tmp = TempDir::new().unwrap();
     let home = tmp.path().join("fakehome");
     fs::create_dir_all(&home).unwrap();
@@ -81,16 +79,13 @@ fn defaults_no_user_config_run_claude_opus() {
     assert!(!wg_dir.join("config.toml").exists());
 
     let out = wg_ok(&wg_dir, &home, &["config", "--merged"]);
+    assert!(out.contains("owner = \"Pi\""), "got:\n{out}");
     assert!(
-        out.contains("claude:opus"),
-        "default agent.model should be claude:opus; got:\n{}",
-        out,
+        out.contains("INVALID"),
+        "unselected roles must be visible: {out}"
     );
-    assert!(
-        out.contains("\"claude\""),
-        "default executor should be claude; got:\n{}",
-        out,
-    );
+    assert!(!home.join(".wg/config.toml").exists());
+    assert!(!wg_dir.join("config.toml").exists());
 }
 
 // ---------------------------------------------------------------------------
@@ -107,7 +102,7 @@ fn config_init_global_writes_minimal_canonical() {
     let stdout = wg_ok(
         &wg_dir,
         &home,
-        &["config", "init", "--global", "--route", "claude-cli"],
+        &["config", "init", "--global", "--route", "pi"],
     );
     assert!(
         stdout.contains("Wrote minimal global config"),
@@ -123,22 +118,14 @@ fn config_init_global_writes_minimal_canonical() {
     );
     let body = fs::read_to_string(&path).unwrap();
 
-    // After the 2026-05 profile-as-snapshot pivot, `wg config init --global`
-    // for a default route (claude-cli) writes the *claude profile* verbatim.
-    // The profile is a complete, working config — not a stripped-down
-    // "minimal" shell — so it includes [agent], [dispatcher], [tiers],
-    // [models.*] sections. This is the single source of truth: profile file
-    // = config file.
+    // The Pi route writes the complete Pi profile snapshot.
     assert!(body.contains("[agent]"), "missing [agent]; got:\n{}", body);
-    assert!(
-        body.contains("model = \"claude:opus\""),
-        "missing claude:opus; got:\n{}",
-        body
-    );
+    assert!(body.contains("model = \"pi:openrouter:z-ai/glm-5.2\""));
     assert!(body.contains("[tiers]"));
-    assert!(body.contains("fast = \"claude:haiku\""));
-    assert!(body.contains("standard = \"claude:opus\""));
-    assert!(body.contains("premium = \"claude:opus\""));
+    assert!(body.contains("fast = \"pi:openrouter:deepseek/deepseek-chat\""));
+    assert!(body.contains("fast_reasoning = \"low\""));
+    assert!(body.contains("standard_reasoning = \"high\""));
+    assert!(body.contains("premium_reasoning = \"xhigh\""));
     assert!(body.contains("[models.default]"));
     assert!(body.contains("[models.task_agent]"));
     assert!(body.contains("[models.evaluator]"));
@@ -161,14 +148,11 @@ fn config_init_global_writes_minimal_canonical() {
     // guarantee the profile-as-snapshot model rests on.
     let cfg: worksgood::config::Config = toml::from_str(&body)
         .unwrap_or_else(|e| panic!("global config must round-trip through Config: {e}\n{body}"));
-    assert_eq!(cfg.tiers.standard.as_deref(), Some("claude:opus"));
     assert_eq!(
-        cfg.models
-            .task_agent
-            .as_ref()
-            .and_then(|m| m.model.as_deref()),
-        Some("claude:opus")
+        cfg.tiers.standard.as_deref(),
+        Some("pi:openrouter:z-ai/glm-5.2")
     );
+    cfg.validate_pi_model_plane().unwrap();
 }
 
 // ---------------------------------------------------------------------------
@@ -181,7 +165,7 @@ fn config_init_global_writes_minimal_canonical() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn config_init_route_codex_cli_produces_complete_codex_config() {
+fn config_init_route_pi_produces_complete_pi_config() {
     let tmp = TempDir::new().unwrap();
     let home = tmp.path().join("fakehome");
     fs::create_dir_all(&home).unwrap();
@@ -190,52 +174,20 @@ fn config_init_route_codex_cli_produces_complete_codex_config() {
     wg_ok(
         &wg_dir,
         &home,
-        &["config", "init", "--global", "--route", "codex-cli"],
+        &["config", "init", "--global", "--route", "pi"],
     );
     let body = fs::read_to_string(home.join(".wg/config.toml")).unwrap();
 
-    // [agent].model — the central key that the original bug silently
-    // dropped — must be codex, not any claude variant.
-    assert!(
-        body.contains("model = \"codex:gpt-5.6-sol\""),
-        "codex-cli route must set agent.model to codex:gpt-5.6-sol; got:\n{}",
-        body,
-    );
-    assert!(
-        !body.contains("claude:opus") && !body.contains("claude:sonnet"),
-        "codex-cli route must not leave any claude models in the config; got:\n{}",
-        body,
-    );
-    // Per-role agency keys: evaluator + assigner must also be codex.
-    assert!(
-        body.contains("[models.evaluator]") && body.contains("[models.assigner]"),
-        "codex-cli config must specify agency role overrides; got:\n{}",
-        body,
-    );
-    assert!(
-        body.contains("model = \"codex:gpt-5.6-luna\""),
-        "codex-cli agency roles must use the cheaper codex model; got:\n{}",
-        body,
-    );
+    assert!(body.contains("model = \"pi:openrouter:z-ai/glm-5.2\""));
+    assert!(body.contains("model = \"pi:openrouter:deepseek/deepseek-chat\""));
+    assert!(!body.contains("codex:gpt") && !body.contains("claude:opus"));
 
-    // Round-trips through Config.
-    let parsed: Result<worksgood::config::Config, _> = toml::from_str(&body);
-    assert!(parsed.is_ok(), "codex-cli config must parse as Config");
-    let cfg = parsed.unwrap();
-    assert_eq!(cfg.agent.model, "codex:gpt-5.6-sol");
-    assert_eq!(cfg.coordinator.model.as_deref(), Some("codex:gpt-5.6-sol"));
-    assert_eq!(cfg.tiers.standard.as_deref(), Some("codex:gpt-5.6-sol"));
-    assert_eq!(
-        cfg.models
-            .task_agent
-            .as_ref()
-            .and_then(|m| m.model.as_deref()),
-        Some("codex:gpt-5.6-sol")
-    );
+    let cfg: worksgood::config::Config = toml::from_str(&body).unwrap();
+    cfg.validate_pi_model_plane().unwrap();
 }
 
 #[test]
-fn config_init_route_codex_cli_matches_codex_profile_template() {
+fn config_init_route_pi_matches_pi_profile_template() {
     // The single-source-of-truth contract: `wg config init --route codex-cli`
     // must emit byte-identical content to the codex profile template that
     // `wg profile use codex` would swap in. Same source, same bytes.
@@ -247,13 +199,13 @@ fn config_init_route_codex_cli_matches_codex_profile_template() {
     wg_ok(
         &wg_dir,
         &home,
-        &["config", "init", "--global", "--route", "codex-cli"],
+        &["config", "init", "--global", "--route", "pi"],
     );
     let written = fs::read_to_string(home.join(".wg/config.toml")).unwrap();
-    let template = worksgood::profile::named::STARTER_CODEX;
+    let template = worksgood::profile::named::STARTER_PI;
     assert_eq!(
         written, template,
-        "codex-cli route must emit the codex profile template verbatim",
+        "pi route must emit the Pi profile template verbatim",
     );
 }
 
@@ -275,7 +227,7 @@ fn config_init_refuses_to_clobber_existing_without_force() {
     let out = wg(
         &wg_dir,
         &home,
-        &["config", "init", "--global", "--route", "claude-cli"],
+        &["config", "init", "--global", "--route", "pi"],
     );
     assert!(
         !out.status.success(),
@@ -306,14 +258,7 @@ fn config_init_force_makes_backup() {
     wg_ok(
         &wg_dir,
         &home,
-        &[
-            "config",
-            "init",
-            "--global",
-            "--route",
-            "claude-cli",
-            "--force",
-        ],
+        &["config", "init", "--global", "--route", "pi", "--force"],
     );
     let backup = home.join(".wg/config.toml.bak");
     assert!(

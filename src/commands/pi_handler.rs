@@ -22,15 +22,11 @@
 //! (prefer A when a `pi` binary is present — smallest delta; else B when the
 //! Node host + built bundle are present). `WG_PI_TOPOLOGY=rpc|node` forces one.
 //!
-//! ## Plain Pi and explicit model overrides
+//! ## Exact Pi routes
 //!
-//! A plain Pi chat may omit WG model routing entirely. In that case WG still
-//! loads the integration plumbing (`--mode rpc`, the embedded plugin, session
-//! ids/dirs), but does not pass `--provider` / `--model`; Pi uses its own
-//! configured/default model. When the user explicitly pins a model, it becomes
-//! pi's `--provider <p> --model <m>` pair ([`pi_model_arg`]); credentials are
-//! supplied by environment only (`OPENROUTER_API_KEY` / `ANTHROPIC_API_KEY` /
-//! …), **never** via `--api-key`.
+//! Every invocation requires `pi:<provider>:<model>` plus explicit or inherited
+//! thinking. WG passes the provider/model identity to Pi but never resolves
+//! credentials, endpoints, availability, or model support; those belong to Pi.
 //!
 //! ## LF-only RPC framing
 //!
@@ -65,7 +61,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 
 use worksgood::chat;
-use worksgood::config::{Config, DispatchRole, EndpointConfig, ReasoningLevel};
+use worksgood::config::{Config, DispatchRole, ReasoningLevel};
 use worksgood::executor_discovery::{self, PiNodeHost, PiRouteAvailability};
 use worksgood::pi_plugin::{self, EnsureMode};
 use worksgood::session_lock::{HandlerKind, SessionLock};
@@ -82,124 +78,10 @@ const NODE_FIRST_TOKEN_TIMEOUT: Duration = Duration::from_secs(180);
 /// circuits this when a future host emits one.
 const NODE_IDLE_QUIESCE: Duration = Duration::from_millis(1500);
 
-// --- WG endpoint/secret resolution -------------------------------------------
-
-/// The WG-resolved endpoint + secret for the Pi route, used to inject
-/// credential-bearing env into the spawned `pi`/`node` process so Pi never
-/// relies on ambient provider credentials or its own private login/config.
-///
-/// This is the WG contract fix: a configured WG endpoint/key is sufficient;
-/// no separate `OPENROUTER_API_KEY` export is required.
-#[derive(Debug, Clone, Default)]
-pub(crate) struct PiEndpointSecret {
-    /// The resolved API key (never logged, never passed via argv).
-    pub api_key: Option<String>,
-    /// The endpoint base URL (e.g. OpenRouter base).
-    pub base_url: Option<String>,
-    /// The WG provider name (`openrouter`, `anthropic`, …) for env-var selection.
-    pub provider: Option<String>,
-}
-
-impl PiEndpointSecret {
-    /// Resolve the WG endpoint + secret for the given pi provider/model route.
-    ///
-    /// Resolution order mirrors `Config::resolve_api_key_for_provider` but
-    /// returns both the key AND the endpoint URL so both can be injected:
-    ///   1. `llm_endpoints.find_for_provider(pi_provider)` → resolve_api_key
-    ///   2. `llm_endpoints.find_default()` → resolve_api_key (cross-provider)
-    ///   3. Provider-specific env-var fallback (OPENROUTER_API_KEY, …)
-    ///   4. Legacy `[native_executor].api_key`
-    ///
-    /// `pi_provider` is the pi-native provider name (`openrouter`, `anthropic`).
-    pub fn resolve(config: &Config, workgraph_dir: &Path, pi_provider: &str) -> Self {
-        // 1. Provider-specific endpoint.
-        if let Some(ep) = config.llm_endpoints.find_for_provider(pi_provider) {
-            if let Ok(Some(key)) = ep.resolve_api_key(Some(workgraph_dir)) {
-                return Self {
-                    api_key: Some(key),
-                    base_url: ep.url.clone(),
-                    provider: Some(ep.provider.clone()),
-                };
-            }
-        }
-        // 2. Default endpoint (cross-provider fallback).
-        if let Some(ep) = config.llm_endpoints.find_default() {
-            if let Ok(Some(key)) = ep.resolve_api_key(Some(workgraph_dir)) {
-                return Self {
-                    api_key: Some(key),
-                    base_url: ep.url.clone(),
-                    provider: Some(ep.provider.clone()),
-                };
-            }
-        }
-        // 3. Provider-specific env-var fallback.
-        for var_name in EndpointConfig::env_var_names_for_provider(pi_provider) {
-            if let Ok(key) = std::env::var(var_name) {
-                let key = key.trim().to_string();
-                if !key.is_empty() {
-                    return Self {
-                        api_key: Some(key),
-                        base_url: None,
-                        provider: Some(pi_provider.to_string()),
-                    };
-                }
-            }
-        }
-        // 4. Legacy [native_executor].api_key.
-        if let Ok(merged_val) = Config::load_merged_toml_value(workgraph_dir)
-            && let Some(key) = merged_val
-                .get("native_executor")
-                .and_then(|v| v.get("api_key"))
-                .and_then(|v| v.as_str())
-            && !key.is_empty()
-        {
-            return Self {
-                api_key: Some(key.to_string()),
-                base_url: None,
-                provider: Some(pi_provider.to_string()),
-            };
-        }
-        Self::default()
-    }
-
-    /// Build the env var pairs to inject into the spawned pi/node process.
-    ///
-    /// Injects (never via argv, never logged):
-    ///   - `WG_API_KEY` — the WG-resolved key (canonical WG secret env).
-    ///   - `WG_ENDPOINT_URL` — the resolved endpoint base URL.
-    ///   - `WG_PI_API_KEY` — pi-specific mirror of the key.
-    ///   - `WG_PI_BASE_URL` — pi-specific mirror of the URL.
-    ///   - Provider-specific vars (`OPENROUTER_API_KEY`, `OPENAI_API_KEY`,
-    ///     `ANTHROPIC_API_KEY`) so Pi's own provider clients discover the key
-    ///     through their standard environment.
-    pub fn env_pairs(&self) -> Vec<(String, String)> {
-        let mut pairs = Vec::new();
-        if let Some(ref key) = self.api_key {
-            pairs.push(("WG_API_KEY".to_string(), key.clone()));
-            pairs.push(("WG_PI_API_KEY".to_string(), key.clone()));
-            if let Some(ref provider) = self.provider {
-                for var_name in EndpointConfig::env_var_names_for_provider(provider) {
-                    pairs.push((var_name.to_string(), key.clone()));
-                }
-            }
-        }
-        if let Some(ref url) = self.base_url {
-            pairs.push(("WG_ENDPOINT_URL".to_string(), url.clone()));
-            pairs.push(("WG_PI_BASE_URL".to_string(), url.clone()));
-        }
-        pairs
-    }
-
-    /// True when a usable API key was resolved from WG config.
-    pub fn has_key(&self) -> bool {
-        self.api_key.is_some()
-    }
-}
-
 // --- model argument mapping ---------------------------------------------------
 
-/// The `--provider`/`--model` pair pi expects on its argv. Credentials are
-/// supplied by env only (never `--api-key`), so this carries no key.
+/// The `--provider`/`--model` identity Pi expects on argv. Pi owns all
+/// credential and endpoint resolution; this carries no key or URL.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PiModelArg {
     /// pi provider name (`openrouter`, `anthropic`, `oai-compat`, …).
@@ -469,7 +351,7 @@ impl RpcTransport {
         session_id: &str,
         session_dir: &Path,
         dist_entry: &Path,
-        secret_env: &[(String, String)],
+        child_env: &[(String, String)],
         logger: &HandlerLogger,
     ) -> Result<Self> {
         std::fs::create_dir_all(session_dir).ok();
@@ -479,15 +361,13 @@ impl RpcTransport {
             pi_binary.display(),
             args.join(" ")
         ));
-        // Build env: PI_CODING_AGENT_SESSION_DIR + WG-resolved endpoint/secret
-        // env (WG_API_KEY, WG_ENDPOINT_URL, WG_PI_API_KEY, WG_PI_BASE_URL,
-        // OPENROUTER_API_KEY, …). Credentials by env ONLY — never argv, never
-        // logged.
+        // Build env from Pi's session directory plus the WG plugin handshake
+        // and graph binding. Provider credentials remain entirely Pi-owned.
         let mut env_pairs: Vec<(String, String)> = vec![(
             "PI_CODING_AGENT_SESSION_DIR".to_string(),
             session_dir.to_string_lossy().to_string(),
         )];
-        env_pairs.extend(secret_env.iter().cloned());
+        env_pairs.extend(child_env.iter().cloned());
         let child = HostedChild::new(pi_binary.to_string_lossy().to_string())
             .args(args)
             .env(env_pairs);
@@ -675,7 +555,7 @@ impl NodeHostTransport {
         host: &PiNodeHost,
         marg: Option<&PiModelArg>,
         reasoning: Option<ReasoningLevel>,
-        secret_env: &[(String, String)],
+        child_env: &[(String, String)],
         logger: &HandlerLogger,
     ) -> Result<Self> {
         logger.info(&format!(
@@ -688,10 +568,8 @@ impl NodeHostTransport {
         cmd.stdin(Stdio::piped());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::inherit());
-        // The plugin/host reads provider+model + credentials from the
-        // environment (never an --api-key flag) only when the user explicitly
-        // pinned a WG model route. Plain Pi chats leave these unset so Pi can
-        // use its own configured/default model.
+        // The plugin/host receives only WG's exact provider/model identity and
+        // thinking. Pi resolves credentials and endpoints itself.
         if let Some(marg) = marg {
             cmd.env("WG_PI_PROVIDER", &marg.provider);
             cmd.env("WG_PI_MODEL", &marg.model);
@@ -700,10 +578,8 @@ impl NodeHostTransport {
             cmd.env("WG_PI_REASONING", reasoning.as_str());
             cmd.env("WG_REASONING", reasoning.as_str());
         }
-        // WG-resolved endpoint/secret env (WG_API_KEY, WG_ENDPOINT_URL,
-        // WG_PI_API_KEY, WG_PI_BASE_URL, OPENROUTER_API_KEY, …). Credentials
-        // by env ONLY — never argv, never logged.
-        for (k, v) in secret_env {
+        // Plugin compatibility and graph binding only — never provider secrets.
+        for (k, v) in child_env {
             cmd.env(k, v);
         }
 
@@ -946,14 +822,16 @@ pub fn run(
 ) -> Result<()> {
     let _ = resume; // pi keeps server-side session state; we resume via --session-dir.
 
-    let explicit_model = model.is_some_and(|m| !m.trim().is_empty());
-    let marg = pi_model_arg(model);
-    if explicit_model && marg.is_none() {
-        anyhow::bail!(
-            "pi-handler could not resolve a provider/model from explicit model {:?}",
-            model
-        );
-    }
+    let raw_route = model
+        .filter(|route| !route.trim().is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!("WG-PI-ROUTE-MISSING: pi-handler requires `pi:<provider>:<model>`")
+        })?;
+    let (provider, model_id) = worksgood::config::parse_exact_pi_route(raw_route)?;
+    let marg = Some(PiModelArg {
+        provider,
+        model: model_id,
+    });
 
     let chat_dir = chat::chat_dir_for_ref(workgraph_dir, chat_ref);
     std::fs::create_dir_all(&chat_dir)
@@ -991,9 +869,8 @@ pub fn run(
         plugin.has_node_modules,
     )?;
 
-    // WG endpoint/secret resolution: the spawned pi process must receive its
-    // credentials from WG config, NOT from ambient env or Pi's own login. This
-    // is the WG contract — a configured WG endpoint/key is sufficient.
+    // WG resolves orchestration thinking only. Pi itself owns provider auth,
+    // endpoints, availability, and support validation.
     let config = Config::load_or_default(workgraph_dir);
     let role_for_reasoning = role
         .and_then(|r| r.parse::<DispatchRole>().ok())
@@ -1003,29 +880,14 @@ pub fn run(
         .transpose()
         .map_err(|e| anyhow::anyhow!("{e}"))?
         .or_else(|| config.resolve_reasoning_for_role(role_for_reasoning));
-    let secret = marg
-        .as_ref()
-        .map(|marg| PiEndpointSecret::resolve(&config, workgraph_dir, &marg.provider))
-        .unwrap_or_default();
-    logger.info(&format!(
-        "pi-handler: WG endpoint/secret resolved: provider={:?}, has_key={}, has_base_url={} (env injection only — never argv, never logged)",
-        secret.provider, secret.has_key(), secret.base_url.is_some()
-    ));
-    if marg.is_some() && !secret.has_key() {
-        logger.warn(&format!(
-            "pi-handler: no WG-resolved API key for provider {:?}; pi will only succeed if it has its own credentials (NOT the WG contract)",
-            marg.as_ref().map(|m| m.provider.as_str())
-        ));
-    }
-    // Child env = WG-resolved credentials + the plugin tripwire/locator env +
-    // the explicit WG project binding (see `plugin_child_env`).
-    let mut secret_env = secret.env_pairs();
-    secret_env.extend(plugin_child_env(
-        &plugin.compat,
-        &plugin.root,
-        workgraph_dir,
-        chat_ref,
-    ));
+    let resolved_reasoning = resolved_reasoning.ok_or_else(|| {
+        anyhow::anyhow!(
+            "WG-PI-REASONING-MISSING: pi-handler route {raw_route:?} has no explicit/inherited reasoning"
+        )
+    })?;
+    // Child env contains only the plugin handshake and explicit WG project
+    // binding. No WG endpoint or secret is injected into Pi.
+    let child_env = plugin_child_env(&plugin.compat, &plugin.root, workgraph_dir, chat_ref);
 
     logger.info(&format!(
         "pi-handler starting: chat_ref={}, role={:?}, model={:?}, reasoning={:?} -> provider/model={:?}, topology={:?}",
@@ -1047,11 +909,11 @@ pub fn run(
             Box::new(RpcTransport::spawn(
                 pi,
                 marg.as_ref(),
-                resolved_reasoning,
+                Some(resolved_reasoning),
                 chat_ref,
                 &session_dir,
                 &plugin.dist_entry,
-                &secret_env,
+                &child_env,
                 &logger,
             )?)
         }
@@ -1063,8 +925,8 @@ pub fn run(
             Box::new(NodeHostTransport::spawn(
                 host,
                 marg.as_ref(),
-                resolved_reasoning,
-                &secret_env,
+                Some(resolved_reasoning),
+                &child_env,
                 &logger,
             )?)
         }
@@ -1145,8 +1007,8 @@ pub fn run(
     }
 }
 
-/// The plugin-locator + WG project-binding env appended to the pi child's
-/// `secret_env`:
+/// The plugin-locator + WG project-binding environment passed to the Pi child.
+/// It intentionally contains no provider credentials or endpoint details:
 ///   - `WG_PI_PLUGIN_COMPAT_VERSION` — the plugin asserts this against its own
 ///     embedded compat at load and fails LOUDLY on mismatch (cheap tripwire; the
 ///     real guarantee is that we point pi at our own embedded bytes).
@@ -1522,139 +1384,30 @@ mod tests {
     }
 
     #[test]
-    fn test_pi_child_secret_env_carries_wg_dir() {
-        // Mirror exactly how `run()` assembles the child `secret_env`:
-        // WG-resolved credential env, then the plugin-locator + WG_DIR env. The
-        // assembled env handed to the pi child MUST carry WG_DIR=<project>.
-        let secret = PiEndpointSecret {
-            api_key: Some("sk-test".to_string()),
-            base_url: Some("https://openrouter.ai/api/v1".to_string()),
-            provider: Some("openrouter".to_string()),
-        };
+    fn test_pi_child_env_carries_graph_binding_but_no_provider_secret() {
         let workgraph_dir = Path::new("/home/bot/myproj");
-        let mut secret_env = secret.env_pairs();
-        secret_env.extend(plugin_child_env(
+        let child_env = plugin_child_env(
             "0.1.0",
             Path::new("/cache/wg/worksgood-pi/0.2.0"),
             workgraph_dir,
             "chat-1",
-        ));
-        let wg_dir = secret_env
+        );
+        let wg_dir = child_env
             .iter()
-            .find(|(k, _)| k == "WG_DIR")
-            .expect("the pi child secret_env must carry WG_DIR");
+            .find(|(key, _)| key == "WG_DIR")
+            .expect("the Pi child environment must carry WG_DIR");
         assert_eq!(wg_dir.1, "/home/bot/myproj");
-        // Credential env from the secret is preserved alongside the binding.
-        assert!(secret_env.iter().any(|(k, _)| k == "WG_API_KEY"));
-    }
-
-    // --- WG endpoint/secret env injection (fix-pi-endpoint-secret-env) ---------
-
-    #[test]
-    fn test_pi_endpoint_secret_env_pairs_include_wg_and_provider_vars() {
-        let secret = PiEndpointSecret {
-            api_key: Some("sk-test-key".to_string()),
-            base_url: Some("https://openrouter.ai/api/v1".to_string()),
-            provider: Some("openrouter".to_string()),
-        };
-        let pairs = secret.env_pairs();
-        let names: Vec<&str> = pairs.iter().map(|(k, _)| k.as_str()).collect();
-        // WG canonical secret env.
-        assert!(names.contains(&"WG_API_KEY"));
-        assert_eq!(
-            pairs.iter().find(|(k, _)| k == "WG_API_KEY").unwrap().1,
-            "sk-test-key"
-        );
-        // Pi-specific mirrors.
-        assert!(names.contains(&"WG_PI_API_KEY"));
-        assert!(names.contains(&"WG_PI_BASE_URL"));
-        assert_eq!(
-            pairs.iter().find(|(k, _)| k == "WG_PI_BASE_URL").unwrap().1,
-            "https://openrouter.ai/api/v1"
-        );
-        // Provider-specific vars for openrouter.
-        assert!(names.contains(&"OPENROUTER_API_KEY"));
-        assert!(names.contains(&"OPENAI_API_KEY"));
-        // The key value is the resolved key, not leaked elsewhere.
-        for (_, v) in &pairs {
-            assert_ne!(*v, "");
+        for retired in [
+            "WG_API_KEY",
+            "WG_PI_API_KEY",
+            "WG_ENDPOINT_URL",
+            "WG_PI_BASE_URL",
+            "OPENROUTER_API_KEY",
+            "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+        ] {
+            assert!(!child_env.iter().any(|(key, _)| key == retired));
         }
-    }
-
-    #[test]
-    fn test_pi_endpoint_secret_env_pairs_no_key_is_empty() {
-        let secret = PiEndpointSecret::default();
-        assert!(secret.env_pairs().is_empty());
-        assert!(!secret.has_key());
-    }
-
-    #[test]
-    fn test_pi_endpoint_secret_env_pairs_no_argv_no_logging() {
-        // The env pairs must never contain an argv-style flag; they are env
-        // (key, value) tuples only. This is the redaction/no-argv-secret
-        // assertion.
-        let secret = PiEndpointSecret {
-            api_key: Some("sk-secret".to_string()),
-            base_url: None,
-            provider: Some("anthropic".to_string()),
-        };
-        let pairs = secret.env_pairs();
-        for (k, v) in &pairs {
-            assert!(!k.starts_with("--"));
-            assert!(!v.starts_with("--"));
-            // No key value should be empty.
-            assert!(!v.is_empty());
-        }
-        // Anthropic provider → ANTHROPIC_API_KEY.
-        let names: Vec<&str> = pairs.iter().map(|(k, _)| k.as_str()).collect();
-        assert!(names.contains(&"ANTHROPIC_API_KEY"));
-    }
-
-    #[test]
-    fn test_pi_endpoint_secret_resolve_from_config_openrouter() {
-        // Build a Config with an openrouter endpoint carrying an inline key,
-        // and confirm PiEndpointSecret::resolve picks it up even when the
-        // ambient env has NO OPENROUTER_API_KEY (the no-ambient-env case).
-        let tmp = tempfile::tempdir().unwrap();
-        let mut config = Config::default();
-        config.llm_endpoints.endpoints.push(EndpointConfig {
-            name: "openrouter-test".to_string(),
-            provider: "openrouter".to_string(),
-            url: Some("https://openrouter.ai/api/v1".to_string()),
-            api_key: Some("sk-from-config".to_string()),
-            ..Default::default()
-        });
-        // Ensure ambient env does NOT carry the key.
-        unsafe { std::env::remove_var("OPENROUTER_API_KEY") };
-        let secret = PiEndpointSecret::resolve(&config, tmp.path(), "openrouter");
-        assert_eq!(secret.api_key.as_deref(), Some("sk-from-config"));
-        assert_eq!(
-            secret.base_url.as_deref(),
-            Some("https://openrouter.ai/api/v1")
-        );
-        assert_eq!(secret.provider.as_deref(), Some("openrouter"));
-    }
-
-    #[test]
-    fn test_pi_endpoint_secret_resolve_no_ambient_env_falls_back_to_default() {
-        // No provider-specific endpoint, but a default endpoint with a key
-        // should be picked up as the cross-provider fallback — proving WG
-        // config alone is sufficient with no ambient env.
-        let tmp = tempfile::tempdir().unwrap();
-        let mut config = Config::default();
-        config.llm_endpoints.endpoints.push(EndpointConfig {
-            name: "default-ep".to_string(),
-            provider: "oai-compat".to_string(),
-            url: Some("https://api.example.com/v1".to_string()),
-            api_key: Some("sk-default-ep".to_string()),
-            is_default: true,
-            ..Default::default()
-        });
-        unsafe { std::env::remove_var("OPENROUTER_API_KEY") };
-        unsafe { std::env::remove_var("OPENAI_API_KEY") };
-        let secret = PiEndpointSecret::resolve(&config, tmp.path(), "openrouter");
-        // The default endpoint's key resolves as the fallback.
-        assert_eq!(secret.api_key.as_deref(), Some("sk-default-ep"));
     }
 
     // --- RPC event parsing (agent_end → last assistant text, canned JSONL) ----

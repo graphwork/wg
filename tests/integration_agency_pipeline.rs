@@ -10,8 +10,8 @@ use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
 use worksgood::config::{
-    CLAUDE_HAIKU_MODEL_ID, CLAUDE_OPUS_MODEL_ID, CLAUDE_SONNET_MODEL_ID, Config, DispatchRole,
-    ModelRegistryEntry, RoleModelConfig, Tier, TierConfig,
+    CLAUDE_HAIKU_MODEL_ID, CLAUDE_OPUS_MODEL_ID, Config, DispatchRole, ModelRegistryEntry,
+    RoleModelConfig, Tier, TierConfig,
 };
 use worksgood::graph::{Node, Status, Task, WorkGraph, is_system_task};
 use worksgood::parser::save_graph;
@@ -90,6 +90,11 @@ fn setup_workgraph(tmp: &TempDir) -> PathBuf {
     let graph_path = wg_dir.join("graph.jsonl");
     let graph = WorkGraph::new();
     save_graph(&graph, &graph_path).unwrap();
+    fs::write(
+        wg_dir.join("config.toml"),
+        worksgood::profile::named::starter_template("pi").unwrap(),
+    )
+    .unwrap();
     wg_dir
 }
 
@@ -106,27 +111,13 @@ fn make_task(id: &str, title: &str) -> Task {
 // ===========================================================================
 
 #[test]
-fn registry_no_config_returns_8_builtins() {
+fn empty_registry_stays_empty_without_builtin_routes() {
     let config = Config::default();
-    let registry = config.effective_registry();
-    assert_eq!(
-        registry.len(),
-        8,
-        "Expected 8 built-in entries (4 legacy aliases + 4 claude:* format)"
-    );
-    let ids: Vec<&str> = registry.iter().map(|e| e.id.as_str()).collect();
-    assert!(ids.contains(&CLAUDE_HAIKU_MODEL_ID));
-    assert!(ids.contains(&CLAUDE_SONNET_MODEL_ID));
-    assert!(ids.contains(&CLAUDE_OPUS_MODEL_ID));
-    assert!(ids.contains(&"fable"));
-    assert!(ids.contains(&"claude:haiku"));
-    assert!(ids.contains(&"claude:sonnet"));
-    assert!(ids.contains(&"claude:opus"));
-    assert!(ids.contains(&"claude:fable"));
+    assert!(config.effective_registry().is_empty());
 }
 
 #[test]
-fn registry_user_entries_override_builtins() {
+fn legacy_registry_retains_only_explicit_migration_entries() {
     let mut config = Config::default();
     config.model_registry = vec![ModelRegistryEntry {
         id: "haiku".into(),
@@ -136,20 +127,11 @@ fn registry_user_entries_override_builtins() {
         ..Default::default()
     }];
     let registry = config.effective_registry();
-    // 7 remaining built-ins + 1 override = 8
-    assert_eq!(registry.len(), 8);
+    assert_eq!(registry.len(), 1);
     let haiku = registry.iter().find(|e| e.id == "haiku").unwrap();
     assert_eq!(haiku.model, "my-custom-haiku");
     assert_eq!(haiku.provider, "local");
-    // Built-in sonnet, opus, and claude:* entries should still be present
-    assert!(registry.iter().any(|e| e.id == "sonnet"));
-    assert!(registry.iter().any(|e| e.id == "opus"));
-    assert!(registry.iter().any(|e| e.id == "fable"));
-    assert!(registry.iter().any(|e| e.id == "claude:haiku"));
-    assert!(registry.iter().any(|e| e.id == "claude:sonnet"));
-    assert!(registry.iter().any(|e| e.id == "claude:opus"));
-    assert!(registry.iter().any(|e| e.id == "claude:fable"));
-    assert!(registry.iter().any(|e| e.id == "claude:opus"));
+    assert!(!registry.iter().any(|e| e.id == "opus"));
 }
 
 #[test]
@@ -169,6 +151,7 @@ fn role_with_explicit_model_ignores_tier() {
 }
 
 #[test]
+#[ignore = "retired WG registry/default model-plane behavior"]
 fn role_with_tier_override_resolves_via_registry() {
     let mut config = Config::default();
     config.models.evaluator = Some(RoleModelConfig {
@@ -185,6 +168,7 @@ fn role_with_tier_override_resolves_via_registry() {
 }
 
 #[test]
+#[ignore = "retired WG registry/default model-plane behavior"]
 fn all_roles_resolve_via_default_tier() {
     let config = Config::default();
     // Test all roles in DispatchRole::ALL resolve without panicking
@@ -226,15 +210,18 @@ fn unknown_model_id_in_tier_config_graceful_fallback() {
         resolved.registry_entry.is_none(),
         "Unknown model should not have registry entry"
     );
-    // Unknown model inherits provider from agent.model prefix ("claude:opus" → "anthropic")
-    assert_eq!(
-        resolved.provider.as_deref(),
-        Some("anthropic"),
-        "Unknown model should inherit provider from agent.model fallback"
+    // Graph-only defaults synthesize no provider and cannot authorize this
+    // legacy bare tier as a Pi route.
+    assert!(resolved.provider.is_none());
+    assert!(
+        config
+            .resolve_pi_route_for_role(DispatchRole::Triage)
+            .is_err()
     );
 }
 
 #[test]
+#[ignore = "retired WG registry/default model-plane behavior"]
 fn registry_remove_warns_about_dependent_roles_tiers() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(&tmp);
@@ -725,6 +712,7 @@ fn auto_create_disabled_does_not_spawn() {
 }
 
 #[test]
+#[ignore = "retired WG registry/default model-plane behavior"]
 fn assigner_to_creator_signal_path_exists() {
     // Verify the agency config has fields for both assigner and creator,
     // and the coordinator can check auto_create after auto_assign
@@ -777,32 +765,23 @@ fn config_show_includes_agency_agents_section() {
 }
 
 #[test]
-fn config_models_includes_tier_column() {
+fn config_models_shows_exact_pi_route_reasoning_and_source() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(&tmp);
 
     let output = wg_ok(&wg_dir, &["config", "--models"]);
-    assert!(
-        output.contains("TIER"),
-        "config --models should include TIER column header, got: {}",
-        output
-    );
-    // Should show tier values
-    assert!(
-        output.contains("fast") || output.contains("standard") || output.contains("premium"),
-        "config --models should show tier values, got: {}",
-        output
-    );
-    // Should show SOURCE column
-    assert!(
-        output.contains("SOURCE"),
-        "config --models should include SOURCE column, got: {}",
-        output
-    );
+    for header in ["HANDLER", "EXACT ROUTE", "REASON", "SOURCE"] {
+        assert!(
+            output.contains(header),
+            "config --models should include {header}, got: {output}"
+        );
+    }
+    assert!(output.contains(" pi "));
+    assert!(output.contains("pi:openrouter:"));
 }
 
 #[test]
-fn config_models_json_includes_tier_and_source() {
+fn config_models_json_includes_pi_identity_reasoning_and_source() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(&tmp);
 
@@ -814,19 +793,12 @@ fn config_models_json_includes_tier_and_source() {
         )
     });
 
-    // Check that each role entry has tier and source fields
     if let Some(obj) = json.as_object() {
         for (role, entry) in obj {
-            assert!(
-                entry.get("tier").is_some(),
-                "Role '{}' should have 'tier' field in JSON output",
-                role
-            );
-            assert!(
-                entry.get("source").is_some(),
-                "Role '{}' should have 'source' field in JSON output",
-                role
-            );
+            assert_eq!(entry["handler"], "pi", "role={role}");
+            assert!(entry["route"].as_str().unwrap().starts_with("pi:"));
+            assert!(entry["reasoning"].is_string(), "role={role}");
+            assert!(entry["source"].is_string(), "role={role}");
         }
     } else {
         panic!("Expected JSON object from config --models --json");
@@ -924,6 +896,7 @@ fn all_auto_toggles_round_trip_through_config() {
 // ===========================================================================
 
 #[test]
+#[ignore = "retired WG registry/default model-plane behavior"]
 fn resolve_model_source_reports_tier_default_for_unconfigured() {
     let config = Config::default();
     let source = config.resolve_model_source(DispatchRole::Triage);
@@ -988,7 +961,7 @@ fn publish_creates_full_pipeline_all_tasks() {
     wg_ok(&wg_dir, &["config", "--auto-assign", "true"]);
     wg_ok(&wg_dir, &["config", "--auto-evaluate", "true"]);
     wg_ok(&wg_dir, &["config", "--flip-enabled", "true"]);
-    wg_ok(&wg_dir, &["config", "--tier", "fast=claude:haiku"]);
+    wg_ok(&wg_dir, &["config", "--tier", "fast=pi:test:agency"]);
 
     // Create a draft task (will be paused)
     wg_ok(&wg_dir, &["add", "My Feature"]);
@@ -1038,7 +1011,7 @@ fn publish_creates_all_pipeline_edges_correctly() {
     wg_ok(&wg_dir, &["config", "--auto-assign", "true"]);
     wg_ok(&wg_dir, &["config", "--auto-evaluate", "true"]);
     wg_ok(&wg_dir, &["config", "--flip-enabled", "true"]);
-    wg_ok(&wg_dir, &["config", "--tier", "fast=claude:haiku"]);
+    wg_ok(&wg_dir, &["config", "--tier", "fast=pi:test:agency"]);
 
     wg_ok(&wg_dir, &["add", "My Feature"]);
     wg_ok(&wg_dir, &["publish", "my-feature"]);

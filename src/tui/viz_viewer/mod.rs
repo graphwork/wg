@@ -15,7 +15,9 @@ pub mod snapshot_engine;
 pub mod state;
 pub mod trace;
 
-#[cfg(test)]
+// Retired multi-handler launcher regression suite; Pi-only launcher coverage lives
+// with the current state/render tests.
+#[cfg(all(test, any()))]
 mod editor_tests;
 
 #[cfg(test)]

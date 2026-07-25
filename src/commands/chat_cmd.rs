@@ -284,6 +284,9 @@ pub fn run_create(
     // mutation unless its invocation or config explicitly selects a route.
     let selection =
         worksgood::execution_selection::require(dir, model.map(|m| (m, false)), "wg chat create")?;
+    worksgood::config::Config::load_merged(dir)?
+        .validate_pi_model_plane()
+        .context("chat creation refused: incomplete or non-Pi role routing")?;
     // Plain interactive Pi is a terminal-hosted vendor console, not the
     // hermetic wg pi-handler/plugin transport. Validate that exact executable
     // before IPC or graph/session mutation so a missing Pi is visible and
@@ -1173,7 +1176,7 @@ mod tests {
         std::fs::write(dir.join("graph.jsonl"), "").unwrap();
         std::fs::write(
             dir.join("config.toml"),
-            "[dispatcher]\nmodel = \"claude:opus\"\n",
+            worksgood::profile::named::starter_template("pi").unwrap(),
         )
         .unwrap();
         td
@@ -1209,10 +1212,7 @@ mod tests {
             .collect();
         assert_eq!(chat_tasks.len(), 1, "Should have created one chat task");
         assert!(chat_tasks[0].id.starts_with(".chat-"));
-        assert_eq!(
-            chat_tasks[0].executor_preset_name.as_deref(),
-            Some("claude")
-        );
+        assert_eq!(chat_tasks[0].executor_preset_name.as_deref(), Some("pi"));
         assert!(!chat_tasks[0].command_argv.is_empty());
         assert!(chat_tasks[0].working_dir.is_some());
     }

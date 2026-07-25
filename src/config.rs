@@ -1533,6 +1533,7 @@ impl DispatchRole {
         Self::Compactor,
         Self::Placer,
         Self::ChatCompactor,
+        Self::CoordinatorEval,
         Self::Reviewer,
     ];
 
@@ -2152,7 +2153,39 @@ impl ModelRoutingConfig {
     }
 }
 
-/// Resolved model+provider for a dispatch.
+/// Exact Pi execution identity resolved from WG orchestration policy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolvedPiRoute {
+    pub route: String,
+    pub provider: String,
+    pub model: String,
+    pub reasoning: ReasoningLevel,
+    pub source: String,
+}
+
+/// Parse the only supported LLM route shape.
+///
+/// Pi owns provider/model validation, so WG deliberately validates only the
+/// structural boundary: handler `pi`, a non-empty provider, and an exact
+/// non-empty model identity. The model remainder stays opaque to WG and may
+/// contain additional `:` or `/` characters.
+pub fn parse_exact_pi_route(route: &str) -> anyhow::Result<(String, String)> {
+    let raw = route.trim();
+    let inner = raw.strip_prefix("pi:").ok_or_else(|| {
+        anyhow::anyhow!("expected `pi:<provider>:<model>`; non-Pi handlers are unsupported")
+    })?;
+    let (provider, model) = inner.split_once(':').ok_or_else(|| {
+        anyhow::anyhow!(
+            "expected `pi:<provider>:<model>` (provider and model must be separated by `:`)"
+        )
+    })?;
+    if provider.trim().is_empty() || model.trim().is_empty() {
+        anyhow::bail!("expected non-empty provider and model in `pi:<provider>:<model>`");
+    }
+    Ok((provider.to_string(), model.to_string()))
+}
+
+/// Resolved model+provider for a legacy compatibility dispatch.
 #[derive(Debug, Clone)]
 pub struct ResolvedModel {
     pub model: String,
@@ -2660,7 +2693,7 @@ pub fn provider_to_executor(provider: &str) -> &'static str {
         // handler, so it maps to itself. This keeps `effective_executor()`
         // (and every status/reload/TUI surface that reads it) in lock-step
         // with `handler_for_model` — the single source of truth for routing —
-        // so a `pi:openrouter/...` model surfaces as `executor=pi` instead of
+        // so a `pi:openrouter:...` model surfaces as `executor=pi` instead of
         // the legacy `native`/`claude` default. `enforce_model_compat` already
         // routes the actual spawn through these handlers, so the display now
         // matches the real route instead of labeling a deprecated key.
@@ -2682,10 +2715,9 @@ pub fn provider_to_executor(provider: &str) -> &'static str {
 /// Inspect a raw config.toml string and produce deprecation warnings for
 /// any explicit `executor = …` keys.
 ///
-/// The `executor` user-facing concept was retired in favour of `(model,
-/// endpoint)` — wg derives the handler from the model spec's provider
-/// prefix. Existing configs continue to work for one release; this
-/// surface is what tells users to migrate.
+/// The `executor` user-facing concept is migration-only. Supported LLM
+/// dispatch requires an exact `pi:<provider>:<model>` route; an old executor
+/// key is readable but cannot authorize or rewrite dispatch.
 ///
 /// Detected surfaces:
 /// - `[agent].executor`                  (per-task agent default)
@@ -2736,11 +2768,9 @@ pub fn deprecated_executor_warnings_for_toml(content: &str) -> Vec<String> {
             _ => String::new(),
         };
         out.push(format!(
-            "config key `{0} = \"{1}\"` is deprecated{2}; \
-             wg now derives the handler from the model spec's provider \
-             prefix (e.g. `model = \"claude:opus\"` → claude CLI, \
-             `model = \"nex:qwen3-coder\"` → nex). Remove the explicit \
-             `executor` key; use a `provider:model` value in `model` instead.",
+            "config key `{0} = \"{1}\"` is migration-only{2}; \
+             it cannot select an LLM handler. Remove the key and configure \
+             an exact `pi:<provider>:<model>` route plus inherited reasoning.",
             label, exec_v, detail,
         ));
     }
@@ -2911,9 +2941,9 @@ pub fn provider_to_resolved_provider(provider: &str) -> &'static str {
 /// ## What it does
 ///
 /// - An explicit OpenRouter route (`openrouter:z-ai/glm-5.2`, or an alias that
-///   maps to the openrouter native provider) → `pi:openrouter/z-ai/glm-5.2`.
+///   maps to the openrouter native provider) → `pi:openrouter:z-ai/glm-5.2`.
 /// - A bare slash route (`z-ai/glm-5.2` / `openrouter/z-ai/glm-5.2`) is an
-///   OpenRouter route too → `pi:openrouter/z-ai/glm-5.2`.
+///   OpenRouter route too → `pi:openrouter:z-ai/glm-5.2`.
 /// - Everything else is left verbatim: `pi:` routes (already correct), the
 ///   `claude:` / `codex:` CLIs (auth themselves), and nex-local / oai-compat
 ///   routes (`nex:` / `oai-compat:` / `local:` …) that genuinely need the
@@ -2933,35 +2963,26 @@ pub fn pi_strong_route(spec: &str) -> String {
     if trimmed.is_empty() {
         return spec.to_string();
     }
-    let parsed = parse_model_spec(trimmed);
-    match parsed.provider.as_deref() {
-        // Explicit OpenRouter (or an alias mapping to it) → pi-served remote
-        // model pi can run with its own login and no endpoint.
-        Some(provider) if provider_to_native_provider(provider) == "openrouter" => {
-            let model_id = parsed
-                .model_id
-                .strip_prefix("openrouter/")
-                .unwrap_or(&parsed.model_id);
-            format!("pi:openrouter/{model_id}")
-        }
-        // Any other explicit provider (claude:, codex:, nex:, oai-compat:,
-        // local:, gemini:, an already-normalized pi: route, …) routes to a
-        // handler that can serve it — leave it verbatim.
-        Some(_) => trimmed.to_string(),
-        // No provider prefix. A bare `vendor/model` slash route is an OpenRouter
-        // route (matches the dispatch bare-route normalization and pi_model_arg);
-        // send it through pi. A bare single-token alias (`opus`) gives pi nothing
-        // to target, and a `pi:`/other-colon route is preserved verbatim.
-        None => {
-            if let Some(rest) = trimmed.strip_prefix("openrouter/") {
-                format!("pi:openrouter/{rest}")
-            } else if trimmed.contains('/') && !trimmed.contains(':') {
-                format!("pi:openrouter/{trimmed}")
-            } else {
-                trimmed.to_string()
-            }
-        }
+    if parse_exact_pi_route(trimmed).is_ok() {
+        return trimmed.to_string();
     }
+    if let Some(inner) = trimmed.strip_prefix("pi:")
+        && let Some((provider, model)) = inner.split_once('/')
+        && !provider.is_empty()
+        && !model.is_empty()
+    {
+        return format!("pi:{provider}:{model}");
+    }
+    if let Some(model) = trimmed
+        .strip_prefix("openrouter:")
+        .or_else(|| trimmed.strip_prefix("openrouter/"))
+    {
+        return format!("pi:openrouter:{model}");
+    }
+    if trimmed.contains('/') && !trimmed.contains(':') {
+        return format!("pi:openrouter:{trimmed}");
+    }
+    trimmed.to_string()
 }
 
 /// Reverse map: internal provider name → user-facing `provider:model` prefix.
@@ -3033,7 +3054,8 @@ impl ConfigValidation {
 }
 
 impl Config {
-    /// Built-in Anthropic model defaults.
+    /// Retired built-in catalog, retained only as source history for legacy tests.
+    #[allow(dead_code)]
     fn builtin_registry() -> Vec<ModelRegistryEntry> {
         vec![
             // Legacy model entries (for backward compatibility)
@@ -3156,21 +3178,15 @@ impl Config {
         ]
     }
 
-    /// Return merged registry: built-in entries + user-defined entries.
-    /// User entries with the same ID override built-in entries.
+    /// Return legacy user-defined registry entries.
+    ///
+    /// The registry is retained only so old configuration and expert
+    /// compatibility commands can be read and migrated deterministically. It
+    /// is not populated with built-ins and is never dispatch authority for the
+    /// supported Pi execution path. In particular, an empty registry stays
+    /// empty: WG must not synthesize a Claude route or pricing record.
     pub fn effective_registry(&self) -> Vec<ModelRegistryEntry> {
-        let builtins = Self::builtin_registry();
-        if self.model_registry.is_empty() {
-            return builtins;
-        }
-        let user_ids: std::collections::HashSet<&str> =
-            self.model_registry.iter().map(|e| e.id.as_str()).collect();
-        let mut result: Vec<ModelRegistryEntry> = builtins
-            .into_iter()
-            .filter(|e| !user_ids.contains(e.id.as_str()))
-            .collect();
-        result.extend(self.model_registry.clone());
-        result
+        self.model_registry.clone()
     }
 
     /// Effective tier config: use configured tiers, filling in defaults for unconfigured ones.
@@ -3197,33 +3213,20 @@ impl Config {
 
     /// Effective tier config (internal).
     ///
-    /// Precedence: explicit [tiers] > profile defaults > hardcoded Anthropic fallback.
+    /// Precedence: explicit `[tiers]` > explicitly selected profile. There is
+    /// deliberately no built-in model fallback: opening a graph is route-free,
+    /// and only an explicit Pi profile/config authorizes LLM execution.
     fn effective_tiers(&self) -> TierConfig {
         let profile_tiers = self.resolve_profile_tiers();
         TierConfig {
-            fast: self
-                .tiers
-                .fast
-                .clone()
-                .or(profile_tiers.fast)
-                .or_else(|| Some(format!("claude:{}", Tier::Fast.default_alias()))),
+            fast: self.tiers.fast.clone().or(profile_tiers.fast),
             fast_reasoning: self.tiers.fast_reasoning.or(profile_tiers.fast_reasoning),
-            standard: self
-                .tiers
-                .standard
-                .clone()
-                .or(profile_tiers.standard)
-                .or_else(|| Some(format!("claude:{}", Tier::Standard.default_alias()))),
+            standard: self.tiers.standard.clone().or(profile_tiers.standard),
             standard_reasoning: self
                 .tiers
                 .standard_reasoning
                 .or(profile_tiers.standard_reasoning),
-            premium: self
-                .tiers
-                .premium
-                .clone()
-                .or(profile_tiers.premium)
-                .or_else(|| Some(format!("claude:{}", Tier::Premium.default_alias()))),
+            premium: self.tiers.premium.clone().or(profile_tiers.premium),
             premium_reasoning: self
                 .tiers
                 .premium_reasoning
@@ -3327,7 +3330,7 @@ impl Config {
             .or(profile_tiers.standard)
     }
 
-    /// Raw configured tier route without the built-in display/catalog fill.
+    /// Raw configured tier route without a display/catalog fill.
     pub fn configured_tier_spec(&self, tier: Tier) -> Option<String> {
         let profile_tiers = self.resolve_profile_tiers();
         match tier {
@@ -3337,7 +3340,76 @@ impl Config {
         }
     }
 
-    /// Resolve a tier to a ResolvedModel via the tier config and registry.
+    /// Resolve one role through explicit orchestration policy only.
+    ///
+    /// This is the supported WorksGood model-plane resolver. It never consults
+    /// `model_registry`, endpoint configuration, provider credentials, or a WG
+    /// model catalog. The returned route is the exact `pi:<provider>:<model>`
+    /// identity Pi receives, and reasoning must be explicit after inheritance.
+    pub fn resolve_pi_route_for_role(&self, role: DispatchRole) -> anyhow::Result<ResolvedPiRoute> {
+        let (route, source) = if let Some(route) = self
+            .models
+            .get_role(role)
+            .and_then(|config| config.model.clone())
+        {
+            (route, format!("models.{role}.model"))
+        } else if let Some(tier) = self.models.get_role(role).and_then(|config| config.tier) {
+            (
+                self.configured_tier_spec(tier).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "error[WG-PI-ROUTE-MISSING]: role={role} selects tier={tier}, but that tier has no explicit Pi route"
+                    )
+                })?,
+                format!("tiers.{tier}"),
+            )
+        } else if let Some(route) = self.configured_tier_spec(role.default_tier()) {
+            (route, format!("tiers.{}", role.default_tier()))
+        } else if let Some(route) = self
+            .models
+            .get_role(DispatchRole::Default)
+            .and_then(|config| config.model.clone())
+        {
+            (route, "models.default.model".to_string())
+        } else if let Some(route) = self.coordinator.model.clone() {
+            (route, "dispatcher.model".to_string())
+        } else if self.agent.model.starts_with("pi:") {
+            (self.agent.model.clone(), "agent.model".to_string())
+        } else {
+            anyhow::bail!(
+                "error[WG-PI-ROUTE-MISSING]: role={role} has no explicit Pi route; select a Pi profile or configure models.{role}.model"
+            );
+        };
+
+        let (provider, model) = parse_exact_pi_route(&route).map_err(|error| {
+            anyhow::anyhow!(
+                "error[WG-PI-ROUTE-REQUIRED]: role={role} source={source} route={route:?}: {error}"
+            )
+        })?;
+        let reasoning = self.resolve_reasoning_for_role(role).ok_or_else(|| {
+            anyhow::anyhow!(
+                "error[WG-PI-REASONING-MISSING]: role={role} route={route:?} has no effective reasoning; set models.{role}.reasoning or tiers.{}_reasoning",
+                role.default_tier()
+            )
+        })?;
+        Ok(ResolvedPiRoute {
+            route,
+            provider,
+            model,
+            reasoning,
+            source,
+        })
+    }
+
+    /// Validate every LLM-backed orchestration role before service startup.
+    pub fn validate_pi_model_plane(&self) -> anyhow::Result<()> {
+        self.resolve_pi_route_for_role(DispatchRole::Default)?;
+        for role in DispatchRole::ALL {
+            self.resolve_pi_route_for_role(*role)?;
+        }
+        Ok(())
+    }
+
+    /// Resolve a tier to a ResolvedModel via the tier config and legacy registry.
     pub fn resolve_tier(&self, tier: Tier) -> Option<ResolvedModel> {
         let tiers = self.effective_tiers();
         let model_id = match tier {
@@ -3976,8 +4048,9 @@ pub struct AgentConfig {
     )]
     pub executor: String,
 
-    /// Model to use (e.g., "opus-4-5", "sonnet", "haiku")
-    #[serde(default = "default_model")]
+    /// Exact Pi route used when no more-specific orchestration role overrides it.
+    /// Empty in graph-only configuration; LLM dispatch then fails closed.
+    #[serde(default = "default_model", skip_serializing_if = "String::is_empty")]
     pub model: String,
 
     /// Default sleep interval between agent iterations (seconds)
@@ -4751,7 +4824,9 @@ pub struct ProjectConfig {
 }
 
 fn default_executor() -> String {
-    "claude".to_string()
+    // Compatibility storage only. Handler selection is derived exclusively
+    // from exact `pi:<provider>:<model>` routes.
+    "pi".to_string()
 }
 
 fn is_default_executor(s: &str) -> bool {
@@ -4759,7 +4834,8 @@ fn is_default_executor(s: &str) -> bool {
 }
 
 fn default_model() -> String {
-    "claude:opus".to_string()
+    // Opening or initializing a graph must not synthesize an LLM route.
+    String::new()
 }
 
 fn default_interval() -> u64 {
@@ -5865,6 +5941,7 @@ impl Config {
         "models.assigner.model",
         "models.flip_inference.model",
         "models.flip_comparison.model",
+        "models.reviewer.model",
     ];
 
     /// Reasoning keys controlled by a two-tier strong-reasoning update.
@@ -5873,6 +5950,7 @@ impl Config {
     pub const PI_STRONG_REASONING_TOML_KEYS: &'static [&'static str] = &[
         "tiers.standard_reasoning",
         "tiers.premium_reasoning",
+        "models.default.reasoning",
         "models.task_agent.reasoning",
     ];
 
@@ -5883,6 +5961,7 @@ impl Config {
         "models.assigner.reasoning",
         "models.flip_inference.reasoning",
         "models.flip_comparison.reasoning",
+        "models.reviewer.reasoning",
     ];
 
     /// Read the Pi profile's `(strong, weak)` tier models from this config.
@@ -5933,10 +6012,6 @@ impl Config {
     /// `profile::named::patch_pi_tiers`, which targets the same TOML keys.
     pub fn set_pi_tiers(&mut self, strong: Option<&str>, weak: Option<&str>) {
         if let Some(s) = strong {
-            // Strong tier must execute through the self-authenticating pi
-            // handler, never the in-process nex OpenRouter client (which would
-            // require a wg-side key). Normalize an `openrouter:`/bare route to a
-            // `pi:` route; CLI / pi / nex-local specs pass through unchanged.
             let s = pi_strong_route(s);
             self.agent.model = s.clone();
             self.coordinator.model = Some(s.clone());
@@ -5945,27 +6020,32 @@ impl Config {
                 model: Some(s.clone()),
                 tier: None,
                 endpoint: None,
-                reasoning: None,
+                reasoning: Some(ReasoningLevel::High),
             };
             self.models.default = Some(role.clone());
             self.models.task_agent = Some(role);
             self.tiers.standard = Some(s.clone());
+            self.tiers.standard_reasoning = Some(ReasoningLevel::High);
             self.tiers.premium = Some(s);
+            self.tiers.premium_reasoning = Some(ReasoningLevel::Xhigh);
         }
         if let Some(w) = weak {
-            self.tiers.fast = Some(w.to_string());
+            let w = pi_strong_route(w);
+            self.tiers.fast = Some(w.clone());
+            self.tiers.fast_reasoning = Some(ReasoningLevel::Low);
             for role in [
                 DispatchRole::Evaluator,
                 DispatchRole::Assigner,
                 DispatchRole::FlipInference,
                 DispatchRole::FlipComparison,
+                DispatchRole::Reviewer,
             ] {
                 *self.models.get_role_mut(role) = Some(RoleModelConfig {
                     provider: None,
-                    model: Some(w.to_string()),
+                    model: Some(w.clone()),
                     tier: None,
                     endpoint: None,
-                    reasoning: None,
+                    reasoning: Some(ReasoningLevel::Low),
                 });
             }
         }
@@ -6190,8 +6270,12 @@ impl Config {
             }
         };
 
-        // agent.model
-        if let Some(err) = check_model("agent.model", &self.agent.model) {
+        // An empty agent.model is the intentional graph-only state. It is
+        // readable, but Pi model-plane validation will fail closed before any
+        // LLM-backed operation.
+        if !self.agent.model.trim().is_empty()
+            && let Some(err) = check_model("agent.model", &self.agent.model)
+        {
             errors.push(err);
         }
 
@@ -6532,11 +6616,12 @@ mod tests {
     }
 
     #[test]
-    fn test_default_config() {
+    fn test_default_config_is_graph_only() {
         let config = Config::default();
-        assert_eq!(config.agent.executor, "claude");
-        assert_eq!(config.agent.model, "claude:opus");
+        assert_eq!(config.agent.executor, "pi");
+        assert!(config.agent.model.is_empty());
         assert_eq!(config.agent.interval, 10);
+        assert!(config.validate_pi_model_plane().is_err());
     }
 
     #[test]
@@ -6697,10 +6782,11 @@ standard_reasoning = "xhigh"
     }
 
     #[test]
-    fn test_load_missing_config() {
+    fn test_load_missing_config_is_graph_only() {
         let temp_dir = TempDir::new().unwrap();
         let config = Config::load(temp_dir.path()).unwrap();
-        assert_eq!(config.agent.executor, "claude");
+        assert_eq!(config.agent.executor, "pi");
+        assert!(config.agent.model.is_empty());
     }
 
     #[test]
@@ -7228,12 +7314,11 @@ model = "claude:haiku"
         // If global config uses old format, this will error — that's expected
         match Config::load_merged(temp_dir.path()) {
             Ok(config) => {
-                // Executor can be either the code default "claude" or the global config override
-                assert!(
-                    config.agent.executor == "claude" || config.agent.executor == "native",
-                    "Expected executor to be 'claude' (default) or 'native' (global config), got: {}",
-                    config.agent.executor
-                );
+                // Fresh defaults are Pi-shaped but route-free. A legacy global
+                // executor may remain readable migration data.
+                if config.agent.executor == "pi" {
+                    assert!(config.agent.model.is_empty() || config.agent.model.starts_with("pi:"));
+                }
             }
             Err(e) => {
                 let msg = e.to_string();
@@ -7272,6 +7357,7 @@ model = "claude:haiku"
     }
 
     #[test]
+    #[ignore = "retired WG model-registry/default compatibility behavior"]
     fn test_resolve_triage_default() {
         // With no config, triage resolves via Fast tier → haiku registry entry
         let config = Config::default();
@@ -7283,6 +7369,7 @@ model = "claude:haiku"
     }
 
     #[test]
+    #[ignore = "retired WG model-registry/default compatibility behavior"]
     fn test_resolve_flip_inference_default() {
         // With no config, flip_inference resolves via Fast tier → haiku registry entry
         let config = Config::default();
@@ -7292,6 +7379,7 @@ model = "claude:haiku"
     }
 
     #[test]
+    #[ignore = "retired WG model-registry/default compatibility behavior"]
     fn test_resolve_flip_comparison_default() {
         let config = Config::default();
         let resolved = config.resolve_model_for_role(DispatchRole::FlipComparison);
@@ -7299,11 +7387,15 @@ model = "claude:haiku"
     }
 
     #[test]
-    fn test_resolve_verification_default() {
-        // Verification defaults to Premium tier → opus
+    fn test_resolve_verification_default_is_route_free() {
         let config = Config::default();
         let resolved = config.resolve_model_for_role(DispatchRole::Verification);
-        assert_eq!(resolved.model, CLAUDE_OPUS_MODEL_ID);
+        assert!(resolved.model.is_empty());
+        assert!(
+            config
+                .resolve_pi_route_for_role(DispatchRole::Verification)
+                .is_err()
+        );
     }
 
     #[test]
@@ -7323,6 +7415,7 @@ model = "claude:haiku"
     }
 
     #[test]
+    #[ignore = "retired WG model-registry/default compatibility behavior"]
     fn test_resolve_evaluator_uses_fast_tier() {
         // Evaluator resolves via Fast tier → haiku registry entry (cheap metacognition)
         let config = Config::default();
@@ -7331,6 +7424,7 @@ model = "claude:haiku"
     }
 
     #[test]
+    #[ignore = "retired WG model-registry/default compatibility behavior"]
     fn test_default_provider_cascades_to_tier_defaults() {
         // Setting [models.default].provider = "openrouter" should cascade
         // to roles that use tier defaults (triage, flip_comparison, etc.)
@@ -7421,6 +7515,7 @@ model = "claude:haiku"
     }
 
     #[test]
+    #[ignore = "retired WG model-registry/default compatibility behavior"]
     fn test_default_provider_cascades_to_global_fallback() {
         // Evaluator resolves via Fast tier; default provider overrides registry provider
         let mut config = Config::default();
@@ -7562,6 +7657,7 @@ model = "claude:haiku"
     }
 
     #[test]
+    #[ignore = "retired WG model-registry/default compatibility behavior"]
     fn test_effective_registry_returns_builtins_when_empty() {
         let config = Config::default();
         let registry = config.effective_registry();
@@ -7581,6 +7677,7 @@ model = "claude:haiku"
     }
 
     #[test]
+    #[ignore = "retired WG model-registry/default compatibility behavior"]
     fn test_effective_registry_returns_custom_when_configured() {
         let mut config = Config::default();
         config.model_registry = vec![ModelRegistryEntry {
@@ -7598,6 +7695,7 @@ model = "claude:haiku"
     }
 
     #[test]
+    #[ignore = "retired WG model-registry/default compatibility behavior"]
     fn test_effective_registry_custom_overrides_builtin() {
         let mut config = Config::default();
         config.model_registry = vec![ModelRegistryEntry {
@@ -7616,6 +7714,7 @@ model = "claude:haiku"
     }
 
     #[test]
+    #[ignore = "retired WG model-registry/default compatibility behavior"]
     fn test_resolve_tier_with_registry() {
         let config = Config::default();
         let resolved = config.resolve_tier(Tier::Fast).unwrap();
@@ -7635,8 +7734,7 @@ model = "claude:haiku"
     }
 
     #[test]
-    fn test_role_tier_override() {
-        // [models.evaluator].tier = "premium" should resolve to opus
+    fn test_role_tier_override_does_not_synthesize_a_route() {
         let mut config = Config::default();
         config.models.evaluator = Some(RoleModelConfig {
             model: None,
@@ -7646,7 +7744,7 @@ model = "claude:haiku"
             reasoning: None,
         });
         let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
-        assert_eq!(resolved.model, CLAUDE_OPUS_MODEL_ID);
+        assert!(resolved.model.is_empty());
     }
 
     #[test]
@@ -8398,6 +8496,7 @@ model = "claude:haiku"
     // --- effective_compaction_threshold tests ---
 
     #[test]
+    #[ignore = "retired WG model-registry/default compatibility behavior"]
     fn test_effective_compaction_threshold_dynamic_from_registry() {
         // Built-in "haiku" has context_window=200_000; 80% = 160_000
         let mut config = Config::default();
@@ -8436,6 +8535,7 @@ model = "claude:haiku"
     }
 
     #[test]
+    #[ignore = "retired WG model-registry/default compatibility behavior"]
     fn test_effective_compaction_threshold_fallback_no_model() {
         // No coordinator model → falls back to agent.model
         let config = Config::default();
@@ -8457,6 +8557,7 @@ model = "claude:haiku"
     }
 
     #[test]
+    #[ignore = "retired WG model-registry/default compatibility behavior"]
     fn test_effective_compaction_threshold_custom_ratio() {
         // sonnet has context_window=200_000; 60% = 120_000
         let mut config = Config::default();
@@ -8469,6 +8570,7 @@ model = "claude:haiku"
     // ---- Registry resolution in resolve_model_for_role steps 1, 2, 5, 6 ----
 
     #[test]
+    #[ignore = "retired WG model-registry/default compatibility behavior"]
     fn test_registry_resolve_step1_role_model_override() {
         // Step 1: [models.evaluator].model = "sonnet" should resolve via registry
         let mut config = Config::default();
@@ -8510,6 +8612,7 @@ model = "claude:haiku"
     }
 
     #[test]
+    #[ignore = "retired WG model-registry/default compatibility behavior"]
     fn test_registry_resolve_step1_provider_override_beats_registry() {
         // Step 1: explicit provider in role config overrides registry provider
         let mut config = Config::default();
@@ -8658,6 +8761,7 @@ model = "claude:haiku"
     }
 
     #[test]
+    #[ignore = "retired WG model-registry/default compatibility behavior"]
     fn test_validate_config_known_model_id_no_warning() {
         let mut config = Config::default();
         config.models.default = Some(RoleModelConfig {
@@ -9116,7 +9220,7 @@ provider = "openrouter"
         config.coordinator.executor = None;
         config.coordinator.model = None;
         config.coordinator.provider = None;
-        config.agent.model = "pi:openrouter/z-ai/glm-4.6".to_string();
+        config.agent.model = "pi:openrouter:z-ai/glm-4.6".to_string();
         // The legacy field-based `effective_executor` cannot see agent.model
         // and would fall back to "claude" — the display-facing resolver must
         // not repeat that mistake.
@@ -9150,7 +9254,7 @@ model = "pi:openrouter:anthropic/claude-opus-4-7"
         assert_eq!(config.effective_dispatcher_executor(), "pi");
     }
 
-    /// The deprecated-executor warning is precise: it fires only when the
+    /// The migration-only executor warning is precise: it fires only when the
     /// explicit `executor = …` KEY is present, and its message names that key
     /// (not the concept of a running handler). Restoring a deprecated
     /// `executor` key to "fix" the display must remain the wrong move.
@@ -9173,8 +9277,8 @@ model = "pi:openrouter:anthropic/claude-opus-4-7"
             "warning must name the explicit config key, got: {w}"
         );
         assert!(
-            w.contains("deprecated"),
-            "warning must call the key deprecated, got: {w}"
+            w.contains("migration-only"),
+            "warning must call the key migration-only, got: {w}"
         );
         // It must NOT tell the user to keep the deprecated key to fix display.
         assert!(
@@ -9319,7 +9423,7 @@ model = "pi:openrouter:anthropic/claude-opus-4-7"
         assert!(w.contains("not a handler"), "{w}");
         // Handler-first forms and bare aliases are silent.
         assert!(handler_first_warning("nex:openrouter:z-ai/glm-5.2").is_none());
-        assert!(handler_first_warning("pi:openrouter/z-ai/glm-5.2").is_none());
+        assert!(handler_first_warning("pi:openrouter:z-ai/glm-5.2").is_none());
         assert!(handler_first_warning("claude:opus").is_none());
         assert!(handler_first_warning("opus").is_none());
     }
@@ -9367,9 +9471,9 @@ model = "pi:openrouter:anthropic/claude-opus-4-7"
         assert_eq!(spec.provider.as_deref(), Some("nex"));
         assert_eq!(spec.model_id, "openrouter:z-ai/glm-5.2");
 
-        let spec = parse_model_spec_strict("pi:openrouter/z-ai/glm-5.2").unwrap();
+        let spec = parse_model_spec_strict("pi:openrouter:z-ai/glm-5.2").unwrap();
         assert_eq!(spec.provider.as_deref(), Some("pi"));
-        assert_eq!(spec.model_id, "openrouter/z-ai/glm-5.2");
+        assert_eq!(spec.model_id, "openrouter:z-ai/glm-5.2");
 
         // claude:opus and bare opus/sonnet/haiku → claude, unchanged.
         let spec = parse_model_spec_strict("claude:opus").unwrap();
@@ -9485,7 +9589,7 @@ model = "oai-compat:gpt-5"
     fn test_deprecated_model_prefix_warnings_canonical_silent() {
         // Handler-first canonical forms must NOT emit a warning: `nex:`
         // (canonical handler), `claude:` (handler-name match), the nested
-        // `nex:openrouter:…` form, and `pi:openrouter/…` (handler-qualified).
+        // `nex:openrouter:…` form, and `pi:openrouter:…` (handler-qualified).
         let toml = r#"
 [agent]
 model = "nex:qwen3-coder"
@@ -9493,7 +9597,7 @@ model = "nex:qwen3-coder"
 [tiers]
 fast = "claude:haiku"
 standard = "nex:openrouter:anthropic/claude-sonnet-4-6"
-premium = "pi:openrouter/anthropic/claude-opus-4-6"
+premium = "pi:openrouter:anthropic/claude-opus-4-6"
 "#;
         let warnings = deprecated_model_prefix_warnings_for_toml(toml);
         assert!(
@@ -9583,6 +9687,7 @@ model = "local:qwen3-coder"
     }
 
     #[test]
+    #[ignore = "retired WG model-registry/default compatibility behavior"]
     fn test_resolve_tier_claude_prefix() {
         let mut config = Config::default();
         config.tiers.premium = Some("claude:opus".into());
@@ -9756,6 +9861,7 @@ model = "local:qwen3-coder"
     // ---- Profile-aware tier resolution tests ----
 
     #[test]
+    #[ignore = "retired WG model-registry/default compatibility behavior"]
     fn test_effective_tiers_no_profile_uses_defaults() {
         let config = Config::default();
         let tiers = config.effective_tiers();
@@ -9798,6 +9904,7 @@ model = "local:qwen3-coder"
     }
 
     #[test]
+    #[ignore = "retired WG model-registry/default compatibility behavior"]
     fn test_unknown_profile_falls_through_to_defaults() {
         let mut config = Config::default();
         config.profile = Some("nonexistent".into());
@@ -9809,6 +9916,7 @@ model = "local:qwen3-coder"
     }
 
     #[test]
+    #[ignore = "retired WG model-registry/default compatibility behavior"]
     fn test_dynamic_profile_falls_through_to_defaults() {
         let mut config = Config::default();
         config.profile = Some("openrouter".into());
@@ -10796,7 +10904,8 @@ fetch_max_chars = 16000
 
     #[test]
     fn test_alias_claude_opus_resolves_to_bare_opus() {
-        let config = Config::default();
+        let mut config = Config::default();
+        config.agent.model = "claude:opus".into();
         let resolved = config.resolve_model_for_role(DispatchRole::Verification);
         assert_eq!(
             resolved.model, "opus",
@@ -10822,6 +10931,7 @@ fetch_max_chars = 16000
     }
 
     #[test]
+    #[ignore = "retired WG model-registry/default compatibility behavior"]
     fn test_alias_claude_haiku_resolves_to_bare_haiku() {
         let config = Config::default();
         let resolved = config.resolve_model_for_role(DispatchRole::Triage);
@@ -11037,10 +11147,10 @@ model = "codex:gpt-5.5"
     #[test]
     fn test_pi_tiers_reads_strong_from_agent_and_weak_from_fast() {
         let mut cfg = Config::default();
-        cfg.agent.model = "pi:openrouter/z-ai/glm-5.2".to_string();
+        cfg.agent.model = "pi:openrouter:z-ai/glm-5.2".to_string();
         cfg.tiers.fast = Some("openrouter:deepseek/deepseek-chat".to_string());
         let (strong, weak) = cfg.pi_tiers();
-        assert_eq!(strong.as_deref(), Some("pi:openrouter/z-ai/glm-5.2"));
+        assert_eq!(strong.as_deref(), Some("pi:openrouter:z-ai/glm-5.2"));
         assert_eq!(weak.as_deref(), Some("openrouter:deepseek/deepseek-chat"));
     }
 
@@ -11052,29 +11162,29 @@ model = "codex:gpt-5.5"
         // spec) so strong-tier work runs through the self-authenticating pi
         // handler rather than the in-process nex OpenRouter client. Weak keys
         // untouched.
-        assert_eq!(cfg.agent.model, "pi:openrouter/z-ai/glm-5.2");
+        assert_eq!(cfg.agent.model, "pi:openrouter:z-ai/glm-5.2");
         assert_eq!(
             cfg.coordinator.model.as_deref(),
-            Some("pi:openrouter/z-ai/glm-5.2")
+            Some("pi:openrouter:z-ai/glm-5.2")
         );
         assert_eq!(
             cfg.tiers.standard.as_deref(),
-            Some("pi:openrouter/z-ai/glm-5.2")
+            Some("pi:openrouter:z-ai/glm-5.2")
         );
         assert_eq!(
             cfg.tiers.premium.as_deref(),
-            Some("pi:openrouter/z-ai/glm-5.2")
+            Some("pi:openrouter:z-ai/glm-5.2")
         );
         assert_eq!(
             cfg.models.default.as_ref().and_then(|m| m.model.as_deref()),
-            Some("pi:openrouter/z-ai/glm-5.2")
+            Some("pi:openrouter:z-ai/glm-5.2")
         );
         assert_eq!(
             cfg.models
                 .task_agent
                 .as_ref()
                 .and_then(|m| m.model.as_deref()),
-            Some("pi:openrouter/z-ai/glm-5.2")
+            Some("pi:openrouter:z-ai/glm-5.2")
         );
         // The strong spec routes to the pi handler (single source of truth).
         assert_eq!(
@@ -11092,7 +11202,7 @@ model = "codex:gpt-5.5"
         cfg.set_pi_tiers(None, Some("openrouter:deepseek/deepseek-chat"));
         assert_eq!(
             cfg.tiers.fast.as_deref(),
-            Some("openrouter:deepseek/deepseek-chat")
+            Some("pi:openrouter:deepseek/deepseek-chat")
         );
         for role in [
             DispatchRole::Evaluator,
@@ -11102,7 +11212,7 @@ model = "codex:gpt-5.5"
         ] {
             assert_eq!(
                 cfg.models.get_role(role).and_then(|m| m.model.as_deref()),
-                Some("openrouter:deepseek/deepseek-chat"),
+                Some("pi:openrouter:deepseek/deepseek-chat"),
                 "weak update must pin the {role:?} agency one-shot"
             );
         }
@@ -11118,10 +11228,11 @@ model = "codex:gpt-5.5"
             Some("openrouter:deepseek/deepseek-v3.1"),
         );
         let (strong, weak) = cfg.pi_tiers();
-        // Strong is normalized to a pi: route on write; weak (agency one-shots)
-        // keeps its native openrouter: route for the keyless-native fallback.
-        assert_eq!(strong.as_deref(), Some("pi:openrouter/qwen/qwen3-max"));
-        assert_eq!(weak.as_deref(), Some("openrouter:deepseek/deepseek-v3.1"));
+        assert_eq!(strong.as_deref(), Some("pi:openrouter:qwen/qwen3-max"));
+        assert_eq!(
+            weak.as_deref(),
+            Some("pi:openrouter:deepseek/deepseek-v3.1")
+        );
     }
 
     #[test]
@@ -11130,21 +11241,21 @@ model = "codex:gpt-5.5"
         // to nex and required a wg-side key) become pi: routes.
         assert_eq!(
             pi_strong_route("openrouter:z-ai/glm-5.2"),
-            "pi:openrouter/z-ai/glm-5.2"
+            "pi:openrouter:z-ai/glm-5.2"
         );
         // Bare slash / CLI-slash routes are OpenRouter routes too.
         assert_eq!(
             pi_strong_route("z-ai/glm-5.2"),
-            "pi:openrouter/z-ai/glm-5.2"
+            "pi:openrouter:z-ai/glm-5.2"
         );
         assert_eq!(
             pi_strong_route("openrouter/z-ai/glm-5.2"),
-            "pi:openrouter/z-ai/glm-5.2"
+            "pi:openrouter:z-ai/glm-5.2"
         );
         // Idempotent: an already-pi: route is preserved verbatim.
         assert_eq!(
-            pi_strong_route("pi:openrouter/z-ai/glm-5.2"),
-            "pi:openrouter/z-ai/glm-5.2"
+            pi_strong_route("pi:openrouter:z-ai/glm-5.2"),
+            "pi:openrouter:z-ai/glm-5.2"
         );
         // Self-authenticating CLIs are left alone (they need no wg key, no pi).
         assert_eq!(pi_strong_route("claude:opus"), "claude:opus");

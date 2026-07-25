@@ -443,10 +443,15 @@ pub fn run(dir: &Path, opts: RecoverOptions) -> Result<()> {
         anyhow::bail!("WG not initialized. Run 'wg init' first.");
     }
 
-    if let Some(m) = &opts.set_model
-        && let Err(e) = worksgood::config::parse_model_spec_strict(m)
-    {
-        anyhow::bail!("Invalid --set-model format: {}", e);
+    if opts.set_endpoint.is_some() {
+        anyhow::bail!("--set-endpoint is unsupported; configure endpoints in Pi");
+    }
+    if let Some(model) = &opts.set_model {
+        worksgood::config::parse_exact_pi_route(model).with_context(|| {
+            format!(
+                "WG-PI-ROUTE-REQUIRED: --set-model must be `pi:<provider>:<model>`, got {model:?}"
+            )
+        })?;
     }
 
     let graph = worksgood::parser::load_graph(&path).context("Failed to load graph")?;

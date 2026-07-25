@@ -31,7 +31,10 @@ pub const STARTER_OPENCODE: &str = include_str!("templates/opencode.toml");
 pub const STARTER_PI: &str = include_str!("templates/pi.toml");
 
 /// The built-in starter profile names.
-pub const STARTER_NAMES: &[&str] = &["claude", "codex", "nex", "opencode", "pi"];
+/// Supported starter profiles. Legacy templates remain loadable only for
+/// deterministic migration/inspection; they are not offered as execution
+/// choices and cannot pass Pi model-plane validation.
+pub const STARTER_NAMES: &[&str] = &["pi"];
 
 /// Legacy starter name retired in favour of the canonical `nex` name (matching
 /// the `wg nex` subcommand). Recognised by `load()` and `init_starters()` so
@@ -951,8 +954,13 @@ pub fn patch_two_tier_profile(
         }
     }
     if let Some(w) = weak {
+        let w = if normalize_pi_strong {
+            crate::config::pi_strong_route(w)
+        } else {
+            w.to_string()
+        };
         for dotted in Config::PI_WEAK_TOML_KEYS {
-            content = set_toml_string_value(&content, dotted, w);
+            content = set_toml_string_value(&content, dotted, &w);
         }
     }
     if let Some(reasoning) = strong_reasoning {
@@ -978,13 +986,16 @@ pub fn patch_two_tier_profile(
     }
 
     // Refuse to persist an invalid reasoning value or malformed profile.
-    let _check: Config = toml::from_str(&content).map_err(|e| {
+    let check: Config = toml::from_str(&content).map_err(|e| {
         anyhow::anyhow!(
             "Patched profile '{}' failed to parse as Config: {}",
             name,
             e
         )
     })?;
+    if normalize_pi_strong {
+        check.validate_pi_model_plane()?;
+    }
     save_raw(name, &content)?;
     Ok(path)
 }
@@ -1078,17 +1089,15 @@ pub struct RoleModelOverrideOutcome {
 /// (lib unit tests + bin unit tests) would otherwise hit.
 ///
 /// Validates the role parses as a [`crate::config::DispatchRole`] and the model
-/// spec is handler-first ([`crate::config::parse_model_spec_strict`]), then —
+/// spec is an exact Pi route ([`crate::config::parse_exact_pi_route`]), then —
 /// unless `dry_run` — patches `~/.wg/profiles/<profile>.toml` via the
 /// comment-preserving line patcher ([`patch_role_model`]) and, when the edited
 /// profile is the active one, re-applies it as the global config so the next
 /// spawned worker picks up the change.
 ///
-/// Handler-first model specs are preserved **verbatim** — a `pi:openrouter/...`
-/// route stays a `pi:` route. We do NOT run the strong-tier `pi_strong_route`
-/// normalization, because a per-role override may legitimately be a native
-/// `openrouter:` route (the weak agency tier) or a `pi:` route; the user
-/// explicitly picks the route for this one role. Per-role overrides always win
+/// Exact Pi model specs are preserved **verbatim**. Native/OpenRouter and other
+/// non-Pi handler routes are migration data only and are rejected here. Per-role
+/// overrides always win
 /// over the two-tier (`wg profile pi`) strong/weak key-set, so this is the
 /// escape hatch when a single role needs to diverge from its tier.
 ///
@@ -1100,7 +1109,7 @@ pub fn set_role_model_override(
     model: &str,
     dry_run: bool,
 ) -> Result<RoleModelOverrideOutcome> {
-    use crate::config::{DispatchRole, parse_model_spec_strict};
+    use crate::config::{DispatchRole, parse_exact_pi_route};
 
     let dispatch_role: DispatchRole = role.parse().with_context(|| {
         format!(
@@ -1111,11 +1120,10 @@ pub fn set_role_model_override(
         )
     })?;
 
-    parse_model_spec_strict(model).with_context(|| {
+    parse_exact_pi_route(model).with_context(|| {
         format!(
-            "Invalid model spec '{}'. Use handler-first provider:model format \
-             (e.g., 'claude:opus', 'pi:openrouter/z-ai/glm-5.2', \
-             'openrouter:deepseek/deepseek-chat').",
+            "Invalid Pi route '{}'. Use exact `pi:<provider>:<model>` format; \
+             provider/model discovery and validation belong to Pi.",
             model,
         )
     })?;
@@ -1381,8 +1389,8 @@ is_default = true
         // carry an explicit pin — they ride their tier (premium=strong /
         // fast=weak) so `wg profile pi` can move them as a unit.
         let prof = parse_profile(STARTER_PI, Path::new("pi.toml"), "pi").unwrap();
-        let worker = "pi:openrouter/z-ai/glm-5.2";
-        let agency = "openrouter:deepseek/deepseek-chat";
+        let worker = "pi:openrouter:z-ai/glm-5.2";
+        let agency = "pi:openrouter:deepseek/deepseek-chat";
         assert_eq!(prof.config.agent.model, worker);
         assert_eq!(prof.config.coordinator.model.as_deref(), Some(worker));
         assert_eq!(prof.config.tiers.fast.as_deref(), Some(agency));
@@ -1441,24 +1449,10 @@ is_default = true
     }
 
     #[test]
-    fn test_pi_starter_documents_plugin_placement() {
-        // The pi.toml comment block must document plugin install/placement so a
-        // user activating the profile knows the plugin must be present in the pi
-        // process (task validation: "pi.toml documents the plugin
-        // install/placement in a comment block").
+    fn test_pi_starter_documents_model_plane_ownership() {
         let tmpl = starter_template("pi").unwrap();
-        assert!(
-            tmpl.contains("~/.pi/agent/extensions/"),
-            "pi.toml must document the global extensions dir (sidesteps the project trust gate)"
-        );
-        assert!(
-            tmpl.contains(".pi/extensions") && tmpl.contains("project_trust"),
-            "pi.toml must document the project extensions dir + its project_trust gate"
-        );
-        assert!(
-            tmpl.contains("wg-pi-host.mjs"),
-            "pi.toml must document the Topology-B Node-host bundle path"
-        );
+        assert!(tmpl.contains("Pi owns providers, authentication, model discovery"));
+        assert!(tmpl.contains("No WG endpoint, API key, or model-registry entry is required"));
     }
 
     #[test]
@@ -1612,7 +1606,7 @@ is_default = true
             );
             // The pi profile's routing keys must take effect.
             assert!(
-                written.contains("pi:openrouter/z-ai/glm-5.2"),
+                written.contains("pi:openrouter:z-ai/glm-5.2"),
                 "pi strong-tier route must be present. Got:\n{}",
                 written,
             );
@@ -1632,7 +1626,7 @@ is_default = true
             let cfg = Config::load_global()
                 .unwrap()
                 .expect("global must be present");
-            assert_eq!(cfg.agent.model, "pi:openrouter/z-ai/glm-5.2");
+            assert_eq!(cfg.agent.model, "pi:openrouter:z-ai/glm-5.2");
             let ep = cfg
                 .llm_endpoints
                 .find_by_name("openrouter")
@@ -1851,25 +1845,11 @@ assigner_agent = "local-agent"
     }
 
     #[test]
-    fn test_starter_names_uses_canonical_nex_name() {
-        assert!(
-            STARTER_NAMES.contains(&"nex"),
-            "STARTER_NAMES must include the canonical 'nex' name (matches `wg nex`); got {:?}",
-            STARTER_NAMES
-        );
-        assert!(
-            !STARTER_NAMES.contains(&"wgnext"),
-            "STARTER_NAMES must NOT include the legacy 'wgnext' name; got {:?}",
-            STARTER_NAMES
-        );
-        assert!(
-            starter_template("nex").is_some(),
-            "starter_template(\"nex\") must return the template"
-        );
-        assert!(
-            starter_template("wgnext").is_none(),
-            "starter_template(\"wgnext\") must NOT return a template (legacy name retired)"
-        );
+    fn test_starter_names_offer_only_pi() {
+        assert_eq!(STARTER_NAMES, &["pi"]);
+        assert!(starter_template("pi").is_some());
+        // Legacy templates remain parseable by explicit name for migration.
+        assert!(starter_template("nex").is_some());
     }
 
     #[test]
@@ -2065,26 +2045,29 @@ assigner_agent = "local-agent"
             )
             .unwrap();
             let content = std::fs::read_to_string(&path).unwrap();
-            // Comment block survives the write.
-            assert!(content.contains("WORKSGOOD PI INSTALL"));
+            // Pi-ownership comment survives the write.
+            assert!(content.contains("Pi owns providers, authentication, model discovery"));
             // Parse and verify the full key-set via the reader. The strong tier
             // is normalized to a pi: route on write (so it runs through the
             // self-authenticating pi handler, not the in-process nex OpenRouter
             // client); the weak/agency tier keeps its native openrouter: route.
             let cfg: Config = toml::from_str(&content).unwrap();
             let (strong, weak) = cfg.pi_tiers();
-            assert_eq!(strong.as_deref(), Some("pi:openrouter/z-ai/glm-5.2"));
-            assert_eq!(weak.as_deref(), Some("openrouter:deepseek/deepseek-v3.1"));
+            assert_eq!(strong.as_deref(), Some("pi:openrouter:z-ai/glm-5.2"));
+            assert_eq!(
+                weak.as_deref(),
+                Some("pi:openrouter:deepseek/deepseek-v3.1")
+            );
             assert_eq!(
                 cfg.tiers.premium.as_deref(),
-                Some("pi:openrouter/z-ai/glm-5.2")
+                Some("pi:openrouter:z-ai/glm-5.2")
             );
             assert_eq!(
                 cfg.models
                     .assigner
                     .as_ref()
                     .and_then(|m| m.model.as_deref()),
-                Some("openrouter:deepseek/deepseek-v3.1")
+                Some("pi:openrouter:deepseek/deepseek-v3.1")
             );
         });
     }
@@ -2093,12 +2076,16 @@ assigner_agent = "local-agent"
     fn test_patch_pi_tiers_partial_leaves_other_tier_intact() {
         let _tmp = with_home(|| {
             // Seed by setting both, then patch only weak; strong must persist.
-            patch_pi_tiers("pi", Some("strong:v1"), Some("weak:v1")).unwrap();
-            let path = patch_pi_tiers("pi", None, Some("weak:v2")).unwrap();
+            patch_pi_tiers("pi", Some("pi:test:strong-v1"), Some("pi:test:weak-v1")).unwrap();
+            let path = patch_pi_tiers("pi", None, Some("pi:test:weak-v2")).unwrap();
             let cfg: Config = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
             let (strong, weak) = cfg.pi_tiers();
-            assert_eq!(strong.as_deref(), Some("strong:v1"), "strong untouched");
-            assert_eq!(weak.as_deref(), Some("weak:v2"));
+            assert_eq!(
+                strong.as_deref(),
+                Some("pi:test:strong-v1"),
+                "strong untouched"
+            );
+            assert_eq!(weak.as_deref(), Some("pi:test:weak-v2"));
         });
     }
 
@@ -2221,17 +2208,17 @@ reasoning = "high"
             let path = patch_role_model(
                 "pi",
                 "models.task_agent.model",
-                "pi:openrouter/deepseek/deepseek-v4-flash",
+                "pi:openrouter:deepseek/deepseek-v4-flash",
             )
             .unwrap();
             let content = std::fs::read_to_string(&path).unwrap();
             // Comments survive.
-            assert!(content.contains("WORKSGOOD PI INSTALL"));
+            assert!(content.contains("Pi owns providers, authentication, model discovery"));
             let cfg: Config = toml::from_str(&content).unwrap();
             // default stays on the starter GLM route (untouched).
             assert_eq!(
                 cfg.models.default.as_ref().and_then(|m| m.model.as_deref()),
-                Some("pi:openrouter/z-ai/glm-5.2")
+                Some("pi:openrouter:z-ai/glm-5.2")
             );
             // task_agent now carries the override verbatim, pi: route preserved.
             assert_eq!(
@@ -2239,12 +2226,12 @@ reasoning = "high"
                     .task_agent
                     .as_ref()
                     .and_then(|m| m.model.as_deref()),
-                Some("pi:openrouter/deepseek/deepseek-v4-flash")
+                Some("pi:openrouter:deepseek/deepseek-v4-flash")
             );
             // The two-tier reader still reports the starter strong (agent.model
             // is untouched by a per-role override) — per-role wins at dispatch.
             let (strong, _weak) = cfg.pi_tiers();
-            assert_eq!(strong.as_deref(), Some("pi:openrouter/z-ai/glm-5.2"));
+            assert_eq!(strong.as_deref(), Some("pi:openrouter:z-ai/glm-5.2"));
         });
     }
 
@@ -2300,13 +2287,13 @@ reasoning = "high"
             let out = set_role_model_override(
                 "pi",
                 "task_agent",
-                "pi:openrouter/deepseek/deepseek-v4-flash",
+                "pi:openrouter:deepseek/deepseek-v4-flash",
                 false,
             )
             .unwrap();
             assert_eq!(out.role, "task_agent");
             assert_eq!(out.dotted, "models.task_agent.model");
-            assert_eq!(out.model, "pi:openrouter/deepseek/deepseek-v4-flash");
+            assert_eq!(out.model, "pi:openrouter:deepseek/deepseek-v4-flash");
             assert!(!out.dry_run);
             assert!(out.wrote_path.is_some());
 
@@ -2315,7 +2302,7 @@ reasoning = "high"
                     .unwrap();
             assert_eq!(
                 cfg.models.default.as_ref().and_then(|m| m.model.as_deref()),
-                Some("pi:openrouter/z-ai/glm-5.2"),
+                Some("pi:openrouter:z-ai/glm-5.2"),
                 "default must stay on the starter GLM route"
             );
             assert_eq!(
@@ -2323,7 +2310,7 @@ reasoning = "high"
                     .task_agent
                     .as_ref()
                     .and_then(|m| m.model.as_deref()),
-                Some("pi:openrouter/deepseek/deepseek-v4-flash"),
+                Some("pi:openrouter:deepseek/deepseek-v4-flash"),
                 "task_agent override written verbatim (pi: route preserved)"
             );
         });
@@ -2335,7 +2322,7 @@ reasoning = "high"
             let out = set_role_model_override(
                 "pi",
                 "task_agent",
-                "pi:openrouter/deepseek/deepseek-v4-flash",
+                "pi:openrouter:deepseek/deepseek-v4-flash",
                 true,
             )
             .unwrap();
@@ -2364,7 +2351,7 @@ reasoning = "high"
         // parser — handler-first form is required.
         let _tmp = with_home(|| {
             let err = set_role_model_override("pi", "task_agent", "opus", false).unwrap_err();
-            assert!(err.to_string().contains("Invalid model spec"));
+            assert!(err.to_string().contains("Invalid Pi route"));
         });
     }
 
@@ -2379,7 +2366,7 @@ reasoning = "high"
             let out = set_role_model_override(
                 "pi",
                 "task_agent",
-                "pi:openrouter/deepseek/deepseek-v4-flash",
+                "pi:openrouter:deepseek/deepseek-v4-flash",
                 false,
             )
             .unwrap();
@@ -2396,12 +2383,12 @@ reasoning = "high"
                     .task_agent
                     .as_ref()
                     .and_then(|m| m.model.as_deref()),
-                Some("pi:openrouter/deepseek/deepseek-v4-flash"),
+                Some("pi:openrouter:deepseek/deepseek-v4-flash"),
                 "active profile override must be re-applied to the global config"
             );
             assert_eq!(
                 cfg.models.default.as_ref().and_then(|m| m.model.as_deref()),
-                Some("pi:openrouter/z-ai/glm-5.2"),
+                Some("pi:openrouter:z-ai/glm-5.2"),
                 "default stays on GLM in the global config"
             );
         });
@@ -2414,7 +2401,7 @@ reasoning = "high"
             let out = set_role_model_override(
                 "pi",
                 "task_agent",
-                "pi:openrouter/deepseek/deepseek-v4-flash",
+                "pi:openrouter:deepseek/deepseek-v4-flash",
                 false,
             )
             .unwrap();
@@ -2434,7 +2421,7 @@ reasoning = "high"
             set_role_model_override(
                 "pi",
                 "task_agent",
-                "pi:openrouter/deepseek/deepseek-v4-flash",
+                "pi:openrouter:deepseek/deepseek-v4-flash",
                 false,
             )
             .unwrap();
@@ -2469,7 +2456,7 @@ reasoning = "high"
                     .task_agent
                     .as_ref()
                     .and_then(|m| m.model.as_deref()),
-                Some("pi:openrouter/deepseek/deepseek-v4-flash"),
+                Some("pi:openrouter:deepseek/deepseek-v4-flash"),
                 "pi override must survive the codex round-trip"
             );
             assert_eq!(
@@ -2478,34 +2465,24 @@ reasoning = "high"
                     .default
                     .as_ref()
                     .and_then(|m| m.model.as_deref()),
-                Some("pi:openrouter/z-ai/glm-5.2"),
+                Some("pi:openrouter:z-ai/glm-5.2"),
                 "default still on GLM after round-trip"
             );
         });
     }
 
     #[test]
-    fn test_set_role_model_override_preserves_native_openrouter_route() {
-        // A weak-tier agency role override keeps its native openrouter: route
-        // (no pi: normalization) — the loud keyless-native fallback stays armed.
+    fn test_set_role_model_override_rejects_native_openrouter_route() {
         let _tmp = with_home(|| {
-            set_role_model_override(
+            let error = set_role_model_override(
                 "pi",
                 "evaluator",
                 "openrouter:deepseek/deepseek-chat",
                 false,
             )
-            .unwrap();
-            let cfg: Config =
-                toml::from_str(&std::fs::read_to_string(&profile_path("pi").unwrap()).unwrap())
-                    .unwrap();
-            assert_eq!(
-                cfg.models
-                    .evaluator
-                    .as_ref()
-                    .and_then(|m| m.model.as_deref()),
-                Some("openrouter:deepseek/deepseek-chat")
-            );
+            .unwrap_err();
+            assert!(error.to_string().contains("Invalid Pi route"));
+            assert!(!profile_path("pi").unwrap().exists());
         });
     }
 }

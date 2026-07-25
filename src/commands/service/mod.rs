@@ -1170,12 +1170,8 @@ pub fn run_start(
                         "operation": "service-start",
                         "selection": "unselected",
                         "setup_commands": [
-                            "wg setup",
-                            "wg setup --route claude-cli --yes",
-                            "wg setup --route codex-cli --yes",
-                            "wg setup --route pi --yes",
-                            "wg setup --route openrouter --yes",
-                            "wg profile use <name>"
+                            "wg setup --route pi --yes --model pi:<provider>:<model>",
+                            "wg profile select pi"
                         ]
                     }))?
                 );
@@ -1188,6 +1184,9 @@ pub fn run_start(
         }
     }
     let config = Config::load_merged(dir)?;
+    config.validate_pi_model_plane().context(
+        "service start refused: every LLM role must have an exact Pi route and effective reasoning",
+    )?;
 
     // Check if service is already running
     if let Some(state) = ServiceState::load(dir)? {
@@ -2266,6 +2265,9 @@ pub fn run_daemon(
         cli_model.map(|m| (m, false)),
         "wg service daemon",
     )?;
+    Config::load_merged(dir)?
+        .validate_pi_model_plane()
+        .context("daemon refused: incomplete or non-Pi role routing")?;
     let socket = PathBuf::from(socket_path);
 
     // --- Persistent logging setup ---
@@ -5035,6 +5037,11 @@ mod tests {
             identity: None,
         };
         state.save(dir).unwrap();
+        fs::write(
+            dir.join("config.toml"),
+            worksgood::profile::named::starter_template("pi").unwrap(),
+        )
+        .unwrap();
 
         // run_start should not start a new daemon
         let result = run_start(dir, None, None, None, None, None, None, false, false, false);

@@ -12413,7 +12413,7 @@ fn draw_config_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                 ConfigEditKind::Toggle => "Enter/Space: toggle",
             }
         } else {
-            "j/k: navigate  Enter: edit  Space: toggle  Tab: collapse  a: add endpoint  m: add model  t: test  r: reload"
+            "j/k: navigate  Enter: edit  Space: toggle  Tab: collapse  r: reload  • models/auth/endpoints are managed in Pi"
         };
         lines.push((
             Line::from(Span::styled(
@@ -19938,6 +19938,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "retired multi-handler launcher behavior"]
     fn launcher_shows_endpoint_suggestions_only_for_nex() {
         let (viz, _) = build_hud_test_graph();
         let suggestions = vec![
@@ -19999,6 +20000,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "retired multi-handler launcher behavior"]
     fn launcher_endpoint_dropdown_hidden_when_typing_raw_url() {
         let (viz, _) = build_hud_test_graph();
         let suggestions = vec![ep_suggestion(
@@ -20031,6 +20033,7 @@ mod tests {
     /// OpenRouter. The acceptance criterion: the modal no longer shows
     /// "Endpoint: (URL — required for nex)" for the OpenRouter-default path.
     #[test]
+    #[ignore = "retired multi-handler launcher behavior"]
     fn launcher_endpoint_not_required_for_openrouter_nex_model() {
         let (viz, _) = build_hud_test_graph();
         // nex, Endpoint focused, NO configured endpoints.
@@ -20053,6 +20056,7 @@ mod tests {
     /// selectable option in the endpoint dropdown for an OpenRouter nex model,
     /// even when no endpoints are configured.
     #[test]
+    #[ignore = "retired multi-handler launcher behavior"]
     fn launcher_openrouter_default_is_selectable_option() {
         let (viz, _) = build_hud_test_graph();
         let mut app = build_app_from_viz_output(&viz, "a");
@@ -20070,6 +20074,7 @@ mod tests {
     /// the field keeps clear "required" copy and does NOT advertise an
     /// OpenRouter default.
     #[test]
+    #[ignore = "retired multi-handler launcher behavior"]
     fn launcher_endpoint_required_for_local_nex_model() {
         let (viz, _) = build_hud_test_graph();
         let mut app = build_app_from_viz_output(&viz, "a");
@@ -20094,6 +20099,7 @@ mod tests {
     /// picker just like project-local ones. The union itself is unit-tested in
     /// state.rs; here we prove the dropdown renders every supplied name.
     #[test]
+    #[ignore = "retired multi-handler launcher behavior"]
     fn launcher_lists_global_endpoint_names() {
         let (viz, _) = build_hud_test_graph();
         let suggestions = vec![
@@ -20143,6 +20149,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "retired multi-handler launcher behavior"]
     fn launcher_shows_model_suggestions_in_add_new_mode() {
         let (viz, _) = build_hud_test_graph();
         let suggestions = vec![
@@ -20174,6 +20181,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "retired multi-handler launcher behavior"]
     fn launcher_model_dropdown_hidden_for_explicit_spec_text() {
         let (viz, _) = build_hud_test_graph();
         let suggestions = vec![model_sug("minimax/minimax-m3", "openrouter", "curated")];
@@ -20197,6 +20205,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "retired multi-handler launcher behavior"]
     fn launcher_model_dropdown_hidden_for_command_executor() {
         let (viz, _) = build_hud_test_graph();
         let suggestions = vec![model_sug("minimax/minimax-m3", "openrouter", "curated")];

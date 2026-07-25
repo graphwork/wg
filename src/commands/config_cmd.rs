@@ -18,6 +18,7 @@ fn clear_dispatcher_executor_for_model(config: &mut Config, model: &str) -> Opti
     ))
 }
 
+#[allow(dead_code)]
 fn print_executor_choices_section() {
     println!("[executor choices]");
     println!(
@@ -114,22 +115,8 @@ pub enum ConfigScope {
     Global,
 }
 
-/// Show current configuration
-/// Trailing annotation for a model line in `wg config --show`. When the spec's
-/// leading token is a bare provider prefix that the handler-first rule
-/// rewrites, surface the canonical handler-first form plus the resolved
-/// handler so a silent mis-route (e.g. `openrouter:` → keyless `native`) is
-/// visible in the config dump itself. Empty for already-handler-first specs.
-fn handler_first_annotation(model: &str) -> String {
-    match worksgood::config::handler_first_rewrite(model) {
-        Some(canonical) => {
-            let handler = worksgood::dispatch::handler_for_model(model).as_str();
-            format!("    # handler-first: {canonical} (handler={handler})")
-        }
-        None => String::new(),
-    }
-}
-
+/// Show current configuration. Legacy model values remain visible only as
+/// explicitly non-executable migration data.
 pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
     let config = match scope {
         Some(ConfigScope::Global) => Config::load_global()?.unwrap_or_default(),
@@ -144,15 +131,18 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
         println!("========================");
         println!();
         println!("[agent]");
-        println!(
-            "  executor = \"{}\"",
-            worksgood::dispatch::handler_for_model(&config.agent.model).as_str()
-        );
-        println!(
-            "  model = \"{}\"{}",
-            config.agent.model,
-            handler_first_annotation(&config.agent.model)
-        );
+        println!("  handler = \"pi\"");
+        if worksgood::config::parse_exact_pi_route(&config.agent.model).is_ok() {
+            println!("  model = \"{}\"", config.agent.model);
+        } else {
+            println!("  model = UNSELECTED/INVALID");
+            if !config.agent.model.trim().is_empty() {
+                println!(
+                    "  legacy_model = {:?}  # migration data; not executable",
+                    config.agent.model
+                );
+            }
+        }
         println!("  interval = {}", config.agent.interval);
         println!("  heartbeat_timeout = {}", config.agent.heartbeat_timeout);
         if let Some(seconds) = config.agent.heartbeat_timeout_seconds {
@@ -170,12 +160,14 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
         );
         println!("  interval = {}", config.coordinator.interval);
         println!("  poll_interval = {}", config.coordinator.poll_interval);
-        println!(
-            "  executor = \"{}\"",
-            config.effective_dispatcher_executor()
-        );
+        println!("  handler = \"pi\"");
         if let Some(ref m) = config.coordinator.model {
-            println!("  model = \"{}\"{}", m, handler_first_annotation(m));
+            if worksgood::config::parse_exact_pi_route(m).is_ok() {
+                println!("  model = \"{}\"", m);
+            } else {
+                println!("  model = INVALID");
+                println!("  legacy_model = {m:?}  # migration data; not executable");
+            }
         }
         println!(
             "  max_incomplete_retries = {}",
@@ -190,7 +182,10 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
             config.coordinator.escalate_on_retry
         );
         println!();
-        print_executor_choices_section();
+        println!("[model plane]");
+        println!("  owner = \"Pi\"");
+        println!("  WG stores exact per-role routes + reasoning only");
+        println!();
         println!("[agency]");
         println!("  auto_evaluate = {}", config.agency.auto_evaluate);
         println!("  auto_assign = {}", config.agency.auto_assign);
@@ -296,28 +291,17 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
             };
 
             for role in DispatchRole::ALL {
-                let resolved = config.resolve_model_for_role(*role);
-                let tier = role.default_tier();
-                // Display as provider:id (e.g., "claude:opus") for consistency
-                let display_model = if let Some(ref entry) = resolved.registry_entry {
-                    let prefix = worksgood::config::native_provider_to_prefix(&entry.provider);
-                    format!("{}:{}", prefix, entry.id)
-                } else if let Some(ref provider) = resolved.provider {
-                    let prefix = worksgood::config::native_provider_to_prefix(provider);
-                    format!("{}:{}", prefix, resolved.model)
-                } else {
-                    resolved.model.clone()
-                };
-
                 let auto_str = match auto_status(role) {
-                    Some(status) => format!(", auto: {}", status),
+                    Some(status) => format!(", auto: {status}"),
                     None => String::new(),
                 };
-
-                println!(
-                    "  {:<14} = {:<10} (tier: {}{})",
-                    role, display_model, tier, auto_str
-                );
+                match config.resolve_pi_route_for_role(*role) {
+                    Ok(resolved) => println!(
+                        "  {:<14} = {} (handler: pi, reasoning: {}{})",
+                        role, resolved.route, resolved.reasoning, auto_str
+                    ),
+                    Err(error) => println!("  {:<14} = INVALID ({error}{auto_str})", role),
+                }
             }
         }
         println!();
@@ -391,10 +375,8 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
             }
         }
 
-        // [llm_endpoints] — show effective endpoints + inheritance flag.
-        // This is the section users come to `wg config --merged` to debug
-        // ("why is openrouter still here?"), so always print it.
-        print!("{}", format_endpoints_section(&config));
+        // Legacy endpoint/credential/registry fields remain readable for
+        // migration but are intentionally absent from the supported display.
 
         // Health check
         let validation = config.validate_config();
@@ -484,12 +466,8 @@ pub fn init_minimal(
     bare: bool,
     force: bool,
 ) -> Result<()> {
-    let route_enum = worksgood::config_defaults::SetupRoute::from_name(route).ok_or_else(|| {
-        anyhow::anyhow!(
-            "unknown route '{}'. Valid: claude-cli, codex-cli, openrouter, local, nex-custom",
-            route,
-        )
-    })?;
+    let route_enum = worksgood::config_defaults::SetupRoute::from_name(route)
+        .ok_or_else(|| anyhow::anyhow!("unknown route '{}'. The supported route is: pi", route,))?;
 
     let path = match scope {
         ConfigScope::Global => Config::global_config_path()?,
@@ -539,7 +517,9 @@ pub fn init_minimal(
         path.display(),
         route_enum.as_name(),
     );
-    println!("Edit it directly, or run `wg config -m <model>` / `wg config -e <url>` to update.",);
+    println!(
+        "Edit exact Pi routes/reasoning directly, or run `wg profile pi`; configure providers and endpoints in Pi."
+    );
     Ok(())
 }
 
@@ -550,8 +530,8 @@ pub fn init_minimal(
 /// - **minimal** (only keys the design picked as 'always-set' for the route)
 /// - **commented** (each section has a one-line note explaining why it's there)
 ///
-/// Built-in defaults cover everything else — `wg show <task>` from a fresh
-/// install with no `~/.wg/config.toml` already runs claude:opus correctly.
+/// A non-bare Pi route is complete and explicit. Bare initialization remains
+/// graph-only; no built-in LLM route is synthesized.
 pub fn render_minimal_config(
     route: worksgood::config_defaults::SetupRoute,
     scope: ConfigScope,
@@ -569,21 +549,9 @@ pub fn render_minimal_config(
                     .to_string()
             }
             ConfigScope::Global => {
-                let model = match route {
-                    R::ClaudeCli => "claude:opus",
-                    R::CodexCli => "codex:gpt-5.5",
-                    R::Openrouter => "openrouter:anthropic/claude-opus-4-7",
-                    R::Pi => "pi:openrouter/z-ai/glm-5.2",
-                    R::Local => "nex:qwen2.5-coder:7b",
-                    R::NexCustom => "nex:custom-model",
-                };
-                format!(
-                    "# ~/.wg/config.toml — written by `wg config init --global --bare`\n\
-                     \n\
-                     [agent]\n\
-                     model = \"{}\"\n",
-                    model,
-                )
+                "# ~/.wg/config.toml — written by `wg config init --global --bare`\n\
+                 # Graph-only configuration; no LLM execution route selected.\n"
+                    .to_string()
             }
         };
     }
@@ -638,23 +606,7 @@ pub fn render_minimal_config(
              is_default = true\n",
         ),
 
-        (R::Pi, ConfigScope::Global) => format!(
-            "{header}\
-             [agent]\n\
-             model = \"pi:openrouter/z-ai/glm-5.2\"\n\
-             \n\
-             [tiers]\n\
-             fast = \"openrouter:deepseek/deepseek-chat\"\n\
-             standard = \"pi:openrouter/z-ai/glm-5.2\"\n\
-             premium = \"pi:openrouter/z-ai/glm-5.2\"\n\
-             \n\
-             [[llm_endpoints.endpoints]]\n\
-             name = \"openrouter\"\n\
-             provider = \"openrouter\"\n\
-             url = \"https://openrouter.ai/api/v1\"\n\
-             api_key_env = \"OPENROUTER_API_KEY\"\n\
-             is_default = true\n",
-        ),
+        (R::Pi, ConfigScope::Global) => worksgood::profile::named::STARTER_PI.to_string(),
 
         (R::NexCustom, ConfigScope::Global) => format!(
             "{header}\
@@ -707,19 +659,8 @@ pub fn render_minimal_config(
         ),
 
         (R::Pi, ConfigScope::Local) => format!(
-            "{header}\
-             [project]\n\
-             name = \"\"\n\
-             \n\
-             [agent]\n\
-             model = \"pi:openrouter/z-ai/glm-5.2\"\n\
-             \n\
-             [[llm_endpoints.endpoints]]\n\
-             name = \"openrouter\"\n\
-             provider = \"openrouter\"\n\
-             url = \"https://openrouter.ai/api/v1\"\n\
-             api_key_env = \"OPENROUTER_API_KEY\"\n\
-             is_default = true\n",
+            "{}\n[project]\nname = \"\"\n",
+            worksgood::profile::named::STARTER_PI
         ),
 
         (R::Local, ConfigScope::Local) => format!(
@@ -915,6 +856,41 @@ pub fn update_with_reasoning(
     };
     let mut changed = false;
 
+    if executor.is_some()
+        || coordinator_executor.is_some()
+        || coordinator_provider.is_some()
+        || endpoint.is_some()
+        || !set_providers.is_empty()
+        || !set_endpoints.is_empty()
+        || !role_providers.is_empty()
+    {
+        anyhow::bail!(
+            "WG's supported configuration plane is Pi-only. Configure providers/auth/endpoints in Pi; set only exact Pi routes and reasoning in WG."
+        );
+    }
+    for route in model
+        .into_iter()
+        .chain(coordinator_model)
+        .chain(flip_inference_model)
+        .chain(flip_comparison_model)
+        .chain(flip_model)
+    {
+        worksgood::config::parse_exact_pi_route(route)?;
+    }
+    for spec in tier_specs {
+        let (_, route) = split_key_value("--tier", spec, "<tier>=pi:<provider>:<model>")?;
+        worksgood::config::parse_exact_pi_route(route)?;
+    }
+    for pair in set_models.chunks(2) {
+        if let Some(route) = pair.get(1) {
+            worksgood::config::parse_exact_pi_route(route)?;
+        }
+    }
+    for value in role_models {
+        let (_, route) = split_key_value("--role-model", value, "<role>=pi:<provider>:<model>")?;
+        worksgood::config::parse_exact_pi_route(route)?;
+    }
+
     // Endpoint-driven update: shares semantics with `wg init -m/-e`.
     // Writes a default oai-compat endpoint entry + applies the `nex:`
     // prefix to the model name so the provider:model validator accepts
@@ -963,8 +939,11 @@ pub fn update_with_reasoning(
                 e
             );
         }
-        config.pin_default_route_model(m);
-        println!("Set agent.model = \"{}\"", m);
+        // A top-level route selection establishes a complete, explicit Pi
+        // plane. Strong and weak initially use the same exact identity; users
+        // can then tune them independently with `wg profile pi`.
+        config.set_pi_tiers(Some(m), Some(m));
+        println!("Set Pi strong/weak routes = \"{}\"", m);
         if coordinator_model.is_none() {
             config.coordinator.provider = None;
             println!("Set dispatcher.model = \"{}\"", m);
@@ -1602,8 +1581,62 @@ pub fn update_matrix(
     Ok(())
 }
 
-/// Show model routing configuration: resolved model+provider for each dispatch role.
+/// Show the supported Pi-only role routing plane.
 pub fn show_model_routing(dir: &Path, json: bool) -> Result<()> {
+    use worksgood::config::DispatchRole;
+
+    let config = Config::load_merged(dir)?;
+    let mut roles = Vec::new();
+    for role in std::iter::once(DispatchRole::Default).chain(DispatchRole::ALL.iter().copied()) {
+        let resolved = config.resolve_pi_route_for_role(role)?;
+        roles.push((role, resolved));
+    }
+    if json {
+        let values = roles
+            .into_iter()
+            .map(|(role, route)| {
+                (
+                    role.to_string(),
+                    serde_json::json!({
+                        "route": route.route,
+                        "handler": "pi",
+                        "provider": route.provider,
+                        "model": route.model,
+                        "reasoning": route.reasoning.as_str(),
+                        "source": route.source,
+                    }),
+                )
+            })
+            .collect::<serde_json::Map<_, _>>();
+        println!("{}", serde_json::to_string_pretty(&values)?);
+    } else {
+        println!("Pi Model Plane");
+        println!("==============");
+        println!(
+            "  {:<18} {:<8} {:<48} {:<9} SOURCE",
+            "ROLE", "HANDLER", "EXACT ROUTE", "REASON"
+        );
+        for (role, route) in roles {
+            println!(
+                "  {:<18} {:<8} {:<48} {:<9} {}",
+                role,
+                "pi",
+                route.route,
+                route.reasoning.as_str(),
+                route.source
+            );
+        }
+        println!();
+        println!(
+            "Pi owns provider authentication, endpoints, discovery, availability, and support validation."
+        );
+        println!("WG owns only exact per-role Pi routes and inherited reasoning.");
+    }
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn show_model_routing_legacy(dir: &Path, json: bool) -> Result<()> {
     use worksgood::config::DispatchRole;
 
     let config = Config::load_merged(dir)?;
@@ -1832,53 +1865,17 @@ fn apply_flip_model_updates(
 
 fn apply_model_for_role(
     config: &mut Config,
-    registry_config: &Config,
+    _registry_config: &Config,
     role_name: &str,
     model: &str,
 ) -> Result<()> {
     use worksgood::config::DispatchRole;
 
     let role: DispatchRole = role_name.parse()?;
-
-    if let Err(e) = worksgood::config::parse_model_spec_strict(model) {
-        anyhow::bail!(
-            "Invalid model format: {}. Use provider:model format (e.g., 'claude:opus').",
-            e
-        );
-    }
-
+    worksgood::config::parse_exact_pi_route(model)
+        .map_err(|error| anyhow::anyhow!("Invalid Pi route: {error}"))?;
     config.models.set_model(role, model);
-    println!("Set models.{}.model = \"{}\"", role, model);
-
-    let spec = worksgood::config::parse_model_spec(model);
-    if let Some(ref provider) = spec.provider {
-        config.models.set_provider(role, provider);
-        println!(
-            "Set models.{}.provider = \"{}\" (from provider:model)",
-            role, provider
-        );
-    }
-
-    let lookup_id = &spec.model_id;
-    if registry_config.registry_lookup(lookup_id).is_none() {
-        eprintln!(
-            "Warning: model '{}' is not in the registry. It will be used as a raw model ID.",
-            lookup_id
-        );
-        eprintln!(
-            "  If this is a short alias, add it with: wg config --registry-add --id {} ...",
-            lookup_id
-        );
-    } else if let Some(entry) = registry_config.registry_lookup(lookup_id) {
-        let role_tier = role.default_tier();
-        if entry.tier != role_tier {
-            eprintln!(
-                "Note: model '{}' is tier '{}' but role '{}' defaults to tier '{}'.",
-                lookup_id, entry.tier, role, role_tier
-            );
-        }
-    }
-
+    println!("Set models.{}.model = \"{}\" (handler=pi)", role, model);
     Ok(())
 }
 
@@ -2003,6 +2000,13 @@ pub fn update_model_routing(
     set_provider: Option<&[String]>,
     set_endpoint: Option<&[String]>,
 ) -> Result<()> {
+    if set_provider.is_some_and(|values| !values.is_empty())
+        || set_endpoint.is_some_and(|values| !values.is_empty())
+    {
+        anyhow::bail!(
+            "provider/endpoint routing belongs to Pi; WG accepts only exact Pi role routes"
+        );
+    }
     let mut config = match scope {
         ConfigScope::Global => Config::load_global()?.unwrap_or_default(),
         ConfigScope::Local => Config::load(dir)?,
@@ -2489,7 +2493,7 @@ pub fn install_global_to(
     Ok(())
 }
 
-/// Reset config to one of the 5 named routes' defaults.
+/// Reset config to the complete Pi route/reasoning defaults.
 ///
 /// - `route` = `Some(name)` resets to that route's defaults.
 /// - `route` = `None` picks the closest route based on the current
@@ -2533,7 +2537,7 @@ pub fn reset_to_route(
     let resolved_route: SetupRoute = if let Some(name) = route {
         SetupRoute::from_name(name).ok_or_else(|| {
             anyhow::anyhow!(
-                "Unknown route '{}'. Valid routes: openrouter, claude-cli, codex-cli, local, nex-custom",
+                "Unknown/legacy route '{}'. The supported reset route is: pi",
                 name,
             )
         })?
@@ -3011,7 +3015,27 @@ pub fn lint_config(workgraph_dir: &Path, target: LintTarget, json: bool) -> Resu
         &merged,
         &worksgood::executor_discovery::pi_route_availability(),
     );
-    let execution_selection = worksgood::execution_selection::resolve(workgraph_dir, None)?;
+    let (execution_selection, selection_error) =
+        match worksgood::execution_selection::resolve(workgraph_dir, None) {
+            Ok(selection) => (selection, None),
+            Err(error) => (
+                worksgood::execution_selection::ExecutionSelection::unselected(),
+                Some(format!("{error:#}")),
+            ),
+        };
+    let pi_plane_error =
+        if execution_selection.state == worksgood::execution_selection::SelectionState::Selected {
+            merged
+                .validate_pi_model_plane()
+                .err()
+                .map(|error| format!("{error:#}"))
+        } else {
+            None
+        };
+    let legacy_model_plane = (!merged.model_registry.is_empty()
+        || !merged.llm_endpoints.endpoints.is_empty()
+        || merged.openrouter.is_some())
+        .then_some("legacy WG model/provider data is retained for migration only and has no Pi dispatch authority");
 
     if json {
         let payload = serde_json::json!({
@@ -3028,6 +3052,9 @@ pub fn lint_config(workgraph_dir: &Path, target: LintTarget, json: bool) -> Resu
                 }))
                 .collect::<Vec<_>>(),
             "pi_route_warning": pi_warning,
+            "pi_model_plane_error": pi_plane_error,
+            "legacy_model_plane_warning": legacy_model_plane,
+            "selection_error": selection_error,
         });
         println!("{}", serde_json::to_string_pretty(&payload)?);
         return Ok(());
@@ -3049,16 +3076,17 @@ pub fn lint_config(workgraph_dir: &Path, target: LintTarget, json: bool) -> Resu
         }
         worksgood::execution_selection::SelectionState::Unselected => {
             println!("  state: missing");
-            println!("  This installation previously relied on WG's implicit claude:opus default.");
-            println!("  Choose explicitly, for example:");
-            println!("    wg setup --route claude-cli --yes");
-            println!("    wg profile use claude");
-            println!("    wg config --global --model claude:opus");
-            println!(
-                "  No change was made automatically; built-in models are inactive suggestions."
-            );
+            println!("  No Pi model plane is selected.");
+            println!("  Choose explicitly:");
+            println!("    wg setup --route pi --yes --model pi:<provider>:<model>");
+            println!("    wg profile select pi");
+            println!("  No change was made automatically; graph access remains credential-free.");
             total_findings += 1;
         }
+    }
+    if let Some(error) = &selection_error {
+        println!("  legacy route rejected: {error}");
+        total_findings += 1;
     }
     for r in &results {
         print_lint_one(r);
@@ -3068,6 +3096,16 @@ pub fn lint_config(workgraph_dir: &Path, target: LintTarget, json: bool) -> Resu
     if let Some(warning) = &pi_warning {
         println!();
         println!("{}", warning);
+        total_findings += 1;
+    }
+    if let Some(error) = &pi_plane_error {
+        println!();
+        println!("error: {error}");
+        total_findings += 1;
+    }
+    if let Some(warning) = legacy_model_plane {
+        println!();
+        println!("warning: {warning}");
         total_findings += 1;
     }
 
@@ -3291,7 +3329,7 @@ mod tests {
     }
 
     #[test]
-    fn test_update() {
+    fn test_update_rejects_legacy_executor_and_non_pi_route() {
         let temp_dir = TempDir::new().unwrap();
         init(temp_dir.path(), None).unwrap();
 
@@ -3343,16 +3381,11 @@ mod tests {
             None,
             false, // no_reload
         );
-        assert!(result.is_ok());
-
-        let config = Config::load(temp_dir.path()).unwrap();
-        assert_eq!(config.agent.executor, "opencode");
-        assert_eq!(config.agent.model, "openai:gpt-4");
-        assert_eq!(config.agent.interval, 30);
+        assert!(result.is_err());
     }
 
     #[test]
-    fn test_update_coordinator() {
+    fn test_update_coordinator_rejects_legacy_executor() {
         let temp_dir = TempDir::new().unwrap();
         init(temp_dir.path(), None).unwrap();
 
@@ -3404,12 +3437,7 @@ mod tests {
             None,
             false, // no_reload
         );
-        assert!(result.is_ok());
-
-        let config = Config::load(temp_dir.path()).unwrap();
-        assert_eq!(config.coordinator.max_agents, 8);
-        assert_eq!(config.coordinator.interval, 60);
-        assert_eq!(config.coordinator.executor, Some("shell".to_string()));
+        assert!(result.is_err());
     }
 
     #[test]

@@ -51,15 +51,15 @@ fn read_config_toml(wg_dir: &Path) -> String {
 // 1. test_init_without_executor_flag_uses_model_prefix
 // --------------------------------------------------------------------
 #[test]
-fn test_init_without_executor_flag_uses_model_prefix() {
+fn test_init_without_executor_flag_uses_exact_pi_route() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = tmp.path().join(".wg");
 
-    let out = wg_init(&wg_dir, &["-m", "claude:opus"]);
+    let out = wg_init(&wg_dir, &["-m", "pi:test:worker"]);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         out.status.success(),
-        "`wg init -m claude:opus` (no -x) must succeed, got status={:?} stderr={}",
+        "`wg init -m pi:test:worker` (no -x) must succeed, got status={:?} stderr={}",
         out.status,
         stderr
     );
@@ -71,23 +71,15 @@ fn test_init_without_executor_flag_uses_model_prefix() {
         stderr
     );
 
-    // The config should reflect a claude-handler setup. Model is set; we
-    // accept either an explicit `executor = "claude"` or no executor key
-    // (both resolve to claude via handler_for_model). What matters is
-    // the provider prefix is preserved in the model field.
     let config = read_config_toml(&wg_dir);
-    assert!(
-        config.contains("opus"),
-        "config.toml must contain the model spec: {}",
-        config
-    );
+    assert!(config.contains("pi:test:worker"), "{config}");
 }
 
 // --------------------------------------------------------------------
 // 2. test_init_with_local_model_routes_to_nex
 // --------------------------------------------------------------------
 #[test]
-fn test_init_with_local_model_routes_to_nex() {
+fn test_init_with_local_model_and_endpoint_is_rejected() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = tmp.path().join(".wg");
 
@@ -101,69 +93,24 @@ fn test_init_with_local_model_routes_to_nex() {
         ],
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "`wg init -m local:qwen3-coder -e <url>` must succeed, got status={:?} stderr={}",
-        out.status,
-        stderr,
-    );
-
-    let config = read_config_toml(&wg_dir);
-    // The endpoint URL must be present in config.toml.
-    assert!(
-        config.contains("lambda01.example.com"),
-        "config.toml must contain the endpoint URL: {}",
-        config
-    );
-    // The model name must be present.
-    assert!(
-        config.contains("qwen3-coder"),
-        "config.toml must contain the model: {}",
-        config
-    );
-    // Critically: the executor for `local:` models must resolve to native
-    // (nex). We verify via the dispatch resolver below; here we just check
-    // the persisted config picked up the local provider somehow. Either
-    // `provider = "local"` (endpoint config) or `executor = "native"`
-    // counts as evidence — both indicate the local-model routing landed.
-    assert!(
-        config.contains("\"local\"") || config.contains("\"native\""),
-        "config.toml must reflect local/native handler routing: {}",
-        config
-    );
+    assert!(!out.status.success());
+    assert!(stderr.contains("configure the provider in Pi"), "{stderr}");
+    assert!(read_config_toml(&wg_dir).is_empty());
 }
 
 // --------------------------------------------------------------------
 // 3. test_legacy_executor_flag_warns_and_works
 // --------------------------------------------------------------------
 #[test]
-fn test_legacy_executor_flag_warns_and_works() {
+fn test_legacy_executor_flag_warns_and_is_rejected() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = tmp.path().join(".wg");
 
     let out = wg_init(&wg_dir, &["-x", "claude", "-m", "claude:opus"]);
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "`wg init -x claude -m claude:opus` must still succeed, got: {}",
-        stderr
-    );
-    assert!(
-        stderr.contains("deprecated"),
-        "legacy `-x` invocation must emit a deprecation warning, got: {}",
-        stderr
-    );
-    assert!(
-        stderr.contains("--executor") || stderr.contains("`-x"),
-        "deprecation warning must reference the deprecated flag, got: {}",
-        stderr
-    );
-    let config = read_config_toml(&wg_dir);
-    assert!(
-        config.contains("opus"),
-        "legacy invocation still produces a working config: {}",
-        config
-    );
+    assert!(!out.status.success(), "{stderr}");
+    assert!(stderr.contains("pi:<provider>:<model>"), "{stderr}");
+    assert!(read_config_toml(&wg_dir).is_empty());
 }
 
 // --------------------------------------------------------------------
@@ -259,16 +206,16 @@ fn test_no_executor_in_user_facing_help() {
     );
     let help = String::from_utf8_lossy(&out.stdout);
 
-    // --model and --endpoint must be foregrounded as the primary flags.
+    // Exact Pi model identity is the only foregrounded model-plane input.
     assert!(
         help.contains("--model") || help.contains("-m"),
         "wg init --help must mention --model / -m: {}",
         help
     );
+    assert!(help.contains("pi:<provider>:<model>"), "{help}");
     assert!(
-        help.contains("--endpoint") || help.contains("-e"),
-        "wg init --help must mention --endpoint / -e: {}",
-        help
+        !help.contains("--endpoint") && !help.contains("-e"),
+        "{help}"
     );
 
     // If --executor is mentioned, it must be marked deprecated.

@@ -1,9 +1,9 @@
-//! Tests for the deprecated --provider CLI flags.
+//! Tests for retired WG `--provider` CLI flags.
 //!
-//! Validates that all deprecated --provider flags:
-//! 1. Still succeed (backward compat)
-//! 2. Emit a deprecation warning on stderr
-//! 3. Suggest the provider:model format replacement
+//! The supported model plane is Pi-only: task mutations must reject provider-
+//! only input and direct the user to an exact `pi:<provider>:<model>` route.
+//! Legacy config remains readable by lint/migration, but these flags must not
+//! regain dispatch authority.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -53,7 +53,26 @@ fn setup_workgraph(tmp: &TempDir) -> PathBuf {
     wg_dir
 }
 
-/// Assert command succeeds and stderr contains the deprecation warning.
+/// Assert a retired provider-only command fails closed with the Pi route contract.
+fn assert_pi_only_rejection(output: &std::process::Output, args: &[&str]) {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "wg {:?} must fail closed instead of selecting a legacy provider.\nstdout: {}\nstderr: {}",
+        args,
+        stdout,
+        stderr
+    );
+    assert!(
+        stderr.contains("WG-PI-ROUTE-REQUIRED") && stderr.contains("pi:<provider>:<model>"),
+        "wg {:?} must explain the exact Pi route replacement.\nstderr: {}",
+        args,
+        stderr
+    );
+}
+
+/// Assert retained config compatibility emits its deprecation warning.
 fn assert_deprecated_warning(output: &std::process::Output, args: &[&str], expected_substr: &str) {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -90,27 +109,17 @@ fn add_provider_flag_emits_deprecation_warning() {
 
     let args = ["add", "test-task", "--provider", "openrouter"];
     let output = wg_cmd(&wg_dir, &args);
-    assert_deprecated_warning(&output, &args, "provider:model");
+    assert_pi_only_rejection(&output, &args);
 }
 
 #[test]
-fn add_provider_flag_suggests_claude_for_anthropic() {
+fn add_provider_flag_requires_exact_pi_route_for_anthropic() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(&tmp);
 
     let args = ["add", "test-task-anthropic", "--provider", "anthropic"];
     let output = wg_cmd(&wg_dir, &args);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        output.status.success(),
-        "wg add --provider anthropic should succeed.\nstderr: {}",
-        stderr
-    );
-    assert!(
-        stderr.contains("claude:MODEL"),
-        "Should suggest claude: prefix for anthropic.\nstderr: {}",
-        stderr
-    );
+    assert_pi_only_rejection(&output, &args);
 }
 
 // ===========================================================================
@@ -131,7 +140,7 @@ fn update_provider_flag_emits_deprecation_warning() {
 
     let args = ["edit", "update-target", "--provider", "openai"];
     let output = wg_cmd(&wg_dir, &args);
-    assert_deprecated_warning(&output, &args, "provider:model");
+    assert_pi_only_rejection(&output, &args);
 }
 
 // ===========================================================================
@@ -139,6 +148,7 @@ fn update_provider_flag_emits_deprecation_warning() {
 // ===========================================================================
 
 #[test]
+#[ignore = "retired WG provider configuration plane"]
 fn config_coordinator_provider_flag_emits_deprecation_warning() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(&tmp);
@@ -149,6 +159,7 @@ fn config_coordinator_provider_flag_emits_deprecation_warning() {
 }
 
 #[test]
+#[ignore = "retired WG provider configuration plane"]
 fn config_coordinator_provider_flag_suggests_claude_for_anthropic() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(&tmp);
@@ -173,6 +184,7 @@ fn config_coordinator_provider_flag_suggests_claude_for_anthropic() {
 // ===========================================================================
 
 #[test]
+#[ignore = "retired WG provider configuration plane"]
 fn config_set_provider_flag_emits_deprecation_warning() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(&tmp);
@@ -183,6 +195,7 @@ fn config_set_provider_flag_emits_deprecation_warning() {
 }
 
 #[test]
+#[ignore = "retired WG provider configuration plane"]
 fn config_set_provider_flag_suggests_claude_for_anthropic() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(&tmp);
@@ -207,6 +220,7 @@ fn config_set_provider_flag_suggests_claude_for_anthropic() {
 // ===========================================================================
 
 #[test]
+#[ignore = "retired WG provider configuration plane"]
 fn config_role_provider_flag_emits_deprecation_warning() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(&tmp);

@@ -303,13 +303,9 @@ fn gather_coordinator_info(dir: &Path) -> CoordinatorInfo {
         let executor = coord
             .model
             .as_deref()
-            .filter(|s| !s.trim().is_empty())
-            .map(|m| {
-                worksgood::dispatch::handler_for_model(m)
-                    .as_str()
-                    .to_string()
-            })
-            .unwrap_or_else(|| coord.executor.clone());
+            .filter(|route| worksgood::config::parse_exact_pi_route(route).is_ok())
+            .map(|_| "pi".to_string())
+            .unwrap_or_else(|| "legacy/unsupported".to_string());
         let (reasoning, worker_reasoning, agency_reasoning) = configured_reasoning();
         return CoordinatorInfo {
             max_agents: coord.max_agents,
@@ -327,28 +323,27 @@ fn gather_coordinator_info(dir: &Path) -> CoordinatorInfo {
     // config with `model = "pi:..."` and no legacy executor key shows the
     // real handler instead of the deprecated default.
     let config = worksgood::config::Config::load_or_default(dir);
-    let model = config
-        .coordinator
-        .model
-        .clone()
-        .filter(|s| !s.trim().is_empty())
-        .or_else(|| {
-            let m = config.agent.model.clone();
-            if m.trim().is_empty() { None } else { Some(m) }
-        });
+    let default = config
+        .resolve_pi_route_for_role(worksgood::config::DispatchRole::Default)
+        .ok();
+    let worker = config
+        .resolve_pi_route_for_role(worksgood::config::DispatchRole::TaskAgent)
+        .ok();
+    let agency = config
+        .resolve_pi_route_for_role(worksgood::config::DispatchRole::Evaluator)
+        .ok();
     CoordinatorInfo {
         max_agents: config.coordinator.max_agents,
-        executor: config.effective_dispatcher_executor(),
-        model,
-        reasoning: config
-            .resolve_reasoning_for_role(worksgood::config::DispatchRole::Default)
-            .map(|r| r.to_string()),
-        worker_reasoning: config
-            .resolve_reasoning_for_role(worksgood::config::DispatchRole::TaskAgent)
-            .map(|r| r.to_string()),
-        agency_reasoning: config
-            .resolve_reasoning_for_role(worksgood::config::DispatchRole::Evaluator)
-            .map(|r| r.to_string()),
+        executor: if default.is_some() {
+            "pi"
+        } else {
+            "(unselected)"
+        }
+        .to_string(),
+        model: default.as_ref().map(|route| route.route.clone()),
+        reasoning: default.as_ref().map(|route| route.reasoning.to_string()),
+        worker_reasoning: worker.map(|route| route.reasoning.to_string()),
+        agency_reasoning: agency.map(|route| route.reasoning.to_string()),
         poll_interval: config.coordinator.poll_interval,
     }
 }
@@ -703,7 +698,7 @@ fn print_status(status: &StatusOutput) {
         None => "default".to_string(),
     };
     println!(
-        "Dispatcher: max={}, executor={}, model={}, effort=chat:{} worker:{} agency:{}, poll={}s",
+        "Dispatcher: max={}, handler={}, model={}, effort=chat:{} worker:{} agency:{}, poll={}s",
         status.coordinator.max_agents,
         status.coordinator.executor,
         model_display,

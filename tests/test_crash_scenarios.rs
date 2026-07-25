@@ -88,7 +88,7 @@ fn wg_ok(wg_dir: &Path, args: &[&str]) -> String {
 /// so that the wrapper script's bare `wg` commands can find `.wg`.
 fn setup_workgraph(tmp_root: &Path) -> PathBuf {
     let wg_dir = tmp_root.join(".wg");
-    wg_ok(&wg_dir, &["init", "--route", "claude-cli"]);
+    wg_ok(&wg_dir, &["init", "--route", "pi"]);
 
     // Get the directory containing the test-built wg binary.
     let wg_bin_dir = wg_binary().parent().unwrap().to_string_lossy().to_string();
@@ -98,28 +98,18 @@ fn setup_workgraph(tmp_root: &Path) -> PathBuf {
         std::env::var("PATH").unwrap_or_default()
     );
 
-    // Create config with crash detection settings
-    let config_content = format!(
-        "[agent]
-model = \"claude:opus\"
-reaper_grace_seconds = 1
-heartbeat_timeout = 3
-
-[coordinator]
-max_agents = 5
-poll_interval = 1
-# Crash fixtures use an intentional non-Git shared working directory.
-worktree_isolation = false
-
-[coordinator.resource_management]
-disk_sentinel_enabled = false
-
-[agency]
-auto_assign = false
-auto_evaluate = false
-"
-    );
-    fs::write(wg_dir.join("config.toml"), config_content).unwrap();
+    // Create Pi-valid config with crash detection settings.
+    let mut config: worksgood::config::Config =
+        toml::from_str(worksgood::profile::named::starter_template("pi").unwrap()).unwrap();
+    config.agent.reaper_grace_seconds = 1;
+    config.agent.heartbeat_timeout = 3;
+    config.coordinator.max_agents = 5;
+    config.coordinator.poll_interval = 1;
+    config.coordinator.worktree_isolation = false;
+    config.coordinator.resource_management.disk_sentinel_enabled = false;
+    config.agency.auto_assign = false;
+    config.agency.auto_evaluate = false;
+    config.save(&wg_dir).unwrap();
 
     let executors_dir = wg_dir.join("executors");
     fs::create_dir_all(&executors_dir).unwrap();
@@ -543,26 +533,18 @@ fn test_crash_scenarios_timeout_cleanup() {
     let wg_dir = setup_workgraph(tmp.path());
     let _guard = ServiceGuard::new(&wg_dir);
 
-    // Override config for fast timeout testing
-    let config_content = "[agent]
-model = \"claude:opus\"
-reaper_grace_seconds = 1
-heartbeat_timeout = 1
-
-[coordinator]
-max_agents = 5
-poll_interval = 1
-# Crash fixtures use an intentional non-Git shared working directory.
-worktree_isolation = false
-
-[coordinator.resource_management]
-disk_sentinel_enabled = false
-
-[agency]
-auto_assign = false
-auto_evaluate = false
-";
-    fs::write(wg_dir.join("config.toml"), config_content).unwrap();
+    // Override config for fast timeout testing.
+    let mut config: worksgood::config::Config =
+        toml::from_str(worksgood::profile::named::starter_template("pi").unwrap()).unwrap();
+    config.agent.reaper_grace_seconds = 1;
+    config.agent.heartbeat_timeout = 1;
+    config.coordinator.max_agents = 5;
+    config.coordinator.poll_interval = 1;
+    config.coordinator.worktree_isolation = false;
+    config.coordinator.resource_management.disk_sentinel_enabled = false;
+    config.agency.auto_assign = false;
+    config.agency.auto_evaluate = false;
+    config.save(&wg_dir).unwrap();
 
     // Start service
     let socket = socket_path_for(tmp.path());
@@ -910,10 +892,11 @@ working_dir = "/nonexistent/directory"
 
         let final_status = task_status(&wg_dir, "spawn-fail-task");
 
-        // Task should either remain "open" (spawn failed) or be "failed"
+        // Spawn/config failures may be parked as incomplete for operator repair,
+        // but must never stay in progress.
         assert!(
-            final_status == "open" || final_status == "failed",
-            "Task with spawn failure should be 'open' or 'failed', got: {}",
+            final_status == "open" || final_status == "failed" || final_status == "incomplete",
+            "Task with spawn failure should be open, failed, or incomplete; got: {}",
             final_status
         );
 

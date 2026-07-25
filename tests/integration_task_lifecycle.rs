@@ -202,7 +202,7 @@ fn test_abandon_cascades_to_in_progress_system_tasks() {
 fn test_retry_after_failure_with_eval_task() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = tmp.path().join(".wg");
-    wg_ok(&wg_dir, &["init", "--route", "claude-cli"]);
+    wg_ok(&wg_dir, &["init", "--route", "pi"]);
     wg_ok(
         &wg_dir,
         &[
@@ -303,7 +303,7 @@ fn test_retry_resets_state_for_redispatch() {
 fn test_supersession_via_abandon_flag() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = tmp.path().join(".wg");
-    wg_ok(&wg_dir, &["init", "--route", "claude-cli"]);
+    wg_ok(&wg_dir, &["init", "--route", "pi"]);
 
     wg_ok(
         &wg_dir,
@@ -443,7 +443,7 @@ fn test_no_zombie_system_tasks_after_abandon() {
 fn test_no_zombie_accumulation_across_multiple_abandons() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = tmp.path().join(".wg");
-    wg_ok(&wg_dir, &["init", "--route", "claude-cli"]);
+    wg_ok(&wg_dir, &["init", "--route", "pi"]);
 
     // Create 3 tasks, each with system children
     for i in 1..=3 {
@@ -511,7 +511,7 @@ fn test_no_zombie_accumulation_across_multiple_abandons() {
 fn test_full_lifecycle_abandon_supersede_cascade() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = tmp.path().join(".wg");
-    wg_ok(&wg_dir, &["init", "--route", "claude-cli"]);
+    wg_ok(&wg_dir, &["init", "--route", "pi"]);
 
     // Create original task
     wg_ok(

@@ -17,7 +17,9 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use worksgood::stream_event::{self, StreamEvent, StreamWriter};
+#[cfg(test)]
+use worksgood::stream_event::StreamEvent;
+use worksgood::stream_event::{self, StreamWriter};
 
 /// Maximum characters of final assistant text to persist as the session
 /// summary — a guard against a pathologically long final message.
@@ -36,25 +38,9 @@ pub fn run(agent_dir: &Path, exit_code: i32) -> Result<()> {
 
     let model_override = read_metadata_model(agent_dir);
 
-    let mut tr = stream_event::translate_pi_stream(&content, model_override.as_deref(), success);
-
-    // Cost fallback: when pi reported no cost but we harvested tokens, estimate
-    // from the model-registry per-token rates for the resolved model.
-    let has_cost = tr.total.cost_usd.is_some_and(|c| c > 0.0);
-    if !has_cost && (tr.total.input_tokens > 0 || tr.total.output_tokens > 0) {
-        let est = worksgood::graph::estimate_agent_cost_usd(
-            &log_path,
-            tr.total.input_tokens,
-            tr.total.output_tokens,
-            tr.total.cache_read_input_tokens.unwrap_or(0),
-        );
-        if est > 0.0 {
-            tr.total.cost_usd = Some(est);
-            if let Some(StreamEvent::Result { usage, .. }) = tr.events.last_mut() {
-                usage.cost_usd = Some(est);
-            }
-        }
-    }
+    // Pi is the accounting authority. Missing cost remains zero/unknown; WG
+    // never substitutes registry pricing for Pi events.
+    let tr = stream_event::translate_pi_stream(&content, model_override.as_deref(), success);
 
     // Write the canonical stream fresh, overwriting the 0/0 bookend the wrapper
     // may have written on a path where this command did not yet run.

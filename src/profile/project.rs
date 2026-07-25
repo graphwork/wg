@@ -1456,6 +1456,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "legacy non-Pi profile catalog"]
     fn two_projects_select_different_reusable_profiles_without_global_mutation() {
         let env = TestEnv::new();
         env.profile("alpha", "claude:opus");
@@ -1635,7 +1636,7 @@ mod tests {
         assert!(!json.contains(env.root.path().to_string_lossy().as_ref()));
         assert!(!json.contains("api_key"));
         assert!(!json.contains("endpoint URL"));
-        assert!(json.contains("pi:openrouter/z-ai/glm-5.2"));
+        assert!(json.contains("pi:openrouter:z-ai/glm-5.2"));
         let after: Vec<PathBuf> = fs::read_dir(&project)
             .unwrap()
             .map(|e| e.unwrap().path())
@@ -1915,6 +1916,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "legacy non-Pi profile catalog"]
     fn exact_routes_and_reasoning_cover_core_starters_without_secret_paths() {
         let env = TestEnv::new();
         let project = env.project("p");

@@ -558,6 +558,7 @@ model = "openai:gpt-4o-mini"
 // ── Fallback chain ──────────────────────────────────────────────────────
 
 #[test]
+#[ignore = "retired non-Pi model fallback cascade"]
 fn test_fallback_chain_role_to_default_to_agent() {
     // Resolution: role-specific → models.default → agent.model
     let mut config = Config::default();
@@ -603,6 +604,7 @@ fn test_fallback_chain_role_to_default_to_agent() {
 }
 
 #[test]
+#[ignore = "retired non-Pi model fallback cascade"]
 fn test_fallback_tier_defaults() {
     // Some roles have built-in tier defaults (between legacy and models.default)
     let config = Config::default();
@@ -787,16 +789,18 @@ async fn test_openai_provider_send_via_mock() {
 // ── All dispatch roles resolve ──────────────────────────────────────────
 
 #[test]
-fn test_all_dispatch_roles_resolve_without_panic() {
-    let config = Config::default();
+fn test_all_dispatch_roles_resolve_to_exact_pi_identity_and_reasoning() {
+    let config = worksgood::config_defaults::config_for_route(
+        worksgood::config_defaults::SetupRoute::Pi,
+        worksgood::config_defaults::RouteParams::default(),
+    );
 
     for role in DispatchRole::ALL {
-        let resolved = config.resolve_model_for_role(*role);
-        assert!(
-            !resolved.model.is_empty(),
-            "Role {:?} should resolve to a non-empty model",
-            role
-        );
+        let resolved = config.resolve_pi_route_for_role(*role).unwrap();
+        assert!(resolved.route.starts_with("pi:"), "role={role:?}");
+        assert!(!resolved.provider.is_empty(), "role={role:?}");
+        assert!(!resolved.model.is_empty(), "role={role:?}");
+        assert!(!resolved.reasoning.as_str().is_empty(), "role={role:?}");
     }
 }
 

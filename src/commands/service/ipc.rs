@@ -2203,9 +2203,11 @@ mod tests {
     use tempfile::TempDir;
 
     fn select_claude_route(dir: &Path) {
+        // Historical helper name retained to keep unrelated lifecycle tests
+        // stable; the executable route is Pi-only.
         fs::write(
             dir.join("config.toml"),
-            "[dispatcher]\nmodel = \"claude:opus\"\n",
+            worksgood::profile::named::starter_template("pi").unwrap(),
         )
         .unwrap();
     }

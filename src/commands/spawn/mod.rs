@@ -556,6 +556,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "retired non-Pi execution compatibility behavior"]
     fn test_spawn_external_worker_executor_with_custom_config_preserves_executor_name() {
         let temp_dir = TempDir::new().unwrap();
         let unique_id = get_unique_id();

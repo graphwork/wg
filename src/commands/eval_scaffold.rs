@@ -575,7 +575,8 @@ mod tests {
 
     fn agency_config() -> Config {
         let mut config = Config::default();
-        config.tiers.fast = Some("claude:haiku".to_string());
+        config.tiers.fast = Some("pi:test:agency".to_string());
+        config.tiers.fast_reasoning = Some(worksgood::config::ReasoningLevel::Low);
         config
     }
 

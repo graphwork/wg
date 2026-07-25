@@ -63,19 +63,21 @@ fn setup_workgraph(tmp: &TempDir) -> PathBuf {
 }
 
 #[test]
-fn test_task_agent_resolves_to_standard_tier() {
-    let config = Config::default();
+fn test_task_agent_resolves_to_standard_pi_tier() {
+    let config = worksgood::config_defaults::config_for_route(
+        worksgood::config_defaults::SetupRoute::Pi,
+        worksgood::config_defaults::RouteParams::default(),
+    );
     assert_eq!(
         DispatchRole::TaskAgent.default_tier(),
         Tier::Standard,
         "task_agent should default to the standard tier"
     );
-    let resolved = config.resolve_model_for_role(DispatchRole::TaskAgent);
-    assert!(
-        resolved.model.contains("opus"),
-        "task_agent should resolve to the top worker model, got: {}",
-        resolved.model
-    );
+    let resolved = config
+        .resolve_pi_route_for_role(DispatchRole::TaskAgent)
+        .unwrap();
+    assert_eq!(resolved.route, config.tiers.standard.clone().unwrap());
+    assert_eq!(resolved.reasoning, worksgood::config::ReasoningLevel::High);
 }
 
 #[test]
@@ -129,21 +131,9 @@ fn test_tier_escalation() {
 fn test_config_tiers_effective_defaults() {
     let config = Config::default();
     let tiers = config.effective_tiers_public();
-    assert_eq!(
-        tiers.fast.as_deref(),
-        Some("claude:haiku"),
-        "fast tier should default to claude:haiku"
-    );
-    assert_eq!(
-        tiers.standard.as_deref(),
-        Some("claude:opus"),
-        "standard tier should default to claude:opus"
-    );
-    assert_eq!(
-        tiers.premium.as_deref(),
-        Some("claude:opus"),
-        "premium tier should default to claude:opus"
-    );
+    assert!(tiers.fast.is_none());
+    assert!(tiers.standard.is_none());
+    assert!(tiers.premium.is_none());
 }
 
 #[test]
@@ -153,20 +143,18 @@ fn test_config_set_tier_remap() {
 
     wg_ok(
         &wg_dir,
-        &["config", "--tier", "standard=openrouter:moonshotai/kimi-k2"],
+        &[
+            "config",
+            "--tier",
+            "standard=pi:openrouter:moonshotai/kimi-k2",
+        ],
     );
 
     let config = Config::load(&wg_dir).unwrap();
     assert_eq!(
         config.tiers.standard.as_deref(),
-        Some("openrouter:moonshotai/kimi-k2"),
-        "standard tier should be remapped to openrouter:moonshotai/kimi-k2"
-    );
-
-    let resolved = config.resolve_model_for_role(DispatchRole::TaskAgent);
-    assert_eq!(
-        resolved.model, "moonshotai/kimi-k2",
-        "task_agent should resolve through the remapped standard tier"
+        Some("pi:openrouter:moonshotai/kimi-k2"),
+        "standard tier should be remapped to pi:openrouter:moonshotai/kimi-k2"
     );
 }
 
@@ -181,18 +169,27 @@ fn test_config_repeated_tier_flags_in_one_invocation() {
             "config",
             "--local",
             "--tier",
-            "fast=codex:gpt-5.4-mini",
+            "fast=pi:openai-codex:gpt-5.4-mini",
             "--tier",
-            "standard=codex:gpt-5.5",
+            "standard=pi:openai-codex:gpt-5.5",
             "--tier",
-            "premium=codex:gpt-5.5",
+            "premium=pi:openai-codex:gpt-5.5",
         ],
     );
 
     let config = Config::load(&wg_dir).unwrap();
-    assert_eq!(config.tiers.fast.as_deref(), Some("codex:gpt-5.4-mini"));
-    assert_eq!(config.tiers.standard.as_deref(), Some("codex:gpt-5.5"));
-    assert_eq!(config.tiers.premium.as_deref(), Some("codex:gpt-5.5"));
+    assert_eq!(
+        config.tiers.fast.as_deref(),
+        Some("pi:openai-codex:gpt-5.4-mini")
+    );
+    assert_eq!(
+        config.tiers.standard.as_deref(),
+        Some("pi:openai-codex:gpt-5.5")
+    );
+    assert_eq!(
+        config.tiers.premium.as_deref(),
+        Some("pi:openai-codex:gpt-5.5")
+    );
 }
 
 #[test]
@@ -206,29 +203,29 @@ fn test_config_codex_one_liner_sets_all_local_values() {
             "config",
             "--local",
             "--model",
-            "codex:gpt-5.5",
+            "pi:openai-codex:gpt-5.5",
             "--coordinator-model",
-            "codex:gpt-5.5",
+            "pi:openai-codex:gpt-5.5",
             "--tier",
-            "fast=codex:gpt-5.4-mini",
+            "fast=pi:openai-codex:gpt-5.4-mini",
             "--tier",
-            "standard=codex:gpt-5.5",
+            "standard=pi:openai-codex:gpt-5.5",
             "--tier",
-            "premium=codex:gpt-5.5",
+            "premium=pi:openai-codex:gpt-5.5",
             "--set-model",
             "default",
-            "codex:gpt-5.5",
+            "pi:openai-codex:gpt-5.5",
             "--set-model",
             "task_agent",
-            "codex:gpt-5.5",
+            "pi:openai-codex:gpt-5.5",
             "--set-model",
             "evaluator",
-            "codex:gpt-5.4-mini",
+            "pi:openai-codex:gpt-5.4-mini",
             "--set-model",
             "assigner",
-            "codex:gpt-5.4-mini",
+            "pi:openai-codex:gpt-5.4-mini",
             "--flip-model",
-            "codex:gpt-5.4-mini",
+            "pi:openai-codex:gpt-5.4-mini",
             "--auto-assign",
             "true",
             "--auto-evaluate",
@@ -237,55 +234,67 @@ fn test_config_codex_one_liner_sets_all_local_values() {
     );
 
     let config = Config::load(&wg_dir).unwrap();
-    assert_eq!(config.agent.model, "codex:gpt-5.5");
-    assert_eq!(config.coordinator.model.as_deref(), Some("codex:gpt-5.5"));
+    assert_eq!(config.agent.model, "pi:openai-codex:gpt-5.5");
+    assert_eq!(
+        config.coordinator.model.as_deref(),
+        Some("pi:openai-codex:gpt-5.5")
+    );
     assert!(config.coordinator.provider.is_none());
 
-    assert_eq!(config.tiers.fast.as_deref(), Some("codex:gpt-5.4-mini"));
-    assert_eq!(config.tiers.standard.as_deref(), Some("codex:gpt-5.5"));
-    assert_eq!(config.tiers.premium.as_deref(), Some("codex:gpt-5.5"));
+    assert_eq!(
+        config.tiers.fast.as_deref(),
+        Some("pi:openai-codex:gpt-5.4-mini")
+    );
+    assert_eq!(
+        config.tiers.standard.as_deref(),
+        Some("pi:openai-codex:gpt-5.5")
+    );
+    assert_eq!(
+        config.tiers.premium.as_deref(),
+        Some("pi:openai-codex:gpt-5.5")
+    );
 
     assert_eq!(
         config
             .models
             .get_role(DispatchRole::Default)
             .and_then(|cfg| cfg.model.as_deref()),
-        Some("codex:gpt-5.5")
+        Some("pi:openai-codex:gpt-5.5")
     );
     assert_eq!(
         config
             .models
             .get_role(DispatchRole::TaskAgent)
             .and_then(|cfg| cfg.model.as_deref()),
-        Some("codex:gpt-5.5")
+        Some("pi:openai-codex:gpt-5.5")
     );
     assert_eq!(
         config
             .models
             .get_role(DispatchRole::Evaluator)
             .and_then(|cfg| cfg.model.as_deref()),
-        Some("codex:gpt-5.4-mini")
+        Some("pi:openai-codex:gpt-5.4-mini")
     );
     assert_eq!(
         config
             .models
             .get_role(DispatchRole::Assigner)
             .and_then(|cfg| cfg.model.as_deref()),
-        Some("codex:gpt-5.4-mini")
+        Some("pi:openai-codex:gpt-5.4-mini")
     );
     assert_eq!(
         config
             .models
             .get_role(DispatchRole::FlipInference)
             .and_then(|cfg| cfg.model.as_deref()),
-        Some("codex:gpt-5.4-mini")
+        Some("pi:openai-codex:gpt-5.4-mini")
     );
     assert_eq!(
         config
             .models
             .get_role(DispatchRole::FlipComparison)
             .and_then(|cfg| cfg.model.as_deref()),
-        Some("codex:gpt-5.4-mini")
+        Some("pi:openai-codex:gpt-5.4-mini")
     );
 
     assert!(config.agency.auto_assign);
@@ -303,9 +312,9 @@ fn test_config_repeated_role_model_flags_in_one_invocation() {
             "config",
             "--local",
             "--role-model",
-            "evaluator=codex:gpt-5.4-mini",
+            "evaluator=pi:openai-codex:gpt-5.4-mini",
             "--role-model",
-            "assigner=codex:gpt-5.4-mini",
+            "assigner=pi:openai-codex:gpt-5.4-mini",
         ],
     );
 
@@ -315,14 +324,14 @@ fn test_config_repeated_role_model_flags_in_one_invocation() {
             .models
             .get_role(DispatchRole::Evaluator)
             .and_then(|cfg| cfg.model.as_deref()),
-        Some("codex:gpt-5.4-mini")
+        Some("pi:openai-codex:gpt-5.4-mini")
     );
     assert_eq!(
         config
             .models
             .get_role(DispatchRole::Assigner)
             .and_then(|cfg| cfg.model.as_deref()),
-        Some("codex:gpt-5.4-mini")
+        Some("pi:openai-codex:gpt-5.4-mini")
     );
 }
 

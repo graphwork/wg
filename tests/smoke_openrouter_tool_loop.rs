@@ -92,7 +92,7 @@ fn smoke_native_tool_loop_openrouter() {
     let api_key = std::env::var("OPENROUTER_API_KEY").expect("OPENROUTER_API_KEY must be set");
     let tmp = TempDir::new().unwrap();
     let wg_dir = tmp.path().join(".wg");
-    wg_ok(&wg_dir, &["init", "--route", "claude-cli"]);
+    wg_ok(&wg_dir, &["init", "--route", "pi"]);
     wg_ok(&wg_dir, &["agency", "init"]);
     wg_ok(
         &wg_dir,
@@ -197,7 +197,7 @@ fn smoke_native_tool_loop_terminates_reasonably() {
     let api_key = std::env::var("OPENROUTER_API_KEY").expect("OPENROUTER_API_KEY must be set");
     let tmp = TempDir::new().unwrap();
     let wg_dir = tmp.path().join(".wg");
-    wg_ok(&wg_dir, &["init", "--route", "claude-cli"]);
+    wg_ok(&wg_dir, &["init", "--route", "pi"]);
 
     let prompt = r#"Run `ls /tmp` via bash tool, then run `wg done termination-test` via bash."#;
     let start = std::time::Instant::now();

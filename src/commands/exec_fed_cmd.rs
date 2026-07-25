@@ -126,6 +126,8 @@ pub fn run_enroll(
     attested: bool,
     json: bool,
 ) -> Result<()> {
+    // Capability labels from legacy federation bundles remain readable; only
+    // local LLM dispatch treats model identity as executable authority.
     let trust = parse_trust(trust)?;
     let isolation = IsolationClass::parse(isolation)?;
     let mut reg = load_registry(workgraph_dir);

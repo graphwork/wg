@@ -1130,14 +1130,13 @@ pub fn parse_token_usage(output_log_path: &std::path::Path) -> Option<TokenUsage
     None
 }
 
-/// Sum pi `turn_end` usage across an `output.log` / `raw_stream.jsonl` body.
-/// Returns `None` when no `turn_end` event is present. Cost prefers pi's own
-/// per-turn `cost.total`; when that is zero it falls back to model-registry
-/// per-token rates.
+/// Sum Pi `turn_end` usage across an `output.log` / `raw_stream.jsonl` body.
+/// Returns `None` when no `turn_end` event is present. Cost is Pi-reported
+/// only; a missing/zero Pi cost remains zero and is never estimated by WG.
 fn extract_pi_token_usage(
     content: &str,
-    model_spec: Option<&str>,
-    pricing: Option<&ModelRegistryEntry>,
+    _model_spec: Option<&str>,
+    _pricing: Option<&ModelRegistryEntry>,
 ) -> Option<TokenUsage> {
     let mut total = TokenUsage {
         cost_usd: 0.0,
@@ -1177,17 +1176,7 @@ fn extract_pi_token_usage(
         return None;
     }
 
-    total.cost_usd = if pi_cost > 0.0 {
-        pi_cost
-    } else {
-        estimate_model_cost_usd(
-            model_spec,
-            pricing,
-            total.input_tokens,
-            total.output_tokens,
-            total.cache_read_input_tokens,
-        )
-    };
+    total.cost_usd = pi_cost;
     Some(total)
 }
 

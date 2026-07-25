@@ -752,10 +752,12 @@ pub fn select_project_profile(
     }
 
     let name = name.ok_or_else(|| {
-        anyhow::anyhow!(
-            "Choose a profile name, or pass --clear. See reusable profiles with `wg profile list`."
-        )
+        anyhow::anyhow!("Choose the Pi profile, or pass --clear. See `wg profile list`.")
     })?;
+    named_profile::load(name)?
+        .config
+        .validate_pi_model_plane()
+        .with_context(|| format!("profile {name:?} is legacy/non-Pi and cannot be selected"))?;
     let plan = project_profile::plan_project_selection(dir, name)?;
     if dry_run {
         if json {
@@ -898,12 +900,16 @@ pub fn list(dir: &Path, json: bool, installed_only: bool) -> Result<()> {
     let visible: Vec<_> = catalog
         .iter()
         .filter(|entry| {
-            !installed_only
-                || matches!(
+            if installed_only {
+                return matches!(
                     entry.source,
                     project_profile::ProfileSource::Installed
                         | project_profile::ProfileSource::Unavailable
-                )
+                );
+            }
+            named_profile::load(&entry.name)
+                .and_then(|profile| profile.config.validate_pi_model_plane())
+                .is_ok()
         })
         .collect();
 
@@ -1008,23 +1014,11 @@ pub fn list(dir: &Path, json: bool, installed_only: bool) -> Result<()> {
         None => println!("Global active: (none; `wg profile use` remains available globally)"),
     }
 
-    if !installed_only {
-        let legacy = profile::builtin_profiles();
-        if !legacy.is_empty() {
-            let active_legacy = Config::load_merged(dir)
-                .ok()
-                .and_then(|config| config.profile);
-            println!();
-            println!("Legacy tier presets (wg profile set <name>):");
-            for p in &legacy {
-                let marker = if active_legacy.as_deref() == Some(p.name) {
-                    " *"
-                } else {
-                    ""
-                };
-                println!("  {:<12} {}{}", p.name, p.description, marker);
-            }
-        }
+    if installed_only {
+        println!();
+        println!(
+            "Compatibility view: legacy installed definitions are read-only and cannot dispatch unless migrated to exact Pi routes."
+        );
     }
     Ok(())
 }
@@ -1069,8 +1063,11 @@ pub fn use_profile(dir: &Path, name: Option<&str>, no_reload: bool, clear: bool)
     let target = parse_profile_use_target(name.unwrap())?;
     let profile_name = target.profile_name.as_str();
     let prof = named_profile::load(profile_name)?;
+    prof.config.validate_pi_model_plane().with_context(|| {
+        format!("profile {profile_name:?} is legacy/non-Pi and cannot be activated")
+    })?;
 
-    // Pre-flight: check that any api_key_ref in the profile's endpoints are reachable.
+    // Legacy endpoint references remain readable but never participate in Pi dispatch.
     let secrets_cfg = worksgood::secret::SecretsConfig::load_global();
     for ep in &prof.config.llm_endpoints.endpoints {
         if let Some(ref r) = ep.api_key_ref {
@@ -1247,6 +1244,12 @@ pub fn create_profile(
     description: Option<&str>,
     force: bool,
 ) -> Result<()> {
+    if endpoint.is_some() {
+        anyhow::bail!("WG profile endpoints are unsupported; configure providers/endpoints in Pi");
+    }
+    if let Some(model) = model {
+        worksgood::config::parse_exact_pi_route(model)?;
+    }
     let path = named_profile::profile_path(name)?;
     if path.exists() && !force {
         anyhow::bail!(
@@ -1268,7 +1271,7 @@ pub fn create_profile(
             anyhow::bail!("Profile or starter '{}' not found", from_name);
         }
     } else {
-        String::new()
+        named_profile::STARTER_PI.to_string()
     };
 
     // Parse, patch, and serialize via toml::Value to keep the result valid TOML.
@@ -1304,25 +1307,17 @@ pub fn create_profile(
             }
         }
     }
-    if let Some(url) = endpoint {
-        let mut ep = toml::map::Map::new();
-        ep.insert("name".into(), toml::Value::String("default".into()));
-        ep.insert("provider".into(), toml::Value::String("oai-compat".into()));
-        ep.insert("url".into(), toml::Value::String(url.to_string()));
-        ep.insert("is_default".into(), toml::Value::Boolean(true));
-        if let Some(table) = val.as_table_mut() {
-            let llm = table
-                .entry("llm_endpoints".to_string())
-                .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
-            if let Some(t) = llm.as_table_mut() {
-                t.insert(
-                    "endpoints".to_string(),
-                    toml::Value::Array(vec![toml::Value::Table(ep)]),
-                );
-            }
+    let mut content = toml::to_string_pretty(&val).context("Failed to serialize new profile")?;
+    if let Some(model) = model {
+        for key in worksgood::config::Config::PI_STRONG_TOML_KEYS
+            .iter()
+            .chain(worksgood::config::Config::PI_WEAK_TOML_KEYS.iter())
+        {
+            content = named_profile::set_toml_string_value(&content, key, model);
         }
     }
-    let content = toml::to_string_pretty(&val).context("Failed to serialize new profile")?;
+    let parsed: Config = toml::from_str(&content)?;
+    parsed.validate_pi_model_plane()?;
     named_profile::save_raw(name, &content)?;
     println!("Profile '{}' created at {}", name, path.display());
     println!("  Use it with: wg profile use {}", name);
@@ -1981,7 +1976,7 @@ pub fn pi(
 /// hot-reloads the daemon so the next spawned worker picks up the change.
 ///
 /// Handler-first model specs are validated with `parse_model_spec_strict` and
-/// preserved exactly: a `pi:openrouter/...` route stays a `pi:` route (we do
+/// preserved exactly: a `pi:openrouter:...` route stays a `pi:` route (we do
 /// NOT run the strong-tier `pi_strong_route` normalization, because this is a
 /// per-role override, not the two-tier strong setter — the user explicitly
 /// picks the route for this one role).
@@ -1998,6 +1993,9 @@ pub fn set_model_profile(
     dry_run: bool,
     no_reload: bool,
 ) -> Result<()> {
+    worksgood::config::parse_exact_pi_route(model).with_context(|| {
+        format!("profile role override must be an exact Pi route, got {model:?}")
+    })?;
     let outcome = named_profile::set_role_model_override(profile, role, model, dry_run)?;
 
     if dry_run {
@@ -2581,7 +2579,7 @@ mod tests {
         };
         assert_eq!(
             pi_apply_command(PI_PROFILE_NAME, &u),
-            "wg profile pi --strong pi:openrouter/qwen/qwen3-max"
+            "wg profile pi --strong pi:openrouter:qwen/qwen3-max"
         );
         // A bare single-token alias has no pi mapping → echoed verbatim.
         let both = PiUpdate {
@@ -2610,8 +2608,8 @@ mod tests {
         // Parse the real Pi starter so the picker list is proven non-hardcoded.
         let cfg: Config = toml::from_str(named_profile::STARTER_PI).unwrap();
         let models = collect_configured_models(&cfg);
-        assert!(models.contains(&s("pi:openrouter/z-ai/glm-5.2")));
-        assert!(models.contains(&s("openrouter:deepseek/deepseek-chat")));
+        assert!(models.contains(&s("pi:openrouter:z-ai/glm-5.2")));
+        assert!(models.contains(&s("pi:openrouter:deepseek/deepseek-chat")));
         // Sorted + de-duplicated.
         let mut sorted = models.clone();
         sorted.sort();

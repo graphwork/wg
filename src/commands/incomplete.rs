@@ -331,7 +331,7 @@ mod tests {
         let mut config = Config::default();
         config.models.evaluator = Some(RoleModelConfig {
             provider: None,
-            model: Some("codex:gpt-5.5".into()),
+            model: Some("pi:openai-codex:gpt-5.5".into()),
             tier: None,
             endpoint: None,
             reasoning: Some(worksgood::config::ReasoningLevel::High),

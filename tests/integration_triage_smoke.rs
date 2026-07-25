@@ -85,7 +85,7 @@ fn is_ready(wg_dir: &Path, id: &str) -> bool {
 fn setup() -> (TempDir, std::path::PathBuf) {
     let tmp = TempDir::new().unwrap();
     let wg_dir = tmp.path().join(".wg");
-    wg_ok(&wg_dir, &["init", "--route", "claude-cli"]);
+    wg_ok(&wg_dir, &["init", "--route", "pi"]);
     std::fs::write(
         wg_dir.join("config.toml"),
         "[agency]\nauto_assign = false\nauto_evaluate = false\nflip_enabled = false\n",

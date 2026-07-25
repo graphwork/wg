@@ -15,66 +15,47 @@ command reference, see [COMMANDS.md](COMMANDS.md).
 
 ### Global config (once, after install)
 
-A fresh install with no `~/.wg/config.toml` already runs `claude:opus` via the
-`claude` CLI handler — built-in defaults cover the common case. The first time
-you want to commit choices to disk you have three options:
+A fresh install is graph-only and has **no executable LLM default**. Pi is the
+sole supported model plane. Select exact `pi:<provider>:<model>` identities and
+reasoning before starting a service or spawning an LLM-backed role:
 
 ```bash
-wg setup                            # interactive wizard — pick one of 5 named routes
-wg config init --global             # non-interactive: minimal canonical claude-cli config
-wg config init --global --route openrouter   # non-interactive: openrouter route
+wg setup --route pi --yes --model pi:<provider>:<model>
+# or install/select the shipped complete profile
+wg profile init-starters
+wg profile select pi
 ```
 
-Writes `~/.wg/config.toml`. Pick one of 5 smooth routes — each produces a
-complete, working config (model + tiers + endpoint when applicable):
+Pi owns provider authentication, endpoint configuration, model discovery,
+availability checks, usage, and cost. WG stores orchestration policy only:
+exact strong/weak or per-role Pi routes plus inherited reasoning. WG does not
+accept provider API keys or endpoint URLs during setup.
 
-| Route | Default model spec | Use case |
-|-------|--------------------|----------|
-| `claude-cli` | `claude:opus` | Local `claude` CLI login (no API key in config) |
-| `codex-cli` | `codex:gpt-5.5` | Local `codex` CLI login |
-| `openrouter` | `openrouter:<model>` | One API key, every major provider |
-| `local` | `nex:<model>` | Ollama / vLLM / llama.cpp on `localhost` (via nex) |
-| `nex-custom` | `nex:<model>` | Bring your own OAI-compatible URL + key + model |
-
-You don't pick an executor — wg derives the handler from the model spec's
-provider prefix. The prefix matches the handler / subcommand name: `claude:*` →
-claude CLI, `codex:*` → codex CLI, `nex:*` → in-process nex (`wg nex`).
-`openrouter:*` also routes through nex but uses an implicit `api.openrouter.ai`
-endpoint.
-
-(`local:` and `oai-compat:` are deprecated aliases for `nex:` retained for one
-release; `wg migrate config` rewrites them in existing config files.)
-
-Non-interactive use:
+Use Pi's own configuration/login flow to choose a provider and model, then copy
+the exact identity into WG. Preview without writing:
 
 ```bash
-wg setup --route claude-cli --yes
-wg setup --route openrouter --api-key-env OPENROUTER_API_KEY --yes
-wg setup --route local --url http://localhost:11434/v1 --model qwen3:4b --yes
-wg setup --route nex-custom --url https://my.endpoint/v1 --api-key-env MY_KEY --model my-model --yes
-
-# Preview without writing
-wg setup --route claude-cli --dry-run
+wg setup --route pi --model pi:openrouter:z-ai/glm-5.2 --dry-run
 ```
 
-Switch routes later with `wg config reset --route <name>` (always backs up the
-existing config first; `--keep-keys` preserves existing endpoint entries).
+A complete profile defines every LLM-backed role either explicitly or through
+a strong/weak tier, and defines effective reasoning for every role. Missing
+reasoning, a bare model name, and every non-Pi route fail closed with no
+fallback handler.
 
-If you have an old config from a previous wg release with deprecated keys
-(`agent.executor`, retired compactor knobs) or stale model strings
-(`openrouter:anthropic/claude-sonnet-4` instead of `…-sonnet-4-6`), run:
+Old WG provider, endpoint, model-registry, and executor fields remain readable
+only for migration. They are not dispatch or accounting authority. Inspect and
+rewrite legacy files before selecting a Pi profile:
 
 ```bash
-wg migrate config --dry-run    # preview changes
-wg migrate config --all        # rewrite global + local; backs up to .pre-migrate.<timestamp>
+wg config lint
+wg migrate config --dry-run
+wg migrate config --all
 ```
 
-Standalone `nex` is a separate human REPL surface. Use `nex` when you want
-`.nex/` or `~/.nex/` sessions that are not owned by a WG task graph. Use
-`wg nex` when the session belongs to a WG project and should live in
-`.wg/chat/`. See [Standalone nex Setup and Migration](guides/standalone-nex.md)
-for the setup, precedence, and migration rules. Autonomous WG agents do not
-read human `~/.nex` model or endpoint state.
+See [Pi model-plane ownership](pi-model-plane.md) for the exact contract. Any
+older non-Pi route examples elsewhere in historical design/audit documents
+describe migration-era behavior and are not executable configuration.
 
 ### Initialize a project
 
@@ -106,9 +87,9 @@ wg add "Implement auth" \
   --skill security \
   --deliverable src/auth.rs
 
-# Per-task model override (use provider:model for non-default providers)
-wg add "Quick formatting fix" --model haiku
-wg add "Use GPT for this" --model openai:gpt-4o
+# Per-task LLM override: always an exact Pi identity
+wg add "Quick formatting fix" --model pi:<provider>:<model> --reasoning low
+wg add "Complex design" --model pi:<provider>:<model> --reasoning xhigh
 
 # Execution weight controls what the agent can do
 wg add "Quick lint fix" --exec-mode shell       # no LLM, just runs shell command
@@ -143,7 +124,7 @@ wg add "Complex refactor" --context-scope full
 wg edit my-task --title "Better title"
 wg edit my-task --add-after other-task
 wg edit my-task --remove-tag stale --add-tag urgent
-wg edit my-task --model opus
+wg edit my-task --model pi:<provider>:<model> --reasoning high
 wg edit my-task --exec-mode light
 wg edit my-task --delay 30m --not-before 2026-03-20T09:00:00Z
 wg edit my-task --add-skill security --remove-skill docs
@@ -182,7 +163,7 @@ wg agent create "Erik" \
   --trust-level verified
 
 # AI agent
-wg agent create "Claude Coder" \
+wg agent create "Pi Coder" \
   --role <role-hash> \
   --tradeoff <tradeoff-hash> \
   --capabilities coding,testing,docs
@@ -212,56 +193,48 @@ wg service stop --kill-agents    # stop daemon and all agents
 
 ```toml
 [dispatcher]              # legacy alias [coordinator] still accepted
-max_agents = 4            # max parallel agents (default: 4)
-poll_interval = 5         # seconds between safety-net ticks
-model = "claude:opus"     # provider:model — handler is implied
+max_agents = 4
+poll_interval = 5
+model = "pi:<provider>:<strong-model>"
 
 [agent]
-model = "claude:opus"
-heartbeat_timeout = 5     # minutes before agent is considered dead
+model = "pi:<provider>:<strong-model>"
+heartbeat_timeout = 5
 
-[agency]
-auto_evaluate = false
-auto_assign = false
-auto_triage = false
-assigner_model = "haiku"
-evaluator_model = "haiku"
-evolver_model = "opus"
+[tiers]
+fast = "pi:<provider>:<weak-model>"
+fast_reasoning = "low"
+standard = "pi:<provider>:<strong-model>"
+standard_reasoning = "high"
+premium = "pi:<provider>:<strong-model>"
+premium_reasoning = "xhigh"
+
+[models.reviewer]
+model = "pi:<provider>:<weak-model>"
+reasoning = "low"
 ```
 
 Set values with:
 
 ```bash
 wg config --max-agents 8
-wg config --model claude:opus
+wg config --model pi:<provider>:<strong-model>
 wg config --poll-interval 120
+wg config --tier fast=pi:<provider>:<weak-model>
+wg config --tier standard=pi:<provider>:<strong-model>
+wg config --set-reasoning fast low
+wg config --set-reasoning standard high
+wg config --role-model reviewer=pi:<provider>:<weak-model>
+wg config --set-reasoning reviewer low
 
-# Agency
+# Agency orchestration
 wg config --auto-evaluate true
 wg config --auto-assign true
 wg config --auto-place true
 wg config --auto-create true
-wg config --assigner-model haiku
-wg config --evaluator-model opus
-wg config --evolver-model opus
-
-# Creator tracking
-wg config --creator-agent <agent-hash>
-wg config --creator-model opus
-
-# Triage
 wg config --auto-triage true
-wg config --triage-model haiku
-
-# Eval gate and FLIP
 wg config --eval-gate-threshold 0.7
 wg config --flip-enabled true
-
-# Model registry
-wg config --registry
-wg config --registry-add --id my-model --provider openrouter --reg-model my-model --reg-tier standard
-wg config --set-model default sonnet
-wg config --set-model evaluator opus
 
 # Multi-chat
 wg config --max-coordinators 3
@@ -275,7 +248,7 @@ wg config --local     # .wg/config.toml
 CLI flags on `wg service start` override `config.toml`:
 
 ```bash
-wg service start --max-agents 8 --interval 120 --model claude:haiku
+wg service start --max-agents 8 --interval 120 --model pi:<provider>:<model>
 ```
 
 ### Service control
@@ -305,7 +278,7 @@ Reload changes settings at runtime:
 
 ```bash
 wg service reload                              # re-read config.toml
-wg service reload --max-agents 8 --model haiku # apply specific overrides
+wg service reload --max-agents 8 --model pi:<provider>:<model> # exact Pi override
 ```
 
 ### Agent management
@@ -367,52 +340,31 @@ wg config --triage-max-log-bytes 50000
 
 ---
 
-## Models
+## Pi routes and thinking
 
-### Selection priority
+Pi is the only supported LLM execution system. Selection priority is:
 
-1. Task's `model` property (`wg add --model`, `wg edit --model`) — highest
-2. Executor config model (in the executor's config file)
-3. `coordinator.model` in config.toml (or `--model` on `wg spawn` / `wg service start`)
-4. Handler default
+1. exact task `model`/`reasoning` override;
+2. explicit `[models.<role>]` route/thinking;
+3. strong/weak tier route/thinking;
+4. exact `[dispatcher]` / `[agent]` Pi route.
+
+There is no handler default: a missing/non-Pi route or missing effective
+thinking fails closed.
 
 ```bash
-wg add "Simple fix" --model claude:haiku
-wg add "Complex design" --model claude:opus
-wg edit my-task --model claude:opus
-wg spawn my-task --model claude:haiku
-wg config --model claude:opus
+wg add "Simple fix" --model pi:<provider>:<model> --reasoning low
+wg add "Complex design" --model pi:<provider>:<model> --reasoning xhigh
+wg config --model pi:<provider>:<model>
+wg config --set-reasoning standard high
+wg config --models
 wg service reload
 ```
 
-**Cost tips.** Use **haiku** for simple formatting/linting and **opus** for the
-default worker route. Configure **sonnet** only when you intentionally want a
-lower-cost override for a specific task or project.
-
-**Alternative providers.** wg supports
-[OpenRouter](https://openrouter.ai/) and any OpenAI-compatible API. Configure
-an endpoint with `wg endpoints add` and use full model IDs like
-`deepseek/deepseek-chat-v3`. See [guides/openrouter-setup.md](guides/openrouter-setup.md)
-for details.
-
-### Model registry
-
-```bash
-wg model list                                     # all models (built-in + user)
-wg model add my-model --provider openrouter --model-id deepseek/deepseek-chat-v3
-wg model remove my-model
-wg model set-default sonnet                       # default dispatch model
-wg model routing                                  # per-role routing
-wg model set --role evaluator opus
-```
-
-### API keys
-
-```bash
-wg key set anthropic
-wg key check
-wg key list
-```
+Use Pi itself for provider login, endpoints, model search, availability, and
+support validation. WG has no supported model catalog, endpoint, or API-key
+configuration surface. Legacy fields are migration-only and cannot authorize,
+rewrite, or price dispatch.
 
 ---
 
@@ -841,7 +793,7 @@ The skill teaches agents to:
 
    `wg retry` also rescues hung in-progress tasks (SIGTERM → SIGKILL → reset).
    Default is retry-in-place; pass `--fresh` to discard the worktree, or
-   `--preserve-session` to keep the stored Claude session ID across the retry.
+   `--preserve-session` to keep the stored Pi session ID across the retry.
 
 5. **Ship.** When `wg ready` is empty and everything important is done, you're
    there.
@@ -886,7 +838,7 @@ Graph format (`.wg/graph.jsonl`):
 
 ```jsonl
 {"kind":"task","id":"design-api","title":"Design the API","status":"done"}
-{"kind":"task","id":"build-backend","title":"Build the backend","status":"open","after":["design-api"],"model":"sonnet"}
+{"kind":"task","id":"build-backend","title":"Build the backend","status":"open","after":["design-api"],"model":"pi:provider:model","reasoning":"high"}
 ```
 
 One JSON object per line. Human-readable, git-friendly, easy to hack on.
@@ -895,34 +847,20 @@ One JSON object per line. Human-readable, git-friendly, easy to hack on.
 
 ## Testing
 
-Run the wave-1 integration smoke test after any wave-1 task lands.
-
-**This MUST be run live against real endpoints — no stubs, no mocks, no
-special bypass.** The earlier version of this smoke silently passed because it
-relied on a fake LLM and ran the daemon with `--no-coordinator-agent`, which
-is exactly how the `wg nex` 404 reached the user on the first 'hi' in TUI
-chat. Live scenarios cover the user's literal reproduction:
+Run the standard Rust gates plus the credential-free Pi model-plane smoke:
 
 ```bash
-# Full suite — runs scenarios 1-7 (offline + live)
-bash scripts/smoke/wave-1-smoke.sh
-
-# Skip slow daemon/TUI scenarios (and the live ones)
-bash scripts/smoke/wave-1-smoke.sh --quick
-
-# Skip live scenarios (6, 7) but keep offline ones — for sandboxed CI
-bash scripts/smoke/wave-1-smoke.sh --offline
+cargo fmt --check
+cargo clippy
+cargo test --lib -- --test-threads=1
+cargo test --bin wg -- --test-threads=1
+cargo test --tests -- --test-threads=1
+bash tests/smoke/scenarios/pi_sole_model_plane.sh
 ```
 
-If a live endpoint is unreachable, scenario 6/7 print a LOUD banner —
-`*** NEX SMOKE SKIPPED — endpoint unreachable ***` — that is greppable in
-output and impossible to miss. Set `WG_SMOKE_FAIL_ON_SKIP=1` to promote loud
-skips to fail in CI. Set `WG_SMOKE_KEEP_SCRATCH=1` to preserve per-scenario
-scratch dirs for post-mortem inspection.
-
-Live scenarios point at `https://lambda01.tail334fe6.ts.net:30000` with model
-`qwen3-coder` by default; override via `WG_LIVE_NEX_ENDPOINT` and
-`WG_LIVE_NEX_MODEL`.
+Live provider/model validation belongs to Pi. The WG smoke verifies exact route
+preservation, per-role thinking, fail-closed behavior, and absence of WG
+credential/endpoint/catalog authority without requiring provider credentials.
 
 ---
 

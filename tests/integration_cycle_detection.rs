@@ -6605,7 +6605,7 @@ fn test_cli_add_with_exec_flag() {
     let dir = TempDir::new().unwrap();
     let wg_dir = dir.path().join(".wg");
 
-    wg_ok(&wg_dir, &["init", "--route", "claude-cli"]);
+    wg_ok(&wg_dir, &["init", "--route", "pi"]);
     let output = wg_ok(
         &wg_dir,
         &[
@@ -6643,7 +6643,7 @@ fn test_cli_add_with_exec_and_timeout() {
     let dir = TempDir::new().unwrap();
     let wg_dir = dir.path().join(".wg");
 
-    wg_ok(&wg_dir, &["init", "--route", "claude-cli"]);
+    wg_ok(&wg_dir, &["init", "--route", "pi"]);
     wg_ok(
         &wg_dir,
         &[

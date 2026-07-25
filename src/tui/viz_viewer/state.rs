@@ -21,7 +21,6 @@ use worksgood::config::Config;
 use worksgood::graph::{
     CycleAnalysis, Status, TokenUsage, format_tokens, parse_token_usage_live_cached,
 };
-use worksgood::models::load_model_choices;
 use worksgood::parser::load_graph;
 use worksgood::{AgentRegistry, AgentStatus};
 
@@ -1983,43 +1982,10 @@ pub struct AddNewExecutorChoice {
 /// Pi is intentionally first: opening New Chat is an explicit create action,
 /// so it may recommend and preselect Pi without changing the graph, profile, or
 /// provider. Nothing is persisted until the user confirms creation.
-pub const ADD_NEW_EXECUTOR_CHOICES: &[AddNewExecutorChoice] = &[
-    AddNewExecutorChoice {
-        label: "pi",
-        internal_executor: "pi",
-    },
-    AddNewExecutorChoice {
-        label: "claude",
-        internal_executor: "claude",
-    },
-    AddNewExecutorChoice {
-        label: "codex",
-        internal_executor: "codex",
-    },
-    // External chat-capable CLIs prototyped after the established executors so
-    // their addition does not shift the core indices the launcher tests pin
-    // (claude=0, codex=1, pi=2) — prototype-octomind-dexto-chat.
-    AddNewExecutorChoice {
-        label: "opencode",
-        internal_executor: "opencode",
-    },
-    AddNewExecutorChoice {
-        label: "nex",
-        internal_executor: "native",
-    },
-    AddNewExecutorChoice {
-        label: "octomind",
-        internal_executor: "octomind",
-    },
-    AddNewExecutorChoice {
-        label: "dexto",
-        internal_executor: "dexto",
-    },
-    AddNewExecutorChoice {
-        label: "Custom Command",
-        internal_executor: "command",
-    },
-];
+pub const ADD_NEW_EXECUTOR_CHOICES: &[AddNewExecutorChoice] = &[AddNewExecutorChoice {
+    label: "pi",
+    internal_executor: "pi",
+}];
 
 /// One endpoint suggestion offered by the Add-new endpoint field's
 /// autocomplete, built from configured `[[llm_endpoints.endpoints]]`.
@@ -2161,45 +2127,6 @@ pub struct ModelSuggestion {
     pub source: String,
 }
 
-/// A curated, network-free set of popular OpenRouter model routes used to
-/// seed the launcher's model autocomplete (add-model-fuzzy). These are
-/// intentionally NOT in the pricing-bearing model registry (which drives
-/// cost estimation): they exist only so common routes a user is likely to
-/// type — `minimax/minimax-m3`, `qwen/qwen3-coder`, `deepseek/deepseek-v3.2`,
-/// … — are findable by fuzzy search without a credentialed OpenRouter API
-/// call. Remote search stays available via `wg models search`; this list
-/// keeps the hot TUI path local and cache-free.
-pub const CURATED_OPENROUTER_MODELS: &[&str] = &[
-    "minimax/minimax-m3",
-    "qwen/qwen3-coder",
-    "qwen/qwen3-max",
-    "deepseek/deepseek-v3.2",
-    "deepseek/deepseek-r1",
-    "moonshotai/kimi-k2",
-    "x-ai/grok-4",
-    "z-ai/glm-4.6",
-    "anthropic/claude-opus-4-6",
-    "anthropic/claude-sonnet-4-6",
-    "openai/gpt-5.5",
-    "google/gemini-2.5-pro",
-];
-
-/// Map a user-facing provider/executor prefix (as parsed by
-/// [`parse_model_spec`]) to the registry-style "home" provider used by
-/// [`ModelSuggestion::provider`]. Routing-only prefixes that don't name a
-/// model home (`nex`, `local`, `native`, …) collapse to an empty string so
-/// the nex normalizer treats their bare ids as `nex:<model>`.
-fn registry_provider_from_prefix(prefix: &str) -> String {
-    match prefix {
-        "openrouter" => "openrouter",
-        "claude" => "anthropic",
-        "openai" | "codex" => "openai",
-        "gemini" => "google",
-        _ => "",
-    }
-    .to_string()
-}
-
 /// Short model name: the last `/`-separated segment of an id.
 fn model_short_name(id: &str) -> &str {
     id.rsplit('/').next().unwrap_or(id)
@@ -2257,17 +2184,12 @@ pub fn normalize_model_for_executor(id: &str, provider: &str, executor: &str) ->
             }
         }
         "pi" => {
-            // Pi handler resolves provider + model from a WG `provider:route`
-            // spec via `pi_model_arg`. Persist the canonical OpenRouter route
-            // (`openrouter:<vendor>/<model>`) so the Pi OpenRouter route is
-            // preserved across launcher history and CoordinatorState round-trips.
-            if provider == "openrouter" || id.contains('/') {
-                format!(
-                    "openrouter:{}",
-                    id.strip_prefix("openrouter/").unwrap_or(id)
-                )
-            } else {
+            if worksgood::config::parse_exact_pi_route(id).is_ok() {
                 id.to_string()
+            } else if provider.is_empty() {
+                id.to_string()
+            } else {
+                format!("pi:{provider}:{id}")
             }
         }
         "native" | "nex" => {
@@ -2353,8 +2275,8 @@ fn fuzzy_term_score(hay: &str, term: &str) -> Option<i64> {
 /// BTreeMap iteration), the curated OpenRouter routes, and finally
 /// configured endpoint default models.
 pub fn build_model_suggestions(
-    config: &Config,
-    registry: &worksgood::models::ModelRegistry,
+    _config: &Config,
+    _registry: &worksgood::models::ModelRegistry,
     recent_models: &[String],
 ) -> Vec<ModelSuggestion> {
     let mut out: Vec<ModelSuggestion> = Vec::new();
@@ -2381,52 +2303,20 @@ pub fn build_model_suggestions(
         });
     }
 
-    // 1. Recent launcher-history models (parse off any routing prefix).
-    for m in recent_models {
-        let spec = worksgood::config::parse_model_spec(m);
-        let provider = spec
-            .provider
-            .as_deref()
-            .map(registry_provider_from_prefix)
-            .unwrap_or_default();
-        push(&mut out, &mut seen, spec.model_id, provider, "recent");
-    }
-
-    // 2. Model registry (richest: id + provider + tier).
-    for entry in registry.models.values() {
-        push(
-            &mut out,
-            &mut seen,
-            entry.id.clone(),
-            entry.provider.clone(),
-            &entry.tier.to_string(),
-        );
-    }
-
-    // 3. Curated OpenRouter routes (network-free hot-path seeds).
-    for id in CURATED_OPENROUTER_MODELS {
-        push(
-            &mut out,
-            &mut seen,
-            (*id).to_string(),
-            "openrouter".to_string(),
-            "curated",
-        );
-    }
-
-    // 4. Configured endpoint default models.
-    for ep in &config.llm_endpoints.endpoints {
-        if let Some(m) = ep.model.as_deref().filter(|m| !m.is_empty()) {
-            let spec = worksgood::config::parse_model_spec(m);
-            let provider = spec
-                .provider
-                .as_deref()
-                .map(registry_provider_from_prefix)
-                .unwrap_or_else(|| registry_provider_from_prefix(&ep.provider));
-            push(&mut out, &mut seen, spec.model_id, provider, "endpoint");
+    // The TUI never reads WG's legacy registry/catalog/endpoint defaults.
+    // It recalls only exact Pi routes the user previously chose; discovery and
+    // validation stay in Pi's own model picker.
+    for route in recent_models {
+        if let Ok((provider, _)) = worksgood::config::parse_exact_pi_route(route) {
+            push(
+                &mut out,
+                &mut seen,
+                route.clone(),
+                provider,
+                "recent Pi route",
+            );
         }
     }
-
     out
 }
 
@@ -2902,45 +2792,37 @@ impl LauncherState {
     /// Pi launches without a WG model route and uses Pi's own configured
     /// default unless the user explicitly edits the preset model.
     pub fn default_presets() -> Vec<LauncherPreset> {
-        vec![
-            LauncherPreset {
-                executor: "codex".to_string(),
-                model: "codex:gpt-5.5".to_string(),
-                label: "codex:gpt-5.5".to_string(),
-                description: "OpenAI Codex CLI (gpt-5.5)".to_string(),
-            },
-            LauncherPreset {
-                executor: "claude".to_string(),
-                model: "claude:opus".to_string(),
-                label: "claude:opus".to_string(),
-                description: "Claude CLI (Opus)".to_string(),
-            },
-            LauncherPreset {
-                executor: "pi".to_string(),
-                model: String::new(),
-                label: "pi".to_string(),
-                description: "Pi (pi.dev)".to_string(),
-            },
-        ]
+        Vec::new()
     }
 
     /// Plain Pi defaults to no WG model override. Users can still explicitly
     /// edit the preset model, but launcher-open state must not synthesize a
     /// route from history or config.
     pub fn resolve_pi_model(
-        _config: &worksgood::config::Config,
+        config: &worksgood::config::Config,
         _workgraph_dir: &std::path::Path,
     ) -> Option<String> {
-        None
+        config
+            .resolve_pi_route_for_role(worksgood::config::DispatchRole::Default)
+            .ok()
+            .map(|route| route.route)
     }
 
     /// Build the default presets. Plain Pi intentionally remains model-free;
     /// this function is retained as the launcher-open hook for callers.
     pub fn presets_with_pi_model(
-        _config: &worksgood::config::Config,
-        _workgraph_dir: &std::path::Path,
+        config: &worksgood::config::Config,
+        workgraph_dir: &std::path::Path,
     ) -> Vec<LauncherPreset> {
-        Self::default_presets()
+        let Some(model) = Self::resolve_pi_model(config, workgraph_dir) else {
+            return Vec::new();
+        };
+        vec![LauncherPreset {
+            executor: "pi".to_string(),
+            label: model.clone(),
+            model,
+            description: "Pi model plane (edit models/login in Pi)".to_string(),
+        }]
     }
 
     /// True when the highlighted Default-mode row is "+ Add new...".
@@ -3464,21 +3346,16 @@ impl LauncherState {
         match self.mode {
             LauncherMode::Default => {
                 let preset = self.presets.get(self.default_selected)?;
-                let model = if preset.model.trim().is_empty() {
-                    None
-                } else {
-                    Some(preset.model.clone())
-                };
-                Some((preset.executor.clone(), model, None))
+                worksgood::config::parse_exact_pi_route(&preset.model).ok()?;
+                Some(("pi".to_string(), Some(preset.model.clone()), None))
             }
             LauncherMode::AddNew => {
                 let executor = self.add_executor_choice().internal_executor.to_string();
                 let model_trimmed = self.add_model.trim();
-                if model_trimmed.is_empty() && executor != "pi" {
+                if executor != "pi"
+                    || worksgood::config::parse_exact_pi_route(model_trimmed).is_err()
+                {
                     return None;
-                }
-                if executor == "command" {
-                    return Some((executor, Some(model_trimmed.to_string()), None));
                 }
                 let endpoint = if self.add_new_show_endpoint() {
                     let trimmed = self.add_endpoint.trim();
@@ -23252,176 +23129,182 @@ impl VizApp {
             .enumerate()
             .map(|(index, endpoint)| (index, endpoint.name.clone()))
             .collect();
-        let model_choices = load_model_choices(&self.workgraph_dir);
-        let mut model_choices_with_default = vec!["(default)".to_string()];
-        model_choices_with_default.extend(model_choices.iter().cloned());
+        let model_choices = config
+            .resolve_pi_route_for_role(worksgood::config::DispatchRole::Default)
+            .ok()
+            .map(|route| vec![route.route])
+            .unwrap_or_default();
         let mut entries = Vec::new();
 
-        // ── 1. LLM Endpoints ──
-        for (i, ep) in config.llm_endpoints.endpoints.iter().enumerate() {
-            let status_icon = if ep.is_default { "✓ " } else { "  " };
-            entries.push(ConfigEntry {
-                key: format!("endpoint.{}.name", i),
-                label: format!("{}{}  ({})", status_icon, ep.name, ep.provider),
-                value: ep.url.clone().unwrap_or_else(|| {
-                    worksgood::config::EndpointConfig::default_url_for_provider(&ep.provider)
-                        .to_string()
-                }),
-                edit_kind: ConfigEditKind::TextInput,
-                section: ConfigSection::Endpoints,
-            });
-            entries.push(ConfigEntry {
-                key: format!("endpoint.{}.model", i),
-                label: "  Model".into(),
-                value: ep.model.clone().unwrap_or_else(|| "(default)".into()),
-                edit_kind: ConfigEditKind::TextInput,
-                section: ConfigSection::Endpoints,
-            });
-            entries.push(ConfigEntry {
-                key: format!("endpoint.{}.api_key", i),
-                label: "  API Key".into(),
-                value: ep.masked_key(),
-                edit_kind: ConfigEditKind::SecretInput,
-                section: ConfigSection::Endpoints,
-            });
-            entries.push(ConfigEntry {
-                key: format!("endpoint.{}.is_default", i),
-                label: "  Set as default".into(),
-                value: if ep.is_default {
-                    "on".into()
-                } else {
-                    "off".into()
-                },
-                edit_kind: ConfigEditKind::Toggle,
-                section: ConfigSection::Endpoints,
-            });
-            entries.push(ConfigEntry {
-                key: format!("endpoint.{}.remove", i),
-                label: "  Remove endpoint".into(),
-                value: "▸".into(),
-                edit_kind: ConfigEditKind::Toggle,
-                section: ConfigSection::Endpoints,
-            });
-        }
-        entries.push(ConfigEntry {
-            key: "endpoint.add".into(),
-            label: "+ Add endpoint".into(),
-            value: String::new(),
-            edit_kind: ConfigEditKind::TextInput,
-            section: ConfigSection::Endpoints,
-        });
-
-        // ── 2. API Keys (from environment) ──
-        // Status indicator: ✓ = set (green), ✗ = missing (red), ⚠ = set but short (yellow)
-        let key_status = |var: &str| -> (String, &'static str) {
-            match std::env::var(var).ok().filter(|k| !k.is_empty()) {
-                Some(key) if key.len() > 8 => {
-                    let masked = format!(
-                        "{}****...{}",
-                        &key[..key.floor_char_boundary(3)],
-                        &key[key.ceil_char_boundary(key.len() - 4)..]
-                    );
-                    (masked, "valid")
-                }
-                Some(_) => ("****".into(), "short"),
-                None => ("(not set)".into(), "missing"),
-            }
-        };
-        let (anthro_val, anthro_status) = key_status("ANTHROPIC_API_KEY");
-        let (openai_val, openai_status) = key_status("OPENAI_API_KEY");
-        let (openrouter_val, openrouter_status) = key_status("OPENROUTER_API_KEY");
-        // Also check endpoint-configured keys
-        let endpoint_has_key = |provider: &str| -> bool {
-            config.llm_endpoints.endpoints.iter().any(|ep| {
-                ep.provider == provider
-                    && (ep.api_key.is_some()
-                        || ep.api_key_file.is_some()
-                        || ep.api_key_env.is_some())
-            })
-        };
-        let key_label = |name: &str, status: &str, provider: &str| -> String {
-            let icon = match status {
-                "valid" => "✓",
-                "short" => "⚠",
-                _ if endpoint_has_key(provider) => "✓",
-                _ => "✗",
-            };
-            format!("{} {}", icon, name)
-        };
-        entries.push(ConfigEntry {
-            key: "apikey.anthropic".into(),
-            label: key_label("Anthropic", anthro_status, "anthropic"),
-            value: anthro_val,
-            edit_kind: ConfigEditKind::SecretInput,
-            section: ConfigSection::ApiKeys,
-        });
-        entries.push(ConfigEntry {
-            key: "apikey.openai".into(),
-            label: key_label("OpenAI", openai_status, "openai"),
-            value: openai_val,
-            edit_kind: ConfigEditKind::SecretInput,
-            section: ConfigSection::ApiKeys,
-        });
-        entries.push(ConfigEntry {
-            key: "apikey.openrouter".into(),
-            label: key_label("OpenRouter", openrouter_status, "openrouter"),
-            value: openrouter_val,
-            edit_kind: ConfigEditKind::SecretInput,
-            section: ConfigSection::ApiKeys,
-        });
-
-        // ── 3. Model Registry (from models.yaml) ──
-        {
-            let registry =
-                worksgood::models::ModelRegistry::load(&self.workgraph_dir).unwrap_or_default();
-            let default_id = registry.default_model.clone();
-            let mut models: Vec<&worksgood::models::ModelEntry> =
-                registry.models.values().collect();
-            models.sort_by(|a, b| a.id.cmp(&b.id));
-            for model in &models {
-                let is_default = default_id.as_deref() == Some(&*model.id);
-                let default_marker = if is_default { " *" } else { "" };
-                let ctx = if model.context_window >= 1_000_000 {
-                    format!("{}M", model.context_window / 1_000_000)
-                } else {
-                    format!("{}k", model.context_window / 1_000)
-                };
+        // Legacy WG provider/model controls stay parseable for migration but
+        // are never rendered. Pi owns these settings.
+        if false {
+            // ── 1. LLM Endpoints ──
+            for (i, ep) in config.llm_endpoints.endpoints.iter().enumerate() {
+                let status_icon = if ep.is_default { "✓ " } else { "  " };
                 entries.push(ConfigEntry {
-                    key: format!("model.{}.info", model.id),
-                    label: format!("{}{}", model.short_name(), default_marker),
-                    value: format!(
-                        "{} | ${:.2}/{:.2} | {}",
-                        model.tier, model.cost_per_1m_input, model.cost_per_1m_output, ctx
-                    ),
+                    key: format!("endpoint.{}.name", i),
+                    label: format!("{}{}  ({})", status_icon, ep.name, ep.provider),
+                    value: ep.url.clone().unwrap_or_else(|| {
+                        worksgood::config::EndpointConfig::default_url_for_provider(&ep.provider)
+                            .to_string()
+                    }),
                     edit_kind: ConfigEditKind::TextInput,
-                    section: ConfigSection::Models,
+                    section: ConfigSection::Endpoints,
                 });
                 entries.push(ConfigEntry {
-                    key: format!("model.{}.set_default", model.id),
+                    key: format!("endpoint.{}.model", i),
+                    label: "  Model".into(),
+                    value: ep.model.clone().unwrap_or_else(|| "(default)".into()),
+                    edit_kind: ConfigEditKind::TextInput,
+                    section: ConfigSection::Endpoints,
+                });
+                entries.push(ConfigEntry {
+                    key: format!("endpoint.{}.api_key", i),
+                    label: "  API Key".into(),
+                    value: ep.masked_key(),
+                    edit_kind: ConfigEditKind::SecretInput,
+                    section: ConfigSection::Endpoints,
+                });
+                entries.push(ConfigEntry {
+                    key: format!("endpoint.{}.is_default", i),
                     label: "  Set as default".into(),
-                    value: if is_default {
+                    value: if ep.is_default {
                         "on".into()
                     } else {
                         "off".into()
                     },
                     edit_kind: ConfigEditKind::Toggle,
-                    section: ConfigSection::Models,
+                    section: ConfigSection::Endpoints,
                 });
                 entries.push(ConfigEntry {
-                    key: format!("model.{}.remove", model.id),
-                    label: "  Remove model".into(),
+                    key: format!("endpoint.{}.remove", i),
+                    label: "  Remove endpoint".into(),
                     value: "▸".into(),
                     edit_kind: ConfigEditKind::Toggle,
-                    section: ConfigSection::Models,
+                    section: ConfigSection::Endpoints,
                 });
             }
             entries.push(ConfigEntry {
-                key: "model.add".into(),
-                label: "+ Add model".into(),
+                key: "endpoint.add".into(),
+                label: "+ Add endpoint".into(),
                 value: String::new(),
                 edit_kind: ConfigEditKind::TextInput,
-                section: ConfigSection::Models,
+                section: ConfigSection::Endpoints,
             });
+
+            // ── 2. API Keys (from environment) ──
+            // Status indicator: ✓ = set (green), ✗ = missing (red), ⚠ = set but short (yellow)
+            let key_status = |var: &str| -> (String, &'static str) {
+                match std::env::var(var).ok().filter(|k| !k.is_empty()) {
+                    Some(key) if key.len() > 8 => {
+                        let masked = format!(
+                            "{}****...{}",
+                            &key[..key.floor_char_boundary(3)],
+                            &key[key.ceil_char_boundary(key.len() - 4)..]
+                        );
+                        (masked, "valid")
+                    }
+                    Some(_) => ("****".into(), "short"),
+                    None => ("(not set)".into(), "missing"),
+                }
+            };
+            let (anthro_val, anthro_status) = key_status("ANTHROPIC_API_KEY");
+            let (openai_val, openai_status) = key_status("OPENAI_API_KEY");
+            let (openrouter_val, openrouter_status) = key_status("OPENROUTER_API_KEY");
+            // Also check endpoint-configured keys
+            let endpoint_has_key = |provider: &str| -> bool {
+                config.llm_endpoints.endpoints.iter().any(|ep| {
+                    ep.provider == provider
+                        && (ep.api_key.is_some()
+                            || ep.api_key_file.is_some()
+                            || ep.api_key_env.is_some())
+                })
+            };
+            let key_label = |name: &str, status: &str, provider: &str| -> String {
+                let icon = match status {
+                    "valid" => "✓",
+                    "short" => "⚠",
+                    _ if endpoint_has_key(provider) => "✓",
+                    _ => "✗",
+                };
+                format!("{} {}", icon, name)
+            };
+            entries.push(ConfigEntry {
+                key: "apikey.anthropic".into(),
+                label: key_label("Anthropic", anthro_status, "anthropic"),
+                value: anthro_val,
+                edit_kind: ConfigEditKind::SecretInput,
+                section: ConfigSection::ApiKeys,
+            });
+            entries.push(ConfigEntry {
+                key: "apikey.openai".into(),
+                label: key_label("OpenAI", openai_status, "openai"),
+                value: openai_val,
+                edit_kind: ConfigEditKind::SecretInput,
+                section: ConfigSection::ApiKeys,
+            });
+            entries.push(ConfigEntry {
+                key: "apikey.openrouter".into(),
+                label: key_label("OpenRouter", openrouter_status, "openrouter"),
+                value: openrouter_val,
+                edit_kind: ConfigEditKind::SecretInput,
+                section: ConfigSection::ApiKeys,
+            });
+
+            // ── 3. Model Registry (from models.yaml) ──
+            {
+                let registry =
+                    worksgood::models::ModelRegistry::load(&self.workgraph_dir).unwrap_or_default();
+                let default_id = registry.default_model.clone();
+                let mut models: Vec<&worksgood::models::ModelEntry> =
+                    registry.models.values().collect();
+                models.sort_by(|a, b| a.id.cmp(&b.id));
+                for model in &models {
+                    let is_default = default_id.as_deref() == Some(&*model.id);
+                    let default_marker = if is_default { " *" } else { "" };
+                    let ctx = if model.context_window >= 1_000_000 {
+                        format!("{}M", model.context_window / 1_000_000)
+                    } else {
+                        format!("{}k", model.context_window / 1_000)
+                    };
+                    entries.push(ConfigEntry {
+                        key: format!("model.{}.info", model.id),
+                        label: format!("{}{}", model.short_name(), default_marker),
+                        value: format!(
+                            "{} | ${:.2}/{:.2} | {}",
+                            model.tier, model.cost_per_1m_input, model.cost_per_1m_output, ctx
+                        ),
+                        edit_kind: ConfigEditKind::TextInput,
+                        section: ConfigSection::Models,
+                    });
+                    entries.push(ConfigEntry {
+                        key: format!("model.{}.set_default", model.id),
+                        label: "  Set as default".into(),
+                        value: if is_default {
+                            "on".into()
+                        } else {
+                            "off".into()
+                        },
+                        edit_kind: ConfigEditKind::Toggle,
+                        section: ConfigSection::Models,
+                    });
+                    entries.push(ConfigEntry {
+                        key: format!("model.{}.remove", model.id),
+                        label: "  Remove model".into(),
+                        value: "▸".into(),
+                        edit_kind: ConfigEditKind::Toggle,
+                        section: ConfigSection::Models,
+                    });
+                }
+                entries.push(ConfigEntry {
+                    key: "model.add".into(),
+                    label: "+ Add model".into(),
+                    value: String::new(),
+                    edit_kind: ConfigEditKind::TextInput,
+                    section: ConfigSection::Models,
+                });
+            }
         }
 
         // ── 4. Service Settings ──
@@ -23447,27 +23330,30 @@ impl VizApp {
             section: ConfigSection::Service,
         });
         entries.push(ConfigEntry {
-            key: "coordinator.executor".into(),
-            label: "Executor".into(),
-            value: config.coordinator.effective_executor(),
-            edit_kind: ConfigEditKind::Choice(vec![
-                "claude".into(),
-                "native".into(),
-                "opencode".into(),
-                "codex".into(),
-                "shell".into(),
-            ]),
-            section: ConfigSection::Service,
-        });
-        entries.push(ConfigEntry {
             key: "coordinator.model".into(),
-            label: "Model".into(),
+            label: "Pi route".into(),
             value: config
                 .coordinator
                 .model
                 .clone()
                 .unwrap_or_else(|| config.agent.model.clone()),
             edit_kind: ConfigEditKind::Choice(model_choices.clone()),
+            section: ConfigSection::Service,
+        });
+        entries.push(ConfigEntry {
+            key: "tiers.standard_reasoning".into(),
+            label: "Pi reasoning".into(),
+            value: config
+                .tiers
+                .standard_reasoning
+                .map(|level| level.as_str().to_string())
+                .unwrap_or_else(|| "(missing — dispatch blocked)".into()),
+            edit_kind: ConfigEditKind::Choice(
+                worksgood::config::ReasoningLevel::ALL
+                    .iter()
+                    .map(|level| level.as_str().to_string())
+                    .collect(),
+            ),
             section: ConfigSection::Service,
         });
         entries.push(ConfigEntry {
@@ -23655,20 +23541,8 @@ impl VizApp {
             section: ConfigSection::AgentDefaults,
         });
         entries.push(ConfigEntry {
-            key: "agent.executor".into(),
-            label: "Default executor".into(),
-            value: config.agent.executor.clone(),
-            edit_kind: ConfigEditKind::Choice(vec![
-                "claude".into(),
-                "opencode".into(),
-                "codex".into(),
-                "shell".into(),
-            ]),
-            section: ConfigSection::AgentDefaults,
-        });
-        entries.push(ConfigEntry {
             key: "agent.model".into(),
-            label: "Default model".into(),
+            label: "Default Pi route".into(),
             value: config.agent.model.clone(),
             edit_kind: ConfigEditKind::Choice(model_choices.clone()),
             section: ConfigSection::AgentDefaults,
@@ -23930,7 +23804,7 @@ impl VizApp {
             });
         }
 
-        // ── 9. Model Routing ──
+        // ── 9. Pi role routing ──
         {
             use worksgood::config::DispatchRole;
             let tier_choices = vec![
@@ -23939,70 +23813,61 @@ impl VizApp {
                 "standard".to_string(),
                 "premium".to_string(),
             ];
-            let roles = [
-                (DispatchRole::Default, "Default"),
-                (DispatchRole::TaskAgent, "Task agent"),
-                (DispatchRole::Evaluator, "Evaluator"),
-                (DispatchRole::FlipInference, "FLIP inference"),
-                (DispatchRole::FlipComparison, "FLIP comparison"),
-                (DispatchRole::Assigner, "Assigner"),
-                (DispatchRole::Evolver, "Evolver"),
-                (DispatchRole::Verification, "Verification"),
-                (DispatchRole::Triage, "Triage"),
-                (DispatchRole::Creator, "Creator"),
-                (DispatchRole::Compactor, "Compactor"),
-            ];
-            for (role, label) in roles {
+            let reasoning_choices = std::iter::once("(inherit)".to_string())
+                .chain(
+                    worksgood::config::ReasoningLevel::ALL
+                        .iter()
+                        .map(|level| level.as_str().to_string()),
+                )
+                .collect::<Vec<_>>();
+            for role in
+                std::iter::once(DispatchRole::Default).chain(DispatchRole::ALL.iter().copied())
+            {
                 let role_cfg = config.models.get_role(role);
-                let resolved = config.resolve_model_for_role(role);
                 let source = config.resolve_model_source(role);
-                let resolved_display = format!("{} ({})", resolved.model, source);
-                let model_val = role_cfg
-                    .and_then(|c| c.model.clone())
+                let resolved_display = match config.resolve_pi_route_for_role(role) {
+                    Ok(route) => format!(
+                        "{} · thinking={} ({})",
+                        route.route, route.reasoning, source
+                    ),
+                    Err(error) => format!("BLOCKED: {error}"),
+                };
+                let route_value = role_cfg
+                    .and_then(|value| value.model.clone())
                     .unwrap_or_else(|| "(inherit)".into());
-                let provider_val = role_cfg
-                    .and_then(|c| c.provider.clone())
+                let tier_value = role_cfg
+                    .and_then(|value| value.tier.map(|tier| tier.to_string()))
                     .unwrap_or_else(|| "(inherit)".into());
-                let tier_val = role_cfg
-                    .and_then(|c| c.tier.map(|t| t.to_string()))
+                let reasoning_value = role_cfg
+                    .and_then(|value| value.reasoning)
+                    .map(|reasoning| reasoning.as_str().to_string())
                     .unwrap_or_else(|| "(inherit)".into());
-                let endpoint_val = role_cfg
-                    .and_then(|c| c.endpoint.clone())
-                    .unwrap_or_else(|| "(inherit)".into());
-                // Resolved display (read-only info line)
                 entries.push(ConfigEntry {
                     key: format!("models.{}.resolved", role),
-                    label: format!("{}  → {}", label, resolved_display),
+                    label: format!("{} → {}", role, resolved_display),
                     value: String::new(),
-                    edit_kind: ConfigEditKind::TextInput, // shown but not meaningfully editable
+                    edit_kind: ConfigEditKind::TextInput,
                     section: ConfigSection::ModelRouting,
                 });
                 entries.push(ConfigEntry {
                     key: format!("models.{}.model", role),
-                    label: format!("  {} model", label),
-                    value: model_val,
+                    label: "  Pi route".into(),
+                    value: route_value,
                     edit_kind: ConfigEditKind::TextInput,
                     section: ConfigSection::ModelRouting,
                 });
                 entries.push(ConfigEntry {
                     key: format!("models.{}.tier", role),
-                    label: format!("  {} tier", label),
-                    value: tier_val,
+                    label: "  Tier".into(),
+                    value: tier_value,
                     edit_kind: ConfigEditKind::Choice(tier_choices.clone()),
                     section: ConfigSection::ModelRouting,
                 });
                 entries.push(ConfigEntry {
-                    key: format!("models.{}.provider", role),
-                    label: format!("  {} provider", label),
-                    value: provider_val,
-                    edit_kind: ConfigEditKind::TextInput,
-                    section: ConfigSection::ModelRouting,
-                });
-                entries.push(ConfigEntry {
-                    key: format!("models.{}.endpoint", role),
-                    label: format!("  {} endpoint", label),
-                    value: endpoint_val,
-                    edit_kind: ConfigEditKind::TextInput,
+                    key: format!("models.{}.reasoning", role),
+                    label: "  Thinking".into(),
+                    value: reasoning_value,
+                    edit_kind: ConfigEditKind::Choice(reasoning_choices.clone()),
                     section: ConfigSection::ModelRouting,
                 });
             }
@@ -24085,18 +23950,11 @@ impl VizApp {
 
         let mut entries: Vec<SettingsEntry> = Vec::new();
 
-        // Agent — model, executor, heartbeat
+        // Agent — exact Pi route and lifecycle timing
         entries.push(SettingsEntry {
             key: "agent.model".into(),
             value: config.agent.model.clone(),
             source: lookup("agent.model"),
-            section: "Agent",
-            kind: SettingsEntryKind::Config,
-        });
-        entries.push(SettingsEntry {
-            key: "agent.executor".into(),
-            value: config.agent.executor.clone(),
-            source: lookup("agent.executor"),
             section: "Agent",
             kind: SettingsEntryKind::Config,
         });
@@ -24563,10 +24421,23 @@ impl VizApp {
             return;
         };
 
+        let key = self.config_panel.entries[idx].key.clone();
+        let is_pi_route_field = matches!(
+            key.as_str(),
+            "coordinator.model" | "agent.model" | "tiers.fast" | "tiers.standard" | "tiers.premium"
+        ) || (key.starts_with("models.") && key.ends_with(".model"));
+        let inherits = new_value == "(inherit)" || new_value.is_empty();
+        if is_pi_route_field
+            && !inherits
+            && let Err(error) = worksgood::config::parse_exact_pi_route(&new_value)
+        {
+            self.config_panel.editing = false;
+            self.push_toast(error.to_string(), ToastSeverity::Error);
+            return;
+        }
         self.config_panel.entries[idx].value = new_value.clone();
 
         let mut config = load_tui_config(&self.workgraph_dir);
-        let key = self.config_panel.entries[idx].key.clone();
         match key.as_str() {
             "coordinator.max_agents" => {
                 if let Ok(v) = new_value.parse::<usize>() {
@@ -24580,6 +24451,9 @@ impl VizApp {
             }
             "coordinator.executor" => config.coordinator.executor = Some(new_value),
             "coordinator.model" => config.coordinator.model = Some(new_value),
+            "tiers.standard_reasoning" => {
+                config.tiers.standard_reasoning = new_value.parse().ok();
+            }
             "coordinator.agent_timeout" => config.coordinator.agent_timeout = new_value,
             "coordinator.settling_delay_ms" => {
                 if let Ok(v) = new_value.parse::<u64>() {
@@ -24789,14 +24663,8 @@ impl VizApp {
                                     }
                                 }
                                 "provider" => {
-                                    if is_inherit {
-                                        let slot = config.models.get_role_mut(role);
-                                        if let Some(c) = slot {
-                                            c.provider = None;
-                                        }
-                                    } else {
-                                        config.models.set_provider(role, &new_value);
-                                    }
+                                    // Migration-only field retained for old files; the Pi
+                                    // configuration panel never renders it.
                                 }
                                 "tier" => {
                                     let slot = config.models.get_role_mut(role);
@@ -24820,15 +24688,28 @@ impl VizApp {
                                         }
                                     }
                                 }
-                                "endpoint" => {
-                                    if is_inherit {
-                                        let slot = config.models.get_role_mut(role);
-                                        if let Some(c) = slot {
-                                            c.endpoint = None;
-                                        }
+                                "reasoning" => {
+                                    let slot = config.models.get_role_mut(role);
+                                    let reasoning = if is_inherit {
+                                        None
                                     } else {
-                                        config.models.set_endpoint(role, &new_value);
+                                        new_value.parse::<worksgood::config::ReasoningLevel>().ok()
+                                    };
+                                    if let Some(config) = slot {
+                                        config.reasoning = reasoning;
+                                    } else if let Some(reasoning) = reasoning {
+                                        *slot = Some(worksgood::config::RoleModelConfig {
+                                            provider: None,
+                                            model: None,
+                                            tier: None,
+                                            endpoint: None,
+                                            reasoning: Some(reasoning),
+                                        });
                                     }
+                                }
+                                "endpoint" => {
+                                    // Migration-only field retained for old files; the Pi
+                                    // configuration panel never renders it.
                                 }
                                 _ => {}
                             }
@@ -28843,8 +28724,12 @@ mod tui_config_panel_tests {
         std::fs::create_dir_all(&wg_dir).unwrap();
         let graph_path = wg_dir.join("graph.jsonl");
         save_graph(&graph, &graph_path).unwrap();
-        // Save a default config so load_config_panel can read it
-        let config = Config::default();
+        // Save a complete Pi config so route/thinking controls exercise the
+        // supported model plane rather than migration-only defaults.
+        let config = worksgood::config_defaults::config_for_route(
+            worksgood::config_defaults::SetupRoute::Pi,
+            worksgood::config_defaults::RouteParams::default(),
+        );
         config.save(&wg_dir).unwrap();
 
         let tasks: Vec<_> = graph.tasks().collect();
@@ -29001,13 +28886,13 @@ mod tui_config_panel_tests {
                         }
                         "coordinator.agent_timeout" => "45m",
                         "tui.counters" => "uptime,active",
-                        // Model and tier fields require provider:model format
+                        // Pi route fields require an exact handler-first identity.
                         k if k.starts_with("tiers.")
                             || k == "coordinator.model"
                             || k == "agent.model"
                             || (k.starts_with("models.") && k.ends_with(".model")) =>
                         {
-                            "claude:test-model"
+                            "pi:test-provider:test-model"
                         }
                         // Provider fields are deprecated (skip_serializing) — skip them
                         k if k.starts_with("models.") && k.ends_with(".provider") => {
@@ -29107,8 +28992,8 @@ mod tui_config_panel_tests {
             // Service
             "coordinator.max_agents",
             "coordinator.poll_interval",
-            "coordinator.executor",
             "coordinator.model",
+            "tiers.standard_reasoning",
             "coordinator.agent_timeout",
             "coordinator.settling_delay_ms",
             "coordinator.max_coordinators",
@@ -29131,7 +29016,6 @@ mod tui_config_panel_tests {
             "tui.show_running_system_tasks",
             // Agent
             "agent.heartbeat_timeout",
-            "agent.executor",
             "agent.model",
             // Agency
             "agency.auto_assign",
@@ -29161,62 +29045,6 @@ mod tui_config_panel_tests {
             "tiers.fast",
             "tiers.standard",
             "tiers.premium",
-            // Model routing (resolved + model + tier + provider + endpoint per role)
-            "models.default.resolved",
-            "models.default.model",
-            "models.default.tier",
-            "models.default.provider",
-            "models.default.endpoint",
-            "models.task_agent.resolved",
-            "models.task_agent.model",
-            "models.task_agent.tier",
-            "models.task_agent.provider",
-            "models.task_agent.endpoint",
-            "models.evaluator.resolved",
-            "models.evaluator.model",
-            "models.evaluator.tier",
-            "models.evaluator.provider",
-            "models.evaluator.endpoint",
-            "models.flip_inference.resolved",
-            "models.flip_inference.model",
-            "models.flip_inference.tier",
-            "models.flip_inference.provider",
-            "models.flip_inference.endpoint",
-            "models.flip_comparison.resolved",
-            "models.flip_comparison.model",
-            "models.flip_comparison.tier",
-            "models.flip_comparison.provider",
-            "models.flip_comparison.endpoint",
-            "models.assigner.resolved",
-            "models.assigner.model",
-            "models.assigner.tier",
-            "models.assigner.provider",
-            "models.assigner.endpoint",
-            "models.evolver.resolved",
-            "models.evolver.model",
-            "models.evolver.tier",
-            "models.evolver.provider",
-            "models.evolver.endpoint",
-            "models.verification.resolved",
-            "models.verification.model",
-            "models.verification.tier",
-            "models.verification.provider",
-            "models.verification.endpoint",
-            "models.triage.resolved",
-            "models.triage.model",
-            "models.triage.tier",
-            "models.triage.provider",
-            "models.triage.endpoint",
-            "models.creator.resolved",
-            "models.creator.model",
-            "models.creator.tier",
-            "models.creator.provider",
-            "models.creator.endpoint",
-            "models.compactor.resolved",
-            "models.compactor.model",
-            "models.compactor.tier",
-            "models.compactor.provider",
-            "models.compactor.endpoint",
         ];
 
         for required in &required_keys {
@@ -29226,6 +29054,20 @@ mod tui_config_panel_tests {
                 required
             );
         }
+        for role in std::iter::once(worksgood::config::DispatchRole::Default)
+            .chain(worksgood::config::DispatchRole::ALL.iter().copied())
+        {
+            for field in ["resolved", "model", "tier", "reasoning"] {
+                let key = format!("models.{role}.{field}");
+                assert!(keys.contains(&key), "Missing Pi role config key: '{key}'");
+            }
+            assert!(!keys.contains(&format!("models.{role}.provider")));
+            assert!(!keys.contains(&format!("models.{role}.endpoint")));
+        }
+        assert!(!keys.iter().any(|key| key.starts_with("apikey.")));
+        assert!(!keys.iter().any(|key| key.starts_with("endpoint.")));
+        assert!(!keys.contains("coordinator.executor"));
+        assert!(!keys.contains("agent.executor"));
     }
 
     #[test]
@@ -29289,13 +29131,13 @@ mod tui_config_panel_tests {
             .unwrap();
         app.config_panel.selected = idx;
         app.config_panel.editing = true;
-        app.config_panel.edit_buffer = "claude:sonnet".to_string();
+        app.config_panel.edit_buffer = "pi:test-provider:sonnet".to_string();
         app.save_config_entry();
 
         // Use Config::load (local-only) to avoid global config bleeding in
         let config = Config::load(&app.workgraph_dir).unwrap();
         let default_model = config.models.default.as_ref().and_then(|c| c.model.clone());
-        assert_eq!(default_model, Some("claude:sonnet".to_string()));
+        assert_eq!(default_model, Some("pi:test-provider:sonnet".to_string()));
 
         // Set to inherit (clear)
         app.load_config_panel();
@@ -29330,13 +29172,13 @@ mod tui_config_panel_tests {
             .unwrap();
         app.config_panel.selected = idx;
         app.config_panel.editing = true;
-        app.config_panel.edit_buffer = "claude:custom-fast-model".to_string();
+        app.config_panel.edit_buffer = "pi:test-provider:custom-fast-model".to_string();
         app.save_config_entry();
 
         let config = Config::load(&app.workgraph_dir).unwrap();
         assert_eq!(
             config.tiers.fast,
-            Some("claude:custom-fast-model".to_string())
+            Some("pi:test-provider:custom-fast-model".to_string())
         );
 
         // Set standard tier
@@ -29350,13 +29192,13 @@ mod tui_config_panel_tests {
             .unwrap();
         app.config_panel.selected = idx;
         app.config_panel.editing = true;
-        app.config_panel.edit_buffer = "claude:custom-standard".to_string();
+        app.config_panel.edit_buffer = "pi:test-provider:custom-standard".to_string();
         app.save_config_entry();
 
         let config = Config::load(&app.workgraph_dir).unwrap();
         assert_eq!(
             config.tiers.standard,
-            Some("claude:custom-standard".to_string())
+            Some("pi:test-provider:custom-standard".to_string())
         );
 
         // Set premium tier
@@ -29370,18 +29212,18 @@ mod tui_config_panel_tests {
             .unwrap();
         app.config_panel.selected = idx;
         app.config_panel.editing = true;
-        app.config_panel.edit_buffer = "claude:custom-premium".to_string();
+        app.config_panel.edit_buffer = "pi:test-provider:custom-premium".to_string();
         app.save_config_entry();
 
         let config = Config::load(&app.workgraph_dir).unwrap();
         assert_eq!(
             config.tiers.premium,
-            Some("claude:custom-premium".to_string())
+            Some("pi:test-provider:custom-premium".to_string())
         );
     }
 
     #[test]
-    fn test_config_panel_model_routing_tier_and_endpoint() {
+    fn test_config_panel_model_routing_tier_and_reasoning() {
         let (mut app, _temp) = build_config_test_app();
         app.load_config_panel();
 
@@ -29404,27 +29246,32 @@ mod tui_config_panel_tests {
         let triage_tier = config.models.triage.as_ref().and_then(|c| c.tier);
         assert_eq!(triage_tier, Some(worksgood::config::Tier::Premium));
 
-        // Set an endpoint for evaluator
+        // Set explicit Pi thinking for evaluator.
         app.load_config_panel();
-        let key = "models.evaluator.endpoint";
+        let key = "models.evaluator.reasoning";
         let idx = app
             .config_panel
             .entries
             .iter()
-            .position(|e| e.key == key)
+            .position(|entry| entry.key == key)
             .unwrap();
+        let reasoning_idx = match &app.config_panel.entries[idx].edit_kind {
+            ConfigEditKind::Choice(choices) => {
+                choices.iter().position(|choice| choice == "xhigh").unwrap()
+            }
+            _ => unreachable!(),
+        };
         app.config_panel.selected = idx;
         app.config_panel.editing = true;
-        app.config_panel.edit_buffer = "openrouter".to_string();
+        app.config_panel.choice_index = reasoning_idx;
         app.save_config_entry();
 
         let config = Config::load(&app.workgraph_dir).unwrap();
-        let eval_endpoint = config
-            .models
-            .evaluator
-            .as_ref()
-            .and_then(|c| c.endpoint.clone());
-        assert_eq!(eval_endpoint, Some("openrouter".to_string()));
+        let eval_reasoning = config.models.evaluator.as_ref().and_then(|c| c.reasoning);
+        assert_eq!(
+            eval_reasoning,
+            Some(worksgood::config::ReasoningLevel::Xhigh)
+        );
 
         // Clear the tier (set to inherit)
         app.load_config_panel();
@@ -29444,27 +29291,23 @@ mod tui_config_panel_tests {
         let triage_tier = config.models.triage.as_ref().and_then(|c| c.tier);
         assert_eq!(triage_tier, None);
 
-        // Clear endpoint (set to inherit)
+        // Clear evaluator thinking (set to inherit).
         app.load_config_panel();
-        let key = "models.evaluator.endpoint";
+        let key = "models.evaluator.reasoning";
         let idx = app
             .config_panel
             .entries
             .iter()
-            .position(|e| e.key == key)
+            .position(|entry| entry.key == key)
             .unwrap();
         app.config_panel.selected = idx;
         app.config_panel.editing = true;
-        app.config_panel.edit_buffer = "(inherit)".to_string();
+        app.config_panel.choice_index = 0;
         app.save_config_entry();
 
         let config = Config::load(&app.workgraph_dir).unwrap();
-        let eval_endpoint = config
-            .models
-            .evaluator
-            .as_ref()
-            .and_then(|c| c.endpoint.clone());
-        assert_eq!(eval_endpoint, None);
+        let eval_reasoning = config.models.evaluator.as_ref().and_then(|c| c.reasoning);
+        assert_eq!(eval_reasoning, None);
     }
 
     #[test]
@@ -29480,10 +29323,18 @@ mod tui_config_panel_tests {
             .iter()
             .find(|e| e.key == resolved_key)
             .expect("resolved entry for triage should exist");
-        // Label should contain "Triage" and an arrow
+        // Label shows the canonical role name, exact Pi route, and thinking.
         assert!(
-            entry.label.contains("Triage"),
+            entry.label.contains("triage"),
             "label should contain role name"
+        );
+        assert!(
+            entry.label.contains("pi:"),
+            "label should contain exact Pi route"
+        );
+        assert!(
+            entry.label.contains("thinking="),
+            "label should contain thinking"
         );
         assert!(
             entry.label.contains("→"),
@@ -34012,7 +33863,7 @@ mod filter_picker_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, any()))]
 mod launcher_redesign_tests {
     use super::{
         ADD_NEW_EXECUTOR_CHOICES, AddNewField, LauncherMode, LauncherSection, LauncherState,
@@ -34385,7 +34236,7 @@ mod launcher_redesign_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, any()))]
 mod launcher_endpoint_autocomplete_tests {
     use super::{
         ADD_NEW_EXECUTOR_CHOICES, AddNewField, EndpointSuggestion, LauncherMode, LauncherSection,
@@ -34811,7 +34662,7 @@ mod launcher_endpoint_autocomplete_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, any()))]
 mod launcher_model_autocomplete_tests {
     use super::{
         ADD_NEW_EXECUTOR_CHOICES, AddNewField, LauncherMode, LauncherSection, LauncherState,
@@ -35855,7 +35706,7 @@ mod agent_stream_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, any()))]
 mod launcher_open_tests {
     use super::*;
 

@@ -7,7 +7,7 @@
 //!    known executor, or future `task.executor` field)                  →  final
 //! 3. Agency-derived `agent_executor` (passed in by caller)              →  final
 //! 4. Local/global `[dispatcher].executor` (a.k.a. `coordinator.executor`) →  final
-//! 5. Default (`claude`)
+//! 5. Default handler shape (`pi`; a missing exact route still fails closed)
 //!
 //! **A BARE model alias never overrides the executor.** Once executor is
 //! resolved (e.g. via local `[dispatcher].executor=claude`), a *bare* model
@@ -359,7 +359,9 @@ pub fn plan_spawn(
     // Per-task model wins over default. Both are kept verbatim — we don't
     // rewrite `opus` to `claude:opus` here because the model field's role is
     // to be passed to the executor, which knows how to resolve aliases.
-    let (model_raw, model_source) = if let Some(m) = task.model.as_deref() {
+    let (model_raw, model_source) = if executor == ExecutorKind::Shell {
+        (String::new(), "shell task (no model)".to_string())
+    } else if let Some(m) = task.model.as_deref() {
         (m.to_string(), "task.model".to_string())
     } else if let Some(m) = default_model {
         (m.to_string(), "dispatcher.default_model".to_string())
@@ -409,9 +411,12 @@ pub fn plan_spawn(
     };
 
     let model = ResolvedModelSpec::from_raw(&model_raw);
-    let reasoning = task
-        .reasoning
-        .or_else(|| config.resolve_reasoning_for_role(crate::config::DispatchRole::TaskAgent));
+    let reasoning = if executor == ExecutorKind::Shell {
+        None
+    } else {
+        task.reasoning
+            .or_else(|| config.resolve_reasoning_for_role(crate::config::DispatchRole::TaskAgent))
+    };
 
     // ----- 2b. Model-compat override -----
     // The claude CLI cannot run non-Anthropic models — it would 404. If we
@@ -712,7 +717,7 @@ fn validate_cli_backend_match(executor: ExecutorKind, model: &ResolvedModelSpec)
 /// 2. `task.exec_mode` parses to a known executor          →  that executor
 /// 3. `agent_executor` (agency-derived effective executor) →  that executor
 /// 4. `[dispatcher].executor` (local or global merged)     →  that executor
-/// 5. Default                                              →  Claude
+/// 5. Default handler shape                                →  Pi
 ///
 /// **Crucially: model is never consulted here.** The caller may have a
 /// non-Anthropic model spec, but if the dispatcher is pinned to claude,
@@ -753,8 +758,9 @@ fn resolve_executor(
         return (kind, "[dispatcher].executor".to_string());
     }
 
-    // 5. Default.
-    (ExecutorKind::Claude, "default".to_string())
+    // 5. Pi is the only supported LLM execution system. The caller still
+    // validates an exact route and reasoning before launch.
+    (ExecutorKind::Pi, "Pi-only default handler".to_string())
 }
 
 #[cfg(test)]
@@ -1251,12 +1257,12 @@ mod tests {
     }
 
     #[test]
-    fn test_default_executor_is_claude() {
+    fn test_default_handler_shape_is_pi() {
         let config = Config::default();
         let task = base_task("t1");
         let plan = plan_spawn(&task, &config, None, None).unwrap();
-        assert_eq!(plan.executor, ExecutorKind::Claude);
-        assert_eq!(plan.provenance.executor_source, "default");
+        assert_eq!(plan.executor, ExecutorKind::Pi);
+        assert_eq!(plan.provenance.executor_source, "Pi-only default handler");
     }
 
     #[test]
@@ -1349,24 +1355,18 @@ mod tests {
         );
     }
 
-    /// Default dispatcher (no executor configured) + agent default (claude)
-    /// + local: model → must override to native. Same root cause as
-    /// autohaiku, just driven by the default fall-through rather than an
-    /// explicit `-x claude`.
+    /// A migration-only non-Pi model cannot turn the Pi-only default into a
+    /// native fallback. The outer spawn boundary rejects the route itself.
     #[test]
-    fn test_default_executor_with_local_model_overrides_to_native() {
+    fn test_default_pi_handler_does_not_fallback_for_local_model() {
         let mut config = Config::default();
         config.coordinator.model = Some("local:qwen3-coder".to_string());
 
         let task = base_task("t1");
         let plan = plan_spawn(&task, &config, None, Some("local:qwen3-coder")).unwrap();
 
-        assert_eq!(
-            plan.executor,
-            ExecutorKind::Native,
-            "default claude executor with local: model must override to native. provenance: {:?}",
-            plan.provenance
-        );
+        assert_eq!(plan.executor, ExecutorKind::Pi);
+        assert_eq!(plan.provenance.executor_source, "Pi-only default handler");
     }
 
     /// `claude:opus` (and bare `opus`) MUST NOT trigger an override — the
@@ -1533,24 +1533,18 @@ mod tests {
     }
 
     #[test]
-    fn test_model_route_preserves_known_good_provider_routing() {
+    fn test_non_pi_defaults_never_select_another_handler() {
         let config = Config::default();
         let task = base_task("t1");
 
-        let cases = [
-            ("codex:gpt-5.5", ExecutorKind::Codex),
-            ("claude:opus", ExecutorKind::Claude),
-            ("nex:qwen3-coder", ExecutorKind::Native),
-            ("openrouter:stepfun/step-3.7-flash", ExecutorKind::Native),
-        ];
-
-        for (model, expected_executor) in cases {
+        for model in [
+            "codex:gpt-5.5",
+            "claude:opus",
+            "nex:qwen3-coder",
+            "openrouter:stepfun/step-3.7-flash",
+        ] {
             let plan = plan_spawn(&task, &config, None, Some(model)).unwrap();
-            assert_eq!(
-                plan.executor, expected_executor,
-                "model {} should route to {:?}; provenance={:?}",
-                model, expected_executor, plan.provenance
-            );
+            assert_eq!(plan.executor, ExecutorKind::Pi, "model={model}");
             assert_eq!(plan.model.raw, model);
         }
     }

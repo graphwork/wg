@@ -57,38 +57,6 @@ fn run_wg_in_isolation_with_env(
         .unwrap_or_else(|e| panic!("Failed to run wg: {}", e))
 }
 
-fn run_wg_in_isolation_with_stdin(
-    fake_home: &Path,
-    args: &[&str],
-    stdin_body: &str,
-) -> std::process::Output {
-    let mut cmd = Command::new(wg_binary());
-    cmd.args(args);
-    cmd.env("HOME", fake_home);
-    cmd.env_remove("ANTHROPIC_API_KEY");
-    cmd.env_remove("OPENROUTER_API_KEY");
-    cmd.env_remove("OPENAI_API_KEY");
-    cmd.env_remove("WG_DIR");
-    cmd.env_remove("WG_TASK_ID");
-    cmd.env_remove("WG_AGENT_ID");
-    cmd.stdin(Stdio::piped());
-    cmd.stdout(Stdio::piped());
-    cmd.stderr(Stdio::piped());
-
-    let mut child = cmd
-        .spawn()
-        .unwrap_or_else(|e| panic!("Failed to spawn wg with stdin: {}", e));
-    child
-        .stdin
-        .take()
-        .expect("missing stdin")
-        .write_all(stdin_body.as_bytes())
-        .expect("write stdin");
-    child
-        .wait_with_output()
-        .unwrap_or_else(|e| panic!("Failed waiting for wg stdin run: {}", e))
-}
-
 #[derive(Clone)]
 struct Route {
     method: &'static str,
@@ -334,22 +302,22 @@ fn test_route_nex_custom_complete_config() {
 
 #[test]
 fn test_setup_non_interactive_route_writes_config() {
-    // wg setup --route claude-cli --yes produces a config with populated tiers.
+    // wg setup --route pi --yes produces complete exact Pi routing.
     let tmp = TempDir::new().unwrap();
     let fake_home = tmp.path().join("home");
     fs::create_dir_all(&fake_home).unwrap();
 
-    let output = run_wg_in_isolation(&fake_home, &["setup", "--route", "claude-cli", "--yes"]);
+    let output = run_wg_in_isolation(&fake_home, &["setup", "--route", "pi", "--yes"]);
     assert!(
         output.status.success(),
-        "wg setup --route claude-cli --yes failed.\nstdout: {}\nstderr: {}",
+        "wg setup --route pi --yes failed.\nstdout: {}\nstderr: {}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
 
     let cfg = load_global_config(&fake_home);
-    assert_eq!(cfg.coordinator.executor.as_deref(), Some("claude"));
-    assert_eq!(cfg.agent.executor, "claude");
+    assert_eq!(cfg.coordinator.executor, None);
+    assert_eq!(cfg.agent.executor, "pi");
     assert!(cfg.tiers.fast.is_some(), "tiers.fast must be populated");
     assert!(
         cfg.tiers.standard.is_some(),
@@ -359,16 +327,12 @@ fn test_setup_non_interactive_route_writes_config() {
         cfg.tiers.premium.is_some(),
         "tiers.premium must be populated"
     );
-    assert_eq!(cfg.agent.model, "claude:opus");
-    assert_eq!(cfg.coordinator.model.as_deref(), Some("claude:opus"));
-    assert_eq!(cfg.tiers.standard.as_deref(), Some("claude:opus"));
-    assert_eq!(
-        cfg.resolve_model_for_role(DispatchRole::TaskAgent).model,
-        "opus"
-    );
+    assert_eq!(cfg.agent.model, "pi:openrouter:z-ai/glm-5.2");
+    cfg.validate_pi_model_plane().unwrap();
 }
 
 #[test]
+#[ignore = "retired non-Pi setup/endpoint surface"]
 fn test_setup_route_codex_writes_top_standard_and_task_agent() {
     let tmp = TempDir::new().unwrap();
     let fake_home = tmp.path().join("home");
@@ -400,6 +364,7 @@ fn test_setup_route_codex_writes_top_standard_and_task_agent() {
 }
 
 #[test]
+#[ignore = "retired non-Pi setup/endpoint surface"]
 fn test_setup_route_openrouter_writes_endpoint_and_tiers() {
     let tmp = TempDir::new().unwrap();
     let fake_home = tmp.path().join("home");
@@ -477,6 +442,7 @@ fn test_setup_route_openrouter_writes_endpoint_and_tiers() {
 }
 
 #[test]
+#[ignore = "retired non-Pi setup/endpoint surface"]
 fn test_setup_route_openrouter_without_key_prints_exact_login_step() {
     let tmp = TempDir::new().unwrap();
     let fake_home = tmp.path().join("home");
@@ -498,6 +464,7 @@ fn test_setup_route_openrouter_without_key_prints_exact_login_step() {
 }
 
 #[test]
+#[ignore = "retired non-Pi setup/endpoint surface"]
 fn test_setup_route_local_uses_supplied_model() {
     let tmp = TempDir::new().unwrap();
     let fake_home = tmp.path().join("home");
@@ -530,6 +497,7 @@ fn test_setup_route_local_uses_supplied_model() {
 }
 
 #[test]
+#[ignore = "retired non-Pi setup/endpoint surface"]
 fn test_setup_route_nex_custom_requires_url_and_model() {
     let tmp = TempDir::new().unwrap();
     let fake_home = tmp.path().join("home");
@@ -561,7 +529,7 @@ fn test_setup_dry_run_does_not_write() {
 
     let output = run_wg_in_isolation(
         &fake_home,
-        &["setup", "--route", "claude-cli", "--dry-run", "--yes"],
+        &["setup", "--route", "pi", "--dry-run", "--yes"],
     );
     assert!(output.status.success());
 
@@ -600,7 +568,7 @@ fn test_init_dry_run_no_write() {
     let output = Command::new(wg_binary())
         .arg("--dir")
         .arg(&wg_dir)
-        .args(["init", "--route", "claude-cli", "--dry-run"])
+        .args(["init", "--route", "pi", "--dry-run"])
         .env("HOME", &fake_home)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -634,6 +602,7 @@ fn test_init_dry_run_no_write() {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[ignore = "retired non-Pi setup/endpoint surface"]
 fn test_init_with_executor_only_populates_tiers() {
     // The validation criteria say `wg init -x claude` should produce
     // populated [tiers] — this is the bug the spec calls out.
@@ -676,6 +645,7 @@ fn test_init_with_executor_only_populates_tiers() {
 }
 
 #[test]
+#[ignore = "retired non-Pi setup/endpoint surface"]
 fn test_init_route_openrouter_prints_login_handoff() {
     let tmp = TempDir::new().unwrap();
     let project = tmp.path().join("project");
@@ -712,6 +682,7 @@ fn test_init_route_openrouter_prints_login_handoff() {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[ignore = "retired non-Pi setup/endpoint surface"]
 fn test_config_reset_keep_keys_preserves_endpoints() {
     let tmp = TempDir::new().unwrap();
     let fake_home = tmp.path().join("home");
@@ -792,10 +763,7 @@ model = "claude:opus"
 "#;
     fs::write(global_dir.join("config.toml"), pre).unwrap();
 
-    let output = run_wg_in_isolation(
-        &fake_home,
-        &["config", "reset", "--route", "openrouter", "--yes"],
-    );
+    let output = run_wg_in_isolation(&fake_home, &["config", "reset", "--route", "pi", "--yes"]);
     assert!(
         output.status.success(),
         "config reset failed.\nstderr: {}",
@@ -848,7 +816,7 @@ model = "claude:sonnet"
 
     let output = run_wg_in_isolation(
         &fake_home,
-        &["config", "reset", "--route", "openrouter", "--dry-run"],
+        &["config", "reset", "--route", "pi", "--dry-run"],
     );
     assert!(output.status.success());
 
@@ -870,6 +838,7 @@ model = "claude:sonnet"
 }
 
 #[test]
+#[ignore = "retired non-Pi setup/endpoint surface"]
 fn test_setup_route_openrouter_from_stdin_writes_secret_ref_not_embedded_key() {
     let tmp = TempDir::new().unwrap();
     let fake_home = tmp.path().join("home");
@@ -918,6 +887,7 @@ fn test_setup_route_openrouter_from_stdin_writes_secret_ref_not_embedded_key() {
 }
 
 #[test]
+#[ignore = "retired non-Pi setup/endpoint surface"]
 fn test_setup_route_openrouter_local_reuses_existing_global_login() {
     let tmp = TempDir::new().unwrap();
     let fake_home = tmp.path().join("home");
@@ -969,6 +939,7 @@ is_default = true
 }
 
 #[test]
+#[ignore = "retired non-Pi setup/endpoint surface"]
 fn test_setup_route_claude_cli_needs_no_api_key_prompt() {
     let tmp = TempDir::new().unwrap();
     let fake_home = tmp.path().join("home");
@@ -986,7 +957,7 @@ fn test_setup_route_claude_cli_needs_no_api_key_prompt() {
 }
 
 #[test]
-fn test_setup_route_pi_local_reuses_global_openrouter_for_wg_managed_side() {
+fn test_setup_route_pi_local_ignores_legacy_global_endpoint_authority() {
     let tmp = TempDir::new().unwrap();
     let fake_home = tmp.path().join("home");
     let project = tmp.path().join("project");
@@ -1024,16 +995,13 @@ is_default = true
     );
 
     let cfg = load_local_config(&project);
-    assert!(cfg.llm_endpoints.inherit_global);
-    assert!(cfg.agent.model.starts_with("pi:"));
-    assert_eq!(
-        cfg.tiers.fast.as_deref(),
-        Some("openrouter:deepseek/deepseek-chat")
-    );
+    assert!(!cfg.llm_endpoints.inherit_global);
+    assert!(cfg.llm_endpoints.endpoints.is_empty());
+    cfg.validate_pi_model_plane().unwrap();
 }
 
 #[test]
-fn test_setup_help_mentions_pi_and_provider_login_onboarding() {
+fn test_setup_help_mentions_pi_and_hides_provider_credentials() {
     let tmp = TempDir::new().unwrap();
     let fake_home = tmp.path().join("home");
     fs::create_dir_all(&fake_home).unwrap();
@@ -1041,7 +1009,7 @@ fn test_setup_help_mentions_pi_and_provider_login_onboarding() {
     let output = run_wg_in_isolation(&fake_home, &["setup", "--help"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success());
-    assert!(stdout.contains("pi"));
-    assert!(stdout.contains("--from-stdin"));
-    assert!(stdout.contains("Secret backend"));
+    assert!(stdout.contains("pi:<provider>:<model>"));
+    assert!(!stdout.contains("--from-stdin"));
+    assert!(!stdout.contains("Secret backend"));
 }

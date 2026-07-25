@@ -2504,6 +2504,13 @@ description = "Candidate-binary credential-free real tmux/SGR flow for the one-r
 timeout_seconds = 180
 
 [[scenario]]
+name = "pi_sole_model_plane"
+script = "scenarios/pi_sole_model_plane.sh"
+owners = ["make-pi-the-2"]
+description = "Credential-free installed-binary Pi-only configuration flow: graph init stays route-free, Pi setup writes no WG registry/endpoints, an unregistered exact Pi route appears for every role with explicit inherited reasoning, non-Pi/missing-reasoning configurations fail closed, and quickstart advertises no retired model-plane choices."
+timeout_seconds = 90
+
+[[scenario]]
 name = "public_add_visible_publish_tui"
 script = "scenarios/public_add_visible_publish_tui.sh"
 owners = [

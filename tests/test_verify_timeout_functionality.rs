@@ -208,7 +208,7 @@ fn test_cli_verify_timeout_flag() -> Result<()> {
 
     // Initialize a WG project
     wg_command()
-        .args(&["init", "--route", "claude-cli"])
+        .args(&["init", "--route", "pi"])
         .current_dir(project_root)
         .output()?;
 
@@ -319,7 +319,7 @@ fn test_verify_timeout_in_task_serialization() -> Result<()> {
 
     // Initialize WG
     wg_command()
-        .args(&["init", "--route", "claude-cli"])
+        .args(&["init", "--route", "pi"])
         .current_dir(project_root)
         .output()?;
 
@@ -349,7 +349,7 @@ fn test_verify_timeout_different_duration_formats() -> Result<()> {
     let project_root = temp_dir.path();
 
     wg_command()
-        .args(&["init", "--route", "claude-cli"])
+        .args(&["init", "--route", "pi"])
         .current_dir(project_root)
         .output()?;
 
@@ -420,7 +420,7 @@ fn test_legacy_verify_flag_is_rejected() -> Result<()> {
     // lives in the task description under a ## Validation section.
     let temp_dir = TempDir::new()?;
     wg_command()
-        .args(&["init", "--route", "claude-cli"])
+        .args(&["init", "--route", "pi"])
         .current_dir(temp_dir.path())
         .output()?;
 

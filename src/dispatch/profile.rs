@@ -173,7 +173,7 @@ mod tests {
         write_profile(
             global_dir.path(),
             "creditburn",
-            "[coordinator]\nmodel = \"codex:gpt-5.5\"\n",
+            "[agent]\nmodel = \"pi:test:worker\"\n[dispatcher]\nmodel = \"pi:test:worker\"\n[tiers]\nfast = \"pi:test:weak\"\nfast_reasoning = \"low\"\nstandard = \"pi:test:worker\"\nstandard_reasoning = \"high\"\npremium = \"pi:test:worker\"\npremium_reasoning = \"xhigh\"\n[models.default]\nmodel = \"pi:test:worker\"\nreasoning = \"high\"\n[models.task_agent]\nmodel = \"pi:test:worker\"\nreasoning = \"high\"\n",
         );
 
         let mut task = Task::default();
@@ -185,7 +185,7 @@ mod tests {
         let eff = effective_config_for_task(&task, &global, &mut cache);
 
         // The effective config IS the profile snapshot (global is untouched).
-        assert_eq!(eff.coordinator.model.as_deref(), Some("codex:gpt-5.5"));
+        assert_eq!(eff.coordinator.model.as_deref(), Some("pi:test:worker"));
         assert_eq!(global.coordinator.model, None);
 
         // And `plan_spawn` (the single dispatch resolver) routes the work task
@@ -194,7 +194,7 @@ mod tests {
             .resolve_model_for_role(crate::config::DispatchRole::TaskAgent)
             .spawn_model_spec();
         let plan = crate::dispatch::plan_spawn(&task, eff.as_ref(), None, Some(&model)).unwrap();
-        assert_eq!(plan.executor, crate::dispatch::ExecutorKind::Codex);
+        assert_eq!(plan.executor, crate::dispatch::ExecutorKind::Pi);
     }
 
     /// A task's agency satellites resolve the evaluator role through the WCC
@@ -208,7 +208,7 @@ mod tests {
         write_profile(
             global_dir.path(),
             "creditburn",
-            "[models.evaluator]\nmodel = \"codex:gpt-5.5-mini\"\n",
+            "[tiers]\nfast = \"pi:test:weak\"\nfast_reasoning = \"low\"\n[models.evaluator]\nmodel = \"pi:test:weak\"\nreasoning = \"low\"\n",
         );
 
         // With no profile/role selection the evaluator is unselected; built-in
@@ -229,8 +229,7 @@ mod tests {
             crate::config::DispatchRole::Evaluator,
         )
         .unwrap();
-        assert_eq!(dispatch.raw_spec, "codex:gpt-5.5-mini");
-        assert_ne!(dispatch.raw_spec, "claude:haiku");
-        assert_eq!(dispatch.handler, crate::dispatch::ExecutorKind::Codex);
+        assert_eq!(dispatch.raw_spec, "pi:test:weak");
+        assert_eq!(dispatch.handler, crate::dispatch::ExecutorKind::Pi);
     }
 }

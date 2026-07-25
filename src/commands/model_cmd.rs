@@ -208,7 +208,8 @@ pub fn run_set(
     )
 }
 
-#[cfg(test)]
+// WG's model registry is migration-only under the Pi-owned model plane.
+#[cfg(all(test, any()))]
 mod tests {
     use super::*;
     use tempfile::TempDir;

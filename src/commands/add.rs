@@ -11,99 +11,11 @@ use worksgood::parser::modify_graph;
 
 use super::graph_path;
 
-/// Resolve a model input string to a fully-qualified `provider:model` format.
-///
-/// Handles four forms (in priority order):
-/// 1. Already valid `provider:model` → pass through
-/// 2. Matches a `[[model_registry]]` entry by ID → use registry provider + model
-/// 3. `provider/model` format (e.g., `minimax/minimax-m2.7`) → `openrouter:provider/model`
-/// 4. Bare short name (e.g., `minimax-m2.7`) → resolve against model cache → `openrouter:resolved_id`
-fn resolve_model_input(model: &str, workgraph_dir: &Path) -> Result<String> {
-    // External-CLI-executor-qualified route. This is not a provider:model
-    // spec: `opencode` names the executor, and the rest names the model as the
-    // executor expects it. Keep it intact so dispatch can atomically select
-    // executor=opencode and normalize the inner model.
-    if let Some((executor, inner)) = model.split_once(':')
-        && worksgood::dispatch::ExecutorKind::from_str(executor)
-            .is_some_and(|kind| kind.is_external_cli())
-        && !inner.trim().is_empty()
-    {
-        return Ok(model.to_string());
-    }
-
-    // If it already passes strict validation, it's fine
-    if worksgood::config::parse_model_spec_strict(model).is_ok() {
-        return Ok(model.to_string());
-    }
-
-    // Check config model_registry before falling back to OpenRouter catalog.
-    if let Ok(config) = worksgood::config::Config::load_merged(workgraph_dir)
-        && let Some(entry) = config.registry_lookup(model)
-    {
-        let prefix = worksgood::config::native_provider_to_prefix(&entry.provider);
-        let full_spec = format!("{}:{}", prefix, entry.model);
-        // Quiet: `full_spec` is a spec the tool reconstructed from the
-        // registry, not the user's literal input — a handler-first warning
-        // about a route wg itself chose would be spurious.
-        if worksgood::config::parse_model_spec_strict_quiet(&full_spec).is_ok() {
-            eprintln!(
-                "Resolved model '{}' → '{}' (from model_registry)",
-                model, full_spec
-            );
-            return Ok(full_spec);
-        }
-    }
-
-    // Check if it has a `/` but no recognized provider prefix → assume OpenRouter format
-    let spec = worksgood::config::parse_model_spec(model);
-    if spec.provider.is_none() && model.contains('/') {
-        // Looks like "provider/model" format (e.g., "minimax/minimax-m2.7")
-        let candidate = format!("openrouter:{}", model);
-        // Validate that this parses correctly. Quiet: `candidate` is a spec
-        // the tool reconstructed from a bare `vendor/model` slash route, not
-        // the user's literal input — warning about it would be spurious.
-        if worksgood::config::parse_model_spec_strict_quiet(&candidate).is_ok() {
-            eprintln!("Resolved model '{}' → '{}'", model, candidate);
-            return Ok(candidate);
-        }
-    }
-
-    // Bare short name — try to resolve against the model cache
-    let resolution =
-        worksgood::executor::native::openai_client::resolve_short_model_name(model, workgraph_dir);
-
-    if let Some(resolved_id) = resolution.resolved {
-        let full_spec = format!("openrouter:{}", resolved_id);
-        eprintln!("Resolved model '{}' → '{}'", model, full_spec);
-        return Ok(full_spec);
-    }
-
-    // Resolution failed — provide helpful error
-    if !resolution.suggestions.is_empty() {
-        let suggestions_str = resolution
-            .suggestions
-            .iter()
-            .map(|s| format!("    - openrouter:{}", s))
-            .collect::<Vec<_>>()
-            .join("\n");
-        anyhow::bail!(
-            "Could not resolve model '{}'. Did you mean one of:\n{}\n  \
-             Hint: run `wg models search {}` to find valid alternatives.",
-            model,
-            suggestions_str,
-            model,
-        );
-    }
-
-    // No cache or no suggestions — fall back to strict validation error message
-    if let Err(e) = worksgood::config::parse_model_spec_strict(model) {
-        anyhow::bail!(
-            "Invalid --model format: {}\n  \
-             Hint: run `wg models fetch` to populate the model cache for short-name resolution.",
-            e,
-        );
-    }
-
+/// Validate a task-level LLM identity without consulting any WG catalog.
+fn resolve_model_input(model: &str, _workgraph_dir: &Path) -> Result<String> {
+    worksgood::config::parse_exact_pi_route(model).with_context(|| {
+        format!("WG-PI-ROUTE-REQUIRED: task model must be `pi:<provider>:<model>`, got {model:?}")
+    })?;
     Ok(model.to_string())
 }
 
@@ -496,18 +408,13 @@ pub fn run_with_remote_provider(
             .map_err(|e| anyhow::anyhow!("{}", e))?;
     }
 
-    // Deprecation warning for --provider flag
-    if let Some(p) = provider {
-        let suggested_provider = if p == "anthropic" { "claude" } else { p };
-        eprintln!(
-            "Warning: --provider is deprecated. Use provider:model format in --model instead.\n\
-             Example: wg add \"...\" --model {}:MODEL",
-            suggested_provider,
+    if provider.is_some() {
+        anyhow::bail!(
+            "WG-PI-ROUTE-REQUIRED: --provider is unsupported; use --model pi:<provider>:<model>"
         );
     }
 
-    // Resolve and validate model: short names are resolved against the model cache,
-    // then the result must be in provider:model format.
+    // Validate the exact Pi route without consulting a WG catalog.
     let resolved_model_str: Option<String>;
     if let Some(m) = model {
         resolved_model_str = Some(resolve_model_input(m, dir)?);
@@ -519,7 +426,7 @@ pub fn run_with_remote_provider(
     // Record model override in launcher history
     if let Some(m) = model {
         let _ = worksgood::launcher_history::record_use(
-            &worksgood::launcher_history::HistoryEntry::new("claude", Some(m), None, "cli"),
+            &worksgood::launcher_history::HistoryEntry::new("pi", Some(m), None, "cli"),
         );
     }
 
@@ -1096,18 +1003,13 @@ pub fn run_remote(
     let scoped_tags = worksgood::scope_guard::resolve_add_scope(tags)?;
     let tags: &[String] = &scoped_tags;
 
-    // Deprecation warning for --provider flag
-    if let Some(p) = provider {
-        let suggested_provider = if p == "anthropic" { "claude" } else { p };
-        eprintln!(
-            "Warning: --provider is deprecated. Use provider:model format in --model instead.\n\
-             Example: wg add \"...\" --model {}:MODEL",
-            suggested_provider,
+    if provider.is_some() {
+        anyhow::bail!(
+            "WG-PI-ROUTE-REQUIRED: --provider is unsupported; use --model pi:<provider>:<model>"
         );
     }
 
-    // Resolve and validate model: short names are resolved against the model cache,
-    // then the result must be in provider:model format.
+    // Validate the exact Pi route without consulting a WG catalog.
     let resolved_model_str: Option<String>;
     if let Some(m) = model {
         resolved_model_str = Some(resolve_model_input(m, local_workgraph_dir)?);
