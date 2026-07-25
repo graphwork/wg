@@ -36,6 +36,15 @@ description = "Pins the dedup decision in docs/manual/03-agency.md: one row per 
 timeout_seconds = 30
 
 [[scenario]]
+name = "dispatch_decoupled_from_openrouter_registry"
+script = "scenarios/dispatch_decoupled_from_openrouter_registry.sh"
+owners = [
+    "fix-decouple-dispatch",
+]
+description = "Pins fix-decouple-dispatch (wg-bug-openrouter-model-resolution): a handler/executor-owned model spec like `pi:zai:glm-5.2` must NOT trigger an unresolved-model-id warning with an empty registry and no OpenRouter key (dispatch must not wedge on the optional catalog refresh); a declared [[model_registry]] entry resolves with no network; and a genuinely unresolved bare alias still warns (fail-soft only for executor-owned/declared models). Credential-free config-validation check."
+timeout_seconds = 30
+
+[[scenario]]
 name = "dev_check_branch_and_binary_freshness"
 script = "scenarios/dev_check_branch_and_binary_freshness.sh"
 owners = [

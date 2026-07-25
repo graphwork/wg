@@ -118,6 +118,19 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub model_registry: Vec<ModelRegistryEntry>,
 
+    /// Model-registry catalog + OpenRouter-refresh settings.
+    ///
+    /// wg's dispatch path never *requires* the OpenRouter catalog refresh —
+    /// a model spec whose leading token is a handler/executor (`pi:`,
+    /// `claude:`, `codex:`, `nex:`, …) or which matches a
+    /// `[[model_registry]]` entry resolves with no network. The refresh is
+    /// purely metadata (pricing/rankings); disabling it or running without
+    /// an OpenRouter key does NOT wedge the dispatcher (see
+    /// `docs/model-registry.md` and the `wg-bug-openrouter-model-resolution`
+    /// report).
+    #[serde(default)]
+    pub registry: RegistryConfig,
+
     /// Deprecated/inert legacy tag-routing entries.
     ///
     /// Freeform task tags are labels only; they do not route work or
@@ -1776,6 +1789,49 @@ impl Default for ModelRegistryEntry {
     }
 }
 
+/// Model-registry catalog settings: whether the optional OpenRouter-backed
+/// refresh is used at all.
+///
+/// This is the documented single switch for "I do not use OpenRouter at all"
+/// (a pure-`pi` deployment whose every model is `pi:<provider>:<model>` and
+/// the executor resolves the provider itself). The refresh is metadata
+/// (pricing/rankings), never a dispatch prerequisite, so disabling it — or
+/// simply having no OpenRouter key configured — must not wedge the
+/// dispatcher. See `docs/model-registry.md`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegistryConfig {
+    /// Whether the daemon's periodic OpenRouter catalog refresh is enabled
+    /// (default: `true` for backward compatibility with OpenRouter-keyed
+    /// setups). Set to `false` for deployments that are provider-complete
+    /// without OpenRouter. Equivalent in effect to
+    /// `coordinator.registry_refresh_interval = 0` but is the documented,
+    /// semantic switch for "OpenRouter is not part of this deployment".
+    #[serde(default = "default_registry_openrouter_refresh")]
+    pub openrouter_refresh: bool,
+}
+
+fn default_registry_openrouter_refresh() -> bool {
+    true
+}
+
+impl Default for RegistryConfig {
+    // Manual so `Config::default()` (and tests) get `openrouter_refresh = true`,
+    // matching the serde default — backward-compatible with OpenRouter-keyed
+    // setups that rely on the periodic refresh.
+    fn default() -> Self {
+        Self {
+            openrouter_refresh: default_registry_openrouter_refresh(),
+        }
+    }
+}
+
+impl RegistryConfig {
+    /// Whether the OpenRouter catalog refresh should run at all.
+    pub fn openrouter_refresh_enabled(&self) -> bool {
+        self.openrouter_refresh
+    }
+}
+
 /// Ordered, opt-in execution-failure policy.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ExecutionConfig {
@@ -2246,6 +2302,44 @@ pub const KNOWN_PROVIDERS: &[&str] = &[
     "native",
 ];
 
+/// Leading tokens that name a *handler/executor* (not a wire/provider) and
+/// therefore *own* model resolution for everything after the first `:`.
+///
+/// A model spec whose leading token is in this set (e.g. `pi:zai:glm-5.2`,
+/// `claude:opus`, `nex:openrouter:deepseek/deepseek-v3.2`) is **resolved by
+/// the executor itself** — `pi` resolves `zai` natively, `claude`/`codex`
+/// authenticate themselves — so it must NOT trigger an `unresolved-model-id`
+/// registry warning, must NOT depend on the OpenRouter catalog refresh, and
+/// must never wedge the dispatcher when OpenRouter is unavailable.
+///
+/// Kept as a plain static list (mirroring `ExecutorKind::from_str` in
+/// `src/dispatch/plan.rs`) so the model-spec parsing layer in `config.rs`
+/// does not take a dependency on the `dispatch` module. Deprecated bare
+/// *provider* prefixes (`openrouter`, `openai`, …) are deliberately absent —
+/// those are wires, not handlers, and the handler-first strict parse already
+/// warns about them separately.
+pub const HANDLER_TOKENS: &[&str] = &[
+    "pi",
+    "claude",
+    "codex",
+    "nex",
+    "native",
+    "opencode",
+    "aider",
+    "goose",
+    "qwen",
+    "cline",
+    "crush",
+    "amplifier",
+    "octomind",
+    "dexto",
+];
+
+/// Whether `token` is a known handler/executor leading token.
+pub fn is_known_handler_token(token: &str) -> bool {
+    HANDLER_TOKENS.contains(&token.trim().to_ascii_lowercase().as_str())
+}
+
 /// Provider prefixes that have been deprecated in favor of the canonical
 /// `nex:` prefix. Returning a non-empty string from this function emits a
 /// one-line stderr deprecation warning at config-load / parse time.
@@ -2471,6 +2565,38 @@ pub fn parse_model_spec(spec: &str) -> ModelSpec {
         provider: None,
         model_id: spec.to_string(),
     }
+}
+
+/// Strip ONE known handler/executor leading token from a model spec and
+/// return the *inner* dialect the handler resolves itself.
+///
+/// `pi:zai:glm-5.2` → `Some("zai:glm-5.2")`, `claude:opus` →
+/// `Some("opus")`, `opus` / `openrouter:x/y` → `None` (no handler token).
+///
+/// Only the *first* colon is consumed so a nested handler-first route like
+/// `nex:openrouter:deepseek/deepseek-v3.2` keeps its inner provider intact.
+pub fn handler_inner_dialect(spec: &str) -> Option<String> {
+    let (prefix, rest) = spec.split_once(':')?;
+    if is_known_handler_token(prefix) {
+        Some(rest.to_string())
+    } else {
+        None
+    }
+}
+
+/// Whether a model spec delegates resolution to a handler/executor — i.e.
+/// its leading token is a known handler (`pi`, `claude`, `codex`, `nex`, …).
+/// See [`HANDLER_TOKENS`] / [`is_known_handler_token`].
+pub fn is_executor_owned_handler_prefix(spec: &str) -> bool {
+    handler_inner_dialect(spec).is_some()
+}
+
+/// Whether a registry entry's full `provider:model` (or `provider/model`)
+/// identity equals `dialect` (an already handler-stripped inner dialect).
+fn entry_identity_matches(entry: &ModelRegistryEntry, dialect: &str) -> bool {
+    let colon = format!("{}:{}", entry.provider, entry.model);
+    let slash = format!("{}/{}", entry.provider, entry.model);
+    dialect == colon || dialect == slash
 }
 
 /// Normalize a bare `vendor/model` route into the canonical
@@ -3308,6 +3434,48 @@ impl Config {
     /// Look up a registry entry by its short ID.
     pub fn registry_lookup(&self, id: &str) -> Option<ModelRegistryEntry> {
         self.effective_registry().into_iter().find(|e| e.id == id)
+    }
+
+    /// Whether a `[[model_registry]]` entry resolves this model spec, so the
+    /// spec needs no network / OpenRouter refresh to spawn (Point 3 of the
+    /// decoupling fix).
+    ///
+    /// A spec is resolved by the registry when EITHER:
+    /// - it is a handler-first spec whose *inner* dialect matches an entry's
+    ///   full `provider:model` (or `provider/model`) identity — e.g.
+    ///   `pi:zai:glm-5.2` matches an entry with `provider="zai"`,
+    ///   `model="glm-5.2"`; OR
+    /// - its parsed `model_id` equals an entry's `id` (the legacy short-id
+    ///   match, e.g. `anthropic:opus` ↔ an entry whose `id = "opus"`).
+    pub fn registry_resolves_spec(&self, spec: &str) -> bool {
+        let trimmed = spec.trim();
+        if trimmed.is_empty() {
+            return false;
+        }
+        // Handler-first inner-dialect match against an entry's full identity.
+        if let Some(inner) = handler_inner_dialect(trimmed) {
+            for entry in &self.model_registry {
+                if entry_identity_matches(entry, &inner) || entry.id == inner {
+                    return true;
+                }
+            }
+        }
+        // Legacy short-id match: parsed model_id == entry.id.
+        let parsed = parse_model_spec(trimmed);
+        self.model_registry.iter().any(|e| e.id == parsed.model_id)
+    }
+
+    /// Whether a model spec is resolved with NO network dependency — either
+    /// by a handler/executor that owns it, or by a `[[model_registry]]`
+    /// entry. Used by the fail-soft validation path and the
+    /// `wg service start` loud-surface diagnostic so dispatch never wedges on
+    /// an unavailable OpenRouter catalog refresh.
+    pub fn spec_resolved_without_network(&self, spec: &str) -> bool {
+        let trimmed = spec.trim();
+        if trimmed.is_empty() {
+            return false;
+        }
+        is_executor_owned_handler_prefix(trimmed) || self.registry_resolves_spec(trimmed)
     }
 
     /// The explicitly configured raw model spec for the **weak** two-tier
@@ -6504,6 +6672,17 @@ impl Config {
 
         for (role_name, role_cfg) in &role_configs {
             if let Some(ref m) = role_cfg.model {
+                // Fail-soft (wg-bug-openrouter-model-resolution): a model
+                // spec that a handler/executor owns (`pi:zai:glm-5.2`, …)
+                // or that a `[[model_registry]]` entry declares is resolved
+                // with NO network and MUST NOT trigger an
+                // unresolved-model warning — otherwise the dispatcher wedges
+                // on an unavailable OpenRouter catalog refresh it never
+                // needed. Only genuinely unresolved short IDs (bare names
+                // with no handler prefix, no registry entry, no '/') warn.
+                if self.spec_resolved_without_network(m) {
+                    continue;
+                }
                 // Parse provider:model format to get the registry lookup ID
                 let model_spec = parse_model_spec(m);
                 let lookup_id = &model_spec.model_id;
@@ -6517,7 +6696,9 @@ impl Config {
                             role_name, m
                         ),
                         fix: format!(
-                            "Add a [[model_registry]] entry for '{}', use a known ID \
+                            "Add a [[model_registry]] entry for '{}' (see docs/model-registry.md), \
+                             use a handler-prefixed route the executor owns (e.g. 'pi:zai:glm-5.2' — \
+                             the executor resolves it, no OpenRouter needed), use a known ID \
                              ({}), or use a tier name (e.g., 'haiku', 'sonnet', 'opus').",
                             m,
                             registry_ids.iter().copied().collect::<Vec<_>>().join(", ")
@@ -6527,17 +6708,24 @@ impl Config {
             }
         }
 
-        // Rule 4: model_registry entry's 'model' field doesn't contain '/'
-        // (should be a full provider-qualified model name for non-Anthropic providers)
+        // Rule 4: model_registry entry's 'model' field for an OpenRouter-style
+        // provider doesn't contain '/' (those providers use 'provider/model').
+        // Non-OpenRouter providers (zai, ollama, local, …) legitimately use
+        // bare model names, so we only advise the slash form for providers
+        // whose wire actually expects `vendor/model`.
         for entry in &self.model_registry {
-            if entry.provider != "anthropic" && !entry.model.contains('/') {
+            let provider_is_vendor_slash = matches!(
+                entry.provider.as_str(),
+                "openrouter" | "openai" | "oai-compat"
+            );
+            if provider_is_vendor_slash && !entry.model.contains('/') {
                 result.warnings.push(ConfigDiagnostic {
                     rule: "registry-model-format".into(),
                     message: format!(
                         "model_registry entry '{}' (provider: '{}') has model = '{}' \
-                         which doesn't contain '/'. OpenRouter and similar providers \
-                         typically use 'provider/model' format.",
-                        entry.id, entry.provider, entry.model
+                         which doesn't contain '/'. The '{}' provider wire \
+                         typically uses 'provider/model' format.",
+                        entry.id, entry.provider, entry.model, entry.provider
                     ),
                     fix: format!(
                         "Use the full model path, e.g., '{}/{}'.",
@@ -11386,5 +11574,165 @@ models = ["pi:openai-codex:gpt-5.6-sol", "pi:openai-codex:gpt-5.6-luna"]
             .filter(|diagnostic| diagnostic.rule == "execution-fallback-cross-system")
             .count();
         assert_eq!(cross_system, 3);
+    }
+
+    // ----- wg-bug-openrouter-model-resolution: decouple dispatch from the
+    // OpenRouter model registry. -----
+
+    #[test]
+    fn handler_inner_dialect_strips_one_known_handler_token() {
+        assert_eq!(
+            handler_inner_dialect("pi:zai:glm-5.2"),
+            Some("zai:glm-5.2".into())
+        );
+        assert_eq!(handler_inner_dialect("claude:opus"), Some("opus".into()));
+        assert_eq!(
+            handler_inner_dialect("nex:openrouter:deepseek/deepseek-v3.2"),
+            Some("openrouter:deepseek/deepseek-v3.2".into())
+        );
+        // Bare provider prefix (not a handler) and bare alias → None.
+        assert_eq!(
+            handler_inner_dialect("openrouter:deepseek/deepseek-v3.2"),
+            None
+        );
+        assert_eq!(handler_inner_dialect("opus"), None);
+    }
+
+    #[test]
+    fn is_executor_owned_handler_prefix_recognizes_handlers() {
+        // The bug's spec and the other handler-first forms are executor-owned.
+        assert!(is_executor_owned_handler_prefix("pi:zai:glm-5.2"));
+        assert!(is_executor_owned_handler_prefix("claude:opus"));
+        assert!(is_executor_owned_handler_prefix("codex:gpt-5.5"));
+        assert!(is_executor_owned_handler_prefix("nex:qwen3-coder"));
+        assert!(is_executor_owned_handler_prefix("native:qwen3-coder"));
+        // A deprecated bare provider prefix is NOT a handler.
+        assert!(!is_executor_owned_handler_prefix("openrouter:z-ai/glm-5.2"));
+        // A bare alias carries no handler signal.
+        assert!(!is_executor_owned_handler_prefix("opus"));
+        assert!(!is_executor_owned_handler_prefix(""));
+    }
+
+    #[test]
+    fn registry_resolves_spec_matches_declared_entry_without_network() {
+        let mut config = Config::default();
+        // Declare the bug's non-built-in provider statically.
+        config.model_registry = vec![ModelRegistryEntry {
+            id: "glm-5.2".into(),
+            provider: "zai".into(),
+            model: "glm-5.2".into(),
+            tier: Tier::Standard,
+            ..Default::default()
+        }];
+        // The handler-first route resolves via the registry's inner identity.
+        assert!(config.registry_resolves_spec("pi:zai:glm-5.2"));
+        // Slash form of the same identity also matches.
+        assert!(config.registry_resolves_spec("pi:zai/glm-5.2"));
+        // A different model on the same provider does NOT match.
+        assert!(!config.registry_resolves_spec("pi:zai:glm-6"));
+        // Legacy short-id match still works.
+        assert!(config.registry_resolves_spec("glm-5.2"));
+    }
+
+    #[test]
+    fn spec_resolved_without_network_for_executor_owned_and_registry() {
+        let config = Config::default();
+        // Executor-owned specs resolve with no registry, no network.
+        assert!(config.spec_resolved_without_network("pi:zai:glm-5.2"));
+        assert!(config.spec_resolved_without_network("claude:opus"));
+        // A bare unknown alias does NOT resolve without network.
+        assert!(!config.spec_resolved_without_network("some-unknown-alias"));
+        assert!(!config.spec_resolved_without_network(""));
+    }
+
+    #[test]
+    fn validate_config_does_not_warn_for_executor_owned_model() {
+        // The bug's exact spec: a handler-first pi route the executor resolves
+        // itself must NOT produce an unresolved-model-id warning, even with an
+        // empty registry and no OpenRouter key. This is the fail-soft boundary
+        // that keeps the dispatcher from wedging.
+        let mut config = Config::default();
+        config.models.default = Some(RoleModelConfig {
+            provider: None,
+            model: Some("pi:zai:glm-5.2".into()),
+            tier: None,
+            endpoint: None,
+            reasoning: None,
+        });
+        config.model_registry = Vec::new();
+        let validation = config.validate_config();
+        let unresolved = validation
+            .warnings
+            .iter()
+            .filter(|d| d.rule == "unresolved-model-id")
+            .count();
+        assert_eq!(unresolved, 0, "executor-owned model must not warn");
+    }
+
+    #[test]
+    fn validate_config_does_not_warn_for_declared_model_registry_entry() {
+        // A declared [[model_registry]] entry resolves the spec without
+        // network, so it must not produce an unresolved-model-id warning.
+        let mut config = Config::default();
+        config.models.default = Some(RoleModelConfig {
+            provider: None,
+            model: Some("pi:zai:glm-5.2".into()),
+            tier: None,
+            endpoint: None,
+            reasoning: None,
+        });
+        config.model_registry = vec![ModelRegistryEntry {
+            id: "glm-5.2".into(),
+            provider: "zai".into(),
+            model: "glm-5.2".into(),
+            tier: Tier::Standard,
+            ..Default::default()
+        }];
+        let validation = config.validate_config();
+        let unresolved = validation
+            .warnings
+            .iter()
+            .filter(|d| d.rule == "unresolved-model-id")
+            .count();
+        assert_eq!(unresolved, 0, "declared registry entry must not warn");
+        // Rule 4 must not nag a non-openrouter provider for a bare model name.
+        let format_warns = validation
+            .warnings
+            .iter()
+            .filter(|d| d.rule == "registry-model-format")
+            .count();
+        assert_eq!(
+            format_warns, 0,
+            "non-openrouter provider may use bare model names"
+        );
+    }
+
+    #[test]
+    fn validate_config_warns_for_genuinely_unresolved_short_id() {
+        // A bare alias with no handler prefix, no registry entry, and no '/'
+        // is genuinely unresolved and SHOULD warn (the safety signal stays).
+        let mut config = Config::default();
+        config.models.default = Some(RoleModelConfig {
+            provider: None,
+            model: Some("some-mystery-alias".into()),
+            tier: None,
+            endpoint: None,
+            reasoning: None,
+        });
+        config.model_registry = Vec::new();
+        let validation = config.validate_config();
+        let unresolved = validation
+            .warnings
+            .iter()
+            .filter(|d| d.rule == "unresolved-model-id")
+            .count();
+        assert_eq!(unresolved, 1, "genuinely unresolved short id must warn");
+    }
+
+    #[test]
+    fn registry_config_defaults_to_openrouter_refresh_enabled() {
+        // Backward compat: existing OpenRouter-keyed setups keep refreshing.
+        let config = Config::default();
+        assert!(config.registry.openrouter_refresh_enabled());
     }
 }

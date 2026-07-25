@@ -1902,4 +1902,39 @@ mod tests {
              the worker UNSCOPED — exactly why the wg add boundary refuses it"
         );
     }
+
+    // ── wg-bug-openrouter-model-resolution: fail-soft model resolution. ─────
+
+    /// A non-built-in provider model that the configured executor resolves on
+    /// its own (here `pi:zai:glm-5.2`, which the `pi` handler reaches natively)
+    /// MUST produce a valid spawn plan with an EMPTY model registry and NO
+    /// OpenRouter dependency. `plan_spawn` is the single source of truth for the
+    /// spawn decision; it never consults the model registry or the OpenRouter
+    /// refresh, so an unknown provider cannot wedge dispatch here. This is the
+    /// fail-soft boundary (Point 2) and the bug's exact reproduction spec.
+    #[test]
+    fn plan_spawn_resolves_executor_owned_non_builtin_model_without_registry() {
+        let mut config = Config::default();
+        // Empty registry, no OpenRouter endpoint/key — the bug's environment.
+        config.model_registry = Vec::new();
+        config.llm_endpoints.endpoints = Vec::new();
+
+        let task = base_task("noop");
+        let plan = plan_spawn(&task, &config, None, Some("pi:zai:glm-5.2")).expect(
+            "plan_spawn must succeed for an executor-owned non-built-in model with \
+             an empty registry and no OpenRouter key — dispatch must not wedge",
+        );
+
+        // The leading `pi:` handler token is consumed by the executor-route
+        // parse (executor=Pi), and the inner `zai:glm-5.2` dialect is carried
+        // verbatim for the pi handler to resolve (pi reaches `zai` natively).
+        // It is NOT rewritten through the registry or rejected as unknown.
+        assert_eq!(plan.executor, ExecutorKind::Pi);
+        assert_eq!(plan.model.raw, "zai:glm-5.2");
+        assert_eq!(
+            plan.env.get("WG_MODEL").map(String::as_str),
+            Some("zai:glm-5.2"),
+            "the executor-owned inner dialect is forwarded to the child env verbatim"
+        );
+    }
 }

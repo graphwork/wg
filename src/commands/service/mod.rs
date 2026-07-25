@@ -1146,6 +1146,99 @@ pub fn find_orphan_daemon_pids(_dir: &Path, _exclude_pid: Option<u32>) -> Vec<u3
     Vec::new()
 }
 
+/// Surface model-resolution diagnostics loudly on the terminal at
+/// `wg service start` (wg-bug-openrouter-model-resolution Point 5).
+///
+/// A configured model that is genuinely unresolvable — no handler owns it,
+/// no `[[model_registry]]` entry declares it, and the OpenRouter catalog
+/// refresh is unavailable — used to silently wedge the dispatcher (the only
+/// signal was buried in the daemon log). This prints a prominent, actionable
+/// banner for each such model so the user sees it *before* the daemon forks.
+///
+/// This is advisory (never fatal): a handler-owned route (`pi:zai:glm-5.2`,
+/// `claude:opus`, …) or a declared `[[model_registry]]` entry is resolved
+/// with no network and produces no banner, so legitimate OpenRouter-free
+/// deployments start cleanly.
+pub(crate) fn surface_model_resolution_diagnostics(
+    config: &Config,
+    dir: &Path,
+    cli_model: Option<&str>,
+) {
+    use worksgood::config::DispatchRole;
+
+    // Collect every configured model spec we would spawn under.
+    let mut specs: Vec<(&str, String)> = Vec::new();
+    if let Some(m) = cli_model {
+        specs.push(("--model", m.to_string()));
+    }
+    if let Some(m) = config.coordinator.model.as_deref() {
+        specs.push(("coordinator.model", m.to_string()));
+    }
+    if let Some(cfg) = config.models.default.as_ref()
+        && let Some(m) = cfg.model.as_deref()
+    {
+        specs.push(("models.default.model", m.to_string()));
+    }
+    for role in DispatchRole::ALL {
+        if let Some(cfg) = config.models.get_role(*role)
+            && let Some(m) = cfg.model.as_deref()
+        {
+            specs.push(("role model", m.to_string()));
+        }
+    }
+
+    let refresh_available = config.registry.openrouter_refresh_enabled()
+        && config.coordinator.registry_refresh_interval != 0
+        && config
+            .resolve_api_key_for_provider("openrouter", dir)
+            .is_ok();
+
+    let mut printed_header = false;
+    for (field, spec) in &specs {
+        if config.spec_resolved_without_network(spec) {
+            continue;
+        }
+        // Genuinely unresolved short ID: no handler owns it, no registry entry.
+        if !printed_header {
+            eprintln!();
+            eprintln!("⚠  Model resolution: the following configured model(s) are not ");
+            eprintln!("   resolved by a handler/executor or a [[model_registry]] entry:");
+            printed_header = true;
+        }
+        eprintln!("   - {} = '{}'", field, spec);
+        if refresh_available {
+            eprintln!(
+                "       dispatch will try the OpenRouter catalog refresh to resolve it; \
+                 if that fails the task's spawn circuit breaker may trip."
+            );
+        } else {
+            eprintln!(
+                "       OpenRouter catalog refresh is unavailable \
+                 ([registry].openrouter_refresh={}, interval={}, key={}): \
+                 this model is UNRESOLVABLE and may wedge the dispatcher.",
+                config.registry.openrouter_refresh_enabled(),
+                config.coordinator.registry_refresh_interval,
+                if config
+                    .resolve_api_key_for_provider("openrouter", dir)
+                    .is_ok()
+                {
+                    "present"
+                } else {
+                    "absent"
+                }
+            );
+        }
+        eprintln!(
+            "       fix: use a handler-prefixed route the executor owns \
+             (e.g. 'pi:zai:glm-5.2'), or add a [[model_registry]] entry \
+             (see docs/model-registry.md)."
+        );
+    }
+    if printed_header {
+        eprintln!();
+    }
+}
+
 /// Start the service daemon
 #[allow(clippy::too_many_arguments)]
 pub fn run_start(
@@ -1195,6 +1288,14 @@ pub fn run_start(
     config.validate_pi_model_plane().context(
         "service start refused: every LLM role must have an exact Pi route and effective reasoning",
     )?;
+
+    // Surface model-resolution diagnostics LOUDLY on the terminal
+    // (wg-bug-openrouter-model-resolution Point 5): a configured model that
+    // is genuinely unresolvable (no handler owns it, no [[model_registry]]
+    // entry, and the OpenRouter catalog refresh is unavailable) used to
+    // silently wedge the dispatcher — the only signal was buried in the
+    // daemon log. Print it here so the user sees it before the daemon forks.
+    surface_model_resolution_diagnostics(&config, dir, model);
 
     // Check if service is already running
     if let Some(state) = ServiceState::load(dir)? {
@@ -2118,6 +2219,16 @@ const REGISTRY_REFRESH_COOLDOWN: std::time::Duration = std::time::Duration::from
 /// have elapsed since the last successful refresh (stored in
 /// `model_benchmarks.json`'s `fetched_at` field). Set interval to 0 to disable.
 ///
+/// **Decoupled from dispatch** (wg-bug-openrouter-model-resolution): the
+/// refresh is *optional metadata* (pricing/rankings), NEVER a dispatch
+/// prerequisite. It is skipped cleanly (no error, no cooldown) when ANY of
+/// these holds: `coordinator.registry_refresh_interval == 0`; OR
+/// `[registry].openrouter_refresh == false`; OR no OpenRouter API
+/// key/endpoint is resolvable (the deployment doesn't use OpenRouter).
+/// A skipped refresh MUST NOT trip the spawn-gating circuit breaker — only an
+/// attempted fetch that actually fails counts toward the breaker, and even
+/// then the breaker only throttles *future refresh attempts*, never spawns.
+///
 /// Circuit-breaker: after 5 consecutive failures the breaker opens for 1
 /// hour. Manual `wg config reload` or `wg openrouter status` (i.e. any
 /// path that re-resolves the API key successfully) implicitly clears the
@@ -2128,7 +2239,34 @@ fn run_registry_refresh(dir: &Path, state: &mut RegistryRefreshState, logger: &D
     let config = worksgood::config::Config::load_or_default(dir);
     let interval = config.coordinator.registry_refresh_interval;
     if interval == 0 {
-        return; // Disabled
+        return; // Disabled via interval.
+    }
+    // The documented single switch for "I do not use OpenRouter at all".
+    if !config.registry.openrouter_refresh_enabled() {
+        return;
+    }
+
+    // Fail-soft: if OpenRouter has no resolvable key/endpoint, do NOT
+    // attempt the fetch — an attempted fetch would error and trip the
+    // 60-min cooldown, which (per the bug report) made it look like the
+    // dispatcher was wedged. The refresh is optional metadata; a missing
+    // key for a provider the deployment doesn't use must stay silent. Clear
+    // any stale cooldown so a later-configured key recovers immediately.
+    if config
+        .resolve_api_key_for_provider("openrouter", dir)
+        .is_err()
+    {
+        if state.cooldown_until.is_some() || state.error_count > 0 {
+            logger.info(&format!(
+                "Registry refresh: OpenRouter not configured — clearing stale \
+                 breaker state (was {} error(s)). Refresh is optional metadata; \
+                 dispatch is unaffected.",
+                state.error_count
+            ));
+            state.error_count = 0;
+            state.cooldown_until = None;
+        }
+        return;
     }
 
     // Circuit breaker: after a recent burst of failures, hold off and
@@ -4902,6 +5040,109 @@ mod tests {
             state.cooldown_until.is_none(),
             "breaker must clear on a successful refresh"
         );
+    }
+
+    // ----- wg-bug-openrouter-model-resolution: decouple dispatch from the
+    // OpenRouter catalog refresh (Points 1 & 4). -----
+
+    /// Write a minimal config to `dir/config.toml` with the given body.
+    fn write_config(dir: &std::path::Path, body: &str) {
+        std::fs::write(dir.join("config.toml"), body).unwrap();
+    }
+
+    /// Isolate `HOME` so `Config::load_merged` does NOT pick up this machine's
+    /// real global `~/.wg/config.toml` (which may carry an OpenRouter
+    /// endpoint/key and make these tests environment-dependent). Restores the
+    /// original `HOME` on drop.
+    struct IsolatedHome {
+        prior: Option<std::ffi::OsString>,
+    }
+    impl IsolatedHome {
+        fn enter(home: &std::path::Path) -> Self {
+            let prior = std::env::var_os("HOME");
+            // SAFETY: test-only env mutation; `HOME` is restored on drop.
+            unsafe { std::env::set_var("HOME", home) };
+            IsolatedHome { prior }
+        }
+    }
+    impl Drop for IsolatedHome {
+        fn drop(&mut self) {
+            // SAFETY: test-only env mutation; restoring the prior value.
+            match &self.prior {
+                Some(v) => unsafe { std::env::set_var("HOME", v) },
+                None => unsafe { std::env::remove_var("HOME") },
+            }
+        }
+    }
+
+    /// With `registry_refresh_interval > 0` but NO OpenRouter key/endpoint,
+    /// the refresh must SKIP CLEANLY — no error_count bump, no cooldown — so a
+    /// deployment that doesn't use OpenRouter never sees the misleading 60-min
+    /// breaker that the bug report showed wedging the dispatcher. This is the
+    /// core decoupling: the refresh is optional metadata, never a dispatch
+    /// prerequisite.
+    #[test]
+    fn run_registry_refresh_skips_cleanly_when_no_openrouter_key() {
+        let tmp = TempDir::new().unwrap();
+        let _home = IsolatedHome::enter(tmp.path());
+        let logger = DaemonLogger::open(tmp.path()).unwrap();
+        write_config(
+            tmp.path(),
+            "[coordinator]\nregistry_refresh_interval = 60\n[agent]\nmodel = \"pi:zai:glm-5.2\"\n",
+        );
+        let mut state = RegistryRefreshState::default();
+        run_registry_refresh(tmp.path(), &mut state, &logger);
+        assert_eq!(
+            state.error_count, 0,
+            "a missing OpenRouter key must not bump the refresh error count"
+        );
+        assert!(
+            state.cooldown_until.is_none(),
+            "a missing OpenRouter key must not trip the spawn-gating cooldown"
+        );
+    }
+
+    /// `[registry].openrouter_refresh = false` disables the refresh entirely
+    /// (the documented single switch for "I do not use OpenRouter at all"),
+    /// even with a non-zero interval. The flag short-circuits before the
+    /// OpenRouter key is even consulted.
+    #[test]
+    fn run_registry_refresh_skips_when_openrouter_refresh_disabled() {
+        let tmp = TempDir::new().unwrap();
+        let _home = IsolatedHome::enter(tmp.path());
+        let logger = DaemonLogger::open(tmp.path()).unwrap();
+        write_config(
+            tmp.path(),
+            "[coordinator]\nregistry_refresh_interval = 60\n[registry]\nopenrouter_refresh = false\n[agent]\nmodel = \"pi:zai:glm-5.2\"\n",
+        );
+        let mut state = RegistryRefreshState::default();
+        run_registry_refresh(tmp.path(), &mut state, &logger);
+        assert_eq!(state.error_count, 0);
+        assert!(state.cooldown_until.is_none());
+    }
+
+    /// A breaker that was tripped BEFORE the key disappeared must be CLEARED
+    /// once the key is gone, so a later-configured key recovers immediately
+    /// instead of waiting out a stale cooldown. (Point 1 — fail-soft.)
+    #[test]
+    fn run_registry_refresh_clears_stale_breaker_when_key_removed() {
+        let tmp = TempDir::new().unwrap();
+        let _home = IsolatedHome::enter(tmp.path());
+        let logger = DaemonLogger::open(tmp.path()).unwrap();
+        write_config(
+            tmp.path(),
+            "[coordinator]\nregistry_refresh_interval = 60\n[agent]\nmodel = \"pi:zai:glm-5.2\"\n",
+        );
+        let mut state = RegistryRefreshState {
+            error_count: REGISTRY_REFRESH_FAILURE_THRESHOLD,
+            cooldown_until: Some(std::time::Instant::now() + std::time::Duration::from_secs(60)),
+        };
+        run_registry_refresh(tmp.path(), &mut state, &logger);
+        assert_eq!(
+            state.error_count, 0,
+            "stale breaker state must be cleared when OpenRouter is no longer configured"
+        );
+        assert!(state.cooldown_until.is_none());
     }
 
     #[test]
