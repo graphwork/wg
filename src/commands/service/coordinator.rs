@@ -1967,28 +1967,27 @@ fn build_flip_verification_tasks(
             continue;
         }
 
-        // Skip tasks that would be handled by eval gate - let eval gate take precedence
-        if let Some(eval_threshold) = config.agency.eval_gate_threshold {
-            let has_deliverables = source_task
-                .description
-                .as_deref()
-                .map(crate::commands::deliverables::parse_deliverables)
-                .is_some_and(|deliverables| !deliverables.is_empty());
-            let is_eval_gated = config.agency.eval_gate_all || has_deliverables;
-            if is_eval_gated {
-                // Check if there's a regular evaluation for this task that scored below eval threshold
-                // But exclude system evaluations (infrastructure failures) from this check
-                let has_low_eval = all_evals.iter().any(|e| {
-                    e.task_id == *source_task_id
-                        && e.source != worksgood::agency::eval_source::FLIP
-                        && e.source != "system"  // Skip infrastructure failures
-                        && e.score < eval_threshold
-                });
-                if has_low_eval {
-                    // Eval gate should handle this task's failure, skip FLIP verification
-                    continue;
-                }
-            }
+        // A hard-gated persisted pipeline consumes its exact FLIP verdict as
+        // a required independent threshold. Never create a verification
+        // satellite for that verdict: doing so both weakens strictest-verdict
+        // semantics and can recreate the old unbounded meta-task cascade.
+        let persisted_hard_gate = source_task
+            .evaluation_lifecycle
+            .as_ref()
+            .and_then(|lifecycle| lifecycle.gate_policy.as_ref())
+            .is_some_and(|policy| {
+                policy.applicability
+                    == worksgood::eval_lifecycle::EvaluationGateApplicability::Required
+            });
+        let configured_hard_gate = config.agency.eval_gate_threshold.is_some()
+            && (config.agency.eval_gate_all
+                || source_task
+                    .description
+                    .as_deref()
+                    .map(crate::commands::deliverables::parse_deliverables)
+                    .is_some_and(|deliverables| !deliverables.is_empty()));
+        if persisted_hard_gate || configured_hard_gate {
+            continue;
         }
 
         // Build verification task description
@@ -3240,6 +3239,8 @@ fn spawn_eval_inline(
                 linked_flip_verdict: None,
                 linked_eval_verdict: None,
                 consumed_verdict: None,
+                gate_policy: None,
+                outcome_provenance: None,
                 repair_version: 0,
                 repair_attempts: 0,
                 plan_migrations: Vec::new(),
@@ -4281,6 +4282,8 @@ fn park_agency_execution_error(graph_path: &Path, task_id: &str, error: &anyhow:
                 linked_flip_verdict: None,
                 linked_eval_verdict: None,
                 consumed_verdict: None,
+                gate_policy: None,
+                outcome_provenance: None,
                 repair_version: 0,
                 repair_attempts: 0,
                 plan_migrations: Vec::new(),

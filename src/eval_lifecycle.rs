@@ -145,7 +145,99 @@ pub enum EvaluationExecutionState {
     Consumed,
 }
 
+/// Whether an evaluator is informational or is allowed to decide source
+/// completion. This is snapshotted on the source attempt before `wg done`
+/// returns, so a daemon reload cannot silently change the meaning of an
+/// already-visible evaluation state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum EvaluationGateApplicability {
+    Advisory,
+    Required,
+}
+
+/// FLIP's contribution to the source gate. A persisted FLIP dependency is a
+/// required independent verdict for a hard gate; scores are never averaged
+/// with the evaluator and a successful system-task execution is never a
+/// substitute for this attempt-bound verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FlipVerdictPolicy {
+    NotScheduled,
+    Advisory,
+    Required,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FlipThresholdSource {
+    EvaluatorThreshold,
+    FlipVerificationThreshold,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EvaluationGatePolicy {
+    pub applicability: EvaluationGateApplicability,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evaluator_threshold: Option<f64>,
+    pub flip_policy: FlipVerdictPolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flip_threshold: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flip_threshold_source: Option<FlipThresholdSource>,
+}
+
+impl EvaluationGatePolicy {
+    pub fn validate(&self) -> Result<()> {
+        let valid_threshold = |name: &str, value: Option<f64>, required: bool| -> Result<()> {
+            let Some(value) = value else {
+                if required {
+                    anyhow::bail!("error[WG-EVAL-GATE-POLICY]: required {name} is missing");
+                }
+                return Ok(());
+            };
+            if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+                anyhow::bail!(
+                    "error[WG-EVAL-GATE-POLICY]: {name} must be finite and in [0, 1], got {value}"
+                );
+            }
+            Ok(())
+        };
+        let required = self.applicability == EvaluationGateApplicability::Required;
+        valid_threshold("evaluator threshold", self.evaluator_threshold, required)?;
+        valid_threshold(
+            "FLIP threshold",
+            self.flip_threshold,
+            self.flip_policy == FlipVerdictPolicy::Required,
+        )?;
+        if self.flip_policy == FlipVerdictPolicy::Required && !required {
+            anyhow::bail!("error[WG-EVAL-GATE-POLICY]: an advisory evaluation cannot require FLIP");
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum EvaluationGateOutcome {
+    AwaitingEvidence,
+    AdvisoryCompleted,
+    Passed,
+    RescueRetry,
+    Rejected,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EvaluationOutcomeProvenance {
+    pub outcome: EvaluationGateOutcome,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evaluator_verdict: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flip_verdict: Option<String>,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EvaluationLifecycle {
     pub schema: u16,
     pub pipeline_id: String,
@@ -166,6 +258,13 @@ pub struct EvaluationLifecycle {
     pub linked_eval_verdict: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub consumed_verdict: Option<String>,
+    /// Attempt-pinned applicability and thresholds. `None` is historical and
+    /// is migrated only while the source is still in a soft evaluation state;
+    /// completed historical rows remain immutable and are surfaced by audit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate_policy: Option<EvaluationGatePolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome_provenance: Option<EvaluationOutcomeProvenance>,
     #[serde(default)]
     pub repair_version: u16,
     /// Number of coordinator plumbing repairs performed for this source
@@ -209,6 +308,8 @@ impl EvaluationLifecycle {
             linked_flip_verdict: None,
             linked_eval_verdict: None,
             consumed_verdict: None,
+            gate_policy: None,
+            outcome_provenance: None,
             repair_version: 0,
             repair_attempts: 0,
             plan_migrations: Vec::new(),
@@ -259,6 +360,45 @@ pub fn refresh_source_lifecycle(task: &mut Task) {
             source_attempt,
         ));
     }
+}
+
+/// Snapshot the effective gate contract on the current source attempt. Existing
+/// attempt policy wins: retries preserve the policy that the user saw rather
+/// than inheriting a later daemon/config reload.
+pub fn snapshot_source_gate(
+    task: &mut Task,
+    policy: EvaluationGatePolicy,
+    outcome: EvaluationGateOutcome,
+) -> Result<()> {
+    policy.validate()?;
+    refresh_source_lifecycle(task);
+    let lifecycle = task
+        .evaluation_lifecycle
+        .as_mut()
+        .expect("refresh_source_lifecycle always installs a lifecycle");
+    if let Some(existing) = lifecycle.gate_policy.as_ref() {
+        existing.validate()?;
+    } else {
+        lifecycle.gate_policy = Some(policy);
+    }
+    if lifecycle.outcome_provenance.is_none() {
+        lifecycle.outcome_provenance = Some(EvaluationOutcomeProvenance {
+            outcome,
+            evaluator_verdict: None,
+            flip_verdict: None,
+            summary: match outcome {
+                EvaluationGateOutcome::AdvisoryCompleted => {
+                    "source completed directly; evaluator execution is advisory evidence, not a quality pass"
+                }
+                EvaluationGateOutcome::AwaitingEvidence => {
+                    "source is hard-gated pending exact attempt-bound required verdicts"
+                }
+                _ => "source gate outcome pending reconciliation",
+            }
+            .to_string(),
+        });
+    }
+    Ok(())
 }
 
 fn source_attempt_for_plan(task: &Task) -> u32 {
@@ -521,6 +661,28 @@ pub fn write_durable_verdict(
     if plan.source_task != source_task.id {
         anyhow::bail!("agency plan source mismatch");
     }
+    if evaluation.task_id != source_task.id
+        || !evaluation.score.is_finite()
+        || !(0.0..=1.0).contains(&evaluation.score)
+    {
+        anyhow::bail!(
+            "error[WG-EVAL-VERDICT-EVIDENCE]: evaluation source/score is malformed or non-finite"
+        );
+    }
+    let stage_source_matches = match stage {
+        AgencyStage::FlipComparison => evaluation.source == crate::agency::eval_source::FLIP,
+        AgencyStage::Evaluate => {
+            evaluation.source != crate::agency::eval_source::FLIP && evaluation.source != "system"
+        }
+        AgencyStage::FlipInference => false,
+    };
+    if !stage_source_matches {
+        anyhow::bail!(
+            "error[WG-EVAL-VERDICT-EVIDENCE]: evaluation source {:?} cannot produce {:?} source-gate evidence",
+            evaluation.source,
+            stage
+        );
+    }
     // The evaluation writer has already atomically renamed its JSON before
     // reaching this call. Pin those exact durable bytes rather than serializing
     // the in-memory `HashMap` again: HashMap iteration order is not stable
@@ -700,11 +862,24 @@ fn verify_evaluation_digest(dir: &Path, verdict: &DurableEvalVerdict) -> Result<
             verdict.verdict_id
         )
     })?;
+    let stage_source_matches = match verdict.stage {
+        AgencyStage::FlipComparison => {
+            evidence.evaluation.source == crate::agency::eval_source::FLIP
+        }
+        AgencyStage::Evaluate => {
+            evidence.evaluation.source != crate::agency::eval_source::FLIP
+                && evidence.evaluation.source != "system"
+        }
+        AgencyStage::FlipInference => false,
+    };
     if evidence.evaluation.task_id != verdict.source_task
         || evidence.evaluation.score != verdict.score
+        || !verdict.score.is_finite()
+        || !(0.0..=1.0).contains(&verdict.score)
+        || !stage_source_matches
     {
         anyhow::bail!(
-            "error[WG-EVAL-VERDICT-EVIDENCE]: verdict {} source/score evaluation mismatch",
+            "error[WG-EVAL-VERDICT-EVIDENCE]: verdict {} source/stage/score evaluation mismatch or non-finite score",
             verdict.verdict_id
         );
     }
@@ -871,6 +1046,8 @@ fn lifecycle_for_plan(plan: &AgencyDispatchPlan) -> EvaluationLifecycle {
         linked_flip_verdict: None,
         linked_eval_verdict: None,
         consumed_verdict: None,
+        gate_policy: None,
+        outcome_provenance: None,
         repair_version: 0,
         repair_attempts: 0,
         plan_migrations: Vec::new(),
@@ -1524,6 +1701,25 @@ pub fn migrate_missing_pi_reasoning(graph: &mut WorkGraph, config: &Config) -> b
         source_lifecycle.repair_version = EVAL_LIFECYCLE_SCHEMA;
         source_lifecycle.diagnostic = None;
         source_lifecycle.plan_migrations.extend(audit_rows);
+        // A re-armed source carries a complete gate identity so downstream
+        // reconciliation stays verdict-driven: a stale old-generation verdict
+        // is then a clean no-op rather than a normalization that flips the
+        // reconcile return value. PendingEval is always a hard gate.
+        if source_lifecycle.gate_policy.is_none() {
+            let threshold = config.agency.eval_gate_threshold.unwrap_or(0.7);
+            let policy = hard_gate_policy_for(graph, &source_id, threshold);
+            if policy.validate().is_ok() {
+                source_lifecycle.gate_policy = Some(policy);
+                source_lifecycle.outcome_provenance = Some(EvaluationOutcomeProvenance {
+                    outcome: EvaluationGateOutcome::AwaitingEvidence,
+                    evaluator_verdict: None,
+                    flip_verdict: None,
+                    summary:
+                        "re-armed migrated pipeline as a required gate; awaiting exact attempt-bound required verdicts"
+                            .to_string(),
+                });
+            }
+        }
         let source = graph
             .get_task_mut(&source_id)
             .expect("prepared reasoning migration source");
@@ -1624,11 +1820,22 @@ pub fn begin_source_attempt(graph: &mut WorkGraph, source_id: &str, reason: &str
     .unwrap_or(0);
     let source_attempt = derived.max(highest_existing.saturating_add(1));
 
+    let prior_gate_policy = snapshot
+        .evaluation_lifecycle
+        .as_ref()
+        .and_then(|lifecycle| lifecycle.gate_policy.clone());
     let mut minted = snapshot.clone();
-    minted.evaluation_lifecycle = Some(EvaluationLifecycle::for_source_attempt(
-        &minted,
-        source_attempt,
-    ));
+    let mut next_lifecycle = EvaluationLifecycle::for_source_attempt(&minted, source_attempt);
+    next_lifecycle.gate_policy = prior_gate_policy;
+    if next_lifecycle.gate_policy.is_some() {
+        next_lifecycle.outcome_provenance = Some(EvaluationOutcomeProvenance {
+            outcome: EvaluationGateOutcome::AwaitingEvidence,
+            evaluator_verdict: None,
+            flip_verdict: None,
+            summary: "in-place rescue retained the prior attempt's exact gate policy; awaiting new attempt-bound verdicts".to_string(),
+        });
+    }
+    minted.evaluation_lifecycle = Some(next_lifecycle);
     if let Some(source) = graph.get_task_mut(source_id) {
         source.evaluation_lifecycle = minted.evaluation_lifecycle.clone();
         source.log.push(LogEntry {
@@ -1749,6 +1956,153 @@ pub struct EvaluationHealth {
     pub diagnostic: String,
 }
 
+/// Read-only gate diagnostics used by `wg show` and `wg status`. Historical
+/// completions are never rewritten; exact consumed evidence is instead audited
+/// against the currently configured thresholds and surfaced loudly.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct EvaluationGateDiagnostics {
+    pub pipeline_id: String,
+    pub source_attempt: u32,
+    pub applicability: String,
+    pub evaluator_threshold: Option<f64>,
+    pub flip_policy: String,
+    pub flip_threshold: Option<f64>,
+    pub outcome_provenance: Option<EvaluationOutcomeProvenance>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audit: Option<String>,
+    #[serde(default)]
+    pub audit_alert: bool,
+}
+
+pub fn evaluation_gate_diagnostics(
+    source: &Task,
+    verdicts: std::result::Result<&[DurableEvalVerdict], &str>,
+    current_evaluator_threshold: Option<f64>,
+    current_flip_threshold: Option<f64>,
+) -> Option<EvaluationGateDiagnostics> {
+    let lifecycle = source.evaluation_lifecycle.as_ref()?;
+    let durable_evidence_error = verdicts.as_ref().err().copied();
+    if let Some(policy) = lifecycle.gate_policy.as_ref() {
+        let audit = lifecycle.diagnostic.clone().or_else(|| {
+            durable_evidence_error
+                .map(|error| format!("durable gate evidence unavailable (fail-closed): {error}"))
+        });
+        return Some(EvaluationGateDiagnostics {
+            pipeline_id: lifecycle.pipeline_id.clone(),
+            source_attempt: lifecycle.source_attempt,
+            applicability: match policy.applicability {
+                EvaluationGateApplicability::Advisory => "advisory".to_string(),
+                EvaluationGateApplicability::Required => "required".to_string(),
+            },
+            evaluator_threshold: policy.evaluator_threshold,
+            flip_policy: match policy.flip_policy {
+                FlipVerdictPolicy::NotScheduled => "not-scheduled".to_string(),
+                FlipVerdictPolicy::Advisory => "advisory".to_string(),
+                FlipVerdictPolicy::Required => "required-strict".to_string(),
+            },
+            flip_threshold: policy.flip_threshold,
+            outcome_provenance: lifecycle.outcome_provenance.clone(),
+            audit: audit.clone(),
+            audit_alert: audit.is_some(),
+        });
+    }
+
+    let consumed = lifecycle.consumed_verdict.as_deref()?;
+    let evaluator_threshold = current_evaluator_threshold.unwrap_or(0.7);
+    let flip_threshold = current_flip_threshold.unwrap_or(evaluator_threshold);
+    let mut alert = false;
+    let audit = match verdicts {
+        Err(error) => {
+            alert = true;
+            format!(
+                "HISTORICAL AUDIT ALERT: immutable Done outcome has no persisted gate policy and verdict evidence is unavailable: {error}"
+            )
+        }
+        Ok(verdicts) => {
+            let evals: Vec<_> = verdicts
+                .iter()
+                .filter(|verdict| {
+                    verdict.verdict_id == consumed
+                        && verdict.source_task == source.id
+                        && verdict.pipeline_id == lifecycle.pipeline_id
+                        && verdict.source_attempt == lifecycle.source_attempt
+                        && verdict.stage == AgencyStage::Evaluate
+                })
+                .collect();
+            let flips: Vec<_> = lifecycle
+                .linked_flip_verdict
+                .as_deref()
+                .map(|flip_id| {
+                    verdicts
+                        .iter()
+                        .filter(|verdict| {
+                            verdict.verdict_id == flip_id
+                                && verdict.source_task == source.id
+                                && verdict.pipeline_id == lifecycle.pipeline_id
+                                && verdict.source_attempt == lifecycle.source_attempt
+                                && verdict.stage == AgencyStage::FlipComparison
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            if evals.len() != 1 || (lifecycle.linked_flip_verdict.is_some() && flips.len() != 1) {
+                alert = true;
+                format!(
+                    "HISTORICAL AUDIT ALERT: immutable Done outcome consumed ambiguous/missing exact evidence (evaluator matches={}, FLIP matches={}); operator review required",
+                    evals.len(),
+                    flips.len()
+                )
+            } else {
+                let eval = evals[0];
+                let eval_failed = !eval.score.is_finite() || eval.score < evaluator_threshold;
+                let flip_failed = flips
+                    .first()
+                    .is_some_and(|flip| !flip.score.is_finite() || flip.score < flip_threshold);
+                if eval_failed || flip_failed {
+                    alert = true;
+                    format!(
+                        "HISTORICAL AUDIT ALERT: immutable Done outcome was accepted below current strict thresholds; evaluator={:.2}/{:.2}, FLIP={}; history was not rewritten",
+                        eval.score,
+                        evaluator_threshold,
+                        flips.first().map_or_else(
+                            || "not-linked".to_string(),
+                            |flip| format!("{:.2}/{:.2}", flip.score, flip_threshold)
+                        )
+                    )
+                } else {
+                    format!(
+                        "historical immutable outcome has no persisted policy; exact evidence meets current thresholds (evaluator={:.2}/{:.2}, FLIP={})",
+                        eval.score,
+                        evaluator_threshold,
+                        flips.first().map_or_else(
+                            || "not-linked".to_string(),
+                            |flip| format!("{:.2}/{:.2}", flip.score, flip_threshold)
+                        )
+                    )
+                }
+            }
+        }
+    };
+    Some(EvaluationGateDiagnostics {
+        pipeline_id: lifecycle.pipeline_id.clone(),
+        source_attempt: lifecycle.source_attempt,
+        applicability: "historical-unclassified".to_string(),
+        evaluator_threshold: Some(evaluator_threshold),
+        flip_policy: if lifecycle.linked_flip_verdict.is_some() {
+            "historical-linked-audit".to_string()
+        } else {
+            "historical-not-linked".to_string()
+        },
+        flip_threshold: lifecycle
+            .linked_flip_verdict
+            .as_ref()
+            .map(|_| flip_threshold),
+        outcome_provenance: lifecycle.outcome_provenance.clone(),
+        audit: Some(audit),
+        audit_alert: alert,
+    })
+}
+
 pub fn evaluation_health(graph: &WorkGraph, source_id: &str) -> Option<EvaluationHealth> {
     let source = graph.get_task(source_id)?;
     if !matches!(
@@ -1842,15 +2196,50 @@ pub fn evaluation_health(graph: &WorkGraph, source_id: &str) -> Option<Evaluatio
         });
     }
 
+    let flip_required = lifecycle
+        .gate_policy
+        .as_ref()
+        .is_some_and(|policy| policy.flip_policy == FlipVerdictPolicy::Required)
+        || (lifecycle.gate_policy.is_none()
+            && graph
+                .get_task(&format!(".evaluate-{source_id}"))
+                .is_some_and(|task| task.after.contains(&format!(".flip-{source_id}"))));
+    if let Some(policy) = lifecycle.gate_policy.as_ref() {
+        if policy.applicability != EvaluationGateApplicability::Required {
+            return Some(EvaluationHealth {
+                state: EvaluationHealthState::OperatorRequiredAmbiguity,
+                pipeline_id: lifecycle.pipeline_id.clone(),
+                source_attempt: lifecycle.source_attempt,
+                route_generation: lifecycle.route_generation,
+                migration_count: lifecycle.plan_migrations.len(),
+                consumed_verdict: lifecycle.consumed_verdict.clone(),
+                diagnostic:
+                    "advisory policy cannot inhabit PendingEval/FailedPendingEval; refusing quality promotion"
+                        .to_string(),
+            });
+        }
+        if let Err(error) = policy.validate() {
+            return Some(EvaluationHealth {
+                state: EvaluationHealthState::OperatorRequiredAmbiguity,
+                pipeline_id: lifecycle.pipeline_id.clone(),
+                source_attempt: lifecycle.source_attempt,
+                route_generation: lifecycle.route_generation,
+                migration_count: lifecycle.plan_migrations.len(),
+                consumed_verdict: lifecycle.consumed_verdict.clone(),
+                diagnostic: format!("invalid persisted gate policy: {error:#}"),
+            });
+        }
+    }
+
     let mut repairable = Vec::new();
     let mut operator = Vec::new();
-    for task_id in [
-        format!(".flip-{source_id}"),
-        format!(".evaluate-{source_id}"),
+    for (task_id, required) in [
+        (format!(".flip-{source_id}"), flip_required),
+        (format!(".evaluate-{source_id}"), true),
     ] {
         let Some(satellite) = graph.get_task(&task_id) else {
-            if task_id.starts_with(".evaluate-") {
-                operator.push(format!("{task_id} is missing"));
+            if required {
+                operator.push(format!("required gate satellite {task_id} is missing"));
             }
             continue;
         };
@@ -1955,6 +2344,7 @@ fn repair_pending_pipeline(
     source_id: &str,
     has_flip_evidence: bool,
     has_eval_evidence: bool,
+    flip_required: bool,
 ) -> bool {
     let Some(source_snapshot) = graph.get_task(source_id).cloned() else {
         return false;
@@ -1974,14 +2364,18 @@ fn repair_pending_pipeline(
 
     let mut prepared = Vec::<(String, AgencyDispatchPlan)>::new();
     let mut conflicts = Vec::new();
-    for (task_id, has_evidence) in [
-        (format!(".flip-{source_id}"), has_flip_evidence),
-        (format!(".evaluate-{source_id}"), has_eval_evidence),
+    for (task_id, has_evidence, required) in [
+        (
+            format!(".flip-{source_id}"),
+            has_flip_evidence,
+            flip_required,
+        ),
+        (format!(".evaluate-{source_id}"), has_eval_evidence, true),
     ] {
         let Some(satellite) = graph.get_task(&task_id) else {
-            if task_id.starts_with(".evaluate-") && !has_evidence {
+            if required && !has_evidence {
                 conflicts.push(format!(
-                    "{task_id} is missing and no evaluator verdict exists"
+                    "required gate satellite {task_id} is missing and no exact verdict exists"
                 ));
             }
             continue;
@@ -2081,18 +2475,54 @@ fn repair_pending_pipeline(
     true
 }
 
-/// Link durable stage evidence and atomically consume an evaluator verdict into
-/// its source task. The caller runs this inside the graph's single
-/// `modify_graph` transaction, so `consumed_verdict` and the source transition
-/// always land in the same atomic rename. `pending_is_gated` preserves the
-/// existing distinction between advisory evaluations and hard eval gates.
+/// Compute the hard-gate policy a `PendingEval`/`FailedPendingEval` source
+/// must carry once it is presented to a user as evaluation-gated. Shared by
+/// historical soft-state normalization in [`reconcile_durable_verdicts`] and
+/// by pre-Pi reasoning migration so a re-armed source already carries a
+/// complete gate identity (downstream reconciliation then stays verdict-driven
+/// and a stale old-generation verdict is a clean no-op).
+///
+/// `PendingEval` is *always* a real hard gate; advisory evaluators never
+/// enter that state.
+fn hard_gate_policy_for(
+    graph: &WorkGraph,
+    source_id: &str,
+    threshold: f64,
+) -> EvaluationGatePolicy {
+    let flip_id = format!(".flip-{source_id}");
+    let flip_required = graph
+        .get_task(&format!(".evaluate-{source_id}"))
+        .is_some_and(|task| task.after.contains(&flip_id));
+    EvaluationGatePolicy {
+        applicability: EvaluationGateApplicability::Required,
+        evaluator_threshold: Some(threshold),
+        flip_policy: if flip_required {
+            FlipVerdictPolicy::Required
+        } else {
+            FlipVerdictPolicy::NotScheduled
+        },
+        flip_threshold: flip_required.then_some(threshold),
+        flip_threshold_source: flip_required.then_some(FlipThresholdSource::EvaluatorThreshold),
+    }
+}
+
+/// Link durable stage evidence and atomically consume all required verdicts
+/// into their source task. The caller runs this inside the graph's single
+/// `modify_graph` transaction, so the exact-attempt consumption fence and the
+/// source transition always land in the same atomic rename.
+///
+/// Every `PendingEval`/`FailedPendingEval` source is a real hard gate. Advisory
+/// evaluations never enter these states and are not consumed into source
+/// quality outcomes. Required FLIP and evaluator verdicts are checked
+/// independently (strictest-required-verdict semantics); they are never
+/// averaged and system-task self-evaluations cannot substitute for either.
 pub fn reconcile_durable_verdicts<F>(
     graph: &mut WorkGraph,
     verdicts: &[DurableEvalVerdict],
     threshold: f64,
     auto_rescue: bool,
     max_rescues: u32,
-    pending_is_gated: F,
+    _legacy_advisory_predicate: F,
 ) -> bool
 where
     F: Fn(&Task) -> bool,
@@ -2116,15 +2546,51 @@ where
             .get_task(&source_id)
             .expect("collected source")
             .clone();
-        let source_lifecycle = source_snapshot
+        let mut source_lifecycle = source_snapshot
             .evaluation_lifecycle
             .clone()
             .unwrap_or_else(|| EvaluationLifecycle::for_source(&source_snapshot));
-        if matches!(
+        let source_is_pending = matches!(
             source_snapshot.status,
             Status::PendingEval | Status::FailedPendingEval
-        ) && source_snapshot.evaluation_lifecycle.is_none()
-        {
+        );
+
+        // Historical soft-state migration is fail-closed: PendingEval itself
+        // is the user-visible assertion that a gate exists. Never reinterpret
+        // it as advisory, even when the ambient `eval_gate_all` setting is off.
+        if source_is_pending && source_lifecycle.gate_policy.is_none() {
+            let policy = hard_gate_policy_for(graph, &source_id, threshold);
+            if let Err(error) = policy.validate() {
+                let source = graph.get_task_mut(&source_id).expect("collected source");
+                source.evaluation_lifecycle = Some(source_lifecycle);
+                modified = true;
+                modified |= lifecycle_conflict(
+                    source,
+                    format!("invalid effective evaluation gate (fail-closed): {error:#}"),
+                );
+                continue;
+            }
+            source_lifecycle.gate_policy = Some(policy);
+            source_lifecycle.outcome_provenance = Some(EvaluationOutcomeProvenance {
+                outcome: EvaluationGateOutcome::AwaitingEvidence,
+                evaluator_verdict: None,
+                flip_verdict: None,
+                summary: "migrated historical soft state as a hard gate; awaiting exact attempt-bound required verdicts".to_string(),
+            });
+            let source = graph.get_task_mut(&source_id).expect("collected source");
+            source.evaluation_lifecycle = Some(source_lifecycle.clone());
+            source.log.push(LogEntry {
+                timestamp: Utc::now().to_rfc3339(),
+                actor: Some("eval-lifecycle-reconcile".to_string()),
+                user: None,
+                message: format!(
+                    "Pinned historical PendingEval as a required gate at evaluator threshold {:.2}",
+                    threshold
+                ),
+            });
+            source_snapshot = source.clone();
+            modified = true;
+        } else if source_is_pending && source_snapshot.evaluation_lifecycle.is_none() {
             graph
                 .get_task_mut(&source_id)
                 .expect("collected source")
@@ -2132,6 +2598,29 @@ where
             source_snapshot.evaluation_lifecycle = Some(source_lifecycle.clone());
             modified = true;
         }
+
+        if source_is_pending {
+            let Some(policy) = source_lifecycle.gate_policy.as_ref() else {
+                continue;
+            };
+            if policy.applicability != EvaluationGateApplicability::Required {
+                let source = graph.get_task_mut(&source_id).expect("collected source");
+                modified |= lifecycle_conflict(
+                    source,
+                    "error[WG-EVAL-GATE-POLICY]: advisory evaluation found in PendingEval; refusing quality promotion".to_string(),
+                );
+                continue;
+            }
+            if let Err(error) = policy.validate() {
+                let source = graph.get_task_mut(&source_id).expect("collected source");
+                modified |= lifecycle_conflict(
+                    source,
+                    format!("invalid persisted evaluation gate (fail-closed): {error:#}"),
+                );
+                continue;
+            }
+        }
+
         let matching: Vec<&DurableEvalVerdict> = verdicts
             .iter()
             .filter(|verdict| {
@@ -2140,10 +2629,32 @@ where
                     && verdict.source_attempt == source_lifecycle.source_attempt
             })
             .collect();
+        // Completed consumed rows are immutable history. Diagnostics audit
+        // them read-only; reconciliation never retrofits policy, selects among
+        // old evidence, or rewrites their Done status/logs.
+        if !source_is_pending && source_lifecycle.consumed_verdict.is_some() {
+            continue;
+        }
+        if let Some(malformed) = matching.iter().find(|verdict| {
+            verdict.schema != EVAL_LIFECYCLE_SCHEMA
+                || !verdict.score.is_finite()
+                || !(0.0..=1.0).contains(&verdict.score)
+                || verdict.stage == AgencyStage::FlipInference
+        }) {
+            let source = graph.get_task_mut(&source_id).expect("collected source");
+            modified |= lifecycle_conflict(
+                source,
+                format!(
+                    "error[WG-EVAL-VERDICT-MALFORMED]: verdict {} has invalid schema/stage/non-finite-or-out-of-range score",
+                    malformed.verdict_id
+                ),
+            );
+            continue;
+        }
         let flips: Vec<_> = matching
             .iter()
             .copied()
-            .filter(|verdict| verdict.stage != AgencyStage::Evaluate)
+            .filter(|verdict| verdict.stage == AgencyStage::FlipComparison)
             .collect();
         let evals: Vec<_> = matching
             .iter()
@@ -2183,8 +2694,17 @@ where
             continue;
         }
 
-        modified |=
-            repair_pending_pipeline(graph, &source_id, !flips.is_empty(), !evals.is_empty());
+        let flip_required = source_lifecycle
+            .gate_policy
+            .as_ref()
+            .is_some_and(|policy| policy.flip_policy == FlipVerdictPolicy::Required);
+        modified |= repair_pending_pipeline(
+            graph,
+            &source_id,
+            !flips.is_empty(),
+            !evals.is_empty(),
+            flip_required,
+        );
         if graph
             .get_task(&source_id)
             .and_then(|source| source.evaluation_lifecycle.as_ref())
@@ -2199,79 +2719,92 @@ where
             modified |= install_completed_legacy_plan(graph, &task_id, flip);
             modified |= mark_satellite_verdict(graph, &task_id, flip);
         }
+        if let Some(eval) = evals.first() {
+            let task_id = format!(".evaluate-{source_id}");
+            modified |= install_completed_legacy_plan(graph, &task_id, eval);
+            modified |= mark_satellite_verdict(graph, &task_id, eval);
+        }
+        if graph
+            .get_task(&source_id)
+            .and_then(|source| source.evaluation_lifecycle.as_ref())
+            .and_then(|lifecycle| lifecycle.diagnostic.as_ref())
+            .is_some()
+        {
+            continue;
+        }
+
         let Some(eval) = evals.first() else {
-            if matches!(
-                source_snapshot.status,
-                Status::PendingEval | Status::FailedPendingEval
-            ) && source_snapshot.evaluation_lifecycle.is_none()
-            {
-                graph
-                    .get_task_mut(&source_id)
-                    .expect("collected source")
-                    .evaluation_lifecycle = Some(source_lifecycle);
-                modified = true;
-            }
             continue;
         };
-
-        let flip_required = graph.get_task(&format!(".flip-{source_id}")).is_some();
-        let flip_linked = !flip_required
-            || graph
-                .get_task(&format!(".flip-{source_id}"))
-                .and_then(|task| task.evaluation_lifecycle.as_ref())
-                .and_then(|lifecycle| lifecycle.linked_flip_verdict.as_ref())
-                .is_some();
-        if !flip_linked {
+        let flip = flips.first().copied();
+        if flip_required && flip.is_none() {
             continue;
         }
-        let eval_task_id = format!(".evaluate-{source_id}");
-        modified |= install_completed_legacy_plan(graph, &eval_task_id, eval);
-        modified |= mark_satellite_verdict(graph, &eval_task_id, eval);
+        if !source_is_pending {
+            continue;
+        }
 
-        let source = graph.get_task_mut(&source_id).expect("collected source");
-        source
-            .evaluation_lifecycle
-            .get_or_insert(source_lifecycle.clone());
-        let consumed = source
-            .evaluation_lifecycle
+        let policy = source_lifecycle
+            .gate_policy
             .as_ref()
-            .and_then(|lifecycle| lifecycle.consumed_verdict.clone());
-        if let Some(existing) = consumed {
-            if existing != eval.verdict_id {
-                modified |= lifecycle_conflict(
-                    source,
-                    format!(
-                        "error[WG-EVAL-CONSUMPTION-CONFLICT]: source consumed {} but found {}",
-                        existing, eval.verdict_id
-                    ),
-                );
-            }
-            continue;
-        }
-        if !matches!(
-            source_snapshot.status,
-            Status::PendingEval | Status::FailedPendingEval
-        ) {
-            continue;
-        }
-
-        let hard_reject = eval.score < threshold
-            && (source_snapshot.status == Status::FailedPendingEval
-                || pending_is_gated(&source_snapshot));
+            .expect("pending sources were pinned above");
+        let evaluator_threshold = policy
+            .evaluator_threshold
+            .expect("validated required evaluator threshold");
+        let flip_threshold = policy.flip_threshold;
+        let evaluator_failed = eval.score < evaluator_threshold;
+        let flip_failed = flip_required
+            && flip.is_some_and(|verdict| {
+                verdict.score < flip_threshold.expect("validated required FLIP threshold")
+            });
+        let hard_reject = evaluator_failed || flip_failed;
         let retry_source = hard_reject
             && source_snapshot.status == Status::PendingEval
             && auto_rescue
             && max_rescues > 0
             && source_snapshot.rescue_count < max_rescues;
 
+        let mut evidence = vec![format!(
+            "evaluator {} score={:.2} threshold={:.2} {}",
+            eval.verdict_id,
+            eval.score,
+            evaluator_threshold,
+            if evaluator_failed { "FAIL" } else { "PASS" }
+        )];
+        if flip_required {
+            let flip = flip.expect("required FLIP checked above");
+            let threshold = flip_threshold.expect("validated required FLIP threshold");
+            evidence.push(format!(
+                "FLIP {} score={:.2} threshold={:.2} {}",
+                flip.verdict_id,
+                flip.score,
+                threshold,
+                if flip_failed { "FAIL" } else { "PASS" }
+            ));
+        }
+        let evidence_summary = evidence.join("; ");
+
+        let source = graph.get_task_mut(&source_id).expect("collected source");
         let lifecycle = source
             .evaluation_lifecycle
             .as_mut()
-            .expect("inserted lifecycle");
-        lifecycle.linked_flip_verdict = flips.first().map(|verdict| verdict.verdict_id.clone());
+            .expect("pending source lifecycle was installed");
+        lifecycle.linked_flip_verdict = flip.map(|verdict| verdict.verdict_id.clone());
         lifecycle.linked_eval_verdict = Some(eval.verdict_id.clone());
         lifecycle.consumed_verdict = Some(eval.verdict_id.clone());
         lifecycle.execution_state = EvaluationExecutionState::Consumed;
+        lifecycle.outcome_provenance = Some(EvaluationOutcomeProvenance {
+            outcome: if retry_source {
+                EvaluationGateOutcome::RescueRetry
+            } else if hard_reject {
+                EvaluationGateOutcome::Rejected
+            } else {
+                EvaluationGateOutcome::Passed
+            },
+            evaluator_verdict: Some(eval.verdict_id.clone()),
+            flip_verdict: flip.map(|verdict| verdict.verdict_id.clone()),
+            summary: evidence_summary.clone(),
+        });
 
         if retry_source {
             source.status = Status::Open;
@@ -2284,8 +2817,7 @@ where
             source.status = Status::Failed;
             source.retry_count = source.retry_count.saturating_add(1);
             source.failure_reason = Some(format!(
-                "evaluation verdict {} rejected: score={:.2} < threshold={:.2}",
-                eval.verdict_id, eval.score, threshold
+                "required evaluation gate rejected: {evidence_summary}"
             ));
             source.completed_at = Some(Utc::now().to_rfc3339());
         } else {
@@ -2298,8 +2830,8 @@ where
             actor: Some("eval-lifecycle-reconcile".to_string()),
             user: None,
             message: format!(
-                "Consumed durable verdict {} exactly once: score={:.2}, outcome={}",
-                eval.verdict_id, eval.score, source.status
+                "Consumed durable verdict {} exactly once under strict required-gate policy: {}; outcome={}",
+                eval.verdict_id, evidence_summary, source.status
             ),
         });
         modified = true;
@@ -2308,7 +2840,7 @@ where
             modified |= begin_source_attempt(
                 graph,
                 &source_id,
-                "automatic in-place rescue after rejected evaluation",
+                "automatic in-place rescue after rejected required evaluation gate",
             );
         }
     }
@@ -2440,7 +2972,10 @@ mod tests {
     }
 
     fn verdict(source: &Task, stage: AgencyStage, score: f64) -> DurableEvalVerdict {
-        let pipeline = EvaluationLifecycle::for_source(source);
+        let pipeline = source
+            .evaluation_lifecycle
+            .clone()
+            .unwrap_or_else(|| EvaluationLifecycle::for_source(source));
         let suffix = if stage == AgencyStage::Evaluate {
             "eval"
         } else {
@@ -2461,6 +2996,28 @@ mod tests {
             evaluation_digest: format!("b3:{suffix}"),
             created_at: Utc::now().to_rfc3339(),
         }
+    }
+
+    fn pin_required_gate(source: &mut Task, evaluator_threshold: f64, flip_threshold: Option<f64>) {
+        source.evaluation_lifecycle = Some(EvaluationLifecycle::for_source(source));
+        let lifecycle = source.evaluation_lifecycle.as_mut().unwrap();
+        lifecycle.gate_policy = Some(EvaluationGatePolicy {
+            applicability: EvaluationGateApplicability::Required,
+            evaluator_threshold: Some(evaluator_threshold),
+            flip_policy: if flip_threshold.is_some() {
+                FlipVerdictPolicy::Required
+            } else {
+                FlipVerdictPolicy::NotScheduled
+            },
+            flip_threshold,
+            flip_threshold_source: flip_threshold.map(|_| FlipThresholdSource::EvaluatorThreshold),
+        });
+        lifecycle.outcome_provenance = Some(EvaluationOutcomeProvenance {
+            outcome: EvaluationGateOutcome::AwaitingEvidence,
+            evaluator_verdict: None,
+            flip_verdict: None,
+            summary: "test gate".into(),
+        });
     }
 
     #[test]
@@ -2507,15 +3064,18 @@ mod tests {
     }
 
     #[test]
-    fn advisory_low_score_completes_but_gated_score_retries_exact_plan() {
-        let mut advisory = source();
-        advisory.status = Status::PendingEval;
-        advisory.evaluation_lifecycle = Some(EvaluationLifecycle::for_source(&advisory));
-        let advisory_eval = planned_satellite(".evaluate-source", &advisory);
-        let low = verdict(&advisory, AgencyStage::Evaluate, 0.2);
+    fn pending_low_score_never_passes_and_retries_exact_plan() {
+        // The legacy callback says "advisory", but PendingEval itself is now
+        // an unambiguous hard-gate contract and must fail closed.
+        let mut legacy_pending = source();
+        legacy_pending.status = Status::PendingEval;
+        legacy_pending.evaluation_lifecycle =
+            Some(EvaluationLifecycle::for_source(&legacy_pending));
+        let legacy_eval = planned_satellite(".evaluate-source", &legacy_pending);
+        let low = verdict(&legacy_pending, AgencyStage::Evaluate, 0.2);
         let mut graph = WorkGraph::new();
-        graph.add_node(crate::graph::Node::Task(advisory));
-        graph.add_node(crate::graph::Node::Task(advisory_eval));
+        graph.add_node(crate::graph::Node::Task(legacy_pending));
+        graph.add_node(crate::graph::Node::Task(legacy_eval));
         assert!(reconcile_durable_verdicts(
             &mut graph,
             &[low],
@@ -2524,7 +3084,7 @@ mod tests {
             3,
             |_| false,
         ));
-        assert_eq!(graph.get_task("source").unwrap().status, Status::Done);
+        assert_eq!(graph.get_task("source").unwrap().status, Status::Open);
 
         let mut gated = source();
         gated.status = Status::PendingEval;
@@ -2567,6 +3127,252 @@ mod tests {
             3,
             |_| true,
         ));
+    }
+
+    #[test]
+    fn strict_required_flip_and_evaluator_threshold_matrix() {
+        for (name, flip_score, eval_score, expected) in [
+            ("incident-both-low", 0.18, 0.20, Status::Failed),
+            ("low-flip", 0.69, 0.95, Status::Failed),
+            ("low-evaluator", 0.95, 0.69, Status::Failed),
+            ("exact-threshold", 0.70, 0.70, Status::Done),
+        ] {
+            let mut source = source();
+            source.status = Status::PendingEval;
+            pin_required_gate(&mut source, 0.70, Some(0.70));
+            let flip = planned_satellite(".flip-source", &source);
+            let eval = planned_satellite(".evaluate-source", &source);
+            let flip_verdict = verdict(&source, AgencyStage::FlipComparison, flip_score);
+            let eval_verdict = verdict(&source, AgencyStage::Evaluate, eval_score);
+            let mut graph = WorkGraph::new();
+            graph.add_node(crate::graph::Node::Task(source));
+            graph.add_node(crate::graph::Node::Task(flip));
+            graph.add_node(crate::graph::Node::Task(eval));
+
+            assert!(
+                reconcile_durable_verdicts(
+                    &mut graph,
+                    &[flip_verdict, eval_verdict],
+                    0.99, // persisted 0.70 must win over ambient reload
+                    false,
+                    0,
+                    |_| false,
+                ),
+                "{name} did not reconcile"
+            );
+            let source = graph.get_task("source").unwrap();
+            assert_eq!(source.status, expected, "{name}");
+            let provenance = source
+                .evaluation_lifecycle
+                .as_ref()
+                .and_then(|lifecycle| lifecycle.outcome_provenance.as_ref())
+                .unwrap();
+            assert!(provenance.summary.contains("evaluator"), "{name}");
+            assert!(provenance.summary.contains("FLIP"), "{name}");
+        }
+    }
+
+    #[test]
+    fn system_task_success_scores_cannot_mask_source_gate_failures() {
+        let mut source = source();
+        source.status = Status::PendingEval;
+        pin_required_gate(&mut source, 0.70, Some(0.70));
+        let flip = planned_satellite(".flip-source", &source);
+        let eval = planned_satellite(".evaluate-source", &source);
+        let source_flip = verdict(&source, AgencyStage::FlipComparison, 0.64);
+        let source_eval = verdict(&source, AgencyStage::Evaluate, 0.18);
+        let mut system_flip = source_flip.clone();
+        system_flip.verdict_id = "verdict-system-flip-success".into();
+        system_flip.source_task = ".flip-source".into();
+        system_flip.score = 1.0;
+        let mut system_eval = source_eval.clone();
+        system_eval.verdict_id = "verdict-system-eval-success".into();
+        system_eval.source_task = ".evaluate-source".into();
+        system_eval.score = 1.0;
+        let mut graph = WorkGraph::new();
+        graph.add_node(crate::graph::Node::Task(source));
+        graph.add_node(crate::graph::Node::Task(flip));
+        graph.add_node(crate::graph::Node::Task(eval));
+
+        assert!(reconcile_durable_verdicts(
+            &mut graph,
+            &[system_flip, system_eval, source_flip, source_eval],
+            0.70,
+            false,
+            0,
+            |_| true,
+        ));
+        let source = graph.get_task("source").unwrap();
+        assert_eq!(source.status, Status::Failed);
+        assert!(
+            source.failure_reason.as_deref().is_some_and(
+                |reason| reason.contains("score=0.18") && reason.contains("score=0.64")
+            )
+        );
+    }
+
+    #[test]
+    fn two_below_threshold_attempts_never_complete_or_unblock_dependents() {
+        let mut source = source();
+        source.status = Status::PendingEval;
+        pin_required_gate(&mut source, 0.70, Some(0.70));
+        let flip = planned_satellite(".flip-source", &source);
+        let eval = planned_satellite(".evaluate-source", &source);
+        let old_flip = verdict(&source, AgencyStage::FlipComparison, 0.18);
+        let old_eval = verdict(&source, AgencyStage::Evaluate, 0.20);
+        let dependent = Task {
+            id: "dependent".into(),
+            title: "must remain blocked".into(),
+            after: vec!["source".into()],
+            ..Task::default()
+        };
+        let mut graph = WorkGraph::new();
+        graph.add_node(crate::graph::Node::Task(source));
+        graph.add_node(crate::graph::Node::Task(flip));
+        graph.add_node(crate::graph::Node::Task(eval));
+        graph.add_node(crate::graph::Node::Task(dependent));
+
+        assert!(reconcile_durable_verdicts(
+            &mut graph,
+            &[old_flip.clone(), old_eval.clone()],
+            0.70,
+            true,
+            1,
+            |_| true,
+        ));
+        let attempt_two = graph.get_task("source").unwrap().clone();
+        assert_eq!(attempt_two.status, Status::Open);
+        assert_eq!(attempt_two.rescue_count, 1);
+        let attempt_two_id = attempt_two
+            .evaluation_lifecycle
+            .as_ref()
+            .unwrap()
+            .pipeline_id
+            .clone();
+        assert_ne!(attempt_two_id, old_eval.pipeline_id);
+        assert!(
+            !crate::query::ready_tasks(&graph)
+                .iter()
+                .any(|task| task.id == "dependent")
+        );
+
+        graph.get_task_mut("source").unwrap().status = Status::PendingEval;
+        let current_source = graph.get_task("source").unwrap().clone();
+        let mut current_flip = verdict(&current_source, AgencyStage::FlipComparison, 0.19);
+        current_flip.verdict_id = "verdict-attempt-2-flip".into();
+        let mut current_eval = verdict(&current_source, AgencyStage::Evaluate, 0.12);
+        current_eval.verdict_id = "verdict-attempt-2-eval".into();
+        assert!(reconcile_durable_verdicts(
+            &mut graph,
+            &[old_flip, old_eval, current_flip, current_eval],
+            0.70,
+            true,
+            1,
+            |_| true,
+        ));
+        let source = graph.get_task("source").unwrap();
+        assert_eq!(source.status, Status::Failed);
+        assert_eq!(
+            source.evaluation_lifecycle.as_ref().unwrap().source_attempt,
+            2
+        );
+        assert!(
+            !crate::query::ready_tasks(&graph)
+                .iter()
+                .any(|task| task.id == "dependent")
+        );
+    }
+
+    #[test]
+    fn non_finite_current_attempt_verdict_fails_closed() {
+        let mut source = source();
+        source.status = Status::PendingEval;
+        pin_required_gate(&mut source, 0.70, None);
+        let eval = planned_satellite(".evaluate-source", &source);
+        let malformed = verdict(&source, AgencyStage::Evaluate, f64::NAN);
+        let mut graph = WorkGraph::new();
+        graph.add_node(crate::graph::Node::Task(source));
+        graph.add_node(crate::graph::Node::Task(eval));
+
+        assert!(reconcile_durable_verdicts(
+            &mut graph,
+            &[malformed],
+            0.70,
+            false,
+            0,
+            |_| true,
+        ));
+        let source = graph.get_task("source").unwrap();
+        assert_eq!(source.status, Status::PendingEval);
+        assert!(
+            source
+                .evaluation_lifecycle
+                .as_ref()
+                .unwrap()
+                .consumed_verdict
+                .is_none()
+        );
+        assert!(
+            source
+                .evaluation_lifecycle
+                .as_ref()
+                .unwrap()
+                .diagnostic
+                .as_deref()
+                .is_some_and(|diagnostic| diagnostic.contains("MALFORMED"))
+        );
+    }
+
+    #[test]
+    fn historical_below_threshold_done_is_audited_without_rewrite() {
+        let mut source = source();
+        source.status = Status::Done;
+        source.evaluation_lifecycle = Some(EvaluationLifecycle::for_source(&source));
+        let flip = verdict(&source, AgencyStage::FlipComparison, 0.64);
+        let eval = verdict(&source, AgencyStage::Evaluate, 0.18);
+        {
+            let lifecycle = source.evaluation_lifecycle.as_mut().unwrap();
+            lifecycle.linked_flip_verdict = Some(flip.verdict_id.clone());
+            lifecycle.linked_eval_verdict = Some(eval.verdict_id.clone());
+            lifecycle.consumed_verdict = Some(eval.verdict_id.clone());
+        }
+        let diagnostic = evaluation_gate_diagnostics(
+            &source,
+            Ok(&[flip.clone(), eval.clone()]),
+            Some(0.70),
+            None,
+        )
+        .unwrap();
+        assert!(diagnostic.audit_alert);
+        assert!(
+            diagnostic
+                .audit
+                .as_deref()
+                .unwrap()
+                .contains("HISTORICAL AUDIT ALERT")
+        );
+
+        let mut graph = WorkGraph::new();
+        graph.add_node(crate::graph::Node::Task(source));
+        assert!(!reconcile_durable_verdicts(
+            &mut graph,
+            &[flip, eval],
+            0.70,
+            true,
+            3,
+            |_| true,
+        ));
+        assert_eq!(graph.get_task("source").unwrap().status, Status::Done);
+        assert!(
+            graph
+                .get_task("source")
+                .unwrap()
+                .evaluation_lifecycle
+                .as_ref()
+                .unwrap()
+                .gate_policy
+                .is_none()
+        );
     }
 
     #[test]
@@ -2676,7 +3482,7 @@ mod tests {
 
         // Attempt-1 evidence remains visible to the reconciler but cannot
         // mutate or score attempt 2.
-        assert!(!reconcile_durable_verdicts(
+        assert!(reconcile_durable_verdicts(
             &mut graph,
             &[old_flip.clone(), old_eval.clone()],
             0.7,
@@ -2684,9 +3490,15 @@ mod tests {
             3,
             |_| true,
         ));
+        let pending = graph.get_task("source").unwrap();
+        assert_eq!(pending.status, Status::PendingEval);
         assert_eq!(
-            graph.get_task("source").unwrap().status,
-            Status::PendingEval
+            pending
+                .evaluation_lifecycle
+                .as_ref()
+                .and_then(|lifecycle| lifecycle.gate_policy.as_ref())
+                .map(|policy| policy.applicability),
+            Some(EvaluationGateApplicability::Required)
         );
 
         let current_source = graph.get_task("source").unwrap().clone();

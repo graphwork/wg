@@ -234,6 +234,41 @@ auto_evaluate = true
 // ===========================================================================
 
 #[test]
+fn merge_eval_gate_threshold_and_flip_policy_use_local_effective_values() {
+    let tmp = TempDir::new().unwrap();
+    let global_dir = setup_global_dir(
+        &tmp,
+        Some(
+            r#"
+[agency]
+eval_gate_threshold = 0.55
+eval_gate_all = false
+flip_verification_threshold = 0.50
+"#,
+        ),
+    );
+    let local_dir = setup_local_dir(
+        &tmp,
+        Some(
+            r#"
+[agency]
+eval_gate_threshold = 0.70
+eval_gate_all = true
+flip_verification_threshold = 0.65
+"#,
+        ),
+    );
+
+    let config = load_merged_custom(&global_dir, &local_dir);
+    assert_eq!(config.agency.eval_gate_threshold, Some(0.70));
+    assert!(config.agency.eval_gate_all);
+    assert_eq!(config.agency.flip_verification_threshold, Some(0.65));
+    config
+        .validate_model_format()
+        .expect("merged effective gate thresholds must validate");
+}
+
+#[test]
 fn merge_global_value_inherited_when_local_absent() {
     let tmp = TempDir::new().unwrap();
     let global_dir = setup_global_dir(

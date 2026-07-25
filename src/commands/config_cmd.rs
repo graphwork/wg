@@ -235,6 +235,23 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
         if let Some(threshold) = config.agency.flip_verification_threshold {
             println!("  flip_verification_threshold = {}", threshold);
         }
+        if let Some(eval_threshold) = config.agency.eval_gate_threshold {
+            println!(
+                "  effective_gate = {} ; evaluator_threshold = {} ; flip_policy = required-strict-when-persisted ; flip_threshold = {}",
+                if config.agency.eval_gate_all {
+                    "all evaluated tasks"
+                } else {
+                    "structural deliverables only (others advisory)"
+                },
+                eval_threshold,
+                config
+                    .agency
+                    .flip_verification_threshold
+                    .unwrap_or(eval_threshold)
+            );
+        } else {
+            println!("  effective_gate = advisory-only ; flip_policy = advisory");
+        }
         println!("  auto_place = {}", config.agency.auto_place);
         if config.agency.auto_evolve {
             println!("  auto_evolve = {}", config.agency.auto_evolve);
@@ -1135,9 +1152,9 @@ pub fn update_with_reasoning(
 
     // Eval gate settings
     if let Some(threshold) = eval_gate_threshold {
-        if !(0.0..=1.0).contains(&threshold) {
+        if !threshold.is_finite() || !(0.0..=1.0).contains(&threshold) {
             anyhow::bail!(
-                "eval_gate_threshold must be in [0.0, 1.0] range, got {}",
+                "eval_gate_threshold must be finite and in [0.0, 1.0] range, got {}",
                 threshold
             );
         }
@@ -1160,6 +1177,12 @@ pub fn update_with_reasoning(
     }
 
     if let Some(v) = flip_verification_threshold {
+        if !v.is_finite() || !(0.0..=1.0).contains(&v) {
+            anyhow::bail!(
+                "flip_verification_threshold must be finite and in [0.0, 1.0] range, got {}",
+                v
+            );
+        }
         config.agency.flip_verification_threshold = Some(v);
         println!("Set agency.flip_verification_threshold = {}", v);
         changed = true;

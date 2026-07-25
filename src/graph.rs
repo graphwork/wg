@@ -204,15 +204,16 @@ pub enum Status {
     Failed,
     Abandoned,
     PendingValidation,
-    /// Soft-done: agent called `wg done`, awaiting `.evaluate-X` to score the
-    /// task. On pass (≥ `eval_gate_threshold`) the task transitions to `Done`
-    /// and downstream dependents unblock. On fail, the existing
-    /// `auto_rescue_on_eval_fail` path runs (Failed + rescue task).
+    /// Hard-gated soft-done: agent called `wg done`, awaiting every required
+    /// exact-attempt FLIP/evaluator verdict. Each verdict must independently
+    /// meet its persisted effective threshold before `Done`; a low verdict
+    /// enters bounded in-place rescue or terminal `Failed`. Advisory
+    /// evaluations never use this status.
     PendingEval,
     /// Soft-failed: agent exited with `failure_class=AgentExitNonzero` without
     /// calling `wg done` or `wg fail`. The dispatcher invokes `.evaluate-X`;
-    /// on a recorded score >= eval_gate_threshold the task is rescued
-    /// (→ Done with rescued=true), otherwise it transitions to Failed
+    /// on required verdicts meeting their persisted effective thresholds the
+    /// task is rescued (→ Done with rescued=true), otherwise it transitions to Failed
     /// (terminal, no auto-rescue spawn).
     FailedPendingEval,
     Incomplete,

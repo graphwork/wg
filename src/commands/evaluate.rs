@@ -2008,31 +2008,59 @@ fn check_eval_gate(
     config: &Config,
     json: bool,
 ) -> Result<bool> {
-    let threshold = match config.agency.eval_gate_threshold {
-        Some(t) => t,
-        None => return Ok(false), // No threshold configured
-    };
+    if !evaluation.score.is_finite() || !(0.0..=1.0).contains(&evaluation.score) {
+        anyhow::bail!(
+            "error[WG-EVAL-VERDICT-MALFORMED]: evaluation score must be finite and in [0, 1]"
+        );
+    }
 
-    // Check if this task is gated. A non-empty parsed-deliverable list opts
-    // the task into the gate, so a soft evaluator pass can no longer promote
-    // a missing-deliverable run to Done. Freeform labels are inert.
-    let is_gated = task_is_eval_gated(task_tags, task_description, config);
+    let persisted_source = worksgood::parser::load_graph(super::graph_path(dir))
+        .ok()
+        .and_then(|graph| graph.get_task(task_id).cloned());
+    let persisted_policy = persisted_source
+        .as_ref()
+        .and_then(|task| task.evaluation_lifecycle.as_ref())
+        .and_then(|lifecycle| lifecycle.gate_policy.as_ref());
+    let (threshold, is_gated) = if let Some(policy) = persisted_policy {
+        policy.validate()?;
+        match policy.applicability {
+            worksgood::eval_lifecycle::EvaluationGateApplicability::Advisory => {
+                return Ok(false);
+            }
+            worksgood::eval_lifecycle::EvaluationGateApplicability::Required => (
+                policy.evaluator_threshold.ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "error[WG-EVAL-GATE-POLICY]: required evaluator threshold is missing"
+                    )
+                })?,
+                true,
+            ),
+        }
+    } else {
+        (
+            match config.agency.eval_gate_threshold {
+                Some(threshold) => threshold,
+                None => return Ok(false),
+            },
+            task_is_eval_gated(task_tags, task_description, config),
+        )
+    };
     if !is_gated {
         return Ok(false);
     }
 
-    // Skip system evaluations (infrastructure failures) - these should not trigger task failure
-    if evaluation.source == "system" {
+    // System/infrastructure evaluations and evaluations OF a system task are
+    // execution diagnostics only. They may never decide a source's quality.
+    if evaluation.source == "system" || task_id.starts_with('.') {
         return Ok(false);
     }
 
     // Soft evaluation states are consumed centrally by the dispatcher after
     // the durable verdict exists. Mutating the source here would race the
     // satellite's own `wg done` and lose the exact consumed-verdict fence.
-    let source_is_soft_eval = worksgood::parser::load_graph(&super::graph_path(dir))
-        .ok()
-        .and_then(|graph| graph.get_task(task_id).map(|task| task.status))
-        .is_some_and(|status| matches!(status, Status::PendingEval | Status::FailedPendingEval));
+    let source_is_soft_eval = persisted_source
+        .as_ref()
+        .is_some_and(|task| matches!(task.status, Status::PendingEval | Status::FailedPendingEval));
     if source_is_soft_eval {
         return Ok(false);
     }

@@ -98,10 +98,11 @@ Each tick does:
       Create evaluate-{task-id} blocked by the original task
       Set evaluator_model and evaluator_agent on the new task
 
- 4.5 FLIP verification (if flip_verification_threshold is set)
-     For tasks with FLIP scores below threshold, create an independent
-     .verify-flip-{task-id} verification task dispatched to a stronger
-     model (Opus) to confirm or reject the result.
+ 4.5 Legacy advisory FLIP verification (if flip_verification_threshold is set)
+     Advisory pipelines may create an independent verification task for a
+     low FLIP score. Hard-gated persisted pipelines never do: FLIP is an
+     exact attempt-bound required verdict checked independently at its
+     effective threshold, without averaging or another satellite.
 
  4.6 [IF auto_evolve enabled]
      Trigger agent evolution when evaluation data warrants it.
@@ -530,24 +531,32 @@ wg config --creator-model haiku
 
 ### Eval gate configuration
 
-Control the evaluation gate that blocks task completion pending a minimum score:
+Control the evaluation gate that blocks task completion pending required verdicts:
 
 ```bash
-wg config --eval-gate-threshold 0.7    # tasks scoring below 0.7 are rejected
-wg config --eval-gate-all true         # gate ALL tasks, not just --verify tasks
+wg config --eval-gate-threshold 0.7    # structural-deliverable gates reject below 0.7
+wg config --eval-gate-all true         # make every persisted evaluator a hard gate
 ```
 
-### FLIP verification
+A source enters `pending-eval` only for a hard gate. Other scheduled evaluations
+are explicitly advisory: the source goes directly to `done`, and completion of
+the `.evaluate-*` job means only that evaluation execution succeeded — it is not
+a quality pass. Tags are labels and do not opt a task into the gate.
 
-When `flip_verification_threshold` is set, tasks with FLIP scores below the threshold automatically get a `.verify-flip-<task-id>` verification task dispatched to a stronger model (Opus):
+When FLIP is persisted in a hard-gated pipeline it is a required verdict. Its
+threshold is `flip_verification_threshold` when explicitly set, otherwise it
+inherits `eval_gate_threshold`. FLIP and evaluator scores are checked
+independently (strictest required verdict wins); they are never averaged and no
+additional verification satellite is created for a gated FLIP. For advisory
+pipelines only, an explicitly set `flip_verification_threshold` retains the
+legacy independent-verification trigger.
 
 ```toml
 [agency]
 flip_enabled = true
-flip_verification_threshold = 0.5
-flip_inference_model = "sonnet"
-flip_comparison_model = "sonnet"
-flip_verification_model = "opus"
+eval_gate_threshold = 0.7
+# optional override; otherwise hard-gate FLIP also uses 0.7
+flip_verification_threshold = 0.65
 ```
 
 ### Retry context injection

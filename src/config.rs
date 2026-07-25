@@ -3876,12 +3876,11 @@ fn default_flip_verification_threshold() -> Option<f64> {
     // generated runaway meta-task cascades (observed on ulivo: every real
     // task accumulated .flip-*, .verify-*, .flip-.verify-*, .evaluate-*,
     // and .evaluate-.verify-* shadow tasks — 5-6x inflation). Replacement
-    // is single-leaf .evaluate-* with `wg rescue` on FAIL (see
-    // docs/design/eval-rescue-graph-surgery.md when written). FLIP scores
-    // are still computed and attached to tasks as a diagnostic signal;
-    // they just no longer trigger task creation.
-    //
-    // Set explicitly in config.toml to re-enable the old behavior.
+    // is single-leaf .evaluate-* with bounded in-place rescue. A FLIP stage
+    // persisted in a hard-gated pipeline remains a required verdict and
+    // inherits eval_gate_threshold when this value is None; it does not
+    // trigger another task. On advisory pipelines an explicit value retains
+    // the legacy verification trigger.
     None
 }
 fn default_evolution_interval() -> u64 {
@@ -4052,10 +4051,11 @@ pub struct AgencyConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flip_comparison_model: Option<String>,
 
-    /// FLIP score threshold below which automatic Opus verification is triggered.
-    /// When a FLIP evaluation scores below this threshold, the coordinator creates
-    /// a verification task that independently checks whether the work was done.
-    /// Default: 0.7. Set to None to disable.
+    /// Explicit FLIP threshold. For a persisted hard-gate FLIP stage this is
+    /// the strict required-verdict threshold; when unset, FLIP inherits
+    /// `eval_gate_threshold`. It never averages with the evaluator. On advisory
+    /// pipelines, setting this retains the legacy bounded verification trigger.
+    /// Default: None (hard-gate FLIP inherits the evaluator threshold).
     #[serde(default = "default_flip_verification_threshold")]
     pub flip_verification_threshold: Option<f64>,
 
@@ -6628,6 +6628,29 @@ impl Config {
     /// field that still uses a bare model name (e.g., `"opus"` instead of `"claude:opus"`).
     pub fn validate_model_format(&self) -> anyhow::Result<()> {
         let mut errors: Vec<String> = Vec::new();
+
+        // Evaluation thresholds are security decisions as well as numbers.
+        // TOML accepts NaN/inf, so validate load/merge results centrally; a
+        // non-finite threshold must never make `< threshold` evaluate false
+        // and accidentally promote a source.
+        for (field, value) in [
+            (
+                "agency.eval_gate_threshold",
+                self.agency.eval_gate_threshold,
+            ),
+            (
+                "agency.flip_verification_threshold",
+                self.agency.flip_verification_threshold,
+            ),
+        ] {
+            if let Some(value) = value
+                && (!value.is_finite() || !(0.0..=1.0).contains(&value))
+            {
+                errors.push(format!(
+                    "  {field} = {value}: threshold must be finite and in [0.0, 1.0]"
+                ));
+            }
+        }
 
         // Quiet variant: this runs on every config load and a bare provider
         // prefix is already surfaced once (with a dotted path) by

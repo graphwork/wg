@@ -3793,12 +3793,12 @@ and registry flags are hidden migration compatibility.
 | `--triage-model <MODEL>` | **[DEPRECATED]** Use `--set-model triage <MODEL>` instead |
 | `--triage-timeout <SECS>` | Set timeout for triage calls (default: 30) |
 | `--triage-max-log-bytes <N>` | Set max bytes for triage log reading (default: 50000) |
-| `--eval-gate-threshold <N>` | Set evaluation gate threshold (0.0–1.0). Evaluations below this score reject the original task. Only applies to tasks tagged `eval-gate` unless `--eval-gate-all` is set |
-| `--eval-gate-all <BOOL>` | Apply eval gate to ALL evaluated tasks, not just those tagged `eval-gate` |
+| `--eval-gate-threshold <N>` | Set the finite evaluation gate threshold (0.0–1.0). By default it hard-gates evaluated tasks with structural deliverables; other evaluator jobs are visibly advisory. Tags are inert. |
+| `--eval-gate-all <BOOL>` | Make every task with a persisted evaluator pipeline a hard gate. Every `pending-eval` source then requires exact attempt-bound verdicts. |
 | `--flip-enabled <BOOL>` | Enable or disable FLIP (roundtrip intent fidelity) evaluation |
 | `--flip-inference-model <MODEL>` | Model for FLIP inference phase (reconstructing prompt from output) |
 | `--flip-comparison-model <MODEL>` | Model for FLIP comparison phase (scoring similarity) |
-| `--flip-verification-threshold <N>` | FLIP score threshold for triggering verification (default: 0.7) |
+| `--flip-verification-threshold <N>` | Explicit finite FLIP threshold (0.0–1.0). In hard-gated persisted FLIP pipelines it is a required independent threshold; when omitted FLIP inherits `eval_gate_threshold`. Advisory pipelines retain the legacy verification trigger. |
 | `--flip-verification-model <MODEL>` | **[DEPRECATED]** Use `--set-model verification <MODEL>` instead |
 | `--chat-history <BOOL>` | Enable/disable chat history persistence across TUI restarts |
 | `--chat-history-max <N>` | Maximum number of chat messages to persist (default: 1000) |

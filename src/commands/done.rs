@@ -1494,26 +1494,97 @@ fn run_smoke_gate(
     Ok(())
 }
 
-/// Decide the status that `wg done` should write for the given task id.
-///
-/// Returns `PendingEval` when the task is gated by an active `.evaluate-X`
-/// scaffolding task (the new default for routine work); the dispatcher will
-/// flip it to `Done` once the eval scores ≥ `eval_gate_threshold`. Returns
-/// `Done` for system tasks (dot-prefixed) and any task whose eval is missing
-/// or already terminal.
-fn pick_done_target_status(graph: &worksgood::graph::WorkGraph, id: &str) -> Status {
-    // System tasks (.evaluate-X, .flip-X, .assign-X, etc.) bypass the gate to
-    // avoid recursion: gating .evaluate-X on .evaluate-.evaluate-X would
-    // deadlock the eval pipeline.
+/// Snapshot the gate meaning that the user will see after `wg done`.
+/// Advisory evaluator satellites remain free to run, but their source never
+/// enters `PendingEval`; every source that does enter `PendingEval` is a real
+/// hard gate with attempt-pinned thresholds.
+fn completion_gate_policy(
+    graph: &worksgood::graph::WorkGraph,
+    id: &str,
+    config: &Config,
+) -> Option<worksgood::eval_lifecycle::EvaluationGatePolicy> {
+    if id.starts_with('.') {
+        return None;
+    }
+    let source = graph.get_task(id)?;
+    if let Some(policy) = source
+        .evaluation_lifecycle
+        .as_ref()
+        .and_then(|lifecycle| lifecycle.gate_policy.clone())
+    {
+        return Some(policy);
+    }
+    let eval_id = format!(".evaluate-{id}");
+    let evaluator = graph.get_task(&eval_id)?;
+    let hard_gate = config.agency.eval_gate_threshold.is_some()
+        && (config.agency.eval_gate_all
+            || source
+                .description
+                .as_deref()
+                .map(crate::commands::deliverables::parse_deliverables)
+                .is_some_and(|deliverables| !deliverables.is_empty()));
+    let flip_id = format!(".flip-{id}");
+    let flip_persisted = evaluator.after.contains(&flip_id);
+
+    if !hard_gate {
+        return Some(worksgood::eval_lifecycle::EvaluationGatePolicy {
+            applicability: worksgood::eval_lifecycle::EvaluationGateApplicability::Advisory,
+            evaluator_threshold: None,
+            flip_policy: if flip_persisted {
+                worksgood::eval_lifecycle::FlipVerdictPolicy::Advisory
+            } else {
+                worksgood::eval_lifecycle::FlipVerdictPolicy::NotScheduled
+            },
+            flip_threshold: None,
+            flip_threshold_source: None,
+        });
+    }
+
+    let evaluator_threshold = config
+        .agency
+        .eval_gate_threshold
+        .expect("hard_gate requires configured threshold");
+    let (flip_threshold, flip_threshold_source) = if flip_persisted {
+        if let Some(threshold) = config.agency.flip_verification_threshold {
+            (
+                Some(threshold),
+                Some(worksgood::eval_lifecycle::FlipThresholdSource::FlipVerificationThreshold),
+            )
+        } else {
+            (
+                Some(evaluator_threshold),
+                Some(worksgood::eval_lifecycle::FlipThresholdSource::EvaluatorThreshold),
+            )
+        }
+    } else {
+        (None, None)
+    };
+    Some(worksgood::eval_lifecycle::EvaluationGatePolicy {
+        applicability: worksgood::eval_lifecycle::EvaluationGateApplicability::Required,
+        evaluator_threshold: Some(evaluator_threshold),
+        flip_policy: if flip_persisted {
+            worksgood::eval_lifecycle::FlipVerdictPolicy::Required
+        } else {
+            worksgood::eval_lifecycle::FlipVerdictPolicy::NotScheduled
+        },
+        flip_threshold,
+        flip_threshold_source,
+    })
+}
+
+fn pick_done_target_status(
+    id: &str,
+    policy: Option<&worksgood::eval_lifecycle::EvaluationGatePolicy>,
+) -> Status {
     if id.starts_with('.') {
         return Status::Done;
     }
-    let eval_id = format!(".evaluate-{}", id);
-    match graph.get_task(&eval_id) {
-        // Eval task exists and hasn't scored yet → soft-done (PendingEval).
-        Some(eval_task) if !eval_task.status.is_terminal() => Status::PendingEval,
-        // Eval task scored already (or doesn't exist) → straight to Done.
-        _ => Status::Done,
+    if policy.is_some_and(|policy| {
+        policy.applicability == worksgood::eval_lifecycle::EvaluationGateApplicability::Required
+    }) {
+        Status::PendingEval
+    } else {
+        Status::Done
     }
 }
 
@@ -2561,6 +2632,8 @@ fn run_inner(
     let mut cycle_reactivated = Vec::new();
     let mut already_done = false;
     let mut cycle_info: Option<(u32, u32)> = None; // (loop_iteration, max_iterations)
+    let completion_config = Config::load_or_default(dir);
+    completion_config.validate_model_format()?;
 
     // Resolve token usage outside the lock (registry read + file I/O).
     let token_usage = AgentRegistry::load(dir).ok().and_then(|registry| {
@@ -2576,11 +2649,18 @@ fn run_inner(
 
     let id_owned = id.to_string();
     let mut transitioned_to_pending_eval = false;
+    let mut completed_with_advisory_eval = false;
+    let mut gate_snapshot_error: Option<String> = None;
     let graph = modify_graph(&path, |graph| {
-        // Decide target status BEFORE taking a mutable borrow on the task —
-        // the eval gate check needs to read other nodes (`.evaluate-X`) from
-        // the same graph.
-        let target_status = pick_done_target_status(graph, &id_owned);
+        // Decide and snapshot gate meaning BEFORE taking a mutable borrow. A
+        // terminal evaluator without exact evidence is still a hard gate; an
+        // advisory evaluator never places the source in PendingEval.
+        let gate_policy = completion_gate_policy(graph, &id_owned, &completion_config);
+        let target_status = pick_done_target_status(&id_owned, gate_policy.as_ref());
+        let advisory_evaluation = gate_policy.as_ref().is_some_and(|policy| {
+            policy.applicability
+                == worksgood::eval_lifecycle::EvaluationGateApplicability::Advisory
+        });
 
         let task = match graph.get_task_mut(&id_owned) {
             Some(t) => t,
@@ -2593,11 +2673,27 @@ fn run_inner(
             return false;
         }
 
+        if let Some(policy) = gate_policy
+            && let Err(error) = worksgood::eval_lifecycle::snapshot_source_gate(
+                task,
+                policy,
+                if target_status == Status::PendingEval {
+                    worksgood::eval_lifecycle::EvaluationGateOutcome::AwaitingEvidence
+                } else {
+                    worksgood::eval_lifecycle::EvaluationGateOutcome::AdvisoryCompleted
+                },
+            )
+        {
+            gate_snapshot_error = Some(format!("{error:#}"));
+            return false;
+        }
+
         task.status = target_status;
         task.completed_at = Some(Utc::now().to_rfc3339());
         if target_status == Status::PendingEval {
             transitioned_to_pending_eval = true;
-            worksgood::eval_lifecycle::refresh_source_lifecycle(task);
+        } else if advisory_evaluation {
+            completed_with_advisory_eval = true;
         }
 
         // Clear any prior deliverable-preflight / no-operational-output
@@ -2621,8 +2717,11 @@ fn run_inner(
             user: Some(worksgood::current_user()),
             message: match target_status {
                 Status::PendingEval => {
-                    "Task pending eval (agent reported done; awaiting `.evaluate-*` to score)"
+                    "Task pending required evaluation gate (agent reported done; awaiting exact attempt-bound `.flip-*`/`.evaluate-*` verdicts)"
                         .to_string()
+                }
+                _ if advisory_evaluation => {
+                    "Task marked as done; scheduled evaluator is advisory evidence only (execution is not a quality pass)".to_string()
                 }
                 _ if converged_accepted => "Task marked as done (converged)".to_string(),
                 _ if converged => {
@@ -2667,6 +2766,14 @@ fn run_inner(
         true
     })
     .context("Failed to save graph")?;
+
+    if let Some(error) = gate_snapshot_error {
+        anyhow::bail!(
+            "Cannot mark '{}' done: invalid evaluation gate policy (fail-closed): {}",
+            id,
+            error
+        );
+    }
 
     if already_done {
         println!("Task '{}' is already done", id);
@@ -2717,7 +2824,12 @@ fn run_inner(
         }
     } else if transitioned_to_pending_eval {
         println!(
-            "Marked '{}' as pending-eval — awaiting `.evaluate-{}` to score before downstream tasks unblock",
+            "Marked '{}' as pending-eval — required gate awaiting exact source-attempt FLIP/evaluator verdicts before downstream tasks unblock",
+            id
+        );
+    } else if completed_with_advisory_eval {
+        println!(
+            "Marked '{}' as done — `.evaluate-{}` is advisory only; its execution is not a quality pass",
             id, id
         );
     } else {

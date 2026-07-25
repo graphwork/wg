@@ -45,6 +45,12 @@ struct CoordinatorInfo {
     worker_reasoning: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     agency_reasoning: Option<String>,
+    eval_gate_applicability: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    evaluator_threshold: Option<f64>,
+    flip_gate_policy: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    flip_threshold: Option<f64>,
     poll_interval: u64,
 }
 
@@ -77,6 +83,7 @@ struct TaskSummaryInfo {
     evaluation_active: usize,
     evaluation_repairable: usize,
     evaluation_operator_required: usize,
+    historical_gate_audit_alerts: usize,
     evaluation_migration_required: usize,
     evaluation_migrated_rearmed: usize,
 }
@@ -309,6 +316,33 @@ fn gather_service_status(dir: &Path) -> Result<ServiceStatusInfo> {
     }
 }
 
+fn configured_gate_info(
+    config: &worksgood::config::Config,
+) -> (String, Option<f64>, String, Option<f64>) {
+    let applicability = if config.agency.eval_gate_threshold.is_none() {
+        "advisory-only".to_string()
+    } else if config.agency.eval_gate_all {
+        "required-for-all-persisted-evaluators".to_string()
+    } else {
+        "required-for-structural-deliverables; otherwise-advisory".to_string()
+    };
+    let flip_policy = if config.agency.eval_gate_threshold.is_some() {
+        "required-strict-when-persisted-in-hard-gate".to_string()
+    } else {
+        "advisory".to_string()
+    };
+    let flip_threshold = config
+        .agency
+        .eval_gate_threshold
+        .map(|eval| config.agency.flip_verification_threshold.unwrap_or(eval));
+    (
+        applicability,
+        config.agency.eval_gate_threshold,
+        flip_policy,
+        flip_threshold,
+    )
+}
+
 fn gather_coordinator_info(dir: &Path) -> CoordinatorInfo {
     let configured_reasoning = || {
         let config = worksgood::config::Config::load_or_default(dir);
@@ -340,6 +374,9 @@ fn gather_coordinator_info(dir: &Path) -> CoordinatorInfo {
             .map(|_| "pi".to_string())
             .unwrap_or_else(|| "legacy/unsupported".to_string());
         let (reasoning, worker_reasoning, agency_reasoning) = configured_reasoning();
+        let config = worksgood::config::Config::load_or_default(dir);
+        let (eval_gate_applicability, evaluator_threshold, flip_gate_policy, flip_threshold) =
+            configured_gate_info(&config);
         return CoordinatorInfo {
             max_agents: coord.max_agents,
             executor,
@@ -347,6 +384,10 @@ fn gather_coordinator_info(dir: &Path) -> CoordinatorInfo {
             reasoning,
             worker_reasoning,
             agency_reasoning,
+            eval_gate_applicability,
+            evaluator_threshold,
+            flip_gate_policy,
+            flip_threshold,
             poll_interval: coord.poll_interval,
         };
     }
@@ -365,6 +406,8 @@ fn gather_coordinator_info(dir: &Path) -> CoordinatorInfo {
     let agency = config
         .resolve_pi_route_for_role(worksgood::config::DispatchRole::Evaluator)
         .ok();
+    let (eval_gate_applicability, evaluator_threshold, flip_gate_policy, flip_threshold) =
+        configured_gate_info(&config);
     CoordinatorInfo {
         max_agents: config.coordinator.max_agents,
         executor: if default.is_some() {
@@ -377,6 +420,10 @@ fn gather_coordinator_info(dir: &Path) -> CoordinatorInfo {
         reasoning: default.as_ref().map(|route| route.reasoning.to_string()),
         worker_reasoning: worker.map(|route| route.reasoning.to_string()),
         agency_reasoning: agency.map(|route| route.reasoning.to_string()),
+        eval_gate_applicability,
+        evaluator_threshold,
+        flip_gate_policy,
+        flip_threshold,
         poll_interval: config.coordinator.poll_interval,
     }
 }
@@ -429,12 +476,19 @@ fn gather_task_summary(dir: &Path, show_all: bool) -> Result<TaskSummaryInfo> {
             evaluation_active: 0,
             evaluation_repairable: 0,
             evaluation_operator_required: 0,
+            historical_gate_audit_alerts: 0,
             evaluation_migration_required: 0,
             evaluation_migrated_rearmed: 0,
         });
     }
 
     let graph = load_graph(&path).context("Failed to load graph")?;
+    let config = worksgood::config::Config::load_or_default(dir);
+    let durable_verdicts = worksgood::eval_lifecycle::load_durable_verdicts(dir);
+    let durable_error = durable_verdicts
+        .as_ref()
+        .err()
+        .map(|error| format!("{error:#}"));
     let ready_tasks_list = ready_tasks(&graph);
     let ready_ids: std::collections::HashSet<&str> =
         ready_tasks_list.iter().map(|t| t.id.as_str()).collect();
@@ -449,6 +503,7 @@ fn gather_task_summary(dir: &Path, show_all: bool) -> Result<TaskSummaryInfo> {
     let mut evaluation_active = 0;
     let mut evaluation_repairable = 0;
     let mut evaluation_operator_required = 0;
+    let mut historical_gate_audit_alerts = 0;
     let mut evaluation_migration_required = 0;
     let mut evaluation_migrated_rearmed = 0;
 
@@ -461,6 +516,22 @@ fn gather_task_summary(dir: &Path, show_all: bool) -> Result<TaskSummaryInfo> {
     for task in graph.tasks() {
         if !show_all && task.id.starts_with('.') {
             continue;
+        }
+        if worksgood::eval_lifecycle::evaluation_gate_diagnostics(
+            task,
+            match durable_verdicts.as_ref() {
+                Ok(verdicts) => Ok(verdicts.as_slice()),
+                Err(_) => Err(durable_error
+                    .as_deref()
+                    .unwrap_or("unknown durable-evidence error")),
+            },
+            config.agency.eval_gate_threshold,
+            config.agency.flip_verification_threshold,
+        )
+        .is_some_and(|diagnostic| {
+            diagnostic.audit_alert && diagnostic.applicability == "historical-unclassified"
+        }) {
+            historical_gate_audit_alerts += 1;
         }
         match task.status {
             Status::Open => {
@@ -551,6 +622,7 @@ fn gather_task_summary(dir: &Path, show_all: bool) -> Result<TaskSummaryInfo> {
         evaluation_active,
         evaluation_repairable,
         evaluation_operator_required,
+        historical_gate_audit_alerts,
         evaluation_migration_required,
         evaluation_migrated_rearmed,
     })
@@ -812,6 +884,19 @@ fn print_status(status: &StatusOutput) {
             .unwrap_or("omit"),
         status.coordinator.poll_interval
     );
+    println!(
+        "Evaluation gate: applicability={}, evaluator-threshold={}, FLIP-policy={}, FLIP-threshold={} (attempt-pinned once visible)",
+        status.coordinator.eval_gate_applicability,
+        status
+            .coordinator
+            .evaluator_threshold
+            .map_or_else(|| "n/a".to_string(), |value| format!("{value:.2}")),
+        status.coordinator.flip_gate_policy,
+        status
+            .coordinator
+            .flip_threshold
+            .map_or_else(|| "n/a".to_string(), |value| format!("{value:.2}")),
+    );
 
     // Line 4+: Agent summary
     println!();
@@ -881,12 +966,18 @@ fn print_status(status: &StatusOutput) {
         + status.tasks.evaluation_migrated_rearmed;
     if evaluation_total > 0 {
         println!(
-            "Evaluation: {} active, {} repairable pipeline drift, {} migration-required, {} migrated/rearmed, {} operator-required ambiguity",
+            "Evaluation: {} active required gates, {} repairable pipeline drift, {} migration-required, {} migrated/rearmed, {} operator-required ambiguity",
             status.tasks.evaluation_active,
             status.tasks.evaluation_repairable,
             status.tasks.evaluation_migration_required,
             status.tasks.evaluation_migrated_rearmed,
             status.tasks.evaluation_operator_required
+        );
+    }
+    if status.tasks.historical_gate_audit_alerts > 0 {
+        println!(
+            "Evaluation audit: \x1b[31m{} immutable historical below-threshold/ambiguous outcome(s)\x1b[0m — inspect with `wg show <task>`",
+            status.tasks.historical_gate_audit_alerts
         );
     }
 

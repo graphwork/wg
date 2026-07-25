@@ -27,10 +27,16 @@ pub fn run(dir: &Path, id: &str) -> Result<()> {
             }
         };
 
-        if !matches!(task.status, Status::PendingValidation | Status::PendingEval) {
+        if task.status == Status::PendingEval {
             error = Some(anyhow::anyhow!(
-                "Task '{}' is not awaiting approval (status: {:?}). Only pending-validation \
-                 and pending-eval tasks can be approved.",
+                "Task '{}' is under a required evaluation gate. `wg approve` cannot bypass exact attempt-bound verdict thresholds; wait for reconciliation or use `wg retry`.",
+                id
+            ));
+            return false;
+        }
+        if task.status != Status::PendingValidation {
+            error = Some(anyhow::anyhow!(
+                "Task '{}' is not awaiting approval (status: {:?}). Only pending-validation tasks can be approved.",
                 id,
                 task.status
             ));
@@ -62,7 +68,7 @@ pub fn run(dir: &Path, id: &str) -> Result<()> {
         "approve",
         Some(id),
         std::env::var("WG_AGENT_ID").ok().as_deref(),
-        serde_json::json!({ "prev_status": "PendingValidation/PendingEval" }),
+        serde_json::json!({ "prev_status": "PendingValidation" }),
         config.log.rotation_threshold,
     );
 
@@ -146,7 +152,7 @@ mod tests {
     }
 
     #[test]
-    fn test_approve_pending_eval_transitions_to_done() {
+    fn test_approve_pending_eval_cannot_bypass_required_gate() {
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
         setup_workgraph(
@@ -155,12 +161,13 @@ mod tests {
         );
 
         let result = run(dir_path, "t1");
-        assert!(result.is_ok(), "approve should accept PendingEval");
+        assert!(result.is_err(), "approve must not bypass PendingEval");
+        assert!(result.unwrap_err().to_string().contains("cannot bypass"));
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
         let task = graph.get_task("t1").unwrap();
-        assert_eq!(task.status, Status::Done);
+        assert_eq!(task.status, Status::PendingEval);
     }
 
     #[test]

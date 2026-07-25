@@ -63,15 +63,17 @@ pub const HEARTBEAT_LIVENESS_TIMEOUT_SECS: u64 = 300;
 /// Determine whether a task's worktree is safe to reap under the retention policy.
 ///
 /// A worktree is **only** safe to reap when BOTH:
-/// 1. The task's evaluation passed — `task.status == Done` AND an explicit
-///    `.evaluate-<task_id>` task exists and is also `Done`.
+/// 1. The source completion contract resolved — `task.status == Done` AND an
+///    explicit `.evaluate-<task_id>` execution task exists and is also `Done`.
+///    The satellite's `Done` means execution completed, not quality passed;
+///    hard-gate quality provenance lives on the source lifecycle.
 /// 2. The branch has been merged into `main` (or `master`) — i.e., the branch
 ///    tip is reachable from the main branch, so all commits are permanently
 ///    captured.
 ///
-/// Either condition alone is insufficient: eval-pass-only means the work hasn't
-/// landed in main and the agent might still need to handle merge conflicts;
-/// merge-only means the eval might still be failing and the work is unverified.
+/// Either condition alone is insufficient: completed evaluation execution alone
+/// means the work has not landed in main; merge-only means the configured source
+/// completion contract may still be unresolved.
 ///
 /// Returns `false` (do NOT reap) when any signal is missing — including unknown
 /// task IDs, missing graph entries, unfindable branches, or unreachable git.
@@ -100,8 +102,8 @@ pub fn is_safe_to_reap(
     }
     let eval_id = format!(".evaluate-{}", task_id);
     let Some(eval) = graph.get_task(&eval_id) else {
-        // Missing evaluation evidence is not a pass. Retain the source until
-        // the graph contains an affirmative completed evaluator record.
+        // Missing evaluation execution evidence is not a resolved lifecycle.
+        // Retain the source until the graph contains a completed evaluator job.
         return false;
     };
     if eval.status != worksgood::graph::Status::Done {
@@ -3067,7 +3069,7 @@ mod tests {
         let wg_dir = project.join(".wg");
         fs::create_dir_all(wg_dir.join("service")).unwrap();
 
-        // Agent completed successfully AND eval passed AND branch merged into main.
+        // Source contract resolved, evaluator execution completed, and branch merged into main.
         // Only this combination is safe to reap under the retention policy.
         let (wt_path, branch) = create_test_worktree(&project, "agent-ok", "task-ok");
         fs::write(wt_path.join(CLEANUP_PENDING_MARKER), "").unwrap();
@@ -3269,7 +3271,7 @@ mod tests {
         let wg_dir = project.join(".wg");
         fs::create_dir_all(wg_dir.join("service")).unwrap();
 
-        // Same as above but task is Done with eval pass + merged branch —
+        // Same as above but source/evaluator lifecycle resolved + merged branch —
         // now it's safe to remove.
         let (wt_path, branch) = create_test_worktree(&project, "agent-orph2", "task-orph2");
         fs::write(wt_path.join(CLEANUP_PENDING_MARKER), "").unwrap();

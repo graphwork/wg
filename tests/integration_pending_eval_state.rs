@@ -85,11 +85,13 @@ fn test_wg_done_transitions_to_pending_eval() {
     // Source task is in-progress; .evaluate-A is scheduled (Open) waiting on A.
     let mut a = make_task("a", Status::InProgress);
     a.assigned = Some("test-agent".to_string());
+    a.description = Some("## Deliverables\n- artifact.txt\n".to_string());
     let mut eval_a = make_task(".evaluate-a", Status::Open);
     eval_a.after = vec!["a".to_string()];
     eval_a.tags = vec!["evaluation".to_string()];
 
     let wg_dir = setup_workgraph(&tmp, vec![a, eval_a]);
+    std::fs::write(tmp.path().join("artifact.txt"), "present\n").unwrap();
 
     let out = wg_cmd(
         &wg_dir,
@@ -114,6 +116,48 @@ fn test_wg_done_transitions_to_pending_eval() {
     // Eval status remains Open (it hasn't run yet).
     let eval = graph.get_task(".evaluate-a").unwrap();
     assert_eq!(eval.status, Status::Open);
+}
+
+#[test]
+fn advisory_evaluator_is_structurally_done_not_pending_eval() {
+    let tmp = TempDir::new().unwrap();
+    let mut source = make_task("advisory", Status::InProgress);
+    source.assigned = Some("test-agent".to_string());
+    source.description = Some("## Validation\n- write a report\n".to_string());
+    let mut evaluator = make_task(".evaluate-advisory", Status::Open);
+    evaluator.after = vec!["advisory".to_string()];
+    let wg_dir = setup_workgraph(&tmp, vec![source, evaluator]);
+
+    let out = wg_cmd(
+        &wg_dir,
+        &[
+            "done",
+            "advisory",
+            "--ignore-unmerged-worktree",
+            "--skip-smoke",
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("advisory only"),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
+    let source = graph.get_task("advisory").unwrap();
+    assert_eq!(source.status, Status::Done);
+    assert_eq!(
+        source
+            .evaluation_lifecycle
+            .as_ref()
+            .and_then(|lifecycle| lifecycle.gate_policy.as_ref())
+            .map(|policy| policy.applicability),
+        Some(worksgood::eval_lifecycle::EvaluationGateApplicability::Advisory)
+    );
 }
 
 #[test]

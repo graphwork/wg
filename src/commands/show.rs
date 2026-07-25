@@ -168,6 +168,10 @@ struct TaskDetails {
     evaluations: Vec<EvalSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
     evaluation_health: Option<worksgood::eval_lifecycle::EvaluationHealth>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    evaluation_gate: Option<worksgood::eval_lifecycle::EvaluationGateDiagnostics>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    evaluation_job_note: Option<String>,
     /// Snapshot of the task's worktree (when one exists). Populated for
     /// retried tasks so the user can inspect prior WIP before deciding to
     /// resume in-place vs `wg retry --fresh`.
@@ -618,6 +622,31 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         }
     };
 
+    let config = Config::load_or_default(dir);
+    let durable_verdicts = worksgood::eval_lifecycle::load_durable_verdicts(dir);
+    let durable_error = durable_verdicts
+        .as_ref()
+        .err()
+        .map(|error| format!("{error:#}"));
+    let evaluation_gate = worksgood::eval_lifecycle::evaluation_gate_diagnostics(
+        task,
+        match durable_verdicts.as_ref() {
+            Ok(verdicts) => Ok(verdicts.as_slice()),
+            Err(_) => Err(durable_error
+                .as_deref()
+                .unwrap_or("unknown durable-evidence error")),
+        },
+        config.agency.eval_gate_threshold,
+        config.agency.flip_verification_threshold,
+    );
+    let evaluation_job_note =
+        (task.id.starts_with(".evaluate-") || task.id.starts_with(".flip-")).then(|| {
+            format!(
+                "evaluation job execution status={}; this is not a source quality pass — only exact attempt-bound source verdicts decide the source gate",
+                task.status
+            )
+        });
+
     let details = TaskDetails {
         id: task.id.clone(),
         title: task.title.clone(),
@@ -688,6 +717,8 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         meta_eval_attempts: task.meta_eval_attempts,
         evaluations,
         evaluation_health: worksgood::eval_lifecycle::evaluation_health(&graph, id),
+        evaluation_gate,
+        evaluation_job_note,
         worktree_state: gather_worktree_state(dir, id),
         cron: gather_cron_diagnostics(&task),
     };
@@ -852,6 +883,50 @@ fn print_human_readable(details: &TaskDetails) {
                         .unwrap_or(stderr);
                     println!("  Last error: {}", stderr.trim());
                 }
+            }
+        }
+    }
+
+    if let Some(note) = details.evaluation_job_note.as_ref() {
+        println!();
+        println!("Evaluation Job:");
+        println!("  {}", note);
+    }
+    if let Some(gate) = details.evaluation_gate.as_ref() {
+        println!();
+        println!("Evaluation Gate:");
+        println!("  Applicability: {}", gate.applicability);
+        println!(
+            "  Evaluator threshold: {}",
+            gate.evaluator_threshold.map_or_else(
+                || "n/a (advisory)".to_string(),
+                |value| format!("{value:.2}")
+            )
+        );
+        println!("  FLIP policy: {}", gate.flip_policy);
+        println!(
+            "  FLIP threshold: {}",
+            gate.flip_threshold
+                .map_or_else(|| "n/a".to_string(), |value| format!("{value:.2}"))
+        );
+        println!(
+            "  Pipeline: {} (source attempt {})",
+            gate.pipeline_id, gate.source_attempt
+        );
+        if let Some(outcome) = gate.outcome_provenance.as_ref() {
+            println!("  Outcome: {:?}", outcome.outcome);
+            println!("  Provenance: {}", outcome.summary);
+        } else {
+            println!("  Outcome: historical-unclassified");
+        }
+        if let Some(audit) = gate.audit.as_ref() {
+            println!(
+                "  Audit: {}{}",
+                if gate.audit_alert { "\x1b[31m" } else { "" },
+                audit
+            );
+            if gate.audit_alert {
+                print!("\x1b[0m");
             }
         }
     }
@@ -1660,6 +1735,8 @@ mod tests {
             meta_eval_attempts: 0,
             evaluations: vec![],
             evaluation_health: None,
+            evaluation_gate: None,
+            evaluation_job_note: None,
             worktree_state: None,
             cron: None,
         };

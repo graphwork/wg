@@ -213,6 +213,8 @@ fn test_retry_after_failure_with_eval_task() {
             "false",
             "--flip-enabled",
             "false",
+            "--eval-gate-all",
+            "true",
         ],
     );
 
