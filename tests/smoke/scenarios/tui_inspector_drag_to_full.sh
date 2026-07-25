@@ -28,8 +28,9 @@ mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$WG_GLOBAL_DIR" "$scratch/project"
 G="$scratch/project/.wg"
 "$WG_BIN" --dir "$G" init --no-agency >/dev/null
 cat >"$G/config.toml" <<'TOML'
-[dispatcher]
-model = "claude:opus"
+[models.default]
+model = "pi:openai-codex:gpt-5.6-sol"
+reasoning = "high"
 TOML
 
 ptydump="$scratch/ptydump"
@@ -49,7 +50,7 @@ add_cleanup_hook cleanup_session
 
 start_tui() {
     tmux new-session -d -s "$session" -x 120 -y 32 \
-        "cd '$scratch/project' && env HOME='$HOME' XDG_CONFIG_HOME='$XDG_CONFIG_HOME' WG_GLOBAL_DIR='$WG_GLOBAL_DIR' WG_PTY_DUMP='$ptydump' '$WG_BIN' --dir '$G' tui"
+        "cd '$scratch/project' && env HOME='$HOME' XDG_CONFIG_HOME='$XDG_CONFIG_HOME' WG_GLOBAL_DIR='$WG_GLOBAL_DIR' WG_PTY_DUMP='$ptydump' TERMUX_VERSION=0.119 MOSH_CONNECTION='smoke 0 0' MOSH_SERVER_PID=4242 '$WG_BIN' --dir '$G' tui"
     tmux resize-window -t "$session" -x 120 -y 32
     tmux set-option -t "$session" mouse on
 }
@@ -107,14 +108,23 @@ raise SystemExit(1)
 ' "$label"
 }
 assert_full_chrome() {
-    local identity=$1 screen count
+    local identity=$1 dock=$2 screen count
     screen=$(capture)
     count=$(grep -oF "Split" <<<"$screen" | wc -l | tr -d ' ')
-    [[ "$count" == 1 ]] || loud_fail "Full must expose exactly one visible contextual restore handle, got $count: $screen"
+    [[ "$count" == 1 ]] || loud_fail "Full must expose exactly one contextual Split fallback, got $count: $screen"
     grep -Fq "$identity" <<<"$screen" || loud_fail "Full lost exact inspector identity $identity: $screen"
     grep -Fq '↯  ⌁  ⌂' <<<"$screen" || loud_fail "Full lost the one contextual navigation row: $screen"
-    # With graph width zero there is no live seam and no outer frame/strip.
-    ! grep -qF '│' <<<"$screen" || loud_fail "Full retained a vertical seam/frame: $screen"
+    case "$dock" in
+      right)
+        python3 -c 'import sys; r=sys.stdin.read().splitlines(); assert len(r)>=20 and all((x+" ")[0]=="│" for x in r), "Full Right lacks one complete visible left boundary"' <<<"$screen" \
+          || loud_fail "Full Right boundary is not completely painted: $screen"
+        ;;
+      bottom)
+        python3 -c 'import sys; r=sys.stdin.read().splitlines(); assert r and len(r[0])>=20 and set(r[0])=={"─"}, "Full Bottom lacks one complete visible top boundary"' <<<"$screen" \
+          || loud_fail "Full Bottom boundary is not completely painted: $screen"
+        ;;
+      *) loud_fail "unsupported Full chrome assertion dock=$dock" ;;
+    esac
     ! grep -qE '^[[:space:]]*[┌┐└┘]' <<<"$screen" || loud_fail "Full retained outer frame corners: $screen"
 }
 context_control_coord() {
@@ -171,7 +181,7 @@ wait_layout mode full
 [[ $(layout_field dock) == right ]] || loud_fail "side drag changed desired dock"
 [[ $(layout_field size_percent) == 90 ]] || loud_fail "Full did not retain bounded 90% split"
 wait_screen ".chat-0" "Chat context vanished in Full"
-assert_full_chrome ".chat-0"
+assert_full_chrome ".chat-0" right
 read -r full_pty_w full_pty_h <<<"$(tmux display-message -p -t "$inner" '#{pane_width} #{pane_height}')"
 (( full_pty_w >= 110 && full_pty_h >= 20 )) \
     || loud_fail "Full Chat did not receive fullscreen PTY dimensions ($full_pty_w x $full_pty_h)"
@@ -179,34 +189,76 @@ if grep -aFq $'\033[<' "$ptydump".env.*.in.bin 2>/dev/null; then
     loud_fail "mouse drag leaked an SGR sequence into Chat PTY"
 fi
 
-# The visible Full Workspace glyph is a one-tap atomic escape: Graph becomes
-# visible and the exact desired Right/90 split survives. No keyboard recovery.
-sgr 0 8 1 M
-sgr 0 8 1 m
+# Regression gesture: derive the literal visible left Full boundary from the
+# candidate's rendered cells, press it in Chat body (not the contextual row),
+# and drag right. Graph must reveal continuously into bounded Right Split.
+full_boundary_x=$(vertical_seam_x) || loud_fail "could not locate visible Full left boundary"
+sgr 0 "$full_boundary_x" 12 M
+sgr 32 $((full_boundary_x + 24)) 12 M
+sgr 0 $((full_boundary_x + 24)) 12 m
 wait_layout mode split
 wait_layout dock right
-[[ $(layout_field size_percent) == 90 ]] || loud_fail "Workspace pointer escape lost exact remembered ratio"
+right_boundary_pct=$(layout_field size_percent)
+(( right_boundary_pct < 90 && right_boundary_pct >= 10 )) \
+    || loud_fail "literal Right Full boundary drag did not resize: $right_boundary_pct"
 
-# Return to the exact Chat surface, enter Full again, and reverse-drag the
-# visible contextual handle rightward. The handle — not an invisible edge —
-# restores and resizes the remembered split.
+# The visible Full Workspace glyph remains a one-tap fallback and preserves the
+# exact desired Right ratio. It is no longer the only pointer escape.
+open_layout; tmux send-keys -t "$session" f Enter
+wait_layout mode full
+wait_screen "↔ Split" "Full fallback row did not settle before Workspace tap"
+read -r workspace_x workspace_y < <(context_control_coord ".chat-0" "⌂") \
+    || loud_fail "Full Workspace fallback is not visible"
+sgr 0 "$workspace_x" "$workspace_y" M
+sgr 0 "$workspace_x" "$workspace_y" m
+wait_layout mode split
+wait_layout dock right
+[[ $(layout_field size_percent) == "$right_boundary_pct" ]] \
+    || loud_fail "Workspace pointer escape lost exact remembered ratio"
+
+# Auto-wide resolves physically to Right while retaining Auto as desired state;
+# its same rendered left boundary uses the same natural rightward inverse drag.
 tmux send-keys -t "$session" 0
 wait_screen ".chat-0" "Chat did not return after Workspace pointer escape"
-# Workspace escape deliberately left host focus on Graph, so plain p (not a
-# second Ctrl+O toggle back into the child) opens the layout row.
+# Workspace left command mode armed on Graph; selecting Chat consumes the
+# destination key but retains command routing, so plain p opens Layout.
 tmux send-keys -t "$session" p
-wait_screen "h:Left" "layout command did not open from restored Graph"
-tmux send-keys -t "$session" f Enter
+wait_screen "h:Left" "layout command did not open from Workspace-restored Graph"
+tmux send-keys -t "$session" a f Enter
 wait_layout mode full
+wait_layout dock auto
+assert_full_chrome ".chat-0" right
+full_boundary_x=$(vertical_seam_x) || loud_fail "Auto-wide Full left boundary missing"
+sgr 0 "$full_boundary_x" 14 M
+sgr 32 $((full_boundary_x + 16)) 14 M
+sgr 0 $((full_boundary_x + 16)) 14 m
+wait_layout mode split
+wait_layout dock auto
+auto_pct=$(layout_field size_percent)
+(( auto_pct < right_boundary_pct && auto_pct >= 10 )) \
+    || loud_fail "Auto-wide boundary drag did not naturally shrink: $auto_pct"
+
+# Contextual ↔ Split remains a fallback: return to explicit Right Full and drag
+# that visible handle. The body-boundary flow above does not depend on it.
+open_layout; tmux send-keys -t "$session" l f Enter
+wait_layout mode full
+wait_layout dock right
 wait_screen "↔ Split" "side Full restore handle is not visible"
-sgr 0 12 1 M
-sgr 32 32 1 M
-sgr 0 32 1 m
+read -r split_x split_y < <(context_control_coord ".chat-0" "↔ Split") \
+    || loud_fail "could not locate contextual Split fallback"
+sgr 0 "$split_x" "$split_y" M
+sgr 32 $((split_x + 12)) "$split_y" M
+sgr 0 $((split_x + 12)) "$split_y" m
 wait_layout mode split
 wait_layout dock right
 side_pct=$(layout_field size_percent)
-(( side_pct < 90 && side_pct >= 10 )) || loud_fail "visible side reverse drag did not resize: $side_pct"
-read -r side_pty_w side_pty_h <<<"$(tmux display-message -p -t "$inner" '#{pane_width} #{pane_height}')"
+(( side_pct < auto_pct && side_pct >= 10 )) || loud_fail "visible side fallback drag did not resize: $side_pct"
+side_pty_w=0 side_pty_h=0
+for _ in $(seq 1 100); do
+    read -r side_pty_w side_pty_h <<<"$(tmux display-message -p -t "$inner" '#{pane_width} #{pane_height}')"
+    (( side_pty_w >= 20 && side_pty_w < full_pty_w && side_pty_h >= 20 )) && break
+    sleep 0.03
+done
 (( side_pty_w >= 20 && side_pty_w < full_pty_w && side_pty_h >= 20 )) \
     || loud_fail "side restore did not resize Chat PTY from Full ($full_pty_w x $full_pty_h → $side_pty_w x $side_pty_h)"
 
@@ -223,14 +275,46 @@ assert b'\x1b[<' not in payload, payload
 PY
 [[ $(tmux display-message -p -t "$inner" '#{pane_pid}') == "$chat_pid" ]] || loud_fail "side Full/restore respawned Chat"
 
-# Exercise Detail and a stacked Bottom seam. Pointer-down uses the graph row
-# immediately above the contextual seam because visible contextual controls win
-# on the seam row itself.
+# The literal visible left boundary is equally authoritative over Detail.
 tmux send-keys -t "$session" C-o
 sleep 0.05
 tmux send-keys -t "$session" 1
 wait_screen "$task_context" "Detail context did not render"
 wait_screen "drag-detail-exact-id" "Detail identity changed"
+open_layout; tmux send-keys -t "$session" l f Enter
+wait_layout mode full
+assert_full_chrome "drag-detail-exact-id" right
+full_boundary_x=$(vertical_seam_x) || loud_fail "Full Detail left boundary missing"
+sgr 0 "$full_boundary_x" 16 M
+sgr 32 $((full_boundary_x + 14)) 16 M
+sgr 0 $((full_boundary_x + 14)) 16 m
+wait_layout mode split
+wait_layout dock right
+
+# Re-enter Right Full, directly switch Detail→Log, and perform the exact body
+# boundary gesture there too. Neither direct control nor boundary may fall into
+# log content or select the hidden Graph.
+open_layout; tmux send-keys -t "$session" f Enter
+wait_layout mode full
+read -r log_x log_y < <(context_control_coord "drag-detail-exact-id" " Log ") \
+    || loud_fail "Full Right Detail row has no direct Log control"
+sgr 0 "$log_x" "$log_y" M
+sgr 0 "$log_x" "$log_y" m
+wait_screen "view=[Events]" "direct Detail→Log did not open before boundary test"
+assert_full_chrome "drag-detail-exact-id" right
+full_boundary_x=$(vertical_seam_x) || loud_fail "Full Log left boundary missing"
+sgr 0 "$full_boundary_x" 18 M
+sgr 32 $((full_boundary_x + 10)) 18 M
+sgr 0 $((full_boundary_x + 10)) 18 m
+wait_layout mode split
+wait_layout dock right
+
+# Exercise the natural stacked Bottom seam next. Pointer-down uses the graph
+# row immediately above the contextual seam while entering Full.
+tmux send-keys -t "$session" C-o
+sleep 0.05
+tmux send-keys -t "$session" 1
+wait_screen "drag-detail-exact-id" "Detail did not return after Full Log boundary"
 open_layout
 tmux send-keys -t "$session" j
 # Normalize this independent Bottom case to the largest bounded split before
@@ -251,7 +335,7 @@ wait_layout mode full
 [[ $(layout_field dock) == bottom ]] || loud_fail "stacked drag changed desired dock"
 [[ $(layout_field size_percent) == 90 ]] || loud_fail "stacked Full lost bounded split"
 wait_screen "drag-detail-exact-id" "Detail context vanished in Full"
-assert_full_chrome "drag-detail-exact-id"
+assert_full_chrome "drag-detail-exact-id" bottom
 wait_screen "↕ Split" "stacked Full restore handle is not visible"
 
 # Detail → current-attempt Log → the same Detail is a direct one-tap local
@@ -268,8 +352,8 @@ sgr 0 "$detail_x" "$detail_y" m
 wait_screen_absent "view=[Events]" "direct Log→Detail did not return to Detail"
 wait_screen "drag-detail-exact-id" "direct Log→Detail changed task identity"
 
-# Reverse-drag the visible vertical handle down from Full; Bottom stays the
-# intended dock and a bounded graph split becomes visible again.
+# Reverse-drag the literal visible top boundary down from Full; Bottom stays
+# the intended dock and a bounded graph split becomes visible again.
 sgr 0 12 1 M
 sgr 32 12 9 M
 sgr 0 12 9 m
@@ -291,12 +375,12 @@ start_tui
 wait_layout mode full
 wait_screen ".chat-0" "restarted TUI did not reload the full inspector"
 [[ $(tmux display-message -p -t "$inner" '#{pane_pid}') == "$chat_pid" ]] || loud_fail "TUI restart respawned persistent Chat"
-assert_full_chrome ".chat-0"
+assert_full_chrome ".chat-0" bottom
 read -r restart_full_pty_w restart_full_pty_h <<<"$(tmux display-message -p -t "$inner" '#{pane_width} #{pane_height}')"
 (( restart_full_pty_w >= 110 && restart_full_pty_h >= 20 )) \
     || loud_fail "restarted Full Chat has unusable PTY dimensions ($restart_full_pty_w x $restart_full_pty_h)"
 
-# Tap (no drag) the visible vertical handle after restart. It restores the
+# Tap (no drag) the visible top boundary after restart. It restores the
 # exact remembered Bottom split, then a real seam drag is resized mid-gesture.
 sgr 0 12 1 M
 sgr 0 12 1 m
@@ -323,9 +407,25 @@ sleep 0.15
 [[ $(layout_field mode) == split ]] || loud_fail "stale post-resize drag snapped layout"
 [[ $(layout_field dock) == bottom ]] || loud_fail "stale post-resize drag changed dock"
 [[ $(layout_field size_percent) == "$stacked_pct" ]] || loud_fail "stale post-resize drag changed ratio"
+
+# At the resized Termux+mosh geometry, Auto resolves to stacked Bottom. Press
+# the rendered top boundary and drag down to prove the natural mobile inverse.
+open_layout; tmux send-keys -t "$session" a f Enter
+wait_layout mode full
+wait_layout dock auto
+assert_full_chrome ".chat-0" bottom
+sgr 0 50 1 M
+sgr 32 50 7 M
+sgr 0 50 7 m
+wait_layout mode split
+wait_layout dock auto
+auto_narrow_pct=$(layout_field size_percent)
+(( auto_narrow_pct < stacked_pct && auto_narrow_pct >= 10 )) \
+    || loud_fail "Auto narrow/Termux boundary drag did not shrink naturally: $auto_narrow_pct"
+
 if grep -aFq $'\033[<' "$ptydump".env.*.in.bin 2>/dev/null; then
     loud_fail "resize/drag leaked input to PTY"
 fi
 [[ $(tmux display-message -p -t "$inner" '#{pane_pid}') == "$chat_pid" ]] || loud_fail "resize respawned Chat"
 
-echo "PASS: real side+stacked Full exposes pointer Workspace/handle escape and direct Detail↔Log; restart, rotation, PTY identity/input confinement hold"
+echo "PASS: real Right/Auto-wide Chat, Detail, Log, stacked Bottom, and Auto-narrow Termux+mosh Full boundaries restore Graph; Workspace/Split fallbacks, restart, rotation, PTY identity/input confinement hold"

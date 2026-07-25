@@ -1765,6 +1765,10 @@ impl LayoutPreference {
 pub struct LayoutDragSnapshot {
     pub dock: InspectorDock,
     pub viewport: Rect,
+    /// Owner stamp for the graph plus authenticated service session that
+    /// emitted the pointer-down frame. A graph switch or disconnect retires
+    /// the capture instead of reusing its coordinates in another context.
+    pub owner_key: u64,
     pub start_column: u16,
     pub start_row: u16,
     pub start_percent: u16,
@@ -1776,10 +1780,6 @@ pub struct LayoutDragSnapshot {
     /// Full is latched once the gesture crosses its snap threshold. Pointer
     /// jitter after the live seam disappears cannot transition back to Split.
     pub snapped_full: bool,
-    /// The visible contextual-row handle starts at the top-left on every dock.
-    /// Its reverse gesture therefore shrinks on right/down motion rather than
-    /// pretending the pointer began on an invisible off-screen seam.
-    pub from_full_handle: bool,
 }
 
 /// One-row layout-control pages. The compact pager is intentionally plain-key
@@ -8967,8 +8967,12 @@ pub struct VizApp {
     pub last_split_percent: u16,
     /// Hit area for the minimized inspector strip (1-col, right edge, Off mode).
     pub last_minimized_strip_area: Rect,
-    /// Hit area for the full-screen restore strip (1-col, left edge, FullInspector mode).
+    /// Exact one-cell-thick, visibly painted graph-facing boundary in Full.
+    /// Unlike a grab zone this rectangle never extends into inspector content.
     pub last_fullscreen_restore_area: Rect,
+    /// Renderer bookkeeping for locally clearing the previous visible seam.
+    /// This survives immediate hit invalidation until the replacement frame.
+    pub last_painted_layout_seam_area: Rect,
     /// Hit area for the full-screen right border (1-col, right edge, FullInspector mode).
     pub last_fullscreen_right_border_area: Rect,
     /// Hit area for the full-screen top border (1-row, top edge, FullInspector mode).
@@ -10428,6 +10432,7 @@ impl VizApp {
             last_split_percent: 67,
             last_minimized_strip_area: Rect::default(),
             last_fullscreen_restore_area: Rect::default(),
+            last_painted_layout_seam_area: Rect::default(),
             last_fullscreen_right_border_area: Rect::default(),
             last_fullscreen_top_border_area: Rect::default(),
             last_fullscreen_bottom_border_area: Rect::default(),
@@ -16083,6 +16088,7 @@ impl VizApp {
             last_split_percent: 67,
             last_minimized_strip_area: Rect::default(),
             last_fullscreen_restore_area: Rect::default(),
+            last_painted_layout_seam_area: Rect::default(),
             last_fullscreen_right_border_area: Rect::default(),
             last_fullscreen_top_border_area: Rect::default(),
             last_fullscreen_bottom_border_area: Rect::default(),
@@ -16364,10 +16370,66 @@ impl VizApp {
         self.horizontal_divider_hover = false;
     }
 
+    /// Retire Full's visible boundary hit without forgetting which seam cells
+    /// the renderer must clear in its replacement frame.
+    pub fn invalidate_full_boundary_hit(&mut self) {
+        self.last_fullscreen_restore_area = Rect::default();
+        self.fullscreen_restore_hover = false;
+    }
+
+    /// One stable owner key for coordinate capture. Routine graph refreshes do
+    /// not change it; a graph switch or authenticated service connect/restart/
+    /// disconnect does.
+    pub fn layout_capture_owner_key(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.workgraph_dir.hash(&mut hasher);
+        if let Some(context) = self.service_health.authoritative.as_ref() {
+            context.owner.graph_digest.hash(&mut hasher);
+            context.owner.socket_path.hash(&mut hasher);
+            context.owner.pid.hash(&mut hasher);
+            context.owner.pid_start_identity.hash(&mut hasher);
+            context.owner.build_id.hash(&mut hasher);
+        }
+        hasher.finish()
+    }
+
+    /// Drop pointer ownership without applying or undoing layout state. This
+    /// is used when an external dock/mode/graph/service transition supersedes
+    /// the gesture's owner.
+    pub fn release_layout_drag_capture(&mut self) {
+        self.layout_drag = None;
+        if matches!(
+            self.scrollbar_drag,
+            Some(ScrollbarDragTarget::Divider) | Some(ScrollbarDragTarget::HorizontalDivider)
+        ) {
+            self.scrollbar_drag = None;
+        }
+    }
+
+    /// Whether the active coordinate capture still belongs to the current
+    /// graph/service, desired dock/mode, and resolved physical edge.
+    pub fn layout_drag_owner_is_current(&self) -> bool {
+        let Some(snapshot) = self.layout_drag else {
+            return true;
+        };
+        let expected_mode = if snapshot.snapped_full {
+            InspectorMode::Full
+        } else {
+            InspectorMode::Split
+        };
+        snapshot.owner_key == self.layout_capture_owner_key()
+            && snapshot.original.dock == self.layout_preference.dock
+            && self.layout_preference.mode == expected_mode
+            && snapshot.dock == self.effective_inspector_dock
+    }
+
     /// Apply desired state to the legacy presentation fields used by existing
     /// panel code. The bounded split ratio is retained across Full/Hidden.
     pub fn set_layout_preference(&mut self, preference: LayoutPreference) {
         self.invalidate_split_seam_hits();
+        self.invalidate_full_boundary_hit();
         self.compact_navigation_override = None;
         self.layout_preference = preference.bounded();
         self.right_panel_percent = self.layout_preference.size_percent;

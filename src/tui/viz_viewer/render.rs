@@ -103,12 +103,41 @@ fn split_areas(area: Rect, dock: InspectorDock, percent: u16) -> Option<(Rect, R
     }
 }
 
+/// Reserve exactly the one graph-facing boundary that remains visible when
+/// Full hides the Graph. This is not a four-sided frame: inspector content
+/// stays borderless and only the physical edge from which Graph returns is
+/// painted and pointer-active.
+fn full_inspector_areas(area: Rect, dock: InspectorDock) -> (Rect, Rect) {
+    match dock {
+        InspectorDock::Left if area.width > 1 => (
+            Rect::new(area.x, area.y, area.width - 1, area.height),
+            Rect::new(area.right() - 1, area.y, 1, area.height),
+        ),
+        InspectorDock::Right if area.width > 1 => (
+            Rect::new(area.x + 1, area.y, area.width - 1, area.height),
+            Rect::new(area.x, area.y, 1, area.height),
+        ),
+        InspectorDock::Top if area.height > 1 => (
+            Rect::new(area.x, area.y, area.width, area.height - 1),
+            Rect::new(area.x, area.bottom() - 1, area.width, 1),
+        ),
+        InspectorDock::Bottom if area.height > 1 => (
+            Rect::new(area.x, area.y + 1, area.width, area.height - 1),
+            Rect::new(area.x, area.y, area.width, 1),
+        ),
+        // Auto is always resolved before geometry. Degenerate one-cell
+        // viewports retain content and expose no impossible boundary target.
+        _ => (area, Rect::default()),
+    }
+}
+
 /// Return the one renderer-owned cell row/column between two adjacent panes.
 ///
 /// Hit regions deliberately extend one cell into each pane, but the visible
 /// seam itself is always exactly one cell thick. Deriving it from the rendered
 /// rectangles keeps old-frame cleanup correct across every dock and responsive
 /// orientation without persisting terminal coordinates as user state.
+#[cfg(test)]
 fn split_seam_area(graph: Rect, panel: Rect) -> Rect {
     if graph.width == 0 || graph.height == 0 || panel.width == 0 || panel.height == 0 {
         return Rect::default();
@@ -214,8 +243,9 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
     // release the prior frame's one-cell seam before the new pane geometry
     // renders, so a moved/removed seam cannot survive in an otherwise-blank
     // Graph or inspector cell. This is intentionally bounded to the old seam.
-    let previous_seam = split_seam_area(app.last_graph_area, app.last_right_panel_area);
+    let previous_seam = app.last_painted_layout_seam_area;
     clear_split_seam(frame, previous_seam);
+    app.last_painted_layout_seam_area = Rect::default();
 
     // Clear expired jump targets (>2 seconds old).
     if let Some((_, when)) = app.jump_target.as_ref()
@@ -242,6 +272,7 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
     // effective dock is resolved so a resize can never leave a stale side seam
     // active while the phone is presenting a horizontal stacked seam.
     app.invalidate_split_seam_hits();
+    app.invalidate_full_boundary_hit();
     app.clear_coordinator_picker_hits();
     app.clear_symbolic_context_hits();
     app.log_header_hits.clear();
@@ -311,6 +342,14 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
     app.layout_viewport = main_area;
     app.update_responsive_breakpoint(area.width, main_area.height);
     let resolved_dock = app.resolved_inspector_dock(area.width);
+    // A dock/mode edit, graph switch, service disconnect/restart, or responsive
+    // physical-edge change supersedes capture. Preserve the newer state while
+    // dropping every coordinate owned by the retired frame.
+    if app.layout_drag.is_some() && !app.layout_drag_owner_is_current() {
+        app.release_layout_drag_capture();
+        app.invalidate_split_seam_hits();
+        app.invalidate_full_boundary_hit();
+    }
     // Compact is a temporary presentation fallback, never a rewrite of the
     // desired dock/ratio/mode. Extreme modes still choose their sole visible
     // pane; Split remembers the user's compact pane across phone rotations.
@@ -352,8 +391,8 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
                     app.last_graph_area = Rect::default();
                     app.scroll.viewport_height = 0;
                     app.scroll.viewport_width = 0;
-                    // Full is genuinely edge-to-edge. There is no invisible
-                    // restore strip, frame reservation, or dead mouse target.
+                    // Full's sole graph-facing seam is allocated after dock
+                    // resolution below; all other frame edges remain absent.
                     app.last_minimized_strip_area = Rect::default();
                     app.last_fullscreen_restore_area = Rect::default();
                     app.last_fullscreen_right_border_area = Rect::default();
@@ -424,8 +463,8 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
                     app.last_graph_area = Rect::default();
                     app.scroll.viewport_height = 0;
                     app.scroll.viewport_width = 0;
-                    // Full is genuinely edge-to-edge. There is no invisible
-                    // restore strip, frame reservation, or dead mouse target.
+                    // Full's sole graph-facing seam is allocated after dock
+                    // resolution below; all other frame edges remain absent.
                     app.last_minimized_strip_area = Rect::default();
                     app.last_fullscreen_restore_area = Rect::default();
                     app.last_fullscreen_right_border_area = Rect::default();
@@ -493,9 +532,22 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
         }
     }
 
-    // The minimal chrome has no restore strip or fullscreen edge hit targets.
-    // Hidden and full modes are genuinely edge-to-edge; layout preferences are
-    // restored through Ctrl+O → p instead of permanent border affordances.
+    // Full retains exactly one visibly painted graph-facing seam. Its hit
+    // rectangle is the painted cell row/column itself — never a wider magic
+    // strip — and the other three edges remain borderless.
+    let full_inspector_visible = app.layout_mode == LayoutMode::FullInspector
+        && !(app.responsive_breakpoint == ResponsiveBreakpoint::Compact
+            && compact_view == SinglePanelView::Graph);
+    if full_inspector_visible {
+        let (panel, seam) = full_inspector_areas(main_area, resolved_dock);
+        app.last_graph_area = Rect::default();
+        app.last_right_panel_area = panel;
+        app.last_fullscreen_restore_area = seam;
+        app.last_fullscreen_right_border_area = Rect::default();
+        app.last_fullscreen_top_border_area = Rect::default();
+        app.last_fullscreen_bottom_border_area = Rect::default();
+    }
+
     let graph_only = app.layout_mode == LayoutMode::Off
         || (app.responsive_breakpoint == ResponsiveBreakpoint::Compact
             && compact_view == SinglePanelView::Graph);
@@ -511,7 +563,7 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
         app.scroll.viewport_width = chunks[1].width as usize;
     }
     if app.layout_mode == LayoutMode::FullInspector {
-        app.last_fullscreen_restore_area = Rect::default();
+        // Legacy non-graph-facing Full frame edges stay retired.
         app.last_fullscreen_right_border_area = Rect::default();
         app.last_fullscreen_top_border_area = Rect::default();
         app.last_fullscreen_bottom_border_area = Rect::default();
@@ -552,7 +604,11 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
                     );
                 }
                 SinglePanelView::Detail => {
-                    draw_right_panel(frame, app, main_area);
+                    if app.layout_mode == LayoutMode::FullInspector {
+                        draw_full_right_panel(frame, app);
+                    } else {
+                        draw_right_panel(frame, app, main_area);
+                    }
                     app.last_graph_hscrollbar_area = Rect::default();
                 }
             }
@@ -561,7 +617,7 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
             // Narrow split mode.
             match app.layout_mode {
                 LayoutMode::FullInspector => {
-                    draw_right_panel(frame, app, main_area);
+                    draw_full_right_panel(frame, app);
                     app.last_graph_hscrollbar_area = Rect::default();
                 }
                 LayoutMode::Off => {
@@ -628,7 +684,7 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
             // Full layout: existing behavior.
             match app.layout_mode {
                 LayoutMode::FullInspector => {
-                    draw_right_panel(frame, app, main_area);
+                    draw_full_right_panel(frame, app);
                     app.last_graph_hscrollbar_area = Rect::default();
                 }
                 LayoutMode::Off => {
@@ -3531,6 +3587,29 @@ fn render_legacy_context_row(frame: &mut Frame, app: &mut VizApp, area: Rect, ch
     };
 }
 
+/// Draw Full's borderless inspector plus the sole graph-facing boundary. The
+/// seam is painted after content so every target cell is visibly authoritative
+/// in the same frame.
+fn draw_full_right_panel(frame: &mut Frame, app: &mut VizApp) {
+    let panel = app.last_right_panel_area;
+    let seam = app.last_fullscreen_restore_area;
+    draw_right_panel(frame, app, panel);
+    if seam.width == 0 || seam.height == 0 {
+        return;
+    }
+    let active = app.layout_drag.is_some();
+    let seam_style = Style::default()
+        .fg(if active || app.fullscreen_restore_hover {
+            Color::Cyan
+        } else {
+            Color::DarkGray
+        })
+        .bg(Color::Reset);
+    let glyph = if seam.width == 1 { '│' } else { '─' };
+    paint_split_seam(frame, seam, glyph, seam_style);
+    app.last_painted_layout_seam_area = seam;
+}
+
 /// Draw one contextual row, one optional split seam, and borderless content.
 fn draw_right_panel(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     app.last_right_panel_area = area;
@@ -3569,6 +3648,7 @@ fn draw_right_panel(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         );
         app.last_divider_area = Rect::default();
         paint_split_seam(frame, seam, '─', seam_style);
+        app.last_painted_layout_seam_area = seam;
         (seam, area)
     } else {
         if side_by_side {
@@ -3586,6 +3666,7 @@ fn draw_right_panel(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             );
             app.last_horizontal_divider_area = Rect::default();
             paint_split_seam(frame, seam, '│', seam_style);
+            app.last_painted_layout_seam_area = seam;
         } else {
             app.last_divider_area = Rect::default();
             app.last_horizontal_divider_area = Rect::default();
@@ -18535,7 +18616,7 @@ mod tests {
     }
 
     #[test]
-    fn fullscreen_chat_consumes_one_chrome_row_and_has_no_outer_frame() {
+    fn fullscreen_chat_has_one_context_row_one_visible_boundary_and_no_outer_frame() {
         use crate::tui::viz_viewer::state::{InspectorMode, LayoutPreference};
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
@@ -18546,26 +18627,23 @@ mod tests {
             ..LayoutPreference::default()
         });
 
-        // Compact, narrow-boundary, and wide buffers all derive the same
-        // borderless geometry: graph=zero, one contextual row, inspector gets
-        // every remaining cell. No width may grow a restore strip/frame.
+        // Compact/narrow Auto resolves to Bottom; wide Auto resolves to Right.
+        // Every buffer has one context row, one literal graph-facing boundary,
+        // and no other frame edge or invisible widened hit target.
         for width in [40, 80, 120, 200] {
             let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
             terminal.draw(|frame| draw(frame, &mut app)).unwrap();
             assert_eq!(app.last_graph_area, Rect::default(), "width={width}");
-            assert_eq!(
-                app.last_right_panel_area,
-                Rect::new(0, 0, width, 24),
-                "width={width}"
-            );
+            let (panel, seam) =
+                full_inspector_areas(Rect::new(0, 0, width, 24), app.effective_inspector_dock);
+            assert_eq!(app.last_right_panel_area, panel, "width={width}");
             assert_eq!(
                 app.last_tab_bar_area,
-                Rect::new(0, 0, width, 1),
-                "width={width}"
+                Rect::new(panel.x, panel.y, panel.width, 1)
             );
             assert_eq!(
                 app.last_right_content_area,
-                Rect::new(0, 1, width, 23),
+                Rect::new(panel.x, panel.y + 1, panel.width, panel.height - 1),
                 "width={width}"
             );
             assert_eq!(app.last_divider_area, Rect::default(), "width={width}");
@@ -18574,11 +18652,8 @@ mod tests {
                 Rect::default(),
                 "width={width}"
             );
-            assert_eq!(
-                app.last_fullscreen_restore_area,
-                Rect::default(),
-                "width={width}"
-            );
+            assert_eq!(app.last_fullscreen_restore_area, seam, "width={width}");
+            assert_eq!(app.last_painted_layout_seam_area, seam, "width={width}");
             assert_eq!(
                 app.last_fullscreen_right_border_area,
                 Rect::default(),
@@ -18594,15 +18669,36 @@ mod tests {
                 Rect::default(),
                 "width={width}"
             );
-            let top: String = (0..width)
-                .map(|x| terminal.backend().buffer().cell((x, 0)).unwrap().symbol())
+            let context: String = (panel.x..panel.right())
+                .map(|x| {
+                    terminal
+                        .backend()
+                        .buffer()
+                        .cell((x, panel.y))
+                        .unwrap()
+                        .symbol()
+                })
                 .collect();
-            assert!(top.contains('↯'), "width={width}: {top}");
-            assert!(top.contains('⊞'), "width={width}: {top}");
-            assert!(
-                !top.contains('┌') && !top.contains('┐') && !top.contains('│'),
-                "width={width}: {top}"
-            );
+            assert!(context.contains('↯'), "width={width}: {context}");
+            assert!(context.contains('⊞'), "width={width}: {context}");
+            let expected_glyph = if seam.width == 1 { "│" } else { "─" };
+            for y in seam.top()..seam.bottom() {
+                for x in seam.left()..seam.right() {
+                    assert_eq!(
+                        terminal.backend().buffer().cell((x, y)).unwrap().symbol(),
+                        expected_glyph,
+                        "width={width} seam cell ({x},{y})"
+                    );
+                }
+            }
+            let all: String = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect();
+            assert!(!all.contains('┌') && !all.contains('┐'), "width={width}");
         }
     }
 
@@ -18643,10 +18739,10 @@ mod tests {
         });
         let mut full = Terminal::new(TestBackend::new(80, 24)).unwrap();
         full.draw(|frame| draw(frame, &mut app)).unwrap();
-        assert_eq!(app.last_chat_message_area, Rect::new(0, 1, 80, 23));
+        assert_eq!(app.last_chat_message_area, Rect::new(0, 2, 80, 22));
         assert_eq!(app.last_chat_input_area.height, 0);
-        assert_eq!(app.last_right_content_area.height, 23);
-        assert_eq!(app.task_panes.get(&task_id).unwrap().dims(), (23, 80));
+        assert_eq!(app.last_right_content_area.height, 22);
+        assert_eq!(app.task_panes.get(&task_id).unwrap().dims(), (22, 80));
 
         // Restoring and resizing reuse the exact pane/process identity. The
         // PTY follows content dimensions only; no duplicated WG row is passed
@@ -18668,12 +18764,12 @@ mod tests {
         resized_full.draw(|frame| draw(frame, &mut app)).unwrap();
         let pane_after = app.task_panes.get(&task_id).unwrap();
         assert_eq!(pane_after as *const _ as usize, pane_identity);
-        assert_eq!(pane_after.dims(), (29, 120));
+        assert_eq!(pane_after.dims(), (29, 119));
         assert_eq!(pane_after.child_input_bytes_written(), input_before);
     }
 
     #[test]
-    fn fullscreen_task_consumes_one_chrome_row_and_has_no_outer_frame() {
+    fn fullscreen_task_keeps_context_and_graph_facing_boundary_without_outer_frame() {
         use crate::tui::viz_viewer::state::{InspectorMode, LayoutPreference};
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
@@ -18693,10 +18789,11 @@ mod tests {
         app.apply_layout_overlay();
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-        assert_eq!(app.last_tab_bar_area, Rect::new(0, 0, 80, 1));
-        assert_eq!(app.last_right_content_area, Rect::new(0, 1, 80, 23));
+        assert_eq!(app.last_fullscreen_restore_area, Rect::new(0, 0, 80, 1));
+        assert_eq!(app.last_tab_bar_area, Rect::new(0, 1, 80, 1));
+        assert_eq!(app.last_right_content_area, Rect::new(0, 2, 80, 22));
         let top: String = (0..80)
-            .map(|x| terminal.backend().buffer().cell((x, 0)).unwrap().symbol())
+            .map(|x| terminal.backend().buffer().cell((x, 1)).unwrap().symbol())
             .collect();
         assert!(top.contains('⌁') && top.contains("a"), "{top}");
         assert!(

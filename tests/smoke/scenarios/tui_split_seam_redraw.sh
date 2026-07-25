@@ -67,6 +67,20 @@ wait_layout() {
   done
   loud_fail "layout $field did not become $expected"
 }
+wait_vertical_seam() {
+  local x=$1 width=$2 height=$3 label=$4
+  for _ in $(seq 1 240); do
+    if capture | python3 -c '
+import sys
+x,w,h=map(int,sys.argv[1:])
+r=(sys.stdin.read().splitlines()+[""]*h)[:h]
+r=[(v+" "*w)[:w] for v in r]
+raise SystemExit(0 if all(v[x]=="│" for v in r) else 1)
+' "$x" "$width" "$height"; then return 0; fi
+    sleep 0.03
+  done
+  loud_fail "$label: $(capture | tr '\n' '|')"
+}
 open_layout() {
   tmux send-keys -t "$session" p
   for _ in $(seq 1 240); do
@@ -190,25 +204,31 @@ assert_vertical_move "$scratch/desktop-38.txt" "$scratch/desktop-67.txt" 74 39 1
 tmux pipe-pane -t "$session"
 assert_no_global_clear "$raw_desktop" "desktop seam moves"
 
-# Full and Hidden remove the seam rather than leaving an old full-height line;
-# Split restoration deterministically repaints the exact remembered seam.
+# Full moves the sole seam to the graph-facing terminal boundary; Hidden
+# removes it. Split restoration deterministically clears that retired boundary
+# and repaints the exact remembered interior seam.
 open_layout; tmux send-keys -t "$session" f Enter
 wait_layout mode full
+wait_vertical_seam 0 120 30 "Full visible left boundary did not settle"
 snapshot "$scratch/desktop-full.txt"
 python3 - "$scratch/desktop-full.txt" <<'PY'
 import sys
-rows=open(sys.argv[1],encoding="utf-8",errors="replace").read().splitlines()
-assert not any("│" in r for r in rows), "Full retained a split seam or outer frame"
+rows=(open(sys.argv[1],encoding="utf-8",errors="replace").read().splitlines()+[""]*30)[:30]
+rows=[(r+" "*120)[:120] for r in rows]
+assert all(r[0] == "│" for r in rows), "Full did not repaint one complete visible left boundary"
 assert sum("↯  ⌁  ⌂" in r for r in rows) == 1, "Full lost/duplicated contextual row"
+assert not any(c in "┌┐└┘" for r in rows for c in r), "Full restored an outer frame"
 PY
 open_layout; tmux send-keys -t "$session" l Enter
 wait_layout mode split
+wait_vertical_seam 39 120 30 "remembered Split seam did not settle"
 snapshot "$scratch/desktop-restored.txt"
 python3 - "$scratch/desktop-restored.txt" <<'PY'
 import sys
 rows=(open(sys.argv[1],encoding="utf-8",errors="replace").read().splitlines()+[""]*30)[:30]
 rows=[(r+" "*120)[:120] for r in rows]
 assert all(r[39] == "│" for r in rows), "Full restore did not repaint the complete remembered seam"
+assert all(r[0] != "│" for r in rows), "Full boundary ghost remained after Split restore"
 PY
 open_layout; tmux send-keys -t "$session" 0 Enter
 wait_layout mode hidden

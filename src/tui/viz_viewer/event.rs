@@ -599,6 +599,7 @@ pub fn dispatch_event(app: &mut VizApp, ev: Event) {
             // derives fresh rectangles from the pointer-down preference.
             app.cancel_layout_drag();
             app.invalidate_split_seam_hits();
+            app.invalidate_full_boundary_hit();
             app.clear_coordinator_picker_hits();
             app.clear_symbolic_context_hits();
             app.log_header_hits.clear();
@@ -4649,9 +4650,10 @@ fn current_layout_viewport(app: &VizApp) -> ratatui::layout::Rect {
     ratatui::layout::Rect::new(x, y, right.saturating_sub(x), bottom.saturating_sub(y))
 }
 
-/// Begin a reverse resize from the visible Full contextual-row handle.
-/// Pointer-down itself is a tap activation, so the exact remembered Split is
-/// restored immediately; subsequent Drag/Moved events resize from that ratio.
+/// Begin a reverse resize from either Full's visible graph-facing boundary or
+/// its contextual-row fallback. Pointer-down itself is a safe tap activation:
+/// the exact remembered Split is restored immediately, while later Drag/Moved
+/// events resize continuously from that ratio without reaching content.
 fn begin_full_restore_drag(app: &mut VizApp, row: u16, column: u16) {
     use super::state::ScrollbarDragTarget;
 
@@ -4677,6 +4679,7 @@ fn begin_full_restore_drag(app: &mut VizApp, row: u16, column: u16) {
     app.layout_drag = Some(LayoutDragSnapshot {
         dock,
         viewport,
+        owner_key: app.layout_capture_owner_key(),
         start_column: column,
         start_row: row,
         start_percent: restored.size_percent,
@@ -4685,7 +4688,6 @@ fn begin_full_restore_drag(app: &mut VizApp, row: u16, column: u16) {
         // persist it even when the pointer never moved.
         moved: true,
         snapped_full: false,
-        from_full_handle: true,
     });
     app.scrollbar_drag = Some(if dock.is_horizontal() {
         ScrollbarDragTarget::Divider
@@ -4720,6 +4722,12 @@ fn activate_selected_task_surface(app: &mut VizApp, tab: RightPanelTab) {
 }
 
 fn apply_layout_drag(app: &mut VizApp, row: u16, column: u16) {
+    if !app.layout_drag_owner_is_current() {
+        app.release_layout_drag_capture();
+        app.invalidate_split_seam_hits();
+        app.invalidate_full_boundary_hit();
+        return;
+    }
     let Some(snapshot) = app.layout_drag else {
         // Real pointer-down paths always capture an immutable snapshot. A
         // synthetic stale Drag without one is ignored rather than constructing
@@ -4751,17 +4759,8 @@ fn apply_layout_drag(app: &mut VizApp, row: u16, column: u16) {
     if current_axis == start_axis {
         return;
     }
-    let drag_direction = if snapshot.from_full_handle {
-        if snapshot.dock.is_horizontal() {
-            InspectorDock::Right
-        } else {
-            InspectorDock::Bottom
-        }
-    } else {
-        snapshot.dock
-    };
     let target = divider_drag_target(
-        drag_direction,
+        snapshot.dock,
         snapshot.start_percent,
         extent,
         start_axis,
@@ -4939,6 +4938,14 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
         app.scrollbar_drag,
         Some(ScrollbarDragTarget::Divider) | Some(ScrollbarDragTarget::HorizontalDivider)
     );
+    if split_drag_captured && !app.layout_drag_owner_is_current() {
+        app.release_layout_drag_capture();
+        app.invalidate_split_seam_hits();
+        app.invalidate_full_boundary_hit();
+        // The event still belongs to the retired capture. Swallow it rather
+        // than letting its old coordinate reach PTY/Graph/new controls.
+        return;
+    }
     if split_drag_captured
         && !matches!(
             kind,
@@ -4971,6 +4978,9 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
     let in_divider = app.last_divider_area.width > 0 && app.last_divider_area.contains(pos);
     let in_horizontal_divider = app.last_horizontal_divider_area.height > 0
         && app.last_horizontal_divider_area.contains(pos);
+    let in_full_boundary = app.last_fullscreen_restore_area.width > 0
+        && app.last_fullscreen_restore_area.height > 0
+        && app.last_fullscreen_restore_area.contains(pos);
 
     // Track hover state for the dividers (visual indicator).
     app.divider_hover = in_divider || app.scrollbar_drag == Some(ScrollbarDragTarget::Divider);
@@ -4978,7 +4988,7 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
         in_horizontal_divider || app.scrollbar_drag == Some(ScrollbarDragTarget::HorizontalDivider);
     // Track hover state for tri-state strips.
     app.minimized_strip_hover = false;
-    app.fullscreen_restore_hover = false;
+    app.fullscreen_restore_hover = in_full_boundary;
     app.fullscreen_right_hover = false;
     app.fullscreen_top_hover = false;
     app.fullscreen_bottom_hover = false;
@@ -5144,6 +5154,13 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                     app.service_health.detail_open = true;
                 }
                 app.last_service_identity_hit = None;
+                return;
+            }
+            // Full's literal painted boundary owns the press before every
+            // contextual control and before Chat PTY/content input. The target
+            // is exactly one visible seam cell thick, never a hidden grab zone.
+            if in_full_boundary {
+                begin_full_restore_drag(app, row, column);
                 return;
             }
             if app.last_context_restore_area.width > 0
@@ -5436,13 +5453,13 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                 app.layout_drag = Some(LayoutDragSnapshot {
                     dock,
                     viewport,
+                    owner_key: app.layout_capture_owner_key(),
                     start_column: column,
                     start_row: row,
                     start_percent: app.right_panel_percent,
                     original: app.layout_preference,
                     moved: false,
                     snapped_full: false,
-                    from_full_handle: false,
                 });
                 app.scrollbar_drag = Some(ScrollbarDragTarget::Divider);
             } else if in_horizontal_divider {
@@ -5459,13 +5476,13 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                 app.layout_drag = Some(LayoutDragSnapshot {
                     dock,
                     viewport,
+                    owner_key: app.layout_capture_owner_key(),
                     start_column: column,
                     start_row: row,
                     start_percent: app.right_panel_percent,
                     original: app.layout_preference,
                     moved: false,
                     snapped_full: false,
-                    from_full_handle: false,
                 });
                 app.scrollbar_drag = Some(ScrollbarDragTarget::HorizontalDivider);
             } else if in_graph_hscrollbar {
@@ -5870,6 +5887,10 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                 }
             }
             if finished_layout_drag || app.scrollbar_drag.is_some() {
+                if finished_layout_drag {
+                    app.invalidate_split_seam_hits();
+                    app.invalidate_full_boundary_hit();
+                }
                 app.scrollbar_drag = None;
                 app.divider_drag_offset = 0;
                 app.divider_drag_start_pct = 0;
@@ -8396,58 +8417,42 @@ mod scrollbar_tests {
     }
 
     #[test]
-    fn fullscreen_edges_have_no_mouse_gesture() {
-        // Borderless fullscreen exposes no edge target. Keyboard Panel/Layout
-        // mode is authoritative; only a visible split's shared seam may drag.
+    fn rendered_full_left_boundary_is_the_exact_pointer_target() {
+        use super::super::state::{InspectorMode, LayoutPreference};
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
         let (mut app, _tmp) = build_test_app();
+        app.set_layout_preference(LayoutPreference {
+            dock: InspectorDock::Right,
+            size_percent: 67,
+            mode: InspectorMode::Full,
+        });
+        let mut terminal = Terminal::new(TestBackend::new(200, 40)).unwrap();
+        terminal
+            .draw(|frame| crate::tui::viz_viewer::render::draw(frame, &mut app))
+            .unwrap();
 
-        // Simulate FullInspector layout with a 200-column main area.
-        let main_width: u16 = 200;
-        let main_height: u16 = 40;
-        app.layout_mode = super::super::state::LayoutMode::FullInspector;
-        app.right_panel_visible = true;
-        // Restore strip: 1 col on the left.
-        app.last_fullscreen_restore_area = Rect {
-            x: 0,
-            y: 0,
-            width: 1,
-            height: main_height,
-        };
-        // Right border: 1 col on the right.
-        app.last_fullscreen_right_border_area = Rect {
-            x: main_width - 1,
-            y: 0,
-            width: 1,
-            height: main_height,
-        };
-        // Panel content: everything between the borders.
-        let panel_content_width = main_width - 2; // 198
-        app.last_right_panel_area = Rect {
-            x: 1,
-            y: 1,
-            width: panel_content_width,
-            height: main_height - 2,
-        };
-        app.last_graph_area = Rect::default();
-        // Clear any areas that shouldn't be active in FullInspector.
-        app.last_divider_area = Rect::default();
-        app.last_horizontal_divider_area = Rect::default();
-        app.last_graph_scrollbar_area = Rect::default();
-        app.last_panel_scrollbar_area = Rect::default();
-        app.last_graph_hscrollbar_area = Rect::default();
-        app.last_minimized_strip_area = Rect::default();
-        app.last_fullscreen_top_border_area = Rect::default();
-        app.last_fullscreen_bottom_border_area = Rect::default();
-
-        // Click on the restore strip (column 0).
-        handle_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 10, 0);
-
-        assert_eq!(app.scrollbar_drag, None);
-        assert_eq!(app.layout_drag, None);
-        assert_eq!(
-            app.layout_mode,
-            super::super::state::LayoutMode::FullInspector
+        // Derive the coordinate from literal painted cells, not app-injected
+        // rectangles and not the contextual ↔ Split handle.
+        let x = (0..200)
+            .find(|&x| {
+                (0..40).all(|y| terminal.backend().buffer().cell((x, y)).unwrap().symbol() == "│")
+            })
+            .expect("Full Right must paint one complete left boundary");
+        assert_eq!(x, 0);
+        assert!(
+            app.last_fullscreen_restore_area
+                .contains(Position::new(x, 20))
         );
+        assert!(!app.last_context_restore_area.contains(Position::new(x, 20)));
+
+        handle_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 20, x);
+        assert_eq!(app.layout_preference.mode, InspectorMode::Split);
+        assert_eq!(app.layout_preference.size_percent, 67);
+        assert_eq!(app.last_fullscreen_restore_area, Rect::default());
+        assert!(app.layout_drag.is_some());
+        assert_eq!(app.scrollbar_drag, Some(ScrollbarDragTarget::Divider));
     }
 
     #[test]
@@ -8489,18 +8494,19 @@ mod scrollbar_tests {
         };
         app.set_layout_preference(original);
         app.focused_panel = FocusedPanel::RightPanel;
+        app.effective_inspector_dock = resolved_dock;
         let viewport = Rect::new(0, 0, 100, 100);
         app.layout_viewport = viewport;
         app.layout_drag = Some(LayoutDragSnapshot {
             dock: resolved_dock,
             viewport,
+            owner_key: app.layout_capture_owner_key(),
             start_column: 40,
             start_row: 40,
             start_percent: 60,
             original,
             moved: false,
             snapped_full: false,
-            from_full_handle: false,
         });
         app.scrollbar_drag = Some(if resolved_dock.is_horizontal() {
             ScrollbarDragTarget::Divider
@@ -13131,7 +13137,7 @@ mod chat_open_tests {
     }
 
     #[test]
-    fn full_context_workspace_and_visible_handle_restore_every_dock_at_actual_coordinates() {
+    fn full_workspace_fallback_and_visible_boundary_restore_every_dock_at_rendered_coordinates() {
         use super::super::state::{InspectorMode, LayoutPreference};
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
@@ -13176,9 +13182,10 @@ mod chat_open_tests {
             assert!(app.last_graph_area.width > 0 && app.last_graph_area.height > 0);
             assert_eq!(app.last_context_restore_area, Rect::default());
 
-            // A fresh Full frame owns a visible reverse-drag handle. Right/down
-            // motion shrinks from the remembered ratio for every physical dock,
-            // including Auto's wide-side and narrow-stacked resolutions.
+            // A fresh Full frame owns one graph-facing boundary. Derive its
+            // coordinate solely from the rendered glyph line, then feed a
+            // touch-style Down/Moved/Up stream in the natural inverse direction
+            // for Left/Right/Top/Bottom and both Auto resolutions.
             app.set_layout_preference(LayoutPreference {
                 dock,
                 size_percent: 67,
@@ -13187,10 +13194,22 @@ mod chat_open_tests {
             terminal
                 .draw(|frame| crate::tui::viz_viewer::render::draw(frame, &mut app))
                 .unwrap();
-            let handle = app.last_context_restore_area;
-            assert!(handle.width >= 3, "dock={dock:?} width={width}");
-            let start_col = handle.x + handle.width / 2;
-            let start_row = handle.y;
+            let physical = app.effective_inspector_dock;
+            let buffer = terminal.backend().buffer();
+            let (start_row, start_col) = if physical.is_horizontal() {
+                let x = (0..width)
+                    .find(|&x| (0..32).all(|y| buffer.cell((x, y)).unwrap().symbol() == "│"))
+                    .unwrap_or_else(|| panic!("dock={dock:?} width={width}: no painted │"));
+                (16, x)
+            } else {
+                let y = (0..32)
+                    .find(|&y| (0..width).all(|x| buffer.cell((x, y)).unwrap().symbol() == "─"))
+                    .unwrap_or_else(|| panic!("dock={dock:?} width={width}: no painted ─"));
+                (y, width / 2)
+            };
+            let painted = Position::new(start_col, start_row);
+            assert!(app.last_fullscreen_restore_area.contains(painted));
+            assert!(!app.last_context_restore_area.contains(painted));
             handle_mouse(
                 &mut app,
                 MouseEventKind::Down(MouseButton::Left),
@@ -13198,21 +13217,16 @@ mod chat_open_tests {
                 start_col,
             );
             assert_eq!(app.layout_preference.mode, InspectorMode::Split);
+            assert_eq!(app.last_fullscreen_restore_area, Rect::default());
             assert!(app.layout_drag.is_some());
-            let (drag_row, drag_col) = if app
-                .layout_drag
-                .is_some_and(|snapshot| snapshot.dock.is_horizontal())
-            {
-                (start_row, start_col.saturating_add(8).min(width - 1))
-            } else {
-                (start_row + 5, start_col)
+            let (drag_row, drag_col) = match physical {
+                InspectorDock::Right => (start_row, start_col + 8),
+                InspectorDock::Left => (start_row, start_col - 8),
+                InspectorDock::Bottom => (start_row + 5, start_col),
+                InspectorDock::Top => (start_row - 5, start_col),
+                InspectorDock::Auto => unreachable!("renderer resolves Auto"),
             };
-            handle_mouse(
-                &mut app,
-                MouseEventKind::Drag(MouseButton::Left),
-                drag_row,
-                drag_col,
-            );
+            handle_mouse(&mut app, MouseEventKind::Moved, drag_row, drag_col);
             assert!(app.layout_preference.size_percent < 67, "dock={dock:?}");
             handle_mouse(
                 &mut app,
@@ -13221,6 +13235,7 @@ mod chat_open_tests {
                 drag_col,
             );
             assert!(app.layout_drag.is_none());
+            assert!(app.scrollbar_drag.is_none());
             assert_eq!(app.layout_preference.dock, dock);
             terminal
                 .draw(|frame| crate::tui::viz_viewer::render::draw(frame, &mut app))
@@ -13240,7 +13255,7 @@ mod chat_open_tests {
         terminal
             .draw(|frame| crate::tui::viz_viewer::render::draw(frame, &mut app))
             .unwrap();
-        let stale = app.last_context_restore_area;
+        let stale = app.last_fullscreen_restore_area;
         handle_mouse(
             &mut app,
             MouseEventKind::Down(MouseButton::Left),
@@ -13257,6 +13272,200 @@ mod chat_open_tests {
             stale.x,
         );
         assert_eq!(app.layout_preference, after_resize);
+    }
+
+    #[test]
+    fn full_boundary_tap_short_drag_and_retired_streams_are_safe() {
+        use super::super::state::{InspectorMode, LayoutPreference};
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        fn render_boundary(app: &mut VizApp, terminal: &mut Terminal<TestBackend>) -> (u16, u16) {
+            terminal
+                .draw(|frame| crate::tui::viz_viewer::render::draw(frame, app))
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            for x in 0..buffer.area.width {
+                if (0..buffer.area.height).all(|y| buffer.cell((x, y)).unwrap().symbol() == "│") {
+                    return (buffer.area.height / 2, x);
+                }
+            }
+            panic!("no rendered Full side boundary");
+        }
+
+        let (mut app, _tmp) = build_app_with_chat_node();
+        app.right_panel_tab = RightPanelTab::Chat;
+        app.chat_pty_mode = true;
+        app.chat_pty_forwards_stdin = true;
+        let original_selection = app.selected_task_idx;
+        let mut terminal = Terminal::new(TestBackend::new(160, 32)).unwrap();
+
+        // A tap is an intentional exact-ratio restore and is fully consumed.
+        app.set_layout_preference(LayoutPreference {
+            dock: InspectorDock::Right,
+            size_percent: 67,
+            mode: InspectorMode::Full,
+        });
+        let (row, column) = render_boundary(&mut app, &mut terminal);
+        handle_mouse(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            row,
+            column,
+        );
+        handle_mouse(&mut app, MouseEventKind::Up(MouseButton::Left), row, column);
+        assert_eq!(app.layout_preference.mode, InspectorMode::Split);
+        assert_eq!(app.layout_preference.size_percent, 67);
+        assert_eq!(app.selected_task_idx, original_selection);
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(app.layout_drag.is_none() && app.graph_pan_last.is_none());
+        assert_eq!(app.last_fullscreen_restore_area, Rect::default());
+
+        // A one-cell touch-style movement is a bounded short drag; after Up,
+        // duplicate motion from the retired stream cannot resize or pan.
+        app.set_layout_preference(LayoutPreference {
+            mode: InspectorMode::Full,
+            ..app.layout_preference
+        });
+        let (row, column) = render_boundary(&mut app, &mut terminal);
+        handle_mouse(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            row,
+            column,
+        );
+        handle_mouse(&mut app, MouseEventKind::Moved, row, column + 1);
+        handle_mouse(
+            &mut app,
+            MouseEventKind::Up(MouseButton::Left),
+            row,
+            column + 1,
+        );
+        assert_eq!(
+            app.layout_preference.size_percent, 67,
+            "a sub-percent short drag is safely consumed without a ratio jump"
+        );
+        let released = app.layout_preference;
+        handle_mouse(&mut app, MouseEventKind::Moved, row, column + 30);
+        handle_mouse(
+            &mut app,
+            MouseEventKind::Drag(MouseButton::Left),
+            row,
+            column + 30,
+        );
+        assert_eq!(app.layout_preference, released);
+        assert_eq!(app.selected_task_idx, original_selection);
+        assert!(app.graph_pan_last.is_none());
+
+        // The contextual Split handle remains a tap fallback, but is not the
+        // boundary coordinate used above.
+        app.set_layout_preference(LayoutPreference {
+            mode: InspectorMode::Full,
+            ..app.layout_preference
+        });
+        terminal
+            .draw(|frame| crate::tui::viz_viewer::render::draw(frame, &mut app))
+            .unwrap();
+        let fallback = app.last_context_restore_area;
+        assert!(fallback.width >= 3);
+        handle_mouse(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            fallback.y,
+            fallback.x,
+        );
+        handle_mouse(
+            &mut app,
+            MouseEventKind::Up(MouseButton::Left),
+            fallback.y,
+            fallback.x,
+        );
+        assert_eq!(app.layout_preference.mode, InspectorMode::Split);
+    }
+
+    #[test]
+    fn full_boundary_capture_expires_on_owner_dock_and_mode_changes() {
+        use super::super::state::{
+            AuthoritativeServiceContext, InspectorMode, LayoutPreference, ServiceContextOwner,
+        };
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        fn arm(app: &mut VizApp, terminal: &mut Terminal<TestBackend>) -> (u16, u16) {
+            app.set_layout_preference(LayoutPreference {
+                dock: InspectorDock::Right,
+                size_percent: 60,
+                mode: InspectorMode::Full,
+            });
+            terminal
+                .draw(|frame| crate::tui::viz_viewer::render::draw(frame, app))
+                .unwrap();
+            let seam = app.last_fullscreen_restore_area;
+            let point = (seam.y + seam.height / 2, seam.x);
+            handle_mouse(
+                app,
+                MouseEventKind::Down(MouseButton::Left),
+                point.0,
+                point.1,
+            );
+            assert!(app.layout_drag.is_some());
+            point
+        }
+
+        let (mut app, _tmp) = build_app_with_chat_node();
+        let mut terminal = Terminal::new(TestBackend::new(160, 32)).unwrap();
+
+        let (row, column) = arm(&mut app, &mut terminal);
+        app.set_layout_preference(LayoutPreference {
+            dock: InspectorDock::Left,
+            size_percent: 55,
+            mode: InspectorMode::Split,
+        });
+        handle_mouse(&mut app, MouseEventKind::Moved, row, column + 20);
+        assert!(app.layout_drag.is_none());
+        assert_eq!(app.layout_preference.dock, InspectorDock::Left);
+        assert_eq!(app.layout_preference.size_percent, 55);
+
+        let (row, column) = arm(&mut app, &mut terminal);
+        app.set_layout_preference(LayoutPreference {
+            mode: InspectorMode::Full,
+            ..app.layout_preference
+        });
+        handle_mouse(&mut app, MouseEventKind::Moved, row, column + 20);
+        assert!(app.layout_drag.is_none());
+        assert_eq!(app.layout_preference.mode, InspectorMode::Full);
+
+        let (row, column) = arm(&mut app, &mut terminal);
+        app.workgraph_dir = app.workgraph_dir.join("switched-graph");
+        handle_mouse(&mut app, MouseEventKind::Moved, row, column + 20);
+        assert!(app.layout_drag.is_none());
+        assert_eq!(app.layout_preference.size_percent, 60);
+
+        app.service_health.authoritative = Some(AuthoritativeServiceContext {
+            owner: ServiceContextOwner {
+                graph_digest: "sha256:capture-owner".into(),
+                socket_path: "/tmp/wg-capture.sock".into(),
+                pid: 42,
+                pid_start_identity: Some("start:42".into()),
+                build_id: "capture-build".into(),
+            },
+            service_user: "svc".into(),
+            service_host: "host".into(),
+            service_home: None,
+            client_user: "client".into(),
+            client_host: "local".into(),
+            canonical_graph: "/tmp/graph/.wg".into(),
+            started_at: "2026-07-25T00:00:00Z".into(),
+            build_id: "capture-build".into(),
+            protocol: worksgood::service_identity::SERVICE_IDENTITY_PROTOCOL.into(),
+            selected_profile: None,
+            route: None,
+        });
+        let (row, column) = arm(&mut app, &mut terminal);
+        app.service_health.authoritative = None; // authenticated disconnect
+        handle_mouse(&mut app, MouseEventKind::Moved, row, column + 20);
+        assert!(app.layout_drag.is_none());
+        assert_eq!(app.layout_preference.size_percent, 60);
     }
 
     #[test]

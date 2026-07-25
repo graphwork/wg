@@ -2422,10 +2422,11 @@ script = "scenarios/tui_inspector_drag_to_full.sh"
 owners = [
     "fix-inspector-full-drag",
     "fix-full-inspector-pointer-escape",
+    "fix-full-border-drag",
     "make-panel-resize",
     "fix-stale-split",
 ]
-description = "Candidate-binary real tmux/SGR mouse regression for Full inspector navigation: opens the exact-labelled Panel/Layout row from command mode, drags the live Right and Bottom seams through the one-way Full snap, then restores Graph using the visible Workspace destination and tap/reverse-drags the same-frame contextual handle (never an invisible edge). Directly taps selected-task Detail↔current-attempt Log, checks bounded remembered dock/ratio, one contextual row and zero outer frame/seam, Chat PTY input confinement/stable PID, Full persistence across restart, phone rotation, and stale post-SIGWINCH drag rejection. Credential-free command Chat."
+description = "Candidate-binary real tmux/SGR mouse regression for Full inspector navigation: opens the exact-labelled Panel/Layout row, drags live Right/Bottom Split seams through the one-way Full snap, then derives and presses the literal painted Full graph-facing boundary in Right/Auto-wide Chat, Detail, Log, and Bottom stacking to restore continuously bounded Split. Workspace and contextual Split remain fallbacks. Checks remembered dock/ratio, one contextual row + one seam + zero outer frames, direct Detail↔Log, Chat PTY confinement/stable PID, persistence, rotation, and stale post-SIGWINCH rejection. Credential-free command Chat."
 timeout_seconds = 180
 
 [[scenario]]
@@ -2471,8 +2472,9 @@ name = "tui_split_seam_redraw"
 script = "scenarios/tui_split_seam_redraw.sh"
 owners = [
     "fix-stale-split",
+    "fix-full-border-drag",
 ]
-description = "Candidate-binary isolated tmux back-buffer regression for stale split-seam glyphs: seeds long real Graph rows at both old/new seam coordinates, moves a Right side seam by an arbitrary +5% and named 2/3 preset, proves the new column is fully glyph-painted and each retired column is cleared with one seam/zero outer frames, crosses Full/Split/Hidden, rotates to a Termux+mosh phone stack and repeats at actual horizontal rows, then restores wide. Captured transition bytes reject percentage-move global clears and rapid captures reject blank flicker frames."
+description = "Candidate-binary isolated tmux back-buffer regression for stale split-seam glyphs: seeds long real Graph rows at both old/new seam coordinates, moves a Right side seam by an arbitrary +5% and named 2/3 preset, proves the new column is fully glyph-painted and each retired column is cleared with one seam/zero outer frames, crosses Full (one graph-facing boundary)/Split/Hidden, rotates to a Termux+mosh phone stack and repeats at actual horizontal rows, then restores wide. Captured transition bytes reject percentage-move global clears and rapid captures reject blank flicker frames."
 timeout_seconds = 240
 
 [[scenario]]
