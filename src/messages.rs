@@ -13,6 +13,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::SystemTime;
 
+use crate::graph::{Status, Task};
+
 /// Delivery status of a message through its lifecycle.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -26,6 +28,32 @@ pub enum DeliveryStatus {
     Read,
     /// Agent explicitly replied to/acknowledged this message.
     Acknowledged,
+}
+
+/// Scheduler-neutral disposition reported by `wg msg list --json`.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageDisposition {
+    DeliveredLive,
+    DeadAttempt,
+    TerminalTask,
+    StaleEpoch,
+    Duplicate,
+    WaitingArmed,
+    WaitingNonmatch,
+    WaitingConsumed,
+    #[default]
+    LegacyUnbound,
+}
+
+impl std::fmt::Display for MessageDisposition {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let value = serde_json::to_value(self)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_owned))
+            .unwrap_or_else(|| "legacy_unbound".to_string());
+        f.write_str(&value)
+    }
 }
 
 impl std::fmt::Display for DeliveryStatus {
@@ -60,6 +88,19 @@ pub struct Message {
     /// Set when `update_message_statuses()` transitions status to `Read`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub read_at: Option<String>,
+    /// Recipient identity and attempt binding captured when this record was accepted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipient_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipient_attempt_epoch: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipient_attempt_id: Option<String>,
+    /// Subscription observed at acceptance. It is never inferred later.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subscription_id: Option<String>,
+    /// Initial scheduler-neutral disposition, retained for audit.
+    #[serde(default)]
+    pub accepted_disposition: MessageDisposition,
 
     // ── WG-Fed federation fields (ADR-fed-001..002, doc 02 §2.3) ───────────────
     // A local queue message gains the federated-addressing fields so it can carry
@@ -103,6 +144,197 @@ fn cursors_dir(workgraph_dir: &Path) -> PathBuf {
 /// Path to a cursor file for a given agent + task combination.
 fn cursor_file(workgraph_dir: &Path, agent_id: &str, task_id: &str) -> PathBuf {
     cursors_dir(workgraph_dir).join(format!("{}.{}", agent_id, task_id))
+}
+
+struct RecipientBinding {
+    attempt_epoch: Option<u64>,
+    attempt_id: Option<String>,
+    subscription_id: Option<String>,
+    disposition: MessageDisposition,
+}
+
+fn capture_recipient_binding(
+    workgraph_dir: &Path,
+    task_id: &str,
+    sender: &str,
+) -> RecipientBinding {
+    let graph_path = workgraph_dir.join("graph.jsonl");
+    let Ok(graph) = crate::parser::load_graph(&graph_path) else {
+        return RecipientBinding {
+            attempt_epoch: None,
+            attempt_id: None,
+            subscription_id: None,
+            disposition: MessageDisposition::LegacyUnbound,
+        };
+    };
+    let Some(task) = graph.get_task(task_id) else {
+        return RecipientBinding {
+            attempt_epoch: None,
+            attempt_id: None,
+            subscription_id: None,
+            disposition: MessageDisposition::LegacyUnbound,
+        };
+    };
+    let attempt = task.lifecycle.current_attempt.as_ref();
+    let attempt_epoch = attempt.map(|a| a.generation);
+    let attempt_id = attempt.map(|a| a.id.clone());
+
+    if task.status.is_terminal() {
+        return RecipientBinding {
+            attempt_epoch,
+            attempt_id,
+            subscription_id: None,
+            disposition: MessageDisposition::TerminalTask,
+        };
+    }
+
+    if task.status == Status::Waiting {
+        if let (Some(attempt), Some(subscription)) = (attempt, task.message_wait.as_ref())
+            && subscription.armed
+            && subscription.attempt_epoch == attempt.generation
+            && subscription.attempt_id == attempt.id
+        {
+            return RecipientBinding {
+                attempt_epoch,
+                attempt_id,
+                subscription_id: Some(subscription.id.clone()),
+                disposition: if subscription.selector.matches_sender(sender) {
+                    MessageDisposition::WaitingArmed
+                } else {
+                    MessageDisposition::WaitingNonmatch
+                },
+            };
+        }
+        return RecipientBinding {
+            attempt_epoch,
+            attempt_id,
+            subscription_id: None,
+            disposition: MessageDisposition::LegacyUnbound,
+        };
+    }
+
+    let live = task.status == Status::InProgress
+        && attempt.is_some_and(|a| a.disposition.is_none())
+        && crate::service::registry::AgentRegistry::load(workgraph_dir)
+            .ok()
+            .is_some_and(|registry| {
+                registry.agents.values().any(|agent| {
+                    agent.task_id == task_id
+                        && attempt.is_some_and(|a| a.actor_id == agent.id)
+                        && agent.is_live(120)
+                })
+            });
+    RecipientBinding {
+        attempt_epoch,
+        attempt_id,
+        subscription_id: None,
+        disposition: if live {
+            MessageDisposition::DeliveredLive
+        } else {
+            MessageDisposition::DeadAttempt
+        },
+    }
+}
+
+/// Exact operator-facing message state. This is diagnostic data only; none of
+/// these fields participate in readiness, liveness, ownership, or admission.
+#[derive(Debug, Clone, Serialize)]
+pub struct MessageInspection {
+    #[serde(flatten)]
+    pub message: Message,
+    pub current_attempt_epoch: u64,
+    pub disposition: MessageDisposition,
+    pub resume_requested: bool,
+    pub reason: String,
+}
+
+pub fn inspect_message(task: &Task, message: &Message, duplicate: bool) -> MessageInspection {
+    let current_epoch = task.lifecycle.generation;
+    let consumed = task.message_wait.as_ref().is_some_and(|subscription| {
+        subscription.consumed_by_message_id == Some(message.id)
+            && message.subscription_id.as_deref() == Some(subscription.id.as_str())
+    });
+    let resume_requested = consumed;
+
+    let (disposition, reason) = if duplicate {
+        (
+            MessageDisposition::Duplicate,
+            format!("message id {} is a duplicate ledger record", message.id),
+        )
+    } else if message.recipient_attempt_epoch.is_none() || message.recipient_attempt_id.is_none() {
+        (
+            MessageDisposition::LegacyUnbound,
+            "message has no recipient attempt binding and cannot request execution".to_string(),
+        )
+    } else if message.recipient_attempt_epoch != Some(current_epoch) {
+        (
+            MessageDisposition::StaleEpoch,
+            format!(
+                "recipient attempt epoch {} is not current epoch {}",
+                message.recipient_attempt_epoch.unwrap_or_default(),
+                current_epoch
+            ),
+        )
+    } else if task.status.is_terminal() {
+        (
+            MessageDisposition::TerminalTask,
+            format!("recipient task is terminal ({})", task.status),
+        )
+    } else if consumed {
+        (
+            MessageDisposition::WaitingConsumed,
+            format!(
+                "subscription {} consumed message {} exactly once",
+                message.subscription_id.as_deref().unwrap_or("unknown"),
+                message.id
+            ),
+        )
+    } else if let Some(current) = task.lifecycle.current_attempt.as_ref()
+        && message.recipient_attempt_id.as_deref() != Some(current.id.as_str())
+    {
+        (
+            MessageDisposition::StaleEpoch,
+            format!(
+                "recipient attempt {} is not current attempt {}",
+                message.recipient_attempt_id.as_deref().unwrap_or("unbound"),
+                current.id
+            ),
+        )
+    } else {
+        let disposition = message.accepted_disposition;
+        let reason = match disposition {
+            MessageDisposition::DeliveredLive => {
+                "delivered to the live bound attempt without a lifecycle transition".to_string()
+            }
+            MessageDisposition::DeadAttempt => {
+                "recipient attempt was not live at message acceptance".to_string()
+            }
+            MessageDisposition::TerminalTask => {
+                "recipient task was terminal at message acceptance".to_string()
+            }
+            MessageDisposition::WaitingArmed => format!(
+                "message matched armed subscription {} and awaits one atomic consume",
+                message.subscription_id.as_deref().unwrap_or("unknown")
+            ),
+            MessageDisposition::WaitingNonmatch => format!(
+                "message did not match subscription {}",
+                message.subscription_id.as_deref().unwrap_or("unknown")
+            ),
+            MessageDisposition::LegacyUnbound => {
+                "message has no resume-authorized binding".to_string()
+            }
+            other => format!("message disposition is {other}"),
+        };
+        (disposition, reason)
+    };
+
+    MessageInspection {
+        message: message.clone(),
+        current_attempt_epoch: current_epoch,
+        disposition,
+        resume_requested,
+        reason,
+    }
 }
 
 /// Send a message to a task's queue.
@@ -164,6 +396,7 @@ pub fn send_message(
     };
 
     let next_id = max_id + 1;
+    let binding = capture_recipient_binding(workgraph_dir, task_id, sender);
     let msg = Message {
         id: next_id,
         timestamp: Utc::now().to_rfc3339(),
@@ -172,6 +405,11 @@ pub fn send_message(
         priority: priority.to_string(),
         status: DeliveryStatus::Sent,
         read_at: None,
+        recipient_id: Some(task_id.to_string()),
+        recipient_attempt_epoch: binding.attempt_epoch,
+        recipient_attempt_id: binding.attempt_id,
+        subscription_id: binding.subscription_id,
+        accepted_disposition: binding.disposition,
         from: None,
         to: Vec::new(),
         sig: None,
@@ -972,21 +1210,13 @@ pub fn deliver_message(
     // 1. Store in persistent queue
     let msg_id = send_message(workgraph_dir, task_id, body, sender, priority)?;
 
-    // 2. Try real-time delivery via adapter
+    // 2. Try real-time delivery via adapter using the exact persisted record,
+    // including its immutable recipient-attempt binding.
     let adapter = adapter_for_executor(&agent.executor);
-    let msg = Message {
-        id: msg_id,
-        timestamp: Utc::now().to_rfc3339(),
-        sender: sender.to_string(),
-        body: body.to_string(),
-        priority: priority.to_string(),
-        status: DeliveryStatus::Sent,
-        read_at: None,
-        from: None,
-        to: Vec::new(),
-        sig: None,
-        refs: Vec::new(),
-    };
+    let msg = list_messages(workgraph_dir, task_id)?
+        .into_iter()
+        .find(|message| message.id == msg_id)
+        .context("newly persisted message record missing")?;
     let delivered = adapter.deliver(workgraph_dir, agent, &msg)?;
 
     Ok((msg_id, delivered))
@@ -1032,6 +1262,64 @@ mod tests {
 
         let msgs = list_messages(&wg_dir, "nonexistent").unwrap();
         assert!(msgs.is_empty());
+    }
+
+    #[test]
+    fn test_message_inspection_reports_epoch_and_consumption_without_execution_state() {
+        let mut task = Task {
+            id: "target".to_string(),
+            status: Status::Open,
+            ..Task::default()
+        };
+        task.lifecycle.generation = 8;
+
+        let mut message = Message {
+            id: 4,
+            timestamp: "2026-07-26T00:00:00Z".to_string(),
+            sender: "user".to_string(),
+            body: "history".to_string(),
+            priority: "normal".to_string(),
+            status: DeliveryStatus::Sent,
+            read_at: None,
+            recipient_id: Some("target".to_string()),
+            recipient_attempt_epoch: Some(7),
+            recipient_attempt_id: Some("attempt-7-1".to_string()),
+            subscription_id: None,
+            accepted_disposition: MessageDisposition::DeadAttempt,
+            from: None,
+            to: Vec::new(),
+            sig: None,
+            refs: Vec::new(),
+        };
+        let stale = inspect_message(&task, &message, false);
+        assert_eq!(stale.current_attempt_epoch, 8);
+        assert_eq!(stale.disposition, MessageDisposition::StaleEpoch);
+        assert!(!stale.resume_requested);
+        assert!(stale.reason.contains("epoch 7 is not current epoch 8"));
+
+        task.status = Status::Waiting;
+        task.lifecycle.generation = 7;
+        task.lifecycle.current_attempt = Some(crate::lifecycle::AttemptRef {
+            id: "attempt-7-1".to_string(),
+            generation: 7,
+            fence: 11,
+            actor_id: "agent-waiter".to_string(),
+            disposition: Some(crate::lifecycle::AttemptDisposition::Parked),
+        });
+        message.subscription_id = Some("sub-7".to_string());
+        message.accepted_disposition = MessageDisposition::WaitingArmed;
+        task.message_wait = Some(crate::graph::MessageWaitSubscription {
+            id: "sub-7".to_string(),
+            attempt_epoch: 7,
+            attempt_id: "attempt-7-1".to_string(),
+            selector: crate::graph::MessageWaitSelector::AnyMessage,
+            armed: false,
+            consumed_by_message_id: Some(4),
+            resume_request_id: Some("resume-4".to_string()),
+        });
+        let consumed = inspect_message(&task, &message, false);
+        assert_eq!(consumed.disposition, MessageDisposition::WaitingConsumed);
+        assert!(consumed.resume_requested);
     }
 
     #[test]
@@ -1384,6 +1672,11 @@ mod tests {
             priority: "normal".to_string(),
             status: DeliveryStatus::Sent,
             read_at: None,
+            recipient_id: None,
+            recipient_attempt_epoch: None,
+            recipient_attempt_id: None,
+            subscription_id: None,
+            accepted_disposition: MessageDisposition::LegacyUnbound,
             from: None,
             to: Vec::new(),
             sig: None,
@@ -1422,6 +1715,11 @@ mod tests {
                 priority: "normal".to_string(),
                 status: DeliveryStatus::Sent,
                 read_at: None,
+                recipient_id: None,
+                recipient_attempt_epoch: None,
+                recipient_attempt_id: None,
+                subscription_id: None,
+                accepted_disposition: MessageDisposition::LegacyUnbound,
                 from: None,
                 to: Vec::new(),
                 sig: None,
@@ -1485,6 +1783,11 @@ mod tests {
             priority: "normal".to_string(),
             status: DeliveryStatus::Sent,
             read_at: None,
+            recipient_id: None,
+            recipient_attempt_epoch: None,
+            recipient_attempt_id: None,
+            subscription_id: None,
+            accepted_disposition: MessageDisposition::LegacyUnbound,
             from: None,
             to: Vec::new(),
             sig: None,

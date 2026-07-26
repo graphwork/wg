@@ -120,6 +120,39 @@ pub enum WaitSpec {
     Any(Vec<WaitCondition>),
 }
 
+/// Persisted selector for the only message-authorized lifecycle edge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MessageWaitSelector {
+    AnyMessage,
+    HumanInput,
+}
+
+impl MessageWaitSelector {
+    pub fn matches_sender(self, sender: &str) -> bool {
+        match self {
+            Self::AnyMessage => true,
+            Self::HumanInput => !sender.starts_with("agent-"),
+        }
+    }
+}
+
+/// Attempt-bound, one-shot subscription created by an explicit message wait.
+/// The record is retained after consumption for exact operator diagnostics.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageWaitSubscription {
+    pub id: String,
+    pub attempt_epoch: u64,
+    pub attempt_id: String,
+    pub selector: MessageWaitSelector,
+    #[serde(default = "default_true")]
+    pub armed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consumed_by_message_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_request_id: Option<String>,
+}
+
 /// Machine-readable failure classification. Populated by the wrapper (via
 /// `wg classify-failure`) and surfaced in `wg show` / `wg service status`.
 /// Pairs with `failure_reason` which carries human prose. None means either
@@ -613,6 +646,9 @@ pub struct Task {
     /// Wait condition set by `wg wait` — coordinator checks and resumes when met
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wait_condition: Option<WaitSpec>,
+    /// Attempt-bound one-shot authority for a message-triggered wait resume.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_wait: Option<MessageWaitSubscription>,
     /// Checkpoint summary written by agent before parking via `wg wait`
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkpoint: Option<String>,
@@ -808,6 +844,7 @@ impl Default for Task {
             token_usage: None,
             session_id: None,
             wait_condition: None,
+            message_wait: None,
             checkpoint: None,
             triage_count: 0,
             resurrection_count: 0,
@@ -1829,6 +1866,8 @@ struct TaskHelper {
     #[serde(default)]
     wait_condition: Option<WaitSpec>,
     #[serde(default)]
+    message_wait: Option<MessageWaitSubscription>,
+    #[serde(default)]
     checkpoint: Option<String>,
     #[serde(default)]
     triage_count: u32,
@@ -1979,6 +2018,7 @@ impl<'de> Deserialize<'de> for Task {
             token_usage: helper.token_usage,
             session_id: helper.session_id,
             wait_condition: helper.wait_condition,
+            message_wait: helper.message_wait,
             checkpoint: helper.checkpoint,
             triage_count: helper.triage_count,
             resurrection_count: helper.resurrection_count,

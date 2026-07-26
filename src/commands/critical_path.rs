@@ -492,6 +492,7 @@ mod tests {
             token_usage: None,
             session_id: None,
             wait_condition: None,
+            message_wait: None,
             checkpoint: None,
             triage_count: 0,
             resurrection_count: 0,

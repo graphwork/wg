@@ -1,6 +1,7 @@
 //! Message queue CLI commands: send, list, read, poll.
 
 use anyhow::{Context, Result};
+use std::collections::HashSet;
 use std::io::Read;
 use std::path::Path;
 
@@ -94,12 +95,20 @@ pub fn run_list(dir: &Path, task_id: &str, json: bool) -> Result<()> {
     // Resolve user board alias and validate task exists
     let (graph, _path) = super::load_workgraph(dir)?;
     let task_id = resolve_user_board_alias(&graph, task_id);
-    graph.get_task_or_err(&task_id)?;
+    let task = graph.get_task_or_err(&task_id)?;
 
     let msgs = messages::list_messages(dir, &task_id)?;
+    let mut seen = HashSet::new();
+    let inspections: Vec<_> = msgs
+        .iter()
+        .map(|message| {
+            let duplicate = !seen.insert(message.id);
+            messages::inspect_message(task, message, duplicate)
+        })
+        .collect();
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&msgs)?);
+        println!("{}", serde_json::to_string_pretty(&inspections)?);
         return Ok(());
     }
 
@@ -111,7 +120,7 @@ pub fn run_list(dir: &Path, task_id: &str, json: bool) -> Result<()> {
     println!("Messages for '{}' ({} total):", task_id, msgs.len());
     println!();
 
-    for msg in &msgs {
+    for (msg, inspection) in msgs.iter().zip(&inspections) {
         let priority_marker = if msg.priority == "urgent" {
             " [URGENT]"
         } else {
@@ -126,6 +135,17 @@ pub fn run_list(dir: &Path, task_id: &str, json: bool) -> Result<()> {
         for line in msg.body.lines() {
             println!("    {}", line);
         }
+        println!(
+            "    message_state={} recipient_epoch={} current_epoch={} subscription={} resume_requested={} reason={}",
+            inspection.disposition,
+            msg.recipient_attempt_epoch
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "unbound".to_string()),
+            inspection.current_attempt_epoch,
+            msg.subscription_id.as_deref().unwrap_or("none"),
+            inspection.resume_requested,
+            inspection.reason
+        );
         println!();
     }
 

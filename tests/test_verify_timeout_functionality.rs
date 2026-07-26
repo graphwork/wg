@@ -80,6 +80,7 @@ fn create_task_with_timeout(id: &str, verify_timeout: Option<String>) -> Task {
         token_usage: None,
         session_id: None,
         wait_condition: None,
+        message_wait: None,
         checkpoint: None,
         triage_count: 0,
         resurrection_count: 0,

@@ -22,7 +22,8 @@ use worksgood::graph::{
     evaluate_all_cycle_iterations,
 };
 use worksgood::lifecycle::{
-    ActorKind, LifecycleActor, TransitionKind, TransitionRequest, apply_transition,
+    ActorKind, FenceExpectation, LifecycleActor, TransitionKind, TransitionRequest,
+    apply_transition,
 };
 use worksgood::messages;
 use worksgood::parser::{load_graph, modify_graph};
@@ -243,12 +244,14 @@ fn check_ready_or_return(
 
 /// Evaluate a single wait condition against the current graph/filesystem state.
 /// Returns `true` if the condition is satisfied.
-fn evaluate_condition(
+fn evaluate_condition_with_message(
     condition: &WaitCondition,
     graph: &worksgood::graph::WorkGraph,
     dir: &Path,
     task_id: &str,
     wait_started_at: Option<&str>,
+    eligible_message: Option<&messages::Message>,
+    strict_message_binding: bool,
 ) -> bool {
     match condition {
         WaitCondition::TaskStatus {
@@ -270,13 +273,15 @@ fn evaluate_condition(
             }
         }
         WaitCondition::HumanInput => {
-            // Check for messages from non-agent senders since the task started waiting
-            has_non_agent_message_since(dir, task_id, wait_started_at)
+            if strict_message_binding {
+                eligible_message.is_some_and(|message| !message.sender.starts_with("agent-"))
+            } else {
+                // Human-dispatch compatibility waits are explicit but do not
+                // own worker attempts. They retain their established selector.
+                has_non_agent_message_since(dir, task_id, wait_started_at)
+            }
         }
-        WaitCondition::Message => {
-            // Check for any message since the task started waiting
-            has_any_message_since(dir, task_id, wait_started_at)
-        }
+        WaitCondition::Message => eligible_message.is_some(),
         WaitCondition::FileChanged {
             path,
             mtime_at_wait,
@@ -295,26 +300,6 @@ fn evaluate_condition(
                 false
             }
         }
-    }
-}
-
-/// Check if any message exists for a task since the wait started.
-fn has_any_message_since(dir: &Path, task_id: &str, wait_started_at: Option<&str>) -> bool {
-    if let Ok(msgs) = messages::list_messages(dir, task_id) {
-        if let Some(wait_ts) = wait_started_at
-            && let Ok(wait_time) = wait_ts.parse::<chrono::DateTime<chrono::Utc>>()
-        {
-            msgs.iter().any(|m| {
-                m.timestamp
-                    .parse::<chrono::DateTime<chrono::Utc>>()
-                    .map(|t| t > wait_time)
-                    .unwrap_or(false)
-            })
-        } else {
-            !msgs.is_empty()
-        }
-    } else {
-        false
     }
 }
 
@@ -339,7 +324,45 @@ fn has_non_agent_message_since(dir: &Path, task_id: &str, wait_started_at: Optio
     }
 }
 
+#[cfg(test)]
+fn evaluate_condition(
+    condition: &WaitCondition,
+    graph: &worksgood::graph::WorkGraph,
+    dir: &Path,
+    task_id: &str,
+    wait_started_at: Option<&str>,
+) -> bool {
+    evaluate_condition_with_message(condition, graph, dir, task_id, wait_started_at, None, false)
+}
+
 /// Evaluate all conditions in a WaitSpec.
+fn evaluate_wait_spec_with_message(
+    spec: &WaitSpec,
+    graph: &worksgood::graph::WorkGraph,
+    dir: &Path,
+    task_id: &str,
+    wait_started_at: Option<&str>,
+    eligible_message: Option<&messages::Message>,
+    strict_message_binding: bool,
+) -> bool {
+    let evaluate = |condition| {
+        evaluate_condition_with_message(
+            condition,
+            graph,
+            dir,
+            task_id,
+            wait_started_at,
+            eligible_message,
+            strict_message_binding,
+        )
+    };
+    match spec {
+        WaitSpec::All(conditions) => conditions.iter().all(evaluate),
+        WaitSpec::Any(conditions) => conditions.iter().any(evaluate),
+    }
+}
+
+#[cfg(test)]
 fn evaluate_wait_spec(
     spec: &WaitSpec,
     graph: &worksgood::graph::WorkGraph,
@@ -347,14 +370,7 @@ fn evaluate_wait_spec(
     task_id: &str,
     wait_started_at: Option<&str>,
 ) -> bool {
-    match spec {
-        WaitSpec::All(conditions) => conditions
-            .iter()
-            .all(|c| evaluate_condition(c, graph, dir, task_id, wait_started_at)),
-        WaitSpec::Any(conditions) => conditions
-            .iter()
-            .any(|c| evaluate_condition(c, graph, dir, task_id, wait_started_at)),
-    }
+    evaluate_wait_spec_with_message(spec, graph, dir, task_id, wait_started_at, None, false)
 }
 
 /// Check if a TaskStatus wait condition is unsatisfiable (referenced task
@@ -566,11 +582,12 @@ fn evaluate_waiting_tasks(graph: &mut worksgood::graph::WorkGraph, dir: &Path) -
                 wait_started,
                 t.session_id.clone(),
                 t.checkpoint.clone(),
+                t.message_wait.clone(),
             )
         })
         .collect();
 
-    for (task_id, spec, wait_started, _session_id, _checkpoint) in &waiting_data {
+    for (task_id, spec, wait_started, _session_id, _checkpoint, subscription) in &waiting_data {
         // Check for unsatisfiable conditions first
         let conditions = match &spec {
             WaitSpec::All(c) | WaitSpec::Any(c) => c,
@@ -620,8 +637,50 @@ fn evaluate_waiting_tasks(graph: &mut worksgood::graph::WorkGraph, dir: &Path) -
             continue;
         }
 
-        // Evaluate the wait spec
-        let satisfied = evaluate_wait_spec(spec, graph, dir, task_id, wait_started.as_deref());
+        // Only messages accepted while this exact subscription was armed are
+        // eligible. Historical/unbound/stale-attempt records remain inert.
+        let eligible_message = subscription.as_ref().and_then(|subscription| {
+            let task = graph.get_task(task_id)?;
+            let attempt = task.lifecycle.current_attempt.as_ref()?;
+            if !subscription.armed
+                || subscription.attempt_epoch != attempt.generation
+                || subscription.attempt_id != attempt.id
+            {
+                return None;
+            }
+            messages::list_messages(dir, task_id)
+                .ok()?
+                .into_iter()
+                .find(|message| {
+                    message.accepted_disposition == messages::MessageDisposition::WaitingArmed
+                        && message.recipient_attempt_epoch == Some(subscription.attempt_epoch)
+                        && message.recipient_attempt_id.as_deref()
+                            == Some(subscription.attempt_id.as_str())
+                        && message.subscription_id.as_deref() == Some(subscription.id.as_str())
+                        && subscription.selector.matches_sender(&message.sender)
+                })
+        });
+        let strict_message_binding = subscription.is_some();
+        let satisfied_without_message = evaluate_wait_spec_with_message(
+            spec,
+            graph,
+            dir,
+            task_id,
+            wait_started.as_deref(),
+            None,
+            strict_message_binding,
+        );
+        let satisfied = satisfied_without_message
+            || evaluate_wait_spec_with_message(
+                spec,
+                graph,
+                dir,
+                task_id,
+                wait_started.as_deref(),
+                eligible_message.as_ref(),
+                strict_message_binding,
+            );
+        let message_triggered = !satisfied_without_message && eligible_message.is_some();
 
         if satisfied {
             // Human-as-agent dispatch tail (R13): if this task is assigned to a
@@ -643,24 +702,55 @@ fn evaluate_waiting_tasks(graph: &mut worksgood::graph::WorkGraph, dir: &Path) -
 
             if let Some(t) = graph.get_task_mut(task_id) {
                 let generation = t.lifecycle.generation;
+                let matched_message_id = message_triggered.then(|| {
+                    eligible_message
+                        .as_ref()
+                        .expect("message-triggered wait has receipt")
+                        .id
+                });
+                let subscription_id = subscription.as_ref().map(|value| value.id.clone());
+                if message_triggered
+                    && !t.message_wait.as_ref().is_some_and(|current| {
+                        current.armed
+                            && Some(current.id.as_str()) == subscription_id.as_deref()
+                            && current.consumed_by_message_id.is_none()
+                    })
+                {
+                    continue;
+                }
+                let wait_id = subscription_id
+                    .clone()
+                    .unwrap_or_else(|| format!("wait:{task_id}:{generation}"));
+                let receipt_id = matched_message_id
+                    .map(|id| format!("message:{task_id}:{id}"))
+                    .unwrap_or_else(|| format!("condition:{task_id}:{generation}"));
+                let idempotency_key = format!("wait-satisfied:{wait_id}:{receipt_id}");
                 let request = TransitionRequest::new(
                     TransitionKind::WaitSatisfied {
-                        wait_id: format!("wait:{task_id}:{generation}"),
-                        receipt_id: format!("condition:{task_id}:{generation}"),
+                        wait_id,
+                        receipt_id: receipt_id.clone(),
                     },
                     LifecycleActor {
                         kind: ActorKind::WaitMatcher,
                         id: "coordinator".to_string(),
                     },
                     "wait_condition_satisfied",
-                    format!("wait-satisfied:{task_id}:{generation}"),
-                );
+                    idempotency_key.clone(),
+                )
+                .expecting(FenceExpectation::current(t));
                 if let Err(rejection) = apply_transition(t, request) {
                     eprintln!(
                         "[dispatcher] Ignored stale wait satisfaction for '{}': {}",
                         task_id, rejection
                     );
                     continue;
+                }
+                if let Some(message_id) = matched_message_id
+                    && let Some(current) = t.message_wait.as_mut()
+                {
+                    current.armed = false;
+                    current.consumed_by_message_id = Some(message_id);
+                    current.resume_request_id = Some(idempotency_key);
                 }
                 t.wait_condition = None;
                 // Store the resume delta as the new checkpoint so the spawned agent gets it
@@ -685,17 +775,13 @@ fn evaluate_waiting_tasks(graph: &mut worksgood::graph::WorkGraph, dir: &Path) -
     modified
 }
 
-// ---------------------------------------------------------------------------
-// Messages are immutable data
-// ---------------------------------------------------------------------------
-
-/// Compatibility hook retained for the staged coordinator migration.
-///
-/// Ordinary messages have no lifecycle authority: they cannot reopen a
-/// terminal generation, create response work, refresh liveness, clear a
-/// breaker, or alter readiness. Explicit `Waiting(Message)` tasks are handled
-/// exclusively by `evaluate_waiting_tasks` and its `WaitSatisfied` request.
-fn resurrect_done_tasks(_graph: &mut worksgood::graph::WorkGraph, _dir: &Path) -> bool {
+// Ordinary messages deliberately have no coordinator phase. The attempt-bound
+// subscription check inside `evaluate_waiting_tasks` is the sole message edge.
+#[cfg(test)]
+fn assert_ordinary_messages_are_inert(
+    _graph: &mut worksgood::graph::WorkGraph,
+    _dir: &Path,
+) -> bool {
     false
 }
 
@@ -1557,6 +1643,7 @@ fn build_auto_assign_tasks(
                     token_usage: None,
                     session_id: None,
                     wait_condition: None,
+                    message_wait: None,
                     checkpoint: None,
                     triage_count: 0,
                     resurrection_count: 0,
@@ -1936,6 +2023,7 @@ fn build_flip_verification_tasks(
             token_usage: None,
             session_id: None,
             wait_condition: None,
+            message_wait: None,
             checkpoint: None,
             triage_count: 0,
             resurrection_count: 0,
@@ -2217,6 +2305,7 @@ fn build_separate_verify_tasks(
             token_usage: None,
             session_id: None,
             wait_condition: None,
+            message_wait: None,
             checkpoint: None,
             triage_count: 0,
             resurrection_count: 0,
@@ -2430,6 +2519,7 @@ fn build_auto_evolve_task(
         token_usage: None,
         session_id: None,
         wait_condition: None,
+        message_wait: None,
         checkpoint: None,
         triage_count: 0,
         resurrection_count: 0,
@@ -2646,6 +2736,7 @@ fn build_auto_create_task(
         token_usage: None,
         session_id: None,
         wait_condition: None,
+        message_wait: None,
         checkpoint: None,
         triage_count: 0,
         resurrection_count: 0,
@@ -4962,8 +5053,7 @@ pub fn coordinator_tick(
         // Phase 2.7: Evaluate waiting tasks — check if wait conditions are satisfied.
         modified |= evaluate_waiting_tasks(graph, dir);
 
-        // Phase 2.8: Message-triggered resurrection.
-        modified |= resurrect_done_tasks(graph, dir);
+        // There is intentionally no generic message reconciliation phase.
 
         // Phase 2.9: Unblock stuck tasks — check for tasks blocked on archived/deleted
         // dependencies or missed completion events.
@@ -6252,25 +6342,72 @@ mod tests {
     }
 
     #[test]
-    fn test_message_condition_with_messages() {
+    fn test_legacy_unbound_message_wait_is_fail_closed() {
         let dir = tempdir().unwrap();
         std::fs::create_dir_all(dir.path()).unwrap();
-
-        messages::send_message(dir.path(), "main", "Hello", "user", "normal").unwrap();
 
         let mut main_task = Task::default();
         main_task.id = "main".to_string();
         main_task.status = Status::Waiting;
         main_task.wait_condition = Some(WaitSpec::All(vec![WaitCondition::Message]));
-
         setup_wait_graph(dir.path(), vec![main_task]);
+        messages::send_message(dir.path(), "main", "Hello", "user", "normal").unwrap();
 
         let mut graph = load_wait_graph(dir.path());
         let modified = evaluate_waiting_tasks(&mut graph, dir.path());
 
-        assert!(modified);
+        assert!(!modified);
+        assert_eq!(graph.get_task("main").unwrap().status, Status::Waiting);
+    }
+
+    #[test]
+    fn test_attempt_bound_human_message_wait_consumes_once_and_nonmatch_is_inert() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path()).unwrap();
+
+        let attempt = worksgood::lifecycle::AttemptRef {
+            id: "attempt-3-1".to_string(),
+            generation: 3,
+            fence: 8,
+            actor_id: "agent-waiter".to_string(),
+            disposition: Some(worksgood::lifecycle::AttemptDisposition::Parked),
+        };
+        let mut main_task = Task::default();
+        main_task.id = "main".to_string();
+        main_task.status = Status::Waiting;
+        main_task.lifecycle.generation = 3;
+        main_task.lifecycle.fence = 8;
+        main_task.lifecycle.current_attempt = Some(attempt);
+        main_task.wait_condition = Some(WaitSpec::All(vec![WaitCondition::HumanInput]));
+        main_task.message_wait = Some(worksgood::graph::MessageWaitSubscription {
+            id: "message-wait:main:3:attempt-3-1".to_string(),
+            attempt_epoch: 3,
+            attempt_id: "attempt-3-1".to_string(),
+            selector: worksgood::graph::MessageWaitSelector::HumanInput,
+            armed: true,
+            consumed_by_message_id: None,
+            resume_request_id: None,
+        });
+        setup_wait_graph(dir.path(), vec![main_task]);
+
+        messages::send_message(dir.path(), "main", "agent chatter", "agent-other", "normal")
+            .unwrap();
+        let mut graph = load_wait_graph(dir.path());
+        assert!(!evaluate_waiting_tasks(&mut graph, dir.path()));
+        assert_eq!(graph.get_task("main").unwrap().status, Status::Waiting);
+
+        messages::send_message(dir.path(), "main", "human answer", "user", "normal").unwrap();
+        let mut graph = load_wait_graph(dir.path());
+        assert!(evaluate_waiting_tasks(&mut graph, dir.path()));
         let task = graph.get_task("main").unwrap();
         assert_eq!(task.status, Status::Open);
+        let subscription = task.message_wait.as_ref().unwrap();
+        assert!(!subscription.armed);
+        assert_eq!(subscription.consumed_by_message_id, Some(2));
+        let revision = task.lifecycle.revision;
+
+        assert!(!evaluate_waiting_tasks(&mut graph, dir.path()));
+        assert_eq!(graph.get_task("main").unwrap().lifecycle.revision, revision);
     }
 
     // -----------------------------------------------------------------------
@@ -6318,7 +6455,7 @@ mod tests {
                 )
             })
             .collect();
-        assert!(!resurrect_done_tasks(&mut graph, dir.path()));
+        assert!(!assert_ordinary_messages_are_inert(&mut graph, dir.path()));
         let after: Vec<_> = graph
             .tasks()
             .map(|task| {
@@ -6666,7 +6803,7 @@ mod tests {
 
         messages::send_message(dir.path(), "parent", "Late feedback", "user", "normal").unwrap();
 
-        let modified = resurrect_done_tasks(&mut graph, dir.path());
+        let modified = assert_ordinary_messages_are_inert(&mut graph, dir.path());
 
         assert!(!modified);
         assert_eq!(graph.get_task("parent").unwrap().status, Status::Done);

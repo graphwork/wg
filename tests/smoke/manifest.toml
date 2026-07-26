@@ -2681,6 +2681,6 @@ timeout_seconds = 60
 [[scenario]]
 name = "lifecycle_message_is_data"
 script = "scenarios/lifecycle_message_is_data.sh"
-owners = ["implement-authoritative-lifecycle", "smoke-gate-is"]
-description = "Credential-free live terminal/daemon lifecycle regression: creates Done, Failed, Open, Running, Waiting, and reset/reclaimed tasks through real wg CLI commands; starts and restarts the real daemon; proves irrelevant messages cannot reopen, resume, refresh lifecycle/liveness, change eligibility/breakers, or create response children; proves an explicit persisted message wait wakes exactly once; proves generation/fence CAS rejects worker A's late completion after reset and worker B claim; and verifies every accepted transition is checksummed in .wg/lifecycle/events.jsonl with actor/reason/idempotency metadata."
+owners = ["implement-authoritative-lifecycle", "smoke-gate-is", "stop-messages-from"]
+description = "Credential-free real installed-CLI/daemon regression: bursts messages at Done, Failed, Abandoned, dead-attempt, stale-epoch, and live-worker recipients while fingerprinting status/readiness/liveness/attempt/ownership/PID/spawn state byte-for-byte; asserts exact recipient-epoch/disposition diagnostics and normal live-worker read delivery; proves only a matching current-attempt one-shot Waiting(Message) subscription resumes (one consumed receipt under a 20-message burst, with nonmatch inert); and restarts the daemon over historical unread records with zero resurrection, responder child, transition replay, or spawn."
 timeout_seconds = 75

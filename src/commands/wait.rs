@@ -1,7 +1,10 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
-use worksgood::graph::{LogEntry, Status, WaitCondition, WaitSpec, parse_delay};
+use worksgood::graph::{
+    LogEntry, MessageWaitSelector, MessageWaitSubscription, Status, WaitCondition, WaitSpec,
+    parse_delay,
+};
 use worksgood::lifecycle::{
     FenceExpectation, LifecycleActor, TransitionKind, TransitionRequest, apply_transition,
 };
@@ -16,6 +19,25 @@ use worksgood::service::registry::{AgentRegistry, AgentStatus};
 /// - `human-input` — wait for a human message
 /// - `message` — wait for any message
 /// - `file:<path>` — wait for a file to change
+fn message_selector(spec: &WaitSpec) -> Option<MessageWaitSelector> {
+    let conditions = match spec {
+        WaitSpec::All(conditions) | WaitSpec::Any(conditions) => conditions,
+    };
+    if conditions
+        .iter()
+        .any(|condition| matches!(condition, WaitCondition::Message))
+    {
+        Some(MessageWaitSelector::AnyMessage)
+    } else if conditions
+        .iter()
+        .any(|condition| matches!(condition, WaitCondition::HumanInput))
+    {
+        Some(MessageWaitSelector::HumanInput)
+    } else {
+        None
+    }
+}
+
 fn parse_condition(s: &str, graph: &worksgood::graph::WorkGraph) -> Result<WaitCondition> {
     let s = s.trim();
 
@@ -166,8 +188,24 @@ pub fn run(dir: &Path, id: &str, until: &str, checkpoint: Option<&str>) -> Resul
             }
         };
 
+        let selector = message_selector(&wait_spec);
+
         // Now mutate
         let task = graph.get_task_mut(id).expect("task verified above");
+        let bound_attempt = if selector.is_some() {
+            match task.lifecycle.current_attempt.as_ref() {
+                Some(attempt) if attempt.disposition.is_none() => Some(attempt.clone()),
+                _ => {
+                    error = Some(anyhow::anyhow!(
+                        "Cannot arm message wait on '{}': no current live attempt; retry/reclaim first",
+                        id
+                    ));
+                    return false;
+                }
+            }
+        } else {
+            None
+        };
 
         let actor_id = if task.lifecycle.current_attempt.is_some() {
             (std::env::var("WG_TASK_ID").as_deref() == Ok(id))
@@ -197,6 +235,17 @@ pub fn run(dir: &Path, id: &str, until: &str, checkpoint: Option<&str>) -> Resul
             return false;
         }
         task.wait_condition = Some(wait_spec);
+        task.message_wait = bound_attempt.zip(selector).map(|(attempt, selector)| {
+            MessageWaitSubscription {
+                id: format!("message-wait:{id}:{}:{}", attempt.generation, attempt.id),
+                attempt_epoch: attempt.generation,
+                attempt_id: attempt.id,
+                selector,
+                armed: true,
+                consumed_by_message_id: None,
+                resume_request_id: None,
+            }
+        });
 
         if let Some(cp) = checkpoint {
             task.checkpoint = Some(cp.to_string());
@@ -253,8 +302,23 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
     use worksgood::graph::{Status, WaitCondition, WaitSpec};
+    use worksgood::lifecycle::AttemptRef;
     use worksgood::parser::load_graph;
     use worksgood::test_helpers::{make_task_with_status as make_task, setup_workgraph};
+
+    fn running_task() -> worksgood::graph::Task {
+        let mut task = make_task("main", "Main", Status::InProgress);
+        task.lifecycle.fence = 1;
+        task.lifecycle.attempt_sequence = 1;
+        task.lifecycle.current_attempt = Some(AttemptRef {
+            id: "attempt-0-1".to_string(),
+            generation: 0,
+            fence: 1,
+            actor_id: "agent-1".to_string(),
+            disposition: None,
+        });
+        task
+    }
 
     fn graph_path(dir: &Path) -> std::path::PathBuf {
         dir.join("graph.jsonl")
@@ -366,10 +430,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
 
-        setup_workgraph(
-            dir_path,
-            vec![make_task("main", "Main", Status::InProgress)],
-        );
+        setup_workgraph(dir_path, vec![running_task()]);
 
         let result = run(dir_path, "main", "message", None);
         assert!(result.is_ok());
@@ -378,6 +439,10 @@ mod tests {
         let graph = load_graph(&path).unwrap();
         let task = graph.get_task("main").unwrap();
         assert_eq!(task.status, Status::Waiting);
+        let subscription = task.message_wait.as_ref().unwrap();
+        assert!(subscription.armed);
+        assert_eq!(subscription.attempt_id, "attempt-0-1");
+        assert_eq!(subscription.selector, MessageWaitSelector::AnyMessage);
     }
 
     #[test]
@@ -385,10 +450,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
 
-        setup_workgraph(
-            dir_path,
-            vec![make_task("main", "Main", Status::InProgress)],
-        );
+        setup_workgraph(dir_path, vec![running_task()]);
 
         let result = run(dir_path, "main", "human-input", None);
         assert!(result.is_ok());
@@ -488,10 +550,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
 
-        setup_workgraph(
-            dir_path,
-            vec![make_task("main", "Main", Status::InProgress)],
-        );
+        setup_workgraph(dir_path, vec![running_task()]);
 
         let result = run(dir_path, "main", "message", None);
         assert!(result.is_ok());
@@ -552,10 +611,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
 
-        setup_workgraph(
-            dir_path,
-            vec![make_task("main", "Main", Status::InProgress)],
-        );
+        setup_workgraph(dir_path, vec![running_task()]);
 
         let result = run(dir_path, "main", "message", None);
         assert!(result.is_ok());
