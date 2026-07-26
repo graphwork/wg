@@ -118,10 +118,29 @@ pub enum ConfigScope {
 /// Show current configuration. Legacy model values remain visible only as
 /// explicitly non-executable migration data.
 pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
-    let config = match scope {
-        Some(ConfigScope::Global) => Config::load_global()?.unwrap_or_default(),
-        Some(ConfigScope::Local) => Config::load(dir)?,
-        None => Config::load_merged(dir)?,
+    // For the default (merged) view, also load the per-key source map so the
+    // precedence-sensitive routing/capacity keys can be annotated with the
+    // winning source (global / local / project-profile / default). Scoped
+    // views (--global/--local) reflect a single layer, so no source annotation
+    // is meaningful there. See docs/config-precedence.md.
+    let (config, sources): (
+        Config,
+        Option<std::collections::BTreeMap<String, ConfigSource>>,
+    ) = match scope {
+        Some(ConfigScope::Global) => (Config::load_global()?.unwrap_or_default(), None),
+        Some(ConfigScope::Local) => (Config::load(dir)?, None),
+        None => {
+            let (c, s) = Config::load_with_sources(dir)?;
+            (c, Some(s))
+        }
+    };
+    // Resolve the source label for a dotted key (empty when no source map).
+    let src_of = |key: &str| -> String {
+        sources
+            .as_ref()
+            .and_then(|m| m.get(key))
+            .map(|s| format!("  [source: {}]", s))
+            .unwrap_or_default()
     };
 
     // Surface collected config-load diagnostics once (deduplicated) for the
@@ -137,11 +156,30 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
     } else {
         println!("WG Configuration");
         println!("========================");
+        // Surface the active project profile (if any) + the precedence legend so
+        // the winning source per key is discoverable from `--show` directly.
+        if sources.is_some() {
+            if let Ok(Some(assoc)) = worksgood::profile::project::read_association(dir) {
+                println!(
+                    "  active project profile: {} (fingerprint {})",
+                    assoc.profile, assoc.profile_fingerprint
+                );
+                println!("  profile authority-owns ROUTING (model/executor/provider/tiers);");
+                println!("  explicit local/global writes win for non-routing tuning.");
+            }
+            println!(
+                "  sources: [global] [local] [project-profile] [default]; full detail: `wg config --list`"
+            );
+        }
         println!();
         println!("[agent]");
         println!("  handler = \"pi\"");
         if worksgood::config::parse_exact_pi_route(&config.agent.model).is_ok() {
-            println!("  model = \"{}\"", config.agent.model);
+            println!(
+                "  model = \"{}\"{}",
+                config.agent.model,
+                src_of("agent.model")
+            );
         } else {
             println!("  model = UNSELECTED/INVALID");
             if !config.agent.model.trim().is_empty() {
@@ -161,7 +199,11 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
         }
         println!();
         println!("[dispatcher]");
-        println!("  max_agents = {}", config.coordinator.max_agents);
+        println!(
+            "  max_agents = {}{}",
+            config.coordinator.max_agents,
+            src_of("dispatcher.max_agents")
+        );
         println!(
             "  max_coordinators = {}",
             config.coordinator.max_coordinators
@@ -171,7 +213,7 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
         println!("  handler = \"pi\"");
         if let Some(ref m) = config.coordinator.model {
             if worksgood::config::parse_exact_pi_route(m).is_ok() {
-                println!("  model = \"{}\"", m);
+                println!("  model = \"{}\"{}", m, src_of("dispatcher.model"));
             } else {
                 println!("  model = INVALID");
                 println!("  legacy_model = {m:?}  # migration data; not executable");
@@ -1364,6 +1406,23 @@ pub fn update_with_reasoning(
                     );
                 }
             }
+        }
+        // Surface the resolved effective value + its source when a project
+        // profile is active, so the user can see what actually took effect
+        // (and from where) under the precedence rules in
+        // docs/config-precedence.md. Routing keys (model/executor/provider)
+        // stay profile-owned; non-routing knobs (max_agents/intervals) an
+        // explicit write set stick. Avoids the "settings don't stick" pain.
+        if matches!(scope, ConfigScope::Local)
+            && worksgood::profile::project::read_association(dir)
+                .ok()
+                .flatten()
+                .is_some()
+        {
+            println!(
+                "  active project profile present: see `wg config --show` / `wg config get <key>` for the effective value + source."
+            );
+            println!("  (routing keys stay profile-owned; non-routing knobs set here stick.)");
         }
     } else {
         println!("No changes specified. Use --show to view current config.");

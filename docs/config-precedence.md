@@ -87,8 +87,9 @@ implementation stripped `max_agents` too, contradicting that comment.
 config against the local and global layers: whichever layer's value actually
 survived the overlay is the truthful source. So a locally-overridden
 `dispatcher.max_agents` is labeled `local`, while a profile-owned
-`agent.model` stays `project-profile`. `wg config --list` / `wg config get`
-surface these labels.
+`agent.model` stays `project-profile`. `wg config --list`, `wg config --show`
+(the precedence-sensitive routing/capacity keys carry an inline `[source: …]`
+plus an active-profile header), and `wg config get` surface these labels.
 
 ## The fingerprint footgun (and how `wg config` avoids it)
 
