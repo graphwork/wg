@@ -2,6 +2,63 @@ use tempfile::TempDir;
 use worksgood::config::{Config, DispatchRole, ModelRegistryEntry, ReasoningLevel, Tier};
 use worksgood::config_defaults::{RouteParams, SetupRoute, config_for_route};
 use worksgood::execution_selection::{SelectionState, resolve};
+use worksgood::service::executor::ExecutorRegistry;
+
+#[test]
+fn explicit_codex_route_selects_existing_native_adapter() {
+    let dir = TempDir::new().unwrap();
+    let adapter = ExecutorRegistry::new(dir.path())
+        .load_config("codex")
+        .expect("native Codex adapter is built in");
+    assert_eq!(adapter.executor.executor_type, "codex");
+    assert_eq!(adapter.executor.command, "codex");
+
+    let selection = resolve(dir.path(), Some(("codex:gpt-native-opaque", true)))
+        .expect("an explicit handler-first Codex route must be selectable");
+    assert_eq!(selection.state, SelectionState::Selected);
+    assert_eq!(selection.route.as_deref(), Some("codex:gpt-native-opaque"));
+    let system = selection
+        .system
+        .expect("selected route has execution identity");
+    assert_eq!(system.handler, "codex");
+    assert_eq!(system.wire, "openai-codex-cli");
+}
+
+#[test]
+fn direct_codex_config_keeps_opaque_identity_distinct_from_pi_codex() {
+    let mut codex: Config = toml::from_str(worksgood::profile::named::STARTER_CODEX).unwrap();
+    codex.models.task_agent.as_mut().unwrap().model = Some("codex:future/opaque:model-v9".into());
+    codex.validate_execution_model_plane().unwrap();
+    let worker = codex
+        .resolve_execution_route_for_role(DispatchRole::TaskAgent)
+        .unwrap();
+    assert_eq!(worker.handler, "codex");
+    assert_eq!(worker.route, "codex:future/opaque:model-v9");
+    assert_eq!(worker.model, "future/opaque:model-v9");
+
+    let pi = config_for_route(
+        SetupRoute::Pi,
+        RouteParams {
+            model: Some("pi:openai-codex:future/opaque:model-v9".into()),
+            ..Default::default()
+        },
+    );
+    let pi_worker = pi
+        .resolve_execution_route_for_role(DispatchRole::TaskAgent)
+        .unwrap();
+    assert_eq!(pi_worker.handler, "pi");
+    assert_eq!(pi_worker.route, "pi:openai-codex:future/opaque:model-v9");
+    assert_ne!(worker.route, pi_worker.route);
+}
+
+#[test]
+fn unsupported_cli_system_is_not_implicitly_selected() {
+    let dir = TempDir::new().unwrap();
+    let error = resolve(dir.path(), Some(("claude:opus", true)))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("WG-EXEC-ROUTE-REQUIRED"), "{error}");
+}
 
 #[test]
 fn unregistered_exact_pi_route_is_dispatch_authority() {
@@ -87,5 +144,5 @@ fn missing_non_pi_and_missing_reasoning_fail_closed() {
         .resolve_pi_route_for_role(DispatchRole::TaskAgent)
         .unwrap_err()
         .to_string();
-    assert!(error.contains("WG-PI-REASONING-MISSING"), "{error}");
+    assert!(error.contains("WG-EXEC-REASONING-MISSING"), "{error}");
 }

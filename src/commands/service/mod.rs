@@ -1324,7 +1324,8 @@ pub fn run_start(
                         "selection": "unselected",
                         "setup_commands": [
                             "wg setup --route pi --yes --model pi:<provider>:<model>",
-                            "wg profile select pi"
+                            "wg profile select pi",
+                            "wg profile select codex"
                         ]
                     }))?
                 );
@@ -1337,8 +1338,8 @@ pub fn run_start(
         }
     }
     let config = Config::load_merged(dir)?;
-    config.validate_pi_model_plane().context(
-        "service start refused: every LLM role must have an exact Pi route and effective reasoning",
+    config.validate_execution_model_plane().context(
+        "service start refused: every worker role must have an explicit Pi/Codex route and effective reasoning",
     )?;
 
     // Check if service is already running
@@ -2489,8 +2490,8 @@ pub fn run_daemon(
     )?;
     let startup_config = Config::load_merged(dir)?;
     startup_config
-        .validate_pi_model_plane()
-        .context("daemon refused: incomplete or non-Pi role routing")?;
+        .validate_execution_model_plane()
+        .context("daemon refused: incomplete or unsupported worker role routing")?;
     let socket = PathBuf::from(socket_path);
 
     // --- Persistent logging setup ---

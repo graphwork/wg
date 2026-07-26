@@ -370,8 +370,12 @@ fn gather_coordinator_info(dir: &Path) -> CoordinatorInfo {
         let executor = coord
             .model
             .as_deref()
-            .filter(|route| worksgood::config::parse_exact_pi_route(route).is_ok())
-            .map(|_| "pi".to_string())
+            .filter(|route| worksgood::config::parse_supported_execution_route(route).is_ok())
+            .map(|route| {
+                worksgood::dispatch::handler_for_model(route)
+                    .as_str()
+                    .to_string()
+            })
             .unwrap_or_else(|| "legacy/unsupported".to_string());
         let (reasoning, worker_reasoning, agency_reasoning) = configured_reasoning();
         let config = worksgood::config::Config::load_or_default(dir);
@@ -398,24 +402,22 @@ fn gather_coordinator_info(dir: &Path) -> CoordinatorInfo {
     // real handler instead of the deprecated default.
     let config = worksgood::config::Config::load_or_default(dir);
     let default = config
-        .resolve_pi_route_for_role(worksgood::config::DispatchRole::Default)
+        .resolve_execution_route_for_role(worksgood::config::DispatchRole::Default)
         .ok();
     let worker = config
-        .resolve_pi_route_for_role(worksgood::config::DispatchRole::TaskAgent)
+        .resolve_execution_route_for_role(worksgood::config::DispatchRole::TaskAgent)
         .ok();
     let agency = config
-        .resolve_pi_route_for_role(worksgood::config::DispatchRole::Evaluator)
+        .resolve_execution_route_for_role(worksgood::config::DispatchRole::Evaluator)
         .ok();
     let (eval_gate_applicability, evaluator_threshold, flip_gate_policy, flip_threshold) =
         configured_gate_info(&config);
     CoordinatorInfo {
         max_agents: config.coordinator.max_agents,
-        executor: if default.is_some() {
-            "pi"
-        } else {
-            "(unselected)"
-        }
-        .to_string(),
+        executor: default
+            .as_ref()
+            .map(|route| route.handler.clone())
+            .unwrap_or_else(|| "(unselected)".to_string()),
         model: default.as_ref().map(|route| route.route.clone()),
         reasoning: default.as_ref().map(|route| route.reasoning.to_string()),
         worker_reasoning: worker.map(|route| route.reasoning.to_string()),

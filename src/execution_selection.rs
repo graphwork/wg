@@ -8,7 +8,7 @@ use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-use crate::config::{Config, ConfigSource, parse_exact_pi_route};
+use crate::config::{Config, ConfigSource, parse_supported_execution_route};
 use crate::dispatch::handler_for_model;
 
 pub const UNSELECTED_CODE: &str = "WG-EXEC-UNSELECTED";
@@ -67,7 +67,9 @@ impl ExecutionSelection {
 
 fn canonical_explicit_route(raw: &str) -> Option<String> {
     let raw = raw.trim();
-    parse_exact_pi_route(raw).ok().map(|_| raw.to_string())
+    parse_supported_execution_route(raw)
+        .ok()
+        .map(|_| raw.to_string())
 }
 
 pub fn system_key(route: &str) -> Option<ExecutionSystemKey> {
@@ -102,7 +104,7 @@ pub fn resolve(dir: &Path, cli_or_task_model: Option<(&str, bool)>) -> Result<Ex
     if let Some((raw, is_task)) = cli_or_task_model {
         let route = canonical_explicit_route(raw).ok_or_else(|| {
             anyhow::anyhow!(
-                "error[WG-PI-ROUTE-REQUIRED]: explicit model `{raw}` is not an exact `pi:<provider>:<model>` route; no fallback was attempted"
+                "error[WG-EXEC-ROUTE-REQUIRED]: explicit model `{raw}` is not `pi:<provider>:<model>` or `codex:<native-model>`; no fallback was attempted"
             )
         })?;
         let source = if is_task {
@@ -161,7 +163,7 @@ fn resolve_config_sources(
         }
         let Some(route) = canonical_explicit_route(raw) else {
             anyhow::bail!(
-                "error[WG-PI-ROUTE-REQUIRED]: {key} selects unsupported route {raw:?}; WorksGood LLM roles require `pi:<provider>:<model>` and never fall back"
+                "error[WG-EXEC-ROUTE-REQUIRED]: {key} selects unsupported route {raw:?}; worker roles require explicit `pi:<provider>:<model>` or `codex:<native-model>` and never fall back"
             );
         };
         let path = match source {
@@ -212,7 +214,7 @@ fn resolve_config_sources(
 
 pub fn unselected_message(operation: &str) -> String {
     format!(
-        "error[{UNSELECTED_CODE}]: no LLM execution system has been selected.\nThis WG is available for graph-only use, but `{operation}` requires an LLM route.\n\nChoose Pi explicitly:\n  wg setup --route pi --yes --model pi:<provider>:<model>\n  wg profile select pi\n  wg config --global --model pi:<provider>:<model>\n  wg config --local  --model pi:<provider>:<model>\n\nPi owns provider login, model discovery, endpoints, and availability. `wg init`, graph reads, graph edits, and the TUI remain credential-free and do not create a route."
+        "error[{UNSELECTED_CODE}]: no LLM execution system has been selected.\nThis WG is available for graph-only use, but `{operation}` requires an LLM route.\n\nChoose Pi explicitly (recommended):\n  wg setup --route pi --yes --model pi:<provider>:<model>\n  wg profile select pi\n  wg config --global --model pi:<provider>:<model>\n  wg config --local  --model pi:<provider>:<model>\n\nOr opt into the native Codex CLI for workers/tasks:\n  wg profile select codex\n  wg config --local --model codex:<native-model>\n\nPi owns its providers and authentication; the Codex CLI owns its login and accepts its native model ID unchanged. `wg init`, graph reads, graph edits, and the TUI remain credential-free and do not create a route."
     )
 }
 

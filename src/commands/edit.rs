@@ -129,9 +129,9 @@ pub fn run_with_reasoning(
     }
 
     if let Some(model) = model {
-        worksgood::config::parse_exact_pi_route(model).with_context(|| {
+        worksgood::config::parse_supported_execution_route(model).with_context(|| {
             format!(
-                "WG-PI-ROUTE-REQUIRED: task model must be `pi:<provider>:<model>`, got {model:?}"
+                "WG-EXEC-ROUTE-REQUIRED: task model must be `pi:<provider>:<model>` or `codex:<native-model>`, got {model:?}"
             )
         })?;
     }

@@ -30,11 +30,10 @@ pub const STARTER_NEX: &str = include_str!("templates/nex.toml");
 pub const STARTER_OPENCODE: &str = include_str!("templates/opencode.toml");
 pub const STARTER_PI: &str = include_str!("templates/pi.toml");
 
-/// The built-in starter profile names.
-/// Supported starter profiles. Legacy templates remain loadable only for
-/// deterministic migration/inspection; they are not offered as execution
-/// choices and cannot pass Pi model-plane validation.
-pub const STARTER_NAMES: &[&str] = &["pi"];
+/// Supported built-in starter profiles. Pi remains the recommended default;
+/// Codex is the explicit native CLI worker profile. Other legacy templates are
+/// retained only for deterministic migration/inspection.
+pub const STARTER_NAMES: &[&str] = &["pi", "codex"];
 
 /// Legacy starter name retired in favour of the canonical `nex` name (matching
 /// the `wg nex` subcommand). Recognised by `load()` and `init_starters()` so
@@ -1207,7 +1206,7 @@ pub fn set_role_model_override(
     model: &str,
     dry_run: bool,
 ) -> Result<RoleModelOverrideOutcome> {
-    use crate::config::{DispatchRole, parse_exact_pi_route};
+    use crate::config::{DispatchRole, parse_supported_execution_route};
 
     let dispatch_role: DispatchRole = role.parse().with_context(|| {
         format!(
@@ -1218,10 +1217,10 @@ pub fn set_role_model_override(
         )
     })?;
 
-    parse_exact_pi_route(model).with_context(|| {
+    parse_supported_execution_route(model).with_context(|| {
         format!(
-            "Invalid Pi route '{}'. Use exact `pi:<provider>:<model>` format; \
-             provider/model discovery and validation belong to Pi.",
+            "Invalid worker route '{}'. Use exact `pi:<provider>:<model>` or \
+             `codex:<native-model>` format; each CLI owns model validation.",
             model,
         )
     })?;
@@ -1943,10 +1942,11 @@ assigner_agent = "local-agent"
     }
 
     #[test]
-    fn test_starter_names_offer_only_pi() {
-        assert_eq!(STARTER_NAMES, &["pi"]);
+    fn test_starter_names_offer_recommended_pi_and_explicit_codex() {
+        assert_eq!(STARTER_NAMES, &["pi", "codex"]);
         assert!(starter_template("pi").is_some());
-        // Legacy templates remain parseable by explicit name for migration.
+        assert!(starter_template("codex").is_some());
+        // Other legacy templates remain parseable by explicit name for migration.
         assert!(starter_template("nex").is_some());
     }
 
@@ -2449,7 +2449,7 @@ reasoning = "high"
         // parser — handler-first form is required.
         let _tmp = with_home(|| {
             let err = set_role_model_override("pi", "task_agent", "opus", false).unwrap_err();
-            assert!(err.to_string().contains("Invalid Pi route"));
+            assert!(err.to_string().contains("Invalid worker route"));
         });
     }
 
@@ -2579,7 +2579,7 @@ reasoning = "high"
                 false,
             )
             .unwrap_err();
-            assert!(error.to_string().contains("Invalid Pi route"));
+            assert!(error.to_string().contains("Invalid worker route"));
             assert!(!profile_path("pi").unwrap().exists());
         });
     }

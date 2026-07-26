@@ -251,7 +251,6 @@ assigner_agent = "local-assigner"
 }
 
 #[test]
-#[ignore = "retired non-Pi profile/registry behavior"]
 fn config_models_displays_codex_provider_for_codex_profile_roles() {
     let tmp = TempDir::new().unwrap();
     let home = tmp.path().join("home");

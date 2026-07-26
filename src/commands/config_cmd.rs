@@ -173,14 +173,18 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
         }
         println!();
         println!("[agent]");
-        println!("  handler = \"pi\"");
-        if worksgood::config::parse_exact_pi_route(&config.agent.model).is_ok() {
+        if worksgood::config::parse_supported_execution_route(&config.agent.model).is_ok() {
+            println!(
+                "  handler = \"{}\"",
+                worksgood::dispatch::handler_for_model(&config.agent.model).as_str()
+            );
             println!(
                 "  model = \"{}\"{}",
                 config.agent.model,
                 src_of("agent.model")
             );
         } else {
+            println!("  handler = UNSELECTED/INVALID");
             println!("  model = UNSELECTED/INVALID");
             if !config.agent.model.trim().is_empty() {
                 println!(
@@ -210,11 +214,15 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
         );
         println!("  interval = {}", config.coordinator.interval);
         println!("  poll_interval = {}", config.coordinator.poll_interval);
-        println!("  handler = \"pi\"");
         if let Some(ref m) = config.coordinator.model {
-            if worksgood::config::parse_exact_pi_route(m).is_ok() {
+            if worksgood::config::parse_supported_execution_route(m).is_ok() {
+                println!(
+                    "  handler = \"{}\"",
+                    worksgood::dispatch::handler_for_model(m).as_str()
+                );
                 println!("  model = \"{}\"{}", m, src_of("dispatcher.model"));
             } else {
+                println!("  handler = INVALID");
                 println!("  model = INVALID");
                 println!("  legacy_model = {m:?}  # migration data; not executable");
             }
@@ -233,8 +241,9 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
         );
         println!();
         println!("[model plane]");
-        println!("  owner = \"Pi\"");
-        println!("  WG stores exact per-role routes + reasoning only");
+        println!("  recommended = \"Pi\"");
+        println!("  explicit_worker_handlers = [\"pi\", \"codex\"]");
+        println!("  WG stores exact per-role routes + reasoning only; each CLI owns auth/models");
         println!();
         println!("[agency]");
         println!("  auto_evaluate = {}", config.agency.auto_evaluate);
@@ -362,10 +371,10 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
                     Some(status) => format!(", auto: {status}"),
                     None => String::new(),
                 };
-                match config.resolve_pi_route_for_role(*role) {
+                match config.resolve_execution_route_for_role(*role) {
                     Ok(resolved) => println!(
-                        "  {:<14} = {} (handler: pi, reasoning: {}{})",
-                        role, resolved.route, resolved.reasoning, auto_str
+                        "  {:<14} = {} (handler: {}, reasoning: {}{})",
+                        role, resolved.route, resolved.handler, resolved.reasoning, auto_str
                     ),
                     Err(error) => println!("  {:<14} = INVALID ({error}{auto_str})", role),
                 }
@@ -931,7 +940,7 @@ pub fn update_with_reasoning(
         || !role_providers.is_empty()
     {
         anyhow::bail!(
-            "WG's supported configuration plane is Pi-only. Configure providers/auth/endpoints in Pi; set only exact Pi routes and reasoning in WG."
+            "WG does not own provider/auth/endpoints. Configure those in Pi, or let the native Codex CLI own its login; set only explicit Pi/Codex routes and reasoning in WG."
         );
     }
     for route in model
@@ -941,20 +950,28 @@ pub fn update_with_reasoning(
         .chain(flip_comparison_model)
         .chain(flip_model)
     {
-        worksgood::config::parse_exact_pi_route(route)?;
+        worksgood::config::parse_supported_execution_route(route)?;
     }
     for spec in tier_specs {
-        let (_, route) = split_key_value("--tier", spec, "<tier>=pi:<provider>:<model>")?;
-        worksgood::config::parse_exact_pi_route(route)?;
+        let (_, route) = split_key_value(
+            "--tier",
+            spec,
+            "<tier>=<pi:<provider>:<model>|codex:<native-model>>",
+        )?;
+        worksgood::config::parse_supported_execution_route(route)?;
     }
     for pair in set_models.chunks(2) {
         if let Some(route) = pair.get(1) {
-            worksgood::config::parse_exact_pi_route(route)?;
+            worksgood::config::parse_supported_execution_route(route)?;
         }
     }
     for value in role_models {
-        let (_, route) = split_key_value("--role-model", value, "<role>=pi:<provider>:<model>")?;
-        worksgood::config::parse_exact_pi_route(route)?;
+        let (_, route) = split_key_value(
+            "--role-model",
+            value,
+            "<role>=<pi:<provider>:<model>|codex:<native-model>>",
+        )?;
+        worksgood::config::parse_supported_execution_route(route)?;
     }
 
     // Endpoint-driven update: shares semantics with `wg init -m/-e`.
@@ -1009,7 +1026,7 @@ pub fn update_with_reasoning(
         // plane. Strong and weak initially use the same exact identity; users
         // can then tune them independently with `wg profile pi`.
         config.set_pi_tiers(Some(m), Some(m));
-        println!("Set Pi strong/weak routes = \"{}\"", m);
+        println!("Set explicit worker strong/weak routes = \"{}\"", m);
         if coordinator_model.is_none() {
             config.coordinator.provider = None;
             println!("Set dispatcher.model = \"{}\"", m);
@@ -1671,14 +1688,14 @@ pub fn update_matrix(
     Ok(())
 }
 
-/// Show the supported Pi-only role routing plane.
+/// Show the supported explicit worker role routing plane.
 pub fn show_model_routing(dir: &Path, json: bool) -> Result<()> {
     use worksgood::config::DispatchRole;
 
     let config = Config::load_merged(dir)?;
     let mut roles = Vec::new();
     for role in std::iter::once(DispatchRole::Default).chain(DispatchRole::ALL.iter().copied()) {
-        let resolved = config.resolve_pi_route_for_role(role)?;
+        let resolved = config.resolve_execution_route_for_role(role)?;
         roles.push((role, resolved));
     }
     if json {
@@ -1689,7 +1706,7 @@ pub fn show_model_routing(dir: &Path, json: bool) -> Result<()> {
                     role.to_string(),
                     serde_json::json!({
                         "route": route.route,
-                        "handler": "pi",
+                        "handler": route.handler,
                         "provider": route.provider,
                         "model": route.model,
                         "reasoning": route.reasoning.as_str(),
@@ -1700,8 +1717,8 @@ pub fn show_model_routing(dir: &Path, json: bool) -> Result<()> {
             .collect::<serde_json::Map<_, _>>();
         println!("{}", serde_json::to_string_pretty(&values)?);
     } else {
-        println!("Pi Model Plane");
-        println!("==============");
+        println!("Explicit Worker Model Plane (Pi recommended)");
+        println!("============================================");
         println!(
             "  {:<18} {:<8} {:<48} {:<9} SOURCE",
             "ROLE", "HANDLER", "EXACT ROUTE", "REASON"
@@ -1710,7 +1727,7 @@ pub fn show_model_routing(dir: &Path, json: bool) -> Result<()> {
             println!(
                 "  {:<18} {:<8} {:<48} {:<9} {}",
                 role,
-                "pi",
+                route.handler,
                 route.route,
                 route.reasoning.as_str(),
                 route.source
@@ -1718,9 +1735,9 @@ pub fn show_model_routing(dir: &Path, json: bool) -> Result<()> {
         }
         println!();
         println!(
-            "Pi owns provider authentication, endpoints, discovery, availability, and support validation."
+            "Pi owns its provider authentication/discovery/endpoints; Codex CLI owns its login and native model IDs."
         );
-        println!("WG owns only exact per-role Pi routes and inherited reasoning.");
+        println!("WG owns only exact per-role execution routes and inherited reasoning.");
     }
     Ok(())
 }
@@ -1962,10 +1979,15 @@ fn apply_model_for_role(
     use worksgood::config::DispatchRole;
 
     let role: DispatchRole = role_name.parse()?;
-    worksgood::config::parse_exact_pi_route(model)
-        .map_err(|error| anyhow::anyhow!("Invalid Pi route: {error}"))?;
+    worksgood::config::parse_supported_execution_route(model)
+        .map_err(|error| anyhow::anyhow!("Invalid worker route: {error}"))?;
     config.models.set_model(role, model);
-    println!("Set models.{}.model = \"{}\" (handler=pi)", role, model);
+    println!(
+        "Set models.{}.model = \"{}\" (handler={})",
+        role,
+        model,
+        worksgood::dispatch::handler_for_model(model).as_str()
+    );
     Ok(())
 }
 
@@ -3465,7 +3487,7 @@ pub fn lint_config(workgraph_dir: &Path, target: LintTarget, json: bool) -> Resu
     let pi_plane_error =
         if execution_selection.state == worksgood::execution_selection::SelectionState::Selected {
             merged
-                .validate_pi_model_plane()
+                .validate_execution_model_plane()
                 .err()
                 .map(|error| format!("{error:#}"))
         } else {

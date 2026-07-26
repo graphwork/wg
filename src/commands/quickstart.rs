@@ -14,10 +14,11 @@ GETTING STARTED
   wg publish my-first-task --only
   wg status
 
-Pi is the sole LLM model plane. Pi owns provider login, model discovery,
-availability, endpoint details, support validation, and reported cost. WG owns
-exact per-role `pi:<provider>:<model>` routes plus inherited reasoning. Opening a
-graph or TUI never creates a route and never requires credentials.
+Pi is the recommended LLM model plane. Pi owns provider login, model discovery,
+availability, endpoint details, support validation, and reported cost. Native
+Codex CLI workers are also available only by explicit `codex:<model>` selection;
+Codex owns its login and native model IDs. WG owns exact routes plus inherited
+reasoning. Opening a graph or TUI never creates a route or requires credentials.
 
 SKILL & BUNDLE SETUP
   wg skill install
@@ -109,12 +110,14 @@ GROWING THE GRAPH
 TIPS
   Use `wg show`, log progress, validate, commit, push, check messages, then `wg done`.
 
-PI MODEL PLANE
-  Supported LLM handler: Pi only.
-  Exact model format: pi:<provider>:<model>
+PI MODEL PLANE (RECOMMENDED; NATIVE CODEX EXPLICIT)
+  Pi route:      pi:<provider>:<model>
+  Native Codex:  codex:<native-model>  # explicit opt-in; worker/task only
   wg config -m pi:<provider>:<model>
-  wg add "Task" --model pi:<provider>:<model> --reasoning high
-  Use Pi itself to list/search models and manage provider login.
+  wg profile select codex
+  wg add "Task" --model codex:<native-model> --reasoning high
+  Each CLI owns model discovery/validation and authentication; WG never falls
+  back across Pi/Codex execution systems.
 
 REUSABLE FUNCTIONS
   wg func list
@@ -179,8 +182,9 @@ RESOURCE MANAGEMENT
   wg resources
 
 PROVIDER PROFILES
-  wg profile list                  # supported Pi orchestration profiles
+  wg profile list                  # Pi recommended; direct Codex selectable
   wg profile select pi
+  wg profile select codex
   wg profile pi --show
 
 USER BOARDS
@@ -266,7 +270,7 @@ fn json_output() -> serde_json::Value {
             "discovery": {
                 "list": "List all tasks",
                 "show": "View task details and context",
-                "add": "Add a visible draft task (supports --context-scope, --exec-mode, --model pi:<provider>:<model>, --reasoning, scheduling, placement, skills, and --independent); release with wg publish <task-id> --only",
+                "add": "Add a visible draft task (supports --context-scope, --exec-mode, explicit --model pi:<provider>:<model> or codex:<native-model>, --reasoning, scheduling, placement, skills, and --independent); release with wg publish <task-id> --only",
                 "edit": "Edit an existing task (title, description, deps, model, tags, etc.)",
                 "ready": "See tasks available to work on (manual mode)",
                 "status": "Quick one-screen status overview"
@@ -389,8 +393,8 @@ fn json_output() -> serde_json::Value {
             "create": "wg profile create <name>",
             "edit": "wg profile edit <name>",
             "diff": "wg profile diff <a> <b>",
-            "init_starters": "wg profile init-starters (writes the Pi starter)",
-            "starters": ["pi (sole supported LLM model plane)"]
+            "init_starters": "wg profile init-starters (writes recommended Pi + explicit Codex worker starters)",
+            "starters": ["pi (recommended model plane)", "codex (explicit native CLI workers)"]
         },
         "pi_model_plane": {
             "owner": "Pi",

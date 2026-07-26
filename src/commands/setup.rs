@@ -1804,7 +1804,7 @@ pub fn run() -> Result<()> {
     let executor = "pi".to_string();
     println!();
     println!(
-        "Pi is the sole LLM execution system. Pi owns login, providers, endpoints, and model discovery."
+        "Pi is the recommended setup route and owns its login/providers/models. Native Codex workers remain an explicit `wg profile select codex` option."
     );
 
     let (endpoint, inherit_global_endpoints, mut model_registry_entries, model) =

@@ -70,7 +70,8 @@ pub enum Commands {
         #[arg(short = 'e', long, hide = true)]
         endpoint: Option<String>,
 
-        /// Select the supported setup route (`pi`). Pi is the sole model plane.
+        /// Select the recommended setup route (`pi`). Native Codex workers can
+        /// be selected afterward with `wg profile select codex`.
         #[arg(long)]
         route: Option<String>,
 
@@ -235,7 +236,8 @@ pub enum Commands {
         #[arg(long)]
         max_retries: Option<u32>,
 
-        /// Exact Pi route for this task (`pi:<provider>:<model>`)
+        /// Explicit worker route for this task: `pi:<provider>:<model>`
+        /// (recommended) or native `codex:<model>`.
         #[arg(long)]
         model: Option<String>,
 
@@ -720,7 +722,7 @@ pub enum Commands {
         #[arg(long, value_name = "EXPR")]
         filter: Vec<String>,
 
-        /// Exact Pi route to apply before retry (`pi:<provider>:<model>`)
+        /// Explicit Pi or native Codex worker route to apply before retry.
         #[arg(long, value_name = "MODEL")]
         set_model: Option<String>,
 
@@ -1733,12 +1735,12 @@ pub enum Commands {
         #[arg(long)]
         list: bool,
 
-        /// [DEPRECATED/UNSUPPORTED] LLM execution is Pi-only.
+        /// [DEPRECATED/UNSUPPORTED] Executor is derived from the explicit route.
         #[arg(long, hide = true)]
         executor: Option<String>,
 
-        /// Set the exact default Pi route (`pi:<provider>:<model>`).
-        /// Updates strong/weak orchestration routing and dispatcher.model.
+        /// Set an explicit worker route: recommended `pi:<provider>:<model>`
+        /// or opt-in native `codex:<model>`. Each CLI owns auth/model support.
         #[arg(short = 'm', long)]
         model: Option<String>,
 
@@ -1780,11 +1782,12 @@ pub enum Commands {
         #[arg(long)]
         poll_interval: Option<u64>,
 
-        /// [DEPRECATED/UNSUPPORTED] LLM execution is Pi-only.
+        /// [DEPRECATED/UNSUPPORTED] Executor is derived from the explicit route.
         #[arg(long, alias = "coordinator-executor", hide = true)]
         dispatcher_executor: Option<String>,
 
-        /// Set the dispatcher's exact Pi route; legacy alias: --coordinator-model
+        /// Set the dispatcher's explicit Pi or native Codex worker route;
+        /// legacy alias: --coordinator-model
         #[arg(
             long = "dispatcher-model",
             alias = "coordinator-model",
@@ -1974,7 +1977,7 @@ pub enum Commands {
         #[arg(long = "cost-output", requires = "registry_add", hide = true)]
         cost_output: Option<f64>,
 
-        /// Show every effective role's exact Pi route, reasoning, and source
+        /// Show every effective role's exact Pi/Codex route, reasoning, and source
         #[arg(long = "models")]
         show_models: bool,
 
@@ -4490,7 +4493,7 @@ pub enum ProfileCommands {
         /// Profile name
         name: String,
 
-        /// Exact Pi route for this profile (`pi:<provider>:<model>`).
+        /// Exact Pi or native Codex worker route for this profile.
         #[arg(long, short = 'm')]
         model: Option<String>,
 
@@ -6217,7 +6220,7 @@ pub enum ServiceCommands {
         #[arg(long)]
         max_agents: Option<usize>,
 
-        /// [DEPRECATED/UNSUPPORTED] LLM execution is Pi-only.
+        /// [DEPRECATED/UNSUPPORTED] Executor is derived from the explicit route.
         #[arg(long, hide = true)]
         executor: Option<String>,
 
@@ -6225,7 +6228,7 @@ pub enum ServiceCommands {
         #[arg(long)]
         interval: Option<u64>,
 
-        /// Exact Pi route override (`pi:<provider>:<model>`).
+        /// Explicit Pi or native Codex worker route override.
         #[arg(long)]
         model: Option<String>,
 
@@ -6277,7 +6280,7 @@ pub enum ServiceCommands {
         #[arg(long)]
         max_agents: Option<usize>,
 
-        /// [DEPRECATED/UNSUPPORTED] LLM execution is Pi-only.
+        /// [DEPRECATED/UNSUPPORTED] Executor is derived from the explicit route.
         #[arg(long, hide = true)]
         executor: Option<String>,
 
@@ -6285,7 +6288,7 @@ pub enum ServiceCommands {
         #[arg(long)]
         interval: Option<u64>,
 
-        /// Exact Pi route override (`pi:<provider>:<model>`).
+        /// Explicit Pi or native Codex worker route override.
         #[arg(long)]
         model: Option<String>,
     },
@@ -6327,11 +6330,11 @@ pub enum ServiceCommands {
         #[arg(long)]
         max_agents: Option<usize>,
 
-        /// [DEPRECATED/UNSUPPORTED] LLM execution is Pi-only.
+        /// [DEPRECATED/UNSUPPORTED] Executor is derived from the explicit route.
         #[arg(long, hide = true)]
         executor: Option<String>,
 
-        /// Exact Pi route override (`pi:<provider>:<model>`).
+        /// Explicit Pi or native Codex worker route override.
         #[arg(long)]
         model: Option<String>,
     },

@@ -2642,6 +2642,15 @@ description = "Static-contract smoke for impl-binary-signing-notarization (T6): 
 timeout_seconds = 30
 
 [[scenario]]
+name = "explicit_codex_worker"
+script = "scenarios/explicit_codex_worker.sh"
+owners = [
+    "restore-explicit-codex",
+]
+description = "Codex-first restoration end-to-end: from a graph-only fresh HOME, selects the embedded direct Codex profile and proves unambiguous codex:gpt-* (not pi:openai-codex:*) rendering; executes a fake credential-free native Codex profile worker; restores the recommended Pi profile and proves a per-task codex:<opaque-native-model> override still routes to codex exec with the exact native model, reasoning, execution identity, metadata provenance, raw-stream event capture, and turn.completed usage accounting; then forces Codex exit 42 and proves the failure propagates without invoking fake Pi or Claude. Agency/evaluation remain disabled and chat restoration is separately tracked."
+timeout_seconds = 120
+
+[[scenario]]
 name = "retry_current_profile"
 script = "scenarios/retry_current_profile.sh"
 owners = ["add-retry-current"]

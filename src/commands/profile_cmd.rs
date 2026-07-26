@@ -752,12 +752,14 @@ pub fn select_project_profile(
     }
 
     let name = name.ok_or_else(|| {
-        anyhow::anyhow!("Choose the Pi profile, or pass --clear. See `wg profile list`.")
+        anyhow::anyhow!(
+            "Choose the recommended Pi profile or explicit Codex profile, or pass --clear. See `wg profile list`."
+        )
     })?;
     named_profile::load(name)?
         .config
-        .validate_pi_model_plane()
-        .with_context(|| format!("profile {name:?} is legacy/non-Pi and cannot be selected"))?;
+        .validate_execution_model_plane()
+        .with_context(|| format!("profile {name:?} is not a supported Pi/Codex worker profile"))?;
     let plan = project_profile::plan_project_selection(dir, name)?;
     if dry_run {
         if json {
@@ -908,7 +910,7 @@ pub fn list(dir: &Path, json: bool, installed_only: bool) -> Result<()> {
                 );
             }
             named_profile::load(&entry.name)
-                .and_then(|profile| profile.config.validate_pi_model_plane())
+                .and_then(|profile| profile.config.validate_execution_model_plane())
                 .is_ok()
         })
         .collect();
@@ -1017,7 +1019,7 @@ pub fn list(dir: &Path, json: bool, installed_only: bool) -> Result<()> {
     if installed_only {
         println!();
         println!(
-            "Compatibility view: legacy installed definitions are read-only and cannot dispatch unless migrated to exact Pi routes."
+            "Compatibility view: unsupported installed definitions are read-only; worker dispatch requires exact Pi or native Codex routes."
         );
     }
     Ok(())
@@ -1063,9 +1065,11 @@ pub fn use_profile(dir: &Path, name: Option<&str>, no_reload: bool, clear: bool)
     let target = parse_profile_use_target(name.unwrap())?;
     let profile_name = target.profile_name.as_str();
     let prof = named_profile::load(profile_name)?;
-    prof.config.validate_pi_model_plane().with_context(|| {
-        format!("profile {profile_name:?} is legacy/non-Pi and cannot be activated")
-    })?;
+    prof.config
+        .validate_execution_model_plane()
+        .with_context(|| {
+            format!("profile {profile_name:?} is not a supported Pi/Codex worker profile")
+        })?;
 
     // Legacy endpoint references remain readable but never participate in Pi dispatch.
     let secrets_cfg = worksgood::secret::SecretsConfig::load_global();
@@ -1248,7 +1252,7 @@ pub fn create_profile(
         anyhow::bail!("WG profile endpoints are unsupported; configure providers/endpoints in Pi");
     }
     if let Some(model) = model {
-        worksgood::config::parse_exact_pi_route(model)?;
+        worksgood::config::parse_supported_execution_route(model)?;
     }
     let path = named_profile::profile_path(name)?;
     if path.exists() && !force {
@@ -1317,7 +1321,7 @@ pub fn create_profile(
         }
     }
     let parsed: Config = toml::from_str(&content)?;
-    parsed.validate_pi_model_plane()?;
+    parsed.validate_execution_model_plane()?;
     named_profile::save_raw(name, &content)?;
     println!("Profile '{}' created at {}", name, path.display());
     println!("  Use it with: wg profile use {}", name);
@@ -1690,7 +1694,7 @@ pub fn init_starters(force: bool) -> Result<()> {
         }
     );
     if written > 0 {
-        println!("Activate one with: wg profile use claude|codex|nex|opencode");
+        println!("Activate one with: wg profile use pi|codex  (Pi recommended)");
     }
 
     Ok(())
@@ -1993,8 +1997,8 @@ pub fn set_model_profile(
     dry_run: bool,
     no_reload: bool,
 ) -> Result<()> {
-    worksgood::config::parse_exact_pi_route(model).with_context(|| {
-        format!("profile role override must be an exact Pi route, got {model:?}")
+    worksgood::config::parse_supported_execution_route(model).with_context(|| {
+        format!("profile role override must be an exact Pi or native Codex route, got {model:?}")
     })?;
     let outcome = named_profile::set_role_model_override(profile, role, model, dry_run)?;
 

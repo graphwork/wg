@@ -2331,7 +2331,22 @@ pub struct ResolvedPiRoute {
     pub source: String,
 }
 
-/// Parse the only supported LLM route shape.
+/// Explicit worker execution identity resolved from WG orchestration policy.
+///
+/// Pi remains the recommended/default execution system. Native Codex is an
+/// opt-in CLI adapter whose model spelling is opaque to WG; only the leading
+/// handler token is interpreted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolvedExecutionRoute {
+    pub route: String,
+    pub handler: String,
+    pub provider: Option<String>,
+    pub model: String,
+    pub reasoning: ReasoningLevel,
+    pub source: String,
+}
+
+/// Parse the only supported Pi route shape.
 ///
 /// Pi owns provider/model validation, so WG deliberately validates only the
 /// structural boundary: handler `pi`, a non-empty provider, and an exact
@@ -2339,9 +2354,9 @@ pub struct ResolvedPiRoute {
 /// contain additional `:` or `/` characters.
 pub fn parse_exact_pi_route(route: &str) -> anyhow::Result<(String, String)> {
     let raw = route.trim();
-    let inner = raw.strip_prefix("pi:").ok_or_else(|| {
-        anyhow::anyhow!("expected `pi:<provider>:<model>`; non-Pi handlers are unsupported")
-    })?;
+    let inner = raw
+        .strip_prefix("pi:")
+        .ok_or_else(|| anyhow::anyhow!("expected `pi:<provider>:<model>`; route is not Pi"))?;
     let (provider, model) = inner.split_once(':').ok_or_else(|| {
         anyhow::anyhow!(
             "expected `pi:<provider>:<model>` (provider and model must be separated by `:`)"
@@ -2351,6 +2366,27 @@ pub fn parse_exact_pi_route(route: &str) -> anyhow::Result<(String, String)> {
         anyhow::bail!("expected non-empty provider and model in `pi:<provider>:<model>`");
     }
     Ok((provider.to_string(), model.to_string()))
+}
+
+/// Parse an explicitly supported worker route without consulting a WG model
+/// catalog or endpoint/credential store.
+///
+/// Pi routes retain their exact provider/model identity. `codex:<model>`
+/// routes hand the complete non-empty suffix to the native Codex CLI as opaque
+/// input. No aliases are guessed and no execution system is substituted.
+pub fn parse_supported_execution_route(route: &str) -> anyhow::Result<(String, String)> {
+    let raw = route.trim();
+    if let Ok((provider, model)) = parse_exact_pi_route(raw) {
+        return Ok(("pi".to_string(), format!("{provider}:{model}")));
+    }
+    if let Some(model) = raw.strip_prefix("codex:")
+        && !model.trim().is_empty()
+    {
+        return Ok(("codex".to_string(), model.to_string()));
+    }
+    anyhow::bail!(
+        "expected an explicit `pi:<provider>:<model>` or `codex:<native-model>` worker route"
+    )
 }
 
 /// Resolved model+provider for a legacy compatibility dispatch.
@@ -3508,59 +3544,76 @@ impl Config {
         }
     }
 
-    /// Resolve one role through explicit orchestration policy only.
-    ///
-    /// This is the supported WorksGood model-plane resolver. It never consults
-    /// `model_registry`, endpoint configuration, provider credentials, or a WG
-    /// model catalog. The returned route is the exact `pi:<provider>:<model>`
-    /// identity Pi receives, and reasoning must be explicit after inheritance.
-    pub fn resolve_pi_route_for_role(&self, role: DispatchRole) -> anyhow::Result<ResolvedPiRoute> {
-        let (route, source) = if let Some(route) = self
+    fn configured_route_for_role(&self, role: DispatchRole) -> anyhow::Result<(String, String)> {
+        if let Some(route) = self
             .models
             .get_role(role)
             .and_then(|config| config.model.clone())
         {
-            (route, format!("models.{role}.model"))
-        } else if let Some(tier) = self.models.get_role(role).and_then(|config| config.tier) {
-            (
-                self.configured_tier_spec(tier).ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "error[WG-PI-ROUTE-MISSING]: role={role} selects tier={tier}, but that tier has no explicit Pi route"
-                    )
-                })?,
-                format!("tiers.{tier}"),
-            )
-        } else if let Some(route) = self.configured_tier_spec(role.default_tier()) {
-            (route, format!("tiers.{}", role.default_tier()))
-        } else if let Some(route) = self
+            return Ok((route, format!("models.{role}.model")));
+        }
+        if let Some(tier) = self.models.get_role(role).and_then(|config| config.tier) {
+            let route = self.configured_tier_spec(tier).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "error[WG-EXEC-ROUTE-MISSING]: role={role} selects tier={tier}, but that tier has no explicit route"
+                )
+            })?;
+            return Ok((route, format!("tiers.{tier}")));
+        }
+        if let Some(route) = self.configured_tier_spec(role.default_tier()) {
+            return Ok((route, format!("tiers.{}", role.default_tier())));
+        }
+        if let Some(route) = self
             .models
             .get_role(DispatchRole::Default)
             .and_then(|config| config.model.clone())
         {
-            (route, "models.default.model".to_string())
-        } else if let Some(route) = self.coordinator.model.clone() {
-            (route, "dispatcher.model".to_string())
-        } else if self.agent.model.starts_with("pi:") {
-            (self.agent.model.clone(), "agent.model".to_string())
-        } else {
-            anyhow::bail!(
-                "error[WG-PI-ROUTE-MISSING]: role={role} has no explicit Pi route; select a Pi profile or configure models.{role}.model"
-            );
-        };
+            return Ok((route, "models.default.model".to_string()));
+        }
+        if let Some(route) = self.coordinator.model.clone() {
+            return Ok((route, "dispatcher.model".to_string()));
+        }
+        if !self.agent.model.trim().is_empty() {
+            return Ok((self.agent.model.clone(), "agent.model".to_string()));
+        }
+        anyhow::bail!(
+            "error[WG-EXEC-ROUTE-MISSING]: role={role} has no explicit route; select the recommended Pi profile, the direct Codex profile, or configure models.{role}.model"
+        )
+    }
 
-        let (provider, model) = parse_exact_pi_route(&route).map_err(|error| {
-            anyhow::anyhow!(
-                "error[WG-PI-ROUTE-REQUIRED]: role={role} source={source} route={route:?}: {error}"
-            )
-        })?;
+    /// Resolve one worker role through explicit orchestration policy only.
+    ///
+    /// This resolver never consults `model_registry`, endpoint configuration,
+    /// provider credentials, or a WG model catalog. Pi and native Codex keep
+    /// distinct execution identities and native model spelling.
+    pub fn resolve_execution_route_for_role(
+        &self,
+        role: DispatchRole,
+    ) -> anyhow::Result<ResolvedExecutionRoute> {
+        let (route, source) = self.configured_route_for_role(role)?;
+        let (handler, parsed_model) =
+            parse_supported_execution_route(&route).map_err(|error| {
+                anyhow::anyhow!(
+                    "error[WG-EXEC-ROUTE-REQUIRED]: role={role} source={source} route={route:?}: {error}"
+                )
+            })?;
+        let (provider, model) = if handler == "pi" {
+            let (provider, model) = parsed_model
+                .split_once(':')
+                .expect("parse_supported_execution_route returned a malformed Pi identity");
+            (Some(provider.to_string()), model.to_string())
+        } else {
+            (Some("codex".to_string()), parsed_model)
+        };
         let reasoning = self.resolve_reasoning_for_role(role).ok_or_else(|| {
             anyhow::anyhow!(
-                "error[WG-PI-REASONING-MISSING]: role={role} route={route:?} has no effective reasoning; set models.{role}.reasoning or tiers.{}_reasoning",
+                "error[WG-EXEC-REASONING-MISSING]: role={role} route={route:?} has no effective reasoning; set models.{role}.reasoning or tiers.{}_reasoning",
                 role.default_tier()
             )
         })?;
-        Ok(ResolvedPiRoute {
+        Ok(ResolvedExecutionRoute {
             route,
+            handler,
             provider,
             model,
             reasoning,
@@ -3568,11 +3621,42 @@ impl Config {
         })
     }
 
-    /// Validate every LLM-backed orchestration role before service startup.
+    /// Resolve one role as Pi specifically. Pi-only subsystems (including the
+    /// currently disabled agency/evaluation recovery path) retain this strict
+    /// boundary and do not become native Codex calls implicitly.
+    pub fn resolve_pi_route_for_role(&self, role: DispatchRole) -> anyhow::Result<ResolvedPiRoute> {
+        let resolved = self.resolve_execution_route_for_role(role)?;
+        let (provider, model) = parse_exact_pi_route(&resolved.route).map_err(|error| {
+            anyhow::anyhow!(
+                "error[WG-PI-ROUTE-REQUIRED]: role={role} source={} route={:?}: {error}",
+                resolved.source,
+                resolved.route
+            )
+        })?;
+        Ok(ResolvedPiRoute {
+            route: resolved.route,
+            provider,
+            model,
+            reasoning: resolved.reasoning,
+            source: resolved.source,
+        })
+    }
+
+    /// Validate every role for the supported Pi worker plane.
     pub fn validate_pi_model_plane(&self) -> anyhow::Result<()> {
         self.resolve_pi_route_for_role(DispatchRole::Default)?;
         for role in DispatchRole::ALL {
             self.resolve_pi_route_for_role(*role)?;
+        }
+        Ok(())
+    }
+
+    /// Validate every role for supported worker dispatch. This admits exact Pi
+    /// routes and explicit native `codex:<model>` routes only.
+    pub fn validate_execution_model_plane(&self) -> anyhow::Result<()> {
+        self.resolve_execution_route_for_role(DispatchRole::Default)?;
+        for role in DispatchRole::ALL {
+            self.resolve_execution_route_for_role(*role)?;
         }
         Ok(())
     }

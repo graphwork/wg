@@ -618,8 +618,8 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
     let config = Config::load_merged(dir)
         .context("Cannot spawn while the project profile selection is invalid")?;
     if executor_name != "shell" && resolve_task_exec_mode(task, dir) != "shell" {
-        config.validate_pi_model_plane().context(
-            "spawn refused: every LLM role must have an exact Pi route and effective reasoning",
+        config.validate_execution_model_plane().context(
+            "spawn refused: every worker role must have an explicit Pi/Codex route and effective reasoning",
         )?;
     }
     // Get task model preference. Freeform task tags are inert labels, so they
@@ -636,13 +636,13 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
             Some(route) => route.to_string(),
             None => {
                 config
-                    .resolve_pi_route_for_role(worksgood::config::DispatchRole::TaskAgent)?
+                    .resolve_execution_route_for_role(worksgood::config::DispatchRole::TaskAgent)?
                     .route
             }
         };
-        worksgood::config::parse_exact_pi_route(&selected_route).with_context(|| {
+        worksgood::config::parse_supported_execution_route(&selected_route).with_context(|| {
             format!(
-                "spawn refused: selected route {selected_route:?} is not `pi:<provider>:<model>`"
+                "spawn refused: selected route {selected_route:?} is not an explicit Pi or native Codex worker route"
             )
         })?;
     }
@@ -661,9 +661,12 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
     let resolved_model_for_spawn = Some(plan.model.raw.clone());
     let resolved_reasoning = explicit_reasoning.or(task.reasoning).or(plan.reasoning);
     if plan.executor != worksgood::dispatch::ExecutorKind::Shell {
-        if plan.executor != worksgood::dispatch::ExecutorKind::Pi {
+        if !matches!(
+            plan.executor,
+            worksgood::dispatch::ExecutorKind::Pi | worksgood::dispatch::ExecutorKind::Codex
+        ) {
             anyhow::bail!(
-                "spawn refused: resolved handler={} is not Pi; no fallback was attempted",
+                "spawn refused: resolved handler={} is not a supported Pi/Codex worker handler; no fallback was attempted",
                 plan.executor.as_str()
             );
         }
@@ -863,7 +866,7 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
     let (effective_model, model_validation_warning) = {
         let mut model = effective_model;
         let mut warning: Option<String> = None;
-        if resolved_executor_name != "pi"
+        if resolved_executor_name == "native"
             && let Some(ref m) = model
             && m.contains('/')
             && !BUILTIN_TIER_ALIASES.contains(&m.as_str())
@@ -1271,9 +1274,7 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
     cmd.env("WG_LAUNCH_PARENT_PID", std::process::id().to_string());
     // Propagate user identity to spawned agents
     cmd.env("WG_USER", worksgood::current_user());
-    if let Some(ref m) = effective_model {
-        cmd.env("WG_MODEL", m);
-    }
+    cmd.env("WG_MODEL", &plan.model.raw);
     if let Some(reasoning) = resolved_reasoning {
         cmd.env("WG_REASONING", reasoning.as_str());
     }
@@ -1413,7 +1414,7 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
             task_id,
             resolved_executor_name,
             &output_file_str,
-            effective_model.as_deref(),
+            Some(&plan.model.raw),
         );
         if agent_id != temp_agent_id {
             anyhow::bail!(
@@ -1483,7 +1484,8 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
             "pid": pid,
             "task_id": task_id,
             "executor": resolved_executor_name,
-            "model": &effective_model,
+            "model": &plan.model.raw,
+            "native_model": &effective_model,
             "reasoning": resolved_reasoning.map(|r| r.as_str()),
             "started_at": Utc::now().to_rfc3339(),
             "run_id": &spawn_run_id,
@@ -1581,7 +1583,7 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
     }
     let task_id_for_audit = task_id.to_string();
     let agent_id_for_audit = agent_id.clone();
-    let effective_model_for_audit = effective_model.clone();
+    let effective_model_for_audit = Some(plan.model.raw.clone());
     let model_warning_for_audit = model_validation_warning.clone();
     if let Err(error) = modify_graph(&graph_path, |graph| {
         let Some(task) = graph.get_task_mut(&task_id_for_audit) else {
@@ -3104,6 +3106,23 @@ fn resolve_spawn_model_via_registry(
         // Pi owns its model identity; shell tasks have no model at all. Neither
         // path may consult the legacy WG model registry.
         return Ok((effective_model, None, None));
+    }
+    if executor_name == "codex" {
+        // The Codex CLI owns model validation and accepts its native model ID
+        // as opaque input. Strip only WG's handler token; never consult or
+        // rewrite through the retired WG model catalog.
+        let native_model = effective_model
+            .as_deref()
+            .map(worksgood::config::parse_supported_execution_route)
+            .transpose()?
+            .map(|(handler, model)| {
+                if handler != "codex" {
+                    anyhow::bail!("native Codex adapter received non-Codex route from spawn plan");
+                }
+                Ok(model)
+            })
+            .transpose()?;
+        return Ok((native_model, Some("codex".to_string()), None));
     }
     resolve_model_via_registry(effective_model, task_model, config, dir)
 }

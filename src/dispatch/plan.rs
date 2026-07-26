@@ -656,6 +656,10 @@ fn enforce_model_compat(
         // model's required CLI rather than doom-spawning (the residual gap:
         // `validate_cli_backend_match` only guarded the claude/codex executors).
         ExecutorKind::Native => model_is_cli_locked,
+        // The recommended Pi floor yields only to an explicitly selected
+        // native Codex route. Claude remains unsupported in this restoration
+        // and cannot be reached by accidental model-compat inference.
+        ExecutorKind::Pi => required == ExecutorKind::Codex,
         // explicit codex floor → leave incompatible pairs for validate to reject;
         // shell has no model; external CLIs route their own provider/model.
         _ => false,
@@ -758,9 +762,12 @@ fn resolve_executor(
         return (kind, "[dispatcher].executor".to_string());
     }
 
-    // 5. Pi is the only supported LLM execution system. The caller still
-    // validates an exact route and reasoning before launch.
-    (ExecutorKind::Pi, "Pi-only default handler".to_string())
+    // 5. Pi remains the recommended default execution system. The caller
+    // still validates the exact Pi/native-Codex worker route and reasoning.
+    (
+        ExecutorKind::Pi,
+        "recommended Pi default handler".to_string(),
+    )
 }
 
 #[cfg(test)]
@@ -1262,7 +1269,10 @@ mod tests {
         let task = base_task("t1");
         let plan = plan_spawn(&task, &config, None, None).unwrap();
         assert_eq!(plan.executor, ExecutorKind::Pi);
-        assert_eq!(plan.provenance.executor_source, "Pi-only default handler");
+        assert_eq!(
+            plan.provenance.executor_source,
+            "recommended Pi default handler"
+        );
     }
 
     #[test]
@@ -1355,8 +1365,9 @@ mod tests {
         );
     }
 
-    /// A migration-only non-Pi model cannot turn the Pi-only default into a
-    /// native fallback. The outer spawn boundary rejects the route itself.
+    /// A migration-only unsupported model cannot turn the recommended Pi
+    /// default into a native fallback. The outer spawn boundary rejects the
+    /// route itself.
     #[test]
     fn test_default_pi_handler_does_not_fallback_for_local_model() {
         let mut config = Config::default();
@@ -1366,7 +1377,10 @@ mod tests {
         let plan = plan_spawn(&task, &config, None, Some("local:qwen3-coder")).unwrap();
 
         assert_eq!(plan.executor, ExecutorKind::Pi);
-        assert_eq!(plan.provenance.executor_source, "Pi-only default handler");
+        assert_eq!(
+            plan.provenance.executor_source,
+            "recommended Pi default handler"
+        );
     }
 
     /// `claude:opus` (and bare `opus`) MUST NOT trigger an override — the
@@ -1433,6 +1447,26 @@ mod tests {
         assert_eq!(
             plan.env.get("WG_MODEL").map(String::as_str),
             Some("codex:gpt-5.5")
+        );
+    }
+
+    #[test]
+    fn test_explicit_codex_task_overrides_recommended_pi_floor() {
+        let config: Config =
+            toml::from_str(crate::profile::named::STARTER_PI).expect("Pi starter parses");
+        let mut task = base_task("t1");
+        task.model = Some("codex:future/opaque:model-v9".to_string());
+
+        let plan = plan_spawn(&task, &config, Some("pi"), None).unwrap();
+        assert_eq!(plan.executor, ExecutorKind::Codex);
+        assert_eq!(plan.model.raw, "codex:future/opaque:model-v9");
+        assert_eq!(
+            plan.env.get("WG_EXECUTOR_TYPE").map(String::as_str),
+            Some("codex")
+        );
+        assert_eq!(
+            plan.env.get("WG_MODEL").map(String::as_str),
+            Some("codex:future/opaque:model-v9")
         );
     }
 
@@ -1533,12 +1567,15 @@ mod tests {
     }
 
     #[test]
-    fn test_non_pi_defaults_never_select_another_handler() {
+    fn test_recommended_pi_default_yields_only_to_explicit_codex() {
         let config = Config::default();
         let task = base_task("t1");
 
+        let codex = plan_spawn(&task, &config, None, Some("codex:gpt-5.5")).unwrap();
+        assert_eq!(codex.executor, ExecutorKind::Codex);
+        assert_eq!(codex.model.raw, "codex:gpt-5.5");
+
         for model in [
-            "codex:gpt-5.5",
             "claude:opus",
             "nex:qwen3-coder",
             "openrouter:stepfun/step-3.7-flash",
