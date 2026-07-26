@@ -834,7 +834,7 @@ mod tests {
         // Resetting X must not touch `.evaluate-Y` for an unrelated source Y.
         let dir = tempdir().unwrap();
         write_source_with_eval_satellite(dir.path());
-        let mut y = make("Y", Status::Done);
+        let y = make("Y", Status::Done);
         let mut eval_y = make(".evaluate-Y", Status::Open);
         eval_y.after = vec!["Y".into()];
         let path = super::super::graph_path(dir.path());
