@@ -66,6 +66,25 @@ pub fn find_orphaned_tasks(dir: &Path) -> Result<Vec<OrphanedTask>> {
     let mut orphaned = Vec::new();
 
     for task in graph.tasks() {
+        // A policy-valid Pi continuation authorization is the lifecycle
+        // kernel's narrow pre-terminal hold. Generic dead-owner cleanup must
+        // not create another attempt/owner while that exact source is being
+        // reconciled by the Pi watchdog.
+        if task.status == Status::InProgress
+            && task
+                .lifecycle
+                .pi_continuation
+                .as_ref()
+                .is_some_and(|authorization| {
+                    matches!(
+                        authorization.state,
+                        worksgood::lifecycle::PiAuthorizationState::Active
+                            | worksgood::lifecycle::PiAuthorizationState::HeldOperatorRequired
+                    )
+                })
+        {
+            continue;
+        }
         let is_inprogress = task.status == Status::InProgress;
         let is_open_with_claim = task.status == Status::Open && task.assigned.is_some();
         if !is_inprogress && !is_open_with_claim {

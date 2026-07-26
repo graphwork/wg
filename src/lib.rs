@@ -69,6 +69,7 @@ pub mod notify;
 pub mod obs;
 pub mod parser;
 pub mod pi_plugin;
+pub mod pi_watchdog;
 pub mod plan_validator;
 pub mod platform_bash;
 pub mod platform_timeout;

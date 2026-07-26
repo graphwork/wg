@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+DIR=$1
+TASK=$2
+WORKTREE=$3
+printf 'FAKE_PI_READY task=%s session=fake-session branch=leaf-0\n' "$TASK"
+while IFS= read -r line; do
+  set -- $line
+  case "${1:-}" in
+    init) wg --dir "$DIR" pi-watchdog fixture-init "$TASK" --worktree "$WORKTREE" --now "${2:-0}" ;;
+    observe) wg --dir "$DIR" pi-watchdog fixture-observe "$TASK" --event "$2" --now "$3" ;;
+    tick) wg --dir "$DIR" pi-watchdog fixture-tick "$TASK" --now "$2" ;;
+    status) wg --dir "$DIR" pi-watchdog status "$TASK" ;;
+    resume) wg --dir "$DIR" pi-watchdog resume "$TASK" --reason "${2:-fixture-manual}" ;;
+    abort) wg --dir "$DIR" pi-watchdog abort "$TASK" --reason "${2:-fixture-abort}" ;;
+    quit) printf 'FAKE_PI_BYE\n'; exit 0 ;;
+    *) printf 'FAKE_PI_UNKNOWN %s\n' "$line" ;;
+  esac
+done

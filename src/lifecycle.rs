@@ -80,6 +80,33 @@ pub struct AttemptRef {
     pub disposition: Option<AttemptDisposition>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PiAuthorizationState {
+    Active,
+    HeldOperatorRequired,
+    Consumed,
+    Revoked,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PiContinuationAuthorization {
+    pub authorization_id: String,
+    pub task_id: String,
+    pub generation: u64,
+    pub attempt_id: String,
+    pub attempt_fence: u64,
+    pub worktree_lease_epoch: u64,
+    pub session_proof_digest: String,
+    pub route_snapshot_digest: String,
+    pub state: PiAuthorizationState,
+    pub max_replacement_epochs: u32,
+    pub max_reserved_elapsed_secs: u64,
+    pub epochs_used: u32,
+    pub elapsed_reserved_secs: u64,
+    pub issued_by_policy: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct LifecycleProjection {
     #[serde(default)]
@@ -96,6 +123,13 @@ pub struct LifecycleProjection {
     pub ledger_head: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub audit: Vec<LifecycleEvent>,
+    /// Current Pi child-process fence beneath the immutable source attempt.
+    #[serde(default)]
+    pub pi_process_epoch: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pi_continuation: Option<PiContinuationAuthorization>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pi_terminal_reservation: Option<crate::pi_watchdog::TerminalIntentReceipt>,
 }
 
 pub fn lifecycle_projection_is_default(value: &LifecycleProjection) -> bool {
@@ -178,6 +212,28 @@ pub enum TransitionKind {
         message_id: String,
     },
     LegacyCheckpointImported,
+    /// Narrow policy authorization that allows a proven Pi child exit to
+    /// remain pre-terminal. This is lifecycle authority, not observer state.
+    PiContinuationAuthorized {
+        authorization: PiContinuationAuthorization,
+        initial_process_epoch: u32,
+    },
+    PiContinuationHeld {
+        reason: String,
+    },
+    PiContinuationEpochReserved {
+        expected_process_epoch: u32,
+        next_process_epoch: u32,
+        elapsed_charge_secs: u64,
+    },
+    PiTerminalIntent {
+        receipt: crate::pi_watchdog::TerminalIntentReceipt,
+    },
+    PiProcessEpochExited {
+        process_epoch: u32,
+        exact_reap_proof: bool,
+        effect_safe: bool,
+    },
 }
 
 impl TransitionKind {
@@ -199,6 +255,11 @@ impl TransitionKind {
             Self::ReconciliationIssue { .. } => "reconciliation-issue",
             Self::MessageObserved { .. } => "message-observed",
             Self::LegacyCheckpointImported => "legacy-checkpoint-imported",
+            Self::PiContinuationAuthorized { .. } => "pi-continuation-authorized",
+            Self::PiContinuationHeld { .. } => "pi-continuation-held",
+            Self::PiContinuationEpochReserved { .. } => "pi-continuation-epoch-reserved",
+            Self::PiTerminalIntent { .. } => "pi-terminal-intent",
+            Self::PiProcessEpochExited { .. } => "pi-process-epoch-exited",
         }
     }
 }
@@ -280,6 +341,12 @@ pub struct LifecycleEventProjection {
     pub attempt_sequence: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_attempt: Option<AttemptRef>,
+    #[serde(default)]
+    pub pi_process_epoch: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pi_continuation: Option<PiContinuationAuthorization>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pi_terminal_reservation: Option<crate::pi_watchdog::TerminalIntentReceipt>,
 }
 
 impl LifecycleEvent {
@@ -290,6 +357,9 @@ impl LifecycleEvent {
         task.lifecycle.fence = self.projection.fence;
         task.lifecycle.attempt_sequence = self.projection.attempt_sequence;
         task.lifecycle.current_attempt = self.projection.current_attempt.clone();
+        task.lifecycle.pi_process_epoch = self.projection.pi_process_epoch;
+        task.lifecycle.pi_continuation = self.projection.pi_continuation.clone();
+        task.lifecycle.pi_terminal_reservation = self.projection.pi_terminal_reservation.clone();
         task.lifecycle.ledger_head = Some(self.event_id.clone());
         if !task
             .lifecycle
@@ -569,6 +639,207 @@ impl LifecycleKernel {
             TransitionKind::LegacyCheckpointImported => {
                 Self::require_actor(&request, &[ActorKind::Importer])?;
             }
+            TransitionKind::PiContinuationAuthorized {
+                authorization,
+                initial_process_epoch,
+            } => {
+                Self::require_actor(&request, &[ActorKind::Dispatcher, ActorKind::Reconciler])?;
+                Self::require_running_attempt(task, &request)?;
+                let attempt = projection.current_attempt.as_ref().ok_or_else(|| {
+                    TransitionRejection::new(
+                        "attempt_missing",
+                        "Pi authorization requires a current attempt",
+                    )
+                })?;
+                if authorization.task_id != task.id
+                    || authorization.generation != projection.generation
+                    || authorization.attempt_id != attempt.id
+                    || authorization.attempt_fence != projection.fence
+                    || authorization.max_replacement_epochs == 0
+                    || authorization.max_reserved_elapsed_secs == 0
+                {
+                    return Err(TransitionRejection::new(
+                        "pi_authorization_mismatch",
+                        "Pi continuation authorization is not bound to the current finite source tuple",
+                    ));
+                }
+                projection.pi_process_epoch = *initial_process_epoch;
+                projection.pi_continuation = Some(authorization.clone());
+                projection.pi_terminal_reservation = None;
+            }
+            TransitionKind::PiContinuationHeld { reason } => {
+                Self::require_actor(
+                    &request,
+                    &[
+                        ActorKind::ProcessObserver,
+                        ActorKind::Reconciler,
+                        ActorKind::Operator,
+                    ],
+                )?;
+                Self::require_running_attempt(task, &request)?;
+                if reason.trim().is_empty() {
+                    return Err(TransitionRejection::new(
+                        "reason_required",
+                        "Pi operator hold requires a stable reason",
+                    ));
+                }
+                let authorization = projection.pi_continuation.as_mut().ok_or_else(|| {
+                    TransitionRejection::new(
+                        "pi_authorization_missing",
+                        "no Pi continuation authorization exists",
+                    )
+                })?;
+                authorization.state = PiAuthorizationState::HeldOperatorRequired;
+            }
+            TransitionKind::PiContinuationEpochReserved {
+                expected_process_epoch,
+                next_process_epoch,
+                elapsed_charge_secs,
+            } => {
+                Self::require_actor(
+                    &request,
+                    &[
+                        ActorKind::ProcessObserver,
+                        ActorKind::Reconciler,
+                        ActorKind::Operator,
+                    ],
+                )?;
+                Self::require_running_attempt(task, &request)?;
+                if projection.pi_terminal_reservation.is_some() {
+                    return Err(TransitionRejection::new(
+                        "attempt_already_terminal",
+                        "terminal reservation won before continuation epoch CAS",
+                    ));
+                }
+                if projection.pi_process_epoch != *expected_process_epoch
+                    || *next_process_epoch != expected_process_epoch.saturating_add(1)
+                {
+                    return Err(TransitionRejection::new(
+                        "stale_process_epoch",
+                        "Pi continuation epoch CAS no longer matches",
+                    ));
+                }
+                let authorization = projection.pi_continuation.as_mut().ok_or_else(|| {
+                    TransitionRejection::new(
+                        "pi_authorization_missing",
+                        "no Pi continuation authorization exists",
+                    )
+                })?;
+                if authorization.state != PiAuthorizationState::Active {
+                    return Err(TransitionRejection::new(
+                        "pi_authorization_held",
+                        "Pi continuation is not actively authorized",
+                    ));
+                }
+                if authorization.epochs_used >= authorization.max_replacement_epochs
+                    || authorization
+                        .elapsed_reserved_secs
+                        .saturating_add(*elapsed_charge_secs)
+                        > authorization.max_reserved_elapsed_secs
+                {
+                    authorization.state = PiAuthorizationState::HeldOperatorRequired;
+                    return Err(TransitionRejection::new(
+                        "continuation_budget_exhausted",
+                        "finite Pi continuation budget is exhausted",
+                    ));
+                }
+                authorization.epochs_used += 1;
+                authorization.elapsed_reserved_secs = authorization
+                    .elapsed_reserved_secs
+                    .saturating_add(*elapsed_charge_secs);
+                projection.pi_process_epoch = *next_process_epoch;
+            }
+            TransitionKind::PiTerminalIntent { receipt } => {
+                Self::require_actor(&request, &[ActorKind::Worker, ActorKind::Operator])?;
+                Self::require_running_attempt(task, &request)?;
+                if projection.pi_process_epoch != receipt.process_epoch {
+                    return Err(TransitionRejection::new(
+                        "stale_process_epoch",
+                        "terminal receipt came from an old Pi process epoch",
+                    ));
+                }
+                if receipt.task_id != task.id
+                    || receipt.generation != projection.generation
+                    || receipt.attempt_fence != projection.fence
+                    || projection.current_attempt.as_ref().map(|a| a.id.as_str())
+                        != Some(receipt.attempt_id.as_str())
+                {
+                    return Err(TransitionRejection::new(
+                        "stale_attempt",
+                        "terminal receipt source tuple no longer matches",
+                    ));
+                }
+                if projection.pi_terminal_reservation.is_some() {
+                    return Err(TransitionRejection::new(
+                        "attempt_already_terminal",
+                        "first Pi terminal receipt already won",
+                    ));
+                }
+                projection.pi_terminal_reservation = Some(receipt.clone());
+                if let Some(authorization) = projection.pi_continuation.as_mut() {
+                    authorization.state = PiAuthorizationState::Consumed;
+                }
+                match receipt.disposition {
+                    crate::pi_watchdog::TerminalDisposition::SuccessIntent => { /* finalizer owns Done */
+                    }
+                    crate::pi_watchdog::TerminalDisposition::Failure => {
+                        Self::terminalize_attempt(&mut projection, AttemptDisposition::Failed)?;
+                        new_state = Status::Failed;
+                    }
+                    crate::pi_watchdog::TerminalDisposition::Park => {
+                        Self::terminalize_attempt(&mut projection, AttemptDisposition::Parked)?;
+                        new_state = Status::Waiting;
+                    }
+                    crate::pi_watchdog::TerminalDisposition::Cancel
+                    | crate::pi_watchdog::TerminalDisposition::Abort => {
+                        Self::terminalize_attempt(&mut projection, AttemptDisposition::Cancelled)?;
+                        new_state = if receipt.disposition
+                            == crate::pi_watchdog::TerminalDisposition::Abort
+                        {
+                            Status::Abandoned
+                        } else {
+                            Status::Open
+                        };
+                    }
+                }
+            }
+            TransitionKind::PiProcessEpochExited {
+                process_epoch,
+                exact_reap_proof,
+                effect_safe,
+            } => {
+                Self::require_actor(
+                    &request,
+                    &[ActorKind::ProcessObserver, ActorKind::Reconciler],
+                )?;
+                Self::require_running_attempt(task, &request)?;
+                if projection.pi_process_epoch != *process_epoch {
+                    return Err(TransitionRejection::new(
+                        "stale_process_epoch",
+                        "exit belongs to an old Pi process epoch",
+                    ));
+                }
+                let policy_valid = projection.pi_terminal_reservation.is_none()
+                    && projection.pi_continuation.as_ref().is_some_and(|a| {
+                        matches!(
+                            a.state,
+                            PiAuthorizationState::Active
+                                | PiAuthorizationState::HeldOperatorRequired
+                        )
+                    });
+                if policy_valid {
+                    if !*exact_reap_proof || !*effect_safe {
+                        if let Some(a) = projection.pi_continuation.as_mut() {
+                            a.state = PiAuthorizationState::HeldOperatorRequired;
+                        }
+                    }
+                    // Pre-terminal NeedsFinalization/hold: compatibility state stays InProgress.
+                } else {
+                    // Preserve the generic RuntimeExit/NoCompletionProtocol mapping.
+                    Self::terminalize_attempt(&mut projection, AttemptDisposition::Failed)?;
+                    new_state = Status::Failed;
+                }
+            }
         }
 
         // K6/K11: no request except explicit generation creation may leave a
@@ -614,6 +885,9 @@ impl LifecycleKernel {
                 fence: projection.fence,
                 attempt_sequence: projection.attempt_sequence,
                 current_attempt: projection.current_attempt,
+                pi_process_epoch: projection.pi_process_epoch,
+                pi_continuation: projection.pi_continuation,
+                pi_terminal_reservation: projection.pi_terminal_reservation,
             },
         };
 

@@ -1605,12 +1605,12 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
             metadata["worktree_branch"] = serde_json::json!(&worktree.branch);
             metadata["effective_cwd"] = serde_json::json!(worktree.path.to_string_lossy());
         }
+        metadata["attempt_id"] = serde_json::json!(&claim_snapshot.attempt_id);
+        metadata["attempt_fence"] = serde_json::json!(claim_snapshot.attempt_fence);
+        metadata["worktree_lease_epoch"] = serde_json::json!(claim_snapshot.attempt_fence);
         if let Some(ref state_dir) = observer_state_dir {
             metadata["worktree_observer_state_dir"] =
                 serde_json::json!(state_dir.to_string_lossy());
-            metadata["attempt_id"] = serde_json::json!(&claim_snapshot.attempt_id);
-            metadata["attempt_fence"] = serde_json::json!(claim_snapshot.attempt_fence);
-            metadata["worktree_lease_epoch"] = serde_json::json!(claim_snapshot.attempt_fence);
         }
         if worktree_info.is_none()
             && let Some(ref working_dir) = settings.working_dir
@@ -2132,6 +2132,37 @@ fn external_prompt_command(
         &settings.executor_type,
         resolved_reasoning,
     );
+    if settings.executor_type == "pi" {
+        let session_dir = output_dir.join("pi-session");
+        fs::create_dir_all(&session_dir)
+            .with_context(|| format!("failed to create {}", session_dir.display()))?;
+        let session_id = uuid::Uuid::now_v7().to_string();
+        let session_file = session_dir.join(format!("wg_{session_id}.jsonl"));
+        let header = serde_json::json!({
+            "type": "session", "version": 3, "id": session_id,
+            "timestamp": Utc::now().to_rfc3339(),
+            "cwd": settings.working_dir.as_deref().unwrap_or(".")
+        });
+        fs::write(
+            &session_file,
+            format!("{}\n", serde_json::to_string(&header)?),
+        )?;
+        fs::write(
+            output_dir.join("pi-session-plan.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "session_id": session_id, "session_dir": session_dir, "session_file": session_file,
+                "header_digest": format!("b3:{}", blake3::hash(serde_json::to_string(&header)?.as_bytes()).to_hex())
+            }))?,
+        )?;
+        if !args_have_flag(&settings.args, &["--session-dir"]) {
+            cmd_parts.push("--session-dir".into());
+            cmd_parts.push(shell_escape(&session_dir.to_string_lossy()));
+        }
+        if !args_have_flag(&settings.args, &["--session-id"]) {
+            cmd_parts.push("--session-id".into());
+            cmd_parts.push(shell_escape(&session_id));
+        }
+    }
 
     match delivery {
         ExternalPromptDelivery::OpenCodeFile => {
@@ -2847,9 +2878,10 @@ fi
             let raw_stream_file = output_dir.join("raw_stream.jsonl");
             let raw_str = raw_stream_file.to_string_lossy().to_string();
             let cmd = format!(
-                "{timed_command} > >(tee -a {raw} >> \"$OUTPUT_FILE\") 2>> \"$OUTPUT_FILE\"",
+                "{{ {timed_command} > >(tee -a {raw} >> \"$OUTPUT_FILE\") 2>> \"$OUTPUT_FILE\" & WG_PI_CHILD_PID=$!; wg pi-watchdog bootstrap \"$TASK_ID\" --agent-dir {dir} --pid $WG_PI_CHILD_PID 2>> \"$OUTPUT_FILE\" || true; wait $WG_PI_CHILD_PID; }}",
                 timed_command = timed_command,
                 raw = shell_escape(&raw_str),
+                dir = shell_escape(&output_dir.to_string_lossy()),
             );
             let bridge = format!(
                 "wg pi-stream-bridge --agent-dir {dir} --exit-code $EXIT_CODE 2>> \"$OUTPUT_FILE\" \
@@ -2930,6 +2962,12 @@ fi
         String::new()
     };
 
+    let pi_exit_reconcile = if executor_type == "pi" {
+        "wg pi-watchdog process-exit \"$TASK_ID\" --exit-code \"$EXIT_CODE\" 2>> \"$OUTPUT_FILE\" || wg fail \"$TASK_ID\" --class agent-exit-nonzero --reason \"Pi exited without a policy-valid continuation authorization\" 2>> \"$OUTPUT_FILE\" || true"
+    } else {
+        ""
+    };
+
     let wrapper_script = format!(
         r#"#!/bin/bash
 TASK_ID={escaped_task_id}
@@ -2999,11 +3037,12 @@ EXIT_CODE=$?
 exec {{HEARTBEAT_GUARD_FD}}>&-
 kill $HEARTBEAT_PID 2>/dev/null; wait $HEARTBEAT_PID 2>/dev/null
 {stream_result}
+{pi_exit_reconcile}
 
 # Check if task is still in progress (agent didn't mark it done/failed)
 TASK_STATUS=$(wg show "$TASK_ID" --json 2>/dev/null | grep -o '"status": *"[^"]*"' | head -1 | sed 's/.*"status": *"//;s/"//' || echo "unknown")
 
-if [ "$TASK_STATUS" = "in-progress" ]; then
+if [ "$TASK_STATUS" = "in-progress" ] && [ "{executor_type}" != "pi" ]; then
     if [ $EXIT_CODE -eq 124 ]; then
         echo "" >> "$OUTPUT_FILE"
         echo "[wrapper] Agent killed by hard timeout, marking task failed" >> "$OUTPUT_FILE"
@@ -3109,6 +3148,8 @@ exit $EXIT_CODE
         debug_env_vars = debug_env_vars,
         stream_init = stream_init,
         stream_result = stream_result,
+        pi_exit_reconcile = pi_exit_reconcile,
+        executor_type = executor_type,
         complete_cmd = complete_cmd,
         complete_msg = complete_msg,
     );

@@ -2141,6 +2141,9 @@ fn main() -> Result<()> {
             SkillCommands::Install => commands::skills::run_install(),
         },
         Commands::PiPlugin { command } => commands::pi_plugin_install::run(command),
+        Commands::PiWatchdog { command } => {
+            commands::pi_watchdog::run(&workgraph_dir, command, cli.json)
+        }
         Commands::Agency { command } => match command {
             AgencyCommands::Init => commands::agency_init::run(&workgraph_dir),
             AgencyCommands::Human { command } => match command {

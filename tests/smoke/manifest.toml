@@ -2700,6 +2700,13 @@ description = "Installed-binary real daemon/wrapper/Fake-Pi terminal flow: basel
 timeout_seconds = 90
 
 [[scenario]]
+name = "pi_session_watchdog_human_flow"
+script = "scenarios/pi_session_watchdog_human_flow.sh"
+owners = ["implement-pi-stalled"]
+description = "Installed-binary PTY/Fake-Pi flow over the production lifecycle ledger and durable watchdog projector: displays static 300s soft and >=900s hard policy; proves soft probe vs hard grace/fence/resume, progress/provider/wait/tool/unknown protections, prompt NeedsFinalization and append-once same-session markers across restart, current-epoch terminal intents with SuccessIntent non-Done, stable finite manual grants and operator abort, and one immutable source attempt/owner/session/route/accounting domain."
+timeout_seconds = 120
+
+[[scenario]]
 name = "spawn_observer_preparation_recovery"
 script = "scenarios/spawn_observer_preparation_recovery.sh"
 owners = ["verify-spawn-recovery"]

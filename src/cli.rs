@@ -1504,6 +1504,13 @@ pub enum Commands {
         command: PiPluginCommands,
     },
 
+    /// Inspect or safely control an authorized Pi task-worker continuation.
+    #[command(name = "pi-watchdog")]
+    PiWatchdog {
+        #[command(subcommand)]
+        command: PiWatchdogCommands,
+    },
+
     /// Manage the agency (roles + tradeoffs)
     Agency {
         #[command(subcommand)]
@@ -5194,6 +5201,80 @@ pub enum PiPluginCommands {
 }
 
 #[derive(Subcommand)]
+pub enum PiWatchdogCommands {
+    /// Show exact source/session/route/process proof, clocks, budgets, and next action.
+    Status {
+        #[arg(value_name = "TASK")]
+        id: String,
+    },
+    /// Add one finite, audited same-session continuation grant.
+    Resume {
+        #[arg(value_name = "TASK")]
+        id: String,
+        #[arg(long)]
+        reason: String,
+        #[arg(long, default_value_t = 1)]
+        grant_epochs: u32,
+        #[arg(long, default_value = "600")]
+        grant_elapsed_secs: u64,
+        #[arg(long)]
+        ack_call: Option<String>,
+        #[arg(long)]
+        disposition: Option<String>,
+        #[arg(long)]
+        receipt: Option<String>,
+    },
+    /// Submit an explicit first-terminal-wins operator abort to the lifecycle kernel.
+    Abort {
+        #[arg(value_name = "TASK")]
+        id: String,
+        #[arg(long)]
+        reason: String,
+    },
+    /// Internal spawn-gated binding of a Pi child to its exact session/route/source tuple.
+    #[command(name = "bootstrap", hide = true)]
+    Bootstrap {
+        id: String,
+        #[arg(long)]
+        agent_dir: PathBuf,
+        #[arg(long)]
+        pid: u32,
+    },
+    /// Internal exact process-exit reconciliation; preserves generic failure when unauthorized.
+    #[command(name = "process-exit", hide = true)]
+    ProcessExit {
+        id: String,
+        #[arg(long)]
+        exit_code: i32,
+    },
+    /// Credential-free deterministic adapter used only by the permanent Fake-Pi smoke.
+    #[command(name = "fixture-init", hide = true)]
+    FixtureInit {
+        id: String,
+        #[arg(long)]
+        worktree: PathBuf,
+        #[arg(long, default_value_t = 0)]
+        now: i64,
+    },
+    /// Feed one bounded native-format Fake-Pi event to the durable production projector.
+    #[command(name = "fixture-observe", hide = true)]
+    FixtureObserve {
+        id: String,
+        #[arg(long)]
+        event: String,
+        #[arg(long)]
+        now: i64,
+    },
+    /// Tick the production projector with deterministic fixture time.
+    #[command(name = "fixture-tick", hide = true)]
+    FixtureTick {
+        id: String,
+        #[arg(long)]
+        now: i64,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum AgencyCommands {
     /// Seed agency with starter roles and tradeoffs
     Init,
@@ -6711,6 +6792,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Resource { .. } => "resource",
         Commands::Skill { .. } => "skill",
         Commands::PiPlugin { .. } => "pi-plugin",
+        Commands::PiWatchdog { .. } => "pi-watchdog",
         Commands::Agency { .. } => "agency",
         Commands::Peer { .. } => "peer",
         Commands::Role { .. } => "role",

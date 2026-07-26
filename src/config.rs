@@ -206,6 +206,10 @@ fn worktree_observer_config_is_default(value: &crate::worktree_observer::Observe
     value == &crate::worktree_observer::ObserverConfig::default()
 }
 
+fn pi_watchdog_config_is_default(value: &crate::pi_watchdog::WatchdogPolicy) -> bool {
+    value == &crate::pi_watchdog::WatchdogPolicy::default()
+}
+
 /// Main configuration structure
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
@@ -261,6 +265,12 @@ pub struct Config {
     /// before the launch permit and never adapt from telemetry mid-attempt.
     #[serde(default, skip_serializing_if = "worktree_observer_config_is_default")]
     pub worktree_observer: crate::worktree_observer::ObserverConfig,
+
+    /// Static, attempt-frozen Pi task-worker observation and continuation
+    /// policy. The 300-second soft clock is probe-only; hard phase clocks are
+    /// independently validated and never adapted from telemetry.
+    #[serde(default, skip_serializing_if = "pi_watchdog_config_is_default")]
+    pub pi_watchdog: crate::pi_watchdog::WatchdogPolicy,
 
     /// Model routing: per-role model+provider assignments
     #[serde(default)]
@@ -6864,6 +6874,13 @@ impl Config {
                 rule: "worktree-observer-policy".into(),
                 message: error.to_string(),
                 fix: "Use repository-relative generated_paths (no '..' or absolute roots), debounce_ms 10..=5000, reconcile_interval_secs 1..=300, observed_activity_grace_secs <= 600, and max_observed_only_extension_secs <= 3600 with grace <= cap.".into(),
+            });
+        }
+        if let Err(error) = self.pi_watchdog.validate() {
+            result.errors.push(ConfigDiagnostic {
+                rule: "pi-watchdog-static-policy".into(),
+                message: error.to_string(),
+                fix: "Keep meaningful_silence_secs exactly 300, free/low provider hard thresholds >= 900, a separate bounded hard grace, and finite nonzero recovery budgets.".into(),
             });
         }
 

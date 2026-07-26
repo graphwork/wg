@@ -44,6 +44,9 @@ struct TaskDetails {
     /// Stable downstream/TUI read model with explicitly separate clocks.
     #[serde(skip_serializing_if = "Option::is_none")]
     activity_clocks: Option<worksgood::worktree_observer::ActivityClocksReadModel>,
+    /// Durable Pi process/session watchdog projection; diagnostic only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pi_watchdog: Option<worksgood::pi_watchdog::PiWatchdogState>,
     priority: Priority,
     #[serde(skip_serializing_if = "Option::is_none")]
     assigned: Option<String>,
@@ -738,6 +741,13 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
     let activity_clocks = worktree_observer.clone().map(|projection| {
         worksgood::worktree_observer::activity_clocks_read_model(projection, None)
     });
+    let pi_watchdog = task.lifecycle.current_attempt.as_ref().and_then(|attempt| {
+        worksgood::pi_watchdog::PiWatchdog::open(
+            &dir.join("attempts").join(&attempt.id).join("pi/state.json"),
+        )
+        .ok()
+        .map(|watchdog| watchdog.state().clone())
+    });
 
     let details = TaskDetails {
         id: task.id.clone(),
@@ -747,6 +757,7 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         lifecycle: task.lifecycle.clone(),
         worktree_observer,
         activity_clocks,
+        pi_watchdog,
         priority: task.priority,
         assigned: task.assigned.clone(),
         hours: task.estimate.as_ref().and_then(|e| e.hours),
@@ -1373,9 +1384,16 @@ fn print_human_readable(details: &TaskDetails) {
         }
         // Receipt-proven progress is intentionally not synthesized from the
         // filesystem channel. The Pi watchdog owns and fills this clock.
-        println!(
-            "Pi progress: proven unavailable (watchdog receipt channel has not projected evidence)"
-        );
+        if let Some(ref watchdog) = details.pi_watchdog {
+            println!(
+                "Pi progress: proven seq={} {} at {}",
+                watchdog.progress_seq, watchdog.last_meaningful_kind, watchdog.last_meaningful_at
+            );
+        } else {
+            println!(
+                "Pi progress: proven unavailable (watchdog receipt channel has not projected evidence)"
+            );
+        }
         println!(
             "Watchdog: proof default={}s; observed grace={}s / {}s hard cap (observations never reset proof)",
             worksgood::worktree_observer::DEFAULT_MEANINGFUL_SILENCE_SECS,
@@ -1412,6 +1430,38 @@ fn print_human_readable(details: &TaskDetails) {
             );
         }
         println!("  next: {}", observer.next_safe_action);
+    }
+    if let Some(ref watchdog) = details.pi_watchdog {
+        let silence = Utc::now()
+            .timestamp()
+            .saturating_sub(watchdog.last_meaningful_at);
+        println!(
+            "Pi watchdog: {:?}; phase={:?}; progress-seq={}; silence={}s / soft=300s",
+            watchdog.classification, watchdog.phase, watchdog.progress_seq, silence
+        );
+        println!(
+            "  session={} leaf={} route=pi:{}:{} qos={:?} process-epoch={} continuation-epoch={}",
+            watchdog.session.session_id,
+            watchdog.session.branch_leaf,
+            watchdog.route.provider,
+            watchdog.route.model,
+            watchdog.route.qos,
+            watchdog.process_epoch,
+            watchdog.continuation_epoch,
+        );
+        println!(
+            "  hard={} grace-deadline={:?}; prompt={:?}; budget={}/{}s; reason={}",
+            watchdog
+                .hard_resume_after_secs
+                .map(|value| format!("{value}s"))
+                .unwrap_or_else(|| "none".to_string()),
+            watchdog.hard_grace_deadline,
+            watchdog.prompt_marker,
+            watchdog.epochs_used,
+            watchdog.elapsed_reserved_secs,
+            watchdog.reason_code.as_deref().unwrap_or("none"),
+        );
+        println!("  next: wg pi-watchdog status {}", watchdog.source.task_id);
     }
     if let Some(ref not_before) = details.not_before {
         println!("Not before: {}{}", not_before, format_countdown(not_before));
@@ -1885,6 +1935,7 @@ mod tests {
             lifecycle: worksgood::lifecycle::LifecycleProjection::default(),
             worktree_observer: None,
             activity_clocks: None,
+            pi_watchdog: None,
             priority: PRIORITY_DEFAULT,
             assigned: Some("agent-1".to_string()),
             hours: Some(2.0),

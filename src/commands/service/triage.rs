@@ -356,7 +356,18 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
             // current worker may request one fenced AttemptLost transition in
             // the final locked transaction below; model triage never has
             // completion or retry authority.
-            if task.status == Status::InProgress {
+            let pi_watchdog_owns_exit =
+                task.lifecycle
+                    .pi_continuation
+                    .as_ref()
+                    .is_some_and(|authorization| {
+                        matches!(
+                            authorization.state,
+                            worksgood::lifecycle::PiAuthorizationState::Active
+                                | worksgood::lifecycle::PiAuthorizationState::HeldOperatorRequired
+                        )
+                    });
+            if task.status == Status::InProgress && !pi_watchdog_owns_exit {
                 if dead_attempt_exhausted_disk(dir, output_file) {
                     task.failure_class = Some(FailureClass::ResourceExhaustedDisk);
                     task.failure_reason =
@@ -437,7 +448,10 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
                 let Some(fresh) = fresh_graph.get_task_mut(task_id) else {
                     continue;
                 };
-                if fresh.status == Status::InProgress {
+                let pi_watchdog_owns_exit = fresh.lifecycle.pi_continuation.as_ref().is_some_and(|authorization| {
+                    matches!(authorization.state, worksgood::lifecycle::PiAuthorizationState::Active | worksgood::lifecycle::PiAuthorizationState::HeldOperatorRequired)
+                });
+                if fresh.status == Status::InProgress && !pi_watchdog_owns_exit {
                     let generation = fresh.lifecycle.generation;
                     let mut request = TransitionRequest::new(
                         TransitionKind::AttemptLost,

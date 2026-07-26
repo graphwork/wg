@@ -152,7 +152,18 @@ pub fn run_cleanup(
         let mut modified = false;
         for dead_agent in &dead_info_clone {
             if let Some(task) = graph.get_task_mut(&dead_agent.task_id) {
-                if task.status == Status::InProgress {
+                let pi_continuation_owns_reconciliation = task
+                    .lifecycle
+                    .pi_continuation
+                    .as_ref()
+                    .is_some_and(|authorization| {
+                        matches!(
+                            authorization.state,
+                            worksgood::lifecycle::PiAuthorizationState::Active
+                                | worksgood::lifecycle::PiAuthorizationState::HeldOperatorRequired
+                        )
+                    });
+                if task.status == Status::InProgress && !pi_continuation_owns_reconciliation {
                     task.status = Status::Open;
                     task.assigned = None;
 

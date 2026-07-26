@@ -38,6 +38,23 @@ pub fn run(agent_dir: &Path, exit_code: i32) -> Result<()> {
 
     let model_override = read_metadata_model(agent_dir);
 
+    // Project native progress/provider/settled evidence into the durable,
+    // process-epoch watchdog journal as well as the canonical UI stream. This
+    // is evidence only; the lifecycle kernel remains the sole task-state
+    // writer. Replay is idempotent at the watchdog action/receipt layer.
+    if let Some(mut watchdog) = open_watchdog_for_agent(agent_dir) {
+        for line in content.lines() {
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            let at = value
+                .get("timestamp")
+                .and_then(|v| v.as_i64())
+                .unwrap_or_else(|| chrono::Utc::now().timestamp());
+            let _ = watchdog.ingest_native_value(&value, at);
+        }
+    }
+
     // Pi is the accounting authority. Missing cost remains zero/unknown; WG
     // never substitutes registry pricing for Pi events.
     let tr = stream_event::translate_pi_stream(&content, model_override.as_deref(), success);
@@ -73,6 +90,20 @@ pub fn run(agent_dir: &Path, exit_code: i32) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn open_watchdog_for_agent(agent_dir: &Path) -> Option<worksgood::pi_watchdog::PiWatchdog> {
+    let content = std::fs::read_to_string(agent_dir.join("metadata.json")).ok()?;
+    let val: serde_json::Value = serde_json::from_str(&content).ok()?;
+    let attempt = val.get("attempt_id")?.as_str()?;
+    let graph_dir = agent_dir.parent()?.parent()?;
+    worksgood::pi_watchdog::PiWatchdog::open(
+        &graph_dir
+            .join("attempts")
+            .join(attempt)
+            .join("pi/state.json"),
+    )
+    .ok()
 }
 
 fn read_metadata_model(agent_dir: &Path) -> Option<String> {
