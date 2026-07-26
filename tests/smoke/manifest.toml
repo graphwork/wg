@@ -2606,3 +2606,12 @@ owners = [
 ]
 description = "Regression for fix-chat-coordinator-2: `wg chat create` while the service is DOWN (direct path) must produce a .chat-N task the supervisor can register on the next `wg service start`. Before the fix, the sessions.json atomic save() shared one sessions.json.tmp; concurrent uncoordinated writes (a TUI session create racing the daemon registering many coordinators on restart) collided and the daemon logged `Coordinator-N: register_coordinator_session failed: No such file or directory`, leaving the chat un-attachable and `wg chat resume` hung on a dir that was never created. The scenario creates a Pi chat (pi:openai-codex:gpt-5.6-sol) while stopped, starts the service, asserts the supervisor registers the session with NO missing-directory error, the UUID chat dir + sessions.json entry exist (attachable), and `wg chat list` returns within a bounded window. Credential-free: the supervisor registers BEFORE spawning the LLM handler."
 timeout_seconds = 60
+
+[[scenario]]
+name = "release_workflow_signing_contract"
+script = "scenarios/release_workflow_signing_contract.sh"
+owners = [
+    "impl-binary-signing-notarization",
+]
+description = "Static-contract smoke for impl-binary-signing-notarization (T6): pins the OS code-signing additions to .github/workflows/release.yml so a later change cannot silently regress them. Asserts (1) macos-entitlements.plist exists, is a valid plist, and does NOT enable App Sandbox; (2) the macOS matrix step runs codesign with hardened-runtime (--options runtime) + entitlements + timestamp, then `xcrun notarytool submit --wait`, then `xcrun stapler staple`/`validate`, gated on runner.os == macOS, and runs BEFORE Package binaries / Create archive (so the shipped archive carries the signature); (3) the Windows matrix step offers Azure Trusted Signing (Azure/trusted-signing-action@v0, RFC3161 timestamp) gated on method==azure, and a signtool fallback with `/fd SHA256 /tr ... /td SHA256` + `signtool verify /pa /v`; (4) the existing Sigstore actions/attest@v4 provenance layer is still present and runs AFTER archiving (signing and provenance are complementary, study §6.4); (5) both OSes have a certs-absent SKIP-with-banner path emitting ::warning:: so a release is not blocked on signing; (6) per-target signing-status JSON is produced and the assemble job surfaces an unsigned-archives section in the Release notes. Credential-free: static file inspection only."
+timeout_seconds = 30

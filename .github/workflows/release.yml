@@ -180,6 +180,273 @@ jobs:
           RUSTFLAGS: ${{ matrix.rustflags }}
         run: cargo build --release --locked --bins --target ${{ matrix.target }}
 
+      # ------------------------------------------------------------------
+      # OS code signing (macOS Developer ID + notarytool + stapler).
+      # Runs BEFORE archiving so the shipped archive carries the signature.
+      # `include_dir!` embeds the pi-worksgood JS bundle at compile time, so
+      # codesigning the final linked binary covers the embedded bytes too —
+      # no separate step for the embed. See study §6.2.
+      # Gated on runner.os == macOS (per study requirement).
+      # ------------------------------------------------------------------
+      - name: Sign and notarize macOS binaries
+        if: ${{ runner.os == 'macOS' }}
+        id: sign_macos
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          APPLE_DEVID_P12: ${{ secrets.APPLE_DEVID_P12 }}
+          APPLE_DEVID_P12_PASSWORD: ${{ secrets.APPLE_DEVID_P12_PASSWORD }}
+          APPLE_DEVID_NAME: ${{ secrets.APPLE_DEVID_NAME }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          BIN_DIR="target/${TARGET}/release"
+
+          # Certs absent: SKIP loudly. The release proceeds unsigned; the gap
+          # is flagged in the GitHub Release notes by the assemble job.
+          if [[ -z "${APPLE_DEVID_P12}" || -z "${APPLE_DEVID_NAME}" || -z "${APPLE_ID}" \
+                || -z "${APPLE_TEAM_ID}" || -z "${APPLE_APP_PASSWORD}" ]]; then
+            echo "::warning::macOS code-signing SKIPPED — Apple Developer ID secrets not configured. Binaries ship UNSIGNED and UN-NOTARIZED; users hit Gatekeeper. Configure APPLE_DEVID_P12 (base64 of the .p12), APPLE_DEVID_P12_PASSWORD, APPLE_DEVID_NAME, APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD. See docs/studies/wg-npm-distribution-design.md §6.2."
+            echo "::group::macOS code signing SKIPPED (certs missing)"
+            echo "+--------------------------------------------------------------+"
+            echo "| APPLE_* Developer ID / notarytool secrets are not set.      |"
+            echo "| macOS binaries ship UNSIGNED and UN-NOTARIZED.              |"
+            echo "| Users will hit Gatekeeper on first run.                     |"
+            echo "| Acquire an Apple Developer ID (.p12) + an app-specific       |"
+            echo "| password and configure the repository secrets before GA.     |"
+            echo "+--------------------------------------------------------------+"
+            echo "::endgroup::"
+            echo "signed=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          # Import the Developer ID Application cert into a temporary keychain.
+          KEYCHAIN_PATH="${RUNNER_TEMP}/wg-signing.keychain-db"
+          KEYCHAIN_PW="$(openssl rand -hex 32)"
+          trap 'security delete-keychain "${KEYCHAIN_PATH}" 2>/dev/null || true' EXIT
+
+          security create-keychain -p "${KEYCHAIN_PW}" "${KEYCHAIN_PATH}"
+          security set-keychain-settings -lut 900 "${KEYCHAIN_PATH}"
+          security unlock-keychain -p "${KEYCHAIN_PW}" "${KEYCHAIN_PATH}"
+
+          P12_PATH="${RUNNER_TEMP}/developer-id.p12"
+          printf '%s' "${APPLE_DEVID_P12}" | base64 --decode > "${P12_PATH}"
+          security import "${P12_PATH}" \
+            -P "${APPLE_DEVID_P12_PASSWORD}" \
+            -f pkcs12 \
+            -k "${KEYCHAIN_PATH}" \
+            -T /usr/bin/codesign
+
+          # Add our keychain to the user-domain search list (preserving existing).
+          EXISTING="$(security list-keychains -d user \
+            | sed 's/^[[:space:]]*"//; s/"[[:space:]]*$//')"
+          security list-keychains -d user -s ${EXISTING} "${KEYCHAIN_PATH}"
+          # Allow codesign to use the imported private key non-interactively.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "${KEYCHAIN_PW}" "${KEYCHAIN_PATH}"
+
+          # codesign: hardened runtime (--options runtime) + timestamp + entitlements.
+          echo "::group::codesign (Developer ID Application)"
+          for bin in wg nex; do
+            echo "Signing ${bin}..."
+            codesign --force --options runtime --timestamp \
+              --entitlements macos-entitlements.plist \
+              --identifier "io.worksgood.${bin}" \
+              --sign "${APPLE_DEVID_NAME}" \
+              "${BIN_DIR}/${bin}"
+          done
+          echo
+          echo "Verifying signatures (codesign -dv --verbose=4 + --verify --strict):"
+          for bin in wg nex; do
+            codesign -dv --verbose=4 "${BIN_DIR}/${bin}" 2>&1 | sed 's/^/  [codesign-dv] /'
+            codesign --verify --strict --verbose=2 "${BIN_DIR}/${bin}"
+          done
+          echo "::endgroup::"
+
+          # notarytool submit (zip of signed binaries) then stapler staple.
+          echo "::group::notarytool submit --wait + stapler staple"
+          STAGE="${RUNNER_TEMP}/notary-input"
+          NOTARY_ZIP="${RUNNER_TEMP}/wg-notary-${TARGET}.zip"
+          mkdir -p "${STAGE}"
+          cp "${BIN_DIR}/wg" "${BIN_DIR}/nex" "${STAGE}/"
+          ( cd "${RUNNER_TEMP}" && ditto -c -k --keepParent notary-input "wg-notary-${TARGET}.zip" )
+
+          xcrun notarytool submit "${NOTARY_ZIP}" \
+            --apple-id "${APPLE_ID}" \
+            --team-id "${APPLE_TEAM_ID}" \
+            --password "${APPLE_APP_PASSWORD}" \
+            --wait
+
+          for bin in wg nex; do
+            xcrun stapler staple "${BIN_DIR}/${bin}"
+            xcrun stapler validate "${BIN_DIR}/${bin}"
+          done
+          echo "::endgroup::"
+
+          echo "signed=true" >> "${GITHUB_OUTPUT}"
+
+      # ------------------------------------------------------------------
+      # OS code signing (Windows Authenticode). Preferred: Azure Trusted
+      # Signing (keyless/certless, Microsoft-recommended 2026 path) via
+      # Azure/trusted-signing-action. Fallback: an EV/OV PFX signed with
+      # signtool. See study §6.3. Gated on runner.os == Windows.
+      # ------------------------------------------------------------------
+      - name: Resolve Windows signing method
+        if: ${{ runner.os == 'Windows' }}
+        id: win_sign_config
+        shell: bash
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+          AZURE_TRUSTED_SIGNING_ACCOUNT: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT }}
+          AZURE_TRUSTED_SIGNING_PROFILE: ${{ secrets.AZURE_TRUSTED_SIGNING_PROFILE }}
+          WINDOWS_CODESIGN_PFX: ${{ secrets.WINDOWS_CODESIGN_PFX }}
+          WINDOWS_CODESIGN_PASSWORD: ${{ secrets.WINDOWS_CODESIGN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${AZURE_TENANT_ID}" && -n "${AZURE_CLIENT_ID}" && -n "${AZURE_CLIENT_SECRET}" \
+                && -n "${AZURE_TRUSTED_SIGNING_ENDPOINT}" && -n "${AZURE_TRUSTED_SIGNING_ACCOUNT}" \
+                && -n "${AZURE_TRUSTED_SIGNING_PROFILE}" ]]; then
+            echo "method=azure" >> "${GITHUB_OUTPUT}"
+            echo "Windows signing: Azure Trusted Signing (preferred, keyless)."
+          elif [[ -n "${WINDOWS_CODESIGN_PFX}" && -n "${WINDOWS_CODESIGN_PASSWORD}" ]]; then
+            echo "method=signtool" >> "${GITHUB_OUTPUT}"
+            echo "Windows signing: Authenticode via signtool (EV/OV PFX)."
+          else
+            echo "method=skip" >> "${GITHUB_OUTPUT}"
+            echo "::warning::Windows code-signing SKIPPED — no Azure Trusted Signing or code-sign cert secrets configured. The .exe ships UNSIGNED; users hit SmartScreen. Configure AZURE_TRUSTED_SIGNING_* (preferred) or WINDOWS_CODESIGN_PFX + WINDOWS_CODESIGN_PASSWORD. See docs/studies/wg-npm-distribution-design.md §6.3."
+            echo "::group::Windows code signing SKIPPED (certs missing)"
+            echo "+--------------------------------------------------------------+"
+            echo "| No AZURE_TRUSTED_SIGNING_* or WINDOWS_CODESIGN_PFX secrets. |"
+            echo "| Windows .exe ships UNSIGNED. Users hit SmartScreen.          |"
+            echo "| Acquire Azure Trusted Signing (preferred) or an EV/OV cert   |"
+            echo "| and configure the repository secrets before GA.              |"
+            echo "+--------------------------------------------------------------+"
+            echo "::endgroup::"
+          fi
+
+      - name: Sign binaries (Windows, Azure Trusted Signing)
+        if: ${{ runner.os == 'Windows' && steps.win_sign_config.outputs.method == 'azure' }}
+        id: sign_windows_azure
+        uses: Azure/trusted-signing-action@v0
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.AZURE_TRUSTED_SIGNING_PROFILE }}
+          # The action signs the release folder's .exe files and applies an
+          # RFC3161 timestamp (default timestamp-rfc3161) so the Authenticode
+          # signature stays valid after cert rotation.
+          files-folder: ${{ github.workspace }}/target/${{ matrix.target }}/release
+          files-folder-filter: exe
+          files-folder-recurse: false
+          timeout: 600
+
+      - name: Sign binaries (Windows, Authenticode signtool)
+        if: ${{ runner.os == 'Windows' && steps.win_sign_config.outputs.method == 'signtool' }}
+        id: sign_windows_signtool
+        shell: pwsh
+        env:
+          TARGET: ${{ matrix.target }}
+          WINDOWS_CODESIGN_PFX: ${{ secrets.WINDOWS_CODESIGN_PFX }}
+          WINDOWS_CODESIGN_PASSWORD: ${{ secrets.WINDOWS_CODESIGN_PASSWORD }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $binDir = "target\$env:TARGET\release"
+
+          # Materialize the PFX (base64 secret) to disk for signtool.
+          $pfxPath = Join-Path $env:RUNNER_TEMP "codesign.pfx"
+          [Convert]::FromBase64String($env:WINDOWS_CODESIGN_PFX) |
+            Set-Content -Path $pfxPath -AsByteStream
+
+          # Locate signtool.exe in the installed Windows SDK.
+          $signTool = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe' `
+            -ErrorAction SilentlyContinue |
+            Sort-Object -Descending { $_.FullName } |
+            Select-Object -First 1 -ExpandProperty FullName
+          if (-not $signTool) { throw "signtool.exe not found in the Windows SDK" }
+
+          # RFC3161 timestamp so the signature survives cert expiry.
+          $timestampUrl = "http://timestamp.digicert.com"
+
+          foreach ($exe in @("wg.exe", "nex.exe")) {
+            $p = Join-Path $binDir $exe
+            Write-Host "Signing $p"
+            & $signTool sign /f $pfxPath /p $env:WINDOWS_CODESIGN_PASSWORD `
+              /fd SHA256 /tr $timestampUrl /td SHA256 $p
+            Write-Host "Verifying $p"
+            & $signTool verify /pa /v $p
+          }
+
+          Remove-Item $pfxPath -Force
+
+      # Aggregate per-target OS code-signing status into a small JSON the
+      # assemble job consumes to flag unsigned archives in the Release notes.
+      - name: Record per-target signing status
+        id: signing_status
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          RUNNER_OS: ${{ runner.os }}
+          MACOS_SIGNED: ${{ steps.sign_macos.outputs.signed }}
+          WIN_METHOD: ${{ steps.win_sign_config.outputs.method }}
+          WIN_AZURE_RESULT: ${{ steps.sign_windows_azure.conclusion }}
+          WIN_SIGNTOOL_RESULT: ${{ steps.sign_windows_signtool.conclusion }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+
+          signed="false"
+          method="unsigned"
+          os_signing_expected="false"
+
+          if [[ "${RUNNER_OS}" == "macOS" ]]; then
+            os_signing_expected="true"
+            if [[ "${MACOS_SIGNED}" == "true" ]]; then
+              signed="true"; method="developer-id-notarytool"
+            else
+              signed="false"; method="unsigned"
+            fi
+          elif [[ "${RUNNER_OS}" == "Windows" ]]; then
+            os_signing_expected="true"
+            if [[ "${WIN_METHOD}" == "azure" && "${WIN_AZURE_RESULT}" == "success" ]]; then
+              signed="true"; method="azure-trusted-signing"
+            elif [[ "${WIN_METHOD}" == "signtool" && "${WIN_SIGNTOOL_RESULT}" == "success" ]]; then
+              signed="true"; method="authenticode-signtool"
+            else
+              signed="false"; method="unsigned"
+            fi
+          else
+            # Linux: no equivalent OS code-signing layer in this pipeline.
+            method="not-applicable"
+            signed="true"
+          fi
+
+          status_file="dist/signing-status-${TARGET}.json"
+          cat > "${status_file}" <<JSON
+          {
+            "target": "${TARGET}",
+            "os_signing_expected": ${os_signing_expected},
+            "signed": ${signed},
+            "method": "${method}"
+          }
+          JSON
+
+          {
+            echo "status_file=${status_file}"
+            echo "signed=${signed}"
+          } >> "${GITHUB_OUTPUT}"
+
+          echo "Signing status for ${TARGET}: signed=${signed} method=${method}"
+
       - name: Package binaries
         id: package
         shell: bash
@@ -305,6 +572,7 @@ jobs:
             ${{ steps.archive.outputs.archive_path }}
             ${{ steps.archive.outputs.checksum_path }}
             ${{ steps.archive.outputs.archive_path }}.intoto.jsonl
+            ${{ steps.signing_status.outputs.status_file }}
 
   assemble:
     name: Assemble release
@@ -425,32 +693,99 @@ jobs:
           path: dist/*
 
       - name: Write GitHub Release notes
+        env:
+          TAG: ${{ needs.plan.outputs.tag }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
-          cat > "${RUNNER_TEMP}/release-notes.md" <<'EOF'
-          Native WG release artifacts for `${{ needs.plan.outputs.tag }}`.
+          node <<'NODE'
+          const fs = require("fs");
+          const path = require("path");
 
-          This release ships both `wg` and `nex` in every platform archive.
+          const tag = process.env.TAG;
+          const version = process.env.VERSION;
+          const repo = process.env.REPOSITORY;
 
-          Supported targets:
-          - x86_64-unknown-linux-gnu
-          - aarch64-unknown-linux-gnu
-          - x86_64-apple-darwin
-          - aarch64-apple-darwin
-          - x86_64-pc-windows-msvc
+          const linux = `wg-v${version}-x86_64-unknown-linux-gnu.tar.gz`;
 
-          Verification:
+          // Aggregate per-target OS code-signing status written by the build jobs.
+          const statuses = fs.readdirSync("dist")
+            .filter((f) => f.startsWith("signing-status-") && f.endsWith(".json"))
+            .map((f) => JSON.parse(fs.readFileSync(path.join("dist", f), "utf8")));
 
-          ```bash
-          gh release download ${{ needs.plan.outputs.tag }} --repo ${{ github.repository }}
-          sha256sum -c SHA256SUMS
-          gh attestation verify wg-v${{ needs.plan.outputs.version }}-x86_64-unknown-linux-gnu.tar.gz --repo ${{ github.repository }}
-          gh attestation verify wg-v${{ needs.plan.outputs.version }}-x86_64-unknown-linux-gnu.tar.gz --repo ${{ github.repository }} --bundle wg-v${{ needs.plan.outputs.version }}-x86_64-unknown-linux-gnu.tar.gz.intoto.jsonl
-          ```
+          const expectedToSign = statuses.filter((s) => s.os_signing_expected);
+          const unsigned = expectedToSign.filter((s) => !s.signed);
+          const signed = expectedToSign.filter((s) => s.signed);
 
-          `release-manifest.json` records the complete target list, asset names,
-          SHA256 hashes, release URLs, and verification commands.
-          EOF
+          function targetLabel(t) {
+            if (t.includes("apple")) {
+              return "macOS — users will hit Gatekeeper; run `xattr -d com.apple.quarantine <archive>` before first use";
+            }
+            if (t.includes("windows")) {
+              return "Windows — users will hit SmartScreen";
+            }
+            return t;
+          }
+
+          const lines = [];
+          lines.push(`Native WG release artifacts for \`${tag}\`.`);
+          lines.push("");
+          lines.push("This release ships both `wg` and `nex` in every platform archive.");
+          lines.push("");
+          lines.push("Supported targets:");
+          lines.push("- x86_64-unknown-linux-gnu");
+          lines.push("- aarch64-unknown-linux-gnu");
+          lines.push("- x86_64-apple-darwin");
+          lines.push("- aarch64-apple-darwin");
+          lines.push("- x86_64-pc-windows-msvc");
+          lines.push("");
+
+          // Code-signing section — surfaces the OS-trust gap explicitly.
+          if (unsigned.length > 0) {
+            lines.push("## ⚠️ Code signing — INCOMPLETE (unsigned archives present)");
+            lines.push("");
+            lines.push("The following archives are **NOT OS code-signed** because signing credentials were not configured for this release:");
+            for (const s of unsigned) {
+              lines.push(`- \`${s.target}\` — ${targetLabel(s.target)}`);
+            }
+            lines.push("");
+            lines.push("Supply-chain provenance (Sigstore `gh attestation verify`) is unaffected and still valid on every archive; only the OS trust layer (Gatekeeper / SmartScreen) is missing. Acquire the required signing secrets (see `docs/studies/wg-npm-distribution-design.md` §6.2 / §6.3) and re-cut the release before claiming GA.");
+          } else if (signed.length > 0) {
+            lines.push("## Code signing");
+            lines.push("");
+            const byMethod = {};
+            for (const s of signed) {
+              (byMethod[s.method] = byMethod[s.method] || []).push(s.target);
+            }
+            if (byMethod["developer-id-notarytool"]) {
+              lines.push(`- macOS (\`${byMethod["developer-id-notarytool"].join("\`, \`")}\`): signed with a Developer ID Application certificate, notarized via \`notarytool\`, and stapled. Verify with \`codesign -dv --verbose=4 <wg>\` and \`xcrun stapler validate <wg>\`.`);
+            }
+            if (byMethod["azure-trusted-signing"]) {
+              lines.push(`- Windows (\`${byMethod["azure-trusted-signing"].join("\`, \`")}\`): Authenticode-signed via Azure Trusted Signing (with RFC3161 timestamp). Verify with \`signtool verify /pa /v <wg.exe>\`.`);
+            }
+            if (byMethod["authenticode-signtool"]) {
+              lines.push(`- Windows (\`${byMethod["authenticode-signtool"].join("\`, \`")}\`): Authenticode-signed via signtool (with RFC3161 timestamp). Verify with \`signtool verify /pa /v <wg.exe>\`.`);
+            }
+          }
+          lines.push("");
+
+          lines.push("Verification:");
+          lines.push("");
+          lines.push("```bash");
+          lines.push(`gh release download ${tag} --repo ${repo}`);
+          lines.push("sha256sum -c SHA256SUMS");
+          lines.push(`gh attestation verify ${linux} --repo ${repo}`);
+          lines.push(`gh attestation verify ${linux} --repo ${repo} --bundle ${linux}.intoto.jsonl`);
+          lines.push("```");
+          lines.push("");
+          lines.push("`release-manifest.json` records the complete target list, asset names, SHA256 hashes, release URLs, and verification commands.");
+
+          fs.writeFileSync(
+            path.join(process.env.RUNNER_TEMP, "release-notes.md"),
+            lines.join("\n") + "\n",
+          );
+          NODE
 
       - name: Publish GitHub Release
         if: ${{ needs.plan.outputs.publish == 'true' }}

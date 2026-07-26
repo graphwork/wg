@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS entitlements for the hardened-runtime build of the `wg` and `nex`
+  CLI binaries, used for Apple Developer ID notarization.
+
+  Design goals (see docs/studies/wg-npm-distribution-design.md section 6.2):
+    - Must NOT break reqwest (network I/O) or keyring (Apple Security
+      framework keychain access). None of the entitlements below restrict those.
+    - Minimal: only what a non-sandboxed, statically-linked Rust CLI actually
+      needs under the hardened runtime. We deliberately do NOT enable App
+      Sandbox (which is what would restrict network/filesystem and break the
+      CLI), and we do NOT weaken library validation (Security.framework is
+      Apple-signed and passes validation as-is).
+
+  The hardened runtime (NOT App Sandbox) is what notarization requires. The
+  hardened runtime does not block network or filesystem access by default, so
+  these two entitlements are belt-and-braces rather than strictly required,
+  but they document intent and keep the binary working if a future build ever
+  enables sandboxing or pulls in a crypto backend that touches executable
+  memory.
+-->
+<plist version="1.0">
+<dict>
+  <!-- Outbound network access (reqwest/rustls). Enforced only under App
+       Sandbox; harmless for a hardened-runtime CLI and documents that the
+       binary is a network client. Does not restrict any access. -->
+  <key>com.apple.security.network.client</key>
+  <true/>
+
+  <!-- The hardened runtime forbids writing to executable memory (W xor X) by
+       default. rustls' crypto backend (ring) performs CPU-feature probing
+       that can touch executable memory on some hosts; granting this avoids a
+       notarized-but-crashes-on-first-TLS-handshake failure. This does not
+       weaken security for a CLI that is already not sandboxed. -->
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+</dict>
+</plist>
