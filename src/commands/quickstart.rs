@@ -16,9 +16,8 @@ GETTING STARTED
 
 Pi is the recommended LLM model plane. Pi owns provider login, model discovery,
 availability, endpoint details, support validation, and reported cost. Native
-Claude and Codex CLI workers are available only by explicit handler-first
-selection; each CLI owns its login and native model IDs. Codex live chat is
-separately proven; Claude chat remains scoped to its own follow-up. WG owns
+Claude and Codex CLI workers and live chats are available only by explicit
+handler-first selection; each CLI owns its login and native model IDs. WG owns
 exact routes plus inherited reasoning. Opening a graph or TUI never creates a
 route or requires credentials.
 
@@ -112,9 +111,9 @@ GROWING THE GRAPH
 TIPS
   Use `wg show`, log progress, validate, commit, push, check messages, then `wg done`.
 
-PI MODEL PLANE (RECOMMENDED; NATIVE CLI WORKERS EXPLICIT)
+PI MODEL PLANE (RECOMMENDED; NATIVE CLI ROUTES EXPLICIT)
   Pi route:       pi:<provider>:<model>
-  Native Claude:  claude:<native-model> # explicit workers/tasks; chat follow-up
+  Native Claude:  claude:<native-model> # explicit workers/tasks + live chat
   Native Codex:   codex:<native-model>  # explicit workers/tasks + live chat
   wg config -m pi:<provider>:<model>
   wg profile select claude
@@ -186,7 +185,7 @@ RESOURCE MANAGEMENT
   wg resources
 
 PROVIDER PROFILES
-  wg profile list                  # Pi recommended; direct Codex selectable
+  wg profile list                  # Pi recommended; direct Claude/Codex selectable
   wg profile select pi
   wg profile select codex
   wg profile pi --show
@@ -397,8 +396,12 @@ fn json_output() -> serde_json::Value {
             "create": "wg profile create <name>",
             "edit": "wg profile edit <name>",
             "diff": "wg profile diff <a> <b>",
-            "init_starters": "wg profile init-starters (writes recommended Pi + explicit Codex worker starters)",
-            "starters": ["pi (recommended model plane)", "codex (explicit native CLI workers)"]
+            "init_starters": "wg profile init-starters (writes recommended Pi + explicit Claude/Codex CLI starters)",
+            "starters": [
+                "pi (recommended model plane)",
+                "claude (explicit native CLI workers + live chat)",
+                "codex (explicit native CLI workers + live chat)"
+            ]
         },
         "pi_model_plane": {
             "owner": "Pi",

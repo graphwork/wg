@@ -2968,13 +2968,13 @@ fn resolve_chat_pty_executor_and_model_with_task(
 }
 
 /// Whether a live chat must stay on WG's file-backed composer so the daemon's
-/// adapter remains its one runtime owner. Native Codex is deliberately here:
-/// `codex-handler` owns first-turn prompt injection, the persisted thread ID,
-/// `codex exec resume`, and visible turn failures. Spawning Codex directly in
-/// a TUI PTY would bypass all four guarantees and could silently cross the
-/// chat from the recorded adapter generation into an unrelated vendor session.
+/// adapter remains its one runtime owner. Native Claude and Codex are
+/// deliberately here: their handlers own first-turn prompt injection,
+/// persisted native session identity/resume, stream/tool/usage projection,
+/// and visible turn failures. Spawning either CLI directly in a TUI PTY would
+/// bypass those guarantees and split one recorded chat across runtimes.
 fn uses_supervised_chat_adapter(executor: &str) -> bool {
-    executor == "codex"
+    matches!(executor, "claude" | "codex")
 }
 
 /// Build the argv for the legacy TUI interactive `codex` PTY chat pane.
@@ -20562,18 +20562,9 @@ impl VizApp {
     /// - `native`  → `wg nex --resume <ref>` (our own REPL inside a
     ///   PTY, stdin-based input via rustyline, same treatment as
     ///   claude/codex).
-    /// - `claude`  → `claude` CLI direct. Uses the user's Claude
-    ///   subscription auth + Claude's native interactive UI.
-    /// - `codex`   → `codex` CLI direct. Uses the user's ChatGPT/Codex
-    ///   subscription auth + Codex's native UI.
-    ///
-    /// The tradeoff for claude/codex is ephemeral: the chat transcript
-    /// lives in the vendor's session store, not in `chat/<ref>/`. If
-    /// the user wants the WG chat history to include those
-    /// turns, they should pick the `native` executor with
-    /// `-m claude:opus` — that routes through our REPL which does write
-    /// inbox/outbox, at the cost of using the raw API budget instead
-    /// of the subscription.
+    /// - `claude` / `codex` → file-backed native composer. Their
+    ///   daemon-supervised adapters own the subscription-authenticated CLI,
+    ///   native session resume, and WG transcript projection.
     ///
     /// Falls through to the file-tailing chat path silently if the
     /// vendor CLI isn't on PATH or the spawn fails. Ctrl+O still toggles
@@ -20636,13 +20627,12 @@ impl VizApp {
         )
         .and_then(|s| s.endpoint_override);
 
-        // Codex live chat is an adapter-backed conversation, not an
-        // interactive vendor console. Keep the normal TUI composer connected
-        // to inbox/outbox so every turn reaches `wg codex-handler`, including
-        // the first-turn contract, native `codex exec resume <thread>`, and
-        // its visible error reply. A stale pre-migration direct-Codex tmux
-        // pane would make the daemon defer forever, so retire only this exact
-        // chat's legacy pane and release its TUI sentinel before returning.
+        // Native Claude/Codex live chat is an adapter-backed conversation,
+        // not a second interactive vendor console. Keep the normal TUI
+        // composer connected to inbox/outbox so every turn reaches the exact
+        // handler and its persisted native session. A stale pre-migration
+        // direct-vendor tmux pane would make the daemon defer forever, so
+        // retire only this chat's legacy pane and release its sentinel.
         if uses_supervised_chat_adapter(&executor) {
             self.pending_chat_pty_spawn = None;
             if self
@@ -36408,6 +36398,63 @@ mod chat_pty_executor_resolution_tests {
 
         assert_eq!(executor, "pi");
         assert_eq!(model.as_deref(), Some("pi:lunaroute:glm-5.2-nvfp4"));
+    }
+
+    #[test]
+    fn explicit_claude_chat_uses_supervised_handler_not_vendor_pty() {
+        let project = tempfile::tempdir().unwrap();
+        let wg_dir = project.path().join(".wg");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+        std::fs::write(
+            wg_dir.join("config.toml"),
+            b"[coordinator]\nexecutor = \"claude\"\nmodel = \"claude:future/opaque:model-v12\"\n",
+        )
+        .unwrap();
+        write_chat_task(
+            &wg_dir,
+            5,
+            Some("claude"),
+            Some("claude:future/opaque:model-v12"),
+        );
+        write_state(
+            &wg_dir,
+            5,
+            Some("claude"),
+            Some("claude:future/opaque:model-v12"),
+        );
+
+        let mut app = VizApp::new(
+            wg_dir.clone(),
+            crate::commands::viz::VizOptions::default(),
+            Some(true),
+            None,
+            false,
+        );
+        app.active_coordinator_id = 5;
+        app.pending_chat_pty_spawn = None;
+        app.task_panes.clear();
+        app.maybe_auto_enable_chat_pty();
+
+        assert!(
+            !app.chat_pty_mode,
+            "Claude chat must render the file-backed native composer"
+        );
+        assert!(
+            !app.chat_pty_forwards_stdin,
+            "Claude keystrokes must go to inbox/outbox, not a direct vendor PTY"
+        );
+        assert!(
+            app.pending_chat_pty_spawn.is_none(),
+            "TUI must not queue direct Claude beside claude-handler"
+        );
+        let chat_ref = worksgood::chat_id::format_chat_session_ref(5);
+        let chat_dir = worksgood::chat::chat_dir_for_ref(&wg_dir, &chat_ref);
+        assert!(
+            worksgood::session_lock::read_tui_driver_sentinel(&chat_dir)
+                .unwrap()
+                .is_none(),
+            "supervised Claude adapter must retain daemon ownership"
+        );
     }
 
     #[test]

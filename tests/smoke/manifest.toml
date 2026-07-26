@@ -2661,8 +2661,15 @@ timeout_seconds = 90
 name = "explicit_claude_worker"
 script = "scenarios/explicit_claude_worker.sh"
 owners = ["restore-explicit-claude-cli"]
-description = "Claude-worker restoration end-to-end: from a graph-only fresh HOME, activates the built-in direct Claude profile and proves unambiguous claude:* (not pi:anthropic:*) rendering; executes a fake credential-free native Claude profile worker; restores recommended Pi with an Anthropic provider route and proves a per-task claude:<opaque-native-model> override alone reaches claude --print/stream-json with exact handler-first WG identity, opaque native model, reasoning, metadata, raw assistant/result stream, and Claude result usage accounting; forces exit 42 and proves failure propagation; retries on a new exact Claude route; and forbids any Pi/Codex crossover. Agency/evaluation stay disabled and Claude chat remains explicitly scoped to its separate follow-up."
+description = "Claude-worker restoration end-to-end: from a graph-only fresh HOME, activates the built-in direct Claude profile and proves unambiguous claude:* (not pi:anthropic:*) rendering; executes a fake credential-free native Claude profile worker; restores recommended Pi with an Anthropic provider route and proves a per-task claude:<opaque-native-model> override alone reaches claude --print/stream-json with exact handler-first WG identity, opaque native model, reasoning, metadata, raw assistant/result stream, and Claude result usage accounting; forces exit 42 and proves failure propagation; retries on a new exact Claude route; and forbids any Pi/Codex crossover. Agency/evaluation stay disabled; live Claude chat is pinned independently by explicit_claude_chat_resume."
 timeout_seconds = 120
+
+[[scenario]]
+name = "explicit_claude_chat_resume"
+script = "scenarios/explicit_claude_chat_resume.sh"
+owners = ["restore-claude-chat"]
+description = "Credential-free fake-Claude live human flow: a real tmux/TUI native composer submits the first explicit claude:<opaque-model> turn through the daemon's existing claude-handler; stream text, a Bash tool/result box, and exact native usage/cost render in canonical outbox/TUI; after a real daemon restart, ordinary terminal `wg chat send` reaches `claude --resume <persisted-session-id>`; a second TUI submission forces a native error/exit 42 whose detail remains visible while the handler restarts. Pins canonical UUID session persistence, exact executor/model identity, no direct Claude vendor PTY, Pi still recommended, and zero Pi/Codex crossover."
+timeout_seconds = 90
 
 [[scenario]]
 name = "retry_current_profile"

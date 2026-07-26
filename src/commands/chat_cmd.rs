@@ -1257,6 +1257,39 @@ mod tests {
     }
 
     #[test]
+    fn create_explicit_claude_chat_is_supported_without_pi_preflight() {
+        let td = TempDir::new().unwrap();
+        let dir = td.path();
+        std::fs::create_dir_all(dir.join("service")).unwrap();
+        std::fs::write(dir.join("graph.jsonl"), "").unwrap();
+        std::fs::write(dir.join("config.toml"), "").unwrap();
+        run_create(
+            dir,
+            Some("explicit-claude"),
+            Some("claude:future/opaque:native-v12"),
+            Some("claude"),
+            None,
+            None,
+            true,
+        )
+        .unwrap();
+
+        let graph = worksgood::parser::load_graph(&graph_path(dir)).unwrap();
+        let chat = graph.get_task(".chat-0").expect("Claude chat task exists");
+        assert_eq!(chat.executor_preset_name.as_deref(), Some("claude"));
+        assert_eq!(
+            chat.model.as_deref(),
+            Some("claude:future/opaque:native-v12")
+        );
+        let state = crate::commands::service::CoordinatorState::load_for(dir, 0).unwrap();
+        assert_eq!(state.executor_override.as_deref(), Some("claude"));
+        assert_eq!(
+            state.model_override.as_deref(),
+            Some("claude:future/opaque:native-v12")
+        );
+    }
+
+    #[test]
     fn create_explicit_codex_chat_is_supported_without_pi_preflight() {
         let td = TempDir::new().unwrap();
         let dir = td.path();
