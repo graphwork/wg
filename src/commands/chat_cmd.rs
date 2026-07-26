@@ -284,9 +284,12 @@ pub fn run_create(
     // mutation unless its invocation or config explicitly selects a route.
     let selection =
         worksgood::execution_selection::require(dir, model.map(|m| (m, false)), "wg chat create")?;
-    worksgood::config::Config::load_merged(dir)?
-        .validate_pi_model_plane()
-        .context("chat creation refused: incomplete or non-Pi role routing")?;
+    // The explicit chat route is independently sufficient, just like an
+    // explicit task.model. Requiring every unrelated worker/agency role to be
+    // configured here made `wg chat create -m codex:<model>` fail in an
+    // otherwise graph-only project even though no fallback was needed.
+    // Service startup still validates its full execution plane before it can
+    // supervise this chat.
     // Plain interactive Pi is a terminal-hosted vendor console, not the
     // hermetic wg pi-handler/plugin transport. Validate that exact executable
     // before IPC or graph/session mutation so a missing Pi is visible and
@@ -1251,6 +1254,39 @@ mod tests {
         assert_eq!(chat.model, None);
         assert_eq!(chat.endpoint, None);
         assert_eq!(chat.command_argv, vec!["pi".to_string()]);
+    }
+
+    #[test]
+    fn create_explicit_codex_chat_is_supported_without_pi_preflight() {
+        let td = TempDir::new().unwrap();
+        let dir = td.path();
+        std::fs::create_dir_all(dir.join("service")).unwrap();
+        std::fs::write(dir.join("graph.jsonl"), "").unwrap();
+        std::fs::write(dir.join("config.toml"), "").unwrap();
+        run_create(
+            dir,
+            Some("explicit-codex"),
+            Some("codex:future/opaque:native-v11"),
+            Some("codex"),
+            None,
+            None,
+            true,
+        )
+        .unwrap();
+
+        let graph = worksgood::parser::load_graph(&graph_path(dir)).unwrap();
+        let chat = graph.get_task(".chat-0").expect("Codex chat task exists");
+        assert_eq!(chat.executor_preset_name.as_deref(), Some("codex"));
+        assert_eq!(
+            chat.model.as_deref(),
+            Some("codex:future/opaque:native-v11")
+        );
+        let state = crate::commands::service::CoordinatorState::load_for(dir, 0).unwrap();
+        assert_eq!(state.executor_override.as_deref(), Some("codex"));
+        assert_eq!(
+            state.model_override.as_deref(),
+            Some("codex:future/opaque:native-v11")
+        );
     }
 
     #[test]

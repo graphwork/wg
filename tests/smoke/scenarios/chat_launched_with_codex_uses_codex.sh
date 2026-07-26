@@ -3,7 +3,7 @@
 #
 # Regression (chat-launched-with): launching a chat with
 # `--executor codex --model codex:gpt-5` against a project whose global
-# default was `claude:opus` silently spawned a claude session. Two-half
+# default belongs to another execution system must never cross handlers. Two-half
 # bug:
 #
 #   1. `VizApp::maybe_auto_enable_chat_pty` only consulted
@@ -51,9 +51,10 @@ run_wg() {
         wg "$@"
 }
 
-# Project default is the user's reported config: claude:opus. The whole
-# point of the bug is that this default was silently winning.
-if ! run_wg init --no-agency -m claude:opus >init.log 2>&1; then
+# Project default is deliberately Pi. Claude init routes are no longer
+# supported; Pi still provides the cross-system default needed to prove the
+# per-chat native Codex generation wins atomically.
+if ! run_wg init --no-agency -m pi:openai-codex:global-pi-default >init.log 2>&1; then
     loud_fail "wg init failed: $(tail -10 init.log)"
 fi
 
@@ -100,18 +101,18 @@ spawn_out=$(env -u WG_TIER -u WG_AGENT_ID -u WG_TASK_ID \
     loud_fail "wg spawn-task --dry-run failed: $spawn_out"
 
 # Hard assertions.
-if grep -qE 'wg claude-handler' <<<"$spawn_out"; then
-    loud_fail "spawn-task dispatched to claude-handler despite WG_EXECUTOR_TYPE=codex (chat-launched-with regression returned):\n$spawn_out"
+if grep -qE 'wg (claude|pi)-handler|^pi ' <<<"$spawn_out"; then
+    loud_fail "spawn-task crossed away from Codex despite WG_EXECUTOR_TYPE=codex (chat-launched-with regression returned):\n$spawn_out"
 fi
 if ! grep -qE 'wg codex-handler' <<<"$spawn_out"; then
     loud_fail "spawn-task did not dispatch to codex-handler. Output:\n$spawn_out"
 fi
-if grep -qE -- '-m claude:opus' <<<"$spawn_out"; then
-    loud_fail "spawn-task used -m claude:opus despite WG_MODEL=codex:gpt-5 (model-half of chat-launched-with regression):\n$spawn_out"
+if grep -qE -- '-m pi:openai-codex:global-pi-default' <<<"$spawn_out"; then
+    loud_fail "spawn-task used the global Pi model despite WG_MODEL=codex:gpt-5 (model-half of chat-launched-with regression):\n$spawn_out"
 fi
 if ! grep -qE -- '-m codex:gpt-5' <<<"$spawn_out"; then
     loud_fail "spawn-task did not pass -m codex:gpt-5 to codex-handler. Output:\n$spawn_out"
 fi
 
-echo "PASS: chat created with --executor codex --model codex:gpt-5 dispatches codex-handler -m codex:gpt-5 (not claude:opus)"
+echo "PASS: chat created with --executor codex --model codex:gpt-5 dispatches codex-handler -m codex:gpt-5 (never the Pi default)"
 exit 0

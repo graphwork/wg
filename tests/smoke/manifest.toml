@@ -958,7 +958,7 @@ owners = [
     "fix-tui-new",
     "smoke-gate-is",
 ]
-description = "Regression for chat-launched-with: launching a chat with --executor codex --model codex:gpt-5 against a project whose default is claude:opus must dispatch wg codex-handler with -m codex:gpt-5, NOT wg claude-handler with -m claude:opus. Locks both halves of the fix end-to-end: (1) wg chat create persists executor_override and model_override into CoordinatorState, (2) spawn-task with WG_EXECUTOR_TYPE=codex + WG_MODEL=codex:gpt-5 honors WG_MODEL alongside WG_EXECUTOR_TYPE in plan_spawn (pre-fix: WG_MODEL was dropped, the codex handler ran with claude:opus). The TUI auto-PTY half is locked by unit tests in chat_pty_executor_resolution_tests."
+description = "Regression for chat-launched-with: launching a chat with --executor codex --model codex:gpt-5 against a Pi-default project must dispatch wg codex-handler with -m codex:gpt-5, never the global Pi route. Locks both halves end-to-end: (1) wg chat create persists executor_override and model_override into CoordinatorState, (2) spawn-task with WG_EXECUTOR_TYPE=codex + WG_MODEL=codex:gpt-5 honors WG_MODEL alongside WG_EXECUTOR_TYPE in plan_spawn. The TUI side is locked by chat_pty_executor_resolution_tests: explicit Codex uses the native composer plus supervised codex-handler, never a Pi/direct-vendor crossover."
 timeout_seconds = 30
 
 [[scenario]]
@@ -970,7 +970,7 @@ owners = [
     "fix-pass-no",
     "smoke-gate-is",
 ]
-description = "Pins fix-codex-chat (bypass flag) AND fix-codex-chat-2 (correct cwd + chat_dir add-dir) AND fix-pass-no (--no-alt-screen). The codex chat agent in the wg TUI MUST be launched with --dangerously-bypass-approvals-and-sandbox AND with cwd = project root (NOT .wg/chat/chat-N/) AND with --add-dir <chat_dir> so per-chat scratch stays writable AND with --no-alt-screen so codex emits line-streamed output instead of alternate-screen TUI mode (which loses scrollback and stacks animation frames in the wg PTY emulator). Drives `wg tui` with a fake codex shim that captures argv + PWD; asserts all four. The previous behaviour (cwd = chat_dir) made the codex banner report 'directory: <proj>/.wg/chat/chat-0' and broke shell command discovery for the chat agent. Mirrors the claude path's --dangerously-skip-permissions + project-root cwd posture. No real codex CLI / LLM required."
+description = "Historical scenario name retained under the grow-only manifest. The direct Codex PTY architecture evolved: explicit native Codex chat now stays on the TUI's native composer while the daemon-supervised codex-handler owns first-turn prompt injection, canonical thread persistence, native `codex exec resume`, and visible errors. Focused tests prove the TUI queues no direct vendor PTY and explicit chat creation accepts Codex; the handler's `codex exec` builder still carries --dangerously-bypass-approvals-and-sandbox. The full fake-Codex terminal/TUI flow is pinned by explicit_codex_chat_resume."
 timeout_seconds = 60
 
 [[scenario]]
@@ -2649,6 +2649,13 @@ owners = [
 ]
 description = "Codex-first restoration end-to-end: from a graph-only fresh HOME, selects the embedded direct Codex profile and proves unambiguous codex:gpt-* (not pi:openai-codex:*) rendering; executes a fake credential-free native Codex profile worker; restores the recommended Pi profile and proves a per-task codex:<opaque-native-model> override still routes to codex exec with the exact native model, reasoning, execution identity, metadata provenance, raw-stream event capture, and turn.completed usage accounting; then forces Codex exit 42 and proves the failure propagates without invoking fake Pi or Claude. Agency/evaluation remain disabled and chat restoration is separately tracked."
 timeout_seconds = 120
+
+[[scenario]]
+name = "explicit_codex_chat_resume"
+script = "scenarios/explicit_codex_chat_resume.sh"
+owners = ["restore-explicit-codex-chat"]
+description = "Credential-free fake-Codex live human flow: a real tmux/TUI native composer submits the first explicit codex:<opaque-model> turn through the daemon's existing codex-handler, an ordinary terminal `wg chat send` produces native `codex exec resume <thread-id>`, and a second TUI submission forces exit 42 whose exact stderr remains visible in outbox and on screen while the handler stays live. Pins canonical UUID-backed thread persistence, first-turn chat-agent contract, exact native model identity, no direct Codex vendor PTY, and zero Pi crossover."
+timeout_seconds = 90
 
 [[scenario]]
 name = "retry_current_profile"

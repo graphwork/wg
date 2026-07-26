@@ -16,9 +16,10 @@ GETTING STARTED
 
 Pi is the recommended LLM model plane. Pi owns provider login, model discovery,
 availability, endpoint details, support validation, and reported cost. Native
-Codex CLI workers are also available only by explicit `codex:<model>` selection;
-Codex owns its login and native model IDs. WG owns exact routes plus inherited
-reasoning. Opening a graph or TUI never creates a route or requires credentials.
+Codex CLI workers and adapter-backed live chats are also available only by
+explicit `codex:<model>` selection; Codex owns its login and native model IDs.
+WG owns exact routes plus inherited reasoning. Opening a graph or TUI never
+creates a route or requires credentials.
 
 SKILL & BUNDLE SETUP
   wg skill install
@@ -112,7 +113,7 @@ TIPS
 
 PI MODEL PLANE (RECOMMENDED; NATIVE CODEX EXPLICIT)
   Pi route:      pi:<provider>:<model>
-  Native Codex:  codex:<native-model>  # explicit opt-in; worker/task only
+  Native Codex:  codex:<native-model>  # explicit workers/tasks + live chat
   wg config -m pi:<provider>:<model>
   wg profile select codex
   wg add "Task" --model codex:<native-model> --reasoning high

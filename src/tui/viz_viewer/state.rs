@@ -2927,7 +2927,21 @@ fn resolve_chat_pty_executor_and_model_with_task(
     (executor, model)
 }
 
-/// Build the argv for the TUI's interactive `codex` PTY chat pane.
+/// Whether a live chat must stay on WG's file-backed composer so the daemon's
+/// adapter remains its one runtime owner. Native Codex is deliberately here:
+/// `codex-handler` owns first-turn prompt injection, the persisted thread ID,
+/// `codex exec resume`, and visible turn failures. Spawning Codex directly in
+/// a TUI PTY would bypass all four guarantees and could silently cross the
+/// chat from the recorded adapter generation into an unrelated vendor session.
+fn uses_supervised_chat_adapter(executor: &str) -> bool {
+    executor == "codex"
+}
+
+/// Build the argv for the legacy TUI interactive `codex` PTY chat pane.
+///
+/// New explicit Codex chats do not call this path: they use the native
+/// composer plus the daemon-supervised `codex-handler`. The builder remains
+/// for compatibility with historical tests/session inspection.
 ///
 /// The bypass flag (`--dangerously-bypass-approvals-and-sandbox`) is
 /// required: without it, codex prompts the user to approve every shell
@@ -9347,6 +9361,10 @@ pub struct VizApp {
     /// Per-coordinator last spawn info (executor, spawn_cmd), recorded at
     /// successful spawn so the death panel can display it when the pane exits.
     pub chat_last_spawn_info: HashMap<u32, (String, String)>,
+    /// Adapter chats whose one-time legacy direct-PTY cleanup ran in this TUI
+    /// process. Supervised Codex deliberately has no local pane, so the normal
+    /// maintenance loop must not shell out to tmux again on every refresh.
+    supervised_chat_adapters_prepared: HashSet<u32>,
 
     // ── Agent monitor state ──
     pub agent_monitor: AgentMonitorState,
@@ -10594,6 +10612,7 @@ impl VizApp {
             first_chat_key_echo_pending: false,
             chat_agent_death: HashMap::new(),
             chat_last_spawn_info: HashMap::new(),
+            supervised_chat_adapters_prepared: HashSet::new(),
             agent_monitor: AgentMonitorState::default(),
             agent_streams: HashMap::new(),
             agent_stream_tails: HashMap::new(),
@@ -16254,6 +16273,7 @@ impl VizApp {
             first_chat_key_echo_pending: false,
             chat_agent_death: HashMap::new(),
             chat_last_spawn_info: HashMap::new(),
+            supervised_chat_adapters_prepared: HashSet::new(),
             agent_monitor: AgentMonitorState::default(),
             agent_streams: HashMap::new(),
             agent_stream_tails: HashMap::new(),
@@ -20572,6 +20592,40 @@ impl VizApp {
             self.active_coordinator_id,
         )
         .and_then(|s| s.endpoint_override);
+
+        // Codex live chat is an adapter-backed conversation, not an
+        // interactive vendor console. Keep the normal TUI composer connected
+        // to inbox/outbox so every turn reaches `wg codex-handler`, including
+        // the first-turn contract, native `codex exec resume <thread>`, and
+        // its visible error reply. A stale pre-migration direct-Codex tmux
+        // pane would make the daemon defer forever, so retire only this exact
+        // chat's legacy pane and release its TUI sentinel before returning.
+        if uses_supervised_chat_adapter(&executor) {
+            self.pending_chat_pty_spawn = None;
+            if self
+                .supervised_chat_adapters_prepared
+                .insert(self.active_coordinator_id)
+            {
+                if let Some(mut pane) = self.task_panes.remove(&task_id) {
+                    pane.kill_underlying_session();
+                } else {
+                    worksgood::chat_id::kill_chat_tmux_session_for_id(
+                        &self.workgraph_dir,
+                        self.active_coordinator_id,
+                    );
+                }
+                let chat_ref =
+                    worksgood::chat_id::format_chat_session_ref(self.active_coordinator_id);
+                let chat_dir = worksgood::chat::chat_dir_for_ref(&self.workgraph_dir, &chat_ref);
+                worksgood::session_lock::clear_tui_driver_sentinel(&chat_dir);
+                worksgood::session_lock::clear_release_marker(&chat_dir);
+            }
+            self.chat_pty_mode = false;
+            self.chat_pty_observer = false;
+            self.chat_pty_forwards_stdin = false;
+            self.focused_panel = FocusedPanel::RightPanel;
+            return;
+        }
 
         // Task ID (`.chat-N`, with dot) is what `wg spawn-task`
         // needs to look the task up in the graph and what our
@@ -36295,6 +36349,53 @@ mod chat_pty_executor_resolution_tests {
 
         assert_eq!(executor, "pi");
         assert_eq!(model.as_deref(), Some("pi:lunaroute:glm-5.2-nvfp4"));
+    }
+
+    #[test]
+    fn explicit_codex_chat_uses_supervised_handler_not_vendor_pty() {
+        let project = tempfile::tempdir().unwrap();
+        let wg_dir = project.path().join(".wg");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+        std::fs::write(
+            wg_dir.join("config.toml"),
+            b"[coordinator]\nexecutor = \"codex\"\nmodel = \"codex:future-native\"\n",
+        )
+        .unwrap();
+        write_chat_task(&wg_dir, 6, Some("codex"), Some("codex:future-native"));
+        write_state(&wg_dir, 6, Some("codex"), Some("codex:future-native"));
+
+        let mut app = VizApp::new(
+            wg_dir.clone(),
+            crate::commands::viz::VizOptions::default(),
+            Some(true),
+            None,
+            false,
+        );
+        app.active_coordinator_id = 6;
+        app.pending_chat_pty_spawn = None;
+        app.task_panes.clear();
+        app.maybe_auto_enable_chat_pty();
+
+        assert!(
+            !app.chat_pty_mode,
+            "Codex chat must render the file-backed native composer"
+        );
+        assert!(
+            !app.chat_pty_forwards_stdin,
+            "Codex keystrokes must go to inbox/outbox, not a direct vendor PTY"
+        );
+        assert!(
+            app.pending_chat_pty_spawn.is_none(),
+            "TUI must not queue a direct codex process beside codex-handler"
+        );
+        let chat_ref = worksgood::chat_id::format_chat_session_ref(6);
+        let chat_dir = worksgood::chat::chat_dir_for_ref(&wg_dir, &chat_ref);
+        assert!(
+            worksgood::session_lock::read_tui_driver_sentinel(&chat_dir)
+                .unwrap()
+                .is_none(),
+            "supervised Codex adapter must retain daemon ownership"
+        );
     }
 
     #[test]

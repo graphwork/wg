@@ -214,7 +214,7 @@ fn resolve_config_sources(
 
 pub fn unselected_message(operation: &str) -> String {
     format!(
-        "error[{UNSELECTED_CODE}]: no LLM execution system has been selected.\nThis WG is available for graph-only use, but `{operation}` requires an LLM route.\n\nChoose Pi explicitly (recommended):\n  wg setup --route pi --yes --model pi:<provider>:<model>\n  wg profile select pi\n  wg config --global --model pi:<provider>:<model>\n  wg config --local  --model pi:<provider>:<model>\n\nOr opt into the native Codex CLI for workers/tasks:\n  wg profile select codex\n  wg config --local --model codex:<native-model>\n\nPi owns its providers and authentication; the Codex CLI owns its login and accepts its native model ID unchanged. `wg init`, graph reads, graph edits, and the TUI remain credential-free and do not create a route."
+        "error[{UNSELECTED_CODE}]: no LLM execution system has been selected.\nThis WG is available for graph-only use, but `{operation}` requires an LLM route.\n\nChoose Pi explicitly (recommended):\n  wg setup --route pi --yes --model pi:<provider>:<model>\n  wg profile select pi\n  wg config --global --model pi:<provider>:<model>\n  wg config --local  --model pi:<provider>:<model>\n\nOr opt into the native Codex CLI for workers/tasks and live chat:\n  wg profile select codex\n  wg config --local --model codex:<native-model>\n\nPi owns its providers and authentication; the Codex CLI owns its login and accepts its native model ID unchanged. `wg init`, graph reads, graph edits, and the TUI remain credential-free and do not create a route."
     )
 }
 

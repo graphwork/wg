@@ -111,10 +111,11 @@ pub fn run(
             // + faster than replaying history every turn). Session
             // id is persisted to .codex-session-id; first turn
             // reads empty (None), subsequent turns reuse.
-            let session_id_path = workgraph_dir
-                .join("chat")
-                .join(chat_ref)
-                .join(".codex-session-id");
+            // Keep the Codex thread identity beside the canonical UUID-backed
+            // inbox/outbox. Joining `chat/<ref>` literally split this marker
+            // away from the session registry after chat-N migration, so a
+            // restarted handler could silently lose native resume continuity.
+            let session_id_path = chat_dir.join(".codex-session-id");
             let prior_session_id = std::fs::read_to_string(&session_id_path)
                 .ok()
                 .map(|s| s.trim().to_string())
@@ -204,9 +205,13 @@ pub fn run(
 }
 
 fn parse_coordinator_id(chat_ref: &str) -> Option<u32> {
-    chat_ref
-        .strip_prefix("coordinator-")
-        .and_then(|s| s.parse::<u32>().ok())
+    ["coordinator-", "chat-", ".coordinator-", ".chat-"]
+        .into_iter()
+        .find_map(|prefix| {
+            chat_ref
+                .strip_prefix(prefix)
+                .and_then(|suffix| suffix.parse::<u32>().ok())
+        })
 }
 
 fn last_answered_inbox_id(workgraph_dir: &Path, chat_ref: &str) -> u64 {
@@ -229,7 +234,7 @@ fn last_answered_inbox_id(workgraph_dir: &Path, chat_ref: &str) -> u64 {
 }
 
 fn build_handler_system_prompt(workgraph_dir: &Path, chat_ref: &str, role: Option<&str>) -> String {
-    if chat_ref.starts_with("coordinator-") || role == Some("coordinator") {
+    if parse_coordinator_id(chat_ref).is_some() || role == Some("coordinator") {
         crate::commands::service::coordinator_agent::build_system_prompt(workgraph_dir)
     } else if let Some(r) = role {
         format!("You are acting in the role of: {}.", r)
@@ -660,6 +665,26 @@ mod tests {
         assert!(
             !prompt.contains("STOP — You Are A Chat Agent"),
             "follow-up turns must not re-inject the addendum (codex session resume preserves it)"
+        );
+    }
+
+    #[test]
+    fn canonical_chat_refs_are_coordinator_sessions() {
+        for (chat_ref, expected) in [
+            ("chat-7", Some(7)),
+            ("coordinator-8", Some(8)),
+            (".chat-9", Some(9)),
+            (".coordinator-10", Some(10)),
+            ("worker-11", None),
+        ] {
+            assert_eq!(parse_coordinator_id(chat_ref), expected, "{chat_ref}");
+        }
+
+        let dir = empty_workgraph();
+        assert_eq!(
+            build_handler_system_prompt(dir.path(), "chat-7", None),
+            crate::commands::service::coordinator_agent::build_system_prompt(dir.path()),
+            "the canonical chat-N alias must receive the chat-agent contract"
         );
     }
 }
