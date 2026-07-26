@@ -2658,6 +2658,13 @@ description = "Credential-free fake-Codex live human flow: a real tmux/TUI nativ
 timeout_seconds = 90
 
 [[scenario]]
+name = "explicit_claude_worker"
+script = "scenarios/explicit_claude_worker.sh"
+owners = ["restore-explicit-claude-cli"]
+description = "Claude-worker restoration end-to-end: from a graph-only fresh HOME, activates the built-in direct Claude profile and proves unambiguous claude:* (not pi:anthropic:*) rendering; executes a fake credential-free native Claude profile worker; restores recommended Pi with an Anthropic provider route and proves a per-task claude:<opaque-native-model> override alone reaches claude --print/stream-json with exact handler-first WG identity, opaque native model, reasoning, metadata, raw assistant/result stream, and Claude result usage accounting; forces exit 42 and proves failure propagation; retries on a new exact Claude route; and forbids any Pi/Codex crossover. Agency/evaluation stay disabled and Claude chat remains explicitly scoped to its separate follow-up."
+timeout_seconds = 120
+
+[[scenario]]
 name = "retry_current_profile"
 script = "scenarios/retry_current_profile.sh"
 owners = ["add-retry-current"]

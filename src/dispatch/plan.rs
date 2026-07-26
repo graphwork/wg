@@ -657,9 +657,9 @@ fn enforce_model_compat(
         // `validate_cli_backend_match` only guarded the claude/codex executors).
         ExecutorKind::Native => model_is_cli_locked,
         // The recommended Pi floor yields only to an explicitly selected
-        // native Codex route. Claude remains unsupported in this restoration
-        // and cannot be reached by accidental model-compat inference.
-        ExecutorKind::Pi => required == ExecutorKind::Codex,
+        // native CLI route. Handler-first `claude:` / `codex:` is an explicit
+        // opt-in; flexible provider routes remain on Pi and never cross over.
+        ExecutorKind::Pi => model_is_cli_locked,
         // explicit codex floor → leave incompatible pairs for validate to reject;
         // shell has no model; external CLIs route their own provider/model.
         _ => false,
@@ -763,7 +763,7 @@ fn resolve_executor(
     }
 
     // 5. Pi remains the recommended default execution system. The caller
-    // still validates the exact Pi/native-Codex worker route and reasoning.
+    // still validates the exact Pi/native-Claude/native-Codex worker route and reasoning.
     (
         ExecutorKind::Pi,
         "recommended Pi default handler".to_string(),
@@ -1451,6 +1451,26 @@ mod tests {
     }
 
     #[test]
+    fn test_explicit_claude_task_overrides_recommended_pi_floor() {
+        let config: Config =
+            toml::from_str(crate::profile::named::STARTER_PI).expect("Pi starter parses");
+        let mut task = base_task("t1");
+        task.model = Some("claude:future/opaque:model-v9".to_string());
+
+        let plan = plan_spawn(&task, &config, Some("pi"), None).unwrap();
+        assert_eq!(plan.executor, ExecutorKind::Claude);
+        assert_eq!(plan.model.raw, "claude:future/opaque:model-v9");
+        assert_eq!(
+            plan.env.get("WG_EXECUTOR_TYPE").map(String::as_str),
+            Some("claude")
+        );
+        assert_eq!(
+            plan.env.get("WG_MODEL").map(String::as_str),
+            Some("claude:future/opaque:model-v9")
+        );
+    }
+
+    #[test]
     fn test_explicit_codex_task_overrides_recommended_pi_floor() {
         let config: Config =
             toml::from_str(crate::profile::named::STARTER_PI).expect("Pi starter parses");
@@ -1567,19 +1587,20 @@ mod tests {
     }
 
     #[test]
-    fn test_recommended_pi_default_yields_only_to_explicit_codex() {
+    fn test_recommended_pi_default_yields_only_to_explicit_native_clis() {
         let config = Config::default();
         let task = base_task("t1");
 
-        let codex = plan_spawn(&task, &config, None, Some("codex:gpt-5.5")).unwrap();
-        assert_eq!(codex.executor, ExecutorKind::Codex);
-        assert_eq!(codex.model.raw, "codex:gpt-5.5");
-
-        for model in [
-            "claude:opus",
-            "nex:qwen3-coder",
-            "openrouter:stepfun/step-3.7-flash",
+        for (model, expected) in [
+            ("claude:future/opaque:model-v9", ExecutorKind::Claude),
+            ("codex:gpt-5.5", ExecutorKind::Codex),
         ] {
+            let plan = plan_spawn(&task, &config, None, Some(model)).unwrap();
+            assert_eq!(plan.executor, expected, "model={model}");
+            assert_eq!(plan.model.raw, model);
+        }
+
+        for model in ["nex:qwen3-coder", "openrouter:stepfun/step-3.7-flash"] {
             let plan = plan_spawn(&task, &config, None, Some(model)).unwrap();
             assert_eq!(plan.executor, ExecutorKind::Pi, "model={model}");
             assert_eq!(plan.model.raw, model);

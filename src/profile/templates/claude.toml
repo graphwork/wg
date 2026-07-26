@@ -1,4 +1,9 @@
-description = "WorksGood profile — Claude CLI: opus standard/default worker, haiku for agency meta-tasks"
+description = "WorksGood profile — direct Claude CLI: opus strong/default worker, haiku for weak agency"
+
+# Pi remains recommended. Activate direct Claude workers explicitly with:
+#   wg profile use claude
+# The Claude CLI owns login and native model validation. Claude chat is scoped
+# to its separate restoration/proof; this profile restores worker dispatch.
 
 [agent]
 model = "claude:opus"
@@ -9,23 +14,32 @@ max_agents = 8
 
 [tiers]
 fast = "claude:haiku"
+fast_reasoning = "low"
 standard = "claude:opus"
+standard_reasoning = "high"
 premium = "claude:opus"
+premium_reasoning = "xhigh"
 
 [models.default]
 model = "claude:opus"
+reasoning = "medium"
 
 [models.task_agent]
 model = "claude:opus"
+reasoning = "high"
 
 [models.evaluator]
 model = "claude:haiku"
+reasoning = "low"
 
 [models.assigner]
 model = "claude:haiku"
+reasoning = "low"
 
 [models.flip_inference]
 model = "claude:haiku"
+reasoning = "low"
 
 [models.flip_comparison]
 model = "claude:haiku"
+reasoning = "low"

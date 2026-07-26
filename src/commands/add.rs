@@ -15,7 +15,7 @@ use super::graph_path;
 fn resolve_model_input(model: &str, _workgraph_dir: &Path) -> Result<String> {
     worksgood::config::parse_supported_execution_route(model).with_context(|| {
         format!(
-            "WG-EXEC-ROUTE-REQUIRED: task model must be `pi:<provider>:<model>` or `codex:<native-model>`, got {model:?}"
+            "WG-EXEC-ROUTE-REQUIRED: task model must be `pi:<provider>:<model>`, `claude:<native-model>`, or `codex:<native-model>`, got {model:?}"
         )
     })?;
     Ok(model.to_string())

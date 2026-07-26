@@ -753,13 +753,15 @@ pub fn select_project_profile(
 
     let name = name.ok_or_else(|| {
         anyhow::anyhow!(
-            "Choose the recommended Pi profile or explicit Codex profile, or pass --clear. See `wg profile list`."
+            "Choose the recommended Pi profile or an explicit Claude/Codex worker profile, or pass --clear. See `wg profile list`."
         )
     })?;
     named_profile::load(name)?
         .config
         .validate_execution_model_plane()
-        .with_context(|| format!("profile {name:?} is not a supported Pi/Codex worker profile"))?;
+        .with_context(|| {
+            format!("profile {name:?} is not a supported Pi/Claude/Codex worker profile")
+        })?;
     let plan = project_profile::plan_project_selection(dir, name)?;
     if dry_run {
         if json {
@@ -1019,7 +1021,7 @@ pub fn list(dir: &Path, json: bool, installed_only: bool) -> Result<()> {
     if installed_only {
         println!();
         println!(
-            "Compatibility view: unsupported installed definitions are read-only; worker dispatch requires exact Pi or native Codex routes."
+            "Compatibility view: unsupported installed definitions are read-only; worker dispatch requires exact Pi, native Claude, or native Codex routes."
         );
     }
     Ok(())
@@ -1068,7 +1070,7 @@ pub fn use_profile(dir: &Path, name: Option<&str>, no_reload: bool, clear: bool)
     prof.config
         .validate_execution_model_plane()
         .with_context(|| {
-            format!("profile {profile_name:?} is not a supported Pi/Codex worker profile")
+            format!("profile {profile_name:?} is not a supported Pi/Claude/Codex worker profile")
         })?;
 
     // Legacy endpoint references remain readable but never participate in Pi dispatch.
@@ -1998,7 +2000,9 @@ pub fn set_model_profile(
     no_reload: bool,
 ) -> Result<()> {
     worksgood::config::parse_supported_execution_route(model).with_context(|| {
-        format!("profile role override must be an exact Pi or native Codex route, got {model:?}")
+        format!(
+            "profile role override must be an exact Pi, native Claude, or native Codex route, got {model:?}"
+        )
     })?;
     let outcome = named_profile::set_role_model_override(profile, role, model, dry_run)?;
 

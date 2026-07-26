@@ -70,8 +70,8 @@ pub enum Commands {
         #[arg(short = 'e', long, hide = true)]
         endpoint: Option<String>,
 
-        /// Select the recommended setup route (`pi`). Native Codex workers can
-        /// be selected afterward with `wg profile select codex`.
+        /// Select the recommended setup route (`pi`). Native Claude/Codex
+        /// workers can be selected afterward with `wg profile select <name>`.
         #[arg(long)]
         route: Option<String>,
 
@@ -731,7 +731,7 @@ pub enum Commands {
         #[arg(long, value_name = "EXPR")]
         filter: Vec<String>,
 
-        /// Explicit Pi or native Codex worker route to apply before retry.
+        /// Explicit Pi, native Claude, or native Codex worker route to apply before retry.
         #[arg(long, value_name = "MODEL")]
         set_model: Option<String>,
 
@@ -1795,7 +1795,7 @@ pub enum Commands {
         #[arg(long, alias = "coordinator-executor", hide = true)]
         dispatcher_executor: Option<String>,
 
-        /// Set the dispatcher's explicit Pi or native Codex worker route;
+        /// Set the dispatcher's explicit Pi, native Claude, or native Codex worker route;
         /// legacy alias: --coordinator-model
         #[arg(
             long = "dispatcher-model",
@@ -1986,7 +1986,7 @@ pub enum Commands {
         #[arg(long = "cost-output", requires = "registry_add", hide = true)]
         cost_output: Option<f64>,
 
-        /// Show every effective role's exact Pi/Codex route, reasoning, and source
+        /// Show every effective role's exact Pi/Claude/Codex route, reasoning, and source
         #[arg(long = "models")]
         show_models: bool,
 
@@ -4502,7 +4502,7 @@ pub enum ProfileCommands {
         /// Profile name
         name: String,
 
-        /// Exact Pi or native Codex worker route for this profile.
+        /// Exact Pi, native Claude, or native Codex worker route for this profile.
         #[arg(long, short = 'm')]
         model: Option<String>,
 
@@ -6237,7 +6237,7 @@ pub enum ServiceCommands {
         #[arg(long)]
         interval: Option<u64>,
 
-        /// Explicit Pi or native Codex worker route override.
+        /// Explicit Pi, native Claude, or native Codex worker route override.
         #[arg(long)]
         model: Option<String>,
 
@@ -6297,7 +6297,7 @@ pub enum ServiceCommands {
         #[arg(long)]
         interval: Option<u64>,
 
-        /// Explicit Pi or native Codex worker route override.
+        /// Explicit Pi, native Claude, or native Codex worker route override.
         #[arg(long)]
         model: Option<String>,
     },
@@ -6343,7 +6343,7 @@ pub enum ServiceCommands {
         #[arg(long, hide = true)]
         executor: Option<String>,
 
-        /// Explicit Pi or native Codex worker route override.
+        /// Explicit Pi, native Claude, or native Codex worker route override.
         #[arg(long)]
         model: Option<String>,
     },

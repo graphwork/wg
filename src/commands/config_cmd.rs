@@ -242,7 +242,7 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
         println!();
         println!("[model plane]");
         println!("  recommended = \"Pi\"");
-        println!("  explicit_worker_handlers = [\"pi\", \"codex\"]");
+        println!("  explicit_worker_handlers = [\"pi\", \"claude\", \"codex\"]");
         println!("  WG stores exact per-role routes + reasoning only; each CLI owns auth/models");
         println!();
         println!("[agency]");
@@ -940,7 +940,7 @@ pub fn update_with_reasoning(
         || !role_providers.is_empty()
     {
         anyhow::bail!(
-            "WG does not own provider/auth/endpoints. Configure those in Pi, or let the native Codex CLI own its login; set only explicit Pi/Codex routes and reasoning in WG."
+            "WG does not own provider/auth/endpoints. Configure those in Pi, or let the native Claude/Codex CLI own its login; set only explicit Pi/Claude/Codex routes and reasoning in WG."
         );
     }
     for route in model
@@ -956,7 +956,7 @@ pub fn update_with_reasoning(
         let (_, route) = split_key_value(
             "--tier",
             spec,
-            "<tier>=<pi:<provider>:<model>|codex:<native-model>>",
+            "<tier>=<pi:<provider>:<model>|claude:<native-model>|codex:<native-model>>",
         )?;
         worksgood::config::parse_supported_execution_route(route)?;
     }
@@ -969,7 +969,7 @@ pub fn update_with_reasoning(
         let (_, route) = split_key_value(
             "--role-model",
             value,
-            "<role>=<pi:<provider>:<model>|codex:<native-model>>",
+            "<role>=<pi:<provider>:<model>|claude:<native-model>|codex:<native-model>>",
         )?;
         worksgood::config::parse_supported_execution_route(route)?;
     }

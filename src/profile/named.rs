@@ -31,9 +31,9 @@ pub const STARTER_OPENCODE: &str = include_str!("templates/opencode.toml");
 pub const STARTER_PI: &str = include_str!("templates/pi.toml");
 
 /// Supported built-in starter profiles. Pi remains the recommended default;
-/// Codex is the explicit native CLI worker profile. Other legacy templates are
-/// retained only for deterministic migration/inspection.
-pub const STARTER_NAMES: &[&str] = &["pi", "codex"];
+/// Claude and Codex are explicit native CLI worker profiles. Other legacy
+/// templates are retained only for deterministic migration/inspection.
+pub const STARTER_NAMES: &[&str] = &["pi", "claude", "codex"];
 
 /// Legacy starter name retired in favour of the canonical `nex` name (matching
 /// the `wg nex` subcommand). Recognised by `load()` and `init_starters()` so
@@ -1192,9 +1192,9 @@ pub struct RoleModelOverrideOutcome {
 /// profile is the active one, re-applies it as the global config so the next
 /// spawned worker picks up the change.
 ///
-/// Exact Pi model specs are preserved **verbatim**. Native/OpenRouter and other
-/// non-Pi handler routes are migration data only and are rejected here. Per-role
-/// overrides always win
+/// Exact supported execution specs are preserved **verbatim**. Pi and direct
+/// Claude/Codex routes are accepted; native/OpenRouter migration routes remain
+/// rejected here. Per-role overrides always win
 /// over the two-tier (`wg profile pi`) strong/weak key-set, so this is the
 /// escape hatch when a single role needs to diverge from its tier.
 ///
@@ -1219,8 +1219,8 @@ pub fn set_role_model_override(
 
     parse_supported_execution_route(model).with_context(|| {
         format!(
-            "Invalid worker route '{}'. Use exact `pi:<provider>:<model>` or \
-             `codex:<native-model>` format; each CLI owns model validation.",
+            "Invalid worker route '{}'. Use exact `pi:<provider>:<model>`, \
+             `claude:<native-model>`, or `codex:<native-model>` format; each CLI owns model validation.",
             model,
         )
     })?;
@@ -1568,6 +1568,9 @@ is_default = true
     #[test]
     fn test_claude_starter_has_opus_default_worker_models() {
         let prof = parse_profile(STARTER_CLAUDE, Path::new("claude.toml"), "claude").unwrap();
+        prof.config
+            .validate_execution_model_plane()
+            .expect("built-in Claude worker profile must be dispatch-ready");
         assert_eq!(prof.config.agent.model, "claude:opus");
         assert_eq!(
             prof.config.coordinator.model.as_deref(),
@@ -1942,9 +1945,10 @@ assigner_agent = "local-agent"
     }
 
     #[test]
-    fn test_starter_names_offer_recommended_pi_and_explicit_codex() {
-        assert_eq!(STARTER_NAMES, &["pi", "codex"]);
+    fn test_starter_names_offer_recommended_pi_and_explicit_native_clis() {
+        assert_eq!(STARTER_NAMES, &["pi", "claude", "codex"]);
         assert!(starter_template("pi").is_some());
+        assert!(starter_template("claude").is_some());
         assert!(starter_template("codex").is_some());
         // Other legacy templates remain parseable by explicit name for migration.
         assert!(starter_template("nex").is_some());

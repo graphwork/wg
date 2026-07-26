@@ -104,7 +104,7 @@ pub fn resolve(dir: &Path, cli_or_task_model: Option<(&str, bool)>) -> Result<Ex
     if let Some((raw, is_task)) = cli_or_task_model {
         let route = canonical_explicit_route(raw).ok_or_else(|| {
             anyhow::anyhow!(
-                "error[WG-EXEC-ROUTE-REQUIRED]: explicit model `{raw}` is not `pi:<provider>:<model>` or `codex:<native-model>`; no fallback was attempted"
+                "error[WG-EXEC-ROUTE-REQUIRED]: explicit model `{raw}` is not `pi:<provider>:<model>`, `claude:<native-model>`, or `codex:<native-model>`; no fallback was attempted"
             )
         })?;
         let source = if is_task {
@@ -163,7 +163,7 @@ fn resolve_config_sources(
         }
         let Some(route) = canonical_explicit_route(raw) else {
             anyhow::bail!(
-                "error[WG-EXEC-ROUTE-REQUIRED]: {key} selects unsupported route {raw:?}; worker roles require explicit `pi:<provider>:<model>` or `codex:<native-model>` and never fall back"
+                "error[WG-EXEC-ROUTE-REQUIRED]: {key} selects unsupported route {raw:?}; worker roles require explicit `pi:<provider>:<model>`, `claude:<native-model>`, or `codex:<native-model>` and never fall back"
             );
         };
         let path = match source {
@@ -214,7 +214,7 @@ fn resolve_config_sources(
 
 pub fn unselected_message(operation: &str) -> String {
     format!(
-        "error[{UNSELECTED_CODE}]: no LLM execution system has been selected.\nThis WG is available for graph-only use, but `{operation}` requires an LLM route.\n\nChoose Pi explicitly (recommended):\n  wg setup --route pi --yes --model pi:<provider>:<model>\n  wg profile select pi\n  wg config --global --model pi:<provider>:<model>\n  wg config --local  --model pi:<provider>:<model>\n\nOr opt into the native Codex CLI for workers/tasks and live chat:\n  wg profile select codex\n  wg config --local --model codex:<native-model>\n\nPi owns its providers and authentication; the Codex CLI owns its login and accepts its native model ID unchanged. `wg init`, graph reads, graph edits, and the TUI remain credential-free and do not create a route."
+        "error[{UNSELECTED_CODE}]: no LLM execution system has been selected.\nThis WG is available for graph-only use, but `{operation}` requires an LLM route.\n\nChoose Pi explicitly (recommended):\n  wg setup --route pi --yes --model pi:<provider>:<model>\n  wg profile select pi\n  wg config --global --model pi:<provider>:<model>\n  wg config --local  --model pi:<provider>:<model>\n\nOr opt into a native CLI:\n  wg profile select claude\n  wg config --local --model claude:<native-model>\n  wg profile select codex\n  wg config --local --model codex:<native-model>\n\nPi owns its providers and authentication; the Claude and Codex CLIs own login and accept native model IDs unchanged. Native Claude worker/task support does not imply Claude chat support. `wg init`, graph reads, graph edits, and the TUI remain credential-free and do not create a route."
     )
 }
 

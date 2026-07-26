@@ -619,7 +619,7 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
         .context("Cannot spawn while the project profile selection is invalid")?;
     if executor_name != "shell" && resolve_task_exec_mode(task, dir) != "shell" {
         config.validate_execution_model_plane().context(
-            "spawn refused: every worker role must have an explicit Pi/Codex route and effective reasoning",
+            "spawn refused: every worker role must have an explicit Pi/Claude/Codex route and effective reasoning",
         )?;
     }
     // Get task model preference. Freeform task tags are inert labels, so they
@@ -642,7 +642,7 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
         };
         worksgood::config::parse_supported_execution_route(&selected_route).with_context(|| {
             format!(
-                "spawn refused: selected route {selected_route:?} is not an explicit Pi or native Codex worker route"
+                "spawn refused: selected route {selected_route:?} is not an explicit Pi, native Claude, or native Codex worker route"
             )
         })?;
     }
@@ -663,16 +663,18 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
     if plan.executor != worksgood::dispatch::ExecutorKind::Shell {
         if !matches!(
             plan.executor,
-            worksgood::dispatch::ExecutorKind::Pi | worksgood::dispatch::ExecutorKind::Codex
+            worksgood::dispatch::ExecutorKind::Pi
+                | worksgood::dispatch::ExecutorKind::Claude
+                | worksgood::dispatch::ExecutorKind::Codex
         ) {
             anyhow::bail!(
-                "spawn refused: resolved handler={} is not a supported Pi/Codex worker handler; no fallback was attempted",
+                "spawn refused: resolved handler={} is not a supported Pi/Claude/Codex worker handler; no fallback was attempted",
                 plan.executor.as_str()
             );
         }
         if resolved_reasoning.is_none() {
             anyhow::bail!(
-                "spawn refused: Pi route {:?} has no explicit/inherited reasoning",
+                "spawn refused: route {:?} has no explicit/inherited reasoning",
                 plan.model.raw
             );
         }
@@ -3107,22 +3109,34 @@ fn resolve_spawn_model_via_registry(
         // path may consult the legacy WG model registry.
         return Ok((effective_model, None, None));
     }
-    if executor_name == "codex" {
-        // The Codex CLI owns model validation and accepts its native model ID
+    if matches!(executor_name, "claude" | "codex") {
+        // Native CLI adapters own model validation and accept their model ID
         // as opaque input. Strip only WG's handler token; never consult or
-        // rewrite through the retired WG model catalog.
+        // rewrite through the retired WG model catalog. Fable is the one
+        // Claude alias without a native CLI shortcut, so expand it explicitly.
         let native_model = effective_model
             .as_deref()
             .map(worksgood::config::parse_supported_execution_route)
             .transpose()?
             .map(|(handler, model)| {
-                if handler != "codex" {
-                    anyhow::bail!("native Codex adapter received non-Codex route from spawn plan");
+                if handler != executor_name {
+                    anyhow::bail!(
+                        "native {executor_name} adapter received a {handler} route from spawn plan"
+                    );
                 }
-                Ok(model)
+                Ok(if handler == "claude" {
+                    worksgood::config::claude_cli_model_arg(&model)
+                } else {
+                    model
+                })
             })
             .transpose()?;
-        return Ok((native_model, Some("codex".to_string()), None));
+        let provider = if executor_name == "claude" {
+            "anthropic"
+        } else {
+            "codex"
+        };
+        return Ok((native_model, Some(provider.to_string()), None));
     }
     resolve_model_via_registry(effective_model, task_model, config, dir)
 }
@@ -4579,6 +4593,48 @@ mod tests {
         );
         assert_eq!(provider, Some("openrouter".to_string()));
         assert_eq!(endpoint, Some("my-openrouter".to_string()));
+    }
+
+    #[test]
+    fn test_native_claude_worker_strips_only_handler_and_skips_registry() {
+        let tmp = setup_registry_dir();
+        let dir = tmp.path();
+        let config = Config::load_or_default(dir);
+        let route = "claude:future/opaque:model-v9".to_string();
+
+        let (model, provider, endpoint) = resolve_spawn_model_via_registry(
+            "claude",
+            Some(route.clone()),
+            Some(&route),
+            &config,
+            dir,
+        )
+        .unwrap();
+
+        assert_eq!(model.as_deref(), Some("future/opaque:model-v9"));
+        assert_eq!(provider.as_deref(), Some("anthropic"));
+        assert_eq!(endpoint, None);
+    }
+
+    #[test]
+    fn test_native_claude_worker_expands_fable_without_registry() {
+        let tmp = setup_registry_dir();
+        let dir = tmp.path();
+        let config = Config::load_or_default(dir);
+        let route = "claude:fable".to_string();
+
+        let (model, provider, endpoint) = resolve_spawn_model_via_registry(
+            "claude",
+            Some(route.clone()),
+            Some(&route),
+            &config,
+            dir,
+        )
+        .unwrap();
+
+        assert_eq!(model.as_deref(), Some(CLAUDE_FABLE_MODEL_ID));
+        assert_eq!(provider.as_deref(), Some("anthropic"));
+        assert_eq!(endpoint, None);
     }
 
     #[test]

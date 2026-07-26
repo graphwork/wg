@@ -1804,7 +1804,7 @@ pub fn run() -> Result<()> {
     let executor = "pi".to_string();
     println!();
     println!(
-        "Pi is the recommended setup route and owns its login/providers/models. Native Codex workers remain an explicit `wg profile select codex` option."
+        "Pi is the recommended setup route and owns its login/providers/models. Native Claude/Codex workers remain explicit `wg profile select claude|codex` options."
     );
 
     let (endpoint, inherit_global_endpoints, mut model_registry_entries, model) =

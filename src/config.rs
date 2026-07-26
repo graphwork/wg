@@ -2333,9 +2333,9 @@ pub struct ResolvedPiRoute {
 
 /// Explicit worker execution identity resolved from WG orchestration policy.
 ///
-/// Pi remains the recommended/default execution system. Native Codex is an
-/// opt-in CLI adapter whose model spelling is opaque to WG; only the leading
-/// handler token is interpreted.
+/// Pi remains the recommended/default execution system. Native Claude and
+/// Codex are opt-in CLI adapters whose model spelling is opaque to WG; only
+/// the leading handler token is interpreted.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResolvedExecutionRoute {
     pub route: String,
@@ -2371,21 +2371,24 @@ pub fn parse_exact_pi_route(route: &str) -> anyhow::Result<(String, String)> {
 /// Parse an explicitly supported worker route without consulting a WG model
 /// catalog or endpoint/credential store.
 ///
-/// Pi routes retain their exact provider/model identity. `codex:<model>`
-/// routes hand the complete non-empty suffix to the native Codex CLI as opaque
-/// input. No aliases are guessed and no execution system is substituted.
+/// Pi routes retain their exact provider/model identity. `claude:<model>` and
+/// `codex:<model>` routes hand the complete non-empty suffix to their native
+/// CLI as opaque input. No aliases are guessed and no execution system is
+/// substituted.
 pub fn parse_supported_execution_route(route: &str) -> anyhow::Result<(String, String)> {
     let raw = route.trim();
     if let Ok((provider, model)) = parse_exact_pi_route(raw) {
         return Ok(("pi".to_string(), format!("{provider}:{model}")));
     }
-    if let Some(model) = raw.strip_prefix("codex:")
-        && !model.trim().is_empty()
-    {
-        return Ok(("codex".to_string(), model.to_string()));
+    for handler in ["claude", "codex"] {
+        if let Some(model) = raw.strip_prefix(&format!("{handler}:"))
+            && !model.trim().is_empty()
+        {
+            return Ok((handler.to_string(), model.to_string()));
+        }
     }
     anyhow::bail!(
-        "expected an explicit `pi:<provider>:<model>` or `codex:<native-model>` worker route"
+        "expected an explicit `pi:<provider>:<model>`, `claude:<native-model>`, or `codex:<native-model>` worker route"
     )
 }
 
@@ -3577,15 +3580,15 @@ impl Config {
             return Ok((self.agent.model.clone(), "agent.model".to_string()));
         }
         anyhow::bail!(
-            "error[WG-EXEC-ROUTE-MISSING]: role={role} has no explicit route; select the recommended Pi profile, the direct Codex profile, or configure models.{role}.model"
+            "error[WG-EXEC-ROUTE-MISSING]: role={role} has no explicit route; select the recommended Pi profile, a direct Claude/Codex profile, or configure models.{role}.model"
         )
     }
 
     /// Resolve one worker role through explicit orchestration policy only.
     ///
     /// This resolver never consults `model_registry`, endpoint configuration,
-    /// provider credentials, or a WG model catalog. Pi and native Codex keep
-    /// distinct execution identities and native model spelling.
+    /// provider credentials, or a WG model catalog. Pi, native Claude, and
+    /// native Codex keep distinct execution identities and native model spelling.
     pub fn resolve_execution_route_for_role(
         &self,
         role: DispatchRole,
@@ -3597,13 +3600,16 @@ impl Config {
                     "error[WG-EXEC-ROUTE-REQUIRED]: role={role} source={source} route={route:?}: {error}"
                 )
             })?;
-        let (provider, model) = if handler == "pi" {
-            let (provider, model) = parsed_model
-                .split_once(':')
-                .expect("parse_supported_execution_route returned a malformed Pi identity");
-            (Some(provider.to_string()), model.to_string())
-        } else {
-            (Some("codex".to_string()), parsed_model)
+        let (provider, model) = match handler.as_str() {
+            "pi" => {
+                let (provider, model) = parsed_model
+                    .split_once(':')
+                    .expect("parse_supported_execution_route returned a malformed Pi identity");
+                (Some(provider.to_string()), model.to_string())
+            }
+            "claude" => (Some("anthropic".to_string()), parsed_model),
+            "codex" => (Some("codex".to_string()), parsed_model),
+            _ => unreachable!("supported execution parser returned unknown handler"),
         };
         let reasoning = self.resolve_reasoning_for_role(role).ok_or_else(|| {
             anyhow::anyhow!(
@@ -3652,7 +3658,7 @@ impl Config {
     }
 
     /// Validate every role for supported worker dispatch. This admits exact Pi
-    /// routes and explicit native `codex:<model>` routes only.
+    /// routes and explicit native `claude:<model>` / `codex:<model>` routes.
     pub fn validate_execution_model_plane(&self) -> anyhow::Result<()> {
         self.resolve_execution_route_for_role(DispatchRole::Default)?;
         for role in DispatchRole::ALL {

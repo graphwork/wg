@@ -16,10 +16,11 @@ GETTING STARTED
 
 Pi is the recommended LLM model plane. Pi owns provider login, model discovery,
 availability, endpoint details, support validation, and reported cost. Native
-Codex CLI workers and adapter-backed live chats are also available only by
-explicit `codex:<model>` selection; Codex owns its login and native model IDs.
-WG owns exact routes plus inherited reasoning. Opening a graph or TUI never
-creates a route or requires credentials.
+Claude and Codex CLI workers are available only by explicit handler-first
+selection; each CLI owns its login and native model IDs. Codex live chat is
+separately proven; Claude chat remains scoped to its own follow-up. WG owns
+exact routes plus inherited reasoning. Opening a graph or TUI never creates a
+route or requires credentials.
 
 SKILL & BUNDLE SETUP
   wg skill install
@@ -111,14 +112,16 @@ GROWING THE GRAPH
 TIPS
   Use `wg show`, log progress, validate, commit, push, check messages, then `wg done`.
 
-PI MODEL PLANE (RECOMMENDED; NATIVE CODEX EXPLICIT)
-  Pi route:      pi:<provider>:<model>
-  Native Codex:  codex:<native-model>  # explicit workers/tasks + live chat
+PI MODEL PLANE (RECOMMENDED; NATIVE CLI WORKERS EXPLICIT)
+  Pi route:       pi:<provider>:<model>
+  Native Claude:  claude:<native-model> # explicit workers/tasks; chat follow-up
+  Native Codex:   codex:<native-model>  # explicit workers/tasks + live chat
   wg config -m pi:<provider>:<model>
+  wg profile select claude
   wg profile select codex
-  wg add "Task" --model codex:<native-model> --reasoning high
+  wg add "Task" --model claude:<native-model> --reasoning high
   Each CLI owns model discovery/validation and authentication; WG never falls
-  back across Pi/Codex execution systems.
+  back across Pi/Claude/Codex execution systems.
 
 REUSABLE FUNCTIONS
   wg func list
