@@ -437,6 +437,14 @@ pub struct Task {
     pub description: Option<String>,
     #[serde(default)]
     pub status: Status,
+    /// Authoritative lifecycle generation/attempt projection and transition
+    /// audit. Legacy graph rows deserialize to generation/revision zero
+    /// without changing their compatibility status.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::lifecycle::lifecycle_projection_is_default"
+    )]
+    pub lifecycle: crate::lifecycle::LifecycleProjection,
     #[serde(default = "default_priority")]
     pub priority: Priority,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -489,6 +497,10 @@ pub struct Task {
     /// group. Defaults to `created_at` for tasks predating this field.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_interaction_at: Option<String>,
+    /// UI-only timestamp of the newest task message. Message delivery is data:
+    /// this field is never a worker heartbeat or readiness/lifecycle input.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_message_at: Option<String>,
     /// Progress log entries
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub log: Vec<LogEntry>,
@@ -747,6 +759,7 @@ impl Default for Task {
             title: String::new(),
             description: None,
             status: Status::default(),
+            lifecycle: crate::lifecycle::LifecycleProjection::default(),
             priority: PRIORITY_DEFAULT,
             assigned: None,
             estimate: None,
@@ -765,6 +778,7 @@ impl Default for Task {
             started_at: None,
             completed_at: None,
             last_interaction_at: None,
+            last_message_at: None,
             log: vec![],
             retry_count: 0,
             max_retries: None,
@@ -851,10 +865,15 @@ impl Task {
     /// `created_at` and finally an empty string so two tasks with no timing
     /// info compare equal (and tie-break by id).
     pub fn interaction_sort_key(&self) -> &str {
-        self.last_interaction_at
-            .as_deref()
-            .or(self.created_at.as_deref())
-            .unwrap_or("")
+        match (
+            self.last_interaction_at.as_deref(),
+            self.last_message_at.as_deref(),
+        ) {
+            (Some(interaction), Some(message)) => interaction.max(message),
+            (Some(interaction), None) => interaction,
+            (None, Some(message)) => message,
+            (None, None) => self.created_at.as_deref().unwrap_or(""),
+        }
     }
 
     /// Compare two tasks for the purposes of detecting whether the closure
@@ -869,6 +888,10 @@ impl Task {
         let mut b = other.clone();
         a.last_interaction_at = None;
         b.last_interaction_at = None;
+        // Message activity has its own UI-only clock and must not be promoted
+        // into substantive task interaction/liveness by modify_graph.
+        a.last_message_at = None;
+        b.last_message_at = None;
         a == b
     }
 }
@@ -1702,6 +1725,8 @@ struct TaskHelper {
     description: Option<String>,
     #[serde(default)]
     status: Status,
+    #[serde(default)]
+    lifecycle: crate::lifecycle::LifecycleProjection,
     #[serde(default, deserialize_with = "deserialize_priority")]
     priority: Option<Priority>,
     #[serde(default)]
@@ -1738,6 +1763,8 @@ struct TaskHelper {
     completed_at: Option<String>,
     #[serde(default)]
     last_interaction_at: Option<String>,
+    #[serde(default)]
+    last_message_at: Option<String>,
     #[serde(default)]
     log: Vec<LogEntry>,
     #[serde(default)]
@@ -1898,6 +1925,7 @@ impl<'de> Deserialize<'de> for Task {
             title: helper.title,
             description: helper.description,
             status: helper.status,
+            lifecycle: helper.lifecycle,
             priority: helper.priority.unwrap_or(PRIORITY_DEFAULT),
             assigned: helper.assigned,
             estimate: helper.estimate,
@@ -1921,6 +1949,7 @@ impl<'de> Deserialize<'de> for Task {
             last_interaction_at: helper
                 .last_interaction_at
                 .or_else(|| helper.created_at.clone()),
+            last_message_at: helper.last_message_at,
             log: helper.log,
             retry_count: helper.retry_count,
             max_retries: helper.max_retries,

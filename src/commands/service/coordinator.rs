@@ -21,6 +21,9 @@ use worksgood::graph::{
     WaitCondition, WaitSpec, boost_priority, evaluate_all_cycle_failure_restarts,
     evaluate_all_cycle_iterations,
 };
+use worksgood::lifecycle::{
+    ActorKind, LifecycleActor, TransitionKind, TransitionRequest, apply_transition,
+};
 use worksgood::messages;
 use worksgood::parser::{load_graph, modify_graph};
 use worksgood::query::{blocked_open_cycle_diagnostics, ready_tasks_with_peers_cycle_aware};
@@ -627,19 +630,10 @@ fn evaluate_waiting_tasks(graph: &mut worksgood::graph::WorkGraph, dir: &Path) -
             // each declared deliverable and mark the task Done. Resuming to Open
             // (the generic path below) would re-park it forever, since there is
             // no AI agent to spawn for a human assignee.
-            if human_dispatch::try_complete_human_task_on_reply(
-                graph,
-                dir,
-                task_id,
-                wait_started.as_deref(),
-            ) {
-                modified = true;
-                eprintln!(
-                    "[dispatcher] Waiting task '{}' received human reply, marking Done",
-                    task_id
-                );
-                continue;
-            }
+            // A human reply is message evidence, not completion authority. It
+            // may satisfy the task's already-persisted explicit wait below,
+            // after which the same generation resumes as Open.
+            let _ = wait_started;
 
             // Build resume delta before mutating
             let delta = {
@@ -648,7 +642,26 @@ fn evaluate_waiting_tasks(graph: &mut worksgood::graph::WorkGraph, dir: &Path) -
             };
 
             if let Some(t) = graph.get_task_mut(task_id) {
-                t.status = Status::Open;
+                let generation = t.lifecycle.generation;
+                let request = TransitionRequest::new(
+                    TransitionKind::WaitSatisfied {
+                        wait_id: format!("wait:{task_id}:{generation}"),
+                        receipt_id: format!("condition:{task_id}:{generation}"),
+                    },
+                    LifecycleActor {
+                        kind: ActorKind::WaitMatcher,
+                        id: "coordinator".to_string(),
+                    },
+                    "wait_condition_satisfied",
+                    format!("wait-satisfied:{task_id}:{generation}"),
+                );
+                if let Err(rejection) = apply_transition(t, request) {
+                    eprintln!(
+                        "[dispatcher] Ignored stale wait satisfaction for '{}': {}",
+                        task_id, rejection
+                    );
+                    continue;
+                }
                 t.wait_condition = None;
                 // Store the resume delta as the new checkpoint so the spawned agent gets it
                 t.checkpoint = Some(delta.clone());
@@ -673,225 +686,17 @@ fn evaluate_waiting_tasks(graph: &mut worksgood::graph::WorkGraph, dir: &Path) -
 }
 
 // ---------------------------------------------------------------------------
-// Message-triggered resurrection
+// Messages are immutable data
 // ---------------------------------------------------------------------------
 
-/// Maximum number of resurrections allowed per task.
-const MAX_RESURRECTIONS: u32 = 5;
-
-/// Minimum seconds between resurrections of the same task.
-const RESURRECTION_COOLDOWN_SECS: i64 = 60;
-
-/// Scan Done tasks for unread messages and resurrect them.
+/// Compatibility hook retained for the staged coordinator migration.
 ///
-/// Two modes:
-/// 1. Reopen: if no downstream task is InProgress or Done, transition Done → Open.
-/// 2. Child task: if downstream tasks are running, create a child task
-///    `.respond-to-<parent-id>` that inherits the parent's session_id and checkpoint.
-///
-/// Guards: rate limit, sender whitelist, abandoned exclusion.
-/// Returns `true` if the graph was modified.
-fn resurrect_done_tasks(graph: &mut worksgood::graph::WorkGraph, dir: &Path) -> bool {
-    let mut modified = false;
-
-    // Collect Done tasks with unread messages from whitelisted senders
-    let candidates: Vec<_> = graph
-        .tasks()
-        .filter(|t| t.status == Status::Done)
-        .filter(|t| !t.tags.iter().any(|tag| tag == "resurrect:false"))
-        .map(|t| {
-            (
-                t.id.clone(),
-                t.assigned.clone(),
-                t.before.clone(),
-                t.session_id.clone(),
-                t.checkpoint.clone(),
-                t.resurrection_count,
-                t.last_resurrected_at.clone(),
-            )
-        })
-        .collect();
-
-    for (
-        task_id,
-        assigned_agent,
-        downstream_ids,
-        session_id,
-        checkpoint,
-        resurrection_count,
-        last_resurrected_at,
-    ) in candidates
-    {
-        // Rate limit: max resurrections
-        if resurrection_count >= MAX_RESURRECTIONS {
-            continue;
-        }
-
-        // Rate limit: cooldown
-        if let Some(ref last_ts) = last_resurrected_at
-            && let Ok(last_time) = last_ts.parse::<chrono::DateTime<chrono::Utc>>()
-        {
-            let elapsed = Utc::now().signed_duration_since(last_time);
-            if elapsed.num_seconds() < RESURRECTION_COOLDOWN_SECS {
-                continue;
-            }
-        }
-
-        // Check for unread messages not from the task's own agent
-        let messages = match messages::list_messages(dir, &task_id) {
-            Ok(msgs) => msgs,
-            Err(_) => continue,
-        };
-
-        // Find messages with status=Sent that are not from the task's own agent
-        let triggering_msgs: Vec<_> = messages
-            .iter()
-            .filter(|m| m.status == messages::DeliveryStatus::Sent)
-            .filter(|m| {
-                // Sender whitelist: user, coordinator, or dependent-task agents
-                if m.sender == "user" || m.sender == "coordinator" {
-                    return true;
-                }
-                // Allow messages from agents working on tasks that depend on this one
-                // (i.e., downstream tasks whose agents might send questions back)
-                if m.sender.starts_with("agent-") {
-                    return true;
-                }
-                false
-            })
-            .filter(|m| {
-                // Exclude messages from the task's own agent
-                if let Some(ref agent) = assigned_agent {
-                    m.sender != *agent
-                } else {
-                    true
-                }
-            })
-            .collect();
-
-        if triggering_msgs.is_empty() {
-            continue;
-        }
-
-        // Check downstream state to decide reopen vs child task
-        let has_active_downstream = downstream_ids.iter().any(|did| {
-            graph
-                .get_task(did)
-                .is_some_and(|dt| matches!(dt.status, Status::InProgress | Status::Done))
-        });
-
-        if has_active_downstream {
-            // Mode 2: Create child task
-            let child_id = format!(".respond-to-{}", task_id);
-
-            // Skip if child already exists
-            if graph.get_task(&child_id).is_some() {
-                continue;
-            }
-
-            let msg_summary: Vec<String> = triggering_msgs
-                .iter()
-                .map(|m| format!("[{}] {}: {}", m.timestamp, m.sender, m.body))
-                .collect();
-
-            let child_desc = format!(
-                "You previously completed task `{}`. There are pending messages that need your attention.\n\n\
-                 ## Pending Messages\n{}\n\n\
-                 Read and respond to these messages using `wg msg read {} --agent $WG_AGENT_ID`.\n\
-                 When done, mark this task complete with `wg done {}`.",
-                task_id,
-                msg_summary.join("\n"),
-                task_id,
-                child_id,
-            );
-
-            let child_task = Task {
-                id: child_id.clone(),
-                title: format!("Respond to messages on {}", task_id),
-                description: Some(child_desc),
-                status: Status::Open,
-                session_id: session_id.clone(),
-                checkpoint: checkpoint.clone(),
-                after: vec![task_id.clone()],
-                tags: vec!["resurrection-child".to_string()],
-                created_at: Some(Utc::now().to_rfc3339()),
-                ..Default::default()
-            };
-
-            graph.add_node(Node::Task(child_task));
-
-            // Update parent resurrection tracking
-            if let Some(t) = graph.get_task_mut(&task_id) {
-                t.resurrection_count += 1;
-                t.last_resurrected_at = Some(Utc::now().to_rfc3339());
-                t.log.push(LogEntry {
-                    timestamp: Utc::now().to_rfc3339(),
-                    actor: Some("coordinator".to_string()),
-                    user: Some(worksgood::current_user()),
-                    message: format!(
-                        "Resurrection: created child task '{}' ({} pending message(s), downstream active)",
-                        child_id,
-                        triggering_msgs.len()
-                    ),
-                });
-            }
-
-            eprintln!(
-                "[dispatcher] Resurrection: created child task '{}' for Done task '{}' ({} message(s))",
-                child_id,
-                task_id,
-                triggering_msgs.len()
-            );
-            modified = true;
-        } else {
-            // Mode 1: Reopen
-            if let Some(t) = graph.get_task_mut(&task_id) {
-                t.status = Status::Open;
-                t.assigned = None;
-                t.resurrection_count += 1;
-                t.last_resurrected_at = Some(Utc::now().to_rfc3339());
-                t.log.push(LogEntry {
-                    timestamp: Utc::now().to_rfc3339(),
-                    actor: Some("coordinator".to_string()),
-                    user: Some(worksgood::current_user()),
-                    message: format!(
-                        "Resurrection: reopened due to {} pending message(s)",
-                        triggering_msgs.len()
-                    ),
-                });
-
-                eprintln!(
-                    "[dispatcher] Resurrection: reopened Done task '{}' ({} message(s))",
-                    task_id,
-                    triggering_msgs.len()
-                );
-                modified = true;
-            }
-
-            // Reopen .assign-* dependency so reassignment can happen
-            let assign_id = format!(".assign-{}", task_id);
-            if let Some(assign_task) = graph.get_task_mut(&assign_id)
-                && assign_task.status == Status::Done
-            {
-                assign_task.status = Status::Open;
-                assign_task.assigned = None;
-                assign_task.completed_at = None;
-                assign_task.description = None;
-                assign_task.log.push(LogEntry {
-                    timestamp: Utc::now().to_rfc3339(),
-                    actor: Some("coordinator".to_string()),
-                    user: Some(worksgood::current_user()),
-                    message: "Reopened for reassignment (source task resurrected)".to_string(),
-                });
-                eprintln!(
-                    "[dispatcher] Resurrection: reopened '{}' for reassignment",
-                    assign_id,
-                );
-            }
-        }
-    }
-
-    modified
+/// Ordinary messages have no lifecycle authority: they cannot reopen a
+/// terminal generation, create response work, refresh liveness, clear a
+/// breaker, or alter readiness. Explicit `Waiting(Message)` tasks are handled
+/// exclusively by `evaluate_waiting_tasks` and its `WaitSatisfied` request.
+fn resurrect_done_tasks(_graph: &mut worksgood::graph::WorkGraph, _dir: &Path) -> bool {
+    false
 }
 
 // ---------------------------------------------------------------------------
@@ -1703,6 +1508,7 @@ fn build_auto_assign_tasks(
                     title: format!("Create agents: poor match for '{}'", source_id),
                     description: Some(desc),
                     status: Status::Open,
+                    lifecycle: worksgood::lifecycle::LifecycleProjection::default(),
                     priority: PRIORITY_DEFAULT,
                     assigned: None,
                     estimate: None,
@@ -1721,6 +1527,7 @@ fn build_auto_assign_tasks(
                     started_at: None,
                     completed_at: None,
                     last_interaction_at: None,
+                    last_message_at: None,
                     log: vec![],
                     retry_count: 0,
                     max_retries: Some(1),
@@ -2078,6 +1885,7 @@ fn build_flip_verification_tasks(
             title: format!("Verify (FLIP {:.2}): {}", eval.score, source_title),
             description: Some(desc),
             status: Status::Open,
+            lifecycle: worksgood::lifecycle::LifecycleProjection::default(),
             priority: PRIORITY_DEFAULT,
             assigned: None,
             estimate: None,
@@ -2096,6 +1904,7 @@ fn build_flip_verification_tasks(
             started_at: None,
             completed_at: None,
             last_interaction_at: None,
+            last_message_at: None,
             log: vec![],
             retry_count: 0,
             max_retries: Some(1),
@@ -2359,6 +2168,7 @@ fn build_separate_verify_tasks(
             title: format!("Verify: {}", source_title),
             description: Some(desc),
             status: Status::Open,
+            lifecycle: worksgood::lifecycle::LifecycleProjection::default(),
             priority: PRIORITY_DEFAULT,
             assigned: None,
             estimate: None,
@@ -2377,6 +2187,7 @@ fn build_separate_verify_tasks(
             started_at: None,
             completed_at: None,
             last_interaction_at: None,
+            last_message_at: None,
             log: vec![],
             retry_count: 0,
             max_retries: Some(1),
@@ -2570,6 +2381,7 @@ fn build_auto_evolve_task(
         title: format!("Auto-evolve: {}", trigger_reason),
         description: Some(desc),
         status: Status::Open,
+        lifecycle: worksgood::lifecycle::LifecycleProjection::default(),
         priority: PRIORITY_DEFAULT,
         assigned: None,
         estimate: None,
@@ -2588,6 +2400,7 @@ fn build_auto_evolve_task(
         started_at: None,
         completed_at: None,
         last_interaction_at: None,
+        last_message_at: None,
         log: vec![],
         retry_count: 0,
         max_retries: Some(1),
@@ -2784,6 +2597,7 @@ fn build_auto_create_task(
         title: format!("Auto-create: {} tasks since last creation", since_last),
         description: Some(desc),
         status: Status::Open,
+        lifecycle: worksgood::lifecycle::LifecycleProjection::default(),
         priority: PRIORITY_DEFAULT,
         assigned: None,
         estimate: None,
@@ -2802,6 +2616,7 @@ fn build_auto_create_task(
         started_at: None,
         completed_at: None,
         last_interaction_at: None,
+        last_message_at: None,
         log: vec![],
         retry_count: 0,
         max_retries: Some(1),
@@ -4360,6 +4175,30 @@ fn park_agency_execution_error(graph_path: &Path, task_id: &str, error: &anyhow:
     true
 }
 
+fn record_admission_deferral(graph_path: &Path, task_id: &str, reason: &str) {
+    let reason_key = blake3::hash(reason.as_bytes()).to_hex();
+    let _ = modify_graph(graph_path, |graph| {
+        let Some(task) = graph.get_task_mut(task_id) else {
+            return false;
+        };
+        let request = TransitionRequest::new(
+            TransitionKind::AdmissionDeferred {
+                gate: reason.to_string(),
+            },
+            LifecycleActor {
+                kind: ActorKind::Dispatcher,
+                id: "resource-admission".to_string(),
+            },
+            "resource_admission_deferred",
+            format!(
+                "admission:{task_id}:{}:{reason_key}",
+                task.lifecycle.generation
+            ),
+        );
+        apply_transition(task, request).is_ok()
+    });
+}
+
 fn spawn_agents_for_ready_tasks(
     dir: &Path,
     graph: &worksgood::graph::WorkGraph,
@@ -4494,8 +4333,11 @@ fn spawn_agents_for_ready_tasks(
             if build_class.is_build_capable() && (builds_blocked || !projected.allowed) {
                 summary.admission_deferred_tasks =
                     summary.admission_deferred_tasks.saturating_add(1);
-                summary.admission_deferred_reason.get_or_insert(reason);
+                summary
+                    .admission_deferred_reason
+                    .get_or_insert(reason.clone());
             }
+            record_admission_deferral(&gp, &task.id, &reason);
             continue;
         }
 
@@ -6432,309 +6274,65 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Message-triggered resurrection tests
+    // Messages are data tests (the old resurrection tests were inverted)
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_resurrection_detects_unread_messages_on_done_task() {
+    fn test_irrelevant_messages_never_mutate_task_lifecycle() {
         let dir = tempdir().unwrap();
         std::fs::create_dir_all(dir.path()).unwrap();
-
-        // Create a Done task
-        let mut task = Task::default();
-        task.id = "done-task".to_string();
-        task.status = Status::Done;
-        task.assigned = Some("agent-old".to_string());
-
-        let mut graph = WorkGraph::new();
-        graph.add_node(Node::Task(task));
-
-        // Send a message from "user" (not the task's own agent)
-        messages::send_message(dir.path(), "done-task", "Please fix X", "user", "normal").unwrap();
-
-        let modified = resurrect_done_tasks(&mut graph, dir.path());
-
-        assert!(modified, "Graph should be modified by resurrection");
-        let task = graph.get_task("done-task").unwrap();
-        assert_eq!(task.status, Status::Open, "Done task should be reopened");
-        assert!(task.assigned.is_none(), "Assignment should be cleared");
-        assert_eq!(task.resurrection_count, 1);
-        assert!(task.last_resurrected_at.is_some());
-        assert!(task.log.last().unwrap().message.contains("Resurrection"));
-    }
-
-    #[test]
-    fn test_resurrection_reopen_when_no_downstream_active() {
-        let dir = tempdir().unwrap();
-        std::fs::create_dir_all(dir.path()).unwrap();
-
-        // Done task with a downstream that is Open (not started)
-        let mut parent = Task::default();
-        parent.id = "parent".to_string();
-        parent.status = Status::Done;
-        parent.before = vec!["child".to_string()];
-
-        let mut child = Task::default();
-        child.id = "child".to_string();
-        child.status = Status::Open;
-        child.after = vec!["parent".to_string()];
-
-        let mut graph = WorkGraph::new();
-        graph.add_node(Node::Task(parent));
-        graph.add_node(Node::Task(child));
-
-        messages::send_message(
-            dir.path(),
-            "parent",
-            "Update needed",
-            "coordinator",
-            "normal",
-        )
-        .unwrap();
-
-        let modified = resurrect_done_tasks(&mut graph, dir.path());
-
-        assert!(modified);
-        let task = graph.get_task("parent").unwrap();
-        assert_eq!(
-            task.status,
+        let statuses = [
             Status::Open,
-            "Should reopen (downstream not active)"
-        );
-    }
-
-    #[test]
-    fn test_resurrection_child_task_when_downstream_active() {
-        let dir = tempdir().unwrap();
-        std::fs::create_dir_all(dir.path()).unwrap();
-
-        // Done task with a downstream that is InProgress
-        let mut parent = Task::default();
-        parent.id = "parent".to_string();
-        parent.status = Status::Done;
-        parent.session_id = Some("sess-123".to_string());
-        parent.checkpoint = Some("Did some work".to_string());
-        parent.before = vec!["downstream".to_string()];
-
-        let mut downstream = Task::default();
-        downstream.id = "downstream".to_string();
-        downstream.status = Status::InProgress;
-        downstream.after = vec!["parent".to_string()];
-
+            Status::InProgress,
+            Status::Done,
+            Status::Failed,
+        ];
         let mut graph = WorkGraph::new();
-        graph.add_node(Node::Task(parent));
-        graph.add_node(Node::Task(downstream));
-
-        messages::send_message(
-            dir.path(),
-            "parent",
-            "Question about X",
-            "agent-downstream",
-            "normal",
-        )
-        .unwrap();
-
-        let modified = resurrect_done_tasks(&mut graph, dir.path());
-
-        assert!(modified);
-        // Parent stays Done
-        let parent = graph.get_task("parent").unwrap();
-        assert_eq!(parent.status, Status::Done, "Parent should stay Done");
-        assert_eq!(parent.resurrection_count, 1);
-
-        // Child task created
-        let child = graph.get_task(".respond-to-parent").unwrap();
-        assert_eq!(child.status, Status::Open);
-        assert_eq!(
-            child.session_id,
-            Some("sess-123".to_string()),
-            "Session inherited"
-        );
-        assert_eq!(
-            child.checkpoint,
-            Some("Did some work".to_string()),
-            "Checkpoint inherited"
-        );
-        assert!(
-            child
-                .description
-                .as_deref()
-                .unwrap()
-                .contains("pending messages")
-        );
-    }
-
-    #[test]
-    fn test_resurrection_rate_limit_max_resurrections() {
-        let dir = tempdir().unwrap();
-        std::fs::create_dir_all(dir.path()).unwrap();
-
-        let mut task = Task::default();
-        task.id = "exhausted".to_string();
-        task.status = Status::Done;
-        task.resurrection_count = MAX_RESURRECTIONS; // Already at max
-
-        let mut graph = WorkGraph::new();
-        graph.add_node(Node::Task(task));
-
-        messages::send_message(dir.path(), "exhausted", "One more", "user", "normal").unwrap();
-
-        let modified = resurrect_done_tasks(&mut graph, dir.path());
-
-        assert!(!modified, "Should NOT resurrect: max count reached");
-        assert_eq!(graph.get_task("exhausted").unwrap().status, Status::Done);
-    }
-
-    #[test]
-    fn test_resurrection_cooldown() {
-        let dir = tempdir().unwrap();
-        std::fs::create_dir_all(dir.path()).unwrap();
-
-        let mut task = Task::default();
-        task.id = "cooled".to_string();
-        task.status = Status::Done;
-        task.resurrection_count = 1;
-        task.last_resurrected_at = Some(Utc::now().to_rfc3339()); // Just now
-
-        let mut graph = WorkGraph::new();
-        graph.add_node(Node::Task(task));
-
-        messages::send_message(dir.path(), "cooled", "Again", "user", "normal").unwrap();
-
-        let modified = resurrect_done_tasks(&mut graph, dir.path());
-
-        assert!(!modified, "Should NOT resurrect: cooldown active");
-        assert_eq!(graph.get_task("cooled").unwrap().status, Status::Done);
-    }
-
-    #[test]
-    fn test_resurrection_excluded_for_abandoned_tasks() {
-        let dir = tempdir().unwrap();
-        std::fs::create_dir_all(dir.path()).unwrap();
-
-        let mut task = Task::default();
-        task.id = "abandoned".to_string();
-        task.status = Status::Abandoned;
-
-        let mut graph = WorkGraph::new();
-        graph.add_node(Node::Task(task));
-
-        messages::send_message(dir.path(), "abandoned", "Come back", "user", "normal").unwrap();
-
-        let modified = resurrect_done_tasks(&mut graph, dir.path());
-
-        assert!(!modified, "Should NOT resurrect abandoned tasks");
-    }
-
-    #[test]
-    fn test_resurrection_ignores_messages_from_own_agent() {
-        let dir = tempdir().unwrap();
-        std::fs::create_dir_all(dir.path()).unwrap();
-
-        let mut task = Task::default();
-        task.id = "self-msg".to_string();
-        task.status = Status::Done;
-        task.assigned = Some("agent-42".to_string());
-
-        let mut graph = WorkGraph::new();
-        graph.add_node(Node::Task(task));
-
-        // Only message is from the task's own agent
-        messages::send_message(dir.path(), "self-msg", "I'm done", "agent-42", "normal").unwrap();
-
-        let modified = resurrect_done_tasks(&mut graph, dir.path());
-
-        assert!(!modified, "Should NOT resurrect from own agent's messages");
-    }
-
-    #[test]
-    fn test_resurrection_batches_multiple_messages() {
-        let dir = tempdir().unwrap();
-        std::fs::create_dir_all(dir.path()).unwrap();
-
-        let mut task = Task::default();
-        task.id = "multi".to_string();
-        task.status = Status::Done;
-
-        let mut graph = WorkGraph::new();
-        graph.add_node(Node::Task(task));
-
-        // Send 3 messages
-        messages::send_message(dir.path(), "multi", "Msg 1", "user", "normal").unwrap();
-        messages::send_message(dir.path(), "multi", "Msg 2", "coordinator", "normal").unwrap();
-        messages::send_message(dir.path(), "multi", "Msg 3", "agent-other", "normal").unwrap();
-
-        let modified = resurrect_done_tasks(&mut graph, dir.path());
-
-        assert!(modified);
-        let task = graph.get_task("multi").unwrap();
-        assert_eq!(task.status, Status::Open);
-        // Only ONE resurrection despite 3 messages
-        assert_eq!(
-            task.resurrection_count, 1,
-            "Should batch into one resurrection"
-        );
-        assert!(
-            task.log
-                .last()
-                .unwrap()
-                .message
-                .contains("3 pending message(s)")
-        );
-    }
-
-    #[test]
-    fn test_resurrection_child_not_duplicated() {
-        let dir = tempdir().unwrap();
-        std::fs::create_dir_all(dir.path()).unwrap();
-
-        let mut parent = Task::default();
-        parent.id = "parent".to_string();
-        parent.status = Status::Done;
-        parent.before = vec!["downstream".to_string()];
-
-        let mut downstream = Task::default();
-        downstream.id = "downstream".to_string();
-        downstream.status = Status::InProgress;
-
-        // Child already exists from a previous resurrection
-        let mut existing_child = Task::default();
-        existing_child.id = ".respond-to-parent".to_string();
-        existing_child.status = Status::InProgress;
-
-        let mut graph = WorkGraph::new();
-        graph.add_node(Node::Task(parent));
-        graph.add_node(Node::Task(downstream));
-        graph.add_node(Node::Task(existing_child));
-
-        messages::send_message(dir.path(), "parent", "Another question", "user", "normal").unwrap();
-
-        let modified = resurrect_done_tasks(&mut graph, dir.path());
-
-        assert!(!modified, "Should NOT create duplicate child task");
-    }
-
-    #[test]
-    fn test_resurrection_opt_out_tag() {
-        let dir = tempdir().unwrap();
-        std::fs::create_dir_all(dir.path()).unwrap();
-
-        let mut task = Task::default();
-        task.id = "no-resurrect".to_string();
-        task.status = Status::Done;
-        task.tags = vec!["resurrect:false".to_string()];
-
-        let mut graph = WorkGraph::new();
-        graph.add_node(Node::Task(task));
-
-        messages::send_message(dir.path(), "no-resurrect", "Wake up", "user", "normal").unwrap();
-
-        let modified = resurrect_done_tasks(&mut graph, dir.path());
-
-        assert!(
-            !modified,
-            "Should NOT resurrect tasks with resurrect:false tag"
-        );
+        for status in statuses {
+            let mut task = Task::default();
+            task.id = format!("target-{status}");
+            task.title = task.id.clone();
+            task.status = status;
+            task.assigned = Some("agent-owner".to_string());
+            graph.add_node(Node::Task(task));
+        }
+        for status in statuses {
+            messages::send_message(
+                dir.path(),
+                &format!("target-{status}"),
+                "irrelevant follow-up",
+                "user",
+                "normal",
+            )
+            .unwrap();
+        }
+        let before: Vec<_> = graph
+            .tasks()
+            .map(|task| {
+                (
+                    task.id.clone(),
+                    task.status,
+                    task.assigned.clone(),
+                    task.lifecycle.clone(),
+                    task.spawn_failures,
+                )
+            })
+            .collect();
+        assert!(!resurrect_done_tasks(&mut graph, dir.path()));
+        let after: Vec<_> = graph
+            .tasks()
+            .map(|task| {
+                (
+                    task.id.clone(),
+                    task.status,
+                    task.assigned.clone(),
+                    task.lifecycle.clone(),
+                    task.spawn_failures,
+                )
+            })
+            .collect();
+        assert_eq!(after, before);
+        assert!(graph.get_task(".respond-to-target-done").is_none());
     }
 
     // -----------------------------------------------------------------------
@@ -7048,7 +6646,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resurrection_downstream_done_triggers_child() {
+    fn test_post_terminal_message_with_done_downstream_is_inert() {
         let dir = tempdir().unwrap();
         std::fs::create_dir_all(dir.path()).unwrap();
 
@@ -7070,10 +6668,10 @@ mod tests {
 
         let modified = resurrect_done_tasks(&mut graph, dir.path());
 
-        assert!(modified);
-        // Downstream is Done, so child task should be created
-        let child = graph.get_task(".respond-to-parent").unwrap();
-        assert_eq!(child.status, Status::Open);
+        assert!(!modified);
+        assert_eq!(graph.get_task("parent").unwrap().status, Status::Done);
+        assert_eq!(graph.get_task("downstream").unwrap().status, Status::Done);
+        assert!(graph.get_task(".respond-to-parent").is_none());
     }
 
     #[test]

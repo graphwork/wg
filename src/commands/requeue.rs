@@ -3,6 +3,7 @@ use chrono::Utc;
 use std::path::Path;
 use worksgood::config::Config;
 use worksgood::graph::{LogEntry, Status};
+use worksgood::lifecycle::{LifecycleActor, TransitionKind, TransitionRequest, apply_transition};
 use worksgood::parser::modify_graph;
 
 #[cfg(test)]
@@ -50,10 +51,20 @@ pub fn run(dir: &Path, id: &str, reason: &str) -> Result<()> {
             return false;
         }
 
+        let request = TransitionRequest::new(
+            TransitionKind::GenerationCreated,
+            LifecycleActor::operator(worksgood::current_user()),
+            "triage_requeue",
+            format!("requeue:{id}:{}", task.triage_count + 1),
+        );
+        if let Err(rejection) = apply_transition(task, request) {
+            error = Some(anyhow::anyhow!(rejection));
+            return false;
+        }
+
         task.triage_count += 1;
         triage_count = task.triage_count;
 
-        task.status = Status::Open;
         task.assigned = None;
         task.started_at = None;
         task.session_id = None;

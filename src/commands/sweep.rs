@@ -20,6 +20,10 @@ use chrono::Utc;
 use std::path::Path;
 
 use worksgood::graph::{LogEntry, Status};
+use worksgood::lifecycle::{
+    ActorKind, FenceExpectation, LifecycleActor, TransitionKind, TransitionRequest,
+    apply_transition,
+};
 use worksgood::parser::{load_graph, modify_graph};
 use worksgood::service::registry::{AgentRegistry, AgentStatus};
 
@@ -257,7 +261,36 @@ pub fn run(dir: &Path, dry_run: bool, reap_targets: bool, json: bool) -> Result<
                 && task.assigned.is_some()
             {
                 let starts_new_attempt = task.status == Status::InProgress;
-                task.status = Status::Open;
+                let generation = task.lifecycle.generation;
+                let mut request = if starts_new_attempt {
+                    TransitionRequest::new(
+                        TransitionKind::AttemptLost,
+                        LifecycleActor {
+                            kind: ActorKind::Reconciler,
+                            id: "manual-sweep".to_string(),
+                        },
+                        "process_identity_dead",
+                        format!("sweep-lost:{}:{generation}", o.task_id),
+                    )
+                } else {
+                    TransitionRequest::new(
+                        TransitionKind::ReconciliationIssue {
+                            issue_id: format!("stale-claim:{}:{generation}", o.task_id),
+                        },
+                        LifecycleActor {
+                            kind: ActorKind::Reconciler,
+                            id: "manual-sweep".to_string(),
+                        },
+                        "stale_open_claim",
+                        format!("sweep-claim:{}:{generation}", o.task_id),
+                    )
+                };
+                if starts_new_attempt && task.lifecycle.current_attempt.is_some() {
+                    request.expected = FenceExpectation::current(task);
+                }
+                if apply_transition(task, request).is_err() {
+                    continue;
+                }
                 task.assigned = None;
                 task.started_at = None;
                 if starts_new_attempt {
@@ -271,20 +304,28 @@ pub fn run(dir: &Path, dry_run: bool, reap_targets: bool, json: bool) -> Result<
                 });
                 fixed.push(o.task_id.clone());
                 modified = true;
-                if starts_new_attempt {
-                    worksgood::eval_lifecycle::begin_source_attempt(
-                        graph,
-                        &o.task_id,
-                        "manual orphan sweep retry",
-                    );
-                }
             } else if let Some(task) = graph.get_task_mut(&o.task_id)
                 && task.status == Status::InProgress
                 && task.assigned.is_none()
             {
-                // The "(none)" sentinel branch: InProgress with no assigned.
-                // Just transition to Open; nothing to clear.
-                task.status = Status::Open;
+                // The "(none)" sentinel branch is still an exact lost
+                // attempt, never an inferred retry/reopen.
+                let generation = task.lifecycle.generation;
+                let mut request = TransitionRequest::new(
+                    TransitionKind::AttemptLost,
+                    LifecycleActor {
+                        kind: ActorKind::Reconciler,
+                        id: "manual-sweep".to_string(),
+                    },
+                    "process_identity_missing",
+                    format!("sweep-lost:{}:{generation}", o.task_id),
+                );
+                if task.lifecycle.current_attempt.is_some() {
+                    request.expected = FenceExpectation::current(task);
+                }
+                if apply_transition(task, request).is_err() {
+                    continue;
+                }
                 task.retry_count = task.retry_count.saturating_add(1);
                 task.log.push(LogEntry {
                     timestamp: Utc::now().to_rfc3339(),
@@ -294,11 +335,6 @@ pub fn run(dir: &Path, dry_run: bool, reap_targets: bool, json: bool) -> Result<
                 });
                 fixed.push(o.task_id.clone());
                 modified = true;
-                worksgood::eval_lifecycle::begin_source_attempt(
-                    graph,
-                    &o.task_id,
-                    "manual orphan sweep retry",
-                );
             }
         }
         modified
@@ -446,9 +482,38 @@ pub fn reconcile_orphaned_tasks(dir: &Path, graph_path: &Path) -> Result<usize> 
         for (task_id, prev_status, agent_desc) in &orphaned_ids {
             if let Some(task) = graph.get_task_mut(task_id) {
                 let was_open = *prev_status == Status::Open;
-                task.status = Status::Open;
+                let generation = task.lifecycle.generation;
+                let mut request = if was_open {
+                    TransitionRequest::new(
+                        TransitionKind::ReconciliationIssue {
+                            issue_id: format!("stale-claim:{task_id}:{generation}"),
+                        },
+                        LifecycleActor {
+                            kind: ActorKind::Reconciler,
+                            id: "coordinator".to_string(),
+                        },
+                        "stale_open_claim",
+                        format!("reconcile-claim:{task_id}:{generation}"),
+                    )
+                } else {
+                    TransitionRequest::new(
+                        TransitionKind::AttemptLost,
+                        LifecycleActor {
+                            kind: ActorKind::Reconciler,
+                            id: "coordinator".to_string(),
+                        },
+                        "process_identity_dead",
+                        format!("reconcile-lost:{task_id}:{generation}"),
+                    )
+                };
+                if !was_open && task.lifecycle.current_attempt.is_some() {
+                    request.expected = FenceExpectation::current(task);
+                }
+                if apply_transition(task, request).is_err() {
+                    continue;
+                }
                 task.assigned = None;
-                if *prev_status == Status::InProgress {
+                if !was_open {
                     task.retry_count = task.retry_count.saturating_add(1);
                 }
                 // started_at only matters for InProgress; clearing it on
@@ -468,15 +533,6 @@ pub fn reconcile_orphaned_tasks(dir: &Path, graph_path: &Path) -> Result<usize> 
                         kind, prev_status, agent_desc
                     ),
                 });
-            }
-        }
-        for (task_id, prev_status, _) in &orphaned_ids {
-            if *prev_status == Status::InProgress {
-                worksgood::eval_lifecycle::begin_source_attempt(
-                    graph,
-                    task_id,
-                    "coordinator orphan reconciliation retry",
-                );
             }
         }
         count > 0
@@ -618,11 +674,12 @@ mod tests {
             "Should fix stuck-task"
         );
 
-        // Verify the task is now Open
+        // Exact dead-process evidence terminalizes one lost attempt; sweep
+        // never infers an automatic retry generation.
         let gpath = graph_path(temp_dir.path());
         let graph = load_graph(&gpath).unwrap();
         let task = graph.get_task("stuck-task").unwrap();
-        assert_eq!(task.status, Status::Open);
+        assert_eq!(task.status, Status::Failed);
         assert!(task.assigned.is_none());
         assert!(task.log.last().unwrap().message.contains("Sweep"));
     }
@@ -697,10 +754,10 @@ mod tests {
 
         assert!(count >= 1, "Should reconcile at least one task");
 
-        // Verify task is now Open
+        // Reconciliation records one lost attempt; explicit retry is separate.
         let graph = load_graph(&gpath).unwrap();
         let task = graph.get_task("stuck-task").unwrap();
-        assert_eq!(task.status, Status::Open);
+        assert_eq!(task.status, Status::Failed);
         assert!(task.assigned.is_none());
         assert!(task.log.last().unwrap().message.contains("Reconciliation"));
     }
@@ -991,8 +1048,8 @@ mod tests {
         );
         assert_eq!(
             g2.get_task("plain-stuck").unwrap().status,
-            Status::Open,
-            "untagged plain orphan should be flipped to Open"
+            Status::Failed,
+            "untagged plain orphan should become one lost attempt, not an implicit retry"
         );
     }
 

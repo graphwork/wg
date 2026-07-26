@@ -211,10 +211,16 @@ fn load_graph_inner<P: AsRef<Path>>(path: P) -> Result<WorkGraph, ParseError> {
 /// indefinitely while the coordinator holds an exclusive lock during
 /// long-running modify_graph closures.
 pub fn load_graph<P: AsRef<Path>>(path: P) -> Result<WorkGraph, ParseError> {
-    let lock_path = get_lock_path(&path);
+    let path = path.as_ref();
+    let lock_path = get_lock_path(path);
     // Try a non-blocking shared lock; proceed regardless.
     let _lock = FileLock::try_acquire_shared(&lock_path)?;
-    load_graph_inner(path)
+    let mut graph = load_graph_inner(path)?;
+    // A crash after lifecycle-ledger fsync but before compatibility projection
+    // replacement is repaired in-memory on every read. The next writer persists
+    // the replay under the exclusive graph lock.
+    crate::lifecycle::replay_ledger(path, &mut graph)?;
+    Ok(graph)
     // Lock (if acquired) is automatically released when _lock goes out of scope
 }
 
@@ -299,14 +305,17 @@ where
     let _lock = FileLock::acquire(&lock_path)?;
 
     let mut graph = load_graph_inner(path)?;
-    // Snapshot every task before the closure runs so we can detect which
-    // tasks changed substantively (anything other than `last_interaction_at`)
-    // and bump their interaction timestamp. This is the single helper that
-    // wraps mutation + timestamp-bump for every modify_graph caller.
+    let replayed = crate::lifecycle::replay_ledger(path, &mut graph)?;
+    // Keep both a graph snapshot (for lifecycle-ledger event diffing) and the
+    // per-task map used by last-interaction timestamp maintenance.
+    let before_graph = graph.clone();
     let before: HashMap<String, Task> = graph.tasks().map(|t| (t.id.clone(), t.clone())).collect();
     let modified = f(&mut graph);
-    if modified {
+    if modified || replayed {
         bump_interaction_timestamps(&mut graph, &before);
+        // Lifecycle records are fsynced before graph.jsonl is atomically
+        // replaced. If the second operation fails, replay converges on restart.
+        crate::lifecycle::append_new_events(path, &before_graph, &graph)?;
         save_graph_inner(&graph, path)?;
     }
     Ok(graph)

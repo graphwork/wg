@@ -1342,6 +1342,7 @@ fn handle_add_task_with_reasoning(
         title: title.to_string(),
         description: description.map(String::from),
         status: Status::Open,
+        lifecycle: worksgood::lifecycle::LifecycleProjection::default(),
         priority: PRIORITY_DEFAULT,
         assigned: None,
         estimate: None,
@@ -1360,6 +1361,7 @@ fn handle_add_task_with_reasoning(
         started_at: None,
         completed_at: None,
         last_interaction_at: None,
+        last_message_at: None,
         log: vec![worksgood::graph::LogEntry {
             timestamp: chrono::Utc::now().to_rfc3339(),
             actor: None,

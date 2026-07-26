@@ -2,6 +2,9 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
 use worksgood::graph::{LogEntry, Status, WaitCondition, WaitSpec, parse_delay};
+use worksgood::lifecycle::{
+    FenceExpectation, LifecycleActor, TransitionKind, TransitionRequest, apply_transition,
+};
 use worksgood::parser::modify_graph;
 use worksgood::service::registry::{AgentRegistry, AgentStatus};
 
@@ -166,7 +169,33 @@ pub fn run(dir: &Path, id: &str, until: &str, checkpoint: Option<&str>) -> Resul
         // Now mutate
         let task = graph.get_task_mut(id).expect("task verified above");
 
-        task.status = Status::Waiting;
+        let actor_id = if task.lifecycle.current_attempt.is_some() {
+            (std::env::var("WG_TASK_ID").as_deref() == Ok(id))
+                .then(|| std::env::var("WG_AGENT_ID").ok())
+                .flatten()
+                .or_else(|| task.assigned.clone())
+                .unwrap_or_else(worksgood::current_user)
+        } else {
+            task.assigned
+                .clone()
+                .unwrap_or_else(worksgood::current_user)
+        };
+        let generation = task.lifecycle.generation;
+        let request = TransitionRequest::new(
+            TransitionKind::AttemptParked,
+            if task.assigned.is_some() {
+                LifecycleActor::worker(actor_id)
+            } else {
+                LifecycleActor::operator(actor_id)
+            },
+            "explicit_wait",
+            format!("wait:{id}:{generation}:{until}"),
+        )
+        .expecting(FenceExpectation::current(task));
+        if let Err(rejection) = apply_transition(task, request) {
+            error = Some(anyhow::anyhow!(rejection));
+            return false;
+        }
         task.wait_condition = Some(wait_spec);
 
         if let Some(cp) = checkpoint {
@@ -238,7 +267,8 @@ mod tests {
 
         let dep = make_task("dep-a", "Dependency A", Status::Open);
         let mut main_task = make_task("main", "Main task", Status::InProgress);
-        main_task.assigned = Some("agent-1".to_string());
+        main_task.assigned =
+            Some(std::env::var("WG_AGENT_ID").unwrap_or_else(|_| "agent-1".to_string()));
 
         setup_workgraph(dir_path, vec![dep, main_task]);
 

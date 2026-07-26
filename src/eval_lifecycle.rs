@@ -13,6 +13,9 @@ use crate::config::{
     execution_system_key, parse_exact_pi_route,
 };
 use crate::graph::{LogEntry, Status, Task, WorkGraph};
+use crate::lifecycle::{
+    ActorKind, LifecycleActor, TransitionKind, TransitionRequest, apply_transition,
+};
 use anyhow::{Context, Result};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -2520,8 +2523,8 @@ pub fn reconcile_durable_verdicts<F>(
     graph: &mut WorkGraph,
     verdicts: &[DurableEvalVerdict],
     threshold: f64,
-    auto_rescue: bool,
-    max_rescues: u32,
+    _auto_rescue: bool,
+    _max_rescues: u32,
     _legacy_advisory_predicate: F,
 ) -> bool
 where
@@ -2770,12 +2773,6 @@ where
                 verdict.score < flip_threshold.expect("validated required FLIP threshold")
             });
         let hard_reject = evaluator_failed || flip_failed;
-        let retry_source = hard_reject
-            && source_snapshot.status == Status::PendingEval
-            && auto_rescue
-            && max_rescues > 0
-            && source_snapshot.rescue_count < max_rescues;
-
         let mut evidence = vec![format!(
             "evaluator {} score={:.2} threshold={:.2} {}",
             eval.verdict_id,
@@ -2806,9 +2803,7 @@ where
         lifecycle.consumed_verdict = Some(eval.verdict_id.clone());
         lifecycle.execution_state = EvaluationExecutionState::Consumed;
         lifecycle.outcome_provenance = Some(EvaluationOutcomeProvenance {
-            outcome: if retry_source {
-                EvaluationGateOutcome::RescueRetry
-            } else if hard_reject {
+            outcome: if hard_reject {
                 EvaluationGateOutcome::Rejected
             } else {
                 EvaluationGateOutcome::Passed
@@ -2818,25 +2813,68 @@ where
             summary: evidence_summary.clone(),
         });
 
-        if retry_source {
-            source.status = Status::Open;
-            source.rescue_count = source.rescue_count.saturating_add(1);
-            source.assigned = None;
-            source.started_at = None;
-            source.completed_at = None;
-            source.failure_reason = None;
+        let evidence_request = TransitionRequest::new(
+            TransitionKind::EvaluationEvidence {
+                evidence_ref: eval.verdict_id.clone(),
+            },
+            LifecycleActor {
+                kind: ActorKind::EvaluationRunner,
+                id: "eval-lifecycle-reconcile".to_string(),
+            },
+            "evaluation_evidence_linked",
+            format!("eval-evidence:{}:{}", source_id, eval.verdict_id),
+        )
+        .with_evidence(eval.verdict_id.clone());
+        if apply_transition(source, evidence_request).is_err() {
+            continue;
+        }
+
+        let outcome_request = if source_snapshot.status == Status::FailedPendingEval {
+            // Legacy soft-failed rows migrate to the source failure they
+            // already represented. Evaluator evidence remains advisory and
+            // cannot rescue or reopen that source generation.
+            TransitionRequest::new(
+                TransitionKind::AttemptFailed { class: None },
+                LifecycleActor::operator("legacy-failed-pending-eval"),
+                "legacy_source_failure_finalized",
+                format!("eval-finalize-failure:{}:{}", source_id, eval.verdict_id),
+            )
         } else if hard_reject {
-            source.status = Status::Failed;
+            TransitionRequest::new(
+                TransitionKind::AcceptanceRejected {
+                    evidence_ref: eval.verdict_id.clone(),
+                },
+                LifecycleActor {
+                    kind: ActorKind::AcceptanceController,
+                    id: "eval-lifecycle-reconcile".to_string(),
+                },
+                "required_evaluation_rejected",
+                format!("eval-reject:{}:{}", source_id, eval.verdict_id),
+            )
+        } else {
+            TransitionRequest::new(
+                TransitionKind::AcceptanceSatisfied {
+                    acceptance_ref: eval.verdict_id.clone(),
+                },
+                LifecycleActor {
+                    kind: ActorKind::AcceptanceController,
+                    id: "eval-lifecycle-reconcile".to_string(),
+                },
+                "required_evaluation_accepted",
+                format!("eval-accept:{}:{}", source_id, eval.verdict_id),
+            )
+        }
+        .with_evidence(eval.verdict_id.clone());
+        if apply_transition(source, outcome_request).is_err() {
+            continue;
+        }
+        if hard_reject || source_snapshot.status == Status::FailedPendingEval {
             source.retry_count = source.retry_count.saturating_add(1);
             source.failure_reason = Some(format!(
                 "required evaluation gate rejected: {evidence_summary}"
             ));
-            source.completed_at = Some(Utc::now().to_rfc3339());
-        } else {
-            source.status = Status::Done;
-            source.rescued |= source_snapshot.status == Status::FailedPendingEval;
-            source.completed_at = Some(Utc::now().to_rfc3339());
         }
+        source.completed_at = Some(Utc::now().to_rfc3339());
         source.log.push(LogEntry {
             timestamp: Utc::now().to_rfc3339(),
             actor: Some("eval-lifecycle-reconcile".to_string()),
@@ -2847,14 +2885,6 @@ where
             ),
         });
         modified = true;
-
-        if retry_source {
-            modified |= begin_source_attempt(
-                graph,
-                &source_id,
-                "automatic in-place rescue after rejected required evaluation gate",
-            );
-        }
     }
     modified
 }
@@ -3055,7 +3085,11 @@ mod tests {
             |_| true,
         ));
         let source = graph.get_task("source").unwrap();
-        assert_eq!(source.status, Status::Done);
+        assert_eq!(
+            source.status,
+            Status::Failed,
+            "legacy source failure is never rescued by evaluator evidence"
+        );
         assert_eq!(
             source
                 .evaluation_lifecycle
@@ -3115,7 +3149,7 @@ mod tests {
     }
 
     #[test]
-    fn pending_low_score_never_passes_and_retries_exact_plan() {
+    fn pending_low_score_rejects_without_implicit_rescue_generation() {
         // The legacy callback says "advisory", but PendingEval itself is now
         // an unambiguous hard-gate contract and must fail closed.
         let mut legacy_pending = source();
@@ -3135,7 +3169,7 @@ mod tests {
             3,
             |_| false,
         ));
-        assert_eq!(graph.get_task("source").unwrap().status, Status::Open);
+        assert_eq!(graph.get_task("source").unwrap().status, Status::Failed);
 
         let mut gated = source();
         gated.status = Status::PendingEval;
@@ -3147,9 +3181,6 @@ mod tests {
             .pipeline_id
             .clone();
         let gated_eval = planned_satellite(".evaluate-source", &gated);
-        let old_route = gated_eval.agency_dispatch.as_ref().unwrap().calls[0]
-            .route
-            .clone();
         let low = verdict(&gated, AgencyStage::Evaluate, 0.2);
         let mut graph = WorkGraph::new();
         graph.add_node(crate::graph::Node::Task(gated));
@@ -3163,13 +3194,13 @@ mod tests {
             |_| true,
         ));
         let source = graph.get_task("source").unwrap();
-        assert_eq!(source.status, Status::Open);
-        assert_eq!(source.rescue_count, 1);
-        let eval = graph.get_task(".evaluate-source").unwrap();
-        let rebound = eval.agency_dispatch.as_ref().unwrap();
-        assert_eq!(rebound.calls[0].route, old_route);
-        assert_ne!(rebound.pipeline_id, old_pipeline);
-        assert_eq!(eval.status, Status::Open);
+        assert_eq!(source.status, Status::Failed);
+        assert_eq!(source.rescue_count, 0);
+        assert_eq!(
+            source.evaluation_lifecycle.as_ref().unwrap().pipeline_id,
+            old_pipeline,
+            "evaluation rejection cannot mint a source generation"
+        );
         assert!(!reconcile_durable_verdicts(
             &mut graph,
             &[low],
@@ -3263,7 +3294,7 @@ mod tests {
     }
 
     #[test]
-    fn two_below_threshold_attempts_never_complete_or_unblock_dependents() {
+    fn low_verdict_requires_explicit_new_generation_before_second_attempt() {
         let mut source = source();
         source.status = Status::PendingEval;
         pin_required_gate(&mut source, 0.70, Some(0.70));
@@ -3291,47 +3322,36 @@ mod tests {
             1,
             |_| true,
         ));
-        let attempt_two = graph.get_task("source").unwrap().clone();
-        assert_eq!(attempt_two.status, Status::Open);
-        assert_eq!(attempt_two.rescue_count, 1);
-        let attempt_two_id = attempt_two
-            .evaluation_lifecycle
-            .as_ref()
-            .unwrap()
-            .pipeline_id
-            .clone();
-        assert_ne!(attempt_two_id, old_eval.pipeline_id);
+        let rejected = graph.get_task("source").unwrap();
+        assert_eq!(rejected.status, Status::Failed);
+        assert_eq!(rejected.rescue_count, 0);
+        assert_eq!(rejected.lifecycle.generation, 0);
         assert!(
             !crate::query::ready_tasks(&graph)
                 .iter()
                 .any(|task| task.id == "dependent")
         );
 
-        graph.get_task_mut("source").unwrap().status = Status::PendingEval;
-        let current_source = graph.get_task("source").unwrap().clone();
-        let mut current_flip = verdict(&current_source, AgencyStage::FlipComparison, 0.19);
-        current_flip.verdict_id = "verdict-attempt-2-flip".into();
-        let mut current_eval = verdict(&current_source, AgencyStage::Evaluate, 0.12);
-        current_eval.verdict_id = "verdict-attempt-2-eval".into();
-        assert!(reconcile_durable_verdicts(
+        // Replaying the same low evidence is inert. Only an explicit operator
+        // generation request can authorize more source execution.
+        assert!(!reconcile_durable_verdicts(
             &mut graph,
-            &[old_flip, old_eval, current_flip, current_eval],
+            &[old_flip, old_eval],
             0.70,
             true,
             1,
             |_| true,
         ));
-        let source = graph.get_task("source").unwrap();
-        assert_eq!(source.status, Status::Failed);
-        assert_eq!(
-            source.evaluation_lifecycle.as_ref().unwrap().source_attempt,
-            2
+        let source = graph.get_task_mut("source").unwrap();
+        let request = crate::lifecycle::TransitionRequest::new(
+            crate::lifecycle::TransitionKind::GenerationCreated,
+            crate::lifecycle::LifecycleActor::operator("test-operator"),
+            "explicit_test_retry",
+            "test-retry:source:0",
         );
-        assert!(
-            !crate::query::ready_tasks(&graph)
-                .iter()
-                .any(|task| task.id == "dependent")
-        );
+        crate::lifecycle::apply_transition(source, request).unwrap();
+        assert_eq!(source.status, Status::Open);
+        assert_eq!(source.lifecycle.generation, 1);
     }
 
     #[test]

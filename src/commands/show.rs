@@ -36,6 +36,8 @@ struct TaskDetails {
     #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<String>,
     status: Status,
+    /// Authoritative generation/attempt/fence projection plus accepted audit.
+    lifecycle: worksgood::lifecycle::LifecycleProjection,
     priority: Priority,
     #[serde(skip_serializing_if = "Option::is_none")]
     assigned: Option<String>,
@@ -714,6 +716,7 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         title: task.title.clone(),
         description: task.description.clone(),
         status: task.status,
+        lifecycle: task.lifecycle.clone(),
         priority: task.priority,
         assigned: task.assigned.clone(),
         hours: task.estimate.as_ref().and_then(|e| e.hours),
@@ -805,6 +808,34 @@ fn print_human_readable(details: &TaskDetails) {
         println!("Status: {} (PAUSED)", details.status);
     } else {
         println!("Status: {}", details.status);
+    }
+
+    if details.lifecycle.revision > 0 {
+        println!(
+            "Lifecycle: generation={} revision={} fence={} attempt={} ledger_head={}",
+            details.lifecycle.generation,
+            details.lifecycle.revision,
+            details.lifecycle.fence,
+            details
+                .lifecycle
+                .current_attempt
+                .as_ref()
+                .map(|attempt| format!("{}:{:?}", attempt.id, attempt.disposition))
+                .unwrap_or_else(|| "none".to_string()),
+            details.lifecycle.ledger_head.as_deref().unwrap_or("none")
+        );
+        if let Some(event) = details.lifecycle.audit.last() {
+            println!(
+                "  Last transition: {} {}→{} actor={:?}/{} reason={} event={}",
+                event.event_kind,
+                event.old_state,
+                event.new_state,
+                event.actor_kind,
+                event.actor_id,
+                event.reason_code,
+                event.event_id
+            );
+        }
     }
 
     if details.priority != PRIORITY_DEFAULT {
@@ -1745,6 +1776,7 @@ mod tests {
             title: "Test Task".to_string(),
             description: Some("Test description".to_string()),
             status: Status::InProgress,
+            lifecycle: worksgood::lifecycle::LifecycleProjection::default(),
             priority: PRIORITY_DEFAULT,
             assigned: Some("agent-1".to_string()),
             hours: Some(2.0),

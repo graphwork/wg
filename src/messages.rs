@@ -190,16 +190,16 @@ pub fn send_message(
 
     // Lock is released when file is dropped
 
-    touch_task_interaction(workgraph_dir, task_id);
+    record_task_message_activity(workgraph_dir, task_id, &msg.timestamp);
 
     Ok(next_id)
 }
 
-fn touch_task_interaction(workgraph_dir: &Path, task_id: &str) {
+fn record_task_message_activity(workgraph_dir: &Path, task_id: &str, timestamp: &str) {
     let graph_path = workgraph_dir.join("graph.jsonl");
     let _ = crate::parser::modify_graph(&graph_path, |graph| {
         if let Some(task) = graph.get_task_mut(task_id) {
-            task.touch();
+            task.last_message_at = Some(timestamp.to_string());
             true
         } else {
             false

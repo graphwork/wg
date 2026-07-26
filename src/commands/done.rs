@@ -8,6 +8,9 @@ use worksgood::graph::{
     parse_token_usage, parse_wg_tokens, user_board_handle, user_board_seq,
 };
 use worksgood::graph::{Task, parse_delay};
+use worksgood::lifecycle::{
+    FenceExpectation, LifecycleActor, TransitionKind, TransitionRequest, apply_transition,
+};
 use worksgood::parser::modify_graph;
 use worksgood::query;
 use worksgood::service::registry::AgentRegistry;
@@ -2688,7 +2691,64 @@ fn run_inner(
             return false;
         }
 
-        task.status = target_status;
+        let caller_agent = (std::env::var("WG_TASK_ID").as_deref() == Ok(id_owned.as_str()))
+            .then(|| std::env::var("WG_AGENT_ID").ok())
+            .flatten();
+        let actor = if task.lifecycle.current_attempt.is_some() {
+            caller_agent
+                .or_else(|| task.assigned.clone())
+                .map(LifecycleActor::worker)
+                .unwrap_or_else(|| LifecycleActor::operator(worksgood::current_user()))
+        } else {
+            task.assigned
+                .clone()
+                .map(LifecycleActor::worker)
+                .unwrap_or_else(|| LifecycleActor::operator(worksgood::current_user()))
+        };
+        let acceptance_ref = (target_status == Status::Done).then(|| {
+            format!(
+                "completion:{}:{}:{}",
+                id_owned,
+                task.lifecycle.generation,
+                task.lifecycle
+                    .current_attempt
+                    .as_ref()
+                    .map(|attempt| attempt.id.as_str())
+                    .unwrap_or("legacy")
+            )
+        });
+        let mut request = TransitionRequest::new(
+            TransitionKind::AttemptSucceeded {
+                acceptance_ref: acceptance_ref.clone(),
+                manual_review: target_status == Status::PendingValidation,
+            },
+            actor,
+            if target_status == Status::Done {
+                "completion_accepted"
+            } else {
+                "source_succeeded_awaiting_acceptance"
+            },
+            format!(
+                "done:{}:{}:{}",
+                id_owned,
+                task.lifecycle.generation,
+                task.lifecycle
+                    .current_attempt
+                    .as_ref()
+                    .map(|attempt| attempt.id.as_str())
+                    .unwrap_or("legacy")
+            ),
+        );
+        if let Some(ref acceptance) = acceptance_ref {
+            request.evidence_refs.push(acceptance.clone());
+        }
+        if task.lifecycle.current_attempt.is_some() {
+            request.expected = FenceExpectation::current(task);
+        }
+        if let Err(rejection) = apply_transition(task, request) {
+            gate_snapshot_error = Some(rejection.to_string());
+            return false;
+        }
         task.completed_at = Some(Utc::now().to_rfc3339());
         if target_status == Status::PendingEval {
             transitioned_to_pending_eval = true;

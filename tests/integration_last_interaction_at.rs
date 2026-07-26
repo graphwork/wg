@@ -281,7 +281,7 @@ fn chat_outbox_append_bumps_modern_chat_task() {
 }
 
 #[test]
-fn task_message_send_bumps_last_interaction_at() {
+fn task_message_send_uses_ui_clock_without_touching_lifecycle_interaction() {
     let tmp = tempdir().unwrap();
     let graph_path = tmp.path().join("graph.jsonl");
     let mut graph = WorkGraph::default();
@@ -296,10 +296,15 @@ fn task_message_send_bumps_last_interaction_at() {
 
     let post = load_graph(&graph_path).unwrap();
     let task = post.get_task("task-a").unwrap();
-    assert_ne!(
+    assert_eq!(
         task.last_interaction_at.as_deref(),
         Some("2026-04-30T00:00:00+00:00"),
-        "wg msg send must touch the target task so recent messages affect TUI ordering"
+        "ordinary message data must not refresh task lifecycle/liveness interaction"
+    );
+    assert!(task.last_message_at.is_some());
+    assert_eq!(
+        task.interaction_sort_key(),
+        task.last_message_at.as_deref().unwrap()
     );
 }
 

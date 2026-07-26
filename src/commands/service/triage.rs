@@ -8,9 +8,10 @@ use std::path::Path;
 
 use worksgood::agency;
 use worksgood::config::Config;
-use worksgood::graph::{
-    FailureClass, LogEntry, Status, Task, evaluate_cycle_iteration, parse_token_usage,
-    parse_wg_tokens,
+use worksgood::graph::{FailureClass, LogEntry, Status, Task, parse_token_usage, parse_wg_tokens};
+use worksgood::lifecycle::{
+    ActorKind, FenceExpectation, LifecycleActor, TransitionKind, TransitionRequest,
+    apply_transition,
 };
 use worksgood::parser::{load_graph, modify_graph};
 use worksgood::profile;
@@ -347,95 +348,28 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
     // Unclaim their tasks (if still in progress - agent may have completed or failed them already)
     let mut graph = load_graph(graph_path).context("Failed to load graph")?;
     let mut tasks_modified = false;
-    let mut tasks_completed_by_triage: Vec<String> = Vec::new();
     let mut resource_exhausted_tasks: Vec<String> = Vec::new();
 
     for (agent_id, task_id, pid, output_file, reason) in &dead {
         if let Some(task) = graph.get_task_mut(task_id) {
-            // Only unclaim if task is still in progress (agent didn't finish it properly)
+            // Process observation is evidence only. A conclusively dead
+            // current worker may request one fenced AttemptLost transition in
+            // the final locked transaction below; model triage never has
+            // completion or retry authority.
             if task.status == Status::InProgress {
                 if dead_attempt_exhausted_disk(dir, output_file) {
-                    task.status = Status::Open;
-                    task.assigned = None;
-                    task.started_at = None;
                     task.failure_class = Some(FailureClass::ResourceExhaustedDisk);
-                    task.failure_reason = Some(
-                        "Disk resource exhausted before terminal bookkeeping; source preserved for safe retry-in-place"
-                            .to_string(),
-                    );
-                    task.log.push(LogEntry {
-                        timestamp: Utc::now().to_rfc3339(),
-                        actor: Some(agent_id.clone()),
-                        user: Some(worksgood::current_user()),
-                        message: "Dead attempt contained ENOSPC evidence — skipped quality triage/evaluation, released its cache lease, and queued a safe in-place retry"
-                            .to_string(),
-                    });
+                    task.failure_reason =
+                        Some("Disk resource exhausted during the running attempt".to_string());
                     resource_exhausted_tasks.push(task_id.clone());
-                    tasks_modified = true;
-                    continue;
-                }
-                if config.agency.auto_triage {
-                    // Run synchronous triage to assess progress
-                    match run_triage(&config, task, output_file) {
-                        Ok(verdict) => {
-                            let is_done = verdict.verdict == "done";
-                            apply_triage_verdict(task, &verdict, agent_id, *pid, dir, &config);
-                            eprintln!(
-                                "[dispatcher] Triage for '{}': verdict={}, reason={}",
-                                task_id, verdict.verdict, verdict.reason
-                            );
-                            if is_done && task.status == Status::Done {
-                                tasks_completed_by_triage.push(task_id.clone());
-                            }
-                        }
-                        Err(e) => {
-                            // Triage failed, fall back to restart behavior
-                            eprintln!(
-                                "[dispatcher] Triage failed for '{}': {}, falling back to restart",
-                                task_id, e
-                            );
-                            task.status = Status::Open;
-                            task.assigned = None;
-                            task.started_at = None;
-                            task.retry_count += 1;
-                            try_escalate_model(task, dir, &config);
-                            task.log.push(LogEntry {
-                                timestamp: Utc::now().to_rfc3339(),
-                                actor: Some("triage".to_string()),
-                                user: Some(worksgood::current_user()),
-                                message: format!(
-                                    "Triage failed ({}), task reset: agent '{}' (PID {}) process exited",
-                                    e, agent_id, pid
-                                ),
-                            });
-                        }
-                    }
                 } else {
-                    // Existing behavior: simple unclaim
-                    task.status = Status::Open;
-                    task.assigned = None;
-                    task.started_at = None;
-                    task.retry_count += 1;
-                    try_escalate_model(task, dir, &config);
-                    let reason_msg = match reason {
-                        DeadReason::ProcessExited => format!(
-                            "Task unclaimed: agent '{}' (PID {}) process exited",
-                            agent_id, pid
-                        ),
-                        DeadReason::PidReused => format!(
-                            "Task unclaimed: agent '{}' (PID {}) dead (PID reused by different process)",
-                            agent_id, pid
-                        ),
-                        DeadReason::HeartbeatTimeout => format!(
-                            "Task unclaimed: agent '{}' (PID {}) timed out (no heartbeat)",
-                            agent_id, pid
-                        ),
-                    };
-                    task.log.push(LogEntry {
-                        timestamp: Utc::now().to_rfc3339(),
-                        actor: None,
-                        user: Some(worksgood::current_user()),
-                        message: reason_msg,
+                    task.failure_class = Some(FailureClass::AgentExitNonzero);
+                    task.failure_reason = Some(match reason {
+                        DeadReason::ProcessExited => "worker process exited".to_string(),
+                        DeadReason::PidReused => "worker PID identity was reused".to_string(),
+                        DeadReason::HeartbeatTimeout => {
+                            "worker heartbeat timed out after process verification".to_string()
+                        }
                     });
                 }
                 tasks_modified = true;
@@ -490,70 +424,58 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
         }
     }
 
-    // Evaluate structural cycle iterations for tasks triaged as done
-    if !tasks_completed_by_triage.is_empty() {
-        let cycle_analysis = graph.compute_cycle_analysis();
-        for task_id in &tasks_completed_by_triage {
-            evaluate_cycle_iteration(&mut graph, task_id, &cycle_analysis);
-        }
-    }
-
     if tasks_modified {
-        // Write back atomically via modify_graph. Since we already have the mutated graph,
-        // we replace all task states from our local copy.
+        // Re-check and commit every dead-process observation under graph.lock.
+        // Concurrent completion/reset wins by lifecycle CAS; triage never
+        // copies a stale status projection over the fresh graph.
         modify_graph(graph_path, |fresh_graph| {
-            // Replay mutations: for each task we modified, update the fresh graph
-            for tid in &tasks_completed_by_triage {
-                if let Some(local) = graph.get_task(tid)
-                    && let Some(fresh) = fresh_graph.get_task_mut(tid)
-                {
-                    fresh.status = local.status;
-                    fresh.completed_at = local.completed_at.clone();
-                    fresh.failure_reason = local.failure_reason.clone();
-                    fresh.retry_count = local.retry_count;
-                    fresh.log = local.log.clone();
-                    fresh.session_id = local.session_id.clone();
-                    fresh.token_usage = local.token_usage.clone();
-                    fresh.model = local.model.clone();
-                    fresh.tried_models = local.tried_models.clone();
-                }
-            }
-            // Also replay mutations for other dead-agent tasks (unclaim, triage-fail, token/session)
-            for (_, task_id, _, _, _) in &dead {
-                if !tasks_completed_by_triage.contains(task_id)
-                    && let Some(local) = graph.get_task(task_id)
-                    && let Some(fresh) = fresh_graph.get_task_mut(task_id)
-                {
-                    fresh.status = local.status;
-                    fresh.assigned = local.assigned.clone();
-                    fresh.started_at = local.started_at.clone();
-                    fresh.retry_count = local.retry_count;
-                    fresh.failure_class = local.failure_class;
-                    fresh.failure_reason = local.failure_reason.clone();
-                    fresh.log = local.log.clone();
-                    fresh.session_id = local.session_id.clone();
-                    fresh.token_usage = local.token_usage.clone();
-                    fresh.model = local.model.clone();
-                    fresh.tried_models = local.tried_models.clone();
-                }
-            }
-            // A dead implementation worker that is reset to Open starts a new
-            // semantic source attempt. Mint/rearm in this same atomic graph
-            // transaction; evaluation satellites (dot tasks) are transport
-            // retries and are intentionally ignored by the helper.
-            for (_, task_id, _, _, _) in &dead {
-                if graph
-                    .get_task(task_id)
-                    .is_some_and(|task| task.status == Status::Open)
-                {
-                    worksgood::eval_lifecycle::begin_source_attempt(
-                        fresh_graph,
-                        task_id,
-                        "coordinator dead-agent retry",
+            let mut modified = false;
+            for (agent_id, task_id, _, _, _) in &dead {
+                let Some(local) = graph.get_task(task_id) else {
+                    continue;
+                };
+                let Some(fresh) = fresh_graph.get_task_mut(task_id) else {
+                    continue;
+                };
+                if fresh.status == Status::InProgress {
+                    let generation = fresh.lifecycle.generation;
+                    let mut request = TransitionRequest::new(
+                        TransitionKind::AttemptLost,
+                        LifecycleActor {
+                            kind: ActorKind::Reconciler,
+                            id: "dead-agent-triage".to_string(),
+                        },
+                        "worker_process_observed_dead",
+                        format!("triage-lost:{task_id}:{generation}:{agent_id}"),
                     );
+                    if fresh.lifecycle.current_attempt.is_some() {
+                        request.expected = FenceExpectation::current(fresh);
+                    }
+                    if apply_transition(fresh, request).is_ok() {
+                        fresh.assigned = None;
+                        fresh.started_at = None;
+                        fresh.retry_count = fresh.retry_count.saturating_add(1);
+                        fresh.failure_class = local.failure_class;
+                        fresh.failure_reason.clone_from(&local.failure_reason);
+                        fresh.log.push(LogEntry {
+                            timestamp: Utc::now().to_rfc3339(),
+                            actor: Some(agent_id.clone()),
+                            user: Some(worksgood::current_user()),
+                            message: "Reconciliation recorded one fenced lost attempt; explicit retry is required".to_string(),
+                        });
+                        modified = true;
+                    }
+                }
+                if fresh.session_id != local.session_id {
+                    fresh.session_id.clone_from(&local.session_id);
+                    modified = true;
+                }
+                if fresh.token_usage != local.token_usage {
+                    fresh.token_usage.clone_from(&local.token_usage);
+                    modified = true;
                 }
             }
-            true
+            modified
         })
         .context("Failed to save graph")?;
     }
@@ -1133,6 +1055,7 @@ fn try_escalate_model(task: &mut Task, dir: &Path, config: &Config) {
 }
 
 /// Apply a triage verdict to a task.
+#[cfg(test)]
 fn apply_triage_verdict(
     task: &mut Task,
     verdict: &TriageVerdict,
@@ -1856,10 +1779,15 @@ mod tests {
         assert_eq!(cleaned.len(), 1, "Should detect one dead agent");
         assert_eq!(cleaned[0], agent_id);
 
-        // Verify task was unclaimed
+        // Verify exact dead-process evidence produced one lost attempt; no
+        // automatic retry/reopen is inferred.
         let graph = worksgood::parser::load_graph(&gpath).unwrap();
         let task = graph.get_task("task-1").unwrap();
-        assert_eq!(task.status, Status::Open, "Task should be reset to Open");
+        assert_eq!(
+            task.status,
+            Status::Failed,
+            "Task should record one lost attempt"
+        );
         assert!(task.assigned.is_none(), "Task should be unassigned");
 
         // Verify log entry was created
@@ -1867,6 +1795,7 @@ mod tests {
             task.log.iter().any(|l| l.message.contains("process exited")
                 || l.message.contains("dead")
                 || l.message.contains("unclaimed")
+                || l.message.contains("fenced lost attempt")
                 || l.message.contains("Triage")),
             "Task should have a log entry about the dead agent: {:?}",
             task.log
@@ -1947,11 +1876,11 @@ mod tests {
         assert_eq!(cleaned, vec!["agent-1"]);
         let graph = worksgood::parser::load_graph(&gpath).unwrap();
         let task = graph.get_task("disk-task").unwrap();
-        assert_eq!(task.status, Status::Open);
+        assert_eq!(task.status, Status::Failed);
         assert_eq!(task.assigned, None);
         assert_eq!(
-            task.retry_count, 0,
-            "resource failure is not a quality retry"
+            task.retry_count, 1,
+            "one running attempt failed; no retry generation was created"
         );
         assert_eq!(
             task.failure_class,
@@ -1961,9 +1890,15 @@ mod tests {
             task.failure_reason
                 .as_deref()
                 .unwrap()
-                .contains("preserved")
+                .contains("Disk resource exhausted")
         );
-        assert!(task.log.last().unwrap().message.contains("skipped quality"));
+        assert!(
+            task.log
+                .last()
+                .unwrap()
+                .message
+                .contains("fenced lost attempt")
+        );
 
         let ownership = worksgood::disk_sentinel::load_ownership(wg_dir).unwrap();
         let expiry = chrono::DateTime::parse_from_rfc3339(

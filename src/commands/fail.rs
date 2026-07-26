@@ -2,9 +2,12 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
 use worksgood::agency::capture_task_output;
-use worksgood::config::Config;
 use worksgood::graph::{
     FailureClass, LogEntry, Status, evaluate_cycle_on_failure, parse_token_usage, parse_wg_tokens,
+};
+use worksgood::lifecycle::{
+    ActorKind, FenceExpectation, LifecycleActor, TransitionKind, TransitionRequest,
+    apply_transition,
 };
 use worksgood::parser::modify_graph;
 use worksgood::service::registry::AgentRegistry;
@@ -36,9 +39,9 @@ fn run_inner(
         let (graph, _path) = super::load_workgraph_mut(dir)?;
         let task = graph.get_task_or_err(id)?;
 
-        if task.status == Status::Done && !eval_reject {
+        if task.status == Status::Done {
             anyhow::bail!(
-                "Task '{}' is already done and cannot be marked as failed",
+                "Task '{}' is already done and its terminal generation cannot be rewritten; use `wg retry` for a new generation",
                 id
             );
         }
@@ -63,22 +66,6 @@ fn run_inner(
 
     let path = super::graph_path(dir);
 
-    // Shell tasks (exec set or exec_mode="shell") have no .evaluate-* scaffold
-    // (suppressed in eval_scaffold), so the rescue path can never resolve.
-    // Route them straight to terminal Failed.
-    let is_shell = worksgood::parser::load_graph(&path)
-        .ok()
-        .and_then(|g| g.get_task(id).map(super::eval_scaffold::is_shell_task))
-        .unwrap_or(false);
-
-    // If this is an AgentExitNonzero failure AND auto_evaluate is on, route to
-    // FailedPendingEval instead of terminal Failed so the evaluator can rescue
-    // the task when the output is actually acceptable.
-    let use_failed_pending_eval = !eval_reject
-        && !is_shell
-        && class == Some(FailureClass::AgentExitNonzero)
-        && Config::load_or_default(dir).agency.auto_evaluate;
-
     // Resolve token usage outside the lock (registry read + file I/O).
     let token_usage = AgentRegistry::load(dir).ok().and_then(|registry| {
         let agent = registry.get_agent_by_task(id)?;
@@ -98,8 +85,7 @@ fn run_inner(
     let mut agent_id_for_archive = None;
     let mut cycle_reactivated = Vec::new();
     let mut already_failed = false;
-    let mut resource_retry_queued = false;
-
+    let mut transition_rejection: Option<String> = None;
     let id_owned = id.to_string();
     let reason_owned = reason.map(String::from);
     let graph = modify_graph(&path, |graph| {
@@ -117,7 +103,7 @@ fn run_inner(
         if task.status == Status::Abandoned {
             return false;
         }
-        if task.status == Status::Done && !eval_reject {
+        if task.status == Status::Done {
             return false;
         }
         // PendingEval → Failed is allowed from both `wg fail` and the
@@ -126,70 +112,61 @@ fn run_inner(
         // FailedPendingEval → Failed is the terminal path after eval rejection
         // (or operator-forced fail). Does NOT trigger auto-rescue spawn.
 
-        // ENOSPC is an infrastructure refusal, never a semantic verdict. Put
-        // the source task straight back in the admission queue so cleanup can
-        // run and the next attempt reuses its dirty worktree. Keeping it Open
-        // also prevents `.evaluate-*` from scoring a partial implementation.
-        if !eval_reject && class == Some(FailureClass::ResourceExhaustedDisk) {
-            agent_id_for_archive = task.assigned.clone();
-            task.status = Status::Open;
-            task.started_at = None;
-            task.completed_at = None;
-            task.assigned = None;
-            task.failure_class = class;
-            task.failure_reason = reason_owned.clone();
-            task.log.push(LogEntry {
-                timestamp: Utc::now().to_rfc3339(),
-                actor: agent_id_for_archive.clone(),
-                user: Some(worksgood::current_user()),
-                message: "Disk resource exhausted — implementation preserved; queued for safe retry-in-place after owned-cache cleanup".to_string(),
-            });
-            if task.token_usage.is_none()
-                && let Some(ref usage) = token_usage
-            {
-                task.token_usage = Some(usage.clone());
+        // Resource admission deferrals happen before reservation and are
+        // recorded by the dispatcher. Once a worker attempt is running,
+        // ENOSPC is a real typed attempt failure; it is never rewritten to
+        // Open here.
+
+        // Evaluator infrastructure and source execution are independent.
+        // A source process failure terminalizes the source attempt; no
+        // `FailedPendingEval` rescue status is produced by the authoritative
+        // path. Evaluation may append advisory evidence only.
+
+        let actor = if eval_reject {
+            LifecycleActor {
+                kind: ActorKind::AcceptanceController,
+                id: "evaluation-gate".to_string(),
             }
-            retry_count = task.retry_count;
-            max_retries = task.max_retries;
-            resource_retry_queued = true;
-            worksgood::eval_lifecycle::begin_source_attempt(
-                graph,
-                &id_owned,
-                "disk-exhaustion retry-in-place",
-            );
-            return true;
-        }
-
-        // Route to FailedPendingEval when conditions are met (Fork 5):
-        // agent-exit-nonzero + auto_evaluate + not an eval-reject call.
-        // Do NOT re-enter FailedPendingEval if already there (operator can
-        // force terminal-fail from FailedPendingEval by calling wg fail again).
-        if use_failed_pending_eval && task.status != Status::FailedPendingEval {
-            task.status = Status::FailedPendingEval;
-            task.failure_class = class;
-            task.failure_reason = reason_owned.clone();
-            worksgood::eval_lifecycle::refresh_source_lifecycle(task);
-            task.log.push(LogEntry {
-                timestamp: Utc::now().to_rfc3339(),
-                actor: task.assigned.clone(),
-                user: Some(worksgood::current_user()),
-                message: "Agent exited without wg done — entering failed-pending-eval for rescue evaluation".to_string(),
-            });
-
-            // Apply pre-resolved token usage
-            if task.token_usage.is_none()
-                && let Some(ref usage) = token_usage
-            {
-                task.token_usage = Some(usage.clone());
+        } else if task.lifecycle.current_attempt.is_some() {
+            (std::env::var("WG_TASK_ID").as_deref() == Ok(id_owned.as_str()))
+                .then(|| std::env::var("WG_AGENT_ID").ok())
+                .flatten()
+                .or_else(|| task.assigned.clone())
+                .map(LifecycleActor::worker)
+                .unwrap_or_else(|| LifecycleActor::operator(worksgood::current_user()))
+        } else if let Some(assigned) = task.assigned.clone() {
+            // One-release compatibility for pre-ledger rows.
+            LifecycleActor::worker(assigned)
+        } else {
+            LifecycleActor::operator(worksgood::current_user())
+        };
+        let kind = if eval_reject {
+            TransitionKind::AcceptanceRejected {
+                evidence_ref: reason_owned
+                    .clone()
+                    .unwrap_or_else(|| "evaluation-rejected".to_string()),
             }
-
-            retry_count = task.retry_count;
-            max_retries = task.max_retries;
-            agent_id_for_archive = task.assigned.clone();
-            return true;
+        } else {
+            TransitionKind::AttemptFailed { class }
+        };
+        let generation = task.lifecycle.generation;
+        let mut request = TransitionRequest::new(
+            kind,
+            actor,
+            if eval_reject {
+                "acceptance_rejected"
+            } else {
+                "source_execution_failed"
+            },
+            format!("fail:{id_owned}:{generation}:{}", task.retry_count),
+        );
+        if task.lifecycle.current_attempt.is_some() {
+            request.expected = FenceExpectation::current(task);
         }
-
-        task.status = Status::Failed;
+        if let Err(rejection) = apply_transition(task, request) {
+            transition_rejection = Some(rejection.to_string());
+            return false;
+        }
         task.retry_count += 1;
         task.failure_reason = reason_owned.clone();
         task.failure_class = class;
@@ -240,6 +217,9 @@ fn run_inner(
         );
         return Ok(());
     }
+    if let Some(rejection) = transition_rejection {
+        anyhow::bail!("Lifecycle transition rejected for '{}': {}", id, rejection);
+    }
 
     super::notify_graph_changed(dir);
 
@@ -284,17 +264,10 @@ fn run_inner(
     );
 
     let reason_msg = reason.map(|r| format!(" ({})", r)).unwrap_or_default();
-    if resource_retry_queued {
-        println!(
-            "Disk resource failure for '{}'{} — source preserved; safe retry-in-place queued behind disk admission",
-            id, reason_msg
-        );
-    } else {
-        println!(
-            "Marked '{}' as failed{} (retry #{})",
-            id, reason_msg, retry_count
-        );
-    }
+    println!(
+        "Marked '{}' as failed{} (retry #{})",
+        id, reason_msg, retry_count
+    );
 
     // Show retry info if max_retries is set
     if let Some(max) = max_retries {
@@ -362,7 +335,7 @@ mod tests {
     }
 
     #[test]
-    fn disk_resource_failure_queues_safe_retry_without_evaluation_state() {
+    fn disk_resource_failure_terminalizes_running_attempt_without_evaluation_state() {
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
         let mut task = make_task("disk-task", "cargo test full suite", Status::InProgress);
@@ -394,14 +367,20 @@ mod tests {
 
         let graph = load_graph(graph_path(dir_path)).unwrap();
         let task = graph.get_task("disk-task").unwrap();
-        assert_eq!(task.status, Status::Open);
-        assert_eq!(task.assigned, None);
-        assert_eq!(task.retry_count, 0);
+        assert_eq!(task.status, Status::Failed);
+        assert_eq!(task.assigned.as_deref(), Some("agent-disk"));
+        assert_eq!(task.retry_count, 1);
         assert_eq!(
             task.failure_class,
             Some(FailureClass::ResourceExhaustedDisk)
         );
-        assert!(task.log.last().unwrap().message.contains("preserved"));
+        assert!(
+            task.log
+                .last()
+                .unwrap()
+                .message
+                .contains("marked as failed")
+        );
         let ownership = worksgood::disk_sentinel::load_ownership(dir_path).unwrap();
         let expiry = chrono::DateTime::parse_from_rfc3339(
             &ownership.caches.first().unwrap().lease_expires_at,
@@ -608,28 +587,20 @@ mod tests {
         let result = run(dir_path, "t1", Some("reason"), None);
         assert!(result.is_err());
 
-        // eval_reject should succeed
+        // Evaluation evidence cannot rewrite an already terminal source.
         let result = run_eval_reject(
             dir_path,
             "t1",
             Some("evaluation score 0.3 below threshold 0.5"),
         );
-        assert!(result.is_ok());
+        assert!(result.is_err());
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
         let task = graph.get_task("t1").unwrap();
-        assert_eq!(task.status, Status::Failed);
-        assert_eq!(task.retry_count, 1);
-        assert!(
-            task.failure_reason
-                .as_deref()
-                .unwrap()
-                .contains("evaluation score")
-        );
-        // Check log message uses "Evaluation rejected" prefix
-        let last_log = task.log.last().unwrap();
-        assert!(last_log.message.contains("Evaluation rejected"));
+        assert_eq!(task.status, Status::Done);
+        assert_eq!(task.retry_count, 0);
+        assert!(task.failure_reason.is_none());
     }
 
     #[test]

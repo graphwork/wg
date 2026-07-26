@@ -53,7 +53,10 @@ use std::path::Path;
 use anyhow::Result;
 use chrono::Utc;
 
-use worksgood::graph::{LogEntry, Status, WorkGraph};
+#[cfg(test)]
+use worksgood::graph::Status;
+use worksgood::graph::{LogEntry, WorkGraph};
+use worksgood::lifecycle::{LifecycleActor, TransitionKind, TransitionRequest, apply_transition};
 use worksgood::parser::modify_graph;
 
 /// Edge direction to follow when computing the closure.
@@ -219,7 +222,22 @@ pub fn run(dir: &Path, seeds: &[String], opts: ResetOptions) -> Result<ResetRepo
             if let Some(task) = graph.get_task_mut(id) {
                 let prev = task.status;
                 let prev_assigned = task.assigned.clone();
-                task.status = Status::Open;
+                let generation = task.lifecycle.generation;
+                let request = TransitionRequest::new(
+                    TransitionKind::GenerationCreated,
+                    LifecycleActor::operator(user.clone()),
+                    "explicit_reset",
+                    format!("reset:{id}:{generation}"),
+                );
+                if let Err(rejection) = apply_transition(task, request) {
+                    task.log.push(LogEntry {
+                        timestamp: now.clone(),
+                        actor: Some("reset".to_string()),
+                        user: Some(user.clone()),
+                        message: format!("reset rejected: {rejection}"),
+                    });
+                    continue;
+                }
                 task.completed_at = None;
                 task.failure_reason = None;
                 task.retry_count = 0;

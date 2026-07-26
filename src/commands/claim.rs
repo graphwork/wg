@@ -2,6 +2,9 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
 use worksgood::graph::{LogEntry, Status};
+use worksgood::lifecycle::{
+    ActorKind, LifecycleActor, TransitionKind, TransitionRequest, apply_transition,
+};
 use worksgood::parser::modify_graph;
 
 #[cfg(test)]
@@ -109,7 +112,26 @@ pub fn claim(dir: &Path, id: &str, actor: Option<&str>) -> Result<()> {
         prev_status = format!("{:?}", task.status);
         prev_assigned = task.assigned.clone();
 
-        task.status = Status::InProgress;
+        let generation = task.lifecycle.generation;
+        let request = TransitionRequest::new(
+            TransitionKind::AttemptReserved {
+                owner_id: actor.map(str::to_string),
+            },
+            LifecycleActor {
+                kind: if actor.is_some() {
+                    ActorKind::Dispatcher
+                } else {
+                    ActorKind::Operator
+                },
+                id: actor.unwrap_or("cli").to_string(),
+            },
+            "claim",
+            format!("claim:{id}:{generation}:{}", actor.unwrap_or("operator")),
+        );
+        if let Err(rejection) = apply_transition(task, request) {
+            error = Some(anyhow::anyhow!(rejection));
+            return false;
+        }
         task.started_at = Some(Utc::now().to_rfc3339());
         if let Some(actor_id) = actor {
             task.assigned = Some(actor_id.to_string());
@@ -231,7 +253,19 @@ pub fn unclaim(dir: &Path, id: &str) -> Result<()> {
 
         let starts_new_attempt = task.status == Status::InProgress;
         prev_assigned = task.assigned.clone();
-        task.status = Status::Open;
+        if starts_new_attempt {
+            let generation = task.lifecycle.generation;
+            let request = TransitionRequest::new(
+                TransitionKind::GenerationCreated,
+                LifecycleActor::operator(worksgood::current_user()),
+                "explicit_unclaim_redispatch",
+                format!("unclaim:{id}:{generation}"),
+            );
+            if let Err(rejection) = apply_transition(task, request) {
+                error = Some(anyhow::anyhow!(rejection));
+                return false;
+            }
+        }
         task.assigned = None;
         if starts_new_attempt {
             task.retry_count = task.retry_count.saturating_add(1);
@@ -344,7 +378,7 @@ mod tests {
     }
 
     #[test]
-    fn test_claim_blocked_task_succeeds() {
+    fn test_claim_blocked_task_is_rejected_until_readiness_clears() {
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
         setup_workgraph(
@@ -353,12 +387,13 @@ mod tests {
         );
 
         let result = claim(dir_path, "t1", None);
-        assert!(result.is_ok());
+        assert!(result.is_err());
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
         let task = graph.get_task("t1").unwrap();
-        assert_eq!(task.status, Status::InProgress);
+        assert_eq!(task.status, Status::Blocked);
+        assert_eq!(task.lifecycle.revision, 0);
     }
 
     #[test]

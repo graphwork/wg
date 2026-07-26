@@ -154,7 +154,7 @@ fn test_rescued_false_deserializes_from_legacy_row() {
 // ── fail.rs intercept tests ────────────────────────────────────────────────
 
 #[test]
-fn test_agent_exit_nonzero_with_auto_evaluate_enters_failed_pending_eval() {
+fn test_agent_exit_nonzero_terminalizes_source_attempt() {
     let tmp = TempDir::new().unwrap();
     let mut task = make_task("t1", Status::InProgress);
     task.assigned = Some("test-agent".to_string());
@@ -172,17 +172,13 @@ fn test_agent_exit_nonzero_with_auto_evaluate_enters_failed_pending_eval() {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    // Task should now be in failed-pending-eval, NOT failed
+    // Source execution failure is authoritative and terminal. Evaluation is
+    // independent evidence and cannot turn failure into a soft eval state.
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     let task = graph.get_task("t1").unwrap();
-    assert_eq!(
-        task.status,
-        Status::FailedPendingEval,
-        "expected failed-pending-eval with auto_evaluate=true"
-    );
+    assert_eq!(task.status, Status::Failed);
     assert_eq!(task.failure_class, Some(FailureClass::AgentExitNonzero));
-    // retry_count should be unchanged (not a retry path)
-    assert_eq!(task.retry_count, 0);
+    assert_eq!(task.retry_count, 1);
 }
 
 #[test]
@@ -382,7 +378,7 @@ fn test_failed_pending_eval_system_bypass() {
 // ── wg show displays ───────────────────────────────────────────────────────
 
 #[test]
-fn test_wg_show_displays_failed_pending_eval_status() {
+fn test_wg_show_displays_authoritative_failed_status() {
     let tmp = TempDir::new().unwrap();
     let mut task = make_task("t1", Status::InProgress);
     task.assigned = Some("test-agent".to_string());
@@ -391,20 +387,18 @@ fn test_wg_show_displays_failed_pending_eval_status() {
     let config_path = wg_dir.join("config.toml");
     std::fs::write(&config_path, "[agency]\nauto_evaluate = true\n").unwrap();
 
-    // Fail the task with agent-exit-nonzero → should enter FailedPendingEval
+    // Fail the task with agent-exit-nonzero: the source attempt is terminal.
     let out = wg_cmd(&wg_dir, &["fail", "t1", "--class", "agent-exit-nonzero"]);
     assert!(out.status.success());
 
-    // wg show should indicate the state
     let out = wg_cmd(&wg_dir, &["show", "t1"]);
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("failed-pending-eval")
-            || stdout.contains("failed pending eval")
-            || stdout.contains("failed pending evaluation"),
-        "wg show should display failed-pending-eval label; got: {}",
+        stdout.contains("Status: failed"),
+        "wg show should display the authoritative failed state; got: {}",
         stdout
     );
+    assert!(stdout.contains("Last transition: attempt-failed"));
 }
 
 #[test]

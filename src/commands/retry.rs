@@ -3,6 +3,7 @@ use chrono::Utc;
 use std::path::Path;
 use worksgood::config::{DispatchRole, ReasoningLevel, Tier};
 use worksgood::graph::{LogEntry, Status};
+use worksgood::lifecycle::{LifecycleActor, TransitionKind, TransitionRequest, apply_transition};
 use worksgood::parser::modify_graph;
 use worksgood::service::{AgentRegistry, is_process_alive, kill_process_graceful};
 
@@ -252,7 +253,7 @@ fn run_with_selection(
             Status::Failed | Status::Incomplete | Status::PendingEval | Status::FailedPendingEval
         ) {
             error = Some(anyhow::anyhow!(
-                "Task '{}' is not retriable (status: {:?}). Only failed, incomplete, pending-eval, failed-pending-eval, or in-progress tasks can be retried.",
+                "Task '{}' is not failed and is not retriable (status: {:?}). Only failed, incomplete, pending-eval, failed-pending-eval, or in-progress tasks can be retried.",
                 id,
                 task.status
             ));
@@ -279,8 +280,20 @@ fn run_with_selection(
         prev_failure_reason = task.failure_reason.clone();
         attempt = task.retry_count + 1;
 
-        // Clear failure state and set to Open status
-        task.status = Status::Open;
+        // Retry is an explicit new generation, never a raw terminal-state
+        // rewrite. The generation/fence CAS makes concurrent retry commands
+        // and stale worker exits deterministic.
+        let generation = task.lifecycle.generation;
+        let request = TransitionRequest::new(
+            TransitionKind::GenerationCreated,
+            LifecycleActor::operator(worksgood::current_user()),
+            "explicit_retry",
+            format!("retry:{id}:{generation}"),
+        );
+        if let Err(rejection) = apply_transition(task, request) {
+            error = Some(anyhow::anyhow!(rejection));
+            return false;
+        }
         task.failure_reason = None;
         task.assigned = None;
         task.ready_after = None;
@@ -398,14 +411,6 @@ fn run_with_selection(
     if let Some(e) = error {
         return Err(e);
     }
-
-    // Set task status to Open after retry (dependency checking is done by ready/service logic)
-    modify_graph(&path, |graph| {
-        let task = graph.get_task_mut(id).unwrap(); // We know it exists from above
-        task.status = Status::Open;
-        true
-    })
-    .context("Failed to update task status after retry")?;
 
     super::notify_graph_changed(dir);
 
@@ -609,7 +614,19 @@ fn retry_in_progress(
             task.retry_count = task.retry_count.max(requested_retry_count);
         }
         attempt = task.retry_count;
-        task.status = Status::Open;
+        if !retry_generation_already_started {
+            let generation = task.lifecycle.generation;
+            let request = TransitionRequest::new(
+                TransitionKind::GenerationCreated,
+                LifecycleActor::operator(worksgood::current_user()),
+                "retry_in_progress",
+                format!("retry-live:{id}:{generation}"),
+            );
+            if let Err(rejection) = apply_transition(task, request) {
+                error = Some(anyhow::anyhow!(rejection));
+                return false;
+            }
+        }
         task.assigned = None;
         task.failure_reason = None;
         task.ready_after = None;

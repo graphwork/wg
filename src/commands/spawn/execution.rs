@@ -11,6 +11,10 @@ use worksgood::agency;
 use worksgood::config::{CapBehavior, Config, EndpointConfig, ReasoningLevel};
 use worksgood::dispatch::plan_spawn;
 use worksgood::graph::{LogEntry, Node, Status, Task, is_system_task};
+use worksgood::lifecycle::{
+    ActorKind, FenceExpectation, LifecycleActor, TransitionKind, TransitionRequest,
+    apply_transition,
+};
 use worksgood::parser::{load_graph, modify_graph};
 use worksgood::service::executor::{ExecutorRegistry, PromptTemplate, TemplateVars, build_prompt};
 use worksgood::service::registry::{AgentRegistry, LockedRegistry};
@@ -426,7 +430,22 @@ fn claim_task_for_spawn(
             started_at: task.started_at.clone(),
             assigned: task.assigned.clone(),
         });
-        task.status = Status::InProgress;
+        let generation = task.lifecycle.generation;
+        let request = TransitionRequest::new(
+            TransitionKind::AttemptReserved {
+                owner_id: Some(agent_id.to_string()),
+            },
+            LifecycleActor {
+                kind: ActorKind::Dispatcher,
+                id: "spawn".to_string(),
+            },
+            "spawn_reservation",
+            format!("spawn-claim:{task_id}:{generation}:{agent_id}"),
+        );
+        if let Err(rejection) = apply_transition(task, request) {
+            claim_error = Some(anyhow::anyhow!(rejection));
+            return false;
+        }
         task.started_at = Some(Utc::now().to_rfc3339());
         task.assigned = Some(agent_id.to_string());
         true
@@ -454,7 +473,27 @@ fn rollback_task_claim(
             ownership_lost = true;
             return false;
         }
-        task.status = snapshot.status;
+        let attempt_id = task
+            .lifecycle
+            .current_attempt
+            .as_ref()
+            .map(|attempt| attempt.id.clone())
+            .unwrap_or_else(|| "legacy".to_string());
+        let request = TransitionRequest::new(
+            TransitionKind::ReservationCancelled,
+            LifecycleActor {
+                kind: ActorKind::Dispatcher,
+                id: "spawn-rollback".to_string(),
+            },
+            "spawn_preparation_rolled_back",
+            format!("spawn-rollback:{task_id}:{attempt_id}"),
+        )
+        .expecting(FenceExpectation::current(task));
+        if apply_transition(task, request).is_err() {
+            ownership_lost = true;
+            return false;
+        }
+        debug_assert_eq!(snapshot.status, Status::Open);
         task.started_at.clone_from(&snapshot.started_at);
         task.assigned.clone_from(&snapshot.assigned);
         true

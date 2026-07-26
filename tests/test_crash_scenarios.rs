@@ -379,10 +379,12 @@ fn test_crash_scenarios_sigkill_cleanup() {
         "Agent should have been detected as dead and cleaned up after SIGKILL"
     );
 
-    // Verify the task eventually returns to "open" or gets re-assigned
+    // A dead attempt is terminally classified as failed; an explicit retry
+    // may subsequently reopen/reassign it.
     let task_handled = wait_for(Duration::from_secs(10), 300, || {
         let status = task_status(&wg_dir, "sigkill-task");
-        status == "open"
+        status == "failed"
+            || status == "open"
             || (status == "in-progress" && {
                 // Check if it's a different agent
                 if let Some(reg) = read_registry(&wg_dir)
@@ -401,7 +403,7 @@ fn test_crash_scenarios_sigkill_cleanup() {
 
     assert!(
         task_handled,
-        "Task should be back to 'open' or reassigned after agent death"
+        "Task should be failed, explicitly reopened, or reassigned after agent death"
     );
 }
 

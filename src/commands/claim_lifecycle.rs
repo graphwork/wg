@@ -12,11 +12,14 @@
 //! Lazy with status-aware reconciler").
 
 use std::collections::HashSet;
-use std::path::Path;
 
 use chrono::Utc;
 
 use worksgood::graph::{LogEntry, Status, WorkGraph};
+use worksgood::lifecycle::{
+    ActorKind, FenceExpectation, LifecycleActor, TransitionKind, TransitionRequest,
+    apply_transition,
+};
 use worksgood::service::registry::{AgentRegistry, AgentStatus};
 
 use super::is_process_alive;
@@ -170,13 +173,53 @@ pub fn clear_stale_downstream_claims(
         }
 
         if let Some(task) = graph.get_task_mut(tid) {
+            let was_running = task.status == Status::InProgress;
+            let generation = task.lifecycle.generation;
+            let mut request = if was_running {
+                TransitionRequest::new(
+                    TransitionKind::AttemptLost,
+                    LifecycleActor {
+                        kind: ActorKind::Reconciler,
+                        id: "claim-lifecycle".to_string(),
+                    },
+                    "stale_downstream_process_dead",
+                    format!("claim-lost:{tid}:{generation}"),
+                )
+            } else {
+                TransitionRequest::new(
+                    TransitionKind::ReconciliationIssue {
+                        issue_id: format!("stale-claim:{tid}:{generation}"),
+                    },
+                    LifecycleActor {
+                        kind: ActorKind::Reconciler,
+                        id: "claim-lifecycle".to_string(),
+                    },
+                    "stale_downstream_claim",
+                    format!("claim-issue:{tid}:{generation}"),
+                )
+            };
+            if was_running && task.lifecycle.current_attempt.is_some() {
+                request.expected = FenceExpectation::current(task);
+            }
+            if apply_transition(task, request).is_err() {
+                continue;
+            }
+            if was_running {
+                let reopen = TransitionRequest::new(
+                    TransitionKind::GenerationCreated,
+                    LifecycleActor {
+                        kind: ActorKind::Reconciler,
+                        id: "claim-lifecycle".to_string(),
+                    },
+                    "upstream_retry_reopens_stale_downstream",
+                    format!("claim-reopen:{tid}:{}", task.lifecycle.generation),
+                );
+                if apply_transition(task, reopen).is_err() {
+                    continue;
+                }
+            }
             task.assigned = None;
             task.started_at = None;
-            // If the task was somehow InProgress under a dead agent,
-            // bring it back to Open so the dispatcher will pick it up.
-            if task.status == Status::InProgress {
-                task.status = Status::Open;
-            }
             task.log.push(LogEntry {
                 timestamp: now.clone(),
                 actor: Some("claim-lifecycle".to_string()),

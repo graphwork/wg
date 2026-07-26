@@ -12,6 +12,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
 use worksgood::graph::{LogEntry, Status, Task};
+use worksgood::lifecycle::{LifecycleActor, TransitionKind, TransitionRequest, apply_transition};
 use worksgood::parser::modify_graph;
 
 #[cfg(test)]
@@ -297,7 +298,16 @@ fn apply_plan(dir: &Path, plan: &Plan, opts: &RecoverOptions) -> Result<()> {
                     task.status,
                     Status::PendingEval | Status::FailedPendingEval
                 );
-                task.status = Status::Open;
+                let generation = task.lifecycle.generation;
+                let request = TransitionRequest::new(
+                    TransitionKind::GenerationCreated,
+                    LifecycleActor::operator(user.clone()),
+                    "batch_recover_retry",
+                    format!("recover:{}:{generation}", task.id),
+                );
+                if apply_transition(task, request).is_err() {
+                    continue;
+                }
                 task.failure_reason = None;
                 task.assigned = None;
                 task.ready_after = None;
@@ -338,7 +348,27 @@ fn apply_plan(dir: &Path, plan: &Plan, opts: &RecoverOptions) -> Result<()> {
         for entry in &plan.agency_abandons {
             if let Some(task) = graph.get_task_mut(&entry.id) {
                 if task.status != Status::Done && task.status != Status::Abandoned {
-                    task.status = Status::Abandoned;
+                    let generation = task.lifecycle.generation;
+                    if task.status.is_terminal() {
+                        let supersede = TransitionRequest::new(
+                            TransitionKind::GenerationCreated,
+                            LifecycleActor::operator(user.clone()),
+                            "batch_recover_supersede_followup",
+                            format!("recover-supersede:{}:{generation}", task.id),
+                        );
+                        if apply_transition(task, supersede).is_err() {
+                            continue;
+                        }
+                    }
+                    let request = TransitionRequest::new(
+                        TransitionKind::Abandoned,
+                        LifecycleActor::operator(user.clone()),
+                        "batch_recover_abandon_followup",
+                        format!("recover-abandon:{}:{}", task.id, task.lifecycle.generation),
+                    );
+                    if apply_transition(task, request).is_err() {
+                        continue;
+                    }
                     task.failure_reason = Some(
                         "Auto-abandoned by `wg recover` so it regenerates from parent".to_string(),
                     );

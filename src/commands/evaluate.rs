@@ -2127,12 +2127,24 @@ fn check_eval_gate(
             .unwrap_or(0);
 
         if max_rescues > 0 && prior_rescue_count >= max_rescues {
-            // Cap reached — terminal failure so the loop ends.
-            super::fail::run_eval_reject(dir, task_id, Some(&reason))?;
+            // A legacy direct-gate source may already be terminal Done. The
+            // evaluator records evidence but cannot rewrite that terminal
+            // generation; only the durable soft-eval path can reject it.
+            let terminal_unchanged = persisted_source
+                .as_ref()
+                .is_some_and(|task| task.status == Status::Done);
+            if !terminal_unchanged {
+                super::fail::run_eval_reject(dir, task_id, Some(&reason))?;
+            }
+            let disposition = if terminal_unchanged {
+                "Leaving terminal generation unchanged for triage."
+            } else {
+                "Leaving task Failed for triage."
+            };
             let msg = format!(
                 "  [eval-rescue] cap reached: '{}' has been rescued {} time(s) \
-                 (max_verify_failures = {}). Leaving task Failed for triage.",
-                task_id, prior_rescue_count, max_rescues
+                 (max_verify_failures = {}). {}",
+                task_id, prior_rescue_count, max_rescues, disposition
             );
             if json {
                 eprintln!("{}", msg);
@@ -2852,9 +2864,9 @@ mod tests {
     }
 
     #[test]
-    fn test_eval_fail_at_cap_transitions_to_failed() {
+    fn test_eval_fail_at_cap_preserves_terminal_generation() {
         // rescue_count == max_eval_rescues: task should NOT iterate further;
-        // instead transition to Failed (terminal).
+        // a legacy already-Done source remains terminal.
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
         let agent_hash = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
@@ -2881,8 +2893,8 @@ mod tests {
 
         assert_eq!(
             task.status,
-            Status::Failed,
-            "at cap, in-place rescue MUST stop and transition to Failed"
+            Status::Done,
+            "evaluation evidence must not rewrite a terminal generation"
         );
 
         // No new rescue task spawned at cap.
