@@ -46,6 +46,43 @@ fn identity() -> ObserverIdentity {
 }
 
 #[test]
+fn case_distinct_paths_attach_on_case_sensitive_checkout() {
+    let root = repo();
+    let upper = root.path().join("PROMPT_CONSTRUCTION_ANALYSIS.md");
+    let lower = root.path().join("prompt_construction_analysis.md");
+    fs::write(&upper, "upper\n").unwrap();
+    fs::write(&lower, "lower\n").unwrap();
+
+    // Case-insensitive filesystems cannot materialize both names. Their Git
+    // checkout/materialization rules remain authoritative, so this regression
+    // applies only where the two entries genuinely coexist.
+    if fs::read_to_string(&upper).unwrap() == fs::read_to_string(&lower).unwrap() {
+        return;
+    }
+
+    git(
+        root.path(),
+        &[
+            "add",
+            "PROMPT_CONSTRUCTION_ANALYSIS.md",
+            "prompt_construction_analysis.md",
+        ],
+    );
+    git(root.path(), &["commit", "-qm", "case-distinct paths"]);
+
+    let storage = tempdir().unwrap();
+    WorktreeObserver::attach_at(
+        root.path(),
+        storage.path(),
+        identity(),
+        CandidatePathPolicy::new(vec![], vec![]).unwrap(),
+        ObserverConfig::default(),
+        1_000,
+    )
+    .expect("case-distinct paths in a valid checkout must not block observer attach");
+}
+
+#[test]
 fn exact_root_content_and_same_bytes_are_domain_separated() {
     let root = repo();
     let storage = tempdir().unwrap();

@@ -432,6 +432,13 @@ fn claim_task_for_spawn(
         let prior_started_at = task.started_at.clone();
         let prior_assigned = task.assigned.clone();
         let generation = task.lifecycle.generation;
+        // A failed spawn rolls its reservation back but intentionally retains
+        // the append-only lifecycle audit. The registry may then reuse the
+        // same not-yet-committed agent ID. Key reservations by the next
+        // monotonic attempt sequence as well, otherwise the retry is mistaken
+        // for the prior idempotent event: no InProgress projection is applied,
+        // `assigned` is set on an Open task, and every later launch rolls back.
+        let reservation_sequence = task.lifecycle.attempt_sequence + 1;
         let request = TransitionRequest::new(
             TransitionKind::AttemptReserved {
                 owner_id: Some(agent_id.to_string()),
@@ -441,7 +448,9 @@ fn claim_task_for_spawn(
                 id: "spawn".to_string(),
             },
             "spawn_reservation",
-            format!("spawn-claim:{task_id}:{generation}:{agent_id}"),
+            format!(
+                "spawn-claim:{task_id}:{generation}:{reservation_sequence}:{agent_id}"
+            ),
         );
         if let Err(rejection) = apply_transition(task, request) {
             claim_error = Some(anyhow::anyhow!(rejection));
@@ -6104,6 +6113,26 @@ mod tests {
             rollback_task_claim(&graph_path, "claim-race", "agent-1", &snapshot).is_err(),
             "rollback must not overwrite the newer owner"
         );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn rolled_back_reservation_can_reuse_uncommitted_agent_id() {
+        let _global = GlobalConfigGuard::isolated();
+        let project = init_spawn_project(&["reservation-retry"], false);
+        let graph_path = project.path().join(".wg/graph.jsonl");
+
+        let first = claim_task_for_spawn(&graph_path, "reservation-retry", "agent-1").unwrap();
+        rollback_task_claim(&graph_path, "reservation-retry", "agent-1", &first).unwrap();
+
+        let second = claim_task_for_spawn(&graph_path, "reservation-retry", "agent-1")
+            .expect("a rolled-back, uncommitted agent ID must be reusable");
+        let graph = load_graph(&graph_path).unwrap();
+        let task = graph.get_task("reservation-retry").unwrap();
+        assert_eq!(task.status, Status::InProgress);
+        assert_eq!(task.assigned.as_deref(), Some("agent-1"));
+        assert_ne!(first.attempt_id, second.attempt_id);
+        rollback_task_claim(&graph_path, "reservation-retry", "agent-1", &second).unwrap();
     }
 
     #[test]

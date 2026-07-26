@@ -1597,14 +1597,14 @@ fn scan_manifest(root: &Path, policy: &CandidatePathPolicy) -> Result<ManifestSn
     let ignored = ignored_paths(root, &untracked)?;
     let mut entries = BTreeMap::new();
     let mut excluded = BTreeMap::new();
-    let mut folded = BTreeMap::<String, String>::new();
     for (path, absolute, file_type) in discovered {
-        let folded_path = path.to_lowercase();
-        if let Some(other) = folded.insert(folded_path, path.clone())
-            && other != path
-        {
-            bail!("case-colliding-paths:{other}:{path}");
-        }
+        // Preserve exact, case-distinct paths when the checkout filesystem can
+        // materialize both of them. Folding names here made observer attach
+        // reject valid Linux repositories (and wedged every subsequent spawn)
+        // even though the manifest and Git index are keyed by exact paths.
+        // A case-insensitive checkout cannot yield two distinct directory
+        // entries in this scan; its ordinary Git materialization checks remain
+        // the authority for that platform.
         let tracked_entry = tracked.get(&path);
         let class = policy.classify(&path, tracked_entry.is_some(), ignored.contains(&path));
         match class {
