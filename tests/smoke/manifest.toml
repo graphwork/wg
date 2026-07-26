@@ -2684,3 +2684,10 @@ script = "scenarios/lifecycle_message_is_data.sh"
 owners = ["implement-authoritative-lifecycle", "smoke-gate-is", "stop-messages-from"]
 description = "Credential-free real installed-CLI/daemon regression: bursts messages at Done, Failed, Abandoned, dead-attempt, stale-epoch, and live-worker recipients while fingerprinting status/readiness/liveness/attempt/ownership/PID/spawn state byte-for-byte; asserts exact recipient-epoch/disposition diagnostics and normal live-worker read delivery; proves only a matching current-attempt one-shot Waiting(Message) subscription resumes (one consumed receipt under a 20-message burst, with nonmatch inert); and restarts the daemon over historical unread records with zero resurrection, responder child, transition replay, or spawn."
 timeout_seconds = 75
+
+[[scenario]]
+name = "admission_deferral_backpressure"
+script = "scenarios/admission_deferral_backpressure.sh"
+owners = ["fix-admission-deferrals"]
+description = "Credential-free installed-binary terminal/daemon flow for admission backpressure: one live build-heavy shell task occupies max_build_agents=1 while a second remains Open and unattempted across more than five bounded ticks with zero spawn/retry/provider-health/evaluator/FLIP charge; service JSON and human status expose the separate deferred count/reason; identical logs and lifecycle evidence coalesce; releasing the first task's capacity (without retry/edit/direct transition calls) makes the daemon dispatch the deferred task exactly once."
+timeout_seconds = 60

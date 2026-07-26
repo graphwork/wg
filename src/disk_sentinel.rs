@@ -217,6 +217,31 @@ pub struct BuildAdmission {
     pub reason: String,
 }
 
+/// Typed transient refusal returned by the final process-creation admission
+/// check. Callers must treat this as scheduler backpressure, never as a spawn
+/// or provider failure. Keeping the classification typed prevents genuine
+/// launch errors that happen to mention "budget" from being misclassified.
+#[derive(Debug, thiserror::Error)]
+#[error("{reason}")]
+pub struct AdmissionDeferral {
+    pub reason: String,
+}
+
+impl AdmissionDeferral {
+    pub fn new(reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+        }
+    }
+}
+
+/// Recover a typed admission refusal through any anyhow context layers.
+pub fn admission_deferral_reason(error: &anyhow::Error) -> Option<&str> {
+    error
+        .downcast_ref::<AdmissionDeferral>()
+        .map(|deferred| deferred.reason.as_str())
+}
+
 fn sentinel_dir(dir: &Path) -> PathBuf {
     dir.join("service").join("disk")
 }
@@ -1775,6 +1800,22 @@ mod tests {
             total_bytes: 1_000,
             free_percent: pct,
         }
+    }
+
+    #[test]
+    fn admission_deferral_classification_is_typed_not_prose() {
+        let typed: anyhow::Error =
+            AdmissionDeferral::new("build-heavy admission budget full (1/1)").into();
+        let contextual = typed.context("final spawn gate");
+        assert_eq!(
+            admission_deferral_reason(&contextual),
+            Some("build-heavy admission budget full (1/1)")
+        );
+
+        let genuine_launch_error = anyhow::anyhow!(
+            "missing binary while message happened to mention admission budget full"
+        );
+        assert_eq!(admission_deferral_reason(&genuine_launch_error), None);
     }
 
     #[test]

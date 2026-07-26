@@ -967,35 +967,32 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
             build_class,
         );
         if !admission.allowed {
-            anyhow::bail!(
+            return Err(worksgood::disk_sentinel::AdmissionDeferral::new(format!(
                 "build admission refused: {} (candidate={} bytes, concurrent-reserve={} bytes; safe retry will reuse this worktree)",
                 admission.reason,
                 admission.candidate_bytes,
                 admission.concurrent_reserved_bytes
-            );
+            ))
+            .into());
         }
     }
 
     if build_class.is_heavy() {
         let active_heavy = locked_registry
             .all()
+            .filter(|agent| agent.is_alive() && worksgood::service::is_process_alive(agent.pid))
             .filter(|agent| {
-                agent.is_live(
-                    config
-                        .coordinator
-                        .resource_management
-                        .disk_agent_heartbeat_seconds,
-                ) && graph
+                graph
                     .get_task(&agent.task_id)
                     .is_some_and(|task| worksgood::disk_sentinel::classify_task(task).is_heavy())
             })
             .count();
         if active_heavy >= config.coordinator.resource_management.max_build_agents {
-            anyhow::bail!(
+            return Err(worksgood::disk_sentinel::AdmissionDeferral::new(format!(
                 "build-heavy admission budget full ({}/{})",
-                active_heavy,
-                config.coordinator.resource_management.max_build_agents
-            );
+                active_heavy, config.coordinator.resource_management.max_build_agents
+            ))
+            .into());
         }
     }
     // --- Workspace reservation and mandatory isolation ---

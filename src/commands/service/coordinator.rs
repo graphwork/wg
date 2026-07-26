@@ -186,6 +186,22 @@ fn is_daemon_managed(task: &worksgood::graph::Task) -> bool {
         .any(|tag| DAEMON_MANAGED_TAGS.contains(&tag.as_str()))
 }
 
+fn active_build_heavy_count(dir: &Path, graph: &worksgood::graph::WorkGraph) -> usize {
+    AgentRegistry::load(dir)
+        .map(|registry| {
+            registry
+                .all()
+                .filter(|agent| agent.is_alive() && is_process_alive(agent.pid))
+                .filter(|agent| {
+                    graph.get_task(&agent.task_id).is_some_and(|task| {
+                        worksgood::disk_sentinel::classify_task(task).is_heavy()
+                    })
+                })
+                .count()
+        })
+        .unwrap_or(0)
+}
+
 fn build_admission_denial(
     task: &Task,
     builds_blocked: bool,
@@ -199,7 +215,7 @@ fn build_admission_denial(
     }
     if class.is_heavy() && active_build_heavy >= max_build_agents {
         return Some(format!(
-            "build-heavy budget full ({active_build_heavy}/{max_build_agents})"
+            "build-heavy admission budget full ({active_build_heavy}/{max_build_agents})"
         ));
     }
     None
@@ -3566,7 +3582,11 @@ fn spawn_shell_inline(dir: &Path, task_id: &str) -> Result<(String, u32)> {
             &config.coordinator.resource_management,
         );
         if level.blocks_builds() {
-            anyhow::bail!("build admission {:?}: {}", level, reason);
+            return Err(worksgood::disk_sentinel::AdmissionDeferral::new(format!(
+                "build admission {:?}: {}",
+                level, reason
+            ))
+            .into());
         }
     }
 
@@ -3581,12 +3601,29 @@ fn spawn_shell_inline(dir: &Path, task_id: &str) -> Result<(String, u32)> {
             build_class,
         );
         if !admission.allowed {
-            anyhow::bail!(
+            return Err(worksgood::disk_sentinel::AdmissionDeferral::new(format!(
                 "build admission refused: {} (candidate={} bytes, concurrent-reserve={} bytes)",
-                admission.reason,
-                admission.candidate_bytes,
-                admission.concurrent_reserved_bytes
-            );
+                admission.reason, admission.candidate_bytes, admission.concurrent_reserved_bytes
+            ))
+            .into());
+        }
+    }
+    if build_class.is_heavy() {
+        let active_heavy = locked_registry
+            .all()
+            .filter(|agent| agent.is_alive() && is_process_alive(agent.pid))
+            .filter(|agent| {
+                graph
+                    .get_task(&agent.task_id)
+                    .is_some_and(|task| worksgood::disk_sentinel::classify_task(task).is_heavy())
+            })
+            .count();
+        if active_heavy >= config.coordinator.resource_management.max_build_agents {
+            return Err(worksgood::disk_sentinel::AdmissionDeferral::new(format!(
+                "build-heavy admission budget full ({}/{})",
+                active_heavy, config.coordinator.resource_management.max_build_agents
+            ))
+            .into());
         }
     }
     let agent_id = format!("agent-{}", locked_registry.next_agent_id);
@@ -4266,12 +4303,29 @@ fn park_agency_execution_error(graph_path: &Path, task_id: &str, error: &anyhow:
     true
 }
 
-fn record_admission_deferral(graph_path: &Path, task_id: &str, reason: &str) {
+/// Persist one coalesced lifecycle evidence event for an admission refusal.
+/// Returns true only for the first identical reason in this task generation so
+/// the caller can rate-limit the human log while still reporting every tick in
+/// service status metrics.
+fn record_admission_deferral(graph_path: &Path, task_id: &str, reason: &str) -> bool {
     let reason_key = blake3::hash(reason.as_bytes()).to_hex();
+    let mut recorded = false;
     let _ = modify_graph(graph_path, |graph| {
         let Some(task) = graph.get_task_mut(task_id) else {
             return false;
         };
+        let idempotency_key = format!(
+            "admission:{task_id}:{}:{reason_key}",
+            task.lifecycle.generation
+        );
+        if task
+            .lifecycle
+            .audit
+            .iter()
+            .any(|event| event.idempotency_key == idempotency_key)
+        {
+            return false;
+        }
         let request = TransitionRequest::new(
             TransitionKind::AdmissionDeferred {
                 gate: reason.to_string(),
@@ -4281,13 +4335,30 @@ fn record_admission_deferral(graph_path: &Path, task_id: &str, reason: &str) {
                 id: "resource-admission".to_string(),
             },
             "resource_admission_deferred",
-            format!(
-                "admission:{task_id}:{}:{reason_key}",
-                task.lifecycle.generation
-            ),
+            idempotency_key,
         );
-        apply_transition(task, request).is_ok()
+        recorded = apply_transition(task, request).is_ok();
+        recorded
     });
+    recorded
+}
+
+fn note_admission_deferral(
+    summary: &mut SpawnSummary,
+    graph_path: &Path,
+    task_id: &str,
+    reason: &str,
+) {
+    summary.admission_deferred_tasks = summary.admission_deferred_tasks.saturating_add(1);
+    summary
+        .admission_deferred_reason
+        .get_or_insert_with(|| reason.to_string());
+    if record_admission_deferral(graph_path, task_id, reason) {
+        eprintln!(
+            "[dispatcher] Deferring '{}': {} (admission backpressure, not a spawn failure; identical deferrals are coalesced; retrying on bounded coordinator ticks)",
+            task_id, reason
+        );
+    }
 }
 
 fn spawn_agents_for_ready_tasks(
@@ -4312,10 +4383,10 @@ fn spawn_agents_for_ready_tasks(
         && disk_snapshot
             .as_ref()
             .is_some_and(|snapshot| snapshot.level.blocks_builds());
-    let mut active_build_heavy = disk_snapshot
-        .as_ref()
-        .map(|snapshot| snapshot.active_build_heavy)
-        .unwrap_or(0);
+    // The concurrency budget is process admission, not a disk observation.
+    // A cached sentinel snapshot may be disabled or stale between ticks, so
+    // derive occupancy from the authoritative live agent registry every tick.
+    let mut active_build_heavy = active_build_heavy_count(dir, graph);
     // Memoize loaded WCC-profile configs by name for this tick so a component
     // of N profiled tasks loads each profile file at most once.
     let mut profile_cache = worksgood::dispatch::ProfileCache::new();
@@ -4417,18 +4488,7 @@ fn spawn_agents_for_ready_tasks(
             config.coordinator.resource_management.max_build_agents,
             disk_reason,
         ) {
-            eprintln!(
-                "[dispatcher] Deferring '{}' while ordinary/evaluator tasks remain eligible: {}",
-                task.id, reason
-            );
-            if build_class.is_build_capable() && (builds_blocked || !projected.allowed) {
-                summary.admission_deferred_tasks =
-                    summary.admission_deferred_tasks.saturating_add(1);
-                summary
-                    .admission_deferred_reason
-                    .get_or_insert(reason.clone());
-            }
-            record_admission_deferral(&gp, &task.id, &reason);
+            note_admission_deferral(&mut summary, &gp, &task.id, &reason);
             continue;
         }
 
@@ -4453,15 +4513,19 @@ fn spawn_agents_for_ready_tasks(
                     }
                 }
                 Err(e) => {
-                    eprintln!("[dispatcher] Failed to spawn shell for {}: {}", task_id, e);
-                    record_spawn_failure(
-                        &gp,
-                        &task_id,
-                        &format!("{}", e),
-                        "inline-shell",
-                        task.exec_mode.as_deref(),
-                        config.coordinator.max_spawn_failures,
-                    );
+                    if let Some(reason) = worksgood::disk_sentinel::admission_deferral_reason(&e) {
+                        note_admission_deferral(&mut summary, &gp, &task_id, reason);
+                    } else {
+                        eprintln!("[dispatcher] Failed to spawn shell for {}: {}", task_id, e);
+                        record_spawn_failure(
+                            &gp,
+                            &task_id,
+                            &format!("{}", e),
+                            "inline-shell",
+                            task.exec_mode.as_deref(),
+                            config.coordinator.max_spawn_failures,
+                        );
+                    }
                 }
             }
             continue;
@@ -4659,15 +4723,19 @@ fn spawn_agents_for_ready_tasks(
                 }
             }
             Err(e) => {
-                eprintln!("[dispatcher] Failed to spawn for {}: {}", task.id, e);
-                record_spawn_failure(
-                    &gp,
-                    &task.id,
-                    &format!("{}", e),
-                    &effective_executor,
-                    task.exec_mode.as_deref(),
-                    config.coordinator.max_spawn_failures,
-                );
+                if let Some(reason) = worksgood::disk_sentinel::admission_deferral_reason(&e) {
+                    note_admission_deferral(&mut summary, &gp, &task.id, reason);
+                } else {
+                    eprintln!("[dispatcher] Failed to spawn for {}: {}", task.id, e);
+                    record_spawn_failure(
+                        &gp,
+                        &task.id,
+                        &format!("{}", e),
+                        &effective_executor,
+                        task.exec_mode.as_deref(),
+                        config.coordinator.max_spawn_failures,
+                    );
+                }
             }
         }
     }
@@ -8043,6 +8111,89 @@ mod tests {
             "the Open→Waiting CAS must make a stale second tick a no-op"
         );
         assert_eq!(task.spawn_failures, 0);
+    }
+
+    #[test]
+    fn admission_deferral_never_becomes_spawn_failure_or_pending_eval() {
+        let dir = tempdir().unwrap();
+        let graph_path = dir.path().join("graph.jsonl");
+
+        let occupied = Task {
+            id: "occupied-build".into(),
+            title: "cargo build occupying the only build slot".into(),
+            status: Status::InProgress,
+            ..Default::default()
+        };
+        let deferred = Task {
+            id: "deferred-build".into(),
+            title: "cargo test waiting for build capacity".into(),
+            status: Status::Open,
+            ..Default::default()
+        };
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(occupied));
+        graph.add_node(Node::Task(deferred));
+        save_graph(&graph, &graph_path).unwrap();
+
+        // A real live registry entry occupies the build-heavy budget. Using
+        // this test process as the PID gives AgentEntry::is_live the same
+        // process+heartbeat evidence the daemon uses without launching an LLM.
+        let mut registry = AgentRegistry::load_locked(dir.path()).unwrap();
+        registry.register_agent(
+            std::process::id(),
+            "occupied-build",
+            "test",
+            "/tmp/occupied-build.log",
+        );
+        registry.save().unwrap();
+
+        let mut config = Config::default();
+        config.coordinator.resource_management.disk_sentinel_enabled = false;
+        config.coordinator.resource_management.max_build_agents = 1;
+        config.coordinator.max_spawn_failures = 5;
+        let provider_health_before =
+            serde_json::to_value(worksgood::service::ProviderHealth::load(dir.path()).unwrap())
+                .unwrap();
+
+        // More ticks than the spawn breaker threshold must remain pure
+        // backpressure. auto_assign=true makes the test credential-free: if
+        // admission were accidentally allowed, the candidate is skipped at
+        // the assignment gate rather than launching a worker.
+        for _ in 0..=config.coordinator.max_spawn_failures {
+            let snapshot = load_graph(&graph_path).unwrap();
+            let summary =
+                spawn_agents_for_ready_tasks(dir.path(), &snapshot, "test", &config, None, 1, true);
+            assert_eq!(summary.spawned, 0);
+            assert_eq!(
+                summary.admission_deferred_tasks, 1,
+                "the occupied live build slot must be reported as admission backpressure"
+            );
+        }
+
+        let persisted = load_graph(&graph_path).unwrap();
+        let task = persisted.get_task("deferred-build").unwrap();
+        assert_eq!(task.status, Status::Open);
+        assert!(task.assigned.is_none());
+        assert_eq!(task.spawn_failures, 0);
+        assert!(task.last_spawn_failure_at.is_none());
+        assert_eq!(task.dispatch_count, 0);
+        assert!(persisted.get_task(".evaluate-deferred-build").is_none());
+        assert!(persisted.get_task(".flip-deferred-build").is_none());
+        assert_eq!(
+            task.lifecycle
+                .audit
+                .iter()
+                .filter(|event| event.event_kind == "admission-deferred")
+                .count(),
+            1,
+            "identical tick deferrals must coalesce into one durable event"
+        );
+        assert_eq!(
+            serde_json::to_value(worksgood::service::ProviderHealth::load(dir.path()).unwrap())
+                .unwrap(),
+            provider_health_before,
+            "resource backpressure must not charge provider circuit health"
+        );
     }
 
     #[test]

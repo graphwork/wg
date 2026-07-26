@@ -809,9 +809,10 @@ pub struct CoordinatorState {
     pub tasks_ready: usize,
     /// Number of agents spawned in last tick
     pub agents_spawned: usize,
-    /// Ready tasks intentionally deferred by the advanced opt-in disk/build
-    /// admission gate during the last tick. Non-zero is a deliberate refusal,
-    /// not evidence that the dispatcher is wedged.
+    /// Ready tasks intentionally deferred by transient resource admission
+    /// during the last tick (for example disk projection or the build-heavy
+    /// concurrency budget). Non-zero is backpressure, not a spawn failure or
+    /// evidence that the dispatcher is wedged.
     #[serde(default)]
     pub admission_deferred_tasks: usize,
     /// First intentional admission refusal from the last tick.
@@ -4151,7 +4152,7 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
         }
         if coord.admission_deferred_tasks > 0 {
             output["agents"]["note"] = serde_json::json!(
-                "ready build work was intentionally deferred by explicitly enabled predictive admission; the dispatcher is not wedged"
+                "ready work was intentionally deferred by transient resource admission; the dispatcher is not wedged and will retry on bounded ticks"
             );
         } else if agency_agents_defined
             && alive_count == 0
@@ -4209,7 +4210,7 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
         }
         if coord.admission_deferred_tasks > 0 {
             println!(
-                "  Admission deferred: {} ready build task(s) by advanced opt-in predictive admission — dispatcher is not wedged",
+                "  Admission deferred: {} ready task(s) by transient resource admission — dispatcher is not wedged; no spawn failure charged; retrying on bounded ticks",
                 coord.admission_deferred_tasks
             );
             if let Some(reason) = coord.admission_deferred_reason.as_deref() {
