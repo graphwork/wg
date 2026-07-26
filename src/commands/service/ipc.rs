@@ -1090,6 +1090,12 @@ fn handle_reconfigure(
     let has_overrides =
         max_agents.is_some() || executor.is_some() || poll_interval.is_some() || model.is_some();
 
+    // An explicit `--max-agents` reload flag is a human action and wins; it is
+    // also recorded as a runtime pin so a *subsequent* flagless reload preserves
+    // it instead of reverting to config.coordinator.max_agents
+    // (`docs/studies/adaptive-parallelism-budget-design.md` §8.2 point 6).
+    let record_pin = has_overrides && max_agents.is_some();
+
     if has_overrides {
         // Apply individual overrides
         if let Some(n) = max_agents {
@@ -1109,6 +1115,16 @@ fn handle_reconfigure(
         match Config::load_merged(dir) {
             Ok(config) => {
                 daemon_cfg.max_agents = config.coordinator.max_agents;
+                // A controller-managed runtime override (or a prior
+                // session/launch-arg pin) wins over the static config value, so
+                // a flagless reload (e.g. a profile swap that rewrote
+                // `[coordinator].max_agents`) does not silently clobber the
+                // adaptive value (`docs/studies/adaptive-parallelism-budget-design.md`
+                // §8.2 point 3). An explicit `--max-agents` flag still wins —
+                // it takes the `has_overrides` branch above and is recorded as a pin.
+                if let Some(rt) = CoordinatorState::load(dir).and_then(|cs| cs.runtime_max_agents) {
+                    daemon_cfg.max_agents = rt;
+                }
                 // Handler-first: derive the effective handler from the model
                 // spec (with agent.model fallback) so a migrated clean config
                 // with `model = "pi:..."` reports `executor=pi` here and in
@@ -1137,6 +1153,9 @@ fn handle_reconfigure(
         coord_state.executor = daemon_cfg.executor.clone();
         coord_state.poll_interval = daemon_cfg.poll_interval.as_secs();
         coord_state.model = daemon_cfg.model.clone();
+        if record_pin {
+            coord_state.runtime_max_agents = max_agents;
+        }
         coord_state.save(dir);
     }
     if !has_overrides
@@ -2460,6 +2479,130 @@ poll_interval = 120
         assert_eq!(
             cfg.model.as_deref(),
             Some("pi:openrouter:anthropic/claude-opus-4-7")
+        );
+    }
+
+    /// Reproduces the `max_agents` reload-clobber bug fixed in
+    /// `docs/studies/adaptive-parallelism-budget-design.md` §8.2: a daemon
+    /// started with `--max-agents 2` (seeded into `runtime_max_agents`) must
+    /// KEEP that value across a flagless `Reconfigure { max_agents: None }`
+    /// (a profile swap), instead of being silently reverted to
+    /// `config.coordinator.max_agents` (= 8 here).
+    #[test]
+    fn test_handle_reconfigure_flagless_preserves_runtime_override() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+        fs::create_dir_all(dir.join("service")).unwrap();
+
+        // A profile swap rewrote [coordinator].max_agents to 8 on disk.
+        let config_content = r#"
+[dispatcher]
+max_agents = 8
+model = "pi:openrouter:anthropic/claude-opus-4-7"
+poll_interval = 60
+"#;
+        fs::write(dir.join("config.toml"), config_content).unwrap();
+
+        // Simulate a daemon started earlier with `--max-agents 2`: the launch
+        // arg seeded runtime_max_agents = 2 (resolve_startup_max_agents).
+        let coord = CoordinatorState {
+            enabled: true,
+            max_agents: 2,
+            poll_interval: 60,
+            executor: "pi".to_string(),
+            runtime_max_agents: Some(2),
+            ..Default::default()
+        };
+        coord.save_for(dir, 0);
+
+        let mut cfg = DaemonConfig {
+            max_agents: 2,
+            executor: "pi".to_string(),
+            poll_interval: Duration::from_secs(60),
+            model: None,
+            provider: None,
+            paused: false,
+            settling_delay: Duration::from_millis(2000),
+        };
+        let logger = DaemonLogger::open(dir).unwrap();
+
+        // Flagless reload — exactly what `wg profile use` fires.
+        let resp = handle_reconfigure(dir, &mut cfg, None, None, None, None, &logger);
+        assert!(resp.ok);
+        // BEFORE the fix this was 8 (the config value clobbered the launch arg).
+        assert_eq!(
+            cfg.max_agents, 2,
+            "flagless reload must preserve the runtime override, not revert to config"
+        );
+
+        // The runtime pin survives on disk so a *further* reload keeps it.
+        let loaded = CoordinatorState::load_for(dir, 0).unwrap();
+        assert_eq!(loaded.max_agents, 2);
+        assert_eq!(loaded.runtime_max_agents, Some(2));
+    }
+
+    /// An explicit `--max-agents` reload flag is a human action: it overrides
+    /// any runtime value AND is recorded as a pin, so a subsequent flagless
+    /// reload preserves it (§8.2 point 6).
+    #[test]
+    fn test_handle_reconfigure_explicit_flag_overrides_and_pins() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+        fs::create_dir_all(dir.join("service")).unwrap();
+
+        let config_content = r#"
+[dispatcher]
+max_agents = 8
+model = "pi:openrouter:anthropic/claude-opus-4-7"
+poll_interval = 60
+"#;
+        fs::write(dir.join("config.toml"), config_content).unwrap();
+
+        // A runtime override of 2 is already on disk (controller or launch arg).
+        let coord = CoordinatorState {
+            enabled: true,
+            max_agents: 2,
+            poll_interval: 60,
+            executor: "pi".to_string(),
+            runtime_max_agents: Some(2),
+            ..Default::default()
+        };
+        coord.save_for(dir, 0);
+
+        let mut cfg = DaemonConfig {
+            max_agents: 2,
+            executor: "pi".to_string(),
+            poll_interval: Duration::from_secs(60),
+            model: None,
+            provider: None,
+            paused: false,
+            settling_delay: Duration::from_millis(2000),
+        };
+        let logger = DaemonLogger::open(dir).unwrap();
+
+        // Human pins 4 explicitly via `wg service reload --max-agents 4`.
+        let resp = handle_reconfigure(dir, &mut cfg, Some(4), None, None, None, &logger);
+        assert!(resp.ok);
+        assert_eq!(
+            cfg.max_agents, 4,
+            "explicit flag wins over the runtime value"
+        );
+
+        // The pin is recorded on disk.
+        let loaded = CoordinatorState::load_for(dir, 0).unwrap();
+        assert_eq!(loaded.max_agents, 4);
+        assert_eq!(
+            loaded.runtime_max_agents,
+            Some(4),
+            "explicit --max-agents reload must be recorded as a runtime pin"
+        );
+
+        // And a subsequent flagless reload preserves the human pin, not config.
+        let resp2 = handle_reconfigure(dir, &mut cfg, None, None, None, None, &logger);
+        assert!(resp2.ok);
+        assert_eq!(
+            cfg.max_agents, 4,
+            "flagless reload after a human pin keeps the pin"
         );
     }
 

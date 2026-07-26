@@ -3415,6 +3415,7 @@ fn main() -> Result<()> {
                 model,
                 force,
                 no_chat_agent,
+                no_pin,
             } => commands::service::run_start(
                 &workgraph_dir,
                 socket.as_deref(),
@@ -3426,6 +3427,7 @@ fn main() -> Result<()> {
                 cli.json,
                 force,
                 no_chat_agent,
+                no_pin,
             ),
             ServiceCommands::Stop { force, kill_agents } => {
                 commands::service::run_stop(&workgraph_dir, force, kill_agents, cli.json)
@@ -3522,6 +3524,7 @@ fn main() -> Result<()> {
                 interval,
                 model,
                 no_chat_agent,
+                no_pin,
             } => commands::service::run_daemon(
                 &workgraph_dir,
                 &socket,
@@ -3530,6 +3533,7 @@ fn main() -> Result<()> {
                 interval,
                 model.as_deref(),
                 no_chat_agent,
+                no_pin,
             ),
         },
         Commands::Tui {

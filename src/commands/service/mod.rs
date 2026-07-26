@@ -768,6 +768,25 @@ pub struct CoordinatorState {
     /// without rewriting global config. Persists across daemon restarts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint_override: Option<String>,
+
+    /// The single transient-but-persisted authority for the effective
+    /// `max_agents`. See `docs/studies/adaptive-parallelism-budget-design.md`
+    /// §8.2 — without this field, a runtime override (the launch arg, or a
+    /// future adaptive-parallelism controller's value) is silently clobbered
+    /// by the first flagless `wg service reload` / profile swap, which
+    /// re-reads `config.coordinator.max_agents`.
+    ///
+    /// Precedence at daemon start (`resolve_startup_max_agents`):
+    ///   1. an existing value on disk (restart restore / controller value)
+    ///   2. the `--max-agents` launch arg (seeded here unless `--no-pin`)
+    ///   3. `config.coordinator.max_agents` (ceiling / cold-start default)
+    ///
+    /// `handle_reconfigure`'s flagless (else) branch reads this and keeps it
+    /// instead of reverting to the config value; an explicit `--max-agents`
+    /// reload flag overrides it and is recorded back here as a pin. Defaults
+    /// to `None` = today's behavior, so no schema migration is needed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_max_agents: Option<usize>,
 }
 
 impl CoordinatorState {
@@ -1159,6 +1178,7 @@ pub fn run_start(
     json: bool,
     force: bool,
     no_coordinator_agent: bool,
+    no_pin: bool,
 ) -> Result<()> {
     guard_service_control_from_worker()?;
 
@@ -1329,6 +1349,9 @@ pub fn run_start(
     }
     if no_coordinator_agent {
         args.push("--no-coordinator-agent".to_string());
+    }
+    if no_pin {
+        args.push("--no-pin".to_string());
     }
     // Redirect daemon stderr to the log file so early startup crashes and
     // unexpected panics that bypass the DaemonLogger are captured.
@@ -2258,7 +2281,50 @@ fn do_registry_refresh(dir: &Path) -> Result<String> {
     Ok(format!("{} models, diff: {}", model_count, diff_summary))
 }
 
+/// Resolve the effective `max_agents` and its persisted runtime authority at
+/// daemon startup.
+///
+/// This implements the four-source precedence ladder from
+/// `docs/studies/adaptive-parallelism-budget-design.md` §8.2 so that a runtime
+/// override survives a flagless `wg service reload` / profile swap instead of
+/// being silently clobbered by `config.coordinator.max_agents`.
+///
+/// Precedence (highest → lowest):
+/// 1. An existing `runtime_max_agents` on disk (a controller value or a prior
+///    session's launch-arg pin) — restored so the authority survives restart.
+/// 2. The CLI launch arg `--max-agents N` (seeded into `runtime_max_agents` so
+///    it survives a subsequent flagless reload) — unless `no_pin` is set.
+/// 3. `config.coordinator.max_agents` — the ceiling / cold-start default.
+///
+/// Returns `(effective_max_agents, runtime_max_agents_to_persist)`.
+///
+/// `no_pin` restores today's behavior for tests: neither reads nor writes
+/// `runtime_max_agents`, so the launch arg stays transient and a flagless
+/// reload reverts to the config value.
+pub(crate) fn resolve_startup_max_agents(
+    dir: &Path,
+    cli_max_agents: Option<usize>,
+    config_max_agents: usize,
+    no_pin: bool,
+) -> (usize, Option<usize>) {
+    if no_pin {
+        return (cli_max_agents.unwrap_or(config_max_agents), None);
+    }
+    // 1. Existing runtime authority on disk survives a daemon restart.
+    if let Some(rt) = CoordinatorState::load(dir).and_then(|cs| cs.runtime_max_agents) {
+        return (rt, Some(rt));
+    }
+    // 2. Launch arg seeds a session pin so it survives a flagless reload
+    //    rather than being transient daemon-memory only.
+    if let Some(n) = cli_max_agents {
+        return (n, Some(n));
+    }
+    // 3. Config is the cold-start default (and the controller's ceiling).
+    (config_max_agents, None)
+}
+
 /// Run the actual daemon loop (called by forked process)
+#[allow(clippy::too_many_arguments)]
 pub fn run_daemon(
     dir: &Path,
     socket_path: &str,
@@ -2267,6 +2333,7 @@ pub fn run_daemon(
     cli_interval: Option<u64>,
     cli_model: Option<&str>,
     no_coordinator_agent: bool,
+    no_pin: bool,
 ) -> Result<()> {
     worksgood::execution_selection::require(
         dir,
@@ -2428,8 +2495,15 @@ pub fn run_daemon(
         no_coordinator_agent,
     )?;
 
+    // Resolve the effective `max_agents` and its persisted runtime authority
+    // per `docs/studies/adaptive-parallelism-budget-design.md` §8.2. This is
+    // the single precedence ladder that collapses the four sources of truth
+    // for `max_agents`: the launch arg is no longer transient memory only.
+    let (effective_max_agents, runtime_max_agents) =
+        resolve_startup_max_agents(&dir, cli_max_agents, config.coordinator.max_agents, no_pin);
+
     let mut daemon_cfg = DaemonConfig {
-        max_agents: cli_max_agents.unwrap_or(config.coordinator.max_agents),
+        max_agents: effective_max_agents,
         executor: resolved_executor,
         // The poll_interval is the slow background safety-net timer.
         // CLI --interval overrides it; otherwise use config.coordinator.poll_interval.
@@ -2488,6 +2562,7 @@ pub fn run_daemon(
         model_override: None,
         executor_override: None,
         endpoint_override: None,
+        runtime_max_agents,
     };
     coord_state.save(&dir);
 
@@ -3216,9 +3291,17 @@ pub fn run_daemon(
                     coord_state.admission_deferred_reason =
                         result.admission_deferred_reason.clone();
                     // Reload accumulated_tokens from disk before saving to avoid clobbering
-                    // increments written by the coordinator agent thread.
+                    // increments written by the coordinator agent thread. Reload
+                    // runtime_max_agents for the same reason: `handle_reconfigure`
+                    // (and, prospectively, the adaptive-parallelism controller)
+                    // write the pin to disk between ticks, so the long-lived
+                    // in-memory `coord_state` is stale wrt that field and would
+                    // clobber it on save (`docs/studies/adaptive-parallelism-budget-design.md`
+                    // §8.2). The effective value is already carried by
+                    // `daemon_cfg.max_agents`; this only preserves the persisted pin.
                     if let Some(disk) = CoordinatorState::load(&dir) {
                         coord_state.accumulated_tokens = disk.accumulated_tokens;
+                        coord_state.runtime_max_agents = disk.runtime_max_agents;
                     }
                     coord_state.save(&dir);
 
@@ -3618,9 +3701,15 @@ pub fn run_restart(dir: &Path, json: bool) -> Result<()> {
     run_stop_inner(dir, false, false, json)?;
 
     // Derive start parameters from the previous daemon's state.
+    // For `max_agents`: only re-pass an explicit `--max-agents` when the prior
+    // daemon had a runtime pin (`runtime_max_agents`), so the pin is re-seeded
+    // identically. A controller-less / pin-less daemon (runtime pin = None) is
+    // restarted from config, NOT from the effective value — otherwise every
+    // restart would seed a spurious pin that shadows later config changes on
+    // reload (`docs/studies/adaptive-parallelism-budget-design.md` §8.2).
     let (max_agents, executor, interval, model) = match &prior_config {
         Some(cs) => (
-            Some(cs.max_agents),
+            cs.runtime_max_agents,
             Some(cs.executor.as_str()),
             Some(cs.poll_interval),
             cs.model.as_deref(),
@@ -3635,6 +3724,7 @@ pub fn run_restart(dir: &Path, json: bool) -> Result<()> {
         max_agents, executor, interval, model, json,
         true,  // force — clean up any leftover state
         false, // no_coordinator_agent — use default
+        false, // no_pin — preserve the runtime authority exactly
     )
 }
 
@@ -5131,7 +5221,9 @@ mod tests {
         .unwrap();
 
         // run_start should not start a new daemon
-        let result = run_start(dir, None, None, None, None, None, None, false, false, false);
+        let result = run_start(
+            dir, None, None, None, None, None, None, false, false, false, false,
+        );
         assert!(result.is_ok()); // returns Ok but prints "already running"
 
         // State should be unchanged (same PID)
@@ -5178,6 +5270,89 @@ mod tests {
         // No orphans should be found for a random temp dir
         let orphans = find_orphan_daemon_pids(dir, None);
         assert!(orphans.is_empty());
+    }
+
+    /// `--max-agents N` on a fresh daemon (no prior runtime pin on disk) seeds
+    /// `runtime_max_agents = N`, so the launch arg's intent survives a flagless
+    /// reload instead of being transient daemon-memory only (§8.2 point 4).
+    #[test]
+    fn test_resolve_startup_max_agents_seeds_pin_from_launch_arg() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+        fs::create_dir_all(dir.join("service")).unwrap();
+        // No coordinator state on disk -> cold start.
+
+        let (eff, rt) = resolve_startup_max_agents(dir, Some(2), 8, false);
+        assert_eq!(eff, 2, "launch arg drives the effective value");
+        assert_eq!(rt, Some(2), "launch arg is seeded as a runtime pin");
+    }
+
+    /// A daemon restart restores `runtime_max_agents` from disk (§8.2 point 2:
+    /// the field survives restart). The CLI arg is ignored when an on-disk
+    /// authority already exists.
+    #[test]
+    fn test_resolve_startup_max_agents_restores_from_disk() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+        fs::create_dir_all(dir.join("service")).unwrap();
+
+        // A controller (or a prior launch-arg pin) wrote runtime_max_agents = 5.
+        CoordinatorState {
+            enabled: true,
+            max_agents: 5,
+            runtime_max_agents: Some(5),
+            ..Default::default()
+        }
+        .save_for(dir, 0);
+
+        // Restart WITHOUT --max-agents: the on-disk authority wins.
+        let (eff, rt) = resolve_startup_max_agents(dir, None, 8, false);
+        assert_eq!(eff, 5, "runtime authority is restored from disk");
+        assert_eq!(rt, Some(5), "runtime pin is preserved across restart");
+
+        // Even an explicit --max-agents on restart does not shadow the on-disk
+        // authority (it would be re-seeded to the same value by run_restart
+        // anyway, which passes runtime_max_agents as the launch arg).
+        let (eff2, rt2) = resolve_startup_max_agents(dir, Some(99), 8, false);
+        assert_eq!(eff2, 5, "on-disk authority beats a mismatched launch arg");
+        assert_eq!(rt2, Some(5));
+    }
+
+    /// `--no-pin` restores today's (pre-fix) behavior for tests: the launch arg
+    /// is NOT seeded/persisted, so a flagless reload reverts to the config value
+    /// (§8.2 point 5).
+    #[test]
+    fn test_resolve_startup_max_agents_no_pin_old_behavior() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+        fs::create_dir_all(dir.join("service")).unwrap();
+
+        // --max-agents 2 --no-pin: effective = 2 but NO runtime pin persisted.
+        let (eff, rt) = resolve_startup_max_agents(dir, Some(2), 8, true);
+        assert_eq!(
+            eff, 2,
+            "launch arg still drives the live value under --no-pin"
+        );
+        assert_eq!(rt, None, "--no-pin does not persist a runtime pin");
+
+        // No launch arg under --no-pin: falls through to the config default.
+        let (eff2, rt2) = resolve_startup_max_agents(dir, None, 8, true);
+        assert_eq!(eff2, 8);
+        assert_eq!(rt2, None);
+    }
+
+    /// Cold start with no launch arg and no on-disk authority: config is the
+    /// default, and no runtime pin is created (so the controller / a future
+    /// launch arg can take over cleanly).
+    #[test]
+    fn test_resolve_startup_max_agents_cold_start_uses_config() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+        fs::create_dir_all(dir.join("service")).unwrap();
+
+        let (eff, rt) = resolve_startup_max_agents(dir, None, 8, false);
+        assert_eq!(eff, 8);
+        assert_eq!(rt, None);
     }
 
     #[test]

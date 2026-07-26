@@ -314,6 +314,7 @@ fn build_assign_subgraph(dir: &Path) {
             cron_enabled: false,
             last_cron_fire: None,
             next_cron_fire: None,
+            last_spawn_failure_at: None,
         };
 
         mutable_graph.add_node(Node::Task(assign_task));

@@ -2608,6 +2608,15 @@ description = "Regression for fix-chat-coordinator-2: `wg chat create` while the
 timeout_seconds = 60
 
 [[scenario]]
+name = "service_max_agents_survives_reload"
+script = "scenarios/service_max_agents_survives_reload.sh"
+owners = [
+    "impl-maxagents-authority-fix",
+]
+description = "Pins impl-maxagents-authority-fix: a runtime `max_agents` override (the `--max-agents` launch arg, or a future adaptive-parallelism controller's value) must survive a flagless `wg service reload` / profile swap instead of being silently clobbered by `config.coordinator.max_agents` (the observed 'start --max-agents 2, wg profile use, observe 8' bug; see docs/studies/adaptive-parallelism-budget-design.md §8). Drives the real daemon: start --max-agents 2 (config=8) seeds runtime_max_agents=2; a flagless reload preserves 2 (NOT 8); an explicit reload --max-agents 5 wins and is recorded as a pin; and the pin SURVIVES a subsequent coordinator tick (the long-lived in-memory coord_state must reload runtime_max_agents from disk on save, like accumulated_tokens, so it does not clobber the externally-written pin). Credential-free: the daemon routes at a Pi OpenRouter model string but only persisted coordinator-state fields are asserted — the endpoint is never contacted."
+timeout_seconds = 90
+
+[[scenario]]
 name = "release_workflow_signing_contract"
 script = "scenarios/release_workflow_signing_contract.sh"
 owners = [

@@ -6225,6 +6225,14 @@ pub enum ServiceCommands {
         /// Disable the persistent chat agent (LLM session); legacy alias: --no-coordinator-agent
         #[arg(long, alias = "no-coordinator-agent")]
         no_chat_agent: bool,
+
+        /// Do NOT seed/persist a `runtime_max_agents` pin from `--max-agents`.
+        /// Restores the pre-fix behavior for tests: the launch arg is transient
+        /// (daemon memory only) and a flagless `wg service reload` reverts it to
+        /// `config.coordinator.max_agents`. See
+        /// `docs/studies/adaptive-parallelism-budget-design.md` §8.2.
+        #[arg(long)]
+        no_pin: bool,
     },
 
     /// Stop the agent service daemon
@@ -6420,6 +6428,11 @@ pub enum ServiceCommands {
         /// Disable the persistent chat agent (LLM session); legacy alias: --no-coordinator-agent
         #[arg(long, alias = "no-coordinator-agent")]
         no_chat_agent: bool,
+
+        /// Do NOT seed/persist a `runtime_max_agents` pin from `--max-agents`
+        /// (forwarded from `wg service start --no-pin`).
+        #[arg(long)]
+        no_pin: bool,
     },
 }
 
