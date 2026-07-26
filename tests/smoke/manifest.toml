@@ -2712,3 +2712,10 @@ script = "scenarios/spawn_observer_preparation_recovery.sh"
 owners = ["verify-spawn-recovery"]
 description = "Candidate-binary real-daemon regression for emergency commit 8419f909: a tracked escaping symlink makes isolated-worktree observer baseline preparation fail; repeated bounded ticks leave the target Open/unassigned with no process, worktree, output, registry, breaker, or sibling-task phantom and coalesce one actionable diagnostic; repairing the checkout makes the same uncommitted agent-1 allocation append a distinct reservation event and launch one Fake-Pi worker exactly once while two other ready tasks remain untouched."
 timeout_seconds = 180
+
+[[scenario]]
+name = "tui_help_modal_scroll"
+script = "scenarios/tui_help_modal_scroll.sh"
+owners = ["move-panel-shortcut"]
+description = "Candidate-binary real tmux/nested-PTY and SGR mouse flow for modal Help: proves the actual painted question-mark hit and keyboard shortcut open the same surface; Up/Down, PageUp/PageDown, Home/End, vertical wheel, and horizontal trackpad-equivalent events move/clamp rendered below-fold content with a visible range/thumb affordance without changing the underlying focus/selection/panel/scroll route; inside clicks are contained; outside down+up dismisses without click-through; Escape and resize restore exact workspace metadata; wide/narrow captures keep first-viewport Panel/move/activate/close/Help-scroll essentials legible while the persistent task bar has no Panel hint."
+timeout_seconds = 180

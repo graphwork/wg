@@ -759,7 +759,7 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
     // ── Overlay widgets (on top of everything) ──
 
     if app.show_help {
-        draw_help_overlay(frame, app.is_light_theme);
+        draw_help_overlay(frame, app);
     }
     // Layout mode replaces the contextual row; it never allocates or draws a
     // second persistent/modal chrome surface.
@@ -2187,7 +2187,6 @@ enum ContextBarControl {
     Search,
     Controls,
     Help,
-    PanelLayout,
     Previous,
     Next,
     Menu,
@@ -3096,14 +3095,6 @@ fn render_context_row(frame: &mut Frame, app: &mut VizApp, area: Rect, _chat: bo
         reserve(ContextBarControl::TaskDetail, detail.to_string(), 0, true);
         reserve(ContextBarControl::TaskLog, log.to_string(), 0, true);
     }
-    if lane == ContextLane::Chat && app.chat_pty_mode {
-        let text = if app.focused_panel == FocusedPanel::RightPanel {
-            " Ctrl+O→p Panel "
-        } else {
-            " p Panel "
-        };
-        reserve(ContextBarControl::PanelLayout, text.to_string(), 0, true);
-    }
     if area.width >= 100 && lane == ContextLane::Task {
         let idx = app.selected_task_idx.unwrap_or(0);
         if idx > 0 {
@@ -3230,9 +3221,9 @@ fn render_context_row(frame: &mut Frame, app: &mut VizApp, area: Rect, _chat: bo
                 tile_style
             }
             ContextBarControl::TaskLog if app.right_panel_tab == RightPanelTab::Log => tile_style,
-            ContextBarControl::TaskDetail
-            | ContextBarControl::TaskLog
-            | ContextBarControl::PanelLayout => bar_style.add_modifier(Modifier::UNDERLINED),
+            ContextBarControl::TaskDetail | ContextBarControl::TaskLog => {
+                bar_style.add_modifier(Modifier::UNDERLINED)
+            }
             _ => bar_style,
         };
         frame.render_widget(Paragraph::new(text).style(style), rect);
@@ -3242,7 +3233,6 @@ fn render_context_row(frame: &mut Frame, app: &mut VizApp, area: Rect, _chat: bo
             ContextBarControl::Search => app.last_context_search_area = rect,
             ContextBarControl::Controls => app.last_context_controls_area = rect,
             ContextBarControl::Help => app.last_context_help_area = rect,
-            ContextBarControl::PanelLayout => app.last_context_layout_area = rect,
             ContextBarControl::Previous => app.last_context_prev_area = rect,
             ContextBarControl::Next => app.last_context_next_area = rect,
             ContextBarControl::Menu => app.last_context_menu_area = rect,
@@ -11723,24 +11713,24 @@ fn control_panel_line<'a>(
     ])
 }
 
-fn draw_help_overlay(frame: &mut Frame, is_light: bool) {
+fn draw_help_overlay(frame: &mut Frame, app: &mut VizApp) {
+    let is_light = app.is_light_theme;
     let size = frame.area();
-    let width = 56.min(size.width.saturating_sub(4));
-    let height = 50.min(size.height.saturating_sub(4));
+    let horizontal_margin = if size.width >= 12 { 4 } else { 0 };
+    let vertical_margin = if size.height >= 8 { 2 } else { 0 };
+    let width = 72.min(size.width.saturating_sub(horizontal_margin));
+    let height = 50.min(size.height.saturating_sub(vertical_margin));
     let x = (size.width.saturating_sub(width)) / 2;
     let y = (size.height.saturating_sub(height)) / 2;
     let area = Rect::new(x, y, width, height);
 
     frame.render_widget(Clear, area);
 
-    let block = Block::default()
-        .title(" Keybindings ")
-        .borders(Borders::ALL)
-        .border_style(
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        );
+    let block = Block::default().borders(Borders::ALL).border_style(
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    );
 
     let inner = block.inner(area);
 
@@ -11766,6 +11756,18 @@ fn draw_help_overlay(frame: &mut Frame, is_light: bool) {
     let blank = || Line::from("");
 
     let lines = vec![
+        heading("Essential navigation"),
+        binding("Ctrl-O → p", "Panel access"),
+        binding("↑ / ↓", "Move"),
+        binding("Enter", "Activate"),
+        binding("Esc / outside", "Close Help; restore view"),
+        blank(),
+        heading("Help scrolling"),
+        binding("↑ / ↓, j / k", "Line"),
+        binding("PgUp / PgDn", "Page"),
+        binding("Home / End", "Top / bottom"),
+        binding("Wheel / trackpad", "Scroll Help only"),
+        blank(),
         heading("Symbolic context bar"),
         binding("↯ / C", "Chat; repeat for exact Chat selector"),
         binding("⌁ / T", "Task; repeat for bounded exact Task selector"),
@@ -11874,10 +11876,48 @@ fn draw_help_overlay(frame: &mut Frame, is_light: bool) {
         )),
     ];
 
-    let paragraph = Paragraph::new(lines);
+    // Help scrolls in rendered rows, not merely logical bindings. Reflow first
+    // so narrow Termux windows clamp and page through the text predictably.
+    // Reserve the rightmost inner column for an always-visible overflow cue.
+    let content_width = inner.width.saturating_sub(1).max(1) as usize;
+    let lines = wrap_line_spans(&lines, content_width);
+    app.help.area = area;
+    app.help.content_area = Rect::new(
+        inner.x,
+        inner.y,
+        inner.width.saturating_sub(1),
+        inner.height,
+    );
+    app.help.viewport_height = inner.height as usize;
+    app.help.total_lines = lines.len();
+    app.help.clamp_scroll();
 
+    let first = if app.help.total_lines == 0 {
+        0
+    } else {
+        app.help.scroll + 1
+    };
+    let last = (app.help.scroll + app.help.viewport_height).min(app.help.total_lines);
+    let title = format!(" Keybindings  {first}-{last}/{} ", app.help.total_lines);
+    let block = block.title(title);
     frame.render_widget(block, area);
-    frame.render_widget(paragraph, inner);
+
+    let paragraph =
+        Paragraph::new(lines).scroll((app.help.scroll.min(u16::MAX as usize) as u16, 0));
+    frame.render_widget(paragraph, app.help.content_area);
+
+    let max_scroll = app.help.max_scroll();
+    if max_scroll > 0 && inner.width > 0 && inner.height > 0 {
+        app.help.scrollbar_area =
+            Rect::new(inner.right().saturating_sub(1), inner.y, 1, inner.height);
+        let mut state = ScrollbarState::new(max_scroll).position(app.help.scroll);
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .thumb_style(Style::default().fg(Color::Yellow))
+            .track_style(Style::default().fg(Color::DarkGray));
+        frame.render_stateful_widget(scrollbar, inner, &mut state);
+    } else {
+        app.help.scrollbar_area = Rect::default();
+    }
 }
 
 /// Render token breakdown spans: "→new_in ←out [+cached] (label) [$cost]"

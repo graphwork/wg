@@ -1487,6 +1487,46 @@ impl RightPanelTab {
     ];
 }
 
+/// Renderer-owned geometry and scroll state for the modal Help surface.
+///
+/// Help deliberately does not replace `focused_panel` or `input_mode`: while
+/// `show_help` is true, the event router gives this state exclusive ownership
+/// of keyboard and pointer input. Closing it therefore restores the exact
+/// underlying focus, selection, panel, and scroll state without reconstructing
+/// a lossy snapshot.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HelpOverlayState {
+    pub scroll: usize,
+    pub total_lines: usize,
+    pub viewport_height: usize,
+    pub area: Rect,
+    pub content_area: Rect,
+    pub scrollbar_area: Rect,
+    pub scrollbar_drag: bool,
+    /// Swallow the release belonging to an outside press that dismissed Help.
+    /// This prevents the tail of that click from reaching the newly uncovered
+    /// graph/PTY surface.
+    pub dismiss_release_pending: bool,
+}
+
+impl HelpOverlayState {
+    pub fn max_scroll(&self) -> usize {
+        self.total_lines.saturating_sub(self.viewport_height)
+    }
+
+    pub fn clamp_scroll(&mut self) {
+        self.scroll = self.scroll.min(self.max_scroll());
+    }
+
+    pub fn scroll_up(&mut self, amount: usize) {
+        self.scroll = self.scroll.saturating_sub(amount);
+    }
+
+    pub fn scroll_down(&mut self, amount: usize) {
+        self.scroll = self.scroll.saturating_add(amount).min(self.max_scroll());
+    }
+}
+
 /// Which scrollbar is being dragged by the mouse.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ScrollbarDragTarget {
@@ -8940,6 +8980,7 @@ pub struct VizApp {
 
     // ── Help overlay ──
     pub show_help: bool,
+    pub help: HelpOverlayState,
 
     // ── System task visibility ──
     /// When true, show system tasks (dot-prefixed) in the graph view.
@@ -10434,6 +10475,7 @@ impl VizApp {
             cycle_timing: Vec::new(),
             show_total_tokens: false,
             show_help: false,
+            help: HelpOverlayState::default(),
             show_system_tasks: config.tui.show_system_tasks,
             show_running_system_tasks: config.tui.show_running_system_tasks,
             system_tasks_just_toggled: false,
@@ -16104,6 +16146,7 @@ impl VizApp {
             cycle_timing: Vec::new(),
             show_total_tokens: false,
             show_help: false,
+            help: HelpOverlayState::default(),
             show_system_tasks: false,
             show_running_system_tasks: false,
             system_tasks_just_toggled: false,
@@ -21774,6 +21817,22 @@ impl VizApp {
             }
         }
         self.exec_command(args, CommandEffect::CreateCoordinator);
+    }
+
+    /// Open Help at its first line. The modal event route owns all input while
+    /// this flag is set, so the underlying focus/input mode remains untouched.
+    pub fn open_help(&mut self) {
+        self.show_help = true;
+        self.help = HelpOverlayState::default();
+    }
+
+    /// Close Help without changing any underlying workspace state.
+    pub fn close_help(&mut self) {
+        self.show_help = false;
+        self.help.scrollbar_drag = false;
+        self.help.area = Rect::default();
+        self.help.content_area = Rect::default();
+        self.help.scrollbar_area = Rect::default();
     }
 
     /// Close the launcher pane without creating a coordinator.

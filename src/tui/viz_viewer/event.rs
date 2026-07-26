@@ -607,6 +607,10 @@ pub fn dispatch_event(app: &mut VizApp, ev: Event) {
             app.last_settings_setup_area = Rect::default();
             app.last_settings_lint_area = Rect::default();
             app.last_dialog_area = Rect::default();
+            app.help.area = Rect::default();
+            app.help.content_area = Rect::default();
+            app.help.scrollbar_area = Rect::default();
+            app.help.scrollbar_drag = false;
         }
         Event::FocusGained => {
             // OS focus returned to wg's window. tmux re-mirrors the active
@@ -685,13 +689,26 @@ fn key_label(code: KeyCode, modifiers: KeyModifiers) -> String {
     }
 }
 
+fn handle_help_key(app: &mut VizApp, code: KeyCode) {
+    let page = app.help.viewport_height.saturating_sub(1).max(1);
+    match code {
+        KeyCode::Char('?') | KeyCode::Esc | KeyCode::Char('q') => app.close_help(),
+        KeyCode::Up | KeyCode::Char('k') => app.help.scroll_up(1),
+        KeyCode::Down | KeyCode::Char('j') => app.help.scroll_down(1),
+        KeyCode::PageUp => app.help.scroll_up(page),
+        KeyCode::PageDown => app.help.scroll_down(page),
+        KeyCode::Home | KeyCode::Char('g') => app.help.scroll = 0,
+        KeyCode::End | KeyCode::Char('G') => app.help.scroll = app.help.max_scroll(),
+        _ => {} // modal: every unhandled key is swallowed
+    }
+}
+
 fn handle_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
-    // Help overlay intercepts all keys when shown
+    // Help owns the complete keyboard route while open. It intentionally does
+    // not mutate `focused_panel`/`input_mode`, so dismissal restores them
+    // byte-for-byte rather than approximating a prior focus snapshot.
     if app.show_help {
-        match code {
-            KeyCode::Char('?') | KeyCode::Esc | KeyCode::Char('q') => app.show_help = false,
-            _ => {} // swallow all other keys while help is shown
-        }
+        handle_help_key(app, code);
         return;
     }
 
@@ -1354,7 +1371,7 @@ fn handle_layout_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers)
         KeyCode::Tab | KeyCode::Right => LayoutControlAction::NextPage,
         KeyCode::BackTab | KeyCode::Left => LayoutControlAction::PreviousPage,
         KeyCode::Char('?') => {
-            app.show_help = true;
+            app.open_help();
             return;
         }
         _ => return,
@@ -1966,7 +1983,7 @@ fn execute_choice_dialog_option(
                 InputMode::Normal
             }
             7 => {
-                app.show_help = true;
+                app.open_help();
                 InputMode::Normal
             }
             _ => InputMode::Normal,
@@ -3050,7 +3067,7 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
 
     match code {
         // Help overlay
-        KeyCode::Char('?') => app.show_help = true,
+        KeyCode::Char('?') => app.open_help(),
 
         // Quit
         KeyCode::Char('q') => app.should_quit = true,
@@ -3629,7 +3646,7 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
             }
         } else {
             match code {
-                KeyCode::Char('?') => app.show_help = true,
+                KeyCode::Char('?') => app.open_help(),
                 KeyCode::Char('q') => app.should_quit = true,
                 KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
                     app.kill_focused_agent();
@@ -3660,7 +3677,7 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
 
     match code {
         // Global keys that work in right panel too
-        KeyCode::Char('?') => app.show_help = true,
+        KeyCode::Char('?') => app.open_help(),
         KeyCode::Char('q') => app.should_quit = true,
         // Ctrl+C: interrupt coordinator if awaiting response, else kill focused agent
         KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
@@ -4920,10 +4937,75 @@ fn handle_task_picker_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, co
     true
 }
 
+fn jump_help_scrollbar(app: &mut VizApp, row: u16) {
+    let track = app.help.scrollbar_area;
+    let max_scroll = app.help.max_scroll();
+    if track.height == 0 || max_scroll == 0 {
+        app.help.scroll = 0;
+        return;
+    }
+    let row_in_track = row
+        .saturating_sub(track.y)
+        .min(track.height.saturating_sub(1)) as usize;
+    app.help.scroll = if track.height <= 1 {
+        0
+    } else {
+        row_in_track * max_scroll / (track.height as usize - 1)
+    };
+}
+
+/// Help is a true modal pointer owner. Wheel/trackpad input scrolls Help even
+/// when the pointer is over the dimmed workspace; presses inside are swallowed,
+/// and an outside press dismisses without forwarding either half of the click.
+fn handle_help_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) -> bool {
+    if app.help.dismiss_release_pending && !app.show_help {
+        match kind {
+            MouseEventKind::Up(MouseButton::Left) => {
+                app.help.dismiss_release_pending = false;
+                return true;
+            }
+            MouseEventKind::Drag(MouseButton::Left) | MouseEventKind::Moved => return true,
+            // Touch transports can omit a release. A distinct new press or
+            // wheel gesture begins a new interaction; the dismissed press set
+            // `workspace_click_pending = false`, so no stale activation remains.
+            _ => app.help.dismiss_release_pending = false,
+        }
+    }
+    if !app.show_help {
+        return false;
+    }
+
+    let pos = Position::new(column, row);
+    match kind {
+        MouseEventKind::ScrollUp | MouseEventKind::ScrollLeft => app.help.scroll_up(3),
+        MouseEventKind::ScrollDown | MouseEventKind::ScrollRight => app.help.scroll_down(3),
+        MouseEventKind::Down(MouseButton::Left) => {
+            app.workspace_click_pending = false;
+            app.add_touch_echo(column, row);
+            if !app.help.area.contains(pos) {
+                app.close_help();
+                app.help.dismiss_release_pending = true;
+            } else if app.help.scrollbar_area.contains(pos) {
+                app.help.scrollbar_drag = true;
+                jump_help_scrollbar(app, row);
+            }
+        }
+        MouseEventKind::Drag(MouseButton::Left) | MouseEventKind::Moved
+            if app.help.scrollbar_drag =>
+        {
+            jump_help_scrollbar(app, row);
+        }
+        MouseEventKind::Up(MouseButton::Left) => app.help.scrollbar_drag = false,
+        _ => {}
+    }
+    true
+}
+
 fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
     use super::state::ScrollbarDragTarget;
 
-    if handle_layout_mouse(app, kind, row, column)
+    if handle_help_mouse(app, kind, row, column)
+        || handle_layout_mouse(app, kind, row, column)
         || handle_coordinator_picker_mouse(app, kind, row, column)
         || handle_task_picker_mouse(app, kind, row, column)
     {
@@ -5206,7 +5288,7 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                 return;
             }
             if app.last_context_help_area.width > 0 && app.last_context_help_area.contains(pos) {
-                app.show_help = true;
+                app.open_help();
                 return;
             }
             if app.last_context_layout_area.width > 0 && app.last_context_layout_area.contains(pos)
@@ -12526,6 +12608,183 @@ mod chat_tab_navigation_tests {
     }
 
     #[test]
+    fn help_is_modal_scrollable_dismissible_and_restores_workspace_state() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        fn render(app: &mut VizApp, width: u16, height: u16) -> String {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| crate::tui::viz_viewer::render::draw(frame, app))
+                .unwrap();
+            (0..height)
+                .map(|y| {
+                    (0..width)
+                        .map(|x| terminal.backend().buffer().cell((x, y)).unwrap().symbol())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        let (mut app, _tmp) = build_app_with_chats(&[0, 1]);
+        app.mouse_enabled = true;
+        app.focused_panel = FocusedPanel::RightPanel;
+        app.right_panel_tab = RightPanelTab::Chat;
+        app.right_panel_visible = true;
+        app.hud_scroll = 7;
+        app.scroll.offset_y = 3;
+        app.scroll.offset_x = 2;
+        let selected = app.selected_task_id().map(str::to_owned);
+        let before = (
+            app.focused_panel,
+            app.right_panel_tab,
+            app.right_panel_visible,
+            app.hud_scroll,
+            app.scroll.offset_y,
+            app.scroll.offset_x,
+            app.single_panel_view,
+        );
+
+        // Open through the exact painted question-mark hit. The release from
+        // that click is swallowed by Help rather than reinterpreted after the
+        // overlay appears.
+        let task_bar = render(&mut app, 80, 24);
+        assert!(!task_bar.contains("Ctrl+O→p Panel"), "{task_bar}");
+        let question = app.last_context_help_area;
+        assert!(question.width > 0, "question-mark control was not painted");
+        super::handle_mouse(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            question.y,
+            question.x,
+        );
+        assert!(app.show_help);
+        super::handle_mouse(
+            &mut app,
+            MouseEventKind::Up(MouseButton::Left),
+            question.y,
+            question.x,
+        );
+        let first = render(&mut app, 80, 24);
+        assert!(first.contains("Essential navigation"), "{first}");
+        assert!(first.contains("Ctrl-O → p"), "{first}");
+        assert!(first.contains("Help scrolling"), "{first}");
+        assert!(app.help.max_scroll() > 0);
+        assert_eq!(app.focused_panel, FocusedPanel::RightPanel);
+
+        // Every documented keyboard route moves Help and clamps at a stable
+        // boundary; it never reaches task/panel navigation behind the modal.
+        super::handle_key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(app.help.scroll, 1);
+        super::handle_key(&mut app, KeyCode::PageDown, KeyModifiers::NONE);
+        assert!(app.help.scroll > 1);
+        super::handle_key(&mut app, KeyCode::End, KeyModifiers::NONE);
+        assert_eq!(app.help.scroll, app.help.max_scroll());
+        super::handle_key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(app.help.scroll, app.help.max_scroll());
+        super::handle_key(&mut app, KeyCode::PageUp, KeyModifiers::NONE);
+        assert!(app.help.scroll < app.help.max_scroll());
+        super::handle_key(&mut app, KeyCode::Home, KeyModifiers::NONE);
+        assert_eq!(app.help.scroll, 0);
+        super::handle_key(&mut app, KeyCode::Up, KeyModifiers::NONE);
+        assert_eq!(app.help.scroll, 0);
+
+        // Wheel and trackpad-equivalent horizontal scroll events are owned by
+        // Help even over the dimmed workspace. Its visible scrollbar is also
+        // clickable/draggable from top to bottom.
+        super::handle_mouse(&mut app, MouseEventKind::ScrollDown, 0, 0);
+        assert_eq!(app.help.scroll, 3);
+        super::handle_mouse(&mut app, MouseEventKind::ScrollRight, 0, 0);
+        assert_eq!(app.help.scroll, 6);
+        let scrollbar = app.help.scrollbar_area;
+        assert!(scrollbar.height > 1);
+        super::handle_mouse(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            scrollbar.bottom() - 1,
+            scrollbar.x,
+        );
+        assert_eq!(app.help.scroll, app.help.max_scroll());
+        super::handle_mouse(
+            &mut app,
+            MouseEventKind::Drag(MouseButton::Left),
+            scrollbar.y,
+            scrollbar.x,
+        );
+        assert_eq!(app.help.scroll, 0);
+        super::handle_mouse(
+            &mut app,
+            MouseEventKind::Up(MouseButton::Left),
+            scrollbar.y,
+            scrollbar.x,
+        );
+
+        // An inside click is Help-only. An outside click closes on press and
+        // consumes its release, without activating the old question control or
+        // changing the selected task/view beneath it.
+        let inside = app.help.content_area;
+        super::handle_mouse(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            inside.y,
+            inside.x,
+        );
+        assert!(app.show_help);
+        super::handle_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 0, 0);
+        assert!(!app.show_help);
+        super::handle_mouse(&mut app, MouseEventKind::Up(MouseButton::Left), 0, 0);
+        assert_eq!(selected.as_deref(), app.selected_task_id());
+        assert_eq!(
+            before,
+            (
+                app.focused_panel,
+                app.right_panel_tab,
+                app.right_panel_visible,
+                app.hud_scroll,
+                app.scroll.offset_y,
+                app.scroll.offset_x,
+                app.single_panel_view,
+            )
+        );
+
+        // Resize at the bottom safely clamps to the newly wrapped narrow
+        // content; Escape then restores the exact same workspace state.
+        app.open_help();
+        render(&mut app, 80, 24);
+        super::handle_key(&mut app, KeyCode::End, KeyModifiers::NONE);
+        super::dispatch_event(&mut app, Event::Resize(32, 16));
+        let narrow_at_end = render(&mut app, 32, 16);
+        assert!(narrow_at_end.contains("Keybindings"), "{narrow_at_end}");
+        assert!(app.help.scroll <= app.help.max_scroll());
+        super::handle_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(!app.show_help);
+
+        // A fresh narrow open still puts Panel access, move/activate/close,
+        // and the Help scrolling section in the first viewport.
+        app.open_help();
+        let narrow_first = render(&mut app, 32, 16);
+        assert!(narrow_first.contains("Ctrl-O"), "{narrow_first}");
+        assert!(narrow_first.contains("Move"), "{narrow_first}");
+        assert!(narrow_first.contains("Activate"), "{narrow_first}");
+        assert!(narrow_first.contains("Help scrolling"), "{narrow_first}");
+        super::handle_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(selected.as_deref(), app.selected_task_id());
+        assert_eq!(
+            before,
+            (
+                app.focused_panel,
+                app.right_panel_tab,
+                app.right_panel_visible,
+                app.hud_scroll,
+                app.scroll.offset_y,
+                app.scroll.offset_x,
+                app.single_panel_view,
+            )
+        );
+    }
+
+    #[test]
     fn actual_layout_control_coordinates_share_keyboard_actions_and_reject_stale_hits() {
         use crate::tui::viz_viewer::state::{
             LayoutControlAction, LayoutControlPage, LayoutPreference, SinglePanelView,
@@ -12597,27 +12856,27 @@ mod chat_tab_navigation_tests {
             .unwrap()
             .child_input_bytes_written();
 
-        // The live Chat frame itself teaches the two-step keyboard escape and
-        // offers an exact pointer peer before the user knows any Vim keys.
+        // Panel remains keyboard-authoritative but no longer monopolizes the
+        // persistent task bar. Help teaches the two-step sequence instead.
         let normal = render(&mut app, 120, 30);
-        assert!(normal.contains("Ctrl+O→p Panel"), "{normal}");
-        let panel_hint = app.last_context_layout_area;
-        assert!(panel_hint.width > 0);
-        super::handle_mouse(
-            &mut app,
-            MouseEventKind::Down(MouseButton::Left),
-            panel_hint.y,
-            panel_hint.x + 1,
+        assert!(
+            !normal.contains("Panel"),
+            "task bar clutter returned: {normal}"
         );
+        assert_eq!(app.last_context_layout_area, Rect::default());
+        super::handle_key(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        super::handle_key(&mut app, KeyCode::Char('p'), KeyModifiers::NONE);
         assert_eq!(app.input_mode, InputMode::Layout);
         assert_eq!(
             app.layout_overlay.unwrap().original_focus,
-            FocusedPanel::RightPanel
+            FocusedPanel::Graph
         );
         render(&mut app, 120, 30);
         tap(&mut app, LayoutControlAction::Cancel);
-        assert_eq!(app.focused_panel, FocusedPanel::RightPanel);
+        assert_eq!(app.focused_panel, FocusedPanel::Graph);
 
+        // Keep the remainder's original RightPanel restoration fixture.
+        app.focused_panel = FocusedPanel::RightPanel;
         app.open_layout_overlay();
         let desktop = render(&mut app, 120, 30);
         assert!(
