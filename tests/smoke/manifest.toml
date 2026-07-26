@@ -2156,6 +2156,15 @@ description = "Pins daemon detachment through the real terminal lifecycle: forkp
 timeout_seconds = 30
 
 [[scenario]]
+name = "service_daemon_crash_supervisor"
+script = "scenarios/service_daemon_crash_supervisor.sh"
+owners = [
+    "fix-coordinator-daemon",
+]
+description = "Installed-binary live daemon regression: SIGKILL the supervised daemon mid-service, require a loud unexpected-exit line and a replacement PID, then deliver the historical silent-exit class (SIGHUP) and require it to be named, survived, and followed by resumed coordinator ticks. A normal service stop must terminate the supervisor rather than restart. Credential-free and graph-isolated."
+timeout_seconds = 30
+
+[[scenario]]
 name = "service_ipc_mixed_clients_keep_ticking"
 script = "scenarios/service_ipc_mixed_clients_keep_ticking.sh"
 owners = [

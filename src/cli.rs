@@ -6233,6 +6233,14 @@ pub enum ServiceCommands {
         /// `docs/studies/adaptive-parallelism-budget-design.md` §8.2.
         #[arg(long)]
         no_pin: bool,
+
+        /// Disable the auto-restart supervisor and fork the daemon directly
+        /// (legacy behavior). By default `wg service start` wraps the daemon in
+        /// a supervisor that re-spawns it on an unexpected exit, so a crash no
+        /// longer halts all dispatch until a human notices. See
+        /// `docs/studies/daemon-crash-supervisor-design.md`.
+        #[arg(long)]
+        no_supervise: bool,
     },
 
     /// Stop the agent service daemon
@@ -6400,6 +6408,41 @@ pub enum ServiceCommands {
         /// activity are skipped.
         #[arg(long, visible_alias = "force", visible_alias = "all")]
         include_active: bool,
+    },
+
+    /// Run the auto-restart supervisor (internal, called by start). Forks and
+    /// monitors `wg service daemon`, re-spawning it on an unexpected exit.
+    /// See `docs/studies/daemon-crash-supervisor-design.md`.
+    #[command(hide = true)]
+    Supervise {
+        /// Unix socket path
+        #[arg(long)]
+        socket: String,
+
+        /// Maximum number of parallel agents (overrides config.toml)
+        #[arg(long)]
+        max_agents: Option<usize>,
+
+        /// Executor to use for spawned agents (overrides config.toml)
+        #[arg(long)]
+        executor: Option<String>,
+
+        /// Background poll interval in seconds (overrides config.toml coordinator.poll_interval)
+        #[arg(long)]
+        interval: Option<u64>,
+
+        /// Model to use for spawned agents (overrides config.toml dispatcher.model)
+        #[arg(long)]
+        model: Option<String>,
+
+        /// Disable the persistent chat agent (LLM session); legacy alias: --no-coordinator-agent
+        #[arg(long, alias = "no-coordinator-agent")]
+        no_chat_agent: bool,
+
+        /// Do NOT seed/persist a `runtime_max_agents` pin from `--max-agents`
+        /// (forwarded from `wg service start --no-pin`).
+        #[arg(long)]
+        no_pin: bool,
     },
 
     /// Run the daemon (internal, called by start)

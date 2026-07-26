@@ -3416,6 +3416,7 @@ fn main() -> Result<()> {
                 force,
                 no_chat_agent,
                 no_pin,
+                no_supervise,
             } => commands::service::run_start(
                 &workgraph_dir,
                 socket.as_deref(),
@@ -3428,6 +3429,7 @@ fn main() -> Result<()> {
                 force,
                 no_chat_agent,
                 no_pin,
+                no_supervise,
             ),
             ServiceCommands::Stop { force, kill_agents } => {
                 commands::service::run_stop(&workgraph_dir, force, kill_agents, cli.json)
@@ -3526,6 +3528,24 @@ fn main() -> Result<()> {
                 no_chat_agent,
                 no_pin,
             } => commands::service::run_daemon(
+                &workgraph_dir,
+                &socket,
+                max_agents,
+                executor.as_deref(),
+                interval,
+                model.as_deref(),
+                no_chat_agent,
+                no_pin,
+            ),
+            ServiceCommands::Supervise {
+                socket,
+                max_agents,
+                executor,
+                interval,
+                model,
+                no_chat_agent,
+                no_pin,
+            } => commands::service::supervisor::run_supervisor(
                 &workgraph_dir,
                 &socket,
                 max_agents,

@@ -284,6 +284,7 @@ pub(crate) fn handle_connection(
     interrupt_coordinator_ids: &mut Vec<u32>,
     daemon_cfg: &mut DaemonConfig,
     logger: &DaemonLogger,
+    requested_shutdown: &mut bool,
 ) -> Result<()> {
     // The daemon handles accepted connections on its coordinator thread. A
     // peer can connect before sending a complete line (or never send one), so
@@ -336,6 +337,7 @@ pub(crate) fn handle_connection(
         interrupt_coordinator_ids,
         daemon_cfg,
         logger,
+        requested_shutdown,
     );
     write_response(&stream, &response)?;
     Ok(())
@@ -363,6 +365,7 @@ fn handle_request(
     interrupt_coordinator_ids: &mut Vec<u32>,
     daemon_cfg: &mut DaemonConfig,
     logger: &DaemonLogger,
+    requested_shutdown: &mut bool,
 ) -> IpcResponse {
     match request {
         IpcRequest::Spawn {
@@ -412,6 +415,10 @@ fn handle_request(
                 force, kill_agents
             ));
             *running = false;
+            // Mark this as a *requested* shutdown so the graceful-exit path
+            // writes the clean-sentinel and the supervisor does NOT restart.
+            // Signal/panic/crash exits leave it false (no sentinel = restart).
+            *requested_shutdown = true;
             handle_shutdown(dir, kill_agents, logger)
         }
         IpcRequest::GraphChanged => {
@@ -2933,6 +2940,7 @@ poll_interval = 60
             &mut interrupt_coordinator_ids,
             &mut cfg,
             &logger,
+            &mut false,
         );
 
         assert!(resp.ok, "create_chat should succeed: {:?}", resp.error);
@@ -3010,6 +3018,7 @@ poll_interval = 60
             &mut interrupt_coordinator_ids,
             &mut cfg,
             &logger,
+            &mut false,
         );
 
         assert!(!resp.ok, "create_chat must fail when cap is 0");
@@ -3060,6 +3069,7 @@ poll_interval = 60
             &mut interrupt_coordinator_ids,
             &mut cfg,
             &logger,
+            &mut false,
         );
 
         assert!(resp.ok);
@@ -3111,6 +3121,7 @@ poll_interval = 60
             &mut interrupt_coordinator_ids,
             &mut cfg,
             &logger,
+            &mut false,
         );
 
         // Verify response
@@ -3181,6 +3192,7 @@ poll_interval = 60
             &mut interrupt_coordinator_ids,
             &mut cfg,
             &logger,
+            &mut false,
         );
 
         assert!(resp.ok);
@@ -3235,6 +3247,7 @@ poll_interval = 60
             &mut interrupt_coordinator_ids,
             &mut cfg,
             &logger,
+            &mut false,
         );
 
         // GraphChanged should set wake_coordinator, NOT urgent_wake or kick_dispatcher
@@ -3288,6 +3301,7 @@ poll_interval = 60
             &mut interrupt_coordinator_ids,
             &mut cfg,
             &logger,
+            &mut false,
         );
 
         assert!(resp.ok);
@@ -3343,6 +3357,7 @@ poll_interval = 60
             &mut interrupt_coordinator_ids,
             &mut cfg,
             &logger,
+            &mut false,
         );
 
         assert!(!cfg.paused, "Resume should clear paused flag");

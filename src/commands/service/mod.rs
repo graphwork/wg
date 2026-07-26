@@ -21,6 +21,8 @@ pub(crate) mod coordinator;
 pub(crate) mod coordinator_agent;
 pub(crate) mod human_dispatch;
 pub mod ipc;
+pub(crate) mod signals;
+pub(crate) mod supervisor;
 mod triage;
 pub(crate) mod worktree;
 pub(crate) mod zero_output;
@@ -30,6 +32,8 @@ pub use ipc::{IpcRequest, IpcResponse};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+#[cfg(unix)]
+use signals::{SignalDisposition, disposition_for, signal_name};
 use std::fs;
 use std::io::IsTerminal;
 use std::io::{BufRead, BufReader, Read as _, Write};
@@ -398,14 +402,83 @@ impl DaemonLogger {
     }
 
     /// Install a panic hook that writes the panic info to this log before
-    /// the process aborts.
+    /// the process aborts. As a belt-and-suspenders (e.g. if the logger mutex
+    /// is poisoned or the log file handle is closed), the panic is also
+    /// written to raw stderr (fd 2) and flushed — stderr is redirected to
+    /// the daemon log by `run_start`, and even on a TTY it surfaces the panic
+    /// so a panic is **never silent** (`fix-coordinator-daemon`).
     pub fn install_panic_hook(&self) {
         let logger = self.clone();
         std::panic::set_hook(Box::new(move |info| {
             let msg = format!("PANIC: {}", info);
-            logger.log("FATAL", &msg);
+            // Raw stderr first: async-safe-ish write + fsync so the panic is
+            // visible even if the structured logger below never lands.
+            write_raw_stderr(&format!("{}\n", msg));
+            // Best-effort structured line, but never block here: a panic may
+            // have happened while this same thread held the logger mutex.
+            // Calling `lock()` from the hook would deadlock and defeat the
+            // supervisor, because the panicking process would never exit.
+            if let Ok(mut inner) = logger.inner.try_lock() {
+                let ts = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ");
+                let location = info
+                    .location()
+                    .map(|loc| format!(" at {}:{}:{}", loc.file(), loc.line(), loc.column()))
+                    .unwrap_or_default();
+                let line = format!("{} [FATAL] {}{}\n", ts, msg, location);
+                let _ = inner.file.write_all(line.as_bytes());
+                let _ = inner.file.flush();
+                inner.written += line.len() as u64;
+            }
         }));
     }
+}
+
+/// Write `msg` directly to fd 2 (stderr) with `libc::write` and `fsync`, so the
+/// bytes are visible even when the structured `DaemonLogger` mutex is poisoned
+/// or its file handle is closed. On non-Unix falls back to the std stderr
+/// handle. Used by the panic hook and the signal-shutdown log.
+pub(crate) fn write_raw_stderr(msg: &str) {
+    #[cfg(unix)]
+    {
+        let bytes = msg.as_bytes();
+        unsafe {
+            let _ = libc::write(2, bytes.as_ptr() as *const libc::c_void, bytes.len());
+            let _ = libc::fsync(2);
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        use std::io::Write;
+        let _ = std::io::stderr().write_all(msg.as_bytes());
+        let _ = std::io::stderr().flush();
+    }
+}
+
+/// Path to the crash sentinel: written ONLY at the end of a **requested**
+/// (IPC `Shutdown`) graceful shutdown. Its absence on the next start (with a
+/// stale `state.json` / dead PID) means the previous run crashed. Read by the
+/// supervisor to decide restart-vs-exit and surfaced in `wg service status`.
+pub fn clean_shutdown_sentinel_path(dir: &Path) -> PathBuf {
+    dir.join("service").join(".clean_shutdown")
+}
+
+/// Record a clean (requested) shutdown so the supervisor does not restart.
+pub(crate) fn write_clean_shutdown_sentinel(dir: &Path) {
+    let path = clean_shutdown_sentinel_path(dir);
+    let ts = chrono::Utc::now().to_rfc3339();
+    let _ = fs::write(&path, format!("{}\n", ts));
+}
+
+/// Consume (delete) the clean-shutdown sentinel. Returns `true` if a sentinel
+/// was present (i.e. the prior shutdown was clean).
+pub(crate) fn consume_clean_shutdown_sentinel(dir: &Path) -> bool {
+    let path = clean_shutdown_sentinel_path(dir);
+    path.exists() && fs::remove_file(&path).is_ok()
+}
+
+/// Was the most recent shutdown clean (sentinel present, not yet consumed)?
+pub fn had_clean_shutdown(dir: &Path) -> bool {
+    clean_shutdown_sentinel_path(dir).exists()
 }
 
 /// Read the last `n` lines from the daemon log that match the given level
@@ -547,6 +620,13 @@ pub struct ServiceState {
     /// than guessed or killed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity: Option<worksgood::service_identity::ServiceIdentity>,
+    /// PID of the auto-restart supervisor process wrapping this daemon
+    /// (`fix-coordinator-daemon`). Absent for the legacy direct-fork path and
+    /// for pre-supervisor state files. `wg service stop --force` and orphan
+    /// cleanup kill this PID's tree so a crash-exit is not immediately
+    /// re-spawned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supervisor_pid: Option<u32>,
 }
 
 impl ServiceState {
@@ -1165,6 +1245,50 @@ pub fn find_orphan_daemon_pids(_dir: &Path, _exclude_pid: Option<u32>) -> Vec<u3
     Vec::new()
 }
 
+/// Find orphan `wg service supervise` processes for this graph dir, excluding
+/// `exclude_pid` and ourselves. The supervisor wraps the daemon
+/// (`fix-coordinator-daemon`); a leftover supervisor would re-spawn a daemon,
+/// so force-stop / cleanup must reap it too.
+#[cfg(unix)]
+pub fn find_orphan_supervisor_pids(dir: &Path, exclude_pid: Option<u32>) -> Vec<u32> {
+    let canonical = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+    let dir_str = canonical.to_string_lossy().to_string();
+    let our_pid = std::process::id();
+    let mut orphans = Vec::new();
+    let proc_dir = match fs::read_dir("/proc") {
+        Ok(d) => d,
+        Err(_) => return orphans,
+    };
+    for entry in proc_dir.flatten() {
+        let pid: u32 = match entry.file_name().to_string_lossy().parse() {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        if pid == our_pid || exclude_pid == Some(pid) {
+            continue;
+        }
+        let cmdline = match fs::read(format!("/proc/{}/cmdline", pid)) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let cmdline_str = String::from_utf8_lossy(&cmdline);
+        let args: Vec<&str> = cmdline_str.split('\0').collect();
+        let has_service_supervise = args
+            .windows(2)
+            .any(|w| w[0] == "service" && w[1] == "supervise");
+        let has_our_dir = args.windows(2).any(|w| w[0] == "--dir" && w[1] == dir_str);
+        if has_service_supervise && has_our_dir {
+            orphans.push(pid);
+        }
+    }
+    orphans
+}
+
+#[cfg(not(unix))]
+pub fn find_orphan_supervisor_pids(_dir: &Path, _exclude_pid: Option<u32>) -> Vec<u32> {
+    Vec::new()
+}
+
 /// Start the service daemon
 #[allow(clippy::too_many_arguments)]
 pub fn run_start(
@@ -1179,6 +1303,7 @@ pub fn run_start(
     force: bool,
     no_coordinator_agent: bool,
     no_pin: bool,
+    no_supervise: bool,
 ) -> Result<()> {
     guard_service_control_from_worker()?;
 
@@ -1274,8 +1399,11 @@ pub fn run_start(
         }
     }
 
-    // Also check for orphan daemon processes that lost their state file
-    let orphans = find_orphan_daemon_pids(dir, None);
+    // Also check for orphan daemon / supervisor processes that lost their
+    // state file. A leftover supervisor would re-spawn a daemon, so it is
+    // reaped alongside daemon orphans.
+    let mut orphans = find_orphan_daemon_pids(dir, None);
+    orphans.extend(find_orphan_supervisor_pids(dir, None));
     if !orphans.is_empty() {
         if force {
             for &pid in &orphans {
@@ -1322,12 +1450,19 @@ pub fn run_start(
     let dir_str = dir.to_string_lossy().to_string();
     let socket_str = socket.to_string_lossy().to_string();
 
-    // Start daemon in background
+    // By default, wrap the daemon in an auto-restart supervisor so a crash no
+    // longer halts all dispatch until a human notices (`fix-coordinator-daemon`).
+    // The supervisor forks `wg service daemon` itself; `--no-supervise` restores
+    // the legacy direct-fork behavior.
+    let supervise = !no_supervise;
+    let subcommand = if supervise { "supervise" } else { "daemon" };
+
+    // Start daemon (or its supervisor) in background
     let mut args = vec![
         "--dir".to_string(),
         dir_str,
         "service".to_string(),
-        "daemon".to_string(),
+        subcommand.to_string(),
         "--socket".to_string(),
         socket_str.clone(),
     ];
@@ -1404,15 +1539,23 @@ pub fn run_start(
 
     let pid = child.id();
 
-    // Save state
-    let state = ServiceState {
-        pid,
-        socket_path: socket_str.clone(),
-        started_at: chrono::Utc::now().to_rfc3339(),
-        pid_start_identity: worksgood::service_identity::pid_start_identity(pid),
-        identity: Some(service_identity),
-    };
-    state.save(dir)?;
+    // When supervising, the supervisor owns `state.json` (it writes the daemon
+    // child's PID after forking it). In the legacy direct-fork path we write it
+    // here ourselves, exactly as before.
+    if !supervise {
+        let state = ServiceState {
+            pid,
+            socket_path: socket_str.clone(),
+            started_at: chrono::Utc::now().to_rfc3339(),
+            pid_start_identity: worksgood::service_identity::pid_start_identity(pid),
+            identity: Some(service_identity),
+            supervisor_pid: None,
+        };
+        state.save(dir)?;
+    } else {
+        // Supervisor computes its own identity; nothing to do here.
+        let _ = service_identity;
+    }
 
     // Wait for daemon to start, showing an animated spinner on TTYs
     let daemon_alive = if !json && std::io::stdout().is_terminal() {
@@ -1466,6 +1609,7 @@ pub fn run_start(
             if start.elapsed() >= Duration::from_millis(600)
                 && is_process_alive(pid)
                 && socket_accepting(&socket)
+                && (!supervise || state_file_path(dir).exists())
             {
                 alive = true;
                 break;
@@ -1484,7 +1628,10 @@ pub fn run_start(
         let mut alive = false;
         while start.elapsed() < Duration::from_millis(8000) {
             std::thread::sleep(Duration::from_millis(100));
-            if is_process_alive(pid) && socket_accepting(&socket) {
+            if is_process_alive(pid)
+                && socket_accepting(&socket)
+                && (!supervise || state_file_path(dir).exists())
+            {
                 alive = true;
                 break;
             }
@@ -2445,6 +2592,46 @@ pub fn run_daemon(
 
     let dir = dir.to_path_buf();
     let mut running = true;
+    // `true` only when the daemon is stopping because it was *asked* to (IPC
+    // `Shutdown` / `wg service stop`). Signal/panic/crash exits leave it false
+    // so the graceful-exit path skips the clean-sentinel and the supervisor
+    // restarts. See `fix-coordinator-daemon`.
+    let mut requested_shutdown = false;
+
+    // Install signal handlers so the daemon's death is **never silent**.
+    // Catchable signals (SIGTERM/SIGHUP/SIGINT/SIGQUIT/SIGPIPE) are delivered
+    // to a self-pipe polled in the main loop, which logs each one and applies
+    // the per-signal disposition (survive vs restart). Without this a stray
+    // signal terminated the process with the default action — no panic, no
+    // Err, no log line — the recurring "silent death mid-tick".
+    let signal_pipe_read_fd = signals::install_daemon_signal_handlers();
+    if signal_pipe_read_fd >= 0 {
+        logger.info("Signal handlers installed (SIGTERM/SIGHUP/SIGINT/SIGQUIT/SIGPIPE)");
+    } else {
+        logger.warn(
+            "Signal handlers NOT installed (self-pipe init failed); stray signals may still terminate the daemon silently",
+        );
+    }
+
+    // Crash detection on startup: if the previous run left no clean-shutdown
+    // sentinel, it did not exit via a requested stop — i.e. it crashed or was
+    // signaled. Surface it loudly. (The supervisor consumes the sentinel for
+    // its own restart decision; this log line is the human-facing breadcrumb.)
+    if !had_clean_shutdown(&dir) {
+        // Only suspect a crash if there is evidence a prior daemon ran here.
+        let prior_state_existed = state_file_path(&dir).exists();
+        if prior_state_existed {
+            logger.warn(
+                "Previous daemon did not record a clean shutdown (no .clean_shutdown sentinel); it likely crashed or was killed by a signal",
+            );
+        }
+    } else {
+        logger.info("Previous daemon shut down cleanly (clean-shutdown sentinel present)");
+    }
+    // Consume any stale sentinel from a prior run so a *future* crash is
+    // detectable again. The supervisor writes/expects its own sentinel check
+    // before this point; consuming here keeps the marker single-use.
+    consume_clean_shutdown_sentinel(&dir);
 
     // Load coordinator config strictly: invalid config must abort startup.
     let config = Config::load_merged(&dir)?;
@@ -2917,20 +3104,36 @@ pub fn run_daemon(
                         // remaining timeout, whichever is shorter). A -1 fd
                         // (pipe creation failed) yields POLLNVAL, which we treat
                         // like a timeout — falling back to accept-retry polling.
+                        //
+                        // Two fds: the graph-watcher self-pipe AND the signal
+                        // self-pipe (`fix-coordinator-daemon`). A signal wake
+                        // must preempt everything else so the disposition (and
+                        // its log line) is applied immediately.
                         let slice = remaining.min(Duration::from_millis(10));
-                        let mut pollfds = [libc::pollfd {
-                            fd: graph_pipe_read_fd,
-                            events: if graph_pipe_read_fd >= 0 {
-                                libc::POLLIN
-                            } else {
-                                0
+                        let mut pollfds = [
+                            libc::pollfd {
+                                fd: graph_pipe_read_fd,
+                                events: if graph_pipe_read_fd >= 0 {
+                                    libc::POLLIN
+                                } else {
+                                    0
+                                },
+                                revents: 0,
                             },
-                            revents: 0,
-                        }];
+                            libc::pollfd {
+                                fd: signal_pipe_read_fd,
+                                events: if signal_pipe_read_fd >= 0 {
+                                    libc::POLLIN
+                                } else {
+                                    0
+                                },
+                                revents: 0,
+                            },
+                        ];
                         let poll_ret = unsafe {
                             libc::poll(
                                 pollfds.as_mut_ptr(),
-                                1,
+                                pollfds.len() as libc::nfds_t,
                                 slice.as_millis().min(i32::MAX as u128) as i32,
                             )
                         };
@@ -2938,6 +3141,40 @@ pub fn run_daemon(
                             // EINTR (e.g. SIGCHLD) — bail out so the outer loop
                             // reaps and recomputes the timeout.
                             break;
+                        }
+
+                        // Signal self-pipe: a signal arrived. Apply the
+                        // per-signal disposition and log it LOUDLY so the
+                        // daemon's death/exit is never silent. Handlers below
+                        // may set `running = false` (restart) or merely log
+                        // (survive).
+                        if signal_pipe_read_fd >= 0 && (pollfds[1].revents & libc::POLLIN) != 0 {
+                            let sigs = signals::drain_signal_pipe(signal_pipe_read_fd);
+                            for sig in sigs {
+                                match disposition_for(sig) {
+                                    SignalDisposition::Survive => logger.warn(&format!(
+                                        "Survived stray signal {} ({}); continuing to tick",
+                                        sig,
+                                        signal_name(sig)
+                                    )),
+                                    SignalDisposition::Restart => {
+                                        logger.warn(&format!(
+                                            "Received {} ({}); initiating graceful shutdown (no clean sentinel — supervisor will restart)",
+                                            signal_name(sig),
+                                            sig
+                                        ));
+                                        // Treat like a crash-exit: stop the
+                                        // loop WITHOUT the clean sentinel so
+                                        // the supervisor restarts us.
+                                        running = false;
+                                    }
+                                }
+                            }
+                            if !running {
+                                // Shutdown requested by signal — stop waiting
+                                // for a connection; fall through to the exit.
+                                break;
+                            }
                         }
 
                         // Drain any graph-watcher wakes and treat them as a
@@ -3039,6 +3276,7 @@ pub fn run_daemon(
                     &mut conn_interrupt_coordinator_ids,
                     &mut daemon_cfg,
                     &logger,
+                    &mut requested_shutdown,
                 ) {
                     logger.error(&format!("Error handling connection: {}", e));
                 }
@@ -3517,6 +3755,18 @@ pub fn run_daemon(
     }
 
     logger.info("Daemon shutting down");
+    if requested_shutdown {
+        // Record a clean (requested) shutdown so the supervisor does NOT
+        // restart us. Signal/panic/crash exits never reach here with this
+        // flag set, so the absence of the sentinel = "restart me".
+        write_clean_shutdown_sentinel(&dir);
+        logger.info("Shutdown was requested via IPC (clean sentinel written; supervisor will exit, not restart)");
+    } else {
+        // We are stopping because of a signal disposition (Restart) or some
+        // other non-IPC path. Do NOT write the sentinel — the supervisor
+        // treats this as an unexpected exit and restarts.
+        logger.warn("Shutdown was NOT requested via IPC (no clean sentinel); supervisor will treat this as a crash and restart");
+    }
 
     // Shut down all coordinator agents
     let agent_count = coordinator_agents.len();
@@ -3630,7 +3880,26 @@ fn run_stop_inner(dir: &Path, force: bool, kill_agents: bool, json: bool) -> Res
         std::thread::sleep(Duration::from_millis(200));
     }
 
-    // If process is still running, kill it
+    // If the daemon (or its supervisor) is still running, stop it.
+    //
+    // When supervised, killing the DAEMON directly would just make the
+    // supervisor re-spawn it — so we stop the SUPERVISOR (it sets its
+    // stopping flag, forwards the signal to the daemon, and exits without
+    // restarting). The IPC Shutdown above already asked the daemon for a
+    // clean exit (sentinel → supervisor self-exit); this is the fallback.
+    let supervisor_pid = state.supervisor_pid;
+    if let Some(spid) = supervisor_pid
+        && is_process_alive(spid)
+    {
+        if force {
+            // Kills the supervisor's whole descendant tree (daemon included).
+            let _ = kill_process_force(spid);
+        } else {
+            let _ = kill_process_graceful(spid, 5);
+        }
+    }
+    // Ensure the daemon itself is gone regardless (unsupervised, or the
+    // supervisor tree didn't reach it in time).
     if is_process_alive(state.pid) {
         if force {
             kill_process_force(state.pid)?;
@@ -3647,8 +3916,11 @@ fn run_stop_inner(dir: &Path, force: bool, kill_agents: bool, json: bool) -> Res
 
     // Scan for orphan daemon processes that may have been left behind by
     // previous start/stop cycles where the state file was removed but the
-    // daemon process wasn't actually killed.
-    let orphans = find_orphan_daemon_pids(dir, Some(state.pid));
+    // daemon process wasn't actually killed. Also catch orphan supervisors.
+    let mut orphans = find_orphan_daemon_pids(dir, Some(state.pid));
+    if let Some(spid) = supervisor_pid {
+        orphans.extend(find_orphan_supervisor_pids(dir, Some(spid)));
+    }
     let mut orphan_count = 0;
     for &pid in &orphans {
         if force {
@@ -3725,6 +3997,7 @@ pub fn run_restart(dir: &Path, json: bool) -> Result<()> {
         true,  // force — clean up any leftover state
         false, // no_coordinator_agent — use default
         false, // no_pin — preserve the runtime authority exactly
+        false, // no_supervise — keep the auto-restart supervisor on restart
     )
 }
 
@@ -5063,6 +5336,7 @@ mod tests {
             started_at: chrono::Utc::now().to_rfc3339(),
             pid_start_identity: None,
             identity: None,
+            supervisor_pid: None,
         }
         .save(dir)
         .unwrap();
@@ -5092,6 +5366,7 @@ mod tests {
             started_at: chrono::Utc::now().to_rfc3339(),
             pid_start_identity: None,
             identity: None,
+            supervisor_pid: None,
         };
 
         state.save(temp_dir.path()).unwrap();
@@ -5212,6 +5487,7 @@ mod tests {
             started_at: chrono::Utc::now().to_rfc3339(),
             pid_start_identity: None,
             identity: None,
+            supervisor_pid: None,
         };
         state.save(dir).unwrap();
         fs::write(
@@ -5222,7 +5498,7 @@ mod tests {
 
         // run_start should not start a new daemon
         let result = run_start(
-            dir, None, None, None, None, None, None, false, false, false, false,
+            dir, None, None, None, None, None, None, false, false, false, false, false,
         );
         assert!(result.is_ok()); // returns Ok but prints "already running"
 
@@ -5249,6 +5525,7 @@ mod tests {
             started_at: chrono::Utc::now().to_rfc3339(),
             pid_start_identity: None,
             identity: None,
+            supervisor_pid: None,
         };
         state.save(dir).unwrap();
 
@@ -5372,6 +5649,7 @@ mod tests {
             started_at: chrono::Utc::now().to_rfc3339(),
             pid_start_identity: None,
             identity: None,
+            supervisor_pid: None,
         };
         state.save(dir).unwrap();
 
