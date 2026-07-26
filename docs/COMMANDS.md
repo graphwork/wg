@@ -283,8 +283,22 @@ Reset a failed, incomplete, in-progress, `pending-eval`, or
 `failed-pending-eval` task back to open status for another attempt.
 
 ```bash
-wg retry <ID> [--reason <REASON>]
+wg retry <ID> [--reason <REASON>] [--fresh] [--current-profile]
 ```
+
+Retry-in-place is the default and preserves the prior worktree, branch, and
+uncommitted WIP. `--fresh` discards that worktree and starts from `main`.
+`--preserve-session` retains the stored Pi session for a plain retry.
+
+`--current-profile` instead resolves the current project's explicitly selected
+profile **at command time** and atomically writes its exact task-agent handler,
+model, and reasoning onto the reopened attempt. It clears stale task-level
+route/profile/session selectors. A later `wg profile select` before dispatch
+cannot change that attempt. The task log and provenance audit record the
+profile name, content-fingerprint generation, selection timestamp, handler,
+model, and reasoning. This flag requires `wg profile select <name>`; it never
+falls back to machine-global profile state. It composes with `--fresh` and
+conflicts with `--preserve-session` because sessions are route-specific.
 
 For an evaluation-held task, retry is the sanctioned operator escape hatch for
 `evaluation_health.state = operator-required-ambiguity`: it mints a fresh
@@ -292,10 +306,20 @@ attempt-bound evaluation pipeline, clears the stuck diagnostic/repair budget,
 and sets the task to `open`. No `graph.jsonl` edit is needed. Batch recovery is
 also available with `wg recover --filter status=failed-pending-eval --yes`.
 
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `--current-profile` | Resolve and persist the selected project profile's exact task-agent route/reasoning now |
+| `--fresh` | Discard the prior worktree instead of retrying in place |
+| `--preserve-session` | Keep the prior Pi session (plain retry only) |
+| `--reason <REASON>` | Record an operator-supplied retry reason |
+
 **Example:**
 ```bash
 wg retry deploy-prod
-wg retry stuck-eval --reason "operator resolved ambiguous evaluation gate"
+wg retry deploy-prod --current-profile
+wg retry deploy-prod --fresh --current-profile
+wg retry stuck-eval --current-profile --reason "operator selected the repaired profile"
 ```
 
 ---

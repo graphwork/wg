@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
-use worksgood::config::Tier;
+use worksgood::config::{DispatchRole, ReasoningLevel, Tier};
 use worksgood::graph::{LogEntry, Status};
 use worksgood::parser::modify_graph;
 use worksgood::service::{AgentRegistry, is_process_alive, kill_process_graceful};
@@ -13,12 +13,135 @@ use super::graph_path;
 #[cfg(test)]
 use worksgood::parser::load_graph;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RetryProfileSelection {
+    profile_name: String,
+    /// The selected profile content fingerprint is its immutable generation.
+    profile_generation: String,
+    profile_selected_at: String,
+    route: String,
+    executor: String,
+    reasoning: Option<ReasoningLevel>,
+}
+
+fn resolve_current_profile(dir: &Path) -> Result<RetryProfileSelection> {
+    let association_before = worksgood::profile::project::read_association(dir)?
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "No project profile is selected. Select one with `wg profile select <name>` before using `wg retry --current-profile`; no global profile fallback was attempted."
+            )
+        })?;
+
+    // This loader verifies the association's project identity and exact profile
+    // fingerprint before applying the profile as the authoritative routing
+    // overlay. Resolve once, here in the operator command — never in a later
+    // dispatcher tick.
+    let config = worksgood::config::Config::load_merged(dir)
+        .context("Cannot resolve the current project profile for retry")?;
+    let association_after = worksgood::profile::project::read_association(dir)?
+        .ok_or_else(|| anyhow::anyhow!("Project profile selection was cleared during retry"))?;
+    if association_before != association_after {
+        anyhow::bail!(
+            "Project profile changed while retry routing was being resolved. Nothing was retried; run the command again."
+        );
+    }
+
+    let resolved = config.resolve_model_for_role(DispatchRole::TaskAgent);
+    let route = resolved.spawn_model_spec();
+    let (handler, remainder) = route.split_once(':').ok_or_else(|| {
+        anyhow::anyhow!(
+            "Current project profile '{}' resolved an implicit task-agent route {:?}. Retry refused because --current-profile never guesses an execution system.",
+            association_before.profile,
+            route
+        )
+    })?;
+    if remainder.trim().is_empty() || !matches!(handler, "pi" | "claude" | "codex") {
+        anyhow::bail!(
+            "Current project profile '{}' resolved unsupported task-agent route {:?}. Expected an explicit pi:, claude:, or codex: route; no fallback was attempted.",
+            association_before.profile,
+            route
+        );
+    }
+    if handler == "pi" {
+        worksgood::config::parse_exact_pi_route(&route).with_context(|| {
+            format!(
+                "Current project profile '{}' has an invalid Pi task-agent route",
+                association_before.profile
+            )
+        })?;
+    }
+    let executor = worksgood::dispatch::handler_for_model(&route)
+        .as_str()
+        .to_string();
+
+    Ok(RetryProfileSelection {
+        profile_name: association_before.profile,
+        profile_generation: association_before.profile_fingerprint,
+        profile_selected_at: association_before.selected_at,
+        route,
+        executor,
+        reasoning: resolved.reasoning,
+    })
+}
+
+fn pin_retry_profile(task: &mut worksgood::graph::Task, selection: &RetryProfileSelection) {
+    // Exact task fields beat every dispatcher/profile cascade. Clear all stale
+    // route/session selectors in the SAME graph transaction that reopens the
+    // task, then store the resolved route + reasoning snapshot.
+    task.model = Some(selection.route.clone());
+    task.reasoning = selection.reasoning;
+    task.provider = None;
+    task.endpoint = None;
+    task.profile = None;
+    task.executor_preset_name = None;
+    task.session_id = None;
+    task.checkpoint = None;
+    task.log.push(LogEntry {
+        timestamp: Utc::now().to_rfc3339(),
+        actor: Some("retry-current-profile".to_string()),
+        user: Some(worksgood::current_user()),
+        message: format!(
+            "Retry route pinned at command time: profile={} generation={} selected_at={} executor={} model={} reasoning={} (stale task route/profile/session selection cleared)",
+            selection.profile_name,
+            selection.profile_generation,
+            selection.profile_selected_at,
+            selection.executor,
+            selection.route,
+            selection
+                .reasoning
+                .map(|level| level.to_string())
+                .unwrap_or_else(|| "omitted".to_string())
+        ),
+    });
+}
+
 pub fn run(
     dir: &Path,
     id: &str,
     preserve_session: bool,
     fresh: bool,
     reason: Option<&str>,
+) -> Result<()> {
+    run_with_selection(dir, id, preserve_session, fresh, reason, None)
+}
+
+pub fn run_with_current_profile(
+    dir: &Path,
+    id: &str,
+    fresh: bool,
+    reason: Option<&str>,
+) -> Result<()> {
+    let selection = resolve_current_profile(dir)?;
+    run_with_selection(dir, id, false, fresh, reason, Some(selection))
+}
+
+fn run_with_selection(
+    dir: &Path,
+    id: &str,
+    preserve_session: bool,
+    fresh: bool,
+    reason: Option<&str>,
+    profile_selection: Option<RetryProfileSelection>,
 ) -> Result<()> {
     let path = super::graph_path(dir);
     if !path.exists() {
@@ -35,7 +158,15 @@ pub fn run(
     };
 
     if initial_status == Some(Status::InProgress) {
-        return retry_in_progress(dir, &path, id, preserve_session, fresh, reason);
+        return retry_in_progress(
+            dir,
+            &path,
+            id,
+            preserve_session,
+            fresh,
+            reason,
+            profile_selection.as_ref(),
+        );
     }
 
     // --fresh: discard the prior worktree (if any) so the next spawn allocates
@@ -164,6 +295,9 @@ pub fn run(
             task.checkpoint = None;
         }
         task.tags.retain(|t| t != "converged");
+        if let Some(selection) = profile_selection.as_ref() {
+            pin_retry_profile(task, selection);
+        }
 
         // Tier escalation on retry: bump fast→standard→premium
         if escalate_on_retry && !task.no_tier_escalation {
@@ -288,6 +422,14 @@ pub fn run(
             "was_pending_eval_stuck": was_pending_eval_stuck,
             "tier_escalation": tier_escalation_msg,
             "reason": reason,
+            "current_profile": profile_selection.as_ref().map(|selection| serde_json::json!({
+                "name": &selection.profile_name,
+                "generation": &selection.profile_generation,
+                "selected_at": &selection.profile_selected_at,
+                "executor": &selection.executor,
+                "model": &selection.route,
+                "reasoning": selection.reasoning.map(|level| level.to_string()),
+            })),
         }),
         config.log.rotation_threshold,
     );
@@ -318,6 +460,20 @@ pub fn run(
 
     if let Some(ref msg) = tier_escalation_msg {
         println!("  {}", msg);
+    }
+
+    if let Some(selection) = profile_selection.as_ref() {
+        println!(
+            "  Current profile pinned now: {} generation={} executor={} model={} reasoning={}",
+            selection.profile_name,
+            selection.profile_generation,
+            selection.executor,
+            selection.route,
+            selection
+                .reasoning
+                .map(|level| level.to_string())
+                .unwrap_or_else(|| "omitted".to_string())
+        );
     }
 
     if !downstream_cleared.is_empty() {
@@ -363,6 +519,7 @@ fn retry_in_progress(
     preserve_session: bool,
     fresh: bool,
     reason: Option<&str>,
+    profile_selection: Option<&RetryProfileSelection>,
 ) -> Result<()> {
     // 1) Kill the assigned agent if any. We do this OUTSIDE the graph lock
     //    because kill_process_graceful sleeps up to 5s.
@@ -465,6 +622,9 @@ fn retry_in_progress(
             task.checkpoint = None;
         }
         task.tags.retain(|t| t != "converged");
+        if let Some(selection) = profile_selection {
+            pin_retry_profile(task, selection);
+        }
 
         if escalate_on_retry && !task.no_tier_escalation {
             let current_tier: Tier = task
@@ -573,6 +733,14 @@ fn retry_in_progress(
             "killed_agent": killed_agent.as_ref().map(|(aid, pid)| serde_json::json!({"agent_id": aid, "pid": pid})),
             "tier_escalation": tier_escalation_msg,
             "reason": reason,
+            "current_profile": profile_selection.map(|selection| serde_json::json!({
+                "name": &selection.profile_name,
+                "generation": &selection.profile_generation,
+                "selected_at": &selection.profile_selected_at,
+                "executor": &selection.executor,
+                "model": &selection.route,
+                "reasoning": selection.reasoning.map(|level| level.to_string()),
+            })),
         }),
         config.log.rotation_threshold,
     );
@@ -590,6 +758,19 @@ fn retry_in_progress(
     }
     if let Some(msg) = tier_escalation_msg {
         println!("  {}", msg);
+    }
+    if let Some(selection) = profile_selection {
+        println!(
+            "  Current profile pinned now: {} generation={} executor={} model={} reasoning={}",
+            selection.profile_name,
+            selection.profile_generation,
+            selection.executor,
+            selection.route,
+            selection
+                .reasoning
+                .map(|level| level.to_string())
+                .unwrap_or_else(|| "omitted".to_string())
+        );
     }
     if !downstream_cleared.is_empty() {
         println!(
@@ -951,7 +1132,7 @@ mod tests {
         setup_workgraph(dir_path, vec![task]);
 
         let path = graph_path(dir_path);
-        retry_in_progress(dir_path, &path, "t1", false, false, None).unwrap();
+        retry_in_progress(dir_path, &path, "t1", false, false, None, None).unwrap();
 
         let graph = load_graph(&path).unwrap();
         let task = graph.get_task("t1").unwrap();
@@ -1249,6 +1430,154 @@ mod tests {
             last_log.message.contains("incomplete"),
             "Log should mention source was incomplete, got: {}",
             last_log.message
+        );
+    }
+
+    fn current_profile_selection() -> RetryProfileSelection {
+        RetryProfileSelection {
+            profile_name: "current".to_string(),
+            profile_generation: "b3:current-generation".to_string(),
+            profile_selected_at: "2026-07-26T00:00:00Z".to_string(),
+            route: "pi:openai-codex:current-worker".to_string(),
+            executor: "pi".to_string(),
+            reasoning: Some(ReasoningLevel::High),
+        }
+    }
+
+    #[test]
+    fn current_profile_retry_atomically_replaces_stale_selection_in_all_held_states() {
+        for status in [
+            Status::Failed,
+            Status::Incomplete,
+            Status::PendingEval,
+            Status::FailedPendingEval,
+        ] {
+            let dir = tempdir().unwrap();
+            let mut task = make_task("t1", "Test task", status);
+            task.retry_count = 1;
+            task.model = Some("pi:openrouter:old-worker".to_string());
+            task.reasoning = Some(ReasoningLevel::Low);
+            task.provider = Some("old-provider".to_string());
+            task.endpoint = Some("old-endpoint".to_string());
+            task.profile = Some("old-profile".to_string());
+            task.executor_preset_name = Some("codex".to_string());
+            task.session_id = Some("old-session".to_string());
+            task.checkpoint = Some("old-checkpoint".to_string());
+            setup_workgraph(dir.path(), vec![task]);
+
+            run_with_selection(
+                dir.path(),
+                "t1",
+                false,
+                false,
+                None,
+                Some(current_profile_selection()),
+            )
+            .unwrap();
+
+            let graph = load_graph(&graph_path(dir.path())).unwrap();
+            let task = graph.get_task("t1").unwrap();
+            assert_eq!(task.status, Status::Open, "source status: {status:?}");
+            assert_eq!(
+                task.model.as_deref(),
+                Some("pi:openai-codex:current-worker")
+            );
+            assert_eq!(task.reasoning, Some(ReasoningLevel::High));
+            assert!(task.provider.is_none());
+            assert!(task.endpoint.is_none());
+            assert!(task.profile.is_none());
+            assert!(task.executor_preset_name.is_none());
+            assert!(task.session_id.is_none());
+            assert!(task.checkpoint.is_none());
+            let route_log = task
+                .log
+                .iter()
+                .find(|entry| entry.actor.as_deref() == Some("retry-current-profile"))
+                .expect("route audit log");
+            assert!(route_log.message.contains("profile=current"));
+            assert!(
+                route_log
+                    .message
+                    .contains("generation=b3:current-generation")
+            );
+            assert!(route_log.message.contains("executor=pi"));
+            assert!(route_log.message.contains("reasoning=high"));
+        }
+    }
+
+    #[test]
+    fn current_profile_retry_repins_in_progress_task() {
+        let dir = tempdir().unwrap();
+        let mut task = make_task("t1", "Test task", Status::InProgress);
+        task.model = Some("pi:openrouter:old-worker".to_string());
+        task.reasoning = Some(ReasoningLevel::Low);
+        task.session_id = Some("old-session".to_string());
+        setup_workgraph(dir.path(), vec![task]);
+
+        run_with_selection(
+            dir.path(),
+            "t1",
+            false,
+            false,
+            Some("hung"),
+            Some(current_profile_selection()),
+        )
+        .unwrap();
+
+        let graph = load_graph(&graph_path(dir.path())).unwrap();
+        let task = graph.get_task("t1").unwrap();
+        assert_eq!(task.status, Status::Open);
+        assert_eq!(task.retry_count, 1);
+        assert_eq!(
+            task.model.as_deref(),
+            Some("pi:openai-codex:current-worker")
+        );
+        assert_eq!(task.reasoning, Some(ReasoningLevel::High));
+        assert!(task.session_id.is_none());
+    }
+
+    #[test]
+    fn retry_snapshot_survives_later_profile_change_before_spawn() {
+        let dir = tempdir().unwrap();
+        let mut task = make_task("t1", "Test task", Status::Failed);
+        task.retry_count = 1;
+        setup_workgraph(dir.path(), vec![task]);
+
+        run_with_selection(
+            dir.path(),
+            "t1",
+            false,
+            false,
+            None,
+            Some(current_profile_selection()),
+        )
+        .unwrap();
+
+        // A later profile flip changes dispatcher defaults, but cannot mutate
+        // the exact task fields written by the retry transaction.
+        let mut later_config = worksgood::config::Config::default();
+        later_config.models.task_agent = Some(worksgood::config::RoleModelConfig {
+            provider: None,
+            model: Some("pi:openrouter:later-worker".to_string()),
+            tier: None,
+            endpoint: None,
+            reasoning: Some(ReasoningLevel::Low),
+        });
+        let graph = load_graph(&graph_path(dir.path())).unwrap();
+        let task = graph.get_task("t1").unwrap();
+        let plan = worksgood::dispatch::plan_spawn(
+            task,
+            &later_config,
+            None,
+            Some("pi:openrouter:later-worker"),
+        )
+        .unwrap();
+        assert_eq!(plan.executor, worksgood::dispatch::ExecutorKind::Pi);
+        assert_eq!(plan.reasoning, Some(ReasoningLevel::High));
+        assert!(plan.provenance.model_source.starts_with("task.model"));
+        assert_eq!(
+            task.model.as_deref(),
+            Some("pi:openai-codex:current-worker")
         );
     }
 

@@ -2640,3 +2640,10 @@ owners = [
 ]
 description = "Static-contract smoke for impl-binary-signing-notarization (T6): pins the OS code-signing additions to .github/workflows/release.yml so a later change cannot silently regress them. Asserts (1) macos-entitlements.plist exists, is a valid plist, and does NOT enable App Sandbox; (2) the macOS matrix step runs codesign with hardened-runtime (--options runtime) + entitlements + timestamp, then `xcrun notarytool submit --wait`, then `xcrun stapler staple`/`validate`, gated on runner.os == macOS, and runs BEFORE Package binaries / Create archive (so the shipped archive carries the signature); (3) the Windows matrix step offers Azure Trusted Signing (Azure/trusted-signing-action@v0, RFC3161 timestamp) gated on method==azure, and a signtool fallback with `/fd SHA256 /tr ... /td SHA256` + `signtool verify /pa /v`; (4) the existing Sigstore actions/attest@v4 provenance layer is still present and runs AFTER archiving (signing and provenance are complementary, study §6.4); (5) both OSes have a certs-absent SKIP-with-banner path emitting ::warning:: so a release is not blocked on signing; (6) per-target signing-status JSON is produced and the assemble job surfaces an unsigned-archives section in the Release notes. Credential-free: static file inspection only."
 timeout_seconds = 30
+
+[[scenario]]
+name = "retry_current_profile"
+script = "scenarios/retry_current_profile.sh"
+owners = ["add-retry-current"]
+description = "Installed-binary credential-free terminal flow for `wg retry --current-profile`: help exposes the operator surface; an unpinned task records the selected project profile's exact name/content-generation/handler/model/reasoning; a stale task-level pin is atomically replaced; changing the project profile after retry but before spawn cannot drift the stored attempt; default retry preserves uncommitted worktree WIP while `--fresh --current-profile` discards it; structured provenance carries the same immutable selection; and plain retry retains its historical route."
+timeout_seconds = 45

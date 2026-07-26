@@ -786,14 +786,21 @@ The skill teaches agents to:
    wg add "New thing we discovered" --after whatever
    wg edit stuck-task --add-tag needs-rethink
    wg fail stuck-task --reason "Need to rethink this"
-   wg retry stuck-task                                # retry-in-place: keep prior worktree
-   wg retry stuck-task --fresh                        # discard prior worktree, start over
+   wg retry stuck-task                                # retry-in-place: keep prior worktree + route
+   wg retry stuck-task --current-profile              # repin exact selected project profile now
+   wg retry stuck-task --fresh --current-profile      # repin and discard prior worktree
    wg retry stuck-task --reason "agent hung at 0% for 20min"
    ```
 
-   `wg retry` also rescues hung in-progress tasks (SIGTERM → SIGKILL → reset).
-   Default is retry-in-place; pass `--fresh` to discard the worktree, or
-   `--preserve-session` to keep the stored Pi session ID across the retry.
+   `wg retry` also rescues hung in-progress and evaluation-held tasks. Default
+   is retry-in-place; pass `--fresh` to discard the worktree, or
+   `--preserve-session` to keep the stored Pi session ID across a plain retry.
+   `--current-profile` requires an explicit project selection from `wg profile
+   select <name>` and snapshots that profile's exact task-agent route and
+   reasoning into the retry transaction. It clears stale task route/profile/
+   session selectors, logs the selected profile content-fingerprint generation,
+   and cannot drift if the project profile changes before spawn. It never falls
+   back to the machine-global profile.
 
 5. **Ship.** When `wg ready` is empty and everything important is done, you're
    there.

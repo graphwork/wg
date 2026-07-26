@@ -679,9 +679,17 @@ pub enum Commands {
         #[arg(value_name = "TASK")]
         id: String,
 
-        /// Keep the stored Claude session ID (default: clear it so the retry starts fresh)
-        #[arg(long)]
+        /// Keep the stored Pi session ID (default: clear it so the retry starts fresh).
+        /// Cannot be combined with --current-profile because sessions are route-specific.
+        #[arg(long, conflicts_with = "current_profile")]
         preserve_session: bool,
+
+        /// Atomically repin this attempt to the current project's selected
+        /// profile. The exact task-agent route and reasoning are resolved now,
+        /// persisted on the task, and cannot drift if the profile changes
+        /// before the dispatcher spawns it.
+        #[arg(long)]
+        current_profile: bool,
 
         /// Discard the prior worktree (if any) and start over from main.
         /// Default is retry-in-place: the next agent reuses the existing

@@ -1308,15 +1308,27 @@ fn main() -> Result<()> {
         Commands::Retry {
             id,
             preserve_session,
+            current_profile,
             fresh,
             reason,
-        } => commands::retry::run(
-            &workgraph_dir,
-            &id,
-            preserve_session,
-            fresh,
-            reason.as_deref(),
-        ),
+        } => {
+            if current_profile {
+                commands::retry::run_with_current_profile(
+                    &workgraph_dir,
+                    &id,
+                    fresh,
+                    reason.as_deref(),
+                )
+            } else {
+                commands::retry::run(
+                    &workgraph_dir,
+                    &id,
+                    preserve_session,
+                    fresh,
+                    reason.as_deref(),
+                )
+            }
+        }
         Commands::Recover {
             yes,
             filter,
