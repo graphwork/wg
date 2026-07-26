@@ -2558,6 +2558,18 @@ where
         // Historical soft-state migration is fail-closed: PendingEval itself
         // is the user-visible assertion that a gate exists. Never reinterpret
         // it as advisory, even when the ambient `eval_gate_all` setting is off.
+        //
+        // An already-diagnosed lifecycle is different: its gate is known to be
+        // unsatisfiable by automation. Do not keep synthesizing/pinning a
+        // historical required policy on every coordinator tick. Preserve the
+        // stable operator-required diagnostic until the sanctioned `wg retry`
+        // or `wg recover` path resets the source to Open with a fresh attempt.
+        if source_is_pending
+            && source_lifecycle.gate_policy.is_none()
+            && source_lifecycle.diagnostic.is_some()
+        {
+            continue;
+        }
         if source_is_pending && source_lifecycle.gate_policy.is_none() {
             let policy = hard_gate_policy_for(graph, &source_id, threshold);
             if let Err(error) = policy.validate() {
@@ -3061,6 +3073,45 @@ mod tests {
             3,
             |_| true,
         ));
+    }
+
+    #[test]
+    fn unsatisfiable_historical_gate_is_not_re_pinned_in_a_loop() {
+        let mut source = source();
+        source.status = Status::PendingEval;
+        source.evaluation_lifecycle = Some(EvaluationLifecycle::for_source(&source));
+        let exhausted =
+            "error[WG-EVAL-PIPELINE-REPAIR-EXHAUSTED]: bounded repair already ran".to_string();
+        source.evaluation_lifecycle.as_mut().unwrap().diagnostic = Some(exhausted.clone());
+        let mut graph = WorkGraph::new();
+        graph.add_node(crate::graph::Node::Task(source));
+
+        // Repeated coordinator reconciliation must be a stable no-op. Before
+        // the fix, each tick appended another "Pinned historical PendingEval"
+        // row even though the gate had already been declared unsatisfiable.
+        for _ in 0..3 {
+            assert!(!reconcile_durable_verdicts(
+                &mut graph,
+                &[],
+                0.7,
+                true,
+                3,
+                |_| true,
+            ));
+        }
+        let source = graph.get_task("source").unwrap();
+        let lifecycle = source.evaluation_lifecycle.as_ref().unwrap();
+        assert!(lifecycle.gate_policy.is_none());
+        assert_eq!(lifecycle.diagnostic.as_deref(), Some(exhausted.as_str()));
+        assert!(!source.log.iter().any(|entry| {
+            entry
+                .message
+                .contains("Pinned historical PendingEval as a required gate")
+        }));
+        assert_eq!(
+            evaluation_health(&graph, "source").unwrap().state,
+            EvaluationHealthState::OperatorRequiredAmbiguity
+        );
     }
 
     #[test]

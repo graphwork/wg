@@ -281,7 +281,7 @@ fn json_output() -> serde_json::Value {
                 "done": "Mark task complete",
                 "done_converged": "Complete task and stop loop (wg done <id> --converged)",
                 "fail": "Mark failed (can be retried)",
-                "retry": "Retry a failed task (resets to open)",
+                "retry": "Retry a failed/incomplete/evaluation-held task (resets to open)",
                 "abandon": "Give up permanently",
                 "pause": "Pause task (dispatcher skips it until resumed)",
                 "wait": "Park task until condition met (wg wait <id> --until \"condition\")",

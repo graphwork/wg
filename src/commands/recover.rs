@@ -224,21 +224,7 @@ fn parse_attempts_cmp(clause: &str) -> Option<(Cmp, u32)> {
 }
 
 fn parse_status(s: &str) -> Result<Status> {
-    let s = s.trim().to_lowercase();
-    let st = match s.as_str() {
-        "open" => Status::Open,
-        "in-progress" | "inprogress" => Status::InProgress,
-        "done" => Status::Done,
-        "failed" => Status::Failed,
-        "abandoned" => Status::Abandoned,
-        "blocked" => Status::Blocked,
-        "waiting" => Status::Waiting,
-        "incomplete" => Status::Incomplete,
-        "pending-validation" | "pendingvalidation" => Status::PendingValidation,
-        "pending-eval" | "pendingeval" => Status::PendingEval,
-        _ => anyhow::bail!("unknown status '{}'", s),
-    };
-    Ok(st)
+    Status::parse_label(s).ok_or_else(|| anyhow::anyhow!("unknown status '{}'", s.trim()))
 }
 
 fn task_matches_filters(task: &Task, filters: &[Filter]) -> bool {
@@ -297,9 +283,20 @@ fn apply_plan(dir: &Path, plan: &Plan, opts: &RecoverOptions) -> Result<()> {
     );
 
     modify_graph(&path, |graph| {
+        let mut eval_stuck_sources = Vec::new();
+
         // Retry user tasks
         for entry in &plan.user_retries {
             if let Some(task) = graph.get_task_mut(&entry.id) {
+                // fix-no-cli: when the task was stuck in PendingEval/FailedPendingEval
+                // (operator-required-ambiguity), resetting status alone is not enough —
+                // the reconciler would re-pin the stuck gate. Clear the evaluation
+                // lifecycle so the next worker run mints a fresh attempt. Mirrors the
+                // `wg retry` escape hatch.
+                let was_eval_stuck = matches!(
+                    task.status,
+                    Status::PendingEval | Status::FailedPendingEval
+                );
                 task.status = Status::Open;
                 task.failure_reason = None;
                 task.assigned = None;
@@ -307,6 +304,16 @@ fn apply_plan(dir: &Path, plan: &Plan, opts: &RecoverOptions) -> Result<()> {
                 task.session_id = None;
                 task.checkpoint = None;
                 task.tags.retain(|t| t != "converged");
+
+                if was_eval_stuck {
+                    eval_stuck_sources.push(task.id.clone());
+                    task.log.push(LogEntry {
+                        timestamp: now.clone(),
+                        actor: Some("eval-lifecycle-clear".to_string()),
+                        user: Some(user.clone()),
+                        message: "Cleared stuck evaluation gate via `wg recover` — fresh attempt will be minted.".to_string(),
+                    });
+                }
 
                 if let Some(m) = &opts.set_model {
                     task.model = Some(m.clone());
@@ -349,6 +356,18 @@ fn apply_plan(dir: &Path, plan: &Plan, opts: &RecoverOptions) -> Result<()> {
                     });
                 }
             }
+        }
+
+        // Resetting the counters on the old pipeline is not enough: stale
+        // durable evidence could still match it. Give every recovered
+        // evaluation-held source a new attempt/pipeline identity atomically,
+        // exactly like the single-task `wg retry` path.
+        for source_id in eval_stuck_sources {
+            worksgood::eval_lifecycle::begin_source_attempt(
+                graph,
+                &source_id,
+                "batch recovery from stuck evaluation gate",
+            );
         }
         true
     })
@@ -698,6 +717,88 @@ mod tests {
         // status=open filter means user-b is the only candidate
         assert_eq!(plan.user_retries.len(), 1);
         assert_eq!(plan.user_retries[0].id, "user-b");
+    }
+
+    /// fix-no-cli: `wg recover` MUST accept `failed-pending-eval` as a filter
+    /// status (previously an unknown-status parse error, so stuck tasks could
+    /// not be batch-recovered).
+    #[test]
+    fn test_recover_filter_failed_pending_eval() {
+        let t1 = task("user-a", Status::FailedPendingEval);
+        let t2 = task("user-b", Status::PendingEval);
+        let t3 = task("user-c", Status::Failed);
+        let opts = RecoverOptions {
+            filter: vec!["status=failed-pending-eval".to_string()],
+            max_attempts: 5,
+            ..Default::default()
+        };
+        let plan = build_plan(&[t1, t2, t3], &opts).unwrap();
+        let ids: Vec<&str> = plan.user_retries.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, vec!["user-a"], "only failed-pending-eval matches");
+    }
+
+    #[test]
+    fn test_recover_filter_pending_eval() {
+        let t1 = task("user-a", Status::FailedPendingEval);
+        let t2 = task("user-b", Status::PendingEval);
+        let opts = RecoverOptions {
+            filter: vec!["status=pending-eval".to_string()],
+            max_attempts: 5,
+            ..Default::default()
+        };
+        let plan = build_plan(&[t1, t2], &opts).unwrap();
+        let ids: Vec<&str> = plan.user_retries.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, vec!["user-b"]);
+    }
+
+    /// fix-no-cli: when `wg recover` retries a task stuck in PendingEval /
+    /// FailedPendingEval, it must clear the stuck evaluation lifecycle
+    /// (diagnostic + repair_attempts), not just flip status — otherwise the
+    /// reconciler re-pins the unsatisfiable gate and the task re-sticks.
+    #[test]
+    fn test_recover_clears_eval_lifecycle_on_pending_eval_retry() {
+        use worksgood::eval_lifecycle::{EvaluationExecutionState, EvaluationLifecycle};
+
+        let dir = tempdir().unwrap();
+        let dp = dir.path();
+        let mut t1 = task("user-a", Status::FailedPendingEval);
+        let mut lifecycle = EvaluationLifecycle::for_source(&t1);
+        lifecycle.repair_attempts = u16::MAX;
+        lifecycle.diagnostic = Some(
+            "error[WG-EVAL-PIPELINE-REPAIR-EXHAUSTED]: bounded repair already ran".to_string(),
+        );
+        t1.evaluation_lifecycle = Some(lifecycle);
+        setup(dp, vec![t1]);
+
+        let opts = RecoverOptions {
+            yes: true,
+            max_attempts: 5,
+            filter: vec!["status=failed-pending-eval".to_string()],
+            ..Default::default()
+        };
+        run(dp, opts).unwrap();
+
+        let g = load_graph(graph_path(dp)).unwrap();
+        let t = g.get_task("user-a").unwrap();
+        assert_eq!(t.status, Status::Open);
+        let lifecycle = t.evaluation_lifecycle.as_ref().unwrap();
+        assert_eq!(
+            lifecycle.source_attempt, 2,
+            "recover must mint a fresh attempt instead of reusing stale evidence"
+        );
+        assert_eq!(
+            lifecycle.repair_attempts, 0,
+            "recover must reset repair_attempts on a stuck eval task"
+        );
+        assert!(
+            lifecycle.diagnostic.is_none(),
+            "recover must clear the stuck diagnostic"
+        );
+        assert_eq!(
+            lifecycle.execution_state,
+            EvaluationExecutionState::Ready,
+            "recover must unblock the eval execution state"
+        );
     }
 
     #[test]

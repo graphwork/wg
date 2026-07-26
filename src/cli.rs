@@ -660,10 +660,12 @@ pub enum Commands {
         superseded_by: Vec<String>,
     },
 
-    /// Retry a failed, incomplete, or in-progress (hung) task.
+    /// Retry a failed, incomplete, evaluation-held, or in-progress (hung) task.
     ///
     /// For failed/incomplete: resets to open status (clears failure_reason,
-    /// assigned, session_id by default).
+    /// assigned, session_id by default). For pending-eval/failed-pending-eval:
+    /// clears an operator-required ambiguity by minting a fresh evaluation
+    /// attempt; no graph.jsonl edit is needed.
     ///
     /// For in-progress: kills the assigned agent (SIGTERM, escalating to
     /// SIGKILL after 5s), increments retry_count, resets to open. The
@@ -695,8 +697,9 @@ pub enum Commands {
 
     /// Batch-recover from credit-exhaustion / mass-failure (default: dry-run)
     ///
-    /// Surveys failed tasks and resets them in one operation: retries
-    /// user-tasks, abandons agency followups so they regenerate from parents.
+    /// Surveys matching tasks and resets them in one operation: retries
+    /// user-tasks (including pending-eval/failed-pending-eval when selected),
+    /// abandons agency followups so they regenerate from parents.
     /// Without --yes this only prints the plan.
     Recover {
         /// Execute the plan (default: dry-run)

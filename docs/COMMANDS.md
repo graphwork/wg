@@ -279,18 +279,23 @@ wg abandon old-approach --superseded-by new-approach-a,new-approach-b
 
 ### `wg retry`
 
-Reset a failed task back to open status for another attempt.
+Reset a failed, incomplete, in-progress, `pending-eval`, or
+`failed-pending-eval` task back to open status for another attempt.
 
 ```bash
-wg retry <ID>
+wg retry <ID> [--reason <REASON>]
 ```
 
-Increments the retry counter and sets status back to `open`.
+For an evaluation-held task, retry is the sanctioned operator escape hatch for
+`evaluation_health.state = operator-required-ambiguity`: it mints a fresh
+attempt-bound evaluation pipeline, clears the stuck diagnostic/repair budget,
+and sets the task to `open`. No `graph.jsonl` edit is needed. Batch recovery is
+also available with `wg recover --filter status=failed-pending-eval --yes`.
 
 **Example:**
 ```bash
 wg retry deploy-prod
-# Resets deploy-prod to open status with incremented retry count
+wg retry stuck-eval --reason "operator resolved ambiguous evaluation gate"
 ```
 
 ---

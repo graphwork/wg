@@ -88,6 +88,7 @@ pub fn run(
     let mut retry_count: u32 = 0;
     let mut max_retries: Option<u32> = None;
     let mut was_incomplete = false;
+    let mut was_pending_eval_stuck = false;
     let mut tier_escalation_msg: Option<String> = None;
     let mut downstream_cleared: Vec<String> = Vec::new();
     let mut breaker_reset = false;
@@ -106,9 +107,21 @@ pub fn run(
             }
         };
 
-        if task.status != Status::Failed && task.status != Status::Incomplete {
+        // PendingEval/FailedPendingEval are also retriable (fix-no-cli): a task
+        // stuck in `operator-required-ambiguity` (eval-pipeline-repair-exhausted)
+        // has no other sanctioned CLI exit. `wg retry` clears the stuck gate by
+        // minting a fresh evaluation attempt (`begin_source_attempt` below) so
+        // the operator never needs graph.jsonl surgery.
+        let was_pending_eval = matches!(
+            task.status,
+            Status::PendingEval | Status::FailedPendingEval
+        );
+        if !matches!(
+            task.status,
+            Status::Failed | Status::Incomplete | Status::PendingEval | Status::FailedPendingEval
+        ) {
             error = Some(anyhow::anyhow!(
-                "Task '{}' is not failed or incomplete (status: {:?}). Only failed or incomplete tasks can be retried.",
+                "Task '{}' is not retriable (status: {:?}). Only failed, incomplete, pending-eval, failed-pending-eval, or in-progress tasks can be retried.",
                 id,
                 task.status
             ));
@@ -116,6 +129,7 @@ pub fn run(
         }
 
         was_incomplete = task.status == Status::Incomplete;
+        was_pending_eval_stuck = was_pending_eval;
 
         // Check if max retries exceeded (for failed tasks)
         if task.status == Status::Failed
@@ -174,6 +188,8 @@ pub fn run(
 
         let source = if was_incomplete {
             "incomplete"
+        } else if was_pending_eval {
+            "pending-eval/failed-pending-eval (stuck evaluation gate)"
         } else {
             "failed"
         };
@@ -191,6 +207,19 @@ pub fn run(
                 reason_suffix
             ),
         });
+        // fix-no-cli: when retrying out of a stuck PendingEval/FailedPendingEval
+        // (operator-required-ambiguity), record the explicit gate-clear so the
+        // operator's sanctioned action is visible in the log. The fresh
+        // evaluation attempt minted by `begin_source_attempt` below replaces the
+        // exhausted lifecycle (diagnostic + repair_attempts reset).
+        if was_pending_eval {
+            task.log.push(LogEntry {
+                timestamp: Utc::now().to_rfc3339(),
+                actor: Some("eval-lifecycle-clear".to_string()),
+                user: Some(worksgood::current_user()),
+                message: "Cleared stuck evaluation gate via `wg retry` — a fresh attempt will be minted; no graph.jsonl edit required.".to_string(),
+            });
+        }
         if breaker_was_tripped {
             breaker_reset = true;
             task.log.push(LogEntry {
@@ -256,6 +285,7 @@ pub fn run(
             "attempt": attempt,
             "prev_failure_reason": prev_failure_reason,
             "was_incomplete": was_incomplete,
+            "was_pending_eval_stuck": was_pending_eval_stuck,
             "tier_escalation": tier_escalation_msg,
             "reason": reason,
         }),
@@ -264,6 +294,8 @@ pub fn run(
 
     let source = if was_incomplete {
         "incomplete"
+    } else if was_pending_eval_stuck {
+        "pending-eval/failed-pending-eval (stuck evaluation gate)"
     } else {
         "failed"
     };
@@ -273,6 +305,12 @@ pub fn run(
         source,
         retry_count + 1
     );
+
+    if was_pending_eval_stuck {
+        println!(
+            "  Cleared stuck evaluation gate — fresh attempt will be minted (no graph.jsonl edit required)."
+        );
+    }
 
     if let Some(max) = max_retries {
         println!("  Retries remaining after this: {}", max - retry_count);
@@ -708,6 +746,96 @@ mod tests {
         }
     }
 
+    /// fix-no-cli: `wg retry` MUST accept a task stuck in PendingEval with an
+    /// `operator-required-ambiguity` (eval-pipeline-repair-exhausted) diagnostic
+    /// and clear the stuck gate by minting a fresh evaluation attempt — with NO
+    /// graph.jsonl edit. This is the recurring tar pit (5 tasks this session).
+    #[test]
+    fn test_retry_pending_eval_clears_stuck_gate() {
+        let dir = tempdir().unwrap();
+        let mut tasks = source_with_eval_satellites(Status::PendingEval);
+        // Simulate the stuck state: repair exhausted + operator-required diagnostic.
+        {
+            let source = &mut tasks[0];
+            let lifecycle = source.evaluation_lifecycle.as_mut().unwrap();
+            lifecycle.repair_attempts = u16::MAX;
+            lifecycle.diagnostic = Some(
+                "error[WG-EVAL-PIPELINE-REPAIR-EXHAUSTED]: bounded repair already ran for t1-p1-s1"
+                    .to_string(),
+            );
+        }
+        setup_workgraph(dir.path(), tasks);
+
+        run(dir.path(), "t1", false, false, None).unwrap();
+
+        let graph = load_graph(&graph_path(dir.path())).unwrap();
+        let source = graph.get_task("t1").unwrap();
+        assert_eq!(source.status, Status::Open);
+        let lifecycle = source.evaluation_lifecycle.as_ref().unwrap();
+        // A fresh attempt mints a new pipeline + bumps source_attempt.
+        assert_eq!(
+            lifecycle.source_attempt, 2,
+            "retry must mint a fresh evaluation attempt"
+        );
+        assert_eq!(
+            lifecycle.repair_attempts, 0,
+            "fresh attempt must reset repair_attempts"
+        );
+        assert!(
+            lifecycle.diagnostic.is_none(),
+            "fresh attempt must clear the stuck diagnostic, got: {:?}",
+            lifecycle.diagnostic
+        );
+        assert!(
+            worksgood::eval_lifecycle::evaluation_health(&graph, "t1").is_none(),
+            "an Open retry must no longer report operator-required evaluation health"
+        );
+        // Satellites are re-armed for the fresh attempt.
+        for task_id in [".flip-t1", ".evaluate-t1"] {
+            let satellite = graph.get_task(task_id).unwrap();
+            assert_eq!(
+                satellite.status,
+                Status::Open,
+                "{task_id} should be re-armed to Open"
+            );
+            let plan = satellite.agency_dispatch.as_ref().unwrap();
+            assert_eq!(plan.source_attempt, lifecycle.source_attempt);
+            assert_eq!(plan.pipeline_id, lifecycle.pipeline_id);
+        }
+        assert!(
+            source.log.iter().any(|e| e
+                .message
+                .contains("Cleared stuck evaluation gate via `wg retry`")),
+            "retry should log the explicit eval-gate clear"
+        );
+    }
+
+    /// fix-no-cli: `wg retry` also accepts FailedPendingEval (agent exited without
+    /// `wg done`, awaiting rescue eval that got stuck).
+    #[test]
+    fn test_retry_failed_pending_eval_clears_stuck_gate() {
+        let dir = tempdir().unwrap();
+        let mut tasks = source_with_eval_satellites(Status::FailedPendingEval);
+        {
+            let source = &mut tasks[0];
+            let lifecycle = source.evaluation_lifecycle.as_mut().unwrap();
+            lifecycle.repair_attempts = u16::MAX;
+            lifecycle.diagnostic = Some(
+                "error[WG-EVAL-PIPELINE-REPAIR-EXHAUSTED]: bounded repair already ran".to_string(),
+            );
+        }
+        setup_workgraph(dir.path(), tasks);
+
+        run(dir.path(), "t1", false, false, None).unwrap();
+
+        let graph = load_graph(&graph_path(dir.path())).unwrap();
+        let source = graph.get_task("t1").unwrap();
+        assert_eq!(source.status, Status::Open);
+        let lifecycle = source.evaluation_lifecycle.as_ref().unwrap();
+        assert_eq!(lifecycle.repair_attempts, 0);
+        assert!(lifecycle.diagnostic.is_none());
+    }
+
     #[test]
     fn test_retry_failed_task_transitions_to_open() {
         let dir = tempdir().unwrap();
@@ -774,7 +902,7 @@ mod tests {
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(
-            err_msg.contains("not failed or incomplete"),
+            err_msg.contains("not retriable"),
             "Expected error about status, got: {}",
             err_msg
         );
@@ -843,12 +971,7 @@ mod tests {
 
         let result = run(dir_path, "t1", false, false, None);
         assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("not failed or incomplete")
-        );
+        assert!(result.unwrap_err().to_string().contains("not retriable"));
     }
 
     #[test]

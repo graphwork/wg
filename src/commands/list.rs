@@ -19,17 +19,12 @@ pub fn run(
     let (graph, _path) = super::load_workgraph(dir)?;
 
     let status_filter: Option<Status> = match status_filter {
-        Some("open") => Some(Status::Open),
-        Some("done") => Some(Status::Done),
-        Some("in-progress") => Some(Status::InProgress),
-        Some("blocked") => Some(Status::Blocked),
-        Some("failed") => Some(Status::Failed),
-        Some("abandoned") => Some(Status::Abandoned),
-        Some("incomplete") => Some(Status::Incomplete),
-        Some(s) => anyhow::bail!(
-            "Unknown status: '{}'. Valid values: open, in-progress, done, blocked, failed, abandoned, incomplete",
-            s
-        ),
+        Some(s) => Some(Status::parse_label(s).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Unknown status: '{}'. Valid values: open, in-progress, waiting, done, blocked, failed, abandoned, pending-validation, pending-eval, failed-pending-eval, incomplete",
+                s
+            )
+        })?),
         None => None,
     };
 
@@ -426,6 +421,36 @@ mod tests {
     }
 
     #[test]
+    fn test_run_status_filters_include_evaluation_hold_states() {
+        let dir = tempdir().unwrap();
+        setup_workgraph(
+            dir.path(),
+            vec![
+                make_task("t-pending", "Pending eval", Status::PendingEval),
+                make_task(
+                    "t-failed-pending",
+                    "Failed pending eval",
+                    Status::FailedPendingEval,
+                ),
+            ],
+        );
+
+        for status in ["pending-eval", "failed-pending-eval"] {
+            let result = run(
+                dir.path(),
+                Some(status),
+                false,
+                &[],
+                None,
+                false,
+                false,
+                false,
+            );
+            assert!(result.is_ok(), "wg list --status {status} must be accepted");
+        }
+    }
+
+    #[test]
     fn test_run_unknown_status_filter() {
         let dir = tempdir().unwrap();
         setup_workgraph(dir.path(), vec![make_task("t1", "Task", Status::Open)]);
@@ -632,6 +657,8 @@ mod tests {
         assert!(msg.contains("Valid values:"));
         assert!(msg.contains("failed"));
         assert!(msg.contains("abandoned"));
+        assert!(msg.contains("pending-eval"));
+        assert!(msg.contains("failed-pending-eval"));
     }
 
     #[test]
