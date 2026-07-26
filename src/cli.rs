@@ -432,6 +432,15 @@ pub enum Commands {
         #[arg(long)]
         provider: Option<String>,
 
+        /// Atomically remove task-level model/reasoning/provider/endpoint/profile/tier/session
+        /// selectors. The next attempt inherits the project profile effective at dispatch
+        /// time; unlike `wg retry --current-profile`, this does not retry or snapshot a route.
+        #[arg(
+            long = "clear-route-pin",
+            conflicts_with_all = ["model", "reasoning", "provider"]
+        )]
+        clear_route_pin: bool,
+
         /// Add a required skill
         #[arg(long = "add-skill")]
         add_skill: Vec<String>,

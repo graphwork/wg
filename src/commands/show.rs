@@ -100,6 +100,7 @@ struct TaskDetails {
     actual_executor: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     actual_model: Option<String>,
+    route_pin: RoutePinInfo,
     #[serde(skip_serializing_if = "Option::is_none")]
     native_compaction: Option<NativeCompactionInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -181,6 +182,67 @@ struct TaskDetails {
     /// Populated only for cron-enabled tasks.
     #[serde(skip_serializing_if = "Option::is_none")]
     cron: Option<CronDiagnosticsInfo>,
+}
+
+/// Explicitly separates immutable task overrides from dynamic project-profile
+/// inheritance. In particular, `current_inheritance` is a preview, not a route
+/// copied onto the task.
+#[derive(Debug, Clone, Serialize)]
+struct RoutePinInfo {
+    state: String,
+    applies_to: String,
+    pinned_fields: Vec<String>,
+    dynamic_at_dispatch: bool,
+    current_inheritance: crate::commands::edit::RouteInheritancePreview,
+}
+
+fn route_pin_info(dir: &Path, task: &Task) -> RoutePinInfo {
+    let mut pinned_fields = Vec::new();
+    for (name, present) in [
+        ("model", task.model.is_some()),
+        ("reasoning", task.reasoning.is_some()),
+        ("provider", task.provider.is_some()),
+        ("endpoint", task.endpoint.is_some()),
+        ("profile", task.profile.is_some()),
+        ("tier", task.tier.is_some()),
+        ("session_id", task.session_id.is_some()),
+    ] {
+        if present {
+            pinned_fields.push(name.to_string());
+        }
+    }
+    let exact = task.model.is_some() || task.profile.is_some() || task.tier.is_some();
+    let state = if pinned_fields.is_empty() {
+        "inherited-unpinned"
+    } else if exact {
+        "exact-task-pin"
+    } else {
+        "partial-task-pin"
+    };
+    let current_inheritance =
+        crate::commands::edit::current_route_inheritance(dir).unwrap_or_else(|error| {
+            crate::commands::edit::RouteInheritancePreview {
+                profile: "unavailable".to_string(),
+                profile_generation: None,
+                route: None,
+                handler: None,
+                reasoning: None,
+                source: None,
+                unavailable_reason: Some(error.to_string()),
+            }
+        });
+
+    RoutePinInfo {
+        state: state.to_string(),
+        applies_to: if task.status == Status::InProgress {
+            "future-attempt".to_string()
+        } else {
+            "next-attempt".to_string()
+        },
+        dynamic_at_dispatch: pinned_fields.is_empty(),
+        pinned_fields,
+        current_inheritance,
+    }
 }
 
 /// Recurring-cron diagnostics block for `wg show` — schedule, resolved
@@ -685,6 +747,7 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         profile: task.profile.clone(),
         actual_executor,
         actual_model,
+        route_pin: route_pin_info(dir, task),
         native_compaction,
         verify: task.verify.clone(),
         agent: task.agent.clone(),
@@ -777,6 +840,26 @@ fn print_human_readable(details: &TaskDetails) {
     }
     if let Some(ref profile) = details.profile {
         println!("Profile: {} (pinned via wg publish --profile)", profile);
+    }
+    if details.route_pin.dynamic_at_dispatch {
+        let inherited = &details.route_pin.current_inheritance;
+        println!(
+            "Route pin: inherited/unpinned ({}; dynamic at dispatch)",
+            details.route_pin.applies_to
+        );
+        println!(
+            "  Current inheritance preview: profile={} model={} reasoning={} (not pinned)",
+            inherited.profile,
+            inherited.route.as_deref().unwrap_or("unconfigured"),
+            inherited.reasoning.as_deref().unwrap_or("unconfigured")
+        );
+    } else {
+        println!(
+            "Route pin: {} ({}; fields: {})",
+            details.route_pin.state,
+            details.route_pin.applies_to,
+            details.route_pin.pinned_fields.join(", ")
+        );
     }
     if details.actual_executor.is_some()
         || details.model.is_some()
@@ -1696,6 +1779,21 @@ mod tests {
             profile: None,
             actual_executor: Some("native".to_string()),
             actual_model: Some("openrouter/minimax".to_string()),
+            route_pin: RoutePinInfo {
+                state: "inherited-unpinned".to_string(),
+                applies_to: "future-attempt".to_string(),
+                pinned_fields: vec![],
+                dynamic_at_dispatch: true,
+                current_inheritance: crate::commands::edit::RouteInheritancePreview {
+                    profile: "test".to_string(),
+                    profile_generation: None,
+                    route: Some("pi:test:model".to_string()),
+                    handler: Some("pi".to_string()),
+                    reasoning: Some("high".to_string()),
+                    source: Some("test".to_string()),
+                    unavailable_reason: None,
+                },
+            },
             native_compaction: Some(NativeCompactionInfo {
                 journal_present: true,
                 journal_entries: 12,

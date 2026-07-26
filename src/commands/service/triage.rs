@@ -64,6 +64,44 @@ fn extract_session_id(agent: &AgentEntry) -> Option<String> {
     None
 }
 
+/// `wg edit --clear-route-pin` records the exact active agent in the task log
+/// before clearing the resumable session selector. If that same attempt later
+/// exits, its stream session is historical provenance only: restoring it to
+/// `task.session_id` would silently re-pin the next attempt.
+fn route_pin_was_cleared_for_attempt(task: &Task, agent_id: &str) -> bool {
+    let marker = format!("active_attempt_agent={agent_id} ");
+    task.log.iter().rev().any(|entry| {
+        entry.actor.as_deref() == Some("clear-route-pin") && entry.message.contains(&marker)
+    })
+}
+
+fn record_extracted_session(task: &mut Task, agent_id: &str, sid: String) -> bool {
+    if route_pin_was_cleared_for_attempt(task, agent_id) {
+        let already_recorded = task.log.iter().any(|entry| {
+            entry.actor.as_deref() == Some("clear-route-pin-session")
+                && entry.message.contains(agent_id)
+        });
+        if already_recorded {
+            return false;
+        }
+        task.log.push(LogEntry {
+            timestamp: Utc::now().to_rfc3339(),
+            actor: Some("clear-route-pin-session".to_string()),
+            user: Some(worksgood::current_user()),
+            message: format!(
+                "Preserved actual session for route-cleared attempt {}: session={}; task.session_id remains unset so the next attempt inherits dynamically.",
+                agent_id, sid
+            ),
+        });
+        true
+    } else if task.session_id.is_none() {
+        task.session_id = Some(sid);
+        true
+    } else {
+        false
+    }
+}
+
 /// Extract token usage from an agent's stream.jsonl file.
 ///
 /// Used as a fallback when output.log doesn't contain parseable token data
@@ -423,9 +461,8 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
         if let Some(agent) = locked_registry.get_agent(agent_id)
             && let Some(sid) = extract_session_id(agent)
             && let Some(task) = graph.get_task_mut(task_id)
-            && task.session_id.is_none()
+            && record_extracted_session(task, agent_id, sid)
         {
-            task.session_id = Some(sid);
             tasks_modified = true;
         }
 
@@ -1324,6 +1361,46 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let config = Config::default();
         apply_triage_verdict(task, verdict, agent_id, pid, tmp.path(), &config);
+    }
+
+    #[test]
+    fn test_route_cleared_attempt_session_stays_historical_not_resumable() {
+        let mut task = Task::default();
+        task.log.push(LogEntry {
+            timestamp: "2026-01-01T00:00:00Z".to_string(),
+            actor: Some("clear-route-pin".to_string()),
+            user: None,
+            message: "active_attempt_agent=agent-live actual_executor=pi actual_model=provider:model actual_session=pending-stream-capture preserved in attempt registry/audit only".to_string(),
+        });
+
+        assert!(record_extracted_session(
+            &mut task,
+            "agent-live",
+            "captured-session".to_string()
+        ));
+        assert!(
+            task.session_id.is_none(),
+            "a cleared active attempt must not silently re-pin its session"
+        );
+        assert!(task.log.iter().any(|entry| {
+            entry.actor.as_deref() == Some("clear-route-pin-session")
+                && entry.message.contains("captured-session")
+        }));
+        assert!(
+            !record_extracted_session(&mut task, "agent-live", "captured-session".to_string()),
+            "historical session provenance must be idempotent"
+        );
+    }
+
+    #[test]
+    fn test_normal_attempt_session_remains_resumable() {
+        let mut task = Task::default();
+        assert!(record_extracted_session(
+            &mut task,
+            "agent-normal",
+            "normal-session".to_string()
+        ));
+        assert_eq!(task.session_id.as_deref(), Some("normal-session"));
     }
 
     #[test]

@@ -2,12 +2,129 @@
 
 use anyhow::{Context, Result};
 use std::path::Path;
-use worksgood::config::ReasoningLevel;
+use worksgood::config::{Config, DispatchRole, ReasoningLevel};
 use worksgood::cycle::{EdgeAddResult, check_edge_addition};
-use worksgood::graph::{CycleConfig, parse_delay};
+use worksgood::graph::{CycleConfig, LogEntry, Status, parse_delay};
 use worksgood::parser::modify_graph;
+use worksgood::service::AgentRegistry;
 
 use super::graph_path;
+
+/// A read-only snapshot of the project policy that an unpinned task would use
+/// if it were dispatched now. This is audit/display metadata only: the clear
+/// command never copies these values onto the task.
+#[derive(Debug, Clone, serde::Serialize)]
+pub(crate) struct RouteInheritancePreview {
+    pub profile: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile_generation: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub route: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub handler: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unavailable_reason: Option<String>,
+}
+
+pub(crate) fn current_route_inheritance(dir: &Path) -> Result<RouteInheritancePreview> {
+    let association = worksgood::profile::project::read_association(dir)?;
+    let profile = association
+        .as_ref()
+        .map(|selected| selected.profile.clone())
+        .unwrap_or_else(|| "project-config (no selected profile)".to_string());
+    let profile_generation = association
+        .as_ref()
+        .map(|selected| selected.profile_fingerprint.clone());
+    let config = Config::load_merged(dir)
+        .context("Cannot inspect the project's current route inheritance")?;
+    let association_after = worksgood::profile::project::read_association(dir)?;
+    if association != association_after {
+        anyhow::bail!(
+            "Project profile changed while route inheritance was being inspected. No task metadata was changed; run the command again."
+        );
+    }
+
+    Ok(
+        match config.resolve_execution_route_for_role(DispatchRole::TaskAgent) {
+            Ok(route) => RouteInheritancePreview {
+                profile,
+                profile_generation,
+                route: Some(route.route),
+                handler: Some(route.handler),
+                reasoning: Some(route.reasoning.to_string()),
+                source: Some(route.source),
+                unavailable_reason: None,
+            },
+            Err(error) => RouteInheritancePreview {
+                profile,
+                profile_generation,
+                route: None,
+                handler: None,
+                reasoning: None,
+                source: None,
+                unavailable_reason: Some(error.to_string()),
+            },
+        },
+    )
+}
+
+#[derive(Debug, Clone)]
+struct ActiveAttemptRoute {
+    agent_id: String,
+    executor: String,
+    model: String,
+}
+
+fn recorded_active_attempt(dir: &Path, task_id: &str) -> Result<Option<ActiveAttemptRoute>> {
+    let graph = worksgood::parser::load_graph(&graph_path(dir)).context("Failed to load graph")?;
+    let task = graph
+        .get_task(task_id)
+        .ok_or_else(|| anyhow::anyhow!("Task '{}' not found", task_id))?;
+    if task.status != Status::InProgress {
+        return Ok(None);
+    }
+
+    let agent_id = task.assigned.as_ref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "Task '{}' is in-progress but has no recorded assigned attempt. Route-pin clear refused because the active route/session cannot be preserved safely.",
+            task_id
+        )
+    })?;
+    let registry = AgentRegistry::load(dir)
+        .context("Cannot read the active agent registry; route-pin clear made no changes")?;
+    let entry = registry.agents.get(agent_id).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Task '{}' is in-progress but assigned attempt '{}' is absent from the agent registry. Route-pin clear refused because the active route/session cannot be preserved safely.",
+            task_id,
+            agent_id
+        )
+    })?;
+    if entry.task_id != task_id {
+        anyhow::bail!(
+            "Task '{}' points at attempt '{}', but the registry records task '{}'. Route-pin clear refused because the active route/session cannot be preserved safely.",
+            task_id,
+            agent_id,
+            entry.task_id
+        );
+    }
+    let model = entry.model.clone().filter(|model| !model.trim().is_empty()).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Task '{}' active attempt '{}' has no recorded actual model. Route-pin clear refused because clearing task.model would erase the only exact route record.",
+            task_id,
+            agent_id
+        )
+    })?;
+
+    Ok(Some(ActiveAttemptRoute {
+        agent_id: agent_id.clone(),
+        executor: entry.executor.clone(),
+        model,
+    }))
+}
 
 /// Edit a task's fields
 #[allow(clippy::too_many_arguments)]
@@ -109,6 +226,75 @@ pub fn run_with_reasoning(
     allow_phantom: bool,
     allow_cycle: bool,
 ) -> Result<()> {
+    run_with_reasoning_and_route_clear(
+        dir,
+        task_id,
+        title,
+        description,
+        add_after,
+        remove_after,
+        add_tag,
+        remove_tag,
+        model,
+        reasoning,
+        provider,
+        add_skill,
+        remove_skill,
+        max_iterations,
+        cycle_guard,
+        cycle_delay,
+        no_converge,
+        no_restart_on_failure,
+        max_failure_restarts,
+        visibility,
+        context_scope,
+        exec_mode,
+        delay,
+        not_before,
+        verify,
+        cron,
+        timeout,
+        verify_timeout,
+        allow_phantom,
+        allow_cycle,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn run_with_reasoning_and_route_clear(
+    dir: &Path,
+    task_id: &str,
+    title: Option<&str>,
+    description: Option<&str>,
+    add_after: &[String],
+    remove_after: &[String],
+    add_tag: &[String],
+    remove_tag: &[String],
+    model: Option<&str>,
+    reasoning: Option<&str>,
+    provider: Option<&str>,
+    add_skill: &[String],
+    remove_skill: &[String],
+    max_iterations: Option<u32>,
+    cycle_guard: Option<&str>,
+    cycle_delay: Option<&str>,
+    no_converge: bool,
+    no_restart_on_failure: bool,
+    max_failure_restarts: Option<u32>,
+    visibility: Option<&str>,
+    context_scope: Option<&str>,
+    exec_mode: Option<&str>,
+    delay: Option<&str>,
+    not_before: Option<&str>,
+    verify: Option<&str>,
+    cron: Option<&str>,
+    timeout: Option<&str>,
+    verify_timeout: Option<&str>,
+    allow_phantom: bool,
+    allow_cycle: bool,
+    clear_route_pin: bool,
+) -> Result<()> {
     let path = graph_path(dir);
 
     if !path.exists() {
@@ -140,8 +326,50 @@ pub fn run_with_reasoning(
         .transpose()
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
+    if clear_route_pin && (model.is_some() || reasoning.is_some() || provider.is_some()) {
+        anyhow::bail!(
+            "--clear-route-pin conflicts with --model, --reasoning, and --provider; clearing means dynamic profile inheritance, not writing a replacement pin"
+        );
+    }
+
+    let inheritance_preview = clear_route_pin
+        .then(|| current_route_inheritance(dir))
+        .transpose()?;
+    let active_attempt_route = if clear_route_pin {
+        recorded_active_attempt(dir, task_id)?
+    } else {
+        None
+    };
+    let has_regular_edit = title.is_some()
+        || description.is_some()
+        || !add_after.is_empty()
+        || !remove_after.is_empty()
+        || !add_tag.is_empty()
+        || !remove_tag.is_empty()
+        || model.is_some()
+        || reasoning.is_some()
+        || provider.is_some()
+        || !add_skill.is_empty()
+        || !remove_skill.is_empty()
+        || max_iterations.is_some()
+        || cycle_guard.is_some()
+        || cycle_delay.is_some()
+        || no_converge
+        || no_restart_on_failure
+        || max_failure_restarts.is_some()
+        || visibility.is_some()
+        || context_scope.is_some()
+        || exec_mode.is_some()
+        || delay.is_some()
+        || not_before.is_some()
+        || verify.is_some()
+        || cron.is_some()
+        || timeout.is_some()
+        || verify_timeout.is_some();
+
     let mut changed = false;
     let mut field_changes: Vec<serde_json::Value> = Vec::new();
+    let mut cleared_route_fields: Vec<String> = Vec::new();
     let mut error: Option<anyhow::Error> = None;
 
     modify_graph(&path, |graph| {
@@ -255,6 +483,31 @@ pub fn run_with_reasoning(
             }
         };
 
+        // Clearing a live task is safe only when its immutable actual route is
+        // already represented by the assigned registry attempt. The process is
+        // left untouched; only metadata consulted by a later spawn is cleared.
+        if clear_route_pin && task.status == Status::InProgress {
+            match active_attempt_route.as_ref() {
+                Some(active) if task.assigned.as_deref() == Some(&active.agent_id) => {}
+                Some(active) => {
+                    error = Some(anyhow::anyhow!(
+                        "Task '{}' changed active attempts while --clear-route-pin was running (expected '{}', found {:?}). Nothing was cleared; run the command again.",
+                        task_id,
+                        active.agent_id,
+                        task.assigned
+                    ));
+                    return false;
+                }
+                None => {
+                    error = Some(anyhow::anyhow!(
+                        "Task '{}' became in-progress while --clear-route-pin was running, but its actual route was not recorded. Nothing was cleared; run the command again.",
+                        task_id
+                    ));
+                    return false;
+                }
+            }
+        }
+
         // Update title
         if let Some(new_title) = title {
             let old = task.title.clone();
@@ -336,6 +589,87 @@ pub fn run_with_reasoning(
         if let Some(new_provider) = provider {
             task.provider = Some(new_provider.to_string());
             println!("Updated provider: {}", new_provider);
+            changed = true;
+        }
+
+        if clear_route_pin {
+            let prior_session_id = task.session_id.clone();
+            // These are every task-level selector consulted by worker route
+            // planning. Clear them together under graph.lock. Historical
+            // runtime/accounting fields live elsewhere and are not touched.
+            macro_rules! clear_route_field {
+                ($field:ident) => {
+                    if task.$field.is_some() {
+                        let old = serde_json::to_value(&task.$field).unwrap_or(serde_json::Value::Null);
+                        task.$field = None;
+                        cleared_route_fields.push(stringify!($field).to_string());
+                        field_changes.push(serde_json::json!({
+                            "field": stringify!($field),
+                            "old": old,
+                            "new": null,
+                        }));
+                    }
+                };
+            }
+            clear_route_field!(model);
+            clear_route_field!(reasoning);
+            clear_route_field!(provider);
+            clear_route_field!(endpoint);
+            clear_route_field!(profile);
+            clear_route_field!(tier);
+            clear_route_field!(session_id);
+
+            let preview = inheritance_preview
+                .as_ref()
+                .expect("clear-route-pin always resolves an inheritance preview");
+            let generation = preview.profile_generation.as_deref().unwrap_or("none");
+            let current_route = preview.route.as_deref().unwrap_or("unconfigured");
+            let current_handler = preview.handler.as_deref().unwrap_or("none");
+            let current_reasoning = preview.reasoning.as_deref().unwrap_or("unconfigured");
+            let cleared = if cleared_route_fields.is_empty() {
+                "none (already unpinned)".to_string()
+            } else {
+                cleared_route_fields.join(",")
+            };
+            let active = active_attempt_route
+                .as_ref()
+                .filter(|_| task.status == Status::InProgress)
+                .map(|attempt| {
+                    format!(
+                        "; active_attempt_agent={} actual_executor={} actual_model={} actual_session={} preserved in attempt registry/audit only",
+                        attempt.agent_id,
+                        attempt.executor,
+                        attempt.model,
+                        prior_session_id
+                            .as_deref()
+                            .unwrap_or("pending-stream-capture")
+                    )
+                })
+                .unwrap_or_default();
+            task.log.push(LogEntry {
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                actor: Some("clear-route-pin".to_string()),
+                user: Some(worksgood::current_user()),
+                message: format!(
+                    "Future route pin cleared atomically: cleared_fields=[{}]; considered_fields=[model,reasoning,provider,endpoint,profile,tier,session_id]; inheritance=dynamic-at-dispatch; current_profile={} generation={} currently_resolves handler={} model={} reasoning={}{}. Unlike `wg retry --current-profile`, no route snapshot was written and task status/attempt history were unchanged.",
+                    cleared,
+                    preview.profile,
+                    generation,
+                    current_handler,
+                    current_route,
+                    current_reasoning,
+                    active
+                ),
+            });
+            println!("Cleared future route pin fields: {}", cleared);
+            println!(
+                "Dynamic inheritance (not pinned): profile={} generation={} currently resolves handler={} model={} reasoning={}",
+                preview.profile,
+                generation,
+                current_handler,
+                current_route,
+                current_reasoning
+            );
             changed = true;
         }
 
@@ -670,7 +1004,7 @@ pub fn run_with_reasoning(
         // Reset spawn failure counter on any edit — the user may have fixed
         // the root cause (e.g., exec_mode mismatch), so the circuit breaker
         // should give the task a fresh set of attempts.
-        if changed && task.spawn_failures > 0 {
+        if changed && task.spawn_failures > 0 && (!clear_route_pin || has_regular_edit) {
             task.spawn_failures = 0;
             println!("Reset spawn failure counter");
         }
@@ -749,7 +1083,15 @@ pub fn run_with_reasoning(
             "edit",
             Some(task_id),
             None,
-            serde_json::json!({ "fields": field_changes }),
+            serde_json::json!({
+                "fields": field_changes,
+                "clear_route_pin": clear_route_pin.then(|| serde_json::json!({
+                    "cleared_fields": cleared_route_fields,
+                    "inheritance": inheritance_preview,
+                    "dynamic_at_dispatch": true,
+                    "snapshotted": false,
+                })),
+            }),
             config.log.rotation_threshold,
         );
 
@@ -2131,6 +2473,219 @@ mod tests {
         assert_eq!(task.status, worksgood::graph::Status::Open);
         assert!(task.superseded_by.is_empty());
         assert!(task.supersedes.is_none());
+    }
+
+    fn clear_route_pin(dir: &Path, task_id: &str) -> Result<()> {
+        run_with_reasoning_and_route_clear(
+            dir,
+            task_id,
+            None,
+            None,
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            None,
+            &[],
+            &[],
+            None,
+            None,
+            None,
+            false,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+            false,
+            true,
+        )
+    }
+
+    #[test]
+    fn test_clear_route_pin_is_atomic_and_preserves_history() {
+        use worksgood::graph::{Node, Task, TokenUsage, WorkGraph};
+
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+        fs::create_dir_all(dir).unwrap();
+        let path = graph_path(dir);
+        let usage = TokenUsage {
+            cost_usd: 1.25,
+            input_tokens: 100,
+            output_tokens: 20,
+            cache_read_input_tokens: 5,
+            cache_creation_input_tokens: 3,
+        };
+        let mut task = Task {
+            id: "pinned".to_string(),
+            title: "Pinned task".to_string(),
+            status: Status::Failed,
+            model: Some("pi:openrouter:old-model".to_string()),
+            reasoning: Some(ReasoningLevel::Low),
+            provider: Some("legacy-provider".to_string()),
+            endpoint: Some("old-endpoint".to_string()),
+            profile: Some("old-wcc-profile".to_string()),
+            tier: Some("premium".to_string()),
+            session_id: Some("route-specific-session".to_string()),
+            token_usage: Some(usage.clone()),
+            retry_count: 4,
+            failure_reason: Some("historic failure".to_string()),
+            ..Task::default()
+        };
+        task.log.push(LogEntry {
+            timestamp: "2026-01-01T00:00:00Z".to_string(),
+            actor: Some("worker".to_string()),
+            user: None,
+            message: "historic attempt provenance".to_string(),
+        });
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(task));
+        save_graph(&graph, &path).unwrap();
+
+        clear_route_pin(dir, "pinned").unwrap();
+
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("pinned").unwrap();
+        assert!(task.model.is_none());
+        assert!(task.reasoning.is_none());
+        assert!(task.provider.is_none());
+        assert!(task.endpoint.is_none());
+        assert!(task.profile.is_none());
+        assert!(task.tier.is_none());
+        assert!(task.session_id.is_none());
+        assert_eq!(task.status, Status::Failed);
+        assert_eq!(task.retry_count, 4);
+        assert_eq!(task.failure_reason.as_deref(), Some("historic failure"));
+        assert_eq!(task.token_usage.as_ref(), Some(&usage));
+        assert!(
+            task.log
+                .iter()
+                .any(|entry| entry.message == "historic attempt provenance")
+        );
+        let audit = task
+            .log
+            .iter()
+            .find(|entry| entry.actor.as_deref() == Some("clear-route-pin"))
+            .expect("clear must be auditable");
+        for field in [
+            "model",
+            "reasoning",
+            "provider",
+            "endpoint",
+            "profile",
+            "tier",
+            "session_id",
+        ] {
+            assert!(audit.message.contains(field), "audit omitted {field}");
+        }
+        assert!(audit.message.contains("dynamic-at-dispatch"));
+        assert!(audit.message.contains("no route snapshot was written"));
+    }
+
+    #[test]
+    fn test_clear_route_pin_preserves_in_progress_actual_route_and_session() {
+        use worksgood::graph::{Node, Task, WorkGraph};
+        use worksgood::service::AgentRegistry;
+
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+        fs::create_dir_all(dir).unwrap();
+        let path = graph_path(dir);
+        let mut registry = AgentRegistry::new();
+        let agent_id = registry.register_agent_with_model(
+            std::process::id(),
+            "live",
+            "pi",
+            "/tmp/live/output.log",
+            Some("openrouter:actual-model"),
+        );
+        registry.save(dir).unwrap();
+        let task = Task {
+            id: "live".to_string(),
+            title: "Live task".to_string(),
+            status: Status::InProgress,
+            assigned: Some(agent_id.clone()),
+            model: Some("pi:openrouter:pinned-model".to_string()),
+            reasoning: Some(ReasoningLevel::High),
+            session_id: Some("active-session".to_string()),
+            ..Task::default()
+        };
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(task));
+        save_graph(&graph, &path).unwrap();
+
+        clear_route_pin(dir, "live").unwrap();
+
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("live").unwrap();
+        assert_eq!(task.status, Status::InProgress);
+        assert_eq!(task.assigned.as_deref(), Some(agent_id.as_str()));
+        assert!(task.model.is_none());
+        assert!(task.reasoning.is_none());
+        assert!(task.session_id.is_none());
+        let audit = task
+            .log
+            .iter()
+            .find(|entry| entry.actor.as_deref() == Some("clear-route-pin"))
+            .unwrap();
+        assert!(
+            audit
+                .message
+                .contains(&format!("active_attempt_agent={agent_id}"))
+        );
+        assert!(audit.message.contains("actual_executor=pi"));
+        assert!(
+            audit
+                .message
+                .contains("actual_model=openrouter:actual-model")
+        );
+        assert!(audit.message.contains("actual_session=active-session"));
+        let entry = AgentRegistry::load(dir)
+            .unwrap()
+            .agents
+            .remove(&agent_id)
+            .unwrap();
+        assert_eq!(entry.executor, "pi");
+        assert_eq!(entry.model.as_deref(), Some("openrouter:actual-model"));
+    }
+
+    #[test]
+    fn test_clear_route_pin_fails_closed_for_unrecorded_in_progress_attempt() {
+        use worksgood::graph::{Node, Task, WorkGraph};
+
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+        fs::create_dir_all(dir).unwrap();
+        let path = graph_path(dir);
+        let task = Task {
+            id: "unsafe-live".to_string(),
+            title: "Unsafe live task".to_string(),
+            status: Status::InProgress,
+            assigned: Some("missing-agent".to_string()),
+            model: Some("pi:openrouter:must-remain".to_string()),
+            session_id: Some("must-remain".to_string()),
+            ..Task::default()
+        };
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(task));
+        save_graph(&graph, &path).unwrap();
+
+        let error = clear_route_pin(dir, "unsafe-live").unwrap_err().to_string();
+        assert!(error.contains("refused"));
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("unsafe-live").unwrap();
+        assert_eq!(task.model.as_deref(), Some("pi:openrouter:must-remain"));
+        assert_eq!(task.session_id.as_deref(), Some("must-remain"));
     }
 
     /// An invalid timeout value must be rejected with a message naming the

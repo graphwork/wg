@@ -151,6 +151,7 @@ wg edit <ID> [OPTIONS]
 | `--remove-skill <SKILL>` | Remove a required skill (repeatable) |
 | `--model <MODEL>` | Update exact Pi route |
 | `--reasoning <LEVEL>` | Update explicit Pi thinking |
+| `--clear-route-pin` | Atomically clear task model/reasoning/legacy-provider/endpoint/profile/tier/session selectors; the next attempt dynamically inherits the project profile effective at dispatch time |
 | `--max-iterations <N>` | Set maximum cycle iterations (creates or updates `CycleConfig`) |
 | `--cycle-guard <EXPR>` | Set guard condition for cycle iteration |
 | `--cycle-delay <DUR>` | Set delay between cycle iterations |
@@ -167,6 +168,22 @@ wg edit <ID> [OPTIONS]
 
 Triggers a `graph_changed` IPC notification to the service daemon, so the coordinator picks up changes immediately.
 
+`--clear-route-pin` changes inheritance metadata only: it does not retry,
+reopen, kill, or spawn the task. It atomically removes every worker-route
+selector (`model`, structured `reasoning`, deprecated `provider`, `endpoint`,
+WCC `profile`, retry-escalated `tier`, and resumable `session_id`) while
+preserving status, actual attempt route, usage/evaluation evidence, logs, and
+worktree. For an in-progress task, WG requires a recorded registry attempt and
+keeps that attempt's actual handler/model/session in registry/audit provenance;
+otherwise it fails without mutation. `wg show` labels the future route as
+`inherited/unpinned` and shows a non-pinning preview of the currently selected
+project profile.
+
+This is intentionally the opposite of `wg retry --current-profile`:
+`--clear-route-pin` does **not** retry and leaves the next route dynamic until
+dispatch, whereas `retry --current-profile` reopens the task and snapshots the
+current profile's exact route/reasoning immediately for deterministic replay.
+
 **Examples:**
 
 ```bash
@@ -181,6 +198,10 @@ wg edit my-task --remove-tag stale --add-tag urgent
 
 # Change model
 wg edit my-task --model pi:<provider>:<model> --reasoning high
+
+# Remove the exact task pin without retrying. A profile flip before the next
+# dispatch is intentionally reflected because no replacement route is stored.
+wg edit my-task --clear-route-pin
 
 # Set cycle configuration (makes this task a cycle header)
 wg edit my-task --max-iterations 5

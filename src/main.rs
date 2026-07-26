@@ -1190,6 +1190,7 @@ fn main() -> Result<()> {
             model,
             reasoning,
             provider,
+            clear_route_pin,
             add_skill,
             remove_skill,
             max_iterations,
@@ -1209,7 +1210,7 @@ fn main() -> Result<()> {
             verify_timeout,
             allow_phantom,
             allow_cycle,
-        } => commands::edit::run_with_reasoning(
+        } => commands::edit::run_with_reasoning_and_route_clear(
             &workgraph_dir,
             &id,
             title.as_deref(),
@@ -1240,6 +1241,7 @@ fn main() -> Result<()> {
             verify_timeout.as_deref(),
             allow_phantom,
             allow_cycle,
+            clear_route_pin,
         ),
         Commands::Reprioritize { id, priority } => {
             commands::reprioritize::run(&workgraph_dir, &id, &priority)
