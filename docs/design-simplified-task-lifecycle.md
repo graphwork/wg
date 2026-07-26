@@ -50,6 +50,9 @@ The following are not configuration choices:
 * A stale owner, stale claim, reset race, or worktree ownership conflict is breaker-neutral. It creates one deduplicated reconciliation issue and an exact readiness hold, never repeated spawn failures.
 * Resource denial is a deferral, not an attempt and not a failure.
 * There is no model-based triage path to `Done`.
+* Every process exit enters an explicit attempt-finalization protocol. Exit without `wg done`/`wg fail` requests a fenced **same-session completion probe**; it never implies success or failure.
+* No attempt or generation terminalizes while any old PID/process nonce for that attempt can still write its worktree.
+* Finalization always checkpoints the exact leased candidate durably and binds validation, evaluation, merge, and acceptance to that candidate digest. It never uses a “main file exists/changed” heuristic or evaluates the integration branch when the candidate is isolated.
 
 ## 2. Goals and non-goals
 
@@ -77,7 +80,7 @@ A **task** is the durable unit and its configuration. A **generation** is one se
 
 A **fence** is a monotonically increasing token on the task. Every attempt and exclusive worktree lease carries `(task_id, generation, attempt_id, fence)`. A requester lacking the current tuple has no mutation authority.
 
-An **acceptance record** is the typed proof that a successful source attempt met the generation's pinned completion policy. It references dependency revisions and content-addressed deliverable, test, merge, remote-attestation, manual-override, and required-evaluation evidence as applicable.
+An **acceptance record** is the typed proof that one checkpointed source candidate met the generation's pinned completion policy. It references the finalization round/candidate digest, dependency revisions, and content-addressed deliverable, validation, merge, remote-attestation, manual-override, and required-evaluation evidence as applicable.
 
 The kernel enforces:
 
@@ -98,8 +101,13 @@ K13 worktree lease changes and the lifecycle event that motivates them commit to
 K14 stale ownership/reconciliation issues do not increment launch-failure budgets
 K15 every accepted event and all projection changes commit under graph.lock
 K16 replaying an event or reconciliation observation twice is semantically a no-op
-K17 required evaluation is bound to task, generation, source attempt, policy, and route
-K18 evaluation evidence never changes the source attempt's terminal disposition
+K17 required evaluation is bound to task, generation, source attempt, policy, route, and candidate digest
+K18 evaluation evidence is append-only and cannot independently mutate lifecycle state
+K19 process exit without a disposition intent enters Suspect and schedules one same-session completion probe
+K20 no attempt/generation terminal event is legal until every process that could write the candidate is provably quiescent or fenced from that storage
+K21 every source terminal event references a durable content-addressed candidate checkpoint (including retained partial work on failure)
+K22 deterministic validation, evaluation, merge/repair, and acceptance for one finalization round reference the same candidate digest
+K23 an isolated candidate is never inferred from or replaced by the integration branch/main file
 ```
 
 ## 4. The single authority
@@ -154,9 +162,9 @@ The target store is an append-only checksummed ledger at `.wg/lifecycle/events.j
 | CLI/operator | publish/pause policy, wait, cancel, abandon, explicit retry/reset/replay, explicit override/waiver, conflict resolution | direct status assignment; unfenced completion of a live attempt |
 | dispatcher | reserve an admitted attempt; publish a launch permit | success, failure, retry, or acceptance |
 | current worker/wrapper | completion intent, explicit failure, park/wait intent, progress evidence | retry, generation creation, acceptance, or mutation after losing its fence |
-| process observer | append spawn/exit/heartbeat observations; request `AttemptLost` with exact process proof | infer completion from output prose; triage to `Done` |
+| process observer | append spawn/exit/heartbeat observations; request `Suspect` for unreported exit and quiescence proof for finalization | infer completion/failure from exit or output prose; bypass same-session probe; triage to `Done` |
 | wait matcher | request one `WaitSatisfied` with matching correlation and barrier | wake non-waiting or terminal work |
-| acceptance controller | request `AcceptanceSatisfied` or `AcceptanceRejected` from a pinned deterministic policy and exact evidence | reopen source execution |
+| finalization/acceptance controller | request the one terminal disposition from a pinned deterministic policy and exact candidate-bound evidence | reopen source execution; terminalize before writer quiescence/checkpoint |
 | evaluation runner | append evaluation job observations and verdict evidence | task status, source attempt, retry, or worktree mutation |
 | retry controller | request a new generation only when a persisted retry policy authorizes the exact failed generation | unbudgeted rescue or retry by inference |
 | cron/cycle controller | request a new generation from a persisted due schedule/iteration rule | rewrite a terminal generation |
@@ -172,15 +180,15 @@ No actor receives a general `set_status` capability. Public library APIs expose 
 
 ```text
 Open                 published generation has no exclusive attempt
-Running              current exclusive attempt exists
+Running              current exclusive attempt is executing
 Waiting              explicit persisted wait; prior attempt is parked
-AwaitingAcceptance   source attempt succeeded; hard acceptance policy unresolved
-Done                 accepted terminal result
-Failed               terminal execution or semantic rejection
-Abandoned            explicit terminal skip
+Finalizing            current attempt is quiescing/checkpointing/validating/evaluating/merging
+Done                  accepted terminal result
+Failed                terminal execution or semantic rejection
+Abandoned             explicit terminal skip
 ```
 
-`Done`, `Failed`, and `Abandoned` are terminal for that generation. `AwaitingAcceptance` is not an evaluation state: it means the task's pinned acceptance policy is unresolved and may be waiting on merge, manual approval, tests, or required evaluation.
+`Done`, `Failed`, and `Abandoned` are terminal for that generation. `Finalizing` is not an evaluation status: it is the explicit attempt-finalization transaction. It means the task's current attempt can no longer be dispatched and its pinned finalization policy remains unresolved. A required evaluation, merge repair, or manual approval is only one stage inside it.
 
 Publication, pause, `not_before`, dependency disposition, and other eligibility facts are policy/readiness fields, not extra task states. Routine `Blocked`, `Incomplete`, `PendingValidation`, `PendingEval`, and `FailedPendingEval` are retired from the canonical enum.
 
@@ -195,13 +203,17 @@ Dependency satisfaction is explicit:
 
 ```text
 Reserved -> Preparing -> LaunchPermitted -> Running
-Running  -> Succeeded | Failed | Parked | Cancelled | Lost
-Preparing/LaunchPermitted -> Failed | Cancelled | Lost
+Running  -> NeedsFinalization(intent=Complete|Fail|Park|Cancel)
+Exited-without-intent -> Suspect -> NeedsFinalization(intent=completion-probe result)
+NeedsFinalization -> Succeeded | Failed | Parked | Cancelled | Lost
+Preparing/LaunchPermitted -> NeedsFinalization -> Failed | Cancelled | Lost
 ```
 
-The terminal attempt dispositions are immutable. `Succeeded` means source execution produced a completion proposal; it does not mean the task was accepted. `Failed` carries a typed class and evidence. `Parked` carries the checkpoint and wait ID. `Lost` is used only after exact process identity can no longer be live. `Cancelled` is an explicit fence operation.
+`Suspect` and `NeedsFinalization` are nonterminal. The first fenced disposition intent is immutable; later contradictory intents are evidence only. `Suspect` records that execution ended without `wg done`/`wg fail`/`wg wait`, not that the attempt failed. It schedules exactly one same-session completion probe, keyed by `(attempt, process_nonce, session_id)`. The probe resumes the same durable agent session with a narrow typed question—`complete(candidate hints)`, `fail(reason)`, `park(wait)`, or `cannot-determine`—and has no independent terminal authority. Its output becomes a disposition intent; crash, timeout, or `cannot-determine` leaves an operator-visible finalization issue rather than inferring `Done` or `Failed`.
 
-An attempt record owns route/model/reasoning, process identity, output manifest, session reference, worktree lease, timestamps, cost, and failure evidence. `retry_count`, `dispatch_count`, rapid-death count, and circuit-breaker totals become derived views over attempts rather than competing notions of identity.
+The terminal attempt dispositions are immutable and occur only in the final commit of §11. `Succeeded` means the exact checkpointed candidate passed its pinned gates and was accepted; `Failed` carries a typed class plus the retained candidate checkpoint. `Parked` carries a durable checkpoint and wait ID. `Lost` is legal only after exact process identity can no longer be live, the same-session probe cannot determine a disposition, and partial candidate state has been durably retained. `Cancelled` is an explicit fence operation with the same preservation requirement.
+
+An attempt record owns route/model/reasoning, every writer process identity, output manifest, durable session reference, worktree lease, finalization round/candidate digest, timestamps, cost, and failure evidence. Its durable `FinalizationRecord` contains `stage`, first intent or suspicion, probe action/result, writer-fence receipts, candidate/manifest digests, validation/evaluation/merge receipts, repair ancestry, and the terminal commit ID. Each stage advances by CAS and is safely resumable. `retry_count`, `dispatch_count`, rapid-death count, and circuit-breaker totals become derived views over attempts rather than competing notions of identity.
 
 ### 5.3 Worker-process state
 
@@ -211,7 +223,7 @@ Process records are observations:
 Reserved, SpawnGated, Spawned, Alive, Exited(code), Signaled, Unknown
 ```
 
-They include PID plus process-start identity/nonce, not PID alone. Process state cannot mark a task successful. A launch syscall failure or a nonzero/lost runtime is evidence for a canonical attempt-failure request. A zero exit without completion evidence is `AttemptFailed(NoCompletionProtocol)`, not success.
+They include PID plus process-start identity/nonce, not PID alone, and distinguish processes that can write the candidate from observation-only helpers. Process state cannot mark a task successful or failed. A launch syscall failure or nonzero/lost runtime supplies a proposed failure intent, but it still passes through finalization and candidate preservation. Any exit—zero or nonzero—without `wg done`/`wg fail` is `Suspect(NoDispositionProtocol)` and triggers the same-session completion probe. Only an explicit probe result or later operator evidence supplies a disposition; exit code, output prose, file presence, and diff shape never do.
 
 ### 5.4 Resource admission
 
@@ -244,29 +256,31 @@ A worktree record has immutable identity/path/branch plus a monotonically increa
 Available
 Active(attempt, fence, lease_epoch)
 Sealing(attempt, fence, lease_epoch)
-Sealed(from_attempt, lease_epoch)
-MergePending(receipt_request)
-MergeConflict(conflict_digest)
-Integrated(merge_receipt)
-Retained(from_attempt, reason)
+CandidateCheckpointed(attempt, round, candidate_digest, lease_epoch)
+MergePending(candidate_digest, receipt_request)
+MergeConflict(candidate_digest, conflict_digest)
+Repairing(attempt, round, repair_fence)
+Integrated(candidate_digest, merge_receipt)
+Retained(from_attempt, candidate_digest, reason)
 Quarantined(issue_id)
 CleanupPending(merge_receipt)
 ```
 
-Only the kernel changes logical lease state. Only the worktree outbox consumer may perform physical create, merge, archive, or cleanup, and every operation supplies the expected lease epoch.
+Only the kernel changes logical lease state. Only fenced outbox consumers may checkpoint, validate, merge, repair, archive, or clean up, and every operation supplies the expected attempt fence, lease epoch, finalization round, and candidate digest.
 
 Rules:
 
 1. Attempt reservation and acquisition/transfer to `Active` are one ledger transaction.
-2. A completion, failure, or park intent from a live handler is only an intent. The wrapper finalizes it after the handler is quiescent. Success terminalizes the attempt and changes `Active -> Sealed` atomically.
-3. A failed/lost/cancelled attempt changes `Active -> Retained` atomically only after quiescence is proved. If logical authority has been revoked but the process may still write, the lease becomes `Quarantined(issue_id)` and cannot be reused. Retention is deliberate and source-preserving, not an owner leak.
-4. Retry-in-place transfers `Retained(old) -> Active(new)` in the same transaction that reserves the new attempt, and only after the old process fence is proved.
-5. A fresh retry leaves the old lease `Retained` and allocates a different worktree.
-6. `Done` atomically records an accepted merge receipt and changes the lease to `Integrated/CleanupPending`. Physical deletion remains best effort and never affects task status.
-7. A conflict leaves the successful attempt unchanged and the task `AwaitingAcceptance`; the lease is `MergeConflict` until an explicit resolution/deferred-merge receipt.
-8. Unknown physical ownership creates `Quarantined(issue_id)`. It is a breaker-neutral readiness hold. Dispatch does not retry it every tick.
+2. A completion, failure, park, or cancel report is only a disposition intent. Process exit without one records `Suspect` and schedules the same-session probe. Neither path terminalizes anything.
+3. Finalization first fences every process nonce that could write the lease. Until quiescence is proved, `Active -> Sealing` is a nonterminal hold. Logical revocation alone is insufficient; a possibly writable tree becomes `Quarantined(issue_id)` and cannot be checkpointed, evaluated, merged, reused, or terminalized.
+4. The checkpoint action snapshots the exact leased worktree into an immutable content-addressed Git object/bundle or CAS tree and records its manifest digest. A path on the integration checkout, a conventional filename, “main file exists,” dirty/clean status, or diff heuristic is never candidate evidence.
+5. `CandidateCheckpointed` is the only input to deterministic validation. Evaluation and merge receipts must repeat that exact digest. When the candidate originated in an isolated worktree, adapters must materialize that checkpoint; falling back to `main`, `HEAD`, or the integration checkout is a hard `candidate_binding_mismatch` rejection.
+6. Merge conflict keeps the attempt and task nonterminal in `Finalizing`. An explicit fenced repair round starts from the immutable candidate plus conflict receipt, creates a new candidate digest, and repeats deterministic validation and any required evaluation. Repair never edits main and then treats main as the candidate.
+7. The final ledger commit atomically records the attempt terminal disposition, task terminal/waiting state, candidate/validation/evaluation/merge receipts, and `Integrated/CleanupPending` or `Retained`. Physical deletion remains best effort and never affects task status.
+8. Retry-in-place transfers `Retained(old) -> Active(new)` in the same transaction that reserves the new attempt, and only after all old writer identities are fenced. A fresh retry retains the old checkpoint and allocates a different worktree.
+9. Unknown physical ownership creates `Quarantined(issue_id)`. It is a breaker-neutral readiness hold. Dispatch does not retry it every tick.
 
-Compatibility `wg done` invoked from a live source worker becomes a completion **intent**. The wrapper finalizes it after handler quiescence. Operator completion first cancels/fences any live attempt. This closes the stale process/worktree race instead of relying on cooperative timing.
+Compatibility `wg done`/`wg fail` invoked from a live source worker becomes a fenced disposition **intent**. The finalizer starts only after handler quiescence. Operator completion first cancels/fences every live writer and then follows the same checkpoint-to-terminal protocol. This closes the stale process/worktree race instead of relying on cooperative timing.
 
 ### 5.7 Evaluation jobs and evidence
 
@@ -294,26 +308,32 @@ Outbox actions carry stable IDs and expected fences. Side-effect consumers write
 | `AttemptReserved` | `Open`, all readiness gates clear | `Running` | new `Reserved` | dispatcher |
 | `LaunchPermitted` | `Running`, matching reserved attempt/lease | unchanged | `LaunchPermitted` | dispatcher |
 | `AttemptRunning` | matching permit/process | unchanged | `Running` | process observer |
-| `AttemptSucceeded` | `Running`, matching current fence | `AwaitingAcceptance` | `Succeeded` | quiescent wrapper/remote adapter |
-| `AttemptFailed` | `Running`, matching current fence | `Failed` | `Failed(class)` | worker or proof-bound observer |
-| `AttemptLost` | `Running`, exact dead identity, no terminal event | `Failed` | `Lost` | reconciler |
-| `AttemptParked` | `Running`, matching current fence | `Waiting` | `Parked` | worker/operator |
+| `DispositionIntentRecorded` | `Running`, matching current fence | `Finalizing` | `NeedsFinalization(intent)` | worker/wrapper/operator |
+| `UnreportedProcessExitObserved` | `Running`, matching process nonce, no intent | `Finalizing` | `Suspect` | process observer |
+| `CompletionProbeRequested` | `Finalizing`, matching durable session, `Suspect` | unchanged | unchanged; outbox probe only | finalization controller |
+| `CompletionProbeAnswered` | `Finalizing`, exact probe/session tuple | unchanged | `NeedsFinalization(intent)` | same-session probe adapter |
+| `CandidateCheckpointed` | `Finalizing`, all candidate writers quiescent | unchanged | unchanged; binds round digest | checkpoint adapter |
+| `CandidateValidated` | `Finalizing`, exact candidate digest | unchanged | unchanged; appends receipt | deterministic validator |
+| `CandidateEvaluationLinked` | `Finalizing`, exact candidate digest/policy | unchanged | unchanged; appends evidence | evaluation linker |
+| `CandidateMerged` | `Finalizing`, exact candidate digest | unchanged | unchanged; appends merge receipt | merge adapter |
+| `AttemptSucceeded` | `Finalizing`, complete acceptance record for same digest | `Done` | `Succeeded` | acceptance controller |
+| `AttemptFailed` | `Finalizing`, writers fenced and candidate retained | `Failed` | `Failed(class)` | finalization controller |
+| `AttemptLost` | `Finalizing`, exact dead identity, inconclusive probe, candidate retained | `Failed` | `Lost` | reconciler |
+| `AttemptParked` | `Finalizing`, matching checkpoint/wait | `Waiting` | `Parked` | finalization controller |
 | `WaitSatisfied` | `Waiting`, exact generation/wait/correlation | `Open` | unchanged terminal parked attempt | wait matcher/operator condition |
-| `AcceptanceSatisfied` | `AwaitingAcceptance`, policy complete | `Done` | unchanged `Succeeded` | acceptance controller |
-| `AcceptanceRejected` | `AwaitingAcceptance`, valid hard evidence | `Failed` | unchanged `Succeeded` | acceptance controller |
-| `AbandonRequested` | any nonterminal state | `Abandoned` after fencing | active attempt `Cancelled` if any | operator |
+| `AbandonRequested` | any nonterminal state | `Abandoned` only after writer fence and candidate retention when an attempt exists | active attempt enters cancel finalization | operator |
 | `GenerationCreated` | terminal generation | new generation `Open` | none | operator or exact pinned retry/cron/cycle policy |
-| `CancelRequested` | `Running` | remains non-ready while fencing | cancel pending observation | operator/controller |
-| `FenceEstablished` | cancel/reset pending | atomically terminalizes the old generation as `Abandoned(Superseded)` and may create the requested new `Open` generation | `Cancelled` | process observer/operator proof |
+| `CancelRequested` | `Running` or `Finalizing` | remains non-ready while fencing/checkpointing | cancel intent, nonterminal | operator/controller |
+| `FenceEstablished` | cancel/reset finalization; all writers fenced and candidate retained | atomically terminalizes the old generation as `Abandoned(Superseded)` and may create the requested new `Open` generation | `Cancelled` | finalization controller from process/checkpoint proof |
 | `EvidenceObserved` | any | unchanged | unchanged | any authenticated adapter |
 
-A reset of a running task is a protocol, not `Running -> Open`: `CancelRequested`, process/worktree fence, then one transaction that records `FenceEstablished`, terminalizes the old generation as explicitly superseded, and appends `GenerationCreated`. Reset of a non-running nonterminal generation likewise records it as superseded before creating the next generation. Until the fence is established, readiness reports `reconciliation.reset-awaiting-fence`. A force action may revoke the logical token immediately but cannot transfer the same physical worktree until process quiescence; it therefore remains held or allocates a fresh path.
+A reset of a running task is a protocol, not `Running -> Open`: `CancelRequested`, process/worktree writer fence, durable candidate checkpoint/retention, then one transaction that records `FenceEstablished`, terminalizes the old generation as explicitly superseded, and appends `GenerationCreated`. Reset of a non-running nonterminal generation likewise records it as superseded before creating the next generation. Until fence and checkpoint receipts exist, readiness reports `reconciliation.reset-awaiting-fence` or `reconciliation.reset-awaiting-checkpoint`. A force action may revoke the logical token immediately but cannot terminalize the old attempt or transfer its physical worktree while an old process can write; it therefore remains quarantined or uses a fresh path while finalization completes.
 
 ### 6.1 First-terminal-wins
 
-The terminal attempt event is a compare-and-set on `(task, generation, attempt, fence, terminal=None)`. The first accepted `Succeeded`, `Failed`, `Parked`, `Cancelled`, or `Lost` disposition wins. A duplicate request with the same idempotency key returns the original event. A different later request returns `attempt_already_terminal` and stores only `EvidenceObserved(late_*)`.
+The disposition intent is first-wins, then the terminal attempt event is a compare-and-set on `(task, generation, attempt, fence, terminal=None, candidate_digest)`. The first accepted `Succeeded`, `Failed`, `Parked`, `Cancelled`, or `Lost` terminal disposition wins. A duplicate request with the same idempotency key returns the original event. A different later intent or terminal request returns `disposition_already_recorded` or `attempt_already_terminal` and stores only `EvidenceObserved(late_*)`. No terminal compare-and-set is attempted until candidate writers are quiescent and the candidate checkpoint/receipts required for that disposition are durable.
 
-This applies to the nightmare sequence from the survey: a stall/lost event accepted first makes a late wrapper `done` stale evidence. If success was accepted first, a later process-exit failure is process evidence and cannot rewrite it.
+This applies to the nightmare sequence from the survey: if the fenced finalizer accepts a lost disposition first, a late wrapper `done` is stale evidence. If success was accepted first, a later process-exit failure is process evidence and cannot rewrite it. Merely observing exit never wins this race: it produces `Suspect` and the same-session completion probe, not a terminal event.
 
 A generation's first terminal task state also wins. Acceptance cannot change `Failed` to `Done`, and evaluation cannot change `Done` to `Failed` or either terminal state to `Open`. A later run requires a new generation.
 
@@ -341,7 +361,7 @@ Readiness is a pure, ordered gate pipeline shared by dispatcher and diagnostics:
 3. temporal/cron occurrence is due;
 4. local and remote dependencies have a satisfying disposition;
 5. no current attempt, unresolved fence, or reconciliation issue dominates execution;
-6. wait/acceptance state is not active;
+6. wait/finalization state is not active;
 7. task class is dispatcher-managed;
 8. route/profile/configuration resolves;
 9. provider breaker permits consideration;
@@ -352,7 +372,7 @@ Readiness is a pure, ordered gate pipeline shared by dispatcher and diagnostics:
 
 Gates 8 and 12 can produce persistent diagnostic issues. Gates 9–11 produce expiring deferrals. None changes task status. The dispatcher reserves an attempt only after admission, so denied admission cannot create a failed attempt.
 
-A route resolved successfully but whose process cannot be launched creates a real reserved attempt and then `AttemptFailed(LaunchProcess)`. Registry/permit persistence failure after reservation is `AttemptFailed(LaunchInfrastructure)` unless exact rollback proves the permit was never publishable; either way it is one attempt, not multiple counter increments.
+A route resolved successfully but whose process cannot be launched creates a real reserved attempt, records a failure intent, checkpoints any prepared workspace state, and then finalizes once as `AttemptFailed(LaunchProcess)`. Registry/permit persistence failure after reservation similarly finalizes as `AttemptFailed(LaunchInfrastructure)` unless exact rollback proves the permit was never publishable; either way it is one attempt, not multiple counter increments.
 
 ## 8. Deterministic failure classification
 
@@ -372,26 +392,28 @@ This table is normative and covers the failure/hold families inventoried by the 
 | provider breaker/zero-output provider pause | provider/admission deferral | none |
 | invalid profile/model/endpoint/credential before reservation | `DispatchIssue(Configuration)` | none; operator/config change required |
 | worktree owner/path/branch collision | `ReconciliationIssue(WorktreeConflict)` + quarantine | none; breaker-neutral hold |
-| worktree creation I/O after reservation | `AttemptFailed(WorkspaceProvisioning)` | `Failed` |
-| OS process launch/permit/registry launch failure | `AttemptFailed(LaunchProcess|LaunchInfrastructure)` | `Failed` |
-| rapid death, signal, nonzero runtime | `AttemptFailed(RuntimeExit)` | `Failed` |
-| zero output/no completion protocol | `AttemptFailed(NoUsefulOutput|NoCompletionProtocol)` | `Failed` |
-| heartbeat/PID identity conclusively lost | `AttemptLost` | `Failed` |
-| liveness ambiguous | `ReconciliationIssue(ProcessIdentityAmbiguous)` | none until proof/operator action |
-| worker explicit failure | `AttemptFailed(SourceExecution)` | `Failed` |
+| worktree creation I/O after reservation | failure intent → retain empty/partial checkpoint → `AttemptFailed(WorkspaceProvisioning)` | `Finalizing -> Failed` |
+| OS process launch/permit/registry launch failure | failure intent → retain prepared checkpoint → `AttemptFailed(LaunchProcess|LaunchInfrastructure)` | `Finalizing -> Failed` |
+| rapid death, signal, nonzero runtime with explicit failure report | failure intent → quiesce/checkpoint → `AttemptFailed(RuntimeExit)` | `Finalizing -> Failed` |
+| any process exit without `wg done`/`wg fail` | `Suspect(NoDispositionProtocol)` + one same-session completion probe | `Finalizing`; no inferred terminal state |
+| same-session probe unavailable/inconclusive | `ReconciliationIssue(CompletionDispositionUnknown)` | remains `Finalizing`; operator action required |
+| heartbeat/PID identity conclusively lost | quiesce/checkpoint, probe if session exists, then proof-bound `AttemptLost` | `Finalizing -> Failed` only after preservation |
+| liveness or write authority ambiguous | `ReconciliationIssue(ProcessIdentityAmbiguous)` + quarantine | none until proof/operator action; terminalization forbidden |
+| worker explicit failure | failure intent → checkpoint → `AttemptFailed(SourceExecution)` | `Finalizing -> Failed` |
 | stale worker complete/fail/wait | rejected request + late evidence | none |
-| deliverable/test/verify missing while worker live | completion request rejected with acceptance diagnostic | remains `Running`; it may correct and retry the intent |
-| deliverable/test/verify missing after handler quiescence | `AttemptFailed(CompletionPreflightRejected)` | `Failed`; evidence names the rejected gate |
-| dependency revision changes during completion | completion request rejected | remains `Running`, or fails preflight if already quiescent |
-| uncommitted worktree | completion request rejected | remains `Running`; source preserved |
-| merge conflict after source success | merge record `MergeConflict` | `AwaitingAcceptance` |
+| deliverable/test/verify missing while worker live | completion request diagnostic | remains `Running`; it may correct before recording intent |
+| deterministic validation missing/fails after checkpoint | validation receipt against candidate; retained checkpoint | `Finalizing -> Failed(CompletionValidationRejected)` by pinned policy |
+| dependency revision changes during finalization | candidate acceptance rejected; retained checkpoint | `Finalizing`, or terminal failure by pinned policy; never evaluate/merge a substituted tree |
+| candidate checkpoint cannot be made durable | `ReconciliationIssue(CandidateCheckpointUnavailable)` | remains `Finalizing`; source preserved; no terminalization |
+| main file exists/changed while candidate is isolated | ignored (not evidence) | none |
+| merge conflict after candidate validation/evaluation | `MergeConflict(candidate_digest)` | remains `Finalizing` for explicit repair |
 | push/archive/audit ancillary failure after accepted merge | outbox issue/repair; acceptance receipt remains authoritative | no rollback; loud issue |
-| remote signature/scope/lease invalid | completion request rejected or remote attempt failed | `Running` or `Failed` by exact evidence |
-| required evaluator low/reject verdict | append verdict; acceptance controller rejects policy | `Failed`; source attempt stays `Succeeded` |
-| advisory evaluator low verdict | append verdict/recommendation | none; task remains `Done` |
-| evaluator launch/runtime/timeout/credential failure | evaluation job `Unavailable/FailedInfrastructure` | none; required task stays `AwaitingAcceptance` |
-| evaluator evidence missing/corrupt/stale/wrong generation | rejected/unlinked evaluation evidence | none |
-| human review rejection | acceptance evidence + `AcceptanceRejected` | `Failed`; source attempt stays `Succeeded` |
+| remote signature/scope/lease invalid | finalization evidence rejected; candidate retained | `Finalizing` or `Failed` by exact pinned evidence |
+| required evaluator low/reject verdict | append verdict bound to candidate; finalizer rejects policy | `Finalizing -> Failed`; candidate retained |
+| advisory evaluator low verdict | append candidate-bound verdict/recommendation | no independent state write; finalizer follows pinned policy |
+| evaluator launch/runtime/timeout/credential failure | evaluation job `Unavailable/FailedInfrastructure` | none; required task stays `Finalizing` |
+| evaluator evidence missing/corrupt/stale/wrong generation/candidate | rejected/unlinked evaluation evidence | none |
+| human review rejection | candidate-bound acceptance evidence | `Finalizing -> Failed`; candidate retained |
 | ordinary/unrelated/post-terminal message | immutable message data | none |
 | matching message for current wait | one `WaitSatisfied` receipt | `Waiting -> Open`, same generation |
 | concurrent message read/delivery failure | delivery-side issue; immutable append retained | none |
@@ -442,16 +464,17 @@ The message JSONL is immutable append-only data. Per-consumer delivery/read/ack 
 
 ### 10.1 Records, not eager task satellites
 
-Publishing a source task no longer creates `.evaluate-*`, `.flip-*`, or verifier task rows. When source success or an explicit `wg evaluate run` makes evaluation relevant, the kernel lazily creates an `EvaluationRecord`:
+Publishing a source task no longer creates `.evaluate-*`, `.flip-*`, or verifier task rows. When a durable candidate checkpoint or an explicit `wg evaluate run --candidate <digest>` makes evaluation relevant, the kernel lazily creates an `EvaluationRecord`:
 
 ```text
 evaluation_id, source_task, generation, source_attempt
+finalization_round, candidate_digest, candidate_manifest_digest
 policy_snapshot, route_snapshot, threshold/quorum
 state: Queued | Running | EvidenceAvailable | Unavailable | Cancelled
 runner_attempts[], evidence_ids[], created_by_event
 ```
 
-Evaluator runner attempts are not source attempts. Their process failures are recorded inside the evaluation record. Verdicts are immutable, content-addressed evidence bound to the exact source tuple, policy, route, and evaluator identity.
+Evaluator runner attempts are not source attempts. Their process failures are recorded inside the evaluation record. Verdicts are immutable, content-addressed evidence bound to the exact source tuple, finalization round, candidate digest, policy, route, and evaluator identity. The evaluator receives a read-only materialization of that checkpoint. If the source candidate is isolated, evaluation against `main`, the integration checkout, or any unbound working directory is rejected rather than used as a fallback.
 
 For compatibility and observability, `wg show --internal` may render records as **virtual satellites** with stable aliases such as `.evaluate-X@generation`. They are projections, have no task status, own no dependency edges, and cannot be messaged/retried through ordinary task lifecycle commands. A temporary compatibility materializer may create legacy satellite rows, but those rows are explicitly non-authoritative and their terminal status never implies a verdict.
 
@@ -460,33 +483,35 @@ For compatibility and observability, `wg show --internal` may render records as 
 Evaluation policy is pinned per generation:
 
 * **None:** no evaluation record unless requested later; acceptance ignores evaluation.
-* **Advisory (default when optional evaluation is enabled):** all non-evaluation hard gates can accept the task immediately. Evaluation runs lazily. Its result may recommend a new task/retry but never changes the current generation.
-* **Required:** source success moves to `AwaitingAcceptance`. Exact valid evidence satisfying the pinned threshold/quorum permits `AcceptanceSatisfied`; an exact semantic reject permits `AcceptanceRejected`. Missing or infrastructure-failed evidence leaves the task awaiting and exposes an operator action.
+* **Advisory (default when optional evaluation is enabled):** the record is created lazily from the durable checkpoint and always evaluates that candidate. Its availability/verdict does not block the terminal commit once all hard gates pass. If evidence arrives after the commit, it remains bound to the retained candidate digest and may recommend a new task/retry but never changes the terminal generation.
+* **Required:** the checkpointed candidate remains `Finalizing`. Exact valid evidence for that candidate satisfying the pinned threshold/quorum completes the evaluation gate; an exact semantic reject supplies finalization failure evidence. Missing or infrastructure-failed evidence leaves the task `Finalizing` and exposes an operator action.
 * **Manual:** a typed human approval/rejection record is the hard gate. This replaces `PendingValidation`.
 
 Evaluator infrastructure retries follow a separate evaluation retry policy and budget. They never increment source retry/launch breakers. Operators may explicitly retry evaluation, reject, or waive a required gate with an audited waiver permitted by policy. A waiver is acceptance evidence, not silent promotion.
 
 ### 10.3 No rescue authority
 
-Low scores, evaluator failure, late evidence, and FLIP recommendations cannot emit `GenerationCreated`. Bounded “rescue” becomes a recommendation plus, if configured, a request to the ordinary persisted retry controller. The controller must append `RetryAuthorized` against a terminal failed/rejected generation and consume the task's retry budget. The evaluation subsystem itself remains append-only evidence.
+Low scores, evaluator failure, late evidence, and FLIP recommendations cannot emit `GenerationCreated` or a lifecycle transition. They only append candidate-bound evidence; the finalization/acceptance controller is the sole reader permitted to request the pinned outcome. Bounded “rescue” becomes a recommendation plus, if configured, a request to the ordinary persisted retry controller. The controller must append `RetryAuthorized` against a terminal failed/rejected generation and consume the task's retry budget.
 
 ## 11. Completion and worktree protocol
 
-The source-bearing happy path is:
+Every source attempt uses this explicit, resumable finalization transaction:
 
-1. The current handler finishes and the wrapper captures a content-addressed output/deliverable manifest.
-2. The wrapper submits completion intent with task/generation/attempt/fence.
-3. Graph-only preconditions are checked under the final lock; external receipts are digest-verified.
-4. Once the handler is quiescent, the kernel commits `AttemptSucceeded`, changes the worktree lease `Active -> Sealed`, and moves the task to `AwaitingAcceptance`.
-5. An idempotent merge outbox action operates on the sealed lease epoch.
-6. The merge receipt is appended. Conflict becomes an explicit merge hold; success satisfies the merge part of acceptance.
-7. Required evaluation/manual evidence is collected if configured.
-8. The acceptance controller rechecks the pinned dependency revisions and policy under lock, commits `AcceptanceSatisfied`, moves the task to `Done`, and records worktree integration/release atomically.
-9. Cleanup/archive/push actions may finish later and are visible. They cannot erase source or retroactively alter acceptance.
+1. **Intent or suspicion.** `wg done`/`wg fail`/`wg wait` records the first fenced disposition intent and moves `Running -> Finalizing` / `Running -> NeedsFinalization`. If the process exits without one, the observer records `Suspect`; it does not classify the exit.
+2. **Same-session completion probe.** For `Suspect`, an idempotent outbox action resumes the attempt's exact durable session and asks for a typed disposition. The answer is recorded as the intent. Missing session, timeout, probe crash, or `cannot-determine` creates `CompletionDispositionUnknown` and holds finalization; no daemon tick or model heuristic may infer `Done` or `Failed`.
+3. **Quiescence/write fence.** The finalizer proves every registered handler, wrapper child, probe, and repair process that could write the leased tree is exited or storage-fenced. Until then the lease stays `Sealing`/`Quarantined`, and the attempt and generation cannot terminalize. PID reuse is excluded with process-start nonce evidence.
+4. **Durable candidate checkpoint.** From the exact `(attempt, fence, lease_epoch)` worktree, the checkpoint adapter writes an immutable content-addressed commit/bundle or CAS tree plus output manifest. It then records `CandidateCheckpointed(round, candidate_digest, manifest_digest)`. This is mandatory for complete, fail, park, cancel, and lost dispositions so partial source survives.
+5. **Deterministic validation.** Validators materialize that digest in a clean read-only/sandbox checkout and record command/environment/input/result digests. No filename, “main file,” dirty-tree, or diff heuristic substitutes for the checkpoint. A candidate that fails a pinned hard validator is retained and follows the pinned failure path.
+6. **Evaluation against candidate.** Required evaluation and any pre-terminal advisory evaluation receive the same immutable candidate digest and manifest. Evidence for main/integration, another finalization round, or an unbound path is rejected. Evaluation appends evidence only; the finalizer applies the pinned policy.
+7. **Merge or repair.** The merge action integrates exactly the validated/evaluated digest. A conflict records `MergeConflict(candidate_digest)` and holds `Finalizing`. A fenced repair starts from that digest and conflict receipt, checkpoints a new round, and repeats steps 5–7; it may not repair main and evaluate main.
+8. **One terminal commit.** Under `graph.lock`, the kernel rechecks generation/attempt/fence, writer quiescence, candidate digest, dependency revisions, and all receipts. One ledger commit records the first terminal attempt disposition, `Done`/`Failed`/`Waiting`/`Abandoned`, and atomic worktree integration or retention. There is no earlier `AttemptSucceeded` and no terminal compatibility projection before this commit.
+9. **Ancillary actions.** Cleanup/archive/push may finish later and remain visible. They cannot erase the retained checkpoint or retroactively alter terminal state.
 
-Non-source shell, human, imported, and remote results use typed acceptance adapters. Each adapter states which policy clauses it satisfies; none bypasses the kernel. Remote signed acceptance can replace a local merge receipt only when the pinned policy explicitly names that receipt kind.
+For an explicit failure/cancel/lost disposition, steps 5–7 may be marked not-applicable by the pinned policy, but quiescence and the durable candidate checkpoint are never skipped. For completion, deterministic validation precedes the evaluation stage, and merge/repair may consume only candidate-bound evaluation evidence. A `None`/non-blocking advisory policy records that its gate is skipped or non-blocking; any later advisory run still reads the retained checkpoint, never main, and cannot change state.
 
-Resetting an accepted upstream does not silently invalidate a terminal downstream. The reset command must preview and explicitly include the affected closure or record a taint/override. Completion always rechecks dependency revisions before acceptance.
+Non-source shell, human, imported, and remote results use typed candidate-checkpoint and acceptance adapters. Each adapter states which policy clauses it satisfies; none bypasses the kernel. Remote signed acceptance can replace a local merge receipt only when the pinned policy explicitly names that receipt kind and binds it to the candidate digest.
+
+Resetting an accepted upstream does not silently invalidate a terminal downstream. The reset command must preview and explicitly include the affected closure or record a taint/override. Finalization always rechecks dependency revisions before the terminal commit.
 
 ## 12. Daemon restart, replay, and reconciliation
 
@@ -498,14 +523,15 @@ Every daemon start and every maintenance tick performs the same idempotent phase
 2. scan/checksum the ledger and replay from the projection's ledger head;
 3. verify projection invariants; create a `ProjectionMismatch` issue rather than guessing if replay cannot explain the snapshot;
 4. ingest durable outbox receipts and evaluation/merge evidence by content ID;
-5. reconcile process records using PID start identity/nonce;
-6. reconcile worktree metadata/physical paths against lease epoch;
-7. match correlated waits against immutable messages;
-8. resolve completed reconciliation issues whose proof is now present;
-9. evaluate explicit retry/cron/cycle policies and append uniquely keyed requests; and
-10. compute readiness/admission and reserve new attempts.
+5. reconcile process records using PID start identity/nonce; an unreported exit appends `Suspect`, never a terminal request;
+6. resume any uniquely keyed same-session completion probe and attempt-finalization outbox step;
+7. reconcile worktree metadata/physical paths, candidate checkpoints, and writer quiescence against lease epoch;
+8. match correlated waits against immutable messages;
+9. resolve completed reconciliation issues whose proof is now present;
+10. evaluate explicit retry/cron/cycle policies and append uniquely keyed requests; and
+11. compute readiness/admission and reserve new attempts.
 
-No phase writes status directly. Each phase proposes events with deterministic idempotency keys, for example `lost:<attempt>:<process_nonce>` or `wait:<wait_id>:<message_id>`.
+No phase writes status directly. Each phase proposes events with deterministic idempotency keys, for example `suspect:<attempt>:<process_nonce>`, `completion-probe:<attempt>:<session_id>:<process_nonce>`, `candidate:<attempt>:<round>:<lease_epoch>`, or `wait:<wait_id>:<message_id>`. A lost terminal request is not constructed from exit alone.
 
 ### 12.2 Crash convergence
 
@@ -515,15 +541,19 @@ No phase writes status directly. Each phase proposes events with deterministic i
 | after reservation, before process spawn | attempt remains `Preparing`; outbox resumes or a single launch attempt failure is recorded |
 | after process spawn, before permit | gated process cannot execute; reconciliation cancels/fails the one attempt |
 | just after permit | graph attempt/process identity is sufficient to adopt the live worker |
-| after process exit, before attempt terminal event | exact observation requests one failure/lost event unless a completion intent exists |
-| after attempt terminal, before process update | process observation is repaired; it cannot contradict first-terminal state |
-| after merge, before receipt link | content-addressed receipt is linked on replay; merge action is idempotent |
-| after verdict write, before link | exact verdict is linked on replay; stale verdict remains historical |
+| after process exit, before disposition intent | replay records `Suspect` and resumes the same-session completion probe; no terminal state is inferred |
+| after intent, before writer quiescence | task remains `Finalizing`; old PID is fenced/proved dead before checkpoint or terminalization |
+| after quiescence, before candidate checkpoint | checkpoint action resumes from the exact lease epoch; no main-file fallback |
+| after checkpoint, before validation/evaluation | exact candidate-bound actions resume idempotently |
+| after validation/evaluation, before merge | merge resumes only for the receipt's candidate digest |
+| after merge, before terminal commit | content-addressed receipt is linked and the final locked CAS resumes; the task is still nonterminal |
+| after terminal, before process projection update | process observation is repaired; it cannot contradict first-terminal state |
+| after verdict write, before link | exact candidate-bound verdict is linked; stale/wrong-candidate verdict remains historical |
 | after ledger append, before graph projection | projector applies the committed event |
 | after projection, before ancillary archive | outbox resumes; semantic state is unchanged |
 | during reset/cancel | task remains held until fence receipt; never advertised ready with stale owner |
 
-Repair reaches one of: valid `Open`, valid current attempt, explicit `Waiting`, explicit `AwaitingAcceptance`, terminal generation, or an operator-required issue. “Spawned 0” without an exact gate is not an acceptable terminal diagnosis.
+Repair reaches one of: valid `Open`, valid current attempt, explicit `Waiting`, explicit `Finalizing` with a named stage/candidate/issue, terminal generation, or an operator-required issue. “Spawned 0” without an exact gate is not an acceptable terminal diagnosis.
 
 ### 12.3 Exact ownership
 
@@ -543,7 +573,7 @@ Multiple reconcilers may observe the same fact; event idempotency and CAS make o
 
 * ledger replay and materialized-projection rebuild;
 * permit-gated spawn and ownership-checked cancellation;
-* exact dead-process observation to one failed/lost attempt;
+* exact dead-process observation to `Suspect`, same-session completion probing, and proof-bound finalization;
 * terminal zombie process reaping;
 * content-addressed merge/verdict receipt linking;
 * correlated wait matching;
@@ -614,9 +644,9 @@ During dual-read, the ledger head plus graph lifecycle revision decides authorit
 | `Abandoned` | terminal `Abandoned` with compatibility `satisfy_dependents=true` |
 | `Blocked` | generation `Open` plus derived dependency/policy issue; no canonical `Blocked` |
 | `Incomplete` | terminal `Failed(IncompleteLegacy)` eligible for explicit/pinned retry |
-| `PendingEval` | `AwaitingAcceptance` with imported required policy/evaluation record bound to mapped generation |
+| `PendingEval` | `Finalizing` with imported required policy/evaluation record; missing candidate binding is a loud migration hold |
 | `FailedPendingEval` | source generation `Failed`; legacy evaluation continues advisory and cannot rescue/reopen |
-| `PendingValidation` + human-review | `AwaitingAcceptance` with manual policy |
+| `PendingValidation` + human-review | `Finalizing` with manual policy and imported/retained candidate checkpoint |
 | other `PendingValidation` | `Done` plus explicit `LegacyValidationMigrated` acceptance, preserving current effective behavior without silent promotion |
 | stale `completed_at` on nonterminal | retained in legacy event evidence, omitted from normalized current projection |
 
@@ -697,6 +727,7 @@ struct Model {
     admission: Vec<AdmissionDecision>,
     provider_health: BTreeMap<Route, ProviderHealth>,
     worktrees: BTreeMap<WorktreeId, WorktreeLease>,
+    finalizations: BTreeMap<AttemptId, FinalizationRecord>,
     evaluations: BTreeMap<EvaluationId, EvaluationRecord>,
     waits: BTreeMap<WaitId, WaitReceipt>,
     issues: BTreeMap<IssueId, ReconciliationIssue>,
@@ -704,7 +735,7 @@ struct Model {
 }
 ```
 
-Generated valid/invalid requests are applied both to the model and a disposable real graph. After each action and optional restart, compare semantic projections and structured rejection codes. The generator varies actor, idempotency key, revisions, generations, attempts, fences, dependency changes, process order, message delivery, worktree lease epochs, evaluation evidence, and crash points.
+Generated valid/invalid requests are applied both to the model and a disposable real graph. After each action and optional restart, compare semantic projections and structured rejection codes. The generator varies actor, idempotency key, revisions, generations, attempts, fences, dependency changes, process order, completion-probe result, writer quiescence, finalization round/candidate digest, message delivery, worktree lease epochs, evaluation evidence, and crash points.
 
 ### 16.2 Required properties
 
@@ -724,10 +755,14 @@ Generated valid/invalid requests are applied both to the model and a disposable 
 14. Ownership/reset conflict is one deduplicated, breaker-neutral issue.
 15. Reset cannot become ready before a fence or safe fresh-worktree decision.
 16. Reconciliation and outbox processing are idempotent.
-17. Crash at every ledger/projection/process/merge/evaluation/message boundary converges.
+17. Crash at every ledger/projection/process/checkpoint/validation/evaluation/merge/terminal/message boundary converges.
 18. Source-bearing work is never automatically deleted.
-19. Dispatcher and `why-not-ready` return the same first gate for one snapshot.
-20. Derived budgets equal attempt/evaluation records and cannot be double-charged.
+19. Process exit without disposition produces `Suspect` plus exactly one same-session probe, never inferred terminal state.
+20. No terminal event is accepted while an old registered writer may still mutate the candidate.
+21. Every source terminal disposition names a durable candidate checkpoint; completion validation, pre-terminal evaluation, and merge receipts all name the same digest/round.
+22. No main-file/path/diff heuristic establishes a candidate, and isolated-candidate evaluation against main is rejected.
+23. Dispatcher and `why-not-ready` return the same first gate for one snapshot.
+24. Derived budgets equal attempt/evaluation records and cannot be double-charged.
 
 ### 16.3 Deterministic interleavings
 
@@ -736,10 +771,12 @@ Permanent tests place barriers:
 * completion intent before/after reset and reassignment;
 * dependency check before an upstream new generation;
 * reservation, process spawn, registry receipt, and launch permit;
-* process exit before/after completion intent;
-* worktree seal, merge, receipt, and acceptance;
+* process exit before/after disposition intent and same-session completion-probe reply;
+* old-writer quiescence before/after checkpoint and attempted terminalization;
+* candidate checkpoint, deterministic validation, exact-candidate evaluation, merge/repair, receipt, and terminal commit;
+* isolated candidate versus deliberately different main/integration content;
 * message append, per-consumer delivery, wait match, and receipt;
-* verdict write/link before/after retry/new generation; and
+* verdict write/link before/after repair/retry/new generation; and
 * reset cancellation before/after process and worktree fencing.
 
 The full survey nightmare trace is a table-driven model case with a restart between every adjacent pair. Expected result: late done is stale evidence; evaluation cannot reopen; the unrelated message is inert; stale worktree ownership creates one neutral issue; reset remains held until fenced; and the loop detector prevents repeated mutation.
@@ -766,7 +803,7 @@ Add serde-defaulted generation/attempt/fence/revision fields, ledger/checkpoint 
 
 ### Stage 2 — ownership, process, and worktree protocol
 
-Move process observations and worktree leases behind fences/outbox. Convert reset/retry/recover. Make reset await quiescence and make ownership issues breaker-neutral. Preserve worktrees by default.
+Move process observations and worktree leases behind fences/outbox. Implement `Suspect`/`NeedsFinalization`, same-session completion probing, writer-quiescence proof, durable candidate checkpointing, and the exact-candidate validation/evaluation/merge pipeline before any terminal event. Convert reset/retry/recover. Make reset await quiescence and make ownership issues breaker-neutral. Preserve worktrees by default.
 
 ### Stage 3 — messages
 
@@ -795,11 +832,11 @@ The implementation is not complete until these credential-free scenarios are in 
 3. **`lifecycle_message_is_data`** — an irrelevant `Sent` message to `Done`, `Failed`, `Open`, and `Running` tasks changes no lifecycle/liveness/readiness fact, including after repeated ticks/restarts.
 4. **`lifecycle_correlated_wait_once`** — unrelated message does not wake; matching message wakes the existing wait once across restart; replay is inert.
 5. **`lifecycle_admission_deferral`** — capacity/disk/provider backpressure creates no attempt or breaker charge and dispatches when the fresh gate clears.
-6. **`lifecycle_process_failure_attempt`** — launch error, nonzero exit, signal, zero-output, and lost process each create one typed failed attempt; pinned retry creates one greater generation.
+6. **`lifecycle_process_failure_attempt`** — reported launch/runtime failures finalize once after checkpoint preservation; every unreported zero/nonzero/signal exit becomes `Suspect` and runs one same-session completion probe rather than inferring failure; pinned retry creates one greater generation.
 7. **`lifecycle_worktree_fenced_transfer`** — retry-in-place preserves source and atomically transfers only after quiescence; fresh retry retains the old tree; conflicts are neutral issues.
 8. **`lifecycle_reset_awaits_fence`** — reset during live execution never advertises ready or reuses its worktree before process/worktree fence proof.
 9. **`lifecycle_completion_acceptance`** — every local/shell/human/remote `Done` path has a typed policy-valid acceptance; missing deliverable/unmerged work/changed dependency refuses it.
-10. **`lifecycle_lazy_evaluation`** — no eager source satellites; advisory pass/fail leaves `Done`; required pass accepts; required low rejects without reopening; evaluator crash leaves source success and task awaiting.
+10. **`lifecycle_lazy_evaluation`** — no eager source satellites; every verdict is bound to the checkpoint digest; advisory pass/fail cannot rewrite a terminal generation; required pass accepts; required low rejects without reopening; evaluator crash leaves the candidate `Finalizing`.
 11. **`lifecycle_stale_evaluation`** — verdict for generation N after N+1 exists remains historical and cannot be consumed.
 12. **`lifecycle_reconcile_restart_matrix`** — restart at each reservation/permit/process/ledger/projection/merge/verdict/outbox boundary converges idempotently.
 13. **`lifecycle_message_concurrency`** — concurrent append/read/ack retains every message and isolates consumer observations.
@@ -808,6 +845,7 @@ The implementation is not complete until these credential-free scenarios are in 
 16. **`lifecycle_composite_nightmare`** — exact cross-graph trace from survey §10, with a restart between every hop; no second loop or charged ownership failure.
 17. **`lifecycle_cycle_cron_generations`** — due schedule/iteration creates one uniquely keyed greater generation; duplicate tick does nothing; stale eval cannot cross.
 18. **`lifecycle_authority_scan`** — no direct task-status writer outside kernel/projector/migration allowlist.
+19. **`lifecycle_attempt_finalization_transaction`** — unreported exit triggers the exact same-session probe; an old writable PID blocks checkpoint/terminalization; after quiescence the leased isolated candidate is durably checkpointed, deterministically validated, evaluated by digest (with deliberately different main rejected), merged/repaired from that digest, and only then terminalized. Restart at every boundary converges without duplicate probe/evaluation/merge.
 
 The model-based suite additionally randomizes at least the properties in §16.2 and shrinks failures to a minimal event sequence. Fault tests cover `EIO`, `ENOSPC`, kill/restart, partial final ledger frame, and idempotent external receipts.
 
@@ -817,7 +855,7 @@ A release may claim the simplified lifecycle only when:
 
 * the authority scan reports one status writer;
 * the complete legacy writer burn-down is empty;
-* all 18 permanent scenarios pass;
+* all 19 permanent scenarios pass;
 * the model reports no state divergence over the configured randomized run budget;
 * every `Done` created after cutover has an acceptance record;
 * ordinary message terminal mutations and ownership-conflict breaker charges are zero; and
@@ -833,9 +871,9 @@ WG needs retry, cron, cycles, and replay. Prohibiting later work entirely would 
 
 A central setter alone would reduce writers but would not make crash replay, origin diagnostics, idempotency, or historical ambiguity deterministic. A ledger alone without one kernel would still permit competing semantics. The combination is required. SQLite could implement it later, but is not necessary for the behavioral cutover.
 
-### 19.3 Why `AwaitingAcceptance`
+### 19.3 Why `Finalizing`
 
-A source attempt can succeed while merge, required review, or approval remains unresolved. Calling that `Running` lies about the worker, and calling it `PendingEval` encodes one evidence type as task state. The generic acceptance state cleanly separates source outcome from policy outcome.
+A handler can stop executing while its attempt is not safely terminal: old writers may need fencing, its candidate must be checkpointed, and merge, required review, or approval may remain unresolved. Calling that `Running` lies about the process, calling it `PendingEval` encodes one evidence type as task state, and terminalizing the attempt before those gates admits stale writers and wrong-candidate evaluation. `Finalizing` names the whole resumable transaction without granting any one stage lifecycle authority.
 
 ### 19.4 Why evaluator reject may fail a task but evaluator failure may not
 
@@ -853,8 +891,10 @@ WG cannot infer whether free-form text requests correction, starts a new deliver
 
 The durable defenses identified by the survey remain: atomic graph projection, permit-gated launch, immutable exact verdicts, source-preserving worktrees, retry-in-place, explicit waits, and idempotent reconciliation. Their role changes. They provide evidence or execute ledger decisions; they do not write task state independently.
 
-The authoritative rule is simple:
+The authoritative rules are simple:
 
 > An actor may submit evidence and a typed request. Only the lifecycle kernel, under the ledger lock and the current generation/attempt/worktree fences, may change lifecycle state.
+>
+> An active attempt reaches a terminal state only through `Suspect/NeedsFinalization -> writer quiescence -> durable candidate checkpoint -> deterministic candidate validation -> candidate-bound evaluation -> merge/repair -> one terminal commit`. Process exit, main-file heuristics, and evaluation of a substituted integration checkout have no terminal authority.
 
-That rule permanently removes message resurrection, stale completion, evaluation rescue, alternate triage completion, and ownership-breaker loops while retaining deliberate recovery and repeated work as explicit, auditable generations.
+These rules permanently remove message resurrection, stale completion, inferred exit disposition, wrong-tree evaluation, evaluation rescue, alternate triage completion, and ownership-breaker loops while retaining deliberate recovery and repeated work as explicit, auditable generations.
