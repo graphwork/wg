@@ -97,16 +97,16 @@ for id in settled safeexit; do
   stop_fake "$s"
 done
 
-# Explicit current-epoch intents: SuccessIntent remains non-Done pending the
-# layered finalizer tuple; failure and park follow their own kernel dispositions.
+# Explicit current-epoch tools are all reservations while a writer may live.
+# Candidate finalization consumes them only after exact reap + durable rescue.
 new_task doneintent; s=$(start_fake doneintent); send "$s" 'init 0'; send "$s" 'observe done 1'; out=$(capture "$s"); grep -q 'terminal=true' <<<"$out" || loud_fail "done receipt not accepted"; [[ $(wgrun show doneintent --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])') == in-progress ]] || loud_fail "success intent became Done early"; stop_fake "$s"
-new_task failintent; s=$(start_fake failintent); send "$s" 'init 0'; send "$s" 'observe fail 1'; [[ $(wgrun show failintent --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])') == failed ]] || loud_fail "explicit fail disposition missing"; stop_fake "$s"
-new_task parkintent; s=$(start_fake parkintent); send "$s" 'init 0'; send "$s" 'observe park 1'; [[ $(wgrun show parkintent --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])') == waiting ]] || loud_fail "explicit park disposition missing"; stop_fake "$s"
+new_task failintent; s=$(start_fake failintent); send "$s" 'init 0'; send "$s" 'observe fail 1'; [[ $(wgrun show failintent --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])') == in-progress ]] || loud_fail "failure intent terminalized before rescue"; stop_fake "$s"
+new_task parkintent; s=$(start_fake parkintent); send "$s" 'init 0'; send "$s" 'observe park 1'; [[ $(wgrun show parkintent --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])') == in-progress ]] || loud_fail "park intent terminalized before rescue"; stop_fake "$s"
 
 # Manual finite grant is charged once by stable action ID, and explicit abort
 # uses the lifecycle CAS. Status exposes all diagnostics through installed CLI.
 new_task manual; s=$(start_fake manual); send "$s" 'init 0'; send "$s" 'observe unknown 0'; send "$s" 'tick 300'; send "$s" 'tick 10000'; send "$s" 'resume inspected'; send "$s" 'resume inspected'; send "$s" status; out=$(capture "$s"); grep -q 'budget: epochs=0/3+1 elapsed-reserved=0/1800+600s' <<<"$out" || loud_fail "manual grant duplicated/replenished: $out"; stop_fake "$s"
-new_task abortme; s=$(start_fake abortme); send "$s" 'init 0'; send "$s" 'abort operator-stop'; out=$(capture "$s"); grep -q 'Operator abort accepted' <<<"$out" || loud_fail "operator abort missing: $out"; [[ $(wgrun show abortme --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])') == abandoned ]] || loud_fail "abort did not use lifecycle disposition"; stop_fake "$s"
+new_task abortme; s=$(start_fake abortme); send "$s" 'init 0'; send "$s" 'abort operator-stop'; out=$(capture "$s"); grep -q 'Operator abort accepted' <<<"$out" || loud_fail "operator abort missing: $out"; [[ $(wgrun show abortme --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])') == in-progress ]] || loud_fail "abort terminalized before rescue"; stop_fake "$s"
 
 # No source retry/admission/breaker/evaluation/owner duplication is possible in
 # this credential-free fixture: each task has exactly one lifecycle attempt.

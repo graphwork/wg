@@ -92,6 +92,7 @@ enum TriageResult {
     UnknownButActive { activity_type: String },
 }
 
+#[cfg(test)]
 #[derive(Debug, PartialEq)]
 enum PushOutcome {
     /// No `origin` remote configured — skipped silently.
@@ -104,6 +105,7 @@ enum PushOutcome {
     LocalOnly { push_error: String },
 }
 
+#[cfg(test)]
 #[derive(Debug)]
 enum WorktreeMergeResult {
     NotInWorktree,
@@ -123,12 +125,14 @@ enum WorktreeMergeResult {
     },
 }
 
+#[cfg(test)]
 struct MergeLockGuard {
     file: Option<std::fs::File>,
     #[cfg(not(unix))]
     path: std::path::PathBuf,
 }
 
+#[cfg(test)]
 impl MergeLockGuard {
     fn acquire(path: &Path) -> Result<Self> {
         #[cfg(unix)]
@@ -167,6 +171,7 @@ impl MergeLockGuard {
     }
 }
 
+#[cfg(test)]
 impl Drop for MergeLockGuard {
     fn drop(&mut self) {
         #[cfg(unix)]
@@ -197,6 +202,7 @@ impl Drop for MergeLockGuard {
 /// Branch deletion is **only** attempted after the main push succeeds (the
 /// audit doc requires the squash commit be reachable from `origin/main`
 /// before we drop the only ref to the agent branch tip on origin).
+#[cfg(test)]
 fn push_main_and_delete_branch(project_root: &str, branch: &str) -> PushOutcome {
     use std::process::Command;
 
@@ -289,6 +295,7 @@ fn push_main_and_delete_branch(project_root: &str, branch: &str) -> PushOutcome 
     }
 }
 
+#[cfg(test)]
 fn one_line_error(stderr: &[u8]) -> String {
     String::from_utf8_lossy(stderr)
         .lines()
@@ -314,6 +321,7 @@ struct WorktreeInfo {
 ///
 /// All three mean "the squash-merge produced no new content," which after a prior
 /// successful merge to main is the expected retry state, not a failure.
+#[cfg(test)]
 fn is_no_changes_to_commit(stdout: &str, stderr: &str) -> bool {
     let needles = [
         "nothing to commit",
@@ -364,12 +372,14 @@ fn detect_worktree(wg_dir: &Path) -> Option<WorktreeInfo> {
     })
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct GitIdentity {
     name: String,
     email: String,
 }
 
+#[cfg(test)]
 impl GitIdentity {
     fn from_author_fields(name: &str, email: &str) -> Option<Self> {
         let name = name.trim();
@@ -405,6 +415,7 @@ impl GitIdentity {
     }
 }
 
+#[cfg(test)]
 #[derive(Debug, PartialEq, Eq)]
 struct SquashAttribution {
     /// The oldest source commit's author remains the squash commit author.
@@ -424,6 +435,7 @@ struct SquashAttribution {
 /// integration commits separated multiple co-author lines with blank lines, so
 /// `%(trailers:...)` returned only the final identity and caused the loss this
 /// path is responsible for repairing.
+#[cfg(test)]
 fn collect_squash_attribution(
     project_root: &str,
     branch: &str,
@@ -487,6 +499,7 @@ fn collect_squash_attribution(
     Ok(Some(SquashAttribution { author, coauthors }))
 }
 
+#[cfg(test)]
 fn attempt_worktree_merge(wt: &WorktreeInfo, task_id: &str) -> Result<WorktreeMergeResult> {
     use std::process::Command;
 
@@ -641,6 +654,7 @@ fn attempt_worktree_merge(wt: &WorktreeInfo, task_id: &str) -> Result<WorktreeMe
     Ok(result)
 }
 
+#[cfg(test)]
 fn create_deferred_merge_task(
     path: &Path,
     task_id: &str,
@@ -2522,105 +2536,92 @@ fn run_inner(
         false
     };
 
-    // --- Worktree merge-back (stigmergic) ---
-    // If running inside an agent worktree, attempt to squash-merge the branch
-    // back to main before marking the task done. On conflict, either refuse
-    // (agent can fix it) or defer (--ignore-unmerged-worktree creates .merge-* task).
+    // --- Crash-safe candidate finalization transaction ---
+    // A worker push is neither required nor invoked. The wrapper/watchdog must
+    // first prove the exact handler is quiescent; then WG snapshots dirty,
+    // untracked and deleted source through a private Git index, validates that
+    // immutable descriptor, and mechanically merges only those exact bytes.
+    let mut finalization_evidence: Vec<String> = Vec::new();
     if let Some(wt) = detect_worktree(dir) {
-        match attempt_worktree_merge(&wt, id)? {
-            WorktreeMergeResult::NotInWorktree => {
-                // Nothing to merge — proceed to mark done
-                mark_worktree_for_cleanup(&wt);
+        let context = match crate::commands::finalize::context_from_current(
+            dir,
+            id,
+            Some(std::path::PathBuf::from(&wt.worktree_path)),
+            None,
+            false,
+        ) {
+            Ok(mut context) => {
+                let gate = completion_gate_policy(&graph, id, &Config::load_or_default(dir));
+                context.evaluation_policy = gate
+                    .as_ref()
+                    .map(|policy| format!("{:?}", policy.applicability).to_lowercase())
+                    .unwrap_or_else(|| "none".to_string());
+                context
             }
-            WorktreeMergeResult::NoCommits => {
-                // Surface the no-op so the agent (and human reading logs) sees
-                // what happened. Prior to this line, NoCommits was a silent
-                // pass-through and `wg show` lied about "Merged to main: true".
-                eprintln!(
-                    "[merge] No commits on branch {} — nothing to merge",
-                    wt.branch
-                );
-                mark_worktree_for_cleanup(&wt);
-            }
-            WorktreeMergeResult::UncommittedChanges { files } => {
-                // Loud refusal — prior behavior silently dropped this work and
-                // marked the task done. See docs/codex-handler-merge-bug.md.
-                let files_display = files
-                    .iter()
-                    .map(|f| format!("  - {}", f))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                anyhow::bail!(
-                    "Worktree has uncommitted changes — refusing to mark '{}' as done.\n\n\
-                     Uncommitted/staged tracked files in {}:\n{}\n\n\
-                     These changes would be silently dropped when the worktree is cleaned up.\n\
-                     Fix: run `git commit -m '...' && git push` in the worktree, then re-run `wg done {}`.\n\
-                     If you want to discard them, run `git reset --hard HEAD` in the worktree first.",
-                    id,
-                    wt.worktree_path,
-                    files_display,
-                    id,
-                );
-            }
-            WorktreeMergeResult::Merged {
-                commit_sha,
-                push_outcome,
-            } => {
-                let suffix = match &push_outcome {
-                    PushOutcome::PushedAndDeleted => {
-                        format!(" — pushed origin/main, deleted origin/{}", wt.branch)
-                    }
-                    PushOutcome::PushedNotDeleted { delete_error } => format!(
-                        " — pushed origin/main, branch delete failed: {}",
-                        delete_error
-                    ),
-                    PushOutcome::LocalOnly { push_error } => {
-                        format!(" — local-only (push failed: {})", push_error)
-                    }
-                    PushOutcome::NoRemote => String::new(),
-                };
-                eprintln!(
-                    "[merge] Squash-merged {} to main ({}){}",
-                    wt.branch, commit_sha, suffix
-                );
-                mark_worktree_for_cleanup(&wt);
-            }
-            WorktreeMergeResult::Conflict { conflicting_files } => {
-                if ignore_unmerged_worktree {
-                    let merge_task_id =
-                        create_deferred_merge_task(&path, id, &wt, &conflicting_files)?;
-                    eprintln!(
-                        "[merge] Conflict deferred — created '{}' for later resolution",
-                        merge_task_id,
+            Err(error) if error.to_string().contains("finalize.writer_still_current") => {
+                if std::env::var("WG_EXECUTOR_TYPE").as_deref() == Ok("pi") {
+                    let tool_call = format!(
+                        "wg-done:{}",
+                        std::env::var("WG_SPAWN_RUN_ID").unwrap_or_else(|_| id.to_string())
                     );
-                    mark_worktree_for_cleanup(&wt);
-                    // Fall through to mark the task done
-                } else {
-                    let files_display = if conflicting_files.is_empty() {
-                        "  (could not determine specific files)".to_string()
-                    } else {
-                        conflicting_files
-                            .iter()
-                            .map(|f| format!("  - {}", f))
-                            .collect::<Vec<_>>()
-                            .join("\n")
-                    };
-                    anyhow::bail!(
-                        "Merge conflict — cannot mark '{}' as done.\n\n\
-                         Conflicting files:\n{}\n\n\
-                         Options:\n\
-                         1. Resolve the conflicts in your worktree, commit, then run 'wg done {}' again\n\
-                         2. Run 'wg done {} --ignore-unmerged-worktree' to defer the merge \
-                            (creates a .merge-{} task for later resolution)",
+                    crate::commands::pi_watchdog::reserve_worker_terminal(
+                        dir,
                         id,
-                        files_display,
-                        id,
-                        id,
-                        id,
-                    );
+                        worksgood::pi_watchdog::TerminalDisposition::SuccessIntent,
+                        &tool_call,
+                    )?;
                 }
+                eprintln!(
+                    "[finalize] terminal intent reserved; exact writer is still current. The wrapper/watchdog will reconcile after reap."
+                );
+                return Ok(());
             }
+            Err(error) => return Err(error),
+        };
+        let store = worksgood::finalization::FinalizationStore::open(dir)?;
+        let checkpoint = worksgood::finalization::checkpoint_candidate(&store, &context)?;
+        let candidate = checkpoint
+            .candidate
+            .as_ref()
+            .context("candidate checkpoint missing descriptor")?;
+        finalization_evidence.extend([
+            candidate.candidate_id.clone(),
+            candidate.candidate_commit_oid.clone(),
+            candidate.candidate_tree_oid.clone(),
+            candidate.content_manifest_cid.clone(),
+            checkpoint
+                .validation
+                .as_ref()
+                .context("candidate validation receipt missing")?
+                .result_id
+                .clone(),
+        ]);
+        let merged = worksgood::finalization::merge_candidate(&store, candidate)?;
+        if let Some(conflict) = merged.merge_conflict.as_ref() {
+            anyhow::bail!(
+                "merge conflict retained as RepairNeeded ({}): candidate={} tree={} manifest={}. Safe next command: {}",
+                conflict.reason_code,
+                conflict.binding.candidate_id,
+                conflict.binding.tree_oid,
+                conflict.binding.manifest_cid,
+                merged.safe_next_command
+            );
         }
+        let receipt = merged
+            .merge_receipt
+            .as_ref()
+            .context("merge.receipt_missing: replay with `wg finalize reconcile`")?;
+        finalization_evidence.push(receipt.receipt_id.clone());
+        eprintln!(
+            "[finalize] candidate={} commit={} tree={} manifest={} merge-receipt={} (no push required)",
+            candidate.candidate_id,
+            candidate.candidate_commit_oid,
+            candidate.candidate_tree_oid,
+            candidate.content_manifest_cid,
+            receipt.receipt_id,
+        );
+        let _ = ignore_unmerged_worktree; // conflicts are always retained, never bypassed
+        mark_worktree_for_cleanup(&wt);
     }
 
     // Atomically load the freshest graph, apply the mutation, and save.
@@ -2706,16 +2707,18 @@ fn run_inner(
                 .unwrap_or_else(|| LifecycleActor::operator(worksgood::current_user()))
         };
         let acceptance_ref = (target_status == Status::Done).then(|| {
-            format!(
-                "completion:{}:{}:{}",
-                id_owned,
-                task.lifecycle.generation,
-                task.lifecycle
-                    .current_attempt
-                    .as_ref()
-                    .map(|attempt| attempt.id.as_str())
-                    .unwrap_or("legacy")
-            )
+            finalization_evidence.last().cloned().unwrap_or_else(|| {
+                format!(
+                    "completion:{}:{}:{}",
+                    id_owned,
+                    task.lifecycle.generation,
+                    task.lifecycle
+                        .current_attempt
+                        .as_ref()
+                        .map(|attempt| attempt.id.as_str())
+                        .unwrap_or("legacy")
+                )
+            })
         });
         let mut request = TransitionRequest::new(
             TransitionKind::AttemptSucceeded {
@@ -2739,7 +2742,10 @@ fn run_inner(
                     .unwrap_or("legacy")
             ),
         );
-        if let Some(ref acceptance) = acceptance_ref {
+        request.evidence_refs.extend(finalization_evidence.clone());
+        if let Some(ref acceptance) = acceptance_ref
+            && !request.evidence_refs.contains(acceptance)
+        {
             request.evidence_refs.push(acceptance.clone());
         }
         if task.lifecycle.current_attempt.is_some() {
