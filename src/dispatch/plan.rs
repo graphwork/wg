@@ -807,6 +807,24 @@ mod tests {
             .collect()
     }
 
+    fn agency_executor_compat_cases() -> Vec<(&'static str, ExecutorKind, &'static str)> {
+        let mut cases = vec![
+            ("claude", ExecutorKind::Claude, "claude:opus"),
+            ("codex", ExecutorKind::Codex, "codex:gpt-5.5"),
+        ];
+        cases.extend(ExecutorKind::EXTERNAL_CLIS.iter().copied().map(|kind| {
+            // Agency already selected the external handler, so its model is
+            // the exact inner provider route. Unlike a `claude:`/`codex:`
+            // route, this flexible route must not override that selection.
+            let model = match kind {
+                ExecutorKind::Pi => "openrouter:anthropic/claude-opus-4-7",
+                _ => "openrouter:stepfun/step-3.7-flash",
+            };
+            (kind.as_str(), kind, model)
+        }));
+        cases
+    }
+
     #[test]
     fn test_executor_kind_recognizes_external_workers() {
         for (name, kind) in external_worker_cases() {
@@ -953,19 +971,20 @@ mod tests {
 
     #[test]
     fn test_agency_external_executor_survives_plan_spawn() {
-        for (name, kind) in external_worker_cases() {
+        for (name, kind, model) in agency_executor_compat_cases() {
             let mut config = Config::default();
-            config.coordinator.executor = Some("claude".to_string());
+            config.coordinator.executor = Some("native".to_string());
 
             let task = base_task("t1");
-            let plan = plan_spawn(&task, &config, Some(name), Some("claude:opus")).unwrap();
+            let plan = plan_spawn(&task, &config, Some(name), Some(model)).unwrap();
 
             assert_eq!(
                 plan.executor, kind,
-                "agency executor {} must beat dispatcher default and survive plan_spawn",
-                name
+                "agency executor {} must beat dispatcher default and survive plan_spawn for model {}",
+                name, model
             );
             assert_eq!(plan.provenance.executor_source, "agency.effective_executor");
+            assert_eq!(plan.model.raw, model);
             assert_eq!(
                 plan.env.get("WG_EXECUTOR_TYPE").map(String::as_str),
                 Some(name)
