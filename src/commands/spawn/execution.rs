@@ -492,16 +492,20 @@ fn rollback_task_claim(
             ownership_lost = true;
             return false;
         };
-        if task.status != Status::InProgress || task.assigned.as_deref() != Some(agent_id) {
+        let owns_exact_attempt = task.status == Status::InProgress
+            && task.assigned.as_deref() == Some(agent_id)
+            && task.lifecycle.generation == snapshot.generation
+            && task.lifecycle.fence == snapshot.attempt_fence
+            && task
+                .lifecycle
+                .current_attempt
+                .as_ref()
+                .is_some_and(|attempt| attempt.id == snapshot.attempt_id);
+        if !owns_exact_attempt {
             ownership_lost = true;
             return false;
         }
-        let attempt_id = task
-            .lifecycle
-            .current_attempt
-            .as_ref()
-            .map(|attempt| attempt.id.clone())
-            .unwrap_or_else(|| "legacy".to_string());
+        let attempt_id = snapshot.attempt_id.clone();
         let request = TransitionRequest::new(
             TransitionKind::ReservationCancelled,
             LifecycleActor {
@@ -6123,6 +6127,29 @@ mod tests {
         let graph_path = project.path().join(".wg/graph.jsonl");
 
         let first = claim_task_for_spawn(&graph_path, "reservation-retry", "agent-1").unwrap();
+        // Breaker-neutral evidence may be appended while fallible preparation
+        // is in flight. It advances lifecycle revision without changing exact
+        // attempt ownership; rollback must still cancel the reserved attempt.
+        modify_graph(&graph_path, |graph| {
+            let task = graph.get_task_mut("reservation-retry").unwrap();
+            apply_transition(
+                task,
+                TransitionRequest::new(
+                    TransitionKind::MessageObserved {
+                        message_id: "during-preparation".to_string(),
+                    },
+                    LifecycleActor {
+                        kind: ActorKind::Dispatcher,
+                        id: "test-evidence".to_string(),
+                    },
+                    "message_is_data",
+                    "reservation-retry-evidence",
+                ),
+            )
+            .unwrap();
+            true
+        })
+        .unwrap();
         rollback_task_claim(&graph_path, "reservation-retry", "agent-1", &first).unwrap();
 
         let second = claim_task_for_spawn(&graph_path, "reservation-retry", "agent-1")
@@ -6132,7 +6159,40 @@ mod tests {
         assert_eq!(task.status, Status::InProgress);
         assert_eq!(task.assigned.as_deref(), Some("agent-1"));
         assert_ne!(first.attempt_id, second.attempt_id);
+        assert_eq!(task.lifecycle.attempt_sequence, 2);
+        let reservations = task
+            .lifecycle
+            .audit
+            .iter()
+            .filter(|event| event.event_kind == "attempt-reserved")
+            .collect::<Vec<_>>();
+        assert_eq!(reservations.len(), 2);
+        assert_ne!(
+            reservations[0].idempotency_key, reservations[1].idempotency_key,
+            "a retry must append a new reservation instead of replaying the cancelled event"
+        );
+        assert_eq!(
+            reservations[0].attempt_id.as_deref(),
+            Some(first.attempt_id.as_str())
+        );
+        assert_eq!(
+            reservations[1].attempt_id.as_deref(),
+            Some(second.attempt_id.as_str())
+        );
+
         rollback_task_claim(&graph_path, "reservation-retry", "agent-1", &second).unwrap();
+        let graph = load_graph(&graph_path).unwrap();
+        let task = graph.get_task("reservation-retry").unwrap();
+        assert_eq!(task.status, Status::Open);
+        assert!(task.assigned.is_none());
+        assert_eq!(
+            task.lifecycle
+                .audit
+                .iter()
+                .filter(|event| event.event_kind == "reservation-cancelled")
+                .count(),
+            2
+        );
     }
 
     #[test]

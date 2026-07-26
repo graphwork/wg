@@ -2698,3 +2698,10 @@ script = "scenarios/isolated_worktree_observer_human_flow.sh"
 owners = ["implement-isolated-worktree"]
 description = "Installed-binary real daemon/wrapper/Fake-Pi terminal flow: baseline is fsynced before the isolated worktree receives its permit; deliberately different main stays inert; candidate writes and atomic rename display as observed/unproven separately from the watchdog-owned proven clock; target churn is ignored; production 300/120/600 bounds remain visible; overflow and daemon restart reconcile without refreshing timestamps; and a post-reap late write is quarantined without making the task Done."
 timeout_seconds = 90
+
+[[scenario]]
+name = "spawn_observer_preparation_recovery"
+script = "scenarios/spawn_observer_preparation_recovery.sh"
+owners = ["verify-spawn-recovery"]
+description = "Candidate-binary real-daemon regression for emergency commit 8419f909: a tracked escaping symlink makes isolated-worktree observer baseline preparation fail; repeated bounded ticks leave the target Open/unassigned with no process, worktree, output, registry, breaker, or sibling-task phantom and coalesce one actionable diagnostic; repairing the checkout makes the same uncommitted agent-1 allocation append a distinct reservation event and launch one Fake-Pi worker exactly once while two other ready tasks remain untouched."
+timeout_seconds = 180

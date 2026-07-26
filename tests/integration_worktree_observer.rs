@@ -46,32 +46,67 @@ fn identity() -> ObserverIdentity {
 }
 
 #[test]
-fn case_distinct_paths_attach_on_case_sensitive_checkout() {
+fn case_distinct_paths_retain_exact_manifest_identity_or_fail_materialization_explicitly() {
     let root = repo();
-    let upper = root.path().join("PROMPT_CONSTRUCTION_ANALYSIS.md");
-    let lower = root.path().join("prompt_construction_analysis.md");
+    let upper_name = "PROMPT_CONSTRUCTION_ANALYSIS.md";
+    let lower_name = "prompt_construction_analysis.md";
+    let upper = root.path().join(upper_name);
+    let lower = root.path().join(lower_name);
     fs::write(&upper, "upper\n").unwrap();
     fs::write(&lower, "lower\n").unwrap();
+    let materializes_both =
+        fs::read_to_string(&upper).unwrap() != fs::read_to_string(&lower).unwrap();
 
-    // Case-insensitive filesystems cannot materialize both names. Their Git
-    // checkout/materialization rules remain authoritative, so this regression
-    // applies only where the two entries genuinely coexist.
-    if fs::read_to_string(&upper).unwrap() == fs::read_to_string(&lower).unwrap() {
+    if !materializes_both {
+        // Put both exact spellings in the index without asking checkout to
+        // materialize them. On a case-insensitive filesystem the walk reports
+        // one spelling while both exact paths resolve to that same entry; the
+        // observer must reject that mismatch explicitly rather than silently
+        // collapsing an index identity.
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(root.path())
+            .args(["hash-object", "-w", upper_name])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let oid = String::from_utf8(output.stdout).unwrap();
+        let oid = oid.trim();
+        for name in [upper_name, lower_name] {
+            git(
+                root.path(),
+                &[
+                    "update-index",
+                    "--add",
+                    "--cacheinfo",
+                    &format!("100644,{oid},{name}"),
+                ],
+            );
+        }
+        let storage = tempdir().unwrap();
+        let error = match WorktreeObserver::attach_at(
+            root.path(),
+            storage.path(),
+            identity(),
+            CandidatePathPolicy::new(vec![], vec![]).unwrap(),
+            ObserverConfig::default(),
+            1_000,
+        ) {
+            Ok(_) => panic!("case-insensitive materialization mismatch was accepted"),
+            Err(error) => error,
+        };
+        assert!(
+            format!("{error:#}").contains("tracked-path-materialization-is-not-exact"),
+            "case-insensitive materialization mismatch was not explicit: {error:#}"
+        );
         return;
     }
 
-    git(
-        root.path(),
-        &[
-            "add",
-            "PROMPT_CONSTRUCTION_ANALYSIS.md",
-            "prompt_construction_analysis.md",
-        ],
-    );
+    git(root.path(), &["add", upper_name, lower_name]);
     git(root.path(), &["commit", "-qm", "case-distinct paths"]);
 
     let storage = tempdir().unwrap();
-    WorktreeObserver::attach_at(
+    let mut observer = WorktreeObserver::attach_at(
         root.path(),
         storage.path(),
         identity(),
@@ -80,6 +115,43 @@ fn case_distinct_paths_attach_on_case_sensitive_checkout() {
         1_000,
     )
     .expect("case-distinct paths in a valid checkout must not block observer attach");
+
+    let baseline: serde_json::Value =
+        serde_json::from_slice(&fs::read(storage.path().join("baseline.json")).unwrap()).unwrap();
+    let entries = baseline["manifest"]["entries"].as_object().unwrap();
+    assert!(entries.contains_key(upper_name));
+    assert!(entries.contains_key(lower_name));
+    assert_eq!(entries[upper_name]["path"], upper_name);
+    assert_eq!(entries[lower_name]["path"], lower_name);
+
+    fs::write(&upper, "upper changed\n").unwrap();
+    observer
+        .reconcile_at(ReconcileSource::Event, 1_010)
+        .unwrap();
+    assert_eq!(
+        observer
+            .projection()
+            .last_activity
+            .as_ref()
+            .unwrap()
+            .changed_paths[0]
+            .path,
+        upper_name
+    );
+    fs::write(&lower, "lower changed\n").unwrap();
+    observer
+        .reconcile_at(ReconcileSource::Event, 1_020)
+        .unwrap();
+    assert_eq!(
+        observer
+            .projection()
+            .last_activity
+            .as_ref()
+            .unwrap()
+            .changed_paths[0]
+            .path,
+        lower_name
+    );
 }
 
 #[test]

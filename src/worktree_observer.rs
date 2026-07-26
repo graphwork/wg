@@ -1588,6 +1588,32 @@ fn scan_manifest(root: &Path, policy: &CandidatePathPolicy) -> Result<ManifestSn
             bail!("candidate-scan-entry-limit-exceeded");
         }
     }
+    // Git may reject a case-colliding index before a worktree is created. If a
+    // platform nevertheless materializes only one spelling, do not silently
+    // collapse the other tracked identity into it: an exact tracked path that
+    // the directory walk did not report but the filesystem still resolves is
+    // an explicit checkout/materialization mismatch. Ordinary tracked
+    // deletions remain valid because the exact path does not resolve.
+    let discovered_paths = discovered
+        .iter()
+        .map(|(path, _, _)| path.as_str())
+        .collect::<BTreeSet<_>>();
+    for (path, tracked_entry) in &tracked {
+        if tracked_entry.mode == 0o160000 || discovered_paths.contains(path.as_str()) {
+            continue;
+        }
+        if fs::symlink_metadata(root.join(path)).is_ok() {
+            let materialized = discovered_paths
+                .iter()
+                .find(|candidate| candidate.to_lowercase() == path.to_lowercase())
+                .copied()
+                .unwrap_or("<non-exact-filesystem-alias>");
+            bail!(
+                "tracked-path-materialization-is-not-exact:{path}:materialized-as={materialized}"
+            );
+        }
+    }
+
     let untracked: Vec<String> = discovered
         .iter()
         .map(|(p, _, _)| p)

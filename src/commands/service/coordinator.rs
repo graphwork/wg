@@ -4303,6 +4303,67 @@ fn park_agency_execution_error(graph_path: &Path, task_id: &str, error: &anyhow:
     true
 }
 
+/// Persist exactly one breaker-neutral diagnostic when the transactional spawn
+/// path fails before publishing its launch permit. The task must already be
+/// Open and unassigned: this function records evidence but never repairs or
+/// overwrites ownership. Keying by generation coalesces repeated coordinator
+/// ticks while the operator repairs the same checkout/configuration cause.
+fn record_spawn_preparation_deferral(graph_path: &Path, task_id: &str, diagnostic: &str) -> bool {
+    let mut recorded = false;
+    let diagnostic = diagnostic.to_string();
+    let _ = modify_graph(graph_path, |graph| {
+        let Some(task) = graph.get_task_mut(task_id) else {
+            return false;
+        };
+        if task.status != Status::Open || task.assigned.is_some() {
+            return false;
+        }
+        let idempotency_key = format!("spawn-preparation:{task_id}:{}", task.lifecycle.generation);
+        if task
+            .lifecycle
+            .audit
+            .iter()
+            .any(|event| event.idempotency_key == idempotency_key)
+        {
+            return false;
+        }
+        let request = TransitionRequest::new(
+            TransitionKind::AdmissionDeferred {
+                gate: diagnostic.clone(),
+            },
+            LifecycleActor {
+                kind: ActorKind::Dispatcher,
+                id: "spawn-preparation".to_string(),
+            },
+            "spawn_preparation_deferred",
+            idempotency_key,
+        );
+        if apply_transition(task, request).is_err() {
+            return false;
+        }
+        task.log.push(LogEntry {
+            timestamp: Utc::now().to_rfc3339(),
+            actor: Some("spawn-preparation".to_string()),
+            user: None,
+            message: format!(
+                "Spawn preparation deferred before launch permit; rollback is complete and no circuit-breaker charge was recorded. Repair the reported checkout/configuration condition and retry: {diagnostic}"
+            ),
+        });
+        recorded = true;
+        true
+    });
+    recorded
+}
+
+fn note_spawn_preparation_deferral(graph_path: &Path, task_id: &str, diagnostic: &str) {
+    if record_spawn_preparation_deferral(graph_path, task_id, diagnostic) {
+        eprintln!(
+            "[dispatcher] Deferring '{}': pre-launch preparation rolled back cleanly; no spawn failure charged. Repair and retry: {}",
+            task_id, diagnostic
+        );
+    }
+}
+
 /// Persist one coalesced lifecycle evidence event for an admission refusal.
 /// Returns true only for the first identical reason in this task generation so
 /// the caller can rate-limit the human log while still reporting every tick in
@@ -4725,6 +4786,14 @@ fn spawn_agents_for_ready_tasks(
             Err(e) => {
                 if let Some(reason) = worksgood::disk_sentinel::admission_deferral_reason(&e) {
                     note_admission_deferral(&mut summary, &gp, &task.id, reason);
+                } else if let Some(diagnostic) = spawn::preparation_failure_reason(&e) {
+                    note_spawn_preparation_deferral(&gp, &task.id, diagnostic);
+                    // A preparation failure commonly describes shared checkout,
+                    // Git, registry, or observer substrate. Stop this tick so
+                    // one bad baseline cannot charge/claim every ready task.
+                    // The next bounded tick retries the same highest-priority
+                    // allocation after repair.
+                    break;
                 } else {
                     eprintln!("[dispatcher] Failed to spawn for {}: {}", task.id, e);
                     record_spawn_failure(
@@ -8194,6 +8263,54 @@ mod tests {
             provider_health_before,
             "resource backpressure must not charge provider circuit health"
         );
+    }
+
+    #[test]
+    fn spawn_preparation_deferral_is_coalesced_and_breaker_neutral() {
+        let dir = tempdir().unwrap();
+        let graph_path = dir.path().join("graph.jsonl");
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(Task {
+            id: "observer-baseline".into(),
+            title: "observer baseline".into(),
+            status: Status::Open,
+            ..Default::default()
+        }));
+        save_graph(&graph, &graph_path).unwrap();
+
+        assert!(record_spawn_preparation_deferral(
+            &graph_path,
+            "observer-baseline",
+            "failed to establish isolated-worktree observer baseline: escaping-symlink:bad-link"
+        ));
+        assert!(!record_spawn_preparation_deferral(
+            &graph_path,
+            "observer-baseline",
+            "a later tick repeats the same preparation failure"
+        ));
+
+        let graph = load_graph(&graph_path).unwrap();
+        let task = graph.get_task("observer-baseline").unwrap();
+        assert_eq!(task.status, Status::Open);
+        assert!(task.assigned.is_none());
+        assert_eq!(task.spawn_failures, 0);
+        assert!(task.last_spawn_failure_at.is_none());
+        assert_eq!(
+            task.lifecycle
+                .audit
+                .iter()
+                .filter(|event| event.reason_code == "spawn_preparation_deferred")
+                .count(),
+            1
+        );
+        let diagnostics = task
+            .log
+            .iter()
+            .filter(|entry| entry.actor.as_deref() == Some("spawn-preparation"))
+            .collect::<Vec<_>>();
+        assert_eq!(diagnostics.len(), 1);
+        assert!(diagnostics[0].message.contains("Repair"));
+        assert!(diagnostics[0].message.contains("no circuit-breaker charge"));
     }
 
     #[test]

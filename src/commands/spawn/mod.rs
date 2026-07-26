@@ -89,6 +89,35 @@ pub(crate) fn sanitize_bash_path(path: &str) -> String {
         .into_owned()
 }
 
+/// A coordinator spawn that failed before the atomic launch permit was
+/// published. The spawn transaction has already rolled back its task claim,
+/// process, registry entry, output reservation, observer state, and worktree.
+///
+/// This typed boundary is scheduler-significant: callers must surface one
+/// actionable diagnostic and retry without charging the task's process-launch
+/// circuit breaker. String matching would risk treating a genuine post-launch
+/// failure as a harmless deferral.
+#[derive(Debug, thiserror::Error)]
+#[error("{diagnostic}")]
+pub(crate) struct SpawnPreparationFailure {
+    diagnostic: String,
+}
+
+impl SpawnPreparationFailure {
+    fn new(diagnostic: impl Into<String>) -> Self {
+        Self {
+            diagnostic: diagnostic.into(),
+        }
+    }
+}
+
+/// Recover a typed pre-permit refusal through any anyhow context layers.
+pub(crate) fn preparation_failure_reason(error: &anyhow::Error) -> Option<&str> {
+    error
+        .downcast_ref::<SpawnPreparationFailure>()
+        .map(|failure| failure.diagnostic.as_str())
+}
+
 /// Result of spawning an agent
 #[derive(Debug, Serialize)]
 pub struct SpawnResult {
@@ -241,7 +270,14 @@ pub fn spawn_agent(
     model: Option<&str>,
 ) -> Result<(String, u32)> {
     let result =
-        execution::spawn_agent_inner(dir, task_id, executor_name, timeout, model, "coordinator")?;
+        execution::spawn_agent_inner(dir, task_id, executor_name, timeout, model, "coordinator")
+            .map_err(|error| {
+                if worksgood::disk_sentinel::admission_deferral_reason(&error).is_some() {
+                    error
+                } else {
+                    anyhow::Error::new(SpawnPreparationFailure::new(format!("{error:#}")))
+                }
+            })?;
     Ok((result.agent_id, result.pid))
 }
 
