@@ -1,10 +1,10 @@
 # Pi task-worker session watchdog and continuation protocol
 
-**Status:** Implementation-ready design; lifecycle-kernel extension requires ratification with the authoritative lifecycle implementation
+**Status:** Implementation-ready amended design; lifecycle-kernel extension requires ratification with the authoritative lifecycle implementation
 
 **Date:** 2026-07-26
 
-**Owner:** `design-pi-stalled`
+**Owner:** `design-pi-stalled`; completion/timeout policy amended by `amend-pi-watchdog`
 
 **Normative dependency:** [Simplified authoritative task lifecycle](design-simplified-task-lifecycle.md)
 
@@ -38,15 +38,22 @@ It MUST NOT:
 * mark a task done or failed; or
 * race the generic dead-owner reaper.
 
-The fixed initial detector is exactly **300 seconds since the last meaningful
-progress evidence**. It is configurable for explicit operator/test use, but it
-does not learn, decrease, or adapt. A separately bounded probe grace defaults
-to 60 seconds. Route timing is telemetry, not detector policy.
+The fixed initial **soft observation threshold** is exactly **300 seconds since
+the last meaningful progress evidence**. Crossing it records suspicion and
+requests a read-only probe only. It does not authorize a prompt, signal,
+process fence, lifecycle disposition, or completion inference. A separate
+`hard_resume_after_secs`, resolved from the frozen route and observed phase,
+is a conservative not-before threshold for safe automatic continuation. The
+initial free/low-QoS provider/TTFT and generation/inter-token values are no
+lower than 900 seconds. Some states deliberately have no automatic hard
+threshold. All initial thresholds are static, configuration-validated, and
+never learned or decreased from telemetry.
 
 Automatic continuation defaults to at most **3 replacement epochs** and **1,800
 seconds (30 minutes) of reserved continuation runtime**. Both budgets are
-charged durably before launch and never refunded or replenished by a tick or
-restart. The rationale is in §11.
+charged durably before a replacement launch and never refunded or replenished
+by a tick or restart. They bound recovery exposure; they are not deadlines for
+the original task or a progressing worker. The rationale is in §11.
 
 ## 2. Authority and lifecycle reconciliation
 
@@ -57,20 +64,23 @@ generation, attempt, fence, and worktree-lease state. Watchdog ticks, Pi events,
 process exits, prompts, status queries, ordinary WG messages, and diagnostics
 submit evidence and typed requests only.
 
-The watchdog phases are projections over process observations and a
+The watchdog classifications are projections over process observations and a
 reconciliation/readiness hold:
 
 ```text
-Active | WaitingUser | LongTool | Suspect | Fencing | Resuming |
-StalledOperatorRequired
+Active | WaitingUser | LongTool | Suspect | HardResumeEligible |
+NeedsFinalization | Fencing | Resuming | StalledOperatorRequired
 ```
 
-`Stalled` is not a canonical task-generation or attempt status. In
-`StalledOperatorRequired`, the generation remains `Running`, the attempt remains
-current and exclusively owned, its worktree remains `Active` under the same
-attempt fence, and readiness is held by one deduplicated reconciliation issue.
-It is non-dispatchable until an operator either grants a same-session
-continuation or asks the lifecycle kernel to fail/cancel/abandon it.
+Neither `Stalled` nor `NeedsFinalization` is a canonical task-generation or
+attempt status. `NeedsFinalization` means only **Pi stopped autonomously without
+completing the WG protocol**. It is not success evidence, failure evidence, or
+a `Done` state. In `NeedsFinalization` or `StalledOperatorRequired`, the
+generation remains `Running`, the attempt remains current and exclusively
+owned, its worktree remains `Active` under the same attempt fence, and readiness
+is held by one deduplicated reconciliation issue. `StalledOperatorRequired` is
+non-dispatchable until an operator either grants a same-session continuation or
+asks the lifecycle kernel to fail/cancel/abandon it.
 
 ### 2.2 Required kernel extension: `PiContinuationAuthorization`
 
@@ -103,14 +113,22 @@ as `AttemptLost`. Under the lifecycle lock, the kernel checks the exact attempt,
 fence, current process epoch, authorization, terminal reservation, session/tool
 safety, and budgets:
 
-* **authorization active and continuation safe:** append
-  `PiProcessExitDeferred`, leave attempt/generation running-held, and emit the
-  continuation outbox action;
-* **proof, side effect, reap, or budget ambiguous:** change the authorization to
-  `HeldOperatorRequired`, create/update one reconciliation issue, and leave the
-  attempt running-held;
+* **authorization active and prompt-safe after exact exit/reap proof:** append
+  `PiProcessExitDeferred`, classify the running-held attempt as
+  `NeedsFinalization`, and emit the same-session completion action promptly;
+* **authorization active and safely continuable after a phase-policy hard
+  threshold and hard-resume grace:** leave the attempt/generation running-held
+  and emit the continuation fencing outbox action only after every §5.3 guard
+  passes;
+* **proof, ownership, effect, reap, phase, or budget ambiguous:** change the
+  authorization to `HeldOperatorRequired`, create/update one reconciliation
+  issue, and leave the attempt running-held;
 * **no policy-valid authorization:** retain the generic
   `AttemptFailed(RuntimeExit|NoCompletionProtocol)` mapping unchanged.
+
+A settled/exited process is prompt-eligible because Pi or the OS supplied
+explicit quiescence evidence, not because a timer expired. Exit status does not
+select success or failure.
 
 `HeldOperatorRequired` remains the typed reason the generic reconciler must not
 terminalize the already-observed process exit. The authorization ends only when:
@@ -213,11 +231,16 @@ worker watchdog must use `agent_settled`.
 RPC remains alive after settling and accepts another prompt; `abort` cancels an
 active operation but is neither a task disposition nor a session replacement.
 For a task worker, `agent_settled` without a kernel-accepted terminal/park
-intent is `NoCompletionProtocol` evidence. The adapter first quiesces and closes
-that idle process epoch, then uses the same budgeted continuation/completion
-probe protocol as a clean child exit. A spontaneous EOF, exit code 0, nonzero
-code, or signal is only an OS process observation. None proves success or
-failure while `PiContinuationAuthorization` is active/held.
+intent enters the nonterminal `NeedsFinalization` classification. Pi has
+explicitly declared that it has no autonomous continuation, so the adapter does
+not wait for the 300-second soft threshold: it promptly quiesces and closes the
+idle process epoch, reconciles effects, and, when proof is safe, issues the one
+bounded same-session completion action. A spontaneous EOF, exit code 0,
+nonzero code, or signal is only an OS process observation. It also enters
+`NeedsFinalization` after exact exit/reap classification; when safe, WG promptly
+reopens the exact session/attempt/route/worktree for that action. None of these
+observations proves success or failure while `PiContinuationAuthorization` is
+active/held.
 
 Pi exposes provider boundaries through extension hooks:
 
@@ -326,18 +349,73 @@ The implementation must render these as unknown, not guess:
 
 Unknown side effects and unknown ownership fail closed.
 
-## 5. Detector, probe grace, waits, and long tools
+### 4.3 Layered lifecycle and completion proof
 
-### 5.1 Fixed detector
+Time and process heuristics never satisfy a lifecycle disposition. A Pi
+lifecycle tool is only an **intent** after `LifecycleKernel` durably accepts a
+receipt for the exact current tuple:
 
-The policy snapshot contains:
+```text
+TerminalReceipt(
+  task_id, generation, attempt_id, attempt_fence,
+  process_epoch, toolCallId, disposition, lifecycle_event_id
+)
+```
+
+The kernel validates currency and first-terminal-wins under `graph.lock`.
+`wg_done` yields `SuccessIntent`; it does not set `Done`. `wg_fail` and a
+correlated `wg_wait` require equivalent current-epoch accepted receipts, then
+follow their failure or park dispositions directly; they do not enter the
+success candidate/finalization path. Receipts from an older process epoch are
+late evidence only. `agent_end`, `agent_settled`, stdout/EOF, any exit code,
+silence, files, evaluator opinion, a completion prompt, and elapsed runtime
+cannot substitute for an accepted receipt.
+
+The proof that a task is really `Done` is the conjunction:
+
+```text
+DoneProofV1 {
+  success_intent: TerminalReceipt(current tuple, wg_done, SuccessIntent),
+  quiescence: PiQuiescenceReceipt(current tuple, exact process reap,
+                                  final session head,
+                                  final worktree manifest digest),
+  candidate: CandidateCheckpointReceipt(candidate_id,
+                                         worktree manifest digest,
+                                         success/quiescence receipt digests),
+  gates: RequiredValidationEvaluationReceipts(candidate_id, policy_digest),
+  finalization: AuthoritativeFinalizationReceipt(
+      candidate_id, target_head_before, target_head_after,
+      merge_event_id, lifecycle_done_event_id),
+}
+```
+
+Ownership is layered and single-writer:
+
+1. `LifecycleKernel` accepts/reserves the current terminal intent and disarms
+   conflicting watchdog actions.
+2. The Pi watchdog quiesces the exact process and emits the current manifest
+   receipt; it cannot create a candidate or declare completion.
+3. The crash-safe finalizer creates and binds the candidate checkpoint to those
+   exact receipts, runs/binds required validation and evaluation evidence, and
+   requests the authoritative merge/finalization transaction.
+4. The finalizer/lifecycle-kernel boundary records the merge/finalization event
+   and only then projects the canonical task `Done` event.
+
+A missing or mismatched member leaves the task non-Done. No timeout, process
+state, prompt, or filesystem observation fills a missing member.
+
+## 5. Observation policy, two clocks, waits, and long tools
+
+### 5.1 Static two-clock policy
+
+The policy snapshot contains two independent clocks:
 
 ```toml
 [pi_watchdog]
 enabled = true
-meaningful_silence_secs = 300       # normative default
-probe_grace_secs = 60               # separate, bounded grace
-max_probe_grace_secs = 180          # hard configuration validation cap
+meaningful_silence_secs = 300       # soft suspicion/read-only probe only
+hard_resume_grace_secs = 60         # starts only after hard threshold
+max_hard_resume_grace_secs = 180    # configuration validation cap
 max_continuation_epochs = 3
 max_continuation_elapsed_secs = 1800
 continuation_epoch_lease_secs = 600
@@ -347,40 +425,127 @@ long_tool_initial_lease_secs = 600
 long_tool_renewal_secs = 300
 long_tool_hard_cap_secs = 3600
 
-# Exact, explicit route overrides; resolved and frozen on the attempt.
+# Static initial defaults; both free and low QoS MUST remain >= 900.
+[pi_watchdog.qos.free.hard_resume_after_secs]
+provider_request_in_flight = 900    # TTFT/body-stream silence
+provider_response_stream = 900      # inter-token/generation silence
+
+[pi_watchdog.qos.low.hard_resume_after_secs]
+provider_request_in_flight = 900
+provider_response_stream = 900
+
+# Exact route/phase overrides are resolved and frozen on the attempt and must
+# respect the applicable QoS safety floor.
 [pi_watchdog.route."pi:provider:model"]
-probe_grace_secs = 120
+hard_resume_grace_secs = 120
+
+[pi_watchdog.route."pi:provider:model".hard_resume_after_secs]
+provider_request_in_flight = 1200
+provider_response_stream = 1200
 ```
 
-At exactly `last_meaningful + 300s`, a current `Active` provider/generation
-phase becomes `Suspect` by CAS. This is 300 seconds of **silence**, not five
-minutes of total task runtime. Tests may set a short explicit policy and use a
-virtual clock; production never auto-decreases it.
+`meaningful_silence_secs` is a static **soft-suspect threshold**. At exactly
+`last_meaningful + 300s`, any armed silent phase (including `Unknown`) becomes
+`Suspect` by CAS and receives one read-only probe; accepted wait and valid
+long-tool states are disarmed/protected as §5.2 specifies. The probe does not
+advance progress and cannot authorize a prompt, TERM/KILL, process fence,
+lifecycle disposition, or
+completion/failure inference. In particular, reaching 300 seconds plus the old
+maximum 180-second grace still does not authorize interruption.
 
-TTFT, provider duration, inter-token gaps, tool duration, false suspects, resume
-outcomes, route, model, input tokens, and token rate are recorded for future
-analysis. A future design may select a conservative p99 with a hard safety
-floor. This implementation does not.
+`hard_resume_after_secs` is separately resolved from the frozen route and the
+current proven phase. It is a not-before eligibility threshold, never a promise
+to interrupt at that instant. Initial free/low-QoS provider/TTFT and
+generation/inter-token policies MUST be at least 900 seconds and may be longer
+by explicit route policy. `Unknown`, advancing progress, an accepted wait, and
+a valid long-tool lease have **no automatic hard threshold**. Missing or invalid
+phase/route policy fails closed to no automatic resume.
 
-### 5.2 Two-stage suspicion and grace
+All production threshold values are static and configuration-validated; the
+credential-free fixture may inject shorter ordered values through its explicit
+test-only policy object, never through production config. Record the frozen
+route/model/QoS, phase, input bytes/tokens, TTFT, provider duration,
+inter-token gaps, tool/worktree progress, suspect/probe outcomes, false
+suspects, resume latency/success, and possible duplicate inference cost.
+Telemetry is observational: it cannot rewrite or decrease policy. Any future
+p99 adaptation requires a separate ratified design and a non-bypassable safety
+floor.
 
-The first action is always an atomic `PiSuspectObserved` containing the current
-progress sequence/digest, phase, route, session head, and process identity. It
-emits a read-only `PiProbeRequested` action. A probe may query RPC state/entries,
-inspect the exact process identity and pipe, and request a plugin phase
-snapshot. It sends no Pi prompt and invokes no tool.
+```text
+new meaningful progress ───────────────────────────────► Active (clocks restart)
+          │
+          ├─ soft 300s ─► Suspect + read-only probe ───► keep process intact
+          │                                  │
+          │                    proven phase hard threshold
+          │                                  ▼
+          │                     HardResumeEligible + hard grace
+          │                                  │
+          │                    all safety proofs/CAS pass
+          │                                  ▼
+          │                     Fencing ─► Resuming (same session)
+          │
+          ├─ agent_settled / exact exit ─► NeedsFinalization (prompt promptly)
+          ├─ accepted terminal receipt ──► disarm / lifecycle-finalizer path
+          └─ unknown or unsafe proof ─────► observe/hold; never generic kill
+```
 
-The persisted route's explicit grace then runs for 60 seconds by default, never
-more than 180. Any genuinely new meaningful evidence CASes the phase back to
-`Active` and cancels the fence action. Liveness-only evidence leaves it suspect.
-At grace expiry, the fence CAS must still match the suspect's progress sequence,
-process epoch, attempt fence, session head, and tool state. Otherwise it is
-stale and does nothing.
+### 5.2 Observation/action decision table
 
-The grace is intentionally route-aware only through an explicit frozen mapping.
-Observed p99s never rewrite it.
+Time can authorize observation or make a safe continuation eligible. It never
+proves success, failure, abandonment, quiescence, or absence of a side effect.
+The supervisor applies this table before any timer logic:
 
-### 5.3 Explicit user wait
+| Observation | Required action |
+|---|---|
+| accepted current-epoch `wg_done` | Disarm the watchdog; quiesce the exact process; hand terminal and current-manifest receipts to candidate validation/evaluation/finalization. Do not project `Done` before the complete §4.3 proof. |
+| accepted current-epoch `wg_fail` or correlated `wg_wait` | Disarm and follow the matching lifecycle failure or park disposition. Do not infer completion or use the success candidate path. |
+| `agent_settled` with no terminal receipt | Enter nonterminal `NeedsFinalization`; promptly quiesce/reconcile and issue one bounded same-session completion action. Do not wait five minutes because Pi declared no autonomous continuation. |
+| exact process exit/EOF with no terminal receipt | Enter `NeedsFinalization`; prove exact exit/reap, classify tool/effect ambiguity, and, when safe, promptly reopen the exact same session/attempt/route/worktree for the bounded completion action. Exit code chooses neither success nor failure. |
+| provider/model request in flight with no meaningful output | At 300 seconds append `Suspect` and run a read-only probe only. Keep the current process/provider operation intact until the separately configured phase/route hard threshold and hard-resume grace pass. |
+| advancing token/thinking/tool-call/session/worktree progress | Remain `Active`, advance the monotonic progress sequence, and cancel stale suspicion/eligibility. Total runtime is irrelevant; a progressing 20-minute task remains untouched. |
+| valid declared long-tool lease | Remain `LongTool` and protect it through lease/renewal/hard-cap rules. At expiry use effect-specific reconcile/receipt/operator-hold behavior, not a provider timer. |
+| accepted explicit user wait | Disarm the watchdog and park through the lifecycle kernel. Only its correlated wake follows normal lifecycle behavior; prose/UI waiting is not authority. |
+| alive but phase/ownership/effect evidence is unknown | Suspect/probe conservatively, then hold for operator or continued observation. Never guess provider stall and never auto-kill under generic silence. |
+| silent/no-terminal without safe same-session, route, process, or side-effect proof | Enter `StalledOperatorRequired`; no fresh session, fallback route, duplicate effect, inferred failure, or automatic new attempt. |
+
+`NeedsFinalization` says only “Pi stopped autonomously without completing the WG
+protocol.” It neither claims that the work is complete nor adds a canonical
+lifecycle status.
+
+### 5.3 Soft probe, hard eligibility, and grace
+
+`PiSuspectObserved` captures the current progress sequence/digest, proven phase,
+frozen route, session head, and exact process identity. Its idempotent
+`PiProbeRequested` may query RPC state/entries, inspect process identity/pipe,
+and request a plugin phase snapshot. It sends no prompt, invokes no tool, does
+not reset meaningful progress, and grants no authority.
+
+For a proven provider/generation phase, WG keeps the existing process and
+provider operation intact until `last_meaningful + hard_resume_after_secs`.
+Crossing that separate threshold records `PiHardResumeEligibilityObserved` and
+only then starts `hard_resume_grace_secs`. New meaningful evidence at any point
+CASes back to `Active`, advances the progress sequence, and invalidates both
+suspect and eligibility actions.
+
+After the hard grace, automatic fencing is permitted only if one CAS proves all
+of the following unchanged/current:
+
+* progress sequence/digest, session head, process epoch, attempt fence, and
+  terminal reservation (`None`);
+* a fresh read-only probe found no new durable or native progress evidence;
+* exact PID/start/boot/nonce identity and descendant containment;
+* a proven phase with a frozen hard-resume policy (never `Unknown`);
+* safe tool/provider effect classification, including receipt/postcondition
+  reconciliation and possible duplicate-inference accounting;
+* available, already-reservable finite continuation budget; and
+* exact same-session, route, attempt, and worktree proof.
+
+A failed, stale, or unknown check holds/observes instead of signaling. Settled
+and exited states take the prompt/finalization path promptly because of explicit
+quiescence evidence, not either clock; an exited/replaced process still requires
+its exact fence/reap receipt before replacement.
+
+### 5.4 Explicit user wait
 
 `WaitingUser` is entered only after the lifecycle kernel accepts a correlated
 park/wait intent. An extension `extension_ui_request`, a question tool waiting
@@ -392,7 +557,7 @@ Once accepted, the terminal/park reservation disarms the watchdog, quiesces the
 process, and finalizes `AttemptParked`. The later correlated wake follows the
 normal new-attempt path. Unrelated/post-terminal messages remain inert.
 
-### 5.4 Long-tool contract
+### 5.5 Long-tool contract
 
 A long tool is protected only if its pre-execution receipt declares:
 
@@ -411,14 +576,17 @@ LongToolContract {
 
 The call ID must be observable. Initial lease defaults to 600 seconds, progress
 may renew it by 300 seconds, and no automatic renewal passes the 3,600-second
-hard cap. While a valid lease exists, the process is not killed even if the
-general 300-second detector would expire. A renewal requires monotonic/new work
-evidence, not a heartbeat.
+hard cap. While a valid lease exists, the process remains `LongTool` and has no
+automatic hard-resume threshold; the 300-second soft observer may record
+diagnostics but cannot interrupt it. A renewal requires monotonic/new work evidence, not a
+heartbeat.
 
-At expiry the supervisor probes. A read-only/idempotent call can be fenced and
-reconciled. A receipt-backed call can proceed only if the stable call ID finds a
-durable completion receipt. An ambiguous non-idempotent call enters
-`StalledOperatorRequired`; it is never blindly replayed.
+At expiry the supervisor probes and applies the effect-specific contract rather
+than a provider timer. A read-only/idempotent call becomes continuation-eligible
+only after its own reconciliation policy and hard cap. A receipt-backed call can
+proceed only if the stable call ID finds a durable completion receipt. An
+ambiguous non-idempotent call enters `StalledOperatorRequired`; it is never
+blindly replayed or killed merely because a budget edge arrived.
 
 ## 6. Same-session and exact-route proof
 
@@ -552,7 +720,7 @@ Prompt wording is not an exactly-once mechanism.
 
 | Crash point | Durable fact | Automatic action |
 |---|---|---|
-| before assistant `message_end` | no durable tool call; partial token may have been billed | same-session completion probe is safe; record possible duplicate inference cost |
+| before assistant `message_end` | no durable tool call; partial token may have been billed | same-session completion action is effect-safe once its state/phase eligibility path authorizes it; record possible duplicate inference cost |
 | after assistant/tool call persisted, before WG call-intent fsync | tool cannot have been permitted to run | append interrupted tool result and continue |
 | after call-intent, before tool side effect | intent only | read-only/idempotent may reconcile; non-idempotent needs proof it did not run |
 | during read-only/idempotent tool | stable call ID, no unsafe external effect | fence; inspect; append recovered/interrupted result; continue |
@@ -586,8 +754,11 @@ semantics may not):
 
 ```text
 PiContinuationAuthorized
+PiNeedsFinalizationObserved
 PiSuspectObserved
 PiProbeRequested / PiProbeObserved
+PiHardResumeEligibilityObserved
+PiCompletionActionRequested / PiCompletionActionObserved
 PiContinuationEpochReserved
 PiProcessSubleaseRevoked
 PiSignalRequested / PiSignalReceipt
@@ -640,8 +811,11 @@ session owner.
   pid, pgid, pid_start_ticks, boot_id, process_nonce,
   phase,
   progress_seq, last_meaningful_at, last_meaningful_kind,
-  silence_deadline, probe_grace_deadline,
+  soft_suspect_deadline,
+  hard_resume_phase, hard_resume_after_secs, hard_resume_not_before,
+  hard_resume_grace_deadline,
   provider_call, tool_state, wait_state,
+  completion_action_id, prompt_version, prompt_digest, prompt_session_marker,
   epochs_used, elapsed_reserved_secs, elapsed_observed_secs,
   reason_code, pending_action_id, next_action,
 }
@@ -711,12 +885,16 @@ manifest; a later write or stale epoch invalidates consumption.
 The crash-safe finalizer may consume these receipts after kernel validation. It
 may not infer a stall, signal/reap/resume Pi, or manufacture quiescence. In the
 other direction, this watchdog does not create rescue/candidate commits, bind
-evaluator evidence, merge, or expose main-tree bytes. After an accepted success
-intent and `PiQuiescenceReceipt`, the finalizer alone checkpoints the exact
-worktree manifest, then performs the normative candidate/evaluation/merge
-protocol. The completion-probe phrase “request the normal candidate checkpoint”
-means request that existing finalization path through `wg_done`; it does not
-make the Pi process or watchdog the checkpoint/merge authority.
+evaluator evidence, merge, or expose main-tree bytes. After an accepted exact
+current-epoch `SuccessIntent` and matching `PiQuiescenceReceipt`, the finalizer
+alone checkpoints the exact worktree manifest, binds the candidate to both
+receipts, gathers required validation/evaluation evidence, and performs the
+authoritative merge/finalization transaction. Only that transaction supplies
+the final member of `DoneProofV1` and authorizes the kernel's canonical `Done`
+projection. Accepted `Failure`, `Park`, `Cancel`, and `Abort` receipts follow
+their own lifecycle dispositions without candidate creation. The completion
+prompt's request to use `wg_done` means request this existing path; it does not
+make the Pi process, prompt, or watchdog checkpoint/merge authority.
 
 ## 9. Fence, reap, and continuation algorithm
 
@@ -739,63 +917,90 @@ termination, do not launch a replacement that shares the worktree.
 
 ### 9.2 Ordered protocol
 
-1. **Observe silence/exit.** Submit evidence with current progress sequence.
-2. **Persist suspect and probe.** CAS `Active/LongTool -> Suspect`; fsync the
-   probe outbox action before probing.
-3. **Grace and recheck.** New meaningful evidence cancels. Liveness alone does
-   not. Classify in-flight tools and terminal reservations.
-4. **Reserve next epoch.** Under the lifecycle lock, CAS the still-current
+1. **Apply terminal receipts first.** A kernel-accepted current-epoch
+   `wg_done`/`wg_fail`/correlated `wg_wait` disarms the watchdog and follows
+   §4.3/§5.2. No observation below overrides first-terminal-wins.
+2. **Classify settled/exit promptly.** `agent_settled` or exact exit/EOF without
+   a terminal receipt enters `NeedsFinalization`. Quiesce/reap and reconcile
+   effects immediately; if proof is safe, reserve a replacement epoch and send
+   the one same-session completion action without waiting for either clock.
+3. **Observe soft silence.** At 300 seconds CAS an armed silent phase (including
+   `Unknown`) to `Suspect`; fsync and perform only the read-only probe action.
+   Unknown then holds/observes with no hard deadline; accepted wait and valid
+   long-tool states follow §5.2 instead.
+4. **Keep observing until phase hard eligibility.** Do not signal or prompt at
+   the soft threshold or old grace. New meaningful evidence advances the CAS
+   sequence, restores `Active`, and cancels stale actions. At the frozen
+   phase/route `hard_resume_after_secs`, append eligibility and start the
+   separate hard-resume grace.
+5. **Re-probe and guard.** After hard grace, require every §5.3 CAS, process,
+   containment, terminal, effect, budget, session/route/worktree proof. A
+   failed/unknown check holds or keeps observing; it never kills.
+6. **Reserve next epoch.** Under the lifecycle lock, CAS the still-current
    source tuple/progress/session head; charge one epoch and elapsed allocation;
    append launch intent; increment the process fence/epoch; revoke the old
    process sublease. The attempt/worktree holder does not change.
-5. **Terminate exact owner.** Verify PID/start/boot/nonce, send TERM to the
-   exact contained process group once, wait 10 seconds, then KILL once if still
-   exact, wait 5 seconds.
-6. **Prove quiescence.** Obtain `waitpid`/platform reap receipt, nonce-pipe EOF,
+7. **Terminate exact owner when still alive.** Verify PID/start/boot/nonce, send
+   TERM to the exact contained process group once, wait 10 seconds, then KILL
+   once if still exact, wait 5 seconds. For an already exited process, preserve
+   the same epoch-fence rules and consume its exact reap proof; never signal a
+   replacement/reused PID.
+8. **Prove quiescence.** Obtain `waitpid`/platform reap receipt, nonce-pipe EOF,
    exact PID identity absent, and group/cgroup/job empty. Recompute Pi session
    head/prefix and worktree manifest. Persist `PiProcessReaped`.
-7. **Repair safe dangling call.** Use §7 receipts/postconditions. Ambiguity holds.
-8. **Launch once.** Outbox consumes the already-persisted launch intent. The
-   replacement starts spawn-gated with the frozen path/route/session and a new
-   process nonce. No replacement PID is created before step 6.
-9. **Re-attest.** Plugin/RPC attests §6. The kernel compares it and sends the
-   epoch execution permit. Mismatch kills the gated child after exact identity
-   verification and holds.
-10. **Send one continuation input.** Use the stable launch action ID and prompt
-    digest. Wait for prompt acceptance and then native progress. The process
-    becomes `Active` only after the continuation input/session entry is
-    observed.
-11. **Finish by explicit protocol.** Only current-epoch `wg_done`, `wg_fail`, or
-    `wg_wait`, accepted by the kernel, can change lifecycle.
+9. **Repair safe dangling call.** Use §7 receipts/postconditions. Ambiguity holds.
+10. **Launch once.** Outbox consumes the already-persisted launch intent. The
+    replacement starts spawn-gated with the frozen path/route/session and a new
+    process nonce. No replacement PID is created before step 8.
+11. **Re-attest.** Plugin/RPC attests §6. The kernel compares it and sends the
+    epoch execution permit. Mismatch kills the gated child after exact identity
+    verification and holds.
+12. **Send the action once.** Inspect the durable session action marker, then
+    append the versioned prompt only if absent. The process becomes `Active`
+    only after the exact prompt/session marker is observed.
+13. **Finish by explicit protocol.** Only a current-epoch `wg_done`, `wg_fail`,
+    or correlated `wg_wait` accepted by the kernel supplies a disposition.
+    Success then still requires the remaining §4.3 finalization proof.
 
-### 9.3 Completion-probe input
+### 9.3 Same-session completion action
 
-The bounded continuation input is Pi session input, never a WG message:
+There is one short versioned stock prompt for both `NeedsFinalization` and a
+safe hard-resume continuation. It is Pi session input, never a WG message:
 
 ```text
-[WG_PI_CONTINUATION_V1]
-Continue process epoch <E> of the SAME WG attempt. The persisted Pi
-conversation and current leased worktree are authoritative. Do not repeat any
-side effect. First inspect the task contract, `git status`/`git diff` in this
-worktree, registered artifacts, and relevant tests. Reconcile the interrupted
-call receipt supplied below.
-
-If the work already satisfies the contract, request the normal candidate
-checkpoint and call the explicit `wg_done` tool. If incomplete, continue only
-unfinished safe work and then use `wg_done`. If genuinely blocked after an
-attempt, call `wg_fail` with evidence. If human input is required, use the
-explicit correlated `wg_wait` tool. Do not infer completion from this prompt.
+[WG_PI_CONTINUATION_V2]
+WG observed `<OBSERVATION_CODE>` for this process epoch; no accepted terminal
+receipt exists. Inspect the durable SAME Pi session, leased worktree, task
+contract, candidate state, relevant tests, and supplied receipt summaries.
+Do not repeat a side effect; reconcile it from receipts/postconditions first.
+Then produce exactly one explicit outcome: `wg_done`, `wg_fail`, or the
+correlated `wg_wait` required by the task. This prompt is guidance, not proof.
 ```
 
+`<OBSERVATION_CODE>` is a bounded, kernel-derived fact such as
+`agent_settled_no_autonomous_continuation`, `exact_process_exit_eof`, or
+`no_meaningful_progress_since_sequence`; it never embeds provider/model prose.
+The sentence is populated only when its fact is true and does not blame the
+model or assert that the task is incomplete or complete.
 The prompt includes only bounded identifiers, safe receipt summaries, and the
-reason code; the full durable session/worktree are already present. It is
-idempotency-oriented, but its wording is not used as safety proof.
+reason code. It cannot prove a side effect, quiescence, or lifecycle outcome.
+
+Append/send is crash-idempotent by a durable action ID derived from
+`(attempt_id, process_epoch, continuation_epoch, prompt_version,
+prompt_digest)`. The session stores the same action marker. On replay, the
+outbox first inspects the exact durable session marker and never appends a
+second copy for that action; an uncertain marker holds instead of resending.
+Prompt acceptance is recorded separately from any later provider/tool effect.
+
+The action preserves the exact session and active branch, attempt/fence,
+worktree lease, frozen Pi route, and process fencing. It never creates a fresh
+session, attempt, route fallback, worktree owner, or concurrent process.
 
 In particular, **main-tree visibility is never progress or completion proof**.
 A process can still be thinking or writing a superior file in its isolated
-worktree while main is unchanged. The supervisor fences/reaps before any
-continuation decision, preserves late writes in the same leased worktree,
-recomputes its manifest, and makes the completion probe inspect those bytes.
+worktree while main is unchanged. The supervisor proves quiescence before
+replacement, preserves late writes in the same leased worktree, recomputes its
+manifest, and makes the same-session action inspect those bytes.
 
 ## 10. First-terminal-wins
 
@@ -817,8 +1022,9 @@ key.
 * If success intent, failure, park, cancel, or operator abort is accepted before
   `PiContinuationEpochReserved`, it reserves the attempt disposition, cancels
   probe/fence/launch outbox actions, and prevents every replacement launch.
-  Success intent is finalized only after quiescence as lifecycle design §5.6
-  requires; the watchdog may help quiesce but may not continue.
+  Success intent follows the full §4.3 proof: the watchdog may help quiesce,
+  but only the finalizer can bind the candidate, validation/evaluation, merge,
+  and authoritative `Done` event.
 * If `PiContinuationEpochReserved` commits first, the old process epoch loses
   transition authority immediately. Old `wg_done`, `wg_fail`, wait, exit, and
   tool receipts are late evidence only. Only the new current epoch may request
@@ -844,26 +1050,28 @@ Automatic policy grants:
 
 Each `PiContinuationEpochReserved` atomically consumes one epoch and reserves
 up to `continuation_epoch_lease_secs = 600` from the remaining elapsed budget.
-The reservation is charged once even if launch later fails, and is never
-refunded. The resumed process receives a hard epoch deadline at the end of that
-allocation: the adapter stops admitting a new provider/tool phase, probes, and
-fences a read-only/idempotent phase; an unsafe in-flight side effect follows its
-receipt/hold contract rather than being blindly killed. Long-tool leases and
-renewals are clamped to the remaining epoch and cumulative budget. This makes
-crash replay trivial and bounds actual automatic resumed-process runtime by the
-reserved 1,800 seconds. Actual observed runtime is recorded separately and
-cannot extend the reservation.
+The reservation is charged before launch, once even if launch later fails, and
+is never refunded. It applies only to replacement recovery exposure: epoch 0
+and ordinary task runtime are not charged. At the end of an allocation the
+adapter stops admitting a new provider/tool phase and reconciles the current
+phase. It may fence a proven read-only/idempotent phase only through the same
+§5.3 safety gates; an unsafe or unknown in-flight effect holds rather than being
+blindly killed. Long-tool leases and renewals are clamped and effect-aware at a
+recovery budget edge. Actual observed runtime is recorded separately and cannot
+replenish the reservation.
 
 Three tries cover a transient process crash plus one repeated infrastructure
-failure without creating an infinite loop. Thirty minutes matches WG's normal
-worker-order timeout and bounds duplicate inference/tool exposure. These are
-conservative recovery limits, not claims about normal task duration; epoch 0 is
-not charged.
+failure without creating an infinite recovery loop. The 1,800-second reserve
+bounds possible duplicate inference/tool exposure. These are recovery-exposure
+budgets, **not normal task-runtime deadlines**: a progressing 20-minute epoch-0
+task is untouched, and crossing a budget does not infer failure.
 
-At an epoch-lease or total-budget boundary, no new automatic work starts. A
-currently executing ambiguous tool follows its safety contract rather than
-being blindly killed. Once quiescent/fenced, the attempt enters one deduplicated
-operator hold. Restart/ticks cannot reset either counter.
+At an epoch-lease or total-budget boundary, no new automatic recovery work
+starts. A currently executing ambiguous tool follows its safety contract rather
+than being blindly killed. Once safely quiescent/fenced, the attempt enters one
+deduplicated operator hold. Restart/ticks cannot reset either counter. Further
+action requires an audited finite manual grant or an explicit lifecycle
+abort/fail/cancel disposition; exhaustion alone supplies none.
 
 ### 11.2 Manual commands
 
@@ -880,9 +1088,11 @@ wg pi-watchdog abort <TASK> --reason <text>
 
 `resume` is valid only for the same attempt/fence/worktree/session/route. It
 appends an audited manual authorization extension, with explicit finite epoch
-and elapsed grants (defaults: one epoch and 600 seconds). It does not reset
-consumed automatic budget. An ambiguous side effect requires an exact call
-acknowledgment and receipt/disposition.
+and elapsed grants (defaults: one epoch and 600 seconds). The grant is charged
+before launch and cannot reset/refund consumed automatic budget. An ambiguous
+side effect requires an exact call acknowledgment and receipt/disposition; an
+operator may instead choose explicit lifecycle abort/fail. Neither budget
+exhaustion nor a denied grant infers failure.
 
 `abort` is an adapter to the lifecycle kernel's cancel/abandon/fail policy. It
 first-terminal-wins and fences the current process; the watchdog does not assign
@@ -896,7 +1106,9 @@ intended disposition is failure rather than cancellation/abandonment.
 | before suspect append | no action; recompute from durable progress/time |
 | suspect appended, probe absent | consume same probe action ID |
 | probe sent, receipt absent | repeat read-only probe; never reset silence |
-| progress arrives during grace | fence CAS fails on progress sequence; cancel actions |
+| soft suspect/probe persisted before hard threshold | continue observing current process; no fence/prompt action exists |
+| hard threshold reached, grace pending | consume same hard-eligibility/grace action; no fence before grace |
+| progress arrives during suspicion/hard grace | fence CAS fails on progress sequence; restore `Active`; cancel actions |
 | epoch reserved, old sublease not revoked physically | continue exact revoke/signal action; no launch |
 | TERM sent, receipt absent | verify exact identity; repeat/wait; never signal reused PID |
 | KILL sent, reap receipt absent | wait/verify containment; ambiguity holds |
@@ -905,7 +1117,7 @@ intended disposition is failure rather than cancellation/abandonment.
 | process spawned, PID receipt absent | gated nonce handshake permits adoption; otherwise kill exact child |
 | child started, attestation absent | no provider/tools; re-request attestation or kill/hold |
 | attestation appended, permit absent | send same permit once |
-| prompt requested, acceptance uncertain | inspect session marker/user entry/provider-call receipt; never duplicate an unsafe call |
+| completion action requested, append uncertain | inspect exact version/action session marker; never send a second prompt for the action; ambiguity holds |
 | tool intent/result receipt appended, Pi entry absent | repair same call ID per §7 |
 | terminal accepted, outbox pending | terminal wins; cancel continuation and finish quiescence |
 | ledger append before projection | lifecycle replay projects it |
@@ -925,7 +1137,9 @@ Human and JSON status must show:
 * continuation/process epoch, PID/PGID/start ticks/boot ID/nonce;
 * phase and pending outbox action;
 * last meaningful progress time, sequence, and kind;
-* current silence, 300-second threshold, probe grace/deadline;
+* current silence and 300-second soft-suspect threshold/probe outcome;
+* proven phase, frozen `hard_resume_after_secs` (or `none`), hard eligibility,
+  and hard-resume grace/deadline;
 * provider call/TTFT phase and token delta telemetry;
 * tool call/effect/receipt/progress/lease state;
 * correlated wait state;
@@ -936,15 +1150,17 @@ Human and JSON status must show:
 Example:
 
 ```text
-Pi watchdog: Suspect (running attempt held)
+Pi watchdog: Suspect (soft observation; process intact)
   source: task=build-x gen=2 attempt=a7 fence=19 worktree-lease=4
-  session: id=... leaf=8fa21c9e proof=verified route=pi:openai-codex:gpt-5.6-sol@xhigh
+  session: id=... leaf=8fa21c9e proof=verified route=pi:openai-codex:gpt-5.6-sol@xhigh qos=low
   process: epoch=1 pid=4312 start=922001 nonce=... exact=yes
-  progress: token_delta at 12:00:00Z; silence=314s / detector=300s
-  probe: grace=46s remaining; response=liveness-only
+  progress: token_delta at 12:00:00Z; silence=314s / soft-suspect=300s
+  probe: response=liveness-only; progress-reset=no
+  hard-resume: phase=provider_request threshold=900s eligible=no grace=not-started
   tool: none; wait: none
-  budget: epochs=1/3 elapsed-reserved=600/1800s
-  next: automatic fence if no meaningful evidence; `wg pi-watchdog status build-x --json`
+  budget: epochs=1/3 elapsed-reserved=600/1800s (recovery only)
+  next: continued observation; no signal before hard policy + grace + proof;
+        `wg pi-watchdog status build-x --json`
 ```
 
 ### 13.2 Metrics
@@ -966,13 +1182,18 @@ wg_pi_watchdog_stale_epoch_reports_total{kind}
 wg_pi_watchdog_pid_identity_ambiguity_total
 ```
 
-The metrics are observational. They do not tune the 300-second threshold.
+The metrics are observational. They tune neither the 300-second soft threshold
+nor any phase/route hard threshold or grace. Future p99 adaptation is deferred
+to a separate ratified design with an explicit safety floor.
 
 ### 13.3 Stable reason codes
 
 ```text
-meaningful_silence
+meaningful_silence_soft_suspect
 probe_no_progress
+hard_resume_phase_eligible
+needs_finalization_settled
+needs_finalization_exit
 process_exit_zero_no_terminal
 process_exit_nonzero_no_terminal
 pipe_eof_no_terminal
@@ -1011,7 +1232,7 @@ lifecycle and admission-deferral work lands:
 | `src/commands/spawn/execution.rs` | replace Pi's generic one-shot wrapper terminal mapping with the dedicated process-epoch supervisor/launch outbox; retain non-Pi behavior |
 | `src/service/executor.rs` | stop using anonymous Pi worker sessions; route Pi task workers through exact-session RPC worker adapter |
 | new `src/pi_watchdog/` | policy, evidence projection, session proof, tool classifier, process fencing, reconciliation, clock abstraction, metrics |
-| new/internal `src/commands/pi_worker.rs` | RPC worker transport, attestation/probe/control, `agent_settled`, bounded completion prompt |
+| new/internal `src/commands/pi_worker.rs` | RPC worker transport, attestation/read-only probe/control, `agent_settled`, versioned idempotent same-session completion action |
 | `src/stream_event.rs`, `src/commands/pi_stream_bridge.rs` | incremental epoch-aware native event ingestion; preserve call IDs/progress/provider phases/settled; aggregate costs across epochs idempotently |
 | `worksgood-pi/src/index.ts` plus new watchdog bridge | session/route attestation, provider phase receipts, pre-provider epoch gate, tool intent/progress/end receipts |
 | `worksgood-pi/src/tools.ts`, `wg-backend.ts` | retain toolCallId, declare effect contracts, pass lifecycle idempotency/process tuple to WG terminal/wait tools |
@@ -1020,7 +1241,7 @@ lifecycle and admission-deferral work lands:
 | generic dead-agent/sweep paths | skip current authorized/held Pi attempts; retain terminal zombie cleanup |
 | `src/cli.rs`, `src/main.rs`, command modules | `wg pi-watchdog status/resume/abort` and hidden receipt/attestation adapters |
 | show/attempt/reconcile/TUI views | §13 diagnostics; no status mutation |
-| config/profile validation | §5/§11 settings, exact route override validation, fixed defaults |
+| config/profile validation | §5/§11 static soft/hard settings, >=900s free/low-QoS hard-floor validation, absent hard policy for unknown/wait/long-tool, exact frozen route overrides, finite recovery budgets |
 | tests/smoke | §15 Fake-Pi, model/race tests, installed-binary PTY scenario |
 
 The shared daemon-loop edit lands before `impl-supervisor-hard-agent`; that later
@@ -1071,45 +1292,63 @@ A scenario file is declarative, for example:
 
 ### 15.2 Permanent model/fault matrix
 
-1. **Slow, not stalled:** slow TTFT/provider call at 299 seconds, explicit
-   route grace, then token; inter-token stream and valid tool progress. Assert no
-   signal/relaunch. Heartbeats, logs, status polls, main-tree changes, and
-   ordinary messages do not reset meaningful time. Assert production default is
-   300 with virtual time.
-2. **Real silence after partial work:** one suspect, probe, epoch CAS, exact
-   group fence/reap, same proof/route/worktree re-attestation, one continuation,
-   receipt-backed side effect exactly once, explicit done.
-3. **Correlated wait:** accepted wait disarms across arbitrary virtual time and
-   daemon restart. Unrelated messages do nothing. Matching correlation follows
-   lifecycle new-attempt behavior and creates no process continuation.
-4. **Long tools:** renewable declared long tool survives 300 seconds and
-   progresses; expired read-only tool reconciles; side-effecting tool killed
-   after effect/before receipt produces operator hold and zero replay.
-5. **Exit classification:** clean zero and abnormal nonzero/signal without
-   terminal result continue safely; explicit done/fail do not. Clean completion
-   probe sees late worktree bytes and chooses done/incomplete/fail through
-   explicit tools.
-6. **Restart every boundary:** restart before/after suspect, probe request,
-   probe receipt, epoch reservation/budget charge, sublease revoke, TERM, KILL,
-   reap, launch intent, spawn, PID receipt, attestation, permit, prompt,
-   tool receipt, and terminal reservation. Assert one action, process, budget
-   charge, and disposition.
-7. **Duplicate/race matrix:** duplicate ticks/exits/receipts; terminal vs epoch
-   CAS in both orders for done, fail, park, cancel, and operator abort. Include
-   stale wrapper reports and PID reuse. Assert first wins and late evidence only.
-8. **Operator outcomes:** manual safe resume; ambiguity acknowledgment with
-   receipt; abort/fail through kernel; grants consumed once.
-9. **Proof/route/budget:** missing/duplicate/replaced session, branch mismatch,
-   endpoint/model/reasoning/profile change, missing attestation, 3-epoch and
-   1,800-second exhaustion all hold with no fresh session/fallback.
-10. **Domain isolation:** continuation creates no admission request, source
-    attempt/generation/retry, evaluation work, worktree transfer, spawn/provider
-    breaker charge, or second owner. Cost aggregates once across epochs.
-11. **Provider lifecycle:** `agent_end(willRetry=true)` does not settle; retry,
-    compaction retry, and queued follow-up phases remain active until
-    `agent_settled`.
-12. **Dangling calls:** crash in every §7.2 window; validate synthetic result
-    repair only with read-only/postcondition/receipt proof.
+1. **Soft versus hard clocks:** with production values frozen at soft 300 and
+   low/free-QoS hard 900, assert 299 seconds is `Active`; exactly 300 appends one
+   `Suspect` plus read-only probe; 300 plus the superseded 180-second grace does
+   **not** fence; 899 seconds still preserves the process. At 900 seconds append
+   hard eligibility/start hard grace, and permit the fence only at/after that
+   grace with every §5.3 proof. Missing/`Unknown` phase policy never fences.
+2. **Progress and long runtime:** token/thinking/tool-call/session/worktree
+   progress advances the monotonic sequence, resets both clocks, and invalidates
+   stale suspicion. A progressing 20-minute generation remains `Active` and is
+   never signaled. Heartbeats, logs, status polls, main-tree changes, ordinary
+   messages, and the probe itself do not reset meaningful time.
+3. **Provider lifecycle:** cover request-in-flight/slow TTFT, response-body and
+   inter-token silence, `agent_end(willRetry=true)`, provider retry, compaction
+   retry, and queued follow-up. Before the phase hard policy plus grace the
+   current provider operation stays intact; retry/follow-up remains active until
+   `agent_settled`.
+4. **Needs finalization:** `agent_settled` and clean/abnormal/signal exit/EOF
+   without a terminal receipt promptly enter nonterminal `NeedsFinalization`
+   and receive the one safe same-session action without waiting 300 seconds.
+   Neither exit status nor settlement selects Done/Failed. Unsafe exit proof
+   enters `StalledOperatorRequired`.
+5. **Explicit terminal and Done proof:** accepted current-epoch done disarms and
+   reaches Done only after exact quiescence/manifest, candidate checkpoint,
+   required validation/evaluation, and authoritative finalization receipts.
+   Accepted fail and correlated wait disarm into their own dispositions. Missing
+   receipt or any missing success-proof member never terminalizes.
+6. **Real eligible silence after partial work:** after hard policy plus grace,
+   one guarded epoch CAS, exact group fence/reap, same proof/route/worktree
+   re-attestation, one prompt, receipt-backed side effect exactly once, and an
+   explicit accepted terminal receipt. A failed CAS/probe/effect/proof check
+   holds without signal.
+7. **Correlated wait and unknown:** accepted wait disarms across arbitrary
+   virtual time and daemon restart; unrelated messages do nothing; only matching
+   correlation follows normal new-attempt behavior. Alive silence with unknown
+   phase/ownership/effect probes then holds forever, with no generic kill.
+8. **Long tools:** renewable declared long tool survives 300, 900, and its
+   valid lease while progressing; expired read-only tool uses effect-specific
+   reconciliation; an ambiguous non-idempotent effect enters operator hold with
+   zero replay and is not blindly killed at a provider/budget timer.
+9. **Restart/idempotency matrix:** restart before/after soft suspect, probe,
+   hard eligibility, hard grace, epoch/budget reservation, sublease revoke,
+   TERM/KILL/reap, launch, attestation/permit, prompt action/marker, tool receipt,
+   and terminal reservation. Assert one prompt append, action, process, charge,
+   and disposition.
+10. **Duplicate/race matrix:** duplicate ticks/exits/receipts; terminal versus
+    epoch CAS in both orders for done/fail/park/cancel/operator abort; stale
+    wrapper reports and PID reuse. Assert first-terminal-wins and old-epoch
+    reports are late evidence only.
+11. **Proof/route/budget/operator:** missing/duplicate/replaced session, branch
+    or route mismatch, unavailable exact route, missing attestation, three-epoch
+    and 1,800-second exhaustion all hold without fallback/fresh session or
+    inferred failure. Manual safe resume/ambiguity receipt/abort/fail grants are
+    finite, audited, charged once, and never replenish on restart.
+12. **Dangling calls and domain isolation:** crash every §7.2 window; repair only
+    with read-only/postcondition/receipt proof. Continuation creates no admission
+    request, source attempt/generation/retry, evaluation job, worktree transfer,
+    breaker charge, or second owner; cost aggregates once across epochs.
 
 ### 15.3 Installed-binary terminal/PTY smoke
 
@@ -1119,16 +1358,25 @@ Register one grow-only scenario, proposed name
 1. `cargo install --path . --locked` before the installed-runtime validation;
 2. run the real `wg service` and wrapper inside tmux/PTY against an isolated
    graph/HOME and Fake-Pi on PATH;
-3. display/assert the production default `meaningful_silence=300s`, then use an
-   explicit short test policy;
-4. visibly cover slow-not-stalled, `Suspect -> Fencing -> Resuming -> Active ->
-   Done`, exact session/route/worktree, and a single side-effect marker;
-5. show wait and valid long-tool states untouched;
-6. kill/restart the real daemon at a durable continuation boundary;
-7. drive one terminal-vs-watchdog race in each ordering;
-8. show explicit done and fail outcomes;
+3. display/assert production `meaningful_silence=300s` and low/free-QoS
+   phase hard-resume policy `>=900s`, then use explicit short soft/hard test
+   values that preserve their ordering;
+4. visibly show soft `Suspect` plus read-only probe, no fence at the old
+   soft-plus-grace point, hold immediately before hard eligibility, and only
+   then `HardResumeEligible -> Fencing -> Resuming -> Active` after hard grace
+   and proof;
+5. show a progressing long run, provider retry/in-flight, accepted wait, valid
+   long tool, and unknown alive silence untouched by generic timing;
+6. show `agent_settled` and safe zero/nonzero exit enter nonterminal
+   `NeedsFinalization` and receive the same-session prompt promptly, without
+   becoming Done/Failed;
+7. prove explicit current-epoch done/fail/wait receipts and the full success
+   finalization tuple; no early Done from prompt/exit/settled;
+8. kill/restart the real daemon around prompt marker, continuation, and budget
+   boundaries; drive terminal-vs-watchdog races in each ordering;
 9. run `wg pi-watchdog resume` and `abort` as human terminal commands; and
-10. assert no duplicate owner/PID/session/input/route/cost receipt.
+10. assert one prompt/action/side-effect, no duplicate owner/PID/session/route or
+    replenished budget, and observational-only telemetry.
 
 This is not replaceable by a direct Rust helper or a fake lifecycle call. A
 TUI status pane may be exercised, but the minimum gate is the actual installed
@@ -1153,14 +1401,18 @@ provider availability is a loud skip, not a CI failure.
 
 The implementation is accepted only when:
 
-* slow generation/provider, active tokens, long tools, wait, process death,
-  zero/nonzero no-terminal exit, explicit done/fail/park, and operator abort are
-  distinguishable without another task-status writer;
-* 300 seconds remains fixed and separate from probe grace and future telemetry;
+* the §5.2 table distinguishes terminal receipts, settled, exit, provider
+  in-flight, progress, long tool, accepted wait, unknown alive silence, and
+  unsafe proof without another task-status writer;
+* 300 seconds remains a fixed soft suspect/probe only, separate from static
+  phase/route hard eligibility (free/low-QoS >=900), hard grace, budgets, and
+  future telemetry; unknown/wait/valid-long-tool has no automatic deadline;
+* `NeedsFinalization` prompts promptly but never terminalizes, while `Done`
+  requires every exact receipt in §4.3;
 * same-session/route proof plus exact process fencing make a concurrent or fresh
-  session impossible;
-* ambiguous side effects, messages, PID reuse, restarts, cost, and budgets are
-  fail-closed and permanently tested;
+  session impossible, and the versioned prompt/action is append-once on restart;
+* ambiguous side effects, messages, PID reuse, restarts, cost, and finite
+  recovery budgets are fail-closed and permanently tested;
 * caps/config/events/files/commands/reasons are implemented as specified; and
 * the credential-free real service/PTY flow is permanent in the smoke manifest.
 
@@ -1196,13 +1448,28 @@ leased worktree are relevant; main is deliberately stale until acceptance.
 ### Why hold instead of fail on ambiguity/exhaustion?
 
 Failure would claim a semantic attempt outcome from missing process evidence and
-would strand recoverable source. Repeating would risk duplicate external
-side effects and unbounded cost. A single owned, non-dispatchable operator hold
-states exactly what is known without inventing success, failure, or retry.
+would strand recoverable source. Repeating would risk duplicate external side
+effects and unbounded cost. A single owned, non-dispatchable operator hold
+states exactly what is known without inventing success, failure, or retry. Time
+can make a proven safe recovery eligible; it cannot eliminate ambiguity.
 
-### Why no adaptive threshold now?
+### Why is exit or `wg_done` not enough to call the task Done?
 
-A learned threshold introduces feedback and sparse-route failure modes before
-we have trustworthy telemetry. The fixed 300-second detector, bounded explicit
-grace, and fail-closed tool/session proof are simple enough to model and test.
-Telemetry collected here can support a later conservative proposal.
+Exit/settlement proves only that one process stopped, and `wg_done` proves only
+that the kernel accepted the current worker's success intent. Neither proves
+that the exact worktree stopped changing, that its candidate was checkpointed,
+that required validation/evaluation passed, or that the candidate was
+atomically finalized into the authoritative target. The layered §4.3 tuple
+assigns each proof to the component that can actually establish it and keeps
+`LifecycleKernel`/the finalizer as the only completion boundary.
+
+### Why two static clocks and no adaptation now?
+
+Five minutes is useful for noticing silence but unsafe as a universal provider
+interruption deadline. A distinct conservative phase/route threshold preserves
+a slow low/free-QoS request while still allowing proven stalls to become
+recovery-eligible. A learned threshold introduces feedback and sparse-route
+failure modes before trustworthy telemetry exists. The static 300-second soft
+observer, >=900-second initial low/free-QoS hard floor, bounded hard grace, and
+fail-closed proofs are modelable and testable. Telemetry cannot modify them.
+Any later p99 policy needs separate ratification and an explicit safety floor.
