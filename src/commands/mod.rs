@@ -158,6 +158,7 @@ pub mod why_blocked;
 pub mod workload;
 pub mod worktree_cmd;
 pub mod worktree_gc;
+pub mod worktree_observer;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};

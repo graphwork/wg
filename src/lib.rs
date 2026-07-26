@@ -98,6 +98,7 @@ pub mod usage;
 pub mod vendor_history;
 pub mod verify_lint;
 pub mod workgraph_dir;
+pub mod worktree_observer;
 
 pub use config::MatrixConfig;
 pub use graph::WorkGraph;

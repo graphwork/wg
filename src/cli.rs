@@ -2668,6 +2668,30 @@ pub enum Commands {
         dry_run: bool,
     },
 
+    /// Internal isolated-worktree observer process. Notifications are wakeup
+    /// hints; this command accepts activity only after content reconciliation.
+    #[command(name = "worktree-observer-run", hide = true)]
+    WorktreeObserverRun {
+        #[arg(long)]
+        state_dir: PathBuf,
+        #[arg(long)]
+        parent_pid: Option<u32>,
+    },
+
+    /// Internal/manual full reconciliation used by daemon startup and tests.
+    #[command(name = "worktree-observer-reconcile", hide = true)]
+    WorktreeObserverReconcile {
+        #[arg(long)]
+        state_dir: PathBuf,
+        #[arg(long)]
+        preservation: bool,
+        #[arg(long)]
+        after_reap: bool,
+        /// Inject a watcher-overflow hint; reconciliation remains the truth.
+        #[arg(long, hide = true)]
+        overflow: bool,
+    },
+
     /// Bridge Claude CLI stream-json stdio ↔ chat/<ref>/*.jsonl.
     ///
     /// Peer of `wg nex --chat <ref>` for the Claude executor. Dispatched
@@ -6747,6 +6771,8 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::TuiNex { .. } => "tui-nex",
         Commands::TuiPty { .. } => "tui-pty",
         Commands::SpawnTask { .. } => "spawn-task",
+        Commands::WorktreeObserverRun { .. } => "worktree-observer-run",
+        Commands::WorktreeObserverReconcile { .. } => "worktree-observer-reconcile",
         Commands::ClaudeHandler { .. } => "claude-handler",
         Commands::CodexHandler { .. } => "codex-handler",
         Commands::OpenCodeHandler { .. } => "opencode-handler",
@@ -6826,6 +6852,7 @@ pub fn supports_json(cmd: &Commands) -> bool {
             | Commands::Kill { .. }
             | Commands::Reap { .. }
             | Commands::Service { .. }
+            | Commands::WorktreeObserverReconcile { .. }
             | Commands::Screencast { .. }
             | Commands::Cost { .. }
             | Commands::Check

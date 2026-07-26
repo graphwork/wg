@@ -2691,3 +2691,10 @@ script = "scenarios/admission_deferral_backpressure.sh"
 owners = ["fix-admission-deferrals"]
 description = "Credential-free installed-binary terminal/daemon flow for admission backpressure: one live build-heavy shell task occupies max_build_agents=1 while a second remains Open and unattempted across more than five bounded ticks with zero spawn/retry/provider-health/evaluator/FLIP charge; service JSON and human status expose the separate deferred count/reason; identical logs and lifecycle evidence coalesce; releasing the first task's capacity (without retry/edit/direct transition calls) makes the daemon dispatch the deferred task exactly once."
 timeout_seconds = 60
+
+[[scenario]]
+name = "isolated_worktree_observer_human_flow"
+script = "scenarios/isolated_worktree_observer_human_flow.sh"
+owners = ["implement-isolated-worktree"]
+description = "Installed-binary real daemon/wrapper/Fake-Pi terminal flow: baseline is fsynced before the isolated worktree receives its permit; deliberately different main stays inert; candidate writes and atomic rename display as observed/unproven separately from the watchdog-owned proven clock; target churn is ignored; production 300/120/600 bounds remain visible; overflow and daemon restart reconcile without refreshing timestamps; and a post-reap late write is quarantined without making the task Done."
+timeout_seconds = 90

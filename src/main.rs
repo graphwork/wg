@@ -3951,6 +3951,22 @@ fn main() -> Result<()> {
             role,
             dry_run,
         } => commands::spawn_task::run(&workgraph_dir, &task_id, role.as_deref(), dry_run),
+        Commands::WorktreeObserverRun {
+            state_dir,
+            parent_pid,
+        } => commands::worktree_observer::run_watch(&state_dir, parent_pid),
+        Commands::WorktreeObserverReconcile {
+            state_dir,
+            preservation,
+            after_reap,
+            overflow,
+        } => commands::worktree_observer::run_reconcile(
+            &state_dir,
+            preservation,
+            after_reap,
+            overflow,
+            cli.json,
+        ),
         Commands::ClaudeHandler {
             chat,
             resume,

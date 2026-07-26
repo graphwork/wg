@@ -202,6 +202,10 @@ impl std::fmt::Display for ConfigLoadDiagnostics {
     }
 }
 
+fn worktree_observer_config_is_default(value: &crate::worktree_observer::ObserverConfig) -> bool {
+    value == &crate::worktree_observer::ObserverConfig::default()
+}
+
 /// Main configuration structure
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
@@ -252,6 +256,11 @@ pub struct Config {
     /// Checkpoint configuration
     #[serde(default)]
     pub checkpoint: CheckpointConfig,
+
+    /// Attempt-scoped isolated-worktree observer policy. Values are snapshotted
+    /// before the launch permit and never adapt from telemetry mid-attempt.
+    #[serde(default, skip_serializing_if = "worktree_observer_config_is_default")]
+    pub worktree_observer: crate::worktree_observer::ObserverConfig,
 
     /// Model routing: per-role model+provider assignments
     #[serde(default)]
@@ -6849,6 +6858,14 @@ impl Config {
     /// Errors should block service start. Warnings should be displayed but allow startup.
     pub fn validate_config(&self) -> ConfigValidation {
         let mut result = ConfigValidation::default();
+
+        if let Err(error) = self.worktree_observer.validate() {
+            result.errors.push(ConfigDiagnostic {
+                rule: "worktree-observer-policy".into(),
+                message: error.to_string(),
+                fix: "Use repository-relative generated_paths (no '..' or absolute roots), debounce_ms 10..=5000, reconcile_interval_secs 1..=300, observed_activity_grace_secs <= 600, and max_observed_only_extension_secs <= 3600 with grace <= cap.".into(),
+            });
+        }
 
         // Explicit execution fallbacks are all-or-nothing. A handler/provider
         // change is a fatal configuration error, not a candidate to skip.

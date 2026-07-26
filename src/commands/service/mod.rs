@@ -2677,6 +2677,17 @@ pub fn run_daemon(
         );
     }
 
+    match worksgood::worktree_observer::restart_current_observers(&dir) {
+        Ok(0) => {}
+        Ok(count) => logger.info(&format!(
+            "Reattached {} isolated-worktree observer process(es); live watcher leases deduplicate startup",
+            count
+        )),
+        Err(error) => logger.warn(&format!(
+            "Worktree observer startup reconciliation degraded; persisted evidence remains fail-closed: {error:#}"
+        )),
+    }
+
     let (resolved_executor, resolved_model) = resolve_service_coordinator_settings(
         &dir,
         &config,
@@ -4095,6 +4106,14 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
     // Load coordinator state (persisted by daemon, reflects effective config + runtime)
     let coord = CoordinatorState::load_or_default(dir);
     let cleanup = worktree::load_cleanup_lane_snapshot(dir);
+    let worktree_observers = worksgood::worktree_observer::list_projections(dir);
+    let worktree_activity_clocks = worktree_observers
+        .iter()
+        .cloned()
+        .map(|projection| {
+            worksgood::worktree_observer::activity_clocks_read_model(projection, None)
+        })
+        .collect::<Vec<_>>();
 
     // Log file info
     let log_path = log_file_path(dir);
@@ -4141,6 +4160,14 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
                 },
             },
             "retained_worktree_cleanup": cleanup,
+            "worktree_observers": worktree_observers,
+            "worktree_activity_clocks": worktree_activity_clocks,
+            "worktree_observer_policy": {
+                "meaningful_silence_secs": worksgood::worktree_observer::DEFAULT_MEANINGFUL_SILENCE_SECS,
+                "observed_activity_grace_secs": worksgood::worktree_observer::DEFAULT_OBSERVED_ACTIVITY_GRACE_SECS,
+                "max_observed_only_extension_secs": worksgood::worktree_observer::DEFAULT_MAX_OBSERVED_ONLY_EXTENSION_SECS,
+                "authority": "observed/unproven; cannot mutate lifecycle"
+            },
             "log": {
                 "path": log_path_str,
                 "exists": log_exists,
@@ -4255,6 +4282,45 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
             );
         } else {
             println!("  No ticks yet");
+        }
+        for observer in worktree_observers.iter().take(16) {
+            let activity = observer.last_activity.as_ref().map_or_else(
+                || {
+                    if observer.baseline_time_unknown {
+                        "none (baseline_time_unknown)".to_string()
+                    } else {
+                        "none after baseline".to_string()
+                    }
+                },
+                |activity| {
+                    format!(
+                        "seq={} {}s ago",
+                        activity.content_seq,
+                        Utc::now()
+                            .timestamp()
+                            .saturating_sub(activity.observed_at)
+                            .max(0)
+                    )
+                },
+            );
+            println!(
+                "  Worktree activity: observed/unproven task={} attempt={} {} health={:?} ignored={:?}",
+                observer.source.identity.task_id,
+                observer.source.identity.attempt_id,
+                activity,
+                observer.health,
+                observer.ignored_churn,
+            );
+            println!(
+                "    Pi progress: proven clock owned by watchdog; filesystem evidence does not advance it"
+            );
+            println!(
+                "    Watchdog bounds: proof={}s grace={}s cap={}s; next={}",
+                worksgood::worktree_observer::DEFAULT_MEANINGFUL_SILENCE_SECS,
+                worksgood::worktree_observer::DEFAULT_OBSERVED_ACTIVITY_GRACE_SECS,
+                worksgood::worktree_observer::DEFAULT_MAX_OBSERVED_ONLY_EXTENSION_SECS,
+                observer.next_safe_action,
+            );
         }
         if let Some(cleanup) = cleanup {
             println!(

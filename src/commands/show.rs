@@ -38,6 +38,12 @@ struct TaskDetails {
     status: Status,
     /// Authoritative generation/attempt/fence projection plus accepted audit.
     lifecycle: worksgood::lifecycle::LifecycleProjection,
+    /// Read-only candidate-content evidence for the exact current attempt.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    worktree_observer: Option<worksgood::worktree_observer::ObserverProjection>,
+    /// Stable downstream/TUI read model with explicitly separate clocks.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    activity_clocks: Option<worksgood::worktree_observer::ActivityClocksReadModel>,
     priority: Priority,
     #[serde(skip_serializing_if = "Option::is_none")]
     assigned: Option<String>,
@@ -711,12 +717,36 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
             )
         });
 
+    let worktree_observer = task
+        .lifecycle
+        .current_attempt
+        .as_ref()
+        .and_then(|attempt| {
+            worksgood::worktree_observer::read_projection(
+                &dir.join("attempts")
+                    .join(&attempt.id)
+                    .join("worktree-observer"),
+            )
+            .ok()
+        })
+        .filter(|projection| {
+            projection.source.identity.task_id == task.id
+                && projection.source.identity.generation == task.lifecycle.generation
+                && projection.source.identity.attempt_fence == task.lifecycle.fence
+        });
+
+    let activity_clocks = worktree_observer.clone().map(|projection| {
+        worksgood::worktree_observer::activity_clocks_read_model(projection, None)
+    });
+
     let details = TaskDetails {
         id: task.id.clone(),
         title: task.title.clone(),
         description: task.description.clone(),
         status: task.status,
         lifecycle: task.lifecycle.clone(),
+        worktree_observer,
+        activity_clocks,
         priority: task.priority,
         assigned: task.assigned.clone(),
         hours: task.estimate.as_ref().and_then(|e| e.hours),
@@ -1307,6 +1337,82 @@ fn print_human_readable(details: &TaskDetails) {
     if let Some(ref last_interaction) = details.last_interaction_at {
         println!("Last interaction: {}", last_interaction);
     }
+    if let Some(ref observer) = details.worktree_observer {
+        println!();
+        if let Some(ref activity) = observer.last_activity {
+            let age = Utc::now()
+                .timestamp()
+                .saturating_sub(activity.observed_at)
+                .max(0);
+            let change = activity.changed_paths.first();
+            let change_text = change.map_or_else(
+                || "candidate manifest changed".to_string(),
+                |path| {
+                    format!(
+                        "{} {} ({:+} bytes)",
+                        path.operation, path.path, path.byte_delta
+                    )
+                },
+            );
+            println!(
+                "Worktree activity: observed/unproven seq={} {} ({} ago)",
+                observer.content_seq,
+                change_text,
+                worksgood::format_duration(age, true),
+            );
+        } else {
+            println!(
+                "Worktree activity: observed/unproven seq={} none after baseline{}",
+                observer.content_seq,
+                if observer.baseline_time_unknown {
+                    " (baseline_time_unknown)"
+                } else {
+                    ""
+                },
+            );
+        }
+        // Receipt-proven progress is intentionally not synthesized from the
+        // filesystem channel. The Pi watchdog owns and fills this clock.
+        println!(
+            "Pi progress: proven unavailable (watchdog receipt channel has not projected evidence)"
+        );
+        println!(
+            "Watchdog: proof default={}s; observed grace={}s / {}s hard cap (observations never reset proof)",
+            worksgood::worktree_observer::DEFAULT_MEANINGFUL_SILENCE_SECS,
+            worksgood::worktree_observer::DEFAULT_OBSERVED_ACTIVITY_GRACE_SECS,
+            worksgood::worktree_observer::DEFAULT_MAX_OBSERVED_ONLY_EXTENSION_SECS,
+        );
+        println!(
+            "Observer: {:?}; scan={}s ago; ignored churn={:?}; manifest={}; policy={}",
+            observer.health,
+            Utc::now()
+                .timestamp()
+                .saturating_sub(observer.last_reconciliation_at)
+                .max(0),
+            observer.ignored_churn,
+            observer.manifest_digest,
+            observer.policy_digest,
+        );
+        println!(
+            "  source: task={} gen={} attempt={} fence={} worktree={} lease={} process-epoch={} observer-epoch={}",
+            observer.source.identity.task_id,
+            observer.source.identity.generation,
+            observer.source.identity.attempt_id,
+            observer.source.identity.attempt_fence,
+            observer.source.identity.worktree_id,
+            observer.source.identity.worktree_lease_epoch,
+            observer.source.identity.process_epoch,
+            observer.source.identity.observer_epoch,
+        );
+        println!("  root: {}", observer.source.canonical_worktree_root);
+        if observer.quarantine_required {
+            println!(
+                "  quarantine: required; late mutations={}",
+                observer.late_mutations.len()
+            );
+        }
+        println!("  next: {}", observer.next_safe_action);
+    }
     if let Some(ref not_before) = details.not_before {
         println!("Not before: {}{}", not_before, format_countdown(not_before));
     }
@@ -1777,6 +1883,8 @@ mod tests {
             description: Some("Test description".to_string()),
             status: Status::InProgress,
             lifecycle: worksgood::lifecycle::LifecycleProjection::default(),
+            worktree_observer: None,
+            activity_clocks: None,
             priority: PRIORITY_DEFAULT,
             assigned: Some("agent-1".to_string()),
             hours: Some(2.0),

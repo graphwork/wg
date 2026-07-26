@@ -400,6 +400,9 @@ struct TaskClaimSnapshot {
     status: Status,
     started_at: Option<String>,
     assigned: Option<String>,
+    generation: u64,
+    attempt_id: String,
+    attempt_fence: u64,
 }
 
 fn claim_task_for_spawn(
@@ -425,11 +428,9 @@ fn claim_task_for_spawn(
             ));
             return false;
         }
-        snapshot = Some(TaskClaimSnapshot {
-            status: task.status,
-            started_at: task.started_at.clone(),
-            assigned: task.assigned.clone(),
-        });
+        let prior_status = task.status;
+        let prior_started_at = task.started_at.clone();
+        let prior_assigned = task.assigned.clone();
         let generation = task.lifecycle.generation;
         let request = TransitionRequest::new(
             TransitionKind::AttemptReserved {
@@ -446,6 +447,19 @@ fn claim_task_for_spawn(
             claim_error = Some(anyhow::anyhow!(rejection));
             return false;
         }
+        let attempt = task
+            .lifecycle
+            .current_attempt
+            .as_ref()
+            .expect("attempt reservation must project a current attempt");
+        snapshot = Some(TaskClaimSnapshot {
+            status: prior_status,
+            started_at: prior_started_at,
+            assigned: prior_assigned,
+            generation: task.lifecycle.generation,
+            attempt_id: attempt.id.clone(),
+            attempt_fence: task.lifecycle.fence,
+        });
         task.started_at = Some(Utc::now().to_rfc3339());
         task.assigned = Some(agent_id.to_string());
         true
@@ -1411,6 +1425,7 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
     // preparation. The closure re-checks status and assignment, closing the
     // stale-read race between concurrent dispatchers.
     let claim_snapshot = claim_task_for_spawn(&graph_path, task_id, &temp_agent_id)?;
+    let mut observer_state_dir: Option<PathBuf> = None;
 
     // The wrapper is spawned behind an unpublished launch gate. It cannot
     // start the handler until every durable transaction boundary succeeds.
@@ -1434,6 +1449,46 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
                     info.path.display()
                 )
             })?;
+
+            // Establish the exact candidate baseline before even the gated
+            // wrapper is spawned. The launch permit is published only after
+            // this state is fsynced, so retained/reused bytes are baseline,
+            // never manufactured activity for the new attempt.
+            let state_dir = dir
+                .join("attempts")
+                .join(&claim_snapshot.attempt_id)
+                .join("worktree-observer");
+            let policy = worksgood::worktree_observer::CandidatePathPolicy::new(
+                task.deliverables.clone(),
+                config.worktree_observer.generated_paths.clone(),
+            )?;
+            worksgood::worktree_observer::WorktreeObserver::attach_at(
+                &info.path,
+                &state_dir,
+                worksgood::worktree_observer::ObserverIdentity {
+                    task_id: task_id.to_string(),
+                    generation: claim_snapshot.generation,
+                    attempt_id: claim_snapshot.attempt_id.clone(),
+                    attempt_fence: claim_snapshot.attempt_fence,
+                    worktree_id: temp_agent_id.clone(),
+                    // The staged lifecycle currently gives the attempt fence
+                    // and worktree acquisition one transaction. Keep the
+                    // compatibility lease epoch identical until the dedicated
+                    // lease projector lands; never derive it from a path.
+                    worktree_lease_epoch: claim_snapshot.attempt_fence,
+                    // The initial process lease is reserved by this same
+                    // fenced attempt transaction; later watchdog rebinds
+                    // monotonically advance it without resetting baseline.
+                    process_epoch: 1,
+                    observer_epoch: 0,
+                },
+                policy,
+                config.worktree_observer.clone(),
+                Utc::now().timestamp(),
+            )
+            .context("failed to establish isolated-worktree observer baseline")?;
+            cmd.env("WG_WORKTREE_OBSERVER_STATE_DIR", &state_dir);
+            observer_state_dir = Some(state_dir);
         }
 
         child = Some(cmd.spawn().with_context(|| {
@@ -1536,7 +1591,17 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
             metadata["worktree_path"] = serde_json::json!(worktree.path.to_string_lossy());
             metadata["worktree_branch"] = serde_json::json!(&worktree.branch);
             metadata["effective_cwd"] = serde_json::json!(worktree.path.to_string_lossy());
-        } else if let Some(ref working_dir) = settings.working_dir {
+        }
+        if let Some(ref state_dir) = observer_state_dir {
+            metadata["worktree_observer_state_dir"] =
+                serde_json::json!(state_dir.to_string_lossy());
+            metadata["attempt_id"] = serde_json::json!(&claim_snapshot.attempt_id);
+            metadata["attempt_fence"] = serde_json::json!(claim_snapshot.attempt_fence);
+            metadata["worktree_lease_epoch"] = serde_json::json!(claim_snapshot.attempt_fence);
+        }
+        if worktree_info.is_none()
+            && let Some(ref working_dir) = settings.working_dir
+        {
             metadata["effective_cwd"] = serde_json::json!(working_dir);
         }
         metadata["owned_cache_paths"] = serde_json::json!(
@@ -1595,6 +1660,15 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
                 rollback_task_claim(&graph_path, task_id, &temp_agent_id, &claim_snapshot)
             {
                 rollback_errors.push(format!("task claim: {rollback:#}"));
+            }
+            // No launch permit was published, so no source process could have
+            // consumed this attempt baseline. It is safe to remove this
+            // unreferenced preparation after the authoritative claim rollback.
+            if let Some(ref state_dir) = observer_state_dir
+                && let Err(rollback) = fs::remove_dir_all(state_dir)
+                && rollback.kind() != std::io::ErrorKind::NotFound
+            {
+                rollback_errors.push(format!("worktree observer preparation: {rollback}"));
             }
             return Err(error).with_context(|| {
                 format!(
@@ -2884,6 +2958,17 @@ unset CLAUDE_CODE_SDK_HAS_OAUTH_REFRESH
 {timeout_note}
 {debug_env_vars}
 {stream_init}
+# Start the source observer before the handler. The baseline was already
+# fsynced by the parent spawn transaction before this wrapper received its
+# launch permit. Native events only wake content reconciliation.
+if [ -n "${{WG_WORKTREE_OBSERVER_STATE_DIR:-}}" ]; then
+    if command -v setsid >/dev/null 2>&1; then
+        setsid wg worktree-observer-run --state-dir "$WG_WORKTREE_OBSERVER_STATE_DIR" --parent-pid "$$" >/dev/null 2>&1 &
+    else
+        nohup wg worktree-observer-run --state-dir "$WG_WORKTREE_OBSERVER_STATE_DIR" --parent-pid "$$" </dev/null >/dev/null 2>&1 &
+    fi
+    WG_WORKTREE_OBSERVER_PID=$!
+fi
 # Guarded heartbeat watcher — keeps registry heartbeat fresh while this wrapper
 # owns the anonymous pipe's write descriptor. The executor runs with that
 # descriptor closed, so even an untrappable wrapper death produces immediate
