@@ -2737,6 +2737,13 @@ description = "Installed-binary real tmux/PTY + native-format Fake-Pi flow: the 
 timeout_seconds = 120
 
 [[scenario]]
+name = "candidate_finalization_transaction"
+script = "scenarios/candidate_finalization_transaction.sh"
+owners = ["implement-crash-safe"]
+description = "Installed-binary terminal/daemon finalization flow: a Fake-Pi-backed exact lifecycle attempt crosses the historical false-stall boundary, writes a late unpushed 28KB worktree candidate against 6KB main, records same-session terminal/reap receipts, rescue/candidate/validation/merge bindings, materializes immutable bytes, replays exactly once across daemon restart, preserves explicit-fail WIP, and retains target movement as RepairNeeded rather than substituting main."
+timeout_seconds = 120
+
+[[scenario]]
 name = "spawn_observer_preparation_recovery"
 script = "scenarios/spawn_observer_preparation_recovery.sh"
 owners = ["verify-spawn-recovery"]

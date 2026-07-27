@@ -1312,6 +1312,7 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
     }
 
     // Add task ID and agent ID to environment
+    cmd.env("WG_DIR", dir);
     cmd.env("WG_TASK_ID", task_id);
     if let Some(chat_id) = worksgood::chat_id::parse_chat_task_id(task_id) {
         cmd.env("WG_CHAT_ID", task_id);
@@ -2893,7 +2894,7 @@ fn write_wrapper_script(
     executor_type: &str,
     fallback_command: Option<&str>,
 ) -> Result<std::path::PathBuf> {
-    let complete_cmd = "wg done \"$TASK_ID\" 2>> \"$OUTPUT_FILE\" || echo \"[wrapper] WARNING: 'wg done' failed with exit code $?\" >> \"$OUTPUT_FILE\"".to_string();
+    let complete_cmd = "WG_HANDLER_QUIESCENT=1 wg done \"$TASK_ID\" 2>> \"$OUTPUT_FILE\" || echo \"[wrapper] WARNING: 'wg done' failed with exit code $?\" >> \"$OUTPUT_FILE\"".to_string();
     let complete_msg = "[wrapper] Agent exited successfully, marking task done";
 
     let timeout_note = if let Some(secs) = effective_timeout_secs {
@@ -3152,6 +3153,12 @@ if [ "$EXIT_CODE" -ne 0 ]; then
     fi
 fi
 {pi_exit_reconcile}
+# Pi terminal tools reserve intent while the handler can still write. Only
+# this post-wait adapter may checkpoint/merge or commit failure preservation.
+if [ "{executor_type}" = "pi" ]; then
+    WG_HANDLER_QUIESCENT=1 wg finalize settle "$TASK_ID" 2>> "$OUTPUT_FILE" || \
+      echo "[wrapper] WARNING: finalization settle held; inspect with: wg finalize status $TASK_ID" >> "$OUTPUT_FILE"
+fi
 
 # Check if task is still in progress (agent didn't mark it done/failed)
 TASK_STATUS=$(wg show "$TASK_ID" --json 2>/dev/null | grep -o '"status": *"[^"]*"' | head -1 | sed 's/.*"status": *"//;s/"//' || echo "unknown")
@@ -3240,11 +3247,14 @@ if [ -n "$WG_WORKTREE_PATH" ] && [ -n "$WG_BRANCH" ] && [ -n "$WG_PROJECT_ROOT" 
 
     TASK_STATUS_FINAL=$(wg show "$TASK_ID" --json 2>/dev/null | grep -o '"status": *"[^"]*"' | head -1 | sed 's/.*"status": *"//;s/"//' || echo "unknown")
 
-    # Mark worktree for cleanup sweep (wg done already placed this marker on
-    # the happy path, but the wrapper is a safety net for cases where the agent
-    # crashed or was killed before reaching wg done).
-    touch "$WG_WORKTREE_PATH/.wg-cleanup-pending" 2>/dev/null || true
-    echo "[wrapper] Task finished with status '$TASK_STATUS_FINAL' — marked worktree $WG_WORKTREE_PATH for explicit cleanup (inspect/remove with: wg worktree archive $WG_AGENT_ID --remove)" >> "$OUTPUT_FILE"
+    # Cleanup is ancillary and only eligible after content-bound acceptance.
+    # Failed, held, rejected and conflicted trees remain source-bearing.
+    if [ "$TASK_STATUS_FINAL" = "done" ]; then
+        touch "$WG_WORKTREE_PATH/.wg-cleanup-pending" 2>/dev/null || true
+        echo "[wrapper] Accepted task marked worktree $WG_WORKTREE_PATH cleanup-pending" >> "$OUTPUT_FILE"
+    else
+        echo "[wrapper] Retaining source-bearing worktree $WG_WORKTREE_PATH (status=$TASK_STATUS_FINAL; inspect: wg finalize status $TASK_ID)" >> "$OUTPUT_FILE"
+    fi
 
     # Build caches are never removed here. The owned-cache sentinel waits for
     # terminal owner/task state, stale exact PID identity, lease expiry, a clean

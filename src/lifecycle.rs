@@ -779,29 +779,10 @@ impl LifecycleKernel {
                 if let Some(authorization) = projection.pi_continuation.as_mut() {
                     authorization.state = PiAuthorizationState::Consumed;
                 }
-                match receipt.disposition {
-                    crate::pi_watchdog::TerminalDisposition::SuccessIntent => { /* finalizer owns Done */
-                    }
-                    crate::pi_watchdog::TerminalDisposition::Failure => {
-                        Self::terminalize_attempt(&mut projection, AttemptDisposition::Failed)?;
-                        new_state = Status::Failed;
-                    }
-                    crate::pi_watchdog::TerminalDisposition::Park => {
-                        Self::terminalize_attempt(&mut projection, AttemptDisposition::Parked)?;
-                        new_state = Status::Waiting;
-                    }
-                    crate::pi_watchdog::TerminalDisposition::Cancel
-                    | crate::pi_watchdog::TerminalDisposition::Abort => {
-                        Self::terminalize_attempt(&mut projection, AttemptDisposition::Cancelled)?;
-                        new_state = if receipt.disposition
-                            == crate::pi_watchdog::TerminalDisposition::Abort
-                        {
-                            Status::Abandoned
-                        } else {
-                            Status::Open
-                        };
-                    }
-                }
+                // Every terminal tool is an intent while the exact writer may
+                // still live. The finalizer consumes the disposition only
+                // after quiescence and durable rescue/candidate publication.
+                // No canonical task/attempt edge is legal here.
             }
             TransitionKind::PiProcessEpochExited {
                 process_epoch,
@@ -819,25 +800,37 @@ impl LifecycleKernel {
                         "exit belongs to an old Pi process epoch",
                     ));
                 }
-                let policy_valid = projection.pi_terminal_reservation.is_none()
-                    && projection.pi_continuation.as_ref().is_some_and(|a| {
+                if projection.pi_terminal_reservation.is_some() {
+                    // A terminal tool won the first-terminal CAS. Exit supplies
+                    // exact reap evidence only; the candidate finalizer owns
+                    // rescue-before-disposition and must not be raced by a
+                    // contradictory generic RuntimeExit classification.
+                    if !*exact_reap_proof || !*effect_safe {
+                        if let Some(a) = projection.pi_continuation.as_mut() {
+                            a.state = PiAuthorizationState::HeldOperatorRequired;
+                        }
+                    }
+                } else {
+                    let continuation_valid = projection.pi_continuation.as_ref().is_some_and(|a| {
                         matches!(
                             a.state,
                             PiAuthorizationState::Active
                                 | PiAuthorizationState::HeldOperatorRequired
                         )
                     });
-                if policy_valid {
-                    if !*exact_reap_proof || !*effect_safe {
-                        if let Some(a) = projection.pi_continuation.as_mut() {
-                            a.state = PiAuthorizationState::HeldOperatorRequired;
+                    if continuation_valid {
+                        if !*exact_reap_proof || !*effect_safe {
+                            if let Some(a) = projection.pi_continuation.as_mut() {
+                                a.state = PiAuthorizationState::HeldOperatorRequired;
+                            }
                         }
+                        // No-terminal Pi exits remain watchdog-owned completion probes.
+                    } else {
+                        // Generic mapping applies only when no Pi terminal or
+                        // continuation authority exists.
+                        Self::terminalize_attempt(&mut projection, AttemptDisposition::Failed)?;
+                        new_state = Status::Failed;
                     }
-                    // Pre-terminal NeedsFinalization/hold: compatibility state stays InProgress.
-                } else {
-                    // Preserve the generic RuntimeExit/NoCompletionProtocol mapping.
-                    Self::terminalize_attempt(&mut projection, AttemptDisposition::Failed)?;
-                    new_state = Status::Failed;
                 }
             }
         }

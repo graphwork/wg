@@ -41,6 +41,7 @@ pub mod execution_selection;
 pub mod executor;
 pub mod executor_discovery;
 pub mod federation;
+pub mod finalization;
 pub mod function;
 pub mod function_memory;
 pub mod graph;

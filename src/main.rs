@@ -1262,6 +1262,12 @@ fn main() -> Result<()> {
             full_smoke,
             skip_smoke,
         ),
+        Commands::Finalize { command } => {
+            commands::finalize::run_finalize(&workgraph_dir, command, cli.json)
+        }
+        Commands::Candidate { command } => {
+            commands::finalize::run_candidate(&workgraph_dir, command, cli.json)
+        }
         Commands::Fail {
             id,
             reason,

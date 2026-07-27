@@ -455,6 +455,63 @@ fn capture_process(pid: u32) -> Result<ProcessIdentity> {
     })
 }
 
+/// Reserve a worker terminal intent in the lifecycle/watchdog first-terminal
+/// CAS. Candidate finalization consumes this receipt only after process exit;
+/// this function never checkpoints, merges, or resumes Pi.
+pub fn reserve_worker_terminal(
+    dir: &Path,
+    id: &str,
+    disposition: TerminalDisposition,
+    tool_call_id: &str,
+) -> Result<()> {
+    let mut watchdog = checked_open(dir, id)?;
+    let receipt = TerminalIntentReceipt::new(
+        &watchdog,
+        watchdog.state().process_epoch,
+        tool_call_id,
+        disposition,
+    );
+    let graph_path = dir.join("graph.jsonl");
+    let mut rejection = None;
+    let receipt_for_graph = receipt.clone();
+    modify_graph(&graph_path, |graph| {
+        let Some(task) = graph.get_task_mut(id) else {
+            return false;
+        };
+        let request = TransitionRequest::new(
+            TransitionKind::PiTerminalIntent {
+                receipt: receipt_for_graph.clone(),
+            },
+            LifecycleActor {
+                kind: ActorKind::Worker,
+                id: task
+                    .lifecycle
+                    .current_attempt
+                    .as_ref()
+                    .map(|a| a.actor_id.clone())
+                    .unwrap_or_else(|| "pi-worker".into()),
+            },
+            "worker_terminal_intent",
+            receipt_for_graph.idempotency_key.clone(),
+        )
+        .expecting(FenceExpectation::current(task));
+        if let Err(error) = apply_transition(task, request) {
+            // Exact duplicate is idempotent at the lifecycle layer. A
+            // contradictory receipt remains evidence and cannot replace it.
+            rejection = Some(error);
+            return false;
+        }
+        true
+    })?;
+    if let Some(error) = rejection {
+        return Err(anyhow::Error::new(error));
+    }
+    watchdog
+        .observe(Observation::TerminalIntent(receipt), Utc::now().timestamp())
+        .map_err(anyhow::Error::new)?;
+    Ok(())
+}
+
 fn process_exit(dir: &Path, id: &str, exit_code: i32) -> Result<()> {
     let mut watchdog = checked_open(dir, id)?;
     let state = watchdog.state().clone();

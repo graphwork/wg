@@ -2688,6 +2688,35 @@ pub fn run_daemon(
         );
     }
 
+    // Replay durable candidate-finalization outbox boundaries before
+    // readiness. Reconciliation is content-addressed/idempotent; ambiguity is
+    // retained and surfaced rather than inferred from current main.
+    match worksgood::finalization::FinalizationStore::open(&dir).and_then(|store| {
+        let transactions = store.list()?;
+        let mut replayed = 0usize;
+        for tx in transactions {
+            if matches!(
+                tx.phase,
+                worksgood::finalization::FinalizationPhase::Validating
+                    | worksgood::finalization::FinalizationPhase::CandidateCheckpointed
+                    | worksgood::finalization::FinalizationPhase::MergePending
+            ) {
+                let _ = worksgood::finalization::reconcile(&store, &tx.task_id)?;
+                replayed += 1;
+            }
+        }
+        Ok(replayed)
+    }) {
+        Ok(0) => {}
+        Ok(count) => logger.info(&format!(
+            "Replayed {} candidate-finalization transaction(s) before readiness",
+            count
+        )),
+        Err(error) => logger.warn(&format!(
+            "Candidate finalization replay held fail-closed; source refs retained: {error:#}"
+        )),
+    }
+
     match worksgood::worktree_observer::restart_current_observers(&dir) {
         Ok(0) => {}
         Ok(count) => logger.info(&format!(

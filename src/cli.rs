@@ -554,6 +554,18 @@ pub enum Commands {
         skip_smoke: bool,
     },
 
+    /// Inspect and reconcile crash-safe candidate finalization transactions
+    Finalize {
+        #[command(subcommand)]
+        command: FinalizeCommands,
+    },
+
+    /// Inspect or materialize immutable candidate versions
+    Candidate {
+        #[command(subcommand)]
+        command: CandidateCommands,
+    },
+
     /// Mark a task as failed (can be retried)
     Fail {
         /// Task ID to mark as failed
@@ -2900,6 +2912,63 @@ pub enum Commands {
 
         /// Source task ID (the task being placed)
         source_task_id: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum FinalizeCommands {
+    /// Show source/fence/lease, rescue, candidate, gate, merge and replay bindings
+    Status { id: String },
+    /// Create a rescue/candidate from a proven-quiescent leased worktree
+    Checkpoint {
+        id: String,
+        #[arg(long)]
+        worktree: Option<PathBuf>,
+        #[arg(long)]
+        quiescence_receipt: Option<String>,
+        #[arg(long)]
+        failure: bool,
+    },
+    /// Replay the next idempotent action, or print it without mutation
+    Reconcile {
+        id: String,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Complete the disposition reserved by the Pi watchdog after exact exit
+    #[command(hide = true)]
+    Settle { id: String },
+    /// Mark retained evidence as explicitly preserved
+    Preserve {
+        id: String,
+        #[arg(long)]
+        reason: String,
+    },
+    /// Report objects eligible for GC (source-bearing objects are never eligible)
+    Gc {
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum CandidateCommands {
+    Show {
+        id: String,
+    },
+    Verify {
+        id: String,
+    },
+    Materialize {
+        id: String,
+        #[arg(long)]
+        to: PathBuf,
+    },
+    /// Print the lifecycle-authorized repair command for a retained immutable version
+    Repair {
+        id: String,
+        #[arg(long)]
+        reuse_worktree: bool,
     },
 }
 
@@ -6756,6 +6825,8 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Add { .. } => "add",
         Commands::Edit { .. } => "edit",
         Commands::Done { .. } => "done",
+        Commands::Finalize { .. } => "finalize",
+        Commands::Candidate { .. } => "candidate",
         Commands::Fail { .. } => "fail",
         Commands::ClassifyFailure { .. } => "classify-failure",
         Commands::RecordTelemetry { .. } => "record-telemetry",
@@ -6923,6 +6994,8 @@ pub fn supports_json(cmd: &Commands) -> bool {
             | Commands::Forecast
             | Commands::Workload
             | Commands::Worktree(_)
+            | Commands::Finalize { .. }
+            | Commands::Candidate { .. }
             | Commands::Resources
             | Commands::Disk(_)
             | Commands::CriticalPath
