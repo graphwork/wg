@@ -566,6 +566,12 @@ pub enum Commands {
         command: CandidateCommands,
     },
 
+    /// Classify and resolve immutable candidate integration conflicts
+    MergeResolution {
+        #[command(subcommand)]
+        command: MergeResolutionCommands,
+    },
+
     /// Mark a task as failed (can be retried)
     Fail {
         /// Task ID to mark as failed
@@ -2948,6 +2954,78 @@ pub enum FinalizeCommands {
     Gc {
         #[arg(long)]
         dry_run: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum MergeResolutionCommands {
+    /// Classify and, only when required, invoke one exact strong merger
+    Run {
+        id: String,
+        /// Credential-free strong-merger adapter executable
+        #[arg(long)]
+        adapter: Option<PathBuf>,
+        /// Pinned combined-tree validation command
+        #[arg(long)]
+        integration_check: Option<String>,
+        /// Conflict includes generated output
+        #[arg(long)]
+        generated: bool,
+        /// Generated source ownership and deterministic generator are pinned
+        #[arg(long)]
+        generated_owned: bool,
+        /// Authoritative metadata says product/user intent is ambiguous
+        #[arg(long)]
+        ambiguous_intent: bool,
+    },
+    Status {
+        id: String,
+    },
+    Inspect {
+        id: String,
+        #[arg(long)]
+        materialize: Option<PathBuf>,
+    },
+    Retry {
+        id: String,
+    },
+    /// Resume after a bound human decision as a new audited generation
+    Resume {
+        id: String,
+    },
+    ChangeRoute {
+        id: String,
+        #[arg(long)]
+        route: String,
+        #[arg(long)]
+        reasoning: String,
+    },
+    Decide {
+        id: String,
+        #[arg(long)]
+        rationale: String,
+        #[arg(long)]
+        constraints: Option<String>,
+    },
+    Reject {
+        id: String,
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    RefreshTarget {
+        id: String,
+    },
+    RepairSource {
+        id: String,
+    },
+    EscalateHuman {
+        id: String,
+    },
+    Abort {
+        id: String,
+    },
+    Rollback {
+        receipt: String,
     },
 }
 
@@ -6827,6 +6905,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Done { .. } => "done",
         Commands::Finalize { .. } => "finalize",
         Commands::Candidate { .. } => "candidate",
+        Commands::MergeResolution { .. } => "merge-resolution",
         Commands::Fail { .. } => "fail",
         Commands::ClassifyFailure { .. } => "classify-failure",
         Commands::RecordTelemetry { .. } => "record-telemetry",
@@ -6996,6 +7075,7 @@ pub fn supports_json(cmd: &Commands) -> bool {
             | Commands::Worktree(_)
             | Commands::Finalize { .. }
             | Commands::Candidate { .. }
+            | Commands::MergeResolution { .. }
             | Commands::Resources
             | Commands::Disk(_)
             | Commands::CriticalPath

@@ -1268,6 +1268,9 @@ fn main() -> Result<()> {
         Commands::Candidate { command } => {
             commands::finalize::run_candidate(&workgraph_dir, command, cli.json)
         }
+        Commands::MergeResolution { command } => {
+            commands::merge_resolution::run(&workgraph_dir, command, cli.json)
+        }
         Commands::Fail {
             id,
             reason,
