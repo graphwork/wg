@@ -144,6 +144,11 @@ For AI agents with limited context windows, trajectories provide an optimal task
 
 ## Quick Start
 
+A normal install provides `worksgood`, `wg`, and `nex`. For the attended human
+lifecycle, enter a project and run `worksgood`; use `worksgood --help` for its
+focused setup/status/stop/restart/TUI verbs. The complete expert commands below
+remain under `wg`.
+
 ### First-Time Setup
 
 Before initializing a project, configure your global defaults:

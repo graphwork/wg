@@ -28,12 +28,11 @@ path = "src/main.rs"
 name = "nex"
 path = "src/bin/nex.rs"
 
-# Reversible profile-first concierge trial. The complete advanced CLI remains
-# `wg`; release/install artifacts intentionally do not expose this target yet.
+# Attended profile-first lifecycle concierge. The complete expert CLI remains
+# `wg`; normal installs ship both surfaces together.
 [[bin]]
 name = "worksgood"
 path = "src/bin/worksgood.rs"
-required-features = ["worksgood-trial"]
 
 # Casa is deliberately a companion adapter target. Product election/projection/
 # delivery policy lives under adapters/, outside WG-Fed/Review/Exec core modules.
@@ -50,8 +49,8 @@ email = ["dep:lettre"]
 slack = []
 llm-tests = []  # gates tests that call Claude CLI
 test-support = []  # exposes test helpers for cross-crate use
-# Candidate-only concierge facade. Not default, not installed by the existing
-# cargo/package/release path; build explicitly in an isolated target/CARGO_HOME.
+# Compatibility no-op for commands/scripts written during the concierge trial.
+# `worksgood` is now an unconditional default binary; this feature gates nothing.
 worksgood-trial = []
 
 [dependencies]

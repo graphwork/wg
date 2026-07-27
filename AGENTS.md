@@ -41,13 +41,13 @@ tool calls.
 
 ## Development
 
-The global `wg` and `nex` commands are installed via `cargo install`. After making changes to the code, run:
+The global `worksgood`, `wg`, and `nex` commands are installed via `cargo install`. After making changes to the code, run:
 
 ```
 cargo install --path . --locked
 ```
 
-to update both global binaries. This is the local `cargo install --path .`
+to update all three global binaries. This is the local `cargo install --path .`
 install target, with `--locked` so Cargo uses the checked-in lockfile during
 install. Forgetting this step is a common source of "why isn't this working"
 issues when testing changes.

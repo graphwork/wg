@@ -7,8 +7,9 @@ use worksgood::config::ReasoningLevel;
 #[derive(Debug, Parser)]
 #[command(
     name = "worksgood",
-    about = "Profile-first WorksGood concierge trial (the complete expert CLI remains `wg`)",
-    after_help = "TRIAL BOUNDARY:\n  This isolated facade does not rename the complete CLI or install an alias.\n  Internal lifecycle operations use one authenticated absolute WorksGood executable.\n\nBare attended use runs setup/reconcile and opens the TUI. Bare non-TTY use refuses without mutation."
+    version,
+    about = "Attended WorksGood lifecycle concierge (the complete expert CLI remains `wg`)",
+    after_help = "PRODUCT BOUNDARY:\n  This concierge does not rename or replace the complete `wg` expert CLI.\n  Internal lifecycle operations use one authenticated absolute sibling `wg` executable.\n\nBare attended use runs setup/reconcile and opens the TUI. Bare non-TTY use refuses without mutation."
 )]
 struct Cli {
     /// Repository/worktree target. Never falls back to ~/.wg.

@@ -13,12 +13,13 @@ if they disagree, **this file is the source of truth**.
 
 ---
 
-## 0. The four names (read this once)
+## 0. The five names (read this once)
 
 | Identity | What it is |
 |---|---|
 | **WorksGood** | the product / project |
-| **`wg`** | the WorksGood CLI binary (`cargo install`) |
+| **`worksgood`** | the installed attended lifecycle concierge (`setup`, `status`, `stop`, `restart`, `tui`) |
+| **`wg`** | the installed complete expert task/tool CLI; Pi tools invoke this backend |
 | **`@worksgood/pi`** | the npm package name of the WorksGood↔Pi integration. It is **not** installed from npm today; the version-locked build is *embedded in the `wg` binary* and installed by `wg pi-plugin install`. |
 | **`pi-worksgood`** | the label Pi shows for the integration (tools, `/wg` commands, `/model` detail). |
 
@@ -29,20 +30,22 @@ graph plus exact per-role `pi:<provider>:<model>` routes. See
 [Pi model-plane ownership](pi-model-plane.md).
 
 > **Heads-up on the `wg` name.** `wg` collides with WireGuard's `wg(8)`. If you
-> also use WireGuard, install WorksGood's `wg` on a private path you control.
-> A future one-command "concierge" (`wg onboard` / `worksg`) is
-> **design-only and not shipped** — do not rely on it yet. See
-> [Future UX](#future-ux-not-shipped).
+> also use WireGuard, install WorksGood's expert `wg` on a private path you
+> control. The human-facing `worksgood` command is shipped by default. There is
+> deliberately no `worksg` alias, and Pi integrations still call full `wg`
+> verbs that the lifecycle concierge does not expose.
 
 ---
 
-## 1. Install WorksGood (`wg`)
+## 1. Install WorksGood (`worksgood` + `wg` + `nex`)
 
 Requires the Rust toolchain ([rustup](https://rustup.rs/)).
 
 ```bash
-cargo install --git https://github.com/graphwork/wg
+cargo install --git https://github.com/graphwork/wg --locked
+worksgood --help
 wg --version
+nex --version
 ```
 
 From a source checkout instead:
@@ -415,14 +418,14 @@ wg migrate config --all
 
 ---
 
-## Future UX (not shipped)
+## Concierge and expert boundary
 
-A one-command "push-button" configurator (working name `wg onboard` / `worksg`)
-is **design/research only** — no command or binary name is approved for
-release. It does not exist today; the explicit steps above are the supported
-path. See [`docs/design-pushbutton-configurator.md`](design-pushbutton-configurator.md)
-for the study. When it ships it will be an explicitly mutating verb; bare `wg`
-and `wg tui` will remain non-mutating.
+The installed `worksgood` concierge provides the attended lifecycle path and
+can select/reconcile a prepared profile before opening the TUI. The explicit
+commands above remain the auditable expert path under `wg`. `worksgood` is not
+a CLI rename and intentionally does not expose task/tool verbs; there is no
+`worksg` alias. Bare `wg` and `wg tui` remain non-mutating, and `pi-worksgood`
+continues to invoke `wg` for its complete backend contract.
 
 ---
 

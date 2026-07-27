@@ -90,17 +90,17 @@ institutional work:
 
 ## Start the OS
 
-The fastest first look is graph-only and needs no credentials:
+A normal install places three commands on `PATH`: `worksgood` (the attended human lifecycle concierge), `wg` (the complete expert task/tool CLI), and `nex` (the standalone native model client).
 
 ```bash
-cargo install --git https://github.com/graphwork/wg
-wg init
-wg tui
+cargo install --git https://github.com/graphwork/wg --locked
+mkdir -p ~/work/my-project && cd ~/work/my-project
+worksgood
 ```
 
-`wg init` and `wg tui` are **non-mutating** — they never select a model,
-authenticate, install packages, or start a service. To actually drive LLM
-work you select the **Pi** model plane explicitly.
+Bare `worksgood` walks an attended setup/reconcile flow and opens the TUI; choose **Continue without AI** for a credential-free first look. Its focused lifecycle verbs are `setup`, `status`, `stop`, `restart`, and `tui`.
+
+For explicit graph-only expert use, `wg init` followed by `wg tui` is **non-mutating** — those commands never select a model, authenticate, install packages, or start a service. The complete task/tool command set remains under `wg`; agent integrations continue to use the `wg_*` protocol.
 
 ### Quickstart: drive a free OpenRouter model through Pi
 
@@ -117,8 +117,8 @@ for the graphwork.github.io site).
 The spine:
 
 ```bash
-# 1. install WG (needs Rust) and Pi (needs Node 20+)
-cargo install --git https://github.com/graphwork/wg
+# 1. install WorksGood (worksgood + wg + nex; needs Rust) and Pi (needs Node 20+)
+cargo install --git https://github.com/graphwork/wg --locked
 npm install -g --ignore-scripts @earendil-works/pi-coding-agent
 
 # 2. authenticate Pi with OpenRouter (once, in Pi — WG never sees the key)
@@ -191,6 +191,8 @@ tomorrow, the work would still be there.
 
 ## Documentation
 
+- **[docs/worksgood-concierge.md](docs/worksgood-concierge.md)** — attended
+  setup/status/stop/restart/TUI lifecycle; `wg` remains the expert CLI
 - **[docs/quickstart-pi-openrouter.md](docs/quickstart-pi-openrouter.md)** — verified
   pushbutton path: install WG + Pi, authenticate with OpenRouter, find a free
   model, install `pi-worksgood`, select the Pi route, open `wg tui`

@@ -91,7 +91,19 @@ describe("WgBackend.setModelOverride exit-code handling", () => {
   });
 });
 
-describe("explicit task release", () => {
+describe("expert backend boundary", () => {
+  it("uses the full wg backend, never the limited worksgood concierge", async () => {
+    const { host, calls } = fakeHost({ stdout: "[]", code: 0 });
+    const backend = new WgBackend(host, { dir: "/proj" });
+
+    await backend.ready();
+    await backend.show("task-1");
+    await backend.msgRead("task-1", "agent-1");
+    expect(calls.map((call) => call.command)).toEqual(["wg", "wg", "wg"]);
+    expect(calls.flatMap((call) => call.args)).not.toContain("worksgood");
+    expect(calls[0].args).toEqual(["--dir", "/proj", "ready", "--json"]);
+  });
+
   it("publishes exactly one staged task", async () => {
     const { host, calls } = fakeHost({ stdout: "published", code: 0 });
     const backend = new WgBackend(host, { dir: "/proj" });

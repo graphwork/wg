@@ -51,6 +51,10 @@ make_release() {
   local archive="${root}.tar.gz"
 
   mkdir -p "$dir/$root"
+  cat > "$dir/$root/worksgood" <<EOF
+#!/usr/bin/env sh
+printf 'worksgood ${label}\n'
+EOF
   cat > "$dir/$root/wg" <<EOF
 #!/usr/bin/env sh
 printf 'wg ${label}\n'
@@ -59,7 +63,7 @@ EOF
 #!/usr/bin/env sh
 printf 'nex ${label}\n'
 EOF
-  chmod +x "$dir/$root/wg" "$dir/$root/nex"
+  chmod +x "$dir/$root/worksgood" "$dir/$root/wg" "$dir/$root/nex"
   printf 'test license\n' > "$dir/$root/LICENSE"
   printf 'test readme\n' > "$dir/$root/README-install.txt"
 
@@ -79,7 +83,7 @@ EOF
   "dry_run": false,
   "publish": true,
   "repository": "graphwork/wg",
-  "binaries": ["wg", "nex"],
+  "binaries": ["worksgood", "wg", "nex"],
   "checksums": {
     "algorithm": "sha256",
     "file": "SHA256SUMS"
@@ -133,16 +137,20 @@ run_installer "$HOME_ONE" \
   --install-dir "$INSTALL_ONE" \
   --channel stable > "$OUTPUT_ONE" 2>&1
 
+assert_executable "$INSTALL_ONE/worksgood"
 assert_executable "$INSTALL_ONE/wg"
 assert_executable "$INSTALL_ONE/nex"
+[[ "$("$INSTALL_ONE/worksgood")" == "worksgood first" ]] || fail "worksgood did not run from first install"
 [[ "$("$INSTALL_ONE/wg")" == "wg first" ]] || fail "wg did not run from first install"
 [[ "$("$INSTALL_ONE/nex")" == "nex first" ]] || fail "nex did not run from first install"
 grep -q 'checksum: OK' "$OUTPUT_ONE" || fail "install output did not report checksum OK"
 grep -q 'attestation: skipped' "$OUTPUT_ONE" || fail "install output did not report attestation status"
-grep -q 'wg tui' "$OUTPUT_ONE" || fail "install output did not print next steps"
+grep -q '^  worksgood$' "$OUTPUT_ONE" || fail "install output did not print attended next step"
+grep -q 'complete expert CLI' "$OUTPUT_ONE" || fail "install output did not preserve the wg expert boundary"
 assert_file "$HOME_ONE/.wg/install-receipt.toml"
 grep -q 'version = "0.99.0"' "$HOME_ONE/.wg/install-receipt.toml" || fail "receipt missing installed version"
-pass "shell installer installs wg and nex into temp HOME without sudo"
+grep -q 'binaries = \["worksgood", "wg", "nex"\]' "$HOME_ONE/.wg/install-receipt.toml" || fail "receipt missing exact binary set"
+pass "shell installer installs worksgood, wg, and nex into temp HOME without sudo"
 
 DRY_HOME="$TMP/home-dry"
 DRY_INSTALL="$DRY_HOME/bin"
@@ -154,8 +162,8 @@ run_installer "$DRY_HOME" \
   --channel stable \
   --version v0.99.0 \
   --dry-run > "$OUTPUT_DRY" 2>&1
-[[ ! -e "$DRY_INSTALL/wg" ]] || fail "dry-run installed wg"
-grep -q 'dry-run: would install' "$OUTPUT_DRY" || fail "dry-run did not print install plan"
+[[ ! -e "$DRY_INSTALL/worksgood" && ! -e "$DRY_INSTALL/wg" && ! -e "$DRY_INSTALL/nex" ]] || fail "dry-run installed a binary"
+grep -q 'dry-run: would install worksgood, wg, and nex' "$OUTPUT_DRY" || fail "dry-run did not print exact install plan"
 pass "shell installer supports dry-run and explicit version"
 
 OUTPUT_UPGRADE="$TMP/upgrade.out"
@@ -164,11 +172,27 @@ run_installer "$HOME_ONE" \
   --install-dir "$INSTALL_ONE" \
   --channel nightly \
   --version v1.2.3 > "$OUTPUT_UPGRADE" 2>&1
+[[ "$("$INSTALL_ONE/worksgood")" == "worksgood second" ]] || fail "worksgood was not replaced on reinstall/upgrade"
 [[ "$("$INSTALL_ONE/wg")" == "wg second" ]] || fail "wg was not replaced on reinstall/upgrade"
 [[ "$("$INSTALL_ONE/nex")" == "nex second" ]] || fail "nex was not replaced on reinstall/upgrade"
 grep -q 'channel = "nightly"' "$HOME_ONE/.wg/install-receipt.toml" || fail "receipt missing nightly channel"
 grep -q 'version = "1.2.3"' "$HOME_ONE/.wg/install-receipt.toml" || fail "receipt missing upgraded version"
-pass "shell installer supports channel/version/custom-dir reinstall"
+pass "shell installer upgrades the exact worksgood/wg/nex set"
+
+FOREIGN_HOME="$TMP/home-foreign"
+FOREIGN_INSTALL="$FOREIGN_HOME/bin"
+mkdir -p "$FOREIGN_INSTALL"
+printf 'foreign command\n' > "$FOREIGN_INSTALL/worksgood"
+OUTPUT_FOREIGN="$TMP/foreign.out"
+if run_installer "$FOREIGN_HOME" \
+  --base-url "file://$RELEASE_ONE" \
+  --install-dir "$FOREIGN_INSTALL" \
+  --channel stable > "$OUTPUT_FOREIGN" 2>&1; then
+  fail "installer overwrote an unreceipted foreign command"
+fi
+grep -q 'refusing to overwrite existing command' "$OUTPUT_FOREIGN" || fail "foreign collision refusal was not explicit"
+[[ "$(cat "$FOREIGN_INSTALL/worksgood")" == "foreign command" ]] || fail "foreign command changed"
+pass "shell installer refuses foreign command collisions"
 
 BAD_HOME="$TMP/home-bad"
 BAD_INSTALL="$BAD_HOME/bin"
@@ -184,6 +208,21 @@ grep -q 'checksum verification failed' "$OUTPUT_BAD" || fail "checksum mismatch 
 [[ ! -e "$BAD_INSTALL/wg" ]] || fail "checksum failure installed wg"
 pass "shell installer refuses checksum mismatches"
 
+printf 'foreign sibling\n' > "$INSTALL_ONE/not-ours"
+OUTPUT_UNINSTALL_DRY="$TMP/uninstall-dry.out"
+run_installer "$HOME_ONE" --install-dir "$INSTALL_ONE" --uninstall --dry-run > "$OUTPUT_UNINSTALL_DRY" 2>&1
+for bin in worksgood wg nex; do
+  assert_executable "$INSTALL_ONE/$bin"
+  grep -q "dry-run: would remove $INSTALL_ONE/$bin" "$OUTPUT_UNINSTALL_DRY" || fail "dry-run omitted $bin removal"
+done
+run_installer "$HOME_ONE" --install-dir "$INSTALL_ONE" --uninstall > "$TMP/uninstall.out" 2>&1
+for bin in worksgood wg nex; do
+  [[ ! -e "$INSTALL_ONE/$bin" ]] || fail "uninstall left $bin"
+done
+[[ -f "$INSTALL_ONE/not-ours" ]] || fail "uninstall removed a foreign sibling"
+[[ ! -e "$HOME_ONE/.wg/install-receipt.toml" ]] || fail "uninstall left receipt"
+pass "shell installer dry-run/uninstall removes only the receipted binary set"
+
 if command -v pwsh >/dev/null 2>&1; then
   PS_HOME="$TMP/home-pwsh"
   PS_INSTALL="$PS_HOME/.local/bin"
@@ -193,6 +232,7 @@ if command -v pwsh >/dev/null 2>&1; then
     -BaseUrl "file://$RELEASE_ONE" \
     -InstallDir "$PS_INSTALL" \
     -Channel stable > "$OUTPUT_PS" 2>&1
+  assert_executable "$PS_INSTALL/worksgood"
   assert_executable "$PS_INSTALL/wg"
   assert_executable "$PS_INSTALL/nex"
   grep -q 'checksum: OK' "$OUTPUT_PS" || fail "PowerShell installer did not report checksum OK"

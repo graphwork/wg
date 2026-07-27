@@ -11,13 +11,14 @@ BASE_URL="${WG_INSTALL_BASE_URL:-}"
 TARGET="${WG_INSTALL_TARGET:-}"
 DEV_DIR="${WG_INSTALL_DEV_DIR:-}"
 DRY_RUN="${WG_INSTALL_DRY_RUN:-0}"
+UNINSTALL="${WG_INSTALL_UNINSTALL:-0}"
 
 WORK_DIR=""
 VERIFIED_SHA256=""
 
 usage() {
   cat <<'USAGE'
-Install WG native binaries.
+Install WorksGood native binaries.
 
 Usage:
   sh install-wg.sh [options]
@@ -25,8 +26,9 @@ Usage:
 Options:
   --channel stable|nightly|dev   Release channel to install (default: stable).
   --version VERSION              Install an explicit release tag/version.
-  --install-dir DIR              Install wg and nex into DIR.
+  --install-dir DIR              Install worksgood, wg, and nex into DIR.
   --dry-run                      Resolve and print actions without installing.
+  --uninstall                    Remove a receipt-owned WorksGood install.
   --repo OWNER/REPO              GitHub repository (default: graphwork/wg).
   --base-url URL                 Mirror/test URL containing release-manifest.json,
                                  SHA256SUMS, and the target archive.
@@ -37,7 +39,7 @@ Options:
 Environment variables mirror the long options:
   WG_INSTALL_CHANNEL, WG_INSTALL_VERSION, WG_INSTALL_DIR,
   WG_INSTALL_REPO, WG_INSTALL_BASE_URL, WG_INSTALL_TARGET,
-  WG_INSTALL_DEV_DIR, WG_INSTALL_DRY_RUN.
+  WG_INSTALL_DEV_DIR, WG_INSTALL_DRY_RUN, WG_INSTALL_UNINSTALL.
 USAGE
 }
 
@@ -87,6 +89,10 @@ while [ "$#" -gt 0 ]; do
       DRY_RUN=1
       shift
       ;;
+    --uninstall)
+      UNINSTALL=1
+      shift
+      ;;
     --repo)
       [ "$#" -ge 2 ] || die "--repo requires a value"
       REPO="$2"
@@ -121,6 +127,12 @@ case "$DRY_RUN" in
   1|true|TRUE|yes|YES) DRY_RUN=1 ;;
   0|false|FALSE|no|NO|"") DRY_RUN=0 ;;
   *) die "WG_INSTALL_DRY_RUN must be 0/1, true/false, or yes/no" ;;
+esac
+
+case "$UNINSTALL" in
+  1|true|TRUE|yes|YES) UNINSTALL=1 ;;
+  0|false|FALSE|no|NO|"") UNINSTALL=0 ;;
+  *) die "WG_INSTALL_UNINSTALL must be 0/1, true/false, or yes/no" ;;
 esac
 
 case "$CHANNEL" in
@@ -369,6 +381,78 @@ install_binary() {
   mv -f "$tmp_dest" "$dest"
 }
 
+toml_string_field() {
+  key="$1"
+  file="$2"
+  sed -n 's/^[[:space:]]*'"$key"'[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$file" | head -n 1
+}
+
+receipt_owns_binary() {
+  bin="$1"
+  receipt="$HOME/.wg/install-receipt.toml"
+  if grep -Eq '^[[:space:]]*binaries[[:space:]]*=.*"'"$bin"'"' "$receipt" 2>/dev/null; then
+    return 0
+  fi
+  # Receipts written before worksgood promotion owned only the original pair.
+  [ "$bin" = wg ] || [ "$bin" = nex ]
+}
+
+assert_install_destinations_owned() {
+  install_dir="$1"
+  exe_ext="$2"
+  receipt="$HOME/.wg/install-receipt.toml"
+  found=0
+  for bin in worksgood wg nex; do
+    [ -e "$install_dir/$bin$exe_ext" ] || [ -L "$install_dir/$bin$exe_ext" ] || continue
+    found=1
+  done
+  [ "$found" = 1 ] || return 0
+
+  [ -f "$receipt" ] || die "refusing to overwrite existing command(s) in $install_dir without a WorksGood install receipt"
+  [ "$(toml_string_field manager "$receipt")" = wg-installer ] \
+    || die "refusing to overwrite existing command(s): receipt manager is not wg-installer"
+  [ "$(toml_string_field binary_dir "$receipt")" = "$install_dir" ] \
+    || die "refusing to overwrite existing command(s): receipt belongs to another install directory"
+
+  for bin in worksgood wg nex; do
+    dest="$install_dir/$bin$exe_ext"
+    [ -e "$dest" ] || [ -L "$dest" ] || continue
+    [ ! -L "$dest" ] || die "refusing to overwrite symlink $dest"
+    receipt_owns_binary "$bin" \
+      || die "refusing to overwrite foreign command $dest (not owned by the receipt)"
+  done
+}
+
+uninstall_receipt_owned() {
+  install_dir="$1"
+  exe_ext="$2"
+  receipt="$HOME/.wg/install-receipt.toml"
+  [ -f "$receipt" ] || die "no WorksGood install receipt found at $receipt; refusing to remove commands"
+  [ "$(toml_string_field manager "$receipt")" = wg-installer ] \
+    || die "receipt manager is not wg-installer; refusing uninstall"
+  [ "$(toml_string_field binary_dir "$receipt")" = "$install_dir" ] \
+    || die "receipt belongs to another install directory; pass its exact --install-dir"
+
+  for bin in worksgood wg nex; do
+    receipt_owns_binary "$bin" || continue
+    dest="$install_dir/$bin$exe_ext"
+    if [ "$DRY_RUN" = 1 ]; then
+      say "dry-run: would remove $dest"
+    elif [ -L "$dest" ]; then
+      die "refusing to remove symlink $dest"
+    else
+      rm -f "$dest"
+      say "removed $dest"
+    fi
+  done
+  if [ "$DRY_RUN" = 1 ]; then
+    say "dry-run: would remove receipt $receipt"
+  else
+    rm -f "$receipt"
+    say "WorksGood uninstall complete. Project data under .wg was preserved."
+  fi
+}
+
 toml_escape() {
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
@@ -403,6 +487,7 @@ write_receipt() {
     printf 'artifact_sha256 = "%s"\n' "$(toml_escape "$artifact_sha256")"
     printf 'archive = "%s"\n' "$(toml_escape "$archive_name")"
     printf 'repository = "%s"\n' "$(toml_escape "$REPO")"
+    printf 'binaries = ["worksgood", "wg", "nex"]\n'
   } > "$receipt_tmp"
   chmod 0600 "$receipt_tmp"
   mv -f "$receipt_tmp" "$receipt_dir/install-receipt.toml"
@@ -413,9 +498,10 @@ print_next_steps() {
   exe_ext="$2"
 
   say ""
-  say "WG installed:"
-  say "  wg  $install_dir/wg$exe_ext"
-  say "  nex $install_dir/nex$exe_ext"
+  say "WorksGood installed:"
+  say "  worksgood $install_dir/worksgood$exe_ext  (attended lifecycle)"
+  say "  wg        $install_dir/wg$exe_ext  (complete expert CLI)"
+  say "  nex       $install_dir/nex$exe_ext"
   say ""
 
   case ":${PATH:-}:" in
@@ -425,12 +511,10 @@ print_next_steps() {
       ;;
   esac
 
-  say "Next:"
-  say "  wg setup"
+  say "Next (attended lifecycle):"
   say "  cd your-project"
-  say "  wg init"
-  say "  wg service start"
-  say "  wg tui"
+  say "  worksgood"
+  say "Expert CLI remains available as wg (for example: wg --help)."
 }
 
 install_dev_channel() {
@@ -465,6 +549,8 @@ install_dev_channel() {
   cargo_root="$WORK_DIR/cargo-root"
   cargo install --path "$dev_dir" --locked --root "$cargo_root" --force
 
+  assert_install_destinations_owned "$install_dir" "$exe_ext"
+  install_binary "$cargo_root/bin/worksgood$exe_ext" "$install_dir/worksgood$exe_ext"
   install_binary "$cargo_root/bin/wg$exe_ext" "$install_dir/wg$exe_ext"
   install_binary "$cargo_root/bin/nex$exe_ext" "$install_dir/nex$exe_ext"
   write_receipt "$version" "dev" "$target" "$install_dir" "file://$dev_dir" "dev" "dev"
@@ -540,7 +626,7 @@ install_release_channel() {
     else
       say "dry-run: attestation would be skipped unless gh and a GitHub release are available"
     fi
-    say "dry-run: would install wg$exe_ext and nex$exe_ext into $install_dir"
+    say "dry-run: would install worksgood$exe_ext, wg$exe_ext, and nex$exe_ext into $install_dir"
     say "dry-run: would write receipt $HOME/.wg/install-receipt.toml"
     print_next_steps "$install_dir" "$exe_ext"
     return
@@ -557,9 +643,12 @@ install_release_channel() {
   extract_archive "$archive_path" "$extract_dir"
   payload_dir="$(find "$extract_dir" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
   [ -n "$payload_dir" ] || die "archive did not contain a top-level directory"
+  [ -f "$payload_dir/worksgood$exe_ext" ] || die "archive is missing worksgood$exe_ext"
   [ -f "$payload_dir/wg$exe_ext" ] || die "archive is missing wg$exe_ext"
   [ -f "$payload_dir/nex$exe_ext" ] || die "archive is missing nex$exe_ext"
 
+  assert_install_destinations_owned "$install_dir" "$exe_ext"
+  install_binary "$payload_dir/worksgood$exe_ext" "$install_dir/worksgood$exe_ext"
   install_binary "$payload_dir/wg$exe_ext" "$install_dir/wg$exe_ext"
   install_binary "$payload_dir/nex$exe_ext" "$install_dir/nex$exe_ext"
   write_receipt "$manifest_version" "$CHANNEL" "$target" "$install_dir" "$release_url" "$artifact_sha256" "$archive_name"
@@ -571,6 +660,11 @@ ARCHIVE_EXT="$(archive_ext_for_target "$TARGET")"
 EXE_EXT="$(exe_ext_for_target "$TARGET")"
 INSTALL_DIR="$(choose_install_dir)"
 ensure_install_dir "$INSTALL_DIR"
+
+if [ "$UNINSTALL" = 1 ]; then
+  uninstall_receipt_owned "$INSTALL_DIR" "$EXE_EXT"
+  exit 0
+fi
 
 if [ "$CHANNEL" = "dev" ]; then
   install_dev_channel "$TARGET" "$EXE_EXT" "$INSTALL_DIR"

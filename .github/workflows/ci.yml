@@ -34,8 +34,16 @@ jobs:
       - name: cargo fmt --check
         run: cargo fmt --check
 
-      - name: cargo clippy
-        run: cargo clippy
+      - name: cargo clippy (default features, including worksgood)
+        run: |
+          cargo clippy
+          cargo clippy --bin worksgood
+
+      - name: Release/install contract static gate
+        run: tests/install/release_contract.sh
+
+      - name: Installer dry-run and isolated-prefix smoke
+        run: tests/install/installer_smoke.sh
 
   build:
     name: Build & Test (stable)
@@ -57,11 +65,13 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: cargo build
-        run: cargo build
+      - name: cargo build (all default-feature binaries)
+        run: cargo build --locked --bins
 
-      - name: cargo test (unit tests)
-        run: cargo test --lib
+      - name: cargo test (unit tests + worksgood target)
+        run: |
+          cargo test --lib
+          cargo test --bin worksgood
 
       - name: cargo test (doc tests)
         run: cargo test --doc
@@ -87,12 +97,31 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: cargo install (needed by integration tests)
-        run: cargo install --path . --locked
+      - name: cargo install into isolated root (needed by integration tests)
+        run: |
+          root="${RUNNER_TEMP}/worksgood-install-root"
+          cargo install --path . --locked --root "${root}"
+          test -x "${root}/bin/worksgood"
+          test -x "${root}/bin/wg"
+          test -x "${root}/bin/nex"
+          "${root}/bin/worksgood" --help >/dev/null
+          "${root}/bin/wg" --help >/dev/null
+          "${root}/bin/nex" --help >/dev/null
+          echo "${root}/bin" >> "${GITHUB_PATH}"
 
       - name: cargo test --test integration_service
         run: cargo test --test integration_service -- --test-threads=1
         timeout-minutes: 10
+
+  installer-windows:
+    name: Windows PowerShell installer contract
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Isolated install/dry-run/upgrade/uninstall smoke
+        shell: pwsh
+        run: ./tests/install/installer_smoke.ps1
 
   worksgood-pi:
     name: pi-worksgood build, selftest & embed staleness

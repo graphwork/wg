@@ -83,6 +83,10 @@ fn install_old_wg(cargo_home: &Path) -> PathBuf {
         .unwrap();
     make_executable(&installed);
 
+    let worksgood = install_dir.join("worksgood");
+    fs::write(&worksgood, "#!/bin/sh\necho old worksgood 0.0.1\n").unwrap();
+    make_executable(&worksgood);
+
     let nex = install_dir.join("nex");
     fs::write(&nex, "#!/bin/sh\necho old nex 0.0.1\n").unwrap();
     make_executable(&nex);
@@ -120,6 +124,12 @@ case "$cmd" in
     printf '\nWG_UPGRADE_TEST_NEW_BINARY\n' >> "$tmp"
     chmod 755 "$tmp"
     mv "$tmp" "$dest/wg"
+    cat > "$dest/worksgood.upgrade-test-tmp" <<'WORKSGOOD'
+#!/bin/sh
+echo worksgood fake 0.2.0
+WORKSGOOD
+    chmod 755 "$dest/worksgood.upgrade-test-tmp"
+    mv "$dest/worksgood.upgrade-test-tmp" "$dest/worksgood"
     cat > "$dest/nex.upgrade-test-tmp" <<'NEX'
 #!/bin/sh
 echo nex fake 0.2.0
@@ -426,8 +436,17 @@ fn source_managed_upgrade_clones_backs_up_binary_and_rollback_restores_it() {
         .map(|entry| entry.unwrap().path())
         .collect();
     backups.sort();
-    let backup_wg = backups.last().unwrap().join("wg");
+    let backup = backups.last().unwrap();
+    let backup_wg = backup.join("wg");
     assert_contains_marker(&backup_wg, OLD_MARKER);
+    assert_eq!(
+        fs::read_to_string(backup.join("worksgood")).unwrap(),
+        "#!/bin/sh\necho old worksgood 0.0.1\n"
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.cargo_home.join("bin/worksgood")).unwrap(),
+        "#!/bin/sh\necho worksgood fake 0.2.0\n"
+    );
     assert!(fixture.home.join(".wg/upgrade-state.toml").exists());
 
     let rollback_args = ["upgrade", "--rollback", "--yes"];
@@ -442,6 +461,10 @@ fn source_managed_upgrade_clones_backs_up_binary_and_rollback_restores_it() {
     );
     assert!(rollback_stdout.contains("Rollback complete."));
     assert_contains_marker(&fixture.installed, OLD_MARKER);
+    assert_eq!(
+        fs::read_to_string(fixture.cargo_home.join("bin/worksgood")).unwrap(),
+        "#!/bin/sh\necho old worksgood 0.0.1\n"
+    );
 }
 
 #[test]

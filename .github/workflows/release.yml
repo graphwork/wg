@@ -250,7 +250,7 @@ jobs:
 
           # codesign: hardened runtime (--options runtime) + timestamp + entitlements.
           echo "::group::codesign (Developer ID Application)"
-          for bin in wg nex; do
+          for bin in worksgood wg nex; do
             echo "Signing ${bin}..."
             codesign --force --options runtime --timestamp \
               --entitlements macos-entitlements.plist \
@@ -260,7 +260,7 @@ jobs:
           done
           echo
           echo "Verifying signatures (codesign -dv --verbose=4 + --verify --strict):"
-          for bin in wg nex; do
+          for bin in worksgood wg nex; do
             codesign -dv --verbose=4 "${BIN_DIR}/${bin}" 2>&1 | sed 's/^/  [codesign-dv] /'
             codesign --verify --strict --verbose=2 "${BIN_DIR}/${bin}"
           done
@@ -271,7 +271,7 @@ jobs:
           STAGE="${RUNNER_TEMP}/notary-input"
           NOTARY_ZIP="${RUNNER_TEMP}/wg-notary-${TARGET}.zip"
           mkdir -p "${STAGE}"
-          cp "${BIN_DIR}/wg" "${BIN_DIR}/nex" "${STAGE}/"
+          cp "${BIN_DIR}/worksgood" "${BIN_DIR}/wg" "${BIN_DIR}/nex" "${STAGE}/"
           ( cd "${RUNNER_TEMP}" && ditto -c -k --keepParent notary-input "wg-notary-${TARGET}.zip" )
 
           xcrun notarytool submit "${NOTARY_ZIP}" \
@@ -280,7 +280,7 @@ jobs:
             --password "${APPLE_APP_PASSWORD}" \
             --wait
 
-          for bin in wg nex; do
+          for bin in worksgood wg nex; do
             xcrun stapler staple "${BIN_DIR}/${bin}"
             xcrun stapler validate "${BIN_DIR}/${bin}"
           done
@@ -377,7 +377,7 @@ jobs:
           # RFC3161 timestamp so the signature survives cert expiry.
           $timestampUrl = "http://timestamp.digicert.com"
 
-          foreach ($exe in @("wg.exe", "nex.exe")) {
+          foreach ($exe in @("worksgood.exe", "wg.exe", "nex.exe")) {
             $p = Join-Path $binDir $exe
             Write-Host "Signing $p"
             & $signTool sign /f $pfxPath /p $env:WINDOWS_CODESIGN_PASSWORD `
@@ -468,6 +468,7 @@ jobs:
           stage_dir="dist/${archive_root}"
 
           mkdir -p "${stage_dir}"
+          cp "target/${TARGET}/release/worksgood${EXE_EXT}" "${stage_dir}/worksgood${EXE_EXT}"
           cp "target/${TARGET}/release/wg${EXE_EXT}" "${stage_dir}/wg${EXE_EXT}"
           cp "target/${TARGET}/release/nex${EXE_EXT}" "${stage_dir}/nex${EXE_EXT}"
           cp LICENSE "${stage_dir}/LICENSE"
@@ -480,9 +481,10 @@ jobs:
           Target: ${TARGET}
           Channel: ${CHANNEL}
 
-          This archive contains both distributed binaries:
-            wg${EXE_EXT}
-            nex${EXE_EXT}
+          This archive contains all distributed binaries:
+            worksgood${EXE_EXT}  attended lifecycle concierge
+            wg${EXE_EXT}        complete expert/task/tool CLI
+            nex${EXE_EXT}       standalone native model client
 
           Verify the archive before installing:
             gh attestation verify ${archive_name} --repo ${REPOSITORY}
@@ -506,7 +508,7 @@ jobs:
             target: process.env.TARGET,
             channel: process.env.CHANNEL,
             dry_run: process.env.DRY_RUN === "true",
-            binaries: ["wg", "nex"],
+            binaries: ["worksgood", "wg", "nex"],
           };
 
           fs.writeFileSync(
@@ -657,7 +659,7 @@ jobs:
             minimum_compatible_wg_schema: "graph-jsonl-v1",
             minimum_migration_version: "none",
             agency_compat_version: process.env.AGENCY_COMPAT_VERSION,
-            binaries: ["wg", "nex"],
+            binaries: ["worksgood", "wg", "nex"],
             checksums: {
               algorithm: "sha256",
               file: "SHA256SUMS",
@@ -731,7 +733,7 @@ jobs:
           const lines = [];
           lines.push(`Native WG release artifacts for \`${tag}\`.`);
           lines.push("");
-          lines.push("This release ships both `wg` and `nex` in every platform archive.");
+          lines.push("This release ships the attended `worksgood` lifecycle concierge, the complete expert `wg` CLI, and `nex` in every platform archive.");
           lines.push("");
           lines.push("Supported targets:");
           lines.push("- x86_64-unknown-linux-gnu");
@@ -759,13 +761,13 @@ jobs:
               (byMethod[s.method] = byMethod[s.method] || []).push(s.target);
             }
             if (byMethod["developer-id-notarytool"]) {
-              lines.push(`- macOS (\`${byMethod["developer-id-notarytool"].join("\`, \`")}\`): signed with a Developer ID Application certificate, notarized via \`notarytool\`, and stapled. Verify with \`codesign -dv --verbose=4 <wg>\` and \`xcrun stapler validate <wg>\`.`);
+              lines.push(`- macOS (\`${byMethod["developer-id-notarytool"].join("\`, \`")}\`): all three binaries are signed with a Developer ID Application certificate, notarized via \`notarytool\`, and stapled. Verify each of \`worksgood\`, \`wg\`, and \`nex\` with \`codesign -dv --verbose=4 <binary>\` and \`xcrun stapler validate <binary>\`.`);
             }
             if (byMethod["azure-trusted-signing"]) {
-              lines.push(`- Windows (\`${byMethod["azure-trusted-signing"].join("\`, \`")}\`): Authenticode-signed via Azure Trusted Signing (with RFC3161 timestamp). Verify with \`signtool verify /pa /v <wg.exe>\`.`);
+              lines.push(`- Windows (\`${byMethod["azure-trusted-signing"].join("\`, \`")}\`): all three binaries are Authenticode-signed via Azure Trusted Signing (with RFC3161 timestamp). Verify each with \`signtool verify /pa /v <binary.exe>\`.`);
             }
             if (byMethod["authenticode-signtool"]) {
-              lines.push(`- Windows (\`${byMethod["authenticode-signtool"].join("\`, \`")}\`): Authenticode-signed via signtool (with RFC3161 timestamp). Verify with \`signtool verify /pa /v <wg.exe>\`.`);
+              lines.push(`- Windows (\`${byMethod["authenticode-signtool"].join("\`, \`")}\`): all three binaries are Authenticode-signed via signtool (with RFC3161 timestamp). Verify each with \`signtool verify /pa /v <binary.exe>\`.`);
             }
           }
           lines.push("");

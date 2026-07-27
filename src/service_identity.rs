@@ -1,5 +1,5 @@
 //! Authenticated, read-only service identity primitives shared by the `wg`
-//! daemon and the feature-gated `worksgood` concierge trial.
+//! daemon and the installed `worksgood` lifecycle concierge.
 //!
 //! The identity deliberately contains no credential, endpoint URL, or model
 //! prompt.  It binds a daemon to one canonical graph, one executable byte

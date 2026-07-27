@@ -18,7 +18,7 @@ See `docs/KEY_DOCS.md` for the canonical list of documentation files to keep in 
 ## Build & Test
 
 ```
-cargo install --path . --locked # rebuild global wg and nex binaries
+cargo install --path . --locked # rebuild global worksgood, wg, and nex binaries
 wg service stop                 # stop before rebuilding
 cargo test                      # run tests
 typst compile docs/manual/wg-manual.typ   # rebuild manual PDF
@@ -133,7 +133,7 @@ To update when Agency releases new primitives:
 
 ```bash
 cp ~/agency/primitives/starter.csv agency/starter.csv
-cargo install --path . --locked # rebuild wg/nex with new pool embedded
+cargo install --path . --locked # rebuild worksgood/wg/nex with new pool embedded
 git add agency/starter.csv
 git commit -m "primitives: sync from Agency vX.Y.Z (637→N)"
 ```

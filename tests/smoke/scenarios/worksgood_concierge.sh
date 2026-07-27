@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Isolated candidate + real attended tmux flow for the profile-first concierge.
+# Isolated default-feature build + real attended tmux flow for the shipped concierge.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/_helpers.sh"
@@ -27,7 +27,7 @@ if [[ -n "${WG_SMOKE_CANDIDATE_DIR:-}" ]]; then
     CARGO_TARGET_DIR="$WG_SMOKE_CANDIDATE_DIR"
 else
     CARGO_TARGET_DIR="$scratch/candidate-target"
-    (cd "$repo_root" && CARGO_TARGET_DIR="$CARGO_TARGET_DIR" CARGO_BUILD_JOBS=1 cargo build --quiet --features worksgood-trial --bin wg --bin worksgood)
+    (cd "$repo_root" && CARGO_TARGET_DIR="$CARGO_TARGET_DIR" CARGO_BUILD_JOBS=1 cargo build --quiet --bin wg --bin worksgood)
 fi
 export CARGO_TARGET_DIR
 WORKSGOOD="$CARGO_TARGET_DIR/debug/worksgood"
@@ -165,25 +165,19 @@ grep -q 'continue_without_ai' "$scratch/no-ai/.wg/concierge.json" || loud_fail "
 [[ ! -e "$scratch/no-ai/.wg/service/state.json" ]] || loud_fail "Continue without AI started service"
 assert_no_chat "$scratch/no-ai/.wg"
 
-# Nex/local readiness distinguishes the built-in handler from an actually
-# configured endpoint; dry-run reports the unavailable endpoint without writes.
-mkdir -p "$WG_GLOBAL_DIR/profiles"
-cat >"$WG_GLOBAL_DIR/profiles/missing-endpoint.toml" <<'TOML'
-description = "endpoint readiness negative control"
-[agent]
-model = "nex:test-model"
-[dispatcher]
-model = "nex:test-model"
-[tiers]
-fast = "nex:test-model"
-standard = "nex:test-model"
-premium = "nex:test-model"
-TOML
-mk_repo "$scratch/endpoint"
-endpoint_before=$(snapshot "$scratch/endpoint")
-endpoint_plan=$("$WORKSGOOD" --project "$scratch/endpoint" --dry-run --profile missing-endpoint --strong-reasoning high --weak-reasoning low --yes setup)
-grep -q '"endpoint_status": "not configured"' <<<"$endpoint_plan" || loud_fail "missing endpoint readiness was not honest"
-[[ "$endpoint_before" = "$(snapshot "$scratch/endpoint")" ]] || loud_fail "endpoint readiness dry-run mutated project"
+# Native profile customization is execution-system pinned: it never falls back
+# from Codex to Claude (or vice versa), and refusal writes nothing.
+mk_repo "$scratch/no-fallback"
+no_fallback_before=$(snapshot "$scratch/no-fallback")
+if no_fallback_output=$("$WORKSGOOD" --project "$scratch/no-fallback" --dry-run --profile codex \
+    --strong-model claude:opus --weak-model codex:gpt-5.6-luna \
+    --strong-reasoning high --weak-reasoning low --yes setup 2>&1); then
+    loud_fail "cross-system concierge model substitution unexpectedly succeeded"
+fi
+grep -q 'bound to the codex execution system' <<<"$no_fallback_output" \
+    || loud_fail "cross-system refusal was not explicit: $no_fallback_output"
+[[ "$no_fallback_before" = "$(snapshot "$scratch/no-fallback")" ]] \
+    || loud_fail "cross-system refusal mutated project"
 
 # A prerequisite failure after confirmation leaves a redacted recovery marker,
 # no committed lifecycle, and no fallback profile/service. Rollback clears only
@@ -304,10 +298,22 @@ assert_no_chat "$scratch/core/.wg"
 # --yes is confirmation only: on a profile with omitted effort it must refuse
 # rather than silently selecting the attended high/low recommendation.
 mk_repo "$scratch/no-silent-effort"
+mkdir -p "$WG_GLOBAL_DIR/profiles"
+cat > "$WG_GLOBAL_DIR/profiles/claude-no-effort.toml" <<'EOF'
+description = "Native Claude fixture with deliberately omitted effort"
+[agent]
+model = "claude:opus"
+[dispatcher]
+model = "claude:opus"
+[tiers]
+fast = "claude:haiku"
+standard = "claude:opus"
+premium = "claude:opus"
+EOF
 no_silent_before=$(snapshot "$scratch/no-silent-effort")
 no_silent_session="worksgood-no-silent-effort-$$"
 tmux new-session -d -s "$no_silent_session" -x 80 -y 24 \
-    "env HOME='$HOME' WG_GLOBAL_DIR='$WG_GLOBAL_DIR' '$WORKSGOOD' --project '$scratch/no-silent-effort' --profile claude --yes setup"
+    "env HOME='$HOME' WG_GLOBAL_DIR='$WG_GLOBAL_DIR' '$WORKSGOOD' --project '$scratch/no-silent-effort' --profile claude-no-effort --yes setup"
 tmux set-option -t "$no_silent_session" remain-on-exit on
 wait_session_exit "$no_silent_session"
 no_silent_output=$(tmux capture-pane -p -S - -t "$no_silent_session")
@@ -368,7 +374,7 @@ grep -q 'Worker/chat high \[explicit\].*Agency/FLIP/Eval low \[explicit\]' <<<"$
     || loud_fail "attended choices were not revisitable in status: $attended_status"
 "$WORKSGOOD" --project "$scratch/attended-effort" stop >/dev/null
 
-for profile in claude nex opencode; do
+for profile in claude; do
     session="worksgood-setup-$profile-$$"
     tmux new-session -d -s "$session" -x 80 -y 24 \
         "env HOME='$HOME' WG_GLOBAL_DIR='$WG_GLOBAL_DIR' '$WORKSGOOD' --project '$scratch/core' --profile '$profile' --strong-reasoning high --weak-reasoning low --yes setup"
@@ -391,7 +397,7 @@ pid_reload=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["pi
 # no restart loop merely because a receipt-authorized copy/hardlink spelling differs.
 identity_before=$(sha256sum "$state" "$scratch/core/.wg/profile-selection.json" "$scratch/core/.wg/concierge.json")
 alias_plan=$(WORKSGOOD_W_EXECUTABLE="$scratch/unknown-wg" WORKSGOOD_W_RECEIPT="$scratch/receipt.json" \
-    "$WORKSGOOD" --project "$scratch/core" --dry-run --profile opencode --strong-reasoning high --weak-reasoning low --yes setup)
+    "$WORKSGOOD" --project "$scratch/core" --dry-run --profile claude --strong-reasoning high --weak-reasoning low --yes setup)
 grep -q '"service_action": "reuse"' <<<"$alias_plan" || loud_fail "same-build alias dry-run did not plan reuse: $alias_plan"
 grep -q 'content build fingerprint all match' <<<"$alias_plan" || loud_fail "same-build reuse omitted exact reason"
 [[ "$identity_before" = "$(sha256sum "$state" "$scratch/core/.wg/profile-selection.json" "$scratch/core/.wg/concierge.json")" ]] || loud_fail "reconcile dry-run mutated identity files"
@@ -416,7 +422,7 @@ cat >"$scratch/different-receipt.json" <<EOF
 EOF
 identity_before=$(sha256sum "$state" "$scratch/core/.wg/profile-selection.json" "$scratch/core/.wg/concierge.json")
 different_plan=$(WORKSGOOD_W_EXECUTABLE="$different_w" WORKSGOOD_W_RECEIPT="$scratch/different-receipt.json" \
-    "$WORKSGOOD" --project "$scratch/core" --dry-run --profile opencode --strong-reasoning high --weak-reasoning low --yes setup)
+    "$WORKSGOOD" --project "$scratch/core" --dry-run --profile claude --strong-reasoning high --weak-reasoning low --yes setup)
 grep -q '"service_action": "controlled_restart"' <<<"$different_plan" || loud_fail "different build dry-run did not plan restart: $different_plan"
 grep -q 'binary/build/protocol mismatch' <<<"$different_plan" || loud_fail "different build dry-run omitted exact reason"
 [[ "$identity_before" = "$(sha256sum "$state" "$scratch/core/.wg/profile-selection.json" "$scratch/core/.wg/concierge.json")" ]] || loud_fail "different-build dry-run mutated identity files"
@@ -587,7 +593,7 @@ pid3=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["pid"])' 
 "$WORKSGOOD" --project "$scratch/core" stop >/dev/null
 kill -0 "$pid3" 2>/dev/null && loud_fail "worksgood stop left daemon alive"
 
-# The candidate target is bounded to the scratch tree and is removed by the
-# smoke harness cleanup; no cargo install, PATH install, alias, or release
-# artifact was touched.
-echo "PASS: worksgood exact/same-build reuse, generation reload, content-build restart, replaced/deleted/foreign fail-closed, failed-restart recovery/no stale TUI, concurrency, explicit effort+Pi argv, strict dry-run/no-chat, absolute identity, and service persistence"
+# The validation target is bounded to the scratch tree and is removed by the
+# smoke harness cleanup; no real user install, PATH command, or release artifact
+# was touched.
+echo "PASS: default-feature worksgood exact/same-build reuse, generation reload, content-build restart, replaced/deleted/foreign fail-closed, failed-restart recovery/no stale TUI, concurrency, explicit effort+Pi argv, strict dry-run/no-chat, absolute identity, and service persistence"

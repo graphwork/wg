@@ -110,12 +110,13 @@
   </nav>
 
   <section id="names">
-    <h2><span class="num">0</span>The four names</h2>
+    <h2><span class="num">0</span>The five names</h2>
     <table>
       <thead><tr><th>Identity</th><th>What it is</th></tr></thead>
       <tbody>
         <tr><td><strong>WorksGood</strong></td><td>the product / project</td></tr>
-        <tr><td><code>wg</code></td><td>the WorksGood CLI binary (<code>cargo install</code>)</td></tr>
+        <tr><td><code>worksgood</code></td><td>the installed attended lifecycle concierge (<code>setup</code>, <code>status</code>, <code>stop</code>, <code>restart</code>, <code>tui</code>)</td></tr>
+        <tr><td><code>wg</code></td><td>the installed complete expert task/tool CLI; Pi tools invoke this backend</td></tr>
         <tr><td><code>@worksgood/pi</code></td><td>npm name of the WorksGood↔Pi integration. <strong>Not</strong> installed from npm today — the version-locked build is embedded in the <code>wg</code> binary and installed by <code>wg pi-plugin install</code>.</td></tr>
         <tr><td><code>pi-worksgood</code></td><td>the label Pi shows for the integration (tools, <code>/wg</code> commands).</td></tr>
       </tbody>
@@ -126,17 +127,20 @@
     <code>pi:&lt;provider&gt;:&lt;model&gt;</code> routes.</p>
     <div class="wg-callout warn">
       <strong>Heads-up on the <code>wg</code> name.</strong> It collides with WireGuard's
-      <code>wg(8)</code>. If you also use WireGuard, install WorksGood's <code>wg</code> on a
-      private path. A future one-command concierge (<code>wg onboard</code> / <code>worksg</code>)
-      is <strong>design-only, not shipped</strong> — see <a href="#future">Future UX</a>.
+      <code>wg(8)</code>. If you also use WireGuard, install WorksGood's expert <code>wg</code>
+      on a private path. The human-facing <code>worksgood</code> command ships by default.
+      There is deliberately no <code>worksg</code> alias, and Pi integrations still call the
+      full <code>wg</code> backend.
     </div>
   </section>
 
   <section id="install-wg">
-    <h2><span class="num">1</span>Install WorksGood (<code>wg</code>)</h2>
+    <h2><span class="num">1</span>Install WorksGood (<code>worksgood</code> + <code>wg</code> + <code>nex</code>)</h2>
     <p>Requires the Rust toolchain (<a href="https://rustup.rs">rustup</a>).</p>
-<pre><code>cargo install --git https://github.com/graphwork/wg
-wg --version</code></pre>
+<pre><code>cargo install --git https://github.com/graphwork/wg --locked
+worksgood --help
+wg --version
+nex --version</code></pre>
     <p>From a source checkout: <code>cargo install --path . --locked</code>. Make
     <code>~/.cargo/bin</code> reachable:</p>
 <pre><code><span class="c-comment"># bash/zsh — add once, then: source ~/.bashrc</span>
@@ -360,12 +364,13 @@ wg migrate config --dry-run <span class="c-comment"># preview legacy-key rewrite
   </section>
 
   <section id="future">
-    <h2>Future UX (not shipped)</h2>
-    <p>A one-command "push-button" configurator (working name <code>wg onboard</code> /
-    <code>worksg</code>) is <strong>design/research only</strong> — no command or binary name
-    is approved for release. It does not exist today; the explicit steps above are the
-    supported path. When it ships it will be an explicitly mutating verb; bare
-    <code>wg</code> and <code>wg tui</code> will remain non-mutating.</p>
+    <h2>Concierge and expert boundary</h2>
+    <p>The installed <code>worksgood</code> concierge provides the attended lifecycle path.
+    The explicit commands above remain the auditable expert path under <code>wg</code>.
+    <code>worksgood</code> is not a CLI rename and intentionally does not expose task/tool
+    verbs; there is no <code>worksg</code> alias. Bare <code>wg</code> and <code>wg tui</code>
+    remain non-mutating, and <code>pi-worksgood</code> continues to invoke <code>wg</code> for
+    its complete backend contract.</p>
   </section>
 
   <footer>

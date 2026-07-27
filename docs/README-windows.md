@@ -9,7 +9,8 @@ it as a reference for gotchas.
 
 1. Install prerequisites: Rust, Git for Windows (bash + git), MSVC Build
    Tools, LLVM (`clang.exe`), CMake.
-2. Clone the repo and run `cargo install --path . --force --locked` from a
+2. Clone the repo and run `cargo install --path . --locked` to install
+   `worksgood`, `wg`, and `nex` from a
    shell that has the MSVC env loaded (`VsDevCmd.bat -arch=arm64` or
    `-arch=x64`). For native ARM64 also set `OPENSSL_NO_ASM=YES`; see
    [the boring-sys2 note](#boring-sys2-and-native-arm64) below.
@@ -19,8 +20,8 @@ it as a reference for gotchas.
    - Headless: put your `sk-ant-oat01-…` token in a file and reference it
      from `.wg/config.toml` under `[auth]`. See
      [Auth](#authentication) below.
-4. `wg init` in your project, then `wg service start` — daemon runs, agents
-   dispatch, graph progresses.
+4. Run `worksgood` in your project for the attended lifecycle, or use the
+   complete expert flow: `wg init`, then `wg service start`.
 
 ## What works
 

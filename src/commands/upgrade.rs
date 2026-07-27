@@ -276,7 +276,7 @@ fn run_rollback(
         return Ok(());
     }
 
-    confirm_or_bail(args.yes, "Restore the previous wg/nex binaries?")?;
+    confirm_or_bail(args.yes, "Restore the previous worksgood/wg/nex binaries?")?;
     restore_binaries(&backup_dir, &install_dir)?;
 
     if daemon.running {
@@ -906,7 +906,7 @@ fn create_backups(
     fs::create_dir_all(&binary_backup_dir)?;
     fs::create_dir_all(&config_backup_dir)?;
 
-    for bin in ["wg", "nex"] {
+    for bin in ["worksgood", "wg", "nex"] {
         let name = binary_name(bin);
         let src = install_dir.join(&name);
         if src.exists() {
@@ -939,7 +939,7 @@ fn create_backups(
 
 fn restore_binaries(backup_dir: &Path, install_dir: &Path) -> Result<()> {
     fs::create_dir_all(install_dir)?;
-    for bin in ["wg", "nex"] {
+    for bin in ["worksgood", "wg", "nex"] {
         let name = binary_name(bin);
         let src = backup_dir.join(&name);
         if src.exists() {
@@ -998,6 +998,7 @@ fn copy_atomic(src: &Path, dest: &Path) -> Result<()> {
 fn print_validation(install_dir: &Path, workgraph_dir: &Path) {
     println!();
     println!("Validation:");
+    print_command_output(&install_dir.join(binary_name("worksgood")), &["--version"]);
     print_command_output(&install_dir.join(binary_name("wg")), &["--version"]);
     print_command_output(&install_dir.join(binary_name("nex")), &["--version"]);
     println!("  wg config lint:");

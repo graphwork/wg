@@ -7,6 +7,7 @@ param(
     [string]$BaseUrl = "",
     [string]$Target = "",
     [string]$DevDir = "",
+    [switch]$Uninstall,
     [switch]$Help
 )
 
@@ -15,7 +16,7 @@ $ErrorActionPreference = "Stop"
 
 function Show-Usage {
     @"
-Install WG native binaries.
+Install WorksGood native binaries.
 
 Usage:
   powershell -ExecutionPolicy Bypass -File install-wg.ps1 [options]
@@ -24,8 +25,9 @@ Usage:
 Options:
   -Channel stable|nightly|dev   Release channel to install (default: stable).
   -Version VERSION              Install an explicit release tag/version.
-  -InstallDir DIR               Install wg and nex into DIR.
+  -InstallDir DIR               Install worksgood, wg, and nex into DIR.
   -DryRun                       Resolve and print actions without installing.
+  -Uninstall                    Remove a receipt-owned WorksGood install.
   -Repo OWNER/REPO              GitHub repository (default: graphwork/wg).
   -BaseUrl URL                  Mirror/test URL containing release-manifest.json,
                                 SHA256SUMS, and the target archive.
@@ -36,7 +38,7 @@ Options:
 Environment variables mirror the options:
   WG_INSTALL_CHANNEL, WG_INSTALL_VERSION, WG_INSTALL_DIR,
   WG_INSTALL_REPO, WG_INSTALL_BASE_URL, WG_INSTALL_TARGET,
-  WG_INSTALL_DEV_DIR, WG_INSTALL_DRY_RUN.
+  WG_INSTALL_DEV_DIR, WG_INSTALL_DRY_RUN, WG_INSTALL_UNINSTALL.
 "@
 }
 
@@ -356,6 +358,99 @@ function Install-Binary {
     Move-Item -LiteralPath $tmp -Destination $Destination -Force
 }
 
+function Get-ReceiptStringField {
+    param(
+        [string]$Path,
+        [string]$Name
+    )
+    foreach ($line in Get-Content -LiteralPath $Path) {
+        if ($line -match ('^\s*' + [Regex]::Escape($Name) + '\s*=\s*"([^"]*)"')) {
+            return $Matches[1]
+        }
+    }
+    return ""
+}
+
+function Test-ReceiptOwnsBinary {
+    param(
+        [string]$Path,
+        [string]$Name
+    )
+    $content = Get-Content -LiteralPath $Path -Raw
+    if ($content -match ('(?m)^\s*binaries\s*=.*"' + [Regex]::Escape($Name) + '"')) {
+        return $true
+    }
+    # Receipts written before worksgood promotion owned only the original pair.
+    return $Name -in @("wg", "nex")
+}
+
+function Assert-InstallDestinationsOwned {
+    param(
+        [string]$InstallDir,
+        [string]$ExeExt
+    )
+    $names = @("worksgood", "wg", "nex")
+    $existing = @($names | Where-Object { Test-Path -LiteralPath (Join-Path $InstallDir "$_$ExeExt") })
+    if ($existing.Count -eq 0) { return }
+
+    $receipt = Join-Path $HOME ".wg/install-receipt.toml"
+    if (-not (Test-Path -LiteralPath $receipt -PathType Leaf)) {
+        Fail "refusing to overwrite existing command(s) in $InstallDir without a WorksGood install receipt"
+    }
+    if ((Get-ReceiptStringField -Path $receipt -Name "manager") -ne "wg-installer") {
+        Fail "refusing to overwrite existing command(s): receipt manager is not wg-installer"
+    }
+    if ((Get-ReceiptStringField -Path $receipt -Name "binary_dir") -ne $InstallDir) {
+        Fail "refusing to overwrite existing command(s): receipt belongs to another install directory"
+    }
+    foreach ($name in $existing) {
+        $dest = Join-Path $InstallDir "$name$ExeExt"
+        if (((Get-Item -LiteralPath $dest).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            Fail "refusing to overwrite symlink $dest"
+        }
+        if (-not (Test-ReceiptOwnsBinary -Path $receipt -Name $name)) {
+            Fail "refusing to overwrite foreign command $dest (not owned by the receipt)"
+        }
+    }
+}
+
+function Uninstall-ReceiptOwned {
+    param(
+        [string]$InstallDir,
+        [string]$ExeExt,
+        [bool]$IsDryRun
+    )
+    $receipt = Join-Path $HOME ".wg/install-receipt.toml"
+    if (-not (Test-Path -LiteralPath $receipt -PathType Leaf)) {
+        Fail "no WorksGood install receipt found at $receipt; refusing to remove commands"
+    }
+    if ((Get-ReceiptStringField -Path $receipt -Name "manager") -ne "wg-installer") {
+        Fail "receipt manager is not wg-installer; refusing uninstall"
+    }
+    if ((Get-ReceiptStringField -Path $receipt -Name "binary_dir") -ne $InstallDir) {
+        Fail "receipt belongs to another install directory; pass its exact -InstallDir"
+    }
+
+    foreach ($name in @("worksgood", "wg", "nex")) {
+        if (-not (Test-ReceiptOwnsBinary -Path $receipt -Name $name)) { continue }
+        $dest = Join-Path $InstallDir "$name$ExeExt"
+        if ($IsDryRun) {
+            Write-Info "dry-run: would remove $dest"
+        } elseif ((Test-Path -LiteralPath $dest) -and (((Get-Item -LiteralPath $dest).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+            Fail "refusing to remove symlink $dest"
+        } else {
+            Remove-Item -LiteralPath $dest -Force -ErrorAction SilentlyContinue
+            Write-Info "removed $dest"
+        }
+    }
+    if ($IsDryRun) {
+        Write-Info "dry-run: would remove receipt $receipt"
+    } else {
+        Remove-Item -LiteralPath $receipt -Force
+        Write-Info "WorksGood uninstall complete. Project data under .wg was preserved."
+    }
+}
+
 function ConvertTo-TomlString {
     param([string]$Value)
     return ($Value.Replace("\", "\\").Replace('"', '\"'))
@@ -394,7 +489,8 @@ function Write-InstallReceipt {
         ('release_url = "{0}"' -f (ConvertTo-TomlString $ReleaseUrl)),
         ('artifact_sha256 = "{0}"' -f (ConvertTo-TomlString $ArtifactSha256)),
         ('archive = "{0}"' -f (ConvertTo-TomlString $ArchiveName)),
-        ('repository = "{0}"' -f (ConvertTo-TomlString $Repo))
+        ('repository = "{0}"' -f (ConvertTo-TomlString $Repo)),
+        'binaries = ["worksgood", "wg", "nex"]'
     ) -join [Environment]::NewLine
 
     $tmp = Join-Path $receiptDir ".install-receipt.toml.$PID"
@@ -409,9 +505,10 @@ function Write-NextSteps {
     )
 
     Write-Info ""
-    Write-Info "WG installed:"
-    Write-Info "  wg  $(Join-Path $InstallDir "wg$ExeExt")"
-    Write-Info "  nex $(Join-Path $InstallDir "nex$ExeExt")"
+    Write-Info "WorksGood installed:"
+    Write-Info "  worksgood $(Join-Path $InstallDir "worksgood$ExeExt")  (attended lifecycle)"
+    Write-Info "  wg        $(Join-Path $InstallDir "wg$ExeExt")  (complete expert CLI)"
+    Write-Info "  nex       $(Join-Path $InstallDir "nex$ExeExt")"
     Write-Info ""
 
     $pathParts = ($env:PATH -split [IO.Path]::PathSeparator)
@@ -419,12 +516,10 @@ function Write-NextSteps {
         Write-Warn "$InstallDir is not on PATH; add it before running wg"
     }
 
-    Write-Info "Next:"
-    Write-Info "  wg setup"
+    Write-Info "Next (attended lifecycle):"
     Write-Info "  cd your-project"
-    Write-Info "  wg init"
-    Write-Info "  wg service start"
-    Write-Info "  wg tui"
+    Write-Info "  worksgood"
+    Write-Info "Expert CLI remains available as wg (for example: wg --help)."
 }
 
 function Install-DevChannel {
@@ -475,6 +570,8 @@ function Install-DevChannel {
         if ($LASTEXITCODE -ne 0) {
             Fail "cargo install failed"
         }
+        Assert-InstallDestinationsOwned -InstallDir $InstallDir -ExeExt $ExeExt
+        Install-Binary -Source (Join-Path $cargoRoot "bin/worksgood$ExeExt") -Destination (Join-Path $InstallDir "worksgood$ExeExt")
         Install-Binary -Source (Join-Path $cargoRoot "bin/wg$ExeExt") -Destination (Join-Path $InstallDir "wg$ExeExt")
         Install-Binary -Source (Join-Path $cargoRoot "bin/nex$ExeExt") -Destination (Join-Path $InstallDir "nex$ExeExt")
         Write-InstallReceipt -Version $versionValue -Channel "dev" -Target $Target -InstallDir $InstallDir -ReleaseUrl "file://$DevDir" -ArtifactSha256 "dev" -ArchiveName "dev" -Repo $Repo -IsDryRun:$false
@@ -560,7 +657,7 @@ function Install-ReleaseChannel {
             } else {
                 Write-Info "dry-run: attestation would be skipped unless gh and a GitHub release are available"
             }
-            Write-Info "dry-run: would install wg$ExeExt and nex$ExeExt into $InstallDir"
+            Write-Info "dry-run: would install worksgood$ExeExt, wg$ExeExt, and nex$ExeExt into $InstallDir"
             Write-InstallReceipt -Version $manifest.version -Channel $Channel -Target $Target -InstallDir $InstallDir -ReleaseUrl $releaseUrl -ArtifactSha256 "" -ArchiveName $archiveName -Repo $Repo -IsDryRun:$true
             Write-NextSteps -InstallDir $InstallDir -ExeExt $ExeExt
             return
@@ -578,8 +675,12 @@ function Install-ReleaseChannel {
             Fail "archive did not contain a top-level directory"
         }
 
+        $worksgoodSource = Join-Path $payloadDir.FullName "worksgood$ExeExt"
         $wgSource = Join-Path $payloadDir.FullName "wg$ExeExt"
         $nexSource = Join-Path $payloadDir.FullName "nex$ExeExt"
+        if (-not (Test-Path -LiteralPath $worksgoodSource -PathType Leaf)) {
+            Fail "archive is missing worksgood$ExeExt"
+        }
         if (-not (Test-Path -LiteralPath $wgSource -PathType Leaf)) {
             Fail "archive is missing wg$ExeExt"
         }
@@ -587,6 +688,8 @@ function Install-ReleaseChannel {
             Fail "archive is missing nex$ExeExt"
         }
 
+        Assert-InstallDestinationsOwned -InstallDir $InstallDir -ExeExt $ExeExt
+        Install-Binary -Source $worksgoodSource -Destination (Join-Path $InstallDir "worksgood$ExeExt")
         Install-Binary -Source $wgSource -Destination (Join-Path $InstallDir "wg$ExeExt")
         Install-Binary -Source $nexSource -Destination (Join-Path $InstallDir "nex$ExeExt")
         Write-InstallReceipt -Version $manifest.version -Channel $Channel -Target $Target -InstallDir $InstallDir -ReleaseUrl $releaseUrl -ArtifactSha256 $artifactSha256 -ArchiveName $archiveName -Repo $Repo -IsDryRun:$false
@@ -606,6 +709,8 @@ $DevDir = Resolve-Option -Value $DevDir -EnvName "WG_INSTALL_DEV_DIR" -Default "
 
 $envDryRun = [Environment]::GetEnvironmentVariable("WG_INSTALL_DRY_RUN")
 $isDryRun = $DryRun.IsPresent -or ($envDryRun -match '^(1|true|TRUE|yes|YES)$')
+$envUninstall = [Environment]::GetEnvironmentVariable("WG_INSTALL_UNINSTALL")
+$isUninstall = $Uninstall.IsPresent -or ($envUninstall -match '^(1|true|TRUE|yes|YES)$')
 
 if ($Channel -notin @("stable", "nightly", "dev")) {
     Fail "-Channel must be stable, nightly, or dev"
@@ -616,6 +721,11 @@ $archiveExt = Get-ArchiveExt -Target $targetTriple
 $exeExt = Get-ExeExt -Target $targetTriple
 $installPath = Get-DefaultInstallDir -Explicit $InstallDir
 Ensure-InstallDir -Path $installPath -IsDryRun:$isDryRun
+
+if ($isUninstall) {
+    Uninstall-ReceiptOwned -InstallDir $installPath -ExeExt $exeExt -IsDryRun:$isDryRun
+    exit 0
+}
 
 if ($Channel -eq "dev") {
     Install-DevChannel -Target $targetTriple -ExeExt $exeExt -InstallDir $installPath -DevDir $DevDir -IsDryRun:$isDryRun

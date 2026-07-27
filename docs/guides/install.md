@@ -1,14 +1,16 @@
 # Install WG
 
-WG ships as native release archives containing both binaries:
+WorksGood ships native release archives containing three binaries:
 
-- `wg` - the task graph CLI, service, and TUI.
+- `worksgood` - the attended human lifecycle concierge (`setup`, `status`, `stop`, `restart`, and `tui`).
+- `wg` - the complete expert task graph, service, TUI, and tool CLI.
 - `nex` - the standalone/native model client binary used by WG routes.
 
 The installer picks the archive for your OS/CPU, verifies its SHA256 checksum,
 verifies GitHub artifact provenance when the `gh` CLI is available, installs
-both binaries into a user-writable directory, and writes
-`~/.wg/install-receipt.toml`.
+the three binaries into a user-writable directory, and writes
+`~/.wg/install-receipt.toml`. It refuses to overwrite commands not owned by a
+matching receipt.
 
 ## Fresh Install
 
@@ -29,16 +31,16 @@ The installer avoids `sudo` by default. On macOS and Linux it prefers
 If the selected directory is not already on `PATH`, the installer prints a
 warning so you can add it before running `wg`.
 
-After install, run the short first-project flow:
+After install, run the attended first-project flow:
 
 ```bash
-wg setup
 mkdir -p ~/work/my-project
 cd ~/work/my-project
-wg init
-wg service start
-wg tui
+worksgood
 ```
+
+Choose **Continue without AI** for a setup-neutral TUI, or select a configured
+profile. The complete expert surface remains available through `wg --help`.
 
 If you want the default agency starter roles before opening the TUI, add:
 
@@ -184,11 +186,13 @@ from a GitHub Release URL.
 
 ## Reinstall Or Upgrade With The Installer
 
-Rerunning the installer over the same install directory replaces `wg` and `nex`
-atomically and rewrites the install receipt.
+Rerunning the installer over the same receipt-owned install directory replaces
+`worksgood`, `wg`, and `nex` and rewrites the install receipt. It refuses an
+unreceipted destination collision rather than overwriting a foreign command.
 
 ```bash
 curl -fsSL https://install.graphwork.dev/wg.sh | sh
+worksgood --help
 wg --version
 nex --version
 ```
@@ -197,8 +201,26 @@ Windows:
 
 ```powershell
 irm https://install.graphwork.dev/wg.ps1 | iex
+worksgood --help
 wg --version
 nex --version
+```
+
+## Uninstall
+
+Uninstall is receipt-bound and removes the same three binaries together while
+preserving project/global `.wg` data and unrelated files. Preview first:
+
+```bash
+sh scripts/install-wg.sh --uninstall --dry-run
+sh scripts/install-wg.sh --uninstall
+```
+
+Windows PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install-wg.ps1 -Uninstall -DryRun
+powershell -ExecutionPolicy Bypass -File .\scripts\install-wg.ps1 -Uninstall
 ```
 
 ## Existing Old WG Install
@@ -214,7 +236,7 @@ cp -a .wg ".wg.backup.$(date +%Y%m%dT%H%M%S)" 2>/dev/null || true
 cp -a .workgraph ".workgraph.backup.$(date +%Y%m%dT%H%M%S)" 2>/dev/null || true
 ```
 
-Install the new `wg` and `nex` binaries:
+Install the new `worksgood`, `wg`, and `nex` binaries:
 
 ```bash
 curl -fsSL https://install.graphwork.dev/wg.sh | sh
@@ -284,6 +306,7 @@ sha256sum -c SHA256SUMS
 gh attestation verify wg-v0.2.0-x86_64-unknown-linux-gnu.tar.gz \
   --repo graphwork/wg
 tar -xzf wg-v0.2.0-x86_64-unknown-linux-gnu.tar.gz
+install -m 0755 wg-v0.2.0-x86_64-unknown-linux-gnu/worksgood "$HOME/.local/bin/worksgood"
 install -m 0755 wg-v0.2.0-x86_64-unknown-linux-gnu/wg "$HOME/.local/bin/wg"
 install -m 0755 wg-v0.2.0-x86_64-unknown-linux-gnu/nex "$HOME/.local/bin/nex"
 ```

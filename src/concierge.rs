@@ -1,4 +1,4 @@
-//! Reversible, profile-first `worksgood` concierge trial.
+//! Attended, profile-first `worksgood` lifecycle concierge.
 //!
 //! This module is intentionally a narrow orchestration layer. It composes the
 //! existing graph initializer and service/TUI entrypoints through one verified
@@ -385,8 +385,13 @@ fn patch_two_tier_content(
     strong_reasoning: ReasoningLevel,
     weak_reasoning: ReasoningLevel,
 ) -> Result<String> {
-    crate::config::parse_exact_pi_route(strong)?;
-    crate::config::parse_exact_pi_route(weak)?;
+    let (strong_handler, _) = crate::config::parse_supported_execution_route(strong)?;
+    let (weak_handler, _) = crate::config::parse_supported_execution_route(weak)?;
+    if strong_handler != weak_handler {
+        anyhow::bail!(
+            "Worker/chat and Agency routes must use the same execution system; got {strong_handler} and {weak_handler}"
+        );
+    }
     for key in Config::PI_STRONG_TOML_KEYS {
         content = named::set_toml_string_value(&content, key, strong);
     }
@@ -409,6 +414,7 @@ fn patch_two_tier_content(
     }
     let parsed: Config = toml::from_str(&content)?;
     parsed.validate_model_format()?;
+    parsed.validate_execution_model_plane()?;
     Ok(content)
 }
 
@@ -768,11 +774,17 @@ fn customize_core_profile(
             "Manual core-profile configuration requires both --strong-model and --weak-model; no agency route was inferred"
         ),
     };
-    crate::config::parse_exact_pi_route(&strong)?;
-    crate::config::parse_exact_pi_route(&weak)?;
-    crate::config::parse_exact_pi_route(&configured_strong).with_context(|| {
-        format!("profile {base:?} is legacy/non-Pi and unavailable in WorksGood")
-    })?;
+    let (configured_handler, _) =
+        crate::config::parse_supported_execution_route(&configured_strong).with_context(|| {
+            format!("profile {base:?} does not use a supported Pi/Claude/Codex route")
+        })?;
+    let (strong_handler, _) = crate::config::parse_supported_execution_route(&strong)?;
+    let (weak_handler, _) = crate::config::parse_supported_execution_route(&weak)?;
+    if strong_handler != configured_handler || weak_handler != configured_handler {
+        anyhow::bail!(
+            "Profile {base:?} is bound to the {configured_handler} execution system; Worker/chat and Agency routes must stay on that same system (got {strong_handler}/{weak_handler})"
+        );
+    }
     let strong_reasoning = resolve_effort_choice(
         "Worker/chat",
         options.strong_reasoning,
@@ -803,8 +815,8 @@ fn choose_mode_and_profile(
         let content = profile_content(profile)?;
         let config: Config = toml::from_str(&content)?;
         config
-            .validate_pi_model_plane()
-            .with_context(|| format!("requested profile {profile:?} is legacy/non-Pi"))?;
+            .validate_model_format()
+            .with_context(|| format!("requested profile {profile:?} has invalid model routes"))?;
         return Ok((ConciergeMode::Profile, Some(profile.clone())));
     }
     let catalog = print_catalog(&target.graph)?;
@@ -1762,7 +1774,7 @@ pub fn run_status(project_path: Option<&Path>) -> Result<()> {
                 .map(|p| format!(" ({p})"))
                 .unwrap_or_default()
         ),
-        None => println!("Project lifecycle: not configured by the worksgood trial"),
+        None => println!("Project lifecycle: not configured by the worksgood concierge"),
     }
     if let Some(pending) = read_pending(&target.graph)? {
         println!(
@@ -1946,7 +1958,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "WorksGood concierge now offers Pi profiles only"]
     fn core_profile_persists_separate_default_effort_without_model_overrides() {
         let content = customize_core_profile(
             "codex",
@@ -2014,11 +2025,36 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "WorksGood concierge now offers Pi profiles only"]
-    fn core_profile_yes_requires_missing_effort_instead_of_silent_defaults() {
+    fn core_profile_refuses_cross_system_model_substitution() {
         let error = customize_core_profile(
-            "claude",
-            named::STARTER_CLAUDE.to_string(),
+            "codex",
+            named::STARTER_CODEX.to_string(),
+            &LifecycleOptions {
+                requested_profile: Some("codex".to_string()),
+                strong_model: Some("claude:opus".to_string()),
+                weak_model: Some("codex:gpt-5.6-luna".to_string()),
+                strong_reasoning: Some(ReasoningLevel::High),
+                weak_reasoning: Some(ReasoningLevel::Low),
+                yes: true,
+                ..LifecycleOptions::default()
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("bound to the codex execution system"));
+        assert!(error.contains("claude/codex"));
+    }
+
+    #[test]
+    fn core_profile_yes_requires_missing_effort_instead_of_silent_defaults() {
+        let without_reasoning = named::STARTER_CLAUDE
+            .lines()
+            .filter(|line| !line.contains("reasoning"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let error = customize_core_profile(
+            "claude-no-effort",
+            without_reasoning,
             &LifecycleOptions {
                 requested_profile: Some("claude".to_string()),
                 yes: true,
