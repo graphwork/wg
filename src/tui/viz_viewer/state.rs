@@ -132,6 +132,7 @@ struct ResolvedWorkspaceAppearance {
     request_generation: u64,
     workgraph_dir: PathBuf,
     identity: String,
+    location: String,
     auto_palette: WorkspacePalette,
     choice: AppearanceChoice,
     symbols: SymbolMode,
@@ -151,6 +152,8 @@ pub struct WorkspaceAppearance {
     pub auto_ansi256: Option<u8>,
     pub auto_ansi16: Option<u8>,
     pub identity: Option<String>,
+    /// Canonical, home-contracted project identity resolved off the render path.
+    pub location: Option<String>,
     pub context_rows_rendered: u64,
     worker: Option<mpsc::Receiver<std::result::Result<ResolvedWorkspaceAppearance, String>>>,
     requested_workgraph_dir: Option<PathBuf>,
@@ -170,6 +173,7 @@ impl Default for WorkspaceAppearance {
             auto_ansi256: None,
             auto_ansi16: None,
             identity: None,
+            location: None,
             context_rows_rendered: 0,
             worker: None,
             requested_workgraph_dir: None,
@@ -194,6 +198,7 @@ impl WorkspaceAppearance {
         let request_generation = self.request_generation;
         self.requested_workgraph_dir = Some(workgraph_dir.clone());
         self.identity = None;
+        self.location = None;
         self.auto_rgb = None;
         self.auto_ansi256 = None;
         self.auto_ansi16 = None;
@@ -223,6 +228,7 @@ impl WorkspaceAppearance {
                 return;
             }
             self.identity = Some(resolved.identity);
+            self.location = Some(resolved.location);
             self.install_auto_palette(resolved.auto_palette);
             self.capability = resolved.capability;
             if !self.user_choice_override {
@@ -403,25 +409,6 @@ fn terminal_color_capability() -> std::result::Result<ColorCapability, String> {
     }
 }
 
-fn system_hostname() -> String {
-    #[cfg(unix)]
-    {
-        let mut buf = [0u8; 256];
-        // SAFETY: `buf` is writable for its full declared length.
-        let rc = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) };
-        if rc == 0 {
-            let end = buf.iter().position(|byte| *byte == 0).unwrap_or(buf.len());
-            let value = String::from_utf8_lossy(&buf[..end]).trim().to_string();
-            if !value.is_empty() {
-                return value;
-            }
-        }
-    }
-    std::env::var("HOSTNAME")
-        .or_else(|_| std::env::var("COMPUTERNAME"))
-        .unwrap_or_else(|_| "unknown-host".to_string())
-}
-
 fn canonical_git_common_identity(project_root: &Path) -> String {
     let canonical_project =
         std::fs::canonicalize(project_root).unwrap_or_else(|_| project_root.to_path_buf());
@@ -462,20 +449,58 @@ fn canonical_git_common_identity(project_root: &Path) -> String {
         .into_owned()
 }
 
+fn format_project_location(user: &str, host: &str, home: Option<&Path>, project: &Path) -> String {
+    let user = safe_service_label(if user.trim().is_empty() {
+        "?"
+    } else {
+        user.trim()
+    });
+    let host = safe_service_label(if host.trim().is_empty() {
+        "?"
+    } else {
+        host.trim()
+    });
+    let path = home
+        .and_then(|home| project.strip_prefix(home).ok())
+        .map(|suffix| {
+            if suffix.as_os_str().is_empty() {
+                "~".to_string()
+            } else {
+                format!("~/{}", suffix.display())
+            }
+        })
+        .unwrap_or_else(|| project.display().to_string());
+    format!("{user}@{host}:{}", safe_service_label(&path))
+}
+
+fn canonical_project_from_common(common_identity: &str) -> PathBuf {
+    let common_path = PathBuf::from(common_identity);
+    // A linked worktree's `.git` file resolves to the repository common dir.
+    // Its parent is therefore the canonical project, never `.wg-worktrees/...`.
+    common_path
+        .file_name()
+        .is_some_and(|name| name == ".git")
+        .then(|| common_path.parent().map(Path::to_path_buf))
+        .flatten()
+        .unwrap_or(common_path)
+}
+
 fn resolve_workspace_appearance(
     workgraph_dir: &Path,
     request_generation: u64,
 ) -> std::result::Result<ResolvedWorkspaceAppearance, String> {
     let project_root = workgraph_dir.parent().unwrap_or(workgraph_dir);
-    let user = std::env::var("USER")
-        .or_else(|_| std::env::var("USERNAME"))
-        .unwrap_or_else(|_| "unknown-user".to_string());
-    let identity = format!(
-        "{}@{}:{}",
-        user,
-        system_hostname(),
-        canonical_git_common_identity(project_root)
+    let common_identity = canonical_git_common_identity(project_root);
+    let canonical_project = canonical_project_from_common(&common_identity);
+    let process = worksgood::service_identity::os_process_identity();
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let location = format_project_location(
+        &process.user,
+        &process.host,
+        home.as_deref(),
+        &canonical_project,
     );
+    let identity = format!("{}@{}:{common_identity}", process.user, process.host);
     let choice = std::env::var("WG_TUI_APPEARANCE")
         .ok()
         .map(|value| AppearanceChoice::parse(&value))
@@ -491,6 +516,7 @@ fn resolve_workspace_appearance(
         workgraph_dir: workgraph_dir.to_path_buf(),
         auto_palette: workspace_palette(workspace_color_rgb(&identity)),
         identity,
+        location,
         choice,
         symbols,
         capability: terminal_color_capability()?,
@@ -684,6 +710,7 @@ mod workspace_appearance_tests {
             request_generation: 1,
             workgraph_dir: graph.clone(),
             identity: "user@host:/repo/.git".into(),
+            location: "user@host:/repo".into(),
             auto_palette: workspace_palette((200, 210, 220)),
             choice: AppearanceChoice::Rgb(1, 2, 3),
             symbols: SymbolMode::Workshop,
@@ -720,6 +747,7 @@ mod workspace_appearance_tests {
             request_generation: 7,
             workgraph_dir: old_graph,
             identity: "stale".into(),
+            location: "stale@host:/project".into(),
             auto_palette: workspace_palette((255, 0, 0)),
             choice: AppearanceChoice::Auto,
             symbols: SymbolMode::Workshop,
@@ -737,6 +765,41 @@ mod workspace_appearance_tests {
         assert_eq!(appearance.context_rows_rendered, 0);
         assert_eq!(appearance.auto_rgb, None);
         assert_eq!(appearance.capability, ColorCapability::Mono);
+    }
+
+    #[test]
+    fn project_location_home_unicode_and_missing_identity_are_explicit() {
+        assert_eq!(
+            canonical_project_from_common("/home/bot/wg/.git"),
+            PathBuf::from("/home/bot/wg")
+        );
+        assert!(
+            !canonical_project_from_common("/home/bot/wg/.git")
+                .to_string_lossy()
+                .contains(".wg-worktrees")
+        );
+        assert_eq!(
+            format_project_location(
+                "böt",
+                "réliévo",
+                Some(Path::new("/home/böt")),
+                Path::new("/home/böt/工作/wg"),
+            ),
+            "böt@réliévo:~/工作/wg"
+        );
+        assert_eq!(
+            format_project_location("", "", None, Path::new("/srv/wg")),
+            "?@?:/srv/wg"
+        );
+        assert_eq!(
+            format_project_location(
+                "bot",
+                "host",
+                Some(Path::new("/home/bot")),
+                Path::new("/home/bot")
+            ),
+            "bot@host:~"
+        );
     }
 }
 
@@ -5295,7 +5358,7 @@ impl AuthoritativeServiceContext {
             .unwrap_or_else(|| Path::new(&self.canonical_graph))
     }
 
-    fn contracted_project_path(&self) -> String {
+    pub(super) fn contracted_project_path(&self) -> String {
         let project = self.project_path();
         let contracted = self
             .service_home
@@ -5314,11 +5377,17 @@ impl AuthoritativeServiceContext {
     }
 
     fn destination_prefix(&self) -> String {
-        let service = format!(
-            "{}@{}:",
-            safe_service_label(&self.service_user),
-            safe_service_label(&self.service_host)
-        );
+        let user = if self.service_user.trim().is_empty() {
+            "?"
+        } else {
+            self.service_user.trim()
+        };
+        let host = if self.service_host.trim().is_empty() {
+            "?"
+        } else {
+            self.service_host.trim()
+        };
+        let service = format!("{}@{}:", safe_service_label(user), safe_service_label(host));
         if self.client_user == self.service_user && self.client_host == self.service_host {
             service
         } else {
@@ -5334,6 +5403,23 @@ impl AuthoritativeServiceContext {
             self.destination_prefix(),
             self.contracted_project_path()
         )
+    }
+
+    /// Stable wide-to-narrow location forms. The full authenticated identity
+    /// is authoritative whenever it fits; constrained rows retain the
+    /// canonical contracted path and finally its project basename.
+    pub(super) fn location_candidates(&self) -> Vec<String> {
+        let full = self.compact_destination();
+        let path = self.contracted_project_path();
+        let basename = self
+            .project_path()
+            .file_name()
+            .map(|name| safe_service_label(&name.to_string_lossy()))
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| "/".to_string());
+        let mut candidates = vec![full, path, format!("…/{basename}"), basename];
+        candidates.dedup();
+        candidates
     }
 
     /// Last-resort optional bar form. It preserves the destination host and

@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 
 use ratatui::prelude::*;
 use ratatui::widgets::{
@@ -2190,7 +2191,6 @@ enum ContextBarControl {
     Previous,
     Next,
     Menu,
-    Pulse,
 }
 
 fn ansi16_color(index: u8) -> Color {
@@ -2346,6 +2346,50 @@ fn clip_cells(text: &str, width: usize) -> String {
     }
     out.push('~');
     out
+}
+
+fn ellipsize_cells(text: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    if UnicodeWidthStr::width(text) <= width {
+        return text.to_string();
+    }
+    if width == 1 {
+        return "…".to_string();
+    }
+    let mut out = String::new();
+    for ch in text.chars() {
+        if UnicodeWidthStr::width(out.as_str())
+            + unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0)
+            > width - 1
+        {
+            break;
+        }
+        out.push(ch);
+    }
+    out.push('…');
+    out
+}
+
+fn fallback_location_candidates(location: &str) -> Vec<String> {
+    let path = location
+        .split_once(':')
+        .map(|(_, path)| path)
+        .unwrap_or(location);
+    let basename = Path::new(path)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| path.to_string());
+    let mut candidates = vec![
+        location.to_string(),
+        path.to_string(),
+        format!("…/{basename}"),
+        basename,
+    ];
+    candidates.dedup();
+    candidates
 }
 
 fn activity_pulse_failure(app: &VizApp) -> bool {
@@ -2897,6 +2941,59 @@ fn render_context_row(frame: &mut Frame, app: &mut VizApp, area: Rect, _chat: bo
 
     let symbols = app.workspace_appearance.symbols;
     let lane = app.current_context_lane();
+
+    // Stable hierarchy starts with canonical location. The authenticated
+    // daemon identity wins; the appearance worker's Git-common-dir result is
+    // the disconnected fallback and therefore cannot expose a linked agent
+    // worktree. At narrow widths we select a whole deterministic candidate
+    // before clipping as a final one-cell-safe fallback.
+    let authority = app.service_health.authoritative.clone();
+    let location_candidates = authority
+        .as_ref()
+        .map(|context| context.location_candidates())
+        .or_else(|| {
+            app.workspace_appearance
+                .location
+                .as_deref()
+                .map(fallback_location_candidates)
+        })
+        .unwrap_or_else(|| {
+            let basename = app
+                .workgraph_dir
+                .parent()
+                .and_then(Path::file_name)
+                .map(|name| name.to_string_lossy().into_owned())
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| "wg".to_string());
+            vec![format!("…/{basename}"), basename]
+        });
+    let location_budget = match area.width {
+        0..=23 => 3,
+        24..=39 => 5,
+        40..=59 => 8,
+        60..=79 => 10,
+        80..=99 => 18,
+        _ => (area.width as usize / 3).min(64),
+    };
+    let location = location_candidates
+        .iter()
+        .find(|candidate| UnicodeWidthStr::width(candidate.as_str()) <= location_budget)
+        .cloned()
+        .unwrap_or_else(|| ellipsize_cells(location_candidates.last().unwrap(), location_budget));
+    let location_width = UnicodeWidthStr::width(location.as_str()) as u16;
+    let location_area = Rect::new(area.x, area.y, location_width.min(area.width), 1);
+    frame.render_widget(
+        Paragraph::new(ellipsize_cells(&location, location_area.width as usize))
+            .style(bar_style.add_modifier(Modifier::BOLD | Modifier::UNDERLINED)),
+        location_area,
+    );
+    if let Some(context) = authority.as_ref() {
+        app.last_service_identity_hit = Some(ServiceIdentityHit {
+            area: location_area,
+            owner: context.owner.clone(),
+        });
+    }
+
     let lane_width = if area.width < 32 { 2 } else { 3 };
     let lane_text = |glyph: &str| {
         if lane_width == 2 {
@@ -2914,7 +3011,12 @@ fn render_context_row(frame: &mut Frame, app: &mut VizApp, area: Rect, _chat: bo
         (ContextLane::Task, lane_text(task_glyph)),
         (ContextLane::Workspace, lane_text(workspace_glyph)),
     ];
-    let mut cursor = area.x;
+    let mut cursor = location_area.right();
+    // One inert separator keeps location distinct from the coherent control
+    // group while preserving its same-frame click owner.
+    if cursor < area.right() {
+        cursor = cursor.saturating_add(1);
+    }
     for (which, text) in lanes {
         if cursor >= area.right() {
             break;
@@ -2973,29 +3075,18 @@ fn render_context_row(frame: &mut Frame, app: &mut VizApp, area: Rect, _chat: bo
     // may select the compact inverse tile. Very narrow rows use the existing
     // compact primary-action glyph so the Full escape and task switch remain
     // reachable without a second row.
-    let compact_new = app.task_counts.resumable_chats > 0
-        // On a physically tiny contextual segment the exact destination and
-        // one-tap global New action fit only in compact form. This applies even
-        // to an empty/disconnected snapshot: the glyph remains the same action,
-        // while a verbose label must never crowd `.chat-N`/task identity.
-        || area.width < 32
-        || (app.layout_preference.mode == InspectorMode::Full && area.width < 60);
-    let new_label = if compact_new {
-        match symbols {
-            SymbolMode::Workshop => " ⊞ ",
-            SymbolMode::Letters => " + ",
-        }
-    } else {
-        NEW_CHAT_BUTTON_LABEL
+    let new_label = match symbols {
+        SymbolMode::Workshop => " ⊞ ",
+        SymbolMode::Letters => " + ",
     };
     let new_width = UnicodeWidthStr::width(new_label).min(area.width as usize) as u16;
-    let new_x = area.right().saturating_sub(new_width);
-    let new_rect = Rect::new(new_x, area.y, new_width, 1);
-    frame.render_widget(Paragraph::new(new_label).style(tile_style), new_rect);
-    app.coordinator_plus_hit = CoordinatorPlusHit {
-        start: new_rect.x,
-        end: new_rect.right(),
+    let pulse_text = format!(" {} ", cached_activity_pulse(app, symbols));
+    let pulse_width = if area.width >= 60 {
+        UnicodeWidthStr::width(pulse_text.as_str()) as u16
+    } else {
+        0
     };
+    let content_right = area.right().saturating_sub(pulse_width);
 
     let exact = match lane {
         ContextLane::Chat => app
@@ -3022,10 +3113,11 @@ fn render_context_row(frame: &mut Frame, app: &mut VizApp, area: Rect, _chat: bo
         ContextLane::Workspace => None,
     };
 
-    let available = new_x.saturating_sub(cursor) as usize;
-    let min_identity =
-        (UnicodeWidthStr::width(exact.as_str()) + 1).min(if area.width < 32 { 8 } else { 11 });
-    let mut budget = available.saturating_sub(min_identity);
+    let available = content_right.saturating_sub(cursor) as usize;
+    let min_title = if area.width < 32 { 3 } else { 8 };
+    let mut budget = available
+        .saturating_sub(new_width as usize)
+        .saturating_sub(min_title);
     let active_search = match lane {
         ContextLane::Chat => {
             app.input_mode == InputMode::ChatSearch || !app.chat.search.query.is_empty()
@@ -3116,20 +3208,13 @@ fn render_context_row(frame: &mut Frame, app: &mut VizApp, area: Rect, _chat: bo
     );
     reserve(ContextBarControl::Help, " ? ".to_string(), 40, false);
     reserve(ContextBarControl::Menu, " ⋮ ".to_string(), 32, false);
-    reserve(
-        ContextBarControl::Pulse,
-        format!(" {} ", cached_activity_pulse(app, symbols)),
-        60,
-        false,
-    );
 
-    let controls_width: usize = controls
-        .iter()
-        .map(|(_, text)| UnicodeWidthStr::width(text.as_str()))
-        .sum();
-    let identity_width = available.saturating_sub(controls_width);
+    // Controls render immediately after location; the title owns only the
+    // stable remainder. This prevents task/chat title changes from moving any
+    // unrelated pointer target.
+    let identity_width = 0usize;
     let exact_text = format!(" {exact}");
-    let friendly_text = friendly.map(|title| format!("  {title}"));
+    let friendly_text = friendly.as_ref().map(|title| format!("  {title}"));
     let authority = app.service_health.authoritative.clone();
     let service_gap = "  •  ";
     let mut rendered_prefix = exact_text.clone();
@@ -3211,12 +3296,11 @@ fn render_context_row(frame: &mut Frame, app: &mut VizApp, area: Rect, _chat: bo
 
     for (kind, text) in controls {
         let width = UnicodeWidthStr::width(text.as_str()) as u16;
-        if width == 0 || cursor.saturating_add(width) > new_x {
+        if width == 0 || cursor.saturating_add(width).saturating_add(new_width) > content_right {
             continue;
         }
         let rect = Rect::new(cursor, area.y, width, 1);
         let style = match kind {
-            ContextBarControl::Pulse => activity_pulse_style(app, bar_style),
             ContextBarControl::TaskDetail if app.right_panel_tab == RightPanelTab::Detail => {
                 tile_style
             }
@@ -3236,15 +3320,49 @@ fn render_context_row(frame: &mut Frame, app: &mut VizApp, area: Rect, _chat: bo
             ContextBarControl::Previous => app.last_context_prev_area = rect,
             ContextBarControl::Next => app.last_context_next_area = rect,
             ContextBarControl::Menu => app.last_context_menu_area = rect,
-            ContextBarControl::Pulse => app.last_context_pulse_area = rect,
         }
         cursor = cursor.saturating_add(width);
     }
-    // The global primary action owns the row's right edge. Repaint it after
-    // every optional identity/control span so a narrow priority-clipped label
-    // can never visually cover the already-reserved cells (and thereby look
-    // actionable under the wrong hit owner).
-    frame.render_widget(Paragraph::new(new_label).style(tile_style), new_rect);
+    // New-chat completes the coherent control group; its hit box is derived
+    // from the final cursor after every resize-dependent control decision.
+    let new_rect = Rect::new(
+        cursor,
+        area.y,
+        new_width.min(content_right.saturating_sub(cursor)),
+        1,
+    );
+    if new_rect.width > 0 {
+        frame.render_widget(
+            Paragraph::new(clip_cells(new_label, new_rect.width as usize)).style(tile_style),
+            new_rect,
+        );
+        app.coordinator_plus_hit = CoordinatorPlusHit {
+            start: new_rect.x,
+            end: new_rect.right(),
+        };
+        cursor = new_rect.right();
+    }
+
+    // Context title is the sole elastic region. Prefer the human chat/task
+    // name, fall back to the exact stable id, and deterministically ellipsize.
+    let title = friendly.unwrap_or(exact);
+    let title_width = content_right.saturating_sub(cursor);
+    if title_width > 0 {
+        let title_text = ellipsize_cells(&format!(" {title}"), title_width as usize);
+        frame.render_widget(
+            Paragraph::new(title_text).style(bar_style.add_modifier(Modifier::BOLD)),
+            Rect::new(cursor, area.y, title_width, 1),
+        );
+    }
+
+    if pulse_width > 0 {
+        let rect = Rect::new(content_right, area.y, pulse_width, 1);
+        frame.render_widget(
+            Paragraph::new(pulse_text).style(activity_pulse_style(app, bar_style)),
+            rect,
+        );
+        app.last_context_pulse_area = rect;
+    }
     app.workspace_appearance.context_rows_rendered = app
         .workspace_appearance
         .context_rows_rendered
@@ -16662,12 +16780,12 @@ mod tests {
 
         app.chat_startup_state = super::super::state::ChatStartupState::Empty;
         let row = context_row_text(&mut app, 40);
-        assert!(row.contains(NEW_CHAT_BUTTON_LABEL), "{row}");
+        assert!(row.contains('⊞'), "{row}");
         assert_eq!(app.last_coordinator_bar_area.height, 1);
         assert_eq!(
             app.coordinator_plus_hit.end - app.coordinator_plus_hit.start,
-            NEW_CHAT_BUTTON_WIDTH as u16,
-            "the fixed fully-labelled context control remains clickable"
+            3,
+            "the compact context control retains a three-cell hit target"
         );
     }
 
@@ -16894,7 +17012,7 @@ mod tests {
             .collect();
         assert!(rendered.contains("No chat selected"), "{rendered}");
         let context = context_row_text(&mut app, 40);
-        assert!(context.contains(NEW_CHAT_BUTTON_LABEL), "{context}");
+        assert!(context.contains('⊞'), "{context}");
     }
 
     #[test]
@@ -17972,6 +18090,17 @@ mod tests {
     }
 
     #[test]
+    fn hierarchy_ellipsis_is_unicode_cell_bounded_and_deterministic() {
+        assert_eq!(ellipsize_cells("工作計画", 5), "工作…");
+        assert_eq!(
+            UnicodeWidthStr::width(ellipsize_cells("工作計画", 5).as_str()),
+            5
+        );
+        assert_eq!(ellipsize_cells("équipe", 4), "équ…");
+        assert_eq!(ellipsize_cells("anything", 1), "…");
+    }
+
+    #[test]
     fn authoritative_service_context_degrades_whole_and_never_crowds_exact_chat_or_controls() {
         let (mut app, _tmp) = build_app_for_tab_color_test(&[7]);
         app.active_chat_identity = Some(super::super::state::ActiveChatIdentity {
@@ -17983,14 +18112,13 @@ mod tests {
         });
         app.task_counts.resumable_chats = 1;
         let context = test_authoritative_service_context();
-        let candidates = context.bar_candidates();
         app.service_health.authoritative = Some(context);
 
         let wide = context_row_text(&mut app, 240);
-        assert!(wide.contains(".chat-7"), "{wide}");
-        assert!(wide.contains("svc@remote:~/work/project"), "{wide}");
+        assert!(wide.starts_with("svc@remote:~/work/project"), "{wide}");
+        assert!(wide.contains("Dinner planning"), "{wide}");
         assert!(
-            wide.contains("pid 4242") && wide.contains("profile pi"),
+            !wide.contains("pid 4242") && !wide.contains("profile pi"),
             "{wide}"
         );
         let wide_hit = app
@@ -17999,31 +18127,23 @@ mod tests {
             .expect("complete wide identity must be actionable");
         assert!(wide_hit.area.right() <= app.last_coordinator_bar_area.right());
 
-        let mut saw_clean = false;
-        let mut saw_elided_or_omitted = false;
+        let mut saw_shortened = false;
         for width in [160, 120, 100, 80, 60, 40, 32, 20] {
             let row = context_row_text(&mut app, width);
-            assert!(row.contains(".chat-7"), "width={width}: {row}");
+            assert!(row.contains("Dinn"), "width={width}: {row}");
             assert!(row.contains('⊞'), "width={width}: {row}");
-            if row.contains("svc@remote:~/work/project")
-                && !row.contains("pid 4242")
-                && !row.contains("profile pi")
-            {
-                saw_clean = true;
-            }
-            if row.contains("svc@remote:…/project") || !row.contains("svc@remote:") {
-                saw_elided_or_omitted = true;
-            }
-            if let Some(hit) = app.last_service_identity_hit.as_ref() {
-                assert!(hit.area.width > 0 && hit.area.right() <= width);
-                assert!(candidates.iter().any(|candidate| row.contains(candidate)));
-            }
+            assert!(
+                app.last_context_chat_lane_area.x > 0,
+                "width={width}: {row}"
+            );
+            saw_shortened |= !row.starts_with("svc@remote:~/work/project");
+            let hit = app
+                .last_service_identity_hit
+                .as_ref()
+                .expect("authoritative location must retain a resized hitbox");
+            assert!(hit.area.x == 0 && hit.area.width > 0 && hit.area.right() <= width);
         }
-        assert!(saw_clean, "matrix never removed ancillary context first");
-        assert!(
-            saw_elided_or_omitted,
-            "matrix never elided/omitted optional context"
-        );
+        assert!(saw_shortened, "matrix never shortened constrained location");
     }
 
     #[test]
@@ -18071,7 +18191,11 @@ mod tests {
         assert!(app.last_service_identity_hit.is_some());
         let narrow = context_row_text(&mut app, 32);
         assert!(!narrow.contains('→'), "{narrow}");
-        assert!(app.last_service_identity_hit.is_none());
+        let hit = app
+            .last_service_identity_hit
+            .as_ref()
+            .expect("shortened canonical location remains clickable");
+        assert_eq!(hit.area.x, 0);
     }
 
     #[test]
@@ -18158,13 +18282,14 @@ mod tests {
         app.task_counts.pending_eval = 2;
         let wide = context_row_text(&mut app, 120);
 
-        assert_eq!(chat, " ↯  ⌁  ⌂  .chat-7         ⌕  ⌘  ?  ⋮  ⊞ ");
-        assert_eq!(letters, " C  T  W  .chat-7         S  =  ?  ⋮  + ");
-        assert_eq!(empty, " ↯  ⌁  ⌂  Workspace ⌕  ⌘  ? [ New chat ]");
-        assert_eq!(
-            wide,
-            " ↯  ⌁  ⌂  .chat-7  Dinner planning                                                           ⌕  ⌘  ?  ⋮  !●2/4⊳3▸1∴2  ⊞ "
-        );
+        assert!(chat.find('↯').unwrap() < chat.find('⊞').unwrap());
+        assert!(chat.find('⊞').unwrap() < chat.find("Dinner").unwrap());
+        assert!(letters.find('C').unwrap() < letters.find('+').unwrap());
+        assert!(letters.find('+').unwrap() < letters.find("Dinner").unwrap());
+        assert!(empty.contains("Workspace") && empty.contains('⊞'));
+        assert!(wide.find('↯').unwrap() < wide.find('⊞').unwrap());
+        assert!(wide.find('⊞').unwrap() < wide.find("Dinner planning").unwrap());
+        assert!(wide.find("Dinner planning").unwrap() < wide.find("●2/4⊳3▸1∴2").unwrap());
     }
 
     #[test]
@@ -18379,8 +18504,16 @@ mod tests {
                 row.contains('↯') && row.contains('⌁') && row.contains('⌂'),
                 "width={width}: {row}"
             );
-            assert!(row.contains(".chat-7"), "width={width}: {row}");
+            assert!(row.contains("Dinn"), "width={width}: {row}");
             assert!(row.contains('⊞'), "width={width}: {row}");
+            assert!(
+                app.last_context_chat_lane_area.x > 0,
+                "location must remain leftmost: {row}"
+            );
+            assert!(
+                app.coordinator_plus_hit.end as usize <= row.find("Dinn").unwrap_or(row.len()),
+                "controls must precede context title: {row}"
+            );
             assert!(
                 !row.contains('['),
                 "compact tile must have no literal brackets: {row}"
@@ -18496,16 +18629,10 @@ mod tests {
                         } else {
                             '+'
                         };
-                        if no_resumable && width >= 32 {
-                            assert!(
-                                row.contains(NEW_CHAT_BUTTON_LABEL),
-                                "{state}/{width}: {row}"
-                            );
-                        } else {
-                            assert!(row.contains(tile), "{state}/{width}: {row}");
-                        }
+                        let _ = no_resumable;
+                        assert!(row.contains(tile), "{state}/{width}: {row}");
                         if state == "search" {
-                            let anchor = match (symbols, width < 28) {
+                            let anchor = match (symbols, width < 40) {
                                 (SymbolMode::Workshop, true) => "⌕/",
                                 (SymbolMode::Workshop, false) => "⌕/needle",
                                 (SymbolMode::Letters, true) => "S/",
@@ -18548,12 +18675,7 @@ mod tests {
             app.task_counts.resumable_chats = 0;
             for width in [20, 32, 40, 60, 80, 120, 200] {
                 let row = context_row_text(&mut app, width);
-                let has_action = if width < 32 {
-                    row.contains('⊞')
-                } else {
-                    row.contains(NEW_CHAT_BUTTON_LABEL)
-                };
-                assert!(has_action, "tab={tab:?} width={width}: {row}");
+                assert!(row.contains('⊞'), "tab={tab:?} width={width}: {row}");
             }
         }
         // Merely rendering all states is strictly non-mutating.
@@ -18604,7 +18726,7 @@ mod tests {
         for width in [80, 140] {
             let row = context_row_text(&mut app, width);
             assert!(row.contains("●2/8⊳4▸3∴1"), "width={width}: {row}");
-            assert!(row.contains(NEW_CHAT_BUTTON_LABEL), "width={width}: {row}");
+            assert!(row.contains('⊞'), "width={width}: {row}");
             assert_eq!(
                 app.last_context_pulse_area.width as usize,
                 UnicodeWidthStr::width(" ●2/8⊳4▸3∴1 ")
@@ -18618,7 +18740,7 @@ mod tests {
 
         let narrow = context_row_text(&mut app, 40);
         assert!(narrow.contains('⌁') && narrow.contains('a'), "{narrow}");
-        assert!(narrow.contains(NEW_CHAT_BUTTON_LABEL), "{narrow}");
+        assert!(narrow.contains('⊞'), "{narrow}");
     }
 
     #[test]
@@ -18635,7 +18757,7 @@ mod tests {
             "previous action must be omitted at the first task: {row}"
         );
         assert!(
-            row.contains("New chat"),
+            row.contains('⊞'),
             "global primary action missing from task context: {row}"
         );
         assert!(
@@ -18837,7 +18959,7 @@ mod tests {
             .collect();
         assert!(top.contains('⌁') && top.contains("a"), "{top}");
         assert!(
-            top.contains("New chat") && !top.contains('┌') && !top.contains('┐'),
+            top.contains('⊞') && !top.contains('┌') && !top.contains('┐'),
             "{top}"
         );
     }

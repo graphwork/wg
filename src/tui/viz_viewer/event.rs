@@ -14128,15 +14128,20 @@ mod chat_open_tests {
         assert!(app.service_health.detail_open);
         app.service_health.detail_open = false;
 
-        // Resize invalidates every old context coordinate before redraw; a
-        // narrow rerender omits the optional destination and owns no region.
+        // Resize invalidates every old context coordinate before redraw; the
+        // narrow rerender installs a newly-derived compact location hitbox.
         dispatch_event(&mut app, Event::Resize(32, 20));
         assert!(app.last_service_identity_hit.is_none());
         let mut narrow = Terminal::new(TestBackend::new(32, 20)).unwrap();
         narrow
             .draw(|frame| crate::tui::viz_viewer::render::draw(frame, &mut app))
             .unwrap();
-        assert!(app.last_service_identity_hit.is_none());
+        let compact = app
+            .last_service_identity_hit
+            .as_ref()
+            .expect("compact authoritative location remains actionable");
+        assert_eq!(compact.area.x, 0);
+        assert!(compact.area.right() <= 32);
 
         // Keyboard parity uses the Workspace actions menu's advertised `i`
         // route and opens exactly the same cached, read-only details surface.

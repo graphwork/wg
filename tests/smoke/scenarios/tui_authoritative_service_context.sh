@@ -116,6 +116,7 @@ click_xy() {
 wait_screen "${sessions[0]}" "$expected_a" "alpha client 1 did not show authoritative destination"
 wait_screen "${sessions[1]}" "$expected_a" "alpha client 2 did not agree on destination"
 wait_screen "${sessions[2]}" "$expected_b" "beta client confused same-host project services"
+[[ -z "${WG_SMOKE_EVIDENCE_DIR:-}" ]] || mkdir -p "$WG_SMOKE_EVIDENCE_DIR"
 # Command-chat startup may atomically normalize its pre-existing route once;
 # pin after that unrelated baseline. Every identity poll, click, detail open,
 # resize, and daemon restart below must leave graph bytes unchanged.
@@ -149,25 +150,29 @@ tmux send-keys -t "${sessions[0]}" Escape
 # and prove optional context degrades away before exact chat identity/primary
 # lanes/New control. A tap at the clipped old coordinate must not reopen detail.
 old_x=$identity_x; old_y=$identity_y
-for width in 140 100 80 60 40 32; do
+for width in 160 140 100 80 60 40 32; do
   tmux resize-window -t "${sessions[0]}" -x "$width" -y 24
+  sleep 0.15
   row=""
   for _ in $(seq 1 100); do
     row=$(capture "${sessions[0]}" | grep -m1 -F '↯' || true)
     [[ -n "$row" ]] && break
     sleep 0.03
   done
-  if [[ "$row" != *'.chat-0'* ]]; then
+  if [[ "$row" != *'destination'* && "$row" != *'Chat:'* ]]; then
     lane_xy=$(coord "${sessions[0]}" '↯' || true)
     if [[ -n "$lane_xy" ]]; then
       read -r lane_x lane_y <<<"$lane_xy"; click_xy "${sessions[0]}" "$lane_x" "$lane_y"; sleep 0.1
       row=$(capture "${sessions[0]}" | grep -m1 -F '↯' || true)
     fi
   fi
-  [[ "$row" == *'.chat-0'* && "$row" == *'↯'* && "$row" == *'⌁'* && "$row" == *'⌂'* ]] \
-    || loud_fail "width $width crowded exact identity/context lanes: $row"
+  [[ ( "$row" == *'destination'* || "$row" == *'Chat:'* ) && "$row" == *'↯'* && "$row" == *'⌁'* && "$row" == *'⌂'* ]] \
+    || loud_fail "width $width crowded current title/context lanes: $row"
   [[ "$row" == *'⊞'* || "$row" == *'⌕'* || "$row" == *'Panel'* || "$row" == *'p Pane'* || "$row" == *'Split'* || "$row" == *"$service_user@$service_host:"* ]] \
     || loud_fail "width $width lost every primary row action: $row"
+  if [[ -n "${WG_SMOKE_EVIDENCE_DIR:-}" && ( "$width" == 160 || "$width" == 80 || "$width" == 40 ) ]]; then
+    printf '%s\n' "$row" >"$WG_SMOKE_EVIDENCE_DIR/$width.txt"
+  fi
 done
 if (( old_x <= 20 )); then
   click_xy "${sessions[0]}" "$old_x" "$old_y"

@@ -2462,8 +2462,9 @@ name = "tui_symbolic_context_bar"
 script = "scenarios/tui_symbolic_context_bar.sh"
 owners = [
     "implement-approved-symbolic-tui",
+    "prototype-clearer-tui",
 ]
-description = "Candidate-binary real tmux/SGR mouse flow for the maintainer-approved symbolic one-row trial: workshop lanes and exact identity, repeated Chat/Task selectors with exact-row taps, transactional task search clearing, context/Help/New-chat/pulse targets, bounded Controls→Appearance click routing, immediate Letters mode, 32-column compact resize, and fully-labelled non-mutating empty startup. Builds in one scratch-bounded target removed by smoke cleanup."
+description = "Candidate-binary real tmux/SGR mouse flow for the one-row hierarchy: canonical location first, coherent resized controls with same-frame hitboxes, elastic Chat/task context title, workshop lanes and repeated selectors, transactional search, Help/New-chat/pulse targets, bounded Controls→Appearance routing, immediate Letters mode, 32-column compact resize, and non-mutating empty startup. Builds in one scratch-bounded target removed by smoke cleanup."
 timeout_seconds = 300
 
 [[scenario]]
