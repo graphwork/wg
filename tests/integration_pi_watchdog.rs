@@ -57,6 +57,39 @@ fn fixture(now: i64) -> PiWatchdog {
 }
 
 #[test]
+fn native_live_projection_is_numeric_deduplicated_and_text_free() {
+    let mut w = fixture(0);
+    let reasoning_canary = "RAW_REASONING_CANARY_7f3b";
+    w.ingest_native_value(
+        &serde_json::json!({"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","delta":reasoning_canary,"thinkingTokens":7}}),
+        1,
+    )
+    .unwrap();
+    w.ingest_native_value(
+        &serde_json::json!({"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"hostile output","outputTokens":5}}),
+        2,
+    )
+    .unwrap();
+    w.ingest_native_value(
+        &serde_json::json!({"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"more hostile output","outputTokens":11}}),
+        4,
+    )
+    .unwrap();
+    let turn = serde_json::json!({"type":"turn_end","turnId":"turn-1","message":{"usage":{"input":10,"output":11,"cacheRead":3,"cacheWrite":2,"totalTokens":26,"cost":{"total":0.25}}}});
+    w.ingest_native_value(&turn, 5).unwrap();
+    w.ingest_native_value(&turn, 6).unwrap();
+    let native = &w.state().native_activity;
+    assert_eq!(native.thinking_tokens, Some(7));
+    assert_eq!(native.output_tokens, Some(11));
+    assert_eq!(native.output_samples.len(), 2);
+    assert_eq!(native.usage_total, Some(26));
+    assert_eq!(native.usage_receipt_count, 1);
+    let serialized = serde_json::to_string(w.state()).unwrap();
+    assert!(!serialized.contains(reasoning_canary));
+    assert!(!serialized.contains("hostile output"));
+}
+
+#[test]
 fn soft_and_hard_are_independent() {
     let mut w = fixture(0);
     w.observe(

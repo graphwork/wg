@@ -49,6 +49,7 @@ pub mod identity;
 pub mod json_extract;
 pub mod launcher_history;
 pub mod lifecycle;
+pub mod live_progress;
 pub mod lock;
 pub mod markdown;
 #[cfg(feature = "matrix")]

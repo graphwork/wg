@@ -615,6 +615,52 @@ fn fixture_init(dir: &Path, id: &str, worktree: &Path, now: i64) -> Result<()> {
 
 fn fixture_observe(dir: &Path, id: &str, event: &str, now: i64) -> Result<()> {
     let mut watchdog = checked_open(dir, id)?;
+    // Credential-free native Pi records for TUI projection smoke tests. Raw
+    // text canaries are intentionally present here to prove they never enter
+    // the persisted UI-safe projection.
+    let native = match event {
+        "thinking-native" => Some(
+            serde_json::json!({"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","delta":"RAW_REASONING_CANARY_7f3b","thinkingTokens":7}}),
+        ),
+        "thinking-unknown" => Some(
+            serde_json::json!({"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","delta":"RAW_REASONING_CANARY_7f3b_UNKNOWN"}}),
+        ),
+        "output-5" => Some(
+            serde_json::json!({"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"HOSTILE_OUTPUT_CANARY_91ac","outputTokens":5}}),
+        ),
+        "output-11" => Some(
+            serde_json::json!({"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"HOSTILE_OUTPUT_CANARY_91ac","outputTokens":11}}),
+        ),
+        "write-native" => Some(
+            serde_json::json!({"type":"tool_execution_start","toolName":"write","toolClass":"write","toolCallId":"write-1"}),
+        ),
+        "tool-native" => Some(
+            serde_json::json!({"type":"tool_execution_start","toolName":"bash","toolClass":"tool","toolCallId":"tool-1"}),
+        ),
+        "test-native" => Some(
+            serde_json::json!({"type":"tool_execution_start","toolName":"test","toolClass":"test","toolCallId":"test-1"}),
+        ),
+        "tool-end-native" => Some(
+            serde_json::json!({"type":"tool_execution_end","toolName":"test","toolCallId":"test-1","isError":false}),
+        ),
+        "usage-native" => Some(
+            serde_json::json!({"type":"turn_end","turnId":"fixture-turn-1","message":{"usage":{"input":10,"output":11,"cacheRead":3,"cacheWrite":2,"totalTokens":26,"cost":{"total":0.25}}}}),
+        ),
+        _ => None,
+    };
+    if let Some(native) = native {
+        let actions = watchdog
+            .ingest_native_value(&native, now)
+            .map_err(anyhow::Error::new)?;
+        println!(
+            "event={event} classification={:?} phase={:?} actions={actions:?} progress={} native-seq={}",
+            watchdog.state().classification,
+            watchdog.state().phase,
+            watchdog.state().progress_seq,
+            watchdog.state().native_activity.event_seq,
+        );
+        return Ok(());
+    }
     let mut terminal_receipt = None;
     let observation = match event {
         "provider-start" => Observation::ProviderRequestStarted {

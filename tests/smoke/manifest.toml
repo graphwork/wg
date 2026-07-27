@@ -2710,7 +2710,7 @@ timeout_seconds = 60
 [[scenario]]
 name = "isolated_worktree_observer_human_flow"
 script = "scenarios/isolated_worktree_observer_human_flow.sh"
-owners = ["implement-isolated-worktree"]
+owners = ["implement-isolated-worktree", "expose-live-worktree"]
 description = "Installed-binary real daemon/wrapper/Fake-Pi terminal flow: baseline is fsynced before the isolated worktree receives its permit; deliberately different main stays inert; candidate writes and atomic rename display as observed/unproven separately from the watchdog-owned proven clock; target churn is ignored; production 300/120/600 bounds remain visible; overflow and daemon restart reconcile without refreshing timestamps; and a post-reap late write is quarantined without making the task Done."
 timeout_seconds = 90
 
@@ -2719,6 +2719,13 @@ name = "pi_session_watchdog_human_flow"
 script = "scenarios/pi_session_watchdog_human_flow.sh"
 owners = ["implement-pi-stalled"]
 description = "Installed-binary PTY/Fake-Pi flow over the production lifecycle ledger and durable watchdog projector: displays static 300s soft and >=900s hard policy; proves soft probe vs hard grace/fence/resume, progress/provider/wait/tool/unknown protections, prompt NeedsFinalization and append-once same-session markers across restart, current-epoch terminal intents with SuccessIntent non-Done, stable finite manual grants and operator abort, and one immutable source attempt/owner/session/route/accounting domain."
+timeout_seconds = 120
+
+[[scenario]]
+name = "tui_live_progress_selected_task"
+script = "scenarios/tui_live_progress_selected_task.sh"
+owners = ["expose-live-worktree"]
+description = "Installed-binary real tmux/PTY + native-format Fake-Pi flow: the selected Detail surface (never the global context bar) renders persisted provider/thinking/output/write/tool/test and watchdog suspect/fence/resume phases, honest numeric/Unknown counts and deduplicated usage, receipt-proven versus observed/unproven rows, static 300/120/600 authority defaults, modal Help ownership during updates, stable wide/narrow resize, read-only dump/navigation, restart restoration, privacy canaries, and immutable Done terminal evidence. The separately-owned isolated-worktree scenario supplies the real leased observer/reconcile/late-write half of the same projection contract."
 timeout_seconds = 120
 
 [[scenario]]

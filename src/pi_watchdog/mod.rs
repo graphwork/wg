@@ -40,6 +40,44 @@ pub enum Phase {
     Exited,
 }
 
+/// UI-safe numeric activity sample projected by the watchdog's canonical Pi
+/// parser. It contains no provider text or reasoning content.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NativeTokenSample {
+    pub at: i64,
+    pub tokens: u64,
+}
+
+/// Persisted UI-facing subset of native Pi evidence. Raw thinking, provider
+/// errors, prompts, tool output, arguments, and file content are deliberately
+/// unrepresentable here; the TUI consumes only this projection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct NativeActivityProjection {
+    pub process_epoch: u32,
+    pub event_seq: u64,
+    pub thinking_activity_seq: u64,
+    pub thinking_tokens: Option<u64>,
+    pub output_activity_seq: u64,
+    pub output_tokens: Option<u64>,
+    pub last_output_activity_at: Option<i64>,
+    #[serde(default)]
+    pub output_samples: Vec<NativeTokenSample>,
+    pub current_tool_label: Option<String>,
+    pub current_tool_class: Option<String>,
+    pub tool_progress: Option<u64>,
+    pub tool_child_state: Option<String>,
+    pub tool_receipt_state: Option<String>,
+    pub usage_input: Option<u64>,
+    pub usage_output: Option<u64>,
+    pub usage_cache_read: Option<u64>,
+    pub usage_cache_write: Option<u64>,
+    pub usage_total: Option<u64>,
+    pub usage_cost: Option<String>,
+    pub usage_receipt_count: u64,
+    #[serde(default)]
+    usage_receipts: BTreeSet<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum QosClass {
@@ -403,6 +441,8 @@ pub struct PiWatchdogState {
     pub reason_code: Option<String>,
     pub exact_route_error: Option<String>,
     pub possible_unattributed_cost: bool,
+    #[serde(default)]
+    pub native_activity: NativeActivityProjection,
     pub domain_counters: DomainCounters,
 }
 
@@ -523,6 +563,10 @@ pub enum Observation {
         contract: ToolContract,
     },
     ToolReceipt {
+        tool_call_id: String,
+        receipt: String,
+    },
+    ToolCompleted {
         tool_call_id: String,
         receipt: String,
     },
@@ -658,6 +702,10 @@ impl PiWatchdog {
                 reason_code: None,
                 exact_route_error: None,
                 possible_unattributed_cost: false,
+                native_activity: NativeActivityProjection {
+                    process_epoch: 1,
+                    ..NativeActivityProjection::default()
+                },
                 domain_counters: DomainCounters::default(),
             },
             policy,
@@ -702,6 +750,9 @@ impl PiWatchdog {
         value: &serde_json::Value,
         now: i64,
     ) -> Result<Vec<ActionKind>, WatchdogError> {
+        // Project only bounded numeric/category evidence. This runs in the
+        // watchdog (the canonical native parser), never in a UI renderer.
+        let native_changed = self.project_native_activity(value, now);
         let ty = value.get("type").and_then(|v| v.as_str()).unwrap_or("");
         let observation = match ty {
             "provider_request_start" | "model_request_start" => {
@@ -712,6 +763,9 @@ impl PiWatchdog {
                         .unwrap_or("provider")
                         .to_string(),
                 })
+            }
+            "provider_response_start" | "model_response_start" => {
+                Some(Observation::ProviderResponseStarted)
             }
             "provider_retry" => Some(Observation::ProviderRetry),
             "compaction_retry" => Some(Observation::CompactionRetry),
@@ -744,6 +798,27 @@ impl PiWatchdog {
                     .to_string(),
                 progress: self.state.progress_seq + 1,
             }),
+            "tool_execution_end" => Some(Observation::ToolCompleted {
+                tool_call_id: value
+                    .get("toolCallId")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .to_string(),
+                receipt: digest_bytes(
+                    format!(
+                        "{}:{}",
+                        value
+                            .get("toolCallId")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown"),
+                        value
+                            .get("isError")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false)
+                    )
+                    .as_bytes(),
+                ),
+            }),
             "agent_end" if value.get("willRetry").and_then(|v| v.as_bool()) == Some(true) => {
                 Some(Observation::AgentEndWillRetry)
             }
@@ -752,8 +827,179 @@ impl PiWatchdog {
         };
         match observation {
             Some(observation) => self.observe(observation, now),
+            None if native_changed => {
+                self.persist("native-activity-projection", now)?;
+                Ok(Vec::new())
+            }
             None => Ok(Vec::new()),
         }
+    }
+
+    fn project_native_activity(&mut self, value: &serde_json::Value, now: i64) -> bool {
+        if self.state.terminal {
+            return false;
+        }
+        let native = &mut self.state.native_activity;
+        if native.process_epoch != self.state.process_epoch {
+            let receipts = std::mem::take(&mut native.usage_receipts);
+            let totals = (
+                native.usage_input,
+                native.usage_output,
+                native.usage_cache_read,
+                native.usage_cache_write,
+                native.usage_total,
+                native.usage_cost.clone(),
+                native.usage_receipt_count,
+            );
+            *native = NativeActivityProjection {
+                process_epoch: self.state.process_epoch,
+                usage_receipts: receipts,
+                usage_input: totals.0,
+                usage_output: totals.1,
+                usage_cache_read: totals.2,
+                usage_cache_write: totals.3,
+                usage_total: totals.4,
+                usage_cost: totals.5,
+                usage_receipt_count: totals.6,
+                ..NativeActivityProjection::default()
+            };
+        }
+        let ty = value.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        let mut changed = false;
+        match ty {
+            "message_update" => {
+                let event = value.get("assistantMessageEvent");
+                match event.and_then(|v| v.get("type")).and_then(|v| v.as_str()) {
+                    Some("thinking_delta") => {
+                        native.event_seq = native.event_seq.saturating_add(1);
+                        native.thinking_activity_seq =
+                            native.thinking_activity_seq.saturating_add(1);
+                        native.thinking_tokens = explicit_u64(
+                            event,
+                            &["thinkingTokens", "thinkingTokenCount", "tokenCount"],
+                        );
+                        changed = true;
+                    }
+                    Some("text_delta") => {
+                        native.event_seq = native.event_seq.saturating_add(1);
+                        native.output_activity_seq = native.output_activity_seq.saturating_add(1);
+                        native.last_output_activity_at = Some(now);
+                        native.output_tokens = explicit_u64(
+                            event,
+                            &["outputTokens", "outputTokenCount", "tokenCount"],
+                        );
+                        if let Some(tokens) = native.output_tokens {
+                            if native
+                                .output_samples
+                                .last()
+                                .is_some_and(|sample| tokens < sample.tokens)
+                            {
+                                native.output_samples.clear();
+                            }
+                            if native
+                                .output_samples
+                                .last()
+                                .is_none_or(|sample| sample.at != now || sample.tokens != tokens)
+                            {
+                                native
+                                    .output_samples
+                                    .push(NativeTokenSample { at: now, tokens });
+                            }
+                            if native.output_samples.len() > 32 {
+                                native.output_samples.remove(0);
+                            }
+                        }
+                        changed = true;
+                    }
+                    _ => {}
+                }
+            }
+            "tool_execution_start" => {
+                native.event_seq = native.event_seq.saturating_add(1);
+                let raw_name = value
+                    .get("toolName")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("tool");
+                native.current_tool_label = Some(safe_tool_label(raw_name));
+                native.current_tool_class = Some(tool_class(value, raw_name));
+                native.tool_progress = explicit_u64(Some(value), &["progress", "progressCount"]);
+                native.tool_child_state = Some("started".into());
+                native.tool_receipt_state = Some("pending".into());
+                changed = true;
+            }
+            "tool_execution_update" => {
+                native.event_seq = native.event_seq.saturating_add(1);
+                native.tool_progress = explicit_u64(Some(value), &["progress", "progressCount"])
+                    .or_else(|| native.tool_progress.map(|v| v.saturating_add(1)))
+                    .or(Some(1));
+                native.tool_child_state = Some(
+                    value
+                        .get("childState")
+                        .and_then(|v| v.as_str())
+                        .map(safe_state_label)
+                        .unwrap_or_else(|| "running".into()),
+                );
+                changed = true;
+            }
+            "tool_execution_end" => {
+                native.event_seq = native.event_seq.saturating_add(1);
+                native.tool_child_state = Some("exited".into());
+                native.tool_receipt_state = Some(
+                    if value.get("isError").and_then(|v| v.as_bool()) == Some(true) {
+                        "error"
+                    } else {
+                        "completed"
+                    }
+                    .into(),
+                );
+                native.current_tool_label = None;
+                native.current_tool_class = None;
+                changed = true;
+            }
+            "turn_end" => {
+                if let Some(usage) = value.get("message").and_then(|m| m.get("usage")) {
+                    let receipt = native_usage_receipt(value, usage);
+                    if native.usage_receipts.insert(receipt) {
+                        add_native_total(
+                            &mut native.usage_input,
+                            usage.get("input").and_then(|v| v.as_u64()),
+                        );
+                        add_native_total(
+                            &mut native.usage_output,
+                            usage.get("output").and_then(|v| v.as_u64()),
+                        );
+                        add_native_total(
+                            &mut native.usage_cache_read,
+                            usage.get("cacheRead").and_then(|v| v.as_u64()),
+                        );
+                        add_native_total(
+                            &mut native.usage_cache_write,
+                            usage.get("cacheWrite").and_then(|v| v.as_u64()),
+                        );
+                        add_native_total(
+                            &mut native.usage_total,
+                            usage.get("totalTokens").and_then(|v| v.as_u64()),
+                        );
+                        if let Some(cost) = usage
+                            .get("cost")
+                            .and_then(|c| c.get("total"))
+                            .and_then(|v| v.as_f64())
+                        {
+                            let prior = native
+                                .usage_cost
+                                .as_deref()
+                                .and_then(|v| v.parse::<f64>().ok())
+                                .unwrap_or(0.0);
+                            native.usage_cost = Some(format!("{:.6}", prior + cost));
+                        }
+                        native.usage_receipt_count = native.usage_receipt_count.saturating_add(1);
+                        changed = true;
+                    }
+                }
+            }
+            _ => {}
+        }
+        changed
     }
 
     pub fn observe(
@@ -880,6 +1126,19 @@ impl PiWatchdog {
                     self.state.exact_guards.effect = tool.is_safe();
                     self.meaningful("tool-receipt", tool_call_id.as_bytes(), now);
                 }
+            }
+            Observation::ToolCompleted {
+                tool_call_id,
+                receipt,
+            } => {
+                if let Some(tool) = self.state.tool.as_mut() {
+                    tool.completion_receipt = Some(receipt);
+                }
+                self.state.tool = None;
+                self.state.exact_guards.effect = true;
+                self.state.classification = Classification::Active;
+                self.state.phase = Phase::Unknown;
+                self.meaningful("tool-complete", tool_call_id.as_bytes(), now);
             }
             Observation::WaitAccepted { correlation } => {
                 self.state.classification = Classification::WaitingUser;
@@ -1359,6 +1618,83 @@ pub fn render_stock_prompt(observation_code: &str) -> Result<String, WatchdogErr
         ));
     }
     Ok(STOCK_PROMPT_TEMPLATE.replace("<OBSERVATION_CODE>", observation_code))
+}
+
+fn explicit_u64(value: Option<&serde_json::Value>, keys: &[&str]) -> Option<u64> {
+    let value = value?;
+    keys.iter()
+        .find_map(|key| value.get(*key).and_then(|v| v.as_u64()))
+}
+
+fn safe_tool_label(raw: &str) -> String {
+    let normalized = raw.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "bash" | "shell" | "read" | "write" | "edit" | "apply_patch" | "cargo" | "test"
+        | "pytest" | "npm" | "make" => normalized,
+        _ => format!("tool#{}", &digest_bytes(raw.as_bytes())[..8]),
+    }
+}
+
+fn safe_state_label(raw: &str) -> String {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "started" => "started".into(),
+        "running" => "running".into(),
+        "waiting" => "waiting".into(),
+        "exited" => "exited".into(),
+        "completed" => "completed".into(),
+        _ => "unknown".into(),
+    }
+}
+
+fn tool_class(value: &serde_json::Value, raw_name: &str) -> String {
+    match value
+        .get("toolClass")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "test" | "testing" => return "test".into(),
+        "write" | "writing" => return "write".into(),
+        "edit" => return "edit".into(),
+        "read" | "read-only" => return "read".into(),
+        _ => {}
+    }
+    match raw_name.trim().to_ascii_lowercase().as_str() {
+        "test" | "pytest" => "test",
+        "write" => "write",
+        "edit" | "apply_patch" => "edit",
+        "read" => "read",
+        _ => "tool",
+    }
+    .into()
+}
+
+fn native_usage_receipt(value: &serde_json::Value, usage: &serde_json::Value) -> String {
+    let identity = value
+        .get("turnId")
+        .or_else(|| value.get("message").and_then(|m| m.get("id")))
+        .and_then(|v| v.as_str())
+        .map(str::to_owned)
+        .unwrap_or_else(|| {
+            let safe = serde_json::json!({
+                "input": usage.get("input"),
+                "output": usage.get("output"),
+                "cacheRead": usage.get("cacheRead"),
+                "cacheWrite": usage.get("cacheWrite"),
+                "totalTokens": usage.get("totalTokens"),
+                "cost": usage.get("cost").and_then(|c| c.get("total")),
+                "timestamp": value.get("timestamp"),
+            });
+            safe.to_string()
+        });
+    digest_bytes(identity.as_bytes())
+}
+
+fn add_native_total(total: &mut Option<u64>, value: Option<u64>) {
+    if let Some(value) = value {
+        *total = Some(total.unwrap_or(0).saturating_add(value));
+    }
 }
 
 fn receipt_matches(source: &SourceTuple, receipt: &TerminalIntentReceipt) -> bool {

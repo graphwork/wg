@@ -8747,6 +8747,9 @@ pub struct TextPromptState {
 pub struct HudDetail {
     /// Task ID this detail was loaded for (to detect stale data).
     pub task_id: String,
+    /// Read-only persisted Pi/watchdog/worktree projection. Rendering this
+    /// value performs no stream parsing, worktree scan, or lifecycle write.
+    pub live_progress: Option<worksgood::live_progress::LiveProgressProjection>,
     /// Task status at load time. Used by the iteration navigator to mark the
     /// live view as "(live)" when the task is still in progress.
     pub task_status: Status,
@@ -9788,6 +9791,9 @@ pub struct VizApp {
     last_chat_outbox_mtime: Option<SystemTime>,
     /// Last mtime of the output.log for the currently-displayed task (Detail tab live refresh).
     last_detail_output_mtime: Option<SystemTime>,
+    /// Presentation-only coalescing clock for persisted live-progress reads.
+    /// It is never written to graph/watchdog/observer state.
+    last_live_progress_refresh_at: Option<Instant>,
     /// Whether the HUD detail panel should auto-scroll to follow new content.
     /// Engages when the user scrolls to the bottom; disengages on scroll up.
     pub hud_follow: bool,
@@ -10831,6 +10837,7 @@ impl VizApp {
             last_ops_log_mtime: None,
             last_chat_outbox_mtime: None,
             last_detail_output_mtime: None,
+            last_live_progress_refresh_at: None,
             hud_follow: false,
             graph_viz_stale: false,
             graph_reload_pending: false,
@@ -13244,6 +13251,28 @@ impl VizApp {
         if !self.bootstrap_complete {
             return false;
         }
+        // Selected-task progress files can update without graph/output mtimes.
+        // Queue the latest read before any early-returning refresh lane: burst
+        // evidence is capped at 10/s, while idle/age-only reads are capped at
+        // 1/s. The auxiliary worker performs all storage I/O.
+        if matches!(
+            self.right_panel_tab,
+            RightPanelTab::Detail | RightPanelTab::Agency
+        ) {
+            let changed_hint = self.fs_change_pending.load(Ordering::Relaxed);
+            let due = self.last_live_progress_refresh_at.is_none_or(|at| {
+                at.elapsed()
+                    >= if changed_hint {
+                        Duration::from_millis(100)
+                    } else {
+                        Duration::from_secs(1)
+                    }
+            });
+            if due {
+                self.last_live_progress_refresh_at = Some(Instant::now());
+                self.request_hud_detail();
+            }
+        }
         if self.poll_graph_snapshot() {
             return true;
         }
@@ -13443,6 +13472,22 @@ impl VizApp {
                 content_updated = true;
             }
 
+            // Persisted live progress changes independently of graph.jsonl and
+            // output.log (notably isolated-worktree observer state). Coalesce
+            // presentation reads to <=10/s; the auxiliary lane retains only the
+            // latest request. This clock has no lifecycle/liveness authority.
+            if matches!(
+                self.right_panel_tab,
+                RightPanelTab::Detail | RightPanelTab::Agency
+            ) && self
+                .last_live_progress_refresh_at
+                .is_none_or(|at| at.elapsed() >= Duration::from_millis(100))
+            {
+                self.last_live_progress_refresh_at = Some(Instant::now());
+                self.request_hud_detail();
+                content_updated = true;
+            }
+
             // Detail tab: live-refresh when the agent output.log changes independently
             // of graph.jsonl (e.g. agent is actively writing output).
             if self.right_panel_tab == RightPanelTab::Detail {
@@ -13509,6 +13554,15 @@ impl VizApp {
         // remains off the render/input thread.
         if self.right_panel_tab == RightPanelTab::Log {
             self.request_log_pane();
+        }
+        // Age-only refreshes are capped at 1/s. Reading the persisted selected
+        // task projection is presentation work only and does not write a
+        // heartbeat, progress clock, lease, probe, or lifecycle event.
+        if matches!(
+            self.right_panel_tab,
+            RightPanelTab::Detail | RightPanelTab::Agency
+        ) {
+            self.request_hud_detail();
         }
 
         // Auto-refresh config panel when config.toml changes on disk,
@@ -14829,8 +14883,13 @@ impl VizApp {
             .and_then(|p| std::fs::metadata(p).ok())
             .and_then(|m| m.modified().ok());
 
+        let live_progress = Some(worksgood::live_progress::load_for_task(
+            &self.workgraph_dir,
+            &task,
+        ));
         self.hud_detail = Some(HudDetail {
             task_id,
+            live_progress,
             task_status: task.status,
             rendered_lines: lines,
             output_path: live_output_path,
@@ -15102,8 +15161,13 @@ impl VizApp {
             .and_then(|p| std::fs::metadata(p).ok())
             .and_then(|m| m.modified().ok());
 
+        let live_progress = Some(worksgood::live_progress::load_for_task(
+            &self.workgraph_dir,
+            &task,
+        ));
         self.hud_detail = Some(HudDetail {
             task_id: target_task_id.to_string(),
+            live_progress,
             task_status: task.status,
             rendered_lines: lines,
             output_path: live_output_path,
@@ -16493,6 +16557,7 @@ impl VizApp {
             last_ops_log_mtime: None,
             last_chat_outbox_mtime: None,
             last_detail_output_mtime: None,
+            last_live_progress_refresh_at: None,
             hud_follow: false,
             graph_viz_stale: false,
             graph_reload_pending: false,

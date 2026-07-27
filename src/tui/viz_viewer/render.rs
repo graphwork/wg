@@ -4234,6 +4234,20 @@ fn draw_detail_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         app.iter_nav_next_zone = Rect::default();
     }
 
+    // Build the fixed-order live block from the already-persisted read model.
+    // Width only controls deterministic collapse; rendering performs no I/O or
+    // lifecycle mutation. Keep it immediately below the task header so live
+    // evidence remains selected-task context rather than global telemetry.
+    let mut rendered_lines = detail.rendered_lines.clone();
+    if let Some(progress) = &detail.live_progress {
+        let insert_at = rendered_lines
+            .iter()
+            .position(String::is_empty)
+            .unwrap_or(rendered_lines.len());
+        let live_lines = progress.detail_lines(area.width as usize);
+        rendered_lines.splice(insert_at..insert_at, live_lines);
+    }
+
     // Build visible lines: filter out content of collapsed sections, add ▸/▾ indicators.
     let mut visible_lines: Vec<String> = Vec::new();
     let mut current_section: Option<String> = None;
@@ -4243,7 +4257,7 @@ fn draw_detail_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     let mut section_content: HashMap<String, Vec<String>> = HashMap::new();
     {
         let mut cur_sec: Option<String> = None;
-        for line in &detail.rendered_lines {
+        for line in &rendered_lines {
             if let Some(name) = extract_section_name(line) {
                 cur_sec = Some(name);
             } else if line.is_empty() {
@@ -4257,7 +4271,7 @@ fn draw_detail_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         }
     }
 
-    for line in &detail.rendered_lines {
+    for line in &rendered_lines {
         if let Some(name) = extract_section_name(line) {
             let collapsed = app.detail_collapsed_sections.contains(&name);
             let indicator = if collapsed { "▸" } else { "▾" };
@@ -7953,6 +7967,29 @@ fn wrap_line_spans<'a>(lines: &[Line<'a>], max_width: usize) -> Vec<Line<'a>> {
 /// Draw the Agents tab content: lifecycle view for selected task + agent list.
 fn draw_agents_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     let mut lines: Vec<Line> = Vec::new();
+
+    // The Agents surface shares the same selected-task projection as Detail.
+    // Compact rows remain textual so reduced motion/color does not hide state.
+    if let Some(progress) = app
+        .hud_detail
+        .as_ref()
+        .and_then(|detail| detail.live_progress.as_ref())
+    {
+        for row in progress
+            .detail_lines(area.width as usize)
+            .into_iter()
+            .take(7)
+        {
+            let style = if row.starts_with("──") {
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(text_primary(app.is_light_theme))
+            };
+            lines.push(Line::from(Span::styled(row, style)));
+        }
+    }
 
     // ── Task Lifecycle (assign → execute → evaluate) ──
     if let Some(ref lifecycle) = app.agency_lifecycle {
