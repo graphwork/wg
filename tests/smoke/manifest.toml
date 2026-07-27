@@ -2744,6 +2744,13 @@ description = "Installed-binary terminal/daemon finalization flow: a Fake-Pi-bac
 timeout_seconds = 120
 
 [[scenario]]
+name = "strong_agent_merge_resolution"
+script = "scenarios/strong_agent_merge_resolution.sh"
+owners = ["implement-strong-agent"]
+description = "Installed-binary immutable-candidate flow: clean classification performs zero model calls; a textual conflict snapshots one exact strong high route, resolves in a standalone no-remote repository, seals a new descriptor, traverses fresh safety/validation/evaluation, and CASes the identical complete tree exactly once across duplicate delivery/service restart; unknown generated ownership stops for a bound human decision and rollback is compensating-only."
+timeout_seconds = 120
+
+[[scenario]]
 name = "spawn_observer_preparation_recovery"
 script = "scenarios/spawn_observer_preparation_recovery.sh"
 owners = ["verify-spawn-recovery"]

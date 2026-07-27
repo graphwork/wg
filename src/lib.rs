@@ -58,6 +58,7 @@ pub mod matrix;
 pub mod matrix_commands;
 #[cfg(feature = "matrix-lite")]
 pub mod matrix_lite;
+pub mod merge_resolution;
 pub mod messages;
 pub mod metrics;
 pub mod model_benchmarks;

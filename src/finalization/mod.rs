@@ -179,6 +179,14 @@ pub struct MergeReceipt {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolutionAuthorityReceipt {
+    pub receipt_id: String,
+    pub integration_commit_oid: String,
+    pub result_tree_oid: String,
+    pub result_manifest_cid: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MergeConflict {
     pub conflict_id: String,
     pub binding: CandidateBinding,
@@ -774,6 +782,124 @@ pub fn merge_candidate(
     tx.updated_at = Utc::now().to_rfc3339();
     store.save(&tx)?;
     Ok(tx)
+}
+
+/// Compute the canonical full-tree manifest identity used by candidate and
+/// resolution descriptors without publishing it into a mutable projection.
+pub fn manifest_cid_for_tree(project: &Path, tree: &str) -> Result<String> {
+    cid_value(&manifest_for_tree(project, tree)?)
+}
+
+/// The sole canonical-write primitive for a sealed resolution candidate.
+///
+/// It imports private objects, verifies complete-tree equality, prepares an
+/// immutable result ref, and CASes main only while both expected commit and
+/// tree still match. Replay after CAS returns the same prepared commit/receipt.
+#[allow(clippy::too_many_arguments)]
+pub fn accept_resolution_tree(
+    project: &Path,
+    private_repo: &Path,
+    resolution_commit: &str,
+    accepted_tree: &str,
+    expected_target_commit: &str,
+    expected_target_tree: &str,
+    request_id: &str,
+    descriptor_id: &str,
+    manifest_cid: &str,
+) -> Result<ResolutionAuthorityReceipt> {
+    let target_ref = "refs/heads/main";
+    let key = cid_bytes(
+        format!(
+            "wg-resolution-merge-receipt-v1\0{request_id}\0{descriptor_id}\0{target_ref}\0{expected_target_commit}\0{expected_target_tree}"
+        )
+        .as_bytes(),
+    );
+    let result_ref = format!("refs/wg/resolution-results/{}", cid_suffix(&key));
+    let observed = git_text(project, &["rev-parse", target_ref])?;
+    if observed != expected_target_commit {
+        if let Ok(prepared) = git_text(project, &["rev-parse", "--verify", &result_ref])
+            && prepared == observed
+        {
+            let tree = git_text(project, &["rev-parse", &format!("{prepared}^{{tree}}")])?;
+            if tree != accepted_tree || manifest_cid_for_tree(project, &tree)? != manifest_cid {
+                bail!("MR_OUTPUT_BINDING_MISMATCH: replay tree/manifest differs");
+            }
+            return Ok(ResolutionAuthorityReceipt {
+                receipt_id: key,
+                integration_commit_oid: prepared,
+                result_tree_oid: tree,
+                result_manifest_cid: manifest_cid.into(),
+            });
+        }
+        bail!("MR_TARGET_MOVED: canonical target no longer equals snapshot");
+    }
+    let observed_tree = git_text(project, &["rev-parse", &format!("{observed}^{{tree}}")])?;
+    if observed_tree != expected_target_tree {
+        bail!("MR_TARGET_MOVED: canonical target tree differs from snapshot");
+    }
+    let fetch = Command::new("git")
+        .args(["-C"])
+        .arg(project)
+        .args(["fetch", "--no-tags"])
+        .arg(private_repo)
+        .arg(resolution_commit)
+        .output()?;
+    if !fetch.status.success() {
+        bail!("resolution object import failed: {}", stderr(&fetch));
+    }
+    let imported_tree = git_text(
+        project,
+        &["rev-parse", &format!("{resolution_commit}^{{tree}}")],
+    )?;
+    if imported_tree != accepted_tree {
+        bail!("MR_OUTPUT_BINDING_MISMATCH: complete resolution tree differs");
+    }
+    if manifest_cid_for_tree(project, accepted_tree)? != manifest_cid {
+        bail!("MR_OUTPUT_BINDING_MISMATCH: resolution manifest differs");
+    }
+    let integration = commit_tree(
+        project,
+        accepted_tree,
+        &[expected_target_commit, resolution_commit],
+        &format!("wg merge resolution {descriptor_id}"),
+    )?;
+    publish_ref(project, &result_ref, &integration)?;
+    let lock = project.join(".wg").join("merge-authority.lock");
+    let _guard = FileLock::acquire(&lock)?;
+    if git_text(project, &["rev-parse", target_ref])? != expected_target_commit {
+        bail!("MR_TARGET_MOVED: target changed before resolution CAS");
+    }
+    let update = git_output(
+        project,
+        &[
+            "update-ref",
+            target_ref,
+            &integration,
+            expected_target_commit,
+        ],
+    )?;
+    if !update.status.success() {
+        bail!("MR_TARGET_MOVED: {}", stderr(&update));
+    }
+    if project.join(".git").exists() {
+        let reset = git_output(project, &["reset", "--hard", &integration])?;
+        if !reset.status.success() {
+            bail!(
+                "cleanup.failed_preserved: resolution CAS succeeded: {}",
+                stderr(&reset)
+            );
+        }
+    }
+    let final_tree = git_text(project, &["rev-parse", &format!("{integration}^{{tree}}")])?;
+    if final_tree != accepted_tree {
+        bail!("MR_OUTPUT_BINDING_MISMATCH: accepted result tree changed");
+    }
+    Ok(ResolutionAuthorityReceipt {
+        receipt_id: key,
+        integration_commit_oid: integration,
+        result_tree_oid: final_tree,
+        result_manifest_cid: manifest_cid.into(),
+    })
 }
 
 pub fn reconcile(store: &FinalizationStore, task: &str) -> Result<Option<FinalizationTransaction>> {

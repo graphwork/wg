@@ -1651,6 +1651,10 @@ pub enum DispatchRole {
     /// Pass 2 / fed S-5 / exec-integrity). An agency one-shot that resolves the
     /// weak tier and escalates to the strong tier on uncertainty (never a human).
     Reviewer,
+    /// Full coding agent used only for content-bound merge resolution. This
+    /// role requires an explicit strong/premium route and high/xhigh reasoning;
+    /// callers must never inherit or fall back from it.
+    Merger,
 }
 
 impl std::fmt::Display for DispatchRole {
@@ -1671,6 +1675,7 @@ impl std::fmt::Display for DispatchRole {
             Self::Placer => write!(f, "placer"),
             Self::ChatCompactor => write!(f, "chat_compactor"),
             Self::Reviewer => write!(f, "reviewer"),
+            Self::Merger => write!(f, "merger"),
         }
     }
 }
@@ -1695,10 +1700,11 @@ impl std::str::FromStr for DispatchRole {
             "placer" => Ok(Self::Placer),
             "chat_compactor" => Ok(Self::ChatCompactor),
             "reviewer" => Ok(Self::Reviewer),
+            "merger" => Ok(Self::Merger),
             _ => Err(anyhow::anyhow!(
                 "Unknown dispatch role '{}'. Valid roles: default, task_agent, evaluator, \
                  flip_inference, flip_comparison, assigner, evolver, verification, triage, \
-                 creator, compactor, placer, chat_compactor, reviewer",
+                 creator, compactor, placer, chat_compactor, reviewer, merger",
                 s
             )),
         }
@@ -1722,6 +1728,7 @@ impl DispatchRole {
         Self::ChatCompactor,
         Self::CoordinatorEval,
         Self::Reviewer,
+        Self::Merger,
     ];
 
     /// Default quality tier for this role.
@@ -1749,6 +1756,7 @@ impl DispatchRole {
             Self::Evolver => Tier::Premium,
             Self::Creator => Tier::Premium,
             Self::Verification => Tier::Premium,
+            Self::Merger => Tier::Premium,
             Self::Default => Tier::Standard,
         }
     }
@@ -2212,6 +2220,11 @@ pub struct ModelRoutingConfig {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reviewer: Option<RoleModelConfig>,
+
+    /// Explicit strong-agent merge resolution route. Unlike ordinary roles it
+    /// is never allowed to inherit from `default` at execution time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merger: Option<RoleModelConfig>,
 }
 
 impl ModelRoutingConfig {
@@ -2233,6 +2246,7 @@ impl ModelRoutingConfig {
             DispatchRole::Placer => self.placer.as_ref(),
             DispatchRole::ChatCompactor => self.chat_compactor.as_ref(),
             DispatchRole::Reviewer => self.reviewer.as_ref(),
+            DispatchRole::Merger => self.merger.as_ref(),
         }
     }
 
@@ -2254,6 +2268,7 @@ impl ModelRoutingConfig {
             DispatchRole::Placer => &mut self.placer,
             DispatchRole::ChatCompactor => &mut self.chat_compactor,
             DispatchRole::Reviewer => &mut self.reviewer,
+            DispatchRole::Merger => &mut self.merger,
         }
     }
 
