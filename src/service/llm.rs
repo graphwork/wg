@@ -253,7 +253,7 @@ pub fn resolve_agency_dispatch(config: &Config, role: DispatchRole) -> Result<Ag
         is_agency_oneshot_role(role),
         "resolve_agency_dispatch is only valid for agency one-shot roles"
     );
-    let resolved = config.resolve_pi_route_for_role(role)?;
+    let resolved = config.resolve_execution_route_for_role(role)?;
     Ok(agency_dispatch_for_spec(
         &resolved.route,
         Some(resolved.reasoning),
@@ -279,7 +279,6 @@ fn call_dispatch_route(
     prompt: &str,
     timeout_secs: u64,
 ) -> Result<LlmCallResult> {
-    crate::config::parse_exact_pi_route(&dispatch.raw_spec)?;
     if dispatch.reasoning.is_none() {
         anyhow::bail!(
             "error[WG-PI-REASONING-MISSING]: lightweight route {:?} has no effective reasoning",
@@ -294,6 +293,9 @@ fn call_dispatch_route(
             prompt,
             timeout_secs,
         ),
+        ExecutorKind::Codex => {
+            call_codex_cli(&dispatch.model_id, dispatch.reasoning, prompt, timeout_secs)
+        }
         other => anyhow::bail!(
             "error[WG-PI-ROUTE-REQUIRED]: handler {} is unsupported for lightweight role route {:?}; no fallback was attempted",
             other.as_str(),
@@ -532,10 +534,10 @@ pub fn run_lightweight_llm_call_for_route(
     prompt: &str,
     timeout_secs: u64,
 ) -> Result<LlmCallResult> {
-    crate::config::parse_exact_pi_route(route).with_context(|| {
-        format!("invalid explicit Pi lightweight route for role={role}: {route:?}")
+    execution_system_key(route).with_context(|| {
+        format!("invalid explicit lightweight route for role={role}: {route:?}")
     })?;
-    let reasoning = config.resolve_pi_route_for_role(role)?.reasoning;
+    let reasoning = config.resolve_execution_route_for_role(role)?.reasoning;
     let dispatch = agency_dispatch_for_spec(route, Some(reasoning));
     run_dispatch_with_same_system_fallback(config, role, dispatch, |candidate| {
         call_dispatch_route(config, candidate, None, prompt, timeout_secs)
@@ -552,7 +554,6 @@ pub fn run_lightweight_llm_call_for_plan(
     prompt: &str,
     timeout_secs: u64,
 ) -> Result<LlmCallResult> {
-    crate::config::parse_exact_pi_route(&call.route)?;
     if call.reasoning.is_none() {
         anyhow::bail!(
             "error[WG-PI-REASONING-MISSING]: persisted agency plan route {:?} has no reasoning",
@@ -573,7 +574,6 @@ pub fn run_lightweight_llm_call_for_plan(
     let mut seen = HashSet::new();
     routes.retain(|route| seen.insert(route.clone()));
     for route in &routes {
-        crate::config::parse_exact_pi_route(route)?;
         if execution_system_key(route)? != call.system {
             anyhow::bail!(
                 "error[WG-EXEC-FALLBACK-CROSS-SYSTEM]: planned primary={} candidate={route:?}",
@@ -1410,6 +1410,149 @@ mod tests {
                 .iter()
                 .all(|arg| !arg.contains("model_reasoning_effort")),
             "unset WG reasoning must leave ~/.codex/config.toml authoritative"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn test_evaluate_run_codex_route_invokes_native_codex_with_exact_model_and_reasoning() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let bin = temp.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let codex_args = temp.path().join("codex.args");
+        let pi_marker = temp.path().join("pi.marker");
+        let claude_marker = temp.path().join("claude.marker");
+        for (name, script) in [
+            (
+                "codex",
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" > \"$WG_TEST_CODEX_ARGS\"\ncat >/dev/null\nprintf '%s\\n' '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"codex-evaluator-ok\"}}'\nprintf '%s\\n' '{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":11,\"cached_input_tokens\":3,\"output_tokens\":7}}'\n",
+            ),
+            (
+                "pi",
+                "#!/bin/sh\nprintf invoked > \"$WG_TEST_PI_MARKER\"\nexit 97\n",
+            ),
+            (
+                "claude",
+                "#!/bin/sh\nprintf invoked > \"$WG_TEST_CLAUDE_MARKER\"\nexit 98\n",
+            ),
+        ] {
+            let path = bin.join(name);
+            std::fs::write(&path, script).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let old_path = std::env::var("PATH").unwrap_or_default();
+        let _path = EnvGuard::set("PATH", Some(&format!("{}:{old_path}", bin.display())));
+        let _codex_args = EnvGuard::set("WG_TEST_CODEX_ARGS", codex_args.to_str());
+        let _pi_marker = EnvGuard::set("WG_TEST_PI_MARKER", pi_marker.to_str());
+        let _claude_marker = EnvGuard::set("WG_TEST_CLAUDE_MARKER", claude_marker.to_str());
+
+        let mut config = Config::default();
+        config
+            .models
+            .set_model(DispatchRole::Evaluator, "codex:gpt-5.6-luna");
+        config
+            .models
+            .set_reasoning(DispatchRole::Evaluator, ReasoningLevel::High);
+
+        // This is the evaluator service entry point used by `wg evaluate run`
+        // when no invocation-scoped route or persisted agency plan overrides it.
+        let result =
+            run_lightweight_llm_call(&config, DispatchRole::Evaluator, "return a verdict", 10)
+                .unwrap();
+
+        assert_eq!(result.text, "codex-evaluator-ok");
+        assert_eq!(
+            result.token_usage,
+            Some(TokenUsage {
+                cost_usd: 0.0,
+                input_tokens: 11,
+                output_tokens: 7,
+                cache_read_input_tokens: 3,
+                cache_creation_input_tokens: 0,
+            })
+        );
+        let args = std::fs::read_to_string(codex_args).unwrap();
+        assert!(args.contains("--model gpt-5.6-luna"), "{args}");
+        assert!(args.contains("model_reasoning_effort=\"high\""), "{args}");
+        assert!(
+            !args.contains("model_verbosity"),
+            "structured reasoning must not alter Codex verbosity: {args}"
+        );
+        assert!(!pi_marker.exists(), "native Codex evaluation invoked Pi");
+        assert!(
+            !claude_marker.exists(),
+            "native Codex evaluation invoked Claude"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn test_failing_native_codex_evaluator_never_crosses_to_pi_or_claude() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let bin = temp.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let codex_marker = temp.path().join("codex.marker");
+        let pi_marker = temp.path().join("pi.marker");
+        let claude_marker = temp.path().join("claude.marker");
+        for (name, script) in [
+            (
+                "codex",
+                "#!/bin/sh\nprintf invoked > \"$WG_TEST_CODEX_MARKER\"\ncat >/dev/null\necho injected-native-codex-failure >&2\nexit 43\n",
+            ),
+            (
+                "pi",
+                "#!/bin/sh\nprintf invoked > \"$WG_TEST_PI_MARKER\"\nexit 97\n",
+            ),
+            (
+                "claude",
+                "#!/bin/sh\nprintf invoked > \"$WG_TEST_CLAUDE_MARKER\"\nexit 98\n",
+            ),
+        ] {
+            let path = bin.join(name);
+            std::fs::write(&path, script).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let old_path = std::env::var("PATH").unwrap_or_default();
+        let _path = EnvGuard::set("PATH", Some(&format!("{}:{old_path}", bin.display())));
+        let _codex_marker = EnvGuard::set("WG_TEST_CODEX_MARKER", codex_marker.to_str());
+        let _pi_marker = EnvGuard::set("WG_TEST_PI_MARKER", pi_marker.to_str());
+        let _claude_marker = EnvGuard::set("WG_TEST_CLAUDE_MARKER", claude_marker.to_str());
+
+        let mut config = Config::default();
+        config
+            .models
+            .set_model(DispatchRole::Evaluator, "codex:gpt-5.6-luna");
+        config
+            .models
+            .set_reasoning(DispatchRole::Evaluator, ReasoningLevel::High);
+
+        let error =
+            run_lightweight_llm_call(&config, DispatchRole::Evaluator, "return a verdict", 10)
+                .unwrap_err();
+
+        assert!(
+            codex_marker.exists(),
+            "native Codex process was not attempted"
+        );
+        assert!(!pi_marker.exists(), "Codex failure invoked Pi");
+        assert!(!claude_marker.exists(), "Codex failure invoked Claude");
+        let structured = error.downcast_ref::<ExecutionRouteFailure>().unwrap();
+        assert_eq!(structured.code, "WG-EXEC-ROUTE-FAILED");
+        assert_eq!(structured.system.handler, "codex");
+        assert_eq!(structured.system.provider, "openai-codex-cli");
+        assert_eq!(structured.attempts.len(), 1);
+        assert!(
+            structured.attempts[0]
+                .failure
+                .contains("injected-native-codex-failure")
         );
     }
 
