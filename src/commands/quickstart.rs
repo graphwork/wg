@@ -69,6 +69,7 @@ TASK STATE COMMANDS
   wg requeue <task-id> --reason "..."
   wg wait <task-id> --until "task:dep-a=done"
   wg wait <task-id> --until "timer:5m"
+  wg resume <task-id> --only  # Explicitly satisfy one Waiting task
 
 VALIDATION (## Validation section in task description)
   Put concrete checks under `## Validation`; the evaluator reads them.

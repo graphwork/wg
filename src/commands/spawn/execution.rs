@@ -4,6 +4,7 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use std::fs::{self, OpenOptions};
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
@@ -2084,12 +2085,89 @@ fn write_executor_prompt_file(
     Ok(prompt_file)
 }
 
+/// Resolve the one previously-attested Pi session file for an exact session
+/// id. Pi's `--session-id` silently creates when it cannot find a match, so a
+/// resumed worker must fail closed rather than accidentally start fresh.
+fn find_exact_prior_pi_session(
+    output_dir: &Path,
+    exact_id: &str,
+) -> Result<(PathBuf, PathBuf, String)> {
+    if exact_id.trim().is_empty()
+        || exact_id.contains('/')
+        || exact_id.contains('\\')
+        || exact_id == "."
+        || exact_id == ".."
+    {
+        anyhow::bail!("invalid exact Pi session id '{}'", exact_id);
+    }
+    let agents_dir = output_dir.parent().ok_or_else(|| {
+        anyhow::anyhow!(
+            "cannot locate agent store from output directory {}",
+            output_dir.display()
+        )
+    })?;
+    let mut matches = Vec::new();
+    for agent_entry in fs::read_dir(agents_dir)
+        .with_context(|| format!("failed to inspect {}", agents_dir.display()))?
+    {
+        let agent_entry = agent_entry?;
+        if !agent_entry.file_type()?.is_dir() {
+            continue;
+        }
+        let session_dir = agent_entry.path().join("pi-session");
+        let Ok(files) = fs::read_dir(&session_dir) else {
+            continue;
+        };
+        for file in files {
+            let file = file?;
+            if !file.file_type()?.is_file()
+                || file.path().extension().and_then(|ext| ext.to_str()) != Some("jsonl")
+            {
+                continue;
+            }
+            let mut header_json = String::new();
+            BufReader::new(
+                fs::File::open(file.path())
+                    .with_context(|| format!("failed to read {}", file.path().display()))?,
+            )
+            .read_line(&mut header_json)?;
+            let header_json = header_json.trim_end_matches(['\r', '\n']);
+            if header_json.is_empty() {
+                continue;
+            }
+            let Ok(header) = serde_json::from_str::<serde_json::Value>(header_json) else {
+                continue;
+            };
+            if header.get("type").and_then(|value| value.as_str()) == Some("session")
+                && header.get("id").and_then(|value| value.as_str()) == Some(exact_id)
+            {
+                matches.push((session_dir.clone(), file.path(), header_json.to_string()));
+            }
+        }
+    }
+    match matches.len() {
+        1 => Ok(matches.pop().unwrap()),
+        0 => anyhow::bail!(
+            "cannot resume exact Pi session '{}': no attested session file exists under {} (refusing Pi's implicit fresh-session fallback)",
+            exact_id,
+            agents_dir.display()
+        ),
+        count => anyhow::bail!(
+            "cannot resume exact Pi session '{}': found {} matching session files under {}",
+            exact_id,
+            count,
+            agents_dir.display()
+        ),
+    }
+}
+
 fn external_prompt_command(
     settings: &worksgood::service::executor::ExecutorSettings,
     output_dir: &Path,
     effective_model: &Option<String>,
     effective_provider: &Option<String>,
     resolved_reasoning: Option<ReasoningLevel>,
+    resume_session_id: Option<&str>,
     delivery: ExternalPromptDelivery,
 ) -> Result<String> {
     // Explicit-model contract: external CLIs that take a `--model` flag MUST
@@ -2133,25 +2211,32 @@ fn external_prompt_command(
         resolved_reasoning,
     );
     if settings.executor_type == "pi" {
-        let session_dir = output_dir.join("pi-session");
-        fs::create_dir_all(&session_dir)
-            .with_context(|| format!("failed to create {}", session_dir.display()))?;
-        let session_id = uuid::Uuid::now_v7().to_string();
-        let session_file = session_dir.join(format!("wg_{session_id}.jsonl"));
-        let header = serde_json::json!({
-            "type": "session", "version": 3, "id": session_id,
-            "timestamp": Utc::now().to_rfc3339(),
-            "cwd": settings.working_dir.as_deref().unwrap_or(".")
-        });
-        fs::write(
-            &session_file,
-            format!("{}\n", serde_json::to_string(&header)?),
-        )?;
+        let (session_id, session_dir, session_file, header_json) =
+            if let Some(exact_id) = resume_session_id {
+                let (session_dir, session_file, header_json) =
+                    find_exact_prior_pi_session(output_dir, exact_id)?;
+                (exact_id.to_string(), session_dir, session_file, header_json)
+            } else {
+                let session_dir = output_dir.join("pi-session");
+                fs::create_dir_all(&session_dir)
+                    .with_context(|| format!("failed to create {}", session_dir.display()))?;
+                let session_id = uuid::Uuid::now_v7().to_string();
+                let session_file = session_dir.join(format!("wg_{session_id}.jsonl"));
+                let header = serde_json::json!({
+                    "type": "session", "version": 3, "id": session_id,
+                    "timestamp": Utc::now().to_rfc3339(),
+                    "cwd": settings.working_dir.as_deref().unwrap_or(".")
+                });
+                let header_json = serde_json::to_string(&header)?;
+                fs::write(&session_file, format!("{header_json}\n"))?;
+                (session_id, session_dir, session_file, header_json)
+            };
         fs::write(
             output_dir.join("pi-session-plan.json"),
             serde_json::to_vec_pretty(&serde_json::json!({
                 "session_id": session_id, "session_dir": session_dir, "session_file": session_file,
-                "header_digest": format!("b3:{}", blake3::hash(serde_json::to_string(&header)?.as_bytes()).to_hex())
+                "resumed": resume_session_id.is_some(),
+                "header_digest": format!("b3:{}", blake3::hash(header_json.as_bytes()).to_hex())
             }))?,
         )?;
         if !args_have_flag(&settings.args, &["--session-dir"]) {
@@ -2638,6 +2723,7 @@ fn build_inner_command_with_reasoning(
             effective_model,
             effective_provider,
             resolved_reasoning,
+            None,
             ExternalPromptDelivery::OpenCodeFile,
         )?,
         "aider" => external_prompt_command(
@@ -2646,6 +2732,7 @@ fn build_inner_command_with_reasoning(
             effective_model,
             effective_provider,
             resolved_reasoning,
+            None,
             ExternalPromptDelivery::AiderMessageFile,
         )?,
         "goose" => external_prompt_command(
@@ -2654,6 +2741,7 @@ fn build_inner_command_with_reasoning(
             effective_model,
             effective_provider,
             resolved_reasoning,
+            None,
             ExternalPromptDelivery::GooseInputFile,
         )?,
         "qwen" | "qwen-code" | "qwen_code" => external_prompt_command(
@@ -2662,6 +2750,7 @@ fn build_inner_command_with_reasoning(
             effective_model,
             effective_provider,
             resolved_reasoning,
+            None,
             ExternalPromptDelivery::QwenPromptAndStdin,
         )?,
         "cline" => external_prompt_command(
@@ -2670,6 +2759,7 @@ fn build_inner_command_with_reasoning(
             effective_model,
             effective_provider,
             resolved_reasoning,
+            None,
             ExternalPromptDelivery::ClinePositionalPromptAndStdin,
         )?,
         "crush" => external_prompt_command(
@@ -2678,6 +2768,7 @@ fn build_inner_command_with_reasoning(
             effective_model,
             effective_provider,
             resolved_reasoning,
+            None,
             ExternalPromptDelivery::Stdin,
         )?,
         "pi" => external_prompt_command(
@@ -2686,6 +2777,7 @@ fn build_inner_command_with_reasoning(
             effective_model,
             effective_provider,
             resolved_reasoning,
+            resume_session_id,
             ExternalPromptDelivery::QwenPromptAndStdin,
         )?,
         "amplifier" => external_prompt_command(
@@ -2694,6 +2786,7 @@ fn build_inner_command_with_reasoning(
             effective_model,
             effective_provider,
             resolved_reasoning,
+            None,
             ExternalPromptDelivery::Argument,
         )?,
         "shell" => {
@@ -5674,6 +5767,77 @@ mod tests {
             std::fs::read_to_string(prompt_file).unwrap(),
             "Investigate task"
         );
+    }
+
+    #[test]
+    fn test_pi_resume_reuses_exact_attested_session_and_fails_closed_when_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        let agents = temp.path().join("agents");
+        let prior_dir = agents.join("agent-1").join("pi-session");
+        let output_dir = agents.join("agent-2");
+        fs::create_dir_all(&prior_dir).unwrap();
+        fs::create_dir_all(&output_dir).unwrap();
+        let session_id = "018f-exact-pi-session";
+        let session_file = prior_dir.join(format!("wg_{session_id}.jsonl"));
+        let header = serde_json::json!({
+            "type": "session", "version": 3, "id": session_id,
+            "timestamp": "2026-01-01T00:00:00Z", "cwd": "/tmp/worktree"
+        });
+        fs::write(&session_file, format!("{header}\n")).unwrap();
+        let settings = external_test_settings("pi", "pi", &["--mode", "json"]);
+
+        let (command, fallback) = build_inner_command(
+            &settings,
+            "full",
+            &output_dir,
+            &Some("pi:openrouter:test/model".to_string()),
+            &None,
+            &None,
+            &None,
+            &None,
+            &test_template_vars(),
+            &None,
+            Some(session_id),
+        )
+        .unwrap();
+
+        assert!(fallback.is_none());
+        assert!(command.contains("--session-id"));
+        assert!(command.contains(session_id));
+        assert!(command.contains(&prior_dir.to_string_lossy().to_string()));
+        assert!(!output_dir.join("pi-session").exists());
+        let plan: serde_json::Value =
+            serde_json::from_slice(&fs::read(output_dir.join("pi-session-plan.json")).unwrap())
+                .unwrap();
+        assert_eq!(plan["session_id"], session_id);
+        assert_eq!(
+            plan["session_file"],
+            session_file.to_string_lossy().as_ref()
+        );
+        assert_eq!(plan["resumed"], true);
+
+        let missing_output = agents.join("agent-3");
+        fs::create_dir_all(&missing_output).unwrap();
+        let error = build_inner_command(
+            &settings,
+            "full",
+            &missing_output,
+            &Some("pi:openrouter:test/model".to_string()),
+            &None,
+            &None,
+            &None,
+            &None,
+            &test_template_vars(),
+            &None,
+            Some("missing-session"),
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("refusing Pi's implicit fresh-session fallback")
+        );
+        assert!(!missing_output.join("pi-session").exists());
     }
 
     #[test]

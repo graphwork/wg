@@ -521,7 +521,7 @@ wg pause implement-api
 
 ### `wg resume`
 
-Resume a paused task (propagates to downstream subgraph by default).
+Explicitly resume a Waiting task, or resume a paused draft. Waiting tasks are always resumed one named task at a time with operator authority; paused drafts retain the historical downstream-subgraph default.
 
 ```bash
 wg resume <ID> [OPTIONS]
@@ -530,7 +530,7 @@ wg resume <ID> [OPTIONS]
 **Options:**
 | Option | Description |
 |--------|-------------|
-| `--only` | Only resume this single task (skip subgraph propagation) |
+| `--only` | Only resume this single paused task (Waiting tasks are always single-task) |
 
 **Example:**
 ```bash
@@ -538,7 +538,10 @@ wg resume implement-api
 # Task and downstream subgraph are eligible for coordinator dispatch again
 
 wg resume implement-api --only
-# Only resume this task, not its dependents
+# Only resume this paused task, not its dependents
+
+wg resume waiting-for-operator --only
+# Explicitly satisfy this task's wait, clear its stale assignment, and kick dispatch
 ```
 
 ---

@@ -2,7 +2,11 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use std::collections::{HashSet, VecDeque};
 use std::path::Path;
-use worksgood::graph::{LogEntry, WorkGraph};
+use worksgood::graph::{LogEntry, Status, WorkGraph};
+use worksgood::lifecycle::{
+    ActorKind, FenceExpectation, LifecycleActor, TransitionKind, TransitionRequest,
+    apply_transition,
+};
 use worksgood::parser::modify_graph;
 
 use super::eval_scaffold;
@@ -13,7 +17,136 @@ use super::graph_path;
 use worksgood::parser::load_graph;
 
 pub fn run(dir: &Path, id: &str, only: bool) -> Result<()> {
-    run_inner(dir, id, Mode::Subgraph(only), false, None, false)
+    match resume_waiting_task(dir, id)? {
+        WaitingResume::Resumed => {
+            // A Waiting resume is deliberately single-task operator authority,
+            // irrespective of the paused-draft subgraph default.
+            super::notify_kick(dir);
+            record_provenance(dir, id, false);
+            println!("Resumed waiting task '{}'", id);
+            Ok(())
+        }
+        WaitingResume::AlreadyResumed(status) => {
+            // Repeating the exact operator action must remain useful without
+            // creating a generation, attempt, lifecycle receipt, or process.
+            // Re-kick only while the task is still dispatchable; once a worker
+            // owns it, a second kick would be noise rather than authority.
+            if status == Status::Open {
+                super::notify_kick(dir);
+                println!("Waiting task '{}' was already resumed; dispatch kicked", id);
+            } else {
+                println!(
+                    "Waiting task '{}' was already resumed; current status is {}",
+                    id, status
+                );
+            }
+            Ok(())
+        }
+        WaitingResume::NotWaiting => run_inner(dir, id, Mode::Subgraph(only), false, None, false),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WaitingResume {
+    Resumed,
+    AlreadyResumed(Status),
+    NotWaiting,
+}
+
+/// Atomically exercise explicit operator authority over one Waiting task.
+///
+/// This path is intentionally separate from both paused-draft release and the
+/// coordinator's condition/message matcher. Ordinary messages cannot call it.
+/// The lifecycle expectation fences the exact waiting projection, while the
+/// deterministic receipt makes a repeated command idempotent.
+fn resume_waiting_task(dir: &Path, id: &str) -> Result<WaitingResume> {
+    let path = super::graph_path(dir);
+    if !path.exists() {
+        anyhow::bail!("WG not initialized. Run 'wg init' first.");
+    }
+
+    let operator = worksgood::current_user();
+    let mut outcome = WaitingResume::NotWaiting;
+    let mut error: Option<anyhow::Error> = None;
+
+    modify_graph(&path, |graph| {
+        let Some(task) = graph.get_task_mut(id) else {
+            return false;
+        };
+
+        if task.status != Status::Waiting {
+            // A paused draft keeps the historical resume implementation
+            // byte-for-byte, even if this task completed a wait long ago.
+            let prior_operator_resume = !task.paused
+                && task.lifecycle.audit.iter().rev().any(|event| {
+                    event.event_kind == "wait-satisfied"
+                        && event.actor_kind == ActorKind::Operator
+                        && event.reason_code == "operator_resume"
+                });
+            if prior_operator_resume {
+                outcome = WaitingResume::AlreadyResumed(task.status);
+            }
+            return false;
+        }
+
+        // A subscription id is the strongest wait identity. Legacy/unbound
+        // waits have none, so bind the receipt to the parked ledger head (or
+        // its stable legacy revision) and current attempt. Multiple waits in
+        // one generation therefore cannot collide.
+        let generation = task.lifecycle.generation;
+        let attempt_id = task
+            .lifecycle
+            .current_attempt
+            .as_ref()
+            .map(|attempt| attempt.id.as_str())
+            .unwrap_or("legacy-unbound-attempt");
+        let wait_token = task
+            .message_wait
+            .as_ref()
+            .map(|subscription| subscription.id.clone())
+            .or_else(|| task.lifecycle.ledger_head.clone())
+            .unwrap_or_else(|| format!("legacy-revision-{}", task.lifecycle.revision));
+        let wait_id = format!("operator-wait:{id}:{generation}:{attempt_id}:{wait_token}");
+        let receipt_id = format!("operator-receipt:{operator}:{wait_id}");
+        let idempotency_key = format!("operator-resume:{wait_id}");
+        let request = TransitionRequest::new(
+            TransitionKind::WaitSatisfied {
+                wait_id,
+                receipt_id: receipt_id.clone(),
+            },
+            LifecycleActor::operator(operator.clone()),
+            "operator_resume",
+            idempotency_key.clone(),
+        )
+        .expecting(FenceExpectation::current(task))
+        .with_evidence(receipt_id);
+
+        if let Err(rejection) = apply_transition(task, request) {
+            error = Some(anyhow::anyhow!(rejection));
+            return false;
+        }
+
+        task.wait_condition = None;
+        if let Some(subscription) = task.message_wait.as_mut() {
+            subscription.armed = false;
+            subscription.resume_request_id = Some(idempotency_key);
+        }
+        task.assigned = None;
+        task.log.push(LogEntry {
+            timestamp: Utc::now().to_rfc3339(),
+            actor: Some(operator.clone()),
+            user: Some(operator.clone()),
+            message: "Waiting task explicitly resumed by operator".to_string(),
+        });
+        outcome = WaitingResume::Resumed;
+        true
+    })
+    .context("Failed to resume waiting task")?;
+
+    if let Some(error) = error {
+        return Err(error);
+    }
+    Ok(outcome)
 }
 
 /// Publish a draft task (alias for resume with validation messaging).
@@ -635,7 +768,11 @@ mod tests {
     use serial_test::serial;
     use std::fs;
     use tempfile::tempdir;
-    use worksgood::graph::{CycleConfig, Node, Status, Task, WorkGraph};
+    use worksgood::graph::{
+        CycleConfig, MessageWaitSelector, MessageWaitSubscription, Node, Status, Task,
+        WaitCondition, WaitSpec, WorkGraph,
+    };
+    use worksgood::lifecycle::{ActorKind, AttemptDisposition, AttemptRef};
     use worksgood::parser::save_graph;
 
     fn make_task(id: &str, title: &str, status: Status) -> Task {
@@ -707,6 +844,152 @@ mod tests {
         let graph = load_graph(graph_path(dir.path())).unwrap();
         let task = graph.get_task("t1").unwrap();
         assert!(!task.paused);
+    }
+
+    #[test]
+    fn test_resume_waiting_legacy_unbound_task() {
+        let dir = tempdir().unwrap();
+        let mut task = make_task("legacy-wait", "Legacy wait", Status::Waiting);
+        task.wait_condition = Some(WaitSpec::All(vec![WaitCondition::Message]));
+        task.session_id = Some("pi-session-exact".to_string());
+        task.checkpoint = Some("preserved checkpoint".to_string());
+        task.assigned = Some("stale-agent".to_string());
+        task.retry_count = 2;
+        task.lifecycle.generation = 4;
+        task.lifecycle.revision = 9;
+        task.lifecycle.fence = 12;
+        task.lifecycle.attempt_sequence = 3;
+        task.lifecycle.ledger_head = Some("park-event-exact".to_string());
+        task.lifecycle.current_attempt = Some(AttemptRef {
+            id: "attempt-4-3".to_string(),
+            generation: 4,
+            fence: 12,
+            actor_id: "stale-agent".to_string(),
+            disposition: Some(AttemptDisposition::Parked),
+        });
+        let mut downstream = make_task("downstream", "Downstream", Status::Open);
+        downstream.paused = true;
+        downstream.after = vec!["legacy-wait".to_string()];
+        setup_workgraph(dir.path(), vec![task, downstream]);
+        fs::write(dir.path().join("preserved-wip.txt"), "exact WIP").unwrap();
+
+        // Legacy/unbound ordinary messages are diagnostic data and remain
+        // inert until this explicit operator command.
+        worksgood::messages::send_message(
+            dir.path(),
+            "legacy-wait",
+            "ordinary legacy message",
+            "user",
+            "normal",
+        )
+        .unwrap();
+        let before = load_graph(graph_path(dir.path())).unwrap();
+        let before = before.get_task("legacy-wait").unwrap();
+        assert_eq!(before.status, Status::Waiting);
+        assert!(before.lifecycle.audit.is_empty());
+
+        // Waiting resume is always named-task-only, even without --only.
+        run(dir.path(), "legacy-wait", false).unwrap();
+
+        let graph = load_graph(graph_path(dir.path())).unwrap();
+        let task = graph.get_task("legacy-wait").unwrap();
+        assert_eq!(task.status, Status::Open);
+        assert!(task.wait_condition.is_none());
+        assert!(task.assigned.is_none());
+        assert_eq!(task.session_id.as_deref(), Some("pi-session-exact"));
+        assert_eq!(task.checkpoint.as_deref(), Some("preserved checkpoint"));
+        assert_eq!(task.retry_count, 2);
+        assert_eq!(task.lifecycle.generation, 4);
+        assert_eq!(task.lifecycle.attempt_sequence, 3);
+        assert_eq!(task.lifecycle.fence, 12);
+        assert_eq!(
+            task.lifecycle.current_attempt.as_ref().unwrap().id,
+            "attempt-4-3"
+        );
+        let wakes: Vec<_> = task
+            .lifecycle
+            .audit
+            .iter()
+            .filter(|event| event.event_kind == "wait-satisfied")
+            .collect();
+        assert_eq!(wakes.len(), 1);
+        let wake = wakes[0];
+        assert_eq!(wake.actor_kind, ActorKind::Operator);
+        assert_eq!(wake.reason_code, "operator_resume");
+        assert_eq!(wake.old_state, Status::Waiting);
+        assert_eq!(wake.new_state, Status::Open);
+        assert_eq!(wake.fence, 12);
+        assert_eq!(wake.evidence_refs.len(), 1);
+        assert!(wake.evidence_refs[0].starts_with("operator-receipt:"));
+        assert!(graph.get_task("downstream").unwrap().paused);
+        assert_eq!(
+            fs::read_to_string(dir.path().join("preserved-wip.txt")).unwrap(),
+            "exact WIP"
+        );
+
+        // Repeating the operator command only re-kicks dispatch. It must not
+        // append a receipt or create an attempt/generation.
+        run(dir.path(), "legacy-wait", false).unwrap();
+        let graph = load_graph(graph_path(dir.path())).unwrap();
+        let task = graph.get_task("legacy-wait").unwrap();
+        assert_eq!(task.lifecycle.audit.len(), 1);
+        assert_eq!(task.lifecycle.generation, 4);
+        assert_eq!(task.lifecycle.attempt_sequence, 3);
+        assert_eq!(task.retry_count, 2);
+
+        worksgood::messages::send_message(
+            dir.path(),
+            "legacy-wait",
+            "ordinary message after resume",
+            "user",
+            "normal",
+        )
+        .unwrap();
+        let graph = load_graph(graph_path(dir.path())).unwrap();
+        let task = graph.get_task("legacy-wait").unwrap();
+        assert_eq!(task.status, Status::Open);
+        assert_eq!(task.lifecycle.audit.len(), 1);
+    }
+
+    #[test]
+    fn test_resume_waiting_disarms_bound_message_subscription() {
+        let dir = tempdir().unwrap();
+        let mut task = make_task("bound-wait", "Bound wait", Status::Waiting);
+        task.lifecycle.generation = 2;
+        task.lifecycle.fence = 5;
+        task.lifecycle.attempt_sequence = 1;
+        task.lifecycle.current_attempt = Some(AttemptRef {
+            id: "attempt-2-1".to_string(),
+            generation: 2,
+            fence: 5,
+            actor_id: "old-worker".to_string(),
+            disposition: Some(AttemptDisposition::Parked),
+        });
+        task.wait_condition = Some(WaitSpec::All(vec![WaitCondition::Message]));
+        task.message_wait = Some(MessageWaitSubscription {
+            id: "message-wait:bound-wait:2:attempt-2-1".to_string(),
+            attempt_epoch: 2,
+            attempt_id: "attempt-2-1".to_string(),
+            selector: MessageWaitSelector::AnyMessage,
+            armed: true,
+            consumed_by_message_id: None,
+            resume_request_id: None,
+        });
+        setup_workgraph(dir.path(), vec![task]);
+
+        run(dir.path(), "bound-wait", true).unwrap();
+
+        let graph = load_graph(graph_path(dir.path())).unwrap();
+        let task = graph.get_task("bound-wait").unwrap();
+        let subscription = task.message_wait.as_ref().unwrap();
+        assert!(!subscription.armed);
+        assert!(subscription.consumed_by_message_id.is_none());
+        assert!(
+            subscription
+                .resume_request_id
+                .as_deref()
+                .is_some_and(|id| id.starts_with("operator-resume:"))
+        );
     }
 
     #[test]

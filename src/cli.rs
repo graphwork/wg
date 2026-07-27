@@ -806,12 +806,12 @@ pub enum Commands {
         id: String,
     },
 
-    /// Resume a paused task (propagates to downstream subgraph by default)
+    /// Resume one Waiting task, or a paused draft/subgraph
     Resume {
-        /// Task ID to resume
+        /// Task ID to resume. Waiting tasks always use named-task-only operator authority.
         #[arg(value_name = "TASK")]
         id: String,
-        /// Only resume this single task (skip subgraph propagation)
+        /// Only resume this single paused task (Waiting tasks are always single-task)
         #[arg(long)]
         only: bool,
     },

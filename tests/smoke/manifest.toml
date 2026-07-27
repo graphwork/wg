@@ -2693,6 +2693,13 @@ description = "Credential-free real installed-CLI/daemon regression: bursts mess
 timeout_seconds = 75
 
 [[scenario]]
+name = "resume_waiting_operator"
+script = "scenarios/resume_waiting_operator.sh"
+owners = ["fix-resume-waiting-operator"]
+description = "Installed-binary real terminal/daemon regression for explicit Waiting resume: a historical legacy/unbound message wait remains inert under ordinary messages; `wg resume TASK --only` atomically records exactly one fenced Operator WaitSatisfied receipt, clears the wait/stale assignment while preserving checkpoint/session/WIP, is idempotent across a dispatch race, kicks exactly one same-generation resumed attempt, and never charges retry or false failed/lost lifecycle edges."
+timeout_seconds = 60
+
+[[scenario]]
 name = "admission_deferral_backpressure"
 script = "scenarios/admission_deferral_backpressure.sh"
 owners = ["fix-admission-deferrals"]
