@@ -2718,9 +2718,9 @@ timeout_seconds = 60
 [[scenario]]
 name = "isolated_worktree_observer_human_flow"
 script = "scenarios/isolated_worktree_observer_human_flow.sh"
-owners = ["implement-isolated-worktree", "expose-live-worktree"]
-description = "Installed-binary real daemon/wrapper/Fake-Pi terminal flow: baseline is fsynced before the isolated worktree receives its permit; deliberately different main stays inert; candidate writes and atomic rename display as observed/unproven separately from the watchdog-owned proven clock; target churn is ignored; production 300/120/600 bounds remain visible; overflow and daemon restart reconcile without refreshing timestamps; and a post-reap late write is quarantined without making the task Done."
-timeout_seconds = 90
+owners = ["implement-isolated-worktree", "expose-live-worktree", "fix-observer-ignored-churn-resource-leak"]
+description = "Installed-binary real daemon/wrapper/Fake-Pi terminal flow: baseline is fsynced before permit; 200k+ nested target events interleaved with source writes keep observer RSS/CPU/single-slot queue bounded while exact source evidence advances; killing only the exact observer leaves writer/worktree intact and truthfully degrades health with recovery argv; overflow/restart reconcile without fresh timestamps; and post-reap writes quarantine without Done authority."
+timeout_seconds = 120
 
 [[scenario]]
 name = "pi_session_watchdog_human_flow"

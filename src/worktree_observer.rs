@@ -13,11 +13,12 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
@@ -29,6 +30,11 @@ pub const DEFAULT_MAX_OBSERVED_ONLY_EXTENSION_SECS: u64 = 600;
 pub const DEFAULT_MEANINGFUL_SILENCE_SECS: u64 = 300;
 const MAX_CHANGED_PATHS: usize = 64;
 const MAX_PATH_RENDER_BYTES: usize = 512;
+/// Native notifications are wake-up hints, not evidence. Keeping a single
+/// coalesced hint prevents a build tree from retaining one `notify::Event` (and
+/// all of its paths) per kernel event while a reconciliation is in progress.
+pub const WATCHER_WAKE_QUEUE_CAPACITY: usize = 1;
+const MAX_WATCHED_SOURCE_DIRECTORIES: usize = 16_384;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ObserverConfig {
@@ -183,6 +189,12 @@ impl CandidatePathPolicy {
     fn matches(patterns: &[String], path: &str) -> bool {
         patterns.iter().any(|pattern| {
             pattern == path
+                || pattern.strip_suffix("/**").is_some_and(|prefix| {
+                    path == prefix
+                        || path
+                            .strip_prefix(prefix)
+                            .is_some_and(|rest| rest.starts_with('/'))
+                })
                 || path
                     .strip_prefix(pattern.trim_end_matches('/'))
                     .is_some_and(|rest| rest.starts_with('/'))
@@ -231,6 +243,26 @@ impl CandidatePathPolicy {
             return PathClass::Excluded("git-ignored");
         }
         PathClass::Candidate("plausible-untracked")
+    }
+
+    /// Cheap event-ingress classification. This intentionally uses only the
+    /// immutable attempt policy and structural rules: no callback may read,
+    /// hash, or retain bytes from a volatile tree. Unknown paths remain wake-up
+    /// hints and are classified exactly by the subsequent stable scan.
+    fn ingress_exclusion(&self, path: &str) -> Option<&'static str> {
+        if Self::matches(&self.explicit_deliverables, path) || self.explicit_may_be_beneath(path) {
+            return None;
+        }
+        if is_internal_control(path) {
+            return Some("internal-control");
+        }
+        if let Some(reason) = volatile_reason(path) {
+            return Some(reason);
+        }
+        if Self::matches(&self.generated_paths, path) || self.generated_directory(path) {
+            return Some("configured-generated");
+        }
+        None
     }
 }
 
@@ -541,6 +573,44 @@ pub struct WorktreeObserver {
 }
 
 impl WorktreeObserver {
+    /// Establish a baseline or idempotently reopen the exact preparation left
+    /// by an earlier transaction pass. A state directory is never adopted by
+    /// path alone: the complete source tuple, root identity, policy snapshot,
+    /// and runtime policy must all match before reconciliation.
+    pub fn prepare_at(
+        root: &Path,
+        storage: &Path,
+        identity: ObserverIdentity,
+        policy: CandidatePathPolicy,
+        config: ObserverConfig,
+        now: i64,
+    ) -> Result<Self> {
+        let state_exists = storage.join("state.json").exists();
+        let baseline_exists = storage.join("baseline.json").exists();
+        if !state_exists && !baseline_exists {
+            return Self::attach_at(root, storage, identity, policy, config, now);
+        }
+        if state_exists != baseline_exists {
+            bail!("observer preparation is partial; preserve state and recover explicitly");
+        }
+        config.validate()?;
+        policy.verify()?;
+        let expected_source = source_for_root(root, identity.clone())?;
+        let mut observer = Self::open_at(storage, identity, now)?;
+        if observer.state.projection.source != expected_source {
+            bail!("observer root identity mismatch during restart reconciliation");
+        }
+        if observer.policy != policy {
+            bail!("observer policy snapshot mismatch during restart reconciliation");
+        }
+        if observer.config != config || observer.state.projection.timing_policy != config {
+            bail!("observer runtime policy mismatch during restart reconciliation");
+        }
+        let callback = observer.state.projection.source.identity.clone();
+        let _ = observer.reconcile_callback_at(&callback, ReconcileSource::Startup, now)?;
+        Ok(observer)
+    }
+
     pub fn attach_at(
         root: &Path,
         storage: &Path,
@@ -998,7 +1068,29 @@ struct ObserverRuntimeFile {
 }
 
 pub fn read_projection(storage: &Path) -> Result<ObserverProjection> {
-    Ok(read_json::<ObserverState>(&storage.join("state.json"))?.projection)
+    let mut projection = read_json::<ObserverState>(&storage.join("state.json"))?.projection;
+    // Health is partly a live-process fact. Never let a durable last-known
+    // `event-and-reconcile` value make operator surfaces claim that a dead
+    // exact PID is active. This is a read-model overlay only: all state and
+    // evidence remain untouched for restart reconciliation.
+    if matches!(
+        projection.health,
+        ObserverHealth::EventAndReconcile | ObserverHealth::RescanRequired
+    ) {
+        let owner = watcher_lock_owner(storage);
+        if !owner.is_some_and(|pid| watcher_owner_is_live(pid, storage)) {
+            projection.health = ObserverHealth::PollOnly;
+            projection.degraded_reason = Some(match owner {
+                Some(pid) => format!("observer-process-exited:pid={pid}"),
+                None => "observer-process-not-started-or-exited".into(),
+            });
+            projection.next_safe_action = format!(
+                "state preserved; recover with argv: wg worktree-observer-run --state-dir {}",
+                storage.display()
+            );
+        }
+    }
+    Ok(projection)
 }
 
 /// Load bounded observer projections for operator/service read models. Corrupt
@@ -1132,6 +1224,174 @@ pub fn calculate_suspect_deadline(input: DeadlineInput) -> DeadlineProjection {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+enum WatchWake {
+    Candidate,
+    IgnoredAccounting,
+}
+
+const INGRESS_REASONS: [&str; 7] = [
+    "internal-control",
+    "configured-generated",
+    "volatile-target",
+    "dependency-tree",
+    "cache-tree",
+    "temporary-file",
+    "wg-runtime",
+];
+
+#[derive(Default)]
+struct IngressAccounting {
+    ignored: [AtomicU64; INGRESS_REASONS.len()],
+    overflowed: AtomicU64,
+}
+
+impl IngressAccounting {
+    fn record_ignored(&self, reason: &str) {
+        if let Some(index) = INGRESS_REASONS.iter().position(|known| *known == reason) {
+            saturating_atomic_increment(&self.ignored[index]);
+        }
+    }
+
+    fn record_overflow(&self) {
+        saturating_atomic_increment(&self.overflowed);
+    }
+
+    fn drain_into(&self, observer: &mut WorktreeObserver, now: i64) -> Result<bool> {
+        let mut changed = false;
+        for (index, reason) in INGRESS_REASONS.iter().enumerate() {
+            let count = self.ignored[index].swap(0, Ordering::AcqRel);
+            if count > 0 {
+                let slot = observer
+                    .state
+                    .projection
+                    .ignored_churn
+                    .entry((*reason).into())
+                    .or_default();
+                *slot = slot.saturating_add(count);
+                changed = true;
+            }
+        }
+        let overflows = self.overflowed.swap(0, Ordering::AcqRel);
+        if overflows > 0 {
+            observer.state.projection.health = ObserverHealth::RescanRequired;
+            observer.state.projection.degraded_reason =
+                Some("rescan-required:bounded watcher wake queue overflow".into());
+            observer.state.projection.watcher_overflows = observer
+                .state
+                .projection
+                .watcher_overflows
+                .saturating_add(overflows);
+            observer.persist()?;
+            let _ = observer.reconcile_at(ReconcileSource::Overflow, now)?;
+            return Ok(true);
+        }
+        if changed {
+            observer.persist()?;
+        }
+        Ok(false)
+    }
+}
+
+fn saturating_atomic_increment(value: &AtomicU64) {
+    let _ = value.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        Some(current.saturating_add(1))
+    });
+}
+
+fn candidate_watch_directories(
+    root: &Path,
+    policy: &CandidatePathPolicy,
+) -> Result<BTreeSet<PathBuf>> {
+    let mut directories = BTreeSet::new();
+    let walker = WalkDir::new(root)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|entry| {
+            if entry.path() == root || !entry.file_type().is_dir() {
+                return true;
+            }
+            let Ok(relative) = entry.path().strip_prefix(root) else {
+                return false;
+            };
+            let Ok(path) = relative_path(relative) else {
+                return true;
+            };
+            if policy.explicit_may_be_beneath(&path) {
+                return true;
+            }
+            !is_internal_control(&path)
+                && volatile_reason(&path).is_none()
+                && !policy.generated_directory(&path)
+        });
+    for entry in walker {
+        let entry = entry?;
+        if !entry.file_type().is_dir() {
+            continue;
+        }
+        directories.insert(entry.path().to_path_buf());
+        if directories.len() > MAX_WATCHED_SOURCE_DIRECTORIES {
+            bail!(
+                "candidate watcher directory limit exceeded; use bounded periodic reconciliation"
+            );
+        }
+    }
+    Ok(directories)
+}
+
+fn sync_candidate_watches(
+    watcher: &mut RecommendedWatcher,
+    root: &Path,
+    policy: &CandidatePathPolicy,
+    watched: &mut BTreeSet<PathBuf>,
+) -> Result<()> {
+    let desired = candidate_watch_directories(root, policy)?;
+    // Backend notifications are hints. Watch only source-capable directories;
+    // excluded build trees are never subscribed, so their kernel traffic does
+    // not create an unbounded post-build callback drain. A periodic stable scan
+    // refreshes this bounded set and remains the exact evidence authority.
+    for directory in desired.difference(watched) {
+        watcher.watch(directory, RecursiveMode::NonRecursive)?;
+    }
+    for directory in watched.difference(&desired) {
+        let _ = watcher.unwatch(directory);
+    }
+    *watched = desired;
+    Ok(())
+}
+
+fn classify_ingress_event(
+    root: &Path,
+    policy: &CandidatePathPolicy,
+    event: &Event,
+    accounting: &IngressAccounting,
+) -> bool {
+    if event.paths.is_empty() {
+        return true;
+    }
+    let mut candidate = false;
+    for absolute in &event.paths {
+        let Ok(relative) = absolute.strip_prefix(root) else {
+            // An unexpected backend path must cause a stable scan rather than
+            // being guessed away.
+            candidate = true;
+            continue;
+        };
+        let Ok(path) = relative_path(relative) else {
+            candidate = true;
+            continue;
+        };
+        if path.is_empty() {
+            candidate = true;
+        } else if let Some(reason) = policy.ingress_exclusion(&path) {
+            accounting.record_ignored(reason);
+        } else {
+            candidate = true;
+        }
+    }
+    candidate
+}
+
 pub fn run_watch_loop(storage: &Path, parent_pid: Option<u32>) -> Result<()> {
     let Some(_lease) = WatcherLease::acquire(storage)? else {
         // Another live observer owns the exact attempt directory. The existing
@@ -1147,14 +1407,52 @@ pub fn run_watch_loop(storage: &Path, parent_pid: Option<u32>) -> Result<()> {
         ReconcileSource::Startup,
         chrono::Utc::now().timestamp(),
     )?;
-    let (tx, rx) = mpsc::channel::<notify::Result<Event>>();
+    let (tx, rx) = mpsc::sync_channel::<WatchWake>(WATCHER_WAKE_QUEUE_CAPACITY);
     let root = PathBuf::from(&observer.projection().source.canonical_worktree_root);
+    let callback_root = root.clone();
+    let callback_policy = observer.policy.clone();
+    let ingress = Arc::new(IngressAccounting::default());
+    let callback_ingress = Arc::clone(&ingress);
     let watcher_result: notify::Result<RecommendedWatcher> =
-        notify::recommended_watcher(move |event| {
-            let _ = tx.send(event);
+        notify::recommended_watcher(move |event: notify::Result<Event>| match event {
+            Ok(event) => {
+                // Fingerprinting necessarily opens/reads candidate files. The
+                // native backend reports those Open/Close events as Access;
+                // treating them as wakeups creates a self-exciting reconcile
+                // loop even after external churn stops.
+                if matches!(event.kind, EventKind::Access(_)) {
+                    return;
+                }
+                let candidate = classify_ingress_event(
+                    &callback_root,
+                    &callback_policy,
+                    &event,
+                    &callback_ingress,
+                );
+                let wake = if candidate {
+                    WatchWake::Candidate
+                } else {
+                    WatchWake::IgnoredAccounting
+                };
+                if let Err(mpsc::TrySendError::Full(_)) = tx.try_send(wake)
+                    && candidate
+                {
+                    // Only dropping a possible source wake requires a stable
+                    // full reconciliation. Ignored accounting is already held
+                    // in fixed atomic category counters.
+                    callback_ingress.record_overflow();
+                }
+            }
+            Err(_) => callback_ingress.record_overflow(),
         });
+    let mut watched_directories = BTreeSet::new();
     let mut watcher = match watcher_result {
-        Ok(mut watcher) => match watcher.watch(&root, RecursiveMode::Recursive) {
+        Ok(mut watcher) => match sync_candidate_watches(
+            &mut watcher,
+            &root,
+            &observer.policy,
+            &mut watched_directories,
+        ) {
             Ok(()) => Some(watcher),
             Err(error) => {
                 observer.mark_watcher_unavailable_at(
@@ -1180,40 +1478,57 @@ pub fn run_watch_loop(storage: &Path, parent_pid: Option<u32>) -> Result<()> {
         }
         refresh_authority(&mut observer, storage, parent_pid)?;
         match rx.recv_timeout(interval) {
-            Ok(Ok(_event)) => {
-                std::thread::sleep(Duration::from_millis(observer.config().debounce_ms));
+            Ok(wake) => {
+                if matches!(wake, WatchWake::Candidate) {
+                    std::thread::sleep(Duration::from_millis(observer.config().debounce_ms));
+                }
                 // Authority may have changed while recv_timeout was blocked.
                 // Recheck immediately before classifying candidate bytes.
                 refresh_authority(&mut observer, storage, parent_pid)?;
-                let _ = observer.reconcile_callback_at(
-                    &callback_identity,
-                    ReconcileSource::Event,
-                    chrono::Utc::now().timestamp(),
-                )?;
-            }
-            Ok(Err(error)) => {
-                refresh_authority(&mut observer, storage, parent_pid)?;
-                observer.mark_overflow_at(&error.to_string(), chrono::Utc::now().timestamp())?
+                let now = chrono::Utc::now().timestamp();
+                let overflow_reconciled = ingress.drain_into(&mut observer, now)?;
+                if matches!(wake, WatchWake::Candidate) && !overflow_reconciled {
+                    let _ = observer.reconcile_callback_at(
+                        &callback_identity,
+                        ReconcileSource::Event,
+                        now,
+                    )?;
+                }
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 refresh_authority(&mut observer, storage, parent_pid)?;
-                let _ = observer.reconcile_callback_at(
-                    &callback_identity,
-                    ReconcileSource::Periodic,
-                    chrono::Utc::now().timestamp(),
-                )?;
+                let now = chrono::Utc::now().timestamp();
+                let overflow_reconciled = ingress.drain_into(&mut observer, now)?;
+                if !overflow_reconciled {
+                    let _ = observer.reconcile_callback_at(
+                        &callback_identity,
+                        ReconcileSource::Periodic,
+                        now,
+                    )?;
+                }
+                if let Some(active_watcher) = watcher.as_mut()
+                    && let Err(error) = sync_candidate_watches(
+                        active_watcher,
+                        &root,
+                        &observer.policy,
+                        &mut watched_directories,
+                    )
+                {
+                    observer.mark_watcher_unavailable_at(&error.to_string(), now)?;
+                    watcher = None;
+                    watched_directories.clear();
+                }
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 refresh_authority(&mut observer, storage, parent_pid)?;
-                observer.mark_watcher_unavailable_at(
-                    "native watcher disconnected",
-                    chrono::Utc::now().timestamp(),
-                )?;
+                let now = chrono::Utc::now().timestamp();
+                let _ = ingress.drain_into(&mut observer, now)?;
+                observer.mark_watcher_unavailable_at("native watcher disconnected", now)?;
                 watcher = None;
                 let _ = observer.reconcile_callback_at(
                     &callback_identity,
                     ReconcileSource::Periodic,
-                    chrono::Utc::now().timestamp(),
+                    now,
                 )?;
                 std::thread::sleep(interval);
             }
@@ -1292,9 +1607,7 @@ pub fn restart_current_observers(wg_dir: &Path) -> Result<usize> {
             .join("attempts")
             .join(&projection.source.identity.attempt_id)
             .join("worktree-observer");
-        let lock_owner = fs::read_to_string(state_dir.join("watcher.lock"))
-            .ok()
-            .and_then(|text| text.trim().parse::<u32>().ok());
+        let lock_owner = watcher_lock_owner(&state_dir);
         if lock_owner.is_some_and(|owner| watcher_owner_is_live(owner, &state_dir)) {
             continue;
         }
@@ -1365,6 +1678,12 @@ fn source_still_current(storage: &Path, projection: &ObserverProjection) -> bool
                             && attempt.disposition.is_none()
                     })
         })
+}
+
+fn watcher_lock_owner(storage: &Path) -> Option<u32> {
+    fs::read_to_string(storage.join("watcher.lock"))
+        .ok()
+        .and_then(|text| text.trim().parse::<u32>().ok())
 }
 
 fn watcher_owner_is_live(pid: u32, storage: &Path) -> bool {
@@ -1532,60 +1851,100 @@ fn ignored_paths(root: &Path, paths: &[String]) -> Result<BTreeSet<String>> {
     Ok(set)
 }
 
+#[derive(Default)]
+struct ExcludedAccumulator {
+    by_reason: BTreeMap<String, (blake3::Hasher, u64)>,
+}
+
+impl ExcludedAccumulator {
+    fn record(&mut self, reason: &str, path: &str, signature: &str) {
+        let (hasher, count) = self
+            .by_reason
+            .entry(reason.into())
+            .or_insert_with(|| (blake3::Hasher::new(), 0));
+        hasher.update(&(path.len() as u64).to_le_bytes());
+        hasher.update(path.as_bytes());
+        hasher.update(&(signature.len() as u64).to_le_bytes());
+        hasher.update(signature.as_bytes());
+        *count = count.saturating_add(1);
+    }
+
+    fn into_signatures(self) -> BTreeMap<String, ExcludedSignature> {
+        self.by_reason
+            .into_iter()
+            .map(|(reason, (hasher, count))| {
+                (
+                    format!("@{reason}"),
+                    ExcludedSignature {
+                        reason,
+                        signature: format!("b3:{}:{count}", hasher.finalize().to_hex()),
+                    },
+                )
+            })
+            .collect()
+    }
+}
+
 fn scan_manifest(root: &Path, policy: &CandidatePathPolicy) -> Result<ManifestSnapshot> {
     let tracked = tracked_entries(root)?;
     let mut discovered = Vec::<(String, PathBuf, fs::FileType)>::new();
-    let walker = WalkDir::new(root)
-        .follow_links(false)
-        .into_iter()
-        .filter_entry(|entry| {
-            if entry.path() == root || !entry.file_type().is_dir() {
-                return true;
+    let mut excluded_accumulator = ExcludedAccumulator::default();
+    {
+        let walker = WalkDir::new(root)
+            .follow_links(false)
+            .into_iter()
+            .filter_entry(|entry| {
+                if entry.path() == root || !entry.file_type().is_dir() {
+                    return true;
+                }
+                let Ok(relative) = entry.path().strip_prefix(root) else {
+                    return false;
+                };
+                let Ok(path) = relative_path(relative) else {
+                    return true;
+                };
+                let exclusion = if is_internal_control(&path) {
+                    Some("internal-control")
+                } else if policy.generated_directory(&path) {
+                    Some("configured-generated")
+                } else {
+                    volatile_reason(&path)
+                };
+                let Some(reason) = exclusion else {
+                    return true;
+                };
+                let prefix = format!("{}/", path.trim_end_matches('/'));
+                let tracked_beneath = tracked
+                    .keys()
+                    .any(|candidate| candidate.starts_with(&prefix));
+                if tracked_beneath || policy.explicit_may_be_beneath(&path) {
+                    return true;
+                }
+                // Drop the entire excluded subtree at walk ingress. Retain one
+                // bounded, category-level metadata signal rather than a path or
+                // content record for each generated entry.
+                let signature = diagnostic_signature(entry.path())
+                    .unwrap_or_else(|_| "unreadable-excluded-root".into());
+                excluded_accumulator.record(reason, &path, &signature);
+                false
+            });
+        for item in walker {
+            let entry = item?;
+            if entry.path() == root {
+                continue;
             }
-            let Ok(relative) = entry.path().strip_prefix(root) else {
-                return false;
-            };
-            let Ok(path) = relative_path(relative) else {
-                return true;
-            };
-            if path == ".git" || path.starts_with(".git/") || is_internal_control(&path) {
-                return false;
+            let relative = entry
+                .path()
+                .strip_prefix(root)
+                .map_err(|_| anyhow::anyhow!("escaping-path"))?;
+            let path = relative_path(relative)?;
+            if entry.file_type().is_dir() {
+                continue;
             }
-            let volatile = volatile_reason(&path).is_some() || policy.generated_directory(&path);
-            if !volatile || !path.contains('/') {
-                // Visit the exclusion root so direct churn remains visible; nested
-                // volatile subtrees are pruned unless a tracked/declared candidate
-                // requires descent.
-                return true;
+            discovered.push((path, entry.path().to_path_buf(), entry.file_type()));
+            if discovered.len() > 200_000 {
+                bail!("candidate-scan-entry-limit-exceeded");
             }
-            let prefix = format!("{}/", path.trim_end_matches('/'));
-            let tracked_beneath = tracked
-                .keys()
-                .any(|candidate| candidate.starts_with(&prefix));
-            tracked_beneath || policy.explicit_may_be_beneath(&path)
-        });
-    for item in walker {
-        let entry = item?;
-        if entry.path() == root {
-            continue;
-        }
-        let relative = entry
-            .path()
-            .strip_prefix(root)
-            .map_err(|_| anyhow::anyhow!("escaping-path"))?;
-        let path = relative_path(relative)?;
-        if path == ".git" || path.starts_with(".git/") {
-            continue;
-        }
-        if entry.file_type().is_dir() {
-            if volatile_reason(&path).is_some() || policy.generated_directory(&path) {
-                discovered.push((path, entry.path().to_path_buf(), entry.file_type()));
-            }
-            continue;
-        }
-        discovered.push((path, entry.path().to_path_buf(), entry.file_type()));
-        if discovered.len() > 200_000 {
-            bail!("candidate-scan-entry-limit-exceeded");
         }
     }
     // Git may reject a case-colliding index before a worktree is created. If a
@@ -1622,7 +1981,6 @@ fn scan_manifest(root: &Path, policy: &CandidatePathPolicy) -> Result<ManifestSn
         .collect();
     let ignored = ignored_paths(root, &untracked)?;
     let mut entries = BTreeMap::new();
-    let mut excluded = BTreeMap::new();
     for (path, absolute, file_type) in discovered {
         // Preserve exact, case-distinct paths when the checkout filesystem can
         // materialize both of them. Folding names here made observer attach
@@ -1635,13 +1993,7 @@ fn scan_manifest(root: &Path, policy: &CandidatePathPolicy) -> Result<ManifestSn
         let class = policy.classify(&path, tracked_entry.is_some(), ignored.contains(&path));
         match class {
             PathClass::Excluded(reason) => {
-                excluded.insert(
-                    path,
-                    ExcludedSignature {
-                        reason: reason.into(),
-                        signature: diagnostic_signature(&absolute)?,
-                    },
-                );
+                excluded_accumulator.record(reason, &path, &diagnostic_signature(&absolute)?);
             }
             PathClass::Candidate(class_name) => {
                 if !(file_type.is_file() || file_type.is_symlink()) {
@@ -1653,6 +2005,7 @@ fn scan_manifest(root: &Path, policy: &CandidatePathPolicy) -> Result<ManifestSn
             }
         }
     }
+    let mut excluded = excluded_accumulator.into_signatures();
     // Gitlinks are index identities, not recursively followed source.
     for (path, tracked_entry) in &tracked {
         if tracked_entry.mode == 0o160000 {

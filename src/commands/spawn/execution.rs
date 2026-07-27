@@ -1477,7 +1477,7 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
                 task.deliverables.clone(),
                 config.worktree_observer.generated_paths.clone(),
             )?;
-            worksgood::worktree_observer::WorktreeObserver::attach_at(
+            worksgood::worktree_observer::WorktreeObserver::prepare_at(
                 &info.path,
                 &state_dir,
                 worksgood::worktree_observer::ObserverIdentity {
