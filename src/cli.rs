@@ -591,6 +591,35 @@ pub enum Commands {
         /// Shell exit code of the agent process (124 = hard timeout)
         #[arg(long, value_name = "N")]
         exit_code: i32,
+
+        /// Executor that produced the stream (inferred when omitted).
+        #[arg(long)]
+        executor: Option<String>,
+
+        /// Full handler-first route used by the failed attempt.
+        #[arg(long)]
+        route: Option<String>,
+
+        /// Emit the complete normalized FailureSignal as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// [Internal] Persist one normalized failed-attempt telemetry record.
+    #[command(hide = true)]
+    RecordTelemetry {
+        #[arg(long, value_name = "TASK")]
+        task: String,
+        #[arg(long, value_name = "PATH")]
+        raw_stream: Option<String>,
+        #[arg(long, value_name = "N")]
+        exit_code: i32,
+        #[arg(long)]
+        executor: Option<String>,
+        #[arg(long)]
+        route: Option<String>,
+        #[arg(long)]
+        json: bool,
     },
 
     /// [Internal] Classify a NoOperationalOutput (guardrail G4) run from the
@@ -727,7 +756,7 @@ pub enum Commands {
 
         /// Filter clauses (repeatable, comma-separated). Examples:
         /// `status=failed`, `tag=eval-scheduled`, `id-prefix=tui-`,
-        /// `attempts<=2`, `error~credit`
+        /// `attempts<=2`, `error~credit`, `reason=credit-exhausted`
         #[arg(long, value_name = "EXPR")]
         filter: Vec<String>,
 
@@ -6729,6 +6758,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Done { .. } => "done",
         Commands::Fail { .. } => "fail",
         Commands::ClassifyFailure { .. } => "classify-failure",
+        Commands::RecordTelemetry { .. } => "record-telemetry",
         Commands::ClassifyNoOp { .. } => "classify-no-op",
         Commands::PiStreamBridge { .. } => "pi-stream-bridge",
         Commands::ChatRuntimeWrapper { .. } => "chat-runtime-wrapper",
@@ -6877,6 +6907,8 @@ pub fn supports_json(cmd: &Commands) -> bool {
     matches!(
         cmd,
         Commands::Ready
+            | Commands::ClassifyFailure { .. }
+            | Commands::RecordTelemetry { .. }
             | Commands::Discover { .. }
             | Commands::Blocked { .. }
             | Commands::WhyBlocked { .. }

@@ -4,26 +4,166 @@
 //! FailureClass kebab string to stdout. Called by the wrapper script
 //! before invoking `wg fail --class <CLASS>`. Hidden from user-facing help.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::path::Path;
+use worksgood::dispatch::plan::ExecutorKind;
+use worksgood::graph::{FailureClass, FailureReason, FailureSignal};
 
 use super::spawn::raw_stream_classifier::{
-    classify_from_raw_stream, classify_no_operational_output,
+    classify_from_raw_stream, classify_no_operational_output, classify_signal_from_raw_stream,
+    infer_executor,
 };
 
-pub fn run(raw_stream: Option<&str>, exit_code: i32) -> Result<()> {
-    let class = match raw_stream {
-        Some(path) => classify_from_raw_stream(Path::new(path), exit_code),
-        None => {
-            use worksgood::graph::FailureClass;
+pub fn run(
+    raw_stream: Option<&str>,
+    exit_code: i32,
+    executor: Option<&str>,
+    route: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    let class = raw_stream
+        .map(|path| classify_from_raw_stream(Path::new(path), exit_code))
+        .unwrap_or_else(|| {
             if exit_code == 124 {
                 FailureClass::AgentHardTimeout
             } else {
                 FailureClass::AgentExitNonzero
             }
-        }
+        });
+    if json {
+        let executor = executor
+            .and_then(ExecutorKind::from_str)
+            .or_else(|| raw_stream.map(Path::new).map(infer_executor))
+            .unwrap_or_default();
+        let signal = raw_stream
+            .map(|path| {
+                classify_signal_from_raw_stream(
+                    Path::new(path),
+                    Path::new(path)
+                        .parent()
+                        .map(|parent| parent.join("output.log"))
+                        .as_deref(),
+                    exit_code,
+                    executor,
+                    route.map(str::to_string),
+                )
+            })
+            .unwrap_or_else(|| fallback_signal(class, executor, route));
+        println!("{}", serde_json::to_string(&signal)?);
+    } else {
+        println!("{}", class);
+    }
+    Ok(())
+}
+
+fn fallback_signal(
+    class: FailureClass,
+    executor: ExecutorKind,
+    route: Option<&str>,
+) -> FailureSignal {
+    let reason = match class {
+        FailureClass::ApiError429RateLimit => FailureReason::RateLimit,
+        FailureClass::ApiError5xxTransient => FailureReason::Transient5xx,
+        FailureClass::ApiError400Document | FailureClass::ExecutorConfig => FailureReason::Hard,
+        FailureClass::AgentHardTimeout => FailureReason::HardTimeout,
+        FailureClass::ResourceExhaustedDisk => FailureReason::Disk,
+        _ => FailureReason::Unknown,
     };
-    println!("{}", class);
+    FailureSignal {
+        reason,
+        confidence: 0.2,
+        executor,
+        route: route.map(str::to_string),
+        detected_at_ms: chrono::Utc::now().timestamp_millis(),
+        ..Default::default()
+    }
+}
+
+pub fn run_record(
+    dir: &Path,
+    task_id: &str,
+    raw_stream: Option<&str>,
+    exit_code: i32,
+    executor: Option<&str>,
+    route: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    let registry = worksgood::service::registry::AgentRegistry::load(dir).ok();
+    let agent = registry
+        .as_ref()
+        .and_then(|registry| registry.get_agent_by_task(task_id));
+    let raw_path = raw_stream.map(std::path::PathBuf::from).or_else(|| {
+        agent.map(|agent| {
+            Path::new(&agent.output_file)
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join("raw_stream.jsonl")
+        })
+    });
+    let executor = executor
+        .and_then(ExecutorKind::from_str)
+        .or_else(|| agent.and_then(|agent| ExecutorKind::from_str(&agent.executor)))
+        .or_else(|| raw_path.as_deref().map(infer_executor))
+        .unwrap_or_default();
+    let route = route
+        .map(str::to_string)
+        .or_else(|| agent.and_then(|agent| agent.model.clone()));
+    let signal = raw_path
+        .as_deref()
+        .map(|raw| {
+            classify_signal_from_raw_stream(
+                raw,
+                raw.parent()
+                    .map(|parent| parent.join("output.log"))
+                    .as_deref(),
+                exit_code,
+                executor,
+                route.clone(),
+            )
+        })
+        .unwrap_or_else(|| {
+            fallback_signal(
+                if exit_code == 124 {
+                    FailureClass::AgentHardTimeout
+                } else {
+                    FailureClass::AgentExitNonzero
+                },
+                executor,
+                route.as_deref(),
+            )
+        });
+
+    // An exit-0 stream with no provider evidence is not a failed attempt.
+    if exit_code == 0 && signal.reason == FailureReason::Unknown {
+        if json {
+            println!("{}", serde_json::to_string(&signal)?);
+        }
+        return Ok(());
+    }
+
+    let graph_path = super::graph_path(dir);
+    let mut attempt = 1;
+    let persisted = signal.clone();
+    worksgood::parser::modify_graph(&graph_path, |graph| {
+        let Some(task) = graph.get_task_mut(task_id) else {
+            return false;
+        };
+        attempt = if task.status == worksgood::graph::Status::Failed {
+            task.retry_count.max(1)
+        } else {
+            task.retry_count.saturating_add(1)
+        };
+        task.failure_signal = Some(persisted.clone());
+        true
+    })
+    .with_context(|| format!("persist telemetry signal for task '{task_id}'"))?;
+    worksgood::telemetry::append_record(
+        dir,
+        worksgood::telemetry::TelemetryRecord::new(task_id, attempt, signal.clone()),
+    )?;
+    if json {
+        println!("{}", serde_json::to_string(&signal)?);
+    }
     Ok(())
 }
 

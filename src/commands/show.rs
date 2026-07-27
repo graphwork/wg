@@ -5,8 +5,8 @@ use std::collections::HashMap;
 use std::path::Path;
 use worksgood::config::{Config, DispatchRole};
 use worksgood::graph::{
-    CycleConfig, FailureClass, LogEntry, LoopGuard, PRIORITY_DEFAULT, Priority, Status, Task,
-    TokenUsage, format_tokens, parse_token_usage_live,
+    CycleConfig, FailureClass, FailureSignal, LogEntry, LoopGuard, PRIORITY_DEFAULT, Priority,
+    Status, Task, TokenUsage, format_tokens, parse_token_usage_live,
 };
 use worksgood::query::build_reverse_index;
 use worksgood::service::AgentRegistry;
@@ -88,6 +88,8 @@ struct TaskDetails {
     failure_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     failure_class: Option<FailureClass>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    failure_signal: Option<FailureSignal>,
     /// Per-task spawn circuit breaker counter (0 = healthy).
     #[serde(default, skip_serializing_if = "is_zero")]
     spawn_failures: u32,
@@ -780,6 +782,7 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         max_retries: task.max_retries,
         failure_reason: task.failure_reason.clone(),
         failure_class: task.failure_class,
+        failure_signal: task.failure_signal.clone(),
         spawn_failures: task.spawn_failures,
         max_spawn_failures: worksgood::config::Config::load_or_default(dir)
             .coordinator
@@ -1176,6 +1179,21 @@ fn print_human_readable(details: &TaskDetails) {
             }
         };
         println!("  hint: {}", hint);
+    }
+    if let Some(signal) = &details.failure_signal {
+        println!(
+            "failure_reason_signal: {} (confidence {:.1}, status {}, retry-after {})",
+            signal.reason,
+            signal.confidence,
+            signal
+                .http_status
+                .map(|status| status.to_string())
+                .unwrap_or_else(|| "n/a".to_string()),
+            signal
+                .retry_after_secs
+                .map(|seconds| format!("{seconds:.1}s"))
+                .unwrap_or_else(|| "n/a".to_string())
+        );
     }
     if !details.superseded_by.is_empty() {
         println!("Superseded by: {}", details.superseded_by.join(", "));
@@ -1961,6 +1979,7 @@ mod tests {
             max_retries: None,
             failure_reason: None,
             failure_class: None,
+            failure_signal: None,
             spawn_failures: 0,
             max_spawn_failures: 0,
             last_spawn_failure_at: None,

@@ -1372,6 +1372,7 @@ fn handle_add_task_with_reasoning(
         max_retries: None,
         failure_reason: None,
         failure_class: None,
+        failure_signal: None,
         model: model.map(String::from),
         reasoning,
         provider: None,

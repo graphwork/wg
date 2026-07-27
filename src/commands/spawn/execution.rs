@@ -3130,6 +3130,27 @@ EXIT_CODE=$?
 exec {{HEARTBEAT_GUARD_FD}}>&-
 kill $HEARTBEAT_PID 2>/dev/null; wait $HEARTBEAT_PID 2>/dev/null
 {stream_result}
+
+# Provider telemetry runs independently of process exit. This catches pi's
+# mid-stream trap: an error event can follow initial text and pi may still exit
+# zero. Detect it before the no-work/no-operational-output gates so the typed
+# provider signal wins over a generic no-op classification.
+if [ -n "$RAW_STREAM" ] && [ -s "$RAW_STREAM" ]; then
+    FAILURE_SIGNAL_JSON=$(wg classify-failure --raw-stream "$RAW_STREAM" --exit-code "$EXIT_CODE" --executor "{executor_type}" --route "${{WG_MODEL:-}}" --json 2>/dev/null || true)
+    DETECTED_PROVIDER_REASON=$(printf '%s' "$FAILURE_SIGNAL_JSON" | sed -n 's/.*"reason":"\([^"]*\)".*/\1/p')
+    if [ "$EXIT_CODE" -eq 0 ] && [ -n "$DETECTED_PROVIDER_REASON" ] && [ "$DETECTED_PROVIDER_REASON" != "unknown" ]; then
+        FAIL_CLASS=$(wg classify-failure --raw-stream "$RAW_STREAM" --exit-code "$EXIT_CODE" --executor "{executor_type}" --route "${{WG_MODEL:-}}" 2>/dev/null || echo "agent-exit-nonzero")
+        wg fail "$TASK_ID" --class "$FAIL_CLASS" --reason "Provider failure detected after streaming: $DETECTED_PROVIDER_REASON" 2>> "$OUTPUT_FILE" || true
+        wg record-telemetry --task "$TASK_ID" --raw-stream "$RAW_STREAM" --exit-code "$EXIT_CODE" --executor "{executor_type}" --route "${{WG_MODEL:-}}" 2>> "$OUTPUT_FILE" || true
+    fi
+fi
+if [ "$EXIT_CODE" -ne 0 ]; then
+    if [ -n "$RAW_STREAM" ]; then
+        wg record-telemetry --task "$TASK_ID" --raw-stream "$RAW_STREAM" --exit-code "$EXIT_CODE" --executor "{executor_type}" --route "${{WG_MODEL:-}}" 2>> "$OUTPUT_FILE" || true
+    else
+        wg record-telemetry --task "$TASK_ID" --exit-code "$EXIT_CODE" --executor "{executor_type}" --route "${{WG_MODEL:-}}" 2>> "$OUTPUT_FILE" || true
+    fi
+fi
 {pi_exit_reconcile}
 
 # Check if task is still in progress (agent didn't mark it done/failed)
@@ -3195,6 +3216,11 @@ if [ "$TASK_STATUS" = "in-progress" ] && [ "{executor_type}" != "pi" ]; then
             FAIL_REASON="Agent exited with code $EXIT_CODE"
         fi
         wg fail "$TASK_ID" --class "$FAIL_CLASS" --reason "$FAIL_REASON" 2>> "$OUTPUT_FILE" || echo "[wrapper] WARNING: 'wg fail' failed with exit code $?" >> "$OUTPUT_FILE"
+        if [ -n "$RAW_STREAM" ]; then
+            wg record-telemetry --task "$TASK_ID" --raw-stream "$RAW_STREAM" --exit-code "$EXIT_CODE" --executor "{executor_type}" --route "${{WG_MODEL:-}}" 2>> "$OUTPUT_FILE" || true
+        else
+            wg record-telemetry --task "$TASK_ID" --exit-code "$EXIT_CODE" --executor "{executor_type}" --route "${{WG_MODEL:-}}" 2>> "$OUTPUT_FILE" || true
+        fi
     fi
 fi
 
@@ -6074,6 +6100,25 @@ mod tests {
         assert!(
             script.contains("Transactional launch gate"),
             "wrapper must not start a handler before the spawn transaction commits"
+        );
+        let telemetry = script
+            .find("Provider telemetry runs independently of process exit")
+            .expect("mid-stream provider detector");
+        let no_work = script.find("Minimum-work gate").expect("no-work gate");
+        assert!(
+            telemetry < no_work,
+            "provider errors must be classified before no-operational-output"
+        );
+        assert!(script.contains("wg record-telemetry --task \"$TASK_ID\""));
+        #[cfg(unix)]
+        assert!(
+            std::process::Command::new("bash")
+                .arg("-n")
+                .arg(&wrapper_path)
+                .status()
+                .unwrap()
+                .success(),
+            "generated telemetry wrapper must remain valid bash"
         );
     }
 

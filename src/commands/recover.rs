@@ -11,7 +11,7 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
-use worksgood::graph::{LogEntry, Status, Task};
+use worksgood::graph::{FailureReason, LogEntry, Status, Task};
 use worksgood::lifecycle::{LifecycleActor, TransitionKind, TransitionRequest, apply_transition};
 use worksgood::parser::modify_graph;
 
@@ -150,6 +150,7 @@ enum Filter {
     IdPrefix(String),
     AttemptsCmp(Cmp, u32),
     ErrorContains(String),
+    Reason(FailureReason),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -198,11 +199,16 @@ fn parse_one_filter(clause: &str) -> Result<Filter> {
     if let Some(v) = clause.strip_prefix("error~") {
         return Ok(Filter::ErrorContains(v.trim().to_string()));
     }
+    if let Some(v) = clause.strip_prefix("reason=") {
+        let reason = FailureReason::parse(v)
+            .ok_or_else(|| anyhow::anyhow!("unknown failure reason '{}'", v.trim()))?;
+        return Ok(Filter::Reason(reason));
+    }
     if let Some((cmp, n)) = parse_attempts_cmp(clause) {
         return Ok(Filter::AttemptsCmp(cmp, n));
     }
     anyhow::bail!(
-        "unknown filter clause '{}' (expected status=X, tag=X, id-prefix=X, attempts<=N, error~X)",
+        "unknown filter clause '{}' (expected status=X, tag=X, id-prefix=X, attempts<=N, error~X, reason=X)",
         clause
     );
 }
@@ -265,6 +271,11 @@ fn task_matches_filters(task: &Task, filters: &[Filter]) -> bool {
                     return false;
                 }
             }
+            Filter::Reason(reason) => {
+                if task.failure_signal.as_ref().map(|signal| signal.reason) != Some(*reason) {
+                    return false;
+                }
+            }
         }
     }
     true
@@ -309,6 +320,7 @@ fn apply_plan(dir: &Path, plan: &Plan, opts: &RecoverOptions) -> Result<()> {
                     continue;
                 }
                 task.failure_reason = None;
+                task.failure_signal = None;
                 task.assigned = None;
                 task.ready_after = None;
                 task.session_id = None;
@@ -876,6 +888,33 @@ mod tests {
         let plan = build_plan(&[t1, t2], &opts).unwrap();
         let ids: Vec<&str> = plan.user_retries.iter().map(|e| e.id.as_str()).collect();
         assert_eq!(ids, vec!["user-a"]);
+    }
+
+    #[test]
+    fn test_recover_filter_reason_is_exact() {
+        let mut credit = task("credit", Status::Failed);
+        credit.failure_signal = Some(worksgood::graph::FailureSignal {
+            reason: FailureReason::CreditExhausted,
+            ..Default::default()
+        });
+        let mut rate = task("rate", Status::Failed);
+        rate.failure_signal = Some(worksgood::graph::FailureSignal {
+            reason: FailureReason::RateLimit,
+            ..Default::default()
+        });
+        rate.failure_reason = Some("mentions credit but is rate-limited".to_string());
+        let opts = RecoverOptions {
+            filter: vec!["reason=credit-exhausted".to_string()],
+            max_attempts: 5,
+            ..Default::default()
+        };
+        let plan = build_plan(&[credit, rate], &opts).unwrap();
+        let ids: Vec<&str> = plan
+            .user_retries
+            .iter()
+            .map(|entry| entry.id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["credit"]);
     }
 
     #[test]

@@ -350,6 +350,7 @@ mod tests {
             max_retries: None,
             failure_reason: None,
             failure_class: None,
+            failure_signal: None,
             model: None,
             reasoning: None,
             provider: None,

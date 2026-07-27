@@ -935,6 +935,7 @@ impl OpenAiClient {
                         ae.status >= 400 && ae.status < 500 && !is_retryable(ae.status)
                     });
                     if is_client_error {
+                        record_native_terminal_error(&e);
                         return Err(e);
                     }
                     if retry_count < max_retries {
@@ -948,6 +949,7 @@ impl OpenAiClient {
                         backoff_ms = (backoff_ms * 2).min(30_000);
                         continue;
                     }
+                    record_native_terminal_error(&e);
                     return Err(e).context("Streaming request failed after retries");
                 }
             }
@@ -1355,6 +1357,7 @@ impl OpenAiClient {
                         ae.status >= 400 && ae.status < 500 && !is_retryable(ae.status)
                     });
                     if is_client_error {
+                        record_native_terminal_error(&e);
                         return Err(e);
                     }
                     if retry_count < max_retries {
@@ -1368,6 +1371,7 @@ impl OpenAiClient {
                         backoff_ms = (backoff_ms * 2).min(30_000);
                         continue;
                     }
+                    record_native_terminal_error(&e);
                     return Err(e).context("Streaming request failed after retries");
                 }
             }
@@ -1427,13 +1431,15 @@ impl OpenAiClient {
                         continue;
                     }
 
-                    return Err(oai_api_error_with_hint(
+                    let error = oai_api_error_with_hint(
                         status_code,
                         &body,
                         &self.auth_config_hint(),
                         self.provider_hint.as_deref(),
                         Some(&self.model),
-                    ));
+                    );
+                    record_native_terminal_error(&error);
+                    return Err(error);
                 }
                 Err(e) => {
                     if retry_count < network_max_retries {
@@ -1714,6 +1720,48 @@ impl std::fmt::Display for ApiError {
 
 impl std::error::Error for ApiError {}
 
+/// Best-effort terminal recording for the in-process executor. The wrapper and
+/// `wg fail` also record; the telemetry store deduplicates the same attempt.
+fn record_native_terminal_error(error: &anyhow::Error) {
+    let Some(api_error) = error.downcast_ref::<ApiError>() else {
+        return;
+    };
+    let error_type = api_error
+        .openrouter_provider_error
+        .as_ref()
+        .and_then(|provider| provider.upstream_type.clone());
+    let provider_code = api_error
+        .openrouter_provider_error
+        .as_ref()
+        .and_then(|provider| provider.upstream_code.clone())
+        .map(serde_json::Value::String);
+    let mut signal = crate::telemetry::failure_signal_from_evidence(
+        Some(api_error.status),
+        error_type,
+        provider_code,
+        None,
+        &api_error.to_string(),
+        crate::dispatch::plan::ExecutorKind::Native,
+        std::env::var("WG_MODEL").ok(),
+    );
+    let Ok(dir) = std::env::var("WG_DIR") else {
+        return;
+    };
+    let Ok(task_id) = std::env::var("WG_TASK_ID") else {
+        return;
+    };
+    signal.detected_at_ms = chrono::Utc::now().timestamp_millis();
+    let dir = std::path::Path::new(&dir);
+    let attempt = crate::parser::load_graph(dir.join("graph.jsonl"))
+        .ok()
+        .and_then(|graph| graph.get_task(&task_id).map(|task| task.retry_count + 1))
+        .unwrap_or(1);
+    let record = crate::telemetry::TelemetryRecord::new(task_id, attempt, signal);
+    if let Err(error) = crate::telemetry::append_record(dir, record) {
+        eprintln!("[openai-client] warning: failed to record provider telemetry: {error:#}");
+    }
+}
+
 fn oai_api_error(status: u16, body: &str) -> anyhow::Error {
     let (message, openrouter_provider_error) =
         if let Ok(err) = serde_json::from_str::<OaiErrorResponse>(body) {
@@ -1758,61 +1806,37 @@ fn parse_openrouter_provider_error(
     detail: &OaiErrorDetail,
     model: Option<&str>,
 ) -> Option<OpenRouterProviderError> {
-    let metadata = detail.metadata.as_ref()?;
-    let raw = metadata.get("raw")?;
-    let raw_value = match raw {
-        serde_json::Value::String(s) => serde_json::from_str::<serde_json::Value>(s)
-            .unwrap_or_else(|_| {
-                serde_json::json!({
-                    "error": {
-                        "message": s
-                    }
-                })
-            }),
-        other => other.clone(),
-    };
-    let raw_error = raw_value.get("error").unwrap_or(&raw_value);
-
-    let provider_name = metadata
-        .get("provider_name")
-        .or_else(|| metadata.get("provider"))
-        .and_then(string_value)
-        .map(str::to_string);
-    let upstream_type = raw_error
-        .get("type")
-        .and_then(string_value)
-        .or(detail.error_type.as_deref())
-        .map(str::to_string);
-    let upstream_code = raw_error
-        .get("code")
-        .and_then(compact_json_value)
-        .or_else(|| detail.code.as_ref().and_then(compact_json_value));
-    let upstream_message = raw_error
-        .get("message")
-        .and_then(string_value)
-        .map(str::to_string);
+    // Provider attribution comes from OpenRouter's metadata.raw envelope;
+    // ordinary platform errors must not be mislabeled as an upstream provider.
+    detail.metadata.as_ref()?.get("raw")?;
+    let body = serde_json::json!({
+        "error": {
+            "message": detail.message,
+            "type": detail.error_type,
+            "code": detail.code,
+            "metadata": detail.metadata,
+        }
+    })
+    .to_string();
+    // Shared with `raw_stream_classifier`: keep OpenRouter's deep body parse
+    // in exactly one pure function.
+    let parsed = crate::telemetry::parse_openrouter_error_envelope(&body)?;
+    if !parsed.has_provider_detail() {
+        return None;
+    }
     let free_route_suggestion = build_openrouter_free_route_suggestion(
         model,
-        &upstream_type,
-        &upstream_code,
-        &upstream_message,
+        &parsed.upstream_type,
+        &parsed.upstream_code,
+        &parsed.upstream_message,
     );
-
-    if provider_name.is_none()
-        && upstream_type.is_none()
-        && upstream_code.is_none()
-        && upstream_message.is_none()
-    {
-        None
-    } else {
-        Some(OpenRouterProviderError {
-            provider_name,
-            upstream_type,
-            upstream_code,
-            upstream_message,
-            free_route_suggestion,
-        })
-    }
+    Some(OpenRouterProviderError {
+        provider_name: parsed.provider_name,
+        upstream_type: parsed.upstream_type,
+        upstream_code: parsed.upstream_code,
+        upstream_message: parsed.upstream_message,
+        free_route_suggestion,
+    })
 }
 
 fn build_openrouter_free_route_suggestion(
@@ -1858,22 +1882,6 @@ fn build_openrouter_free_route_suggestion(
     }
 }
 
-fn string_value(value: &serde_json::Value) -> Option<&str> {
-    match value {
-        serde_json::Value::String(s) if !s.trim().is_empty() => Some(s.trim()),
-        _ => None,
-    }
-}
-
-fn compact_json_value(value: &serde_json::Value) -> Option<String> {
-    match value {
-        serde_json::Value::String(s) if !s.trim().is_empty() => Some(s.trim().to_string()),
-        serde_json::Value::Number(n) => Some(n.to_string()),
-        serde_json::Value::Bool(b) => Some(b.to_string()),
-        _ => None,
-    }
-}
-
 /// Same as `oai_api_error`, but appends a WG-config-pointing hint
 /// when the status is auth-related (401/403). The hint names the
 /// `[[llm_endpoints.endpoints]]` block — never an env var.
@@ -1895,16 +1903,9 @@ fn oai_api_error_with_hint(
 }
 
 fn parse_retry_after_oai(body: &str) -> Option<u64> {
-    if let Ok(val) = serde_json::from_str::<serde_json::Value>(body)
-        && let Some(secs) = val
-            .get("error")
-            .and_then(|e| e.get("metadata"))
-            .and_then(|m| m.get("retry_after"))
-            .and_then(|v| v.as_f64())
-    {
-        return Some((secs * 1000.0) as u64);
-    }
-    None
+    crate::telemetry::parse_openrouter_error_envelope(body)
+        .and_then(|parsed| parsed.retry_after_secs)
+        .map(|seconds| (seconds * 1_000.0) as u64)
 }
 
 /// Add jitter to a backoff duration to prevent thundering herd.

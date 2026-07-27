@@ -1,4 +1,5 @@
 use crate::config::{Config, ModelRegistryEntry, ReasoningLevel};
+use crate::dispatch::plan::ExecutorKind;
 use chrono::{Duration, Utc};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -222,6 +223,89 @@ impl FailureClass {
             FailureClass::ExecutorConfig | FailureClass::ResourceExhaustedDisk
         )
     }
+}
+
+/// Provider-facing failure reason. This is deliberately separate from
+/// [`FailureClass`]: classes drive retry policy, while reasons feed rolling
+/// provider telemetry and adaptive concurrency decisions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum FailureReason {
+    RateLimit,
+    CreditExhausted,
+    QuotaToken,
+    Auth,
+    ProviderUnavailable,
+    ProviderOverloaded,
+    Transient5xx,
+    Timeout,
+    Hard,
+    Disk,
+    HardTimeout,
+    #[default]
+    Unknown,
+}
+
+impl FailureReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::RateLimit => "rate-limit",
+            Self::CreditExhausted => "credit-exhausted",
+            Self::QuotaToken => "quota-token",
+            Self::Auth => "auth",
+            Self::ProviderUnavailable => "provider-unavailable",
+            Self::ProviderOverloaded => "provider-overloaded",
+            Self::Transient5xx => "transient-5xx",
+            Self::Timeout => "timeout",
+            Self::Hard => "hard",
+            Self::Disk => "disk",
+            Self::HardTimeout => "hard-timeout",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value.trim().to_ascii_lowercase().as_str() {
+            "rate-limit" => Self::RateLimit,
+            "credit-exhausted" => Self::CreditExhausted,
+            "quota-token" => Self::QuotaToken,
+            "auth" => Self::Auth,
+            "provider-unavailable" => Self::ProviderUnavailable,
+            "provider-overloaded" => Self::ProviderOverloaded,
+            "transient-5xx" => Self::Transient5xx,
+            "timeout" => Self::Timeout,
+            "hard" => Self::Hard,
+            "disk" => Self::Disk,
+            "hard-timeout" => Self::HardTimeout,
+            "unknown" => Self::Unknown,
+            _ => return None,
+        })
+    }
+}
+
+impl std::fmt::Display for FailureReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Normalized evidence emitted once for each failed attempt.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct FailureSignal {
+    pub reason: FailureReason,
+    pub confidence: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_status: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_code: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_after_secs: Option<f64>,
+    pub executor: ExecutorKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route: Option<String>,
+    pub detected_at_ms: i64,
 }
 
 /// Task status
@@ -550,6 +634,9 @@ pub struct Task {
     /// None for successful tasks or rows predating this field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure_class: Option<FailureClass>,
+    /// Latest normalized provider/local failure signal for this task attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_signal: Option<FailureSignal>,
     /// Preferred model for this task (haiku, sonnet, opus)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
@@ -820,6 +907,7 @@ impl Default for Task {
             max_retries: None,
             failure_reason: None,
             failure_class: None,
+            failure_signal: None,
             model: None,
             reasoning: None,
             provider: None,
@@ -1813,6 +1901,8 @@ struct TaskHelper {
     #[serde(default)]
     failure_class: Option<FailureClass>,
     #[serde(default)]
+    failure_signal: Option<FailureSignal>,
+    #[serde(default)]
     model: Option<String>,
     #[serde(default)]
     reasoning: Option<ReasoningLevel>,
@@ -1994,6 +2084,7 @@ impl<'de> Deserialize<'de> for Task {
             max_retries: helper.max_retries,
             failure_reason: helper.failure_reason,
             failure_class: helper.failure_class,
+            failure_signal: helper.failure_signal,
             model: helper.model,
             reasoning: helper.reasoning,
             provider: helper.provider,

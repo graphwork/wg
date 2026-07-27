@@ -2,8 +2,10 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
 use worksgood::agency::capture_task_output;
+use worksgood::dispatch::plan::ExecutorKind;
 use worksgood::graph::{
-    FailureClass, LogEntry, Status, evaluate_cycle_on_failure, parse_token_usage, parse_wg_tokens,
+    FailureClass, FailureReason, FailureSignal, LogEntry, Status, evaluate_cycle_on_failure,
+    parse_token_usage, parse_wg_tokens,
 };
 use worksgood::lifecycle::{
     ActorKind, FenceExpectation, LifecycleActor, TransitionKind, TransitionRequest,
@@ -16,6 +18,38 @@ use worksgood::service::registry::AgentRegistry;
 use super::graph_path;
 #[cfg(test)]
 use worksgood::parser::load_graph;
+
+fn failure_signal_for_class(
+    class: Option<FailureClass>,
+    message: Option<&str>,
+    executor: ExecutorKind,
+    route: Option<String>,
+) -> FailureSignal {
+    let reason = match class {
+        Some(FailureClass::ApiError429RateLimit) => FailureReason::RateLimit,
+        Some(FailureClass::ApiError5xxTransient) => FailureReason::Transient5xx,
+        Some(FailureClass::ApiError400Document | FailureClass::ExecutorConfig) => {
+            FailureReason::Hard
+        }
+        Some(FailureClass::AgentHardTimeout) => FailureReason::HardTimeout,
+        Some(FailureClass::ResourceExhaustedDisk) => FailureReason::Disk,
+        _ => FailureReason::Unknown,
+    };
+    let mut signal = worksgood::telemetry::failure_signal_from_evidence(
+        None,
+        None,
+        None,
+        None,
+        message.unwrap_or_default(),
+        executor,
+        route,
+    );
+    if reason != FailureReason::Unknown {
+        signal.reason = reason;
+        signal.confidence = 0.2;
+    }
+    signal
+}
 
 pub fn run(dir: &Path, id: &str, reason: Option<&str>, class: Option<FailureClass>) -> Result<()> {
     run_inner(dir, id, reason, class, false)
@@ -66,17 +100,55 @@ fn run_inner(
 
     let path = super::graph_path(dir);
 
-    // Resolve token usage outside the lock (registry read + file I/O).
-    let token_usage = AgentRegistry::load(dir).ok().and_then(|registry| {
-        let agent = registry.get_agent_by_task(id)?;
-        let output_path = std::path::Path::new(&agent.output_file);
-        let abs_path = if output_path.is_absolute() {
-            output_path.to_path_buf()
+    // Resolve usage and provider evidence outside the graph lock (registry +
+    // stream file I/O). The wrapper may record the same attempt afterward;
+    // telemetry append deduplicates by task/attempt/executor/bucket.
+    let registry = AgentRegistry::load(dir).ok();
+    let agent = registry
+        .as_ref()
+        .and_then(|registry| registry.get_agent_by_task(id));
+    let output_path = agent.map(|agent| {
+        let path = std::path::Path::new(&agent.output_file);
+        if path.is_absolute() {
+            path.to_path_buf()
         } else {
-            dir.parent().unwrap_or(dir).join(output_path)
-        };
-        parse_token_usage(&abs_path).or_else(|| parse_wg_tokens(&abs_path))
+            dir.parent().unwrap_or(dir).join(path)
+        }
     });
+    let token_usage = output_path
+        .as_deref()
+        .and_then(|path| parse_token_usage(path).or_else(|| parse_wg_tokens(path)));
+    let executor = agent
+        .and_then(|agent| ExecutorKind::from_str(&agent.executor))
+        .unwrap_or_default();
+    let route = agent.and_then(|agent| agent.model.clone());
+    let failure_signal = if eval_reject {
+        None
+    } else if let Some(output_path) = output_path.as_deref() {
+        let raw_stream = output_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("raw_stream.jsonl");
+        let detected = super::spawn::raw_stream_classifier::classify_signal_from_raw_stream(
+            &raw_stream,
+            Some(output_path),
+            1,
+            executor,
+            route.clone(),
+        );
+        Some(if detected.reason == FailureReason::Unknown {
+            failure_signal_for_class(class, reason, executor, route.clone())
+        } else {
+            detected
+        })
+    } else {
+        Some(failure_signal_for_class(
+            class,
+            reason,
+            executor,
+            route.clone(),
+        ))
+    };
 
     // Atomically load the freshest graph, apply the mutation, and save.
     // Using modify_graph prevents lost updates from concurrent graph writers.
@@ -170,6 +242,7 @@ fn run_inner(
         task.retry_count += 1;
         task.failure_reason = reason_owned.clone();
         task.failure_class = class;
+        task.failure_signal = failure_signal.clone();
 
         let log_message = if eval_reject {
             match reason_owned.as_deref() {
@@ -219,6 +292,16 @@ fn run_inner(
     }
     if let Some(rejection) = transition_rejection {
         anyhow::bail!("Lifecycle transition rejected for '{}': {}", id, rejection);
+    }
+
+    if !eval_reject
+        && let Some(signal) = failure_signal.clone()
+        && let Err(error) = worksgood::telemetry::append_record(
+            dir,
+            worksgood::telemetry::TelemetryRecord::new(id, retry_count.max(1), signal),
+        )
+    {
+        eprintln!("Warning: failed to append provider telemetry for '{id}': {error:#}");
     }
 
     super::notify_graph_changed(dir);

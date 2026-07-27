@@ -4,7 +4,12 @@
 //! `wg classify-failure` which shells out to this logic.
 
 use std::path::Path;
-use worksgood::graph::FailureClass;
+use worksgood::dispatch::plan::ExecutorKind;
+use worksgood::graph::{FailureClass, FailureReason, FailureSignal};
+use worksgood::telemetry::{
+    failure_signal_from_envelope, failure_signal_from_evidence, parse_openrouter_error_envelope,
+    parse_retry_after_text,
+};
 
 /// Maximum bytes to read from the tail of executor streams when scanning for
 /// error patterns. Cargo/linker ENOSPC diagnostics can be followed by wrapper
@@ -18,56 +23,256 @@ const TAIL_BYTES: u64 = 64 * 1024;
 ///   May not exist if the agent was killed before producing any output.
 /// - `exit_code`: the shell exit code of the agent process (124 = hard timeout).
 pub fn classify_from_raw_stream(raw_stream: &Path, exit_code: i32) -> FailureClass {
-    // Hard timeout: exit 124 is set by the `timeout` command in the wrapper.
+    let signal = classify_signal_from_raw_stream(
+        raw_stream,
+        None,
+        exit_code,
+        infer_executor(raw_stream),
+        None,
+    );
+    failure_class_for_signal(
+        &signal,
+        read_tail(raw_stream).as_deref(),
+        raw_stream,
+        exit_code,
+    )
+}
+
+/// Produce the normalized provider-telemetry signal. `output_log` is scanned
+/// in addition to the raw stream because some CLI handlers echo the provider
+/// body only on stderr.
+pub fn classify_signal_from_raw_stream(
+    raw_stream: &Path,
+    output_log: Option<&Path>,
+    exit_code: i32,
+    executor: ExecutorKind,
+    route: Option<String>,
+) -> FailureSignal {
     if exit_code == 124 {
-        return FailureClass::AgentHardTimeout;
+        return failure_signal_from_evidence(
+            None,
+            None,
+            None,
+            None,
+            "hard timeout",
+            executor,
+            route,
+        )
+        .with_reason(FailureReason::HardTimeout, 0.8);
     }
 
-    // Read the tail of raw_stream.jsonl for api_error_status.
-    let tail = match read_tail(raw_stream) {
-        Some(t) => t,
-        None => {
-            // File missing or unreadable — could be a wrapper-internal problem
-            // (exit_code != 0 with no stream) or the agent never ran.
-            if exit_code != 0 {
-                return FailureClass::WrapperInternal;
-            }
-            return FailureClass::AgentExitNonzero;
-        }
+    let raw = read_tail(raw_stream).unwrap_or_default();
+    let output = output_log.and_then(read_tail).unwrap_or_default();
+    let combined = if output.is_empty() {
+        raw.clone()
+    } else {
+        format!("{raw}\n{output}")
     };
 
-    // Disk exhaustion is infrastructure pressure, not a quality signal. It
-    // takes precedence over generic non-zero classification so `wg fail`
-    // queues a safe in-place retry rather than dispatching a bogus evaluator.
-    if looks_like_disk_exhaustion(&tail) {
-        return FailureClass::ResourceExhaustedDisk;
+    if looks_like_disk_exhaustion(&combined) {
+        return failure_signal_from_evidence(None, None, None, None, &combined, executor, route)
+            .with_reason(FailureReason::Disk, 0.8);
     }
 
-    // Scan for api_error_status numeric value.
-    if let Some(status_code) = extract_api_error_status(&tail) {
-        match status_code {
-            400 => {
-                // Confirm it's a document-processing error, not an unrelated 400.
-                if tail.contains("Could not process PDF")
-                    || tail.contains("Could not process document")
-                    || tail.contains("Could not process image")
-                {
-                    return FailureClass::ApiError400Document;
-                }
-                // Generic 400 — treat as document error conservatively.
-                return FailureClass::ApiError400Document;
+    // Latest structured error wins. This covers raw OpenRouter envelopes and
+    // pi `error` / failed `response` events with string or object errors.
+    for line in combined.lines().rev() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(signal) = signal_from_json_line(line, executor, route.clone()) {
+            if signal.reason != FailureReason::Unknown || signal.http_status.is_some() {
+                return signal;
             }
-            429 => return FailureClass::ApiError429RateLimit,
-            500..=599 => return FailureClass::ApiError5xxTransient,
-            _ => {}
         }
     }
 
-    if looks_like_executor_tool_model_config_failure(&tail) {
-        return FailureClass::ExecutorConfig;
+    if let Some(status) = extract_api_error_status(&combined) {
+        return failure_signal_from_evidence(
+            Some(status as u16),
+            extract_error_type(&combined),
+            None,
+            parse_retry_after_text(&combined),
+            &combined,
+            executor,
+            route,
+        );
     }
 
-    FailureClass::AgentExitNonzero
+    failure_signal_from_evidence(
+        extract_status_from_message(&combined),
+        extract_error_type(&combined),
+        None,
+        parse_retry_after_text(&combined),
+        &combined,
+        executor,
+        route,
+    )
+}
+
+trait FailureSignalExt {
+    fn with_reason(self, reason: FailureReason, confidence: f32) -> Self;
+}
+
+impl FailureSignalExt for FailureSignal {
+    fn with_reason(mut self, reason: FailureReason, confidence: f32) -> Self {
+        self.reason = reason;
+        self.confidence = confidence;
+        self
+    }
+}
+
+fn failure_class_for_signal(
+    signal: &FailureSignal,
+    text: Option<&str>,
+    raw_stream: &Path,
+    exit_code: i32,
+) -> FailureClass {
+    match signal.reason {
+        FailureReason::HardTimeout => FailureClass::AgentHardTimeout,
+        FailureReason::Disk => FailureClass::ResourceExhaustedDisk,
+        FailureReason::RateLimit => FailureClass::ApiError429RateLimit,
+        FailureReason::ProviderUnavailable
+        | FailureReason::ProviderOverloaded
+        | FailureReason::Transient5xx
+        | FailureReason::Timeout
+            if signal.http_status.is_some_and(|s| s >= 500) =>
+        {
+            FailureClass::ApiError5xxTransient
+        }
+        FailureReason::Hard if signal.http_status == Some(400) => FailureClass::ApiError400Document,
+        _ if text.is_some_and(looks_like_executor_tool_model_config_failure) => {
+            FailureClass::ExecutorConfig
+        }
+        _ if read_tail(raw_stream).is_none() && exit_code != 0 => FailureClass::WrapperInternal,
+        _ => FailureClass::AgentExitNonzero,
+    }
+}
+
+fn signal_from_json_line(
+    line: &str,
+    executor: ExecutorKind,
+    route: Option<String>,
+) -> Option<FailureSignal> {
+    // The direct OpenRouter envelope/calibration fixture path. Calling the
+    // shared parser here is the no-duplication contract with the native path.
+    // stderr may prefix the JSON with a logger label, so also try the suffix
+    // beginning at the envelope's opening object.
+    let envelope = std::iter::once(line).chain(
+        line.find("{\"error\"")
+            .filter(|position| *position > 0)
+            .map(|position| &line[position..]),
+    );
+    for envelope in envelope {
+        if let Some(parsed) = parse_openrouter_error_envelope(envelope) {
+            let signal = failure_signal_from_envelope(envelope, None, executor, route.clone())?;
+            if parsed.status.is_some()
+                || parsed.error_type.is_some()
+                || signal.reason != FailureReason::Unknown
+            {
+                return Some(signal);
+            }
+        }
+    }
+
+    let value: serde_json::Value = serde_json::from_str(line).ok()?;
+    let event_type = value.get("type").and_then(|v| v.as_str());
+    let is_pi_error = event_type == Some("error")
+        || (event_type == Some("response")
+            && value.get("success").and_then(|v| v.as_bool()) == Some(false));
+    if !is_pi_error {
+        return None;
+    }
+    let error = value.get("error").or_else(|| value.get("message"));
+    let message = error
+        .and_then(|v| v.as_str().map(str::to_string))
+        .or_else(|| error.map(serde_json::Value::to_string))
+        .unwrap_or_else(|| "pi request failed".to_string());
+    let envelope = error.map(|v| serde_json::json!({"error": v}).to_string());
+    let parsed = envelope
+        .as_deref()
+        .and_then(parse_openrouter_error_envelope);
+    let status = value
+        .get("status")
+        .or_else(|| value.get("code"))
+        .and_then(json_u16)
+        .or_else(|| parsed.as_ref().and_then(|p| p.status))
+        .or_else(|| extract_status_from_message(&message));
+    let error_type = value
+        .get("error_type")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .or_else(|| parsed.as_ref().and_then(|p| p.error_type.clone()))
+        .or_else(|| extract_error_type(&message));
+    Some(failure_signal_from_evidence(
+        status,
+        error_type,
+        parsed.as_ref().and_then(|p| p.provider_code.clone()),
+        parsed.as_ref().and_then(|p| p.retry_after_secs),
+        &message,
+        executor,
+        route,
+    ))
+}
+
+fn json_u16(value: &serde_json::Value) -> Option<u16> {
+    value
+        .as_u64()
+        .and_then(|number| u16::try_from(number).ok())
+        .or_else(|| value.as_str()?.parse().ok())
+}
+
+fn extract_status_from_message(text: &str) -> Option<u16> {
+    for marker in ["API error ", "HTTP "] {
+        let lower = text.to_ascii_lowercase();
+        let marker_lower = marker.to_ascii_lowercase();
+        if let Some(pos) = lower.find(&marker_lower) {
+            let after = &text[pos + marker.len()..];
+            let digits: String = after.chars().take_while(char::is_ascii_digit).collect();
+            if let Ok(status) = digits.parse() {
+                return Some(status);
+            }
+        }
+    }
+    None
+}
+
+fn extract_error_type(text: &str) -> Option<String> {
+    // Do not treat a stream event's generic `type` (for example `result`) as
+    // OpenRouter's canonical error_type; nested envelopes are parsed
+    // structurally before this fallback.
+    let needle = "\"error_type\"";
+    let pos = text.find(needle)?;
+    let after = &text[pos + needle.len()..];
+    let start = after.find('"').map(|pos| pos + 1)?;
+    let value = &after[start..];
+    let end = value.find('"')?;
+    (end > 0).then(|| value[..end].to_string())
+}
+
+pub fn infer_executor(raw_stream: &Path) -> ExecutorKind {
+    let content = read_tail(raw_stream).unwrap_or_default();
+    if content.lines().any(|line| {
+        serde_json::from_str::<serde_json::Value>(line)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("type")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+            })
+            .is_some_and(|kind| {
+                matches!(
+                    kind.as_str(),
+                    "session" | "turn_end" | "tool_execution_start" | "response" | "error"
+                )
+            })
+    }) {
+        ExecutorKind::Pi
+    } else {
+        ExecutorKind::Native
+    }
 }
 
 /// Classify `NoOperationalOutput` (guardrail G4): the agent "talked but
@@ -231,6 +436,59 @@ mod tests {
             classify_from_raw_stream(f.path(), 1),
             FailureClass::ApiError400Document
         );
+    }
+
+    #[test]
+    fn classifier_pi_402_and_calibration_envelope_are_credit_exhausted() {
+        let pi = write_stream(
+            r#"{"type":"error","error":{"code":402,"message":"Insufficient credits","metadata":{"error_type":"payment_required"}}}"#,
+        );
+        let signal = classify_signal_from_raw_stream(
+            pi.path(),
+            None,
+            1,
+            ExecutorKind::Pi,
+            Some("pi:openrouter:test/model".into()),
+        );
+        assert_eq!(signal.reason, FailureReason::CreditExhausted);
+        assert_eq!(signal.http_status, Some(402));
+        assert_eq!(signal.confidence, 1.0);
+
+        let calibration = write_stream(
+            r#"{"error":{"message":"Provider returned error","code":402,"metadata":{"provider_name":"Crucible","raw":"{\"error\":{\"type\":\"insufficient_quota\",\"code\":\"insufficient_quota\",\"message\":\"Out of credits. Top up at /dashboard/billing to continue.\"}}"}}}"#,
+        );
+        let signal =
+            classify_signal_from_raw_stream(calibration.path(), None, 1, ExecutorKind::Pi, None);
+        assert_eq!(signal.reason, FailureReason::CreditExhausted);
+        assert_eq!(signal.error_type.as_deref(), Some("insufficient_quota"));
+    }
+
+    #[test]
+    fn classifier_structured_statuses_and_retry_after() {
+        let cases = [
+            (
+                r#"{"type":"error","error":{"code":429,"message":"Rate limited","metadata":{"error_type":"rate_limit_exceeded","retry_after":12.5}}}"#,
+                FailureReason::RateLimit,
+                Some(12.5),
+            ),
+            (
+                r#"{"type":"response","success":false,"error":{"code":401,"message":"Unauthorized","metadata":{"error_type":"authentication"}}}"#,
+                FailureReason::Auth,
+                None,
+            ),
+            (
+                r#"{"type":"error","error":{"code":529,"message":"Provider overloaded","metadata":{"error_type":"provider_overloaded"}}}"#,
+                FailureReason::ProviderOverloaded,
+                None,
+            ),
+        ];
+        for (body, expected, retry_after) in cases {
+            let stream = write_stream(body);
+            let signal =
+                classify_signal_from_raw_stream(stream.path(), None, 1, ExecutorKind::Pi, None);
+            assert_eq!(signal.reason, expected, "{body}");
+            assert_eq!(signal.retry_after_secs, retry_after, "{body}");
+        }
     }
 
     #[test]

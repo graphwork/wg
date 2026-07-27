@@ -226,6 +226,7 @@ fn build_assign_subgraph(dir: &Path) {
         ));
 
         let assign_task = Task {
+            failure_signal: None,
             id: assign_task_id.clone(),
             title: format!("Assign agent for: {}", ready_task.title),
             description: Some(desc),
@@ -1188,6 +1189,7 @@ Begin working on the task now.
              IMPORTANT: You must run BOTH `wg assign` AND `wg done`. Do not skip `wg assign`."
         );
         let assign_task = Task {
+            failure_signal: None,
             id: "assign-rust-feature".to_string(),
             title: "Assign agent for: Implement a Rust parser".to_string(),
             description: Some(assign_desc),

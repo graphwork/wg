@@ -56,12 +56,14 @@ use std::collections::HashMap;
 /// The executor kind that will run a spawned agent. This is the canonical
 /// type; string forms (`"claude"`, `"native"`, …) are an external interop
 /// concern — internally we should always pass an `ExecutorKind`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum ExecutorKind {
     /// Claude Code CLI session. Handles its own auth/url.
     Claude,
     /// In-process native executor (`wg native-exec …`). Speaks OpenAI-compat
     /// or Anthropic wire format; needs an explicit endpoint.
+    #[default]
     Native,
     /// Shell executor: runs `task.exec` verbatim. No model, no endpoint.
     Shell,

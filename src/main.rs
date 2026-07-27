@@ -1278,7 +1278,32 @@ fn main() -> Result<()> {
         Commands::ClassifyFailure {
             raw_stream,
             exit_code,
-        } => commands::classify_failure::run(raw_stream.as_deref(), exit_code),
+            executor,
+            route,
+            json,
+        } => commands::classify_failure::run(
+            raw_stream.as_deref(),
+            exit_code,
+            executor.as_deref(),
+            route.as_deref(),
+            json,
+        ),
+        Commands::RecordTelemetry {
+            task,
+            raw_stream,
+            exit_code,
+            executor,
+            route,
+            json,
+        } => commands::classify_failure::run_record(
+            &workgraph_dir,
+            &task,
+            raw_stream.as_deref(),
+            exit_code,
+            executor.as_deref(),
+            route.as_deref(),
+            json,
+        ),
         Commands::ClassifyNoOp {
             output_log,
             clean_exit,

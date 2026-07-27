@@ -53,6 +53,16 @@ pub enum StreamEvent {
     TextChunk { text: String, timestamp_ms: i64 },
     /// A thinking/reasoning chunk from real-time streaming output.
     ThinkingChunk { text: String, timestamp_ms: i64 },
+    /// Canonical executor/provider error. Pi's JSON-mode `error` and failed
+    /// `response` events are forwarded here instead of being dropped.
+    Error {
+        message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<u16>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error_type: Option<String>,
+        timestamp_ms: i64,
+    },
     /// Final event — aggregated usage and outcome.
     Result {
         success: bool,
@@ -102,6 +112,7 @@ impl StreamEvent {
             | StreamEvent::Heartbeat { timestamp_ms }
             | StreamEvent::TextChunk { timestamp_ms, .. }
             | StreamEvent::ThinkingChunk { timestamp_ms, .. }
+            | StreamEvent::Error { timestamp_ms, .. }
             | StreamEvent::Result { timestamp_ms, .. } => *timestamp_ms,
         }
     }
@@ -448,6 +459,28 @@ pub struct PiTranslation {
     pub final_text: Option<String>,
 }
 
+fn json_u16(value: &serde_json::Value) -> Option<u16> {
+    value
+        .as_u64()
+        .and_then(|number| u16::try_from(number).ok())
+        .or_else(|| value.as_str()?.parse().ok())
+}
+
+fn status_from_message(message: &str) -> Option<u16> {
+    for marker in ["API error ", "HTTP "] {
+        if let Some(after) = message
+            .find(marker)
+            .map(|pos| &message[pos + marker.len()..])
+        {
+            let digits: String = after.chars().take_while(char::is_ascii_digit).collect();
+            if let Ok(status) = digits.parse() {
+                return Some(status);
+            }
+        }
+    }
+    None
+}
+
 /// Translate a pi `--mode json` NDJSON event stream into canonical
 /// [`StreamEvent`]s.
 ///
@@ -512,6 +545,37 @@ pub fn translate_pi_stream(
                     name: name.to_string(),
                     is_error,
                     duration_ms: 0,
+                    timestamp_ms: now_ms(),
+                });
+            }
+            Some("error") | Some("response")
+                if val.get("type").and_then(|v| v.as_str()) == Some("error")
+                    || val.get("success").and_then(|v| v.as_bool()) == Some(false) =>
+            {
+                let error = val.get("error").or_else(|| val.get("message"));
+                let message = error
+                    .and_then(|value| value.as_str().map(str::to_string))
+                    .or_else(|| error.map(serde_json::Value::to_string))
+                    .unwrap_or_else(|| "pi request failed".to_string());
+                let envelope = error
+                    .map(|value| serde_json::json!({"error": value}).to_string())
+                    .unwrap_or_default();
+                let parsed = crate::telemetry::parse_openrouter_error_envelope(&envelope);
+                let status = val
+                    .get("status")
+                    .or_else(|| val.get("code"))
+                    .and_then(json_u16)
+                    .or_else(|| parsed.as_ref().and_then(|p| p.status))
+                    .or_else(|| status_from_message(&message));
+                let error_type = val
+                    .get("error_type")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+                    .or_else(|| parsed.and_then(|p| p.error_type));
+                steps.push(StreamEvent::Error {
+                    message,
+                    status,
+                    error_type,
                     timestamp_ms: now_ms(),
                 });
             }
@@ -694,7 +758,8 @@ impl AgentStreamState {
                 StreamEvent::ToolOutputChunk { .. } => {}
                 StreamEvent::Heartbeat { .. }
                 | StreamEvent::TextChunk { .. }
-                | StreamEvent::ThinkingChunk { .. } => {}
+                | StreamEvent::ThinkingChunk { .. }
+                | StreamEvent::Error { .. } => {}
                 StreamEvent::Result { usage, .. } => {
                     // Final usage overwrites accumulated
                     self.accumulated_usage = usage.clone();
@@ -1124,6 +1189,29 @@ not json
                 |e| matches!(e, StreamEvent::TextChunk { text, .. } if text == "final answer")
             )
         );
+    }
+
+    #[test]
+    fn test_translate_pi_stream_forwards_pi_error_event() {
+        let raw = r#"{"type":"error","error":"API error 402: Insufficient credits"}"#;
+        let translated = translate_pi_stream(raw, Some("pi:openrouter:test/model"), false);
+        assert!(translated.events.iter().any(|event| matches!(
+            event,
+            StreamEvent::Error {
+                message,
+                status: Some(402),
+                ..
+            } if message.contains("Insufficient credits")
+        )));
+        let canonical = translated
+            .events
+            .iter()
+            .map(serde_json::to_string)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+            .join("\n");
+        assert!(canonical.contains(r#""type":"error""#));
+        assert!(canonical.contains(r#""status":402"#));
     }
 
     #[test]

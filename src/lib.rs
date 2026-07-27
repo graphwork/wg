@@ -95,6 +95,7 @@ pub mod smoke;
 pub mod stream_event;
 pub mod syntect_convert;
 pub mod telegram_commands;
+pub mod telemetry;
 pub mod trust;
 pub mod usage;
 pub mod vendor_history;

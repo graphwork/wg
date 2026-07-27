@@ -268,6 +268,7 @@ pub fn run(
                 max_retries: None,
                 failure_reason: None,
                 failure_class: None,
+                failure_signal: None,
                 model: task_model,
                 reasoning: None,
                 provider: None,

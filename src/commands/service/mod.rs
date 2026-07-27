@@ -751,6 +751,10 @@ pub struct SessionCostTracking {
     pub last_key_check: Option<chrono::DateTime<chrono::Utc>>,
     /// Cached key status from last check
     pub key_status: Option<worksgood::executor::native::openai_client::OpenRouterKeyStatus>,
+    /// Cheap aggregate of the persisted rolling provider-failure window,
+    /// keyed by normalized route bucket.
+    #[serde(default)]
+    pub provider_health: std::collections::HashMap<String, worksgood::telemetry::ProviderHealth>,
 }
 
 impl Default for SessionCostTracking {
@@ -760,6 +764,7 @@ impl Default for SessionCostTracking {
             session_start: chrono::Utc::now(),
             last_key_check: None,
             key_status: None,
+            provider_health: std::collections::HashMap::new(),
         }
     }
 }
@@ -782,6 +787,12 @@ impl SessionCostTracking {
     ) {
         self.last_key_check = Some(chrono::Utc::now());
         self.key_status = Some(status);
+    }
+
+    pub fn refresh_provider_health(&mut self, dir: &Path) -> Result<()> {
+        let records = worksgood::telemetry::read_records(dir)?;
+        self.provider_health = worksgood::telemetry::provider_health(&records, chrono::Utc::now());
+        Ok(())
     }
 }
 
