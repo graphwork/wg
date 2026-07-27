@@ -4,8 +4,9 @@ use std::process::Command;
 use tempfile::tempdir;
 use worksgood::graph::{Status, Task};
 use worksgood::worktree_observer::{
-    CandidatePathPolicy, DeadlineInput, ObserverConfig, ObserverIdentity, ReconcileSource,
-    WorktreeObserver, calculate_suspect_deadline,
+    CandidatePathPolicy, DeadlineInput, ObserverConfig, ObserverHealth, ObserverIdentity,
+    ReconcileSource, WATCHER_WAKE_QUEUE_CAPACITY, WorktreeObserver, calculate_suspect_deadline,
+    read_projection,
 };
 
 fn git(root: &std::path::Path, args: &[&str]) {
@@ -409,6 +410,152 @@ fn deadline_keeps_proven_and_observed_clocks_independent_and_bounded() {
         rewrite_loop.suspect_at, 10_900,
         "observed-only rewriting must hit the hard cap"
     );
+}
+
+#[test]
+fn preparation_is_idempotent_only_for_the_exact_source_root_policy_and_epoch() {
+    let root = repo();
+    let storage = tempdir().unwrap();
+    let policy = CandidatePathPolicy::new(vec![], vec!["generated/**".into()]).unwrap();
+    let config = ObserverConfig::default();
+    let first = WorktreeObserver::prepare_at(
+        root.path(),
+        storage.path(),
+        identity(),
+        policy.clone(),
+        config.clone(),
+        2_900,
+    )
+    .unwrap();
+    let baseline = fs::read(storage.path().join("baseline.json")).unwrap();
+    drop(first);
+
+    let reopened = WorktreeObserver::prepare_at(
+        root.path(),
+        storage.path(),
+        identity(),
+        policy.clone(),
+        config.clone(),
+        2_910,
+    )
+    .unwrap();
+    assert_eq!(reopened.projection().content_seq, 0);
+    assert_eq!(
+        fs::read(storage.path().join("baseline.json")).unwrap(),
+        baseline,
+        "same-attempt restart must open/reconcile rather than reset evidence"
+    );
+    drop(reopened);
+
+    let mut wrong_epoch = identity();
+    wrong_epoch.process_epoch += 1;
+    assert!(
+        WorktreeObserver::prepare_at(
+            root.path(),
+            storage.path(),
+            wrong_epoch,
+            policy.clone(),
+            config.clone(),
+            2_920,
+        )
+        .err()
+        .unwrap()
+        .to_string()
+        .contains("source tuple mismatch")
+    );
+    assert!(
+        WorktreeObserver::prepare_at(
+            root.path(),
+            storage.path(),
+            identity(),
+            CandidatePathPolicy::new(vec![], vec!["other/**".into()]).unwrap(),
+            config,
+            2_930,
+        )
+        .err()
+        .unwrap()
+        .to_string()
+        .contains("policy snapshot mismatch")
+    );
+    let other_root = repo();
+    assert!(
+        WorktreeObserver::prepare_at(
+            other_root.path(),
+            storage.path(),
+            identity(),
+            policy,
+            ObserverConfig::default(),
+            2_940,
+        )
+        .err()
+        .unwrap()
+        .to_string()
+        .contains("root identity mismatch")
+    );
+}
+
+#[test]
+fn dead_or_not_yet_started_exact_observer_is_reported_degraded_without_state_loss() {
+    let root = repo();
+    let storage = tempdir().unwrap();
+    WorktreeObserver::attach_at(
+        root.path(),
+        storage.path(),
+        identity(),
+        CandidatePathPolicy::new(vec![], vec![]).unwrap(),
+        ObserverConfig::default(),
+        2_950,
+    )
+    .unwrap();
+    let before = fs::read(storage.path().join("state.json")).unwrap();
+    fs::write(storage.path().join("watcher.lock"), "4294967294\n").unwrap();
+
+    let projection = read_projection(storage.path()).unwrap();
+    assert_eq!(projection.health, ObserverHealth::PollOnly);
+    assert!(
+        projection
+            .degraded_reason
+            .as_deref()
+            .unwrap()
+            .contains("observer-process-exited")
+    );
+    assert!(
+        projection
+            .next_safe_action
+            .contains("wg worktree-observer-run --state-dir")
+    );
+    assert_eq!(fs::read(storage.path().join("state.json")).unwrap(), before);
+}
+
+#[test]
+fn volatile_walk_is_category_bounded_and_source_manifest_remains_exact() {
+    let root = repo();
+    let storage = tempdir().unwrap();
+    let nested = root.path().join("target/a/b/c/d");
+    fs::create_dir_all(&nested).unwrap();
+    for index in 0..20_000 {
+        fs::write(nested.join(format!("generated-{index}")), b"x").unwrap();
+    }
+    let observer = WorktreeObserver::attach_at(
+        root.path(),
+        storage.path(),
+        identity(),
+        CandidatePathPolicy::new(vec![], vec![]).unwrap(),
+        ObserverConfig::default(),
+        2_975,
+    )
+    .unwrap();
+    let baseline = fs::read(storage.path().join("baseline.json")).unwrap();
+    assert!(
+        baseline.len() < 16 * 1024,
+        "ignored paths leaked into baseline"
+    );
+    assert_eq!(observer.projection().content_seq, 0);
+    assert_eq!(WATCHER_WAKE_QUEUE_CAPACITY, 1);
+    let value: serde_json::Value = serde_json::from_slice(&baseline).unwrap();
+    let entries = value["manifest"]["entries"].as_object().unwrap();
+    assert!(entries.contains_key("tracked.txt"));
+    assert_eq!(entries.len(), 1, "generated files entered source manifest");
 }
 
 #[test]
