@@ -18,7 +18,7 @@ use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
@@ -1416,6 +1416,13 @@ pub fn run_watch_loop(storage: &Path, parent_pid: Option<u32>) -> Result<()> {
     let watcher_result: notify::Result<RecommendedWatcher> =
         notify::recommended_watcher(move |event: notify::Result<Event>| match event {
             Ok(event) => {
+                // Fingerprinting necessarily opens/reads candidate files. The
+                // native backend reports those Open/Close events as Access;
+                // treating them as wakeups creates a self-exciting reconcile
+                // loop even after external churn stops.
+                if matches!(event.kind, EventKind::Access(_)) {
+                    return;
+                }
                 let candidate = classify_ingress_event(
                     &callback_root,
                     &callback_policy,
