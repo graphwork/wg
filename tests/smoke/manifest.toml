@@ -2732,8 +2732,15 @@ timeout_seconds = 120
 [[scenario]]
 name = "tui_live_progress_selected_task"
 script = "scenarios/tui_live_progress_selected_task.sh"
-owners = ["expose-live-worktree"]
+owners = ["expose-live-worktree", "fix-pi-native-progress-session-proof"]
 description = "Installed-binary real tmux/PTY + native-format Fake-Pi flow: the selected Detail surface (never the global context bar) renders persisted provider/thinking/output/write/tool/test and watchdog suspect/fence/resume phases, honest numeric/Unknown counts and deduplicated usage, receipt-proven versus observed/unproven rows, static 300/120/600 authority defaults, modal Help ownership during updates, stable wide/narrow resize, read-only dump/navigation, restart restoration, privacy canaries, and immutable Done terminal evidence. The separately-owned isolated-worktree scenario supplies the real leased observer/reconcile/late-write half of the same projection contract."
+timeout_seconds = 120
+
+[[scenario]]
+name = "pi_native_activity_session_proof"
+script = "scenarios/pi_native_activity_session_proof.sh"
+owners = ["fix-pi-native-progress-session-proof"]
+description = "Installed-binary Fake-Pi stream follower proof: a preserved bootstrap header plus one substantive timestamped journal is canonicalized without rewriting bytes; thinking/text/tool/long-build/usage events update bounded live native counters and exact session leaf in real time; raw content canaries never enter status; restart/replay preserves monotonic counters and deduplicates usage/cost; and a second substantive journal fails closed while retaining all evidence."
 timeout_seconds = 120
 
 [[scenario]]

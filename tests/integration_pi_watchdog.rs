@@ -90,6 +90,69 @@ fn native_live_projection_is_numeric_deduplicated_and_text_free() {
 }
 
 #[test]
+fn native_stream_cursor_replay_is_monotonic_and_cost_is_not_doubled() {
+    let mut w = fixture(0);
+    let stream = "/bounded/capture/raw_stream.jsonl";
+    let line = r#"{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","delta":"SECRET","thinkingTokens":7}}"#;
+    w.ingest_native_line(line, stream, line.len() as u64 + 1, 1)
+        .unwrap();
+    w.ingest_native_line(line, stream, line.len() as u64 + 1, 2)
+        .unwrap();
+    let usage = r#"{"type":"turn_end","turnId":"turn-a","message":{"usage":{"input":10,"output":2,"totalTokens":12,"cost":{"total":0.25}}}}"#;
+    let usage_end = line.len() as u64 + usage.len() as u64 + 2;
+    w.ingest_native_line(usage, stream, usage_end, 3).unwrap();
+    let path = w.state_path().to_path_buf();
+    drop(w);
+    let mut reopened = PiWatchdog::open(&path).unwrap();
+    reopened
+        .ingest_native_line(line, stream, line.len() as u64 + 1, 4)
+        .unwrap();
+    reopened
+        .ingest_native_line(usage, stream, usage_end, 4)
+        .unwrap();
+    assert_eq!(reopened.state().native_activity.thinking_activity_seq, 1);
+    assert_eq!(reopened.state().native_activity.usage_receipt_count, 1);
+    assert_eq!(reopened.state().native_activity.usage_total, Some(12));
+    assert_eq!(
+        reopened.state().native_activity.usage_cost.as_deref(),
+        Some("0.250000")
+    );
+    assert!(
+        !serde_json::to_string(reopened.state())
+            .unwrap()
+            .contains("SECRET")
+    );
+}
+
+#[test]
+fn bootstrap_and_substantive_journal_reconcile_without_deleting_evidence() {
+    let mut w = fixture(0);
+    let session = w.state().session.clone();
+    let substantive = session
+        .session_dir
+        .join("2026-01-01T00-00-00Z_session-1.jsonl");
+    std::fs::write(
+        &substantive,
+        "{\"type\":\"session\",\"version\":3,\"id\":\"session-1\"}\n{\"type\":\"message\",\"id\":\"m1\"}\n",
+    )
+    .unwrap();
+    assert!(w.reconcile_session_journal(2).unwrap());
+    assert_eq!(w.state().session.session_file, substantive);
+    assert!(session.session_file.exists());
+    let other = session
+        .session_dir
+        .join("2026-01-02T00-00-00Z_session-1.jsonl");
+    std::fs::write(
+        &other,
+        "{\"type\":\"session\",\"version\":3,\"id\":\"session-1\"}\n{\"type\":\"message\",\"id\":\"m2\"}\n",
+    )
+    .unwrap();
+    let error = w.reconcile_session_journal(3).unwrap_err();
+    assert_eq!(error.code, "ambiguous_substantive_session_journals");
+    assert!(session.session_file.exists() && substantive.exists() && other.exists());
+}
+
+#[test]
 fn soft_and_hard_are_independent() {
     let mut w = fixture(0);
     w.observe(

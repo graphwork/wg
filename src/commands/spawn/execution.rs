@@ -4,7 +4,6 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use std::fs::{self, OpenOptions};
-use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
@@ -2107,7 +2106,8 @@ fn find_exact_prior_pi_session(
             output_dir.display()
         )
     })?;
-    let mut matches = Vec::new();
+    let mut substantive = Vec::new();
+    let mut header_only = Vec::new();
     for agent_entry in fs::read_dir(agents_dir)
         .with_context(|| format!("failed to inspect {}", agents_dir.display()))?
     {
@@ -2116,50 +2116,91 @@ fn find_exact_prior_pi_session(
             continue;
         }
         let session_dir = agent_entry.path().join("pi-session");
-        let Ok(files) = fs::read_dir(&session_dir) else {
+        if !session_dir.is_dir() {
             continue;
-        };
-        for file in files {
-            let file = file?;
-            if !file.file_type()?.is_file()
-                || file.path().extension().and_then(|ext| ext.to_str()) != Some("jsonl")
-            {
-                continue;
+        }
+        match worksgood::pi_watchdog::select_canonical_session_journal(&session_dir, exact_id) {
+            Ok(selected) => {
+                let candidate = (
+                    session_dir,
+                    selected.session_file,
+                    selected.header_json,
+                    selected.branch_leaf,
+                );
+                if selected.substantive {
+                    substantive.push(candidate);
+                } else {
+                    header_only.push(candidate);
+                }
             }
-            let mut header_json = String::new();
-            BufReader::new(
-                fs::File::open(file.path())
-                    .with_context(|| format!("failed to read {}", file.path().display()))?,
-            )
-            .read_line(&mut header_json)?;
-            let header_json = header_json.trim_end_matches(['\r', '\n']);
-            if header_json.is_empty() {
-                continue;
-            }
-            let Ok(header) = serde_json::from_str::<serde_json::Value>(header_json) else {
-                continue;
-            };
-            if header.get("type").and_then(|value| value.as_str()) == Some("session")
-                && header.get("id").and_then(|value| value.as_str()) == Some(exact_id)
-            {
-                matches.push((session_dir.clone(), file.path(), header_json.to_string()));
-            }
+            Err(error) if error.code == "session_journal_missing" => {}
+            Err(error) => return Err(anyhow::Error::new(error)),
         }
     }
-    match matches.len() {
-        1 => Ok(matches.pop().unwrap()),
-        0 => anyhow::bail!(
-            "cannot resume exact Pi session '{}': no attested session file exists under {} (refusing Pi's implicit fresh-session fallback)",
-            exact_id,
-            agents_dir.display()
-        ),
-        count => anyhow::bail!(
-            "cannot resume exact Pi session '{}': found {} matching session files under {}",
+    let selected = match substantive.len() {
+        1 => substantive.pop().unwrap(),
+        count if count > 1 => anyhow::bail!(
+            "cannot resume exact Pi session '{}': found {} substantive journals under {}; refusing ambiguous evidence",
             exact_id,
             count,
             agents_dir.display()
         ),
+        _ => match header_only.len() {
+            1 => header_only.pop().unwrap(),
+            0 => anyhow::bail!(
+                "cannot resume exact Pi session '{}': no attested session file exists under {} (refusing Pi's implicit fresh-session fallback)",
+                exact_id,
+                agents_dir.display()
+            ),
+            count => anyhow::bail!(
+                "cannot resume exact Pi session '{}': found {} header-only journals and no substantive journal under {}",
+                exact_id,
+                count,
+                agents_dir.display()
+            ),
+        },
+    };
+    attest_selected_prior_pi_leaf(
+        agents_dir.parent().unwrap_or(agents_dir),
+        exact_id,
+        &selected.1,
+        &selected.3,
+    )?;
+    Ok((selected.0, selected.1, selected.2))
+}
+
+fn attest_selected_prior_pi_leaf(
+    wg_dir: &Path,
+    session_id: &str,
+    selected_file: &Path,
+    selected_leaf: &str,
+) -> Result<()> {
+    let Ok(entries) = fs::read_dir(wg_dir.join("attempts")) else {
+        return Ok(());
+    };
+    let mut found_session_proof = false;
+    for entry in entries {
+        let entry = entry?;
+        let state_path = entry.path().join("pi/state.json");
+        let Ok(watchdog) = worksgood::pi_watchdog::PiWatchdog::open(&state_path) else {
+            continue;
+        };
+        let proof = &watchdog.state().session;
+        if proof.session_id != session_id {
+            continue;
+        }
+        found_session_proof = true;
+        if proof.session_file == selected_file && proof.branch_leaf == selected_leaf {
+            return Ok(());
+        }
     }
+    if found_session_proof {
+        anyhow::bail!(
+            "cannot resume exact Pi session '{}': selected substantive leaf is not the attested append-only leaf",
+            session_id
+        )
+    }
+    Ok(())
 }
 
 fn external_prompt_command(
@@ -2235,9 +2276,11 @@ fn external_prompt_command(
         fs::write(
             output_dir.join("pi-session-plan.json"),
             serde_json::to_vec_pretty(&serde_json::json!({
-                "session_id": session_id, "session_dir": session_dir, "session_file": session_file,
+                "session_id": session_id, "session_dir": &session_dir, "session_file": &session_file,
                 "resumed": resume_session_id.is_some(),
-                "header_digest": format!("b3:{}", blake3::hash(header_json.as_bytes()).to_hex())
+                "header_digest": format!("b3:{}", blake3::hash(header_json.as_bytes()).to_hex()),
+                "canonical_leaf": format!("b3:{}", blake3::hash(&fs::read(&session_file)?).to_hex()),
+                "canonical_prefix_len": fs::metadata(&session_file)?.len()
             }))?,
         )?;
         if !args_have_flag(&settings.args, &["--session-dir"]) {
@@ -2972,7 +3015,7 @@ fi
             let raw_stream_file = output_dir.join("raw_stream.jsonl");
             let raw_str = raw_stream_file.to_string_lossy().to_string();
             let cmd = format!(
-                "{{ {timed_command} > >(tee -a {raw} >> \"$OUTPUT_FILE\") 2>> \"$OUTPUT_FILE\" & WG_PI_CHILD_PID=$!; wg pi-watchdog bootstrap \"$TASK_ID\" --agent-dir {dir} --pid $WG_PI_CHILD_PID 2>> \"$OUTPUT_FILE\" || true; wait $WG_PI_CHILD_PID; }}",
+                "{{ {timed_command} > >(tee -a {raw} >> \"$OUTPUT_FILE\") 2>> \"$OUTPUT_FILE\" & WG_PI_CHILD_PID=$!; if ! wg pi-watchdog bootstrap \"$TASK_ID\" --agent-dir {dir} --pid $WG_PI_CHILD_PID 2>> \"$OUTPUT_FILE\"; then kill $WG_PI_CHILD_PID 2>/dev/null || true; wait $WG_PI_CHILD_PID 2>/dev/null || true; (exit 125); else wg pi-stream-observe --agent-dir {dir} --follow-pid $WG_PI_CHILD_PID 2>> \"$OUTPUT_FILE\" & WG_PI_OBSERVER_PID=$!; wait $WG_PI_CHILD_PID; WG_PI_EXIT_CODE=$?; wait $WG_PI_OBSERVER_PID || echo \"[wrapper] WARNING: Pi native observer held; exact continuation will fail closed\" >> \"$OUTPUT_FILE\"; (exit $WG_PI_EXIT_CODE); fi; }}",
                 timed_command = timed_command,
                 raw = shell_escape(&raw_str),
                 dir = shell_escape(&output_dir.to_string_lossy()),
@@ -5820,6 +5863,12 @@ mod tests {
             "timestamp": "2026-01-01T00:00:00Z", "cwd": "/tmp/worktree"
         });
         fs::write(&session_file, format!("{header}\n")).unwrap();
+        let substantive_file = prior_dir.join(format!("2026-01-01T00-00-00Z_{session_id}.jsonl"));
+        fs::write(
+            &substantive_file,
+            format!("{header}\n{{\"type\":\"message\",\"id\":\"m1\"}}\n"),
+        )
+        .unwrap();
         let settings = external_test_settings("pi", "pi", &["--mode", "json"]);
 
         let (command, fallback) = build_inner_command(
@@ -5848,9 +5897,13 @@ mod tests {
         assert_eq!(plan["session_id"], session_id);
         assert_eq!(
             plan["session_file"],
-            session_file.to_string_lossy().as_ref()
+            substantive_file.to_string_lossy().as_ref()
         );
         assert_eq!(plan["resumed"], true);
+        assert!(
+            session_file.exists(),
+            "bootstrap evidence must be preserved"
+        );
 
         let missing_output = agents.join("agent-3");
         fs::create_dir_all(&missing_output).unwrap();
@@ -5874,6 +5927,31 @@ mod tests {
                 .contains("refusing Pi's implicit fresh-session fallback")
         );
         assert!(!missing_output.join("pi-session").exists());
+
+        let second_substantive = prior_dir.join(format!("2026-01-02T00-00-00Z_{session_id}.jsonl"));
+        fs::write(
+            &second_substantive,
+            format!("{header}\n{{\"type\":\"message\",\"id\":\"m2\"}}\n"),
+        )
+        .unwrap();
+        let ambiguous_output = agents.join("agent-4");
+        fs::create_dir_all(&ambiguous_output).unwrap();
+        let error = build_inner_command(
+            &settings,
+            "full",
+            &ambiguous_output,
+            &Some("pi:openrouter:test/model".to_string()),
+            &None,
+            &None,
+            &None,
+            &None,
+            &test_template_vars(),
+            &None,
+            Some(session_id),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("substantive journals"));
+        assert!(session_file.exists() && substantive_file.exists() && second_substantive.exists());
     }
 
     #[test]

@@ -13,7 +13,9 @@
 //! `graph::parse_token_usage`, which learned the same pi `turn_end` summation;
 //! this command exists to populate the canonical event channel.
 
+use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::Path;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 
@@ -24,6 +26,107 @@ use worksgood::stream_event::{self, StreamWriter};
 /// Maximum characters of final assistant text to persist as the session
 /// summary — a guard against a pathologically long final message.
 const MAX_SUMMARY_CHARS: usize = 4000;
+
+/// Follow the append-only capture while the exact Pi child is alive. Only
+/// bounded projections enter watchdog state; raw bytes remain exclusively in
+/// raw_stream.jsonl/output.log.
+pub fn observe_live(agent_dir: &Path, follow_pid: u32) -> Result<()> {
+    let raw_path = agent_dir.join(stream_event::RAW_STREAM_FILE_NAME);
+    let stream_id = raw_path.to_string_lossy().into_owned();
+    let mut cursor = open_watchdog_for_agent(agent_dir)
+        .map(|watchdog| watchdog.native_stream_offset(&stream_id))
+        .unwrap_or(0);
+    let mut dead_stable_rounds = 0u8;
+    let mut reconcile_needed = true;
+    loop {
+        let before = cursor;
+        if raw_path.is_file() {
+            let mut file = std::fs::File::open(&raw_path)?;
+            let length = file.metadata()?.len();
+            if length < cursor {
+                anyhow::bail!(
+                    "Pi native capture shrank from {} to {}; append-only proof failed",
+                    cursor,
+                    length
+                );
+            }
+            file.seek(SeekFrom::Start(cursor))?;
+            let mut reader = BufReader::new(file);
+            loop {
+                let line_start = cursor;
+                let mut line = String::new();
+                let read = reader.read_line(&mut line)?;
+                if read == 0 {
+                    break;
+                }
+                if !line.ends_with('\n') {
+                    cursor = line_start;
+                    break;
+                }
+                cursor = cursor.saturating_add(read as u64);
+                if let Some(mut watchdog) = open_watchdog_for_agent(agent_dir) {
+                    watchdog
+                        .ingest_native_line(
+                            line.trim_end_matches(['\r', '\n']),
+                            &stream_id,
+                            cursor,
+                            chrono::Utc::now().timestamp(),
+                        )
+                        .map_err(anyhow::Error::new)?;
+                    if reconcile_needed {
+                        match watchdog.reconcile_session_journal(chrono::Utc::now().timestamp()) {
+                            Ok(changed) => reconcile_needed = !changed,
+                            Err(error) if error.code == "session_journal_missing" => {}
+                            Err(error) => {
+                                let _ = watchdog.observe(
+                                    worksgood::pi_watchdog::Observation::GuardFailure(
+                                        worksgood::pi_watchdog::GuardFailure::Session,
+                                    ),
+                                    chrono::Utc::now().timestamp(),
+                                );
+                                return Err(anyhow::Error::new(error));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let alive = process_alive(follow_pid);
+        if !alive && cursor == before {
+            dead_stable_rounds = dead_stable_rounds.saturating_add(1);
+            if dead_stable_rounds >= 4 {
+                break;
+            }
+        } else {
+            dead_stable_rounds = 0;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    if let Some(mut watchdog) = open_watchdog_for_agent(agent_dir)
+        && let Err(error) = watchdog.reconcile_session_journal(chrono::Utc::now().timestamp())
+    {
+        let _ = watchdog.observe(
+            worksgood::pi_watchdog::Observation::GuardFailure(
+                worksgood::pi_watchdog::GuardFailure::Session,
+            ),
+            chrono::Utc::now().timestamp(),
+        );
+        return Err(anyhow::Error::new(error));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn process_alive(pid: u32) -> bool {
+    // Signal 0 performs identity-free liveness only; the watchdog separately
+    // owns the exact PID/start-ticks proof used for any disposition.
+    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+}
+
+#[cfg(not(unix))]
+fn process_alive(_pid: u32) -> bool {
+    false
+}
 
 pub fn run(agent_dir: &Path, exit_code: i32) -> Result<()> {
     let success = exit_code == 0;
@@ -43,16 +146,20 @@ pub fn run(agent_dir: &Path, exit_code: i32) -> Result<()> {
     // is evidence only; the lifecycle kernel remains the sole task-state
     // writer. Replay is idempotent at the watchdog action/receipt layer.
     if let Some(mut watchdog) = open_watchdog_for_agent(agent_dir) {
-        for line in content.lines() {
-            let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+        let stream_id = raw_path.to_string_lossy();
+        let mut offset = 0u64;
+        for line in content.split_inclusive('\n') {
+            offset = offset.saturating_add(line.len() as u64);
+            let line = line.trim_end_matches(['\r', '\n']);
+            if line.is_empty() {
                 continue;
-            };
-            let at = value
-                .get("timestamp")
-                .and_then(|v| v.as_i64())
-                .unwrap_or_else(|| chrono::Utc::now().timestamp());
-            let _ = watchdog.ingest_native_value(&value, at);
+            }
+            let at = chrono::Utc::now().timestamp();
+            let _ = watchdog.ingest_native_line(line, &stream_id, offset, at);
         }
+        watchdog
+            .reconcile_session_journal(chrono::Utc::now().timestamp())
+            .map_err(anyhow::Error::new)?;
     }
 
     // Pi is the accounting authority. Missing cost remains zero/unknown; WG

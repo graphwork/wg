@@ -683,6 +683,16 @@ pub enum Commands {
         exit_code: i32,
     },
 
+    /// [Internal] Follow a live Pi NDJSON capture and project bounded native
+    /// activity into the exact-attempt watchdog.
+    #[command(hide = true)]
+    PiStreamObserve {
+        #[arg(long, value_name = "DIR")]
+        agent_dir: String,
+        #[arg(long, value_name = "PID")]
+        follow_pid: u32,
+    },
+
     /// [Internal] Own a tmux chat's inner vendor process and durably record
     /// its exact start/exit status in the canonical UUID chat directory.
     #[command(hide = true)]
@@ -6911,6 +6921,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::RecordTelemetry { .. } => "record-telemetry",
         Commands::ClassifyNoOp { .. } => "classify-no-op",
         Commands::PiStreamBridge { .. } => "pi-stream-bridge",
+        Commands::PiStreamObserve { .. } => "pi-stream-observe",
         Commands::ChatRuntimeWrapper { .. } => "chat-runtime-wrapper",
         Commands::Incomplete { .. } => "incomplete",
         Commands::Abandon { .. } => "abandon",

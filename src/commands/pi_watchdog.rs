@@ -171,6 +171,34 @@ fn status(dir: &Path, id: &str, json: bool) -> Result<()> {
         watchdog.policy().meaningful_silence_secs
     );
     println!(
+        "  native: live/unproven seq={} at={:?} thinking-events={} output-events={} tool={}/{} child={} receipt={} usage-receipts={}",
+        state.native_activity.event_seq,
+        state.native_activity.last_activity_at,
+        state.native_activity.thinking_activity_seq,
+        state.native_activity.output_activity_seq,
+        state
+            .native_activity
+            .current_tool_class
+            .as_deref()
+            .unwrap_or("none"),
+        state
+            .native_activity
+            .current_tool_label
+            .as_deref()
+            .unwrap_or("none"),
+        state
+            .native_activity
+            .tool_child_state
+            .as_deref()
+            .unwrap_or("none"),
+        state
+            .native_activity
+            .tool_receipt_state
+            .as_deref()
+            .unwrap_or("none"),
+        state.native_activity.usage_receipt_count,
+    );
+    println!(
         "  probe: action={:?} observed={:?}; progress-reset=no",
         state.probe_action_id, state.probe_observed_at
     );
@@ -313,12 +341,53 @@ fn bootstrap(dir: &Path, id: &str, agent_dir: &Path, pid: u32) -> Result<()> {
         .unwrap_or("pi:unknown:unknown");
     let inner = model.strip_prefix("pi:").unwrap_or(model);
     let (provider, model_id) = inner.split_once(':').unwrap_or(("unknown", inner));
-    let session_file = PathBuf::from(
+    let planned_session_file = PathBuf::from(
         plan["session_file"]
             .as_str()
             .context("session file missing")?,
     );
-    let session_bytes = std::fs::read(&session_file)?;
+    let session_dir = PathBuf::from(
+        plan["session_dir"]
+            .as_str()
+            .context("session dir missing")?,
+    );
+    let session_id = plan["session_id"].as_str().context("session id missing")?;
+    let selected =
+        worksgood::pi_watchdog::select_canonical_session_journal(&session_dir, session_id)
+            .map_err(anyhow::Error::new)?;
+    let planned_header_digest = plan["header_digest"]
+        .as_str()
+        .context("header digest missing")?;
+    let planned_bytes = std::fs::read(&planned_session_file)?;
+    let planned_header = planned_bytes
+        .split(|byte| *byte == b'\n')
+        .next()
+        .unwrap_or_default();
+    let actual_planned_header_digest = format!("b3:{}", blake3::hash(planned_header).to_hex());
+    if actual_planned_header_digest != planned_header_digest {
+        anyhow::bail!("Pi bootstrap journal header does not match its launch attestation")
+    }
+    if selected.session_file != planned_session_file && !selected.substantive {
+        anyhow::bail!("Pi bootstrap plan does not resolve to its attested journal")
+    }
+    if plan["resumed"].as_bool() == Some(true) {
+        let prefix_len = plan["canonical_prefix_len"]
+            .as_u64()
+            .context("canonical prefix length missing")?;
+        let expected_leaf = plan["canonical_leaf"]
+            .as_str()
+            .context("canonical leaf missing")?;
+        let selected_bytes = std::fs::read(&selected.session_file)?;
+        let prefix_len = usize::try_from(prefix_len).context("canonical prefix too large")?;
+        if selected_bytes.len() < prefix_len
+            || format!(
+                "b3:{}",
+                blake3::hash(&selected_bytes[..prefix_len]).to_hex()
+            ) != expected_leaf
+        {
+            anyhow::bail!("Pi resumed journal does not extend its attested substantive leaf")
+        }
+    }
     let source = SourceTuple {
         task_id: id.into(),
         generation: task.lifecycle.generation,
@@ -342,23 +411,13 @@ fn bootstrap(dir: &Path, id: &str, agent_dir: &Path, pid: u32) -> Result<()> {
         plugin_digest: worksgood::pi_plugin::WG_PI_PLUGIN_COMPAT_VERSION.into(),
     };
     let session = SessionProof {
-        session_id: plan["session_id"]
-            .as_str()
-            .context("session id missing")?
-            .into(),
-        branch_leaf: "header".into(),
-        session_dir: PathBuf::from(
-            plan["session_dir"]
-                .as_str()
-                .context("session dir missing")?,
-        ),
-        session_file,
-        header_digest: plan["header_digest"]
-            .as_str()
-            .context("header digest missing")?
-            .into(),
-        append_prefix_digest: format!("b3:{}", blake3::hash(&session_bytes).to_hex()),
-        append_prefix_len: 1,
+        session_id: session_id.into(),
+        branch_leaf: selected.branch_leaf,
+        session_dir,
+        session_file: selected.session_file,
+        header_digest: selected.header_digest,
+        append_prefix_digest: selected.append_prefix_digest,
+        append_prefix_len: selected.append_prefix_len,
     };
     let process = capture_process(pid)?;
     PiWatchdog::new_at(

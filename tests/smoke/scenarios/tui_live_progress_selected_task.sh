@@ -38,7 +38,7 @@ capture() { tmux capture-pane -p -S - -t "$tui_session" 2>/dev/null || true; }
 dump() { wg --dir "$project/.wg" --json tui-dump 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("text", ""))'; }
 wait_for() { local needle=$1; for _ in $(seq 1 120); do dump | grep -Fq "$needle" && return 0; sleep .05; done; loud_fail "TUI never showed $needle: $(capture | tr '\n' '|')"; }
 wait_for 'Phase: Waiting provider'
-for label in 'Tokens:' 'Pi progress: receipt-proven' 'Worktree activity: observed/unproven' 'Tool/Test:' 'Watchdog/Resume:'; do dump | grep -Fq "$label" || loud_fail "missing accessible live row $label"; done
+for label in 'Tokens:' 'Native activity: live/unproven' 'Pi progress: receipt-proven' 'Worktree activity: observed/unproven' 'Tool/Test:' 'Watchdog/Resume:'; do dump | grep -Fq "$label" || loud_fail "missing accessible live row $label"; done
 dump | grep -Fq 'silence-policy=300s observed-grace=120s cap=600s' || loud_fail "production 300/120/600 policy absent"
 
 send_fake 'observe thinking-native 2'; wait_for 'Phase: Thinking'; dump | grep -Fq 'thinking=7' || loud_fail 'provided thinking count absent'
