@@ -55,6 +55,7 @@ pub struct NativeTokenSample {
 pub struct NativeActivityProjection {
     pub process_epoch: u32,
     pub event_seq: u64,
+    pub last_activity_at: Option<i64>,
     pub thinking_activity_seq: u64,
     pub thinking_tokens: Option<u64>,
     pub output_activity_seq: u64,
@@ -76,6 +77,24 @@ pub struct NativeActivityProjection {
     pub usage_receipt_count: u64,
     #[serde(default)]
     usage_receipts: BTreeSet<String>,
+    /// Per-capture byte cursors make replay/restart idempotent without
+    /// deduplicating legitimate equal deltas. Keys are bounded stream digests,
+    /// never filesystem paths or provider content.
+    #[serde(default)]
+    stream_offsets: BTreeMap<String, u64>,
+}
+
+/// A matching Pi journal selected without rewriting or deleting any evidence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CanonicalSessionJournal {
+    pub session_file: PathBuf,
+    pub header_json: String,
+    pub header_digest: String,
+    pub branch_leaf: String,
+    pub append_prefix_digest: String,
+    pub append_prefix_len: u64,
+    pub substantive: bool,
+    pub bootstrap_evidence: Vec<(u64, String)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -534,6 +553,9 @@ pub enum Observation {
         tool_call_id: String,
         progress: u64,
     },
+    UsageReceipt {
+        receipt: String,
+    },
     SessionAdvanced {
         leaf: String,
         prefix_digest: String,
@@ -732,6 +754,70 @@ impl PiWatchdog {
     pub fn state(&self) -> &PiWatchdogState {
         &self.state
     }
+
+    /// Return the durable cursor for a bounded capture identity.
+    pub fn native_stream_offset(&self, stream_id: &str) -> u64 {
+        let stream_id = digest_bytes(stream_id.as_bytes());
+        self.state
+            .native_activity
+            .stream_offsets
+            .get(&stream_id)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Ingest one complete native line at its append-only end offset. Replays
+    /// from the same capture are skipped by byte position; identical deltas at
+    /// distinct positions remain distinct activity.
+    pub fn ingest_native_line(
+        &mut self,
+        line: &str,
+        stream_id: &str,
+        end_offset: u64,
+        now: i64,
+    ) -> Result<Vec<ActionKind>, WatchdogError> {
+        let stream_id = digest_bytes(stream_id.as_bytes());
+        if end_offset
+            <= self
+                .state
+                .native_activity
+                .stream_offsets
+                .get(&stream_id)
+                .copied()
+                .unwrap_or(0)
+        {
+            return Ok(Vec::new());
+        }
+        let value: serde_json::Value = serde_json::from_str(line).map_err(json_error)?;
+        self.state
+            .native_activity
+            .stream_offsets
+            .insert(stream_id, end_offset);
+        self.ingest_native_value(&value, now)
+    }
+
+    /// Reconcile Pi's bootstrap header with the journal Pi actually appended.
+    /// One substantive match wins over any number of header-only evidence
+    /// files. Multiple substantive matches fail closed and no bytes move.
+    pub fn reconcile_session_journal(&mut self, now: i64) -> Result<bool, WatchdogError> {
+        let selected = select_canonical_session_journal(
+            &self.state.session.session_dir,
+            &self.state.session.session_id,
+        )?;
+        let changed = self.state.session.session_file != selected.session_file
+            || self.state.session.branch_leaf != selected.branch_leaf
+            || self.state.session.append_prefix_len != selected.append_prefix_len;
+        if changed {
+            self.state.session.session_file = selected.session_file;
+            self.state.session.header_digest = selected.header_digest;
+            self.state.session.branch_leaf = selected.branch_leaf;
+            self.state.session.append_prefix_digest = selected.append_prefix_digest;
+            self.state.session.append_prefix_len = selected.append_prefix_len;
+            self.meaningful("session-journal-attested", b"canonical-journal", now);
+            self.persist("session-journal-reconciled", now)?;
+        }
+        Ok(changed)
+    }
     #[doc(hidden)]
     pub fn state_mut_for_test(&mut self) -> &mut PiWatchdogState {
         &mut self.state
@@ -755,7 +841,7 @@ impl PiWatchdog {
         let native_changed = self.project_native_activity(value, now);
         let ty = value.get("type").and_then(|v| v.as_str()).unwrap_or("");
         let observation = match ty {
-            "provider_request_start" | "model_request_start" => {
+            "turn_start" | "provider_request_start" | "model_request_start" => {
                 Some(Observation::ProviderRequestStarted {
                     call_id: value
                         .get("callId")
@@ -764,7 +850,7 @@ impl PiWatchdog {
                         .to_string(),
                 })
             }
-            "provider_response_start" | "model_response_start" => {
+            "message_start" | "provider_response_start" | "model_response_start" => {
                 Some(Observation::ProviderResponseStarted)
             }
             "provider_retry" => Some(Observation::ProviderRetry),
@@ -774,8 +860,12 @@ impl PiWatchdog {
                 .and_then(|v| v.get("type"))
                 .and_then(|v| v.as_str())
             {
-                Some("thinking_delta") => Some(Observation::ThinkingDelta),
-                Some("text_delta") => Some(Observation::TokenDelta { tokens: 1 }),
+                Some("thinking_start" | "thinking_delta" | "thinking_end") => {
+                    Some(Observation::ThinkingDelta)
+                }
+                Some("text_delta" | "toolcall_start" | "toolcall_delta" | "toolcall_end") => {
+                    Some(Observation::TokenDelta { tokens: 1 })
+                }
                 _ => None,
             },
             "tool_execution_start" => Some(Observation::ToolIntent {
@@ -786,6 +876,9 @@ impl PiWatchdog {
                         .unwrap_or("unknown")
                         .to_string(),
                     effect: ToolEffect::NonIdempotent,
+                    // Runtime is not a deadline. An open native tool remains
+                    // visible and blocks automatic continuation until a
+                    // receipt closes its effect.
                     lease_expires_at: None,
                     completion_receipt: None,
                 },
@@ -819,6 +912,13 @@ impl PiWatchdog {
                     .as_bytes(),
                 ),
             }),
+            "turn_end" if native_changed => Some(Observation::UsageReceipt {
+                receipt: value
+                    .get("turnId")
+                    .and_then(|v| v.as_str())
+                    .map(|v| digest_bytes(v.as_bytes()))
+                    .unwrap_or_else(|| digest_bytes(value.to_string().as_bytes())),
+            }),
             "agent_end" if value.get("willRetry").and_then(|v| v.as_bool()) == Some(true) => {
                 Some(Observation::AgentEndWillRetry)
             }
@@ -842,6 +942,7 @@ impl PiWatchdog {
         let native = &mut self.state.native_activity;
         if native.process_epoch != self.state.process_epoch {
             let receipts = std::mem::take(&mut native.usage_receipts);
+            let stream_offsets = std::mem::take(&mut native.stream_offsets);
             let totals = (
                 native.usage_input,
                 native.usage_output,
@@ -854,6 +955,7 @@ impl PiWatchdog {
             *native = NativeActivityProjection {
                 process_epoch: self.state.process_epoch,
                 usage_receipts: receipts,
+                stream_offsets,
                 usage_input: totals.0,
                 usage_output: totals.1,
                 usage_cache_read: totals.2,
@@ -867,10 +969,15 @@ impl PiWatchdog {
         let ty = value.get("type").and_then(|v| v.as_str()).unwrap_or("");
         let mut changed = false;
         match ty {
+            "turn_start" | "message_start" | "agent_end" => {
+                native.event_seq = native.event_seq.saturating_add(1);
+                native.last_activity_at = Some(now);
+                changed = true;
+            }
             "message_update" => {
                 let event = value.get("assistantMessageEvent");
                 match event.and_then(|v| v.get("type")).and_then(|v| v.as_str()) {
-                    Some("thinking_delta") => {
+                    Some("thinking_start" | "thinking_delta" | "thinking_end") => {
                         native.event_seq = native.event_seq.saturating_add(1);
                         native.thinking_activity_seq =
                             native.thinking_activity_seq.saturating_add(1);
@@ -878,16 +985,19 @@ impl PiWatchdog {
                             event,
                             &["thinkingTokens", "thinkingTokenCount", "tokenCount"],
                         );
+                        native.last_activity_at = Some(now);
                         changed = true;
                     }
-                    Some("text_delta") => {
+                    Some("text_delta" | "toolcall_start" | "toolcall_delta" | "toolcall_end") => {
                         native.event_seq = native.event_seq.saturating_add(1);
                         native.output_activity_seq = native.output_activity_seq.saturating_add(1);
+                        native.last_activity_at = Some(now);
                         native.last_output_activity_at = Some(now);
                         native.output_tokens = explicit_u64(
                             event,
                             &["outputTokens", "outputTokenCount", "tokenCount"],
-                        );
+                        )
+                        .or(native.output_tokens);
                         if let Some(tokens) = native.output_tokens {
                             if native
                                 .output_samples
@@ -916,6 +1026,7 @@ impl PiWatchdog {
             }
             "tool_execution_start" => {
                 native.event_seq = native.event_seq.saturating_add(1);
+                native.last_activity_at = Some(now);
                 let raw_name = value
                     .get("toolName")
                     .and_then(|v| v.as_str())
@@ -929,6 +1040,7 @@ impl PiWatchdog {
             }
             "tool_execution_update" => {
                 native.event_seq = native.event_seq.saturating_add(1);
+                native.last_activity_at = Some(now);
                 native.tool_progress = explicit_u64(Some(value), &["progress", "progressCount"])
                     .or_else(|| native.tool_progress.map(|v| v.saturating_add(1)))
                     .or(Some(1));
@@ -943,6 +1055,7 @@ impl PiWatchdog {
             }
             "tool_execution_end" => {
                 native.event_seq = native.event_seq.saturating_add(1);
+                native.last_activity_at = Some(now);
                 native.tool_child_state = Some("exited".into());
                 native.tool_receipt_state = Some(
                     if value.get("isError").and_then(|v| v.as_bool()) == Some(true) {
@@ -993,6 +1106,8 @@ impl PiWatchdog {
                             native.usage_cost = Some(format!("{:.6}", prior + cost));
                         }
                         native.usage_receipt_count = native.usage_receipt_count.saturating_add(1);
+                        native.event_seq = native.event_seq.saturating_add(1);
+                        native.last_activity_at = Some(now);
                         changed = true;
                     }
                 }
@@ -1053,6 +1168,9 @@ impl PiWatchdog {
                 format!("{tool_call_id}:{progress}").as_bytes(),
                 now,
             ),
+            Observation::UsageReceipt { receipt } => {
+                self.meaningful("usage-receipt", receipt.as_bytes(), now)
+            }
             Observation::SessionAdvanced {
                 leaf,
                 prefix_digest,
@@ -1191,17 +1309,17 @@ impl PiWatchdog {
         if self.state.terminal || self.state.classification == Classification::WaitingUser {
             return Ok(Vec::new());
         }
-        if let Some(tool) = &self.state.tool {
-            if tool.lease_expires_at.is_some_and(|expires| now < expires) {
-                self.state.classification = Classification::LongTool;
-                return Ok(Vec::new());
-            }
-            if !tool.is_safe() {
-                self.hold("ambiguous_tool_side_effect");
-                self.persist("tool-expired-hold", now)?;
-                return Ok(Vec::new());
-            }
+        if self
+            .state
+            .tool
+            .as_ref()
+            .and_then(|tool| tool.lease_expires_at)
+            .is_some_and(|expires| now < expires)
+        {
+            self.state.classification = Classification::LongTool;
+            return Ok(Vec::new());
         }
+        let open_tool_blocks_resume = self.state.tool.as_ref().is_some_and(|tool| !tool.is_safe());
         let silence = now.saturating_sub(self.state.last_meaningful_at) as u64;
         let mut actions = Vec::new();
         if self.state.suspect_at.is_none() && silence >= self.policy.meaningful_silence_secs {
@@ -1216,6 +1334,17 @@ impl PiWatchdog {
             if self.state.phase == Phase::Unknown {
                 self.state.reason_code = Some("probe_no_progress".into());
             }
+        }
+        if open_tool_blocks_resume {
+            // Still apply the meaningful-progress suspicion clock, but never
+            // turn total tool runtime into a kill/resume deadline. The native
+            // projection continues to show the bounded live tool state.
+            self.state.hard_resume_after_secs = None;
+            if self.state.suspect_at.is_none() {
+                self.state.classification = Classification::LongTool;
+            }
+            self.persist("open-tool-observed", now)?;
+            return Ok(actions);
         }
         let hard = self
             .policy
@@ -1398,6 +1527,10 @@ impl PiWatchdog {
         }
         if !self.session_has_marker(&action_id)? {
             self.append_session_marker(&action_id, reason, &prompt)?;
+            let bytes = fs::read(&self.state.session.session_file).map_err(io_error)?;
+            self.state.session.branch_leaf = digest_bytes(&bytes);
+            self.state.session.append_prefix_digest = digest_bytes(&bytes);
+            self.state.session.append_prefix_len = bytes.len() as u64;
         }
         if self.state.completed_action_ids.insert(action_id.clone()) {
             self.state.prompt_marker = Some(action_id);
@@ -1599,6 +1732,96 @@ struct JournalFrame {
     event: String,
     state_digest: String,
     previous_digest: String,
+}
+
+/// Select the one resumable journal for `session_id` without changing the
+/// directory. Pi may leave WG's bootstrap header beside the timestamped file
+/// it actually appends. Header-only matches are evidence, not competing
+/// sessions, once exactly one substantive journal exists.
+pub fn select_canonical_session_journal(
+    session_dir: &Path,
+    session_id: &str,
+) -> Result<CanonicalSessionJournal, WatchdogError> {
+    let entries = fs::read_dir(session_dir).map_err(io_error)?;
+    let mut headers = Vec::new();
+    let mut substantive = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(io_error)?;
+        let path = entry.path();
+        if !entry.file_type().map_err(io_error)?.is_file()
+            || path.extension().and_then(|v| v.to_str()) != Some("jsonl")
+        {
+            continue;
+        }
+        let bytes = fs::read(&path).map_err(io_error)?;
+        let first_end = bytes
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .unwrap_or(bytes.len());
+        let header_bytes = &bytes[..first_end];
+        let Ok(header) = serde_json::from_slice::<serde_json::Value>(header_bytes) else {
+            continue;
+        };
+        if header.get("type").and_then(|v| v.as_str()) != Some("session")
+            || header.get("id").and_then(|v| v.as_str()) != Some(session_id)
+        {
+            continue;
+        }
+        let header_json = String::from_utf8_lossy(header_bytes).into_owned();
+        let is_substantive = bytes
+            .get(first_end.saturating_add(1)..)
+            .is_some_and(|tail| tail.iter().any(|byte| !byte.is_ascii_whitespace()));
+        let candidate = CanonicalSessionJournal {
+            session_file: path,
+            header_json,
+            header_digest: digest_bytes(header_bytes),
+            branch_leaf: digest_bytes(&bytes),
+            append_prefix_digest: digest_bytes(&bytes),
+            append_prefix_len: bytes.len() as u64,
+            substantive: is_substantive,
+            bootstrap_evidence: Vec::new(),
+        };
+        if is_substantive {
+            substantive.push(candidate);
+        } else {
+            headers.push(candidate);
+        }
+    }
+    if substantive.len() > 1 {
+        return Err(WatchdogError::new(
+            "ambiguous_substantive_session_journals",
+            format!(
+                "exact Pi session has {} substantive journals; refusing continuation without deleting evidence",
+                substantive.len()
+            ),
+        ));
+    }
+    let mut selected = if let Some(selected) = substantive.pop() {
+        selected
+    } else {
+        match headers.len() {
+            1 => headers.pop().unwrap(),
+            0 => {
+                return Err(WatchdogError::new(
+                    "session_journal_missing",
+                    "no matching Pi session journal exists",
+                ));
+            }
+            count => {
+                return Err(WatchdogError::new(
+                    "ambiguous_header_only_session_journals",
+                    format!(
+                        "exact Pi session has {count} header-only journals and no substantive journal"
+                    ),
+                ));
+            }
+        }
+    };
+    selected.bootstrap_evidence = headers
+        .into_iter()
+        .map(|header| (header.append_prefix_len, header.append_prefix_digest))
+        .collect();
+    Ok(selected)
 }
 
 pub fn render_stock_prompt(observation_code: &str) -> Result<String, WatchdogError> {

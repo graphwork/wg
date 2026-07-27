@@ -1328,6 +1328,10 @@ fn main() -> Result<()> {
             agent_dir,
             exit_code,
         } => commands::pi_stream_bridge::run(std::path::Path::new(&agent_dir), exit_code),
+        Commands::PiStreamObserve {
+            agent_dir,
+            follow_pid,
+        } => commands::pi_stream_bridge::observe_live(std::path::Path::new(&agent_dir), follow_pid),
         Commands::ChatRuntimeWrapper { command } => {
             let command = command.into_iter().map(std::ffi::OsString::from).collect();
             let exit_code = worksgood::chat_runtime::run_wrapper(command)?;

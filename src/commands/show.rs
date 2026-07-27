@@ -1454,8 +1454,36 @@ fn print_human_readable(details: &TaskDetails) {
             .timestamp()
             .saturating_sub(watchdog.last_meaningful_at);
         println!(
-            "Pi watchdog: {:?}; phase={:?}; progress-seq={}; silence={}s / soft=300s",
+            "Pi watchdog: {:?}; phase={:?}; progress-seq={}; proof-silence={}s / soft=300s",
             watchdog.classification, watchdog.phase, watchdog.progress_seq, silence
+        );
+        println!(
+            "  native: live/unproven seq={} at={:?} thinking-events={} output-events={} tool={}/{} child={} receipt={} usage-receipts={}",
+            watchdog.native_activity.event_seq,
+            watchdog.native_activity.last_activity_at,
+            watchdog.native_activity.thinking_activity_seq,
+            watchdog.native_activity.output_activity_seq,
+            watchdog
+                .native_activity
+                .current_tool_class
+                .as_deref()
+                .unwrap_or("none"),
+            watchdog
+                .native_activity
+                .current_tool_label
+                .as_deref()
+                .unwrap_or("none"),
+            watchdog
+                .native_activity
+                .tool_child_state
+                .as_deref()
+                .unwrap_or("none"),
+            watchdog
+                .native_activity
+                .tool_receipt_state
+                .as_deref()
+                .unwrap_or("none"),
+            watchdog.native_activity.usage_receipt_count,
         );
         println!(
             "  session={} leaf={} route=pi:{}:{} qos={:?} process-epoch={} continuation-epoch={}",

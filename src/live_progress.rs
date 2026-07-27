@@ -160,8 +160,12 @@ pub struct LiveProgressProjection {
     pub source: Option<SourceTuple>,
     pub phase: LivePhase,
     pub phase_at: Option<i64>,
+    pub native_event_seq: u64,
+    pub native_last_activity_at: Option<i64>,
     pub thinking_activity: bool,
+    pub thinking_activity_seq: u64,
     pub thinking_tokens: Option<u64>,
+    pub output_activity_seq: u64,
     pub output_tokens: Option<u64>,
     pub output_rate_milli_tok_per_sec: Option<u64>,
     pub rate_window_secs: i64,
@@ -189,8 +193,12 @@ impl Default for LiveProgressProjection {
             source: None,
             phase: LivePhase::Unknown,
             phase_at: None,
+            native_event_seq: 0,
+            native_last_activity_at: None,
             thinking_activity: false,
+            thinking_activity_seq: 0,
             thinking_tokens: None,
+            output_activity_seq: 0,
             output_tokens: None,
             output_rate_milli_tok_per_sec: None,
             rate_window_secs: RATE_WINDOW_SECS,
@@ -777,8 +785,12 @@ pub fn load_for_task(wg_dir: &Path, task: &Task) -> LiveProgressProjection {
                 }
             });
             out.phase_at = Some(state.last_meaningful_at);
+            out.native_event_seq = state.native_activity.event_seq;
+            out.native_last_activity_at = state.native_activity.last_activity_at;
             out.thinking_activity = state.native_activity.thinking_activity_seq > 0;
+            out.thinking_activity_seq = state.native_activity.thinking_activity_seq;
             out.thinking_tokens = state.native_activity.thinking_tokens;
+            out.output_activity_seq = state.native_activity.output_activity_seq;
             out.output_tokens = state.native_activity.output_tokens;
             out.output_rate_milli_tok_per_sec = rolling_rate(
                 &state
@@ -914,6 +926,13 @@ impl LiveProgressProjection {
                 .unwrap_or_else(|| UNKNOWN.into()),
             opt_i64(self.last_output_activity_at)
         );
+        let native = format!(
+            "  Native activity: live/unproven seq={} at={} thinking-events={} output-events={}",
+            self.native_event_seq,
+            opt_i64(self.native_last_activity_at),
+            self.thinking_activity_seq,
+            self.output_activity_seq,
+        );
         let pi = self
             .pi_progress
             .as_ref()
@@ -972,6 +991,7 @@ impl LiveProgressProjection {
             "── Live progress ──".into(),
             format!("  Phase: {}", self.phase.label()),
             tokens,
+            native,
             pi,
             wt,
             tool,
@@ -1223,6 +1243,7 @@ mod tests {
         for required in [
             "Phase:",
             "Tokens:",
+            "Native activity: live/unproven",
             "Pi progress: receipt-proven",
             "Worktree activity: observed/unproven",
             "Tool/Test:",
