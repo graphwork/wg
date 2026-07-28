@@ -1679,6 +1679,7 @@ fn build_auto_assign_tasks(
                     meta_eval_attempts: 0,
                     agency_dispatch: None,
                     evaluation_lifecycle: None,
+                    evaluation_records: vec![],
                     spawn_failures: 0,
                     last_spawn_failure_at: None,
                     dispatch_count: 0,
@@ -1711,92 +1712,6 @@ fn build_auto_assign_tasks(
 
         modified = true;
     }
-
-    modified
-}
-
-/// Auto-evaluate: create evaluation tasks for completed/active tasks.
-///
-/// Per the agency design (§4.3), when auto_evaluate is enabled the coordinator
-/// creates an evaluation task `evaluate-{task-id}` that is blocked by the
-/// original task.  When the original task completes (done or failed),
-/// the evaluation task becomes ready and the coordinator spawns an
-/// evaluator agent on it.
-///
-/// Tasks tagged "evaluation", "assignment", or "evolution" are NOT
-/// auto-evaluated to prevent infinite regress.  Abandoned tasks are also
-/// excluded.
-///
-/// Returns `true` if the graph was modified.
-fn build_auto_evaluate_tasks(
-    dir: &Path,
-    graph: &mut worksgood::graph::WorkGraph,
-    config: &Config,
-) -> bool {
-    let mut modified = false;
-
-    // Load agents to identify human operators — their work quality isn't
-    // a reflection of a role+tradeoff prompt so we skip auto-evaluation.
-    let agents_dir = dir.join("agency").join("cache/agents");
-    let all_agents = agency::load_all_agents_or_warn(&agents_dir);
-    let human_agent_ids: std::collections::HashSet<&str> = all_agents
-        .iter()
-        .filter(|a| a.is_human())
-        .map(|a| a.id.as_str())
-        .collect();
-
-    // Catch-all for tasks that weren't published with eager scaffolding
-    // (backward compatibility). The eval_scaffold helper handles idempotency
-    // structurally, so this is safe to call even if publish already created
-    // the eval task.
-    let tasks_needing_eval: Vec<_> = graph
-        .tasks()
-        .filter(|t| {
-            // Skip paused/draft tasks — their pipeline is scaffolded at
-            // `wg publish` time via scaffold_full_pipeline.  Creating
-            if t.paused {
-                return false;
-            }
-            let eval_id = format!(".evaluate-{}", t.id);
-            if graph.get_task(&eval_id).is_some() {
-                return false;
-            }
-            if worksgood::graph::is_system_task(&t.id) {
-                return false;
-            }
-            // Skip tasks assigned to human agents
-            if let Some(ref agent_id) = t.agent
-                && human_agent_ids.contains(agent_id.as_str())
-            {
-                return false;
-            }
-            !matches!(t.status, Status::Abandoned)
-        })
-        .map(|t| (t.id.clone(), t.title.clone()))
-        .collect();
-
-    // Use shared scaffold helper (same logic as publish-time creation)
-    let count = crate::commands::eval_scaffold::scaffold_eval_tasks_batch(
-        dir,
-        graph,
-        &tasks_needing_eval,
-        config,
-    );
-    if count > 0 {
-        modified = true;
-    }
-
-    // NOTE: evaluation tasks whose source has Failed / FailedPendingEval used
-    // to be unblocked here by DESTRUCTIVELY stripping their `after` edge.
-    // That strip was permanent, so once the source was later reset to Open
-    // (bulk retry / `wg recover` / manual reset) the `.evaluate-*` satellite
-    // stayed permanently ready and respawned every tick, failing instantly
-    // with "task is open — can't evaluate" (the resolve-prophage-source
-    // incident). Eval eligibility now lives in `query::dependency_disposition`,
-    // which bypasses Done | Failed | PendingEval | FailedPendingEval for the
-    // owning `.flip-X` / `.evaluate-X` satellites while PRESERVING the `after`
-    // edge — so a reset-to-Open source correctly re-blocks its satellite. No
-    // graph mutation is needed here.
 
     modified
 }
@@ -2060,6 +1975,7 @@ fn build_flip_verification_tasks(
             meta_eval_attempts: 0,
             agency_dispatch: None,
             evaluation_lifecycle: None,
+            evaluation_records: vec![],
             spawn_failures: 0,
             last_spawn_failure_at: None,
             dispatch_count: 0,
@@ -2102,9 +2018,8 @@ fn build_flip_verification_tasks(
             verify_task_id, eval.score, threshold,
         );
 
-        // Scaffold the full agency pipeline (.assign-*, .flip-*, .evaluate-*) for
-        // the verify task — it's a pipeline-eligible system task, so
-        // scaffold_full_pipeline handles it just like a regular task.
+        // Scaffold assignment for the verify task. Its own evaluation remains
+        // lazy and candidate-bound like ordinary source work.
         let verify_title = format!("Verify (FLIP {:.2}): {}", eval.score, source_title);
         crate::commands::eval_scaffold::scaffold_full_pipeline(
             dir,
@@ -2114,8 +2029,8 @@ fn build_flip_verification_tasks(
             config,
         );
 
-        // Add verify as additional dep on .evaluate-<source> so the source's
-        // evaluation waits for verification to complete.
+        // Legacy compatibility: if an old `.evaluate-<source>` row exists,
+        // keep its historical verification dependency intact.
         let eval_task_id = format!(".evaluate-{}", source_task_id);
         if let Some(eval_task) = graph.get_task_mut(&eval_task_id)
             && !eval_task.after.contains(&verify_task_id)
@@ -2343,6 +2258,7 @@ fn build_separate_verify_tasks(
             meta_eval_attempts: 0,
             agency_dispatch: None,
             evaluation_lifecycle: None,
+            evaluation_records: vec![],
             spawn_failures: 0,
             last_spawn_failure_at: None,
             dispatch_count: 0,
@@ -2558,6 +2474,7 @@ fn build_auto_evolve_task(
         meta_eval_attempts: 0,
         agency_dispatch: None,
         evaluation_lifecycle: None,
+        evaluation_records: vec![],
         spawn_failures: 0,
         last_spawn_failure_at: None,
         dispatch_count: 0,
@@ -2776,6 +2693,7 @@ fn build_auto_create_task(
         meta_eval_attempts: 0,
         agency_dispatch: None,
         evaluation_lifecycle: None,
+        evaluation_records: vec![],
         spawn_failures: 0,
         last_spawn_failure_at: None,
         dispatch_count: 0,
@@ -5244,10 +5162,9 @@ pub fn coordinator_tick(
             modified |= build_auto_assign_tasks(graph, &config, dir);
         }
 
-        // Phase 4: Auto-evaluate tasks
-        if config.agency.auto_evaluate {
-            modified |= build_auto_evaluate_tasks(dir, graph, &config);
-        }
+        // Phase 4: evaluation is lazy and candidate-bound. The authoritative
+        // completion transaction mints hidden records; coordinator ticks never
+        // create `.evaluate-*`/`.flip-*` graph work.
 
         // Phase 4.5: FLIP verification
         modified |= build_flip_verification_tasks(dir, graph, &config);
@@ -7060,23 +6977,11 @@ mod tests {
             "verify task should be blocked by its assignment task"
         );
 
-        // Check that .flip-.verify-my-task was created (full pipeline)
-        let flip = graph.get_task(".flip-.verify-my-task").unwrap();
-        assert!(
-            flip.after.contains(&".verify-my-task".to_string()),
-            "flip task should depend on verify task"
-        );
-        assert!(
-            flip.tags.contains(&"flip".to_string()),
-            "should be tagged as flip"
-        );
-
-        // Check that .evaluate-.verify-my-task was created (full pipeline)
-        let eval = graph.get_task(".evaluate-.verify-my-task").unwrap();
-        assert!(
-            eval.tags.contains(&"evaluation".to_string()),
-            "should be tagged as evaluation"
-        );
+        // The repair task itself follows the same lazy rule: only assignment
+        // exists before its own authenticated candidate completion.
+        assert!(graph.get_task(".flip-.verify-my-task").is_none());
+        assert!(graph.get_task(".evaluate-.verify-my-task").is_none());
+        assert!(verify.evaluation_records.is_empty());
     }
 
     #[test]

@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Credential-free source-worker fixture for lazy evaluation lifecycle tests.
+set -euo pipefail
+for name in OPENAI_API_KEY OPENROUTER_API_KEY ANTHROPIC_API_KEY; do
+  [[ -z "${!name:-}" ]] || { echo "credential unexpectedly present: $name" >&2; exit 91; }
+done
+cat >/dev/null || true
+printf 'candidate produced by credential-free Fake-Pi\n' > lazy-evaluation-artifact.txt
+# While this process is alive, wg done records terminal intent only. The real
+# wrapper exit adapter proves quiescence and performs candidate finalization.
+if ! wg done "$WG_TASK_ID" >/dev/null 2>fake-done.err; then
+  cat fake-done.err >&2
+  exit 92
+fi
+printf '%s\n' '{"type":"turn_end","message":{"role":"assistant","content":[{"type":"text","text":"fake candidate complete"}],"provider":"test","model":"fake-worker","stopReason":"stop","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}}}}'

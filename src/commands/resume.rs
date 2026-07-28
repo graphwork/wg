@@ -281,7 +281,7 @@ fn run_inner(
         // (the WCC / subgraph / single task) in this same atomic transaction.
         // Tasks added to the component later inherit via `wg add`
         // (inherit-on-attach), and agency satellites are stamped inside
-        // `scaffold_eval_for_unpaused` below.
+        // `scaffold_agency_for_unpaused` below.
         if let Some(name) = profile {
             stamped = stamp_profile(graph, &members, name);
         }
@@ -299,7 +299,7 @@ fn run_inner(
 
             // Eagerly scaffold agency pipeline for every newly-unpaused task.
             // Each satellite inherits the parent task's stamped profile.
-            scaffold_eval_for_unpaused(dir, graph, &unpaused, action);
+            scaffold_agency_for_unpaused(dir, graph, &unpaused, action);
         }
 
         true
@@ -680,13 +680,13 @@ fn stamp_profile(graph: &mut WorkGraph, members: &[String], profile: &str) -> us
     changed
 }
 
-/// Create the full agency pipeline (`.assign-*`, `.flip-*`,
-/// `.evaluate-*`) for each unpaused task in one atomic pass.
+/// Create publish-time agency prerequisites for each unpaused task in one
+/// atomic pass. Assignment remains a graph prerequisite; evaluation/FLIP are
+/// selected later from candidate completion and stored on the source.
 ///
-/// All tasks and their edges are written together into the same graph
-/// object before the caller saves — guaranteeing a single, atomic write.
-/// Idempotent: skips tasks that already have scaffold siblings.
-fn scaffold_eval_for_unpaused(
+/// All prerequisites and edges are written together into the same graph
+/// object before the caller saves. Idempotent: skips existing assignment rows.
+fn scaffold_agency_for_unpaused(
     dir: &Path,
     graph: &mut WorkGraph,
     task_ids: &[String],
@@ -712,9 +712,9 @@ fn scaffold_eval_for_unpaused(
     let mut count = 0;
 
     for (id, title, profile) in &candidates {
-        // Resolve the effective config for this task's profile so the agency
-        // satellites bake the PROFILE's evaluator/assigner model (overriding
-        // the default claude:haiku pin) instead of the global one.
+        // Resolve the effective profile config for assignment now and for
+        // lazy candidate policy later. Historical satellites, when present,
+        // retain their existing compatibility routing.
         let eff: worksgood::config::Config = match profile {
             Some(name) => profile_cache
                 .entry(name.clone())
@@ -728,9 +728,8 @@ fn scaffold_eval_for_unpaused(
             count += 1;
         }
 
-        // Stamp the parent's profile onto each agency satellite so it is
-        // itself a profiled WCC member and its dispatch (`wg evaluate`/`wg
-        // assign`) resolves through the profile too.
+        // Stamp the parent's profile onto assignment and any retained legacy
+        // satellites so compatibility work remains in the profiled WCC.
         if let Some(name) = profile {
             for prefix in [".assign-", ".flip-", ".evaluate-"] {
                 let sat_id = format!("{}{}", prefix, id);
@@ -743,7 +742,7 @@ fn scaffold_eval_for_unpaused(
 
     if count > 0 {
         eprintln!(
-            "[{}] Eagerly scaffolded full agency pipeline for {} task(s)",
+            "[{}] Scaffolded publish-time agency prerequisites for {} task(s)",
             action, count
         );
     }
@@ -1322,9 +1321,9 @@ mod tests {
     }
 
     #[test]
-    fn test_publish_creates_pipeline_tasks_with_auto_place() {
-        // Verify that publish creates .assign-* and .evaluate-* tasks
-        // (placement is handled by the assignment step, no separate .place-* tasks).
+    fn test_publish_creates_assignment_without_eager_evaluation() {
+        // Publish owns only the pre-execution assignment prerequisite.
+        // Evaluation is minted after authenticated candidate completion.
         let dir = tempdir().unwrap();
         let mut task = make_task("my-task", "My Task", Status::Open);
         task.paused = true;
@@ -1346,16 +1345,21 @@ mod tests {
             graph.get_task(".assign-my-task").is_some(),
             ".assign-my-task must be created at publish time"
         );
+        assert!(graph.get_task(".evaluate-my-task").is_none());
+        assert!(graph.get_task(".flip-my-task").is_none());
         assert!(
-            graph.get_task(".evaluate-my-task").is_some(),
-            ".evaluate-my-task must be created at publish time"
+            graph
+                .get_task("my-task")
+                .unwrap()
+                .evaluation_records
+                .is_empty()
         );
     }
 
     // --- Resume scaffolding tests ---
 
     #[test]
-    fn test_resume_scaffolds_agency_pipeline_for_draft_task() {
+    fn test_resume_scaffolds_assignment_without_eager_evaluation() {
         let dir = tempdir().unwrap();
         let mut task = make_task("my-task", "My Task", Status::Open);
         task.paused = true;
@@ -1375,14 +1379,19 @@ mod tests {
             graph.get_task(".assign-my-task").is_some(),
             ".assign-my-task must be created at resume time"
         );
+        assert!(graph.get_task(".evaluate-my-task").is_none());
+        assert!(graph.get_task(".flip-my-task").is_none());
         assert!(
-            graph.get_task(".evaluate-my-task").is_some(),
-            ".evaluate-my-task must be created at resume time"
+            graph
+                .get_task("my-task")
+                .unwrap()
+                .evaluation_records
+                .is_empty()
         );
     }
 
     #[test]
-    fn test_resume_scaffolds_agency_pipeline_only_mode() {
+    fn test_resume_only_scaffolds_assignment_without_eager_evaluation() {
         let dir = tempdir().unwrap();
         let mut task = make_task("my-task", "My Task", Status::Open);
         task.paused = true;
@@ -1402,9 +1411,14 @@ mod tests {
             graph.get_task(".assign-my-task").is_some(),
             ".assign-my-task must be created at resume time (--only)"
         );
+        assert!(graph.get_task(".evaluate-my-task").is_none());
+        assert!(graph.get_task(".flip-my-task").is_none());
         assert!(
-            graph.get_task(".evaluate-my-task").is_some(),
-            ".evaluate-my-task must be created at resume time (--only)"
+            graph
+                .get_task("my-task")
+                .unwrap()
+                .evaluation_records
+                .is_empty()
         );
     }
 
@@ -1421,14 +1435,13 @@ mod tests {
         )
         .unwrap();
 
-        // First: publish (creates scaffold tasks)
+        // First: publish (creates assignment only)
         publish(dir.path(), "my-task", false, false, None, false).unwrap();
 
         let graph = load_graph(graph_path(dir.path())).unwrap();
         let assign = graph.get_task(".assign-my-task").unwrap();
         let assign_created_at = assign.created_at.clone();
-        let eval = graph.get_task(".evaluate-my-task").unwrap();
-        let eval_created_at = eval.created_at.clone();
+        assert!(graph.get_task(".evaluate-my-task").is_none());
 
         // Now pause and resume the task
         {
@@ -1447,8 +1460,8 @@ mod tests {
         let graph = load_graph(graph_path(dir.path())).unwrap();
         let assign = graph.get_task(".assign-my-task").unwrap();
         assert_eq!(assign.created_at, assign_created_at);
-        let eval = graph.get_task(".evaluate-my-task").unwrap();
-        assert_eq!(eval.created_at, eval_created_at);
+        assert!(graph.get_task(".evaluate-my-task").is_none());
+        assert!(graph.get_task(".flip-my-task").is_none());
     }
 
     // ── --wcc: weakly-connected component release ────────────────────────

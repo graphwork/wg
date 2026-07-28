@@ -1,21 +1,24 @@
-//! Eager lifecycle-task scaffolding.
+//! Publish-time agency prerequisites and legacy evaluation migration.
 //!
-//! Creates `.assign-<task>`, `.flip-<task>`, and `.evaluate-<task>` tasks at
-//! publish time so every published task has a full lifecycle chain as real graph
-//! edges, wired atomically in one graph write:
+//! New publication creates only `.assign-<task> → task` when automatic
+//! assignment is enabled. Evaluation and deep FLIP are selected lazily from an
+//! authenticated candidate-completion event and stored as hidden source-bound
+//! records. The explicit satellite builders remain temporarily for historical
+//! graph compatibility/tests; production publication and coordinator ticks do
+//! not call them.
 //!
-//! ```text
-//! .assign-foo → foo → .flip-foo → .evaluate-foo
-//! ```
-//!
-//! Note: placement (dependency edge decisions) is now merged into the assignment
-//! step — no separate `.place-*` tasks are created.
+//! Placement (dependency edge decisions) is merged into assignment; no
+//! separate `.place-*` tasks are created.
 
 use chrono::Utc;
 use std::path::Path;
 
 use worksgood::config::Config;
 use worksgood::graph::{Node, PRIORITY_DEFAULT, Priority, Status, Task, WorkGraph, lower_priority};
+use worksgood::lifecycle::{
+    ActorKind, FenceExpectation, LifecycleActor, TransitionKind, TransitionRequest,
+    apply_transition,
+};
 
 /// System task prefixes that are eligible for the full agency pipeline.
 /// These tasks go through placement, assignment, FLIP, and evaluation like
@@ -153,25 +156,16 @@ pub fn scaffold_flip_task(graph: &mut WorkGraph, task_id: &str, config: &Config)
     true
 }
 
-/// Scaffold the FULL agency pipeline for a task in one pass:
+/// Scaffold publish-time agency prerequisites.
 ///
-/// ```text
-/// .assign-{id} → {id} → .flip-{id} → .evaluate-{id}
-/// ```
+/// Assignment remains a real pre-execution task because it gates dispatch.
+/// Evaluation and FLIP do not: they are selected lazily from a genuine
+/// candidate-completion event and stored as hidden source evidence.
 ///
-/// All tasks are created and all dependency edges are wired atomically
-/// (caller is responsible for the single `save_graph` / `modify_graph` call).
-///
-/// - `.assign-*` is created if `config.agency.auto_assign` is enabled.
-///   Placement (dependency edge decisions) is merged into the assignment step
-///   when `config.agency.auto_place` is enabled.
-/// - `.flip-*` is created if FLIP is enabled.
-/// - `.evaluate-*` is created if `config.agency.auto_evaluate` is enabled.
-///
-/// Returns `true` if the graph was modified.
-/// Idempotent: skips tasks that already exist.
+/// Returns `true` if assignment was created/wired or stale legacy evaluation
+/// scaffolding was safely retired.
 pub fn scaffold_full_pipeline(
-    dir: &Path,
+    _dir: &Path,
     graph: &mut WorkGraph,
     task_id: &str,
     task_title: &str,
@@ -189,8 +183,6 @@ pub fn scaffold_full_pipeline(
     }
 
     let assign_task_id = format!(".assign-{}", task_id);
-    let flip_task_id = format!(".flip-{}", task_id);
-    let eval_task_id = format!(".evaluate-{}", task_id);
 
     let mut any_created = false;
 
@@ -224,101 +216,90 @@ pub fn scaffold_full_pipeline(
         && !source.after.iter().any(|a| a == &assign_task_id)
     {
         source.after.push(assign_task_id.clone());
+        any_created = true;
     }
 
-    // 3. Create .flip-* task (depends on main task)
-    let run_flip = should_run_flip(graph, task_id, config);
-    if run_flip && graph.get_task(&flip_task_id).is_none() {
-        let Some(flip_plan) = plan_satellite(graph, task_id, &flip_task_id, config) else {
-            return any_created;
-        };
-        let primary = &flip_plan.calls[0];
-        let flip_task = Task {
-            id: flip_task_id.clone(),
-            title: format!("FLIP: {}", task_id),
-            description: Some(format!(
-                "Run FLIP (Fidelity via Latent Intent Probing) evaluation for task '{}'.",
-                task_id,
-            )),
-            status: Status::Open,
-            after: vec![task_id.to_string()],
-            tags: vec!["flip".to_string(), "agency".to_string()],
-            exec: Some(format!("wg evaluate run {} --flip", task_id)),
-            model: Some(primary.route.clone()),
-            provider: Some(primary.system.handler.clone()),
-            endpoint: primary.endpoint.clone(),
-            reasoning: primary.reasoning,
-            agency_dispatch: Some(flip_plan),
-            exec_mode: Some("bare".to_string()),
-            visibility: "internal".to_string(),
-            created_at: Some(Utc::now().to_rfc3339()),
-            ..Task::default()
-        };
-        graph.add_node(Node::Task(flip_task));
+    // Evaluation/FLIP are deliberately absent here. Publication owns only
+    // assignment scaffolding; candidate completion atomically selects and
+    // mints hidden attempt-bound records on the source.
+    let retired = retire_stale_legacy_satellites(graph, task_id, false);
+    if retired > 0 {
         any_created = true;
         eprintln!(
-            "[eval-scaffold] Created FLIP task '{}' blocked by '{}'",
-            flip_task_id, task_id,
-        );
-    }
-
-    // 4. Create .evaluate-* task (depends on .flip-* if FLIP enabled, else main task)
-    if config.agency.auto_evaluate && graph.get_task(&eval_task_id).is_none() {
-        let eval_after = if run_flip {
-            vec![flip_task_id.clone()]
-        } else {
-            vec![task_id.to_string()]
-        };
-
-        let evaluator_identity = resolve_evaluator_identity(dir, config);
-        let mut desc = String::new();
-        if let Some(ref identity) = evaluator_identity {
-            desc.push_str(identity);
-            desc.push_str("\n\n");
-        }
-        desc.push_str(&format!(
-            "Evaluate the completed task '{}'.\n\n\
-             Run `wg evaluate run {}` to produce a structured evaluation.\n\
-             This reads the task output from `.wg/output/{}/` and \
-             the task definition via `wg show {}`.",
-            task_id, task_id, task_id, task_id,
-        ));
-
-        let Some(eval_plan) = plan_satellite(graph, task_id, &eval_task_id, config) else {
-            return any_created;
-        };
-        let primary = &eval_plan.calls[0];
-        let eval_task = Task {
-            id: eval_task_id.clone(),
-            title: format!("Evaluate: {}", task_title),
-            description: Some(desc),
-            status: Status::Open,
-            after: eval_after,
-            tags: vec!["evaluation".to_string(), "agency".to_string()],
-            exec: Some(format!("wg evaluate run {}", task_id)),
-            model: Some(primary.route.clone()),
-            provider: Some(primary.system.handler.clone()),
-            endpoint: primary.endpoint.clone(),
-            reasoning: primary.reasoning,
-            agency_dispatch: Some(eval_plan),
-            agent: config.agency.evaluator_agent.clone(),
-            exec_mode: Some("bare".to_string()),
-            visibility: "internal".to_string(),
-            created_at: Some(Utc::now().to_rfc3339()),
-            ..Task::default()
-        };
-        graph.add_node(Node::Task(eval_task));
-        any_created = true;
-        eprintln!(
-            "[eval-scaffold] Created evaluation task '{}' blocked by '{}'",
-            eval_task_id, task_id,
+            "[eval-scaffold] Retired {} stale pre-created evaluation satellite(s) for '{}'",
+            retired, task_id
         );
     }
 
     any_created
 }
 
-/// Scaffold the full pipeline for multiple tasks at once (batch mode for publish).
+/// Retire unclaimed, evidence-free rows created by the legacy eager pipeline.
+/// Claimed/running/terminal rows and historical verdict-bearing rows remain
+/// readable and continue through the compatibility path.
+pub fn retire_stale_legacy_satellites(
+    graph: &mut WorkGraph,
+    source_id: &str,
+    candidate_completion: bool,
+) -> usize {
+    let source_eligible = graph.get_task(source_id).is_some_and(|source| {
+        candidate_completion
+            || (source.status == Status::Open
+                && source
+                    .lifecycle
+                    .current_attempt
+                    .as_ref()
+                    .is_none_or(|attempt| attempt.disposition.is_some()))
+    });
+    if !source_eligible {
+        return 0;
+    }
+
+    let mut retired = 0usize;
+    for satellite_id in [
+        format!(".flip-{source_id}"),
+        format!(".evaluate-{source_id}"),
+    ] {
+        let safe = graph.get_task(&satellite_id).is_some_and(|satellite| {
+            matches!(
+                satellite.status,
+                Status::Open | Status::Blocked | Status::Waiting
+            ) && satellite.assigned.is_none()
+                && satellite.started_at.is_none()
+                && satellite
+                    .evaluation_lifecycle
+                    .as_ref()
+                    .is_none_or(|lifecycle| {
+                        lifecycle.linked_flip_verdict.is_none()
+                            && lifecycle.linked_eval_verdict.is_none()
+                            && lifecycle.consumed_verdict.is_none()
+                    })
+        });
+        if !safe {
+            continue;
+        }
+        let satellite = graph
+            .get_task_mut(&satellite_id)
+            .expect("safe check established satellite existence");
+        let request = TransitionRequest::new(
+            TransitionKind::Abandoned,
+            LifecycleActor {
+                kind: ActorKind::Operator,
+                id: "lazy-evaluation-migration".to_string(),
+            },
+            "legacy_eager_evaluation_retired",
+            format!("retire-eager-evaluation:{satellite_id}"),
+        )
+        .expecting(FenceExpectation::current(satellite));
+        if apply_transition(satellite, request).is_ok() {
+            satellite.completed_at = Some(Utc::now().to_rfc3339());
+            retired += 1;
+        }
+    }
+    retired
+}
+
+/// Scaffold publish-time prerequisites for multiple tasks at once.
 /// Returns the number of tasks for which the pipeline was created.
 pub fn scaffold_full_pipeline_batch(
     dir: &Path,
@@ -934,7 +915,7 @@ mod tests {
     // --- scaffold_full_pipeline tests ---
 
     #[test]
-    fn test_scaffold_full_pipeline_creates_all_tasks() {
+    fn test_scaffold_full_pipeline_creates_only_assignment_before_completion() {
         let dir = tempdir().unwrap();
         let mut config = agency_config();
         config.agency.auto_place = true;
@@ -947,10 +928,9 @@ mod tests {
         let modified = scaffold_full_pipeline(dir.path(), &mut graph, "foo", "Foo Task", &config);
         assert!(modified);
 
-        // Pipeline tasks exist (no separate .place-* task)
         assert!(graph.get_task(".assign-foo").is_some());
-        assert!(graph.get_task(".flip-foo").is_some());
-        assert!(graph.get_task(".evaluate-foo").is_some());
+        assert!(graph.get_task(".flip-foo").is_none());
+        assert!(graph.get_task(".evaluate-foo").is_none());
     }
 
     #[test]
@@ -975,13 +955,9 @@ mod tests {
         let foo = graph.get_task("foo").unwrap();
         assert!(foo.after.contains(&".assign-foo".to_string()));
 
-        // .flip-foo depends on foo
-        let flip = graph.get_task(".flip-foo").unwrap();
-        assert_eq!(flip.after, vec!["foo".to_string()]);
-
-        // .evaluate-foo depends on .flip-foo (when FLIP enabled)
-        let eval = graph.get_task(".evaluate-foo").unwrap();
-        assert_eq!(eval.after, vec![".flip-foo".to_string()]);
+        // Candidate-bound evaluation has no graph edges before completion.
+        assert!(graph.get_task(".flip-foo").is_none());
+        assert!(graph.get_task(".evaluate-foo").is_none());
     }
 
     #[test]
@@ -1019,7 +995,7 @@ mod tests {
             "Foo Task",
             &config
         ));
-        // Second call is a no-op because the structural .evaluate-* task exists.
+        // Second call is a no-op because assignment is already wired.
         assert!(!scaffold_full_pipeline(
             dir.path(),
             &mut graph,
@@ -1071,7 +1047,7 @@ mod tests {
             scaffold_full_pipeline(dir.path(), &mut graph, "eval-infra", "Eval Infra", &config);
         assert!(modified);
         assert!(graph.get_task(".assign-eval-infra").is_some());
-        assert!(graph.get_task(".evaluate-eval-infra").is_some());
+        assert!(graph.get_task(".evaluate-eval-infra").is_none());
     }
 
     #[test]
@@ -1128,12 +1104,20 @@ mod tests {
             graph.get_task(".assign-foo").is_some(),
             ".assign-foo must exist even when label tags are set"
         );
+        assert_eq!(
+            graph.get_task(".flip-foo").unwrap().status,
+            Status::Abandoned
+        );
+        assert_eq!(
+            graph.get_task(".evaluate-foo").unwrap().status,
+            Status::Abandoned
+        );
     }
 
     #[test]
-    fn test_verify_task_gets_full_agency_pipeline() {
-        // .verify-* tasks are pipeline-eligible system tasks — they should get
-        // .assign-*, .flip-*, and .evaluate-* scaffolded just like regular tasks.
+    fn test_verify_task_gets_assignment_but_no_eager_evaluation() {
+        // .verify-* tasks are pipeline-eligible for assignment; their own
+        // evaluation remains candidate-bound like any other source.
         let dir = tempdir().unwrap();
         let mut config = agency_config();
         config.agency.auto_assign = true;
@@ -1169,14 +1153,8 @@ mod tests {
             ".verify-* should depend on its .assign-* task"
         );
 
-        // .flip-.verify-my-task should exist
-        let flip = graph.get_task(".flip-.verify-my-task").unwrap();
-        assert!(flip.after.contains(&".verify-my-task".to_string()));
-        assert!(flip.tags.contains(&"flip".to_string()));
-
-        // .evaluate-.verify-my-task should exist
-        let eval = graph.get_task(".evaluate-.verify-my-task").unwrap();
-        assert!(eval.tags.contains(&"evaluation".to_string()));
+        assert!(graph.get_task(".flip-.verify-my-task").is_none());
+        assert!(graph.get_task(".evaluate-.verify-my-task").is_none());
     }
 
     #[test]
@@ -1227,7 +1205,7 @@ mod tests {
 
         let modified =
             scaffold_full_pipeline(dir.path(), &mut graph, ".verify-t1", "Verify: t1", &config);
-        // Should still create .evaluate-* even if .assign-* exists
+        // Existing assignment is wired to the source, but no evaluation row is created.
         assert!(modified);
 
         // Existing assign should be preserved
@@ -1421,7 +1399,7 @@ mod tests {
             );
         }
 
-        // Normal tasks SHOULD still get the full pipeline
+        // Normal tasks get assignment only; evaluation is lazy.
         assert!(scaffold_full_pipeline(
             dir.path(),
             &mut graph,
@@ -1430,8 +1408,8 @@ mod tests {
             &config
         ));
         assert!(graph.get_task(".assign-normal-task").is_some());
-        assert!(graph.get_task(".flip-normal-task").is_some());
-        assert!(graph.get_task(".evaluate-normal-task").is_some());
+        assert!(graph.get_task(".flip-normal-task").is_none());
+        assert!(graph.get_task(".evaluate-normal-task").is_none());
     }
 
     #[test]
@@ -1492,7 +1470,7 @@ mod tests {
 
     #[test]
     fn test_checker_downstream_of_shell_gets_pipeline() {
-        // A non-shell task depending on a shell task should still get full pipeline
+        // A non-shell task depending on a shell task still gets assignment.
         let dir = tempdir().unwrap();
         let mut config = agency_config();
         config.agency.auto_assign = true;
@@ -1515,7 +1493,7 @@ mod tests {
             scaffold_full_pipeline(dir.path(), &mut graph, "run-batch", "Run Batch", &config);
         assert!(!modified_shell);
 
-        // Checker task should get full pipeline
+        // Checker task gets assignment, never eager evaluation.
         let modified_checker = scaffold_full_pipeline(
             dir.path(),
             &mut graph,
@@ -1525,8 +1503,8 @@ mod tests {
         );
         assert!(modified_checker);
         assert!(graph.get_task(".assign-check-batch").is_some());
-        assert!(graph.get_task(".flip-check-batch").is_some());
-        assert!(graph.get_task(".evaluate-check-batch").is_some());
+        assert!(graph.get_task(".flip-check-batch").is_none());
+        assert!(graph.get_task(".evaluate-check-batch").is_none());
     }
 
     // --- freeform label inertness tests ---
@@ -1551,7 +1529,8 @@ mod tests {
     #[test]
     fn test_skip_eval_label_does_not_prevent_eval_creation() {
         let dir = tempdir().unwrap();
-        let config = agency_config();
+        let mut config = agency_config();
+        config.agency.flip_enabled = true;
         let mut graph = WorkGraph::new();
         let mut task = make_task("pulse-task", "Pulse Task");
         task.tags = vec!["skip-eval".to_string()];
@@ -1581,20 +1560,10 @@ mod tests {
 
         let modified =
             scaffold_full_pipeline(dir.path(), &mut graph, "pulse-task", "Pulse Task", &config);
-        assert!(modified, "freeform labels do not suppress scaffolding");
-
-        assert!(
-            graph.get_task(".assign-pulse-task").is_some(),
-            ".assign-* should be created for label-tagged tasks"
-        );
-        assert!(
-            graph.get_task(".flip-pulse-task").is_some(),
-            ".flip-* should be created for label-tagged tasks"
-        );
-        assert!(
-            graph.get_task(".evaluate-pulse-task").is_some(),
-            ".evaluate-* should be created for label-tagged tasks"
-        );
+        assert!(modified, "freeform labels do not suppress assignment");
+        assert!(graph.get_task(".assign-pulse-task").is_some());
+        assert!(graph.get_task(".flip-pulse-task").is_none());
+        assert!(graph.get_task(".evaluate-pulse-task").is_none());
     }
 
     #[test]

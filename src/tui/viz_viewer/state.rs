@@ -14432,9 +14432,46 @@ impl VizApp {
             lines.push(String::new());
         }
 
-        // ── Evaluation ──
+        // ── Hidden attempt-bound evaluation evidence ──
+        // Records never enter task_order or graph topology; the selected-task
+        // Detail action is the intentional reveal surface.
+        let mut rendered_eval = !task.evaluation_records.is_empty();
+        if rendered_eval {
+            lines.push("── Evaluation Evidence (hidden) ──".to_string());
+            for record in &task.evaluation_records {
+                lines.push(format!(
+                    "  {} · {:?} · {:?}",
+                    record.product.label(),
+                    record.policy.applicability,
+                    record.state
+                ));
+                lines.push(format!("  ID: {}", record.evaluation_id));
+                lines.push(format!(
+                    "  Candidate: {} · attempt {} · gen {} · fence {} · round {}",
+                    record.source.candidate_digest,
+                    record.source.source_attempt_id,
+                    record.source.generation,
+                    record.source.source_fence,
+                    record.source.finalization_round
+                ));
+                if let Some(route) = record.route.as_ref() {
+                    let exact = route
+                        .calls
+                        .iter()
+                        .map(|call| call.exact_route.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" → ");
+                    lines.push(format!("  Route: {} ({}, pinned)", exact, route.adapter));
+                }
+                if let Some(diagnostic) = record.diagnostic.as_ref() {
+                    lines.push(format!("  Diagnostic: {}", diagnostic));
+                }
+            }
+            lines.push(String::new());
+        }
+
+        // ── Legacy evaluation files ──
         let evals_dir = self.workgraph_dir.join("agency").join("evaluations");
-        let mut rendered_eval = false;
         if evals_dir.exists() {
             let prefix = format!("eval-{}-", task.id);
             if let Ok(entries) = std::fs::read_dir(&evals_dir) {

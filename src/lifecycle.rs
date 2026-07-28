@@ -34,6 +34,7 @@ pub enum ActorKind {
     WaitMatcher,
     AcceptanceController,
     EvaluationRunner,
+    Finalizer,
     Reconciler,
     Importer,
 }
@@ -170,6 +171,12 @@ pub enum TransitionKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         owner_id: Option<String>,
     },
+    /// The claim crossed its serialized launch gate. This is evidence that a
+    /// real source process was admitted, distinct from reservation or
+    /// admission deferral; it does not change compatibility status.
+    AttemptRunning {
+        launch_receipt: String,
+    },
     ReservationCancelled,
     AttemptSucceeded {
         /// `Some` means all currently-required acceptance evidence is present.
@@ -204,6 +211,15 @@ pub enum TransitionKind {
     },
     EvaluationEvidence {
         evidence_ref: String,
+    },
+    /// Immutable candidate + deterministic validation were durably published
+    /// for the exact still-running attempt. Evaluation policy may mint hidden
+    /// evidence records only from this authoritative event.
+    CandidateCheckpointed {
+        candidate_id: String,
+        manifest_cid: String,
+        validation_result_id: String,
+        finalization_round: u64,
     },
     ReconciliationIssue {
         issue_id: String,
@@ -240,6 +256,7 @@ impl TransitionKind {
     pub fn event_kind(&self) -> &'static str {
         match self {
             Self::AttemptReserved { .. } => "attempt-reserved",
+            Self::AttemptRunning { .. } => "attempt-running",
             Self::ReservationCancelled => "reservation-cancelled",
             Self::AttemptSucceeded { .. } => "attempt-succeeded",
             Self::AttemptFailed { .. } => "attempt-failed",
@@ -252,6 +269,7 @@ impl TransitionKind {
             Self::Abandoned => "abandoned",
             Self::AdmissionDeferred { .. } => "admission-deferred",
             Self::EvaluationEvidence { .. } => "evaluation-evidence",
+            Self::CandidateCheckpointed { .. } => "candidate-checkpointed",
             Self::ReconciliationIssue { .. } => "reconciliation-issue",
             Self::MessageObserved { .. } => "message-observed",
             Self::LegacyCheckpointImported => "legacy-checkpoint-imported",
@@ -480,6 +498,17 @@ impl LifecycleKernel {
                 });
                 new_state = Status::InProgress;
             }
+            TransitionKind::AttemptRunning { launch_receipt } => {
+                Self::require_actor(&request, &[ActorKind::Dispatcher, ActorKind::Reconciler])?;
+                Self::require_running_attempt(task, &request)?;
+                if launch_receipt.trim().is_empty() {
+                    return Err(TransitionRejection::new(
+                        "launch_receipt_missing",
+                        "attempt-running requires an authenticated launch receipt",
+                    ));
+                }
+                // Evidence only: AttemptReserved already owns InProgress.
+            }
             TransitionKind::ReservationCancelled => {
                 Self::require_actor(&request, &[ActorKind::Dispatcher, ActorKind::Reconciler])?;
                 Self::require_running_attempt(task, &request)?;
@@ -627,6 +656,27 @@ impl LifecycleKernel {
                 )?;
                 // Evidence handoff is append-only. Only a separate acceptance
                 // request may change the source generation.
+            }
+            TransitionKind::CandidateCheckpointed {
+                candidate_id,
+                manifest_cid,
+                validation_result_id,
+                finalization_round,
+            } => {
+                Self::require_actor(&request, &[ActorKind::Finalizer])?;
+                Self::require_running_attempt(task, &request)?;
+                if candidate_id.trim().is_empty()
+                    || manifest_cid.trim().is_empty()
+                    || validation_result_id.trim().is_empty()
+                    || *finalization_round == 0
+                {
+                    return Err(TransitionRejection::new(
+                        "candidate_binding_incomplete",
+                        "candidate checkpoint requires candidate, manifest, validation, and round",
+                    ));
+                }
+                // Evidence only. AttemptSucceeded remains the sole completion
+                // status writer and follows in the same graph commit.
             }
             TransitionKind::ReconciliationIssue { .. } => {
                 Self::require_actor(&request, &[ActorKind::Reconciler])?;

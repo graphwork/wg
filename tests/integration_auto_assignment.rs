@@ -299,6 +299,7 @@ fn build_assign_subgraph(dir: &Path) {
             meta_eval_attempts: 0,
             agency_dispatch: None,
             evaluation_lifecycle: None,
+            evaluation_records: vec![],
             spawn_failures: 0,
             dispatch_count: 0,
             tier: None,

@@ -75,11 +75,11 @@ fn setup_workgraph(tmp: &TempDir, tasks: Vec<Task>) -> PathBuf {
 }
 
 // ---------------------------------------------------------------------------
-// Validation criterion 1: wg done → PendingEval (when eval is scheduled)
+// Lazy migration: eager row names alone never create an acceptance gate.
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_wg_done_transitions_to_pending_eval() {
+fn test_wg_done_retires_stale_eager_evaluator_without_pending_eval() {
     let tmp = TempDir::new().unwrap();
 
     // Source task is in-progress; .evaluate-A is scheduled (Open) waiting on A.
@@ -108,18 +108,19 @@ fn test_wg_done_transitions_to_pending_eval() {
     let task = graph.get_task("a").unwrap();
     assert_eq!(
         task.status,
-        Status::PendingEval,
-        "wg done with .evaluate-X scheduled should land in PendingEval (got {:?})",
-        task.status
+        Status::Done,
+        "a pre-created row without an authenticated attempt/candidate cannot gate completion"
     );
 
-    // Eval status remains Open (it hasn't run yet).
+    // Evidence-free, unclaimed legacy scaffolding is retained for graph
+    // compatibility but safely terminalized so it can never become a zombie.
     let eval = graph.get_task(".evaluate-a").unwrap();
-    assert_eq!(eval.status, Status::Open);
+    assert_eq!(eval.status, Status::Abandoned);
+    assert!(task.evaluation_records.is_empty());
 }
 
 #[test]
-fn advisory_evaluator_is_structurally_done_not_pending_eval() {
+fn legacy_advisory_row_name_does_not_infer_evaluation_policy() {
     let tmp = TempDir::new().unwrap();
     let mut source = make_task("advisory", Status::InProgress);
     source.assigned = Some("test-agent".to_string());
@@ -142,21 +143,51 @@ fn advisory_evaluator_is_structurally_done_not_pending_eval() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(
-        String::from_utf8_lossy(&out.stdout).contains("advisory only"),
-        "{}",
-        String::from_utf8_lossy(&out.stdout)
-    );
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     let source = graph.get_task("advisory").unwrap();
     assert_eq!(source.status, Status::Done);
+    assert!(source.evaluation_lifecycle.is_none());
+    assert!(source.evaluation_records.is_empty());
     assert_eq!(
-        source
-            .evaluation_lifecycle
-            .as_ref()
-            .and_then(|lifecycle| lifecycle.gate_policy.as_ref())
-            .map(|policy| policy.applicability),
-        Some(worksgood::eval_lifecycle::EvaluationGateApplicability::Advisory)
+        graph.get_task(".evaluate-advisory").unwrap().status,
+        Status::Abandoned
+    );
+}
+
+#[test]
+fn historical_persisted_required_gate_remains_authoritative() {
+    let tmp = TempDir::new().unwrap();
+    let mut source = make_task("historical-gate", Status::InProgress);
+    source.assigned = Some("legacy-agent".to_string());
+    let mut lifecycle = worksgood::eval_lifecycle::EvaluationLifecycle::for_source(&source);
+    lifecycle.gate_policy = Some(worksgood::eval_lifecycle::EvaluationGatePolicy {
+        applicability: worksgood::eval_lifecycle::EvaluationGateApplicability::Required,
+        evaluator_threshold: Some(0.8),
+        flip_policy: worksgood::eval_lifecycle::FlipVerdictPolicy::NotScheduled,
+        flip_threshold: None,
+        flip_threshold_source: None,
+    });
+    source.evaluation_lifecycle = Some(lifecycle);
+    let wg_dir = setup_workgraph(&tmp, vec![source]);
+
+    let out = wg_cmd(
+        &wg_dir,
+        &[
+            "done",
+            "historical-gate",
+            "--ignore-unmerged-worktree",
+            "--skip-smoke",
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
+    assert_eq!(
+        graph.get_task("historical-gate").unwrap().status,
+        Status::PendingEval
     );
 }
 

@@ -180,6 +180,10 @@ struct TaskDetails {
     meta_eval_attempts: u32,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     evaluations: Vec<EvalSummary>,
+    /// Hidden attempt-bound records are omitted from graph/list topology but
+    /// are first-class detail evidence.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    evaluation_records: Vec<worksgood::evaluation::EvaluationRecord>,
     #[serde(skip_serializing_if = "Option::is_none")]
     evaluation_health: Option<worksgood::eval_lifecycle::EvaluationHealth>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -826,6 +830,7 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         rescued: task.rescued,
         meta_eval_attempts: task.meta_eval_attempts,
         evaluations,
+        evaluation_records: task.evaluation_records.clone(),
         evaluation_health: worksgood::eval_lifecycle::evaluation_health(&graph, id),
         evaluation_gate,
         evaluation_job_note,
@@ -1041,6 +1046,40 @@ fn print_human_readable(details: &TaskDetails) {
                         .unwrap_or(stderr);
                     println!("  Last error: {}", stderr.trim());
                 }
+            }
+        }
+    }
+
+    if !details.evaluation_records.is_empty() {
+        println!();
+        println!("Evaluation Evidence (hidden from graph/list):");
+        for record in &details.evaluation_records {
+            println!(
+                "  {} {:?} — {:?} ({})",
+                record.product.label(),
+                record.policy.applicability,
+                record.state,
+                record.evaluation_id
+            );
+            println!(
+                "    candidate: {} attempt={} generation={} fence={} round={}",
+                record.source.candidate_digest,
+                record.source.source_attempt_id,
+                record.source.generation,
+                record.source.source_fence,
+                record.source.finalization_round
+            );
+            if let Some(route) = record.route.as_ref() {
+                let routes = route
+                    .calls
+                    .iter()
+                    .map(|call| call.exact_route.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" → ");
+                println!("    route: {} ({}, pinned)", routes, route.adapter);
+            }
+            if let Some(diagnostic) = record.diagnostic.as_ref() {
+                println!("    diagnostic: {}", diagnostic);
             }
         }
     }
@@ -2070,6 +2109,7 @@ mod tests {
             rescued: false,
             meta_eval_attempts: 0,
             evaluations: vec![],
+            evaluation_records: vec![],
             evaluation_health: None,
             evaluation_gate: None,
             evaluation_job_note: None,

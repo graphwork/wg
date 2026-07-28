@@ -4304,7 +4304,9 @@ impl Default for AgencyConfig {
             eval_gate_threshold: default_eval_gate_threshold(),
             eval_gate_all: false,
             auto_rescue_on_eval_fail: default_auto_rescue_on_eval_fail(),
-            flip_enabled: true,
+            // Deep-readonly FLIP is selective. Enabling routine bounded
+            // evaluation must never infer a global deep observation run.
+            flip_enabled: false,
             flip_inference_model: None,
             flip_comparison_model: None,
             flip_verification_threshold: default_flip_verification_threshold(),

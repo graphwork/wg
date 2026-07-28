@@ -946,13 +946,13 @@ fn resolve_model_source_reports_tier_override() {
 }
 
 // ===========================================================================
-// Full pipeline creation tests (publish creates all 5 tasks atomically)
+// Lazy evaluation creation tests (publish creates assignment only)
 // ===========================================================================
 
 #[test]
-fn publish_creates_full_pipeline_all_tasks() {
-    // wg publish with all agency flags enabled creates pipeline tasks:
-    // .assign-*, main task (already exists), .flip-*, .evaluate-*
+fn publish_creates_assignment_but_no_evaluation_satellites() {
+    // Evaluation and FLIP are candidate-bound hidden records, even when both
+    // policies are enabled before publication.
     let tmp = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(&tmp);
 
@@ -974,10 +974,10 @@ fn publish_creates_full_pipeline_all_tasks() {
         show
     );
 
-    // Publish it — this should atomically create pipeline tasks
+    // Publish creates only the pre-execution assignment prerequisite.
     wg_ok(&wg_dir, &["publish", "my-feature"]);
 
-    // Load the graph and verify pipeline tasks exist
+    // Load the graph and verify the workspace remains uncluttered.
     use worksgood::parser::load_graph;
     let graph_path = wg_dir.join("graph.jsonl");
     let graph = load_graph(&graph_path).unwrap();
@@ -990,20 +990,20 @@ fn publish_creates_full_pipeline_all_tasks() {
         graph.get_task(".assign-my-feature").is_some(),
         ".assign-my-feature should be created by wg publish"
     );
+    assert!(graph.get_task(".flip-my-feature").is_none());
+    assert!(graph.get_task(".evaluate-my-feature").is_none());
     assert!(
-        graph.get_task(".flip-my-feature").is_some(),
-        ".flip-my-feature should be created by wg publish (FLIP enabled)"
-    );
-    assert!(
-        graph.get_task(".evaluate-my-feature").is_some(),
-        ".evaluate-my-feature should be created by wg publish"
+        graph
+            .get_task("my-feature")
+            .unwrap()
+            .evaluation_records
+            .is_empty()
     );
 }
 
 #[test]
-fn publish_creates_all_pipeline_edges_correctly() {
-    // Verify the full edge chain after publish:
-    // .assign-* → my-feature → .flip-* → .evaluate-*
+fn publish_creates_only_assignment_edge() {
+    // The only publish-time agency edge is assignment → source.
     let tmp = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(&tmp);
 
@@ -1040,21 +1040,8 @@ fn publish_creates_all_pipeline_edges_correctly() {
         main_task.after
     );
 
-    // .flip-* depends on main task
-    let flip = graph.get_task(".flip-my-feature").unwrap();
-    assert!(
-        flip.after.contains(&"my-feature".to_string()),
-        ".flip-* should depend on main task, got after: {:?}",
-        flip.after
-    );
-
-    // .evaluate-* depends on .flip-*
-    let eval = graph.get_task(".evaluate-my-feature").unwrap();
-    assert!(
-        eval.after.contains(&".flip-my-feature".to_string()),
-        ".evaluate-* should depend on .flip-*, got after: {:?}",
-        eval.after
-    );
+    assert!(graph.get_task(".flip-my-feature").is_none());
+    assert!(graph.get_task(".evaluate-my-feature").is_none());
 }
 
 #[test]

@@ -805,6 +805,10 @@ pub struct Task {
     /// terminal outcome.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evaluation_lifecycle: Option<crate::eval_lifecycle::EvaluationLifecycle>,
+    /// Hidden, attempt-bound evaluation evidence. These are projections on
+    /// the source, never ordinary graph nodes/edges/worker tasks.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evaluation_records: Vec<crate::evaluation::EvaluationRecord>,
     /// Number of consecutive spawn failures (spawn circuit breaker counter)
     #[serde(default, skip_serializing_if = "is_zero")]
     pub spawn_failures: u32,
@@ -951,6 +955,7 @@ impl Default for Task {
             meta_eval_attempts: 0,
             agency_dispatch: None,
             evaluation_lifecycle: None,
+            evaluation_records: Vec::new(),
             spawn_failures: 0,
             last_spawn_failure_at: None,
             tier: None,
@@ -1994,6 +1999,8 @@ struct TaskHelper {
     #[serde(default)]
     evaluation_lifecycle: Option<crate::eval_lifecycle::EvaluationLifecycle>,
     #[serde(default)]
+    evaluation_records: Vec<crate::evaluation::EvaluationRecord>,
+    #[serde(default)]
     spawn_failures: u32,
     #[serde(default)]
     last_spawn_failure_at: Option<String>,
@@ -2128,6 +2135,7 @@ impl<'de> Deserialize<'de> for Task {
             meta_eval_attempts: helper.meta_eval_attempts,
             agency_dispatch: helper.agency_dispatch,
             evaluation_lifecycle: helper.evaluation_lifecycle,
+            evaluation_records: helper.evaluation_records,
             spawn_failures: helper.spawn_failures,
             last_spawn_failure_at: helper.last_spawn_failure_at,
             tier: helper.tier,

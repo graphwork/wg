@@ -2770,3 +2770,10 @@ script = "scenarios/tui_help_modal_scroll.sh"
 owners = ["move-panel-shortcut"]
 description = "Candidate-binary real tmux/nested-PTY and SGR mouse flow for modal Help: proves the actual painted question-mark hit and keyboard shortcut open the same surface; Up/Down, PageUp/PageDown, Home/End, vertical wheel, and horizontal trackpad-equivalent events move/clamp rendered below-fold content with a visible range/thumb affordance without changing the underlying focus/selection/panel/scroll route; inside clicks are contained; outside down+up dismisses without click-through; Escape and resize restore exact workspace metadata; wide/narrow captures keep first-viewport Panel/move/activate/close/Help-scroll essentials legible while the persistent task bar has no Panel hint."
 timeout_seconds = 180
+
+[[scenario]]
+name = "lazy_evaluation_tui_evidence"
+script = "scenarios/lazy_evaluation_tui_evidence.sh"
+owners = ["implement-lazy-evaluation"]
+description = "Candidate-binary real tmux/TUI and credential-free Fake-Pi source flow: publishing a multi-task workspace creates zero `.evaluate-*`/`.flip-*` satellites or records; one real launch-permitted source reaches immutable candidate completion and atomically mints exactly one bounded advisory record; default Viz remains uncluttered; selecting another task cannot reveal the record while the actual exact-search/detail action reveals its attempt, candidate CID and pinned route; duplicate done plus service restart remain exactly once."
+timeout_seconds = 180
