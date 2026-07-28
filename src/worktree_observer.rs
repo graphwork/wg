@@ -1097,15 +1097,11 @@ pub fn read_projection(storage: &Path) -> Result<ObserverProjection> {
 /// entries are omitted here (their task-specific `wg show` path reports them as
 /// unavailable); this function never repairs or mutates observer state.
 pub fn list_projections(wg_dir: &Path) -> Vec<ObserverProjection> {
-    let attempts = wg_dir.join("attempts");
-    let Ok(entries) = fs::read_dir(attempts) else {
-        return Vec::new();
-    };
-    let mut projections = entries
-        .filter_map(std::result::Result::ok)
-        .take(256)
-        .filter_map(|entry| read_projection(&entry.path().join("worktree-observer")).ok())
-        .collect::<Vec<_>>();
+    let mut projections =
+        crate::attempt_runtime::list_component_dirs(wg_dir, "worktree-observer", 256)
+            .into_iter()
+            .filter_map(|path| read_projection(&path).ok())
+            .collect::<Vec<_>>();
     projections.sort_by(|a, b| {
         a.source
             .identity
@@ -1594,19 +1590,22 @@ pub fn restart_current_observers(wg_dir: &Path) -> Result<usize> {
     let executable = std::env::current_exe()?;
     let mut started = 0usize;
     for projection in list_projections(wg_dir).into_iter().take(256) {
-        if !source_still_current(
-            &wg_dir
-                .join("attempts")
-                .join(&projection.source.identity.attempt_id)
-                .join("worktree-observer"),
-            &projection,
-        ) {
+        let identity = &projection.source.identity;
+        let key = crate::attempt_runtime::AttemptRuntimeKey::new(
+            &identity.task_id,
+            identity.generation,
+            &identity.attempt_id,
+            identity.attempt_fence,
+            identity.worktree_lease_epoch,
+        );
+        let state_dir =
+            crate::attempt_runtime::component_for_update(wg_dir, &key, "worktree-observer")?;
+        if !state_dir.exists() {
             continue;
         }
-        let state_dir = wg_dir
-            .join("attempts")
-            .join(&projection.source.identity.attempt_id)
-            .join("worktree-observer");
+        if !source_still_current(&state_dir, &projection) {
+            continue;
+        }
         let lock_owner = watcher_lock_owner(&state_dir);
         if lock_owner.is_some_and(|owner| watcher_owner_is_live(owner, &state_dir)) {
             continue;
@@ -1652,12 +1651,15 @@ fn refresh_authority(
 }
 
 fn source_still_current(storage: &Path, projection: &ObserverProjection) -> bool {
-    let Some(wg_dir) = storage
-        .parent()
-        .and_then(Path::parent)
-        .and_then(Path::parent)
-    else {
-        return false;
+    let mut ancestor = Some(storage);
+    let wg_dir = loop {
+        let Some(path) = ancestor else {
+            return false;
+        };
+        if path.join("graph.jsonl").is_file() {
+            break path;
+        }
+        ancestor = path.parent();
     };
     let graph_path = wg_dir.join("graph.jsonl");
     let Ok(graph) = crate::parser::load_graph(&graph_path) else {

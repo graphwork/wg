@@ -741,28 +741,31 @@ pub fn load_for_task(wg_dir: &Path, task: &Task) -> LiveProgressProjection {
         out.phase = terminal_phase(task.status).unwrap_or(LivePhase::Unknown);
         return out;
     };
-    let pi_path = wg_dir
-        .join("attempts")
-        .join(&attempt.id)
-        .join("pi/state.json");
-    let observer_path = wg_dir
-        .join("attempts")
-        .join(&attempt.id)
-        .join("worktree-observer");
-    let watchdog = PiWatchdog::open(&pi_path).ok();
-    let observer = read_projection(&observer_path).ok().filter(|o| {
-        o.source.identity.task_id == task.id
-            && o.source.identity.generation == task.lifecycle.generation
-            && o.source.identity.attempt_id == attempt.id
-            && o.source.identity.attempt_fence == task.lifecycle.fence
-    });
+    let runtime_key = crate::attempt_runtime::AttemptRuntimeKey::for_attempt(task, attempt);
+    let watchdog = crate::attempt_runtime::resolve_component(wg_dir, &runtime_key, "pi/state.json")
+        .ok()
+        .flatten()
+        .and_then(|path| PiWatchdog::open(&path).ok());
+    let observer =
+        crate::attempt_runtime::resolve_component(wg_dir, &runtime_key, "worktree-observer")
+            .ok()
+            .flatten()
+            .and_then(|path| read_projection(&path).ok())
+            .filter(|o| {
+                o.source.identity.task_id == task.id
+                    && o.source.identity.generation == task.lifecycle.generation
+                    && o.source.identity.attempt_id == attempt.id
+                    && o.source.identity.attempt_fence == attempt.fence
+                    && o.source.identity.worktree_lease_epoch == attempt.fence
+            });
 
     if let Some(watchdog) = watchdog.as_ref() {
         let state = watchdog.state();
         if state.source.task_id == task.id
             && state.source.generation == task.lifecycle.generation
             && state.source.attempt_id == attempt.id
-            && state.source.attempt_fence == task.lifecycle.fence
+            && state.source.attempt_fence == attempt.fence
+            && state.source.worktree_lease_epoch == attempt.fence
         {
             out.source = Some(SourceTuple {
                 task: task.id.clone(),

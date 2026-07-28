@@ -99,11 +99,8 @@ grep -q 'merge.target_moved' <<<"$conflict" || loud_fail "conflict reason absent
 grep -q 'evaluation: request=.*policy=required.*binding=wgcid:.*read-only=true' <<<"$conflict" || loud_fail "candidate-bound read-only evaluation handoff absent: $conflict"
 [[ $(wc -c <"$project/incident/payload.txt") -eq 6144 ]] || loud_fail "conflict overwrote moved main"
 
-# Fixture attempts use the legacy task-local `attempt-0-1` spelling; clear
-# their watchdog-only fixture directory before the real spawned attempt so its
-# production bootstrap owns a fresh exact state root. Candidate/rescue refs are
-# independent and remain durable.
-rm -rf "$project/.wg/attempts/attempt-0-1"
+# Fixture and real spawned attempts may all use task-local `attempt-0-1`;
+# authoritative tuple namespaces keep their watchdog/observer evidence apart.
 
 # Actual daemon + generated wrapper + isolated worktree path. The Pi tool call
 # reserves intent while alive; only the wrapper's post-wait process-exit/settle

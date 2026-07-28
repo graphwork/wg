@@ -92,7 +92,9 @@ for id in settled safeexit; do
   out=$(capture "$s"); flat=$(tr -d '\n\r ' <<<"$out")
   grep -q 'prompts=1' <<<"$flat" || loud_fail "$id replay duplicated prompt: $out"
   grep -q 'terminal=false' <<<"$flat" || loud_fail "$id replay inferred terminal: $out"
-  marker="$project/.wg/attempts/$(wgrun show "$id" --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["lifecycle"]["current_attempt"]["id"])')/pi/session/fake-session.jsonl"
+  attempt=$(wgrun show "$id" --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["lifecycle"]["current_attempt"]["id"])')
+  runtime=$(attempt_runtime_dir "$project/.wg" "$id" "$attempt")
+  marker="$runtime/pi/session/fake-session.jsonl"
   [[ $(grep -c 'wg-pi-continuation' "$marker") -eq 1 ]] || loud_fail "$id session marker not exactly once"
   stop_fake "$s"
 done

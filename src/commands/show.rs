@@ -760,28 +760,43 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         .current_attempt
         .as_ref()
         .and_then(|attempt| {
-            worksgood::worktree_observer::read_projection(
-                &dir.join("attempts")
-                    .join(&attempt.id)
-                    .join("worktree-observer"),
-            )
-            .ok()
+            let key = worksgood::attempt_runtime::AttemptRuntimeKey::for_attempt(task, attempt);
+            worksgood::attempt_runtime::resolve_component(dir, &key, "worktree-observer")
+                .ok()
+                .flatten()
+                .and_then(|path| worksgood::worktree_observer::read_projection(&path).ok())
         })
         .filter(|projection| {
-            projection.source.identity.task_id == task.id
-                && projection.source.identity.generation == task.lifecycle.generation
-                && projection.source.identity.attempt_fence == task.lifecycle.fence
+            let identity = &projection.source.identity;
+            let attempt = task
+                .lifecycle
+                .current_attempt
+                .as_ref()
+                .expect("checked above");
+            identity.task_id == task.id
+                && identity.generation == attempt.generation
+                && identity.attempt_id == attempt.id
+                && identity.attempt_fence == attempt.fence
+                && identity.worktree_lease_epoch == attempt.fence
         });
 
     let activity_clocks = worktree_observer.clone().map(|projection| {
         worksgood::worktree_observer::activity_clocks_read_model(projection, None)
     });
     let pi_watchdog = task.lifecycle.current_attempt.as_ref().and_then(|attempt| {
-        worksgood::pi_watchdog::PiWatchdog::open(
-            &dir.join("attempts").join(&attempt.id).join("pi/state.json"),
-        )
-        .ok()
-        .map(|watchdog| watchdog.state().clone())
+        let key = worksgood::attempt_runtime::AttemptRuntimeKey::for_attempt(task, attempt);
+        worksgood::attempt_runtime::resolve_component(dir, &key, "pi/state.json")
+            .ok()
+            .flatten()
+            .and_then(|path| worksgood::pi_watchdog::PiWatchdog::open(&path).ok())
+            .map(|watchdog| watchdog.state().clone())
+            .filter(|state| {
+                state.source.task_id == task.id
+                    && state.source.generation == attempt.generation
+                    && state.source.attempt_id == attempt.id
+                    && state.source.attempt_fence == attempt.fence
+                    && state.source.worktree_lease_epoch == attempt.fence
+            })
     });
 
     let details = TaskDetails {

@@ -61,10 +61,8 @@ fn state_path(dir: &Path, task_id: &str) -> Result<PathBuf> {
         .current_attempt
         .as_ref()
         .context("task has no current attempt")?;
-    let canonical = dir
-        .join("attempts")
-        .join(&attempt.id)
-        .join("pi")
+    let runtime_key = worksgood::attempt_runtime::AttemptRuntimeKey::for_attempt(task, attempt);
+    let canonical = worksgood::attempt_runtime::component_for_update(dir, &runtime_key, "pi")?
         .join("state.json");
     if canonical.exists() {
         return Ok(canonical);
@@ -206,10 +204,19 @@ pub(crate) fn sync_lifecycle_process_authority(
 }
 
 fn sync_worktree_observer_process_epoch(dir: &Path, watchdog: &PiWatchdog) -> Result<()> {
-    let storage = dir
-        .join("attempts")
-        .join(&watchdog.state().source.attempt_id)
-        .join("worktree-observer");
+    let source = &watchdog.state().source;
+    let runtime_key = worksgood::attempt_runtime::AttemptRuntimeKey::new(
+        &source.task_id,
+        source.generation,
+        &source.attempt_id,
+        source.attempt_fence,
+        source.worktree_lease_epoch,
+    );
+    let storage =
+        worksgood::attempt_runtime::component_for_update(dir, &runtime_key, "worktree-observer")?;
+    if !storage.exists() {
+        return Ok(());
+    }
     if !storage.join("state.json").is_file() {
         return Ok(());
     }
@@ -502,7 +509,9 @@ fn bootstrap(dir: &Path, id: &str, agent_dir: &Path, pid: u32) -> Result<()> {
         .as_ref()
         .context("Pi bootstrap requires current attempt")?
         .clone();
-    let state_path = dir.join("attempts").join(&attempt.id).join("pi/state.json");
+    let runtime_key = worksgood::attempt_runtime::AttemptRuntimeKey::for_attempt(task, &attempt);
+    let state_dir = worksgood::attempt_runtime::component_for_update(dir, &runtime_key, "pi")?;
+    let state_path = state_dir.join("state.json");
     if state_path.exists() {
         return Ok(());
     }
@@ -868,7 +877,8 @@ fn fixture_init(dir: &Path, id: &str, worktree: &Path, now: i64) -> Result<()> {
         .as_ref()
         .context("fixture task must be claimed")?
         .clone();
-    let state_dir = dir.join("attempts").join(&attempt.id).join("pi");
+    let runtime_key = worksgood::attempt_runtime::AttemptRuntimeKey::for_attempt(task, &attempt);
+    let state_dir = worksgood::attempt_runtime::component_for_update(dir, &runtime_key, "pi")?;
     let session_dir = state_dir.join("session");
     std::fs::create_dir_all(&session_dir)?;
     let session_file = session_dir.join("fake-session.jsonl");

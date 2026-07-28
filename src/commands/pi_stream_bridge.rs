@@ -238,15 +238,34 @@ pub fn run(agent_dir: &Path, exit_code: i32, follow_pid: Option<u32>) -> Result<
 fn open_watchdog_for_agent(agent_dir: &Path) -> Option<worksgood::pi_watchdog::PiWatchdog> {
     let content = std::fs::read_to_string(agent_dir.join("metadata.json")).ok()?;
     let val: serde_json::Value = serde_json::from_str(&content).ok()?;
-    let attempt = val.get("attempt_id")?.as_str()?;
     let graph_dir = agent_dir.parent()?.parent()?;
-    let mut watchdog = worksgood::pi_watchdog::PiWatchdog::open(
-        &graph_dir
-            .join("attempts")
-            .join(attempt)
-            .join("pi/state.json"),
-    )
-    .ok()?;
+    let task_id = val
+        .get("task_id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| std::env::var("WG_TASK_ID").ok())?;
+    let graph = worksgood::parser::load_graph(graph_dir.join("graph.jsonl")).ok()?;
+    let task = graph.get_task(&task_id)?;
+    let attempt = task.lifecycle.current_attempt.as_ref()?;
+    if val.get("attempt_id")?.as_str()? != attempt.id {
+        return None;
+    }
+    let key = worksgood::attempt_runtime::AttemptRuntimeKey::for_attempt(task, attempt);
+    let state_path = worksgood::attempt_runtime::component_for_update(graph_dir, &key, "pi")
+        .ok()?
+        .join("state.json");
+    if !state_path.is_file() {
+        return None;
+    }
+    let mut watchdog = worksgood::pi_watchdog::PiWatchdog::open(&state_path).ok()?;
+    if watchdog.state().source.task_id != key.task_id
+        || watchdog.state().source.generation != key.generation
+        || watchdog.state().source.attempt_id != key.attempt_id
+        || watchdog.state().source.attempt_fence != key.attempt_fence
+        || watchdog.state().source.worktree_lease_epoch != key.worktree_lease_epoch
+    {
+        return None;
+    }
     // The native follower is not an independent epoch authority. Refuse all
     // progress unless lifecycle and watchdog agree on the exact current
     // process fence/identity; this also performs the one-time schema-v1 repair.

@@ -1133,6 +1133,38 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
             .into());
         }
     }
+    // --- Attempt runtime namespace preflight ---
+    // Attempt IDs are task-local. Inspect the prospective legacy flat slot
+    // before allocating output or creating/removing a worktree. Foreign
+    // historical evidence is preserved and ignored in favor of the exact
+    // tuple namespace; unattributable evidence stops here without reserving a
+    // lifecycle attempt, so the coordinator cannot probe IDs in a loop.
+    let prospective_runtime_key = worksgood::attempt_runtime::AttemptRuntimeKey::new(
+        task_id,
+        task.lifecycle.generation,
+        format!(
+            "attempt-{}-{}",
+            task.lifecycle.generation,
+            task.lifecycle.attempt_sequence.saturating_add(1)
+        ),
+        task.lifecycle.fence.saturating_add(1),
+        task.lifecycle.fence.saturating_add(1),
+    );
+    worksgood::attempt_runtime::preflight_namespace(dir, &prospective_runtime_key)?;
+    if let Some(foreign) =
+        worksgood::attempt_runtime::preflight_legacy_slot(dir, &prospective_runtime_key)?
+    {
+        eprintln!(
+            "[spawn] historical flat slot {} belongs to task '{}' fence {} lease {}; preserving it read-only and using exact runtime namespace {} for task '{}'",
+            foreign.attempt_id,
+            foreign.task_id,
+            foreign.attempt_fence,
+            foreign.worktree_lease_epoch,
+            worksgood::attempt_runtime::canonical_dir(dir, &prospective_runtime_key).display(),
+            task_id
+        );
+    }
+
     // --- Workspace reservation and mandatory isolation ---
     // The registry lock is held across collision-free ID allocation, output
     // reservation, worktree creation/verification, graph claim, gated process
@@ -1550,6 +1582,14 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
     // preparation. The closure re-checks status and assignment, closing the
     // stale-read race between concurrent dispatchers.
     let claim_snapshot = claim_task_for_spawn(&graph_path, task_id, &temp_agent_id)?;
+    let runtime_key = worksgood::attempt_runtime::AttemptRuntimeKey::new(
+        task_id,
+        claim_snapshot.generation,
+        claim_snapshot.attempt_id.clone(),
+        claim_snapshot.attempt_fence,
+        claim_snapshot.attempt_fence,
+    );
+    let mut attempt_runtime_dir: Option<PathBuf> = None;
     let mut observer_state_dir: Option<PathBuf> = None;
 
     // The wrapper is spawned behind an unpublished launch gate. It cannot
@@ -1559,6 +1599,8 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
     let mut registered_caches = Vec::new();
     let launch_result = (|| -> Result<(String, u32)> {
         spawn_fault("claim")?;
+        let runtime_dir = worksgood::attempt_runtime::ensure_namespace(dir, &runtime_key)?;
+        attempt_runtime_dir = Some(runtime_dir);
         workspace.prepare_launch()?;
         if needs_worktree {
             let info = worktree_info.as_ref().ok_or_else(|| {
@@ -1579,9 +1621,9 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
             // wrapper is spawned. The launch permit is published only after
             // this state is fsynced, so retained/reused bytes are baseline,
             // never manufactured activity for the new attempt.
-            let state_dir = dir
-                .join("attempts")
-                .join(&claim_snapshot.attempt_id)
+            let state_dir = attempt_runtime_dir
+                .as_ref()
+                .expect("attempt runtime namespace established")
                 .join("worktree-observer");
             let policy = worksgood::worktree_observer::CandidatePathPolicy::new(
                 task.deliverables.clone(),
@@ -1718,8 +1760,12 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
             metadata["effective_cwd"] = serde_json::json!(worktree.path.to_string_lossy());
         }
         metadata["attempt_id"] = serde_json::json!(&claim_snapshot.attempt_id);
+        metadata["attempt_generation"] = serde_json::json!(claim_snapshot.generation);
         metadata["attempt_fence"] = serde_json::json!(claim_snapshot.attempt_fence);
         metadata["worktree_lease_epoch"] = serde_json::json!(claim_snapshot.attempt_fence);
+        if let Some(ref runtime_dir) = attempt_runtime_dir {
+            metadata["attempt_runtime_dir"] = serde_json::json!(runtime_dir.to_string_lossy());
+        }
         if let Some(ref state_dir) = observer_state_dir {
             metadata["worktree_observer_state_dir"] =
                 serde_json::json!(state_dir.to_string_lossy());
@@ -2286,13 +2332,9 @@ fn attest_selected_prior_pi_leaf(
     selected_file: &Path,
     selected_leaf: &str,
 ) -> Result<()> {
-    let Ok(entries) = fs::read_dir(wg_dir.join("attempts")) else {
-        return Ok(());
-    };
     let mut found_session_proof = false;
-    for entry in entries {
-        let entry = entry?;
-        let state_path = entry.path().join("pi/state.json");
+    for state_path in worksgood::attempt_runtime::list_component_dirs(wg_dir, "pi/state.json", 1024)
+    {
         let Ok(watchdog) = worksgood::pi_watchdog::PiWatchdog::open(&state_path) else {
             continue;
         };

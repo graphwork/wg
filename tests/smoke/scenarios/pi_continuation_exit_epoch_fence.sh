@@ -34,7 +34,7 @@ state_path() {
   local id=$1
   local attempt
   attempt=$(wgrun show "$id" --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["lifecycle"]["current_attempt"]["id"])')
-  printf '%s/.wg/attempts/%s/pi/state.json' "$project" "$attempt"
+  printf '%s/pi/state.json' "$(attempt_runtime_dir "$project/.wg" "$id" "$attempt")"
 }
 assert_authority() {
   local id=$1 expected_terminal=$2

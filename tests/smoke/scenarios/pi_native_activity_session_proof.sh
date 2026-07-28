@@ -26,7 +26,8 @@ wgrun add native-proof --id native-proof -d $'Fake Pi native stream.\n\n## Valid
 wgrun claim native-proof >/dev/null
 wgrun pi-watchdog fixture-init native-proof --worktree "$worktree" --now 0 >/dev/null
 attempt=$(wgrun show native-proof --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["lifecycle"]["current_attempt"]["id"])')
-session_dir="$project/.wg/attempts/$attempt/pi/session"
+runtime=$(attempt_runtime_dir "$project/.wg" native-proof "$attempt")
+session_dir="$runtime/pi/session"
 bootstrap="$session_dir/fake-session.jsonl"
 substantive="$session_dir/2026-01-01T00-00-00Z_fake-session.jsonl"
 printf '%s\n%s\n' \
@@ -36,7 +37,7 @@ bootstrap_before=$(sha256sum "$bootstrap" | cut -d' ' -f1)
 
 agent_dir="$project/.wg/agents/fake-pi"
 mkdir -p "$agent_dir"
-printf '{"attempt_id":"%s","executor":"pi","model":"pi:fake:slow"}\n' "$attempt" >"$agent_dir/metadata.json"
+printf '{"task_id":"native-proof","attempt_id":"%s","executor":"pi","model":"pi:fake:slow"}\n' "$attempt" >"$agent_dir/metadata.json"
 : >"$agent_dir/raw_stream.jsonl"
 
 sleep 4 & child=$!
