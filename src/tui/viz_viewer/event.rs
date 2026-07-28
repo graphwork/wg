@@ -1759,12 +1759,21 @@ fn open_context_action_menu(app: &mut VizApp) {
                 selected: 0,
                 options: vec![
                     (
+                        'a',
+                        "Activity".into(),
+                        "Open the graph-wide live event feed".into(),
+                    ),
+                    (
                         'd',
                         "Dashboard".into(),
                         "Open the cached system overview".into(),
                     ),
                     ('c', "Config".into(), "Inspect merged configuration".into()),
-                    ('l', "Service log".into(), "Inspect daemon activity".into()),
+                    (
+                        'l',
+                        "Raw service log".into(),
+                        "Inspect daemon.log lines".into(),
+                    ),
                     (
                         'i',
                         "Service identity".into(),
@@ -1792,8 +1801,16 @@ fn activate_context_lane_control(app: &mut VizApp, lane: ContextLane) {
         app.restore_from_extreme();
     }
 
-    if app.current_context_lane() != lane {
-        app.activate_context_lane(lane);
+    let workspace_needs_primary = lane == ContextLane::Workspace
+        && (app.right_panel_tab != RightPanelTab::Dashboard
+            || (app.responsive_breakpoint == ResponsiveBreakpoint::Compact
+                && app.effective_compact_view() == super::state::SinglePanelView::Graph));
+    if app.current_context_lane() != lane || workspace_needs_primary {
+        if workspace_needs_primary {
+            app.show_inspector_tab(RightPanelTab::Dashboard);
+        } else {
+            app.activate_context_lane(lane);
+        }
     } else if !restored_full {
         match lane {
             ContextLane::Chat => app.open_coordinator_picker(),
@@ -1942,9 +1959,10 @@ fn execute_choice_dialog_option(
         ChoiceDialogAction::WorkspaceContext => {
             let tab = match idx {
                 0 => Some(RightPanelTab::Dashboard),
-                1 => Some(RightPanelTab::Config),
-                2 => Some(RightPanelTab::CoordLog),
-                3 => {
+                1 => Some(RightPanelTab::Firehose),
+                2 => Some(RightPanelTab::Config),
+                3 => Some(RightPanelTab::CoordLog),
+                4 => {
                     app.service_health.detail_open = true;
                     None
                 }
@@ -3828,8 +3846,8 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
             }
         }
 
-        // Dashboard: 'k' kills the selected agent instead of scrolling
-        KeyCode::Char('k') if app.right_panel_tab == RightPanelTab::Dashboard => {
+        // Cached Dashboard: 'k' kills the selected agent instead of scrolling.
+        KeyCode::Char('k') if app.right_panel_tab == RightPanelTab::Firehose => {
             if let Some(row) = app.dashboard.agent_rows.get(app.dashboard.selected_row) {
                 let agent_id = row.agent_id.clone();
                 app.exec_command(
@@ -3888,7 +3906,20 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
                     }
                 }
             } else if app.right_panel_tab == RightPanelTab::Dashboard {
-                // Drill-down: push Dashboard onto nav stack, switch to Output for selected agent
+                // The selected row owns an immutable task id; refreshes retain
+                // selection by stable event id and cannot retarget activation.
+                if let Some(task_id) = app
+                    .activity_feed
+                    .events
+                    .get(app.activity_feed.selected)
+                    .and_then(|event| event.task_id.clone())
+                {
+                    app.select_task_by_id_exact(&task_id);
+                    app.request_hud_detail_for_task(&task_id);
+                    app.right_panel_tab = RightPanelTab::Detail;
+                }
+            } else if app.right_panel_tab == RightPanelTab::Firehose {
+                // Drill-down from the secondary cached Dashboard.
                 if let Some(row) = app.dashboard.agent_rows.get(app.dashboard.selected_row) {
                     let agent_id = row.agent_id.clone();
                     app.nav_stack.push(NavEntry::Dashboard);
@@ -4028,8 +4059,8 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
             }
         }
 
-        // Dashboard tab: t = task detail, b = back
-        KeyCode::Char('t') if app.right_panel_tab == RightPanelTab::Dashboard => {
+        // Cached Dashboard: t = task detail, b = back.
+        KeyCode::Char('t') if app.right_panel_tab == RightPanelTab::Firehose => {
             // Jump to task detail for the selected agent's task (push Dashboard onto nav stack)
             if let Some(row) = app.dashboard.agent_rows.get(app.dashboard.selected_row) {
                 let task_id = row.task_id.clone();
@@ -4039,7 +4070,7 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
             }
         }
         KeyCode::Char('b')
-            if app.right_panel_tab == RightPanelTab::Dashboard
+            if app.right_panel_tab == RightPanelTab::Firehose
                 || app.right_panel_tab == RightPanelTab::Output
                 || app.right_panel_tab == RightPanelTab::Detail
                 || app.right_panel_tab == RightPanelTab::Log =>
@@ -4362,17 +4393,7 @@ fn right_panel_scroll_up(app: &mut VizApp, amount: usize) {
         RightPanelTab::Files => {
             // File browser handles its own scrolling.
         }
-        RightPanelTab::CoordLog => {
-            if !app.activity_feed.events.is_empty() {
-                app.activity_feed_scroll_up(amount);
-            } else {
-                app.coord_log_scroll_up(amount);
-            }
-        }
-        RightPanelTab::Firehose => {
-            app.firehose.auto_tail = false;
-            app.firehose.scroll = app.firehose.scroll.saturating_sub(amount);
-        }
+        RightPanelTab::CoordLog => app.coord_log_scroll_up(amount),
         RightPanelTab::Output => {
             if let Some(ref agent_id) = app.output_pane.active_agent_id.clone() {
                 let scroll_state = app
@@ -4387,7 +4408,8 @@ fn right_panel_scroll_up(app: &mut VizApp, amount: usize) {
                 scroll_state.auto_follow = false;
             }
         }
-        RightPanelTab::Dashboard => {
+        RightPanelTab::Dashboard => app.activity_feed_scroll_up(amount),
+        RightPanelTab::Firehose => {
             app.dashboard.selected_row = app.dashboard.selected_row.saturating_sub(amount);
         }
         RightPanelTab::Settings => {
@@ -4439,23 +4461,7 @@ fn right_panel_scroll_down(app: &mut VizApp, amount: usize) {
         RightPanelTab::Files => {
             // File browser handles its own scrolling.
         }
-        RightPanelTab::CoordLog => {
-            if !app.activity_feed.events.is_empty() {
-                app.activity_feed_scroll_down(amount);
-            } else {
-                app.coord_log_scroll_down(amount);
-            }
-        }
-        RightPanelTab::Firehose => {
-            app.firehose.scroll += amount;
-            let max = app
-                .firehose
-                .total_rendered_lines
-                .saturating_sub(app.firehose.viewport_height);
-            if app.firehose.scroll >= max {
-                app.firehose.auto_tail = true;
-            }
-        }
+        RightPanelTab::CoordLog => app.coord_log_scroll_down(amount),
         RightPanelTab::Output => {
             if let Some(ref agent_id) = app.output_pane.active_agent_id.clone() {
                 let scroll_state = app
@@ -4475,7 +4481,8 @@ fn right_panel_scroll_down(app: &mut VizApp, amount: usize) {
                 }
             }
         }
-        RightPanelTab::Dashboard => {
+        RightPanelTab::Dashboard => app.activity_feed_scroll_down(amount),
+        RightPanelTab::Firehose => {
             let max = app.dashboard.agent_rows.len().saturating_sub(1);
             app.dashboard.selected_row = (app.dashboard.selected_row + amount).min(max);
         }
@@ -4522,17 +4529,7 @@ fn right_panel_scroll_to_top(app: &mut VizApp) {
             }
         }
         RightPanelTab::Files => {}
-        RightPanelTab::CoordLog => {
-            if !app.activity_feed.events.is_empty() {
-                app.activity_feed_scroll_to_top();
-            } else {
-                app.coord_log_scroll_to_top();
-            }
-        }
-        RightPanelTab::Firehose => {
-            app.firehose.auto_tail = false;
-            app.firehose.scroll = 0;
-        }
+        RightPanelTab::CoordLog => app.coord_log_scroll_to_top(),
         RightPanelTab::Output => {
             if let Some(ref agent_id) = app.output_pane.active_agent_id.clone() {
                 let scroll_state = app
@@ -4544,7 +4541,8 @@ fn right_panel_scroll_to_top(app: &mut VizApp) {
                 scroll_state.auto_follow = false;
             }
         }
-        RightPanelTab::Dashboard => {
+        RightPanelTab::Dashboard => app.activity_feed_scroll_to_top(),
+        RightPanelTab::Firehose => {
             app.dashboard.selected_row = 0;
         }
         RightPanelTab::Settings => {
@@ -4586,17 +4584,7 @@ fn right_panel_scroll_to_bottom(app: &mut VizApp) {
             }
         }
         RightPanelTab::Files => {}
-        RightPanelTab::CoordLog => {
-            if !app.activity_feed.events.is_empty() {
-                app.activity_feed_scroll_to_bottom();
-            } else {
-                app.coord_log_scroll_to_bottom();
-            }
-        }
-        RightPanelTab::Firehose => {
-            app.firehose.auto_tail = true;
-            app.firehose.scroll = usize::MAX;
-        }
+        RightPanelTab::CoordLog => app.coord_log_scroll_to_bottom(),
         RightPanelTab::Output => {
             if let Some(ref agent_id) = app.output_pane.active_agent_id.clone() {
                 let scroll_state = app
@@ -4609,7 +4597,8 @@ fn right_panel_scroll_to_bottom(app: &mut VizApp) {
                 app.output_pane.has_new_content = false;
             }
         }
-        RightPanelTab::Dashboard => {
+        RightPanelTab::Dashboard => app.activity_feed_scroll_to_bottom(),
+        RightPanelTab::Firehose => {
             app.dashboard.selected_row = app.dashboard.agent_rows.len().saturating_sub(1);
         }
         RightPanelTab::Settings => {

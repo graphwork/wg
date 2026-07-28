@@ -5,7 +5,7 @@ use ratatui::prelude::*;
 use ratatui::widgets::{
     Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Tabs, Wrap,
 };
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::state::{
     ActivityEventKind, AppearanceChoice, ChoiceDialogState, ColorCapability, ConfigEditKind,
@@ -313,14 +313,13 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
         {
             app.request_agency_lifecycle();
         }
-        // Lazy-load coordinator log + activity feed on first switch to CoordLog tab.
+        // Activity is a graph-wide auxiliary projection and refreshes while
+        // visible; Service log remains the bounded raw daemon surface.
+        if app.right_panel_tab == RightPanelTab::Dashboard {
+            app.request_activity_feed();
+        }
         if app.right_panel_tab == RightPanelTab::CoordLog {
-            if app.coord_log.rendered_lines.is_empty() {
-                app.request_coordinator_log();
-            }
-            if app.activity_feed.events.is_empty() {
-                app.request_coordinator_log();
-            }
+            app.request_coordinator_log();
         }
         // Lazy-init file browser on first switch to Files tab.
         if app.right_panel_tab == RightPanelTab::Files && app.file_browser.is_none() {
@@ -3098,9 +3097,11 @@ fn render_context_row(frame: &mut Frame, app: &mut VizApp, area: Rect, _chat: bo
             .map(str::to_owned)
             .unwrap_or_else(|| "No task".to_string()),
         ContextLane::Workspace => match app.right_panel_tab {
+            RightPanelTab::Dashboard => "Activity".to_string(),
+            RightPanelTab::Firehose => "Dashboard".to_string(),
             RightPanelTab::Config => "Config".to_string(),
             RightPanelTab::Settings => "Settings".to_string(),
-            RightPanelTab::CoordLog => "Service".to_string(),
+            RightPanelTab::CoordLog => "Raw service log".to_string(),
             _ => "Workspace".to_string(),
         },
     };
@@ -3398,7 +3399,14 @@ fn render_legacy_context_row(frame: &mut Frame, app: &mut VizApp, area: Rect, ch
 
     let active = app.active_chat_view_identity();
     let selected = app.selected_task_id().map(str::to_owned);
-    let workspace = app.right_panel_tab == RightPanelTab::Dashboard || selected.is_none();
+    let workspace = matches!(
+        app.right_panel_tab,
+        RightPanelTab::Dashboard
+            | RightPanelTab::Firehose
+            | RightPanelTab::Config
+            | RightPanelTab::CoordLog
+            | RightPanelTab::Settings
+    ) || selected.is_none();
     let task_context = !chat
         && !workspace
         && matches!(
@@ -3860,7 +3868,7 @@ fn draw_right_panel(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             draw_coord_log_tab(frame, app, content_area);
         }
         RightPanelTab::Dashboard => {
-            draw_dashboard_tab(frame, app, content_area);
+            draw_activity_feed(frame, app, content_area);
         }
         RightPanelTab::Messages => {
             draw_messages_tab(frame, app, content_area);
@@ -3871,9 +3879,10 @@ fn draw_right_panel(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             }
             draw_settings_tab(frame, app, content_area);
         }
-        // Dead tabs — not reachable from the bar. No-op here so stray
-        // state still renders as empty rather than crashing.
-        RightPanelTab::Files | RightPanelTab::Firehose | RightPanelTab::Output => {}
+        // Firehose is retained as the secondary cached Dashboard destination
+        // in Workspace actions. Files/Output remain internal drill-down states.
+        RightPanelTab::Firehose => draw_dashboard_tab(frame, app, content_area),
+        RightPanelTab::Files | RightPanelTab::Output => {}
     }
 }
 
@@ -7082,7 +7091,7 @@ fn draw_messages_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     }
 }
 
-/// Draw the Coordinator Log tab (panel 7) — activity feed from operations.jsonl.
+/// Draw the raw Service Log tab (panel 7).
 fn draw_coord_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     let header_lines = build_coordinator_runtime_lines(app);
     let area = if !header_lines.is_empty() && area.height > 4 {
@@ -7095,33 +7104,23 @@ fn draw_coord_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         area
     };
 
-    // If we have activity feed events, render the semantic view.
-    // Otherwise fall back to the raw daemon.log display.
-    if !app.activity_feed.events.is_empty() {
-        draw_activity_feed(frame, app, area);
-        return;
-    }
-
-    // Fallback: raw daemon.log (original behavior).
     if app.coord_log.rendered_lines.is_empty() {
-        let msg = Paragraph::new(vec![
-            Line::from(Span::styled(
-                "Activity Feed",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            )),
-            Line::from(""),
-            Line::from(Span::styled(
-                "No activity yet.",
-                Style::default().fg(Color::DarkGray),
-            )),
-            Line::from(Span::styled(
-                "(Start the service with `wg service start`)",
-                Style::default().fg(Color::DarkGray),
-            )),
-        ]);
-        frame.render_widget(msg, area);
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::from(Span::styled(
+                    "Raw Service Log",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                )),
+                Line::from(""),
+                Line::from(Span::styled(
+                    "daemon.log is unavailable or contains no lines",
+                    Style::default().fg(Color::DarkGray),
+                )),
+            ]),
+            area,
+        );
         return;
     }
     let viewport_h = area.height as usize;
@@ -7257,100 +7256,200 @@ fn build_coordinator_runtime_lines(app: &VizApp) -> Vec<Line<'static>> {
     ]
 }
 
-/// Render the semantic activity feed from parsed operations.jsonl events.
+/// Render the graph-wide chronological activity projection. Storage and JSON
+/// work has already completed on the auxiliary lane; render only formats the
+/// cached bounded ring and the current clock (which advances idle ages).
 fn draw_activity_feed(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     let viewport_h = area.height as usize;
     app.activity_feed.viewport_height = viewport_h;
     if viewport_h == 0 {
         return;
     }
-    let wrap_width = area.width as usize;
-    let mut wrapped_lines: Vec<Line> = Vec::new();
 
-    for event in &app.activity_feed.events {
-        let (icon_color, icon_style) = activity_event_style(&event.kind, app.is_light_theme);
-        // Format: "HH:MM:SS icon summary"
-        let time_span = Span::styled(
-            format!("{} ", event.time_short),
-            Style::default().fg(Color::DarkGray),
-        );
-        let icon_span = Span::styled(format!("{} ", event.icon()), icon_style);
-        let summary_span = Span::styled(event.summary.clone(), Style::default().fg(icon_color));
-
-        let prefix_len = event.time_short.len() + 1 + event.icon().len() + 1;
-        let text_width = wrap_width.saturating_sub(prefix_len);
-
-        if text_width == 0 || event.summary.is_empty() {
-            wrapped_lines.push(Line::from(vec![time_span, icon_span, summary_span]));
-        } else if event.summary.width() > text_width {
-            let wrapped = word_wrap(&event.summary, text_width);
-            let indent = " ".repeat(prefix_len);
-            for (i, wl) in wrapped.iter().enumerate() {
-                if i == 0 {
-                    wrapped_lines.push(Line::from(vec![
-                        time_span.clone(),
-                        icon_span.clone(),
-                        Span::styled(wl.to_string(), Style::default().fg(icon_color)),
-                    ]));
-                } else {
-                    wrapped_lines.push(Line::from(Span::styled(
-                        format!("{}{}", indent, wl),
-                        Style::default().fg(icon_color),
-                    )));
-                }
-            }
-        } else {
-            wrapped_lines.push(Line::from(vec![time_span, icon_span, summary_span]));
+    let mut header = vec![Span::styled(
+        "⌂ Activity",
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    )];
+    if !app.activity_feed.auto_tail {
+        header.push(Span::styled(
+            " · paused",
+            Style::default().fg(Color::Yellow),
+        ));
+        if app.activity_feed.unseen > 0 {
+            header.push(Span::styled(
+                format!(" · {} unseen · End to follow", app.activity_feed.unseen),
+                Style::default().fg(Color::Yellow),
+            ));
         }
+    } else {
+        header.push(Span::styled(" · live", Style::default().fg(Color::Green)));
+    }
+    let health = if app.activity_feed.malformed > 0 {
+        format!(
+            " · {} malformed record(s) skipped",
+            app.activity_feed.malformed
+        )
+    } else {
+        String::new()
+    };
+    if !health.is_empty() {
+        header.push(Span::styled(health, Style::default().fg(Color::Yellow)));
+    }
+    frame.render_widget(
+        Paragraph::new(Line::from(header)),
+        Rect { height: 1, ..area },
+    );
+    if area.height <= 1 {
+        return;
+    }
+    let body = Rect {
+        y: area.y + 1,
+        height: area.height - 1,
+        ..area
+    };
+    let body_height = body.height as usize;
+
+    if app.activity_feed.events.is_empty() {
+        let unavailable = if app.activity_feed.unavailable.is_empty() {
+            "all projections are available; this graph is truly eventless".to_string()
+        } else {
+            format!(
+                "event projections unavailable: {}",
+                app.activity_feed.unavailable.join(", ")
+            )
+        };
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::from(""),
+                Line::from(Span::styled(
+                    "No graph activity evidence.",
+                    Style::default().fg(Color::DarkGray),
+                )),
+                Line::from(Span::styled(
+                    unavailable,
+                    Style::default().fg(Color::DarkGray),
+                )),
+            ]),
+            body,
+        );
+        return;
     }
 
-    let total_lines = wrapped_lines.len();
-    app.activity_feed.total_wrapped_lines = total_lines;
-    let scroll = app
+    let total = app.activity_feed.events.len();
+    app.activity_feed.total_wrapped_lines = total;
+    if app.activity_feed.auto_tail {
+        app.activity_feed.selected = total.saturating_sub(1);
+        app.activity_feed.scroll = total.saturating_sub(body_height);
+    } else {
+        if app.activity_feed.selected < app.activity_feed.scroll {
+            app.activity_feed.scroll = app.activity_feed.selected;
+        }
+        if app.activity_feed.selected >= app.activity_feed.scroll + body_height {
+            app.activity_feed.scroll = app.activity_feed.selected + 1 - body_height;
+        }
+        app.activity_feed.scroll = app
+            .activity_feed
+            .scroll
+            .min(total.saturating_sub(body_height));
+    }
+
+    let now = chrono::Utc::now().timestamp_millis();
+    let compact = body.width < 72;
+    let very_narrow = body.width < 44;
+    let mut lines = Vec::with_capacity(body_height);
+    for (index, event) in app
         .activity_feed
-        .scroll
-        .min(total_lines.saturating_sub(viewport_h));
-    let end = (scroll + viewport_h).min(total_lines);
-    let visible_lines: Vec<Line> = wrapped_lines[scroll..end].to_vec();
-    let paragraph = Paragraph::new(visible_lines);
-    frame.render_widget(paragraph, area);
-    if total_lines > viewport_h && app.panel_scrollbar_visible() {
+        .events
+        .iter()
+        .enumerate()
+        .skip(app.activity_feed.scroll)
+        .take(body_height)
+    {
+        let selected = index == app.activity_feed.selected;
+        let (_, icon_style) = activity_event_style(&event.kind, app.is_light_theme);
+        let age_clock = format!("{} · {}", event.relative_age_at(now), event.local_clock());
+        let count = if event.count > 1 {
+            format!(" ×{}", event.count)
+        } else {
+            String::new()
+        };
+        let authority = if very_narrow {
+            match event.authority {
+                super::state::ActivityAuthority::Observed => "obs",
+                super::state::ActivityAuthority::Proven => "proof",
+                super::state::ActivityAuthority::Control => "ctl",
+            }
+        } else {
+            event.authority.label()
+        };
+        let identity = event.identity();
+        let text = if compact {
+            format!(
+                "{age_clock} {} {identity} · {authority} · {}{count}",
+                event.icon(),
+                event.summary
+            )
+        } else {
+            format!(
+                "{age_clock}  {}  {identity}  [{authority}]  {}{count}",
+                event.icon(),
+                event.summary
+            )
+        };
+        let bounded = truncate_to_width(&text, body.width as usize);
+        let style = if selected {
+            Style::default().fg(Color::Black).bg(Color::Cyan)
+        } else {
+            icon_style
+        };
+        lines.push(Line::from(Span::styled(bounded, style)));
+    }
+    frame.render_widget(Paragraph::new(lines), body);
+    if total > body_height && app.panel_scrollbar_visible() {
         draw_panel_scrollbar(
             frame,
             app,
-            area,
-            total_lines.saturating_sub(viewport_h),
-            scroll,
+            body,
+            total.saturating_sub(body_height),
+            app.activity_feed.scroll,
         );
     }
 }
 
+fn truncate_to_width(text: &str, width: usize) -> String {
+    if text.width() <= width {
+        return text.to_string();
+    }
+    if width <= 1 {
+        return "…".chars().take(width).collect();
+    }
+    let mut out = String::new();
+    for ch in text.chars() {
+        if out.width() + ch.width().unwrap_or(0) >= width {
+            break;
+        }
+        out.push(ch);
+    }
+    out.push('…');
+    out
+}
+
 /// Return (foreground color, icon Style) for an activity event kind.
 fn activity_event_style(kind: &ActivityEventKind, is_light: bool) -> (Color, Style) {
-    match kind {
-        ActivityEventKind::TaskCreated => (Color::Blue, Style::default().fg(Color::Blue)),
-        ActivityEventKind::StatusChange => (Color::Yellow, Style::default().fg(Color::Yellow)),
-        ActivityEventKind::AgentSpawned => (Color::Green, Style::default().fg(Color::Green)),
-        ActivityEventKind::AgentCompleted => (
-            Color::Green,
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD),
-        ),
-        ActivityEventKind::AgentFailed => (
-            Color::Red,
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-        ),
-        ActivityEventKind::CoordinatorTick => {
-            (Color::DarkGray, Style::default().fg(Color::DarkGray))
-        }
-        ActivityEventKind::VerificationResult => (Color::Cyan, Style::default().fg(Color::Cyan)),
-        ActivityEventKind::Compact => (Color::Magenta, Style::default().fg(Color::Magenta)),
-        ActivityEventKind::UserAction => {
-            let c = text_primary(is_light);
-            (c, Style::default().fg(c))
-        }
-    }
+    let color = match kind {
+        ActivityEventKind::Task => Color::Blue,
+        ActivityEventKind::Lifecycle => Color::Yellow,
+        ActivityEventKind::Agent => Color::Green,
+        ActivityEventKind::Native => Color::Magenta,
+        ActivityEventKind::Worktree => Color::LightBlue,
+        ActivityEventKind::Validation => Color::Cyan,
+        ActivityEventKind::Finalization => Color::Green,
+        ActivityEventKind::Service => Color::DarkGray,
+        ActivityEventKind::Message => text_primary(is_light),
+    };
+    (color, Style::default().fg(color))
 }
 
 fn draw_dashboard_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {

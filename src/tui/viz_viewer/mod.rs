@@ -1,3 +1,4 @@
+pub mod activity;
 pub mod async_fs;
 pub mod auxiliary;
 pub mod bootstrap;

@@ -20,6 +20,7 @@ pub(crate) enum Kind {
     Log,
     Messages,
     Agency,
+    Activity,
     CoordinatorLog,
     Firehose,
     Output,
