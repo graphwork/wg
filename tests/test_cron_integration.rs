@@ -321,6 +321,7 @@ fn create_test_task() -> Task {
         meta_eval_attempts: 0,
         agency_dispatch: None,
         evaluation_lifecycle: None,
+        evaluation_records: vec![],
         spawn_failures: 0,
         last_spawn_failure_at: None,
         dispatch_count: 0,

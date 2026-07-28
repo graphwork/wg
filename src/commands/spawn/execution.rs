@@ -548,19 +548,61 @@ fn publish_launch_permit_for_claim(
         let valid = graph.get_task(task_id).is_some_and(|task| {
             task.status == Status::InProgress && task.assigned.as_deref() == Some(agent_id)
         });
-        outcome = Some(if valid {
-            // Publish while the graph lock is still held. The claim and permit
-            // therefore have one commit point: another dispatcher cannot
-            // unclaim/reassign between the ownership check and handler launch.
-            release_launch_gate(output_dir, token)
-        } else {
-            Err(anyhow::anyhow!(
+        if !valid {
+            outcome = Some(Err(anyhow::anyhow!(
                 "task '{}' claim ownership changed before launch (expected status=in-progress assigned={}); refusing to release handler gate",
                 task_id,
                 agent_id
-            ))
-        });
-        false
+            )));
+            return false;
+        }
+
+        // Prepare the authenticated AttemptRunning transition while the graph
+        // lock is held, before releasing the child. If either the transition or
+        // gate release fails, returning false discards the in-memory transition
+        // and the graph remains at AttemptReserved. Admission deferral never
+        // reaches this point.
+        let task = graph
+            .get_task_mut(task_id)
+            .expect("ownership check established task existence");
+        let attempt_id = task
+            .lifecycle
+            .current_attempt
+            .as_ref()
+            .map(|attempt| attempt.id.clone())
+            .unwrap_or_else(|| "legacy".to_string());
+        let launch_receipt = format!(
+            "b3:{}",
+            blake3::hash(format!("{task_id}\0{attempt_id}\0{agent_id}\0{token}").as_bytes())
+                .to_hex()
+        );
+        let request = TransitionRequest::new(
+            TransitionKind::AttemptRunning {
+                launch_receipt: launch_receipt.clone(),
+            },
+            LifecycleActor {
+                kind: ActorKind::Dispatcher,
+                id: "spawn-launch-gate".to_string(),
+            },
+            "launch_permitted",
+            format!("attempt-running:{task_id}:{attempt_id}"),
+        )
+        .expecting(FenceExpectation::current(task))
+        .with_evidence(launch_receipt);
+        if let Err(error) = apply_transition(task, request) {
+            outcome = Some(Err(anyhow::anyhow!(error)));
+            return false;
+        }
+        match release_launch_gate(output_dir, token) {
+            Ok(()) => {
+                outcome = Some(Ok(()));
+                true
+            }
+            Err(error) => {
+                outcome = Some(Err(error));
+                false
+            }
+        }
     })
     .context("failed to lock/recheck task claim before launch")?;
     outcome.ok_or_else(|| anyhow::anyhow!("task claim launch check produced no outcome"))?
@@ -6424,6 +6466,44 @@ mod tests {
         assert_eq!(metadata["isolation_mode"], "shared-explicitly-configured");
         assert_eq!(metadata["worktree_isolation_enabled"], false);
         terminate_spawn(result.pid);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn launch_gate_release_records_authenticated_running_attempt() {
+        let _global = GlobalConfigGuard::isolated();
+        let project = init_spawn_project(&["launch-proof"], false);
+        let graph_path = project.path().join(".wg/graph.jsonl");
+        claim_task_for_spawn(&graph_path, "launch-proof", "agent-1").unwrap();
+        let output_dir = project.path().join(".wg/agents/launch-proof-check");
+        fs::create_dir_all(&output_dir).unwrap();
+
+        publish_launch_permit_for_claim(
+            &graph_path,
+            "launch-proof",
+            "agent-1",
+            &output_dir,
+            "permit-token",
+        )
+        .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(output_dir.join(LAUNCH_GATE_FILE)).unwrap(),
+            "permit-token"
+        );
+        let graph = load_graph(&graph_path).unwrap();
+        let task = graph.get_task("launch-proof").unwrap();
+        assert!(worksgood::evaluation::has_authenticated_running_attempt(
+            task
+        ));
+        assert_eq!(
+            task.lifecycle
+                .audit
+                .iter()
+                .filter(|event| event.event_kind == "attempt-running")
+                .count(),
+            1
+        );
     }
 
     #[test]

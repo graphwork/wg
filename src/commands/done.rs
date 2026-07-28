@@ -1512,9 +1512,10 @@ fn run_smoke_gate(
 }
 
 /// Snapshot the gate meaning that the user will see after `wg done`.
-/// Advisory evaluator satellites remain free to run, but their source never
-/// enters `PendingEval`; every source that does enter `PendingEval` is a real
-/// hard gate with attempt-pinned thresholds.
+/// New policy is eligible only after the authoritative running-attempt proof;
+/// historical persisted gate snapshots remain readable and drain unchanged.
+/// Every source that enters `PendingEval` therefore has a real hard gate with
+/// attempt-pinned thresholds rather than an eager satellite inferred by name.
 fn completion_gate_policy(
     graph: &worksgood::graph::WorkGraph,
     id: &str,
@@ -1531,62 +1532,12 @@ fn completion_gate_policy(
     {
         return Some(policy);
     }
-    let eval_id = format!(".evaluate-{id}");
-    let evaluator = graph.get_task(&eval_id)?;
-    let hard_gate = config.agency.eval_gate_threshold.is_some()
-        && (config.agency.eval_gate_all
-            || source
-                .description
-                .as_deref()
-                .map(crate::commands::deliverables::parse_deliverables)
-                .is_some_and(|deliverables| !deliverables.is_empty()));
-    let flip_id = format!(".flip-{id}");
-    let flip_persisted = evaluator.after.contains(&flip_id);
-
-    if !hard_gate {
-        return Some(worksgood::eval_lifecycle::EvaluationGatePolicy {
-            applicability: worksgood::eval_lifecycle::EvaluationGateApplicability::Advisory,
-            evaluator_threshold: None,
-            flip_policy: if flip_persisted {
-                worksgood::eval_lifecycle::FlipVerdictPolicy::Advisory
-            } else {
-                worksgood::eval_lifecycle::FlipVerdictPolicy::NotScheduled
-            },
-            flip_threshold: None,
-            flip_threshold_source: None,
-        });
+    if !worksgood::evaluation::has_authenticated_running_attempt(source) {
+        return None;
     }
-
-    let evaluator_threshold = config
-        .agency
-        .eval_gate_threshold
-        .expect("hard_gate requires configured threshold");
-    let (flip_threshold, flip_threshold_source) = if flip_persisted {
-        if let Some(threshold) = config.agency.flip_verification_threshold {
-            (
-                Some(threshold),
-                Some(worksgood::eval_lifecycle::FlipThresholdSource::FlipVerificationThreshold),
-            )
-        } else {
-            (
-                Some(evaluator_threshold),
-                Some(worksgood::eval_lifecycle::FlipThresholdSource::EvaluatorThreshold),
-            )
-        }
-    } else {
-        (None, None)
-    };
-    Some(worksgood::eval_lifecycle::EvaluationGatePolicy {
-        applicability: worksgood::eval_lifecycle::EvaluationGateApplicability::Required,
-        evaluator_threshold: Some(evaluator_threshold),
-        flip_policy: if flip_persisted {
-            worksgood::eval_lifecycle::FlipVerdictPolicy::Required
-        } else {
-            worksgood::eval_lifecycle::FlipVerdictPolicy::NotScheduled
-        },
-        flip_threshold,
-        flip_threshold_source,
-    })
+    worksgood::evaluation::LazyEvaluationSelection::resolve(source, config)
+        .ok()?
+        .gate_policy()
 }
 
 fn pick_done_target_status(
@@ -1661,6 +1612,13 @@ fn run_inner(
 
     if task.status == Status::Done {
         println!("Task '{}' is already done", id);
+        return Ok(());
+    }
+    if task.status == Status::PendingEval {
+        println!(
+            "Task '{}' candidate is already complete and awaiting evaluation evidence",
+            id
+        );
         return Ok(());
     }
 
@@ -2542,6 +2500,8 @@ fn run_inner(
     // untracked and deleted source through a private Git index, validates that
     // immutable descriptor, and mechanically merges only those exact bytes.
     let mut finalization_evidence: Vec<String> = Vec::new();
+    let mut finalized_candidate: Option<(worksgood::finalization::CandidateDescriptor, String)> =
+        None;
     if let Some(wt) = detect_worktree(dir) {
         let context = match crate::commands::finalize::context_from_current(
             dir,
@@ -2596,6 +2556,15 @@ fn run_inner(
                 .result_id
                 .clone(),
         ]);
+        finalized_candidate = Some((
+            candidate.clone(),
+            checkpoint
+                .validation
+                .as_ref()
+                .context("candidate validation receipt missing")?
+                .result_id
+                .clone(),
+        ));
         let merged = worksgood::finalization::merge_candidate(&store, candidate)?;
         if let Some(conflict) = merged.merge_conflict.as_ref() {
             anyhow::bail!(
@@ -2656,10 +2625,61 @@ fn run_inner(
     let mut completed_with_advisory_eval = false;
     let mut gate_snapshot_error: Option<String> = None;
     let graph = modify_graph(&path, |graph| {
-        // Decide and snapshot gate meaning BEFORE taking a mutable borrow. A
-        // terminal evaluator without exact evidence is still a hard gate; an
-        // advisory evaluator never places the source in PendingEval.
-        let gate_policy = completion_gate_policy(graph, &id_owned, &completion_config);
+        // Lazy eligibility is derived from the exact candidate + launch proof,
+        // never status alone. Resolve both products from one immutable source
+        // snapshot before taking the mutable completion borrow.
+        let source_snapshot = match graph.get_task(&id_owned) {
+            Some(task) => task.clone(),
+            None => return false,
+        };
+        let selection = match worksgood::evaluation::LazyEvaluationSelection::resolve(
+            &source_snapshot,
+            &completion_config,
+        ) {
+            Ok(selection) => selection,
+            Err(error) => {
+                gate_snapshot_error = Some(format!("{error:#}"));
+                return false;
+            }
+        };
+        let source_candidate = finalized_candidate.as_ref().and_then(|(candidate, validation)| {
+            worksgood::evaluation::has_authenticated_running_attempt(&source_snapshot).then(|| {
+                worksgood::evaluation::SourceCandidateRef {
+                    task_id: id_owned.clone(),
+                    generation: candidate.generation,
+                    source_attempt_id: candidate.attempt_id.clone(),
+                    source_fence: candidate.attempt_fence,
+                    finalization_round: candidate.candidate_version,
+                    candidate_digest: candidate.candidate_id.clone(),
+                    candidate_manifest_digest: candidate.content_manifest_cid.clone(),
+                    dependency_revision_digest:
+                        worksgood::evaluation::dependency_revision_digest(
+                            graph,
+                            &source_snapshot,
+                        )
+                        .unwrap_or_else(|_| "b3:dependency-digest-unavailable".to_string()),
+                    validation_result_id: validation.clone(),
+                }
+            })
+        });
+        // Any evidence-free, unclaimed eager rows are historical scaffolding,
+        // not work that may outlive this completion transaction. Rows carrying
+        // claims/verdicts remain untouched and readable on the legacy path.
+        crate::commands::eval_scaffold::retire_stale_legacy_satellites(
+            graph,
+            &id_owned,
+            true,
+        );
+        let gate_policy = if source_candidate.is_some() {
+            selection.gate_policy()
+        } else {
+            // Compatibility only: a previously persisted gate snapshot is
+            // authoritative. Mere `.evaluate-*`/`.flip-*` row names are not.
+            source_snapshot
+                .evaluation_lifecycle
+                .as_ref()
+                .and_then(|lifecycle| lifecycle.gate_policy.clone())
+        };
         let target_status = pick_done_target_status(&id_owned, gate_policy.as_ref());
         let advisory_evaluation = gate_policy.as_ref().is_some_and(|policy| {
             policy.applicability
@@ -2671,10 +2691,40 @@ fn run_inner(
             None => return false,
         };
 
-        // Re-check: another writer may have marked it Done already
+        // Re-check: another writer may have marked it Done already.
         if task.status == Status::Done {
             already_done = true;
             return false;
+        }
+
+        if let Some(source) = source_candidate.as_ref() {
+            let mut request = TransitionRequest::new(
+                TransitionKind::CandidateCheckpointed {
+                    candidate_id: source.candidate_digest.clone(),
+                    manifest_cid: source.candidate_manifest_digest.clone(),
+                    validation_result_id: source.validation_result_id.clone(),
+                    finalization_round: source.finalization_round,
+                },
+                LifecycleActor {
+                    kind: worksgood::lifecycle::ActorKind::Finalizer,
+                    id: "candidate-finalizer".to_string(),
+                },
+                "candidate_checkpointed",
+                format!(
+                    "candidate-checkpointed:{}:{}:{}",
+                    id_owned, source.source_attempt_id, source.candidate_digest
+                ),
+            )
+            .expecting(FenceExpectation::current(task));
+            request.evidence_refs.extend([
+                source.candidate_digest.clone(),
+                source.candidate_manifest_digest.clone(),
+                source.validation_result_id.clone(),
+            ]);
+            if let Err(error) = apply_transition(task, request) {
+                gate_snapshot_error = Some(error.to_string());
+                return false;
+            }
         }
 
         if let Some(policy) = gate_policy
@@ -2686,6 +2736,18 @@ fn run_inner(
                 } else {
                     worksgood::eval_lifecycle::EvaluationGateOutcome::AdvisoryCompleted
                 },
+            )
+        {
+            gate_snapshot_error = Some(format!("{error:#}"));
+            return false;
+        }
+
+        if let Some(source) = source_candidate.as_ref()
+            && let Err(error) = worksgood::evaluation::mint_for_candidate(
+                task,
+                source,
+                &selection,
+                &completion_config,
             )
         {
             gate_snapshot_error = Some(format!("{error:#}"));
@@ -2783,11 +2845,11 @@ fn run_inner(
             user: Some(worksgood::current_user()),
             message: match target_status {
                 Status::PendingEval => {
-                    "Task pending required evaluation gate (agent reported done; awaiting exact attempt-bound `.flip-*`/`.evaluate-*` verdicts)"
+                    "Task pending required evaluation gate (agent reported done; awaiting exact attempt-bound hidden evaluation evidence)"
                         .to_string()
                 }
                 _ if advisory_evaluation => {
-                    "Task marked as done; scheduled evaluator is advisory evidence only (execution is not a quality pass)".to_string()
+                    "Task marked as done; hidden bounded evaluation record is advisory evidence only (execution is not a quality pass)".to_string()
                 }
                 _ if converged_accepted => "Task marked as done (converged)".to_string(),
                 _ if converged => {
@@ -2890,12 +2952,12 @@ fn run_inner(
         }
     } else if transitioned_to_pending_eval {
         println!(
-            "Marked '{}' as pending-eval — required gate awaiting exact source-attempt FLIP/evaluator verdicts before downstream tasks unblock",
+            "Marked '{}' as pending-eval — required gate awaiting exact source-attempt hidden evaluation evidence before downstream tasks unblock",
             id
         );
     } else if completed_with_advisory_eval {
         println!(
-            "Marked '{}' as done — `.evaluate-{}` is advisory only; its execution is not a quality pass",
+            "Marked '{}' as done — bounded evaluation evidence is advisory only; inspect it in `wg show {}` or the TUI Detail pane",
             id, id
         );
     } else {
@@ -2947,10 +3009,9 @@ fn run_inner(
         }
     }
 
-    // Capture task output (git diff, artifacts, log) for evaluation.
-    // When auto_evaluate is enabled, the coordinator creates an evaluation task
-    // in the graph that becomes ready once this task is done; the captured output
-    // feeds that evaluator.
+    // Capture task output (git diff, artifacts, log) as compatibility evidence.
+    // New evaluation records bind immutable finalization objects instead of
+    // scheduling an ordinary graph task.
     if let Some(task) = graph.get_task(id) {
         match capture_task_output(dir, task) {
             Ok(output_dir) => {
