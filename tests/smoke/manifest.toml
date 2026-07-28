@@ -2809,8 +2809,15 @@ description = "Candidate-binary credential-free Fake-Pi + real tmux/TUI human fl
 timeout_seconds = 240
 
 [[scenario]]
+name = "flip_first_required_gate"
+script = "scenarios/flip_first_required_gate.sh"
+owners = ["flip-first-required-gate"]
+description = "Candidate-binary credential-free Fake-Pi + real daemon/tmux human flow for the authoritative completion→candidate→validation→required deep-readonly FLIP→merge order. With bounded auto-evaluation off it observes main unchanged while FLIP is queued/running, exactly one merge on semantic pass across restart, retained AwaitingAcceptance + repair actions on semantic reject, and retained infrastructure-unavailable without source retry/fallback. The actual selected-task TUI detail renders bounded safe codes/IDs/actions."
+timeout_seconds = 300
+
+[[scenario]]
 name = "pi_evaluation_rollout_requires_canary_success_before_enable"
 script = "scenarios/pi_evaluation_rollout_requires_canary_success_before_enable.sh"
-owners = ["integrate-and-canary"]
-description = "RED-first candidate-binary real operator-terminal/daemon-reload rollout: persists disabled safety flags; rejects config forgery and stage skipping; requires content-addressed Fake-Pi lifecycle, live bounded Pi/Luna, then explicit deep-readonly evidence in that order; enables bounded advisory auto-evaluation with no global hard gate/FLIP; retains native Codex route evidence; and exercises audited rollback plus before/after Viz CIDs. Companion owned Fake-Pi/TUI/lane/deep/admission scenarios provide the actual lifecycle evidence summarized by these certificates."
+owners = ["integrate-and-canary", "flip-first-required-gate"]
+description = "RED-first candidate-binary operator-terminal/daemon-reload rollout corrected to the authoritative order: disabled → content-addressed Fake-Pi → deep-readonly observation canary → flip-required gate canary, explicitly refusing bounded-first. The required stage keeps bounded auto_evaluate=false and eval_gate_all=false while enabling global qualifying-candidate deep FLIP; machine evidence proves pass/reject/infrastructure-retry/restart/main-CAS semantics and exact Luna route handoff, then real rollback atomically disables selection while preserving evidence."
 timeout_seconds = 90

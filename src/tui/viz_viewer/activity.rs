@@ -135,6 +135,7 @@ pub fn load(workgraph_dir: &Path) -> Projection {
         projection.unavailable.push("lifecycle");
     }
 
+    load_required_flip_events(workgraph_dir, &mut events, &mut projection.malformed);
     load_observer_events(workgraph_dir, &mut events, &mut projection.malformed);
     load_finalization_events(workgraph_dir, &mut events, &mut projection.malformed);
     load_native_events(workgraph_dir, &mut events, &mut projection.malformed);
@@ -314,6 +315,10 @@ fn lifecycle_event(line: &str) -> Option<ActivityEvent> {
         .and_then(Value::as_str)
         .map(bounded_id);
     let new_state = value.get("new_state").and_then(Value::as_str).unwrap_or("");
+    let reason_code = value
+        .get("reason_code")
+        .and_then(Value::as_str)
+        .unwrap_or("");
     let terminal = matches!(new_state, "done" | "failed" | "abandoned")
         || event_kind.contains("succeeded")
         || event_kind.contains("failed")
@@ -329,10 +334,13 @@ fn lifecycle_event(line: &str) -> Option<ActivityEvent> {
     } else {
         ActivityEventKind::Lifecycle
     };
-    let summary = if new_state.is_empty() {
-        bounded(event_kind, 64)
-    } else {
-        format!("{} → {}", bounded(event_kind, 48), bounded(new_state, 24))
+    let summary = match reason_code {
+        "waiting_on_required_flip" => "waiting on required FLIP".to_string(),
+        "deep_flip_rejected_repair_needed" => "FLIP rejected—repair needed".to_string(),
+        "deep_flip_accepted_candidate_merged" => "FLIP passed—candidate merged".to_string(),
+        "required_flip_operator_waiver" => "required FLIP explicitly waived (audited)".to_string(),
+        _ if new_state.is_empty() => bounded(event_kind, 64),
+        _ => format!("{} → {}", bounded(event_kind, 48), bounded(new_state, 24)),
     };
     Some(ActivityEvent {
         id: value
@@ -354,6 +362,73 @@ fn lifecycle_event(line: &str) -> Option<ActivityEvent> {
         count: 1,
         coalescible: false,
     })
+}
+
+fn load_required_flip_events(root: &Path, events: &mut Vec<ActivityEvent>, malformed: &mut usize) {
+    let graph_path = root.join("graph.jsonl");
+    if !graph_path.exists() {
+        return;
+    }
+    let Ok(graph) = worksgood::parser::load_graph(&graph_path) else {
+        *malformed = malformed.saturating_add(1);
+        return;
+    };
+    for task in graph.tasks() {
+        let Some(flip) = worksgood::evaluation::flip_gate_projection(task) else {
+            continue;
+        };
+        let Some((timestamp, timestamp_millis)) = timestamp(
+            &serde_json::json!({"updated_at": flip.updated_at}),
+            &["updated_at"],
+        ) else {
+            *malformed = malformed.saturating_add(1);
+            continue;
+        };
+        let label = match flip.state.as_str() {
+            "flip-queued" => "FLIP queued",
+            "flip-running" => "FLIP running",
+            "waiting-on-required-flip" => "waiting on required FLIP",
+            "flip-rejected-repair-needed" => "FLIP rejected—repair needed",
+            "flip-infrastructure-unavailable" => "FLIP infrastructure unavailable",
+            "flip-passed-merging" => "FLIP passed—merging",
+            "flip-passed-merged" => "FLIP passed—merged",
+            _ => "required FLIP",
+        };
+        let report = flip.report_id.as_deref().unwrap_or("pending");
+        let summary = format!(
+            "{label} · c={} · r={}",
+            bounded(&flip.candidate_id, 8),
+            bounded(report, 8)
+        );
+        events.push(ActivityEvent {
+            id: stable_id(
+                "required-flip",
+                &serde_json::json!({
+                    "task": task.id,
+                    "state": flip.state,
+                    "candidate": flip.candidate_id,
+                    "report": flip.report_id,
+                    "at": timestamp,
+                }),
+            ),
+            timestamp,
+            timestamp_millis,
+            kind: ActivityEventKind::Validation,
+            task_id: Some(bounded_id(&task.id)),
+            agent_id: None,
+            summary,
+            authority: if matches!(
+                flip.state.as_str(),
+                "flip-queued" | "flip-running" | "waiting-on-required-flip"
+            ) {
+                Authority::Control
+            } else {
+                Authority::Proven
+            },
+            count: 1,
+            coalescible: false,
+        });
+    }
 }
 
 fn load_observer_events(root: &Path, events: &mut Vec<ActivityEvent>, malformed: &mut usize) {

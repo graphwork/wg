@@ -3062,6 +3062,14 @@ pub enum CandidateCommands {
         #[arg(long)]
         reuse_worktree: bool,
     },
+    /// Explicit operator-attributed, candidate+report-bound acceptance waiver
+    Waive {
+        id: String,
+        #[arg(long)]
+        report: String,
+        #[arg(long)]
+        reason: String,
+    },
 }
 
 #[derive(Subcommand)]

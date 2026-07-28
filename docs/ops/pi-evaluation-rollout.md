@@ -1,170 +1,167 @@
-# Pi evaluation plane rollout runbook
+# Required deep-FLIP rollout runbook
 
-This runbook rolls the attempt-bound evaluation plane from **disabled** to
-**bounded advisory**. It cannot enable a global hard gate. Routine FLIP remains
-disabled; deep-readonly FLIP is an explicit, selective action.
+Deep read-only system FLIP is the primary, required pre-merge feedback signal
+for qualifying coding candidates. The authoritative order is:
 
-The authoritative audit is:
+```text
+completion receipt → immutable candidate → deterministic validation
+→ deep read-only FLIP → accepted FLIP report → exact-candidate merge → Done
+```
+
+Bounded grading is optional and independent. It does not precede, average with,
+or satisfy FLIP. The managed `flip-required` stage therefore has
+`auto_evaluate=false`, `eval_gate_all=false`, and `global_flip_enabled=true`.
+
+The content-addressed rollout ledger is:
 
 ```text
 .wg/agency/evaluation-plane/canary-evidence.json
 ```
 
-`wg evaluate rollout status --json` renders the same state. Config edits and
-daemon reloads fail closed when `[evaluation].rollout_stage` differs from this
-record.
+## 1. Prove the candidate binary while disabled
 
-## 1. Start disabled
+```bash
+cargo build --locked --bin wg
+WG_SMOKE_CANDIDATE_BIN="$PWD/target/debug/wg" \
+  bash tests/smoke/scenarios/flip_first_required_gate.sh
+WG_SMOKE_CANDIDATE_BIN="$PWD/target/debug/wg" \
+  bash tests/smoke/scenarios/pi_evaluation_rollout_requires_canary_success_before_enable.sh
+```
+
+The Fake-Pi flow must prove all eight evidence classes, observation-only tools,
+semantic pass and reject, timeout/malformed/process-unavailable behavior,
+explicit same-record retry, restart replay, no fallback, no source retry, no
+evaluation worker/build/worktree slot, and exactly-once merge. Main must remain
+unchanged while pending and on reject/unavailable.
+
+## 2. Start the managed controller
 
 ```bash
 wg evaluate rollout start
 wg evaluate rollout status --json
 ```
 
-Required output: `stage=disabled`, `auto_evaluate=false`,
-`eval_gate_all=false`, `global_flip_enabled=false`. Starting twice at disabled
-is idempotent. Do not edit the stage in TOML.
+Required: `stage=disabled`, `auto_evaluate=false`, `eval_gate_all=false`, and
+`global_flip_enabled=false`. Never edit managed keys in TOML.
 
-## 2. Credential-free lifecycle gate
+## 3. Record Fake-Pi evidence
 
-Run the candidate binary through all owned scenarios:
-
-```bash
-WG_SMOKE_CANDIDATE_BIN="$PWD/target/debug/wg" \
-  bash tests/smoke/scenarios/lazy_evaluation_tui_evidence.sh
-WG_SMOKE_CANDIDATE_BIN="$PWD/target/debug/wg" \
-  bash tests/smoke/scenarios/dedicated_pi_bounded_evaluation_lane.sh
-WG_SMOKE_CANDIDATE_BIN="$PWD/target/debug/wg" \
-  bash tests/smoke/scenarios/admission_deferral_backpressure.sh
-WG_SMOKE_CANDIDATE_BIN="$PWD/target/debug/wg" \
-  bash tests/smoke/scenarios/deep_readonly_flip_human_flow.sh
-```
-
-The evidence JSON for `fake-pi-lifecycle` must report zero never-ran
-evaluations, stuck pending states, duplicate records/verdicts, evaluation worker
-or build slots, and evaluation worktrees. It must report neutral admission
-deferral and retained native Codex routing. Record before/after `wg viz --all
---no-tui` digests.
+Create `fake-pi-lifecycle.json` with exact route, before/after Viz CIDs, one
+source completion/verdict, and zero duplicate/stuck/never-ran/slot counters.
+Then:
 
 ```bash
 wg evaluate rollout advance \
   --stage fake-pi-validated --evidence fake-pi-lifecycle.json
+wg service restart
+wg evaluate rollout status --json
 ```
 
-Restart the daemon and re-run `status`; counts and evidence IDs must not change.
+Restart must not duplicate a record, verdict, cost, transition, or merge.
 
-## 3. Live low-risk Pi/Luna bounded canary
+## 4. Run the deep read-only canary (bounded is not a prerequisite)
 
-Only continue if `pi --list-models` shows the exact configured route and its
-login works. A missing route/credential is a loud stop, not Codex/Claude
-fallback.
-
-1. Complete one low-risk source normally and confirm an immutable candidate.
-2. At `fake-pi-validated`, run the explicit pre-enable lane:
-
-   ```bash
-   wg evaluate run SOURCE --bounded --json > bounded-record.json
-   ```
-
-3. Confirm product `bounded`, state `consumed`, exact `pi:` route, one attempt,
-   one verdict, Pi usage, no `.evaluate-*` task/agent/worktree, and unchanged
-   terminal source status.
-4. Create `bounded-live-canary` evidence and advance:
-
-   ```bash
-   wg evaluate rollout advance \
-     --stage bounded-canary-passed --evidence bounded-live-canary.json
-   ```
-
-The 2026-07-28 canary used `pi:openai-codex:gpt-5.6-luna`; its evidence is in
-`docs/reports/pi-evaluation-canary-evidence.json`.
-
-## 4. One explicit deep-readonly FLIP canary
-
-Do **not** call a shallow bounded grader FLIP. Only after the bounded canary:
+Only the dedicated observation lane counts. A bounded summary or legacy shallow
+roundtrip is not FLIP.
 
 ```bash
 wg evaluate run SOURCE --flip --json > deep-record.json
 ```
 
-Accept the canary only when the report:
+Require an exact Pi route, a candidate-bound report, capability audit containing
+only the four deep observation tools, all eight evidence classes, at least two
+repository files, latent-intent/counterfactual/cross-component codes, safe
+references, and no raw prompt/reasoning/secret text. Infrastructure failure is
+not a semantic rejection and must use explicit same-record retry:
 
-- has a `latent-intent` finding and a nonempty latent probe code;
-- contains genuine counterfactual probe codes and cross-component evidence;
-- observed all eight evidence classes and at least two repository files;
-- has an audit containing only `deep_read_evidence`,
-  `deep_search_repository`, `deep_read_repository`, and optionally the declared
-  validation tool;
-- leaves source/config/repository bytes unchanged (evaluation projections and
-  immutable evidence are the only permitted writes); and
-- uses the same exact Pi route on an explicit retry. Infrastructure/schema
-  failure is visible and cannot change the source.
+```bash
+wg evaluate run SOURCE --flip --json
+```
 
-Then:
+Record `deep-readonly-flip.json`, then:
 
 ```bash
 wg evaluate rollout advance \
   --stage deep-readonly-canary-passed --evidence deep-readonly-flip.json
+wg service restart
 ```
 
-The live Luna canary first failed closed on an invalid locator, then succeeded
-on an explicit same-candidate/same-route retry after the locator grammar was
-made unambiguous. Both attempts remain audited.
+## 5. Live low-risk Luna **gate** canary
 
-## 5. Enable bounded advisory only
+Use the exact available Luna route (the 2026-07-28 route was
+`pi:openai-codex:gpt-5.6-luna`). Missing login/adapter/route is a loud stop; do
+not fall back to Codex, Claude, another Pi model, or bounded grading.
+
+In an isolated rehearsal graph, prove:
+
+1. a qualifying worker completion creates one deep record and no bounded record;
+2. main stays at the exact pre-candidate OID while FLIP is queued/running;
+3. semantic pass at the snapshotted threshold advances main exactly once;
+4. semantic fail/below-threshold retains candidate/report/worktree and leaves
+   main unchanged in `AwaitingAcceptance` with repair actions;
+5. timeout, malformed output, route drift, crash, and unavailable adapter leave
+   main unchanged and consume only the FLIP retry budget;
+6. restart before/after candidate, report write, verdict link, acceptance
+   consume, and merge produces one report/verdict/merge and no duplicate cost;
+7. the evidence file records before/after main OIDs and Viz CIDs, exact route,
+   policy/candidate/report/merge IDs, and `gate_left_disabled=true`.
+
+Create `flip-required-gate.json` with all controller proof booleans true. **Do
+not advance the live project from an unmerged worker branch.** Carry this file
+forward to the chat operator.
+
+## 6. Operator activation—only after exact-main install
+
+The chat/operator runs this copy-pasteable sequence only after the implementing
+candidate is accepted on main:
 
 ```bash
-wg evaluate rollout advance --stage advisory
+git switch main
+git pull --ff-only
+cargo install --path . --locked
 wg evaluate rollout status --json
-```
-
-This is the only automatic mode enabled by this rollout:
-
-```text
-auto_evaluate=true
-mode=bounded-advisory
-eval_gate_all=false
-global_flip_enabled=false
-```
-
-An inherited historical threshold is inert while `managed_rollout=true`;
-`LazyEvaluationSelection` structurally refuses required applicability. Config
-attempts to set `eval_gate_all=true`, enable global FLIP, change stage, or enable
-auto-evaluation before canaries are rejected.
-
-## 6. Observe and record
-
-Observe at least two real source completions. Each must have exactly one
-candidate-bound record and verdict, no stuck pending state, and no evaluation
-worker/build/worktree occupancy. Record before/after Viz digests and thresholds:
-
-```bash
-wg evaluate rollout record-observation \
-  --evidence source-observation.json
-```
-
-Rollback immediately on any of:
-
-- duplicate semantic record or verdict;
-- evaluation for a source that never ran;
-- pending evaluation that remains stuck after its runner is terminal;
-- evaluation consuming worker/build/worktree capacity;
-- source status being reopened or changed by evaluation infrastructure failure;
-- route drift, native Codex rewrite, or cross-executor fallback;
-- global FLIP or any hard-gate applicability;
-- non-idempotent daemon restart.
-
-## 7. Roll back
-
-Use the terminal controller, never hand-edit config:
-
-```bash
-wg evaluate rollout rollback \
-  --reason 'duplicate verdict threshold reached'
+wg evaluate rollout advance \
+  --stage flip-required --evidence /ABS/PATH/flip-required-gate.json
 wg service restart
 wg evaluate rollout status --json
 ```
 
-Rollback atomically returns the managed policy to disabled, preserves canary
-and observation history, appends the operator reason, and keeps hard gates and
-global FLIP off. It does not delete immutable evidence or alter source tasks.
+The final status must be exactly:
+
+```text
+stage=flip-required
+mode=flip-required
+auto_evaluate=false
+eval_gate_all=false
+global_flip_enabled=true
+```
+
+If the exact-main install or route check differs, stop. Do not hand-edit config.
+
+## 7. Operator repair surfaces
+
+`wg show TASK` and its stable JSON/TUI projection expose only bounded codes and
+content IDs. For a retained candidate:
+
+```bash
+wg show TASK
+wg evaluate run TASK --flip                 # retry FLIP only
+wg candidate repair CANDIDATE_ID            # mint a fresh repair generation
+wg candidate waive CANDIDATE_ID \
+  --report REPORT_ID --reason 'OPERATOR REASON'
+```
+
+Waiver is operator-only, candidate+report bound, audited, and merges only that
+exact immutable candidate. Messages and late events cannot reopen the source.
+
+## 8. Roll back
+
+```bash
+wg evaluate rollout rollback --reason 'operator reason'
+wg service restart
+wg evaluate rollout status --json
+```
+
+Rollback atomically disables deep selection/gating and bounded auto-evaluation
+while preserving reports, candidates, rollout evidence, and already accepted
+history. It never rewrites an accepted source outcome.

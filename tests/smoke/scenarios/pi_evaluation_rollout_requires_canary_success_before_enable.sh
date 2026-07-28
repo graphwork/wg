@@ -61,29 +61,30 @@ cat >"$scratch/fake.json" <<'JSON'
 {"schema":1,"kind":"fake-pi-lifecycle","success":true,"route":"pi:test:fake","source_completions":1,"evaluation_verdicts":1,"never_ran_evaluations":0,"stuck_pending_evaluations":0,"duplicate_records":0,"duplicate_verdicts":0,"worker_slots_used":0,"build_slots_used":0,"worktrees_created":0,"admission_deferrals_neutral":true,"native_codex_route_preserved":true,"before_viz_cid":"b3:before","after_viz_cid":"b3:after","notes":["publish-execute-lazy-evaluate-terminal","cancel-skip-nonspawn-zero"]}
 JSON
 cat >"$scratch/bounded.json" <<'JSON'
-{"schema":1,"kind":"bounded-live-canary","success":true,"route":"pi:luna:bounded-canary","source_completions":1,"evaluation_verdicts":1,"never_ran_evaluations":0,"stuck_pending_evaluations":0,"duplicate_records":0,"duplicate_verdicts":0,"worker_slots_used":0,"build_slots_used":0,"worktrees_created":0,"admission_deferrals_neutral":true,"native_codex_route_preserved":true,"before_viz_cid":"b3:before-bounded","after_viz_cid":"b3:after-bounded","notes":["low-risk advisory"]}
+{"schema":1,"kind":"bounded-live-canary","success":true,"route":"pi:luna:bounded-canary","source_completions":1,"evaluation_verdicts":1,"never_ran_evaluations":0,"stuck_pending_evaluations":0,"duplicate_records":0,"duplicate_verdicts":0,"worker_slots_used":0,"build_slots_used":0,"worktrees_created":0,"admission_deferrals_neutral":true,"native_codex_route_preserved":true,"before_viz_cid":"b3:before-bounded","after_viz_cid":"b3:after-bounded","notes":["optional secondary only"]}
 JSON
 cat >"$scratch/deep.json" <<'JSON'
 {"schema":1,"kind":"deep-readonly-flip","success":true,"route":"pi:luna:deep-canary","source_completions":1,"evaluation_verdicts":1,"never_ran_evaluations":0,"stuck_pending_evaluations":0,"duplicate_records":0,"duplicate_verdicts":0,"worker_slots_used":0,"build_slots_used":0,"worktrees_created":0,"admission_deferrals_neutral":true,"native_codex_route_preserved":true,"observation_only":true,"latent_intent_findings":1,"counterfactual_findings":3,"cross_system_findings":1,"before_viz_cid":"b3:before-deep","after_viz_cid":"b3:after-deep","notes":["explicit deep read-only; not bounded FLIP"]}
 JSON
+cat >"$scratch/gate.json" <<'JSON'
+{"schema":1,"kind":"flip-required-gate","success":true,"route":"pi:openai-codex:gpt-5.6-luna","source_completions":3,"evaluation_verdicts":3,"never_ran_evaluations":0,"stuck_pending_evaluations":0,"duplicate_records":0,"duplicate_verdicts":0,"worker_slots_used":0,"build_slots_used":0,"worktrees_created":0,"admission_deferrals_neutral":true,"native_codex_route_preserved":true,"observation_only":true,"latent_intent_findings":1,"counterfactual_findings":2,"cross_system_findings":1,"semantic_reject_preserved":true,"infrastructure_retry_converged":true,"restart_boundaries_proven":true,"main_unchanged_pending_reject_unavailable":true,"main_advanced_once_on_pass":true,"gate_left_disabled":true,"before_viz_cid":"b3:before-required","after_viz_cid":"b3:after-required","notes":["operator activates only after exact-main install"]}
+JSON
 
 wgrun evaluate rollout advance --stage fake-pi-validated --evidence "$scratch/fake.json" >/dev/null
 restart_daemon
-if wgrun evaluate rollout advance --stage deep-readonly-canary-passed --evidence "$scratch/deep.json" >/tmp/deep-too-early.out 2>&1; then
-  loud_fail "deep canary advanced before bounded canary"
+# Bounded grading is optional/secondary and cannot precede or gate FLIP.
+if wgrun evaluate rollout advance --stage bounded-canary-passed --evidence "$scratch/bounded.json" >/tmp/bounded-first.out 2>&1; then
+  loud_fail "managed rollout still required/accepted bounded-first policy"
 fi
-wgrun evaluate rollout advance --stage bounded-canary-passed --evidence "$scratch/bounded.json" >/dev/null
-restart_daemon
 wgrun evaluate rollout advance --stage deep-readonly-canary-passed --evidence "$scratch/deep.json" >/dev/null
 restart_daemon
-wgrun evaluate rollout advance --stage advisory >/dev/null
+wgrun evaluate rollout advance --stage flip-required --evidence "$scratch/gate.json" >/dev/null
 restart_daemon
 
 status=$(wgrun --json evaluate rollout status)
-python3 -c 'import json,sys; x=json.load(sys.stdin); assert x["stage"]=="advisory"; assert x["auto_evaluate"] is True; assert x["mode"]=="bounded-advisory"; assert x["eval_gate_all"] is False; assert x["global_flip_enabled"] is False; assert len(x["evidence"])==3' <<<"$status"
-# This rollout may never turn on a global hard gate.
+python3 -c 'import json,sys; x=json.load(sys.stdin); assert x["stage"]=="flip-required"; assert x["auto_evaluate"] is False; assert x["mode"]=="flip-required"; assert x["eval_gate_all"] is False; assert x["global_flip_enabled"] is True; assert len(x["evidence"])==3' <<<"$status"
 if wgrun config --local --eval-gate-all true >/tmp/hard-gate.out 2>&1; then
-  loud_fail "managed rollout accepted a global hard gate"
+  loud_fail "managed rollout accepted eval_gate_all even though FLIP selection is independent"
 fi
 
 # Record multiple observed completions plus explicit rollback thresholds through
@@ -105,10 +106,10 @@ python3 - "$evidence" <<'PY'
 import json,sys
 x=json.load(open(sys.argv[1]))
 assert x['schema']==1
-assert [e['kind'] for e in x['evidence']]==['fake-pi-lifecycle','bounded-live-canary','deep-readonly-flip','source-observation']
+assert [e['kind'] for e in x['evidence']]==['fake-pi-lifecycle','deep-readonly-flip','flip-required-gate','source-observation']
 assert x['evidence'][-1]['source_completions'] >= 3
 assert all(e['before_viz_cid'] and e['after_viz_cid'] for e in x['evidence'])
 assert x['rollbacks'] and x['rollbacks'][-1]['reason']=='operator canary threshold exercised'
 PY
 
-echo "PASS: disabled start, no stage skip, ordered Fake-Pi/bounded/deep evidence, advisory-only enablement, hard-gate refusal, and real rollback are persisted"
+echo "PASS: managed rollout reaches required deep FLIP without bounded-first, keeps auto_evaluate/eval_gate_all false, proves pass/reject/infrastructure/restart semantics, and rolls back atomically"

@@ -207,7 +207,9 @@ impl EvaluationGatePolicy {
             Ok(())
         };
         let required = self.applicability == EvaluationGateApplicability::Required;
-        valid_threshold("evaluator threshold", self.evaluator_threshold, required)?;
+        // A required gate may be deep-only. `None` means bounded grading was
+        // not selected; it must not be synthesized, averaged, or required.
+        valid_threshold("evaluator threshold", self.evaluator_threshold, false)?;
         valid_threshold(
             "FLIP threshold",
             self.flip_threshold,
@@ -215,6 +217,14 @@ impl EvaluationGatePolicy {
         )?;
         if self.flip_policy == FlipVerdictPolicy::Required && !required {
             anyhow::bail!("error[WG-EVAL-GATE-POLICY]: an advisory evaluation cannot require FLIP");
+        }
+        if required
+            && self.evaluator_threshold.is_none()
+            && self.flip_policy != FlipVerdictPolicy::Required
+        {
+            anyhow::bail!(
+                "error[WG-EVAL-GATE-POLICY]: required gate selects neither bounded nor FLIP evidence"
+            );
         }
         Ok(())
     }
@@ -2126,6 +2136,32 @@ pub fn evaluation_health(graph: &WorkGraph, source_id: &str) -> Option<Evaluatio
         });
     };
 
+    // The dedicated deep-readonly lane is record-based and intentionally has
+    // no `.flip-*`/`.evaluate-*` graph satellites. Do not diagnose their
+    // absence as legacy pipeline drift.
+    if let Some(flip) = crate::evaluation::flip_gate_projection(source) {
+        let state = match flip.state.as_str() {
+            "flip-rejected-repair-needed" => EvaluationHealthState::OperatorRequiredAmbiguity,
+            "flip-infrastructure-unavailable" => EvaluationHealthState::ActiveEvaluation,
+            _ => EvaluationHealthState::ActiveEvaluation,
+        };
+        return Some(EvaluationHealth {
+            state,
+            pipeline_id: lifecycle.pipeline_id.clone(),
+            source_attempt: lifecycle.source_attempt,
+            route_generation: lifecycle.route_generation,
+            migration_count: lifecycle.plan_migrations.len(),
+            consumed_verdict: lifecycle.consumed_verdict.clone(),
+            diagnostic: format!(
+                "{}; candidate={}; report={}; retry FLIP only with `{}`",
+                flip.state,
+                flip.candidate_id,
+                flip.report_id.as_deref().unwrap_or("pending"),
+                flip.retry_flip_command
+            ),
+        });
+    }
+
     let mut migration_required = Vec::new();
     let mut migration_rejected = Vec::new();
     for task_id in [
@@ -2868,10 +2904,16 @@ where
         if apply_transition(source, outcome_request).is_err() {
             continue;
         }
-        if hard_reject || source_snapshot.status == Status::FailedPendingEval {
-            source.retry_count = source.retry_count.saturating_add(1);
+        if hard_reject {
+            // Reject the immutable candidate, not the successful source
+            // attempt. Repair/waiver is explicit and content-bound; no
+            // evaluator event consumes source retry budget or reopens work.
             source.failure_reason = Some(format!(
-                "required evaluation gate rejected: {evidence_summary}"
+                "AcceptanceRejected; candidate retained in RepairNeeded/AwaitingAcceptance: {evidence_summary}"
+            ));
+        } else if source_snapshot.status == Status::FailedPendingEval {
+            source.failure_reason = Some(format!(
+                "legacy failed source finalized with evaluation evidence: {evidence_summary}"
             ));
         }
         source.completed_at = Some(Utc::now().to_rfc3339());
@@ -3149,9 +3191,10 @@ mod tests {
     }
 
     #[test]
-    fn pending_low_score_rejects_without_implicit_rescue_generation() {
-        // The legacy callback says "advisory", but PendingEval itself is now
-        // an unambiguous hard-gate contract and must fail closed.
+    fn pending_low_score_retains_candidate_without_implicit_rescue_generation() {
+        // The legacy callback says "advisory", but PendingEval itself is an
+        // unambiguous hard-gate contract. Rejection fails closed by retaining
+        // AwaitingAcceptance, never by retrying the successful source.
         let mut legacy_pending = source();
         legacy_pending.status = Status::PendingEval;
         legacy_pending.evaluation_lifecycle =
@@ -3169,7 +3212,10 @@ mod tests {
             3,
             |_| false,
         ));
-        assert_eq!(graph.get_task("source").unwrap().status, Status::Failed);
+        assert_eq!(
+            graph.get_task("source").unwrap().status,
+            Status::PendingEval
+        );
 
         let mut gated = source();
         gated.status = Status::PendingEval;
@@ -3194,7 +3240,7 @@ mod tests {
             |_| true,
         ));
         let source = graph.get_task("source").unwrap();
-        assert_eq!(source.status, Status::Failed);
+        assert_eq!(source.status, Status::PendingEval);
         assert_eq!(source.rescue_count, 0);
         assert_eq!(
             source.evaluation_lifecycle.as_ref().unwrap().pipeline_id,
@@ -3214,9 +3260,9 @@ mod tests {
     #[test]
     fn strict_required_flip_and_evaluator_threshold_matrix() {
         for (name, flip_score, eval_score, expected) in [
-            ("incident-both-low", 0.18, 0.20, Status::Failed),
-            ("low-flip", 0.69, 0.95, Status::Failed),
-            ("low-evaluator", 0.95, 0.69, Status::Failed),
+            ("incident-both-low", 0.18, 0.20, Status::PendingEval),
+            ("low-flip", 0.69, 0.95, Status::PendingEval),
+            ("low-evaluator", 0.95, 0.69, Status::PendingEval),
             ("exact-threshold", 0.70, 0.70, Status::Done),
         ] {
             let mut source = source();
@@ -3285,7 +3331,7 @@ mod tests {
             |_| true,
         ));
         let source = graph.get_task("source").unwrap();
-        assert_eq!(source.status, Status::Failed);
+        assert_eq!(source.status, Status::PendingEval);
         assert!(
             source.failure_reason.as_deref().is_some_and(
                 |reason| reason.contains("score=0.18") && reason.contains("score=0.64")
@@ -3323,7 +3369,7 @@ mod tests {
             |_| true,
         ));
         let rejected = graph.get_task("source").unwrap();
-        assert_eq!(rejected.status, Status::Failed);
+        assert_eq!(rejected.status, Status::PendingEval);
         assert_eq!(rejected.rescue_count, 0);
         assert_eq!(rejected.lifecycle.generation, 0);
         assert!(

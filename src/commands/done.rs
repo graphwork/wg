@@ -2502,6 +2502,7 @@ fn run_inner(
     let mut finalization_evidence: Vec<String> = Vec::new();
     let mut finalized_candidate: Option<(worksgood::finalization::CandidateDescriptor, String)> =
         None;
+    let defer_candidate_merge_for_flip;
     if let Some(wt) = detect_worktree(dir) {
         let context = match crate::commands::finalize::context_from_current(
             dir,
@@ -2512,10 +2513,19 @@ fn run_inner(
         ) {
             Ok(mut context) => {
                 let gate = completion_gate_policy(&graph, id, &Config::load_or_default(dir));
-                context.evaluation_policy = gate
-                    .as_ref()
-                    .map(|policy| format!("{:?}", policy.applicability).to_lowercase())
-                    .unwrap_or_else(|| "none".to_string());
+                defer_candidate_merge_for_flip = gate.as_ref().is_some_and(|policy| {
+                    policy.applicability
+                        == worksgood::eval_lifecycle::EvaluationGateApplicability::Required
+                        && policy.flip_policy
+                            == worksgood::eval_lifecycle::FlipVerdictPolicy::Required
+                });
+                context.evaluation_policy = if defer_candidate_merge_for_flip {
+                    "required-deep-readonly-flip-before-merge".to_string()
+                } else {
+                    gate.as_ref()
+                        .map(|policy| format!("{:?}", policy.applicability).to_lowercase())
+                        .unwrap_or_else(|| "none".to_string())
+                };
                 context
             }
             Err(error) if error.to_string().contains("finalize.writer_still_current") => {
@@ -2565,32 +2575,42 @@ fn run_inner(
                 .result_id
                 .clone(),
         ));
-        let merged = worksgood::finalization::merge_candidate(&store, candidate)?;
-        if let Some(conflict) = merged.merge_conflict.as_ref() {
-            anyhow::bail!(
-                "merge conflict retained as RepairNeeded ({}): candidate={} tree={} manifest={}. Safe next command: {}",
-                conflict.reason_code,
-                conflict.binding.candidate_id,
-                conflict.binding.tree_oid,
-                conflict.binding.manifest_cid,
-                merged.safe_next_command
+        if defer_candidate_merge_for_flip {
+            eprintln!(
+                "[finalize] candidate={} commit={} tree={} manifest={} retained immutable; waiting on required deep-readonly FLIP before merge",
+                candidate.candidate_id,
+                candidate.candidate_commit_oid,
+                candidate.candidate_tree_oid,
+                candidate.content_manifest_cid,
             );
+        } else {
+            let merged = worksgood::finalization::merge_candidate(&store, candidate)?;
+            if let Some(conflict) = merged.merge_conflict.as_ref() {
+                anyhow::bail!(
+                    "merge conflict retained as RepairNeeded ({}): candidate={} tree={} manifest={}. Safe next command: {}",
+                    conflict.reason_code,
+                    conflict.binding.candidate_id,
+                    conflict.binding.tree_oid,
+                    conflict.binding.manifest_cid,
+                    merged.safe_next_command
+                );
+            }
+            let receipt = merged
+                .merge_receipt
+                .as_ref()
+                .context("merge.receipt_missing: replay with `wg finalize reconcile`")?;
+            finalization_evidence.push(receipt.receipt_id.clone());
+            eprintln!(
+                "[finalize] candidate={} commit={} tree={} manifest={} merge-receipt={} (no push required)",
+                candidate.candidate_id,
+                candidate.candidate_commit_oid,
+                candidate.candidate_tree_oid,
+                candidate.content_manifest_cid,
+                receipt.receipt_id,
+            );
+            let _ = ignore_unmerged_worktree; // conflicts are always retained, never bypassed
+            mark_worktree_for_cleanup(&wt);
         }
-        let receipt = merged
-            .merge_receipt
-            .as_ref()
-            .context("merge.receipt_missing: replay with `wg finalize reconcile`")?;
-        finalization_evidence.push(receipt.receipt_id.clone());
-        eprintln!(
-            "[finalize] candidate={} commit={} tree={} manifest={} merge-receipt={} (no push required)",
-            candidate.candidate_id,
-            candidate.candidate_commit_oid,
-            candidate.candidate_tree_oid,
-            candidate.content_manifest_cid,
-            receipt.receipt_id,
-        );
-        let _ = ignore_unmerged_worktree; // conflicts are always retained, never bypassed
-        mark_worktree_for_cleanup(&wt);
     }
 
     // Atomically load the freshest graph, apply the mutation, and save.
@@ -2684,6 +2704,12 @@ fn run_inner(
         let advisory_evaluation = gate_policy.as_ref().is_some_and(|policy| {
             policy.applicability
                 == worksgood::eval_lifecycle::EvaluationGateApplicability::Advisory
+        });
+        let waiting_required_flip = gate_policy.as_ref().is_some_and(|policy| {
+            policy.applicability
+                == worksgood::eval_lifecycle::EvaluationGateApplicability::Required
+                && policy.flip_policy
+                    == worksgood::eval_lifecycle::FlipVerdictPolicy::Required
         });
 
         let task = match graph.get_task_mut(&id_owned) {
@@ -2790,6 +2816,8 @@ fn run_inner(
             actor,
             if target_status == Status::Done {
                 "completion_accepted"
+            } else if waiting_required_flip {
+                "waiting_on_required_flip"
             } else {
                 "source_succeeded_awaiting_acceptance"
             },

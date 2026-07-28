@@ -1,9 +1,8 @@
 //! Fail-closed staged rollout for the Pi evaluation plane.
 //!
-//! This controller is intentionally operational rather than scheduler state:
-//! it owns the feature flags, an ordered stage, and content-addressed canary
-//! evidence. Evaluation runners may read the resulting advisory policy but
-//! cannot advance it.
+//! Deep read-only FLIP is the primary required pre-merge feedback gate. The
+//! controller owns an ordered, content-addressed proof path to `flip-required`;
+//! bounded evaluation remains an independent optional secondary product.
 
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
@@ -21,6 +20,9 @@ pub enum CanaryKind {
     FakePiLifecycle,
     BoundedLiveCanary,
     DeepReadonlyFlip,
+    /// End-to-end required-gate canary: pending/reject/unavailable keep main
+    /// unchanged and an accepted report advances it exactly once.
+    FlipRequiredGate,
     SourceObservation,
 }
 
@@ -61,6 +63,18 @@ pub struct CanaryEvidence {
     pub counterfactual_findings: u64,
     #[serde(default)]
     pub cross_system_findings: u64,
+    #[serde(default)]
+    pub semantic_reject_preserved: bool,
+    #[serde(default)]
+    pub infrastructure_retry_converged: bool,
+    #[serde(default)]
+    pub restart_boundaries_proven: bool,
+    #[serde(default)]
+    pub main_unchanged_pending_reject_unavailable: bool,
+    #[serde(default)]
+    pub main_advanced_once_on_pass: bool,
+    #[serde(default)]
+    pub gate_left_disabled: bool,
     pub before_viz_cid: String,
     pub after_viz_cid: String,
     #[serde(default)]
@@ -164,16 +178,16 @@ fn save_state(dir: &Path, state: &RolloutState) -> Result<()> {
 fn apply_flags(config: &mut Config, stage: EvaluationRolloutStage) {
     config.evaluation.managed_rollout = true;
     config.evaluation.rollout_stage = stage;
+    // Bounded selection is never a prerequisite for FLIP. Historical advisory
+    // ledgers retain their old behavior until the operator advances/rolls back.
     config.agency.auto_evaluate = stage == EvaluationRolloutStage::Advisory;
-    // This release is advisory-only. A threshold, global gate, or eager FLIP
-    // must not survive any managed transition, including rollback.
-    // The historical optional threshold can be inherited from global/default
-    // config and TOML has no explicit-null override. Managed rollout policy
-    // therefore makes it inert in `LazyEvaluationSelection`; eval_gate_all is
-    // still structurally rejected below.
     config.agency.eval_gate_threshold = None;
     config.agency.eval_gate_all = false;
-    config.agency.flip_enabled = false;
+    config.agency.flip_enabled = stage == EvaluationRolloutStage::FlipRequired;
+    if stage == EvaluationRolloutStage::FlipRequired {
+        config.agency.flip_verification_threshold =
+            Some(config.agency.flip_verification_threshold.unwrap_or(0.8));
+    }
 }
 
 pub fn start(dir: &Path) -> Result<RolloutStatus> {
@@ -198,14 +212,15 @@ pub fn start(dir: &Path) -> Result<RolloutStatus> {
 fn next_stage(stage: EvaluationRolloutStage) -> Option<EvaluationRolloutStage> {
     match stage {
         EvaluationRolloutStage::Disabled => Some(EvaluationRolloutStage::FakePiValidated),
-        EvaluationRolloutStage::FakePiValidated => {
-            Some(EvaluationRolloutStage::BoundedCanaryPassed)
-        }
-        EvaluationRolloutStage::BoundedCanaryPassed => {
+        // Product order is Fake-Pi → deep observation canary → required gate.
+        // The bounded stage is readable for old ledgers but never a prerequisite.
+        EvaluationRolloutStage::FakePiValidated | EvaluationRolloutStage::BoundedCanaryPassed => {
             Some(EvaluationRolloutStage::DeepReadonlyCanaryPassed)
         }
-        EvaluationRolloutStage::DeepReadonlyCanaryPassed => Some(EvaluationRolloutStage::Advisory),
-        EvaluationRolloutStage::Advisory => None,
+        EvaluationRolloutStage::DeepReadonlyCanaryPassed | EvaluationRolloutStage::Advisory => {
+            Some(EvaluationRolloutStage::FlipRequired)
+        }
+        EvaluationRolloutStage::FlipRequired => None,
     }
 }
 
@@ -214,6 +229,7 @@ fn expected_kind(stage: EvaluationRolloutStage) -> Option<CanaryKind> {
         EvaluationRolloutStage::FakePiValidated => Some(CanaryKind::FakePiLifecycle),
         EvaluationRolloutStage::BoundedCanaryPassed => Some(CanaryKind::BoundedLiveCanary),
         EvaluationRolloutStage::DeepReadonlyCanaryPassed => Some(CanaryKind::DeepReadonlyFlip),
+        EvaluationRolloutStage::FlipRequired => Some(CanaryKind::FlipRequiredGate),
         _ => None,
     }
 }
@@ -280,14 +296,28 @@ fn read_and_validate_evidence(
         );
     }
     validate_common(&evidence)?;
-    if evidence.kind == CanaryKind::DeepReadonlyFlip
-        && (!evidence.observation_only
-            || evidence.latent_intent_findings == 0
-            || evidence.counterfactual_findings == 0
-            || evidence.cross_system_findings == 0)
+    if matches!(
+        evidence.kind,
+        CanaryKind::DeepReadonlyFlip | CanaryKind::FlipRequiredGate
+    ) && (!evidence.observation_only
+        || evidence.latent_intent_findings == 0
+        || evidence.counterfactual_findings == 0
+        || evidence.cross_system_findings == 0)
     {
         bail!(
             "deep-readonly FLIP canary must prove observation-only authority, latent intent, genuine counterfactual analysis, and cross-system findings; a bounded grader is not FLIP"
+        );
+    }
+    if evidence.kind == CanaryKind::FlipRequiredGate
+        && (!evidence.semantic_reject_preserved
+            || !evidence.infrastructure_retry_converged
+            || !evidence.restart_boundaries_proven
+            || !evidence.main_unchanged_pending_reject_unavailable
+            || !evidence.main_advanced_once_on_pass
+            || !evidence.gate_left_disabled)
+    {
+        bail!(
+            "flip-required canary must prove semantic reject preservation, infrastructure-only retry convergence, every restart boundary, unchanged main for pending/reject/unavailable, exactly-once pass merge, and gate-left-disabled operator handoff"
         );
     }
     let value = serde_json::to_value(&evidence)?;
@@ -304,7 +334,8 @@ pub fn advance(
     evidence: Option<&Path>,
 ) -> Result<RolloutStatus> {
     let mut state = load_state(dir)?;
-    let required = next_stage(state.stage).context("evaluation rollout is already advisory")?;
+    let required =
+        next_stage(state.stage).context("evaluation rollout is already flip-required")?;
     if target != required {
         bail!(
             "cannot advance evaluation rollout from {} to {}; next required stage is {}",
@@ -319,9 +350,7 @@ pub fn advance(
             .evidence
             .push(read_and_validate_evidence(path, target)?);
     } else if evidence.is_some() {
-        bail!(
-            "advisory advancement does not accept new evidence; prior canaries are authoritative"
-        );
+        bail!("this rollout advancement does not accept new evidence");
     }
     state.stage = target;
     state.updated_at = Utc::now().to_rfc3339();
@@ -334,8 +363,11 @@ pub fn advance(
 
 pub fn record_observation(dir: &Path, path: &Path) -> Result<RolloutStatus> {
     let mut state = load_state(dir)?;
-    if state.stage != EvaluationRolloutStage::Advisory {
-        bail!("real source observations may be recorded only at advisory stage");
+    if !matches!(
+        state.stage,
+        EvaluationRolloutStage::Advisory | EvaluationRolloutStage::FlipRequired
+    ) {
+        bail!("real source observations may be recorded only after canary validation");
     }
     let bytes = fs::read(path)?;
     let evidence: CanaryEvidence = serde_json::from_slice(&bytes)?;
@@ -366,12 +398,14 @@ pub fn rollback(dir: &Path, reason: &str) -> Result<RolloutStatus> {
     });
     state.stage = EvaluationRolloutStage::Disabled;
     state.updated_at = Utc::now().to_rfc3339();
-    save_state(dir, &state)?;
-    // Load local config deliberately: rollback must repair even a forged
-    // merged stage that normal daemon reload correctly refuses.
+    // Disable the dispatch/gate authority first. If the process crashes before
+    // the ledger write, config/state mismatch fails closed and rollback is
+    // safely retryable; there is never a window with a disabled ledger and a
+    // still-enabled live selector.
     let mut config = Config::load(dir)?;
     apply_flags(&mut config, EvaluationRolloutStage::Disabled);
     config.save(dir)?;
+    save_state(dir, &state)?;
     status(dir)
 }
 
@@ -382,10 +416,10 @@ pub fn status(dir: &Path) -> Result<RolloutStatus> {
     Ok(RolloutStatus {
         schema: state.schema,
         stage: state.stage,
-        mode: if state.stage == EvaluationRolloutStage::Advisory {
-            "bounded-advisory"
-        } else {
-            "disabled"
+        mode: match state.stage {
+            EvaluationRolloutStage::FlipRequired => "flip-required",
+            EvaluationRolloutStage::Advisory => "bounded-advisory-historical",
+            _ => "disabled",
         },
         auto_evaluate: config.agency.auto_evaluate,
         eval_gate_all: config.agency.eval_gate_all,
@@ -415,21 +449,26 @@ pub fn validate_managed_config(dir: &Path, config: &Config) -> Result<()> {
         );
     }
     if config.agency.eval_gate_all {
-        bail!(
-            "global evaluation hard gate is forbidden in this rollout; eval_gate_all must remain false"
-        );
+        bail!("eval_gate_all is irrelevant to managed FLIP and must remain false");
     }
-    if config.agency.flip_enabled {
-        bail!("global/eager FLIP is forbidden; request selective deep-readonly FLIP explicitly");
+    let flip_required = state.stage == EvaluationRolloutStage::FlipRequired;
+    if config.agency.flip_enabled != flip_required {
+        bail!(
+            "global deep-readonly FLIP selection must be {} at rollout stage {}",
+            flip_required,
+            state.stage
+        );
     }
     let expected_auto = state.stage == EvaluationRolloutStage::Advisory;
     if config.agency.auto_evaluate != expected_auto {
-        if expected_auto {
-            bail!("recorded canaries require auto_evaluate=true in advisory stage");
-        }
         bail!(
-            "auto_evaluate cannot be enabled before recorded Fake-Pi, bounded, and deep-readonly canary success"
+            "bounded auto_evaluate must be {} at rollout stage {}; it is independent of required FLIP",
+            expected_auto,
+            state.stage
         );
+    }
+    if flip_required && config.agency.flip_verification_threshold.is_none() {
+        bail!("flip-required stage requires a snapshottable FLIP threshold");
     }
     Ok(())
 }

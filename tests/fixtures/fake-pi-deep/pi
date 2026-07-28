@@ -41,7 +41,7 @@ if model=="deep-attack":
     turn(report)
     raise SystemExit(0)
 
-if model not in ("deep-find","deep-overbudget"):
+if model not in ("deep-find","deep-pass","deep-overbudget","deep-route-drift"):
     print("unexpected model",model,file=sys.stderr); raise SystemExit(88)
 
 # Record the exact evidence/tool observations. The fixture is a deterministic
@@ -59,8 +59,10 @@ if model=="deep-overbudget":
 intent=by_kind["original-intent"]["evidence_id"]
 graph=by_kind["graph-context"]["evidence_id"]
 diff=by_kind["artifacts-diff"]["evidence_id"]
+requested_model=model
+if requested_model=="deep-route-drift": model="different-model"
 report={
- "schema_version":1,"score":0.28,"outcome":"fail","summary_code":"CROSS_COMPONENT_OMISSION_FOUND",
+ "schema_version":1,"score":0.95 if requested_model=="deep-pass" else 0.28,"outcome":"pass" if requested_model=="deep-pass" else "fail","summary_code":"FULL_SYSTEM_INTENT_SATISFIED" if requested_model=="deep-pass" else "CROSS_COMPONENT_OMISSION_FOUND",
  "findings":[
   {"finding_code":"REGISTRY_NOT_UPDATED","category":"cross-component-omission","severity":"high","confidence":0.99,"evidence":[{"evidence_id":"repo:src/api.rs","locator":"src/api.rs:1"},{"evidence_id":"repo:src/registry.rs","locator":"src/registry.rs:1"},{"evidence_id":diff,"locator":"source_diff"}],"counterfactual_code":"REGISTRY_LOOKUP_REJECTS_NEW_MODE"},
   {"finding_code":"LATENT_ALL_CONSUMERS_REQUIREMENT","category":"latent-intent","severity":"medium","confidence":0.96,"evidence":[{"evidence_id":intent,"locator":"description"},{"evidence_id":graph,"locator":"tasks.intent-dependency"}]}

@@ -156,6 +156,108 @@ pub fn run_candidate(dir: &Path, command: CandidateCommands, json: bool) -> Resu
             );
             Ok(())
         }
+        CandidateCommands::Waive { id, report, reason } => {
+            if std::env::var_os("WG_AGENT_ID").is_some() {
+                bail!("candidate waiver is operator-only; workers cannot waive required FLIP");
+            }
+            if reason.trim().is_empty() {
+                bail!("candidate waiver requires a non-empty operator reason");
+            }
+            let candidate = resolve_candidate(&store, &id)?;
+            let actor = worksgood::current_user();
+            let waiver_value = serde_json::json!({
+                "schema": 1,
+                "candidate": candidate.candidate_id,
+                "report": report,
+                "operator": actor,
+                "reason": reason.trim(),
+            });
+            let waiver_id = worksgood::identity::content_cid(&waiver_value);
+            let waiver_dir = store.root().join("waivers");
+            std::fs::create_dir_all(&waiver_dir)?;
+            worksgood::atomic_file::write_atomic(
+                &waiver_dir.join(format!("{}.json", waiver_id.replace(':', "_"))),
+                &serde_json::to_vec_pretty(&waiver_value)?,
+            )?;
+            let mut failure: Option<String> = None;
+            worksgood::parser::modify_graph(dir.join("graph.jsonl"), |graph| {
+                let Some(task) = graph.get_task_mut(&candidate.task_id) else {
+                    failure = Some("candidate source task missing".into());
+                    return false;
+                };
+                let valid_rejection = task.evaluation_records.iter().any(|record| {
+                    record.product == worksgood::evaluation::EvaluationProduct::DeepReadonlyFlip
+                        && record.policy.applicability
+                            == worksgood::eval_lifecycle::EvaluationGateApplicability::Required
+                        && record.source.candidate_digest == candidate.candidate_id
+                        && worksgood::evaluation::source_candidate_is_current(task, &record.source)
+                        && record
+                            .deep_report
+                            .as_ref()
+                            .is_some_and(|value| value.report_id == report)
+                        && record.consumed_verdict_id.as_deref() == Some(report.as_str())
+                        && record.deep_report.as_ref().is_some_and(|value| {
+                            value.outcome == worksgood::evaluation::BoundedVerdictOutcome::Fail
+                                || value.score < record.policy.threshold.unwrap_or(1.0)
+                        })
+                });
+                if !valid_rejection || task.status != worksgood::graph::Status::PendingEval {
+                    failure = Some(
+                        "waiver requires the exact retained candidate and rejected consumed FLIP report in AwaitingAcceptance"
+                            .into(),
+                    );
+                    return false;
+                }
+                let merged = match worksgood::finalization::merge_candidate(&store, &candidate) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        failure = Some(format!("waiver merge failed: {error:#}"));
+                        return false;
+                    }
+                };
+                let Some(receipt) = merged.merge_receipt.as_ref() else {
+                    failure = Some(format!(
+                        "waiver merge needs repair: {}",
+                        merged.safe_next_command
+                    ));
+                    return false;
+                };
+                let request = worksgood::lifecycle::TransitionRequest::new(
+                    worksgood::lifecycle::TransitionKind::AcceptanceSatisfied {
+                        acceptance_ref: waiver_id.clone(),
+                    },
+                    worksgood::lifecycle::LifecycleActor::operator(actor.clone()),
+                    "required_flip_operator_waiver",
+                    format!("flip-waiver:{}:{}", candidate.task_id, waiver_id),
+                )
+                .with_evidence(candidate.candidate_id.clone())
+                .with_evidence(report.clone())
+                .with_evidence(waiver_id.clone())
+                .with_evidence(receipt.receipt_id.clone());
+                if let Err(error) = worksgood::lifecycle::apply_transition(task, request) {
+                    failure = Some(format!("waiver acceptance CAS refused: {error}"));
+                    return false;
+                }
+                task.log.push(worksgood::graph::LogEntry {
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    actor: None,
+                    user: Some(actor.clone()),
+                    message: format!(
+                        "AUDITED FLIP WAIVER {} candidate={} report={} reason_code=operator-supplied merge={}",
+                        waiver_id, candidate.candidate_id, report, receipt.receipt_id
+                    ),
+                });
+                true
+            })?;
+            if let Some(error) = failure {
+                bail!("{error}");
+            }
+            println!(
+                "Waived required FLIP: waiver={} candidate={} report={} operator={} (audited; exact candidate merged)",
+                waiver_id, candidate.candidate_id, report, actor
+            );
+            Ok(())
+        }
     }
 }
 

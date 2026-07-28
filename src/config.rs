@@ -4040,6 +4040,12 @@ pub enum EvaluationRolloutStage {
     FakePiValidated,
     BoundedCanaryPassed,
     DeepReadonlyCanaryPassed,
+    /// Deep read-only FLIP is selected for every qualifying real candidate
+    /// and is the sole required pre-merge acceptance signal. Bounded grading
+    /// remains independently optional.
+    FlipRequired,
+    /// Historical bounded-advisory stage retained for reading older rollout
+    /// ledgers. New managed rollouts do not route through it.
     Advisory,
 }
 
@@ -4050,6 +4056,7 @@ impl EvaluationRolloutStage {
             Self::FakePiValidated => "fake-pi-validated",
             Self::BoundedCanaryPassed => "bounded-canary-passed",
             Self::DeepReadonlyCanaryPassed => "deep-readonly-canary-passed",
+            Self::FlipRequired => "flip-required",
             Self::Advisory => "advisory",
         }
     }
@@ -4070,9 +4077,10 @@ impl std::str::FromStr for EvaluationRolloutStage {
             "fake-pi-validated" => Ok(Self::FakePiValidated),
             "bounded-canary-passed" => Ok(Self::BoundedCanaryPassed),
             "deep-readonly-canary-passed" => Ok(Self::DeepReadonlyCanaryPassed),
+            "flip-required" => Ok(Self::FlipRequired),
             "advisory" => Ok(Self::Advisory),
             _ => anyhow::bail!(
-                "unknown evaluation rollout stage {value:?}; expected disabled, fake-pi-validated, bounded-canary-passed, deep-readonly-canary-passed, or advisory"
+                "unknown evaluation rollout stage {value:?}; expected disabled, fake-pi-validated, bounded-canary-passed, deep-readonly-canary-passed, flip-required, or advisory"
             ),
         }
     }

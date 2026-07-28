@@ -560,14 +560,74 @@ pub fn checkpoint_rescue(
         read_only_materialization: true,
         created_at: Utc::now().to_rfc3339(),
     });
-    tx.phase = FinalizationPhase::CandidateCheckpointed;
+    let required_flip_before_merge =
+        ctx.evaluation_policy == "required-deep-readonly-flip-before-merge";
+    tx.phase = if required_flip_before_merge {
+        FinalizationPhase::Evaluating
+    } else {
+        FinalizationPhase::CandidateCheckpointed
+    };
     tx.validation = Some(validation);
     tx.evaluation_request = evaluation_request;
-    tx.replay_action = Some(format!(
-        "merge:{}:refs/heads/main:{}",
-        candidate_id, candidate.base_commit_oid
-    ));
-    tx.safe_next_command = format!("wg finalize reconcile {}", ctx.task_id);
+    tx.replay_action = if required_flip_before_merge {
+        None
+    } else {
+        Some(format!(
+            "merge:{}:refs/heads/main:{}",
+            candidate_id, candidate.base_commit_oid
+        ))
+    };
+    tx.safe_next_command = if required_flip_before_merge {
+        format!("wg evaluate run {} --flip", ctx.task_id)
+    } else {
+        format!("wg finalize reconcile {}", ctx.task_id)
+    };
+    tx.updated_at = Utc::now().to_rfc3339();
+    store.save(&tx)?;
+    Ok(tx)
+}
+
+/// Project a valid semantic acceptance rejection onto the retained candidate
+/// transaction. This is idempotent and content-bound: a stale report cannot
+/// retag a newer candidate, and an already merged candidate is immutable.
+pub fn retain_rejected_candidate(
+    store: &FinalizationStore,
+    candidate_id: &str,
+    report_id: &str,
+) -> Result<FinalizationTransaction> {
+    let candidate = store.read_candidate(candidate_id)?;
+    let mut tx = store
+        .load_task(&candidate.task_id)?
+        .context("finalization transaction missing")?;
+    if tx
+        .candidate
+        .as_ref()
+        .map(|value| value.candidate_id.as_str())
+        != Some(candidate_id)
+    {
+        bail!("candidate.binding_mismatch: rejection does not name current transaction");
+    }
+    let retained_reason = format!("acceptance.rejected:{report_id}");
+    if tx.phase == FinalizationPhase::RepairNeeded
+        && tx.retained_reason.as_deref() == Some(retained_reason.as_str())
+    {
+        return Ok(tx);
+    }
+    if tx.phase == FinalizationPhase::Merged || tx.merge_receipt.is_some() {
+        bail!("acceptance.already_merged: rejected report is stale evidence only");
+    }
+    if !matches!(
+        tx.phase,
+        FinalizationPhase::Evaluating
+            | FinalizationPhase::CandidateCheckpointed
+            | FinalizationPhase::RepairNeeded
+    ) {
+        bail!("acceptance.rejection_phase_invalid: {:?}", tx.phase);
+    }
+    tx.phase = FinalizationPhase::RepairNeeded;
+    tx.retained_reason = Some(retained_reason);
+    tx.replay_action = None;
+    tx.safe_next_command = format!("wg candidate repair {candidate_id}");
     tx.updated_at = Utc::now().to_rfc3339();
     store.save(&tx)?;
     Ok(tx)
@@ -909,11 +969,17 @@ pub fn reconcile(store: &FinalizationStore, task: &str) -> Result<Option<Finaliz
     if tx.phase == FinalizationPhase::Validating && tx.validation.is_none() {
         let c = tx.candidate.clone().context("candidate missing")?;
         tx.validation = Some(validate_candidate(store, &tx.project_root, &c)?);
-        tx.phase = FinalizationPhase::CandidateCheckpointed;
-        tx.replay_action = Some(format!(
-            "merge:{}:refs/heads/main:{}",
-            c.candidate_id, c.base_commit_oid
-        ));
+        if c.evaluation_policy == "required-deep-readonly-flip-before-merge" {
+            tx.phase = FinalizationPhase::Evaluating;
+            tx.replay_action = None;
+            tx.safe_next_command = format!("wg evaluate run {} --flip", c.task_id);
+        } else {
+            tx.phase = FinalizationPhase::CandidateCheckpointed;
+            tx.replay_action = Some(format!(
+                "merge:{}:refs/heads/main:{}",
+                c.candidate_id, c.base_commit_oid
+            ));
+        }
         tx.updated_at = Utc::now().to_rfc3339();
         store.save(&tx)?;
     }

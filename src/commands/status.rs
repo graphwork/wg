@@ -86,6 +86,10 @@ struct TaskSummaryInfo {
     historical_gate_audit_alerts: usize,
     evaluation_migration_required: usize,
     evaluation_migrated_rearmed: usize,
+    flip_queued_or_running: usize,
+    flip_rejected_repair_needed: usize,
+    flip_infrastructure_unavailable: usize,
+    flip_passed_merging: usize,
 }
 
 /// Recent activity entry
@@ -319,6 +323,17 @@ fn gather_service_status(dir: &Path) -> Result<ServiceStatusInfo> {
 fn configured_gate_info(
     config: &worksgood::config::Config,
 ) -> (String, Option<f64>, String, Option<f64>) {
+    if config.evaluation.managed_rollout
+        && config.evaluation.rollout_stage
+            == worksgood::config::EvaluationRolloutStage::FlipRequired
+    {
+        return (
+            "required-deep-readonly-flip-for-qualifying-candidates".to_string(),
+            None,
+            "required-primary-pre-merge".to_string(),
+            config.agency.flip_verification_threshold,
+        );
+    }
     let applicability = if config.agency.eval_gate_threshold.is_none() {
         "advisory-only".to_string()
     } else if config.agency.eval_gate_all {
@@ -481,6 +496,10 @@ fn gather_task_summary(dir: &Path, show_all: bool) -> Result<TaskSummaryInfo> {
             historical_gate_audit_alerts: 0,
             evaluation_migration_required: 0,
             evaluation_migrated_rearmed: 0,
+            flip_queued_or_running: 0,
+            flip_rejected_repair_needed: 0,
+            flip_infrastructure_unavailable: 0,
+            flip_passed_merging: 0,
         });
     }
 
@@ -508,6 +527,10 @@ fn gather_task_summary(dir: &Path, show_all: bool) -> Result<TaskSummaryInfo> {
     let mut historical_gate_audit_alerts = 0;
     let mut evaluation_migration_required = 0;
     let mut evaluation_migrated_rearmed = 0;
+    let mut flip_queued_or_running = 0;
+    let mut flip_rejected_repair_needed = 0;
+    let mut flip_infrastructure_unavailable = 0;
+    let mut flip_passed_merging = 0;
 
     let today_start = now
         .date_naive()
@@ -518,6 +541,17 @@ fn gather_task_summary(dir: &Path, show_all: bool) -> Result<TaskSummaryInfo> {
     for task in graph.tasks() {
         if !show_all && task.id.starts_with('.') {
             continue;
+        }
+        if let Some(flip) = worksgood::evaluation::flip_gate_projection(task) {
+            match flip.state.as_str() {
+                "flip-queued" | "flip-running" | "waiting-on-required-flip" => {
+                    flip_queued_or_running += 1
+                }
+                "flip-rejected-repair-needed" => flip_rejected_repair_needed += 1,
+                "flip-infrastructure-unavailable" => flip_infrastructure_unavailable += 1,
+                "flip-passed-merging" => flip_passed_merging += 1,
+                _ => {}
+            }
         }
         if worksgood::eval_lifecycle::evaluation_gate_diagnostics(
             task,
@@ -627,6 +661,10 @@ fn gather_task_summary(dir: &Path, show_all: bool) -> Result<TaskSummaryInfo> {
         historical_gate_audit_alerts,
         evaluation_migration_required,
         evaluation_migrated_rearmed,
+        flip_queued_or_running,
+        flip_rejected_repair_needed,
+        flip_infrastructure_unavailable,
+        flip_passed_merging,
     })
 }
 
@@ -974,6 +1012,19 @@ fn print_status(status: &StatusOutput) {
             status.tasks.evaluation_migration_required,
             status.tasks.evaluation_migrated_rearmed,
             status.tasks.evaluation_operator_required
+        );
+    }
+    let flip_total = status.tasks.flip_queued_or_running
+        + status.tasks.flip_rejected_repair_needed
+        + status.tasks.flip_infrastructure_unavailable
+        + status.tasks.flip_passed_merging;
+    if flip_total > 0 {
+        println!(
+            "Required FLIP: {} queued/running, {} rejected—repair needed, {} infrastructure unavailable, {} passed—merging",
+            status.tasks.flip_queued_or_running,
+            status.tasks.flip_rejected_repair_needed,
+            status.tasks.flip_infrastructure_unavailable,
+            status.tasks.flip_passed_merging
         );
     }
     if status.tasks.historical_gate_audit_alerts > 0 {

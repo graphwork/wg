@@ -644,7 +644,12 @@ impl LifecycleKernel {
                 if !matches!(old_state, Status::PendingEval | Status::PendingValidation) {
                     return Err(Self::state_rejection(old_state));
                 }
-                new_state = Status::Failed;
+                // A semantic rejection rejects this immutable candidate, not
+                // the already-successful source execution. Keep the source in
+                // canonical AwaitingAcceptance so repair/waiver can operate on
+                // retained candidate and report evidence without an implicit
+                // worker retry.
+                new_state = Status::PendingEval;
             }
             TransitionKind::GenerationCreated => {
                 Self::require_actor(&request, &[ActorKind::Operator, ActorKind::Reconciler])?;

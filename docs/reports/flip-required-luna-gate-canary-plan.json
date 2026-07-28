@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "decision": "flip-first-required",
+  "status": "pending-exact-main-operator-canary",
+  "gate_enabled_in_live_project": false,
+  "exact_route": "pi:openai-codex:gpt-5.6-luna",
+  "prior_route_evidence": "docs/reports/pi-evaluation-canary-evidence.json",
+  "reason_pending": "The required-gate implementation is an unmerged worker candidate. Live activation is forbidden until exact-main install.",
+  "operator_preconditions": [
+    "implementation candidate accepted and merged to main",
+    "git pull --ff-only resolves exact accepted main",
+    "cargo install --path . --locked succeeds",
+    "pi route and login are available without fallback",
+    "credential-free flip_first_required_gate smoke passes with candidate binary"
+  ],
+  "required_observations": [
+    "main OID unchanged while FLIP queued/running",
+    "main advances exactly once on valid semantic pass at snapshotted threshold",
+    "main unchanged on semantic reject",
+    "main unchanged on unavailable adapter/credentials/route drift/crash/malformed/timeout",
+    "one candidate, report, accepted verdict, merge receipt and Pi cost across every restart boundary",
+    "semantic reject retains source success, candidate, validation, report and rescue/worktree evidence",
+    "infrastructure retry rearms only exact FLIP record and exact Pi route",
+    "bounded record absent unless independently requested",
+    "rollout ledger records gate_left_disabled=true before operator activation"
+  ],
+  "operator_commands": [
+    "git switch main",
+    "git pull --ff-only",
+    "cargo install --path . --locked",
+    "WG_SMOKE_CANDIDATE_BIN=\"$(command -v wg)\" bash tests/smoke/scenarios/flip_first_required_gate.sh",
+    "wg evaluate rollout status --json",
+    "wg evaluate rollout advance --stage flip-required --evidence /ABS/PATH/flip-required-gate.json",
+    "wg service restart",
+    "wg evaluate rollout status --json"
+  ],
+  "expected_final_status": {
+    "stage": "flip-required",
+    "mode": "flip-required",
+    "auto_evaluate": false,
+    "eval_gate_all": false,
+    "global_flip_enabled": true
+  },
+  "rollback_command": "wg evaluate rollout rollback --reason 'required FLIP canary rollback threshold reached'"
+}
