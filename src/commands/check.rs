@@ -17,6 +17,7 @@ struct CheckJsonOutput {
     orphan_refs: Vec<worksgood::check::OrphanRef>,
     stale_assignments: Vec<worksgood::check::StaleAssignment>,
     stuck_blocked: Vec<worksgood::check::StuckBlocked>,
+    abandoned_dependency_violations: Vec<worksgood::check::AbandonedDependencyViolation>,
     node_count: usize,
     structural_cycles: Vec<CycleInfo>,
     warnings: usize,
@@ -36,6 +37,7 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
     let warnings = result.cycles.len()
         + result.stale_assignments.len()
         + result.stuck_blocked.len()
+        + result.abandoned_dependency_violations.len()
         + irreducible_count;
     let errors = result.orphan_refs.len();
 
@@ -56,6 +58,7 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
             orphan_refs: result.orphan_refs,
             stale_assignments: result.stale_assignments,
             stuck_blocked: result.stuck_blocked,
+            abandoned_dependency_violations: result.abandoned_dependency_violations,
             node_count: graph.len(),
             structural_cycles,
             warnings,
@@ -94,6 +97,25 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
                 stuck.task_id,
                 stuck.after_ids.join(", ")
             );
+        }
+    }
+
+    if !result.abandoned_dependency_violations.is_empty() {
+        eprintln!("Warning: Abandoned required-success dependency audit findings:");
+        for finding in &result.abandoned_dependency_violations {
+            eprintln!(
+                "  {}: {} (prerequisite {}, archived={})",
+                finding.task_id, finding.diagnostic, finding.prerequisite_id, finding.archived
+            );
+            if finding.task_status == worksgood::graph::Status::Done {
+                eprintln!(
+                    "    immutable historical completion retained; operator review recommended"
+                );
+            } else {
+                eprintln!(
+                    "    live attempt preserved; acceptance/merge is fenced until explicit edge repair"
+                );
+            }
         }
     }
 

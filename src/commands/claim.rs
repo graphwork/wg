@@ -24,6 +24,51 @@ pub fn claim(dir: &Path, id: &str, actor: Option<&str>) -> Result<()> {
     let mut prev_assigned: Option<String> = None;
 
     let _graph = modify_graph(&path, |graph| {
+        // Manual claim is an execution admission edge, not an operator waiver.
+        // It must consult the same disposition authority as the dispatcher.
+        let dependency_error = graph.get_task(id).and_then(|candidate| {
+            let cycle_analysis = graph.compute_cycle_analysis();
+            candidate.after.iter().find_map(|dep_id| {
+                let disposition = worksgood::query::dependency_disposition(
+                    dep_id,
+                    id,
+                    graph,
+                    Some(dir),
+                );
+                if disposition.is_satisfied() {
+                    return None;
+                }
+                let same_cycle = cycle_analysis.task_to_cycle.get(dep_id).is_some_and(|cycle| {
+                    cycle_analysis.task_to_cycle.get(id) == Some(cycle)
+                });
+                let liveness_back_edge = same_cycle
+                    && graph.get_task(dep_id).is_some_and(|dep| {
+                        !matches!(dep.status, Status::Failed | Status::Abandoned)
+                    });
+                if liveness_back_edge {
+                    None
+                } else {
+                    let reason = match disposition {
+                        worksgood::query::DependencyDisposition::Blocked { reason } => reason,
+                        _ => "dependency is not satisfied".to_string(),
+                    };
+                    Some((dep_id.clone(), reason))
+                }
+            })
+        });
+        if let Some((dep_id, reason)) = dependency_error {
+            error = Some(anyhow::anyhow!(
+                "Cannot claim task '{}': blocked by prerequisite '{}': {}. Repair with `wg retry {}` or explicitly remove/relink the edge (`wg rm-dep {} {}`).",
+                id,
+                dep_id,
+                reason,
+                dep_id,
+                id,
+                dep_id
+            ));
+            return false;
+        }
+
         let task = match graph.get_task_mut(id) {
             Some(t) => t,
             None => {

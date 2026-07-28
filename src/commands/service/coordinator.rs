@@ -805,20 +805,10 @@ fn assert_ordinary_messages_are_inert(
 // Unblock stuck tasks
 // ---------------------------------------------------------------------------
 
-/// Scan blocked tasks and unblock those whose dependencies are satisfied
-/// (terminal) or missing (archived/deleted).
-///
-/// The coordinator runs unblock logic only when a task transitions to done.
-/// This misses cases where:
-/// 1. A dependency is archived/deleted → dangling reference never confirms
-/// 2. Coordinator misses a completion event (restart, crash, timing)
-/// 3. Tasks blocked on completed tasks never get unblocked
-///
-/// This function:
-/// 1. Scans all blocked tasks
-/// 2. Checks if all after dependencies are terminal OR don't exist
-/// 3. If so, transitions Blocked → Open
-/// 4. Logs diagnostic info for stale blocked states
+/// Scan blocked tasks and reopen only those whose required-success edges are
+/// satisfied according to the canonical dependency disposition. Missing,
+/// failed, abandoned, unresolved-remote, and archived non-Done prerequisites
+/// stay blocked; coordinator recovery must never manufacture success.
 ///
 /// Returns `true` if the graph was modified.
 /// Dispatcher-side wrapper around `worksgood::lifecycle::migrate_pending_validation_tasks`.
@@ -841,7 +831,7 @@ fn migrate_pending_validation_tasks(graph: &mut worksgood::graph::WorkGraph) -> 
 // `eval_lifecycle::reconcile_durable_verdicts`; terminal/missing satellites are
 // never interpreted as semantic success.
 
-fn unblock_stuck_tasks(graph: &mut worksgood::graph::WorkGraph, _dir: &Path) -> bool {
+fn unblock_stuck_tasks(graph: &mut worksgood::graph::WorkGraph, dir: &Path) -> bool {
     let mut modified = false;
 
     // Collect blocked task IDs first
@@ -852,18 +842,13 @@ fn unblock_stuck_tasks(graph: &mut worksgood::graph::WorkGraph, _dir: &Path) -> 
         .collect();
 
     for task_id in blocked_task_ids {
-        // Check if all dependencies are satisfied
-        let task = graph.tasks().find(|t| t.id == task_id);
-        let all_deps_satisfied = match task {
-            Some(task) => task.after.iter().all(|dep_id| {
-                // Check if dependency exists
-                match graph.tasks().find(|t| t.id == *dep_id) {
-                    Some(dep_task) => dep_task.status.is_dep_satisfied(),
-                    None => true, // Missing dependency = satisfied for stuck tasks
-                }
-            }),
-            None => false,
-        };
+        let task = graph.get_task(&task_id);
+        let all_deps_satisfied = task.is_some_and(|task| {
+            task.after.iter().all(|dep_id| {
+                worksgood::query::dependency_disposition(dep_id, &task.id, graph, Some(dir))
+                    .is_satisfied()
+            })
+        });
 
         if all_deps_satisfied {
             // Get mutable reference to update the task
@@ -876,7 +861,7 @@ fn unblock_stuck_tasks(graph: &mut worksgood::graph::WorkGraph, _dir: &Path) -> 
                         actor: Some("coordinator".to_string()),
                         user: Some(worksgood::current_user()),
                         message: format!(
-                            "Unblocked by coordinator scan — all dependencies satisfied or archived/deleted. Dependencies: {}",
+                            "Unblocked by coordinator scan — all required-success dependencies are canonically satisfied. Dependencies: {}",
                             task.after.join(", ")
                         ),
                     });
@@ -896,15 +881,18 @@ fn unblock_stuck_tasks(graph: &mut worksgood::graph::WorkGraph, _dir: &Path) -> 
                     .after
                     .iter()
                     .filter_map(|dep_id| {
-                        graph.tasks().find(|t| t.id == *dep_id).map(|t| {
-                            if !t.status.is_terminal() {
-                                format!("{}:{:?}", dep_id, t.status)
-                            } else {
-                                String::new()
+                        match worksgood::query::dependency_disposition(
+                            dep_id,
+                            &task.id,
+                            graph,
+                            Some(dir),
+                        ) {
+                            worksgood::query::DependencyDisposition::Blocked { reason } => {
+                                Some(format!("{dep_id}:{reason}"))
                             }
-                        })
+                            _ => None,
+                        }
                     })
-                    .filter(|s| !s.is_empty())
                     .collect();
                 if !waiting_on.is_empty() {
                     eprintln!(

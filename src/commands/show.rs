@@ -18,6 +18,12 @@ use super::service::CoordinatorState;
 struct BlockerInfo {
     id: String,
     status: Status,
+    /// Stable required-success edge projection. Terminal does not imply true.
+    satisfied: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    blocked_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    superseded_by: Vec<String>,
 }
 
 fn is_zero(val: &u32) -> bool {
@@ -604,24 +610,42 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
                     remote_task_id,
                     dir,
                 );
+                let disposition =
+                    worksgood::query::dependency_disposition(blocker_id, id, &graph, Some(dir));
                 BlockerInfo {
                     id: blocker_id.clone(),
                     status: remote.status,
+                    satisfied: disposition.is_satisfied(),
+                    blocked_reason: match disposition {
+                        worksgood::query::DependencyDisposition::Blocked { reason } => Some(reason),
+                        _ => None,
+                    },
+                    superseded_by: Vec::new(),
                 }
             } else {
-                let status = match graph.get_task(blocker_id) {
-                    Some(t) => t.status,
-                    None => {
-                        eprintln!(
-                            "Warning: blocker '{}' referenced by '{}' not found in graph",
-                            blocker_id, id
-                        );
-                        Status::Open
-                    }
-                };
+                let status = graph
+                    .get_task(blocker_id)
+                    .map(|task| task.status)
+                    .or_else(|| {
+                        graph
+                            .get_archived_boundary(blocker_id)
+                            .map(|boundary| boundary.status)
+                    })
+                    .unwrap_or(Status::Open);
+                let disposition =
+                    worksgood::query::dependency_disposition(blocker_id, id, &graph, Some(dir));
                 BlockerInfo {
                     id: blocker_id.clone(),
                     status,
+                    satisfied: disposition.is_satisfied(),
+                    blocked_reason: match disposition {
+                        worksgood::query::DependencyDisposition::Blocked { reason } => Some(reason),
+                        _ => None,
+                    },
+                    superseded_by: graph
+                        .get_task(blocker_id)
+                        .map(|task| task.superseded_by.clone())
+                        .unwrap_or_default(),
                 }
             }
         })
@@ -641,6 +665,9 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
                     BlockerInfo {
                         id: dep_id.clone(),
                         status,
+                        satisfied: false,
+                        blocked_reason: None,
+                        superseded_by: Vec::new(),
                     }
                 })
                 .collect()
@@ -1424,6 +1451,19 @@ fn print_human_readable(details: &TaskDetails) {
     } else {
         for blocker in &details.after {
             println!("  - {} ({})", blocker.id, blocker.status);
+            if let Some(reason) = blocker.blocked_reason.as_deref() {
+                println!("    blocked: {}", reason);
+                if !blocker.superseded_by.is_empty() {
+                    println!(
+                        "    superseded by {} (provenance only; edge still blocks)",
+                        blocker.superseded_by.join(", ")
+                    );
+                }
+                println!(
+                    "    repair: `wg retry {0}`, relink to a completed replacement, or `wg rm-dep {1} {0}`",
+                    blocker.id, details.id
+                );
+            }
         }
     }
 
@@ -2156,6 +2196,9 @@ mod tests {
             before: vec![BlockerInfo {
                 id: "t2".to_string(),
                 status: Status::Open,
+                satisfied: false,
+                blocked_reason: None,
+                superseded_by: Vec::new(),
             }],
             created_at: Some("2026-01-20T15:35:50+00:00".to_string()),
             started_at: Some("2026-01-20T16:30:00+00:00".to_string()),

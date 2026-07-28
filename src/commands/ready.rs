@@ -26,12 +26,12 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
             if !has_future_ready_after {
                 return false;
             }
-            // All blockers must be terminal (i.e. only ready_after is holding it back)
+            // Only an exactly satisfied required-success edge means the delay
+            // is the sole remaining gate. Terminal failure/abandonment and
+            // missing/archive failures remain dependency blockers.
             task.after.iter().all(|blocker_id| {
-                graph
-                    .get_task(blocker_id)
-                    .map(|t| t.status.is_terminal())
-                    .unwrap_or(true)
+                worksgood::query::dependency_disposition(blocker_id, &task.id, &graph, Some(dir))
+                    .is_satisfied()
             })
         })
         .collect();

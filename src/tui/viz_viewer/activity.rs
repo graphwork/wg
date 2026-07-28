@@ -243,9 +243,22 @@ fn operation_event(line: &str) -> Option<ActivityEvent> {
         "edit" => (ActivityEventKind::Task, "task edited".to_string()),
         "publish" => (ActivityEventKind::Task, "task published".to_string()),
         "link" | "unlink" => (ActivityEventKind::Task, format!("dependency {op}")),
-        "pause" | "resume" | "retry" | "abandon" | "requeue" => {
-            (ActivityEventKind::Lifecycle, op.to_string())
+        "abandon" => {
+            let affected = detail
+                .get("affected_ordinary_dependents")
+                .and_then(Value::as_array)
+                .map(Vec::len)
+                .unwrap_or(0);
+            (
+                ActivityEventKind::Lifecycle,
+                if affected == 0 {
+                    "abandoned (required-success edges fail closed)".to_string()
+                } else {
+                    format!("abandoned; {affected} ordinary dependent(s) remain blocked")
+                },
+            )
         }
+        "pause" | "resume" | "retry" | "requeue" => (ActivityEventKind::Lifecycle, op.to_string()),
         "claim" | "spawn" => (
             ActivityEventKind::Agent,
             format!("{} admitted", actor.as_deref().unwrap_or("agent")),

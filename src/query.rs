@@ -226,10 +226,7 @@ where
             // Check if all blockers are now resolved (in our plan or dep-satisfied)
             let blockers_done = task.after.iter().all(|blocker_id| {
                 completed_in_plan.contains(blocker_id.as_str())
-                    || graph
-                        .get_task(blocker_id)
-                        .map(|t| t.status.is_dep_satisfied())
-                        .unwrap_or(true)
+                    || dependency_disposition(blocker_id, &task.id, graph, None).is_satisfied()
             });
 
             if blockers_done {
@@ -283,12 +280,10 @@ pub fn build_reverse_index(graph: &WorkGraph) -> HashMap<String, Vec<String>> {
 /// Agency eval IS the verification — `wg approve`/`wg reject` are no longer
 /// routine human gates.
 ///
-/// Returns false (gate satisfied) when:
-/// - `.evaluate-{blocker_id}` does not exist (no eval scheduled)
-/// - `.evaluate-{blocker_id}` is terminal (Done/Failed/Abandoned)
-///
-/// Returns true (gate pending) when:
-/// - `.evaluate-{blocker_id}` exists and is Open/InProgress/Waiting/PendingValidation
+/// Returns false (gate satisfied) when no evaluation was scheduled or the
+/// scheduled evaluation completed successfully. Failed/Abandoned evaluation
+/// jobs are terminal for lifecycle purposes but do not constitute acceptance
+/// evidence, so the gate remains pending/fail-closed.
 ///
 /// System tasks (dot-prefixed) are exempt from eval gating to avoid recursive
 /// gates on `.evaluate-X`, `.assign-X`, etc.
@@ -298,7 +293,7 @@ pub fn is_eval_gate_pending(blocker_id: &str, graph: &WorkGraph) -> bool {
     }
     let eval_id = format!(".evaluate-{}", blocker_id);
     match graph.get_task(&eval_id) {
-        Some(eval_task) => !eval_task.status.is_terminal(),
+        Some(eval_task) => eval_task.status != Status::Done,
         None => false,
     }
 }
@@ -320,8 +315,9 @@ pub fn ready_tasks(graph: &WorkGraph) -> Vec<&Task> {
             if !is_time_ready(task) {
                 return false;
             }
-            // All blockers must be terminal (done, failed, or abandoned).
-            // If a blocker doesn't exist in the graph, treat it as BLOCKED
+            // Every required-success blocker must be exactly Done. Terminal
+            // failure/abandonment is not success evidence. If a blocker does
+            // not exist in the graph, treat it as BLOCKED
             // (not satisfied). This prevents premature dispatch when tasks
             // reference dependencies that haven't been created yet during
             // burst graph construction.
@@ -366,23 +362,34 @@ pub fn dependency_disposition(
     graph: &WorkGraph,
     workgraph_dir: Option<&Path>,
 ) -> DependencyDisposition {
-    if crate::federation::parse_remote_ref(blocker_id).is_some() {
-        return if is_blocker_satisfied(blocker_id, graph, workgraph_dir) {
+    if let Some((peer_name, remote_task_id)) = crate::federation::parse_remote_ref(blocker_id) {
+        let Some(dir) = workgraph_dir else {
+            return DependencyDisposition::Blocked {
+                reason: "remote dependency unresolved".to_string(),
+            };
+        };
+        let remote = crate::federation::resolve_remote_task_status(peer_name, remote_task_id, dir);
+        return if remote.status == Status::Done {
             DependencyDisposition::Satisfied
         } else {
             DependencyDisposition::Blocked {
-                reason: "remote dependency unresolved".to_string(),
+                reason: format!("remote prerequisite status is {}", remote.status),
             }
         };
     }
 
     let Some(blocker) = graph.get_task(blocker_id) else {
-        return if graph.get_archived_boundary(blocker_id).is_some() {
-            DependencyDisposition::Satisfied
-        } else {
-            DependencyDisposition::Blocked {
+        return match graph.get_archived_boundary(blocker_id) {
+            Some(boundary) if boundary.status == Status::Done => DependencyDisposition::Satisfied,
+            Some(boundary) => DependencyDisposition::Blocked {
+                reason: format!(
+                    "archived prerequisite status is {} (only archived done satisfies)",
+                    boundary.status
+                ),
+            },
+            None => DependencyDisposition::Blocked {
                 reason: "dependency does not exist".to_string(),
-            }
+            },
         };
     };
     // The owning `.flip-X` / `.evaluate-X` satellites ARE the mechanism that
@@ -395,7 +402,8 @@ pub fn dependency_disposition(
     // That preservation is what makes a reset-to-Open source correctly
     // RE-BLOCK its eval satellite, so a stale `.evaluate-*` can never respawn
     // (and fail "task is open - can't evaluate") against an open source.
-    // `Done`/`Abandoned` fall through to the ordinary satisfied path below.
+    // `Done` falls through to the ordinary satisfied path below. `Abandoned`
+    // remains a failed-closed ordinary prerequisite.
     if matches!(
         blocker.status,
         Status::Failed | Status::PendingEval | Status::FailedPendingEval
@@ -406,9 +414,12 @@ pub fn dependency_disposition(
         };
     }
     if !blocker.status.is_dep_satisfied() {
-        return DependencyDisposition::Blocked {
-            reason: format!("dependency status is {}", blocker.status),
+        let reason = if blocker.status == Status::Abandoned {
+            format!("prerequisite {blocker_id} was abandoned")
+        } else {
+            format!("dependency status is {}", blocker.status)
         };
+        return DependencyDisposition::Blocked { reason };
     }
     if !dependent_id.starts_with('.') && is_eval_gate_pending(blocker_id, graph) {
         return DependencyDisposition::Blocked {
@@ -420,9 +431,9 @@ pub fn dependency_disposition(
 
 /// Check whether a single after dependency is satisfied.
 ///
-/// Satisfied means Done or Abandoned.  Failed is NOT satisfied — a failed
-/// upstream produced no valid output and must be retried before downstream
-/// work can proceed.
+/// Satisfied means exactly Done. Failed and Abandoned are terminal lifecycle
+/// states but produced no valid output and must never authorize downstream
+/// work.
 ///
 /// Handles both local and remote (`peer:task-id`) references.
 /// For remote refs, resolves via federation config using IPC or direct file access.
@@ -448,7 +459,11 @@ pub fn is_blocker_satisfied(
         graph
             .get_task(blocker_id)
             .map(|t| t.status.is_dep_satisfied())
-            .or_else(|| graph.get_archived_boundary(blocker_id).map(|_| true))
+            .or_else(|| {
+                graph
+                    .get_archived_boundary(blocker_id)
+                    .map(|boundary| boundary.status == Status::Done)
+            })
             .unwrap_or(false)
     }
 }
@@ -535,6 +550,7 @@ pub fn ready_tasks_cycle_aware<'a>(
                 cycle_analysis
                     .back_edges
                     .contains(&(blocker_id.clone(), task.id.clone()))
+                    && cycle_back_edge_may_break_liveness(blocker_id, graph)
             })
         })
         .collect();
@@ -673,6 +689,12 @@ fn collect_cycle_member_tasks<'a>(
     members.iter().map(|id| graph.get_task(id)).collect()
 }
 
+fn cycle_back_edge_may_break_liveness(blocker_id: &str, graph: &WorkGraph) -> bool {
+    graph
+        .get_task(blocker_id)
+        .is_some_and(|blocker| !matches!(blocker.status, Status::Failed | Status::Abandoned))
+}
+
 fn cycle_has_unsatisfied_external_blocker(graph: &WorkGraph, members: &[String]) -> bool {
     let member_set: HashSet<&str> = members.iter().map(String::as_str).collect();
     members
@@ -680,12 +702,7 @@ fn cycle_has_unsatisfied_external_blocker(graph: &WorkGraph, members: &[String])
         .filter_map(|member_id| graph.get_task(member_id))
         .flat_map(|task| task.after.iter())
         .filter(|dep_id| !member_set.contains(dep_id.as_str()))
-        .any(|dep_id| {
-            graph
-                .get_task(dep_id)
-                .map(|dep| !dep.status.is_dep_satisfied())
-                .unwrap_or(true)
-        })
+        .any(|dep_id| !dependency_disposition(dep_id, "cycle-external", graph, None).is_satisfied())
 }
 
 /// Find all tasks that are ready to work on, resolving cross-repo dependencies,
@@ -718,6 +735,7 @@ pub fn ready_tasks_with_peers_cycle_aware<'a>(
                 cycle_analysis
                     .back_edges
                     .contains(&(blocker_id.clone(), task.id.clone()))
+                    && cycle_back_edge_may_break_liveness(blocker_id, graph)
             })
         })
         .collect()
@@ -725,9 +743,9 @@ pub fn ready_tasks_with_peers_cycle_aware<'a>(
 
 /// Find what tasks are blocking a given task.
 ///
-/// A blocker is any upstream that has not yet satisfied its dependency — i.e.
-/// not Done and not Abandoned.  Failed upstreams are included because they
-/// did not produce valid output.
+/// A blocker is any local upstream that has not successfully completed.
+/// Abandoned and Failed upstreams remain blockers even though they are
+/// terminal lifecycle states.
 pub fn after<'a>(graph: &'a WorkGraph, task_id: &str) -> Vec<&'a Task> {
     let Some(task) = graph.get_task(task_id) else {
         return vec![];
@@ -773,7 +791,7 @@ pub fn cost_of(graph: &WorkGraph, task_id: &str) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::{Estimate, Node};
+    use crate::graph::{ArchivedBoundary, Estimate, Node};
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {
@@ -902,7 +920,7 @@ mod tests {
     }
 
     #[test]
-    fn test_after_excludes_abandoned_blockers() {
+    fn test_after_includes_abandoned_blockers() {
         let mut graph = WorkGraph::new();
 
         let mut blocker = make_task("blocker", "Blocker");
@@ -915,9 +933,10 @@ mod tests {
         graph.add_node(Node::Task(blocked));
 
         let blockers = after(&graph, "blocked");
-        assert!(
-            blockers.is_empty(),
-            "Abandoned blockers should not block dependents"
+        assert_eq!(
+            blockers.len(),
+            1,
+            "Abandoned blockers remain required-success blockers"
         );
     }
 
@@ -1457,8 +1476,8 @@ mod tests {
     }
 
     #[test]
-    fn test_ready_tasks_abandoned_blocker_unblocks() {
-        // A task whose only blocker was abandoned should become ready
+    fn test_ready_tasks_abandoned_blocker_blocks() {
+        // Abandonment is terminal lifecycle history, not success evidence.
         let mut graph = WorkGraph::new();
 
         let mut b_abandoned = make_task("b-abandoned", "Abandoned blocker");
@@ -1473,9 +1492,40 @@ mod tests {
         let ready = ready_tasks(&graph);
         let ready_ids: Vec<&str> = ready.iter().map(|t| t.id.as_str()).collect();
         assert!(
-            ready_ids.contains(&"t"),
-            "t should be ready when blocker was abandoned"
+            !ready_ids.contains(&"t"),
+            "t must remain blocked when its required prerequisite was abandoned"
         );
+    }
+
+    #[test]
+    fn archived_done_boundary_satisfies_but_archived_abandoned_blocks() {
+        for (status, expected_ready) in [(Status::Done, true), (Status::Abandoned, false)] {
+            let mut graph = WorkGraph::new();
+            graph.add_node(Node::ArchivedBoundary(ArchivedBoundary {
+                id: "archived-upstream".to_string(),
+                title: "Archived upstream".to_string(),
+                status,
+                predecessors: Vec::new(),
+                successors: vec!["downstream".to_string()],
+                archived_at: "2026-01-01T00:00:00Z".to_string(),
+            }));
+            let mut downstream = make_task("downstream", "Downstream");
+            downstream.after = vec!["archived-upstream".to_string()];
+            graph.add_node(Node::Task(downstream));
+
+            assert_eq!(
+                ready_tasks(&graph)
+                    .iter()
+                    .any(|task| task.id == "downstream"),
+                expected_ready,
+                "archived {status} boundary readiness"
+            );
+            assert_eq!(
+                dependency_disposition("archived-upstream", "downstream", &graph, None)
+                    .is_satisfied(),
+                expected_ready
+            );
+        }
     }
 
     // ========== Orphan blocker tests ==========

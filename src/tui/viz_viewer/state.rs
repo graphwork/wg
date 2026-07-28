@@ -14612,6 +14612,30 @@ impl VizApp {
             lines.push("── Dependencies ──".to_string());
             if !task.after.is_empty() {
                 lines.push(format!("  After:  {}", task.after.join(", ")));
+                for prerequisite_id in &task.after {
+                    if let worksgood::query::DependencyDisposition::Blocked { reason } =
+                        worksgood::query::dependency_disposition(
+                            prerequisite_id,
+                            &task.id,
+                            &graph,
+                            Some(&self.workgraph_dir),
+                        )
+                    {
+                        lines.push(format!("    blocked: {}", reason));
+                        if let Some(prerequisite) = graph.get_task(prerequisite_id)
+                            && !prerequisite.superseded_by.is_empty()
+                        {
+                            lines.push(format!(
+                                "    superseded by {} (provenance only; edge still blocks)",
+                                prerequisite.superseded_by.join(", ")
+                            ));
+                        }
+                        lines.push(format!(
+                            "    repair: wg retry {0} | wg rm-dep {1} {0} | relink to completed replacement",
+                            prerequisite_id, task.id
+                        ));
+                    }
+                }
             }
             if !task.before.is_empty() {
                 lines.push(format!("  Before: {}", task.before.join(", ")));

@@ -649,6 +649,62 @@ pub fn merge_candidate(
         }
     }
     let project = tx.project_root.clone();
+    // Merge is a downstream acceptance effect. Re-check the live graph here,
+    // after candidate production and immediately before any target mutation,
+    // so an abandoned/missing prerequisite that appeared during a live attempt
+    // fences the exact writer without discarding its retained candidate.
+    let wg_dir = project.join(".wg");
+    let graph_path = wg_dir.join("graph.jsonl");
+    // The finalization library also supports graph-less content-CAS fixtures.
+    // Production WG projects always have graph.jsonl; when present it is
+    // authoritative and any parse/read failure remains fail-closed.
+    if graph_path.exists() {
+        let graph = crate::parser::load_graph(&graph_path).context(
+            "merge.dependency_graph_unavailable: retained candidate requires operator review",
+        )?;
+        if let Some(task) = graph.get_task(&candidate.task_id) {
+            let cycles = graph.compute_cycle_analysis();
+            for prerequisite_id in &task.after {
+                let disposition = crate::query::dependency_disposition(
+                    prerequisite_id,
+                    &task.id,
+                    &graph,
+                    Some(&wg_dir),
+                );
+                if disposition.is_satisfied() {
+                    continue;
+                }
+                let viable_cycle_peer = cycles
+                    .task_to_cycle
+                    .get(prerequisite_id)
+                    .is_some_and(|cycle| cycles.task_to_cycle.get(&task.id) == Some(cycle))
+                    && graph.get_task(prerequisite_id).is_some_and(|prerequisite| {
+                        !matches!(
+                            prerequisite.status,
+                            crate::graph::Status::Failed | crate::graph::Status::Abandoned
+                        )
+                    });
+                if viable_cycle_peer {
+                    continue;
+                }
+                let reason = match disposition {
+                    crate::query::DependencyDisposition::Blocked { reason } => reason,
+                    _ => "required-success prerequisite is not satisfied".to_string(),
+                };
+                bail!(
+                    "merge.dependency_fenced: task {} prerequisite {} is not successful: {}; candidate retained for operator review",
+                    task.id,
+                    prerequisite_id,
+                    reason
+                );
+            }
+        } else {
+            bail!(
+                "merge.dependency_fenced: task {} is missing from the live graph; candidate retained for operator review",
+                candidate.task_id
+            );
+        }
+    }
     verify_candidate_at(store, &project, candidate)?;
     let target_ref = "refs/heads/main";
     let action_id = format!(

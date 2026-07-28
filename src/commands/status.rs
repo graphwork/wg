@@ -581,10 +581,8 @@ fn gather_task_summary(dir: &Path, show_all: bool) -> Result<TaskSummaryInfo> {
                             .unwrap_or(false)
                     });
                     let all_blockers_done = task.after.iter().all(|bid| {
-                        graph
-                            .get_task(bid)
-                            .map(|t| t.status.is_terminal())
-                            .unwrap_or(true)
+                        worksgood::query::dependency_disposition(bid, &task.id, &graph, Some(dir))
+                            .is_satisfied()
                     });
                     if has_future_ready_after && all_blockers_done {
                         delayed += 1;
