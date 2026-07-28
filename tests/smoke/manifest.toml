@@ -2784,3 +2784,12 @@ script = "scenarios/pi_continuation_exit_epoch_fence.sh"
 owners = ["fix-pi-continuation-exit-epoch-fence"]
 description = "Installed-binary Fake-Pi replay of attempt-0-22: a same-process continuation advances only prompt epoch, then current terminal/exit receipts with and without wg_done reconcile exactly once across command restarts; the historical schema-v1 watchdog=2/lifecycle=1 split self-repairs without Lost/stale_process_epoch, duplicate budget charge, or mutation of retained dirty WIP/substantive session bytes."
 timeout_seconds = 120
+
+[[scenario]]
+name = "tui_graph_wide_activity_feed"
+script = "scenarios/tui_graph_wide_activity_feed.sh"
+owners = [
+    "tui-graph-wide-activity-feed",
+]
+description = "Candidate-binary tmux Workspace Activity flow: one wide/compact activation shows bounded graph history, relative+local clock time, live tail, scroll freeze with unseen count, End resume, and secondary Dashboard/Config/raw Service log actions."
+timeout_seconds = 180
