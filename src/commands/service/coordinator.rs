@@ -4965,6 +4965,25 @@ pub fn coordinator_tick(
     // below (max agents, no ready tasks) would skip chat processing otherwise.
     process_chat_inbox(dir);
 
+    // Phase 0.5: dedicated bounded evaluation. This precedes ordinary worker
+    // cleanup/admission and deliberately does not consume an AgentRegistry
+    // slot, allocate a worktree, or enter build admission. Adapter failures are
+    // persisted on the hidden source record and never cross-fall back.
+    match worksgood::evaluation::bounded::run_one_pending(dir, &config) {
+        Ok(tick) if tick.ran => eprintln!(
+            "[evaluation-lane] {} -> {:?}",
+            tick.evaluation_id.as_deref().unwrap_or("unknown"),
+            tick.state
+        ),
+        Ok(tick) if tick.deferred => eprintln!(
+            "[evaluation-lane] dedicated capacity/rate deferred; source failure accounting unchanged"
+        ),
+        Ok(_) => {}
+        Err(error) => eprintln!(
+            "[evaluation-lane] internal lane error (source lifecycle unchanged): {error:#}"
+        ),
+    }
+
     // Retained source and periodic disk scans are deliberately NOT performed
     // here. Both may traverse slow/network worktrees, so the daemon's
     // single-flight RetainedWorktreeCleanupLane owns them. A dispatch-critical

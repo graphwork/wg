@@ -4145,6 +4145,7 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
 
     // Load coordinator state (persisted by daemon, reflects effective config + runtime)
     let coord = CoordinatorState::load_or_default(dir);
+    let evaluation_lane = worksgood::evaluation::bounded::load_lane_status(dir);
     let cleanup = worktree::load_cleanup_lane_snapshot(dir);
     let worktree_observers = worksgood::worktree_observer::list_projections(dir);
     let worktree_activity_clocks = worktree_observers
@@ -4199,6 +4200,7 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
                     "normal"
                 },
             },
+            "evaluation_lane": evaluation_lane,
             "retained_worktree_cleanup": cleanup,
             "worktree_observers": worktree_observers,
             "worktree_activity_clocks": worktree_activity_clocks,
@@ -4308,6 +4310,28 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
         );
         if coord.frozen && !coord.frozen_pids.is_empty() {
             println!("  Frozen PIDs: {:?}", coord.frozen_pids);
+        }
+        println!(
+            "Evaluation lane: active={}/{}, rate={}/{}/min, completed={}, failed={}, deferred={}",
+            evaluation_lane.active,
+            evaluation_lane.max_concurrency,
+            evaluation_lane.launches_per_minute,
+            evaluation_lane.launch_limit_per_minute,
+            evaluation_lane.completed,
+            evaluation_lane.failed,
+            evaluation_lane.resource_deferrals
+        );
+        if let Some(id) = evaluation_lane.last_evaluation_id.as_deref() {
+            println!(
+                "  Last: {} state={:?}{}",
+                id,
+                evaluation_lane.last_state,
+                evaluation_lane
+                    .last_diagnostic
+                    .as_deref()
+                    .map(|value| format!(" diagnostic={value}"))
+                    .unwrap_or_default()
+            );
         }
         if let Some(ref last) = coord.last_tick {
             println!(
