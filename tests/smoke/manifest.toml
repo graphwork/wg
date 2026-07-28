@@ -2828,3 +2828,10 @@ script = "scenarios/abandoned_dependency_fail_closed.sh"
 owners = ["fix-abandoned-dependency-readiness"]
 description = "Installed-binary credential-free daemon/terminal regression for required-success dependency semantics: prerequisite -> packaging -> launch remains blocked after abandonment and supersession provenance; ready/why-blocked/show JSON, claim/spawn/done, repeated polls, restart, archived Abandoned boundary and archive undo all fail closed with no attempt/output runtime state; only an explicit provenance-recorded edge removal permits progress."
 timeout_seconds = 90
+
+[[scenario]]
+name = "attempt_runtime_state_namespace"
+script = "scenarios/attempt_runtime_state_namespace.sh"
+owners = ["fix-attempt-runtime-state-namespace"]
+description = "Candidate-binary terminal regression for task-local attempt identity: two concurrent tasks both own attempt-0-1 with distinct real Pi watchdog/session namespaces; a third real spawn launches exactly once despite 1-27 foreign historical flat directories, emits one reconciliation diagnostic, never projects stale Pi/observer state, and leaves every historical byte unchanged."
+timeout_seconds = 180

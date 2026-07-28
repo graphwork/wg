@@ -445,8 +445,11 @@ fn load_required_flip_events(root: &Path, events: &mut Vec<ActivityEvent>, malfo
 }
 
 fn load_observer_events(root: &Path, events: &mut Vec<ActivityEvent>, malformed: &mut usize) {
-    let attempts = root.join("attempts");
-    let mut paths = child_files(&attempts, "worktree-observer/activity.jsonl", 48);
+    let mut paths = worksgood::attempt_runtime::list_component_dirs(
+        root,
+        "worktree-observer/activity.jsonl",
+        48,
+    );
     paths.sort();
     for path in paths {
         parse_file(&path, malformed, |line| {
@@ -593,19 +596,6 @@ fn load_native_events(root: &Path, events: &mut Vec<ActivityEvent>, malformed: &
 
 fn bounded_id(value: &str) -> String {
     bounded(value, 72)
-}
-
-fn child_files(root: &Path, suffix: &str, limit: usize) -> Vec<PathBuf> {
-    let Ok(entries) = fs::read_dir(root) else {
-        return Vec::new();
-    };
-    let mut children: Vec<_> = entries
-        .flatten()
-        .map(|entry| entry.path().join(suffix))
-        .filter(|path| path.is_file())
-        .collect();
-    children.sort_by_key(|path| fs::metadata(path).and_then(|m| m.modified()).ok());
-    children.into_iter().rev().take(limit).collect()
 }
 
 fn newest_files(root: &Path, limit: usize) -> Vec<PathBuf> {

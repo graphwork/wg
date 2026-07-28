@@ -454,6 +454,26 @@ trap wg_smoke_cleanup INT
 trap wg_smoke_cleanup TERM
 trap wg_smoke_cleanup HUP
 
+# Resolve collision-free attempt runtime storage by authoritative task ID.
+# Falls back to the historical flat path for fixtures created by old binaries;
+# callers still rely on wg itself to validate the embedded full source tuple.
+attempt_runtime_dir() {
+    local wg_dir="$1" task_id="$2" attempt_id="$3"
+    python3 - "$wg_dir" "$task_id" "$attempt_id" <<'PY'
+import glob,json,os,sys
+wg,task,attempt=sys.argv[1:]
+for manifest in glob.glob(os.path.join(wg,'attempts','by-source-tuple','*','source-tuple.json')):
+    try: key=json.load(open(manifest))
+    except Exception: continue
+    if key.get('task_id')==task and key.get('attempt_id')==attempt:
+        print(os.path.dirname(manifest)); raise SystemExit(0)
+legacy=os.path.join(wg,'attempts',attempt)
+if os.path.isdir(legacy):
+    print(legacy); raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
 # ── Legacy: kill_tree by direct children. Kept for the rare scenario
 #    that owns a non-daemon background process (e.g. tmux). Do NOT use
 #    for `wg service start` — start_wg_daemon handles that correctly. ──

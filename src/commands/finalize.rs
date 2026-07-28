@@ -307,7 +307,7 @@ pub fn context_from_current(
     let terminal_id = terminal
         .map(|r| r.idempotency_key.clone())
         .unwrap_or_else(|| format!("terminal:{}:{}:{}", id, attempt.id, task.lifecycle.fence));
-    let process_identity = pi_identity(dir, &attempt.id)
+    let process_identity = pi_identity(dir, task, attempt)
         .or_else(|| generic_process_identity(dir, id))
         .unwrap_or_else(|| {
             format!(
@@ -509,11 +509,14 @@ fn print_tx(tx: &worksgood::finalization::FinalizationTransaction, json: bool) -
     }
     Ok(())
 }
-fn pi_identity(dir: &Path, attempt: &str) -> Option<String> {
-    let v: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(dir.join("attempts").join(attempt).join("pi/state.json")).ok()?,
-    )
-    .ok()?;
+fn pi_identity(
+    dir: &Path,
+    task: &worksgood::graph::Task,
+    attempt: &worksgood::lifecycle::AttemptRef,
+) -> Option<String> {
+    let key = worksgood::attempt_runtime::AttemptRuntimeKey::for_attempt(task, attempt);
+    let path = worksgood::attempt_runtime::resolve_component(dir, &key, "pi/state.json").ok()??;
+    let v: serde_json::Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
     Some(v.get("state")?.get("process")?.to_string())
 }
 fn generic_process_identity(dir: &Path, id: &str) -> Option<String> {
