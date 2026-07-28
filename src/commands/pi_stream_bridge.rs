@@ -65,6 +65,16 @@ pub fn observe_live(agent_dir: &Path, follow_pid: u32) -> Result<()> {
                 }
                 cursor = cursor.saturating_add(read as u64);
                 if let Some(mut watchdog) = open_watchdog_for_agent(agent_dir) {
+                    if watchdog.state().process.nonce != "fixture-nonce"
+                        && watchdog.state().process.pid != follow_pid
+                    {
+                        anyhow::bail!(
+                            "stale_process_identity: native follower PID {} is not current epoch {} PID {}",
+                            follow_pid,
+                            watchdog.state().process_epoch,
+                            watchdog.state().process.pid
+                        );
+                    }
                     watchdog
                         .ingest_native_line(
                             line.trim_end_matches(['\r', '\n']),
@@ -73,6 +83,13 @@ pub fn observe_live(agent_dir: &Path, follow_pid: u32) -> Result<()> {
                             chrono::Utc::now().timestamp(),
                         )
                         .map_err(anyhow::Error::new)?;
+                    if let Some(graph_dir) = agent_dir.parent().and_then(Path::parent) {
+                        crate::commands::pi_watchdog::sync_lifecycle_continuation_authority(
+                            graph_dir,
+                            &watchdog.state().source.task_id,
+                            &watchdog,
+                        )?;
+                    }
                     if reconcile_needed {
                         match watchdog.reconcile_session_journal(chrono::Utc::now().timestamp()) {
                             Ok(changed) => reconcile_needed = !changed,
@@ -103,6 +120,8 @@ pub fn observe_live(agent_dir: &Path, follow_pid: u32) -> Result<()> {
         std::thread::sleep(Duration::from_millis(50));
     }
     if let Some(mut watchdog) = open_watchdog_for_agent(agent_dir)
+        && (watchdog.state().process.nonce == "fixture-nonce"
+            || watchdog.state().process.pid == follow_pid)
         && let Err(error) = watchdog.reconcile_session_journal(chrono::Utc::now().timestamp())
     {
         let _ = watchdog.observe(
@@ -128,7 +147,7 @@ fn process_alive(_pid: u32) -> bool {
     false
 }
 
-pub fn run(agent_dir: &Path, exit_code: i32) -> Result<()> {
+pub fn run(agent_dir: &Path, exit_code: i32, follow_pid: Option<u32>) -> Result<()> {
     let success = exit_code == 0;
 
     // Prefer pi's native NDJSON capture; fall back to the combined log (which
@@ -146,6 +165,16 @@ pub fn run(agent_dir: &Path, exit_code: i32) -> Result<()> {
     // is evidence only; the lifecycle kernel remains the sole task-state
     // writer. Replay is idempotent at the watchdog action/receipt layer.
     if let Some(mut watchdog) = open_watchdog_for_agent(agent_dir) {
+        if let Some(pid) = follow_pid
+            && watchdog.state().process.nonce != "fixture-nonce"
+            && watchdog.state().process.pid != pid
+        {
+            anyhow::bail!(
+                "stale_process_identity: stream bridge PID {pid} is not current epoch {} PID {}",
+                watchdog.state().process_epoch,
+                watchdog.state().process.pid
+            );
+        }
         let stream_id = raw_path.to_string_lossy();
         let mut offset = 0u64;
         for line in content.split_inclusive('\n') {
@@ -156,6 +185,13 @@ pub fn run(agent_dir: &Path, exit_code: i32) -> Result<()> {
             }
             let at = chrono::Utc::now().timestamp();
             let _ = watchdog.ingest_native_line(line, &stream_id, offset, at);
+        }
+        if let Some(graph_dir) = agent_dir.parent().and_then(Path::parent) {
+            crate::commands::pi_watchdog::sync_lifecycle_continuation_authority(
+                graph_dir,
+                &watchdog.state().source.task_id,
+                &watchdog,
+            )?;
         }
         watchdog
             .reconcile_session_journal(chrono::Utc::now().timestamp())
@@ -204,13 +240,32 @@ fn open_watchdog_for_agent(agent_dir: &Path) -> Option<worksgood::pi_watchdog::P
     let val: serde_json::Value = serde_json::from_str(&content).ok()?;
     let attempt = val.get("attempt_id")?.as_str()?;
     let graph_dir = agent_dir.parent()?.parent()?;
-    worksgood::pi_watchdog::PiWatchdog::open(
+    let mut watchdog = worksgood::pi_watchdog::PiWatchdog::open(
         &graph_dir
             .join("attempts")
             .join(attempt)
             .join("pi/state.json"),
     )
-    .ok()
+    .ok()?;
+    // The native follower is not an independent epoch authority. Refuse all
+    // progress unless lifecycle and watchdog agree on the exact current
+    // process fence/identity; this also performs the one-time schema-v1 repair.
+    crate::commands::pi_watchdog::sync_lifecycle_process_authority(
+        graph_dir,
+        &watchdog.state().source.task_id.clone(),
+        &mut watchdog,
+    )
+    .ok()?;
+    watchdog
+        .reconcile_pending_same_process_prompt(chrono::Utc::now().timestamp())
+        .ok()?;
+    crate::commands::pi_watchdog::sync_lifecycle_continuation_authority(
+        graph_dir,
+        &watchdog.state().source.task_id,
+        &watchdog,
+    )
+    .ok()?;
+    Some(watchdog)
 }
 
 fn read_metadata_model(agent_dir: &Path) -> Option<String> {
@@ -245,7 +300,7 @@ mod tests {
         .join("\n");
         write(agent_dir, "raw_stream.jsonl", &raw);
 
-        run(agent_dir, 0).unwrap();
+        run(agent_dir, 0, None).unwrap();
 
         // stream.jsonl now carries a NONZERO summed result.usage.
         let stream_path = agent_dir.join(stream_event::STREAM_FILE_NAME);
@@ -273,7 +328,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let agent_dir = tmp.path();
         // No raw_stream.jsonl, no output.log.
-        run(agent_dir, 1).unwrap();
+        run(agent_dir, 1, None).unwrap();
         let stream_path = agent_dir.join(stream_event::STREAM_FILE_NAME);
         let (events, _) = stream_event::read_stream_events(&stream_path, 0).unwrap();
         // Still emits init + result bookends (result success=false).

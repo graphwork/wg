@@ -80,6 +80,7 @@ pub fn find_orphaned_tasks(dir: &Path) -> Result<Vec<OrphanedTask>> {
                         authorization.state,
                         worksgood::lifecycle::PiAuthorizationState::Active
                             | worksgood::lifecycle::PiAuthorizationState::HeldOperatorRequired
+                            | worksgood::lifecycle::PiAuthorizationState::Consumed
                     )
                 })
         {
@@ -441,6 +442,26 @@ pub fn reconcile_orphaned_tasks(dir: &Path, graph_path: &Path) -> Result<usize> 
             .tasks()
             .filter(|task| matches!(task.status, Status::InProgress | Status::Open))
             .filter_map(|task| {
+                // Pi's exact process-exit/finalization lane remains authority
+                // after the wrapper dies, including after a terminal intent
+                // consumes continuation budget. Generic orphan recovery must
+                // not overwrite retained WIP with AttemptLost.
+                if task.status == Status::InProgress
+                    && task
+                        .lifecycle
+                        .pi_continuation
+                        .as_ref()
+                        .is_some_and(|authorization| {
+                            matches!(
+                            authorization.state,
+                            worksgood::lifecycle::PiAuthorizationState::Active
+                                | worksgood::lifecycle::PiAuthorizationState::HeldOperatorRequired
+                                | worksgood::lifecycle::PiAuthorizationState::Consumed
+                        )
+                        })
+                {
+                    return None;
+                }
                 let dominated = match &task.assigned {
                     Some(agent_id) => match registry.get_agent(agent_id) {
                         Some(agent) => {

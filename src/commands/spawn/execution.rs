@@ -3063,7 +3063,7 @@ fi
                 dir = shell_escape(&output_dir.to_string_lossy()),
             );
             let bridge = format!(
-                "wg pi-stream-bridge --agent-dir {dir} --exit-code $EXIT_CODE 2>> \"$OUTPUT_FILE\" \
+                "wg pi-stream-bridge --agent-dir {dir} --exit-code $EXIT_CODE --follow-pid \"$WG_PI_CHILD_PID\" 2>> \"$OUTPUT_FILE\" \
                  || echo \"[wrapper] WARNING: 'wg pi-stream-bridge' failed with exit code $?\" >> \"$OUTPUT_FILE\"",
                 dir = shell_escape(&output_dir.to_string_lossy()),
             );
@@ -3142,7 +3142,7 @@ fi
     };
 
     let pi_exit_reconcile = if executor_type == "pi" {
-        "wg pi-watchdog process-exit \"$TASK_ID\" --exit-code \"$EXIT_CODE\" 2>> \"$OUTPUT_FILE\" || wg fail \"$TASK_ID\" --class agent-exit-nonzero --reason \"Pi exited without a policy-valid continuation authorization\" 2>> \"$OUTPUT_FILE\" || true"
+        "wg pi-watchdog process-exit \"$TASK_ID\" --exit-code \"$EXIT_CODE\" --pid \"$WG_PI_CHILD_PID\" 2>> \"$OUTPUT_FILE\" || wg fail \"$TASK_ID\" --class agent-exit-nonzero --reason \"Pi exited without a policy-valid continuation authorization\" 2>> \"$OUTPUT_FILE\" || true"
     } else {
         ""
     };

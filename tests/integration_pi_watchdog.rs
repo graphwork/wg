@@ -423,8 +423,9 @@ fn proof_mismatch_budget_and_pid_reuse_hold() {
 }
 
 #[test]
-fn restart_replay_is_idempotent_and_budget_never_replenishes() {
+fn same_pid_continuation_keeps_process_epoch_across_restart_and_exit() {
     let mut w = fixture(0);
+    let original_process = w.state().process.clone();
     w.observe(Observation::AgentSettled, 1).unwrap();
     let path = w.state_path().to_path_buf();
     let before = (
@@ -432,7 +433,11 @@ fn restart_replay_is_idempotent_and_budget_never_replenishes() {
         w.state().epochs_used,
         w.state().elapsed_reserved_secs,
     );
+    assert_eq!(w.state().process_epoch, 1);
+    assert_eq!(w.state().continuation_epoch, 1);
+    assert_eq!(w.state().process, original_process);
     drop(w);
+
     let mut reopened = PiWatchdog::open(&path).unwrap();
     assert!(
         reopened
@@ -448,9 +453,119 @@ fn restart_replay_is_idempotent_and_budget_never_replenishes() {
         ),
         before
     );
-    assert_eq!(reopened.state().process_epoch, 2);
+    assert_eq!(reopened.state().process_epoch, 1);
+    assert_eq!(reopened.state().continuation_epoch, 1);
+    let terminal = TerminalIntentReceipt::new(
+        &reopened,
+        1,
+        "same-process-done",
+        TerminalDisposition::SuccessIntent,
+    );
+    reopened
+        .observe(Observation::TerminalIntent(terminal), 3)
+        .unwrap();
+    assert!(reopened.state().terminal);
     assert_eq!(reopened.state().session.session_id, "session-1");
     assert_eq!(reopened.state().source.attempt_id, "attempt-2-7");
+}
+
+#[test]
+fn legacy_same_process_split_repairs_once_without_touching_session_bytes() {
+    let mut w = fixture(0);
+    w.observe(Observation::AgentSettled, 1).unwrap();
+    let session_before = std::fs::read(&w.state().session.session_file).unwrap();
+    let identity = w.state().process.digest();
+    w.state_mut_for_test().schema_version = 1;
+    w.state_mut_for_test().process_epoch = 2;
+    w.state_mut_for_test().native_activity.process_epoch = 2;
+    let authority = w
+        .attest_lifecycle_process_authority(1, &identity, 2)
+        .unwrap();
+    assert_eq!(authority.process_epoch, 1);
+    assert_eq!(w.state().schema_version, 2);
+    assert_eq!(w.state().native_activity.process_epoch, 1);
+    assert_eq!(
+        std::fs::read(&w.state().session.session_file).unwrap(),
+        session_before
+    );
+    let path = w.state_path().to_path_buf();
+    drop(w);
+    let mut reopened = PiWatchdog::open(&path).unwrap();
+    assert_eq!(
+        reopened
+            .attest_lifecycle_process_authority(1, &identity, 3)
+            .unwrap(),
+        authority
+    );
+}
+
+#[test]
+fn replacement_process_atomically_fences_old_receipts_and_survives_restart() {
+    let mut w = fixture(0);
+    let old_receipt =
+        TerminalIntentReceipt::new(&w, 1, "old-done", TerminalDisposition::SuccessIntent);
+    let old_identity = w.state().process.clone();
+    let replacement = ProcessIdentity {
+        pid: 124,
+        pgid: 124,
+        start_ticks: 789,
+        boot_id: old_identity.boot_id.clone(),
+        nonce: "replacement-nonce".into(),
+    };
+    let authority = w
+        .replace_process_epoch(&old_identity, replacement.clone(), 1)
+        .unwrap();
+    assert_eq!(authority.process_epoch, 2);
+    assert_eq!(authority.process_identity_digest, replacement.digest());
+    assert_eq!(w.state().process, replacement);
+    assert_eq!(
+        w.observe(Observation::TerminalIntent(old_receipt), 2)
+            .unwrap_err()
+            .code,
+        "stale_process_epoch"
+    );
+
+    let path = w.state_path().to_path_buf();
+    drop(w);
+    let mut reopened = PiWatchdog::open(&path).unwrap();
+    assert_eq!(reopened.process_epoch_authority(), authority);
+    let current = TerminalIntentReceipt::new(
+        &reopened,
+        authority.process_epoch,
+        "new-done",
+        TerminalDisposition::SuccessIntent,
+    );
+    reopened
+        .observe(Observation::TerminalIntent(current.clone()), 3)
+        .unwrap();
+    assert!(
+        reopened
+            .observe(Observation::TerminalIntent(current), 4)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn restart_consumes_reserved_same_process_continuation_exactly_once() {
+    let mut w = fixture(0);
+    w.inject_crash_barrier(CrashBarrier::AfterContinuationReserved)
+        .unwrap();
+    assert!(w.observe(Observation::AgentSettled, 1).is_err());
+    assert_eq!(w.state().process_epoch, 1);
+    assert_eq!(w.state().continuation_epoch, 1);
+    assert_eq!(w.state().prompt_count, 0);
+    let path = w.state_path().to_owned();
+    drop(w);
+
+    let mut reopened = PiWatchdog::open(&path).unwrap();
+    assert!(reopened.reconcile_pending_same_process_prompt(2).unwrap());
+    assert_eq!(reopened.state().prompt_count, 1);
+    assert_eq!(reopened.state().process_epoch, 1);
+    drop(reopened);
+    let mut replayed = PiWatchdog::open(&path).unwrap();
+    assert!(!replayed.reconcile_pending_same_process_prompt(3).unwrap());
+    assert_eq!(replayed.state().prompt_count, 1);
 }
 
 #[test]
@@ -580,6 +695,7 @@ fn lifecycle_kernel_alone_defers_authorized_pi_exit_and_orders_terminal_cas() {
             TransitionKind::PiContinuationAuthorized {
                 authorization: auth,
                 initial_process_epoch: 1,
+                initial_process_identity_digest: "process-1".into(),
             },
             LifecycleActor {
                 kind: ActorKind::Dispatcher,
@@ -595,8 +711,78 @@ fn lifecycle_kernel_alone_defers_authorized_pi_exit_and_orders_terminal_cas() {
     apply_transition(
         &mut task,
         TransitionRequest::new(
+            TransitionKind::PiContinuationEpochReserved {
+                expected_process_epoch: 1,
+                process_identity_digest: "process-1".into(),
+                expected_continuation_epoch: 0,
+                next_continuation_epoch: 1,
+                elapsed_charge_secs: 600,
+            },
+            LifecycleActor {
+                kind: ActorKind::ProcessObserver,
+                id: "pi-watchdog".into(),
+            },
+            "same_process_continuation",
+            "continuation-1",
+        )
+        .expecting(expected),
+    )
+    .unwrap();
+    assert_eq!(task.lifecycle.pi_process_epoch, 1);
+    assert_eq!(task.lifecycle.pi_continuation_epoch, 1);
+
+    let expected = FenceExpectation::current(&task);
+    apply_transition(
+        &mut task,
+        TransitionRequest::new(
+            TransitionKind::PiProcessEpochReplaced {
+                expected_process_epoch: 1,
+                expected_process_identity_digest: "process-1".into(),
+                next_process_epoch: 2,
+                next_process_identity_digest: "process-2".into(),
+            },
+            LifecycleActor {
+                kind: ActorKind::ProcessObserver,
+                id: "pi-watchdog".into(),
+            },
+            "exact_process_replaced",
+            "replace-2",
+        )
+        .expecting(expected),
+    )
+    .unwrap();
+    assert_eq!(task.lifecycle.pi_process_epoch, 2);
+    assert_eq!(task.lifecycle.pi_process_identity_digest, "process-2");
+
+    let expected = FenceExpectation::current(&task);
+    let stale_exit = apply_transition(
+        &mut task,
+        TransitionRequest::new(
             TransitionKind::PiProcessEpochExited {
                 process_epoch: 1,
+                process_identity_digest: "process-1".into(),
+                exact_reap_proof: true,
+                effect_safe: true,
+            },
+            LifecycleActor {
+                kind: ActorKind::ProcessObserver,
+                id: "old-pi-watchdog".into(),
+            },
+            "old_process_exit",
+            "exit-1",
+        )
+        .expecting(expected),
+    )
+    .unwrap_err();
+    assert_eq!(stale_exit.code, "stale_process_epoch");
+
+    let expected = FenceExpectation::current(&task);
+    apply_transition(
+        &mut task,
+        TransitionRequest::new(
+            TransitionKind::PiProcessEpochExited {
+                process_epoch: 2,
+                process_identity_digest: "process-2".into(),
                 exact_reap_proof: true,
                 effect_safe: true,
             },
@@ -605,7 +791,7 @@ fn lifecycle_kernel_alone_defers_authorized_pi_exit_and_orders_terminal_cas() {
                 id: "pi-watchdog".into(),
             },
             "needs_finalization_exit",
-            "exit-1",
+            "exit-2",
         )
         .expecting(expected),
     )
@@ -629,7 +815,8 @@ fn lifecycle_kernel_alone_defers_authorized_pi_exit_and_orders_terminal_cas() {
         generation: source.generation,
         attempt_id: source.attempt_id,
         attempt_fence: source.attempt_fence,
-        process_epoch: 1,
+        process_epoch: 2,
+        process_identity_digest: "process-2".into(),
         tool_call_id: "done-call".into(),
         disposition: TerminalDisposition::SuccessIntent,
         idempotency_key: "done-call".into(),
@@ -659,8 +846,10 @@ fn lifecycle_kernel_alone_defers_authorized_pi_exit_and_orders_terminal_cas() {
         &mut task,
         TransitionRequest::new(
             TransitionKind::PiContinuationEpochReserved {
-                expected_process_epoch: 1,
-                next_process_epoch: 2,
+                expected_process_epoch: 2,
+                process_identity_digest: "process-2".into(),
+                expected_continuation_epoch: 1,
+                next_continuation_epoch: 2,
                 elapsed_charge_secs: 600,
             },
             LifecycleActor {
