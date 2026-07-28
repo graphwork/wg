@@ -9,8 +9,11 @@ use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::fs;
+use std::path::Path;
 
 pub mod bounded;
+pub mod deep;
 
 use crate::config::{Config, ReasoningLevel};
 use crate::eval_lifecycle::{
@@ -197,6 +200,12 @@ pub struct EvaluationRecord {
     pub evidence_manifest_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verdict: Option<BoundedVerdict>,
+    /// Evidence-linked high-fidelity report produced only by the separately
+    /// selected deep-readonly FLIP lane. Keeping this distinct from the
+    /// bounded verdict prevents a summary grader from masquerading as a
+    /// system-level investigation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deep_report: Option<deep::DeepFlipReport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub consumed_verdict_id: Option<String>,
     pub created_by_event: String,
@@ -319,6 +328,153 @@ pub struct MintSummary {
     pub existing: usize,
 }
 
+/// Explicitly request a deep-readonly FLIP for the latest immutable candidate.
+/// This is the manual trigger surface: it never changes global policy and it
+/// refuses status-only or evidence-free tasks. High-risk policy uses the normal
+/// completion-time minting path instead.
+pub fn request_manual_deep(dir: &Path, task_id: &str, config: &Config) -> Result<String> {
+    let graph_path = dir.join("graph.jsonl");
+    if !graph_path.exists() {
+        bail!("WG not initialized. Run `wg init` first.");
+    }
+    let graph = crate::parser::load_graph(&graph_path)?;
+    let task = graph.get_task_or_err(task_id)?;
+    if !matches!(
+        task.status,
+        Status::Done | Status::PendingEval | Status::FailedPendingEval | Status::Failed
+    ) {
+        bail!("deep FLIP requires a source attempt at candidate completion");
+    }
+    let source = task
+        .evaluation_records
+        .iter()
+        .max_by_key(|record| (record.source.generation, record.source.finalization_round))
+        .map(|record| record.source.clone())
+        .or_else(|| source_from_candidate_event(dir, &graph, task).ok())
+        .context("deep FLIP requires an immutable candidate-checkpointed source attempt")?;
+    if let Some(existing) = task.evaluation_records.iter().find(|record| {
+        record.product == EvaluationProduct::DeepReadonlyFlip && record.source == source
+    }) {
+        return Ok(existing.evaluation_id.clone());
+    }
+    let policy = policy_snapshot(
+        EvaluationProduct::DeepReadonlyFlip,
+        EvaluationGateApplicability::Advisory,
+        None,
+        "deep:explicit-manual-after-candidate",
+    );
+    let route = route_snapshot(config, task, EvaluationProduct::DeepReadonlyFlip)?;
+    let route_digest = route.digest.clone();
+    let evaluation_id = evaluation_id(
+        EvaluationProduct::DeepReadonlyFlip,
+        &source,
+        &policy.digest,
+        &route_digest,
+    )?;
+    let created_by_event = task
+        .lifecycle
+        .audit
+        .iter()
+        .rev()
+        .find(|event| {
+            event.event_kind == "candidate-checkpointed"
+                && event.attempt_id.as_deref() == Some(source.source_attempt_id.as_str())
+                && event
+                    .evidence_refs
+                    .iter()
+                    .any(|value| value == &source.candidate_digest)
+        })
+        .map(|event| event.event_id.clone())
+        .context("deep FLIP candidate checkpoint event is missing")?;
+    let record = EvaluationRecord {
+        schema: EVALUATION_RECORD_SCHEMA,
+        evaluation_id: evaluation_id.clone(),
+        product: EvaluationProduct::DeepReadonlyFlip,
+        source: source.clone(),
+        policy,
+        route: Some(route),
+        route_digest,
+        state: EvaluationState::PreparingBundle,
+        runner_attempts: Vec::new(),
+        attempts: Vec::new(),
+        evidence_ids: vec![
+            source.candidate_digest.clone(),
+            source.candidate_manifest_digest.clone(),
+            source.validation_result_id.clone(),
+        ],
+        evidence_manifest_id: None,
+        verdict: None,
+        deep_report: None,
+        consumed_verdict_id: None,
+        created_by_event,
+        created_at: Utc::now().to_rfc3339(),
+        diagnostic: Some("Explicit deep-readonly FLIP requested; awaiting observation lane".into()),
+    };
+    crate::parser::modify_graph(&graph_path, |fresh| {
+        let Some(task) = fresh.get_task_mut(task_id) else {
+            return false;
+        };
+        if task.evaluation_records.iter().any(|existing| {
+            existing.product == EvaluationProduct::DeepReadonlyFlip && existing.source == source
+        }) {
+            return false;
+        }
+        task.evaluation_records.push(record.clone());
+        task.evaluation_records.sort_by(|a, b| {
+            a.source
+                .generation
+                .cmp(&b.source.generation)
+                .then_with(|| a.product.label().cmp(b.product.label()))
+        });
+        task.log.push(crate::graph::LogEntry {
+            timestamp: Utc::now().to_rfc3339(),
+            actor: Some("manual-deep-flip".into()),
+            user: None,
+            message: format!(
+                "Explicitly requested deep-readonly FLIP {} after immutable candidate completion",
+                evaluation_id
+            ),
+        });
+        true
+    })?;
+    Ok(evaluation_id)
+}
+
+fn source_from_candidate_event(
+    dir: &Path,
+    graph: &WorkGraph,
+    task: &Task,
+) -> Result<SourceCandidateRef> {
+    let event = task
+        .lifecycle
+        .audit
+        .iter()
+        .rev()
+        .find(|event| {
+            event.event_kind == "candidate-checkpointed"
+                && event.evidence_refs.len() >= 3
+                && event.attempt_id.is_some()
+        })
+        .context("candidate checkpoint unavailable")?;
+    let candidate_digest = event.evidence_refs[0].clone();
+    let descriptor_path = dir
+        .join("finalization/objects")
+        .join(candidate_digest.replace(':', "_"));
+    let descriptor: crate::finalization::CandidateDescriptor =
+        serde_json::from_slice(&fs::read(descriptor_path)?)?;
+    Ok(SourceCandidateRef {
+        task_id: task.id.clone(),
+        generation: event.generation,
+        source_attempt_id: event.attempt_id.clone().unwrap_or_default(),
+        source_fence: event.fence,
+        finalization_round: descriptor.candidate_version,
+        candidate_digest,
+        candidate_manifest_digest: event.evidence_refs[1].clone(),
+        dependency_revision_digest: dependency_revision_digest(graph, task)?,
+        validation_result_id: event.evidence_refs[2].clone(),
+    })
+}
+
 /// True only when the current generation/fence has the authoritative proof
 /// emitted after the serialized launch gate was released. Reservations,
 /// admission deferrals, preparation failures and reconciler status writes do
@@ -422,6 +578,7 @@ pub fn mint_for_candidate(
             ],
             evidence_manifest_id: None,
             verdict: None,
+            deep_report: None,
             consumed_verdict_id: None,
             created_by_event: created_event.clone(),
             created_at: Utc::now().to_rfc3339(),
@@ -507,8 +664,10 @@ fn route_snapshot(
         EvaluationProduct::Bounded => format!(".evaluate-{}", task.id),
         EvaluationProduct::DeepReadonlyFlip => format!(".flip-{}", task.id),
     };
+    let effective =
+        crate::dispatch::effective_config_owned(task.profile.as_deref(), config.clone());
     let plan = crate::eval_lifecycle::build_plan(
-        config,
+        &effective,
         task,
         &virtual_id,
         DispatchSelectionSource::ScaffoldConfig,

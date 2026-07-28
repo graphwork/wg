@@ -1,0 +1,71 @@
+#!/usr/bin/env python3
+import hashlib, json, os, pathlib, sys, time
+
+args=sys.argv[1:]
+def value(flag):
+    try: return args[args.index(flag)+1]
+    except (ValueError,IndexError): return ""
+model=value("--model"); provider=value("--provider")
+home=pathlib.Path(os.environ.get("HOME",".")); home.mkdir(parents=True,exist_ok=True)
+with (home/"fake-pi-deep-invocations.log").open("a") as f: f.write(" ".join(args)+"\n")
+_ = sys.stdin.read()
+
+def turn(text, inp=31, out=17):
+    print(json.dumps({"type":"turn_end","message":{"role":"assistant","content":[{"type":"text","text":json.dumps(text,separators=(",",":"))}],"provider":provider,"model":model,"stopReason":"stop","usage":{"input":inp,"output":out,"cacheRead":3,"cacheWrite":1,"totalTokens":inp+out,"cost":{"total":0.0071}}}}))
+
+if model=="bounded-miss":
+    turn({"schema_version":1,"score":0.94,"outcome":"pass","dimensions":{"correctness":0.94,"completeness":0.91},"summary":"Visible candidate summary satisfies the declared API change."},17,9)
+    raise SystemExit(0)
+
+root=pathlib.Path(os.environ["WG_DEEP_BUNDLE_ROOT"])
+index=json.loads((root/"index.json").read_text())
+audit=pathlib.Path(os.environ["WG_DEEP_AUDIT_PATH"])
+seq=0
+def observe(tool,refs,payload):
+    global seq
+    seq+=1
+    raw=json.dumps(payload,separators=(",",":"))
+    row={"sequence":seq,"tool":tool,"request_digest":"b3:"+hashlib.sha256(raw.encode()).hexdigest(),"evidence_refs":refs,"output_digest":"b3:"+hashlib.sha256((raw+"-out").encode()).hexdigest(),"outcome":"ok"}
+    with audit.open("a") as f: f.write(json.dumps(row,separators=(",",":"))+"\n")
+
+if model=="deep-timeout":
+    time.sleep(3)
+    raise SystemExit(0)
+
+if model=="deep-attack":
+    print(json.dumps({"type":"tool_execution_start","toolName":"write","toolCallId":"attack","args":{"path":"src/api.rs"}}))
+    # The fake provider only expresses the attempted call. Pi's real active-tool
+    # allowlist would not execute it; the Rust delivery guard independently
+    # fails closed if any such event appears.
+    report={"schema_version":1,"score":1.0,"outcome":"pass","summary_code":"ATTACK","findings":[{"finding_code":"ATTACK","category":"security-boundary","severity":"critical","confidence":1.0,"evidence":[{"evidence_id":"repo:src/api.rs","locator":"src/api.rs:1"}]}],"latent_intent_probe_code":"ATTACK","counterfactual_probe_codes":["ATTACK"]}
+    turn(report)
+    raise SystemExit(0)
+
+if model not in ("deep-find","deep-overbudget"):
+    print("unexpected model",model,file=sys.stderr); raise SystemExit(88)
+
+# Record the exact evidence/tool observations. The fixture is a deterministic
+# replay of custom-tool results; production observations are written by the
+# extension itself.
+by_kind={entry["kind"]:entry for entry in index["evidence"]}
+for kind in ["original-intent","graph-context","source-attempt-history","messages","artifacts-diff","validation","runtime-traces","effective-config"]:
+    observe("deep_read_evidence",[by_kind[kind]["evidence_id"]],{"kind":kind})
+observe("deep_read_repository",["repo:src/api.rs"],{"path":"src/api.rs","offset":1,"limit":20})
+observe("deep_read_repository",["repo:src/registry.rs"],{"path":"src/registry.rs","offset":1,"limit":20})
+observe("deep_search_repository",["repo:src/api.rs","repo:src/registry.rs"],{"query":"MODE","max_results":20})
+if model=="deep-overbudget":
+    for i in range(54):
+        observe("deep_read_repository",["repo:src/api.rs"],{"path":"src/api.rs","offset":1,"limit":20,"replay":i})
+intent=by_kind["original-intent"]["evidence_id"]
+graph=by_kind["graph-context"]["evidence_id"]
+diff=by_kind["artifacts-diff"]["evidence_id"]
+report={
+ "schema_version":1,"score":0.28,"outcome":"fail","summary_code":"CROSS_COMPONENT_OMISSION_FOUND",
+ "findings":[
+  {"finding_code":"REGISTRY_NOT_UPDATED","category":"cross-component-omission","severity":"high","confidence":0.99,"evidence":[{"evidence_id":"repo:src/api.rs","locator":"src/api.rs:1"},{"evidence_id":"repo:src/registry.rs","locator":"src/registry.rs:1"},{"evidence_id":diff,"locator":"source_diff"}],"counterfactual_code":"REGISTRY_LOOKUP_REJECTS_NEW_MODE"},
+  {"finding_code":"LATENT_ALL_CONSUMERS_REQUIREMENT","category":"latent-intent","severity":"medium","confidence":0.96,"evidence":[{"evidence_id":intent,"locator":"description"},{"evidence_id":graph,"locator":"tasks.intent-dependency"}]}
+ ],
+ "latent_intent_probe_code":"ALL_REGISTRY_CONSUMERS_MUST_AGREE",
+ "counterfactual_probe_codes":["REGISTRY_LOOKUP_REJECTS_NEW_MODE"]
+}
+turn(report)

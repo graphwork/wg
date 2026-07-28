@@ -15,6 +15,111 @@ use worksgood::graph::{LogEntry, Status, TokenUsage};
 use worksgood::parser::load_graph;
 use worksgood::provenance;
 
+/// Explicit post-candidate deep-readonly FLIP. This is intentionally separate
+/// from routine bounded evaluation and from the legacy two-summary FLIP path:
+/// it mints one hidden attempt-bound record, runs only the observation lane,
+/// and prints the evidence-linked structured report.
+pub fn run_deep_readonly(
+    dir: &Path,
+    task_id: &str,
+    evaluator_model: Option<&str>,
+    dry_run: bool,
+    json: bool,
+) -> Result<()> {
+    if evaluator_model.is_some() {
+        bail!(
+            "deep FLIP uses the exact configured Pi evaluator route; per-call model overrides are refused"
+        );
+    }
+    let graph = load_graph(&super::graph_path(dir))?;
+    let task_profile = graph.get_task_or_err(task_id)?.profile.clone();
+    let config = worksgood::dispatch::effective_config_owned(
+        task_profile.as_deref(),
+        Config::load_or_default(dir),
+    );
+    if dry_run {
+        let task = graph.get_task_or_err(task_id)?;
+        let has_candidate = task
+            .lifecycle
+            .audit
+            .iter()
+            .any(|event| event.event_kind == "candidate-checkpointed")
+            || !task.evaluation_records.is_empty();
+        if !has_candidate {
+            bail!("deep FLIP requires an immutable candidate-checkpointed source attempt");
+        }
+        println!("Deep-readonly FLIP dry run for '{task_id}'");
+        println!("  trigger: explicit manual (does not change global FLIP policy)");
+        println!("  tools: deep evidence/repository reads, literal search, declared-id validation");
+        println!(
+            "  authority: observation only; no source/config/graph mutation, arbitrary shell/network, credentials, or identity"
+        );
+        return Ok(());
+    }
+    let evaluation_id = worksgood::evaluation::request_manual_deep(dir, task_id, &config)?;
+    if !json {
+        println!("Deep-readonly FLIP requested: {evaluation_id}");
+        println!(
+            "Inspecting immutable intent, graph, attempts, messages, diff, tests, runtime, config, and repository evidence…"
+        );
+    }
+    let tick = worksgood::evaluation::deep::run_one_pending(dir, &config)?;
+    if !tick.ran {
+        bail!("deep FLIP record is not runnable (it may already be complete or capacity-deferred)");
+    }
+    let graph = load_graph(&super::graph_path(dir))?;
+    let record = graph
+        .get_task_or_err(task_id)?
+        .evaluation_records
+        .iter()
+        .find(|record| record.evaluation_id == evaluation_id)
+        .context("deep FLIP record disappeared")?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(record)?);
+        return Ok(());
+    }
+    match record.deep_report.as_ref() {
+        Some(report) => {
+            println!(
+                "Deep FLIP report: {} · {:?} · score {:.2}",
+                report.report_id, report.outcome, report.score
+            );
+            println!("  summary: {}", report.summary_code);
+            println!(
+                "  observed: {} tool calls · {} findings · {}",
+                report.observations.len(),
+                report.findings.len(),
+                report.observed_evidence_kinds.join(", ")
+            );
+            for finding in &report.findings {
+                let refs = finding
+                    .evidence
+                    .iter()
+                    .map(|reference| format!("{}@{}", reference.evidence_id, reference.locator))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                println!(
+                    "  [{:?}/{:.0}%] {} — {}",
+                    finding.severity,
+                    finding.confidence * 100.0,
+                    finding.finding_code,
+                    refs
+                );
+                if let Some(counterfactual) = finding.counterfactual_code.as_deref() {
+                    println!("    counterfactual: {counterfactual}");
+                }
+            }
+            println!("  evidence bundle: {}", report.evidence_bundle_id);
+            println!("Open `wg show {task_id}` or the TUI Detail pane for the auditable report.");
+        }
+        None => bail!(
+            "deep FLIP failed closed: {}",
+            record.diagnostic.as_deref().unwrap_or("no report")
+        ),
+    }
+    Ok(())
+}
+
 fn persisted_invocation_plan(
     dir: &Path,
     source_task_id: &str,

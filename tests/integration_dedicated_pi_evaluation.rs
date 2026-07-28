@@ -131,6 +131,7 @@ fn make_graph(dir: &Path, model: &str, applicability: EvaluationGateApplicabilit
         evidence_ids: vec![],
         evidence_manifest_id: None,
         verdict: None,
+        deep_report: None,
         consumed_verdict_id: None,
         created_by_event: "event-candidate".into(),
         created_at: "2026-07-28T00:00:00Z".into(),

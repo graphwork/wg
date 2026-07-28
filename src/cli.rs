@@ -4593,7 +4593,7 @@ pub enum EvaluateCommands {
         /// Show what would be evaluated without spawning the evaluator
         #[arg(long)]
         dry_run: bool,
-        /// Run FLIP (roundtrip intent fidelity) evaluation instead of direct evaluation
+        /// Explicitly run deep read-only system FLIP after candidate completion
         #[arg(long)]
         flip: bool,
     },
