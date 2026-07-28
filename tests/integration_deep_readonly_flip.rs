@@ -8,7 +8,8 @@ use worksgood::config::{Config, ReasoningLevel};
 use worksgood::eval_lifecycle::{AgencyStage, EvaluationGateApplicability};
 use worksgood::evaluation::bounded;
 use worksgood::evaluation::deep::{
-    DeepCapabilities, DeepFindingCategory, enforce_observation_only_tool_name, run_one_pending,
+    DeepCapabilities, DeepFindingCategory, enforce_observation_only_tool_name,
+    rearm_explicit_retry, run_one_pending,
 };
 use worksgood::evaluation::{
     EvaluationPolicySnapshot, EvaluationProduct, EvaluationRecord, EvaluationRouteCall,
@@ -390,6 +391,51 @@ fn deep_flip_budgets_and_timeout_fail_closed_deterministically() {
         );
         assert!(deep.deep_report.is_none(), "{model}");
     }
+}
+
+#[test]
+#[serial]
+fn deep_flip_explicit_retry_is_same_record_bounded_and_restart_inert() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().join("home");
+    fs::create_dir_all(&home).unwrap();
+    let _env = test_env(&home);
+    let dir = setup_candidate(&tmp.path().join("project"), "deep-overbudget");
+
+    assert!(run_one_pending(&dir, &config()).unwrap().ran);
+    let evaluation_id = load_graph(&dir.join("graph.jsonl"))
+        .unwrap()
+        .get_task("source")
+        .unwrap()
+        .evaluation_records
+        .iter()
+        .find(|record| record.product == EvaluationProduct::DeepReadonlyFlip)
+        .unwrap()
+        .evaluation_id
+        .clone();
+    // A daemon restart is inert: terminal infrastructure evidence does not
+    // hot-loop. Only the explicit operator action rearms the exact record.
+    assert!(!run_one_pending(&dir, &config()).unwrap().ran);
+    assert!(rearm_explicit_retry(&dir, &evaluation_id).unwrap());
+    assert!(run_one_pending(&dir, &config()).unwrap().ran);
+    assert!(!rearm_explicit_retry(&dir, &evaluation_id).unwrap());
+    assert!(!run_one_pending(&dir, &config()).unwrap().ran);
+
+    let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+    let deep = graph
+        .get_task("source")
+        .unwrap()
+        .evaluation_records
+        .iter()
+        .find(|record| record.evaluation_id == evaluation_id)
+        .unwrap();
+    assert_eq!(deep.attempts.len(), 2);
+    assert!(
+        deep.attempts
+            .iter()
+            .all(|attempt| attempt.exact_route == "pi:test:deep-overbudget")
+    );
+    assert_eq!(deep.state, EvaluationState::Malformed);
 }
 
 #[test]

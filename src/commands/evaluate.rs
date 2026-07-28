@@ -15,6 +15,139 @@ use worksgood::graph::{LogEntry, Status, TokenUsage};
 use worksgood::parser::load_graph;
 use worksgood::provenance;
 
+fn print_rollout_status(
+    status: &worksgood::evaluation::rollout::RolloutStatus,
+    json: bool,
+) -> Result<()> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(status)?);
+    } else {
+        println!("Pi evaluation rollout: {}", status.stage);
+        println!("  mode: {}", status.mode);
+        println!("  auto_evaluate: {}", status.auto_evaluate);
+        println!(
+            "  eval_gate_all: {} (global hard gate forbidden)",
+            status.eval_gate_all
+        );
+        println!(
+            "  global FLIP: {} (explicit deep-readonly only)",
+            status.global_flip_enabled
+        );
+        println!("  canary/observation evidence: {}", status.evidence.len());
+        println!("  rollbacks: {}", status.rollback_count);
+        println!("  evidence: {}", status.state_path);
+    }
+    Ok(())
+}
+
+pub fn rollout_start(dir: &Path, json: bool) -> Result<()> {
+    let status = worksgood::evaluation::rollout::start(dir)?;
+    print_rollout_status(&status, json)
+}
+
+pub fn rollout_status(dir: &Path, json: bool) -> Result<()> {
+    let status = worksgood::evaluation::rollout::status(dir)?;
+    print_rollout_status(&status, json)
+}
+
+pub fn rollout_advance(dir: &Path, stage: &str, evidence: Option<&Path>, json: bool) -> Result<()> {
+    let target = stage.parse::<worksgood::config::EvaluationRolloutStage>()?;
+    let status = worksgood::evaluation::rollout::advance(dir, target, evidence)?;
+    print_rollout_status(&status, json)
+}
+
+pub fn rollout_record_observation(dir: &Path, evidence: &Path, json: bool) -> Result<()> {
+    let status = worksgood::evaluation::rollout::record_observation(dir, evidence)?;
+    print_rollout_status(&status, json)
+}
+
+pub fn rollout_rollback(dir: &Path, reason: &str, json: bool) -> Result<()> {
+    let status = worksgood::evaluation::rollout::rollback(dir, reason)?;
+    print_rollout_status(&status, json)
+}
+
+/// Explicit pre-enable bounded advisory canary over an immutable candidate.
+/// This uses the dedicated evaluation lane without enabling automatic/global
+/// evaluation and without creating an evaluator graph task.
+pub fn run_bounded_canary(
+    dir: &Path,
+    task_id: &str,
+    evaluator_model: Option<&str>,
+    dry_run: bool,
+    json: bool,
+) -> Result<()> {
+    if evaluator_model.is_some() {
+        bail!(
+            "bounded canary uses the exact configured Pi evaluator route; per-call model overrides are refused"
+        );
+    }
+    if let Some(stage) = worksgood::evaluation::rollout::managed_stage(dir)?
+        && stage != worksgood::config::EvaluationRolloutStage::FakePiValidated
+    {
+        bail!("managed bounded canary requires rollout stage fake-pi-validated, found {stage}");
+    }
+    let graph = load_graph(&super::graph_path(dir))?;
+    let task_profile = graph.get_task_or_err(task_id)?.profile.clone();
+    let config = worksgood::dispatch::effective_config_owned(
+        task_profile.as_deref(),
+        Config::load_or_default(dir),
+    );
+    if dry_run {
+        let task = graph.get_task_or_err(task_id)?;
+        if !task
+            .lifecycle
+            .audit
+            .iter()
+            .any(|event| event.event_kind == "candidate-checkpointed")
+        {
+            bail!("bounded canary requires an immutable candidate-checkpointed source attempt");
+        }
+        println!("Bounded advisory canary dry run for '{task_id}'");
+        println!("  trigger: explicit pre-enable (automatic evaluation remains unchanged)");
+        println!("  authority: no tools, graph task, worker/build slot, worktree, or fallback");
+        return Ok(());
+    }
+    let evaluation_id = worksgood::evaluation::request_manual_bounded(dir, task_id, &config)?;
+    if !json {
+        println!("Bounded advisory canary requested: {evaluation_id}");
+    }
+    let tick = worksgood::evaluation::bounded::run_one_pending(dir, &config)?;
+    if !tick.ran {
+        bail!("bounded canary record is not runnable (already complete or capacity-deferred)");
+    }
+    let graph = load_graph(&super::graph_path(dir))?;
+    let record = graph
+        .get_task_or_err(task_id)?
+        .evaluation_records
+        .iter()
+        .find(|record| record.evaluation_id == evaluation_id)
+        .context("bounded canary record disappeared")?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(record)?);
+    } else if let Some(verdict) = record.verdict.as_ref() {
+        println!(
+            "Bounded advisory verdict: {} · {:?} · score {:.2}",
+            verdict.verdict_id, verdict.outcome, verdict.score
+        );
+        println!("  evidence bundle: {}", verdict.evidence_manifest_id);
+        println!(
+            "  route: {} (pinned, no fallback)",
+            record
+                .route
+                .as_ref()
+                .and_then(|route| route.calls.first())
+                .map(|call| call.exact_route.as_str())
+                .unwrap_or("unavailable")
+        );
+    } else {
+        bail!(
+            "bounded canary failed closed: {}",
+            record.diagnostic.as_deref().unwrap_or("no verdict")
+        );
+    }
+    Ok(())
+}
+
 /// Explicit post-candidate deep-readonly FLIP. This is intentionally separate
 /// from routine bounded evaluation and from the legacy two-summary FLIP path:
 /// it mints one hidden attempt-bound record, runs only the observation lane,
@@ -29,6 +162,17 @@ pub fn run_deep_readonly(
     if evaluator_model.is_some() {
         bail!(
             "deep FLIP uses the exact configured Pi evaluator route; per-call model overrides are refused"
+        );
+    }
+    if let Some(stage) = worksgood::evaluation::rollout::managed_stage(dir)?
+        && !matches!(
+            stage,
+            worksgood::config::EvaluationRolloutStage::BoundedCanaryPassed
+                | worksgood::config::EvaluationRolloutStage::Advisory
+        )
+    {
+        bail!(
+            "managed deep-readonly FLIP requires bounded-canary-passed first (or later advisory selective policy), found {stage}"
         );
     }
     let graph = load_graph(&super::graph_path(dir))?;
@@ -57,6 +201,7 @@ pub fn run_deep_readonly(
         return Ok(());
     }
     let evaluation_id = worksgood::evaluation::request_manual_deep(dir, task_id, &config)?;
+    let _ = worksgood::evaluation::deep::rearm_explicit_retry(dir, &evaluation_id)?;
     if !json {
         println!("Deep-readonly FLIP requested: {evaluation_id}");
         println!(

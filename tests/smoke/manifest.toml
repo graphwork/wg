@@ -2711,7 +2711,7 @@ timeout_seconds = 60
 [[scenario]]
 name = "admission_deferral_backpressure"
 script = "scenarios/admission_deferral_backpressure.sh"
-owners = ["fix-admission-deferrals"]
+owners = ["fix-admission-deferrals", "integrate-and-canary"]
 description = "Credential-free installed-binary terminal/daemon flow for admission backpressure: one live build-heavy shell task occupies max_build_agents=1 while a second remains Open and unattempted across more than five bounded ticks with zero spawn/retry/provider-health/evaluator/FLIP charge; service JSON and human status expose the separate deferred count/reason; identical logs and lifecycle evidence coalesce; releasing the first task's capacity (without retry/edit/direct transition calls) makes the daemon dispatch the deferred task exactly once."
 timeout_seconds = 60
 
@@ -2774,7 +2774,7 @@ timeout_seconds = 180
 [[scenario]]
 name = "lazy_evaluation_tui_evidence"
 script = "scenarios/lazy_evaluation_tui_evidence.sh"
-owners = ["implement-lazy-evaluation"]
+owners = ["implement-lazy-evaluation", "integrate-and-canary"]
 description = "Candidate-binary real tmux/TUI and credential-free Fake-Pi source flow: publishing a multi-task workspace creates zero `.evaluate-*`/`.flip-*` satellites or records; one real launch-permitted source reaches immutable candidate completion and atomically mints exactly one bounded advisory record; default Viz remains uncluttered; selecting another task cannot reveal the record while the actual exact-search/detail action reveals its attempt, candidate CID and pinned route; duplicate done plus service restart remain exactly once."
 timeout_seconds = 180
 
@@ -2797,13 +2797,20 @@ timeout_seconds = 180
 [[scenario]]
 name = "dedicated_pi_bounded_evaluation_lane"
 script = "scenarios/dedicated_pi_bounded_evaluation_lane.sh"
-owners = ["implement-dedicated-pi"]
+owners = ["implement-dedicated-pi", "integrate-and-canary"]
 description = "Candidate-binary real daemon + tmux/TUI credential-free Fake-Pi flow: a genuine source candidate mints one hidden bounded record, which the dedicated pre-admission lane executes with no evaluator graph task/agent/worktree/build slot, no tools/extensions/session/credential environment, exact pinned Pi route and strict structured schema; terminal show, service status and the actual TUI detail action display content-addressed evidence, route, state, verdict and Pi-reported usage/cost; repeated ticks consume the verdict exactly once."
 timeout_seconds = 180
 
 [[scenario]]
 name = "deep_readonly_flip_human_flow"
 script = "scenarios/deep_readonly_flip_human_flow.sh"
-owners = ["implement-deep-read"]
+owners = ["implement-deep-read", "integrate-and-canary"]
 description = "Candidate-binary credential-free Fake-Pi + real tmux/TUI human flow: default bounded evaluation completes one genuine source candidate without creating deep work; an explicit post-completion terminal `wg evaluate run --flip` alone starts the separate observation-only Pi lane, paints progress, opens an evidence-linked report in the actual TUI Detail pane, and finds a planted API/registry omission plus latent intent/counterfactual that bounded summary grading misses. Pins all eight evidence classes, exact tool/evidence audit, closed injection-safe finding codes, immutable candidate reads, and no credential/mutation/shell/network/identity capabilities."
 timeout_seconds = 240
+
+[[scenario]]
+name = "pi_evaluation_rollout_requires_canary_success_before_enable"
+script = "scenarios/pi_evaluation_rollout_requires_canary_success_before_enable.sh"
+owners = ["integrate-and-canary"]
+description = "RED-first candidate-binary real operator-terminal/daemon-reload rollout: persists disabled safety flags; rejects config forgery and stage skipping; requires content-addressed Fake-Pi lifecycle, live bounded Pi/Luna, then explicit deep-readonly evidence in that order; enables bounded advisory auto-evaluation with no global hard gate/FLIP; retains native Codex route evidence; and exercises audited rollback plus before/after Viz CIDs. Companion owned Fake-Pi/TUI/lane/deep/admission scenarios provide the actual lifecycle evidence summarized by these certificates."
+timeout_seconds = 90

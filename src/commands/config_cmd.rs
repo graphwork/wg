@@ -1373,6 +1373,12 @@ pub fn update_with_reasoning(
     };
 
     if changed {
+        // A managed evaluation rollout owns these safety flags. Validate
+        // before backup/write so a direct config command cannot bypass the
+        // ordered, evidence-gated controller.
+        if matches!(scope, ConfigScope::Local) {
+            worksgood::evaluation::rollout::validate_managed_config(dir, &config)?;
+        }
         // Snapshot local config.toml before overwriting — only after all
         // validation has passed, so a failed `wg config` run doesn't leave
         // stray backup files behind.
@@ -3029,6 +3035,22 @@ pub fn set_dotted(
         anyhow::bail!("config set: <key> must not be empty");
     }
     let normalized_key = normalize_dotted_key(key);
+    if worksgood::evaluation::rollout::evidence_path(workgraph_dir).exists()
+        && matches!(
+            normalized_key.as_str(),
+            "agency.auto_evaluate"
+                | "agency.eval_gate_all"
+                | "agency.eval_gate_threshold"
+                | "agency.flip_enabled"
+                | "evaluation.managed_rollout"
+                | "evaluation.rollout_stage"
+        )
+    {
+        anyhow::bail!(
+            "managed evaluation rollout owns '{}'; use `wg evaluate rollout advance` or `rollback`",
+            normalized_key
+        );
+    }
 
     // 1. Validate known typed keys up front so a bad value never reaches disk.
     let typed_value = infer_toml_scalar(value);
