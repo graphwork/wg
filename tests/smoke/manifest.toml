@@ -2777,3 +2777,10 @@ script = "scenarios/lazy_evaluation_tui_evidence.sh"
 owners = ["implement-lazy-evaluation"]
 description = "Candidate-binary real tmux/TUI and credential-free Fake-Pi source flow: publishing a multi-task workspace creates zero `.evaluate-*`/`.flip-*` satellites or records; one real launch-permitted source reaches immutable candidate completion and atomically mints exactly one bounded advisory record; default Viz remains uncluttered; selecting another task cannot reveal the record while the actual exact-search/detail action reveals its attempt, candidate CID and pinned route; duplicate done plus service restart remain exactly once."
 timeout_seconds = 180
+
+[[scenario]]
+name = "pi_continuation_exit_epoch_fence"
+script = "scenarios/pi_continuation_exit_epoch_fence.sh"
+owners = ["fix-pi-continuation-exit-epoch-fence"]
+description = "Installed-binary Fake-Pi replay of attempt-0-22: a same-process continuation advances only prompt epoch, then current terminal/exit receipts with and without wg_done reconcile exactly once across command restarts; the historical schema-v1 watchdog=2/lifecycle=1 split self-repairs without Lost/stale_process_epoch, duplicate budget charge, or mutation of retained dirty WIP/substantive session bytes."
+timeout_seconds = 120

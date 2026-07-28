@@ -681,6 +681,10 @@ pub enum Commands {
         /// Shell exit code of the pi process (0 = success)
         #[arg(long, value_name = "N", default_value_t = 0)]
         exit_code: i32,
+
+        /// Exact reaped Pi child PID whose capture is being translated.
+        #[arg(long)]
+        follow_pid: Option<u32>,
     },
 
     /// [Internal] Follow a live Pi NDJSON capture and project bounded native
@@ -5432,6 +5436,9 @@ pub enum PiWatchdogCommands {
         id: String,
         #[arg(long)]
         exit_code: i32,
+        /// Exact reaped Pi child PID attested by the owning wrapper.
+        #[arg(long)]
+        pid: Option<u32>,
     },
     /// Credential-free deterministic adapter used only by the permanent Fake-Pi smoke.
     #[command(name = "fixture-init", hide = true)]

@@ -40,7 +40,9 @@ pub fn run(dir: &Path, command: PiWatchdogCommands, json: bool) -> Result<()> {
         PiWatchdogCommands::Bootstrap { id, agent_dir, pid } => {
             bootstrap(dir, &id, &agent_dir, pid)
         }
-        PiWatchdogCommands::ProcessExit { id, exit_code } => process_exit(dir, &id, exit_code),
+        PiWatchdogCommands::ProcessExit { id, exit_code, pid } => {
+            process_exit(dir, &id, exit_code, pid)
+        }
         PiWatchdogCommands::FixtureInit { id, worktree, now } => {
             fixture_init(dir, &id, &worktree, now)
         }
@@ -88,7 +90,7 @@ fn state_path(dir: &Path, task_id: &str) -> Result<PathBuf> {
 
 fn checked_open(dir: &Path, task_id: &str) -> Result<PiWatchdog> {
     let path = state_path(dir, task_id)?;
-    let watchdog = PiWatchdog::open(&path).map_err(anyhow::Error::new)?;
+    let mut watchdog = PiWatchdog::open(&path).map_err(anyhow::Error::new)?;
     let graph = load_graph(dir.join("graph.jsonl"))?;
     let task = graph.get_task_or_err(task_id)?;
     let attempt = task
@@ -104,7 +106,191 @@ fn checked_open(dir: &Path, task_id: &str) -> Result<PiWatchdog> {
     {
         anyhow::bail!("stale_attempt: watchdog source tuple does not match the lifecycle kernel")
     }
+    sync_lifecycle_process_authority(dir, task_id, &mut watchdog)?;
+    watchdog
+        .reconcile_pending_same_process_prompt(Utc::now().timestamp())
+        .map_err(anyhow::Error::new)?;
+    sync_lifecycle_continuation_authority(dir, task_id, &watchdog)?;
     Ok(watchdog)
+}
+
+/// Reconcile a crash-safe process replacement outbox. The watchdog swaps the
+/// exact identity first, which immediately makes all graph-facing consumers
+/// fail closed; this CAS publishes the same epoch/identity in lifecycle before
+/// checked consumers may resume. Replaying after either boundary is idempotent.
+pub(crate) fn sync_lifecycle_process_authority(
+    dir: &Path,
+    task_id: &str,
+    watchdog: &mut PiWatchdog,
+) -> Result<()> {
+    let graph_path = dir.join("graph.jsonl");
+    let graph = load_graph(&graph_path)?;
+    let task = graph.get_task_or_err(task_id)?;
+    let watchdog_authority = watchdog.process_epoch_authority();
+    // Schema-v1 continuation splits are repaired inside the watchdog only;
+    // old releases had no legitimate replacement-process transition.
+    if watchdog.state().schema_version == 1 {
+        watchdog
+            .attest_lifecycle_process_authority(
+                task.lifecycle.pi_process_epoch,
+                &task.lifecycle.pi_process_identity_digest,
+                Utc::now().timestamp(),
+            )
+            .map_err(anyhow::Error::new)?;
+        sync_worktree_observer_process_epoch(dir, watchdog)?;
+        return Ok(());
+    }
+    if task.lifecycle.pi_process_epoch == watchdog_authority.process_epoch
+        && (task.lifecycle.pi_process_identity_digest.is_empty()
+            || task.lifecycle.pi_process_identity_digest
+                == watchdog_authority.process_identity_digest)
+    {
+        sync_worktree_observer_process_epoch(dir, watchdog)?;
+        return Ok(());
+    }
+    if task.lifecycle.pi_process_epoch.saturating_add(1) != watchdog_authority.process_epoch
+        || task.lifecycle.pi_process_identity_digest.is_empty()
+    {
+        anyhow::bail!(
+            "process_epoch_authority_mismatch: replacement is not the next exact lifecycle epoch"
+        );
+    }
+    let expected_epoch = task.lifecycle.pi_process_epoch;
+    let expected_digest = task.lifecycle.pi_process_identity_digest.clone();
+    let next_epoch = watchdog_authority.process_epoch;
+    let next_digest = watchdog_authority.process_identity_digest;
+    let mut rejection = None;
+    modify_graph(&graph_path, |graph| {
+        let Some(task) = graph.get_task_mut(task_id) else {
+            return false;
+        };
+        let request = TransitionRequest::new(
+            TransitionKind::PiProcessEpochReplaced {
+                expected_process_epoch: expected_epoch,
+                expected_process_identity_digest: expected_digest.clone(),
+                next_process_epoch: next_epoch,
+                next_process_identity_digest: next_digest.clone(),
+            },
+            LifecycleActor {
+                kind: ActorKind::ProcessObserver,
+                id: "pi-watchdog-process-outbox".into(),
+            },
+            "exact_process_replaced",
+            format!(
+                "pi-process-replaced:{}:{}",
+                watchdog.state().source.attempt_id,
+                next_epoch
+            ),
+        )
+        .expecting(FenceExpectation::current(task));
+        if let Err(error) = apply_transition(task, request) {
+            rejection = Some(error);
+            return false;
+        }
+        true
+    })?;
+    if let Some(error) = rejection {
+        return Err(anyhow::Error::new(error));
+    }
+    let graph = load_graph(&graph_path)?;
+    let task = graph.get_task_or_err(task_id)?;
+    watchdog
+        .attest_lifecycle_process_authority(
+            task.lifecycle.pi_process_epoch,
+            &task.lifecycle.pi_process_identity_digest,
+            Utc::now().timestamp(),
+        )
+        .map_err(anyhow::Error::new)?;
+    sync_worktree_observer_process_epoch(dir, watchdog)?;
+    Ok(())
+}
+
+fn sync_worktree_observer_process_epoch(dir: &Path, watchdog: &PiWatchdog) -> Result<()> {
+    let storage = dir
+        .join("attempts")
+        .join(&watchdog.state().source.attempt_id)
+        .join("worktree-observer");
+    if !storage.join("state.json").is_file() {
+        return Ok(());
+    }
+    let mut observer = worksgood::worktree_observer::WorktreeObserver::open(&storage)?;
+    let current = observer.projection().source.identity.clone();
+    let target = watchdog.state().process_epoch;
+    if current.process_epoch == target {
+        return Ok(());
+    }
+    if current.process_epoch > target {
+        anyhow::bail!(
+            "process_epoch_authority_mismatch: worktree observer epoch {} is ahead of watchdog {}",
+            current.process_epoch,
+            target
+        );
+    }
+    observer.rebind_process_epoch_from_watchdog_at(&current, target, Utc::now().timestamp())?;
+    Ok(())
+}
+
+/// Reconcile the crash-safe watchdog outbox into the lifecycle ledger. The
+/// watchdog persists a continuation intent before session mutation; replaying
+/// this function after any restart charges each prompt epoch exactly once.
+pub(crate) fn sync_lifecycle_continuation_authority(
+    dir: &Path,
+    task_id: &str,
+    watchdog: &PiWatchdog,
+) -> Result<()> {
+    let graph_path = dir.join("graph.jsonl");
+    let target = watchdog.state().continuation_epoch;
+    let process_epoch = watchdog.state().process_epoch;
+    let process_identity_digest = watchdog.state().process.digest();
+    let elapsed_charge_secs = watchdog.policy().continuation_epoch_lease_secs;
+    let mut rejection = None;
+    modify_graph(&graph_path, |graph| {
+        let Some(task) = graph.get_task_mut(task_id) else {
+            return false;
+        };
+        if task.lifecycle.pi_continuation_epoch > target {
+            rejection = Some(anyhow::anyhow!(
+                "stale_continuation_epoch: lifecycle is ahead of watchdog"
+            ));
+            return false;
+        }
+        let mut changed = false;
+        while task.lifecycle.pi_continuation_epoch < target {
+            let expected_continuation_epoch = task.lifecycle.pi_continuation_epoch;
+            let next_continuation_epoch = expected_continuation_epoch.saturating_add(1);
+            let request = TransitionRequest::new(
+                TransitionKind::PiContinuationEpochReserved {
+                    expected_process_epoch: process_epoch,
+                    process_identity_digest: process_identity_digest.clone(),
+                    expected_continuation_epoch,
+                    next_continuation_epoch,
+                    elapsed_charge_secs,
+                },
+                LifecycleActor {
+                    kind: ActorKind::ProcessObserver,
+                    id: "pi-watchdog-continuation-outbox".into(),
+                },
+                "same_process_continuation",
+                format!(
+                    "pi-continuation:{}:{}:{}",
+                    watchdog.state().source.attempt_id,
+                    process_epoch,
+                    next_continuation_epoch
+                ),
+            )
+            .expecting(FenceExpectation::current(task));
+            if let Err(error) = apply_transition(task, request) {
+                rejection = Some(anyhow::Error::new(error));
+                return false;
+            }
+            changed = true;
+        }
+        changed
+    })?;
+    if let Some(error) = rejection {
+        return Err(error);
+    }
+    Ok(())
 }
 
 fn status(dir: &Path, id: &str, json: bool) -> Result<()> {
@@ -420,6 +606,7 @@ fn bootstrap(dir: &Path, id: &str, agent_dir: &Path, pid: u32) -> Result<()> {
         append_prefix_len: selected.append_prefix_len,
     };
     let process = capture_process(pid)?;
+    let process_identity_digest = process.digest();
     PiWatchdog::new_at(
         state_path,
         source.clone(),
@@ -458,6 +645,7 @@ fn bootstrap(dir: &Path, id: &str, agent_dir: &Path, pid: u32) -> Result<()> {
                 TransitionKind::PiContinuationAuthorized {
                     authorization: authorization.clone(),
                     initial_process_epoch: 1,
+                    initial_process_identity_digest: process_identity_digest.clone(),
                 },
                 LifecycleActor {
                     kind: ActorKind::Dispatcher,
@@ -524,6 +712,7 @@ pub fn reserve_worker_terminal(
     tool_call_id: &str,
 ) -> Result<()> {
     let mut watchdog = checked_open(dir, id)?;
+    attest_worker_descends_from_current_process(&watchdog)?;
     let receipt = TerminalIntentReceipt::new(
         &watchdog,
         watchdog.state().process_epoch,
@@ -571,9 +760,59 @@ pub fn reserve_worker_terminal(
     Ok(())
 }
 
-fn process_exit(dir: &Path, id: &str, exit_code: i32) -> Result<()> {
+fn attest_worker_descends_from_current_process(watchdog: &PiWatchdog) -> Result<()> {
+    if std::env::var("WG_EXECUTOR_TYPE").as_deref() != Ok("pi") {
+        return Ok(());
+    }
+    let expected = watchdog.state().process.pid;
+    #[cfg(target_os = "linux")]
+    {
+        let mut pid = std::process::id();
+        for _ in 0..64 {
+            if pid == expected {
+                return Ok(());
+            }
+            let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"))?;
+            let close = stat.rfind(')').context("invalid proc stat")?;
+            let fields: Vec<&str> = stat[close + 2..].split_whitespace().collect();
+            let parent: u32 = fields.get(1).context("proc parent missing")?.parse()?;
+            if parent == 0 || parent == pid {
+                break;
+            }
+            pid = parent;
+        }
+        anyhow::bail!(
+            "stale_process_identity: terminal caller is not descended from current epoch {} PID {}",
+            watchdog.state().process_epoch,
+            expected
+        );
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let parent = unsafe { libc::getppid() as u32 };
+        if parent != expected {
+            anyhow::bail!(
+                "stale_process_identity: terminal caller parent is not current epoch {} PID {}",
+                watchdog.state().process_epoch,
+                expected
+            );
+        }
+        Ok(())
+    }
+}
+
+fn process_exit(dir: &Path, id: &str, exit_code: i32, attested_pid: Option<u32>) -> Result<()> {
     let mut watchdog = checked_open(dir, id)?;
     let state = watchdog.state().clone();
+    if let Some(pid) = attested_pid
+        && pid != state.process.pid
+    {
+        anyhow::bail!(
+            "stale_process_identity: wrapper exit PID {pid} is not current epoch {} PID {}",
+            state.process_epoch,
+            state.process.pid
+        );
+    }
     let graph_path = dir.join("graph.jsonl");
     let mut rejection = None;
     modify_graph(&graph_path, |graph| {
@@ -583,6 +822,7 @@ fn process_exit(dir: &Path, id: &str, exit_code: i32) -> Result<()> {
         let request = TransitionRequest::new(
             TransitionKind::PiProcessEpochExited {
                 process_epoch: state.process_epoch,
+                process_identity_digest: state.process.digest(),
                 exact_reap_proof: true,
                 effect_safe: state.exact_guards.effect,
             },
@@ -671,6 +911,7 @@ fn fixture_init(dir: &Path, id: &str, worktree: &Path, now: i64) -> Result<()> {
         boot_id: "fixture-boot".into(),
         nonce: "fixture-nonce".into(),
     };
+    let process_identity_digest = process.digest();
     let state_path = state_dir.join("state.json");
     PiWatchdog::new_at(
         state_path,
@@ -710,6 +951,7 @@ fn fixture_init(dir: &Path, id: &str, worktree: &Path, now: i64) -> Result<()> {
                 TransitionKind::PiContinuationAuthorized {
                     authorization: authorization.clone(),
                     initial_process_epoch: 1,
+                    initial_process_identity_digest: process_identity_digest.clone(),
                 },
                 LifecycleActor {
                     kind: ActorKind::Dispatcher,
@@ -867,6 +1109,7 @@ fn fixture_observe(dir: &Path, id: &str, event: &str, now: i64) -> Result<()> {
     let actions = watchdog
         .observe(observation, now)
         .map_err(anyhow::Error::new)?;
+    sync_lifecycle_continuation_authority(dir, id, &watchdog)?;
     println!(
         "event={event} classification={:?} actions={actions:?} process_epoch={} continuation_epoch={} prompts={} terminal={}",
         watchdog.state().classification,
@@ -881,6 +1124,7 @@ fn fixture_observe(dir: &Path, id: &str, event: &str, now: i64) -> Result<()> {
 fn fixture_tick(dir: &Path, id: &str, now: i64) -> Result<()> {
     let mut watchdog = checked_open(dir, id)?;
     let actions = watchdog.tick(now).map_err(anyhow::Error::new)?;
+    sync_lifecycle_continuation_authority(dir, id, &watchdog)?;
     println!(
         "tick={now} classification={:?} actions={actions:?} process_epoch={} continuation_epoch={} prompts={} budget={}/{}s",
         watchdog.state().classification,
@@ -905,6 +1149,7 @@ fn abort(dir: &Path, id: &str, reason: &str, json: bool) -> Result<()> {
         attempt_id: state.source.attempt_id.clone(),
         attempt_fence: state.source.attempt_fence,
         process_epoch: state.process_epoch,
+        process_identity_digest: state.process.digest(),
         tool_call_id: format!(
             "operator-abort:{}:{}",
             state.process_epoch,

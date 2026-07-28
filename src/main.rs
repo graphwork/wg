@@ -1327,7 +1327,10 @@ fn main() -> Result<()> {
         Commands::PiStreamBridge {
             agent_dir,
             exit_code,
-        } => commands::pi_stream_bridge::run(std::path::Path::new(&agent_dir), exit_code),
+            follow_pid,
+        } => {
+            commands::pi_stream_bridge::run(std::path::Path::new(&agent_dir), exit_code, follow_pid)
+        }
         Commands::PiStreamObserve {
             agent_dir,
             follow_pid,

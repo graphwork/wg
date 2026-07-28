@@ -127,6 +127,13 @@ pub struct LifecycleProjection {
     /// Current Pi child-process fence beneath the immutable source attempt.
     #[serde(default)]
     pub pi_process_epoch: u32,
+    /// Digest of the exact PID/start/boot/nonce identity bound to that fence.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub pi_process_identity_digest: String,
+    /// Prompt/continuation counter. This advances independently while the
+    /// exact in-process Pi writer and `pi_process_epoch` remain unchanged.
+    #[serde(default)]
+    pub pi_continuation_epoch: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pi_continuation: Option<PiContinuationAuthorization>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -233,20 +240,35 @@ pub enum TransitionKind {
     PiContinuationAuthorized {
         authorization: PiContinuationAuthorization,
         initial_process_epoch: u32,
+        #[serde(default)]
+        initial_process_identity_digest: String,
     },
     PiContinuationHeld {
         reason: String,
     },
     PiContinuationEpochReserved {
         expected_process_epoch: u32,
-        next_process_epoch: u32,
+        #[serde(default)]
+        process_identity_digest: String,
+        expected_continuation_epoch: u32,
+        next_continuation_epoch: u32,
         elapsed_charge_secs: u64,
+    },
+    /// CAS a genuinely new exact process identity into the process fence.
+    /// Continuation prompts must never use this transition.
+    PiProcessEpochReplaced {
+        expected_process_epoch: u32,
+        expected_process_identity_digest: String,
+        next_process_epoch: u32,
+        next_process_identity_digest: String,
     },
     PiTerminalIntent {
         receipt: crate::pi_watchdog::TerminalIntentReceipt,
     },
     PiProcessEpochExited {
         process_epoch: u32,
+        #[serde(default)]
+        process_identity_digest: String,
         exact_reap_proof: bool,
         effect_safe: bool,
     },
@@ -276,6 +298,7 @@ impl TransitionKind {
             Self::PiContinuationAuthorized { .. } => "pi-continuation-authorized",
             Self::PiContinuationHeld { .. } => "pi-continuation-held",
             Self::PiContinuationEpochReserved { .. } => "pi-continuation-epoch-reserved",
+            Self::PiProcessEpochReplaced { .. } => "pi-process-epoch-replaced",
             Self::PiTerminalIntent { .. } => "pi-terminal-intent",
             Self::PiProcessEpochExited { .. } => "pi-process-epoch-exited",
         }
@@ -361,6 +384,10 @@ pub struct LifecycleEventProjection {
     pub current_attempt: Option<AttemptRef>,
     #[serde(default)]
     pub pi_process_epoch: u32,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub pi_process_identity_digest: String,
+    #[serde(default)]
+    pub pi_continuation_epoch: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pi_continuation: Option<PiContinuationAuthorization>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -376,6 +403,9 @@ impl LifecycleEvent {
         task.lifecycle.attempt_sequence = self.projection.attempt_sequence;
         task.lifecycle.current_attempt = self.projection.current_attempt.clone();
         task.lifecycle.pi_process_epoch = self.projection.pi_process_epoch;
+        task.lifecycle.pi_process_identity_digest =
+            self.projection.pi_process_identity_digest.clone();
+        task.lifecycle.pi_continuation_epoch = self.projection.pi_continuation_epoch;
         task.lifecycle.pi_continuation = self.projection.pi_continuation.clone();
         task.lifecycle.pi_terminal_reservation = self.projection.pi_terminal_reservation.clone();
         task.lifecycle.ledger_head = Some(self.event_id.clone());
@@ -692,6 +722,7 @@ impl LifecycleKernel {
             TransitionKind::PiContinuationAuthorized {
                 authorization,
                 initial_process_epoch,
+                initial_process_identity_digest,
             } => {
                 Self::require_actor(&request, &[ActorKind::Dispatcher, ActorKind::Reconciler])?;
                 Self::require_running_attempt(task, &request)?;
@@ -714,6 +745,8 @@ impl LifecycleKernel {
                     ));
                 }
                 projection.pi_process_epoch = *initial_process_epoch;
+                projection.pi_process_identity_digest = initial_process_identity_digest.clone();
+                projection.pi_continuation_epoch = 0;
                 projection.pi_continuation = Some(authorization.clone());
                 projection.pi_terminal_reservation = None;
             }
@@ -743,7 +776,9 @@ impl LifecycleKernel {
             }
             TransitionKind::PiContinuationEpochReserved {
                 expected_process_epoch,
-                next_process_epoch,
+                process_identity_digest,
+                expected_continuation_epoch,
+                next_continuation_epoch,
                 elapsed_charge_secs,
             } => {
                 Self::require_actor(
@@ -762,11 +797,20 @@ impl LifecycleKernel {
                     ));
                 }
                 if projection.pi_process_epoch != *expected_process_epoch
-                    || *next_process_epoch != expected_process_epoch.saturating_add(1)
+                    || (!projection.pi_process_identity_digest.is_empty()
+                        && projection.pi_process_identity_digest != *process_identity_digest)
                 {
                     return Err(TransitionRejection::new(
                         "stale_process_epoch",
-                        "Pi continuation epoch CAS no longer matches",
+                        "Pi continuation came from a non-current process authority",
+                    ));
+                }
+                if projection.pi_continuation_epoch != *expected_continuation_epoch
+                    || *next_continuation_epoch != expected_continuation_epoch.saturating_add(1)
+                {
+                    return Err(TransitionRejection::new(
+                        "stale_continuation_epoch",
+                        "Pi continuation prompt epoch CAS no longer matches",
                     ));
                 }
                 let authorization = projection.pi_continuation.as_mut().ok_or_else(|| {
@@ -797,15 +841,53 @@ impl LifecycleKernel {
                 authorization.elapsed_reserved_secs = authorization
                     .elapsed_reserved_secs
                     .saturating_add(*elapsed_charge_secs);
+                projection.pi_continuation_epoch = *next_continuation_epoch;
+            }
+            TransitionKind::PiProcessEpochReplaced {
+                expected_process_epoch,
+                expected_process_identity_digest,
+                next_process_epoch,
+                next_process_identity_digest,
+            } => {
+                Self::require_actor(
+                    &request,
+                    &[
+                        ActorKind::Dispatcher,
+                        ActorKind::ProcessObserver,
+                        ActorKind::Reconciler,
+                    ],
+                )?;
+                Self::require_running_attempt(task, &request)?;
+                if projection.pi_terminal_reservation.is_some() {
+                    return Err(TransitionRejection::new(
+                        "attempt_already_terminal",
+                        "terminal reservation won before process replacement",
+                    ));
+                }
+                if projection.pi_process_epoch != *expected_process_epoch
+                    || projection.pi_process_identity_digest != *expected_process_identity_digest
+                    || *next_process_epoch != expected_process_epoch.saturating_add(1)
+                    || next_process_identity_digest.is_empty()
+                    || next_process_identity_digest == expected_process_identity_digest
+                {
+                    return Err(TransitionRejection::new(
+                        "stale_process_epoch",
+                        "Pi replacement process CAS no longer matches exact authority",
+                    ));
+                }
                 projection.pi_process_epoch = *next_process_epoch;
+                projection.pi_process_identity_digest = next_process_identity_digest.clone();
             }
             TransitionKind::PiTerminalIntent { receipt } => {
                 Self::require_actor(&request, &[ActorKind::Worker, ActorKind::Operator])?;
                 Self::require_running_attempt(task, &request)?;
-                if projection.pi_process_epoch != receipt.process_epoch {
+                if projection.pi_process_epoch != receipt.process_epoch
+                    || (!projection.pi_process_identity_digest.is_empty()
+                        && projection.pi_process_identity_digest != receipt.process_identity_digest)
+                {
                     return Err(TransitionRejection::new(
                         "stale_process_epoch",
-                        "terminal receipt came from an old Pi process epoch",
+                        "terminal receipt came from an old Pi process authority",
                     ));
                 }
                 if receipt.task_id != task.id
@@ -836,6 +918,7 @@ impl LifecycleKernel {
             }
             TransitionKind::PiProcessEpochExited {
                 process_epoch,
+                process_identity_digest,
                 exact_reap_proof,
                 effect_safe,
             } => {
@@ -844,10 +927,13 @@ impl LifecycleKernel {
                     &[ActorKind::ProcessObserver, ActorKind::Reconciler],
                 )?;
                 Self::require_running_attempt(task, &request)?;
-                if projection.pi_process_epoch != *process_epoch {
+                if projection.pi_process_epoch != *process_epoch
+                    || (!projection.pi_process_identity_digest.is_empty()
+                        && projection.pi_process_identity_digest != *process_identity_digest)
+                {
                     return Err(TransitionRejection::new(
                         "stale_process_epoch",
-                        "exit belongs to an old Pi process epoch",
+                        "exit belongs to an old Pi process authority",
                     ));
                 }
                 if projection.pi_terminal_reservation.is_some() {
@@ -929,6 +1015,8 @@ impl LifecycleKernel {
                 attempt_sequence: projection.attempt_sequence,
                 current_attempt: projection.current_attempt,
                 pi_process_epoch: projection.pi_process_epoch,
+                pi_process_identity_digest: projection.pi_process_identity_digest,
+                pi_continuation_epoch: projection.pi_continuation_epoch,
                 pi_continuation: projection.pi_continuation,
                 pi_terminal_reservation: projection.pi_terminal_reservation,
             },

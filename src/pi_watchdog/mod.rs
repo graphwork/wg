@@ -271,6 +271,17 @@ impl ProcessIdentity {
     }
 }
 
+/// Durable authority for the exact process currently allowed to contribute
+/// progress or terminal/exit receipts to one immutable source attempt.
+/// Continuation prompts deliberately do not appear here: they advance
+/// `continuation_epoch` while an in-process continuation retains this exact
+/// PID/start/boot/nonce and process epoch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProcessEpochAuthority {
+    pub process_epoch: u32,
+    pub process_identity_digest: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ToolEffect {
@@ -335,6 +346,8 @@ pub struct TerminalIntentReceipt {
     pub attempt_id: String,
     pub attempt_fence: u64,
     pub process_epoch: u32,
+    #[serde(default)]
+    pub process_identity_digest: String,
     pub tool_call_id: String,
     pub disposition: TerminalDisposition,
     pub idempotency_key: String,
@@ -354,6 +367,7 @@ impl TerminalIntentReceipt {
             attempt_id: s.attempt_id.clone(),
             attempt_fence: s.attempt_fence,
             process_epoch,
+            process_identity_digest: w.state.process.digest(),
             idempotency_key: format!(
                 "{}:{}:{}:{:?}",
                 s.attempt_id, process_epoch, tool_call_id, disposition
@@ -391,6 +405,8 @@ impl DoneProofV1 {
         self.terminal.as_ref().is_some_and(|r| {
             r.disposition == TerminalDisposition::SuccessIntent
                 && r.process_epoch == s.process_epoch
+                && (r.process_identity_digest.is_empty()
+                    || r.process_identity_digest == s.process.digest())
                 && receipt_matches(&s.source, r)
         }) && self.quiescence.as_ref().is_some_and(|r| {
             r.source == s.source
@@ -620,6 +636,7 @@ pub struct ManualGrant {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CrashBarrier {
+    AfterContinuationReserved,
     AfterPromptIntent,
 }
 
@@ -686,7 +703,7 @@ impl PiWatchdog {
         fs::create_dir_all(root).map_err(io_error)?;
         let mut watchdog = Self {
             state: PiWatchdogState {
-                schema_version: 1,
+                schema_version: 2,
                 source,
                 route,
                 session,
@@ -827,6 +844,93 @@ impl PiWatchdog {
     }
     pub fn policy(&self) -> &WatchdogPolicy {
         &self.policy
+    }
+
+    /// Bind a reopened watchdog to the lifecycle projection before any
+    /// receipt is accepted. Schema-v1 states may contain the historical split
+    /// where an in-process continuation incorrectly advanced only the
+    /// watchdog process epoch; that exact shape is repaired once and persisted.
+    pub fn attest_lifecycle_process_authority(
+        &mut self,
+        lifecycle_process_epoch: u32,
+        lifecycle_process_identity_digest: &str,
+        now: i64,
+    ) -> Result<ProcessEpochAuthority, WatchdogError> {
+        if self.state.schema_version == 1
+            && lifecycle_process_epoch > 0
+            && self.state.process_epoch > lifecycle_process_epoch
+            && self.state.continuation_epoch > 0
+            && (lifecycle_process_identity_digest.is_empty()
+                || lifecycle_process_identity_digest == self.state.process.digest())
+        {
+            self.state.process_epoch = lifecycle_process_epoch;
+            self.state.native_activity.process_epoch = lifecycle_process_epoch;
+            self.state.schema_version = 2;
+            self.persist("legacy-same-process-epoch-repaired", now)?;
+        }
+        let authority = self.process_epoch_authority();
+        if lifecycle_process_epoch != authority.process_epoch
+            || (!lifecycle_process_identity_digest.is_empty()
+                && lifecycle_process_identity_digest != authority.process_identity_digest)
+        {
+            return Err(WatchdogError::new(
+                "process_epoch_authority_mismatch",
+                "lifecycle and watchdog disagree on the current exact Pi process authority",
+            ));
+        }
+        if self.state.schema_version < 2 {
+            self.state.schema_version = 2;
+            self.persist("process-epoch-schema-upgraded", now)?;
+        }
+        Ok(authority)
+    }
+
+    pub fn process_epoch_authority(&self) -> ProcessEpochAuthority {
+        ProcessEpochAuthority {
+            process_epoch: self.state.process_epoch,
+            process_identity_digest: self.state.process.digest(),
+        }
+    }
+
+    /// Atomically replace the exact process identity and advance its fence.
+    /// A retry after a crash is idempotent when the replacement identity is
+    /// already current. Any genuinely old or competing replacement is
+    /// rejected before progress can be attributed to it.
+    pub fn replace_process_epoch(
+        &mut self,
+        expected: &ProcessIdentity,
+        replacement: ProcessIdentity,
+        now: i64,
+    ) -> Result<ProcessEpochAuthority, WatchdogError> {
+        if self.state.process == replacement {
+            return Ok(self.process_epoch_authority());
+        }
+        if &self.state.process != expected {
+            return Err(WatchdogError::new(
+                "stale_process_identity",
+                "replacement expected an old or competing Pi process identity",
+            ));
+        }
+        if self.state.terminal {
+            return Err(WatchdogError::new(
+                "attempt_already_terminal",
+                "a terminal receipt won before process replacement",
+            ));
+        }
+        if replacement.digest() == expected.digest() {
+            return Err(WatchdogError::new(
+                "process_identity_unchanged",
+                "same exact PID/start/boot/nonce is a continuation, not a replacement process",
+            ));
+        }
+        self.state.process_epoch = self.state.process_epoch.saturating_add(1);
+        self.state.process = replacement;
+        self.state.exact_guards.pid_identity = true;
+        // Leave native_activity on the old epoch until the first record from
+        // the replacement arrives; projection then clears per-process live
+        // counters while retaining deduplicated accounting/cursors.
+        self.persist("process-epoch-replaced", now)?;
+        Ok(self.process_epoch_authority())
     }
 
     /// Ingest one native Pi JSON/RPC record without letting ordinary log or
@@ -1435,6 +1539,30 @@ impl PiWatchdog {
         Ok(Vec::new())
     }
 
+    /// Complete a persisted same-process prompt intent after restart. This is
+    /// the crash-safe outbox consumer for both boundaries: epoch reserved but
+    /// prompt intent absent, and prompt intent persisted but marker absent.
+    pub fn reconcile_pending_same_process_prompt(
+        &mut self,
+        now: i64,
+    ) -> Result<bool, WatchdogError> {
+        if self.state.terminal
+            || self.state.classification != Classification::NeedsFinalization
+            || self.state.prompt_marker.is_some()
+            || self.state.continuation_epoch == 0
+            || self.state.prompt_count >= self.state.continuation_epoch
+        {
+            return Ok(false);
+        }
+        let reason = self
+            .state
+            .reason_code
+            .clone()
+            .unwrap_or_else(|| "needs_finalization_restart".into());
+        self.emit_completion_prompt(&reason, now)?;
+        Ok(true)
+    }
+
     pub fn quiescence_receipt(&self, manifest: impl Into<String>, now: i64) -> PiQuiescenceReceipt {
         PiQuiescenceReceipt {
             source: self.state.source.clone(),
@@ -1509,6 +1637,21 @@ impl PiWatchdog {
             return Ok(Vec::new());
         }
         self.reserve_epoch(false, now)?;
+        if self.crash_barrier == Some(CrashBarrier::AfterContinuationReserved) {
+            return Err(WatchdogError::new(
+                "injected_crash",
+                "after continuation reserved",
+            ));
+        }
+        self.emit_completion_prompt(reason, now)?;
+        Ok(vec![
+            ActionKind::ReserveContinuation,
+            ActionKind::LaunchSameSession,
+            ActionKind::AppendCompletionPrompt,
+        ])
+    }
+
+    fn emit_completion_prompt(&mut self, reason: &str, now: i64) -> Result<(), WatchdogError> {
         let prompt = render_stock_prompt(reason)?;
         let digest = digest_bytes(prompt.as_bytes());
         let action_id = format!(
@@ -1537,11 +1680,7 @@ impl PiWatchdog {
             self.state.prompt_count += 1;
         }
         self.persist("prompt-observed", now)?;
-        Ok(vec![
-            ActionKind::ReserveContinuation,
-            ActionKind::LaunchSameSession,
-            ActionKind::AppendCompletionPrompt,
-        ])
+        Ok(())
     }
 
     fn session_has_marker(&self, action_id: &str) -> Result<bool, WatchdogError> {
@@ -1587,10 +1726,13 @@ impl PiWatchdog {
                 "terminal receipt source tuple does not match",
             ));
         }
-        if receipt.process_epoch != self.state.process_epoch {
+        if receipt.process_epoch != self.state.process_epoch
+            || (!receipt.process_identity_digest.is_empty()
+                && receipt.process_identity_digest != self.state.process.digest())
+        {
             return Err(WatchdogError::new(
                 "stale_process_epoch",
-                "terminal receipt came from an old process epoch",
+                "terminal receipt came from an old process authority",
             ));
         }
         self.state.terminal = true;
@@ -1628,7 +1770,9 @@ impl PiWatchdog {
             .elapsed_reserved_secs
             .saturating_add(self.policy.continuation_epoch_lease_secs);
         self.state.continuation_epoch += 1;
-        self.state.process_epoch += 1;
+        // A prompt delivered inside the same live Pi process is not a process
+        // replacement. Advancing the process fence here makes that exact
+        // writer's later terminal/exit receipt appear stale and strands WIP.
         self.persist("continuation-epoch-reserved", now)
     }
     fn budget_available(&self, _manual: bool) -> bool {

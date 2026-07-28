@@ -365,6 +365,7 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
                             authorization.state,
                             worksgood::lifecycle::PiAuthorizationState::Active
                                 | worksgood::lifecycle::PiAuthorizationState::HeldOperatorRequired
+                                | worksgood::lifecycle::PiAuthorizationState::Consumed
                         )
                     });
             if task.status == Status::InProgress && !pi_watchdog_owns_exit {
@@ -449,7 +450,7 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
                     continue;
                 };
                 let pi_watchdog_owns_exit = fresh.lifecycle.pi_continuation.as_ref().is_some_and(|authorization| {
-                    matches!(authorization.state, worksgood::lifecycle::PiAuthorizationState::Active | worksgood::lifecycle::PiAuthorizationState::HeldOperatorRequired)
+                    matches!(authorization.state, worksgood::lifecycle::PiAuthorizationState::Active | worksgood::lifecycle::PiAuthorizationState::HeldOperatorRequired | worksgood::lifecycle::PiAuthorizationState::Consumed)
                 });
                 if fresh.status == Status::InProgress && !pi_watchdog_owns_exit {
                     let generation = fresh.lifecycle.generation;
