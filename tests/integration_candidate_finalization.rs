@@ -148,6 +148,44 @@ fn candidate_binds_28kb_bytes_not_6kb_main_and_is_immutable() {
 }
 
 #[test]
+fn required_deep_flip_holds_candidate_across_reconcile_until_acceptance() {
+    let f = fixture();
+    let base = git(&f.root, &["rev-parse", "refs/heads/main"]);
+    fs::write(f.wt.join("incident/payload.txt"), vec![b'c'; 28_672]).unwrap();
+    let store = FinalizationStore::open(&f.wg).unwrap();
+    let mut ctx = context(&f);
+    ctx.evaluation_policy = "required-deep-readonly-flip-before-merge".into();
+    let tx = checkpoint_candidate(&store, &ctx).unwrap();
+    assert_eq!(tx.phase, FinalizationPhase::Evaluating);
+    assert!(tx.replay_action.is_none());
+    assert!(tx.merge_receipt.is_none());
+    let replay = worksgood::finalization::reconcile(&store, "incident")
+        .unwrap()
+        .unwrap();
+    assert_eq!(replay.phase, FinalizationPhase::Evaluating);
+    assert!(replay.merge_receipt.is_none());
+    let rejected = worksgood::finalization::retain_rejected_candidate(
+        &store,
+        &tx.candidate.as_ref().unwrap().candidate_id,
+        "deep-report-semantic-reject",
+    )
+    .unwrap();
+    assert_eq!(rejected.phase, FinalizationPhase::RepairNeeded);
+    assert_eq!(
+        rejected.retained_reason.as_deref(),
+        Some("acceptance.rejected:deep-report-semantic-reject")
+    );
+    let replay = worksgood::finalization::retain_rejected_candidate(
+        &store,
+        &tx.candidate.as_ref().unwrap().candidate_id,
+        "deep-report-semantic-reject",
+    )
+    .unwrap();
+    assert_eq!(replay, rejected, "rejection projection is idempotent");
+    assert_eq!(git(&f.root, &["rev-parse", "refs/heads/main"]), base);
+}
+
+#[test]
 fn merge_is_content_bound_exactly_once_and_conflict_is_retained() {
     let f = fixture();
     fs::write(f.wt.join("incident/payload.txt"), vec![b'c'; 28_672]).unwrap();

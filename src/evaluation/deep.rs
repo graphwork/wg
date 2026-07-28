@@ -313,37 +313,71 @@ pub fn load_lane_status(dir: &Path) -> EvaluationLaneStatus {
 
 /// Execute at most one explicitly selected deep record. Default bounded
 /// evaluation never creates one, and this selector never accepts bounded work.
-/// Rearm one infrastructure-failed deep record after an explicit operator
-/// request. Daemon restarts never call this, so they remain idempotent and a
-/// malformed verdict cannot hot-loop. The exact candidate and route stay
-/// unchanged and both attempts remain audited.
+/// Rearm one infrastructure-failed or semantically rejected deep record after
+/// an explicit operator request. Daemon restarts never call this, so terminal
+/// evidence cannot hot-loop. The exact candidate/policy/route stay unchanged;
+/// a superseded semantic report moves to immutable prior evidence and every
+/// process attempt remains audited.
 pub fn rearm_explicit_retry(dir: &Path, evaluation_id: &str) -> Result<bool> {
     let graph_path = dir.join("graph.jsonl");
     let rearmed = std::cell::Cell::new(false);
     crate::parser::modify_graph(&graph_path, |graph| {
         for task in graph.tasks_mut() {
-            let Some(record) = task
+            let Some(index) = task
                 .evaluation_records
-                .iter_mut()
-                .find(|record| record.evaluation_id == evaluation_id)
+                .iter()
+                .position(|record| record.evaluation_id == evaluation_id)
             else {
                 continue;
             };
+            let record = &task.evaluation_records[index];
+            let infrastructure_failure = matches!(
+                record.state,
+                EvaluationState::Malformed
+                    | EvaluationState::TimedOut
+                    | EvaluationState::RouteDrift
+                    | EvaluationState::ProcessFailed
+                    | EvaluationState::Unavailable
+            );
+            let semantic_rejection = record.state == EvaluationState::Consumed
+                && record.policy.applicability == EvaluationGateApplicability::Required
+                && super::source_candidate_is_current(task, &record.source)
+                && record.deep_report.as_ref().is_some_and(|report| {
+                    report.outcome == BoundedVerdictOutcome::Fail
+                        || report.score < record.policy.threshold.unwrap_or(1.0)
+                });
             if record.product != EvaluationProduct::DeepReadonlyFlip
                 || record.attempts.len() >= MAX_PROCESS_ATTEMPTS
-                || !matches!(
-                    record.state,
-                    EvaluationState::Malformed
-                        | EvaluationState::TimedOut
-                        | EvaluationState::ProcessFailed
-                        | EvaluationState::Unavailable
-                )
+                || (!infrastructure_failure && !semantic_rejection)
             {
                 return false;
             }
+            let record = &mut task.evaluation_records[index];
+            let prior_report_id = if semantic_rejection {
+                let report = record.deep_report.take().expect("rejected report checked");
+                let report_id = report.report_id.clone();
+                record.prior_deep_reports.push(report);
+                record.consumed_verdict_id = None;
+                Some(report_id)
+            } else {
+                None
+            };
             record.state = EvaluationState::PreparingBundle;
-            record.diagnostic =
-                Some("Explicit operator retry on the same candidate and exact Pi route".into());
+            record.diagnostic = Some(
+                "Explicit operator retry on the same candidate, policy, and exact Pi route".into(),
+            );
+            task.log.push(LogEntry {
+                timestamp: Utc::now().to_rfc3339(),
+                actor: Some("deep-readonly-flip-lane".into()),
+                user: None,
+                message: match prior_report_id {
+                    Some(report) => format!(
+                        "Explicit FLIP-only retry rearmed exact candidate after semantic report {report}; prior report retained immutable"
+                    ),
+                    None => "Explicit FLIP-only retry rearmed infrastructure-failed exact record"
+                        .into(),
+                },
+            });
             rearmed.set(true);
             return true;
         }
@@ -352,11 +386,179 @@ pub fn rearm_explicit_retry(dir: &Path, evaluation_id: &str) -> Result<bool> {
     Ok(rearmed.get())
 }
 
+/// Replay only the post-report acceptance boundary. A valid deep report is
+/// immutable evidence, so restart must never spend or invoke the model again.
+pub fn reconcile_required_passes(dir: &Path) -> Result<usize> {
+    let graph_path = dir.join("graph.jsonl");
+    if !graph_path.exists() {
+        return Ok(0);
+    }
+    let graph = load_graph(&graph_path)?;
+    let pending: Vec<(String, String)> = graph
+        .tasks()
+        .filter(|task| matches!(task.status, Status::PendingEval | Status::FailedPendingEval))
+        .flat_map(|task| {
+            task.evaluation_records.iter().filter_map(move |record| {
+                let report = record.deep_report.as_ref()?;
+                (record.product == EvaluationProduct::DeepReadonlyFlip
+                    && record.policy.applicability == EvaluationGateApplicability::Required
+                    && super::source_candidate_is_current(task, &record.source)
+                    && record.consumed_verdict_id.as_deref() == Some(report.report_id.as_str())
+                    && report.outcome == BoundedVerdictOutcome::Pass
+                    && report.score >= record.policy.threshold.unwrap_or(1.0))
+                .then(|| (task.id.clone(), record.evaluation_id.clone()))
+            })
+        })
+        .collect();
+    let mut merged = 0usize;
+    for (task_id, evaluation_id) in pending {
+        if consume_required_pass(dir, &task_id, &evaluation_id)? {
+            merged += 1;
+        }
+    }
+    Ok(merged)
+}
+
+fn consume_required_pass(dir: &Path, task_id: &str, evaluation_id: &str) -> Result<bool> {
+    let mut accepted = false;
+    let mut infrastructure_error: Option<String> = None;
+    modify_graph(&dir.join("graph.jsonl"), |graph| {
+        let Some(task) = graph.get_task_mut(task_id) else {
+            return false;
+        };
+        if !matches!(task.status, Status::PendingEval | Status::FailedPendingEval) {
+            return false;
+        }
+        let Some(index) = task
+            .evaluation_records
+            .iter()
+            .position(|record| record.evaluation_id == evaluation_id)
+        else {
+            return false;
+        };
+        let snapshot = task.evaluation_records[index].clone();
+        let Some(report) = snapshot.deep_report.as_ref() else {
+            return false;
+        };
+        if snapshot.policy.applicability != EvaluationGateApplicability::Required
+            || !super::source_candidate_is_current(task, &snapshot.source)
+            || snapshot.consumed_verdict_id.as_deref() != Some(report.report_id.as_str())
+            || report.outcome != BoundedVerdictOutcome::Pass
+            || report.score < snapshot.policy.threshold.unwrap_or(1.0)
+        {
+            return false;
+        }
+
+        let merge = (|| -> Result<crate::finalization::FinalizationTransaction> {
+            let store = FinalizationStore::open(dir)?;
+            let candidate = store.read_candidate(&snapshot.source.candidate_digest)?;
+            if candidate.task_id != snapshot.source.task_id
+                || candidate.generation != snapshot.source.generation
+                || candidate.attempt_id != snapshot.source.source_attempt_id
+                || candidate.attempt_fence != snapshot.source.source_fence
+                || candidate.candidate_version != snapshot.source.finalization_round
+                || candidate.content_manifest_cid != snapshot.source.candidate_manifest_digest
+            {
+                bail!("required FLIP candidate/source binding mismatch");
+            }
+            store.verify_candidate(&candidate)?;
+            crate::finalization::merge_candidate(&store, &candidate)
+        })();
+        let transaction = match merge {
+            Ok(transaction) => transaction,
+            Err(error) => {
+                infrastructure_error = Some(format!("{error:#}"));
+                let diagnostic = format!(
+                    "FLIP passed—merge infrastructure unavailable: {error:#}. Retry acceptance only: `wg evaluate run {task_id} --flip`; inspect: `wg show {task_id}`"
+                );
+                task.evaluation_records[index].diagnostic = Some(diagnostic.clone());
+                if let Some(lifecycle) = task.evaluation_lifecycle.as_mut() {
+                    lifecycle.diagnostic = Some(diagnostic);
+                }
+                return true;
+            }
+        };
+        if let Some(conflict) = transaction.merge_conflict.as_ref() {
+            let diagnostic = format!(
+                "FLIP passed but exact candidate merge needs repair ({}). Candidate={}; repair: `{}`",
+                conflict.reason_code, conflict.binding.candidate_id, transaction.safe_next_command
+            );
+            task.evaluation_records[index].diagnostic = Some(diagnostic.clone());
+            if let Some(lifecycle) = task.evaluation_lifecycle.as_mut() {
+                lifecycle.diagnostic = Some(diagnostic);
+            }
+            return true;
+        }
+        let Some(receipt) = transaction.merge_receipt.as_ref() else {
+            infrastructure_error = Some("merge receipt missing".into());
+            task.evaluation_records[index].diagnostic =
+                Some("FLIP passed—merge receipt missing; run `wg finalize reconcile`".into());
+            return true;
+        };
+        let report_id = report.report_id.clone();
+        let request = TransitionRequest::new(
+            TransitionKind::AcceptanceSatisfied {
+                acceptance_ref: report_id.clone(),
+            },
+            LifecycleActor {
+                kind: ActorKind::AcceptanceController,
+                id: "deep-readonly-flip-lane".into(),
+            },
+            "deep_flip_accepted_candidate_merged",
+            format!("deep-flip-accept:{task_id}:{report_id}"),
+        )
+        .with_evidence(report_id.clone())
+        .with_evidence(receipt.receipt_id.clone());
+        if let Err(error) = apply_transition(task, request) {
+            infrastructure_error = Some(format!("acceptance CAS refused: {error}"));
+            return false;
+        }
+        task.evaluation_records[index].diagnostic = None;
+        if let Some(lifecycle) = task.evaluation_lifecycle.as_mut() {
+            lifecycle.linked_flip_verdict = Some(report_id.clone());
+            lifecycle.consumed_verdict = Some(report_id.clone());
+            lifecycle.execution_state = crate::eval_lifecycle::EvaluationExecutionState::Consumed;
+            lifecycle.diagnostic = None;
+            lifecycle.outcome_provenance = Some(
+                crate::eval_lifecycle::EvaluationOutcomeProvenance {
+                    outcome: crate::eval_lifecycle::EvaluationGateOutcome::Passed,
+                    evaluator_verdict: None,
+                    flip_verdict: Some(report_id.clone()),
+                    summary: format!(
+                        "required deep-readonly FLIP passed and exact candidate merged once; report={report_id} candidate={} merge={}",
+                        snapshot.source.candidate_digest, receipt.receipt_id
+                    ),
+                },
+            );
+        }
+        task.completed_at = Some(Utc::now().to_rfc3339());
+        task.failure_reason = None;
+        task.log.push(LogEntry {
+            timestamp: Utc::now().to_rfc3339(),
+            actor: Some("deep-readonly-flip-lane".into()),
+            user: None,
+            message: format!(
+                "FLIP passed—merged exact candidate {} once with report {} and receipt {}",
+                snapshot.source.candidate_digest, report_id, receipt.receipt_id
+            ),
+        });
+        accepted = true;
+        true
+    })?;
+    if let Some(error) = infrastructure_error {
+        tracing::warn!(task = task_id, evaluation = evaluation_id, "{error}");
+    }
+    Ok(accepted)
+}
+
 pub fn run_one_pending(dir: &Path, config: &Config) -> Result<DeepLaneTick> {
     let graph_path = dir.join("graph.jsonl");
     if !graph_path.exists() {
         return Ok(DeepLaneTick::default());
     }
+    // Crash/restart after durable report linkage never invokes Pi again. It
+    // only replays the content-bound acceptance/merge transaction.
+    let _ = reconcile_required_passes(dir)?;
     let mut lane = load_lane_status(dir);
     normalize_status(&mut lane);
     if lane.active >= lane.max_concurrency
@@ -1537,6 +1739,7 @@ fn finalize_success(
     let usage = response.usage;
     let response_digest = response.response_digest;
     let mut conflict = None;
+    let mut rejection_committed = false;
     modify_graph(&dir.join("graph.jsonl"), |graph| {
         let Some(task) = graph.get_task_mut(task_id) else {
             return false;
@@ -1556,60 +1759,38 @@ fn finalize_success(
                 != Some(attempt_id)
             || task.evaluation_records[index].route_digest != snapshot.route_digest
             || task.evaluation_records[index].source != snapshot.source
+            || task.evaluation_records[index].policy != snapshot.policy
         {
-            conflict = Some("attempt-bound deep source/route changed before delivery".to_string());
+            conflict =
+                Some("attempt-bound deep source/route/policy changed before delivery".to_string());
             return false;
         }
+        let current_source = super::source_candidate_is_current(task, &snapshot.source);
+        let required_pass = snapshot.policy.applicability == EvaluationGateApplicability::Required
+            && report.outcome == BoundedVerdictOutcome::Pass
+            && report.score >= snapshot.policy.threshold.unwrap_or(1.0);
         if snapshot.policy.applicability == EvaluationGateApplicability::Required
+            && current_source
             && matches!(task.status, Status::PendingEval | Status::FailedPendingEval)
+            && !required_pass
         {
-            let all_bounded_pass = task
-                .evaluation_records
-                .iter()
-                .filter(|record| {
-                    record.product == EvaluationProduct::Bounded
-                        && record.policy.applicability == EvaluationGateApplicability::Required
-                })
-                .all(|record| {
-                    record
-                        .verdict
-                        .as_ref()
-                        .zip(record.policy.threshold)
-                        .is_some_and(|(verdict, threshold)| verdict.score >= threshold)
-                });
-            let passed = report.outcome == BoundedVerdictOutcome::Pass
-                && report.score >= snapshot.policy.threshold.unwrap_or(1.0)
-                && all_bounded_pass;
-            let request = if passed {
-                TransitionRequest::new(
-                    TransitionKind::AcceptanceSatisfied {
-                        acceptance_ref: report_id.clone(),
-                    },
-                    LifecycleActor {
-                        kind: ActorKind::AcceptanceController,
-                        id: "deep-readonly-flip-lane".into(),
-                    },
-                    "deep_flip_accepted",
-                    format!("deep-flip-accept:{task_id}:{report_id}"),
-                )
-            } else {
-                TransitionRequest::new(
-                    TransitionKind::AcceptanceRejected {
-                        evidence_ref: report_id.clone(),
-                    },
-                    LifecycleActor {
-                        kind: ActorKind::AcceptanceController,
-                        id: "deep-readonly-flip-lane".into(),
-                    },
-                    "deep_flip_rejected",
-                    format!("deep-flip-reject:{task_id}:{report_id}"),
-                )
-            }
+            let request = TransitionRequest::new(
+                TransitionKind::AcceptanceRejected {
+                    evidence_ref: report_id.clone(),
+                },
+                LifecycleActor {
+                    kind: ActorKind::AcceptanceController,
+                    id: "deep-readonly-flip-lane".into(),
+                },
+                "deep_flip_rejected_repair_needed",
+                format!("deep-flip-reject:{task_id}:{report_id}"),
+            )
             .with_evidence(report_id.clone());
             if let Err(error) = apply_transition(task, request) {
-                conflict = Some(format!("deep acceptance transition refused: {error}"));
+                conflict = Some(format!("deep rejection transition refused: {error}"));
                 return false;
             }
+            rejection_committed = true;
         }
         let record = &mut task.evaluation_records[index];
         let attempt = record
@@ -1634,11 +1815,69 @@ fn finalize_success(
         record.consumed_verdict_id = Some(report_id.clone());
         record.state = EvaluationState::Consumed;
         record.diagnostic = None;
+        if snapshot.policy.applicability == EvaluationGateApplicability::Required
+            && current_source
+            && !required_pass
+        {
+            let diagnostic = format!(
+                "FLIP rejected—repair needed; report={report_id} candidate={}. Inspect: `wg show {task_id}`; retry FLIP only: `wg evaluate run {task_id} --flip`; repair candidate: `wg candidate repair {}`; audited waiver: `wg candidate waive {} --report {report_id} --reason '<operator-reason>'`.",
+                snapshot.source.candidate_digest,
+                snapshot.source.candidate_digest,
+                snapshot.source.candidate_digest
+            );
+            record.diagnostic = Some(diagnostic.clone());
+            task.failure_reason = Some(diagnostic.clone());
+            if let Some(lifecycle) = task.evaluation_lifecycle.as_mut() {
+                lifecycle.linked_flip_verdict = Some(report_id.clone());
+                lifecycle.consumed_verdict = Some(report_id.clone());
+                lifecycle.execution_state =
+                    crate::eval_lifecycle::EvaluationExecutionState::Consumed;
+                lifecycle.diagnostic = None;
+                lifecycle.outcome_provenance =
+                    Some(crate::eval_lifecycle::EvaluationOutcomeProvenance {
+                        outcome: crate::eval_lifecycle::EvaluationGateOutcome::Rejected,
+                        evaluator_verdict: None,
+                        flip_verdict: Some(report_id.clone()),
+                        summary: diagnostic,
+                    });
+            }
+        } else if snapshot.policy.applicability == EvaluationGateApplicability::Required
+            && !current_source
+        {
+            record.diagnostic = Some(format!(
+                "Stale required FLIP report retained as immutable evidence only; report={report_id} candidate={}",
+                snapshot.source.candidate_digest
+            ));
+        }
         task.log.push(LogEntry { timestamp: now.clone(), actor: Some("deep-readonly-flip-lane".into()), user: None, message: format!("Consumed deep-readonly FLIP report {report_id}; observations={} findings={} route={} usage={}in/{}out", report.observations.len(), report.findings.len(), snapshot.route_digest, usage.input_tokens, usage.output_tokens) });
         true
     })?;
     if let Some(error) = conflict {
         bail!("error[WG-DEEP-DELIVERY-CAS]: {error}");
+    }
+    if rejection_committed {
+        let result = (|| -> Result<()> {
+            let store = FinalizationStore::open(dir)?;
+            crate::finalization::retain_rejected_candidate(
+                &store,
+                &snapshot.source.candidate_digest,
+                &report_id,
+            )?;
+            Ok(())
+        })();
+        if let Err(error) = result {
+            tracing::warn!(
+                task = task_id,
+                evaluation = evaluation_id,
+                "failed to project semantic rejection onto retained finalization transaction: {error:#}"
+            );
+        }
+    }
+    if snapshot.policy.applicability == EvaluationGateApplicability::Required
+        && report.outcome == BoundedVerdictOutcome::Pass
+        && report.score >= snapshot.policy.threshold.unwrap_or(1.0)
+    {
+        let _ = consume_required_pass(dir, task_id, evaluation_id)?;
     }
     Ok((EvaluationState::Consumed, None, true))
 }
@@ -1690,7 +1929,7 @@ fn finalize_failure(
             actor: Some("deep-readonly-flip-lane".into()),
             user: None,
             message: format!(
-                "Deep FLIP failed closed without source/config/graph mutation: {diagnostic}"
+                "Deep FLIP infrastructure failed closed without source/config/repository mutation: {diagnostic}"
             ),
         });
         true

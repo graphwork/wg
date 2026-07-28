@@ -26,11 +26,11 @@ fn print_rollout_status(
         println!("  mode: {}", status.mode);
         println!("  auto_evaluate: {}", status.auto_evaluate);
         println!(
-            "  eval_gate_all: {} (global hard gate forbidden)",
+            "  eval_gate_all: {} (irrelevant to required FLIP)",
             status.eval_gate_all
         );
         println!(
-            "  global FLIP: {} (explicit deep-readonly only)",
+            "  global deep-readonly FLIP selection: {}",
             status.global_flip_enabled
         );
         println!("  canary/observation evidence: {}", status.evidence.len());
@@ -167,12 +167,13 @@ pub fn run_deep_readonly(
     if let Some(stage) = worksgood::evaluation::rollout::managed_stage(dir)?
         && !matches!(
             stage,
-            worksgood::config::EvaluationRolloutStage::BoundedCanaryPassed
+            worksgood::config::EvaluationRolloutStage::DeepReadonlyCanaryPassed
+                | worksgood::config::EvaluationRolloutStage::FlipRequired
                 | worksgood::config::EvaluationRolloutStage::Advisory
         )
     {
         bail!(
-            "managed deep-readonly FLIP requires bounded-canary-passed first (or later advisory selective policy), found {stage}"
+            "managed deep-readonly FLIP requires Fake-Pi plus deep-readonly canary evidence; bounded evaluation is not a prerequisite (found {stage})"
         );
     }
     let graph = load_graph(&super::graph_path(dir))?;

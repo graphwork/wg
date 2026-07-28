@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 
 use serial_test::serial;
 use tempfile::TempDir;
-use worksgood::config::{Config, ReasoningLevel};
-use worksgood::eval_lifecycle::{AgencyStage, EvaluationGateApplicability};
+use worksgood::config::{Config, EvaluationRolloutStage, ReasoningLevel};
+use worksgood::eval_lifecycle::{AgencyStage, EvaluationGateApplicability, FlipVerdictPolicy};
 use worksgood::evaluation::bounded;
 use worksgood::evaluation::deep::{
     DeepCapabilities, DeepFindingCategory, enforce_observation_only_tool_name,
@@ -13,7 +13,7 @@ use worksgood::evaluation::deep::{
 };
 use worksgood::evaluation::{
     EvaluationPolicySnapshot, EvaluationProduct, EvaluationRecord, EvaluationRouteCall,
-    EvaluationRouteSnapshot, EvaluationState, SourceCandidateRef,
+    EvaluationRouteSnapshot, EvaluationState, LazyEvaluationSelection, SourceCandidateRef,
 };
 use worksgood::finalization::{CandidateBinding, CandidateDescriptor};
 use worksgood::graph::{LogEntry, Node, Status, Task, WorkGraph};
@@ -128,6 +128,7 @@ fn record(
         evidence_manifest_id: None,
         verdict: None,
         deep_report: None,
+        prior_deep_reports: Vec::new(),
         consumed_verdict_id: None,
         created_by_event: "event-candidate".into(),
         created_at: "2026-07-28T00:00:00Z".into(),
@@ -268,6 +269,84 @@ fn config() -> Config {
     config
 }
 
+fn flip_required_config() -> Config {
+    let mut config = Config::default();
+    config.evaluation.managed_rollout = true;
+    config.evaluation.rollout_stage = EvaluationRolloutStage::FlipRequired;
+    config.agency.auto_evaluate = false;
+    config.agency.eval_gate_all = false;
+    config.agency.flip_enabled = true;
+    config.agency.flip_verification_threshold = Some(0.8);
+    config
+}
+
+#[test]
+fn deep_only_managed_policy_is_a_required_gate_without_bounded_selection() {
+    let task = Task {
+        id: "ordinary-coding-task".into(),
+        title: "Implement ordinary source change".into(),
+        status: Status::InProgress,
+        ..Task::default()
+    };
+    let selection = LazyEvaluationSelection::resolve(&task, &flip_required_config()).unwrap();
+    assert!(
+        selection.bounded.is_none(),
+        "bounded grading is independently disabled"
+    );
+    let gate = selection
+        .gate_policy()
+        .expect("deep-only selection must construct a completion gate");
+    assert_eq!(gate.applicability, EvaluationGateApplicability::Required);
+    assert_eq!(gate.evaluator_threshold, None);
+    assert_eq!(gate.flip_policy, FlipVerdictPolicy::Required);
+    assert_eq!(gate.flip_threshold, Some(0.8));
+}
+
+#[test]
+fn flip_required_excludes_system_shell_draft_and_message_only_work() {
+    let config = flip_required_config();
+    for mut task in [
+        Task {
+            id: ".evaluate-source".into(),
+            title: "system".into(),
+            ..Task::default()
+        },
+        Task {
+            id: "shell".into(),
+            title: "shell".into(),
+            exec: Some("true".into()),
+            ..Task::default()
+        },
+        Task {
+            id: "draft".into(),
+            title: "draft".into(),
+            paused: true,
+            ..Task::default()
+        },
+        Task {
+            id: "message".into(),
+            title: "message".into(),
+            tags: vec!["message-only".into()],
+            ..Task::default()
+        },
+        Task {
+            id: "reconcile".into(),
+            title: "reconcile".into(),
+            tags: vec!["reconciliation-only".into()],
+            ..Task::default()
+        },
+    ] {
+        task.status = Status::InProgress;
+        assert!(
+            LazyEvaluationSelection::resolve(&task, &config)
+                .unwrap()
+                .is_empty(),
+            "excluded task {} selected FLIP",
+            task.id
+        );
+    }
+}
+
 #[test]
 #[serial]
 fn deep_flip_finds_cross_component_omission_bounded_summary_misses() {
@@ -352,6 +431,79 @@ fn deep_flip_finds_cross_component_omission_bounded_summary_misses() {
 
 #[test]
 #[serial]
+fn required_deep_reject_retains_successful_source_and_candidate_for_repair() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().join("home");
+    fs::create_dir_all(&home).unwrap();
+    let _env = test_env(&home);
+    let project = tmp.path().join("project");
+    let dir = setup_candidate(&project, "deep-find");
+    let main_before = git(&project, &["rev-parse", "refs/heads/main"]);
+    worksgood::parser::modify_graph(&dir.join("graph.jsonl"), |graph| {
+        let task = graph.get_task_mut("source").unwrap();
+        task.status = Status::PendingEval;
+        task.lifecycle.generation = 1;
+        task.lifecycle.fence = 1;
+        task.lifecycle.current_attempt = Some(worksgood::lifecycle::AttemptRef {
+            id: "attempt-1-1".into(),
+            generation: 1,
+            fence: 1,
+            actor_id: "agent-source".into(),
+            disposition: Some(worksgood::lifecycle::AttemptDisposition::Succeeded),
+        });
+        task.evaluation_records
+            .retain(|record| record.product == EvaluationProduct::DeepReadonlyFlip);
+        let record = &mut task.evaluation_records[0];
+        record.policy.applicability = EvaluationGateApplicability::Required;
+        record.policy.threshold = Some(0.8);
+        true
+    })
+    .unwrap();
+
+    assert!(run_one_pending(&dir, &config()).unwrap().ran);
+    let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+    let task = graph.get_task("source").unwrap();
+    let record = &task.evaluation_records[0];
+    assert_eq!(
+        task.status,
+        Status::PendingEval,
+        "rejection stays AwaitingAcceptance"
+    );
+    assert_eq!(task.retry_count, 0, "FLIP must not retry the source worker");
+    assert_eq!(record.state, EvaluationState::Consumed);
+    assert_eq!(
+        record.deep_report.as_ref().unwrap().outcome,
+        worksgood::evaluation::BoundedVerdictOutcome::Fail
+    );
+    assert!(
+        record
+            .diagnostic
+            .as_deref()
+            .unwrap()
+            .contains("FLIP rejected—repair needed")
+    );
+    assert_eq!(
+        git(&project, &["rev-parse", "refs/heads/main"]),
+        main_before
+    );
+
+    assert!(
+        rearm_explicit_retry(&dir, &record.evaluation_id).unwrap(),
+        "the displayed FLIP-only retry command must actually rearm a semantic reject"
+    );
+    let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+    let task = graph.get_task("source").unwrap();
+    let record = &task.evaluation_records[0];
+    assert_eq!(record.state, EvaluationState::PreparingBundle);
+    assert!(record.deep_report.is_none());
+    assert!(record.consumed_verdict_id.is_none());
+    assert_eq!(record.prior_deep_reports.len(), 1);
+    assert_eq!(task.status, Status::PendingEval);
+    assert_eq!(task.retry_count, 0);
+}
+
+#[test]
+#[serial]
 fn deep_flip_budgets_and_timeout_fail_closed_deterministically() {
     for (model, timeout, expected_state, expected_code) in [
         (
@@ -365,6 +517,18 @@ fn deep_flip_budgets_and_timeout_fail_closed_deterministically() {
             1,
             EvaluationState::TimedOut,
             "WG-DEEP-PI-TIMEOUT",
+        ),
+        (
+            "deep-route-drift",
+            5,
+            EvaluationState::RouteDrift,
+            "WG-DEEP-PI-ROUTE-DRIFT",
+        ),
+        (
+            "deep-crash",
+            5,
+            EvaluationState::ProcessFailed,
+            "WG-DEEP-PI-PROCESS",
         ),
     ] {
         let tmp = TempDir::new().unwrap();

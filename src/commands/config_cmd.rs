@@ -286,7 +286,15 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
         if let Some(threshold) = config.agency.flip_verification_threshold {
             println!("  flip_verification_threshold = {}", threshold);
         }
-        if let Some(eval_threshold) = config.agency.eval_gate_threshold {
+        if config.evaluation.managed_rollout
+            && config.evaluation.rollout_stage
+                == worksgood::config::EvaluationRolloutStage::FlipRequired
+        {
+            println!(
+                "  effective_gate = required deep-readonly FLIP for qualifying candidates ; evaluator_threshold = n/a (bounded absent) ; flip_policy = required-primary-pre-merge ; flip_threshold = {}",
+                config.agency.flip_verification_threshold.unwrap_or(0.8)
+            );
+        } else if let Some(eval_threshold) = config.agency.eval_gate_threshold {
             println!(
                 "  effective_gate = {} ; evaluator_threshold = {} ; flip_policy = required-strict-when-persisted ; flip_threshold = {}",
                 if config.agency.eval_gate_all {

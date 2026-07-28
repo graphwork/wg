@@ -185,6 +185,8 @@ struct TaskDetails {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     evaluation_records: Vec<worksgood::evaluation::EvaluationRecord>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    flip_gate: Option<worksgood::evaluation::FlipGateProjection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     evaluation_health: Option<worksgood::eval_lifecycle::EvaluationHealth>,
     #[serde(skip_serializing_if = "Option::is_none")]
     evaluation_gate: Option<worksgood::eval_lifecycle::EvaluationGateDiagnostics>,
@@ -831,6 +833,7 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         meta_eval_attempts: task.meta_eval_attempts,
         evaluations,
         evaluation_records: task.evaluation_records.clone(),
+        flip_gate: worksgood::evaluation::flip_gate_projection(task),
         evaluation_health: worksgood::eval_lifecycle::evaluation_health(&graph, id),
         evaluation_gate,
         evaluation_job_note,
@@ -1050,6 +1053,39 @@ fn print_human_readable(details: &TaskDetails) {
         }
     }
 
+    if let Some(flip) = details.flip_gate.as_ref() {
+        println!();
+        println!("Required FLIP:");
+        println!("  State: {}", flip.state.replace('-', " "));
+        println!("  Candidate: {}", flip.candidate_id);
+        println!(
+            "  Report: {}",
+            flip.report_id.as_deref().unwrap_or("pending")
+        );
+        let relative = DateTime::parse_from_rfc3339(&flip.updated_at)
+            .ok()
+            .map(|at| {
+                let seconds = Utc::now()
+                    .signed_duration_since(at.with_timezone(&Utc))
+                    .num_seconds()
+                    .max(0);
+                worksgood::format_duration(seconds, true)
+            })
+            .unwrap_or_else(|| "unknown".to_string());
+        println!("  Updated: {} ({} ago)", flip.updated_at, relative);
+        if !flip.finding_codes.is_empty() {
+            println!("  Finding codes: {}", flip.finding_codes.join(", "));
+        }
+        if flip.state == "flip-rejected-repair-needed"
+            || flip.state == "flip-infrastructure-unavailable"
+        {
+            println!("  Inspect: {}", flip.inspect_command);
+            println!("  Retry FLIP only: {}", flip.retry_flip_command);
+            println!("  Repair candidate: {}", flip.repair_command);
+            println!("  Audited waiver: {}", flip.waiver_command);
+        }
+    }
+
     if !details.evaluation_records.is_empty() {
         println!();
         println!("Evaluation Evidence (hidden from graph/list):");
@@ -1156,6 +1192,12 @@ fn print_human_readable(details: &TaskDetails) {
                     }
                 }
                 println!("    capability manifest: {}", report.capability_manifest_id);
+            }
+            for prior in &record.prior_deep_reports {
+                println!(
+                    "    prior deep report (immutable evidence only): {} {:?} score={:.2}",
+                    prior.report_id, prior.outcome, prior.score
+                );
             }
             if let Some(diagnostic) = record.diagnostic.as_ref() {
                 println!("    diagnostic: {}", diagnostic);
@@ -2189,6 +2231,7 @@ mod tests {
             meta_eval_attempts: 0,
             evaluations: vec![],
             evaluation_records: vec![],
+            flip_gate: None,
             evaluation_health: None,
             evaluation_gate: None,
             evaluation_job_note: None,

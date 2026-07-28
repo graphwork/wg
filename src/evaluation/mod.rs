@@ -207,6 +207,11 @@ pub struct EvaluationRecord {
     /// system-level investigation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deep_report: Option<deep::DeepFlipReport>,
+    /// Reports superseded only by an explicit same-candidate FLIP retry. Each
+    /// remains immutable, inspectable evidence; it is never averaged with or
+    /// allowed to satisfy a later acceptance decision.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prior_deep_reports: Vec<deep::DeepFlipReport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub consumed_verdict_id: Option<String>,
     pub created_by_event: String,
@@ -228,9 +233,26 @@ impl LazyEvaluationSelection {
     /// only bounded work. Deep FLIP requires its separate explicit switch or
     /// an explicit per-task high-risk/deep tag.
     pub fn resolve(task: &Task, config: &Config) -> Result<Self> {
+        const EXCLUDED_TAGS: [&str; 10] = [
+            "system",
+            "meta",
+            "evaluation",
+            "message-only",
+            "reconciliation-only",
+            "draft",
+            "unpublished",
+            "cancelled",
+            "skipped",
+            "preparation-failed",
+        ];
         if is_system_task(&task.id)
             || task.exec.is_some()
             || task.exec_mode.as_deref() == Some("shell")
+            || task.paused
+            || task
+                .tags
+                .iter()
+                .any(|tag| EXCLUDED_TAGS.contains(&tag.as_str()))
         {
             return Ok(Self {
                 bounded: None,
@@ -238,34 +260,35 @@ impl LazyEvaluationSelection {
             });
         }
 
-        // The controlled rollout is permanently advisory in this release.
-        // A historical/inherited threshold remains serializable but is inert;
-        // only a later, separately designed selective-hard-gate rollout may
-        // remove this guard.
-        let hard_gate = !config.evaluation.managed_rollout
+        // Bounded selection and deep selection are intentionally independent.
+        // The managed FLIP-required stage never enables bounded auto-evaluation
+        // and never consults eval_gate_all.
+        let bounded_required = !config.evaluation.managed_rollout
             && config.agency.auto_evaluate
             && config.agency.eval_gate_threshold.is_some()
             && (config.agency.eval_gate_all || has_declared_deliverables(task));
-        let applicability = if hard_gate {
-            EvaluationGateApplicability::Required
-        } else {
-            EvaluationGateApplicability::Advisory
-        };
         let bounded = config.agency.auto_evaluate.then(|| {
             policy_snapshot(
                 EvaluationProduct::Bounded,
-                applicability,
-                hard_gate
+                if bounded_required {
+                    EvaluationGateApplicability::Required
+                } else {
+                    EvaluationGateApplicability::Advisory
+                },
+                bounded_required
                     .then_some(config.agency.eval_gate_threshold)
                     .flatten(),
-                if hard_gate {
+                if bounded_required {
                     "bounded:explicit-hard-gate"
                 } else {
-                    "bounded:default-advisory"
+                    "bounded:optional-secondary"
                 },
             )
         });
 
+        let managed_flip_required = config.evaluation.managed_rollout
+            && config.evaluation.rollout_stage
+                == crate::config::EvaluationRolloutStage::FlipRequired;
         let explicit_deep = config.agency.flip_enabled
             || task.tags.iter().any(|tag| {
                 matches!(
@@ -274,15 +297,14 @@ impl LazyEvaluationSelection {
                 )
             });
         let deep_readonly_flip = explicit_deep.then(|| {
-            let required = hard_gate;
-            let threshold = if required {
+            let required = managed_flip_required || bounded_required;
+            let threshold = required.then(|| {
                 config
                     .agency
                     .flip_verification_threshold
                     .or(config.agency.eval_gate_threshold)
-            } else {
-                None
-            };
+                    .unwrap_or(0.8)
+            });
             policy_snapshot(
                 EvaluationProduct::DeepReadonlyFlip,
                 if required {
@@ -291,7 +313,9 @@ impl LazyEvaluationSelection {
                     EvaluationGateApplicability::Advisory
                 },
                 threshold,
-                if config.agency.flip_enabled {
+                if managed_flip_required {
+                    "deep:managed-flip-required"
+                } else if config.agency.flip_enabled {
                     "deep:explicit-policy"
                 } else {
                     "deep:high-risk-task-policy"
@@ -306,11 +330,25 @@ impl LazyEvaluationSelection {
     }
 
     pub fn gate_policy(&self) -> Option<EvaluationGatePolicy> {
-        let bounded = self.bounded.as_ref()?;
+        let bounded = self.bounded.as_ref();
         let deep = self.deep_readonly_flip.as_ref();
+        if bounded.is_none() && deep.is_none() {
+            return None;
+        }
+        let required = bounded
+            .is_some_and(|policy| policy.applicability == EvaluationGateApplicability::Required)
+            || deep.is_some_and(|policy| {
+                policy.applicability == EvaluationGateApplicability::Required
+            });
         Some(EvaluationGatePolicy {
-            applicability: bounded.applicability,
-            evaluator_threshold: bounded.threshold,
+            applicability: if required {
+                EvaluationGateApplicability::Required
+            } else {
+                EvaluationGateApplicability::Advisory
+            },
+            // None is authoritative for a deep-only gate: bounded evaluation
+            // is absent, not silently assigned a default threshold.
+            evaluator_threshold: bounded.and_then(|policy| policy.threshold),
             flip_policy: match deep {
                 None => FlipVerdictPolicy::NotScheduled,
                 Some(policy) if policy.applicability == EvaluationGateApplicability::Required => {
@@ -326,6 +364,94 @@ impl LazyEvaluationSelection {
     pub fn is_empty(&self) -> bool {
         self.bounded.is_none() && self.deep_readonly_flip.is_none()
     }
+}
+
+/// Stable, bounded operator projection for the required FLIP gate. It exposes
+/// only content IDs and closed finding codes—never prompts, raw model text,
+/// secrets, or chain-of-thought.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FlipGateProjection {
+    pub state: String,
+    pub candidate_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub report_id: Option<String>,
+    pub updated_at: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub finding_codes: Vec<String>,
+    pub inspect_command: String,
+    pub retry_flip_command: String,
+    pub repair_command: String,
+    pub waiver_command: String,
+}
+
+pub fn flip_gate_projection(task: &Task) -> Option<FlipGateProjection> {
+    let record = task
+        .evaluation_records
+        .iter()
+        .filter(|record| {
+            record.product == EvaluationProduct::DeepReadonlyFlip
+                && record.policy.applicability == EvaluationGateApplicability::Required
+                && source_candidate_is_current(task, &record.source)
+        })
+        .max_by_key(|record| (record.source.generation, record.source.finalization_round))?;
+    let report = record.deep_report.as_ref();
+    let semantic_pass = report.is_some_and(|report| {
+        report.outcome == BoundedVerdictOutcome::Pass
+            && report.score >= record.policy.threshold.unwrap_or(1.0)
+    });
+    let state = match record.state {
+        EvaluationState::PreparingBundle | EvaluationState::Queued => "flip-queued",
+        EvaluationState::Running => "flip-running",
+        EvaluationState::Consumed if semantic_pass && task.status == Status::Done => {
+            "flip-passed-merged"
+        }
+        EvaluationState::Consumed if semantic_pass => "flip-passed-merging",
+        EvaluationState::Consumed => "flip-rejected-repair-needed",
+        EvaluationState::Unavailable
+        | EvaluationState::TimedOut
+        | EvaluationState::Malformed
+        | EvaluationState::RouteDrift
+        | EvaluationState::ProcessFailed => "flip-infrastructure-unavailable",
+        _ => "waiting-on-required-flip",
+    };
+    let updated_at = record
+        .attempts
+        .last()
+        .and_then(|attempt| {
+            attempt
+                .completed_at
+                .clone()
+                .or_else(|| Some(attempt.started_at.clone()))
+        })
+        .unwrap_or_else(|| record.created_at.clone());
+    let mut finding_codes = report
+        .map(|report| {
+            report
+                .findings
+                .iter()
+                .map(|finding| finding.finding_code.clone())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    finding_codes.sort();
+    finding_codes.dedup();
+    Some(FlipGateProjection {
+        state: state.into(),
+        candidate_id: record.source.candidate_digest.clone(),
+        report_id: report.map(|report| report.report_id.clone()),
+        updated_at,
+        finding_codes,
+        inspect_command: format!("wg show {}", task.id),
+        retry_flip_command: format!("wg evaluate run {} --flip", task.id),
+        repair_command: format!("wg candidate repair {}", record.source.candidate_digest),
+        waiver_command: format!(
+            "wg candidate waive {} --report {} --reason '<operator-reason>'",
+            record.source.candidate_digest,
+            report
+                .map(|report| report.report_id.as_str())
+                .unwrap_or("<report-id>")
+        ),
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -411,6 +537,7 @@ pub fn request_manual_bounded(dir: &Path, task_id: &str, config: &Config) -> Res
         evidence_manifest_id: None,
         verdict: None,
         deep_report: None,
+        prior_deep_reports: Vec::new(),
         consumed_verdict_id: None,
         created_by_event,
         created_at: Utc::now().to_rfc3339(),
@@ -519,6 +646,7 @@ pub fn request_manual_deep(dir: &Path, task_id: &str, config: &Config) -> Result
         evidence_manifest_id: None,
         verdict: None,
         deep_report: None,
+        prior_deep_reports: Vec::new(),
         consumed_verdict_id: None,
         created_by_event,
         created_at: Utc::now().to_rfc3339(),
@@ -608,6 +736,28 @@ pub fn has_authenticated_running_attempt(task: &Task) -> bool {
         })
 }
 
+/// True only while this immutable candidate still names the authoritative,
+/// successfully completed source generation/attempt/fence. Evaluation reports
+/// for older tuples remain evidence, but may never reject, waive, or merge the
+/// current source.
+pub fn source_candidate_is_current(task: &Task, source: &SourceCandidateRef) -> bool {
+    use crate::lifecycle::AttemptDisposition;
+
+    task.id == source.task_id
+        && task.lifecycle.generation == source.generation
+        && task.lifecycle.fence == source.source_fence
+        && task
+            .lifecycle
+            .current_attempt
+            .as_ref()
+            .is_some_and(|attempt| {
+                attempt.id == source.source_attempt_id
+                    && attempt.generation == source.generation
+                    && attempt.fence == source.source_fence
+                    && attempt.disposition == Some(AttemptDisposition::Succeeded)
+            })
+}
+
 /// Mint the selected records exactly once for an authenticated running source
 /// candidate. Callers perform this while holding the graph lock, in the same
 /// commit as `CandidateCheckpointed` and the completion disposition.
@@ -693,6 +843,7 @@ pub fn mint_for_candidate(
             evidence_manifest_id: None,
             verdict: None,
             deep_report: None,
+            prior_deep_reports: Vec::new(),
             consumed_verdict_id: None,
             created_by_event: created_event.clone(),
             created_at: Utc::now().to_rfc3339(),

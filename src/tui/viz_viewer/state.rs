@@ -14181,6 +14181,33 @@ impl VizApp {
         // Records never enter task_order or graph topology; the selected-task
         // Detail action is the intentional reveal surface.
         let mut rendered_eval = !task.evaluation_records.is_empty();
+        if let Some(flip) = worksgood::evaluation::flip_gate_projection(&task) {
+            lines.push("── Required FLIP Acceptance ──".to_string());
+            lines.push(format!("  State: {}", flip.state.replace('-', " ")));
+            lines.push(format!("  Candidate: {}", flip.candidate_id));
+            lines.push(format!(
+                "  Report: {} · updated {} ({})",
+                flip.report_id.as_deref().unwrap_or("pending"),
+                flip.updated_at,
+                format_relative_time(&flip.updated_at, &chrono::Utc::now())
+            ));
+            if !flip.finding_codes.is_empty() {
+                lines.push(format!(
+                    "  Finding codes: {}",
+                    flip.finding_codes.join(", ")
+                ));
+            }
+            if matches!(
+                flip.state.as_str(),
+                "flip-rejected-repair-needed" | "flip-infrastructure-unavailable"
+            ) {
+                lines.push(format!("  Inspect: {}", flip.inspect_command));
+                lines.push(format!("  Retry FLIP only: {}", flip.retry_flip_command));
+                lines.push(format!("  Repair: {}", flip.repair_command));
+                lines.push(format!("  Audited waiver: {}", flip.waiver_command));
+            }
+            lines.push(String::new());
+        }
         if rendered_eval {
             lines.push("── Evaluation Evidence (hidden) ──".to_string());
             for record in &task.evaluation_records {
