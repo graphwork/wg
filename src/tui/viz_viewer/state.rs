@@ -14246,6 +14246,47 @@ impl VizApp {
                     ));
                     lines.push(format!("  Summary: {}", verdict.summary));
                 }
+                if let Some(report) = record.deep_report.as_ref() {
+                    lines.push(format!(
+                        "  Deep report: {:?} · {:.2} · {} · consumed {}",
+                        report.outcome,
+                        report.score,
+                        report.report_id,
+                        record.consumed_verdict_id.as_deref() == Some(report.report_id.as_str())
+                    ));
+                    lines.push(format!("  Summary code: {}", report.summary_code));
+                    lines.push(format!(
+                        "  Probes: latent {} · counterfactual {}",
+                        report.latent_intent_probe_code,
+                        report.counterfactual_probe_codes.join(", ")
+                    ));
+                    lines.push(format!(
+                        "  Observed: {} kinds · {} tool calls",
+                        report.observed_evidence_kinds.len(),
+                        report.observations.len()
+                    ));
+                    for finding in &report.findings {
+                        lines.push(format!(
+                            "  Finding: {:?}/{:.0}% · {}",
+                            finding.severity,
+                            finding.confidence * 100.0,
+                            finding.finding_code
+                        ));
+                        for reference in &finding.evidence {
+                            lines.push(format!(
+                                "    ↳ {} @ {}",
+                                reference.evidence_id, reference.locator
+                            ));
+                        }
+                        if let Some(counterfactual) = finding.counterfactual_code.as_deref() {
+                            lines.push(format!("    Counterfactual: {}", counterfactual));
+                        }
+                    }
+                    lines.push(format!(
+                        "  Capability manifest: {}",
+                        report.capability_manifest_id
+                    ));
+                }
                 if let Some(diagnostic) = record.diagnostic.as_ref() {
                     lines.push(format!("  Diagnostic: {}", diagnostic));
                 }

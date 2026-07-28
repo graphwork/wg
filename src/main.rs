@@ -2623,7 +2623,7 @@ fn main() -> Result<()> {
                 flip,
             } => {
                 if flip {
-                    commands::evaluate::run_flip(
+                    commands::evaluate::run_deep_readonly(
                         &workgraph_dir,
                         &task,
                         evaluator_model.as_deref(),

@@ -1118,6 +1118,45 @@ fn print_human_readable(details: &TaskDetails) {
                 );
                 println!("    summary: {}", verdict.summary);
             }
+            if let Some(report) = record.deep_report.as_ref() {
+                println!(
+                    "    deep report: {} {:?} score={:.2} consumed={}",
+                    report.report_id,
+                    report.outcome,
+                    report.score,
+                    record.consumed_verdict_id.as_deref() == Some(report.report_id.as_str())
+                );
+                println!(
+                    "    probes: latent={} counterfactuals={}",
+                    report.latent_intent_probe_code,
+                    report.counterfactual_probe_codes.join(",")
+                );
+                println!(
+                    "    observed evidence/tools: {} kinds / {} calls — {}",
+                    report.observed_evidence_kinds.len(),
+                    report.observations.len(),
+                    report.observed_evidence_kinds.join(", ")
+                );
+                for finding in &report.findings {
+                    let references = finding
+                        .evidence
+                        .iter()
+                        .map(|reference| format!("{}@{}", reference.evidence_id, reference.locator))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    println!(
+                        "    finding: {:?}/{:.0}% {} — {}",
+                        finding.severity,
+                        finding.confidence * 100.0,
+                        finding.finding_code,
+                        references
+                    );
+                    if let Some(counterfactual) = finding.counterfactual_code.as_deref() {
+                        println!("      counterfactual: {}", counterfactual);
+                    }
+                }
+                println!("    capability manifest: {}", report.capability_manifest_id);
+            }
             if let Some(diagnostic) = record.diagnostic.as_ref() {
                 println!("    diagnostic: {}", diagnostic);
             }

@@ -4983,6 +4983,23 @@ pub fn coordinator_tick(
             "[evaluation-lane] internal lane error (source lifecycle unchanged): {error:#}"
         ),
     }
+    // Deep FLIP is an independently selected observation lane. A default
+    // bounded record can never reach this selector; only an explicit manual
+    // request or completion-time high-risk policy creates its product.
+    match worksgood::evaluation::deep::run_one_pending(dir, &config) {
+        Ok(tick) if tick.ran => eprintln!(
+            "[deep-flip-lane] {} -> {:?}",
+            tick.evaluation_id.as_deref().unwrap_or("unknown"),
+            tick.state
+        ),
+        Ok(tick) if tick.deferred => {
+            eprintln!("[deep-flip-lane] observation capacity/rate deferred")
+        }
+        Ok(_) => {}
+        Err(error) => eprintln!(
+            "[deep-flip-lane] internal lane error (source/config/graph unchanged): {error:#}"
+        ),
+    }
 
     // Retained source and periodic disk scans are deliberately NOT performed
     // here. Both may traverse slow/network worktrees, so the daemon's

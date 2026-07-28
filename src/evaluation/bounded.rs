@@ -684,8 +684,19 @@ fn finalize_success(
         if applicability == EvaluationGateApplicability::Required
             && matches!(task.status, Status::PendingEval | Status::FailedPendingEval)
         {
-            let request = if passed {
-                TransitionRequest::new(
+            let required_deep_pending = task.evaluation_records.iter().any(|record| {
+                record.product == EvaluationProduct::DeepReadonlyFlip
+                    && record.policy.applicability == EvaluationGateApplicability::Required
+                    && record.consumed_verdict_id.is_none()
+            });
+            // A passing bounded summary is necessary but not sufficient when a
+            // separately selected high-risk deep FLIP is still observing the
+            // system. A bounded failure may reject immediately; a pass waits
+            // for the deep lane to combine both pieces of evidence.
+            let request = if passed && required_deep_pending {
+                None
+            } else if passed {
+                Some(TransitionRequest::new(
                     TransitionKind::AcceptanceSatisfied {
                         acceptance_ref: verdict_id.clone(),
                     },
@@ -695,9 +706,9 @@ fn finalize_success(
                     },
                     "bounded_evaluation_accepted",
                     format!("bounded-eval-accept:{task_id}:{verdict_id}"),
-                )
+                ))
             } else {
-                TransitionRequest::new(
+                Some(TransitionRequest::new(
                     TransitionKind::AcceptanceRejected {
                         evidence_ref: verdict_id.clone(),
                     },
@@ -707,10 +718,11 @@ fn finalize_success(
                     },
                     "bounded_evaluation_rejected",
                     format!("bounded-eval-reject:{task_id}:{verdict_id}"),
-                )
-            }
-            .with_evidence(verdict_id.clone());
-            if let Err(error) = apply_transition(task, request) {
+                ))
+            };
+            if let Some(request) = request.map(|request| request.with_evidence(verdict_id.clone()))
+                && let Err(error) = apply_transition(task, request)
+            {
                 conflict = Some(format!(
                     "acceptance transition refused before verdict consumption: {error}"
                 ));

@@ -4146,6 +4146,7 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
     // Load coordinator state (persisted by daemon, reflects effective config + runtime)
     let coord = CoordinatorState::load_or_default(dir);
     let evaluation_lane = worksgood::evaluation::bounded::load_lane_status(dir);
+    let deep_flip_lane = worksgood::evaluation::deep::load_lane_status(dir);
     let cleanup = worktree::load_cleanup_lane_snapshot(dir);
     let worktree_observers = worksgood::worktree_observer::list_projections(dir);
     let worktree_activity_clocks = worktree_observers
@@ -4201,6 +4202,7 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
                 },
             },
             "evaluation_lane": evaluation_lane,
+            "deep_flip_lane": deep_flip_lane,
             "retained_worktree_cleanup": cleanup,
             "worktree_observers": worktree_observers,
             "worktree_activity_clocks": worktree_activity_clocks,
@@ -4327,6 +4329,28 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
                 id,
                 evaluation_lane.last_state,
                 evaluation_lane
+                    .last_diagnostic
+                    .as_deref()
+                    .map(|value| format!(" diagnostic={value}"))
+                    .unwrap_or_default()
+            );
+        }
+        println!(
+            "Deep FLIP lane: active={}/{}, rate={}/{}/min, completed={}, failed={}, deferred={}",
+            deep_flip_lane.active,
+            deep_flip_lane.max_concurrency,
+            deep_flip_lane.launches_per_minute,
+            deep_flip_lane.launch_limit_per_minute,
+            deep_flip_lane.completed,
+            deep_flip_lane.failed,
+            deep_flip_lane.resource_deferrals
+        );
+        if let Some(id) = deep_flip_lane.last_evaluation_id.as_deref() {
+            println!(
+                "  Last: {} state={:?}{}",
+                id,
+                deep_flip_lane.last_state,
+                deep_flip_lane
                     .last_diagnostic
                     .as_deref()
                     .map(|value| format!(" diagnostic={value}"))
