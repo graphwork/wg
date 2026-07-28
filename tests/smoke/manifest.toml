@@ -2793,3 +2793,10 @@ owners = [
 ]
 description = "Candidate-binary tmux Workspace Activity flow: one wide/compact activation shows bounded graph history, relative+local clock time, live tail, scroll freeze with unseen count, End resume, and secondary Dashboard/Config/raw Service log actions."
 timeout_seconds = 180
+
+[[scenario]]
+name = "dedicated_pi_bounded_evaluation_lane"
+script = "scenarios/dedicated_pi_bounded_evaluation_lane.sh"
+owners = ["implement-dedicated-pi"]
+description = "Candidate-binary real daemon + tmux/TUI credential-free Fake-Pi flow: a genuine source candidate mints one hidden bounded record, which the dedicated pre-admission lane executes with no evaluator graph task/agent/worktree/build slot, no tools/extensions/session/credential environment, exact pinned Pi route and strict structured schema; terminal show, service status and the actual TUI detail action display content-addressed evidence, route, state, verdict and Pi-reported usage/cost; repeated ticks consume the verdict exactly once."
+timeout_seconds = 180

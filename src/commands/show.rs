@@ -1078,6 +1078,46 @@ fn print_human_readable(details: &TaskDetails) {
                     .join(" → ");
                 println!("    route: {} ({}, pinned)", routes, route.adapter);
             }
+            if let Some(manifest) = record.evidence_manifest_id.as_ref() {
+                println!("    evidence manifest: {}", manifest);
+            }
+            if let Some(attempt) = record.attempts.last() {
+                println!(
+                    "    evaluator attempt: {} executor={} route={} reasoning={:?} renderer=v{} schema=v{}",
+                    attempt.attempt_id,
+                    attempt.executor,
+                    attempt.exact_route,
+                    attempt.reasoning,
+                    attempt.renderer_version,
+                    attempt.verdict_schema_version
+                );
+                if let Some(usage) = attempt.usage.as_ref() {
+                    println!(
+                        "    Pi-reported usage: in={} out={} cache-read={} cache-write={} cost=${:.6}",
+                        usage.input_tokens,
+                        usage.output_tokens,
+                        usage.cache_read_input_tokens,
+                        usage.cache_creation_input_tokens,
+                        usage.cost_usd
+                    );
+                }
+                if let Some(failure) = attempt.failure.as_ref() {
+                    println!(
+                        "    evaluator failure: {:?} {} — {}",
+                        failure.kind, failure.code, failure.message
+                    );
+                }
+            }
+            if let Some(verdict) = record.verdict.as_ref() {
+                println!(
+                    "    verdict: {} {:?} score={:.2} consumed={}",
+                    verdict.verdict_id,
+                    verdict.outcome,
+                    verdict.score,
+                    record.consumed_verdict_id.as_deref() == Some(verdict.verdict_id.as_str())
+                );
+                println!("    summary: {}", verdict.summary);
+            }
             if let Some(diagnostic) = record.diagnostic.as_ref() {
                 println!("    diagnostic: {}", diagnostic);
             }

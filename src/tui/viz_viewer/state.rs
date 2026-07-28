@@ -14208,6 +14208,44 @@ impl VizApp {
                         .join(" → ");
                     lines.push(format!("  Route: {} ({}, pinned)", exact, route.adapter));
                 }
+                if let Some(manifest) = record.evidence_manifest_id.as_ref() {
+                    lines.push(format!("  Evidence manifest: {}", manifest));
+                }
+                if let Some(attempt) = record.attempts.last() {
+                    lines.push(format!(
+                        "  Evaluator: {} · {} · reasoning {:?} · renderer v{} · schema v{}",
+                        attempt.executor,
+                        attempt.exact_route,
+                        attempt.reasoning,
+                        attempt.renderer_version,
+                        attempt.verdict_schema_version
+                    ));
+                    if let Some(usage) = attempt.usage.as_ref() {
+                        lines.push(format!(
+                            "  Pi usage: {} in · {} out · {} cache-read · ${:.6}",
+                            usage.input_tokens,
+                            usage.output_tokens,
+                            usage.cache_read_input_tokens,
+                            usage.cost_usd
+                        ));
+                    }
+                    if let Some(failure) = attempt.failure.as_ref() {
+                        lines.push(format!(
+                            "  Failure: {:?} · {} · {}",
+                            failure.kind, failure.code, failure.message
+                        ));
+                    }
+                }
+                if let Some(verdict) = record.verdict.as_ref() {
+                    lines.push(format!(
+                        "  Verdict: {:?} · {:.2} · {} · consumed {}",
+                        verdict.outcome,
+                        verdict.score,
+                        verdict.verdict_id,
+                        record.consumed_verdict_id.as_deref() == Some(verdict.verdict_id.as_str())
+                    ));
+                    lines.push(format!("  Summary: {}", verdict.summary));
+                }
                 if let Some(diagnostic) = record.diagnostic.as_ref() {
                     lines.push(format!("  Diagnostic: {}", diagnostic));
                 }

@@ -8,6 +8,9 @@
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+
+pub mod bounded;
 
 use crate::config::{Config, ReasoningLevel};
 use crate::eval_lifecycle::{
@@ -45,8 +48,88 @@ pub enum EvaluationState {
     RetryBackoff,
     TimedOut,
     Malformed,
+    RouteDrift,
+    ProcessFailed,
     Unavailable,
     Cancelled,
+}
+
+/// Versioned, executor-neutral usage reported by the selected evaluation
+/// adapter. Costs are never estimated here: Pi (or an explicitly selected
+/// native adapter) is the usage authority for its own call.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EvaluationUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_input_tokens: u64,
+    pub cache_creation_input_tokens: u64,
+    pub cost_usd: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum EvaluationFailureKind {
+    AdapterUnavailable,
+    ProcessFailure,
+    Timeout,
+    MalformedOutput,
+    RouteDrift,
+    EvidenceUnavailable,
+    ResourceDeferred,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EvaluationFailure {
+    pub kind: EvaluationFailureKind,
+    pub code: String,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stderr_excerpt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stdout_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reported_usage: Option<EvaluationUsage>,
+    pub occurred_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EvaluationAttempt {
+    pub attempt_id: String,
+    pub executor: String,
+    pub exact_route: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<ReasoningLevel>,
+    pub renderer_version: u16,
+    pub verdict_schema_version: u16,
+    pub started_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<EvaluationUsage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<EvaluationFailure>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BoundedVerdictOutcome {
+    Pass,
+    Fail,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BoundedVerdict {
+    pub schema_version: u16,
+    pub verdict_id: String,
+    pub score: f64,
+    pub outcome: BoundedVerdictOutcome,
+    pub dimensions: BTreeMap<String, f64>,
+    pub summary: String,
+    pub evidence_manifest_id: String,
+    pub route_digest: String,
+    pub received_at: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -104,8 +187,16 @@ pub struct EvaluationRecord {
     pub state: EvaluationState,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub runner_attempts: Vec<String>,
+    /// Structured attempt provenance for the dedicated lane. The string list
+    /// above remains a historical compatibility projection.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attempts: Vec<EvaluationAttempt>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub evidence_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence_manifest_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verdict: Option<BoundedVerdict>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub consumed_verdict_id: Option<String>,
     pub created_by_event: String,
@@ -323,11 +414,14 @@ pub fn mint_for_candidate(
             route_digest,
             state,
             runner_attempts: Vec::new(),
+            attempts: Vec::new(),
             evidence_ids: vec![
                 source.candidate_digest.clone(),
                 source.candidate_manifest_digest.clone(),
                 source.validation_result_id.clone(),
             ],
+            evidence_manifest_id: None,
+            verdict: None,
             consumed_verdict_id: None,
             created_by_event: created_event.clone(),
             created_at: Utc::now().to_rfc3339(),
