@@ -14,6 +14,7 @@ use std::path::Path;
 
 pub mod bounded;
 pub mod deep;
+pub mod rollout;
 
 use crate::config::{Config, ReasoningLevel};
 use crate::eval_lifecycle::{
@@ -237,7 +238,12 @@ impl LazyEvaluationSelection {
             });
         }
 
-        let hard_gate = config.agency.auto_evaluate
+        // The controlled rollout is permanently advisory in this release.
+        // A historical/inherited threshold remains serializable but is inert;
+        // only a later, separately designed selective-hard-gate rollout may
+        // remove this guard.
+        let hard_gate = !config.evaluation.managed_rollout
+            && config.agency.auto_evaluate
             && config.agency.eval_gate_threshold.is_some()
             && (config.agency.eval_gate_all || has_declared_deliverables(task));
         let applicability = if hard_gate {
@@ -326,6 +332,114 @@ impl LazyEvaluationSelection {
 pub struct MintSummary {
     pub created: usize,
     pub existing: usize,
+}
+
+/// Explicitly request one bounded advisory evaluation for the latest immutable
+/// candidate. This is the pre-enable canary surface: it never changes global
+/// policy, creates graph work, or permits a hard gate.
+pub fn request_manual_bounded(dir: &Path, task_id: &str, config: &Config) -> Result<String> {
+    let graph_path = dir.join("graph.jsonl");
+    if !graph_path.exists() {
+        bail!("WG not initialized. Run `wg init` first.");
+    }
+    let graph = crate::parser::load_graph(&graph_path)?;
+    let task = graph.get_task_or_err(task_id)?;
+    if !matches!(task.status, Status::Done | Status::Failed) {
+        bail!("bounded evaluation canary requires a terminal candidate-completed source");
+    }
+    let source = task
+        .evaluation_records
+        .iter()
+        .max_by_key(|record| (record.source.generation, record.source.finalization_round))
+        .map(|record| record.source.clone())
+        .or_else(|| source_from_candidate_event(dir, &graph, task).ok())
+        .context(
+            "bounded evaluation canary requires an immutable candidate-checkpointed source attempt",
+        )?;
+    if let Some(existing) = task
+        .evaluation_records
+        .iter()
+        .find(|record| record.product == EvaluationProduct::Bounded && record.source == source)
+    {
+        return Ok(existing.evaluation_id.clone());
+    }
+    let policy = policy_snapshot(
+        EvaluationProduct::Bounded,
+        EvaluationGateApplicability::Advisory,
+        None,
+        "bounded:explicit-pre-enable-canary",
+    );
+    let route = route_snapshot(config, task, EvaluationProduct::Bounded)?;
+    let route_digest = route.digest.clone();
+    let evaluation_id = evaluation_id(
+        EvaluationProduct::Bounded,
+        &source,
+        &policy.digest,
+        &route_digest,
+    )?;
+    let created_by_event = task
+        .lifecycle
+        .audit
+        .iter()
+        .rev()
+        .find(|event| {
+            event.event_kind == "candidate-checkpointed"
+                && event.attempt_id.as_deref() == Some(source.source_attempt_id.as_str())
+                && event
+                    .evidence_refs
+                    .iter()
+                    .any(|value| value == &source.candidate_digest)
+        })
+        .map(|event| event.event_id.clone())
+        .context("bounded canary candidate checkpoint event is missing")?;
+    let record = EvaluationRecord {
+        schema: EVALUATION_RECORD_SCHEMA,
+        evaluation_id: evaluation_id.clone(),
+        product: EvaluationProduct::Bounded,
+        source: source.clone(),
+        policy,
+        route: Some(route),
+        route_digest,
+        state: EvaluationState::PreparingBundle,
+        runner_attempts: Vec::new(),
+        attempts: Vec::new(),
+        evidence_ids: vec![
+            source.candidate_digest.clone(),
+            source.candidate_manifest_digest.clone(),
+            source.validation_result_id.clone(),
+        ],
+        evidence_manifest_id: None,
+        verdict: None,
+        deep_report: None,
+        consumed_verdict_id: None,
+        created_by_event,
+        created_at: Utc::now().to_rfc3339(),
+        diagnostic: Some(
+            "Explicit bounded advisory canary requested; awaiting dedicated lane".into(),
+        ),
+    };
+    crate::parser::modify_graph(&graph_path, |fresh| {
+        let Some(task) = fresh.get_task_mut(task_id) else {
+            return false;
+        };
+        if task.evaluation_records.iter().any(|existing| {
+            existing.product == EvaluationProduct::Bounded && existing.source == source
+        }) {
+            return false;
+        }
+        task.evaluation_records.push(record.clone());
+        task.log.push(crate::graph::LogEntry {
+            timestamp: Utc::now().to_rfc3339(),
+            actor: Some("manual-bounded-canary".into()),
+            user: None,
+            message: format!(
+                "Explicitly requested bounded advisory canary {} after immutable candidate completion",
+                evaluation_id
+            ),
+        });
+        true
+    })?;
+    Ok(evaluation_id)
 }
 
 /// Explicitly request a deep-readonly FLIP for the latest immutable candidate.

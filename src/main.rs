@@ -2621,9 +2621,18 @@ fn main() -> Result<()> {
                 evaluator_model,
                 dry_run,
                 flip,
+                bounded,
             } => {
                 if flip {
                     commands::evaluate::run_deep_readonly(
+                        &workgraph_dir,
+                        &task,
+                        evaluator_model.as_deref(),
+                        dry_run,
+                        cli.json,
+                    )
+                } else if bounded {
+                    commands::evaluate::run_bounded_canary(
                         &workgraph_dir,
                         &task,
                         evaluator_model.as_deref(),
@@ -2670,6 +2679,32 @@ fn main() -> Result<()> {
                 cli.json,
                 task_detail.as_deref(),
             ),
+            EvaluateCommands::Rollout { command } => match command {
+                EvaluationRolloutCommands::Start => {
+                    commands::evaluate::rollout_start(&workgraph_dir, cli.json)
+                }
+                EvaluationRolloutCommands::Status => {
+                    commands::evaluate::rollout_status(&workgraph_dir, cli.json)
+                }
+                EvaluationRolloutCommands::Advance { stage, evidence } => {
+                    commands::evaluate::rollout_advance(
+                        &workgraph_dir,
+                        &stage,
+                        evidence.as_deref(),
+                        cli.json,
+                    )
+                }
+                EvaluationRolloutCommands::RecordObservation { evidence } => {
+                    commands::evaluate::rollout_record_observation(
+                        &workgraph_dir,
+                        &evidence,
+                        cli.json,
+                    )
+                }
+                EvaluationRolloutCommands::Rollback { reason } => {
+                    commands::evaluate::rollout_rollback(&workgraph_dir, &reason, cli.json)
+                }
+            },
         },
         Commands::Watch {
             event_types,

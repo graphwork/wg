@@ -4594,8 +4594,11 @@ pub enum EvaluateCommands {
         #[arg(long)]
         dry_run: bool,
         /// Explicitly run deep read-only system FLIP after candidate completion
-        #[arg(long)]
+        #[arg(long, conflicts_with = "bounded")]
         flip: bool,
+        /// Explicitly run one bounded advisory canary through the dedicated lane
+        #[arg(long, conflicts_with = "flip")]
+        bounded: bool,
     },
 
     /// Record an evaluation from an external source
@@ -4617,6 +4620,12 @@ pub enum EvaluateCommands {
         dimensions: Vec<String>,
     },
 
+    /// Manage the ordered, evidence-gated Pi evaluation rollout
+    Rollout {
+        #[command(subcommand)]
+        command: EvaluationRolloutCommands,
+    },
+
     /// Show evaluation history (or both task-level and org-level scores for a specific task)
     Show {
         /// Show both task-level and org-level scores side by side for this task
@@ -4634,6 +4643,35 @@ pub enum EvaluateCommands {
         /// Show only the N most recent evaluations
         #[arg(long)]
         limit: Option<usize>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum EvaluationRolloutCommands {
+    /// Persist a disabled, advisory-only rollout baseline
+    Start,
+    /// Show the stage, safety flags, and content-addressed evidence
+    Status,
+    /// Advance exactly one stage after validating required evidence
+    Advance {
+        /// Required next stage
+        #[arg(long)]
+        stage: String,
+        /// Machine-readable canary evidence for validation stages
+        #[arg(long)]
+        evidence: Option<PathBuf>,
+    },
+    /// Record post-enable source observations and rollback thresholds
+    RecordObservation {
+        /// Machine-readable observation evidence
+        #[arg(long)]
+        evidence: PathBuf,
+    },
+    /// Disable automatic evaluation through the real operator rollback path
+    Rollback {
+        /// Audited reason or threshold that triggered rollback
+        #[arg(long)]
+        reason: String,
     },
 }
 

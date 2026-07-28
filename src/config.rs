@@ -233,6 +233,12 @@ pub struct Config {
     #[serde(default)]
     pub agency: AgencyConfig,
 
+    /// Controlled rollout state for the attempt-bound evaluation plane.
+    /// Unmanaged legacy configurations omit this table; `wg evaluate rollout
+    /// start` persists it and activates fail-closed transition validation.
+    #[serde(default, skip_serializing_if = "EvaluationConfig::is_unmanaged")]
+    pub evaluation: EvaluationConfig,
+
     /// Log configuration
     #[serde(default)]
     pub log: LogConfig,
@@ -4023,6 +4029,70 @@ fn default_auto_assign_grace_seconds() -> u64 {
     10
 }
 
+/// Persisted stage of the controlled Pi evaluation rollout. Stage order is
+/// intentionally explicit; operators advance it only through
+/// `wg evaluate rollout advance` with machine-readable evidence.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum EvaluationRolloutStage {
+    #[default]
+    Disabled,
+    FakePiValidated,
+    BoundedCanaryPassed,
+    DeepReadonlyCanaryPassed,
+    Advisory,
+}
+
+impl EvaluationRolloutStage {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::FakePiValidated => "fake-pi-validated",
+            Self::BoundedCanaryPassed => "bounded-canary-passed",
+            Self::DeepReadonlyCanaryPassed => "deep-readonly-canary-passed",
+            Self::Advisory => "advisory",
+        }
+    }
+}
+
+impl std::fmt::Display for EvaluationRolloutStage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+impl std::str::FromStr for EvaluationRolloutStage {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> anyhow::Result<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "disabled" => Ok(Self::Disabled),
+            "fake-pi-validated" => Ok(Self::FakePiValidated),
+            "bounded-canary-passed" => Ok(Self::BoundedCanaryPassed),
+            "deep-readonly-canary-passed" => Ok(Self::DeepReadonlyCanaryPassed),
+            "advisory" => Ok(Self::Advisory),
+            _ => anyhow::bail!(
+                "unknown evaluation rollout stage {value:?}; expected disabled, fake-pi-validated, bounded-canary-passed, deep-readonly-canary-passed, or advisory"
+            ),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EvaluationConfig {
+    /// Becomes true only when the staged controller owns evaluation flags.
+    #[serde(default)]
+    pub managed_rollout: bool,
+    #[serde(default)]
+    pub rollout_stage: EvaluationRolloutStage,
+}
+
+impl EvaluationConfig {
+    pub fn is_unmanaged(&self) -> bool {
+        !self.managed_rollout && self.rollout_stage == EvaluationRolloutStage::Disabled
+    }
+}
+
 /// Agency (evolutionary identity system) configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgencyConfig {
@@ -5983,6 +6053,7 @@ impl Config {
         // mutates global state, and drift/missing definitions fail closed.
 
         config.validate_model_format()?;
+        crate::evaluation::rollout::validate_managed_config(workgraph_dir, &config)?;
         config.load_diagnostics = diag;
 
         Ok(config)
