@@ -447,17 +447,15 @@ impl Status {
         matches!(self, Status::Done | Status::Failed | Status::Abandoned)
     }
 
-    /// Whether this status satisfies a dependency edge — i.e. the upstream is
-    /// "done enough" that downstream work may proceed.
+    /// Whether this status satisfies an ordinary required-success dependency.
     ///
-    /// `Failed` does NOT satisfy a dependency: it means work was attempted but
-    /// produced no valid output.  Downstream tasks spawned against a failed
-    /// upstream would run against missing/broken artifacts.
-    ///
-    /// `Abandoned` DOES satisfy: an operator explicitly decided not to do that
-    /// work; proceeding downstream is intentional.
+    /// Terminality and success are deliberately separate: `Failed` and
+    /// `Abandoned` are terminal for lifecycle/retention purposes, but neither
+    /// produced the promised successful output. Only exact `Done` authorizes a
+    /// downstream task. Evaluation-system exceptions are relation-aware and
+    /// live in `query::dependency_disposition`, never in this status helper.
     pub fn is_dep_satisfied(&self) -> bool {
-        matches!(self, Status::Done | Status::Abandoned)
+        matches!(self, Status::Done)
     }
 
     /// Whether this status counts as "active" for HUD/viz consistency:
@@ -3323,6 +3321,14 @@ mod tests {
         // PendingEval is non-terminal — downstream dependents must wait until
         // the eval flips it to Done (or Failed via auto-rescue).
         assert!(!Status::PendingEval.is_terminal());
+    }
+
+    #[test]
+    fn dependency_satisfaction_is_success_not_terminality() {
+        assert!(Status::Done.is_dep_satisfied());
+        assert!(!Status::Abandoned.is_dep_satisfied());
+        assert!(!Status::Failed.is_dep_satisfied());
+        assert!(!Status::Open.is_dep_satisfied());
     }
 
     #[test]

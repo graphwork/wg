@@ -59,7 +59,9 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
     let phantom_root_ids: Vec<String> = root_blocker_ids
         .iter()
         .filter(|rid| {
-            graph.get_task(rid).is_none() && worksgood::federation::parse_remote_ref(rid).is_none()
+            graph.get_task(rid).is_none()
+                && graph.get_archived_boundary(rid).is_none()
+                && worksgood::federation::parse_remote_ref(rid).is_none()
         })
         .cloned()
         .collect();
@@ -92,10 +94,16 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
 
 fn blocking_node(graph: &WorkGraph, task_id: &str) -> BlockingNode {
     let task = graph.get_task(task_id);
+    let boundary = graph.get_archived_boundary(task_id);
     BlockingNode {
         id: task_id.to_string(),
-        status: task.map(|task| task.status).unwrap_or(Status::Open),
-        is_phantom: task.is_none() && worksgood::federation::parse_remote_ref(task_id).is_none(),
+        status: task
+            .map(|task| task.status)
+            .or_else(|| boundary.map(|boundary| boundary.status))
+            .unwrap_or(Status::Open),
+        is_phantom: task.is_none()
+            && boundary.is_none()
+            && worksgood::federation::parse_remote_ref(task_id).is_none(),
         failure_reason: task.and_then(|task| task.failure_reason.clone()),
         evaluation_health: task
             .and_then(|task| worksgood::eval_lifecycle::evaluation_health(graph, &task.id)),
@@ -136,7 +144,7 @@ fn build_blocking_tree(
                     remote_task_id,
                     dir,
                 );
-                if !remote.status.is_terminal() {
+                if remote.status != Status::Done {
                     let child = tree.nodes.len();
                     tree.nodes.push(BlockingNode {
                         id: blocker_id.clone(),
@@ -191,7 +199,10 @@ fn collect_root_blockers(graph: &WorkGraph, tree: &BlockingTree, roots: &mut Has
             roots.insert(node.id.clone());
         } else if graph
             .get_task(&node.id)
-            .is_some_and(|task| !task.status.is_terminal())
+            .is_some_and(|task| !task.status.is_dep_satisfied())
+            || graph
+                .get_archived_boundary(&node.id)
+                .is_some_and(|boundary| boundary.status != Status::Done)
         {
             roots.insert(node.id.clone());
         }
@@ -254,6 +265,23 @@ fn print_human(
     }
 
     println!("Status: blocked (transitively)");
+    for node in tree.nodes.iter().skip(1) {
+        if node.status == Status::Abandoned {
+            println!("blocked: prerequisite {} was abandoned", node.id);
+            if let Some(abandoned) = graph.get_task(&node.id)
+                && !abandoned.superseded_by.is_empty()
+            {
+                println!(
+                    "  Superseded by: {} (provenance only; the edge remains blocked)",
+                    abandoned.superseded_by.join(", ")
+                );
+            }
+            println!(
+                "  Repair: `wg retry {0}`, relink to a completed replacement, or explicitly remove the edge with `wg rm-dep {1} {0}`.",
+                node.id, task.id
+            );
+        }
+    }
     println!();
     println!("Blocking chain:");
     println!();
@@ -409,6 +437,34 @@ fn print_json(
             })).collect::<Vec<_>>(),
         })
     };
+    let blocking_reasons: Vec<serde_json::Value> = tree
+        .nodes
+        .iter()
+        .skip(1)
+        .map(|node| {
+            let reason = if node.status == Status::Abandoned {
+                format!("prerequisite {} was abandoned", node.id)
+            } else if node.is_phantom {
+                format!("prerequisite {} does not exist", node.id)
+            } else {
+                format!("prerequisite {} status is {}", node.id, node.status)
+            };
+            let superseded_by = graph
+                .get_task(&node.id)
+                .map(|task| task.superseded_by.clone())
+                .unwrap_or_default();
+            serde_json::json!({
+                "id": node.id,
+                "status": node.status,
+                "reason": reason,
+                "superseded_by": superseded_by,
+                "repair_commands": [
+                    format!("wg retry {}", node.id),
+                    format!("wg rm-dep {} {}", task.id, node.id),
+                ],
+            })
+        })
+        .collect();
     let output = serde_json::json!({
         "task": {
             "id": task.id,
@@ -420,6 +476,7 @@ fn print_json(
         "blocking_chain": blocking_chain,
         "root_blockers": all_root_blockers,
         "total_blockers": total,
+        "blocking_reasons": blocking_reasons,
         "evaluation_health": worksgood::eval_lifecycle::evaluation_health(graph, &task.id),
     });
     println!("{}", serde_json::to_string_pretty(&output)?);

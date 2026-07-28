@@ -19,6 +19,7 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>, superseded_by: &[String])
     let mut already_abandoned = false;
     let mut prev_assigned: Option<String> = None;
     let mut cascade_targets: Vec<String> = Vec::new();
+    let mut affected_dependents: Vec<(String, Status)> = Vec::new();
 
     let _graph = modify_graph(&path, |graph| {
         let task = match graph.get_task_mut(id) {
@@ -69,6 +70,18 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>, superseded_by: &[String])
         let flip_id = format!(".flip-{}", id);
         let verify_id = format!(".verify-{}", id);
         let verify_deferred_id = format!(".verify-deferred-{}", id);
+        affected_dependents = graph
+            .tasks()
+            .filter(|dependent| {
+                !dependent.id.starts_with('.')
+                    && dependent.id != id
+                    && dependent.after.iter().any(|dep| dep == id)
+                    && !dependent.status.is_terminal()
+            })
+            .map(|dependent| (dependent.id.clone(), dependent.status))
+            .collect();
+        affected_dependents.sort_by(|left, right| left.0.cmp(&right.0));
+
         cascade_targets = graph
             .tasks()
             .filter(|t| {
@@ -125,6 +138,8 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>, superseded_by: &[String])
             "prev_assigned": prev_assigned,
             "cascaded": cascade_targets,
             "superseded_by": superseded_by,
+            "affected_ordinary_dependents": affected_dependents.iter().map(|(id, status)| serde_json::json!({"id": id, "status": status})).collect::<Vec<_>>(),
+            "dependency_semantics": "abandonment-is-not-success",
         }),
         config.log.rotation_threshold,
     );
@@ -133,6 +148,25 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>, superseded_by: &[String])
     println!("Marked '{}' as abandoned{}", id, reason_msg);
     for target in &cascade_targets {
         println!("  Auto-abandoned: {}", target);
+    }
+    if !affected_dependents.is_empty() {
+        println!("Affected ordinary dependents remain blocked (abandonment is not success):");
+        for (dependent, status) in &affected_dependents {
+            println!(
+                "  - {} ({}) — blocked: prerequisite {} was abandoned",
+                dependent, status, id
+            );
+            println!(
+                "    repair explicitly: `wg retry {0}`, relink to a completed replacement, or `wg rm-dep {1} {0}`",
+                id, dependent
+            );
+        }
+        if !superseded_by.is_empty() {
+            println!(
+                "Superseded by {} is provenance only and does not satisfy or rewrite any dependency edge.",
+                superseded_by.join(", ")
+            );
+        }
     }
 
     Ok(())

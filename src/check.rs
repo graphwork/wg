@@ -9,6 +9,10 @@ pub struct CheckResult {
     pub orphan_refs: Vec<OrphanRef>,
     pub stale_assignments: Vec<StaleAssignment>,
     pub stuck_blocked: Vec<StuckBlocked>,
+    /// Upgrade audit: work accepted or launched while a required-success edge
+    /// pointed at an abandoned prerequisite. History is reported, never
+    /// rewritten or reopened by this check.
+    pub abandoned_dependency_violations: Vec<AbandonedDependencyViolation>,
     pub ok: bool,
 }
 
@@ -27,12 +31,21 @@ pub struct StaleAssignment {
     pub assigned: String,
 }
 
-/// A task with status=Blocked where all after tasks have terminal status
-/// (done/failed/abandoned). These tasks should have been transitioned to Open but weren't.
+/// A task with status=Blocked where all required-success edges are satisfied.
+/// These tasks should have been transitioned to Open but were not.
 #[derive(Debug, Clone, Serialize)]
 pub struct StuckBlocked {
     pub task_id: String,
     pub after_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct AbandonedDependencyViolation {
+    pub task_id: String,
+    pub task_status: crate::graph::Status,
+    pub prerequisite_id: String,
+    pub archived: bool,
+    pub diagnostic: String,
 }
 
 /// Check for cycles in task dependencies
@@ -107,8 +120,63 @@ pub fn check_stale_assignments(graph: &WorkGraph) -> Vec<StaleAssignment> {
     stale
 }
 
-/// Check for tasks with status=Blocked where all after tasks have terminal status.
-/// These tasks should have been transitioned to Open but weren't — they're stuck.
+/// Check for tasks with status=Blocked where all local required-success edges
+/// are canonically satisfied. Failed, abandoned, archived non-Done, missing,
+/// and unresolved remote edges remain blocked and are not stale-unblock cases.
+pub fn check_abandoned_dependency_violations(
+    graph: &WorkGraph,
+) -> Vec<AbandonedDependencyViolation> {
+    let mut violations = Vec::new();
+    for task in graph.tasks() {
+        if task.id.starts_with('.') {
+            continue;
+        }
+        // Open/Blocked rows are correctly fail-closed and need no upgrade
+        // warning. Already-live attempts and immutable Done history do.
+        if !matches!(
+            task.status,
+            crate::graph::Status::InProgress
+                | crate::graph::Status::PendingValidation
+                | crate::graph::Status::PendingEval
+                | crate::graph::Status::FailedPendingEval
+                | crate::graph::Status::Done
+        ) {
+            continue;
+        }
+        for prerequisite_id in &task.after {
+            let (abandoned, archived) = match graph.get_task(prerequisite_id) {
+                Some(prerequisite) => (
+                    prerequisite.status == crate::graph::Status::Abandoned,
+                    false,
+                ),
+                None => (
+                    graph
+                        .get_archived_boundary(prerequisite_id)
+                        .is_some_and(|boundary| boundary.status == crate::graph::Status::Abandoned),
+                    true,
+                ),
+            };
+            if abandoned {
+                violations.push(AbandonedDependencyViolation {
+                    task_id: task.id.clone(),
+                    task_status: task.status,
+                    prerequisite_id: prerequisite_id.clone(),
+                    archived,
+                    diagnostic: if task.status == crate::graph::Status::Done {
+                        "completed-through-abandoned-prerequisite".to_string()
+                    } else {
+                        "live-attempt-through-abandoned-prerequisite-acceptance-fenced-operator-review-required".to_string()
+                    },
+                });
+            }
+        }
+    }
+    violations.sort_by(|left, right| {
+        (&left.task_id, &left.prerequisite_id).cmp(&(&right.task_id, &right.prerequisite_id))
+    });
+    violations
+}
+
 pub fn check_stuck_blocked(graph: &WorkGraph) -> Vec<StuckBlocked> {
     let mut stuck = Vec::new();
 
@@ -119,12 +187,10 @@ pub fn check_stuck_blocked(graph: &WorkGraph) -> Vec<StuckBlocked> {
         if task.after.is_empty() {
             continue;
         }
-        let all_terminal = task.after.iter().all(|dep_id| {
-            graph
-                .get_task(dep_id)
-                .is_some_and(|dep| dep.status.is_terminal())
+        let all_satisfied = task.after.iter().all(|dep_id| {
+            crate::query::dependency_disposition(dep_id, &task.id, graph, None).is_satisfied()
         });
-        if all_terminal {
+        if all_satisfied {
             stuck.push(StuckBlocked {
                 task_id: task.id.clone(),
                 after_ids: task.after.clone(),
@@ -217,6 +283,7 @@ pub fn check_all(graph: &WorkGraph) -> CheckResult {
     let orphan_refs = check_orphans(graph);
     let stale_assignments = check_stale_assignments(graph);
     let stuck_blocked = check_stuck_blocked(graph);
+    let abandoned_dependency_violations = check_abandoned_dependency_violations(graph);
 
     // Cycles, stale assignments, and stuck blocked are warnings, not errors —
     // only orphan refs make the graph invalid
@@ -227,6 +294,7 @@ pub fn check_all(graph: &WorkGraph) -> CheckResult {
         orphan_refs,
         stale_assignments,
         stuck_blocked,
+        abandoned_dependency_violations,
         ok,
     }
 }
@@ -236,6 +304,42 @@ mod tests {
     use super::*;
     use crate::graph::{Node, Status};
     use crate::test_helpers::make_task;
+
+    #[test]
+    fn audit_flags_live_and_done_descendants_without_mutating_history() {
+        let mut graph = WorkGraph::new();
+        let mut abandoned = make_task("upstream", "Upstream");
+        abandoned.status = Status::Abandoned;
+        graph.add_node(Node::Task(abandoned));
+
+        for (id, status) in [
+            ("running", Status::InProgress),
+            ("historical", Status::Done),
+        ] {
+            let mut dependent = make_task(id, id);
+            dependent.status = status;
+            dependent.after = vec!["upstream".to_string()];
+            graph.add_node(Node::Task(dependent));
+        }
+
+        let findings = check_abandoned_dependency_violations(&graph);
+        assert_eq!(findings.len(), 2);
+        assert!(findings.iter().any(|finding| {
+            finding.task_id == "historical"
+                && finding.diagnostic == "completed-through-abandoned-prerequisite"
+        }));
+        assert!(findings.iter().any(|finding| {
+            finding.task_id == "running"
+                && finding
+                    .diagnostic
+                    .contains("acceptance-fenced-operator-review-required")
+        }));
+        assert_eq!(graph.get_task("historical").unwrap().status, Status::Done);
+        assert_eq!(
+            graph.get_task("running").unwrap().status,
+            Status::InProgress
+        );
+    }
 
     #[test]
     fn test_no_cycles_in_empty_graph() {
@@ -621,7 +725,7 @@ mod tests {
     }
 
     #[test]
-    fn test_stuck_blocked_mixed_terminal_deps() {
+    fn test_not_stuck_blocked_when_terminal_deps_include_failures() {
         let mut graph = WorkGraph::new();
         let mut dep1 = make_task("dep1", "Done dep");
         dep1.status = Status::Done;
@@ -639,8 +743,10 @@ mod tests {
         graph.add_node(Node::Task(blocked));
 
         let stuck = check_stuck_blocked(&graph);
-        assert_eq!(stuck.len(), 1);
-        assert_eq!(stuck[0].task_id, "blocked");
+        assert!(
+            stuck.is_empty(),
+            "failed/abandoned prerequisites are legitimate blockers, not stale-open evidence"
+        );
     }
 
     #[test]

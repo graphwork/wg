@@ -10,7 +10,7 @@ use std::process::{Child, Command, Stdio};
 use worksgood::agency;
 use worksgood::config::{CapBehavior, Config, EndpointConfig, ReasoningLevel};
 use worksgood::dispatch::plan_spawn;
-use worksgood::graph::{LogEntry, Node, Status, Task, is_system_task};
+use worksgood::graph::{LogEntry, Node, Status, Task, WorkGraph, is_system_task};
 use worksgood::lifecycle::{
     ActorKind, FenceExpectation, LifecycleActor, TransitionKind, TransitionRequest,
     apply_transition,
@@ -395,6 +395,38 @@ fn prepare_spawn_workspace(
     }
 }
 
+fn spawn_dependency_blocker(
+    graph: &WorkGraph,
+    task_id: &str,
+    dir: &Path,
+) -> Option<(String, String)> {
+    let task = graph.get_task(task_id)?;
+    let cycle_analysis = graph.compute_cycle_analysis();
+    task.after.iter().find_map(|dep_id| {
+        let disposition =
+            worksgood::query::dependency_disposition(dep_id, task_id, graph, Some(dir));
+        if disposition.is_satisfied() {
+            return None;
+        }
+        let same_cycle = cycle_analysis
+            .task_to_cycle
+            .get(dep_id)
+            .is_some_and(|cycle| cycle_analysis.task_to_cycle.get(task_id) == Some(cycle));
+        let liveness_back_edge = same_cycle
+            && graph
+                .get_task(dep_id)
+                .is_some_and(|dep| !matches!(dep.status, Status::Failed | Status::Abandoned));
+        if liveness_back_edge {
+            return None;
+        }
+        let reason = match disposition {
+            worksgood::query::DependencyDisposition::Blocked { reason } => reason,
+            _ => "dependency is not satisfied".to_string(),
+        };
+        Some((dep_id.clone(), reason))
+    })
+}
+
 #[derive(Clone)]
 struct TaskClaimSnapshot {
     status: Status,
@@ -413,6 +445,19 @@ fn claim_task_for_spawn(
     let mut snapshot = None;
     let mut claim_error = None;
     modify_graph(graph_path, |graph| {
+        if let Some((dep_id, reason)) = spawn_dependency_blocker(
+            graph,
+            task_id,
+            graph_path.parent().unwrap_or(graph_path),
+        ) {
+            claim_error = Some(anyhow::anyhow!(
+                "Task '{}' is blocked by prerequisite '{}': {}; refusing spawn admission",
+                task_id,
+                dep_id,
+                reason
+            ));
+            return false;
+        }
         let Some(task) = graph.get_task_mut(task_id) else {
             claim_error = Some(anyhow::anyhow!("Task '{}' not found", task_id));
             return false;
@@ -556,6 +601,19 @@ fn publish_launch_permit_for_claim(
             )));
             return false;
         }
+        if let Some((dep_id, reason)) = spawn_dependency_blocker(
+            graph,
+            task_id,
+            graph_path.parent().unwrap_or(graph_path),
+        ) {
+            outcome = Some(Err(anyhow::anyhow!(
+                "task '{}' became blocked by prerequisite '{}' before launch: {}; refusing to release handler gate and preserving the reserved attempt for reconciliation",
+                task_id,
+                dep_id,
+                reason
+            )));
+            return false;
+        }
 
         // Prepare the authenticated AttemptRunning transition while the graph
         // lock is held, before releasing the child. If either the transition or
@@ -683,6 +741,17 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
     let graph = load_graph(&graph_path).context("Failed to load graph")?;
 
     let task = graph.get_task_or_err(task_id)?;
+    if let Some((dep_id, reason)) = spawn_dependency_blocker(&graph, task_id, dir) {
+        anyhow::bail!(
+            "Cannot spawn task '{}': blocked by prerequisite '{}': {}. Repair with `wg retry {}` or explicitly remove/relink the edge (`wg rm-dep {} {}`).",
+            task_id,
+            dep_id,
+            reason,
+            dep_id,
+            task_id,
+            dep_id
+        );
+    }
 
     // Selection preflight must happen before plan resolution, worktree creation,
     // registry writes, or the atomic claim. Shell tasks remain graph-only.

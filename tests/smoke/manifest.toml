@@ -2821,3 +2821,10 @@ script = "scenarios/pi_evaluation_rollout_requires_canary_success_before_enable.
 owners = ["integrate-and-canary", "flip-first-required-gate"]
 description = "RED-first candidate-binary operator-terminal/daemon-reload rollout corrected to the authoritative order: disabled → content-addressed Fake-Pi → deep-readonly observation canary → flip-required gate canary, explicitly refusing bounded-first. The required stage keeps bounded auto_evaluate=false and eval_gate_all=false while enabling global qualifying-candidate deep FLIP; machine evidence proves pass/reject/infrastructure-retry/restart/main-CAS semantics and exact Luna route handoff, then real rollback atomically disables selection while preserving evidence."
 timeout_seconds = 90
+
+[[scenario]]
+name = "abandoned_dependency_fail_closed"
+script = "scenarios/abandoned_dependency_fail_closed.sh"
+owners = ["fix-abandoned-dependency-readiness"]
+description = "Installed-binary credential-free daemon/terminal regression for required-success dependency semantics: prerequisite -> packaging -> launch remains blocked after abandonment and supersession provenance; ready/why-blocked/show JSON, claim/spawn/done, repeated polls, restart, archived Abandoned boundary and archive undo all fail closed with no attempt/output runtime state; only an explicit provenance-recorded edge removal permits progress."
+timeout_seconds = 90

@@ -1629,54 +1629,54 @@ fn run_inner(
     // is exempted — both header and non-header members.  The mutual dependency
     // between cycle members is a structural back-edge; blocking on it would
     // deadlock the cycle.
-    let blockers = query::after(&graph, id);
-    if !blockers.is_empty() {
-        let cycle_analysis = graph.compute_cycle_analysis();
-        let effective_blockers: Vec<_> = blockers
-            .into_iter()
-            .filter(|b| {
-                // Exempt any blocker in the same cycle (SCC) as this task
-                let in_same_cycle = cycle_analysis
-                    .task_to_cycle
-                    .get(&b.id)
-                    .is_some_and(|bc| cycle_analysis.task_to_cycle.get(id) == Some(bc));
-                if in_same_cycle {
-                    return false;
-                }
-                // Luca's FailedPendingEval rescue exemption is relation-aware:
-                // only the owning `.flip-X` / direct `.evaluate-X` edge is the
-                // mechanism that resolves X. Other dot-prefixed work must not
-                // inherit this trust-bearing bypass.
-                if matches!(
-                    query::dependency_disposition(&b.id, id, &graph, Some(dir)),
-                    query::DependencyDisposition::EvalSystemBypass { .. }
-                ) {
-                    return false;
-                }
-                // Terminal blockers (Failed / Abandoned) don't gate manual
-                // `wg done` on a downstream task. The operator is explicitly
-                // marking work complete; auto-spawn against broken artifacts
-                // is the concern `is_dep_satisfied` guards, not this path.
-                // (Done is already excluded by `query::after` via
-                // `is_dep_satisfied`.)
-                if matches!(b.status, Status::Failed | Status::Abandoned) {
-                    return false;
-                }
-                true
-            })
-            .collect();
-        if !effective_blockers.is_empty() {
-            let blocker_list: Vec<String> = effective_blockers
-                .iter()
-                .map(|t| format!("  - {} ({}): {:?}", t.id, t.title, t.status))
-                .collect();
-            anyhow::bail!(
-                "Cannot mark '{}' as done: blocked by {} unresolved task(s):\n{}",
-                id,
-                effective_blockers.len(),
-                blocker_list.join("\n")
-            );
-        }
+    let cycle_analysis = graph.compute_cycle_analysis();
+    let effective_blockers: Vec<String> = graph
+        .get_task(id)
+        .into_iter()
+        .flat_map(|task| task.after.iter())
+        .filter_map(|blocker_id| {
+            let disposition = query::dependency_disposition(blocker_id, id, &graph, Some(dir));
+            if disposition.is_satisfied() {
+                return None;
+            }
+            // A structural cycle back-edge may break liveness only while its
+            // peer remains a viable cycle participant. Failed/abandoned peers
+            // and missing/archive boundaries never become success by cycling.
+            let in_same_cycle = cycle_analysis
+                .task_to_cycle
+                .get(blocker_id)
+                .is_some_and(|cycle| cycle_analysis.task_to_cycle.get(id) == Some(cycle));
+            let viable_cycle_peer = in_same_cycle
+                && graph.get_task(blocker_id).is_some_and(|blocker| {
+                    !matches!(blocker.status, Status::Failed | Status::Abandoned)
+                });
+            if viable_cycle_peer {
+                return None;
+            }
+            let reason = match disposition {
+                query::DependencyDisposition::Blocked { reason } => reason,
+                query::DependencyDisposition::EvalSystemBypass { .. }
+                | query::DependencyDisposition::Satisfied => return None,
+            };
+            let status = graph
+                .get_task(blocker_id)
+                .map(|blocker| blocker.status.to_string())
+                .or_else(|| {
+                    graph
+                        .get_archived_boundary(blocker_id)
+                        .map(|boundary| format!("archived {}", boundary.status))
+                })
+                .unwrap_or_else(|| "missing".to_string());
+            Some(format!("  - {blocker_id} ({status}): {reason}"))
+        })
+        .collect();
+    if !effective_blockers.is_empty() {
+        anyhow::bail!(
+            "Cannot mark '{}' as done: blocked by {} unresolved required-success prerequisite(s):\n{}\nRepair by retrying/reopening the prerequisite, relinking to a completed replacement, or explicitly removing the edge with `wg rm-dep <task> <prerequisite>`.",
+            id,
+            effective_blockers.len(),
+            effective_blockers.join("\n")
+        );
     }
 
     // Git hygiene check for agents: warn about uncommitted changes.
@@ -3158,8 +3158,8 @@ mod tests {
     }
 
     #[test]
-    fn test_done_with_failed_blocker_succeeds() {
-        // Failed blockers are terminal — they should not block dependents
+    fn test_done_with_failed_blocker_is_rejected() {
+        // Manual/worker completion is not a dependency waiver.
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
 
@@ -3170,17 +3170,23 @@ mod tests {
         setup_workgraph(dir_path, vec![blocker, blocked]);
 
         let result = run(dir_path, "blocked", false, false, false, false, false);
-        assert!(result.is_ok());
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("dependency status is failed")
+        );
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
         let task = graph.get_task("blocked").unwrap();
-        assert_eq!(task.status, Status::Done);
+        assert_eq!(task.status, Status::Open);
     }
 
     #[test]
-    fn test_done_with_abandoned_blocker_succeeds() {
-        // Abandoned blockers are terminal — they should not block dependents
+    fn test_done_with_abandoned_blocker_is_rejected() {
+        // Abandoned is terminal for retention, never successful completion.
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
 
@@ -3191,12 +3197,13 @@ mod tests {
         setup_workgraph(dir_path, vec![blocker, blocked]);
 
         let result = run(dir_path, "blocked", false, false, false, false, false);
-        assert!(result.is_ok());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("was abandoned"));
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
         let task = graph.get_task("blocked").unwrap();
-        assert_eq!(task.status, Status::Done);
+        assert_eq!(task.status, Status::Open);
     }
 
     #[test]
