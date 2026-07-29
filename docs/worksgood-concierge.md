@@ -1,4 +1,4 @@
-# `worksgood` profile-first lifecycle concierge
+# `worksgood` lifecycle concierge
 
 **Status:** shipped by default alongside `wg` and `nex` on every supported platform.
 
@@ -21,11 +21,23 @@ The concierge resolves the physical `worksgood` executable and its sibling `wg` 
 
 ## Lifecycle
 
-In an attended terminal:
+In an attended terminal, the primary one-model path is:
+
+```sh
+M=pi:openrouter:deepseek/deepseek-v4-flash
+worksgood setup --model "$M"  # setup/reconcile; no TUI
+worksgood --model "$M"        # setup/reconcile, then TUI
+```
+
+`--model` accepts only the exact handler-first shape `pi:<provider>:<model>` and never rewrites, infers, or falls back to another route. It copies that exact value to every executable LLM role. Its explicit concierge policy is Worker/chat/strong reasoning `high` and Eval/assign/FLIP/weak reasoning `low`; `--strong-reasoning` and `--weak-reasoning` override those dimensions independently. Reasoning remains structured, content-addressed profile/service identity and is never encoded into or appended to the unchanged model route. `--yes` accepts this already-explicit model plus high/low policy in an attended TTY—it never invents a model and never bypasses TTY safety.
+
+The generated profile is built from the bundled clean Pi starter, content-addressed, reusable, and selected only for the project. This path does not require or inherit `~/.wg/profiles/pi.toml`, and it writes neither global config nor `~/.wg/active-profile`. Pi continues to own provider authentication and credentials.
+
+Other lifecycle forms:
 
 ```text
 worksgood              first run or returning fast path, then TUI
-worksgood setup        profile selection/setup or resume; no TUI
+worksgood setup        interactive profile selection/setup or resume; no TUI
 worksgood setup --rollback
                        clear an uncommitted failed setup's exact selection/service effect
 worksgood status       strictly read-only identity/readiness status
@@ -36,7 +48,7 @@ worksgood tui          setup-neutral existing TUI only
 
 Bare non-TTY use fails with stable `ATTENDED_TTY_REQUIRED` and mutates nothing. `--dry-run` prints one immutable redacted plan and writes no graph, profile, history, journal, plugin/cache, service, or TUI state. The choice prompt defaults to cancel. The primary no-provider choice is **Continue without AI**; it selects no LLM route, runs no LLM service, and opens only the setup-neutral TUI.
 
-The profile list reuses the project-profile catalog: current-project selection first, created reusable profiles before built-ins, quiet local frequency labels, exact Worker/chat and Agency/FLIP/evaluation routes, and honest handler-owned readiness. Core integrated choices are Pi, native Codex, and native Claude. Routes remain pinned to the selected execution system with no cross-system fallback; Nex/local, OpenCode, and specialized adapters remain in the advanced `wg` surface.
+The interactive profile list is the advanced existing-profile/customization path. `--profile <name>` selects an existing reusable base definition; it does not create a new profile name. For a new one-model setup, use `worksgood setup --model pi:<provider>:<model>`. The list reuses the project-profile catalog: current-project selection first, created reusable profiles before built-ins, quiet local frequency labels, exact Worker/chat and Agency/FLIP/evaluation routes, and honest handler-owned readiness. Core integrated choices are Pi, native Codex, and native Claude. Routes remain pinned to the selected execution system with no cross-system fallback; Nex/local, OpenCode, and specialized adapters remain in the advanced `wg` surface.
 
 For Pi, the WorksGood picker asks Pi's own authenticated RPC model registry (`get_available_models`) and retains a manual exact-ID fallback. Worker/chat and Agency/FLIP/evaluation model plus effort are separate explicit choices. **Same as worker** is an explicit option and is never inferred. Every selected core profile persists explicit Worker/chat effort (default `high`) and Agency/FLIP/evaluation effort (default `low`) in a content-addressed reusable project profile; returning runs show both resolved routes and efforts. Pi maps those resolved values to its real `--thinking <level>` argv separately from model identity. Pi remains the auth owner; WorksGood only prepares its version-matched plugin after confirmation.
 

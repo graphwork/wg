@@ -100,6 +100,16 @@ worksgood
 
 Bare `worksgood` walks an attended setup/reconcile flow and opens the TUI; choose **Continue without AI** for a credential-free first look. Its focused lifecycle verbs are `setup`, `status`, `stop`, `restart`, and `tui`.
 
+If you already know one exact Pi route, the primary simple setup is one paste and one confirmation:
+
+```bash
+worksgood setup --model pi:openrouter:deepseek/deepseek-v4-flash
+# Or reconcile the same setup and then open the TUI:
+worksgood --model pi:openrouter:deepseek/deepseek-v4-flash
+```
+
+The exact route is copied to every LLM role without normalization or fallback. Worker/chat/strong roles default to reasoning `high`; eval/assign/FLIP/weak roles default to `low`. Override those independently with `--strong-reasoning` and `--weak-reasoning`. Reasoning remains structured profile/service identity separate from the unchanged model route. `--profile` is the advanced path for selecting and customizing an **existing** reusable base profile; it does not create a profile named after a model.
+
 For explicit graph-only expert use, `wg init` followed by `wg tui` is **non-mutating** — those commands never select a model, authenticate, install packages, or start a service. The complete task/tool command set remains under `wg`; agent integrations continue to use the `wg_*` protocol.
 
 ### Quickstart: drive a free OpenRouter model through Pi

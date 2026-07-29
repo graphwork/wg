@@ -20,16 +20,26 @@ struct Cli {
     #[arg(long, global = true)]
     dry_run: bool,
 
-    /// Explicit reusable profile (otherwise show the profile-first chooser).
+    /// Copy one exact Pi route to every LLM role (simple path).
+    /// Worker/chat reasoning defaults high; Eval/assign/FLIP/weak defaults low.
+    #[arg(
+        long,
+        global = true,
+        value_name = "pi:<provider>:<model>",
+        conflicts_with_all = ["without_ai", "profile", "strong_model", "weak_model"]
+    )]
+    model: Option<String>,
+
+    /// Select an existing reusable base profile (advanced customization path).
     #[arg(long, global = true)]
     profile: Option<String>,
 
     /// Explicitly open a setup-neutral graph/TUI with no LLM service.
-    #[arg(long, global = true, conflicts_with = "profile")]
+    #[arg(long, global = true, conflicts_with_all = ["profile", "model"])]
     without_ai: bool,
 
-    /// Exact Pi Worker/chat handler-first route.
-    #[arg(long, global = true, requires = "profile")]
+    /// Exact Pi Worker/chat handler-first route for an existing --profile.
+    #[arg(long, global = true, requires = "profile", conflicts_with = "model")]
     strong_model: Option<String>,
 
     /// Exact Pi Agency/FLIP/evaluation route. Use the same exact value as
@@ -37,12 +47,12 @@ struct Cli {
     #[arg(long, global = true, requires = "strong_model")]
     weak_model: Option<String>,
 
-    /// Worker/chat effort. Attended recommendation: high; --yes requires an explicit or already-configured value.
-    #[arg(long, global = true, requires = "profile")]
+    /// Worker/chat effort. With --model, defaults to the explicit shorthand policy: high.
+    #[arg(long, global = true)]
     strong_reasoning: Option<ReasoningLevel>,
 
-    /// Agency/FLIP/evaluation effort. Attended recommendation: low; --yes never chooses it silently.
-    #[arg(long, global = true, requires = "profile")]
+    /// Eval/assign/FLIP/weak-role effort. With --model, defaults to low.
+    #[arg(long, global = true)]
     weak_reasoning: Option<ReasoningLevel>,
 
     /// Accept the displayed immutable plan. Still requires an attended TTY.
@@ -76,6 +86,7 @@ fn lifecycle_options(cli: &Cli, open_tui: bool) -> LifecycleOptions {
     LifecycleOptions {
         project: cli.project.clone(),
         dry_run: cli.dry_run,
+        requested_model: cli.model.clone(),
         requested_profile: cli.profile.clone(),
         continue_without_ai: cli.without_ai,
         strong_model: cli.strong_model.clone(),
@@ -89,6 +100,16 @@ fn lifecycle_options(cli: &Cli, open_tui: bool) -> LifecycleOptions {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    if cli.model.is_some()
+        && matches!(
+            cli.command,
+            Some(Commands::Status | Commands::Stop | Commands::Restart | Commands::Tui)
+        )
+    {
+        anyhow::bail!(
+            "--model is a setup/reconcile option; use it with bare `worksgood` or `worksgood setup`"
+        );
+    }
     match cli.command {
         None => concierge::run_lifecycle(&lifecycle_options(&cli, true), false),
         Some(Commands::Setup { rollback }) => {
