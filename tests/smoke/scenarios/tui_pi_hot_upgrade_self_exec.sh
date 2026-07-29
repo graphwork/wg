@@ -94,20 +94,19 @@ old_exe=$(readlink "/proc/$tui_pid/exe" 2>/dev/null || true)
     || loud_fail "TUI did not run the installed-copy target: pid=$tui_pid exe=$old_exe"
 
 # Real command-mode flow. Empty-chat startup is already in command mode; `n`
-# opens New chat. The default preset order is Codex, Claude, Pi, Add new, so
-# two Down presses explicitly select Pi. Replace the image while the chooser is
-# open, exactly before confirmation invokes the recursive `wg chat create`.
+# opens New chat. The attended default is bare Pi (the project profile remains
+# the unattended service contract). Replace the image while the chooser is open,
+# exactly before confirmation invokes the recursive `wg chat create`.
 TM send-keys -t tui n
 for _ in $(seq 1 50); do
     TM capture-pane -p -t tui 2>/dev/null | grep -q 'New chat' && break
     sleep 0.1
 done
-TM capture-pane -p -t tui | grep -q 'Pi (pi.dev)' \
-    || loud_fail "New chat chooser did not offer Pi"
+TM capture-pane -p -t tui | grep -q 'Pi (choose model in Pi)' \
+    || loud_fail "New chat chooser did not offer attended bare Pi"
 rows_before_confirm=$(grep -c '"id":"\.chat-' "$G/graph.jsonl" 2>/dev/null || true)
 [[ "$rows_before_confirm" -eq 0 && ! -e "$scratch/pi-evidence" ]] \
     || loud_fail "opening/selecting New chat mutated state before confirmation"
-TM send-keys -t tui Down Down
 sleep 0.2
 
 cp "$WG_BIN" "$scratch/wg-image.next"
@@ -200,7 +199,7 @@ for _ in $(seq 1 50); do
     TM capture-pane -p -t missing-tui 2>/dev/null | grep -q 'New chat' && break
     sleep 0.1
 done
-TM send-keys -t missing-tui Down Down Enter
+TM send-keys -t missing-tui Enter
 missing_tui_error=""
 for _ in $(seq 1 80); do
     capture=$(TM capture-pane -p -t missing-tui 2>/dev/null || true)
@@ -212,7 +211,7 @@ for _ in $(seq 1 80); do
 done
 [[ -n "$missing_tui_error" ]] \
     || loud_fail "missing-Pi TUI confirmation did not show the Pi-specific error"
-printf '%s' "$missing_tui_error" | grep -q 'no chat was created' \
+printf '%s' "$missing_tui_error" | grep -Eq 'no chat( was created)?' \
     || loud_fail "missing-Pi TUI error omitted transactional result: $missing_tui_error"
 if printf '%s' "$missing_tui_error" | grep -q 'Failed to run wg'; then
     loud_fail "missing-Pi TUI misidentified the missing process as wg"

@@ -167,6 +167,15 @@ description = "Pins add-plain-pi/fix-plain-pi: `wg chat create --exec pi` stores
 timeout_seconds = 30
 
 [[scenario]]
+name = "tui_pi_chat_ipc_timeout_reconcile"
+script = "scenarios/tui_pi_chat_ipc_timeout_reconcile.sh"
+owners = [
+    "fix-tui-pi-chat-ipc-timeout",
+]
+description = "Candidate-binary real TUI/tmux/Fake-Pi regression for the production post-commit CreateChat response-loss incident: a dedicated attended-chat IPC lane remains responsive during a deterministic >2s coordinator/route-less-FLIP delay; two deliberately late replies reconcile by durable request id to exactly one bare and one explicitly-pinned Pi chat; a refused transaction leaves no graph/process/tmux residue; the selected live pane forwards exact typed bytes (including focused '+') through a custom outer tmux socket, Ctrl+O exposes command keys/help and symmetrically restores Pi input, and argv/model observation/session ownership/service-restart reattachment remain exact with no duplicate handler or BrokenPipe corruption noise. Credential-free and HOME/graph isolated."
+timeout_seconds = 90
+
+[[scenario]]
 name = "tui_chat_composer_newlines_pty"
 script = "scenarios/tui_chat_composer_newlines_pty.sh"
 owners = [

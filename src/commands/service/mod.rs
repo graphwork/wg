@@ -39,7 +39,10 @@ use std::io::IsTerminal;
 use std::io::{BufRead, BufReader, Read as _, Write};
 use std::path::{Path, PathBuf};
 use std::process;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::{Duration, Instant};
 
 use interprocess::local_socket::{
@@ -601,6 +604,15 @@ pub fn default_socket_path(dir: &Path) -> PathBuf {
     dir.join("service").join("daemon.sock")
 }
 
+/// Dedicated attended-chat control socket derived from the daemon socket.
+/// Keeping this listener on its own thread prevents slow unattended dispatcher,
+/// evaluation, registry, or graph ticks from starving New-chat IPC.
+pub(crate) fn chat_control_socket_path(daemon_socket: &Path) -> PathBuf {
+    // Keep this basename no longer than `daemon.sock`: Lustre/HPC project
+    // roots can already sit close to Unix sockaddr_un's path limit.
+    daemon_socket.with_file_name("chat.sock")
+}
+
 /// Path to the service state file
 pub fn state_file_path(dir: &Path) -> PathBuf {
     dir.join("service").join("state.json")
@@ -796,6 +808,38 @@ impl SessionCostTracking {
     }
 }
 
+fn is_zero_u64(value: &u64) -> bool {
+    *value == 0
+}
+
+/// Cross-process sidecar lock for a per-chat coordinator state file. The Pi
+/// plugin can report an attended model change while the daemon is persisting a
+/// stale in-memory tick snapshot; serializing the read/merge/write boundary is
+/// what lets route generations prevent that snapshot from winning.
+struct CoordinatorStateFileLock {
+    _file: fs::File,
+}
+
+impl CoordinatorStateFileLock {
+    fn acquire(state_path: &Path) -> std::io::Result<Self> {
+        let lock_path = state_path.with_extension("json.lock");
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(lock_path)?;
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+        }
+        Ok(Self { _file: file })
+    }
+}
+
 /// Runtime coordinator state persisted to disk for status queries
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CoordinatorState {
@@ -860,6 +904,12 @@ pub struct CoordinatorState {
     /// without rewriting global config. Persists across daemon restarts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint_override: Option<String>,
+    /// Monotonic generation for the atomic executor/model/endpoint tuple.
+    /// Attended Pi model observations increment this outside the daemon; stale
+    /// daemon tick snapshots preserve the higher on-disk generation instead of
+    /// silently reverting the user's live-session choice.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub route_generation: u64,
 
     /// The single transient-but-persisted authority for the effective
     /// `max_agents`. See `docs/studies/adaptive-parallelism-budget-design.md`
@@ -882,6 +932,11 @@ pub struct CoordinatorState {
 }
 
 impl CoordinatorState {
+    /// Mark a deliberate change to the atomic executor/model/endpoint tuple.
+    pub fn advance_route_generation(&mut self) {
+        self.route_generation = self.route_generation.saturating_add(1);
+    }
+
     /// Load coordinator state for a specific coordinator ID.
     /// Checks the per-ID file first, then falls back to the legacy shared file
     /// for coordinator 0.
@@ -923,7 +978,28 @@ impl CoordinatorState {
             );
             return;
         }
-        match serde_json::to_string_pretty(self) {
+        let _lock = match CoordinatorStateFileLock::acquire(&path) {
+            Ok(lock) => lock,
+            Err(error) => {
+                eprintln!(
+                    "Warning: failed to lock coordinator state {}: {}",
+                    path.display(),
+                    error
+                );
+                return;
+            }
+        };
+        let mut state = self.clone();
+        if path.exists()
+            && let Some(disk) = load_runtime_json_or_quarantine::<Self>(&path, "coordinator state")
+            && disk.route_generation > state.route_generation
+        {
+            state.executor_override = disk.executor_override;
+            state.model_override = disk.model_override;
+            state.endpoint_override = disk.endpoint_override;
+            state.route_generation = disk.route_generation;
+        }
+        match serde_json::to_string_pretty(&state) {
             Ok(content) => {
                 if let Err(e) = write_atomic(&path, content.as_bytes()) {
                     eprintln!(
@@ -1002,6 +1078,7 @@ impl CoordinatorState {
     pub fn remove_for(dir: &Path, coordinator_id: u32) {
         let path = coordinator_state_path(dir, coordinator_id);
         let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(path.with_extension("json.lock"));
     }
 
     /// Remove coordinator 0 state file(s), including legacy shared file.
@@ -1020,7 +1097,9 @@ impl CoordinatorState {
             for entry in entries.flatten() {
                 let name = entry.file_name();
                 let name_str = name.to_string_lossy();
-                if name_str.starts_with("coordinator-state") && name_str.ends_with(".json") {
+                if name_str.starts_with("coordinator-state")
+                    && (name_str.ends_with(".json") || name_str.ends_with(".json.lock"))
+                {
                     let _ = fs::remove_file(entry.path());
                 }
             }
@@ -2604,6 +2683,60 @@ pub fn run_daemon(
     // Non-blocking so the accept loop can also service timers/tick checks.
     listener.set_nonblocking(ListenerNonblockingMode::Both)?;
 
+    // Attended chat creation has an independent accept/handler lane. The main
+    // daemon thread still owns unattended dispatch state, but a >2s FLIP/eval
+    // or registry pass can no longer keep a New-chat request sitting unaccepted.
+    let chat_socket = chat_control_socket_path(&socket);
+    if chat_socket.exists() {
+        fs::remove_file(&chat_socket)?;
+    }
+    let chat_listener = bind_socket(&chat_socket)
+        .with_context(|| format!("Failed to bind chat control socket {:?}", chat_socket))?;
+    chat_listener.set_nonblocking(ListenerNonblockingMode::Both)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&chat_socket, fs::Permissions::from_mode(0o600))?;
+    }
+    let chat_lane_running = Arc::new(AtomicBool::new(true));
+    let chat_lane_stop = Arc::clone(&chat_lane_running);
+    let chat_lane_dir = dir.to_path_buf();
+    let chat_lane_logger = logger.clone();
+    let (chat_created_tx, chat_created_rx) = std::sync::mpsc::channel::<u32>();
+    let chat_lane_handle = std::thread::Builder::new()
+        .name("wg-chat-ipc".to_string())
+        .spawn(move || {
+            while chat_lane_stop.load(Ordering::Acquire) {
+                match chat_listener.accept() {
+                    Ok(stream) => match ipc::handle_chat_control_connection(
+                        &chat_lane_dir,
+                        stream,
+                        &chat_lane_logger,
+                    ) {
+                        Ok(Some(chat_id)) => {
+                            let _ = chat_created_tx.send(chat_id);
+                        }
+                        Ok(None) => {}
+                        Err(error) => chat_lane_logger.warn(&format!(
+                            "Chat IPC connection failed before reconciliation: {error:#}"
+                        )),
+                    },
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => {
+                        chat_lane_logger.warn(&format!("Chat IPC accept failed: {error}"));
+                        std::thread::sleep(Duration::from_millis(25));
+                    }
+                }
+            }
+        })
+        .context("Failed to start dedicated chat IPC lane")?;
+    logger.info(&format!(
+        "Dedicated attended-chat IPC lane listening on {}",
+        chat_socket.display()
+    ));
+
     let dir = dir.to_path_buf();
     let mut running = true;
     // `true` only when the daemon is stopping because it was *asked* to (IPC
@@ -2803,6 +2936,7 @@ pub fn run_daemon(
         model_override: None,
         executor_override: None,
         endpoint_override: None,
+        route_generation: 0,
         runtime_max_agents,
     };
     coord_state.save(&dir);
@@ -3099,6 +3233,16 @@ pub fn run_daemon(
         // folds all overlapping timer/fs-watch wakes into one deferred pass.
         if let Some(lane) = retained_cleanup_lane.as_ref() {
             lane.request("daemon-wake");
+        }
+
+        // Drain committed creates from the independent chat IPC lane. Queue
+        // each id at most once; the lazy-spawn gate and tmux sentinel remain
+        // authoritative and cannot install a competing live owner.
+        while let Ok(chat_id) = chat_created_rx.try_recv() {
+            if !pending_coordinator_ids.contains(&chat_id) {
+                pending_coordinator_ids.push(chat_id);
+            }
+            urgent_wake = true;
         }
 
         // Reap zombie child processes (agents that have exited).
@@ -3833,6 +3977,9 @@ pub fn run_daemon(
     }
 
     // Cleanup
+    chat_lane_running.store(false, Ordering::Release);
+    let _ = chat_lane_handle.join();
+    let _ = fs::remove_file(&chat_socket);
     let _ = fs::remove_file(&socket);
     // Clean up coordinator prompt file
     let _ = fs::remove_file(dir.join("service").join("coordinator-prompt.txt"));
@@ -3965,6 +4112,10 @@ fn run_stop_inner(dir: &Path, force: bool, kill_agents: bool, json: bool) -> Res
     // Clean up
     if socket.exists() {
         let _ = fs::remove_file(&socket);
+    }
+    let chat_socket = chat_control_socket_path(&socket);
+    if chat_socket.exists() {
+        let _ = fs::remove_file(&chat_socket);
     }
     ServiceState::remove(dir)?;
 
@@ -4717,6 +4868,7 @@ pub fn run_thaw(dir: &Path, json: bool) -> Result<()> {
 /// Create a new coordinator session via IPC
 pub fn run_create_coordinator(
     dir: &Path,
+    request_id: &str,
     name: Option<&str>,
     model: Option<&str>,
     executor: Option<&str>,
@@ -4724,16 +4876,36 @@ pub fn run_create_coordinator(
     command: Option<&str>,
     json: bool,
 ) -> Result<()> {
-    let response = send_request(
-        dir,
-        &IpcRequest::CreateChat {
-            name: name.map(|s| s.to_string()),
-            model: model.map(|s| s.to_string()),
-            executor: executor.map(|s| s.to_string()),
-            endpoint: endpoint.map(|s| s.to_string()),
-            command: command.map(|s| s.to_string()),
+    let request = IpcRequest::CreateChat {
+        request_id: Some(request_id.to_string()),
+        name: name.map(|s| s.to_string()),
+        model: model.map(|s| s.to_string()),
+        executor: executor.map(|s| s.to_string()),
+        endpoint: endpoint.map(|s| s.to_string()),
+        command: command.map(|s| s.to_string()),
+    };
+    let response = match send_chat_create_request(dir, &request) {
+        Ok(response) => response,
+        Err(ipc_error) => match reconcile_chat_create(dir, request_id) {
+            Some(chat_id) => {
+                eprintln!(
+                    "warning: chat-create response was lost ({ipc_error}); reconciled committed {} by request id",
+                    worksgood::chat_id::format_chat_task_id(chat_id)
+                );
+                IpcResponse::success(serde_json::json!({
+                    "coordinator_id": chat_id,
+                    "chat_id": chat_id,
+                    "task_id": worksgood::chat_id::format_chat_task_id(chat_id),
+                    "request_id": request_id,
+                    "reconciled": true,
+                    "name": name,
+                }))
+            }
+            None => return Err(ipc_error).context(
+                "chat creation did not produce a reconcilable graph commit; no chat/runtime residue was found",
+            ),
         },
-    )?;
+    };
 
     if !response.ok {
         let msg = response
@@ -4753,6 +4925,83 @@ pub fn run_create_coordinator(
     }
 
     Ok(())
+}
+
+fn reconcile_chat_create(dir: &Path, request_id: &str) -> Option<u32> {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        if let Ok(graph) = worksgood::parser::load_graph(&crate::commands::graph_path(dir))
+            && let Some(chat_id) = graph.tasks().find_map(|task| {
+                (ipc::chat_create_request_id(task) == Some(request_id))
+                    .then(|| worksgood::chat_id::parse_chat_task_id(&task.id))
+                    .flatten()
+            })
+        {
+            return Some(chat_id);
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Send CreateChat through its independently-serviced socket. Old daemons do
+/// not expose that socket, so compatibility falls back to the general lane.
+fn send_chat_create_request(dir: &Path, request: &IpcRequest) -> Result<IpcResponse> {
+    let state = ServiceState::load(dir)?.ok_or_else(|| {
+        anyhow::anyhow!("Service not running (no state file). Start it with 'wg service start'.")
+    })?;
+    let main_socket = PathBuf::from(&state.socket_path);
+    let chat_socket = chat_control_socket_path(&main_socket);
+
+    const IPC_CLIENT_TIMEOUT: Duration = Duration::from_secs(2);
+    // Do not use Path::exists as protocol discovery: some local-socket
+    // backends expose a connectable name without a stat-visible filesystem
+    // node. A failed connect is the only reliable old-daemon fallback signal.
+    let mut stream = match connect_to_socket(&chat_socket) {
+        Ok(stream) => stream,
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+            ) =>
+        {
+            return send_request(dir, request);
+        }
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "Could not connect to dedicated chat IPC lane at {:?} (daemon PID {})",
+                    chat_socket, state.pid
+                )
+            });
+        }
+    };
+    #[cfg(unix)]
+    {
+        stream
+            .set_recv_timeout(Some(IPC_CLIENT_TIMEOUT))
+            .context("Failed to set chat IPC receive timeout")?;
+        stream
+            .set_send_timeout(Some(IPC_CLIENT_TIMEOUT))
+            .context("Failed to set chat IPC send timeout")?;
+    }
+    writeln!(stream, "{}", serde_json::to_string(request)?)?;
+    stream.flush()?;
+    let reader = BufReader::new(&stream);
+    for line in reader.lines() {
+        let line = line.with_context(|| {
+            format!(
+                "Service chat IPC response timed out after {}s; reconciling the durable request identity",
+                IPC_CLIENT_TIMEOUT.as_secs()
+            )
+        })?;
+        if !line.is_empty() {
+            return serde_json::from_str(&line).context("Failed to parse chat IPC response");
+        }
+    }
+    anyhow::bail!("No response from dedicated chat IPC lane")
 }
 
 /// Delete a coordinator session via IPC
@@ -6176,6 +6425,42 @@ mod tests {
 
         // Non-zero coordinator should NOT fall back to legacy
         assert!(CoordinatorState::load_for(dir, 1).is_none());
+    }
+
+    #[test]
+    fn stale_daemon_snapshot_preserves_newer_attended_pi_route_generation() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+        fs::create_dir_all(dir.join("service")).unwrap();
+
+        let mut stale_daemon = CoordinatorState {
+            ticks: 1,
+            executor_override: Some("pi".to_string()),
+            model_override: Some("pi:openai-codex:old".to_string()),
+            ..Default::default()
+        };
+        stale_daemon.advance_route_generation();
+        stale_daemon.save_for(dir, 7);
+
+        let mut observed = CoordinatorState::load_or_default_for(dir, 7);
+        observed.model_override = Some("pi:openai-codex:observed".to_string());
+        observed.advance_route_generation();
+        observed.save_for(dir, 7);
+
+        // A daemon tick that began before the attended observation may still
+        // finish afterward. Its runtime counters should land, but its stale
+        // atomic route tuple must not revert the newer generation.
+        stale_daemon.ticks = 2;
+        stale_daemon.save_for(dir, 7);
+
+        let persisted = CoordinatorState::load_or_default_for(dir, 7);
+        assert_eq!(persisted.ticks, 2);
+        assert_eq!(persisted.route_generation, 2);
+        assert_eq!(persisted.executor_override.as_deref(), Some("pi"));
+        assert_eq!(
+            persisted.model_override.as_deref(),
+            Some("pi:openai-codex:observed")
+        );
     }
 
     #[test]

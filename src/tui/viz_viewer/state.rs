@@ -3192,44 +3192,34 @@ fn executor_model_boost(provider: &str, executor: &str) -> i64 {
 }
 
 impl LauncherState {
-    /// Built-in default presets shown in Default mode. Three first-class
-    /// executor choices: codex, claude, and pi — all surfaced on the first
-    /// page without drilling into Add new. The codex/claude models are
-    /// conventional constants; the Pi model is intentionally empty so plain
-    /// Pi launches without a WG model route and uses Pi's own configured
-    /// default unless the user explicitly edits the preset model.
+    /// The attended default is a bare Pi console. WG's profile remains the
+    /// exact unattended worker/agency service contract; it is deliberately not
+    /// copied into a new human-owned chat unless the user edits Model and pins
+    /// an explicit per-chat `pi:<provider>:<model>` route.
     pub fn default_presets() -> Vec<LauncherPreset> {
-        Vec::new()
-    }
-
-    /// Plain Pi defaults to no WG model override. Users can still explicitly
-    /// edit the preset model, but launcher-open state must not synthesize a
-    /// route from history or config.
-    pub fn resolve_pi_model(
-        config: &worksgood::config::Config,
-        _workgraph_dir: &std::path::Path,
-    ) -> Option<String> {
-        config
-            .resolve_pi_route_for_role(worksgood::config::DispatchRole::Default)
-            .ok()
-            .map(|route| route.route)
-    }
-
-    /// Build the default presets. Plain Pi intentionally remains model-free;
-    /// this function is retained as the launcher-open hook for callers.
-    pub fn presets_with_pi_model(
-        config: &worksgood::config::Config,
-        workgraph_dir: &std::path::Path,
-    ) -> Vec<LauncherPreset> {
-        let Some(model) = Self::resolve_pi_model(config, workgraph_dir) else {
-            return Vec::new();
-        };
         vec![LauncherPreset {
             executor: "pi".to_string(),
-            label: model.clone(),
-            model,
-            description: "Pi model plane (edit models/login in Pi)".to_string(),
+            model: String::new(),
+            label: "Pi (choose model in Pi)".to_string(),
+            description: "Attended Pi console; Pi owns login and model picker".to_string(),
         }]
+    }
+
+    /// Attended launch never inherits an unattended profile route.
+    pub fn resolve_pi_model(
+        _config: &worksgood::config::Config,
+        _workgraph_dir: &std::path::Path,
+    ) -> Option<String> {
+        None
+    }
+
+    /// Launcher-open hook retained for callers; config is intentionally not
+    /// consulted when constructing the attended bare-Pi preset.
+    pub fn presets_with_pi_model(
+        _config: &worksgood::config::Config,
+        _workgraph_dir: &std::path::Path,
+    ) -> Vec<LauncherPreset> {
+        Self::default_presets()
     }
 
     /// True when the highlighted Default-mode row is "+ Add new...".
@@ -3753,8 +3743,13 @@ impl LauncherState {
         match self.mode {
             LauncherMode::Default => {
                 let preset = self.presets.get(self.default_selected)?;
-                worksgood::config::parse_exact_pi_route(&preset.model).ok()?;
-                Some(("pi".to_string(), Some(preset.model.clone()), None))
+                let model = if preset.model.trim().is_empty() {
+                    None
+                } else {
+                    worksgood::config::parse_exact_pi_route(&preset.model).ok()?;
+                    Some(preset.model.clone())
+                };
+                Some((preset.executor.clone(), model, None))
             }
             LauncherMode::AddNew => {
                 let executor = self.add_executor_choice().internal_executor.to_string();
@@ -34094,6 +34089,45 @@ mod filter_picker_tests {
         picker.filter = "opus".to_string();
         picker.apply_filter();
         assert!(picker.selected < picker.visible_count());
+    }
+}
+
+#[cfg(test)]
+mod attended_pi_launcher_tests {
+    use super::{LauncherMode, LauncherSection, LauncherState};
+
+    #[test]
+    fn inherited_profile_opens_bare_attended_pi_preset() {
+        let config = worksgood::config::Config::default();
+        let temp = tempfile::TempDir::new().unwrap();
+        let presets = LauncherState::presets_with_pi_model(&config, temp.path());
+        assert_eq!(presets.len(), 1);
+        assert_eq!(presets[0].executor, "pi");
+        assert!(presets[0].model.is_empty());
+
+        let state = LauncherState {
+            mode: LauncherMode::Default,
+            active_section: LauncherSection::Defaults,
+            name: String::new(),
+            presets,
+            default_selected: 0,
+            add_executor_idx: 0,
+            add_model: String::new(),
+            model_suggestions: Vec::new(),
+            model_suggestion_selected: 0,
+            preset_model_edit: String::new(),
+            preset_model_suggestions: Vec::new(),
+            preset_model_suggestion_selected: 0,
+            add_endpoint: String::new(),
+            endpoint_suggestions: Vec::new(),
+            endpoint_suggestion_selected: 0,
+            creating: false,
+            last_error: None,
+        };
+        let (executor, model, endpoint) = state.resolved_launch_args().unwrap();
+        assert_eq!(executor, "pi");
+        assert_eq!(model, None, "profile route must not become a chat override");
+        assert_eq!(endpoint, None);
     }
 }
 

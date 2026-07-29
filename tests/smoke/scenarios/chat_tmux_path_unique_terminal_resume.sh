@@ -175,6 +175,12 @@ mkdir -p "$terminal_root"
 cat >"$terminal_graph/config.toml" <<'TOML'
 [dispatcher]
 model = "pi:openai-codex:test-terminal"
+reasoning = "high"
+
+[tiers]
+fast_reasoning = "low"
+standard_reasoning = "high"
+premium_reasoning = "xhigh"
 TOML
 "$WG_BIN" --dir "$terminal_graph" chat create --name terminal --json >"$terminal_root/create.json" 2>&1 \
     || loud_fail "terminal fixture chat create failed: $(cat "$terminal_root/create.json")"

@@ -2383,6 +2383,11 @@ fn handle_launcher_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifier
             }
             KeyCode::Enter => {
                 launcher.accept_preset_model_suggestion();
+                // Whether Enter accepted a suggestion or the user typed an
+                // exact `pi:<provider>:<model>`, commit the edit before launch.
+                // Otherwise the attended bare preset silently discarded the
+                // explicit per-chat pin and still launched model-free.
+                launcher.commit_preset_model_edit();
                 app.launch_from_launcher();
             }
             KeyCode::Esc => {
