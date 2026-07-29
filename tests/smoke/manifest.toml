@@ -2716,6 +2716,13 @@ description = "Installed-binary real terminal/daemon regression for explicit Wai
 timeout_seconds = 60
 
 [[scenario]]
+name = "park_resume_live_owner_overlap"
+script = "scenarios/park_resume_live_owner_overlap.sh"
+owners = ["pin-park-resume-live-owner-race"]
+description = "Credential-free real current-source-candidate CLI/daemon regression for the parked live-owner overlap: the scenario requires WG_SMOKE_CANDIDATE_BIN (or the existing target/debug/wg), records its digest/source commit, and puts it first in PATH for every daemon/wrapper/fake-Pi subprocess; fake Pi deterministically awaits committed watchdog/process-epoch authorization, calls `wg wait`, then remains alive holding its dirty isolated worktree while an operator immediately runs `wg resume`; daemon-log synchronization holds the overlap across at least dispatcher.max_spawn_failures ticks and proves no competitor launches, spawn_failures stays zero, no breaker surfaces/trips, and one coalesced preparation deferral preserves lifecycle authority plus the attested exact Pi session leaf/WIP. Releasing only the old process naturally admits exactly one same-generation continuation using the exact session/session leaf and same worktree with dirty WIP intact, without `wg retry`, breaker repair, graph edit, credentials, cluster paths, or secrets; failures preserve a scratch evidence copy."
+timeout_seconds = 90
+
+[[scenario]]
 name = "admission_deferral_backpressure"
 script = "scenarios/admission_deferral_backpressure.sh"
 owners = ["fix-admission-deferrals", "integrate-and-canary"]
