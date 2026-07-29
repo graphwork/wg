@@ -2,13 +2,15 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
 use worksgood::graph::{
-    LogEntry, MessageWaitSelector, MessageWaitSubscription, Status, WaitCondition, WaitSpec,
+    LogEntry, MessageWaitSelector, MessageWaitSubscription, Status, Task, WaitCondition, WaitSpec,
     parse_delay,
 };
 use worksgood::lifecycle::{
-    FenceExpectation, LifecycleActor, TransitionKind, TransitionRequest, apply_transition,
+    FenceExpectation, LifecycleActor, PiAuthorizationState, TransitionKind, TransitionRequest,
+    apply_transition,
 };
 use worksgood::parser::modify_graph;
+use worksgood::pi_watchdog::PiWatchdog;
 use worksgood::service::registry::{AgentRegistry, AgentStatus};
 
 /// Parse a condition string into a WaitCondition.
@@ -151,6 +153,87 @@ fn parse_wait_spec(s: &str, graph: &worksgood::graph::WorkGraph) -> Result<WaitS
     }
 }
 
+/// Resolve the exact Pi session already authorized for this source attempt.
+///
+/// Parking is the handoff point after which a replacement may be dispatched,
+/// so the resume selector must be persisted in the same graph transaction as
+/// `AttemptParked`. The watchdog state alone is not a scheduling field, and an
+/// ambient `PI_SESSION_ID` alone is not authority. Bind the two only when the
+/// durable watchdog source/session/process proofs match the lifecycle kernel's
+/// active continuation authorization exactly.
+fn attested_pi_session_id(dir: &Path, task: &Task) -> Result<Option<String>> {
+    let Some(authorization) = task.lifecycle.pi_continuation.as_ref() else {
+        return Ok(None);
+    };
+    if authorization.state != PiAuthorizationState::Active {
+        anyhow::bail!(
+            "cannot park Pi attempt '{}': continuation authorization is {:?}, expected active",
+            authorization.attempt_id,
+            authorization.state
+        );
+    }
+    let attempt = task
+        .lifecycle
+        .current_attempt
+        .as_ref()
+        .context("Pi-authorized task has no current attempt")?;
+    let runtime_key = worksgood::attempt_runtime::AttemptRuntimeKey::for_attempt(task, attempt);
+    let state_path = worksgood::attempt_runtime::component_for_update(dir, &runtime_key, "pi")?
+        .join("state.json");
+    let watchdog = PiWatchdog::open(&state_path).map_err(anyhow::Error::new)?;
+    let state = watchdog.state();
+    let source = &state.source;
+    if source.task_id != task.id
+        || source.generation != task.lifecycle.generation
+        || source.attempt_id != attempt.id
+        || source.attempt_fence != task.lifecycle.fence
+        || source.worktree_lease_epoch != authorization.worktree_lease_epoch
+        || authorization.task_id != task.id
+        || authorization.generation != task.lifecycle.generation
+        || authorization.attempt_id != attempt.id
+        || authorization.attempt_fence != task.lifecycle.fence
+    {
+        anyhow::bail!(
+            "cannot park Pi attempt '{}': watchdog/continuation source tuple is stale",
+            attempt.id
+        );
+    }
+    if state.session.digest() != authorization.session_proof_digest
+        || state.route.digest() != authorization.route_snapshot_digest
+        || state.process_epoch != task.lifecycle.pi_process_epoch
+        || state.process.digest() != task.lifecycle.pi_process_identity_digest
+        || state.terminal
+        || !state.exact_guards.session
+        || !state.exact_guards.route
+        || !state.exact_guards.worktree
+        || !state.exact_guards.pid_identity
+        || !state.exact_guards.terminal_clear
+    {
+        anyhow::bail!(
+            "cannot park Pi attempt '{}': exact session/process guards are not attested",
+            attempt.id
+        );
+    }
+    if std::env::var("WG_TASK_ID").as_deref() == Ok(task.id.as_str())
+        && let Ok(environment_session) = std::env::var("PI_SESSION_ID")
+        && environment_session != state.session.session_id
+    {
+        anyhow::bail!(
+            "cannot park Pi attempt '{}': PI_SESSION_ID does not match the authorized session",
+            attempt.id
+        );
+    }
+    if let Some(existing) = task.session_id.as_deref()
+        && existing != state.session.session_id
+    {
+        anyhow::bail!(
+            "cannot park Pi attempt '{}': task session selector conflicts with the authorized session",
+            attempt.id
+        );
+    }
+    Ok(Some(state.session.session_id.clone()))
+}
+
 pub fn run(dir: &Path, id: &str, until: &str, checkpoint: Option<&str>) -> Result<()> {
     let path = super::graph_path(dir);
     if !path.exists() {
@@ -178,6 +261,17 @@ pub fn run(dir: &Path, id: &str, until: &str, checkpoint: Option<&str>) -> Resul
             ));
             return false;
         }
+
+        // Resolve a Pi continuation's exact session before changing lifecycle
+        // revision. This is read-only attestation; persistence happens only
+        // after the park transition succeeds below.
+        let attested_session_id = match attested_pi_session_id(dir, task) {
+            Ok(session_id) => session_id,
+            Err(e) => {
+                error = Some(e);
+                return false;
+            }
+        };
 
         // Parse and validate the condition
         let wait_spec = match parse_wait_spec(until, graph) {
@@ -233,6 +327,9 @@ pub fn run(dir: &Path, id: &str, until: &str, checkpoint: Option<&str>) -> Resul
         if let Err(rejection) = apply_transition(task, request) {
             error = Some(anyhow::anyhow!(rejection));
             return false;
+        }
+        if let Some(session_id) = attested_session_id {
+            task.session_id = Some(session_id);
         }
         task.wait_condition = Some(wait_spec);
         task.message_wait = bound_attempt.zip(selector).map(|(attempt, selector)| {
@@ -302,8 +399,11 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
     use worksgood::graph::{Status, WaitCondition, WaitSpec};
-    use worksgood::lifecycle::AttemptRef;
-    use worksgood::parser::load_graph;
+    use worksgood::lifecycle::{AttemptRef, PiContinuationAuthorization};
+    use worksgood::parser::{load_graph, modify_graph};
+    use worksgood::pi_watchdog::{
+        ProcessIdentity, QosClass, RouteSnapshot, SessionProof, SourceTuple, WatchdogPolicy,
+    };
     use worksgood::test_helpers::{make_task_with_status as make_task, setup_workgraph};
 
     fn running_task() -> worksgood::graph::Task {
@@ -443,6 +543,124 @@ mod tests {
         assert!(subscription.armed);
         assert_eq!(subscription.attempt_id, "attempt-0-1");
         assert_eq!(subscription.selector, MessageWaitSelector::AnyMessage);
+    }
+
+    #[test]
+    fn test_wg_wait_persists_only_attested_pi_session_for_resume() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+        setup_workgraph(dir_path, vec![running_task()]);
+
+        let graph = load_graph(graph_path(dir_path)).unwrap();
+        let task = graph.get_task("main").unwrap();
+        let attempt = task.lifecycle.current_attempt.as_ref().unwrap();
+        let runtime_key = worksgood::attempt_runtime::AttemptRuntimeKey::for_attempt(task, attempt);
+        let pi_dir =
+            worksgood::attempt_runtime::component_for_update(dir_path, &runtime_key, "pi").unwrap();
+        let session_dir = pi_dir.join("session");
+        std::fs::create_dir_all(&session_dir).unwrap();
+        let session_file = session_dir.join("attested-session.jsonl");
+        std::fs::write(
+            &session_file,
+            "{\"type\":\"session\",\"version\":3,\"id\":\"attested-session\"}\n",
+        )
+        .unwrap();
+        let source = SourceTuple {
+            task_id: "main".into(),
+            generation: 0,
+            attempt_id: attempt.id.clone(),
+            attempt_fence: 1,
+            worktree_lease_epoch: 1,
+            worktree_path: dir_path.join("worktree"),
+        };
+        let route = RouteSnapshot {
+            handler: "pi".into(),
+            provider: "fake".into(),
+            model: "fake-model".into(),
+            reasoning: Some("high".into()),
+            endpoint_redacted: "pi-owned".into(),
+            endpoint_hmac: "fixture-endpoint".into(),
+            qos: QosClass::Free,
+            pi_binary_digest: "fixture-pi".into(),
+            plugin_digest: "fixture-plugin".into(),
+        };
+        let session = SessionProof {
+            session_id: "attested-session".into(),
+            branch_leaf: "b3:leaf".into(),
+            session_dir,
+            session_file,
+            header_digest: "b3:header".into(),
+            append_prefix_digest: "b3:prefix".into(),
+            append_prefix_len: 1,
+        };
+        let process = ProcessIdentity {
+            pid: std::process::id(),
+            pgid: std::process::id(),
+            start_ticks: 1,
+            boot_id: "fixture-boot".into(),
+            nonce: "fixture-nonce".into(),
+        };
+        let process_digest = process.digest();
+        let state_path = pi_dir.join("state.json");
+        PiWatchdog::new_at(
+            state_path.clone(),
+            source.clone(),
+            route.clone(),
+            session.clone(),
+            process,
+            WatchdogPolicy::default(),
+            Utc::now().timestamp(),
+        )
+        .unwrap();
+        let authorization = PiContinuationAuthorization {
+            authorization_id: "fixture-auth".into(),
+            task_id: "main".into(),
+            generation: 0,
+            attempt_id: attempt.id.clone(),
+            attempt_fence: 1,
+            worktree_lease_epoch: 1,
+            session_proof_digest: session.digest(),
+            route_snapshot_digest: route.digest(),
+            state: PiAuthorizationState::Active,
+            max_replacement_epochs: 3,
+            max_reserved_elapsed_secs: 1800,
+            epochs_used: 0,
+            elapsed_reserved_secs: 0,
+            issued_by_policy: "pi-watchdog-static-v1".into(),
+        };
+        modify_graph(&graph_path(dir_path), |graph| {
+            let task = graph.get_task_mut("main").unwrap();
+            task.lifecycle.pi_process_epoch = 1;
+            task.lifecycle.pi_process_identity_digest = process_digest.clone();
+            task.lifecycle.pi_continuation = Some(authorization.clone());
+            true
+        })
+        .unwrap();
+
+        // A present session ID is not enough: corrupting one exact guard must
+        // fail closed without parking or persisting a resume selector.
+        let mut persisted: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&state_path).unwrap()).unwrap();
+        persisted["state"]["exact_guards"]["session"] = serde_json::json!(false);
+        std::fs::write(&state_path, serde_json::to_vec_pretty(&persisted).unwrap()).unwrap();
+        let rejected = run(dir_path, "main", "message", Some("unattested park")).unwrap_err();
+        assert!(
+            rejected.to_string().contains("not attested"),
+            "{rejected:#}"
+        );
+        let graph = load_graph(graph_path(dir_path)).unwrap();
+        let task = graph.get_task("main").unwrap();
+        assert_eq!(task.status, Status::InProgress);
+        assert!(task.session_id.is_none());
+
+        persisted["state"]["exact_guards"]["session"] = serde_json::json!(true);
+        std::fs::write(&state_path, serde_json::to_vec_pretty(&persisted).unwrap()).unwrap();
+        run(dir_path, "main", "message", Some("attested park")).unwrap();
+        let graph = load_graph(graph_path(dir_path)).unwrap();
+        let task = graph.get_task("main").unwrap();
+        assert_eq!(task.status, Status::Waiting);
+        assert_eq!(task.session_id.as_deref(), Some("attested-session"));
+        assert_eq!(task.checkpoint.as_deref(), Some("attested park"));
     }
 
     #[test]
