@@ -123,6 +123,9 @@ pub struct ConciergePlan {
 pub struct LifecycleOptions {
     pub project: Option<PathBuf>,
     pub dry_run: bool,
+    /// Exact one-model concierge shorthand. This is deliberately separate from
+    /// the advanced existing-profile customization fields below.
+    pub requested_model: Option<String>,
     pub requested_profile: Option<String>,
     pub continue_without_ai: bool,
     pub strong_model: Option<String>,
@@ -428,10 +431,11 @@ fn generated_profile_name(base: &str, content: &str) -> Result<String> {
     Ok(format!("concierge-{base}-{short}"))
 }
 
-fn existing_or_generated_plan(
+fn existing_or_generated_plan_at(
     graph: &Path,
     base: &str,
     content: String,
+    now: chrono::DateTime<chrono::Utc>,
 ) -> Result<(project::ProjectSelectionPlan, Option<String>)> {
     let name = generated_profile_name(base, &content)?;
     let path = named::profile_path(&name)?;
@@ -442,12 +446,106 @@ fn existing_or_generated_plan(
         {
             anyhow::bail!("Generated profile hash collision at {}", path.display());
         }
-        return Ok((project::plan_project_selection(graph, &name)?, None));
+        return Ok((project::plan_project_selection_at(graph, &name, now)?, None));
     }
     Ok((
-        project::plan_generated_project_selection(graph, &name, &content)?,
+        project::plan_generated_project_selection_at(graph, &name, &content, now)?,
         Some(content),
     ))
+}
+
+fn existing_or_generated_plan(
+    graph: &Path,
+    base: &str,
+    content: String,
+) -> Result<(project::ProjectSelectionPlan, Option<String>)> {
+    existing_or_generated_plan_at(graph, base, content, chrono::Utc::now())
+}
+
+/// The shorthand accepts one spelling only and retains it byte-for-byte.
+/// In particular, this must never pass through the legacy handler/provider
+/// normalizers that can turn `openrouter:...` into another execution system.
+fn validate_one_model_route(route: &str) -> Result<()> {
+    if route != route.trim() || route.chars().any(char::is_whitespace) {
+        anyhow::bail!("--model requires one exact whitespace-free `pi:<provider>:<model>` route");
+    }
+    let (provider, model) = crate::config::parse_exact_pi_route(route).map_err(|error| {
+        anyhow::anyhow!(
+            "--model requires an exact handler-first Pi route `pi:<provider>:<model>`: {error}; no handler/model was inferred and no fallback was selected"
+        )
+    })?;
+    if format!("pi:{provider}:{model}") != route {
+        anyhow::bail!(
+            "--model route was not exact; pass `pi:<provider>:<model>` without aliases or normalization"
+        );
+    }
+    Ok(())
+}
+
+/// Build only from the bundled clean Pi starter. User materializations and
+/// drifted overrides are intentionally not consulted by this shorthand.
+fn one_model_profile_content(
+    route: &str,
+    strong_reasoning: ReasoningLevel,
+    weak_reasoning: ReasoningLevel,
+) -> Result<String> {
+    validate_one_model_route(route)?;
+    let mut content = patch_two_tier_content(
+        named::STARTER_PI.to_string(),
+        route,
+        route,
+        strong_reasoning,
+        weak_reasoning,
+    )?;
+
+    // Pin every concrete dispatch slot, rather than merely relying on tier
+    // inheritance. This enumeration grows with DispatchRole::ALL, so a newly
+    // configured dispatch role cannot retain a route from the starter.
+    for role in crate::config::DispatchRole::ALL {
+        // CoordinatorEval is intentionally the evaluator slot in Config; do not
+        // emit an unknown TOML table for that alias.
+        if *role == crate::config::DispatchRole::CoordinatorEval {
+            continue;
+        }
+        content = named::set_toml_string_value(&content, &format!("models.{role}.model"), route);
+        let reasoning = if role.default_tier() == crate::config::Tier::Fast {
+            weak_reasoning
+        } else {
+            strong_reasoning
+        };
+        content = named::set_toml_string_value(
+            &content,
+            &format!("models.{role}.reasoning"),
+            reasoning.as_str(),
+        );
+    }
+
+    let config: Config = toml::from_str(&content)?;
+    config.validate_model_format()?;
+    config.validate_pi_model_plane()?;
+    if config.agent.model != route || config.coordinator.model.as_deref() != Some(route) {
+        anyhow::bail!("one-model profile failed to pin agent/dispatcher to the exact route");
+    }
+    for role in std::iter::once(crate::config::DispatchRole::Default)
+        .chain(crate::config::DispatchRole::ALL.iter().copied())
+    {
+        let resolved = config.resolve_pi_route_for_role(role)?;
+        let expected_reasoning = if role.default_tier() == crate::config::Tier::Fast {
+            weak_reasoning
+        } else {
+            strong_reasoning
+        };
+        if resolved.route != route || resolved.reasoning != expected_reasoning {
+            anyhow::bail!(
+                "one-model invariant failed for role {role}: route={:?}, reasoning={} (expected {:?}, {})",
+                resolved.route,
+                resolved.reasoning,
+                route,
+                expected_reasoning
+            );
+        }
+    }
+    Ok(content)
 }
 
 fn route_for_pi_model(model: &PiModel) -> String {
@@ -811,8 +909,26 @@ fn choose_mode_and_profile(
     if options.continue_without_ai {
         return Ok((ConciergeMode::ContinueWithoutAi, None));
     }
+    if let Some(route) = &options.requested_model {
+        validate_one_model_route(route)?;
+        // `pi` here is an internal base identity only. prepare_plan uses the
+        // bundled starter directly and never loads an on-disk pi profile.
+        return Ok((ConciergeMode::Profile, Some("pi".to_string())));
+    }
     if let Some(profile) = &options.requested_profile {
-        let content = profile_content(profile)?;
+        let content = profile_content(profile).map_err(|error| {
+            if options.strong_model.is_some()
+                || options.weak_model.is_some()
+                || options.strong_reasoning.is_some()
+                || options.weak_reasoning.is_some()
+            {
+                anyhow::anyhow!(
+                    "Profile '{profile}' is unavailable. `--profile` selects an existing reusable base definition; it does not create a new model profile. For the simple one-model path use `worksgood setup --model pi:<provider>:<model>`. ({error})"
+                )
+            } else {
+                error
+            }
+        })?;
         let config: Config = toml::from_str(&content)?;
         config
             .validate_model_format()
@@ -1005,7 +1121,22 @@ fn prepare_plan(
     let mut planned_profile_toml = None;
     let selection = if mode == ConciergeMode::Profile {
         let base = base_profile.context("Profile mode omitted profile")?;
-        if base == "pi" || base.starts_with("pi-") {
+        if let Some(route) = options.requested_model.as_deref() {
+            let strong_reasoning = options.strong_reasoning.unwrap_or(ReasoningLevel::High);
+            let weak_reasoning = options.weak_reasoning.unwrap_or(ReasoningLevel::Low);
+            let content = one_model_profile_content(route, strong_reasoning, weak_reasoning)?;
+            planned_profile_toml = Some(content.parse::<toml::Value>()?);
+            let now = if options.dry_run {
+                chrono::DateTime::<chrono::Utc>::from_timestamp(0, 0)
+                    .expect("Unix epoch is a valid concierge plan timestamp")
+            } else {
+                chrono::Utc::now()
+            };
+            let (plan, generated) =
+                existing_or_generated_plan_at(&target.graph, "pi-one-model", content, now)?;
+            generated_content = generated;
+            Some(plan)
+        } else if base == "pi" || base.starts_with("pi-") {
             let content = profile_content(&base)?;
             let configured: Config = toml::from_str(&content)?;
             let (strong, weak, strong_reasoning, weak_reasoning) =
@@ -1074,8 +1205,13 @@ fn prepare_plan(
                 selection.profile, selection.profile_fingerprint
             ));
         }
+        let weak_label = if options.requested_model.is_some() {
+            "Eval/assign/FLIP/weak roles"
+        } else {
+            "Agency/FLIP/evaluation"
+        };
         actions.push(format!(
-            "Select profile '{}' for this project only; Worker/chat {} (effort {} [{}]); Agency/FLIP/evaluation {} (effort {} [{}])",
+            "Select profile '{}' for this project only; Worker/chat {} (effort {} [{}]); {weak_label} {} (effort {} [{}])",
             selection.profile,
             selection.readiness.strong_route,
             reasoning_label(selection.readiness.strong_reasoning),
@@ -1531,9 +1667,34 @@ pub fn run_lifecycle(options: &LifecycleOptions, force_setup: bool) -> Result<()
             "error[{ATTENDED_TTY_REQUIRED}]: bare/setup worksgood requires an attended TTY; no files or services were changed"
         );
     }
+    if options.requested_model.is_some()
+        && (options.continue_without_ai
+            || options.requested_profile.is_some()
+            || options.strong_model.is_some()
+            || options.weak_model.is_some())
+    {
+        anyhow::bail!(
+            "--model conflicts with --without-ai, --profile, --strong-model, and --weak-model"
+        );
+    }
+    if options.requested_profile.is_none()
+        && options.requested_model.is_none()
+        && (options.strong_model.is_some()
+            || options.weak_model.is_some()
+            || options.strong_reasoning.is_some()
+            || options.weak_reasoning.is_some())
+    {
+        anyhow::bail!(
+            "model/reasoning overrides require either an existing --profile or the simple `--model pi:<provider>:<model>` path"
+        );
+    }
+    if let Some(route) = options.requested_model.as_deref() {
+        validate_one_model_route(route)?;
+    }
     let target = resolve_repository(options.project.as_deref())?;
     let executable = resolve_authoritative_executable()?;
-    if target.graph_exists && !force_setup && !options.dry_run {
+    if target.graph_exists && !force_setup && !options.dry_run && options.requested_model.is_none()
+    {
         if let Some(state) = read_state(&target.graph)? {
             return configured_fast_path(&target, &executable, state, options);
         }
@@ -1557,9 +1718,26 @@ pub fn run_lifecycle(options: &LifecycleOptions, force_setup: bool) -> Result<()
     print_plan(&prepared.public)?;
     if options.dry_run {
         println!(
-            "Dry run: no graph, profile, history, journal, cache, service, or TUI state was written."
+            "Dry run: no graph, profile, history, journal, cache, plugin, service, or TUI state was written."
         );
         return Ok(());
+    }
+    // The one-model shorthand must reject an unavailable Pi transport before
+    // graph init, profile materialization, plugin preparation, or any other
+    // transaction write. Pi still owns authentication, which remains an
+    // attended/actionable readiness status rather than a WG credential probe.
+    if options.requested_model.is_some()
+        && let Some(selection) = prepared.public.selection.as_ref()
+        && let Some(pi) = selection
+            .readiness
+            .handlers
+            .iter()
+            .find(|handler| handler.handler == "pi")
+        && !pi.installed
+    {
+        anyhow::bail!(
+            "Pi is unavailable for the exact --model route. Install Pi and complete Pi-owned authentication, then rerun this command; no graph/profile/plugin/service state was changed and no fallback was selected."
+        );
     }
     if !confirm_plan(options)? {
         println!("Cancelled; nothing was written.");
@@ -1936,6 +2114,103 @@ mod tests {
             route_for_pi_model(&parsed[0]),
             "pi:openai-codex:gpt-5.6-sol"
         );
+    }
+
+    #[test]
+    fn one_model_shorthand_pins_every_effective_role_exactly() {
+        let route = "pi:openrouter:deepseek/deepseek-v4-flash";
+        let content =
+            one_model_profile_content(route, ReasoningLevel::High, ReasoningLevel::Low).unwrap();
+        let config: Config = toml::from_str(&content).unwrap();
+        assert_eq!(config.agent.model, route);
+        assert_eq!(config.coordinator.model.as_deref(), Some(route));
+        for role in std::iter::once(crate::config::DispatchRole::Default)
+            .chain(crate::config::DispatchRole::ALL.iter().copied())
+        {
+            let resolved = config.resolve_pi_route_for_role(role).unwrap();
+            assert_eq!(resolved.route, route, "role={role}");
+            let expected = if role.default_tier() == crate::config::Tier::Fast {
+                ReasoningLevel::Low
+            } else {
+                ReasoningLevel::High
+            };
+            assert_eq!(resolved.reasoning, expected, "role={role}");
+        }
+        assert!(!content.contains("z-ai/glm-5.2"));
+        assert!(!content.contains("deepseek/deepseek-chat"));
+    }
+
+    #[test]
+    fn one_model_shorthand_content_addresses_independent_reasoning_overrides() {
+        let route = "pi:openrouter:deepseek/deepseek-v4-flash";
+        let base =
+            one_model_profile_content(route, ReasoningLevel::High, ReasoningLevel::Low).unwrap();
+        let strong_only =
+            one_model_profile_content(route, ReasoningLevel::Xhigh, ReasoningLevel::Low).unwrap();
+        let weak_only =
+            one_model_profile_content(route, ReasoningLevel::High, ReasoningLevel::Minimal)
+                .unwrap();
+
+        let base_fp = project::profile_content_fingerprint(&base).unwrap();
+        let strong_fp = project::profile_content_fingerprint(&strong_only).unwrap();
+        let weak_fp = project::profile_content_fingerprint(&weak_only).unwrap();
+        assert_ne!(base_fp, strong_fp, "strong reasoning is profile identity");
+        assert_ne!(base_fp, weak_fp, "weak reasoning is profile identity");
+        assert_ne!(
+            generated_profile_name("pi-one-model", &base).unwrap(),
+            generated_profile_name("pi-one-model", &strong_only).unwrap()
+        );
+        assert_ne!(
+            generated_profile_name("pi-one-model", &base).unwrap(),
+            generated_profile_name("pi-one-model", &weak_only).unwrap()
+        );
+        let base_config: Config = toml::from_str(&base).unwrap();
+        let strong_config: Config = toml::from_str(&strong_only).unwrap();
+        let weak_config: Config = toml::from_str(&weak_only).unwrap();
+        assert_ne!(
+            crate::service_identity::config_fingerprint(&base_config).unwrap(),
+            crate::service_identity::config_fingerprint(&strong_config).unwrap(),
+            "strong reasoning is service identity"
+        );
+        assert_ne!(
+            crate::service_identity::config_fingerprint(&base_config).unwrap(),
+            crate::service_identity::config_fingerprint(&weak_config).unwrap(),
+            "weak reasoning is service identity"
+        );
+
+        for (content, strong, weak) in [
+            (&base, ReasoningLevel::High, ReasoningLevel::Low),
+            (&strong_only, ReasoningLevel::Xhigh, ReasoningLevel::Low),
+            (&weak_only, ReasoningLevel::High, ReasoningLevel::Minimal),
+        ] {
+            let config: Config = toml::from_str(content).unwrap();
+            let worker = config
+                .resolve_pi_route_for_role(crate::config::DispatchRole::TaskAgent)
+                .unwrap();
+            let flip = config
+                .resolve_pi_route_for_role(crate::config::DispatchRole::FlipComparison)
+                .unwrap();
+            assert_eq!(worker.route, route);
+            assert_eq!(flip.route, route);
+            assert_eq!(worker.reasoning, strong);
+            assert_eq!(flip.reasoning, weak);
+            assert!(!worker.route.contains('('));
+            assert!(!flip.route.contains('('));
+        }
+    }
+
+    #[test]
+    fn one_model_shorthand_rejects_aliases_and_other_handlers() {
+        for invalid in [
+            "openrouter:deepseek/deepseek-v4-flash",
+            "nex:openrouter:deepseek/deepseek-v4-flash",
+            "claude:opus",
+            "pi:openrouter:",
+            " pi:openrouter:deepseek/deepseek-v4-flash",
+        ] {
+            let error = validate_one_model_route(invalid).unwrap_err().to_string();
+            assert!(error.contains("--model"), "{invalid}: {error}");
+        }
     }
 
     #[test]

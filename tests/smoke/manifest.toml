@@ -2547,6 +2547,13 @@ description = "Default-feature, credential-free attended tmux lifecycle for the 
 timeout_seconds = 600
 
 [[scenario]]
+name = "worksgood_one_model_setup"
+script = "scenarios/worksgood_one_model_setup.sh"
+owners = ["concierge-one-model-setup"]
+description = "Pins the primary concierge one-model contract through the real attended tmux flow from a clean HOME with zero profile files: `worksgood setup --model pi:openrouter:deepseek/deepseek-v4-flash` shows one immutable plan and needs one confirmation; every effective role retains the exact route, strong roles are high, weak/FLIP/eval roles low; generated content-addressed selection stays project-only; Pi plugin and authenticated daemon identity become ready; repeat is idempotent. Also pins byte-stable non-mutating dry-run, bare `worksgood --model`, strict route/conflict errors, improved unavailable-profile guidance, cancellation, and unavailable-Pi pre-mutation refusal with no fallback."
+timeout_seconds = 300
+
+[[scenario]]
 name = "worksgood_default_release_contract"
 script = "../install/release_contract.sh"
 owners = ["promote-worksgood-default-install"]
