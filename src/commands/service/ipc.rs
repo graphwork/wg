@@ -1870,6 +1870,11 @@ pub fn create_chat_in_graph_with_request_id(
             command_argv,
             working_dir,
             executor_preset_name,
+            // Attended chats are human-directed repository operators. Persist
+            // the full context/tool posture explicitly instead of inheriting
+            // worker defaults that could later narrow the chat silently.
+            context_scope: Some("full".to_string()),
+            exec_mode: Some("full".to_string()),
             created_at: Some(now.clone()),
             started_at: Some(now.clone()),
             log: vec![worksgood::graph::LogEntry {
@@ -4080,6 +4085,12 @@ poll_interval = 60
         assert_eq!(task.model.as_deref(), Some("pi:openai-codex:gpt-5.6-sol"));
         assert_eq!(task.command_argv.first().map(String::as_str), Some("pi"));
         assert!(!task.command_argv.iter().any(|arg| arg == "claude"));
+        assert_eq!(task.exec_mode.as_deref(), Some("full"));
+        assert_eq!(task.context_scope.as_deref(), Some("full"));
+        assert_eq!(
+            task.working_dir.as_deref(),
+            Some(dir.parent().unwrap_or(dir).to_string_lossy().as_ref())
+        );
 
         let state = CoordinatorState::load_for(dir, id).expect("atomic route state");
         assert_eq!(state.executor_override.as_deref(), Some("pi"));

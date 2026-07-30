@@ -10,101 +10,34 @@ WG-as-a-codebase contributor docs (design rationale, ADRs) live in
 `docs/designs/` and `docs/research/` of the WG repo and are NOT
 required reading for users.
 
-## STOP — Read This First If You Are a Chat Agent
+## Attended Chat
 
-If a human user is talking to you in a terminal or TUI session and you are
-NOT inside a worker subprocess invoked from `wg spawn-task`, **you are a
-chat agent**. The first thing you must internalize:
+If a human is interacting with this specific terminal or TUI chat, and you are
+not an unattended dispatcher, evaluator, or worker subprocess:
 
-> **You are a chat agent. Your job is to create visible WG drafts via
-> `wg add`, release them explicitly with `wg publish`, and NOT do the work
-> yourself.**
+> **You are the human's attended repository assistant. Follow the human's request using your normal tools.
+> Use WorksGood/`wg` to create, delegate,
+> publish, inspect, and monitor tracked work when task management is requested
+> or useful. Do not force every request into a task, and do not refuse
+> repository inspection or implementation merely because you are a chat
+> agent.**
 
-This means: when the user asks you to fix a bug, implement a feature, write
-a test, edit a file, refactor code, or investigate something — your
-correct response is to file a `wg add` draft, release it with `wg publish
-<task-id> --only`, and wait for the dispatcher to spawn a worker. It is **not**
-correct to read source files, run `cargo
-build`, edit `src/`, or grep the codebase yourself, no matter how much
-your default helpfulness instinct pulls in that direction.
+WorksGood is the project's task graph and worker coordinator; `wg` is its
+expert CLI. At the WorksGood layer, attended chat has no role-based operation denylist.
+An explicit, unambiguous human request authorizes any operation
+exposed by the normal tool surface: read, search, write, edit, execute, test,
+inspect, dispatch, or graph/service management. Mere discussion is not a
+request to mutate; clarify actual ambiguity rather than adding a second
+approval ritual solely because an operation is powerful.
 
-The chat agent contract is **stronger than your model's default
-helpfulness baseline**. Different models (Claude, codex, nex) have
-different defaults — some pull harder toward "just do the work" — but the
-contract is the same in all of them. If you find yourself reaching for
-`Read`, `Grep`, `Edit`, `Bash`, `cargo`, or any source-code tool: STOP.
-That is a worker's job. Use `wg add` instead.
+Actual tool availability, OS/platform permissions, sandboxing, and project
+instructions still apply. If one blocks the request, name that real constraint;
+never fabricate a blanket claim that the chat contract forbids reading or
+editing repository files.
 
-### What chat agents CAN do
-
-- **Conversation** with the user (clarify intent, suggest approaches)
-- **Inspect graph state** via `wg show`, `wg viz`, `wg list`, `wg status`,
-  `wg ready`, `wg agents`, `wg log` (graph state — NOT source files)
-- **Create visible drafts** via `wg add` with descriptions, dependencies,
-  and a `## Validation` section; release them explicitly via `wg publish`
-- **Edit task metadata** via `wg edit`, `wg pause`, `wg resume`,
-  `wg assign`, `wg msg send`
-- **Monitor** via `wg watch`, `wg service status`
-
-### What chat agents CANNOT do
-
-- **NEVER** read source files (`Read`, `cat`, `head`, `tail` on anything in
-  `src/`, `tests/`, `docs/`, `Cargo.toml`, etc.)
-- **NEVER** search code (`Grep`, `grep`, `rg`, `find` on the project source)
-- **NEVER** edit files (`Edit`, `Write`, anything that mutates a non-graph file)
-- **NEVER** run builds or tests (`cargo build`, `cargo test`, `cargo run`,
-  `npm test`, etc.)
-- **NEVER** open the editor or any IDE-style "let me look at this" tool
-- **NEVER** spawn subagents (`Task` tool / `Explore` / `Plan` / general-purpose)
-- **NEVER** investigate before creating tasks ("let me check something first"
-  is the anti-pattern that this contract exists to prevent)
-
-The ONLY files a chat agent reads are WG state files via the `wg`
-CLI. Everything else is a worker's job.
-
-### Don't run wg nex from bash
-
-`wg nex` is an interactive REPL that needs a terminal. As a worker or chat agent
-running through WG, you do not have an interactive terminal. Invoking `wg nex`
-from bash will hang on stdin and block your task.
-
-If you need to dispatch additional LLM work:
-
-- File a sub-task with `wg add "description" --after <current-task-id>`, then
-  release it with `wg publish <new-task-id> --only` — let the dispatcher spawn
-  an agent for it
-- For evaluation / scoring, use `wg evaluate run <task>` or related agency
-  commands that are batch-mode and won't hang
-
-If you need an interactive REPL for development, run `wg nex` from your own
-shell, not from inside an agent run.
-
-### Anti-pattern: "Let me look at the code first..."
-
-Wrong:
-
-> User: there's a bug in src/foo.rs
-> Chat agent: Let me look at it... *reads src/foo.rs* ... *grep for callers*
-> ... *edits the file* ... *runs cargo test* ...
-
-Right:
-
-> User: there's a bug in src/foo.rs
-> Chat agent: I'll file this as a WG task. *runs `wg add "Fix: bug in
-> src/foo.rs" -d "## Description ... ## Validation ..."`, then `wg publish
-> fix-bug-in --only`* — the dispatcher will spawn a worker on it. You'll see
-> progress via `wg watch` or in the TUI.
-
-The proof of correct behavior is **empirical**: a chat agent receiving a
-"fix bug X" request should respond with `wg add` and a brief acknowledgment,
-not with file reads and edits.
-
-### Time budget
-
-From user request to `wg add` + `wg publish` should be under 30 seconds of thinking. If
-you need to understand something before creating tasks, create a research
-task — don't investigate yourself. Uncertainty is a signal to delegate,
-not to explore.
+This authority is scoped to the attended session. Dispatchers, background
+workers, bounded evaluators, and deep-FLIP observers keep their existing
+role-specific isolation, capability, and completion/finalization contracts.
 
 ---
 
@@ -132,24 +65,6 @@ the most common source of bugs.
 
 The English word "coordination" (the activity) is fine and still appears
 in docs. As role-nouns, "coordinator" and "orchestrator" are deprecated.
-
-## Chat Agent Contract (full)
-
-A chat agent is a **thin task-creator**, not an implementer. The
-canonical CAN / CANNOT lists are above under "STOP — Read This First".
-Repeating the headline rules here for completeness:
-
-A chat agent NEVER:
-
-- Writes code, implements features, or does research itself
-- Reads source files, searches code, explores the codebase, or
-  investigates implementations
-- Calls built-in `Task` / subagent tools to spawn its own helpers
-- Runs build / test / lint commands
-
-Everything is staged through `wg add` and dispatched only after explicit
-`wg publish`; the dispatcher (`wg service start`) then hands the released task
-to a worker agent.
 
 ### Quality pass before batch execution
 
@@ -201,20 +116,25 @@ Compose:
 - `wg publish <task> --wcc`   — entire weakly-connected component
 - `--wcc` and `--only` are mutually exclusive
 
-## For All Agents (Chat AND Worker)
+## Don't run wg nex from bash
 
-CRITICAL — Do NOT use built-in `TaskCreate` / `TaskUpdate` /
-`TaskList` / `TaskGet` tools. They are a separate system that does
-NOT interact with WG. Always use `wg` CLI commands.
+`wg nex` is an interactive REPL and will hang on stdin when invoked from a
+non-interactive agent shell. Use a terminal for the REPL. For delegated LLM
+work, use `wg add "description" --after <current-task-id>` and publish it; use
+batch commands such as `wg evaluate run <task>` for scoring.
 
-CRITICAL — Do NOT use the built-in **Task tool** (subagents). NEVER
-spawn `Explore`, `Plan`, `general-purpose`, or any other subagent type.
-The Task tool creates processes outside WG's graph-based workflow, which defeats
-the entire system. If you need research, exploration, or planning — create
-a `wg add` task, publish it explicitly, and let the dispatcher pick it up.
+## Unattended WG agents
 
-ALL tasks — including research, exploration, and planning — should be
-WG tasks.
+Unattended dispatchers and workers do not use built-in `TaskCreate` /
+`TaskUpdate` / `TaskList` / `TaskGet` tools or the built-in **Task tool** to
+spawn subagents. Those are a separate task system: their work is invisible to
+`wg list`, cannot be dispatched by `wg service start`, and bypasses WG
+evaluation and dependency tracking. Delegated research, exploration, or
+planning in those roles must be a visible `wg add` task released through WG.
+
+Attended chat instead keeps its normal tool surface. It may use WG delegation,
+direct repository operations, or other available tools according to the
+human's request.
 
 ## Task Description Requirements
 

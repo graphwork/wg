@@ -2858,3 +2858,10 @@ script = "scenarios/attempt_runtime_state_namespace.sh"
 owners = ["fix-attempt-runtime-state-namespace"]
 description = "Candidate-binary terminal regression for task-local attempt identity: two concurrent tasks both own attempt-0-1 with distinct real Pi watchdog/session namespaces; a third real spawn launches exactly once despite 1-27 foreign historical flat directories, emits one reconciliation diagnostic, never projects stale Pi/observer state, and leaves every historical byte unchanged."
 timeout_seconds = 180
+
+[[scenario]]
+name = "attended_chat_user_authority"
+script = "scenarios/attended_chat_user_authority.sh"
+owners = ["restore-attended-chat-user-authority"]
+description = "Credential-free fake-Claude model through the real daemon + tmux TUI composer: the concise attended first-turn prompt exposes the normal repository Read/Edit/Bash surface beside WG delegation and carries no retired graph-only source prohibition or replacement denylist; a known-file read proves tool path/result without mutation, discussion creates no write/task, a harmless explicit edit/check executes, wg add+publish remains available, ambiguous destructive discussion is clarified rather than executed, chat metadata pins repository cwd + full context/exec posture, and Claude argv does not narrow tools to Bash(wg:*)."
+timeout_seconds = 180

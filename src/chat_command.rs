@@ -355,8 +355,17 @@ pub fn migrate_chat_task_metadata(
     endpoint: Option<&str>,
 ) -> bool {
     let mut changed = false;
-    if task.working_dir.is_none() {
-        task.working_dir = Some(default_working_dir(workgraph_dir));
+    let repository_root = default_working_dir(workgraph_dir);
+    if task.working_dir.as_deref() != Some(repository_root.as_str()) {
+        task.working_dir = Some(repository_root);
+        changed = true;
+    }
+    if task.context_scope.as_deref() != Some("full") {
+        task.context_scope = Some("full".to_string());
+        changed = true;
+    }
+    if task.exec_mode.as_deref() != Some("full") {
+        task.exec_mode = Some("full".to_string());
         changed = true;
     }
     if task.executor_preset_name.is_none() {

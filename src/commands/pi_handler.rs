@@ -1053,9 +1053,13 @@ fn plugin_child_env(
 }
 
 fn parse_coordinator_id(chat_ref: &str) -> Option<u32> {
-    chat_ref
-        .strip_prefix("coordinator-")
-        .and_then(|s| s.parse::<u32>().ok())
+    ["chat-", "coordinator-", ".chat-", ".coordinator-"]
+        .into_iter()
+        .find_map(|prefix| {
+            chat_ref
+                .strip_prefix(prefix)
+                .and_then(|suffix| suffix.parse::<u32>().ok())
+        })
 }
 
 fn last_answered_inbox_id(workgraph_dir: &Path, chat_ref: &str) -> u64 {
@@ -1078,7 +1082,7 @@ fn last_answered_inbox_id(workgraph_dir: &Path, chat_ref: &str) -> u64 {
 }
 
 fn build_handler_system_prompt(workgraph_dir: &Path, chat_ref: &str, role: Option<&str>) -> String {
-    if chat_ref.starts_with("coordinator-") || role == Some("coordinator") {
+    if parse_coordinator_id(chat_ref).is_some() || role == Some("coordinator") {
         crate::commands::service::coordinator_agent::build_system_prompt(workgraph_dir)
     } else if let Some(r) = role {
         format!("You are acting in the role of: {}.", r)
@@ -1543,5 +1547,23 @@ mod tests {
         let without = assemble_turn(dir.path(), None, None, "hello");
         assert!(!without.contains("# System"));
         assert!(without.contains("hello"));
+    }
+
+    #[test]
+    fn canonical_pi_chat_first_turn_has_human_directed_operator_contract() {
+        let dir = tempfile::TempDir::new().unwrap();
+        for chat_ref in ["chat-7", "coordinator-8", ".chat-9", ".coordinator-10"] {
+            assert!(parse_coordinator_id(chat_ref).is_some(), "{chat_ref}");
+            let prompt = build_handler_system_prompt(dir.path(), chat_ref, None);
+            let turn = assemble_turn(dir.path(), None, Some(&prompt), "read README.md");
+            assert!(turn.contains("human's attended repository assistant"));
+            assert!(turn.contains("Follow the human's request"));
+            assert!(turn.contains("normal tool surface: read, search, write, edit, execute, test"));
+            assert!(turn.contains("no role-based operation denylist"));
+            assert!(!turn.contains("You do NOT read source files"));
+            assert!(!turn.contains("The ONLY files you may read are WG state"));
+            assert!(!turn.contains("A chat agent NEVER reads source files"));
+        }
+        assert!(parse_coordinator_id("worker-11").is_none());
     }
 }

@@ -1233,7 +1233,13 @@ mod tests {
         assert!(chat_tasks[0].id.starts_with(".chat-"));
         assert_eq!(chat_tasks[0].executor_preset_name.as_deref(), Some("pi"));
         assert!(!chat_tasks[0].command_argv.is_empty());
-        assert!(chat_tasks[0].working_dir.is_some());
+        assert_eq!(
+            chat_tasks[0].working_dir.as_deref(),
+            dir.parent().map(|path| path.to_string_lossy()).as_deref(),
+            "attended chat cwd must be the repository root"
+        );
+        assert_eq!(chat_tasks[0].exec_mode.as_deref(), Some("full"));
+        assert_eq!(chat_tasks[0].context_scope.as_deref(), Some("full"));
     }
 
     #[test]
@@ -1253,6 +1259,8 @@ mod tests {
             vec!["bash".to_string(), "-lc".to_string(), "bash".to_string()]
         );
         assert!(chat.working_dir.as_deref().is_some_and(|d| !d.is_empty()));
+        assert_eq!(chat.exec_mode.as_deref(), Some("full"));
+        assert_eq!(chat.context_scope.as_deref(), Some("full"));
     }
 
     #[test]
@@ -1393,6 +1401,8 @@ mod tests {
         assert_eq!(chat.command_argv[0], "wg");
         assert!(chat.command_argv.contains(&"nex".to_string()));
         assert!(chat.working_dir.as_deref().is_some_and(|d| !d.is_empty()));
+        assert_eq!(chat.exec_mode.as_deref(), Some("full"));
+        assert_eq!(chat.context_scope.as_deref(), Some("full"));
     }
 
     #[test]
