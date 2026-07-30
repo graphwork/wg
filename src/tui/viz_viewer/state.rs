@@ -20787,6 +20787,8 @@ impl VizApp {
                             t.command_argv = replacement.command_argv.clone();
                             t.working_dir = replacement.working_dir.clone();
                             t.executor_preset_name = replacement.executor_preset_name.clone();
+                            t.context_scope = replacement.context_scope.clone();
+                            t.exec_mode = replacement.exec_mode.clone();
                             true
                         } else {
                             false
@@ -20921,7 +20923,10 @@ impl VizApp {
             return;
         }
 
-        // Owned String args per executor.
+        // Owned String args per executor. Attended Pi additionally resolves
+        // the version-locked WG extension so the pane has Pi's ordinary
+        // built-in tools PLUS the WG tools (no `-ne` discovery suppression).
+        let mut attended_pi_plugin: Option<worksgood::pi_plugin::ResolvedPlugin> = None;
         let (bin, args_owned, cwd_opt): (String, Vec<String>, Option<std::path::PathBuf>) =
             match executor.as_str() {
                 "native" => {
@@ -21137,6 +21142,24 @@ impl VizApp {
                         "--session-dir".to_string(),
                         session_dir.display().to_string(),
                     ]);
+                    // Load the exact WG extension explicitly while leaving Pi's
+                    // normal extension discovery and built-in file/bash tools
+                    // enabled. `-ne` is intentionally absent: attended chat is
+                    // not the hermetic unattended RPC topology.
+                    let plugin = match worksgood::pi_plugin::ensure_pi_plugin(
+                        worksgood::pi_plugin::EnsureMode::Hermetic,
+                    ) {
+                        Ok(plugin) => plugin,
+                        Err(error) => {
+                            worksgood::session_lock::clear_tui_driver_sentinel(&chat_dir);
+                            self.chat_startup_state = ChatStartupState::Error(format!(
+                                "could not prepare WG tools for attended Pi chat: {error}"
+                            ));
+                            return;
+                        }
+                    };
+                    args.extend(["-e".to_string(), plugin.dist_entry.display().to_string()]);
+                    attended_pi_plugin = Some(plugin);
                     // `wg chat create` preflights the interactive Pi binary
                     // transactionally. Resolve it again to an absolute path at
                     // the actual PTY edge so tmux/non-login PATH drift cannot
@@ -21231,6 +21254,16 @@ impl VizApp {
         }
         if let Some(reasoning) = authoritative_task.and_then(|task| task.reasoning) {
             env.push(("WG_REASONING".to_string(), reasoning.as_str().to_string()));
+        }
+        if let Some(plugin) = attended_pi_plugin.as_ref() {
+            env.push((
+                "WG_PI_PLUGIN_COMPAT_VERSION".to_string(),
+                plugin.compat.clone(),
+            ));
+            env.push((
+                "WG_PI_PLUGIN_DIR".to_string(),
+                plugin.root.display().to_string(),
+            ));
         }
 
         // tmux-wrap the chat process when tmux is on PATH so it
@@ -36821,7 +36854,7 @@ mod prioritized_chat_startup_tests {
         .unwrap();
 
         let apply = VizApp::load_chat_startup(dir.clone()).unwrap();
-        let mut app = VizApp::new(dir, VizOptions::default(), Some(false), None, true);
+        let mut app = VizApp::new(dir.clone(), VizOptions::default(), Some(false), None, true);
         apply(&mut app);
         let identity = app
             .active_chat_view_identity()
@@ -36855,6 +36888,32 @@ mod prioritized_chat_startup_tests {
                 .windows(2)
                 .any(|pair| pair == ["--model", "z-ai/glm-5.2"])
         );
+        let extension = pending
+            .args
+            .windows(2)
+            .find(|pair| pair[0] == "-e")
+            .map(|pair| std::path::PathBuf::from(&pair[1]))
+            .expect("attended Pi argv must explicitly load the WG extension");
+        assert!(
+            extension.is_file(),
+            "extension missing: {}",
+            extension.display()
+        );
+        assert!(
+            !pending.args.iter().any(|arg| arg == "-ne"),
+            "attended Pi must retain its normal built-in tools: {:?}",
+            pending.args
+        );
+        assert_eq!(
+            pending.cwd.as_deref(),
+            dir.parent(),
+            "attended Pi cwd must be the repository root"
+        );
+        assert!(pending.env.iter().any(|(key, value)| {
+            key == "WG_PI_PLUGIN_COMPAT_VERSION"
+                && value == worksgood::pi_plugin::WG_PI_PLUGIN_COMPAT_VERSION
+        }));
+        assert!(pending.env.iter().any(|(key, _)| key == "WG_PI_PLUGIN_DIR"));
         assert!(!pending.args.iter().any(|arg| arg.contains("claude")));
     }
 

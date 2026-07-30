@@ -39,9 +39,15 @@ mod tests {
 
     #[test]
     fn guide_text_covers_chat_agent_contract() {
-        assert!(AGENT_GUIDE_TEXT.contains("Chat Agent Contract"));
-        assert!(AGENT_GUIDE_TEXT.contains("thin task-creator"));
-        assert!(AGENT_GUIDE_TEXT.contains("NEVER"));
+        assert!(AGENT_GUIDE_TEXT.contains("## Attended Chat"));
+        assert!(AGENT_GUIDE_TEXT.contains("human's attended repository assistant"));
+        assert!(AGENT_GUIDE_TEXT.contains("Follow the human's request using your normal tools"));
+        assert!(AGENT_GUIDE_TEXT.contains("Do not force every request into a task"));
+        assert!(
+            AGENT_GUIDE_TEXT
+                .contains("explicit, unambiguous human request authorizes any operation")
+        );
+        assert!(AGENT_GUIDE_TEXT.contains("keep their existing"));
     }
 
     #[test]
@@ -73,53 +79,46 @@ mod tests {
         assert!(AGENT_GUIDE_TEXT.contains("Paused-task") || AGENT_GUIDE_TEXT.contains("paused"));
     }
 
-    /// Regression lock for fix-agents-md: the guide must lead with a loud
-    /// chat-agent role banner so that codex chat agents (whose
-    /// "be helpful, do the work" baseline is stronger than their
-    /// instruction-following) see the role contract before anything else.
+    /// The attended-chat authority must be prominent and must not leak to
+    /// unattended roles.
     #[test]
-    fn guide_text_leads_with_chat_agent_stop_banner() {
-        // The "STOP" banner must appear in the first ~1000 bytes — i.e.
-        // before "Three Roles" or any other heading. This guards against
-        // a future refactor that buries it.
-        let head = &AGENT_GUIDE_TEXT[..AGENT_GUIDE_TEXT.len().min(1500)];
+    fn guide_text_leads_with_human_directed_chat_contract() {
+        let head = &AGENT_GUIDE_TEXT[..AGENT_GUIDE_TEXT.len().min(2500)];
+        assert!(head.contains("## Attended Chat"), "guide head was:\n{head}");
         assert!(
-            head.contains("STOP"),
-            "agent guide must lead with a STOP banner for chat agents; head was:\n{}",
-            head
+            head.contains("human's attended repository assistant"),
+            "{head}"
         );
         assert!(
-            head.contains("chat agent"),
-            "agent guide head must name the chat-agent role explicitly"
+            head.contains("normal tool surface: read, search, write, edit, execute, test"),
+            "{head}"
         );
+        assert!(head.contains("no role-based operation denylist"), "{head}");
+        assert!(head.contains("keep their existing"), "{head}");
     }
 
     #[test]
-    fn guide_text_lists_chat_agent_anti_patterns() {
-        // Concrete forbidden actions — the things codex chat agents have
-        // been observed doing instead of dispatching via wg add.
-        assert!(
-            AGENT_GUIDE_TEXT.contains("DO NOT write code")
-                || AGENT_GUIDE_TEXT.contains("DO NOT edit files")
-                || AGENT_GUIDE_TEXT.contains("CANNOT do"),
-            "agent guide must explicitly forbid chat-agent code-touching actions"
-        );
-        assert!(
-            AGENT_GUIDE_TEXT.contains("cargo build") || AGENT_GUIDE_TEXT.contains("cargo test"),
-            "agent guide must call out cargo as a forbidden chat-agent action"
-        );
-    }
-
-    #[test]
-    fn guide_text_lists_chat_agent_allow_list() {
-        // Allowed wg commands — chat agents need to know what they CAN do.
-        for cmd in ["wg add", "wg show", "wg list", "wg edit"] {
+    fn guide_text_excludes_retired_blanket_chat_prohibitions() {
+        for retired in [
+            "thin task-creator",
+            "NEVER read source files",
+            "The ONLY files a chat agent reads",
+            "Everything is staged through `wg add`",
+        ] {
             assert!(
-                AGENT_GUIDE_TEXT.contains(cmd),
-                "agent guide must list allowed command `{}` in the chat-agent surface",
-                cmd
+                !AGENT_GUIDE_TEXT.contains(retired),
+                "retired attended-chat prohibition survived: {retired}"
             );
         }
+        assert!(AGENT_GUIDE_TEXT.contains("never fabricate a blanket claim"));
+        assert!(!AGENT_GUIDE_TEXT.contains("A chat agent NEVER reads source files"));
+    }
+
+    #[test]
+    fn guide_text_keeps_wg_delegation_without_an_operation_allowlist() {
+        assert!(AGENT_GUIDE_TEXT.contains("wg add"));
+        assert!(AGENT_GUIDE_TEXT.contains("wg publish"));
+        assert!(AGENT_GUIDE_TEXT.contains("no role-based operation denylist"));
     }
 
     #[test]

@@ -109,7 +109,7 @@ For coordinator/chat sessions dispatched via `wg spawn-task .coordinator-N` or
 
 This is **extremely minimal**. No wg guide, no validation contract, no smoke gate.
 
-The `CODEX_CHAT_ADDENDUM` (a loud "STOP — You Are A Chat Agent" section) is injected
+The `CODEX_CHAT_ADDENDUM` (a concise human-directed `# Attended Chat` section) is injected
 only for coordinator sessions where `coordinator_id.is_some()`. Worker-type chat
 sessions get the minimal string.
 

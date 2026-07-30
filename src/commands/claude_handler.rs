@@ -401,7 +401,10 @@ fn spawn_claude_process(
     } else {
         cmd.args(["--system-prompt", system_prompt]);
     }
-    cmd.args(["--allowedTools", "Bash(wg:*)"]);
+    // Do not narrow attended Claude to graph-only Bash. With
+    // --dangerously-skip-permissions the CLI keeps its ordinary repository
+    // tool surface (Read/Grep/Edit/Write/Bash plus WG through Bash) so explicit
+    // human-directed reads, edits, and tests can actually be carried out.
 
     if let Some(m) = model {
         // Strip provider prefix (e.g., "claude:opus" → "opus") for the CLI, then
@@ -1124,6 +1127,16 @@ mod tests {
         ] {
             assert_eq!(parse_coordinator_id(chat_ref), expected, "{chat_ref}");
         }
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let prompt = build_handler_system_prompt(dir.path(), "chat-7", None);
+        assert!(prompt.contains("human's attended repository assistant"));
+        assert!(prompt.contains("Follow the human's request"));
+        assert!(prompt.contains("normal tool surface: read, search, write, edit, execute, test"));
+        assert!(prompt.contains("no role-based operation denylist"));
+        assert!(!prompt.contains("You do NOT read source files"));
+        assert!(!prompt.contains("The ONLY files you may read are WG state"));
+        assert!(!prompt.contains("A chat agent NEVER reads source files"));
     }
 
     #[test]

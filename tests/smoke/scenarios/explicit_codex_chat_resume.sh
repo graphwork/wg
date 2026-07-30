@@ -227,8 +227,15 @@ for argv in args:
     assert "--dangerously-bypass-approvals-and-sandbox" in argv, argv
     assert "--json" in argv, argv
     assert "--provider" not in argv, argv
-assert "STOP — You Are A Chat Agent" in (home/"codex-prompt-1").read_text(), "chat contract missing first turn"
-assert "STOP — You Are A Chat Agent" not in (home/"codex-prompt-2").read_text(), "first-turn contract replayed"
+first=(home/"codex-prompt-1").read_text()
+second=(home/"codex-prompt-2").read_text()
+operator="# Attended Chat"
+assert operator in first, "human-directed chat contract missing first turn"
+assert "human's attended repository assistant" in first
+assert "explicit, unambiguous request authorizes any operation" in first
+assert "DO NOT write code" not in first and "DO NOT grep" not in first
+assert "A chat agent NEVER reads source files" not in first
+assert operator not in second, "first-turn contract replayed"
 assert "TERMINAL_SECOND_NATIVE_TURN" in (home/"codex-prompt-2").read_text()
 # The thread marker belongs to the canonical UUID directory, never literal
 # chat/chat-0 storage.
