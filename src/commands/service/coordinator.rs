@@ -4948,6 +4948,17 @@ pub fn coordinator_tick(
     // Load config for agency settings
     let config = Config::load_or_default(dir);
 
+    // Credential-free regression hook for proving that attended chat IPC is
+    // independent of a slow unattended dispatcher/evaluation pass. This delay
+    // is intentionally inside the real tick, after the daemon has accepted its
+    // service identity, and is inert unless explicitly injected by a test.
+    if let Ok(delay) = std::env::var("WG_TEST_COORDINATOR_TICK_DELAY_MS")
+        && let Ok(delay) = delay.parse::<u64>()
+        && delay > 0
+    {
+        std::thread::sleep(std::time::Duration::from_millis(delay));
+    }
+
     // Process chat inbox FIRST — chat is a user-facing interaction that must not
     // be blocked by agent capacity limits or empty task queues. The early returns
     // below (max agents, no ready tasks) would skip chat processing otherwise.

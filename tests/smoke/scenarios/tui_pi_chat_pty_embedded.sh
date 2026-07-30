@@ -42,7 +42,7 @@
 #       grace of the per-chat `CoordinatorState` written by `wg chat new`.
 #       Instead we activate the real `pi` starter profile and copy it into
 #       the project config, so the Pi route is the coordinator's own routing
-#       (`[dispatcher].model = pi:openrouter/z-ai/glm-5.2`) and nothing
+#       (`[dispatcher].model = pi:openrouter:z-ai/glm-5.2`) and nothing
 #       depends on a daemon-written CoordinatorState handoff. No `executor`
 #       key means no deprecation flood corrupting the pane.
 
@@ -106,8 +106,8 @@ chmod +x "$fakedir/pi"
 export PATH="$fakedir:$PATH"
 
 # ── Config: activate the real `pi` starter profile, then pin it project-local ─
-# See header fix (b). The pi starter sets [dispatcher].model = pi:openrouter/
-# z-ai/glm-5.2 with NO `executor` key (so the coordinator routes to pi without
+# See header fix (b). The pi starter sets an exact handler-first Pi route with
+# NO `executor` key (so the coordinator routes to pi without
 # a deprecation-warning flood). We overwrite the claude default `wg init`
 # writes with the activated pi config so the TUI's own Config::load resolves
 # the Pi routing deterministically — no daemon / CoordinatorState handoff.
@@ -129,7 +129,7 @@ cp "$HOME/.wg/config.toml" "$G/config.toml"
 # contract — pi_model_arg must resolve a provider/model pair). This also
 # writes the per-chat CoordinatorState (executor_override = pi).
 if ! wg --dir "$G" chat new --name piroom --executor pi \
-        --model "openrouter:z-ai/glm-5.2" >"$scratch/chat0.log" 2>&1; then
+        --model "pi:openrouter:z-ai/glm-5.2" >"$scratch/chat0.log" 2>&1; then
     loud_fail "create pi chat failed: $(cat "$scratch/chat0.log")"
 fi
 

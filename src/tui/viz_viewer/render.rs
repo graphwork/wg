@@ -2913,6 +2913,20 @@ fn render_layout_context_row(
         .saturating_add(1);
 }
 
+fn attended_chat_context_title(
+    context_title: String,
+    attended_pty: bool,
+    input_focused: bool,
+) -> String {
+    if !attended_pty {
+        context_title
+    } else if input_focused {
+        format!("Chat input · Ctrl+O commands · {context_title}")
+    } else {
+        format!("Commands · n New chat · ? Help · Ctrl+O return · {context_title}")
+    }
+}
+
 fn render_context_row(frame: &mut Frame, app: &mut VizApp, area: Rect, _chat: bool) {
     app.clear_symbolic_context_hits();
     app.last_coordinator_bar_area = area;
@@ -3344,9 +3358,17 @@ fn render_context_row(frame: &mut Frame, app: &mut VizApp, area: Rect, _chat: bo
         cursor = new_rect.right();
     }
 
-    // Context title is the sole elastic region. Prefer the human chat/task
-    // name, fall back to the exact stable id, and deterministically ellipsize.
-    let title = friendly.unwrap_or(exact);
+    // Context title is the sole elastic region. In an attended PTY it also
+    // carries the keyboard-mode contract: Ctrl+O must remain discoverable
+    // while input is focused, and command mode must name both its key surface
+    // and the route back. The Help button remains first-class above, while
+    // `? Help` makes its keyboard peer explicit after the escape.
+    let context_title = friendly.unwrap_or(exact);
+    let title = attended_chat_context_title(
+        context_title,
+        lane == ContextLane::Chat && app.chat_pty_mode && app.chat_pty_forwards_stdin,
+        app.focused_panel == FocusedPanel::RightPanel,
+    );
     let title_width = content_right.saturating_sub(cursor);
     if title_width > 0 {
         let title_text = ellipsize_cells(&format!(" {title}"), title_width as usize);
@@ -12978,6 +13000,22 @@ mod tests {
     use worksgood::test_helpers::make_task_with_status;
 
     use crate::commands::viz::ascii::generate_ascii;
+
+    #[test]
+    fn attended_chat_context_title_exposes_ctrl_o_and_help_in_both_focus_modes() {
+        assert_eq!(
+            attended_chat_context_title("Chat 7".to_string(), true, true),
+            "Chat input · Ctrl+O commands · Chat 7"
+        );
+        assert_eq!(
+            attended_chat_context_title("Chat 7".to_string(), true, false),
+            "Commands · n New chat · ? Help · Ctrl+O return · Chat 7"
+        );
+        assert_eq!(
+            attended_chat_context_title("Task 7".to_string(), false, false),
+            "Task 7"
+        );
+    }
 
     /// Default bottom panel percent (matches HudSize::Normal).
     const BOTTOM_PANEL_PERCENT: u16 = 40;

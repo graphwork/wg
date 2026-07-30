@@ -146,6 +146,10 @@ pub enum IpcRequest {
     /// Create a new chat agent instance.
     #[serde(alias = "create_coordinator")]
     CreateChat {
+        /// Client-generated idempotency identity. A retry or reconciliation
+        /// with the same value resolves to the already-committed chat row.
+        #[serde(default)]
+        request_id: Option<String>,
         /// Optional human-readable name for the chat agent.
         #[serde(default)]
         name: Option<String>,
@@ -311,7 +315,7 @@ pub(crate) fn handle_connection(
     let line = line.trim_end_matches(['\r', '\n']);
     if line.is_empty() {
         let response = IpcResponse::error("Invalid request: empty request");
-        write_response(&stream, &response)?;
+        write_response_or_cancel(&stream, &response, logger)?;
         return Ok(());
     }
 
@@ -320,7 +324,7 @@ pub(crate) fn handle_connection(
         Err(e) => {
             logger.warn(&format!("Invalid IPC request: {}", e));
             let response = IpcResponse::error(&format!("Invalid request: {}", e));
-            write_response(&stream, &response)?;
+            write_response_or_cancel(&stream, &response, logger)?;
             return Ok(());
         }
     };
@@ -339,7 +343,7 @@ pub(crate) fn handle_connection(
         logger,
         requested_shutdown,
     );
-    write_response(&stream, &response)?;
+    write_response_or_cancel(&stream, &response, logger)?;
     Ok(())
 }
 
@@ -349,6 +353,112 @@ fn write_response(stream: &Stream, response: &IpcResponse) -> Result<()> {
     writeln!(w, "{}", json)?;
     w.flush()?;
     Ok(())
+}
+
+fn peer_disconnected(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause.downcast_ref::<std::io::Error>().is_some_and(|io| {
+            matches!(
+                io.kind(),
+                std::io::ErrorKind::BrokenPipe
+                    | std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::ConnectionAborted
+                    | std::io::ErrorKind::NotConnected
+            )
+        })
+    })
+}
+
+/// A response arriving after the client deadline is normal cancellation
+/// evidence: the mutation may already be durable and the client reconciles it
+/// by request id. Do not promote that late close into daemon corruption noise.
+fn write_response_or_cancel(
+    stream: &Stream,
+    response: &IpcResponse,
+    logger: &DaemonLogger,
+) -> Result<()> {
+    match write_response(stream, response) {
+        Ok(()) => Ok(()),
+        Err(error) if peer_disconnected(&error) => {
+            logger.info("IPC client disconnected before late response; treating reply as cancelled (durable mutation remains reconcilable)");
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Handle one request on the dedicated chat-control socket. This lane owns
+/// chat creation independently of coordinator/evaluation/registry ticks, so a
+/// slow unattended-work pass cannot consume the attended New-chat response
+/// budget. Returns the committed chat id for the daemon's eager-spawn queue.
+pub(crate) fn handle_chat_control_connection(
+    dir: &Path,
+    stream: Stream,
+    logger: &DaemonLogger,
+) -> Result<Option<u32>> {
+    const IPC_IO_TIMEOUT: Duration = Duration::from_millis(500);
+    stream.set_nonblocking(false)?;
+    stream.set_recv_timeout(Some(IPC_IO_TIMEOUT))?;
+    stream.set_send_timeout(Some(IPC_IO_TIMEOUT))?;
+
+    let mut reader = BufReader::new(&stream);
+    let mut line = String::new();
+    match reader.read_line(&mut line) {
+        Ok(0) => return Ok(None),
+        Ok(_) => {}
+        Err(error) => {
+            logger.info(&format!(
+                "Chat IPC client disconnected or timed out before a request: {error}"
+            ));
+            return Ok(None);
+        }
+    }
+    let request: IpcRequest = match serde_json::from_str(line.trim_end_matches(['\r', '\n'])) {
+        Ok(request) => request,
+        Err(error) => {
+            let response = IpcResponse::error(&format!("Invalid request: {error}"));
+            write_response_or_cancel(&stream, &response, logger)?;
+            return Ok(None);
+        }
+    };
+    let IpcRequest::CreateChat {
+        request_id,
+        name,
+        model,
+        executor,
+        endpoint,
+        command,
+    } = request
+    else {
+        let response = IpcResponse::error("Dedicated chat IPC lane accepts only create_chat");
+        write_response_or_cancel(&stream, &response, logger)?;
+        return Ok(None);
+    };
+
+    logger.info(&format!(
+        "Chat IPC CreateChat: request_id={request_id:?}, name={name:?}, model={model:?}, executor={executor:?}"
+    ));
+    let (response, chat_id) = handle_create_coordinator(
+        dir,
+        request_id.as_deref(),
+        name.as_deref(),
+        model.as_deref(),
+        executor.as_deref(),
+        endpoint.as_deref(),
+        command.as_deref(),
+    );
+
+    // Deterministic response-loss boundary for credential-free regression
+    // tests: delay only after the graph/route transaction committed.
+    if chat_id.is_some()
+        && let Ok(delay) = std::env::var("WG_TEST_CHAT_CREATE_RESPONSE_DELAY_MS")
+        && let Ok(delay) = delay.parse::<u64>()
+        && delay > 0
+    {
+        std::thread::sleep(Duration::from_millis(delay));
+    }
+    write_response_or_cancel(&stream, &response, logger)?;
+    Ok(chat_id)
 }
 
 /// Handle an IPC request
@@ -577,6 +687,7 @@ fn handle_request(
             }
         }
         IpcRequest::CreateChat {
+            request_id,
             name,
             model,
             executor,
@@ -584,11 +695,12 @@ fn handle_request(
             command,
         } => {
             logger.info(&format!(
-                "IPC CreateChat: name={:?}, model={:?}, executor={:?}, endpoint={:?}, command={:?}",
-                name, model, executor, endpoint, command
+                "IPC CreateChat: request_id={:?}, name={:?}, model={:?}, executor={:?}, endpoint={:?}, command={:?}",
+                request_id, name, model, executor, endpoint, command
             ));
             let (resp, new_chat_id) = handle_create_coordinator(
                 dir,
+                request_id.as_deref(),
                 name.as_deref(),
                 model.as_deref(),
                 executor.as_deref(),
@@ -1624,6 +1736,21 @@ pub fn create_chat_in_graph(
     endpoint: Option<&str>,
     command: Option<&str>,
 ) -> Result<u32> {
+    create_chat_in_graph_with_request_id(dir, None, name, model, executor, endpoint, command)
+}
+
+/// Idempotent chat-create transaction. `request_id` is persisted on the task
+/// itself, making the graph row the reconciliation receipt: a repeated request
+/// returns that exact row and never allocates another chat identity.
+pub fn create_chat_in_graph_with_request_id(
+    dir: &Path,
+    request_id: Option<&str>,
+    name: Option<&str>,
+    model: Option<&str>,
+    executor: Option<&str>,
+    endpoint: Option<&str>,
+    command: Option<&str>,
+) -> Result<u32> {
     if command.is_some() && (model.is_some() || executor.is_some() || endpoint.is_some()) {
         anyhow::bail!(
             "--command cannot be combined with --exec/--executor, --model, or --endpoint"
@@ -1653,112 +1780,132 @@ pub fn create_chat_in_graph(
         anyhow::bail!("{}", msg);
     }
     let graph_path = crate::commands::graph_path(dir);
-    let mut graph =
-        worksgood::parser::load_graph(&graph_path).with_context(|| "Failed to load graph")?;
-
+    let request_id = request_id.filter(|id| !id.trim().is_empty());
     let config = worksgood::config::Config::load_or_default(dir);
     let max = config.coordinator.max_coordinators;
-    let alive =
-        worksgood::chat::count_live_chats(dir, &graph, worksgood::chat::CHAT_CAP_IDLE_THRESHOLD);
-    if alive >= max {
-        anyhow::bail!("Chat cap reached ({}/{})", alive, max);
-    }
-
-    let next_id = find_next_fresh_coordinator_id(&graph, dir);
-
-    // Create the chat task
-    let title = name
-        .map(|n| format!("Chat: {}", n))
-        .unwrap_or_else(|| format!("Chat {}", next_id));
-
     let project_root = worksgood::chat_command::project_root_for_workgraph_dir(dir);
-    let (command_argv, working_dir, executor_preset_name) = if let Some(command) = command {
-        (
-            worksgood::chat_command::argv_for_command_line(command),
-            Some(project_root.display().to_string()),
-            None,
-        )
-    } else {
-        let preset = worksgood::chat_command::preset_name_for_executor(executor, model);
-        let mut argv = worksgood::chat_command::argv_for_preset(&preset, model, endpoint, "wg");
-        // Dexto drives OpenRouter via a generated per-chat agent YAML; write it
-        // now and substitute its absolute path so the stored command record is
-        // runnable even outside the TUI (prototype-octomind-dexto-chat).
-        if preset == "dexto" {
-            let chat_ref = format!("chat-{}", next_id);
-            let chat_dir = worksgood::chat::chat_dir_for_ref(dir, &chat_ref);
-            match worksgood::chat_command::write_dexto_agent_config(&chat_dir, model) {
-                Ok(path) => {
-                    if let Some(slot) = argv
-                        .iter_mut()
-                        .find(|a| a.as_str() == worksgood::chat_command::DEXTO_AGENT_CONFIG_FILE)
-                    {
-                        *slot = path.display().to_string();
+    let mut committed_id = None;
+    let mut created_new = false;
+    let mut transaction_error = None;
+
+    // Allocation, idempotency lookup, capacity check, and insertion are one
+    // lock-held transaction. The dedicated lane runs concurrently with daemon
+    // ticks (and old clients may still use the general lane), so deriving an id
+    // from a pre-lock graph could otherwise acknowledge the wrong chat after a
+    // collision or create two rows for one retried request.
+    worksgood::parser::modify_graph(&graph_path, |fresh| {
+        if let Some(request_id) = request_id
+            && let Some(existing_id) = fresh.tasks().find_map(|task| {
+                (chat_create_request_id(task) == Some(request_id))
+                    .then(|| worksgood::chat_id::parse_chat_task_id(&task.id))
+                    .flatten()
+            })
+        {
+            committed_id = Some(existing_id);
+            return false;
+        }
+
+        let alive =
+            worksgood::chat::count_live_chats(dir, fresh, worksgood::chat::CHAT_CAP_IDLE_THRESHOLD);
+        if alive >= max {
+            transaction_error = Some(anyhow::anyhow!("Chat cap reached ({alive}/{max})"));
+            return false;
+        }
+
+        let next_id = find_next_fresh_coordinator_id(fresh, dir);
+        let title = name
+            .map(|n| format!("Chat: {n}"))
+            .unwrap_or_else(|| format!("Chat {next_id}"));
+        let (command_argv, working_dir, executor_preset_name) = if let Some(command) = command {
+            (
+                worksgood::chat_command::argv_for_command_line(command),
+                Some(project_root.display().to_string()),
+                None,
+            )
+        } else {
+            let preset = worksgood::chat_command::preset_name_for_executor(executor, model);
+            let mut argv = worksgood::chat_command::argv_for_preset(&preset, model, endpoint, "wg");
+            // Dexto drives OpenRouter via a generated per-chat agent YAML; write
+            // it now and substitute its absolute path into the durable command.
+            if preset == "dexto" {
+                let chat_ref = format!("chat-{next_id}");
+                let chat_dir = worksgood::chat::chat_dir_for_ref(dir, &chat_ref);
+                match worksgood::chat_command::write_dexto_agent_config(&chat_dir, model) {
+                    Ok(path) => {
+                        if let Some(slot) = argv.iter_mut().find(|a| {
+                            a.as_str() == worksgood::chat_command::DEXTO_AGENT_CONFIG_FILE
+                        }) {
+                            *slot = path.display().to_string();
+                        }
+                    }
+                    Err(error) => {
+                        transaction_error = Some(anyhow::anyhow!(
+                            "failed to write dexto agent config: {error}"
+                        ));
+                        return false;
                     }
                 }
-                Err(e) => {
-                    anyhow::bail!("failed to write dexto agent config: {e}");
-                }
             }
-        }
-        (argv, Some(project_root.display().to_string()), Some(preset))
-    };
+            (argv, Some(project_root.display().to_string()), Some(preset))
+        };
+        let now = chrono::Utc::now().to_rfc3339();
+        let task = worksgood::graph::Task {
+            id: worksgood::chat_id::format_chat_task_id(next_id),
+            title,
+            description: Some(format!("Chat {next_id} — persistent chat agent.")),
+            status: worksgood::graph::Status::InProgress,
+            priority: PRIORITY_HIGH,
+            tags: vec![worksgood::chat_id::CHAT_LOOP_TAG.to_string()],
+            cycle_config: Some(worksgood::graph::CycleConfig {
+                max_iterations: 0,
+                guard: None,
+                delay: None,
+                no_converge: true,
+                restart_on_failure: true,
+                max_failure_restarts: None,
+            }),
+            // Per-task overrides are authoritative on first spawn and resume.
+            model: effective_model.clone(),
+            endpoint: endpoint.map(String::from),
+            command_argv,
+            working_dir,
+            executor_preset_name,
+            created_at: Some(now.clone()),
+            started_at: Some(now.clone()),
+            log: vec![worksgood::graph::LogEntry {
+                timestamp: now,
+                actor: Some(
+                    request_id
+                        .map(|id| format!("chat-create-request:{id}"))
+                        .unwrap_or_else(|| "daemon".to_string()),
+                ),
+                user: Some(worksgood::current_user()),
+                message: format!("Chat {next_id} task created via IPC"),
+            }],
+            ..Default::default()
+        };
 
-    let task = worksgood::graph::Task {
-        id: worksgood::chat_id::format_chat_task_id(next_id),
-        title,
-        description: Some(format!("Chat {} — persistent chat agent.", next_id)),
-        status: worksgood::graph::Status::InProgress,
-        priority: PRIORITY_HIGH,
-        tags: vec![worksgood::chat_id::CHAT_LOOP_TAG.to_string()],
-        cycle_config: Some(worksgood::graph::CycleConfig {
-            max_iterations: 0,
-            guard: None,
-            delay: None,
-            no_converge: true,
-            restart_on_failure: true,
-            max_failure_restarts: None,
-        }),
-        // Per-task overrides — `plan_spawn` reads these directly off the
-        // chat task on every supervisor iteration. Setting them here means
-        // the supervisor honors the resolved profile/launcher choices on first
-        // spawn AND on respawn after handler crash.
-        model: effective_model.clone(),
-        endpoint: endpoint.map(String::from),
-        command_argv,
-        working_dir,
-        executor_preset_name,
-        created_at: Some(chrono::Utc::now().to_rfc3339()),
-        started_at: Some(chrono::Utc::now().to_rfc3339()),
-        log: vec![worksgood::graph::LogEntry {
-            timestamp: chrono::Utc::now().to_rfc3339(),
-            actor: Some("daemon".to_string()),
-            user: Some(worksgood::current_user()),
-            message: format!("Chat {} task created via IPC", next_id),
-        }],
-        ..Default::default()
-    };
+        // Apply ONLY the new row; replaying a stale pre-transaction graph here
+        // would overwrite concurrent dispatcher mutations.
+        fresh.add_node(worksgood::graph::Node::Task(task));
+        committed_id = Some(next_id);
+        created_new = true;
+        true
+    })
+    .with_context(|| "Failed to save graph")?;
 
-    graph.add_node(worksgood::graph::Node::Task(task));
+    if let Some(error) = transaction_error {
+        return Err(error);
+    }
+    let next_id = committed_id
+        .ok_or_else(|| anyhow::anyhow!("chat-create transaction produced no durable receipt"))?;
+    if !created_new {
+        return Ok(next_id);
+    }
 
     // Companion `.archive-N` and `.compact-N` tasks are no longer created.
     // Archival runs natively in the dispatcher (see `run_automatic_archival`);
     // graph-cycle compaction has been retired entirely.
-
-    worksgood::parser::modify_graph(&graph_path, |fresh| {
-        // Re-apply all mutations to a fresh graph
-        for node in graph.nodes() {
-            if let worksgood::graph::Node::Task(t) = node {
-                if let Some(ft) = fresh.get_task_mut(&t.id) {
-                    *ft = t.clone();
-                } else {
-                    fresh.add_node(worksgood::graph::Node::Task(t.clone()));
-                }
-            }
-        }
-        true
-    })
-    .with_context(|| "Failed to save graph")?;
 
     // Record the effective executor/model/endpoint combo, never a fabricated
     // Claude fallback that was not selected by the user.
@@ -1776,10 +1923,22 @@ pub fn create_chat_in_graph(
         state.model_override = effective_model;
         state.executor_override = effective_executor;
         state.endpoint_override = endpoint.map(String::from);
+        state.advance_route_generation();
         state.save_for(dir, next_id);
     }
 
     Ok(next_id)
+}
+
+/// Recover the client-generated identity from a chat task's creation receipt.
+/// The receipt lives in the first graph log entry so it remains durable without
+/// expanding every task initializer/schema for chat-only transaction metadata.
+pub(crate) fn chat_create_request_id(task: &worksgood::graph::Task) -> Option<&str> {
+    task.log
+        .iter()
+        .find_map(|entry| entry.actor.as_deref())
+        .and_then(|actor| actor.strip_prefix("chat-create-request:"))
+        .filter(|id| !id.is_empty())
 }
 
 /// Handle CreateCoordinator IPC request — wraps `create_chat_in_graph`.
@@ -1792,18 +1951,22 @@ pub fn create_chat_in_graph(
 /// process exists.
 fn handle_create_coordinator(
     dir: &Path,
+    request_id: Option<&str>,
     name: Option<&str>,
     model: Option<&str>,
     executor: Option<&str>,
     endpoint: Option<&str>,
     command: Option<&str>,
 ) -> (IpcResponse, Option<u32>) {
-    match create_chat_in_graph(dir, name, model, executor, endpoint, command) {
+    match create_chat_in_graph_with_request_id(
+        dir, request_id, name, model, executor, endpoint, command,
+    ) {
         Ok(next_id) => (
             IpcResponse::success(serde_json::json!({
                 "coordinator_id": next_id,
                 "chat_id": next_id,
                 "task_id": worksgood::chat_id::format_chat_task_id(next_id),
+                "request_id": request_id,
                 "name": name,
             })),
             Some(next_id),
@@ -2078,6 +2241,7 @@ fn handle_set_coordinator_executor(
     if let Some(m) = model {
         state.model_override = Some(m.to_string());
     }
+    state.advance_route_generation();
     state.save_for(dir, coordinator_id);
 
     // Signal the live handler to exit so the supervisor respawns
@@ -2685,6 +2849,7 @@ poll_interval = 60
     #[test]
     fn test_ipc_create_chat_serialization() {
         let req = IpcRequest::CreateChat {
+            request_id: Some("create-1".to_string()),
             name: Some("Feature Work".to_string()),
             model: None,
             executor: None,
@@ -2698,12 +2863,14 @@ poll_interval = 60
         let parsed: IpcRequest = serde_json::from_str(&json).unwrap();
         match parsed {
             IpcRequest::CreateChat {
+                request_id,
                 name,
                 model,
                 executor,
                 endpoint,
                 command,
             } => {
+                assert_eq!(request_id, Some("create-1".to_string()));
                 assert_eq!(name, Some("Feature Work".to_string()));
                 assert_eq!(model, None);
                 assert_eq!(executor, None);
@@ -2715,6 +2882,7 @@ poll_interval = 60
 
         // Test with model and executor overrides
         let req2 = IpcRequest::CreateChat {
+            request_id: None,
             name: Some("Local Model".to_string()),
             model: Some("openai:qwen3-coder-30b".to_string()),
             executor: Some("native".to_string()),
@@ -2725,12 +2893,14 @@ poll_interval = 60
         let parsed2: IpcRequest = serde_json::from_str(&json2).unwrap();
         match parsed2 {
             IpcRequest::CreateChat {
+                request_id,
                 name,
                 model,
                 executor,
                 endpoint,
                 command,
             } => {
+                assert_eq!(request_id, None);
                 assert_eq!(name, Some("Local Model".to_string()));
                 assert_eq!(model, Some("openai:qwen3-coder-30b".to_string()));
                 assert_eq!(executor, Some("native".to_string()));
@@ -2748,6 +2918,7 @@ poll_interval = 60
     #[test]
     fn test_ipc_create_chat_endpoint_round_trips() {
         let req = IpcRequest::CreateChat {
+            request_id: None,
             name: Some("Lambda Box".to_string()),
             model: Some("qwen3-coder".to_string()),
             executor: Some("native".to_string()),
@@ -2930,6 +3101,7 @@ poll_interval = 60
         let resp = handle_request(
             dir,
             IpcRequest::CreateChat {
+                request_id: Some("create-alice".to_string()),
                 name: Some("alice".to_string()),
                 model: Some("nex:qwen3-coder".to_string()),
                 executor: Some("native".to_string()),
@@ -3008,6 +3180,7 @@ poll_interval = 60
         let resp = handle_request(
             dir,
             IpcRequest::CreateChat {
+                request_id: Some("create-over-cap".to_string()),
                 name: Some("over-cap".to_string()),
                 model: None,
                 executor: None,
@@ -3616,7 +3789,8 @@ poll_interval = 60
         select_claude_route(dir);
 
         // Create chat agent labeled "alice"
-        let (resp, new_id) = handle_create_coordinator(dir, Some("alice"), None, None, None, None);
+        let (resp, new_id) =
+            handle_create_coordinator(dir, None, Some("alice"), None, None, None, None);
         assert!(resp.ok, "create_chat should succeed");
         assert_eq!(new_id, Some(0), "first chat should be chat 0");
 
@@ -3629,7 +3803,8 @@ poll_interval = 60
         assert!(coord.tags.contains(&"chat-loop".to_string()));
 
         // Create chat labeled "bob"
-        let (resp, new_id) = handle_create_coordinator(dir, Some("bob"), None, None, None, None);
+        let (resp, new_id) =
+            handle_create_coordinator(dir, None, Some("bob"), None, None, None, None);
         assert!(resp.ok, "create_chat for bob should succeed");
         assert_eq!(new_id, Some(1), "second chat should be chat 1");
 
@@ -3653,8 +3828,8 @@ poll_interval = 60
         worksgood::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
         select_claude_route(dir);
 
-        let _ = handle_create_coordinator(dir, Some("alice"), None, None, None, None);
-        let _ = handle_create_coordinator(dir, Some("bob"), None, None, None, None);
+        let _ = handle_create_coordinator(dir, None, Some("alice"), None, None, None, None);
+        let _ = handle_create_coordinator(dir, None, Some("bob"), None, None, None, None);
 
         // Write per-coordinator state files
         let alice_state = CoordinatorState {
@@ -3915,6 +4090,49 @@ poll_interval = 60
     }
 
     #[test]
+    fn test_create_chat_request_id_is_idempotent_after_commit() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path();
+        fs::create_dir_all(dir.join("service")).unwrap();
+        worksgood::parser::save_graph(
+            &worksgood::graph::WorkGraph::new(),
+            &dir.join("graph.jsonl"),
+        )
+        .unwrap();
+
+        let first = create_chat_in_graph_with_request_id(
+            dir,
+            Some("create-request-1"),
+            Some("first"),
+            None,
+            None,
+            None,
+            Some("cat"),
+        )
+        .unwrap();
+        let retry = create_chat_in_graph_with_request_id(
+            dir,
+            Some("create-request-1"),
+            Some("must-not-replace"),
+            None,
+            None,
+            None,
+            Some("cat"),
+        )
+        .unwrap();
+
+        assert_eq!(first, retry);
+        let graph = worksgood::parser::load_graph(&dir.join("graph.jsonl")).unwrap();
+        let chats: Vec<_> = graph
+            .tasks()
+            .filter(|task| worksgood::chat_id::parse_chat_task_id(&task.id).is_some())
+            .collect();
+        assert_eq!(chats.len(), 1, "retry must not allocate another chat row");
+        assert_eq!(chat_create_request_id(chats[0]), Some("create-request-1"));
+        assert_eq!(chats[0].title, "Chat: first");
+    }
+
+    #[test]
     fn test_create_chat_persists_endpoint_override() {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
@@ -3925,6 +4143,7 @@ poll_interval = 60
 
         let (resp, new_id) = handle_create_coordinator(
             dir,
+            None,
             Some("Lambda Box"),
             Some("nex:qwen3-coder"),
             Some("native"),

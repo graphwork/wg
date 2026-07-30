@@ -537,11 +537,18 @@ impl PtyPane {
         // Attach client lives in our PTY child. `-d` detaches any other
         // clients first — single-attach semantics, even if a prior TUI
         // (or a stray `tmux attach` from a shell) is still glued on.
+        //
         // A TUI commonly runs inside another tmux session. The embedded
-        // client has its own PTY, so explicitly remove TMUX for this process;
-        // merely setting it to an empty string still trips some tmux versions'
-        // nested-session guard.
-        let attach_args = ["-u", "TMUX", "tmux", "attach", "-d", "-t", session_name];
+        // client has its own PTY, so remove TMUX to bypass tmux's nested-client
+        // guard. Crucially, TMUX also names the server socket. Unsetting it
+        // without preserving `socket,pid,index`'s socket component makes the
+        // attach fall back to the default server even though `new-session`
+        // inherited a custom/outer server; the live inner session then remains
+        // orphaned while the attach client exits and WG can no longer forward
+        // keyboard input. Pin `-S <exact socket>` before removing TMUX.
+        let inherited_tmux = std::env::var("TMUX").ok();
+        let attach_args_owned = tmux_attach_args(session_name, inherited_tmux.as_deref());
+        let attach_args: Vec<&str> = attach_args_owned.iter().map(String::as_str).collect();
         let attach_env = vec![
             ("TERM".to_string(), "xterm-256color".to_string()),
             ("COLORTERM".to_string(), "truecolor".to_string()),
@@ -1067,6 +1074,28 @@ impl Drop for PtyPane {
         // OS reaps it when the process exits.
         let _ = self.reader_thread.take();
     }
+}
+
+/// Build an attach command that bypasses tmux's nested-session guard without
+/// losing the server selected by the outer TUI. `TMUX` is
+/// `<socket-path>,<server-pid>,<window-index>`; only the exact socket belongs on
+/// the child command line. The `env -u TMUX` prefix remains mandatory because
+/// tmux refuses a nested client based on variable presence even with `-S`.
+fn tmux_attach_args(session_name: &str, inherited_tmux: Option<&str>) -> Vec<String> {
+    let mut args = vec!["-u".to_string(), "TMUX".to_string(), "tmux".to_string()];
+    if let Some(socket) = inherited_tmux
+        .and_then(|value| value.split(',').next())
+        .filter(|socket| !socket.is_empty())
+    {
+        args.extend(["-S".to_string(), socket.to_string()]);
+    }
+    args.extend([
+        "attach".to_string(),
+        "-d".to_string(),
+        "-t".to_string(),
+        session_name.to_string(),
+    ]);
+    args
 }
 
 /// Cached tmux-availability probe. Cheap (one `which` per process) and
@@ -1749,6 +1778,36 @@ mod tests {
     use super::*;
 
     const SILENT_KILL_CHILD_ENV: &str = "WG_TEST_TUI_SILENT_TMUX_KILL_CHILD";
+
+    #[test]
+    fn nested_tmux_attach_unsets_guard_but_pins_exact_outer_socket() {
+        assert_eq!(
+            tmux_attach_args("wg-chat-project-0", Some("/tmp/tmux-1000/custom,4321,7")),
+            vec![
+                "-u",
+                "TMUX",
+                "tmux",
+                "-S",
+                "/tmp/tmux-1000/custom",
+                "attach",
+                "-d",
+                "-t",
+                "wg-chat-project-0",
+            ]
+        );
+        assert_eq!(
+            tmux_attach_args("wg-chat-project-0", None),
+            vec![
+                "-u",
+                "TMUX",
+                "tmux",
+                "attach",
+                "-d",
+                "-t",
+                "wg-chat-project-0",
+            ]
+        );
+    }
 
     #[test]
     fn tui_runtime_never_writes_process_stderr() {

@@ -13,7 +13,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 require_wg
 scratch=$(make_scratch)
 cd "$scratch"
-wg init -m claude:opus >init.log 2>&1 || loud_fail "wg init failed: $(tail -10 init.log)"
+wg init -m pi:openai-codex:gpt-5.6-sol >init.log 2>&1 || loud_fail "wg init failed: $(tail -10 init.log)"
 graph_dir=$(graph_dir_in "$scratch") || loud_fail "wg init did not create a graph"
 # Reload traffic must preserve the 1s test cadence rather than reverting the
 # daemon to the default 5s safety interval.

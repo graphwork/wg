@@ -303,8 +303,21 @@ pub fn run_create(
     if command.is_none() {
         require_interactive_executor_binary(selected_executor)?;
     }
+    // This identity belongs to the logical create, not to its socket attempt.
+    // The daemon persists it on the graph row before replying, so a lost/late
+    // response reconciles to the exact committed chat instead of duplicating.
+    let request_id = format!("chat-create-{}", uuid::Uuid::now_v7());
     if service_is_running(dir) {
-        run_create_via_ipc(dir, name, model, executor, endpoint, command, json)
+        run_create_via_ipc(
+            dir,
+            &request_id,
+            name,
+            model,
+            executor,
+            endpoint,
+            command,
+            json,
+        )
     } else {
         run_create_direct(dir, name, model, executor, endpoint, command, json)
     }
@@ -313,6 +326,7 @@ pub fn run_create(
 #[cfg(unix)]
 fn run_create_via_ipc(
     dir: &Path,
+    request_id: &str,
     name: Option<&str>,
     model: Option<&str>,
     executor: Option<&str>,
@@ -321,13 +335,14 @@ fn run_create_via_ipc(
     json: bool,
 ) -> Result<()> {
     crate::commands::service::run_create_coordinator(
-        dir, name, model, executor, endpoint, command, json,
+        dir, request_id, name, model, executor, endpoint, command, json,
     )
 }
 
 #[cfg(not(unix))]
 fn run_create_via_ipc(
     _dir: &Path,
+    _request_id: &str,
     _name: Option<&str>,
     _model: Option<&str>,
     _executor: Option<&str>,
@@ -643,6 +658,7 @@ fn persist_chat_model_override(dir: &Path, cid: u32, executor: &str, model: &str
     }
     state.executor_override = Some(executor.to_string());
     state.model_override = Some(model.to_string());
+    state.advance_route_generation();
     state.save_for(dir, cid);
     Ok(true)
 }
