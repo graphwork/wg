@@ -2552,7 +2552,7 @@ owners = [
     "expose-thinking-effort",
     "promote-worksgood-default-install",
 ]
-description = "Default-feature, credential-free attended tmux lifecycle for the shipped profile-first worksgood concierge, including explicit/revisitable Worker/chat and Agency effort plus noninteractive refusal to invent unset values: bounded nearest-repo resolution; stable non-TTY refusal; byte-stable help/dry-run/cancel; unknown-PATH/relative/symlink/receipt safety; Continue without AI; mocked Pi exact strong/weak routes, effort, and real --thinking argv; every supported Pi/native Codex/native Claude profile with same-system no-fallback enforcement; first-run start; exact/same-build-alias reuse without path loops; compatible config/profile/reasoning generation reload; same-version/different-content and same-path replacement controlled restart; deleted executable and foreign graph identity fail-closed without signal/TUI; failed replacement restores an authenticated prior build without stale TUI; concurrent TUI clients keep one daemon; authenticated absolute executable/PID-birth/content-build/protocol/profile/config/socket/graph identity; no startup chat; post-TUI service persistence; explicit restart and graceful stop. One isolated default-feature wg+worksgood target, never installed into a real user prefix."
+description = "Default-feature, credential-free attended tmux lifecycle for explicit advanced worksgood automation configuration, including explicit/revisitable Worker/chat and Agency effort plus noninteractive refusal to invent unset values: bounded nearest-repo resolution; stable non-TTY refusal; byte-stable help/dry-run/cancel; unknown-PATH/relative/symlink/receipt safety; graph-only mode; mocked Pi exact worker/evaluator routes, effort, and real --thinking argv; every supported Pi/native Codex/native Claude automation base with same-system no-fallback enforcement; first start; exact/same-build-alias reuse without path loops; compatible config/reasoning generation reload; same-version/different-content and same-path replacement controlled restart; deleted executable and foreign graph identity fail-closed without signal/TUI; failed replacement restores an authenticated prior build without stale TUI; explicit stale-state repair keeps one daemon; authenticated absolute executable/PID-birth/content-build/protocol/config/socket/graph identity; no startup chat; post-TUI service persistence; explicit restart and graceful stop. The separate bare attended Pi journey is owned by worksgood_attended_pi_simple."
 timeout_seconds = 600
 
 [[scenario]]
@@ -2858,3 +2858,10 @@ script = "scenarios/attempt_runtime_state_namespace.sh"
 owners = ["fix-attempt-runtime-state-namespace"]
 description = "Candidate-binary terminal regression for task-local attempt identity: two concurrent tasks both own attempt-0-1 with distinct real Pi watchdog/session namespaces; a third real spawn launches exactly once despite 1-27 foreign historical flat directories, emits one reconciliation diagnostic, never projects stale Pi/observer state, and leaves every historical byte unchanged."
 timeout_seconds = 180
+
+[[scenario]]
+name = "worksgood_attended_pi_simple"
+script = "scenarios/worksgood_attended_pi_simple.sh"
+owners = ["simplify-attended-pi-setup"]
+description = "Candidate-binary credential-free real tmux/TUI human flow for the product boundary: fresh bare worksgood verifies Fake-Pi, ensures the compatible plugin, initializes a route-free/no-agency graph, opens New chat -> Pi with no model/provider/reasoning override, forwards exact keyboard input through the accepted PTY path, and writes no profile/model/reasoning/dispatcher/service state. Missing Pi emits one Pi-owned install/login action before any graph/plugin/automation write. Explicit setup --model still enters the exact fail-closed unattended automation planner with effective worker/evaluator reasoning."
+timeout_seconds = 240

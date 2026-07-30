@@ -420,12 +420,15 @@ wg migrate config --all
 
 ## Concierge and expert boundary
 
-The installed `worksgood` concierge provides the attended lifecycle path and
-can select/reconcile a prepared profile before opening the TUI. The explicit
-commands above remain the auditable expert path under `wg`. `worksgood` is not
-a CLI rename and intentionally does not expose task/tool verbs; there is no
-`worksg` alias. Bare `wg` and `wg tui` remain non-mutating, and `pi-worksgood`
-continues to invoke `wg` for its complete backend contract.
+Bare `worksgood` provides the simple attended path: it verifies Pi, ensures the
+compatible plugin, and opens a route-free TUI where **New chat → Pi** hands login
+and model selection to Pi. It does not require or reconcile an automation
+profile/service. `worksgood setup` is the separate advanced surface for exact
+unattended worker/evaluator routes and reasoning; those settings do not control
+the model chosen in an attended chat. The explicit commands above remain the
+auditable expert path under `wg`. `worksgood` is not a CLI rename and does not
+expose task/tool verbs; there is no `worksg` alias. Bare `wg` and `wg tui` remain
+non-mutating, and `pi-worksgood` continues to invoke `wg` for its backend contract.
 
 ---
 

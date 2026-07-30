@@ -8,8 +8,8 @@ use worksgood::config::ReasoningLevel;
 #[command(
     name = "worksgood",
     version,
-    about = "Attended WorksGood lifecycle concierge (the complete expert CLI remains `wg`)",
-    after_help = "PRODUCT BOUNDARY:\n  This concierge does not rename or replace the complete `wg` expert CLI.\n  Internal lifecycle operations use one authenticated absolute sibling `wg` executable.\n\nBare attended use runs setup/reconcile and opens the TUI. Bare non-TTY use refuses without mutation."
+    about = "Simple attended Pi chat launcher (the complete expert CLI remains `wg`)",
+    after_help = "PRODUCT BOUNDARY:\n  Bare `worksgood` opens a route-free attended Pi chat surface. Pi owns login, model selection, and model switching; no worker/evaluator route or service is configured.\n  `worksgood setup` explicitly enables/configures unattended workers and evaluation (advanced). Those routes do not control the model selected inside an attended Pi chat.\n  This concierge does not rename or replace the complete `wg` expert CLI. Internal operations use one authenticated absolute sibling `wg` executable.\n\nBare non-TTY use refuses without mutation."
 )]
 struct Cli {
     /// Repository/worktree target. Never falls back to ~/.wg.
@@ -20,8 +20,9 @@ struct Cli {
     #[arg(long, global = true)]
     dry_run: bool,
 
-    /// Copy one exact Pi route to every LLM role (simple path).
-    /// Worker/chat reasoning defaults high; Eval/assign/FLIP/weak defaults low.
+    /// Configure one exact Pi route for every unattended LLM role (advanced).
+    /// Worker reasoning defaults high; Eval/assign/FLIP reasoning defaults low.
+    /// This never selects the model in an attended Pi chat.
     #[arg(
         long,
         global = true,
@@ -30,28 +31,28 @@ struct Cli {
     )]
     model: Option<String>,
 
-    /// Select an existing reusable base profile (advanced customization path).
+    /// Select an existing reusable base profile for automation (advanced).
     #[arg(long, global = true)]
     profile: Option<String>,
 
-    /// Explicitly open a setup-neutral graph/TUI with no LLM service.
+    /// Explicitly open a graph/TUI without checking Pi or running an LLM service.
     #[arg(long, global = true, conflicts_with_all = ["profile", "model"])]
     without_ai: bool,
 
-    /// Exact Pi Worker/chat handler-first route for an existing --profile.
+    /// Exact unattended worker/chat route for an existing --profile (advanced).
     #[arg(long, global = true, requires = "profile", conflicts_with = "model")]
     strong_model: Option<String>,
 
-    /// Exact Pi Agency/FLIP/evaluation route. Use the same exact value as
+    /// Exact unattended Agency/FLIP/evaluation route. Use the same exact value as
     /// --strong-model to explicitly choose “Same as worker”.
     #[arg(long, global = true, requires = "strong_model")]
     weak_model: Option<String>,
 
-    /// Worker/chat effort. With --model, defaults to the explicit shorthand policy: high.
+    /// Unattended worker/chat effort. With --model, defaults to high.
     #[arg(long, global = true)]
     strong_reasoning: Option<ReasoningLevel>,
 
-    /// Eval/assign/FLIP/weak-role effort. With --model, defaults to low.
+    /// Unattended Eval/assign/FLIP/weak-role effort. With --model, defaults to low.
     #[arg(long, global = true)]
     weak_reasoning: Option<ReasoningLevel>,
 
@@ -65,7 +66,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    /// Re-enter profile selection and commit setup; does not open the TUI.
+    /// Enable/configure unattended workers and evaluation (advanced); no TUI.
     Setup {
         /// Roll back an uncommitted failed setup's exact project selection and
         /// service start. Graph init and handler-owned auth/plugin stay intact.

@@ -280,10 +280,21 @@ pub fn run_create(
     command: Option<&str>,
     json: bool,
 ) -> Result<()> {
-    // A chat is an LLM-backed entity. Refuse before IPC or direct graph
-    // mutation unless its invocation or config explicitly selects a route.
-    let selection =
-        worksgood::execution_selection::require(dir, model.map(|m| (m, false)), "wg chat create")?;
+    // A bare, explicitly-attended Pi console is the one route-free LLM chat:
+    // Pi owns login/model selection inside its own UI. Every other chat still
+    // fails closed unless its invocation or repository config selects a route.
+    // This exception is deliberately keyed to explicit `--exec pi` + no model;
+    // it cannot weaken unattended worker/evaluator service validation.
+    let attended_bare_pi = executor == Some("pi") && model.is_none();
+    let selection = if attended_bare_pi {
+        None
+    } else {
+        Some(worksgood::execution_selection::require(
+            dir,
+            model.map(|m| (m, false)),
+            "wg chat create",
+        )?)
+    };
     // The explicit chat route is independently sufficient, just like an
     // explicit task.model. Requiring every unrelated worker/agency role to be
     // configured here made `wg chat create -m codex:<model>` fail in an
@@ -296,8 +307,8 @@ pub fn run_create(
     // transactional. An explicit --exec wins over the model/profile handler.
     let selected_executor = executor.or_else(|| {
         selection
-            .system
             .as_ref()
+            .and_then(|selection| selection.system.as_ref())
             .map(|system| system.handler.as_str())
     });
     if command.is_none() {
