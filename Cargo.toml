@@ -28,8 +28,8 @@ path = "src/main.rs"
 name = "nex"
 path = "src/bin/nex.rs"
 
-# Attended profile-first lifecycle concierge. The complete expert CLI remains
-# `wg`; normal installs ship both surfaces together.
+# Simple attended Pi chat launcher plus explicit advanced automation concierge.
+# The complete expert CLI remains `wg`; normal installs ship both surfaces.
 [[bin]]
 name = "worksgood"
 path = "src/bin/worksgood.rs"

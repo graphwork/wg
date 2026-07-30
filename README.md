@@ -98,9 +98,9 @@ mkdir -p ~/work/my-project && cd ~/work/my-project
 worksgood
 ```
 
-Bare `worksgood` walks an attended setup/reconcile flow and opens the TUI; choose **Continue without AI** for a credential-free first look. Its focused lifecycle verbs are `setup`, `status`, `stop`, `restart`, and `tui`.
+Bare `worksgood` takes the simple attended path: it verifies `pi`, ensures the compatible WorksGood plugin, initializes a route-free graph when needed, and opens the TUI. Choose **New chat → Pi**; Pi owns login, provider/model selection, and model switching. No profile, worker/evaluator route, reasoning tier, dispatcher, or service is required or changed. Use `worksgood --without-ai` (or `wg init --no-agency && wg tui`) to open a graph without checking Pi.
 
-If you already know one exact Pi route, the primary simple setup is one paste and one confirmation:
+Repository-wide automation is a separate advanced choice. If you want unattended workers and evaluation and already know one exact Pi route, configure it with one paste and one confirmation:
 
 ```bash
 worksgood setup --model pi:openrouter:deepseek/deepseek-v4-flash
@@ -108,7 +108,7 @@ worksgood setup --model pi:openrouter:deepseek/deepseek-v4-flash
 worksgood --model pi:openrouter:deepseek/deepseek-v4-flash
 ```
 
-The exact route is copied to every LLM role without normalization or fallback. Worker/chat/strong roles default to reasoning `high`; eval/assign/FLIP/weak roles default to `low`. Override those independently with `--strong-reasoning` and `--weak-reasoning`. Reasoning remains structured profile/service identity separate from the unchanged model route. `--profile` is the advanced path for selecting and customizing an **existing** reusable base profile; it does not create a profile named after a model.
+Those exact routes and reasoning settings govern **unattended dispatch only**; they never select or rewrite the model a human chooses inside an attended Pi chat. The route is copied to every automation role without normalization or fallback. Worker roles default to reasoning `high`; eval/assign/FLIP roles default to `low`. Override those independently with `--strong-reasoning` and `--weak-reasoning`. `--profile` remains the advanced path for selecting and customizing an existing reusable automation base.
 
 For explicit graph-only expert use, `wg init` followed by `wg tui` is **non-mutating** — those commands never select a model, authenticate, install packages, or start a service. The complete task/tool command set remains under `wg`; agent integrations continue to use the `wg_*` protocol.
 

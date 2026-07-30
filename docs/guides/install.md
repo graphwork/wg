@@ -39,10 +39,23 @@ cd ~/work/my-project
 worksgood
 ```
 
-Choose **Continue without AI** for a setup-neutral TUI, or select a configured
-profile. The complete expert surface remains available through `wg --help`.
+Bare `worksgood` verifies Pi, ensures the compatible WG plugin, and opens a
+route-free TUI. Choose **New chat → Pi**; Pi owns login, model selection, and
+model switching. This attended path does not configure or start unattended
+workers/evaluation. Use `worksgood --without-ai` for a graph-only TUI that does
+not check Pi. The complete expert surface remains available through `wg --help`.
 
-If you want the default agency starter roles before opening the TUI, add:
+Only when you want repository-wide unattended automation, run the advanced
+setup and provide exact worker/evaluation routes plus reasoning:
+
+```bash
+worksgood setup
+# or: worksgood setup --model pi:<provider>:<model>
+```
+
+Those settings govern unattended dispatch, not the model chosen inside an
+attended Pi chat. If you want the default agency starter roles independently,
+add:
 
 ```bash
 wg agency init
