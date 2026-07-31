@@ -3214,7 +3214,7 @@ fn render_context_row(frame: &mut Frame, app: &mut VizApp, area: Rect, _chat: bo
     }
     if app.task_counts.plumbing_total > 0 {
         let automation_label = format!(
-            " · plumbing: {} · {} hidden ",
+            " · {} · {} hidden ",
             app.automation_visibility_mode().label(),
             app.hidden_plumbing_count()
         );
@@ -18297,19 +18297,16 @@ mod tests {
         app.task_counts.plumbing_running = 1;
 
         let hidden = context_row_text(&mut app, 160);
-        assert!(hidden.contains("· plumbing: hidden · 4 hidden"), "{hidden}");
+        assert!(hidden.contains("· hidden · 4 hidden"), "{hidden}");
         assert!(app.last_automation_indicator_area.width > 0);
 
         app.cycle_automation_visibility();
         let running = context_row_text(&mut app, 160);
-        assert!(
-            running.contains("· plumbing: running only · 3 hidden"),
-            "{running}"
-        );
+        assert!(running.contains("· running only · 3 hidden"), "{running}");
 
         app.cycle_automation_visibility();
         let all = context_row_text(&mut app, 160);
-        assert!(all.contains("· plumbing: all · 0 hidden"), "{all}");
+        assert!(all.contains("· all · 0 hidden"), "{all}");
     }
 
     #[test]
