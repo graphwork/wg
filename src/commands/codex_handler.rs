@@ -243,45 +243,23 @@ fn build_handler_system_prompt(workgraph_dir: &Path, chat_ref: &str, role: Optio
     }
 }
 
-/// Codex-specific addendum prepended to the first-turn system prompt for
-/// chat sessions. Codex's "be helpful, do the work" baseline is stronger
-/// than its instruction-following, so we lead with an extra-loud reminder
-/// that the chat agent is a thin task-creator, not an implementer. This is
-/// the asymmetry-fix counterpart to the codex bypass-flag handling
-/// elsewhere — different handler, different treatment.
+/// Codex-specific first-turn addendum for attended chats. The universal
+/// contract follows, but this short lead-in counters old persisted prompt
+/// expectations that source access must always be delegated.
 const CODEX_CHAT_ADDENDUM: &str = "\
-# STOP — You Are A Chat Agent, Not An Implementer
+# Attended Chat
 
-You are running as a WG chat agent. Before you do anything else,
-read this:
+You are the human's attended repository assistant. Follow the human's request
+using Codex's normal tools. Use WorksGood/`wg` for tracked work when requested
+or useful; do not force every request into a task, and do not refuse repository
+inspection or implementation merely because you are a chat agent.
 
-- Your job is to ORCHESTRATE work, not to receive it. The user is talking
-  to you to file `wg add` tasks; the dispatcher then spawns workers.
-- DO NOT write code. DO NOT edit files. DO NOT run `cargo build` /
-  `cargo test`. DO NOT grep, find, cat, or read source files. DO NOT
-  open the editor. DO NOT investigate the codebase.
-- For ANY code-touching request — bug fix, feature, refactor, test,
-  doc edit — your correct response is `wg add \"...\" -d \"## Description \
-... ## Validation ...\"` plus a brief acknowledgment to the user. The \
-worker that the dispatcher spawns will do the work.
-- Allowed commands: `wg add`, `wg edit`, `wg show`, `wg list`, `wg log`,
-  `wg msg send`, `wg pause`, `wg resume`, `wg assign`, `wg agents`,
-  `wg status`, `wg ready`, `wg watch`, `wg viz`. These read graph state
-  or create tasks. They do NOT touch source.
-- Forbidden: any tool that reads or writes a file under `src/`,
-  `tests/`, `docs/`, `Cargo.*`, `package.json`, etc. Any shell command
-  that runs the build / test / lint / format / migration. Any subagent
-  spawn (`Task` / `Explore` / `Plan` / general-purpose).
+An explicit, unambiguous request authorizes any operation exposed by the normal
+tool surface. Mere discussion is not a mutation request. Only actual tool,
+OS/platform, sandbox, and project constraints apply; name the real constraint
+if blocked. Unattended roles keep their separate contracts.
 
-Codex's default helpfulness baseline pulls toward \"just do it.\" The
-chat-agent contract is stronger than that baseline. If you find yourself
-reaching for a code tool: STOP, write a `wg add` instead.
-
-Empirical proof of correct behavior: when the user says \"fix bug Y in
-src/foo.rs\" you respond with `wg add ...` and a one-sentence
-acknowledgment, NOT with `Read src/foo.rs` or `cargo test`.
-
-The full universal contract follows in the system prompt below.
+The universal contract follows.
 
 ---
 
@@ -299,9 +277,9 @@ fn assemble_first_turn_prompt(
 ) -> String {
     let mut out = String::new();
     out.push_str("# System\n");
-    // Chat sessions get the codex-specific anti-implementer addendum
-    // prepended. Worker / non-chat sessions don't (they're SUPPOSED to
-    // implement). Detect chat by the presence of a coordinator_id, since
+    // Chat sessions get the Codex-specific attended-operator addendum.
+    // Worker / non-chat sessions do not: chat authority must never leak into
+    // unattended roles. Detect chat by the presence of a coordinator_id, since
     // that's set when the chat_ref starts with "coordinator-" / ".chat-".
     if coordinator_id.is_some() {
         out.push_str(CODEX_CHAT_ADDENDUM);
@@ -615,20 +593,23 @@ mod tests {
             "fix bug Y in src/foo.rs",
         );
         assert!(
-            prompt.contains("STOP — You Are A Chat Agent"),
-            "chat-session first turn must include the codex anti-implementer addendum, got:\n{}",
+            prompt.contains("# Attended Chat"),
+            "chat-session first turn must include the Codex operator addendum, got:\n{}",
             prompt
         );
-        assert!(
-            prompt.contains("DO NOT write code"),
-            "addendum must explicitly forbid writing code"
-        );
+        assert!(prompt.contains("human's attended repository assistant"));
+        assert!(prompt.contains("using Codex's normal tools"));
+        assert!(prompt.contains("do not force every request into a task"));
+        assert!(prompt.contains("explicit, unambiguous request authorizes any operation"));
+        assert!(!prompt.contains("DO NOT write code"));
+        assert!(!prompt.contains("DO NOT grep"));
+        assert!(!prompt.contains("A chat agent NEVER reads source files"));
         assert!(
             prompt.contains("BASE_SYSTEM_PROMPT_PLACEHOLDER"),
             "addendum must precede (not replace) the universal system prompt"
         );
         // Addendum comes before the universal contract.
-        let addendum_idx = prompt.find("STOP — You Are A Chat Agent").unwrap();
+        let addendum_idx = prompt.find("# Attended Chat").unwrap();
         let base_idx = prompt.find("BASE_SYSTEM_PROMPT_PLACEHOLDER").unwrap();
         assert!(
             addendum_idx < base_idx,
@@ -646,8 +627,8 @@ mod tests {
             "do the thing",
         );
         assert!(
-            !prompt.contains("STOP — You Are A Chat Agent"),
-            "non-chat sessions must NOT receive the chat-agent addendum (workers SHOULD implement)"
+            !prompt.contains("# Attended Chat"),
+            "non-chat sessions must NOT receive attended-chat authority"
         );
         assert!(
             prompt.contains("BASE_SYSTEM_PROMPT_PLACEHOLDER"),
@@ -663,7 +644,7 @@ mod tests {
         let dir = empty_workgraph();
         let prompt = assemble_followup_prompt(dir.path(), Some(1), "another request");
         assert!(
-            !prompt.contains("STOP — You Are A Chat Agent"),
+            !prompt.contains("# Attended Chat"),
             "follow-up turns must not re-inject the addendum (codex session resume preserves it)"
         );
     }

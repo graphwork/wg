@@ -280,10 +280,21 @@ pub fn run_create(
     command: Option<&str>,
     json: bool,
 ) -> Result<()> {
-    // A chat is an LLM-backed entity. Refuse before IPC or direct graph
-    // mutation unless its invocation or config explicitly selects a route.
-    let selection =
-        worksgood::execution_selection::require(dir, model.map(|m| (m, false)), "wg chat create")?;
+    // A bare, explicitly-attended Pi console is the one route-free LLM chat:
+    // Pi owns login/model selection inside its own UI. Every other chat still
+    // fails closed unless its invocation or repository config selects a route.
+    // This exception is deliberately keyed to explicit `--exec pi` + no model;
+    // it cannot weaken unattended worker/evaluator service validation.
+    let attended_bare_pi = executor == Some("pi") && model.is_none();
+    let selection = if attended_bare_pi {
+        None
+    } else {
+        Some(worksgood::execution_selection::require(
+            dir,
+            model.map(|m| (m, false)),
+            "wg chat create",
+        )?)
+    };
     // The explicit chat route is independently sufficient, just like an
     // explicit task.model. Requiring every unrelated worker/agency role to be
     // configured here made `wg chat create -m codex:<model>` fail in an
@@ -296,8 +307,8 @@ pub fn run_create(
     // transactional. An explicit --exec wins over the model/profile handler.
     let selected_executor = executor.or_else(|| {
         selection
-            .system
             .as_ref()
+            .and_then(|selection| selection.system.as_ref())
             .map(|system| system.handler.as_str())
     });
     if command.is_none() {
@@ -1233,7 +1244,13 @@ mod tests {
         assert!(chat_tasks[0].id.starts_with(".chat-"));
         assert_eq!(chat_tasks[0].executor_preset_name.as_deref(), Some("pi"));
         assert!(!chat_tasks[0].command_argv.is_empty());
-        assert!(chat_tasks[0].working_dir.is_some());
+        assert_eq!(
+            chat_tasks[0].working_dir.as_deref(),
+            dir.parent().map(|path| path.to_string_lossy()).as_deref(),
+            "attended chat cwd must be the repository root"
+        );
+        assert_eq!(chat_tasks[0].exec_mode.as_deref(), Some("full"));
+        assert_eq!(chat_tasks[0].context_scope.as_deref(), Some("full"));
     }
 
     #[test]
@@ -1253,6 +1270,8 @@ mod tests {
             vec!["bash".to_string(), "-lc".to_string(), "bash".to_string()]
         );
         assert!(chat.working_dir.as_deref().is_some_and(|d| !d.is_empty()));
+        assert_eq!(chat.exec_mode.as_deref(), Some("full"));
+        assert_eq!(chat.context_scope.as_deref(), Some("full"));
     }
 
     #[test]
@@ -1393,6 +1412,8 @@ mod tests {
         assert_eq!(chat.command_argv[0], "wg");
         assert!(chat.command_argv.contains(&"nex".to_string()));
         assert!(chat.working_dir.as_deref().is_some_and(|d| !d.is_empty()));
+        assert_eq!(chat.exec_mode.as_deref(), Some("full"));
+        assert_eq!(chat.context_scope.as_deref(), Some("full"));
     }
 
     #[test]

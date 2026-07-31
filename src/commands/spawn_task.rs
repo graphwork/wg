@@ -461,6 +461,14 @@ fn dispatch_pi(chat_ref: &str, model: Option<&str>, workgraph_dir: &Path) -> Res
         .with_context(|| format!("acquire Pi chat runtime lock for {chat_ref}"))?;
         std::mem::forget(lock);
 
+        // Attended interactive Pi keeps its normal built-in tools and
+        // extension discovery, while loading the exact version-locked WG
+        // extension explicitly. Do not pass `-ne`: that belongs to the
+        // hermetic unattended RPC topology and would narrow the human's
+        // ordinary console tool surface.
+        let plugin =
+            worksgood::pi_plugin::ensure_pi_plugin(worksgood::pi_plugin::EnsureMode::Hermetic)
+                .context("prepare WG tools for attended Pi chat")?;
         let mut cmd = std::process::Command::new("pi");
         if let Some(marg) = crate::commands::pi_handler::pi_model_arg(model) {
             cmd.arg("--provider")
@@ -471,8 +479,12 @@ fn dispatch_pi(chat_ref: &str, model: Option<&str>, workgraph_dir: &Path) -> Res
         cmd.arg("--session-id")
             .arg(chat_ref)
             .arg("--session-dir")
-            .arg(&session_dir);
+            .arg(&session_dir)
+            .arg("-e")
+            .arg(&plugin.dist_entry);
         cmd.env("WG_DIR", workgraph_dir);
+        cmd.env("WG_PI_PLUGIN_COMPAT_VERSION", &plugin.compat);
+        cmd.env("WG_PI_PLUGIN_DIR", &plugin.root);
         cmd.env("WG_CHAT_REF", chat_ref);
         if let Some(chat_id) = worksgood::chat_id::canonical_task_id_from_ref(chat_ref) {
             cmd.env("WG_CHAT_ID", chat_id);

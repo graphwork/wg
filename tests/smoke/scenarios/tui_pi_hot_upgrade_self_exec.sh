@@ -39,7 +39,9 @@ cleanup_tmux() { tmux -L "$TM_SOCK" kill-server 2>/dev/null || true; }
 add_cleanup_hook cleanup_tmux
 
 # The fake interactive Pi records identity/argv and then stays alive. It is a
-# standalone console launch: no wg pi-handler, --mode rpc, or hermetic -e/-ne.
+# standalone console launch: no wg pi-handler / --mode rpc. It loads the
+# version-locked WG extension with `-e` while deliberately omitting `-ne`, so
+# normal Pi built-ins remain available beside WG tools.
 cat >"$scratch/fakebin/pi" <<'SH'
 #!/bin/sh
 evidence="$(dirname "$0")/../pi-evidence"
@@ -138,8 +140,11 @@ grep -q '^WG_CHAT_ID=\.chat-0$' "$scratch/pi-evidence" \
     || loud_fail "Pi did not receive canonical chat identity: $(cat "$scratch/pi-evidence")"
 grep -q '^WG_CHAT_REF=chat-0$' "$scratch/pi-evidence" \
     || loud_fail "Pi did not receive canonical chat ref: $(cat "$scratch/pi-evidence")"
-if grep '^argv=' "$scratch/pi-evidence" | grep -Eq -- ' --mode| <rpc>| <-e>| <-ne>'; then
-    loud_fail "standalone TUI Pi was confused with managed/RPC plugin launch: $(cat "$scratch/pi-evidence")"
+if grep '^argv=' "$scratch/pi-evidence" | grep -Eq -- ' --mode| <rpc>| <-ne>'; then
+    loud_fail "attended TUI Pi was narrowed into the hermetic/RPC topology: $(cat "$scratch/pi-evidence")"
+fi
+if ! grep '^argv=' "$scratch/pi-evidence" | grep -Eq -- ' <-e> <[^>]+/pi-worksgood/index\.js>' ; then
+    loud_fail "attended TUI Pi did not load the version-locked WG extension: $(cat "$scratch/pi-evidence")"
 fi
 pi_pid=$(sed -n 's/^pid=//p' "$scratch/pi-evidence")
 kill -0 "$pi_pid" 2>/dev/null || loud_fail "recorded Pi process is not alive: pid=$pi_pid"

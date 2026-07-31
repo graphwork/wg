@@ -1315,47 +1315,11 @@ fn subprocess_coordinator_loop(
 // System prompt
 // ---------------------------------------------------------------------------
 
-/// Coordinator prompt component file names (in composition order).
-const COORDINATOR_PROMPT_FILES: &[&str] = &[
-    "base-system-prompt.md",
-    "behavioral-rules.md",
-    "common-patterns.md",
-    "evolved-amendments.md",
-];
-
-/// Build the system prompt for the coordinator agent by composing from files.
-///
-/// Reads from `.wg/agency/coordinator-prompt/` and concatenates the
-/// component files in order. Falls back to the hardcoded prompt if the
-/// directory doesn't exist or no files are found.
-///
-/// Dynamic state goes through context injection (see `build_coordinator_context`).
+/// Build the static attended-chat prompt. The library implementation appends
+/// the authoritative human-directed operator contract to both built-in and
+/// project-composed prompt bodies, including legacy generated prompt files.
 pub fn build_system_prompt(dir: &Path) -> String {
-    let prompt_dir = dir.join("agency/coordinator-prompt");
-
-    if prompt_dir.is_dir() {
-        let mut parts = Vec::new();
-        for filename in COORDINATOR_PROMPT_FILES {
-            let path = prompt_dir.join(filename);
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                let trimmed = content.trim();
-                if !trimmed.is_empty() {
-                    parts.push(trimmed.to_string());
-                }
-            }
-        }
-        if !parts.is_empty() {
-            return parts.join("\n\n");
-        }
-    }
-
-    // Fallback: hardcoded prompt (for projects without coordinator-prompt/ files)
-    build_system_prompt_fallback()
-}
-
-/// Hardcoded fallback prompt used when coordinator-prompt files don't exist.
-fn build_system_prompt_fallback() -> String {
-    include_str!("coordinator_prompt_fallback.txt").to_string()
+    worksgood::service::coordinator_prompt::build_system_prompt(dir)
 }
 
 // ---------------------------------------------------------------------------
@@ -1580,9 +1544,13 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let prompt = build_system_prompt(tmp.path());
         // Falls back to hardcoded prompt since no coordinator-prompt dir exists
-        assert!(prompt.contains("WG chat agent"));
-        assert!(prompt.contains("Never implement"));
+        assert!(prompt.contains("persistent attended chat"));
+        assert!(prompt.contains("human's attended repository assistant"));
+        assert!(prompt.contains("Follow the human's request"));
+        assert!(prompt.contains("normal tool surface: read, search, write, edit, execute, test"));
+        assert!(prompt.contains("no role-based operation denylist"));
         assert!(prompt.contains("wg add"));
+        assert!(!prompt.contains("You do NOT read source files"));
     }
 
     #[test]
@@ -1600,8 +1568,10 @@ mod tests {
         assert!(prompt.contains("Rules here"));
         assert!(prompt.contains("Patterns here"));
         assert!(prompt.contains("Amendments here"));
-        // Should NOT contain fallback content
-        assert!(!prompt.contains("WG chat agent"));
+        // Should NOT contain fallback body, but the authoritative attended
+        // contract is always appended even to project-composed prompts.
+        assert!(!prompt.contains("persistent attended chat"));
+        assert!(prompt.contains("human's attended repository assistant"));
     }
 
     #[test]
