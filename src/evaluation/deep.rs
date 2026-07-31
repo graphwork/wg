@@ -1084,6 +1084,7 @@ fn build_bundle(
         &mut repository,
         budgets.max_repository_files,
     )?;
+    make_repository_readonly(&repository_dir)?;
     let capabilities = DeepCapabilities::observation_only();
     capabilities.field_scan()?;
     let capability_manifest_id = format!(
@@ -1217,6 +1218,32 @@ fn collect_repository(
             });
         }
     }
+    Ok(())
+}
+
+fn make_repository_readonly(root: &Path) -> Result<()> {
+    let mut entries: Vec<_> = fs::read_dir(root)?.flatten().collect();
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path)?;
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
+        if metadata.is_dir() {
+            make_repository_readonly(&path)?;
+            let mut permissions = metadata.permissions();
+            permissions.set_readonly(true);
+            fs::set_permissions(&path, permissions)?;
+        } else if metadata.is_file() {
+            let mut permissions = metadata.permissions();
+            permissions.set_readonly(true);
+            fs::set_permissions(&path, permissions)?;
+        }
+    }
+    let mut permissions = fs::metadata(root)?.permissions();
+    permissions.set_readonly(true);
+    fs::set_permissions(root, permissions)?;
     Ok(())
 }
 
@@ -1951,6 +1978,8 @@ fn failure(
         stderr_excerpt,
         stdout_digest,
         reported_usage: None,
+        safe_evidence_ids: Vec::new(),
+        safe_evidence_categories: Vec::new(),
         occurred_at: Utc::now().to_rfc3339(),
     }
 }

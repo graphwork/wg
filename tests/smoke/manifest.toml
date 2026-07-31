@@ -2820,15 +2820,22 @@ timeout_seconds = 180
 [[scenario]]
 name = "dedicated_pi_bounded_evaluation_lane"
 script = "scenarios/dedicated_pi_bounded_evaluation_lane.sh"
-owners = ["implement-dedicated-pi", "integrate-and-canary"]
+owners = ["implement-dedicated-pi", "integrate-and-canary", "fix-bounded-eval-evidence-sufficiency"]
 description = "Candidate-binary real daemon + tmux/TUI credential-free Fake-Pi flow: a genuine source candidate mints one hidden bounded record, which the dedicated pre-admission lane executes with no evaluator graph task/agent/worktree/build slot, no tools/extensions/session/credential environment, exact pinned Pi route and strict structured schema; terminal show, service status and the actual TUI detail action display content-addressed evidence, route, state, verdict and Pi-reported usage/cost; repeated ticks consume the verdict exactly once."
 timeout_seconds = 180
 
 [[scenario]]
 name = "deep_readonly_flip_human_flow"
 script = "scenarios/deep_readonly_flip_human_flow.sh"
-owners = ["implement-deep-read", "integrate-and-canary"]
+owners = ["implement-deep-read", "integrate-and-canary", "fix-bounded-eval-evidence-sufficiency"]
 description = "Candidate-binary credential-free Fake-Pi + real tmux/TUI human flow: default bounded evaluation completes one genuine source candidate without creating deep work; an explicit post-completion terminal `wg evaluate run --flip` alone starts the separate observation-only Pi lane, paints progress, opens an evidence-linked report in the actual TUI Detail pane, and finds a planted API/registry omission plus latent intent/counterfactual that bounded summary grading misses. Pins all eight evidence classes, exact tool/evidence audit, closed injection-safe finding codes, immutable candidate reads, and no credential/mutation/shell/network/identity capabilities."
+timeout_seconds = 240
+
+[[scenario]]
+name = "bounded_insufficient_deep_authority"
+script = "scenarios/bounded_insufficient_deep_authority.sh"
+owners = ["fix-bounded-eval-evidence-sufficiency"]
+description = "Candidate-binary daemon + terminal/tmux TUI Fake-Pi regression: an immutable coding candidate whose decisive changed bytes exceed every bounded rebundle budget records structured InsufficientEvidence without invoking the semantic bounded model, rejecting/retrying the source, or changing its attempt/candidate; required deep read-only FLIP independently reads the exact candidate commit, accepts it, and terminal/TUI surfaces only safe evidence categories/IDs."
 timeout_seconds = 240
 
 [[scenario]]

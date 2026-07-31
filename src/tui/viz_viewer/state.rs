@@ -14256,6 +14256,18 @@ impl VizApp {
                             "  Failure: {:?} · {} · {}",
                             failure.kind, failure.code, failure.message
                         ));
+                        if !failure.safe_evidence_categories.is_empty() {
+                            lines.push(format!(
+                                "  Evidence categories: {}",
+                                failure.safe_evidence_categories.join(", ")
+                            ));
+                        }
+                        if !failure.safe_evidence_ids.is_empty() {
+                            lines.push(format!(
+                                "  Evidence IDs: {}",
+                                failure.safe_evidence_ids.join(", ")
+                            ));
+                        }
                     }
                 }
                 if let Some(verdict) = record.verdict.as_ref() {

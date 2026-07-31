@@ -97,7 +97,14 @@ fn candidate_binds_28kb_bytes_not_6kb_main_and_is_immutable() {
     let candidate = tx.candidate.as_ref().unwrap();
     let reloaded = store.read_candidate(&candidate.candidate_id).unwrap();
     assert_eq!(reloaded.binding, candidate.binding);
-    assert_eq!(candidate.binding, tx.validation.as_ref().unwrap().binding);
+    let validation = tx.validation.as_ref().unwrap();
+    assert_eq!(candidate.binding, validation.binding);
+    assert!(
+        f.wg.join("finalization/objects")
+            .join(validation.result_id.replace(':', "_"))
+            .is_file(),
+        "the lifecycle-referenced validation receipt must be readable by exact result_id"
+    );
     assert_eq!(
         candidate.binding,
         CandidateBinding {

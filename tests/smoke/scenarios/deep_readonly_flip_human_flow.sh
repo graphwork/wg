@@ -111,7 +111,7 @@ tmux send-keys -t "$session" /; tmux send-keys -t "$session" -l source; sleep .1
 seen=''
 for _ in $(seq 1 220); do
   frame=$(dump); seen+=$'\n'"$frame"
-  if grep -Fq 'Deep report:' <<<"$seen" && grep -Fq 'REGISTRY_NOT_UPDATED' <<<"$seen" && grep -Fq 'src/registry.rs:1' <<<"$seen" && grep -Fq 'Observed: 8 kinds' <<<"$seen"; then break; fi
+  if grep -Fq 'Deep report:' <<<"$seen" && grep -Fq 'REGISTRY_NOT_UPDATED' <<<"$seen" && grep -Fq 'src/registry.rs:1' <<<"$seen" && grep -Fq 'Observed: 8 kinds' <<<"$seen" && grep -Fq 'Counterfactual: REGISTRY_LOOKUP_REJECTS_NEW_MODE' <<<"$seen"; then break; fi
   tmux send-keys -t "$session" PageDown; sleep .02
 done
 for needle in 'Deep report:' 'REGISTRY_NOT_UPDATED' 'src/registry.rs:1' 'Observed: 8 kinds' 'Counterfactual: REGISTRY_LOOKUP_REJECTS_NEW_MODE'; do

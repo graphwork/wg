@@ -15,7 +15,9 @@ use worksgood::evaluation::{
     EvaluationPolicySnapshot, EvaluationProduct, EvaluationRecord, EvaluationRouteCall,
     EvaluationRouteSnapshot, EvaluationState, LazyEvaluationSelection, SourceCandidateRef,
 };
-use worksgood::finalization::{CandidateBinding, CandidateDescriptor};
+use worksgood::finalization::{
+    CandidateBinding, CandidateDescriptor, ContentManifest, ManifestEntry, ValidationResult,
+};
 use worksgood::graph::{LogEntry, Node, Status, Task, WorkGraph};
 use worksgood::parser::{load_graph, save_graph};
 
@@ -136,7 +138,7 @@ fn record(
     }
 }
 
-fn setup_candidate(project: &Path, deep_model: &str) -> PathBuf {
+fn setup_candidate(project: &Path, deep_model: &str, large_candidate: bool) -> PathBuf {
     fs::create_dir_all(project.join("src")).unwrap();
     git(project, &["init", "-q", "-b", "main"]);
     git(project, &["config", "user.email", "deep@test.invalid"]);
@@ -157,11 +159,15 @@ fn setup_candidate(project: &Path, deep_model: &str) -> PathBuf {
 
     // Candidate implements the visible API but omits the registry update. The
     // user's latent intent explicitly requires both components to agree.
-    fs::write(
-        project.join("src/api.rs"),
-        "pub const MODE: &str = \"deep\";\n",
-    )
-    .unwrap();
+    let candidate_api = if large_candidate {
+        format!(
+            "pub const MODE: &str = \"deep\";\npub const TABLE: &str = \"{}\";\n",
+            "candidate-byte-that-bounded-must-not-guess-".repeat(2_000)
+        )
+    } else {
+        "pub const MODE: &str = \"deep\";\n".into()
+    };
+    fs::write(project.join("src/api.rs"), candidate_api).unwrap();
     git(project, &["add", "src/api.rs"]);
     git(project, &["commit", "-qm", "candidate"]);
     let candidate = git(project, &["rev-parse", "HEAD"]);
@@ -212,11 +218,60 @@ fn setup_candidate(project: &Path, deep_model: &str) -> PathBuf {
         serde_json::to_vec(&descriptor).unwrap(),
     )
     .unwrap();
-    fs::write(
-        dir.join("finalization/objects/wgcid_v1_blake3_delta"),
-        br#"{"files":["src/api.rs"],"omitted":"src/registry.rs"}"#,
-    )
-    .unwrap();
+    let entries = ["src/api.rs", "src/registry.rs"]
+        .into_iter()
+        .map(|path| {
+            let content = fs::read(project.join(path)).unwrap();
+            ManifestEntry {
+                path: path.into(),
+                git_mode: "100644".into(),
+                kind: "blob".into(),
+                git_object_oid: git(project, &["rev-parse", &format!("HEAD:{path}")]),
+                blake3_content_digest: format!(
+                    "wgcid:v1:blake3:{}",
+                    blake3::hash(&content).to_hex()
+                ),
+                size: content.len() as u64,
+            }
+        })
+        .collect();
+    let manifest = ContentManifest {
+        schema_version: 1,
+        tree_oid: descriptor.candidate_tree_oid.clone(),
+        entries,
+    };
+    let validation = ValidationResult {
+        result_id: "wgcid:v1:blake3:validation".into(),
+        request_id: "validation-request".into(),
+        binding: descriptor.binding.clone(),
+        policy_cid: "wgcid:v1:blake3:validation-policy".into(),
+        materialized_tree_oid: descriptor.candidate_tree_oid.clone(),
+        materialized_manifest_cid: "wgcid:v1:blake3:manifest".into(),
+        passed: true,
+        validator_identity: "test-validator".into(),
+        created_at: "2026-07-28T00:00:00Z".into(),
+    };
+    for (name, bytes) in [
+        (
+            "wgcid_v1_blake3_manifest",
+            serde_json::to_vec(&manifest).unwrap(),
+        ),
+        (
+            "wgcid_v1_blake3_delta",
+            serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1,
+                "base": descriptor.base_commit_oid,
+                "candidate": descriptor.candidate_commit_oid,
+            }))
+            .unwrap(),
+        ),
+        (
+            "wgcid_v1_blake3_validation",
+            serde_json::to_vec(&validation).unwrap(),
+        ),
+    ] {
+        fs::write(dir.join("finalization/objects").join(name), bytes).unwrap();
+    }
 
     let source = SourceCandidateRef {
         task_id: "source".into(),
@@ -303,6 +358,36 @@ fn deep_only_managed_policy_is_a_required_gate_without_bounded_selection() {
 }
 
 #[test]
+fn coding_hard_gate_routes_authority_to_deep_and_keeps_bounded_secondary() {
+    let mut config = Config::default();
+    config.evaluation.managed_rollout = false;
+    config.agency.auto_evaluate = true;
+    config.agency.eval_gate_all = true;
+    config.agency.eval_gate_threshold = Some(0.7);
+    config.agency.flip_enabled = false;
+    let task = Task {
+        id: "coding-candidate".into(),
+        title: "Implement source change".into(),
+        artifacts: vec!["src/lib.rs".into()],
+        status: Status::InProgress,
+        ..Task::default()
+    };
+    let selection = LazyEvaluationSelection::resolve(&task, &config).unwrap();
+    assert_eq!(
+        selection.bounded.as_ref().unwrap().applicability,
+        EvaluationGateApplicability::Advisory
+    );
+    assert_eq!(
+        selection.deep_readonly_flip.as_ref().unwrap().applicability,
+        EvaluationGateApplicability::Required
+    );
+    let gate = selection.gate_policy().unwrap();
+    assert_eq!(gate.applicability, EvaluationGateApplicability::Required);
+    assert_eq!(gate.evaluator_threshold, None);
+    assert_eq!(gate.flip_policy, FlipVerdictPolicy::Required);
+}
+
+#[test]
 fn flip_required_excludes_system_shell_draft_and_message_only_work() {
     let config = flip_required_config();
     for mut task in [
@@ -354,7 +439,7 @@ fn deep_flip_finds_cross_component_omission_bounded_summary_misses() {
     let home = tmp.path().join("home");
     fs::create_dir_all(&home).unwrap();
     let _env = test_env(&home);
-    let dir = setup_candidate(&tmp.path().join("project"), "deep-find");
+    let dir = setup_candidate(&tmp.path().join("project"), "deep-find", false);
 
     assert!(bounded::run_one_pending(&dir, &config()).unwrap().ran);
     let bounded_record = load_graph(&dir.join("graph.jsonl"))
@@ -375,6 +460,24 @@ fn deep_flip_finds_cross_component_omission_bounded_summary_misses() {
             .summary
             .contains("registry")
     );
+    assert!(
+        bounded_record
+            .diagnostic
+            .as_deref()
+            .unwrap()
+            .contains("advisory only")
+    );
+    let graph_after_bounded = load_graph(&dir.join("graph.jsonl")).unwrap();
+    let deep_before = graph_after_bounded
+        .get_task("source")
+        .unwrap()
+        .evaluation_records
+        .iter()
+        .find(|record| record.product == EvaluationProduct::DeepReadonlyFlip)
+        .unwrap();
+    assert_eq!(deep_before.state, EvaluationState::PreparingBundle);
+    assert!(deep_before.deep_report.is_none());
+    assert!(deep_before.consumed_verdict_id.is_none());
 
     assert!(run_one_pending(&dir, &config()).unwrap().ran);
     let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
@@ -437,7 +540,7 @@ fn required_deep_reject_retains_successful_source_and_candidate_for_repair() {
     fs::create_dir_all(&home).unwrap();
     let _env = test_env(&home);
     let project = tmp.path().join("project");
-    let dir = setup_candidate(&project, "deep-find");
+    let dir = setup_candidate(&project, "deep-find", false);
     let main_before = git(&project, &["rev-parse", "refs/heads/main"]);
     worksgood::parser::modify_graph(&dir.join("graph.jsonl"), |graph| {
         let task = graph.get_task_mut("source").unwrap();
@@ -504,6 +607,161 @@ fn required_deep_reject_retains_successful_source_and_candidate_for_repair() {
 
 #[test]
 #[serial]
+fn bounded_truncation_is_infrastructure_only_and_deep_reads_exact_candidate() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().join("home");
+    fs::create_dir_all(&home).unwrap();
+    let _env = test_env(&home);
+    let project = tmp.path().join("project");
+    let dir = setup_candidate(&project, "deep-pass", true);
+    let candidate_object = dir.join("finalization/objects/wgcid_v1_blake3_deep-candidate");
+    let candidate_descriptor_before = fs::read(&candidate_object).unwrap();
+    let candidate_source_before = git(&project, &["show", "HEAD:src/api.rs"]);
+
+    worksgood::parser::modify_graph(&dir.join("graph.jsonl"), |graph| {
+        let task = graph.get_task_mut("source").unwrap();
+        task.status = Status::PendingEval;
+        task.lifecycle.generation = 1;
+        task.lifecycle.fence = 1;
+        task.lifecycle.current_attempt = Some(worksgood::lifecycle::AttemptRef {
+            id: "attempt-1-1".into(),
+            generation: 1,
+            fence: 1,
+            actor_id: "agent-source".into(),
+            disposition: Some(worksgood::lifecycle::AttemptDisposition::Succeeded),
+        });
+        let bounded = task
+            .evaluation_records
+            .iter_mut()
+            .find(|record| record.product == EvaluationProduct::Bounded)
+            .unwrap();
+        bounded.policy.applicability = EvaluationGateApplicability::Required;
+        bounded.policy.threshold = Some(0.7);
+        true
+    })
+    .unwrap();
+    let before = load_graph(&dir.join("graph.jsonl"))
+        .unwrap()
+        .get_task("source")
+        .unwrap()
+        .clone();
+
+    for attempt in 0..3 {
+        assert!(bounded::run_one_pending(&dir, &config()).unwrap().ran);
+        let state = load_graph(&dir.join("graph.jsonl"))
+            .unwrap()
+            .get_task("source")
+            .unwrap()
+            .evaluation_records
+            .iter()
+            .find(|record| record.product == EvaluationProduct::Bounded)
+            .unwrap()
+            .state;
+        if attempt < 2 {
+            assert_eq!(state, EvaluationState::RetryBackoff);
+            worksgood::parser::modify_graph(&dir.join("graph.jsonl"), |graph| {
+                let record = graph
+                    .get_task_mut("source")
+                    .unwrap()
+                    .evaluation_records
+                    .iter_mut()
+                    .find(|record| record.product == EvaluationProduct::Bounded)
+                    .unwrap();
+                record.attempts.last_mut().unwrap().completed_at =
+                    Some("2000-01-01T00:00:00Z".into());
+                true
+            })
+            .unwrap();
+        } else {
+            assert_eq!(state, EvaluationState::InsufficientEvidence);
+        }
+    }
+
+    let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+    let task = graph.get_task("source").unwrap();
+    let bounded_record = task
+        .evaluation_records
+        .iter()
+        .find(|record| record.product == EvaluationProduct::Bounded)
+        .unwrap();
+    assert!(bounded_record.verdict.is_none());
+    assert!(bounded_record.consumed_verdict_id.is_none());
+    assert_eq!(bounded_record.attempts.len(), 3);
+    assert!(bounded_record.attempts.iter().all(|attempt| {
+        matches!(
+            attempt.failure.as_ref().map(|failure| failure.kind),
+            Some(
+                worksgood::evaluation::EvaluationFailureKind::InsufficientEvidence
+                    | worksgood::evaluation::EvaluationFailureKind::EvidenceUnavailable
+            )
+        )
+    }));
+    assert!(bounded_record.attempts.iter().all(|attempt| {
+        attempt.failure.as_ref().is_some_and(|failure| {
+            failure
+                .safe_evidence_categories
+                .contains(&"candidate-source".into())
+        })
+    }));
+    assert_eq!(task.status, Status::PendingEval);
+    assert_eq!(task.lifecycle.generation, before.lifecycle.generation);
+    assert_eq!(
+        task.lifecycle.current_attempt,
+        before.lifecycle.current_attempt
+    );
+    assert_eq!(task.retry_count, before.retry_count);
+    assert_eq!(task.spawn_failures, before.spawn_failures);
+    assert!(
+        !task
+            .lifecycle
+            .audit
+            .iter()
+            .any(|event| event.event_kind.contains("acceptance-rejected"))
+    );
+    assert_eq!(
+        fs::read(&candidate_object).unwrap(),
+        candidate_descriptor_before
+    );
+    assert_eq!(
+        git(&project, &["show", "HEAD:src/api.rs"]),
+        candidate_source_before
+    );
+    assert!(
+        !home.join("fake-pi-deep-invocations.log").exists(),
+        "preflight insufficiency must not invoke a semantic grader"
+    );
+
+    assert!(run_one_pending(&dir, &config()).unwrap().ran);
+    let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+    let deep = graph
+        .get_task("source")
+        .unwrap()
+        .evaluation_records
+        .iter()
+        .find(|record| record.product == EvaluationProduct::DeepReadonlyFlip)
+        .unwrap();
+    assert_eq!(
+        deep.deep_report.as_ref().unwrap().outcome,
+        worksgood::evaluation::BoundedVerdictOutcome::Pass
+    );
+    let attempt_id = &deep.attempts[0].attempt_id;
+    let materialized = dir
+        .join("evaluation/runtime")
+        .join(format!("{}-{}", deep.evaluation_id, attempt_id))
+        .join("bundle/repository/src/api.rs");
+    let materialized_bytes = fs::read(&materialized).unwrap();
+    assert_eq!(
+        String::from_utf8(materialized_bytes).unwrap().trim_end(),
+        candidate_source_before
+    );
+    assert!(
+        fs::metadata(materialized).unwrap().permissions().readonly(),
+        "deep FLIP repository materialization must be read-only"
+    );
+}
+
+#[test]
+#[serial]
 fn deep_flip_budgets_and_timeout_fail_closed_deterministically() {
     for (model, timeout, expected_state, expected_code) in [
         (
@@ -535,7 +793,7 @@ fn deep_flip_budgets_and_timeout_fail_closed_deterministically() {
         let home = tmp.path().join("home");
         fs::create_dir_all(&home).unwrap();
         let _env = test_env(&home);
-        let dir = setup_candidate(&tmp.path().join("project"), model);
+        let dir = setup_candidate(&tmp.path().join("project"), model, false);
         let mut cfg = config();
         cfg.agency.inference_timeout = Some(timeout);
         assert!(run_one_pending(&dir, &cfg).unwrap().ran, "{model}");
@@ -564,7 +822,7 @@ fn deep_flip_explicit_retry_is_same_record_bounded_and_restart_inert() {
     let home = tmp.path().join("home");
     fs::create_dir_all(&home).unwrap();
     let _env = test_env(&home);
-    let dir = setup_candidate(&tmp.path().join("project"), "deep-overbudget");
+    let dir = setup_candidate(&tmp.path().join("project"), "deep-overbudget", false);
 
     assert!(run_one_pending(&dir, &config()).unwrap().ran);
     let evaluation_id = load_graph(&dir.join("graph.jsonl"))
@@ -636,7 +894,7 @@ fn deep_flip_capabilities_are_observation_only() {
     fs::create_dir_all(&home).unwrap();
     let _env = test_env(&home);
     let project = tmp.path().join("project");
-    let dir = setup_candidate(&project, "deep-attack");
+    let dir = setup_candidate(&project, "deep-attack", false);
     let source_before = fs::read(project.join("src/api.rs")).unwrap();
     let graph_before = fs::read(dir.join("graph.jsonl")).unwrap();
     let config_before = fs::read(dir.join("config.toml")).unwrap_or_default();

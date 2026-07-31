@@ -49,6 +49,9 @@ pub enum EvaluationState {
     Running,
     EvidenceAvailable,
     Consumed,
+    /// The bounded bundle was well-formed but could not support a semantic
+    /// verdict. This is infrastructure state, never candidate rejection.
+    InsufficientEvidence,
     RetryBackoff,
     TimedOut,
     Malformed,
@@ -79,6 +82,9 @@ pub enum EvaluationFailureKind {
     MalformedOutput,
     RouteDrift,
     EvidenceUnavailable,
+    /// Required evidence was present only in a bounded/truncated form, or the
+    /// evaluator explicitly declined semantic judgment for that reason.
+    InsufficientEvidence,
     ResourceDeferred,
 }
 
@@ -93,6 +99,12 @@ pub struct EvaluationFailure {
     pub stdout_digest: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reported_usage: Option<EvaluationUsage>,
+    /// Closed, operator-safe evidence locator IDs and category codes. Raw
+    /// artifact paths/content and adapter prose never enter lifecycle logs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub safe_evidence_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub safe_evidence_categories: Vec<String>,
     pub occurred_at: String,
 }
 
@@ -260,13 +272,20 @@ impl LazyEvaluationSelection {
             });
         }
 
-        // Bounded selection and deep selection are intentionally independent.
         // The managed FLIP-required stage never enables bounded auto-evaluation
-        // and never consults eval_gate_all.
-        let bounded_required = !config.evaluation.managed_rollout
+        // and never consults eval_gate_all. Outside managed rollout, a requested
+        // bounded hard gate may be promoted to deep authority when the declared
+        // task class requires surrounding source context.
+        let requested_bounded_gate = !config.evaluation.managed_rollout
             && config.agency.auto_evaluate
             && config.agency.eval_gate_threshold.is_some()
             && (config.agency.eval_gate_all || has_declared_deliverables(task));
+        // A no-tools summary bundle cannot prove that a coding/structural
+        // candidate is semantically correct in its surrounding source tree.
+        // Keep bounded grading as candidate-bound secondary evidence and route
+        // the requested authority to the immutable deep-readonly lane instead.
+        let source_context_required = requested_bounded_gate && declares_source_work(task);
+        let bounded_required = requested_bounded_gate && !source_context_required;
         let bounded = config.agency.auto_evaluate.then(|| {
             policy_snapshot(
                 EvaluationProduct::Bounded,
@@ -280,6 +299,8 @@ impl LazyEvaluationSelection {
                     .flatten(),
                 if bounded_required {
                     "bounded:explicit-hard-gate"
+                } else if source_context_required {
+                    "bounded:source-context-advisory-only"
                 } else {
                     "bounded:optional-secondary"
                 },
@@ -289,7 +310,8 @@ impl LazyEvaluationSelection {
         let managed_flip_required = config.evaluation.managed_rollout
             && config.evaluation.rollout_stage
                 == crate::config::EvaluationRolloutStage::FlipRequired;
-        let explicit_deep = config.agency.flip_enabled
+        let explicit_deep = source_context_required
+            || config.agency.flip_enabled
             || task.tags.iter().any(|tag| {
                 matches!(
                     tag.as_str(),
@@ -297,7 +319,7 @@ impl LazyEvaluationSelection {
                 )
             });
         let deep_readonly_flip = explicit_deep.then(|| {
-            let required = managed_flip_required || bounded_required;
+            let required = managed_flip_required || bounded_required || source_context_required;
             let threshold = required.then(|| {
                 config
                     .agency
@@ -315,6 +337,8 @@ impl LazyEvaluationSelection {
                 threshold,
                 if managed_flip_required {
                     "deep:managed-flip-required"
+                } else if source_context_required {
+                    "deep:source-context-required"
                 } else if config.agency.flip_enabled {
                     "deep:explicit-policy"
                 } else {
@@ -408,6 +432,7 @@ pub fn flip_gate_projection(task: &Task) -> Option<FlipGateProjection> {
         EvaluationState::Consumed if semantic_pass => "flip-passed-merging",
         EvaluationState::Consumed => "flip-rejected-repair-needed",
         EvaluationState::Unavailable
+        | EvaluationState::InsufficientEvidence
         | EvaluationState::TimedOut
         | EvaluationState::Malformed
         | EvaluationState::RouteDrift
@@ -1009,6 +1034,63 @@ fn evaluation_id(
 fn digest_json(value: &serde_json::Value) -> Result<String> {
     let bytes = serde_json::to_vec(value)?;
     Ok(format!("b3:{}", blake3::hash(&bytes).to_hex()))
+}
+
+fn declares_source_work(task: &Task) -> bool {
+    if task.tags.iter().any(|tag| {
+        matches!(
+            tag.to_ascii_lowercase().as_str(),
+            "coding" | "code" | "structural" | "implementation" | "refactor" | "bugfix"
+        )
+    }) || task
+        .artifacts
+        .iter()
+        .any(|artifact| source_path_requires_context(Path::new(artifact)))
+    {
+        return true;
+    }
+    let contract = format!(
+        "{}\n{}\n{}",
+        task.title,
+        task.description.as_deref().unwrap_or_default(),
+        task.validation_commands.join("\n")
+    )
+    .to_ascii_lowercase();
+    [
+        "source code",
+        "code change",
+        "coding",
+        "refactor",
+        "compile",
+        "cargo ",
+        "structural",
+        "bug fix",
+        "regression test",
+    ]
+    .iter()
+    .any(|needle| contract.contains(needle))
+}
+
+fn source_path_requires_context(path: &Path) -> bool {
+    const SOURCE_EXTENSIONS: [&str; 27] = [
+        "rs", "c", "cc", "cpp", "h", "hpp", "go", "java", "kt", "swift", "py", "js", "jsx", "ts",
+        "tsx", "rb", "php", "scala", "sh", "toml", "yaml", "yml", "json", "sql", "proto",
+        "graphql", "lock",
+    ];
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    matches!(
+        file_name.as_str(),
+        "dockerfile" | "makefile" | "justfile" | "build" | "workspace"
+    ) || path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            SOURCE_EXTENSIONS.contains(&extension.to_ascii_lowercase().as_str())
+        })
 }
 
 fn has_declared_deliverables(task: &Task) -> bool {

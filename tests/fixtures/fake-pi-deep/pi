@@ -14,7 +14,7 @@ def turn(text, inp=31, out=17):
     print(json.dumps({"type":"turn_end","message":{"role":"assistant","content":[{"type":"text","text":json.dumps(text,separators=(",",":"))}],"provider":provider,"model":model,"stopReason":"stop","usage":{"input":inp,"output":out,"cacheRead":3,"cacheWrite":1,"totalTokens":inp+out,"cost":{"total":0.0071}}}}))
 
 if model=="bounded-miss":
-    turn({"schema_version":1,"score":0.94,"outcome":"pass","dimensions":{"correctness":0.94,"completeness":0.91},"summary":"Visible candidate summary satisfies the declared API change."},17,9)
+    turn({"schema_version":2,"score":0.94,"outcome":"pass","dimensions":{"correctness":0.94,"completeness":0.91},"summary":"Visible candidate summary satisfies the declared API change."},17,9)
     raise SystemExit(0)
 
 root=pathlib.Path(os.environ["WG_DEEP_BUNDLE_ROOT"])

@@ -12,6 +12,40 @@ Bounded grading is optional and independent. It does not precede, average with,
 or satisfy FLIP. The managed `flip-required` stage therefore has
 `auto_evaluate=false`, `eval_gate_all=false`, and `global_flip_enabled=true`.
 
+## Bounded evidence sufficiency versus deep authority
+
+The bounded lane is a no-tools grader over an automatically assembled manifest.
+Before a model is invoked—and again before any returned verdict is consumed—WG
+checks closed evidence locators for the exact candidate descriptor, content and
+delta manifests, exact-commit patch bytes, validation receipt, task contract,
+original intent, and every declared candidate-relative artifact. The assembler
+expands exact immutable-commit excerpts deterministically across bounded retries;
+it never reads or mounts the worker worktree and never substitutes mutable
+`main`. Missing or unreadable items are `EvidenceUnavailable`; omitted or
+truncated required bytes and the model's structured `insufficient_evidence`
+response are `InsufficientEvidence`.
+
+Both outcomes are evaluation infrastructure state. They consume only the
+bounded retry budget, retain the source attempt/candidate in
+`AwaitingAcceptance` (`PendingEval`), and can never emit
+`AcceptanceRejected`, reopen/retry the source, contribute a score, or satisfy a
+required FLIP gate. `wg show TASK` displays the state plus WG-generated evidence
+IDs/categories; it does not log artifact paths or model/user evidence text.
+Operators may repair the immutable evidence store and let the same exact route
+rebundle, or run/retry the already-selected deep lane:
+
+```bash
+wg show TASK
+wg evaluate run TASK --flip
+```
+
+A complete bounded bundle may still produce candidate/manifest/route-bound
+pass/fail evidence. For coding or structural work that evidence is always
+secondary/advisory: a requested acceptance gate is routed to deep read-only
+FLIP, whose isolated observation bundle materializes the exact candidate commit
+as a read-only repository. Bounded output is never averaged with deep output
+and never unlocks the deep gate.
+
 The content-addressed rollout ledger is:
 
 ```text
