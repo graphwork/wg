@@ -2876,8 +2876,11 @@ timeout_seconds = 180
 [[scenario]]
 name = "worksgood_attended_pi_simple"
 script = "scenarios/worksgood_attended_pi_simple.sh"
-owners = ["simplify-attended-pi-setup"]
-description = "Candidate-binary credential-free real tmux/TUI human flow for the product boundary: fresh bare worksgood verifies Fake-Pi, ensures the compatible plugin, initializes a route-free/no-agency graph, opens New chat -> Pi with no model/provider/reasoning override, forwards exact keyboard input through the accepted PTY path, and writes no profile/model/reasoning/dispatcher/service state; Pi's exact warm model-picker write-back remains chat-scoped and still cannot create automation routing. Missing Pi emits one Pi-owned install/login action before any graph/plugin/automation write. Explicit setup --model still enters the exact fail-closed unattended automation planner with effective worker/evaluator reasoning."
+owners = [
+    "simplify-attended-pi-setup",
+    "make-worksgood-thin-existing-graph-launcher",
+]
+description = "Candidate-binary credential-free real tmux/TUI human flow for the thin launcher boundary: on an existing graph, bare worksgood, worksgood tui, and wg tui cross the authenticated absolute sibling boundary with identical --dir <exact-graph> tui argv and setup-neutral state effects, without reading valid concierge state or preparing Pi/profile/config/service state. The graph opens with Pi absent; only New chat -> Pi shows an actionable transactional error. A fresh repository runs route-free/no-agency init exactly once and every later bare entry bypasses bootstrap. Explicit worksgood setup --model retains exact route, reasoning, and service gates."
 timeout_seconds = 240
 
 [[scenario]]
