@@ -1,9 +1,12 @@
-//! Attended, profile-first `worksgood` lifecycle concierge.
+//! `worksgood` attended Pi chat launcher and explicit automation concierge.
 //!
-//! This module is intentionally a narrow orchestration layer. It composes the
-//! existing graph initializer and service/TUI entrypoints through one verified
-//! absolute WorksGood executable, and uses the existing project-profile plan /
-//! apply API directly. It is not a second config, trust, process, or TUI owner.
+//! Bare `worksgood` is intentionally small: verify Pi, ensure the compatible
+//! console plugin, initialize a route-free graph when needed, and open the
+//! existing TUI. Pi owns attended authentication and model selection. The
+//! profile/service machinery below is entered only through explicit automation
+//! setup options or `worksgood setup`; it remains fail-closed for unattended
+//! workers and evaluation. This module is not a second config, trust, process,
+//! chat transport, or TUI owner.
 
 use crate::atomic_file::write_atomic;
 use crate::config::{Config, ReasoningLevel};
@@ -123,8 +126,9 @@ pub struct ConciergePlan {
 pub struct LifecycleOptions {
     pub project: Option<PathBuf>,
     pub dry_run: bool,
-    /// Exact one-model concierge shorthand. This is deliberately separate from
-    /// the advanced existing-profile customization fields below.
+    /// Exact one-model unattended-automation shorthand. This is deliberately
+    /// separate from both attended Pi's own picker and the advanced
+    /// existing-profile customization fields below.
     pub requested_model: Option<String>,
     pub requested_profile: Option<String>,
     pub continue_without_ai: bool,
@@ -134,6 +138,19 @@ pub struct LifecycleOptions {
     pub weak_reasoning: Option<ReasoningLevel>,
     pub yes: bool,
     pub open_tui: bool,
+}
+
+impl LifecycleOptions {
+    /// Any repository-wide model/reasoning input is an explicit request for
+    /// unattended automation. Bare attended Pi never consults these settings.
+    fn requests_automation(&self) -> bool {
+        self.requested_model.is_some()
+            || self.requested_profile.is_some()
+            || self.strong_model.is_some()
+            || self.weak_model.is_some()
+            || self.strong_reasoning.is_some()
+            || self.weak_reasoning.is_some()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -666,8 +683,11 @@ fn print_catalog(graph: &Path) -> Result<Vec<project::ProfileCatalogEntry>> {
             && entry.readiness.strong_reasoning.is_some()
             && entry.readiness.weak_reasoning.is_some()
     });
-    println!("\nChoose how this repository should run (nothing is selected automatically):");
-    println!("  0. Continue without AI — no LLM service");
+    println!("\nUnattended automation setup (advanced; nothing is selected automatically):");
+    println!(
+        "These routes govern dispatched workers/evaluation, not models chosen in attended Pi chats."
+    );
+    println!("  0. Disable unattended AI — no LLM service");
     for (index, entry) in catalog.iter().enumerate() {
         let current = if entry.selected_for_project {
             " [current project]"
@@ -1211,7 +1231,7 @@ fn prepare_plan(
             "Agency/FLIP/evaluation"
         };
         actions.push(format!(
-            "Select profile '{}' for this project only; Worker/chat {} (effort {} [{}]); {weak_label} {} (effort {} [{}])",
+            "Select profile '{}' for unattended automation in this project only; Worker/chat {} (effort {} [{}]); {weak_label} {} (effort {} [{}]). These routes do not select the attended Pi model",
             selection.profile,
             selection.readiness.strong_route,
             reasoning_label(selection.readiness.strong_reasoning),
@@ -1595,69 +1615,66 @@ fn lifecycle_message(
         }
     }
     println!("Re-enter: worksgood");
-    println!("Setup:    worksgood setup");
-    println!("TUI only: worksgood tui        # no setup or service reconcile");
+    println!("Automation (advanced): worksgood setup");
+    println!("TUI only:              worksgood tui  # no setup or service reconcile");
 }
 
-fn configured_fast_path(
+fn attended_pi_executable() -> Result<PathBuf> {
+    crate::executor_discovery::discover()
+        .into_iter()
+        .find(|entry| entry.name == "pi" && entry.available)
+        .and_then(|entry| entry.binary_path)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Pi executable not found. Install Pi and run `pi` to sign in/select a model, then rerun `worksgood`; no model, profile, or service state was written."
+            )
+        })
+}
+
+/// The default human journey. It deliberately does not read concierge state,
+/// project profiles, merged model config, service state, or agency readiness.
+/// Chat creation/input remain owned by the existing TUI bare-Pi PTY path.
+fn run_attended_pi(
     target: &RepositoryTarget,
     executable: &ExecutableAuthority,
-    state: ConciergeState,
     options: &LifecycleOptions,
 ) -> Result<()> {
-    match state.mode {
-        ConciergeMode::ContinueWithoutAi => {
-            let observation = observe_service(&target.graph);
-            if !matches!(
-                observation.health,
-                ServiceHealth::Down | ServiceHealth::StalePid
-            ) {
-                anyhow::bail!(
-                    "This project is committed Continue without AI but a service is present; run `worksgood stop` or `worksgood setup`"
-                );
-            }
-            if options.open_tui {
-                open_tui(executable, &target.graph)?;
-                lifecycle_message(&ConciergeMode::ContinueWithoutAi, None, None);
-            }
+    let pi = attended_pi_executable()?;
+    if options.dry_run {
+        println!("Attended Pi chat plan (read only):");
+        println!("  Repository: {}", target.repository.display());
+        println!("  Graph:      {}", target.graph.display());
+        println!("  Pi:         {}", pi.display());
+        if !target.graph_exists {
+            println!("  Initialize a route-free graph (no agency, model, profile, or service)");
         }
-        ConciergeMode::Profile => {
-            let inspection = project::inspect_association(&target.graph);
-            if inspection.state != project::AssociationState::Ready
-                || inspection.association.as_ref().map(|a| a.profile.as_str())
-                    != state.profile.as_deref()
-                || inspection
-                    .association
-                    .as_ref()
-                    .map(|a| a.profile_fingerprint.as_str())
-                    != state.profile_fingerprint.as_deref()
-            {
-                anyhow::bail!(
-                    "Committed project profile is not ready: {}. Run `worksgood setup`.",
-                    inspection.message
-                );
-            }
-            let profile = state.profile.as_deref().ok_or_else(|| {
-                anyhow::anyhow!("Committed profile mode omitted profile identity")
-            })?;
-            let readiness = project::plan_project_selection(&target.graph, profile)?;
-            validate_prepared_readiness(&readiness).with_context(|| {
-                format!("Committed profile '{profile}' is no longer ready; run `worksgood setup`")
-            })?;
-            let _lock = LifecycleLock::acquire(&target.graph)?;
-            let service =
-                apply_reconcile(&target.graph, executable, &ConciergeMode::Profile, false)?;
-            drop(_lock);
-            if options.open_tui {
-                open_tui(executable, &target.graph)?;
-                lifecycle_message(
-                    &ConciergeMode::Profile,
-                    service.as_ref(),
-                    Some(&readiness.readiness),
-                );
-            }
-        }
+        println!("  Ensure the compatible WorksGood plugin for Pi");
+        println!("  Open the TUI; choose New chat → Pi; Pi owns login and the model picker");
+        println!("  Unattended worker/evaluator routes and services remain unchanged");
+        println!("Dry run: nothing was written or started.");
+        return Ok(());
     }
+
+    crate::pi_plugin::ensure_pi_plugin(crate::pi_plugin::EnsureMode::Console)
+        .context("Could not prepare the compatible WorksGood plugin for attended Pi")?;
+    if !target.graph_exists {
+        run_w_quiet(
+            &executable.executable,
+            &target.graph,
+            &["init", "--no-agency"],
+        )?;
+        println!(
+            "Initialized route-free WorksGood graph at {}",
+            target.graph.display()
+        );
+    }
+    println!("Opening WorksGood. Choose New chat → Pi; Pi owns login and model selection.");
+    println!("Unattended workers/evaluation are not configured or started.");
+    open_tui(executable, &target.graph)?;
+    println!("\nAttended Pi chat closed; no unattended automation route or service was changed.");
+    println!("Re-enter:              worksgood");
+    println!("Automation (advanced): worksgood setup");
+    println!("Graph-only TUI:        worksgood tui");
     Ok(())
 }
 
@@ -1685,7 +1702,7 @@ pub fn run_lifecycle(options: &LifecycleOptions, force_setup: bool) -> Result<()
             || options.weak_reasoning.is_some())
     {
         anyhow::bail!(
-            "model/reasoning overrides require either an existing --profile or the simple `--model pi:<provider>:<model>` path"
+            "unattended model/reasoning overrides require either an existing --profile or `--model pi:<provider>:<model>`"
         );
     }
     if let Some(route) = options.requested_model.as_deref() {
@@ -1693,17 +1710,28 @@ pub fn run_lifecycle(options: &LifecycleOptions, force_setup: bool) -> Result<()
     }
     let target = resolve_repository(options.project.as_deref())?;
     let executable = resolve_authoritative_executable()?;
-    if target.graph_exists && !force_setup && !options.dry_run && options.requested_model.is_none()
-    {
-        if let Some(state) = read_state(&target.graph)? {
-            return configured_fast_path(&target, &executable, state, options);
-        }
+
+    // Product boundary: bare attended use is not a shorthand for repository
+    // automation. It does not inherit or reconcile even an already-configured
+    // service. Explicit setup/options below retain all route/reasoning gates.
+    if !force_setup && !options.continue_without_ai && !options.requests_automation() {
+        return run_attended_pi(&target, &executable, options);
     }
 
-    println!("WorksGood can open a graph without an AI account.");
+    // The explicit one-model automation shortcut can validate its sole
+    // transport before producing the large role plan or touching transaction
+    // state. Advanced profile setup retains its per-handler readiness checks.
+    if options.requested_model.is_some() && attended_pi_executable().is_err() {
+        anyhow::bail!(
+            "Pi is unavailable for the exact --model route. Install Pi and complete Pi-owned authentication, then rerun this command; no graph/profile/plugin/service state was changed and no fallback was selected."
+        );
+    }
+
+    println!("Unattended automation setup (advanced).");
     println!(
-        "LLM work additionally needs one explicit profile, that handler's own authentication/endpoint, any required integration, and a ready service."
+        "These exact routes, reasoning levels, and the authenticated service govern dispatched workers/evaluation only; they do not select the model in an attended Pi chat."
     );
+    println!("A graph-only TUI remains available with `worksgood --without-ai`.");
     println!("Repository: {}", target.repository.display());
     println!("Graph:      {}", target.graph.display());
     println!(
@@ -2441,6 +2469,25 @@ mod tests {
             decision
                 .reason
                 .contains("cannot authenticate running executable path")
+        );
+    }
+
+    #[test]
+    fn bare_attended_options_are_distinct_from_automation_inputs() {
+        assert!(!LifecycleOptions::default().requests_automation());
+        assert!(
+            LifecycleOptions {
+                requested_model: Some("pi:openrouter:test/model".to_string()),
+                ..LifecycleOptions::default()
+            }
+            .requests_automation()
+        );
+        assert!(
+            LifecycleOptions {
+                weak_reasoning: Some(ReasoningLevel::Low),
+                ..LifecycleOptions::default()
+            }
+            .requests_automation()
         );
     }
 

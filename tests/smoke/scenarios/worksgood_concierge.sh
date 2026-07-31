@@ -126,7 +126,7 @@ grep -q "\"graph\": \"$scratch/worktree/.wg\"" <<<"$worktree_plan" || loud_fail 
 
 cancel_session="worksgood-cancel-$$"
 tmux new-session -d -s "$cancel_session" -x 80 -y 24 \
-    "env HOME='$HOME' WG_GLOBAL_DIR='$WG_GLOBAL_DIR' '$WORKSGOOD' --project '$scratch/cancel'"
+    "env HOME='$HOME' WG_GLOBAL_DIR='$WG_GLOBAL_DIR' '$WORKSGOOD' --project '$scratch/cancel' setup"
 tmux set-option -t "$cancel_session" remain-on-exit on
 for _ in $(seq 1 100); do
     tmux capture-pane -p -t "$cancel_session" | grep -q 'Selection:' && break
@@ -257,8 +257,9 @@ assert not any("gpt-5.6-sol(" in arg for arg in args), args
 PY
 
 # Each non-Pi core profile applies through the same reusable project-profile
-# owner. The first Codex run starts one daemon + TUI; returning bare reuses the
-# authenticated PID. Changing to Claude reloads config without replacing PID.
+# owner. The first Codex run starts one daemon + TUI; a second explicit
+# automation invocation reuses the authenticated PID. Changing to Claude reloads
+# config without replacing PID.
 mk_repo "$scratch/core"
 core_first_session="worksgood-core-first-$$"
 run_tui_lifecycle "$core_first_session" "$scratch/core" "--profile codex --yes"
@@ -282,7 +283,7 @@ assert i["selected_profile"].startswith("concierge-codex-"), i
 assert i["selected_profile_fingerprint"].startswith("b3:"), i
 PY
 core_return_session="worksgood-core-return-$$"
-run_tui_lifecycle "$core_return_session" "$scratch/core" ""
+run_tui_lifecycle "$core_return_session" "$scratch/core" "--profile codex --yes"
 core_return_output=$(tmux capture-pane -p -S - -t "$core_return_session")
 grep -q 'Service remains detached and running' <<<"$core_return_output" || loud_fail "returning post-TUI running guidance missing"
 grep -q 'Resolved Worker/chat: codex:gpt-5.6-sol (effort high \[explicit\])' <<<"$core_return_output" || loud_fail "returning run omitted resolved Worker/chat effort"
@@ -403,7 +404,7 @@ grep -q 'content build fingerprint all match' <<<"$alias_plan" || loud_fail "sam
 [[ "$identity_before" = "$(sha256sum "$state" "$scratch/core/.wg/profile-selection.json" "$scratch/core/.wg/concierge.json")" ]] || loud_fail "reconcile dry-run mutated identity files"
 alias_session="worksgood-same-build-alias-$$"
 tmux new-session -d -s "$alias_session" -x 80 -y 24 \
-    "env HOME='$HOME' WG_GLOBAL_DIR='$WG_GLOBAL_DIR' WORKSGOOD_W_EXECUTABLE='$scratch/unknown-wg' WORKSGOOD_W_RECEIPT='$scratch/receipt.json' '$WORKSGOOD' --project '$scratch/core'"
+    "env HOME='$HOME' WG_GLOBAL_DIR='$WG_GLOBAL_DIR' WORKSGOOD_W_EXECUTABLE='$scratch/unknown-wg' WORKSGOOD_W_RECEIPT='$scratch/receipt.json' '$WORKSGOOD' --project '$scratch/core' --profile claude --strong-reasoning high --weak-reasoning low --yes"
 tmux set-option -t "$alias_session" remain-on-exit on
 wait_tui "$alias_session"
 tmux send-keys -t "$alias_session" q
@@ -412,7 +413,7 @@ pid_alias=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["pid
 [[ "$pid_alias" = "$pid1" ]] || loud_fail "same-build path alias restarted service"
 
 # Same semantic version, DIFFERENT content build: dry-run names the reason and
-# writes nothing; attended bare worksgood shows the diff, confirms, restarts,
+# writes nothing; an explicit automation invocation shows the diff, confirms, restarts,
 # verifies the new handshake, then opens TUI.
 different_w="$scratch/different-build-wg"
 cp "$W" "$different_w"; printf '\n# distinct same-version build\n' >>"$different_w"; chmod +x "$different_w"
@@ -428,14 +429,16 @@ grep -q 'binary/build/protocol mismatch' <<<"$different_plan" || loud_fail "diff
 [[ "$identity_before" = "$(sha256sum "$state" "$scratch/core/.wg/profile-selection.json" "$scratch/core/.wg/concierge.json")" ]] || loud_fail "different-build dry-run mutated identity files"
 build_session="worksgood-different-build-$$"
 tmux new-session -d -s "$build_session" -x 80 -y 24 \
-    "env HOME='$HOME' WG_GLOBAL_DIR='$WG_GLOBAL_DIR' WORKSGOOD_W_EXECUTABLE='$different_w' WORKSGOOD_W_RECEIPT='$scratch/different-receipt.json' '$WORKSGOOD' --project '$scratch/core'"
+    "env HOME='$HOME' WG_GLOBAL_DIR='$WG_GLOBAL_DIR' WORKSGOOD_W_EXECUTABLE='$different_w' WORKSGOOD_W_RECEIPT='$scratch/different-receipt.json' '$WORKSGOOD' --project '$scratch/core' --profile claude --strong-model claude:opus --weak-model claude:haiku --strong-reasoning high --weak-reasoning low"
 tmux set-option -t "$build_session" remain-on-exit on
 for _ in $(seq 1 1200); do
-    tmux capture-pane -p -S - -t "$build_session" 2>/dev/null | grep -q 'Controlled restart this graph' && break
+    tmux capture-pane -p -S - -t "$build_session" 2>/dev/null | grep -q 'Apply this exact plan?' && break
     sleep 0.05
 done
 build_prompt=$(tmux capture-pane -p -S - -t "$build_session")
-grep -q 'Service identity mismatch' <<<"$build_prompt" || loud_fail "same-version/different-build did not show identity diff: $build_prompt"
+build_flat=$(tr -d '\n' <<<"$build_prompt")
+grep -q 'service_action.*controlled_restart' <<<"$build_flat" || loud_fail "same-version/different-build plan did not show identity action: $build_prompt"
+grep -q 'binary/build/protocol mismatch' <<<"$build_flat" || loud_fail "same-version/different-build plan omitted identity diff: $build_prompt"
 tmux send-keys -t "$build_session" y Enter
 wait_tui "$build_session"
 tmux send-keys -t "$build_session" q
@@ -458,10 +461,10 @@ cat >"$scratch/different-receipt.json" <<EOF
 EOF
 replaced_session="worksgood-replaced-build-$$"
 tmux new-session -d -s "$replaced_session" -x 80 -y 24 \
-    "env HOME='$HOME' WG_GLOBAL_DIR='$WG_GLOBAL_DIR' WORKSGOOD_W_EXECUTABLE='$different_w' WORKSGOOD_W_RECEIPT='$scratch/different-receipt.json' '$WORKSGOOD' --project '$scratch/core'"
+    "env HOME='$HOME' WG_GLOBAL_DIR='$WG_GLOBAL_DIR' WORKSGOOD_W_EXECUTABLE='$different_w' WORKSGOOD_W_RECEIPT='$scratch/different-receipt.json' '$WORKSGOOD' --project '$scratch/core' --profile claude --strong-model claude:opus --weak-model claude:haiku --strong-reasoning high --weak-reasoning low"
 tmux set-option -t "$replaced_session" remain-on-exit on
 for _ in $(seq 1 1200); do
-    tmux capture-pane -p -S - -t "$replaced_session" 2>/dev/null | grep -q 'Controlled restart this graph' && break
+    tmux capture-pane -p -S - -t "$replaced_session" 2>/dev/null | grep -q 'Apply this exact plan?' && break
     sleep 0.05
 done
 tmux send-keys -t "$replaced_session" y Enter
@@ -478,7 +481,7 @@ cp "$different_w" "$scratch/different-wg-backup"
 rm "$different_w"
 deleted_session="worksgood-deleted-running-$$"
 tmux new-session -d -s "$deleted_session" -x 80 -y 24 \
-    "env HOME='$HOME' WG_GLOBAL_DIR='$WG_GLOBAL_DIR' '$WORKSGOOD' --project '$scratch/core'"
+    "env HOME='$HOME' WG_GLOBAL_DIR='$WG_GLOBAL_DIR' '$WORKSGOOD' --project '$scratch/core' --profile claude --strong-reasoning high --weak-reasoning low --yes"
 tmux set-option -t "$deleted_session" remain-on-exit on
 wait_session_exit "$deleted_session"
 deleted_output=$(tmux capture-pane -p -S - -t "$deleted_session")
@@ -488,7 +491,7 @@ kill -0 "$pid_replaced" 2>/dev/null || loud_fail "deleted executable refusal sig
 cp "$scratch/different-wg-backup" "$different_w"; chmod +x "$different_w"
 restored_alias_session="worksgood-restored-alias-$$"
 tmux new-session -d -s "$restored_alias_session" -x 80 -y 24 \
-    "env HOME='$HOME' WG_GLOBAL_DIR='$WG_GLOBAL_DIR' '$WORKSGOOD' --project '$scratch/core'"
+    "env HOME='$HOME' WG_GLOBAL_DIR='$WG_GLOBAL_DIR' '$WORKSGOOD' --project '$scratch/core' --profile claude --strong-reasoning high --weak-reasoning low --yes"
 tmux set-option -t "$restored_alias_session" remain-on-exit on
 wait_tui "$restored_alias_session"
 tmux send-keys -t "$restored_alias_session" q
@@ -514,7 +517,7 @@ cat >"$scratch/bad-receipt.json" <<EOF
 EOF
 failed_restart_session="worksgood-failed-restart-$$"
 tmux new-session -d -s "$failed_restart_session" -x 100 -y 30 \
-    "env HOME='$HOME' WG_GLOBAL_DIR='$WG_GLOBAL_DIR' WORKSGOOD_W_EXECUTABLE='$bad_w' WORKSGOOD_W_RECEIPT='$scratch/bad-receipt.json' '$WORKSGOOD' --project '$scratch/core'"
+    "env HOME='$HOME' WG_GLOBAL_DIR='$WG_GLOBAL_DIR' WORKSGOOD_W_EXECUTABLE='$bad_w' WORKSGOOD_W_RECEIPT='$scratch/bad-receipt.json' '$WORKSGOOD' --project '$scratch/core' --profile claude --strong-reasoning high --weak-reasoning low --yes"
 tmux set-option -t "$failed_restart_session" remain-on-exit on
 for _ in $(seq 1 1200); do
     tmux capture-pane -p -S - -t "$failed_restart_session" 2>/dev/null | grep -q 'Controlled restart this graph' && break
@@ -542,7 +545,7 @@ json.dump(s,open(p,"w"))
 PY
 foreign_session="worksgood-foreign-identity-$$"
 tmux new-session -d -s "$foreign_session" -x 100 -y 30 \
-    "env HOME='$HOME' WG_GLOBAL_DIR='$WG_GLOBAL_DIR' '$WORKSGOOD' --project '$scratch/core'"
+    "env HOME='$HOME' WG_GLOBAL_DIR='$WG_GLOBAL_DIR' '$WORKSGOOD' --project '$scratch/core' --profile claude --strong-reasoning high --weak-reasoning low --yes"
 tmux set-option -t "$foreign_session" remain-on-exit on
 wait_session_exit "$foreign_session"
 foreign_output=$(tmux capture-pane -p -S - -t "$foreign_session")
@@ -551,9 +554,8 @@ grep -q 'foreign canonical graph identity' <<<"$foreign_output" || loud_fail "fo
 kill -0 "$recovered_pid" 2>/dev/null || loud_fail "foreign identity refusal signalled daemon"
 cp "$scratch/foreign-state-backup.json" "$state"
 
-# Proven stale PID state is repaired rather than signalled. Then two concurrent
-# returning invocations serialize only reconcile, open independent TUI clients,
-# and still leave exactly one daemon.
+# Proven stale PID state is repaired rather than signalled. The explicit
+# automation invocation leaves exactly one authenticated daemon for restart.
 cp "$state" "$scratch/stale-state.json"
 "$WORKSGOOD" --project "$scratch/core" stop >/dev/null
 python3 - "$scratch/stale-state.json" "$state" <<'PY'
@@ -561,24 +563,12 @@ import json,sys
 s=json.load(open(sys.argv[1])); s["pid"]=999999; s["pid_start_identity"]="proc-start:impossible"
 json.dump(s,open(sys.argv[2],"w"))
 PY
-run_tui_lifecycle "worksgood-stale-$$" "$scratch/core" ""
+run_tui_lifecycle "worksgood-stale-$$" "$scratch/core" "--profile claude --strong-reasoning high --weak-reasoning low --yes"
 stale_pid=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["pid"])' "$state")
 [[ "$stale_pid" != 999999 ]] || loud_fail "stale PID was not repaired"
-"$WORKSGOOD" --project "$scratch/core" stop >/dev/null
-
-concurrent_a="worksgood-concurrent-a-$$"; concurrent_b="worksgood-concurrent-b-$$"
-for session in "$concurrent_a" "$concurrent_b"; do
-    tmux new-session -d -s "$session" -x 40 -y 20 \
-        "env HOME='$HOME' WG_GLOBAL_DIR='$WG_GLOBAL_DIR' '$WORKSGOOD' --project '$scratch/core'"
-    tmux set-option -t "$session" remain-on-exit on
-done
-wait_tui "$concurrent_a"; wait_tui "$concurrent_b"
-concurrent_pid=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["pid"])' "$state")
-kill -0 "$concurrent_pid" 2>/dev/null || loud_fail "concurrent lifecycle daemon not alive"
+kill -0 "$stale_pid" 2>/dev/null || loud_fail "repaired lifecycle daemon not alive"
 daemon_count=$(ps -eo args= | grep -F "$W --dir $scratch/core/.wg service daemon" | grep -v grep | wc -l)
-[[ "$daemon_count" = 1 ]] || loud_fail "concurrent worksgood created $daemon_count daemons"
-tmux send-keys -t "$concurrent_a" q; tmux send-keys -t "$concurrent_b" q
-wait_session_exit "$concurrent_a"; wait_session_exit "$concurrent_b"
+[[ "$daemon_count" = 1 ]] || loud_fail "explicit automation created $daemon_count daemons"
 
 # Explicit restart warns but preserves detached-work policy, then proves a new
 # PID/build/config/socket handshake. Finally stop leaves no duplicate daemon.
@@ -596,4 +586,4 @@ kill -0 "$pid3" 2>/dev/null && loud_fail "worksgood stop left daemon alive"
 # The validation target is bounded to the scratch tree and is removed by the
 # smoke harness cleanup; no real user install, PATH command, or release artifact
 # was touched.
-echo "PASS: default-feature worksgood exact/same-build reuse, generation reload, content-build restart, replaced/deleted/foreign fail-closed, failed-restart recovery/no stale TUI, concurrency, explicit effort+Pi argv, strict dry-run/no-chat, absolute identity, and service persistence"
+echo "PASS: explicit worksgood automation exact/same-build reuse, generation reload, content-build restart, replaced/deleted/foreign fail-closed, failed-restart recovery/no stale TUI, stale repair, explicit effort+Pi argv, strict dry-run/no-chat, absolute identity, and service persistence"
