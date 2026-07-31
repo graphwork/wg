@@ -3170,14 +3170,34 @@ fn reactivate_cycle(
             if task.tags.contains(&"archived".to_string()) {
                 continue;
             }
-            // Preserve completed_at as last_iteration_completed_at before clearing
+            // Preserve completed_at as last_iteration_completed_at. Reopening
+            // is fenced until the exact prior owner releases; cycle convergence
+            // may record intent but never make a competing attempt runnable.
             if task.completed_at.is_some() {
                 task.last_iteration_completed_at = task.completed_at.clone();
             }
-            task.status = Status::Open;
-            task.assigned = None;
-            task.started_at = None;
-            task.completed_at = None;
+            let intent = crate::lifecycle::ReopenIntent::for_task(
+                task,
+                "cycle-iteration",
+                false,
+                true,
+                "cycle iteration",
+            );
+            let request = crate::lifecycle::TransitionRequest::new(
+                crate::lifecycle::TransitionKind::ReopenRequested {
+                    intent: intent.clone(),
+                },
+                crate::lifecycle::LifecycleActor {
+                    kind: crate::lifecycle::ActorKind::Reconciler,
+                    id: "cycle-convergence".into(),
+                },
+                "cycle_iteration_reopen",
+                intent.id.clone(),
+            )
+            .expecting(crate::lifecycle::FenceExpectation::current(task));
+            if crate::lifecycle::apply_transition(task, request).is_err() {
+                continue;
+            }
             task.triage_count = 0;
             task.loop_iteration = new_iteration;
             if *member_id == config_owner_id {
@@ -3463,10 +3483,28 @@ fn reactivate_cycle_on_failure(
 
     for member_id in members {
         if let Some(task) = graph.get_task_mut(member_id) {
-            task.status = Status::Open;
-            task.assigned = None;
-            task.started_at = None;
-            task.completed_at = None;
+            let intent = crate::lifecycle::ReopenIntent::for_task(
+                task,
+                "cycle-failure-restart",
+                false,
+                true,
+                "cycle failure restart",
+            );
+            let request = crate::lifecycle::TransitionRequest::new(
+                crate::lifecycle::TransitionKind::ReopenRequested {
+                    intent: intent.clone(),
+                },
+                crate::lifecycle::LifecycleActor {
+                    kind: crate::lifecycle::ActorKind::Reconciler,
+                    id: "cycle-convergence".into(),
+                },
+                "cycle_failure_restart",
+                intent.id.clone(),
+            )
+            .expecting(crate::lifecycle::FenceExpectation::current(task));
+            if crate::lifecycle::apply_transition(task, request).is_err() {
+                continue;
+            }
             task.failure_reason = None;
             task.triage_count = 0;
             // loop_iteration stays the same — this is a retry of the same iteration

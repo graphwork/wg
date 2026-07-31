@@ -13873,6 +13873,22 @@ impl VizApp {
         }
     }
 
+    fn append_reopen_hold_lines(lines: &mut Vec<String>, task: &worksgood::graph::Task) {
+        if let Some(intent) = task.lifecycle.reopen_intent.as_ref() {
+            lines.push(format!(
+                "Hold: waiting-for-owner-release ({}; owner {}; attempt {}; fence {})",
+                intent.operation,
+                intent.owner_id.as_deref().unwrap_or("none"),
+                intent.source_attempt_id.as_deref().unwrap_or("none"),
+                intent.source_fence
+            ));
+            lines.push(format!(
+                "Next: exact owner exit/reap enables generation {} once",
+                intent.source_generation.saturating_add(1)
+            ));
+        }
+    }
+
     /// Load HUD detail for the currently selected task.
     /// Called when selection changes or trace is toggled on.
     pub fn load_hud_detail(&mut self) {
@@ -13972,6 +13988,7 @@ impl VizApp {
             lines.push(format!("Origin goal: {}", goal));
         }
         lines.push(format!("Status: {:?}", task.status));
+        Self::append_reopen_hold_lines(&mut lines, &task);
         if let Some(ref agent) = task.assigned {
             lines.push(format!("Agent: {}", agent));
         }
@@ -14939,6 +14956,7 @@ impl VizApp {
             lines.push(format!("Origin goal: {}", goal));
         }
         lines.push(format!("Status: {:?}", task.status));
+        Self::append_reopen_hold_lines(&mut lines, &task);
         if let Some(ref agent) = task.assigned {
             lines.push(format!("Agent: {}", agent));
         }
@@ -28428,6 +28446,32 @@ mod hud_tests {
             "HudDetail.task_status must reflect the task's status so the \
              iteration navigator can decide whether to show (live)"
         );
+    }
+
+    #[test]
+    fn tui_hud_explains_reopen_owner_release_hold() {
+        let (viz, mut graph, temp) = build_cyclic_task_with_archives(1);
+        let task = graph.get_task_mut("cycle-task").unwrap();
+        let intent = worksgood::lifecycle::ReopenIntent::for_task(
+            task,
+            "retry",
+            false,
+            false,
+            "resume-in-place retry",
+        );
+        task.lifecycle.reopen_intent = Some(intent);
+        save_graph(&graph, &temp.path().join("graph.jsonl")).unwrap();
+
+        let mut app = build_app(&viz, "cycle-task", temp.path());
+        app.load_hud_detail();
+        let rendered = app
+            .hud_detail
+            .as_ref()
+            .expect("detail must load")
+            .rendered_lines
+            .join("\n");
+        assert!(rendered.contains("Hold: waiting-for-owner-release"));
+        assert!(rendered.contains("exact owner exit/reap enables generation"));
     }
 }
 

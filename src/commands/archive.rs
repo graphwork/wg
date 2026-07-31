@@ -275,9 +275,16 @@ pub fn restore(dir: &Path, task_id: &str, reopen: bool) -> Result<()> {
 
     let mut restored_task = task;
     if reopen {
-        restored_task.status = Status::Open;
-        restored_task.completed_at = None;
-        restored_task.assigned = None;
+        super::reopen::request(
+            &mut restored_task,
+            "archive-restore",
+            false,
+            true,
+            "archive restore reopen",
+            worksgood::lifecycle::LifecycleActor::operator(worksgood::current_user()),
+            "archive_restore_reopen",
+        )
+        .map_err(anyhow::Error::new)?;
     }
 
     // Add back to graph atomically
@@ -303,6 +310,9 @@ pub fn restore(dir: &Path, task_id: &str, reopen: bool) -> Result<()> {
     remove_from_archive(&arch_path, task_id)?;
 
     super::notify_graph_changed(dir);
+    if reopen {
+        let _ = super::reopen::reconcile_pending(dir)?;
+    }
 
     let status = if reopen { "open" } else { "done" };
     println!(

@@ -974,6 +974,13 @@ fn print_human_readable(details: &TaskDetails) {
                 event.event_id
             );
         }
+        if let Some(intent) = details.lifecycle.reopen_intent.as_ref() {
+            println!("  Hold: {}", super::reopen::hold_label(intent));
+            println!(
+                "  Next: exact old-owner exit/reap releases the fenced lease, then generation {} is enabled once",
+                intent.source_generation.saturating_add(1)
+            );
+        }
     }
 
     if details.priority != PRIORITY_DEFAULT {

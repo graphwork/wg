@@ -3,9 +3,9 @@ use chrono::Utc;
 use std::path::Path;
 use worksgood::config::{DispatchRole, ReasoningLevel, Tier};
 use worksgood::graph::{LogEntry, Status};
-use worksgood::lifecycle::{LifecycleActor, TransitionKind, TransitionRequest, apply_transition};
+use worksgood::lifecycle::LifecycleActor;
 use worksgood::parser::modify_graph;
-use worksgood::service::{AgentRegistry, is_process_alive, kill_process_graceful};
+use worksgood::service::AgentRegistry;
 
 use super::claim_lifecycle;
 
@@ -86,17 +86,16 @@ fn resolve_current_profile(dir: &Path) -> Result<RetryProfileSelection> {
 }
 
 fn pin_retry_profile(task: &mut worksgood::graph::Task, selection: &RetryProfileSelection) {
-    // Exact task fields beat every dispatcher/profile cascade. Clear all stale
-    // route/session selectors in the SAME graph transaction that reopens the
-    // task, then store the resolved route + reasoning snapshot.
+    // Exact task fields beat every dispatcher/profile cascade. Clear stale
+    // route selectors at command time, then store the resolved route +
+    // reasoning snapshot. Session selectors remain owned by the old attempt
+    // until the exact-owner release transaction clears them.
     task.model = Some(selection.route.clone());
     task.reasoning = selection.reasoning;
     task.provider = None;
     task.endpoint = None;
     task.profile = None;
     task.executor_preset_name = None;
-    task.session_id = None;
-    task.checkpoint = None;
     task.log.push(LogEntry {
         timestamp: Utc::now().to_rfc3339(),
         actor: Some("retry-current-profile".to_string()),
@@ -170,44 +169,18 @@ fn run_with_selection(
         );
     }
 
-    // --fresh: discard the prior worktree (if any) so the next spawn allocates
-    // a clean one off main. Default behavior is retry-in-place, which preserves
-    // the existing worktree + branch so the next agent can resume WIP.
-    let mut fresh_removed_path: Option<std::path::PathBuf> = None;
-    if fresh {
-        if let Some(project_root) = dir.parent() {
-            if let Some((wt_path, branch)) =
-                crate::commands::spawn::worktree::find_worktree_for_task(project_root, id)
-            {
-                eprintln!(
-                    "[retry --fresh] Removing prior worktree for '{}' at {:?} (branch: {})",
-                    id, wt_path, branch
-                );
-                let _ = crate::commands::spawn::worktree::remove_worktree(
-                    project_root,
-                    &wt_path,
-                    &branch,
-                );
-                fresh_removed_path = Some(wt_path);
-            }
-        }
-    } else {
-        // Retry-in-place: clear any cleanup-pending marker so the dispatcher
-        // tick doesn't reap the worktree before the next agent picks it up.
-        if let Some(project_root) = dir.parent() {
-            if let Some((wt_path, _)) =
-                crate::commands::spawn::worktree::find_worktree_for_task(project_root, id)
-            {
-                let marker =
-                    wt_path.join(crate::commands::service::worktree::CLEANUP_PENDING_MARKER);
-                if marker.exists() {
-                    let _ = std::fs::remove_file(&marker);
-                    eprintln!(
-                        "[retry] Cleared cleanup-pending marker on prior worktree for '{}' (retry-in-place)",
-                        id
-                    );
-                }
-            }
+    // Worktree mutation is deliberately deferred to the exact-owner reaper.
+    // In particular, --fresh must never delete a worktree while its prior Pi
+    // writer is live. Default retry-in-place preserves all WIP bytes.
+    let fresh_removed_path: Option<std::path::PathBuf> = None;
+    if !fresh
+        && let Some(project_root) = dir.parent()
+        && let Some((wt_path, _)) =
+            crate::commands::spawn::worktree::find_worktree_for_task(project_root, id)
+    {
+        let marker = wt_path.join(crate::commands::service::worktree::CLEANUP_PENDING_MARKER);
+        if marker.exists() {
+            let _ = std::fs::remove_file(&marker);
         }
     }
 
@@ -250,10 +223,14 @@ fn run_with_selection(
         );
         if !matches!(
             task.status,
-            Status::Failed | Status::Incomplete | Status::PendingEval | Status::FailedPendingEval
+            Status::Failed
+                | Status::Abandoned
+                | Status::Incomplete
+                | Status::PendingEval
+                | Status::FailedPendingEval
         ) {
             error = Some(anyhow::anyhow!(
-                "Task '{}' is not failed and is not retriable (status: {:?}). Only failed, incomplete, pending-eval, failed-pending-eval, or in-progress tasks can be retried.",
+                "Task '{}' is not retriable (status: {:?}). Only failed, abandoned, incomplete, pending-eval, failed-pending-eval, or in-progress tasks can be retried.",
                 id,
                 task.status
             ));
@@ -280,22 +257,27 @@ fn run_with_selection(
         prev_failure_reason = task.failure_reason.clone();
         attempt = task.retry_count + 1;
 
-        // Retry is an explicit new generation, never a raw terminal-state
-        // rewrite. The generation/fence CAS makes concurrent retry commands
-        // and stale worker exits deterministic.
-        let generation = task.lifecycle.generation;
-        let request = TransitionRequest::new(
-            TransitionKind::GenerationCreated,
+        // Persist intent first. The generation remains non-runnable until the
+        // exact old owner is quiescent; late old-owner events are fenced now.
+        let (_, newly_requested) = match super::reopen::request(
+            task,
+            "retry",
+            fresh,
+            preserve_session,
+            if fresh { "fresh retry" } else { "resume-in-place retry" },
             LifecycleActor::operator(worksgood::current_user()),
             "explicit_retry",
-            format!("retry:{id}:{generation}"),
-        );
-        if let Err(rejection) = apply_transition(task, request) {
-            error = Some(anyhow::anyhow!(rejection));
+        ) {
+            Ok(result) => result,
+            Err(rejection) => {
+                error = Some(anyhow::anyhow!(rejection));
+                return false;
+            }
+        };
+        if !newly_requested {
             return false;
         }
         task.failure_reason = None;
-        task.assigned = None;
         task.ready_after = None;
         // Reset the per-task spawn circuit breaker so dispatch resumes WITHOUT
         // a graph.jsonl edit (fix-spawn-failures). The breaker may have tripped
@@ -303,10 +285,6 @@ fn run_with_selection(
         let breaker_was_tripped = task.spawn_failures > 0;
         task.spawn_failures = 0;
         task.last_spawn_failure_at = None;
-        if !preserve_session {
-            task.session_id = None;
-            task.checkpoint = None;
-        }
         task.tags.retain(|t| t != "converged");
         if let Some(selection) = profile_selection.as_ref() {
             pin_retry_profile(task, selection);
@@ -395,15 +373,7 @@ fn run_with_selection(
         );
         downstream_cleared = report.cleared;
 
-        // Retry is a new source execution attempt even when the previous
-        // worker was preempted before producing a verdict. Mint the parent and
-        // rearm both satellites in this same graph transaction.
-        worksgood::eval_lifecycle::begin_source_attempt(
-            graph,
-            id,
-            if fresh { "fresh retry" } else { "resume-in-place retry" },
-        );
-
+        // Evaluation attempt rearming happens atomically with owner release.
         true
     })
     .context("Failed to modify graph")?;
@@ -413,6 +383,7 @@ fn run_with_selection(
     }
 
     super::notify_graph_changed(dir);
+    let _ = super::reopen::reconcile_pending(dir)?;
 
     // Record operation
     let _ = worksgood::provenance::record(
@@ -438,6 +409,15 @@ fn run_with_selection(
         }),
         config.log.rotation_threshold,
     );
+
+    let reopened_graph = worksgood::parser::load_graph(&path)?;
+    if let Some(intent) = reopened_graph
+        .get_task(id)
+        .and_then(|task| task.lifecycle.reopen_intent.as_ref())
+    {
+        println!("{}", super::reopen::hold_label(intent));
+        return Ok(());
+    }
 
     let source = if was_incomplete {
         "incomplete"
@@ -510,13 +490,13 @@ fn run_with_selection(
     Ok(())
 }
 
-/// Retry an in-progress task: kill the assigned agent (if alive), reset the
-/// task to Open, increment retry_count. The dispatcher's next tick will
-/// respawn a fresh agent on it.
+/// Retry an in-progress task by first persisting a fenced reopen intent.
+/// Signalling/reaping the exact process owner happens only after that durable
+/// hold exists, so a crash cannot leave an unfenced dead owner whose task is
+/// redispatched by another reconciler.
 ///
-/// Idempotent across the graceful-kill race: if the reconciler has already
-/// reset the killed execution to an open, unclaimed retry generation, this
-/// path logs the retry without incrementing or minting another generation.
+/// Repeated callers coalesce on the same source generation and cannot mint a
+/// second attempt.
 fn retry_in_progress(
     dir: &Path,
     path: &Path,
@@ -526,48 +506,9 @@ fn retry_in_progress(
     reason: Option<&str>,
     profile_selection: Option<&RetryProfileSelection>,
 ) -> Result<()> {
-    // 1) Kill the assigned agent if any. We do this OUTSIDE the graph lock
-    //    because kill_process_graceful sleeps up to 5s.
-    let registry = AgentRegistry::load(dir).unwrap_or_else(|_| AgentRegistry::new());
-    let task_snapshot = {
-        let graph = worksgood::parser::load_graph(path).context("Failed to load graph")?;
-        graph.get_task(id).cloned()
-    };
-    let task = task_snapshot.ok_or_else(|| anyhow::anyhow!("Task '{}' not found", id))?;
-    let assigned = task.assigned.clone();
-    let requested_retry_count = task.retry_count.saturating_add(1);
-
-    let mut killed_agent: Option<(String, u32)> = None;
-    if let Some(agent_id) = &assigned
-        && let Some(agent) = registry.get_agent(agent_id)
-        && agent.is_alive()
-        && is_process_alive(agent.pid)
-    {
-        eprintln!(
-            "[retry] Killing agent {} (PID {}) for in-progress task '{}'",
-            agent_id, agent.pid, id
-        );
-        // SIGTERM (graceful, escalates to SIGKILL after 5s if needed).
-        let _ = kill_process_graceful(agent.pid, 5);
-        killed_agent = Some((agent_id.clone(), agent.pid));
-    }
-
-    // 2) Mark the agent Dead in registry so the dispatcher's reconciler can
-    //    transition the task without waiting for heartbeat timeout.
-    if let Some((ref aid, _)) = killed_agent
-        && let Ok(mut locked) = AgentRegistry::load_locked(dir)
-    {
-        if let Some(agent) = locked.get_agent_mut(aid) {
-            agent.status = worksgood::service::AgentStatus::Dead;
-            if agent.completed_at.is_none() {
-                agent.completed_at = Some(Utc::now().to_rfc3339());
-            }
-        }
-        let _ = locked.save_ref();
-    }
-
-    // 3) Reset the task: status=Open, clear assigned, increment retry_count,
-    //    log retry. This is atomic under the graph flock.
+    // Persist intent before sending any signal. The best-effort reconciliation
+    // after the graph transaction requests graceful exit; coordinator restarts
+    // resume the same idempotent intent.
     let config = worksgood::config::Config::load_or_default(dir);
     let escalate_on_retry = config.coordinator.escalate_on_retry;
     let mut error: Option<anyhow::Error> = None;
@@ -576,9 +517,8 @@ fn retry_in_progress(
     let mut downstream_cleared: Vec<String> = Vec::new();
     let mut retry_generation_already_started = false;
 
-    // Re-snapshot the registry — we just marked the killed agent Dead
-    // above, so the eager walk now sees that state and will clear any
-    // downstream claims still pointing at it.
+    // Snapshot claim liveness once outside the graph lock for downstream
+    // cleanup. The source owner's registry entry remains live until exact reap.
     let registry_snapshot = AgentRegistry::load(dir).unwrap_or_else(|_| AgentRegistry::new());
 
     modify_graph(path, |graph| {
@@ -590,11 +530,15 @@ fn retry_in_progress(
             }
         };
 
-        // The dead-agent reconciler can win the race while the graceful kill
-        // waits. Its open, unclaimed state is this same requested retry, not a
-        // second source execution attempt.
-        retry_generation_already_started =
-            task.status == Status::Open && task.assigned.is_none();
+        retry_generation_already_started = task
+            .lifecycle
+            .reopen_intent
+            .as_ref()
+            .is_some_and(|intent| intent.operation == "retry")
+            || (task.status == Status::Open
+                && task.assigned.is_none()
+                && task.lifecycle.current_attempt.is_none());
+        let requested_retry_count = task.retry_count.saturating_add(1);
 
         // Honor max_retries before starting a generation ourselves.
         if !retry_generation_already_started
@@ -615,29 +559,35 @@ fn retry_in_progress(
         }
         attempt = task.retry_count;
         if !retry_generation_already_started {
-            let generation = task.lifecycle.generation;
-            let request = TransitionRequest::new(
-                TransitionKind::GenerationCreated,
+            let (_, newly_requested) = match super::reopen::request(
+                task,
+                "retry",
+                fresh,
+                preserve_session,
+                if fresh {
+                    "fresh in-progress retry"
+                } else {
+                    "resume-in-place in-progress retry"
+                },
                 LifecycleActor::operator(worksgood::current_user()),
                 "retry_in_progress",
-                format!("retry-live:{id}:{generation}"),
-            );
-            if let Err(rejection) = apply_transition(task, request) {
-                error = Some(anyhow::anyhow!(rejection));
-                return false;
+            ) {
+                Ok(result) => result,
+                Err(rejection) => {
+                    error = Some(anyhow::anyhow!(rejection));
+                    return false;
+                }
+            };
+            if !newly_requested {
+                retry_generation_already_started = true;
             }
         }
-        task.assigned = None;
         task.failure_reason = None;
         task.ready_after = None;
         // Reset the per-task spawn circuit breaker (fix-spawn-failures) so an
         // in-progress retry dispatches instead of being skipped forever.
         task.spawn_failures = 0;
         task.last_spawn_failure_at = None;
-        if !preserve_session {
-            task.session_id = None;
-            task.checkpoint = None;
-        }
         task.tags.retain(|t| t != "converged");
         if let Some(selection) = profile_selection {
             pin_retry_profile(task, selection);
@@ -663,10 +613,6 @@ fn retry_in_progress(
             }
         }
 
-        let kill_note = killed_agent
-            .as_ref()
-            .map(|(aid, pid)| format!(" — killed agent {} (PID {})", aid, pid))
-            .unwrap_or_default();
         let reason_suffix = reason
             .map(|r| format!(" — reason: {}", r))
             .unwrap_or_default();
@@ -675,8 +621,8 @@ fn retry_in_progress(
             actor: None,
             user: Some(worksgood::current_user()),
             message: format!(
-                "Task reset for retry from in-progress (attempt #{}){}{}",
-                task.retry_count, kill_note, reason_suffix
+                "Task fenced for retry from in-progress (attempt #{}) — waiting for exact owner release{}",
+                task.retry_count, reason_suffix
             ),
         });
 
@@ -690,18 +636,6 @@ fn retry_in_progress(
         );
         downstream_cleared = report.cleared;
 
-        if !retry_generation_already_started {
-            worksgood::eval_lifecycle::begin_source_attempt(
-                graph,
-                id,
-                if fresh {
-                    "fresh in-progress retry"
-                } else {
-                    "resume-in-place in-progress retry"
-                },
-            );
-        }
-
         true
     })
     .context("Failed to modify graph")?;
@@ -710,34 +644,9 @@ fn retry_in_progress(
         return Err(e);
     }
 
-    // Worktree handling (same as the failed/incomplete path).
-    if fresh {
-        if let Some(project_root) = dir.parent() {
-            if let Some((wt_path, branch)) =
-                crate::commands::spawn::worktree::find_worktree_for_task(project_root, id)
-            {
-                eprintln!(
-                    "[retry --fresh] Removing prior worktree for '{}' at {:?} (branch: {})",
-                    id, wt_path, branch
-                );
-                let _ = crate::commands::spawn::worktree::remove_worktree(
-                    project_root,
-                    &wt_path,
-                    &branch,
-                );
-            }
-        }
-    } else if let Some(project_root) = dir.parent()
-        && let Some((wt_path, _)) =
-            crate::commands::spawn::worktree::find_worktree_for_task(project_root, id)
-    {
-        let marker = wt_path.join(crate::commands::service::worktree::CLEANUP_PENDING_MARKER);
-        if marker.exists() {
-            let _ = std::fs::remove_file(&marker);
-        }
-    }
-
+    // Reaper owns fresh deletion and generation enablement in that order.
     super::notify_graph_changed(dir);
+    let _ = super::reopen::reconcile_pending(dir)?;
 
     let _ = worksgood::provenance::record(
         dir,
@@ -747,7 +656,7 @@ fn retry_in_progress(
         serde_json::json!({
             "attempt": attempt,
             "was_in_progress": true,
-            "killed_agent": killed_agent.as_ref().map(|(aid, pid)| serde_json::json!({"agent_id": aid, "pid": pid})),
+            "owner_release": "durable-intent-then-exact-reap",
             "tier_escalation": tier_escalation_msg,
             "reason": reason,
             "current_profile": profile_selection.map(|selection| serde_json::json!({
@@ -762,17 +671,19 @@ fn retry_in_progress(
         config.log.rotation_threshold,
     );
 
-    if let Some((aid, pid)) = killed_agent {
-        println!(
-            "Reset '{}' from in-progress to open (attempt #{}); killed agent {} (PID {})",
-            id, attempt, aid, pid
-        );
-    } else {
-        println!(
-            "Reset '{}' from in-progress to open (attempt #{}); no live agent to kill",
-            id, attempt
-        );
+    let reopened_graph = worksgood::parser::load_graph(path)?;
+    if let Some(intent) = reopened_graph
+        .get_task(id)
+        .and_then(|task| task.lifecycle.reopen_intent.as_ref())
+    {
+        println!("{}", super::reopen::hold_label(intent));
+        return Ok(());
     }
+
+    println!(
+        "Reset '{}' from in-progress to open (attempt #{}) after exact owner release",
+        id, attempt
+    );
     if let Some(msg) = tier_escalation_msg {
         println!("  {}", msg);
     }
@@ -1108,10 +1019,8 @@ mod tests {
 
     #[test]
     fn test_retry_in_progress_task_resets_to_open() {
-        // wg retry on an InProgress task with no assigned agent (or a dead
-        // one) resets to Open and increments retry_count. The killed-agent
-        // path is exercised in the `retry_kills_in_progress_agent` smoke
-        // scenario, which can spawn a real PID to terminate.
+        // An InProgress task with no recorded owner releases immediately;
+        // real live-owner hold/reap behavior is covered by the Fake-Pi smoke.
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
         let mut task = make_task("t1", "Test task", Status::InProgress);

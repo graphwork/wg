@@ -295,8 +295,6 @@ fn apply_plan(dir: &Path, plan: &Plan, opts: &RecoverOptions) -> Result<()> {
     );
 
     modify_graph(&path, |graph| {
-        let mut eval_stuck_sources = Vec::new();
-
         // Retry user tasks
         for entry in &plan.user_retries {
             if let Some(task) = graph.get_task_mut(&entry.id) {
@@ -309,26 +307,31 @@ fn apply_plan(dir: &Path, plan: &Plan, opts: &RecoverOptions) -> Result<()> {
                     task.status,
                     Status::PendingEval | Status::FailedPendingEval
                 );
-                let generation = task.lifecycle.generation;
-                let request = TransitionRequest::new(
-                    TransitionKind::GenerationCreated,
+                if super::reopen::request(
+                    task,
+                    "recover",
+                    false,
+                    false,
+                    if was_eval_stuck {
+                        "batch recovery from stuck evaluation gate"
+                    } else {
+                        ""
+                    },
                     LifecycleActor::operator(user.clone()),
                     "batch_recover_retry",
-                    format!("recover:{}:{generation}", task.id),
-                );
-                if apply_transition(task, request).is_err() {
+                )
+                .is_err()
+                {
                     continue;
                 }
                 task.failure_reason = None;
                 task.failure_signal = None;
-                task.assigned = None;
                 task.ready_after = None;
-                task.session_id = None;
-                task.checkpoint = None;
+                // Session selectors remain owned until exact owner release;
+                // the reopen intent clears them atomically with generation enablement.
                 task.tags.retain(|t| t != "converged");
 
                 if was_eval_stuck {
-                    eval_stuck_sources.push(task.id.clone());
                     task.log.push(LogEntry {
                         timestamp: now.clone(),
                         actor: Some("eval-lifecycle-clear".to_string()),
@@ -400,22 +403,12 @@ fn apply_plan(dir: &Path, plan: &Plan, opts: &RecoverOptions) -> Result<()> {
             }
         }
 
-        // Resetting the counters on the old pipeline is not enough: stale
-        // durable evidence could still match it. Give every recovered
-        // evaluation-held source a new attempt/pipeline identity atomically,
-        // exactly like the single-task `wg retry` path.
-        for source_id in eval_stuck_sources {
-            worksgood::eval_lifecycle::begin_source_attempt(
-                graph,
-                &source_id,
-                "batch recovery from stuck evaluation gate",
-            );
-        }
         true
     })
     .context("Failed to modify graph during recovery")?;
 
     super::notify_graph_changed(dir);
+    let _ = super::reopen::reconcile_pending(dir)?;
 
     let config = worksgood::config::Config::load_or_default(dir);
     let _ = worksgood::provenance::record(

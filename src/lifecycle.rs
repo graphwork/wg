@@ -108,6 +108,75 @@ pub struct PiContinuationAuthorization {
     pub issued_by_policy: String,
 }
 
+/// Durable intent to create a new source generation only after the exact prior
+/// process/worktree owner is quiescent. Keeping this in the lifecycle
+/// projection makes every crash boundary restart-convergent and gives
+/// readiness/TUI one authoritative hold to inspect.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReopenIntent {
+    pub id: String,
+    pub operation: String,
+    pub source_generation: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_attempt_id: Option<String>,
+    pub source_fence: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_id: Option<String>,
+    pub process_epoch: u32,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub process_identity_digest: String,
+    #[serde(default)]
+    pub discard_worktree: bool,
+    #[serde(default)]
+    pub preserve_session: bool,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub begin_source_attempt_reason: String,
+    pub requested_at: String,
+}
+
+impl ReopenIntent {
+    pub fn for_task(
+        task: &Task,
+        operation: impl Into<String>,
+        discard_worktree: bool,
+        preserve_session: bool,
+        begin_source_attempt_reason: impl Into<String>,
+    ) -> Self {
+        let operation = operation.into();
+        let source_attempt_id = task
+            .lifecycle
+            .current_attempt
+            .as_ref()
+            .map(|attempt| attempt.id.clone());
+        let owner_id = task
+            .lifecycle
+            .current_attempt
+            .as_ref()
+            .map(|attempt| attempt.actor_id.clone())
+            .or_else(|| task.assigned.clone());
+        Self {
+            id: format!(
+                "reopen:{}:{}:{}:{}",
+                task.id,
+                task.lifecycle.generation,
+                source_attempt_id.as_deref().unwrap_or("none"),
+                operation
+            ),
+            operation,
+            source_generation: task.lifecycle.generation,
+            source_attempt_id,
+            source_fence: task.lifecycle.fence,
+            owner_id,
+            process_epoch: task.lifecycle.pi_process_epoch,
+            process_identity_digest: task.lifecycle.pi_process_identity_digest.clone(),
+            discard_worktree,
+            preserve_session,
+            begin_source_attempt_reason: begin_source_attempt_reason.into(),
+            requested_at: Utc::now().to_rfc3339(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct LifecycleProjection {
     #[serde(default)]
@@ -138,6 +207,8 @@ pub struct LifecycleProjection {
     pub pi_continuation: Option<PiContinuationAuthorization>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pi_terminal_reservation: Option<crate::pi_watchdog::TerminalIntentReceipt>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reopen_intent: Option<ReopenIntent>,
 }
 
 pub fn lifecycle_projection_is_default(value: &LifecycleProjection) -> bool {
@@ -212,6 +283,17 @@ pub enum TransitionKind {
         evidence_ref: String,
     },
     GenerationCreated,
+    /// Persist a reopen request and fence a still-live old attempt without
+    /// making the task runnable.
+    ReopenRequested {
+        intent: ReopenIntent,
+    },
+    /// Exact quiescence/reap proof won; release the held ownership and create
+    /// the new generation in this same lifecycle transition.
+    ReopenOwnerReleased {
+        intent_id: String,
+        exact_owner_reaped: bool,
+    },
     Abandoned,
     AdmissionDeferred {
         gate: String,
@@ -288,6 +370,8 @@ impl TransitionKind {
             Self::AcceptanceSatisfied { .. } => "acceptance-satisfied",
             Self::AcceptanceRejected { .. } => "acceptance-rejected",
             Self::GenerationCreated => "generation-created",
+            Self::ReopenRequested { .. } => "reopen-requested",
+            Self::ReopenOwnerReleased { .. } => "reopen-owner-released",
             Self::Abandoned => "abandoned",
             Self::AdmissionDeferred { .. } => "admission-deferred",
             Self::EvaluationEvidence { .. } => "evaluation-evidence",
@@ -392,6 +476,8 @@ pub struct LifecycleEventProjection {
     pub pi_continuation: Option<PiContinuationAuthorization>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pi_terminal_reservation: Option<crate::pi_watchdog::TerminalIntentReceipt>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reopen_intent: Option<ReopenIntent>,
 }
 
 impl LifecycleEvent {
@@ -408,6 +494,7 @@ impl LifecycleEvent {
         task.lifecycle.pi_continuation_epoch = self.projection.pi_continuation_epoch;
         task.lifecycle.pi_continuation = self.projection.pi_continuation.clone();
         task.lifecycle.pi_terminal_reservation = self.projection.pi_terminal_reservation.clone();
+        task.lifecycle.reopen_intent = self.projection.reopen_intent.clone();
         task.lifecycle.ledger_head = Some(self.event_id.clone());
         if !task
             .lifecycle
@@ -653,6 +740,12 @@ impl LifecycleKernel {
             }
             TransitionKind::GenerationCreated => {
                 Self::require_actor(&request, &[ActorKind::Operator, ActorKind::Reconciler])?;
+                if projection.reopen_intent.is_some() {
+                    return Err(TransitionRejection::new(
+                        "waiting_for_owner_release",
+                        "a reopen intent is fenced until its exact prior owner is reaped",
+                    ));
+                }
                 if old_state == Status::InProgress {
                     projection.fence += 1;
                     if let Some(attempt) = projection.current_attempt.as_mut()
@@ -661,10 +754,90 @@ impl LifecycleKernel {
                         attempt.disposition = Some(AttemptDisposition::Cancelled);
                     }
                 }
-                // Explicit reset/retry may supersede any legacy held state;
-                // it is never an implicit message/evaluator edge.
                 projection.generation += 1;
                 projection.current_attempt = None;
+                projection.pi_process_epoch = 0;
+                projection.pi_process_identity_digest.clear();
+                projection.pi_continuation_epoch = 0;
+                projection.pi_continuation = None;
+                projection.pi_terminal_reservation = None;
+                new_state = Status::Open;
+            }
+            TransitionKind::ReopenRequested { intent } => {
+                Self::require_actor(&request, &[ActorKind::Operator, ActorKind::Reconciler])?;
+                if projection.reopen_intent.is_some() {
+                    return Err(TransitionRejection::new(
+                        "reopen_already_pending",
+                        "another reopen intent already waits for prior-owner release",
+                    ));
+                }
+                let current_attempt_id = projection
+                    .current_attempt
+                    .as_ref()
+                    .map(|attempt| attempt.id.as_str());
+                let current_owner_id = projection
+                    .current_attempt
+                    .as_ref()
+                    .map(|attempt| attempt.actor_id.as_str())
+                    .or(task.assigned.as_deref());
+                if intent.source_generation != projection.generation
+                    || intent.source_attempt_id.as_deref() != current_attempt_id
+                    || intent.owner_id.as_deref() != current_owner_id
+                    || intent.source_fence != projection.fence
+                    || intent.process_epoch != projection.pi_process_epoch
+                    || intent.process_identity_digest != projection.pi_process_identity_digest
+                {
+                    return Err(TransitionRejection::new(
+                        "stale_reopen_source",
+                        "reopen intent is not bound to the exact current source owner",
+                    ));
+                }
+                if let Some(attempt) = projection.current_attempt.as_mut()
+                    && attempt.disposition.is_none()
+                {
+                    attempt.disposition = Some(AttemptDisposition::Cancelled);
+                    projection.fence = projection.fence.saturating_add(1);
+                }
+                if let Some(authorization) = projection.pi_continuation.as_mut() {
+                    authorization.state = PiAuthorizationState::Revoked;
+                }
+                projection.reopen_intent = Some(intent.clone());
+            }
+            TransitionKind::ReopenOwnerReleased {
+                intent_id,
+                exact_owner_reaped,
+            } => {
+                Self::require_actor(&request, &[ActorKind::Reconciler])?;
+                if !*exact_owner_reaped {
+                    return Err(TransitionRejection::new(
+                        "owner_still_live",
+                        "new generation requires exact old-owner exit/reap proof",
+                    ));
+                }
+                let intent = projection.reopen_intent.as_ref().ok_or_else(|| {
+                    TransitionRejection::new("reopen_intent_missing", "no reopen is pending")
+                })?;
+                if intent.id != *intent_id
+                    || intent.source_generation != projection.generation
+                    || intent.source_attempt_id.as_deref()
+                        != projection
+                            .current_attempt
+                            .as_ref()
+                            .map(|attempt| attempt.id.as_str())
+                {
+                    return Err(TransitionRejection::new(
+                        "stale_reopen_source",
+                        "owner release belongs to a superseded reopen intent",
+                    ));
+                }
+                projection.generation = projection.generation.saturating_add(1);
+                projection.current_attempt = None;
+                projection.pi_process_epoch = 0;
+                projection.pi_process_identity_digest.clear();
+                projection.pi_continuation_epoch = 0;
+                projection.pi_continuation = None;
+                projection.pi_terminal_reservation = None;
+                projection.reopen_intent = None;
                 new_state = Status::Open;
             }
             TransitionKind::Abandoned => {
@@ -676,7 +849,8 @@ impl LifecycleKernel {
                     && attempt.disposition.is_none()
                 {
                     attempt.disposition = Some(AttemptDisposition::Cancelled);
-                    projection.fence += 1;
+                    // Keep the source tuple/lease fence stable for exact reap.
+                    // Terminal status + disposition already reject late writes.
                 }
                 new_state = Status::Abandoned;
             }
@@ -981,7 +1155,10 @@ impl LifecycleKernel {
         // allowed and retain the exact state.
         if old_state.is_terminal()
             && new_state != old_state
-            && !matches!(kind, TransitionKind::GenerationCreated)
+            && !matches!(
+                kind,
+                TransitionKind::GenerationCreated | TransitionKind::ReopenOwnerReleased { .. }
+            )
         {
             return Err(TransitionRejection::new(
                 "generation_terminal",
@@ -1024,6 +1201,7 @@ impl LifecycleKernel {
                 pi_continuation_epoch: projection.pi_continuation_epoch,
                 pi_continuation: projection.pi_continuation,
                 pi_terminal_reservation: projection.pi_terminal_reservation,
+                reopen_intent: projection.reopen_intent,
             },
         };
 
@@ -1514,6 +1692,93 @@ mod tests {
         ));
         assert_eq!(task.status, Status::InProgress);
         assert_eq!(task.lifecycle.generation, 1);
+    }
+
+    #[test]
+    fn reopen_waits_for_exact_owner_release_and_late_events_are_stale() {
+        let mut task = task("reopen-race", Status::Open);
+        reserve(&mut task);
+        let old = FenceExpectation::current(&task);
+        let intent = ReopenIntent::for_task(&task, "retry", false, true, "resume-in-place retry");
+        let mut hold = request(
+            TransitionKind::ReopenRequested {
+                intent: intent.clone(),
+            },
+            ActorKind::Operator,
+            "reopen-hold",
+        );
+        hold.expected = old.clone();
+        apply(&mut task, hold).unwrap();
+
+        assert_eq!(task.status, Status::InProgress);
+        assert_eq!(task.lifecycle.generation, 0);
+        assert_eq!(task.lifecycle.reopen_intent.as_ref(), Some(&intent));
+        assert_eq!(
+            task.lifecycle
+                .current_attempt
+                .as_ref()
+                .and_then(|attempt| attempt.disposition),
+            Some(AttemptDisposition::Cancelled)
+        );
+        assert!(!crate::query::is_time_ready(&task));
+
+        let held_revision = task.lifecycle.revision;
+        let mut late_while_held = request(
+            TransitionKind::AttemptFailed { class: None },
+            ActorKind::Worker,
+            "late-old-terminal-while-held",
+        );
+        late_while_held.expected = old.clone();
+        assert!(matches!(
+            apply(&mut task, late_while_held),
+            Err(ref code) if code.starts_with("stale_") || code == "illegal_transition"
+        ));
+        assert_eq!(task.lifecycle.revision, held_revision);
+
+        let refused = request(
+            TransitionKind::ReopenOwnerReleased {
+                intent_id: intent.id.clone(),
+                exact_owner_reaped: false,
+            },
+            ActorKind::Reconciler,
+            "release-without-proof",
+        );
+        assert!(matches!(
+            apply(&mut task, refused),
+            Err(ref code) if code == "owner_still_live"
+        ));
+        assert_eq!(task.lifecycle.revision, held_revision);
+
+        // Simulate a daemon crash/restart at the intent/reap boundary.
+        let encoded = serde_json::to_vec(&task).unwrap();
+        let mut restarted: Task = serde_json::from_slice(&encoded).unwrap();
+        let mut release = request(
+            TransitionKind::ReopenOwnerReleased {
+                intent_id: intent.id.clone(),
+                exact_owner_reaped: true,
+            },
+            ActorKind::Reconciler,
+            "release-exact-owner",
+        );
+        release.expected = FenceExpectation::current(&restarted);
+        apply(&mut restarted, release).unwrap();
+        assert_eq!(restarted.status, Status::Open);
+        assert_eq!(restarted.lifecycle.generation, 1);
+        assert!(restarted.lifecycle.current_attempt.is_none());
+        assert!(restarted.lifecycle.reopen_intent.is_none());
+
+        let mut late = request(
+            TransitionKind::AttemptFailed { class: None },
+            ActorKind::Worker,
+            "late-old-terminal",
+        );
+        late.expected = old;
+        assert!(matches!(
+            apply(&mut restarted, late),
+            Err(ref code) if code.starts_with("stale_") || code == "illegal_transition"
+        ));
+        assert_eq!(restarted.status, Status::Open);
+        assert_eq!(restarted.lifecycle.generation, 1);
     }
 
     #[test]

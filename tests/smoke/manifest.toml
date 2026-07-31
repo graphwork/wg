@@ -2911,3 +2911,10 @@ script = "scenarios/post_lifecycle_convergence_ux.sh"
 owners = ["synthesize-post-lifecycle-convergence-ux"]
 description = "Credential-free real-daemon integration for the service-owned deterministic convergence cutover: restart preserves a seeded future deadline/exponent/jitter tuple; an overdue unchanged goal wakes before the 60s safety tick, falls off at its cap, and stays live; a seeded exact Pi/OpenRouter route outage admits at most one credential-bearing probe lease, leaves global service pause false, performs no fallback, and creates no controller/probe/merge/cleanup graph task."
 timeout_seconds = 120
+
+[[scenario]]
+name = "reopen_waits_for_pi_owner_release"
+script = "scenarios/reopen_waits_for_pi_owner_release.sh"
+owners = ["fix-reopen-before-owner-release-race"]
+description = "Candidate-binary credential-free real terminal/daemon Fake-Pi regression for reopen ownership fencing across abandon→retry, direct requeue, and abandon→reset: exact Pi processes, wrappers, and dirty leased worktrees remain live while each operator command first records a visible waiting-for-owner-release intent outside readiness and breaker accounting; three owners exit normally while a fourth is SIGKILLed with its watchdog deliberately still Active, and daemon restart reaps both process owners, clears stale-live Pi/worktree ownership without indefinite deferral, atomically enables exactly one generation/attempt, preserves WIP/session/runtime evidence, and rejects late old-owner evidence."
+timeout_seconds = 240

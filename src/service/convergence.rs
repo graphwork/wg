@@ -949,6 +949,7 @@ mod tests {
                 pi_continuation_epoch: 0,
                 pi_continuation: None,
                 pi_terminal_reservation: None,
+                reopen_intent: None,
             },
         });
         state.reconcile_goals(

@@ -56,8 +56,8 @@ use chrono::Utc;
 #[cfg(test)]
 use worksgood::graph::Status;
 use worksgood::graph::{LogEntry, WorkGraph};
-use worksgood::lifecycle::{LifecycleActor, TransitionKind, TransitionRequest, apply_transition};
-use worksgood::parser::modify_graph;
+use worksgood::lifecycle::LifecycleActor;
+use worksgood::parser::{load_graph, modify_graph};
 
 /// Edge direction to follow when computing the closure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -222,31 +222,35 @@ pub fn run(dir: &Path, seeds: &[String], opts: ResetOptions) -> Result<ResetRepo
             if let Some(task) = graph.get_task_mut(id) {
                 let prev = task.status;
                 let prev_assigned = task.assigned.clone();
-                let generation = task.lifecycle.generation;
-                let request = TransitionRequest::new(
-                    TransitionKind::GenerationCreated,
+                let (_, newly_requested) = match super::reopen::request(
+                    task,
+                    "reset",
+                    false,
+                    true,
+                    "explicit reset",
                     LifecycleActor::operator(user.clone()),
                     "explicit_reset",
-                    format!("reset:{id}:{generation}"),
-                );
-                if let Err(rejection) = apply_transition(task, request) {
-                    task.log.push(LogEntry {
-                        timestamp: now.clone(),
-                        actor: Some("reset".to_string()),
-                        user: Some(user.clone()),
-                        message: format!("reset rejected: {rejection}"),
-                    });
+                ) {
+                    Ok(result) => result,
+                    Err(rejection) => {
+                        task.log.push(LogEntry {
+                            timestamp: now.clone(),
+                            actor: Some("reset".to_string()),
+                            user: Some(user.clone()),
+                            message: format!("reset rejected: {rejection}"),
+                        });
+                        continue;
+                    }
+                };
+                if !newly_requested {
                     continue;
                 }
                 task.completed_at = None;
                 task.failure_reason = None;
                 task.retry_count = 0;
-                // Mirror `wg unclaim`: a reset task should be ready for a
-                // fresh dispatcher pickup, so clear claim fields too.
-                // Without this, dead-agent claims survive `wg reset` and
-                // block the dispatcher from spawning on the next tick.
-                task.assigned = None;
-                task.started_at = None;
+                // The exact prior claim remains visible while ownership drains;
+                // the reopen reaper clears it in the same transaction that
+                // enables the new generation.
                 let claim_note = match &prev_assigned {
                     Some(a) => format!(" (cleared claim from @{})", a),
                     None => String::new(),
@@ -317,11 +321,22 @@ pub fn run(dir: &Path, seeds: &[String], opts: ResetOptions) -> Result<ResetRepo
     );
 
     super::notify_graph_changed(dir);
+    let _ = super::reopen::reconcile_pending(dir)?;
 
     eprintln!(
         "\x1b[32m✓\x1b[0m reset {} task(s), stripped {} meta task(s)",
         reset_count, stripped_count
     );
+    if let Ok(graph) = load_graph(&path) {
+        for id in &closure_sorted {
+            if let Some(intent) = graph
+                .get_task(id)
+                .and_then(|task| task.lifecycle.reopen_intent.as_ref())
+            {
+                eprintln!("{}", super::reopen::hold_label(intent));
+            }
+        }
+    }
 
     Ok(ResetReport {
         closure: closure_sorted,

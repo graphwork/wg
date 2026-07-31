@@ -2,6 +2,9 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
 use worksgood::graph::{LogEntry, Status};
+use worksgood::lifecycle::{
+    FenceExpectation, LifecycleActor, TransitionKind, TransitionRequest, apply_transition,
+};
 use worksgood::parser::modify_graph;
 
 #[cfg(test)]
@@ -44,7 +47,23 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>, superseded_by: &[String])
         }
 
         prev_assigned = task.assigned.clone();
-        task.status = Status::Abandoned;
+        if task.status == Status::Failed {
+            // Historical failed generations may already have a terminal
+            // disposition. Abandoning them changes operator disposition only.
+            task.status = Status::Abandoned;
+        } else {
+            let request = TransitionRequest::new(
+                TransitionKind::Abandoned,
+                LifecycleActor::operator(worksgood::current_user()),
+                "operator_abandoned",
+                format!("abandon:{id}:{}", task.lifecycle.generation),
+            )
+            .expecting(FenceExpectation::current(task));
+            if let Err(rejection) = apply_transition(task, request) {
+                error = Some(anyhow::anyhow!(rejection));
+                return false;
+            }
+        }
         task.failure_reason = reason.map(String::from);
         if !superseded_by.is_empty() {
             task.superseded_by = superseded_by.to_vec();

@@ -113,6 +113,7 @@ pub mod reap;
 pub mod reclaim;
 pub mod recover;
 pub mod reject;
+pub mod reopen;
 pub mod replay;
 pub mod reprioritize;
 pub mod requeue;

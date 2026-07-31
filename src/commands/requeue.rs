@@ -3,13 +3,11 @@ use chrono::Utc;
 use std::path::Path;
 use worksgood::config::Config;
 use worksgood::graph::{LogEntry, Status};
-use worksgood::lifecycle::{LifecycleActor, TransitionKind, TransitionRequest, apply_transition};
-use worksgood::parser::modify_graph;
+use worksgood::lifecycle::LifecycleActor;
+use worksgood::parser::{load_graph, modify_graph};
 
 #[cfg(test)]
 use super::graph_path;
-#[cfg(test)]
-use worksgood::parser::load_graph;
 
 pub fn run(dir: &Path, id: &str, reason: &str) -> Result<()> {
     let path = super::graph_path(dir);
@@ -51,23 +49,32 @@ pub fn run(dir: &Path, id: &str, reason: &str) -> Result<()> {
             return false;
         }
 
-        let request = TransitionRequest::new(
-            TransitionKind::GenerationCreated,
+        let (_, newly_requested) = match super::reopen::request(
+            task,
+            "requeue",
+            false,
+            false,
+            "triage requeue",
             LifecycleActor::operator(worksgood::current_user()),
             "triage_requeue",
-            format!("requeue:{id}:{}", task.triage_count + 1),
-        );
-        if let Err(rejection) = apply_transition(task, request) {
-            error = Some(anyhow::anyhow!(rejection));
+        ) {
+            Ok(result) => result,
+            Err(rejection) => {
+                error = Some(anyhow::anyhow!(rejection));
+                return false;
+            }
+        };
+        if !newly_requested {
+            triage_count = task.triage_count;
             return false;
         }
 
         task.triage_count += 1;
         triage_count = task.triage_count;
 
-        task.assigned = None;
-        task.started_at = None;
-        task.session_id = None;
+        // Assignment/session/worktree ownership is retained until the exact
+        // old owner releases. The reaper clears session for requeue semantics
+        // only when it atomically enables the new generation.
         // Preserve: loop_iteration, cycle_config, tags, retry_count, agent
 
         task.log.push(LogEntry {
@@ -80,12 +87,6 @@ pub fn run(dir: &Path, id: &str, reason: &str) -> Result<()> {
             ),
         });
 
-        worksgood::eval_lifecycle::begin_source_attempt(
-            graph,
-            id,
-            "triage requeue",
-        );
-
         true
     })
     .context("Failed to modify graph")?;
@@ -95,6 +96,7 @@ pub fn run(dir: &Path, id: &str, reason: &str) -> Result<()> {
     }
 
     super::notify_graph_changed(dir);
+    let _ = super::reopen::reconcile_pending(dir)?;
 
     // Record operation
     let _ = worksgood::provenance::record(
@@ -110,10 +112,18 @@ pub fn run(dir: &Path, id: &str, reason: &str) -> Result<()> {
         config.log.rotation_threshold,
     );
 
-    println!(
-        "Requeued '{}' for triage (attempt {}/{}): {}",
-        id, triage_count, max_triage, reason
-    );
+    let graph = load_graph(&path)?;
+    if let Some(intent) = graph
+        .get_task(id)
+        .and_then(|task| task.lifecycle.reopen_intent.as_ref())
+    {
+        println!("{}", super::reopen::hold_label(intent));
+    } else {
+        println!(
+            "Requeued '{}' for triage (attempt {}/{}): {}",
+            id, triage_count, max_triage, reason
+        );
+    }
 
     Ok(())
 }

@@ -63,9 +63,21 @@ pub fn run(dir: &Path, id: &str, reason: &str) -> Result<()> {
                 ),
             });
         } else {
-            // Reopen for re-dispatch
-            task.status = Status::Open;
-            task.assigned = None;
+            // Reopen for continuation, but never overlap the still-owned
+            // source worktree/session. The exact-owner reaper enables the next
+            // generation after quiescence.
+            if let Err(rejection) = super::reopen::request(
+                task,
+                "reject",
+                false,
+                true,
+                "validation rejection continuation",
+                worksgood::lifecycle::LifecycleActor::operator(worksgood::current_user()),
+                "validation_rejected_reopen",
+            ) {
+                error = Some(anyhow::anyhow!(rejection));
+                return false;
+            }
             task.log.push(LogEntry {
                 timestamp: Utc::now().to_rfc3339(),
                 actor: std::env::var("WG_AGENT_ID").ok(),
@@ -86,6 +98,9 @@ pub fn run(dir: &Path, id: &str, reason: &str) -> Result<()> {
     }
 
     super::notify_graph_changed(dir);
+    if outcome == "reopened" {
+        let _ = super::reopen::reconcile_pending(dir)?;
+    }
 
     let config = worksgood::config::Config::load_or_default(dir);
     let _ = worksgood::provenance::record(

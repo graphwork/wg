@@ -137,6 +137,18 @@ fn cleanup_and_count_alive(
         }
     }
 
+    // Reopen is a two-phase lifecycle operation. Only this exact-owner reaper
+    // may turn a persisted intent into a runnable generation; contention is an
+    // expected hold and never reaches the spawn breaker.
+    match crate::commands::reopen::reconcile_pending(dir) {
+        Ok(released) if !released.is_empty() => eprintln!(
+            "[dispatcher] Released prior ownership and enabled one generation for: {:?}",
+            released
+        ),
+        Ok(_) => {}
+        Err(error) => eprintln!("[dispatcher] Reopen reconciliation held fail-closed: {error:#}"),
+    }
+
     // Now count truly alive agents (process still running)
     let registry = AgentRegistry::load(dir)?;
     let alive_count = registry

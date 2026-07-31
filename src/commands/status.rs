@@ -129,6 +129,16 @@ struct SpawnBreakerTask {
     last_spawn_failure_at: Option<String>,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+struct ReopenHeldTask {
+    task_id: String,
+    operation: String,
+    owner: Option<String>,
+    source_generation: u64,
+    source_attempt: Option<String>,
+    source_fence: u64,
+}
+
 /// Active cycle timing info
 #[derive(Debug, Clone, serde::Serialize)]
 struct CycleTimingInfo {
@@ -161,6 +171,10 @@ struct StatusOutput {
     /// Tasks whose per-task spawn circuit breaker is tripped.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     spawn_breaker: Vec<SpawnBreakerTask>,
+    /// Reopen intents deliberately held outside the ready queue until their
+    /// exact prior owner releases.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    waiting_for_owner_release: Vec<ReopenHeldTask>,
     /// Cached periodic sentinel snapshot. `wg status` never walks the
     /// filesystem; the daemon/doctor refreshes this bounded snapshot off the
     /// input/render path.
@@ -272,6 +286,7 @@ fn gather_status(dir: &Path, show_all: bool) -> Result<StatusOutput> {
 
     // 8b. Spawn-circuit-breaker tripped tasks (per-task, self-healing).
     let spawn_breaker = gather_spawn_breakers(dir, show_all);
+    let waiting_for_owner_release = gather_reopen_holds(dir, show_all);
 
     // 9. Disk state is a cached, bounded sentinel snapshot. Do not refresh or
     // scan here: status/TUI latency must not scale with target size.
@@ -287,6 +302,7 @@ fn gather_status(dir: &Path, show_all: bool) -> Result<StatusOutput> {
         dangling_deps,
         verify_failing,
         spawn_breaker,
+        waiting_for_owner_release,
         disk,
     })
 }
@@ -880,6 +896,28 @@ fn gather_spawn_breakers(dir: &Path, show_all: bool) -> Vec<SpawnBreakerTask> {
         .collect()
 }
 
+fn gather_reopen_holds(dir: &Path, show_all: bool) -> Vec<ReopenHeldTask> {
+    let path = super::graph_path(dir);
+    let Ok(graph) = load_graph(&path) else {
+        return Vec::new();
+    };
+    graph
+        .tasks()
+        .filter(|task| show_all || !task.id.starts_with('.'))
+        .filter_map(|task| {
+            let intent = task.lifecycle.reopen_intent.as_ref()?;
+            Some(ReopenHeldTask {
+                task_id: task.id.clone(),
+                operation: intent.operation.clone(),
+                owner: intent.owner_id.clone(),
+                source_generation: intent.source_generation,
+                source_attempt: intent.source_attempt_id.clone(),
+                source_fence: intent.source_fence,
+            })
+        })
+        .collect()
+}
+
 fn print_status(status: &StatusOutput) {
     // Line 1: Service status
     if status.service.running {
@@ -1097,6 +1135,25 @@ fn print_status(status: &StatusOutput) {
             println!(
                 "  VERIFY FAILING: \x1b[33m{}\x1b[0m — verify command has failed {} times: {}",
                 vf.task_id, vf.failures, cmd_snippet
+            );
+        }
+    }
+
+    if !status.waiting_for_owner_release.is_empty() {
+        println!();
+        println!(
+            "Waiting for owner release: {} task(s) are intentionally non-runnable:",
+            status.waiting_for_owner_release.len()
+        );
+        for held in &status.waiting_for_owner_release {
+            println!(
+                "  {} — {} owner={} generation={} attempt={} fence={} (breaker-neutral)",
+                held.task_id,
+                held.operation,
+                held.owner.as_deref().unwrap_or("none"),
+                held.source_generation,
+                held.source_attempt.as_deref().unwrap_or("none"),
+                held.source_fence
             );
         }
     }

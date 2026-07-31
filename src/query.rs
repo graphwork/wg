@@ -7,6 +7,11 @@ use std::path::Path;
 /// Check if a task is past its not_before and ready_after timestamps (or has no timestamps),
 /// and if cron-enabled, whether it is due to fire.
 pub fn is_time_ready(task: &Task) -> bool {
+    // A reopen request is durable intent, never dispatch authority.  Even if a
+    // legacy/raw caller projects Open, ownership release must win first.
+    if task.lifecycle.reopen_intent.is_some() {
+        return false;
+    }
     let now = Utc::now();
 
     // Check not_before
