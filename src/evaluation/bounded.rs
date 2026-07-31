@@ -964,6 +964,20 @@ fn finalize_success(
     if let Some(error) = conflict {
         bail!("error[WG-EVAL-DELIVERY-CAS]: {error}");
     }
+    if has_required_authority {
+        let store = crate::finalization::FinalizationStore::open(dir)?;
+        crate::finalization::record_evaluation_receipt(
+            &store,
+            &source.candidate_digest,
+            if verdict.score >= threshold.unwrap_or(1.0) {
+                crate::finalization::EvaluationReceiptOutcome::Accepted
+            } else {
+                crate::finalization::EvaluationReceiptOutcome::Rejected
+            },
+            &verdict_id,
+            "bounded-evaluation-lane",
+        )?;
+    }
     Ok((EvaluationState::Consumed, None, true))
 }
 

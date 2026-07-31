@@ -3427,34 +3427,25 @@ if [ "$TASK_STATUS" = "in-progress" ] && [ "{executor_type}" != "pi" ]; then
     fi
 fi
 
-# --- Worktree Cleanup (merge-back is handled by wg done) ---
-# The merge-back squash is now performed inline by `wg done` while the agent is
-# still alive, so it can react to conflicts. This wrapper only handles the
-# cleanup marker for the explicit worktree cleanup surface.
+# --- Task-owned transactional cleanup ---
+# Promotion/delivery/report is durable before this point. The wrapper is the
+# final part of the same task transaction: leave the cwd, remove owned scratch
+# state synchronously, write a cleanup receipt, and only then expose Done.
 if [ -n "$WG_WORKTREE_PATH" ] && [ -n "$WG_BRANCH" ] && [ -n "$WG_PROJECT_ROOT" ]; then
     CURRENT_DIR_REAL=$(pwd -P 2>/dev/null || pwd)
     WORKTREE_PATH_REAL=$(cd "$WG_WORKTREE_PATH" 2>/dev/null && pwd -P || printf '%s' "$WG_WORKTREE_PATH")
     if [ "$CURRENT_DIR_REAL" != "$WORKTREE_PATH_REAL" ]; then
-        echo "[wrapper] WARNING: Skipping worktree cleanup because current directory '$CURRENT_DIR_REAL' does not match WG_WORKTREE_PATH '$WORKTREE_PATH_REAL' — possible inherited parent agent environment" >> "$OUTPUT_FILE"
+        echo "[wrapper] WARNING: Skipping task-owned cleanup because cwd '$CURRENT_DIR_REAL' does not match '$WORKTREE_PATH_REAL'" >> "$OUTPUT_FILE"
     else
-    if [ ! -e "$WG_WORKTREE_PATH/.git" ]; then
-        echo "[wrapper] WARNING: Worktree .git pointer missing at $WG_WORKTREE_PATH — possible worktree escape detected" >> "$OUTPUT_FILE"
-    fi
-
-    TASK_STATUS_FINAL=$(wg show "$TASK_ID" --json 2>/dev/null | grep -o '"status": *"[^"]*"' | head -1 | sed 's/.*"status": *"//;s/"//' || echo "unknown")
-
-    # Cleanup is ancillary and only eligible after content-bound acceptance.
-    # Failed, held, rejected and conflicted trees remain source-bearing.
-    if [ "$TASK_STATUS_FINAL" = "done" ]; then
-        touch "$WG_WORKTREE_PATH/.wg-cleanup-pending" 2>/dev/null || true
-        echo "[wrapper] Accepted task marked worktree $WG_WORKTREE_PATH cleanup-pending" >> "$OUTPUT_FILE"
-    else
-        echo "[wrapper] Retaining source-bearing worktree $WG_WORKTREE_PATH (status=$TASK_STATUS_FINAL; inspect: wg finalize status $TASK_ID)" >> "$OUTPUT_FILE"
-    fi
-
-    # Build caches are never removed here. The owned-cache sentinel waits for
-    # terminal owner/task state, stale exact PID identity, lease expiry, a clean
-    # worktree, no registered artifacts, and no open files.
+        cd "$WG_PROJECT_ROOT" || exit 1
+        if wg finish cleanup "$TASK_ID" >> "$OUTPUT_FILE" 2>&1; then
+            echo "[wrapper] Task-owned finish cleanup completed synchronously" >> "$OUTPUT_FILE"
+        else
+            # Crash/retry fallback only. The durable promotion/output receipt
+            # ensures restart reconciliation can perform cleanup and nothing else.
+            touch "$WG_WORKTREE_PATH/.wg-cleanup-pending" 2>/dev/null || true
+            echo "[wrapper] WARNING: finish cleanup deferred from durable receipt; no source/evaluation rerun authorized" >> "$OUTPUT_FILE"
+        fi
     fi
 fi
 

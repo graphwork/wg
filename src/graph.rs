@@ -33,6 +33,10 @@ fn is_false(b: &bool) -> bool {
     !b
 }
 
+fn is_land_contract(value: &CompletionContract) -> bool {
+    *value == CompletionContract::Land
+}
+
 fn is_true(b: &bool) -> bool {
     *b
 }
@@ -308,6 +312,64 @@ pub struct FailureSignal {
     pub detected_at_ms: i64,
 }
 
+/// The durable result a task promises to produce.
+///
+/// Missing values in historical graphs deserialize as [`Land`], preserving the
+/// ordinary source-task contract: a successful `after` edge means the exact
+/// accepted repository change reached the protected branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum CompletionContract {
+    #[default]
+    Land,
+    Deliver,
+    Report,
+}
+
+impl std::fmt::Display for CompletionContract {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Land => "land",
+            Self::Deliver => "deliver",
+            Self::Report => "report",
+        })
+    }
+}
+
+/// Terminal, receipt-backed projection of a completion contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CompletionDisposition {
+    Landed,
+    Delivered,
+    Reported,
+}
+
+impl CompletionDisposition {
+    pub fn satisfies(self, contract: CompletionContract) -> bool {
+        matches!(
+            (self, contract),
+            (Self::Landed, CompletionContract::Land)
+                | (Self::Delivered, CompletionContract::Deliver)
+                | (Self::Reported, CompletionContract::Report)
+        )
+    }
+}
+
+/// An explicitly typed contribution edge. It is also stored in `after` so old
+/// graph traversals preserve ordering, but only this edge may consume a
+/// `Delivered` predecessor.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskInputDependency {
+    pub task_id: String,
+    #[serde(default = "default_contribution_input_kind")]
+    pub kind: String,
+}
+
+fn default_contribution_input_kind() -> String {
+    "contribution".into()
+}
+
 /// Task status
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
 #[serde(rename_all = "kebab-case")]
@@ -570,8 +632,22 @@ pub struct Task {
     pub before: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty", alias = "blocked_by")]
     pub after: Vec<String>,
+    /// Explicit immutable contribution inputs. An entry is also present in
+    /// `after`; this typed relation changes success semantics from Landed to
+    /// Delivered without making ordinary dependencies accept deliveries.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub input_dependencies: Vec<TaskInputDependency>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub requires: Vec<String>,
+    /// Typed completion promise. Historical/omitted rows default to `land`.
+    #[serde(default, skip_serializing_if = "is_land_contract")]
+    pub completion_contract: CompletionContract,
+    /// Receipt-backed terminal result. Historical Done land tasks omit this
+    /// and are treated as legacy Landed by dependency compatibility logic.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion_disposition: Option<CompletionDisposition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion_receipt: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
     /// Required skills/capabilities for this task
@@ -890,7 +966,11 @@ impl Default for Task {
             estimate: None,
             before: vec![],
             after: vec![],
+            input_dependencies: vec![],
             requires: vec![],
+            completion_contract: CompletionContract::Land,
+            completion_disposition: None,
+            completion_receipt: None,
             tags: vec![],
             skills: vec![],
             inputs: vec![],
@@ -979,6 +1059,21 @@ impl Default for Task {
 }
 
 impl Task {
+    /// Receipt-backed successful result, with a narrow compatibility bridge
+    /// for historical `Done` source rows written before typed completion.
+    pub fn effective_completion_disposition(&self) -> Option<CompletionDisposition> {
+        self.completion_disposition.or_else(|| {
+            (self.status == Status::Done && self.completion_contract == CompletionContract::Land)
+                .then_some(CompletionDisposition::Landed)
+        })
+    }
+
+    pub fn input_dependency_from(&self, task_id: &str) -> bool {
+        self.input_dependencies
+            .iter()
+            .any(|edge| edge.task_id == task_id && edge.kind == "contribution")
+    }
+
     /// Bump `last_interaction_at` to now (UTC, RFC 3339).
     ///
     /// Called by `modify_graph` for every task whose persistent fields change
@@ -1866,7 +1961,15 @@ struct TaskHelper {
     #[serde(default, alias = "blocked_by")]
     after: Vec<String>,
     #[serde(default)]
+    input_dependencies: Vec<TaskInputDependency>,
+    #[serde(default)]
     requires: Vec<String>,
+    #[serde(default)]
+    completion_contract: CompletionContract,
+    #[serde(default)]
+    completion_disposition: Option<CompletionDisposition>,
+    #[serde(default)]
+    completion_receipt: Option<String>,
     #[serde(default)]
     tags: Vec<String>,
     #[serde(default)]
@@ -2065,7 +2168,11 @@ impl<'de> Deserialize<'de> for Task {
             estimate: helper.estimate,
             before: helper.before,
             after: helper.after,
+            input_dependencies: helper.input_dependencies,
             requires: helper.requires,
+            completion_contract: helper.completion_contract,
+            completion_disposition: helper.completion_disposition,
+            completion_receipt: helper.completion_receipt,
             tags: helper.tags,
             skills: helper.skills,
             inputs: helper.inputs,

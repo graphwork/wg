@@ -5,8 +5,9 @@ use std::collections::HashMap;
 use std::path::Path;
 use worksgood::config::{Config, DispatchRole};
 use worksgood::graph::{
-    CycleConfig, FailureClass, FailureSignal, LogEntry, LoopGuard, PRIORITY_DEFAULT, Priority,
-    Status, Task, TokenUsage, format_tokens, parse_token_usage_live,
+    CompletionContract, CompletionDisposition, CycleConfig, FailureClass, FailureSignal, LogEntry,
+    LoopGuard, PRIORITY_DEFAULT, Priority, Status, Task, TokenUsage, format_tokens,
+    parse_token_usage_live,
 };
 use worksgood::query::build_reverse_index;
 use worksgood::service::AgentRegistry;
@@ -42,6 +43,13 @@ struct TaskDetails {
     #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<String>,
     status: Status,
+    completion_contract: CompletionContract,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    completion_disposition: Option<CompletionDisposition>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    completion_receipt: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    finish_phase: Option<String>,
     /// Authoritative generation/attempt/fence projection plus accepted audit.
     lifecycle: worksgood::lifecycle::LifecycleProjection,
     /// Read-only candidate-content evidence for the exact current attempt.
@@ -804,6 +812,13 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         title: task.title.clone(),
         description: task.description.clone(),
         status: task.status,
+        completion_contract: task.completion_contract,
+        completion_disposition: task.completion_disposition,
+        completion_receipt: task.completion_receipt.clone(),
+        finish_phase: worksgood::finalization::FinalizationStore::open(dir)
+            .ok()
+            .and_then(|store| store.load_task(id).ok().flatten())
+            .map(|tx| format!("{:?}", tx.phase)),
         lifecycle: task.lifecycle.clone(),
         worktree_observer,
         activity_clocks,
@@ -902,6 +917,23 @@ fn print_human_readable(details: &TaskDetails) {
         println!("Status: {} (PAUSED)", details.status);
     } else {
         println!("Status: {}", details.status);
+    }
+    println!("Completion contract: {}", details.completion_contract);
+    if let Some(disposition) = details.completion_disposition {
+        println!(
+            "Completed disposition: {:?} receipt={}",
+            disposition,
+            details.completion_receipt.as_deref().unwrap_or("missing")
+        );
+    } else if let Some(phase) = details.finish_phase.as_deref() {
+        let visible = match phase {
+            "WaitingEvaluation" | "Evaluating" => "Finishing/WaitingEvaluation",
+            "Cleaned" => "Completed",
+            _ => "Finishing",
+        };
+        println!("Finish: {} ({})", visible, phase);
+    } else if details.status == Status::InProgress {
+        println!("Finish: Working");
     }
 
     if details.lifecycle.revision > 0 {
@@ -2205,6 +2237,10 @@ mod tests {
             title: "Test Task".to_string(),
             description: Some("Test description".to_string()),
             status: Status::InProgress,
+            completion_contract: CompletionContract::Land,
+            completion_disposition: None,
+            completion_receipt: None,
+            finish_phase: None,
             lifecycle: worksgood::lifecycle::LifecycleProjection::default(),
             worktree_observer: None,
             activity_clocks: None,

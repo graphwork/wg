@@ -2879,3 +2879,10 @@ script = "scenarios/worksgood_attended_pi_simple.sh"
 owners = ["simplify-attended-pi-setup"]
 description = "Candidate-binary credential-free real tmux/TUI human flow for the product boundary: fresh bare worksgood verifies Fake-Pi, ensures the compatible plugin, initializes a route-free/no-agency graph, opens New chat -> Pi with no model/provider/reasoning override, forwards exact keyboard input through the accepted PTY path, and writes no profile/model/reasoning/dispatcher/service state; Pi's exact warm model-picker write-back remains chat-scoped and still cannot create automation routing. Missing Pi emits one Pi-owned install/login action before any graph/plugin/automation write. Explicit setup --model still enters the exact fail-closed unattended automation planner with effective worker/evaluator reasoning."
 timeout_seconds = 240
+
+[[scenario]]
+name = "task_owned_finish_transaction"
+script = "scenarios/task_owned_finish_transaction.sh"
+owners = ["implement-task-owned-finish-transaction"]
+description = "Installed-binary credential-free finish protocol: two same-base land tasks serialize under the repository lease and both reach main with exact evaluation receipts; a real conflict remains in the same source attempt/worktree; two deliver children publish retained immutable refs without moving main, clean immediately, and a synthesis land task alone combines/promotes them. Every terminal disposition has a cleanup receipt and no worktree."
+timeout_seconds = 180

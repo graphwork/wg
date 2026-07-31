@@ -2494,7 +2494,16 @@ fn run_inner(
         false
     };
 
-    // --- Crash-safe candidate finalization transaction ---
+    // --- Task-owned finish transaction ---
+    // New worktree-backed source tasks retain their original owner through
+    // leased integration, exact-candidate evaluation, protected promotion and
+    // wrapper-owned cleanup. Graph-less/operator compatibility below remains
+    // only for historical transactions without a managed source worktree.
+    if detect_worktree(dir).is_some() && crate::commands::finalize::task_owned_done(dir, id)? {
+        return Ok(());
+    }
+
+    // --- Historical crash-safe candidate finalization compatibility ---
     // A worker push is neither required nor invoked. The wrapper/watchdog must
     // first prove the exact handler is quiescent; then WG snapshots dirty,
     // untracked and deleted source through a private Git index, validates that

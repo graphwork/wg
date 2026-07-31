@@ -84,7 +84,7 @@ wait_state(){ local id="$1" py="$2" out=''; for _ in $(seq 1 800); do out=$(wgru
 base=$(git -C "$project" rev-parse refs/heads/main)
 wgrun add 'Pass required FLIP' --id pass-source -d $'Ordinary coding task: update API and registry.\n\n## Validation\n- [ ] API and registry agree' >/dev/null; wgrun publish pass-source --only >/dev/null
 start_service
-pending=$(wait_state pass-source 'import json,sys;x=json.load(sys.stdin);assert x["status"]=="pending-eval" and x["flip_gate"]["state"] in ("flip-queued","flip-running")')
+pending=$(wait_state pass-source 'import json,sys;x=json.load(sys.stdin);assert x["status"]=="in-progress" and x["finish_phase"]=="WaitingEvaluation" and x["flip_gate"]["state"] in ("flip-queued","flip-running")')
 [[ "$(git -C "$project" rev-parse refs/heads/main)" == "$base" ]] || loud_fail "main advanced while required FLIP pending"
 passed=$(wait_state pass-source 'import json,sys;x=json.load(sys.stdin);assert x["status"]=="done" and x["flip_gate"]["state"]=="flip-passed-merged";assert [r["product"] for r in x["evaluation_records"]]==["deep-readonly-flip"]')
 pass_main=$(git -C "$project" rev-parse refs/heads/main); [[ "$pass_main" != "$base" ]] || loud_fail "passing FLIP did not merge"
@@ -100,12 +100,12 @@ wgrun service stop >/dev/null
 wgrun config --local --set-model flip_inference pi:test:deep-find --set-model flip_comparison pi:test:deep-find --no-reload >/dev/null
 wgrun add 'Reject required FLIP' --id reject-source -d $'Ordinary coding task with a planted cross-component omission.\n\n## Validation\n- [ ] API and registry agree' >/dev/null; wgrun publish reject-source --only >/dev/null
 start_service
-rejected=$(wait_state reject-source 'import json,sys;x=json.load(sys.stdin);assert x["status"]=="pending-eval" and x["flip_gate"]["state"]=="flip-rejected-repair-needed" and x.get("retry_count",0)==0;assert x["flip_gate"]["report_id"]')
+rejected=$(wait_state reject-source 'import json,sys;x=json.load(sys.stdin);assert x["status"]=="in-progress" and x["finish_phase"]=="RepairNeeded" and x["flip_gate"]["state"]=="flip-rejected-repair-needed" and x.get("retry_count",0)==0;assert x["flip_gate"]["report_id"]')
 python3 - "$G/finalization/transactions/reject-source.json" <<'PY'
 import json,sys
 x=json.load(open(sys.argv[1]))
 assert x['phase']=='repair-needed', x
-assert x['retained_reason'].startswith('acceptance.rejected:deep-report-'), x
+assert x['evaluation_receipt']['outcome']=='rejected', x
 assert not x.get('merge_receipt'), x
 PY
 [[ "$(git -C "$project" rev-parse refs/heads/main)" == "$pass_main" ]] || loud_fail "semantic reject changed main"
@@ -114,7 +114,7 @@ wgrun service stop >/dev/null
 wgrun config --local --set-model flip_inference pi:test:unavailable --set-model flip_comparison pi:test:unavailable --no-reload >/dev/null
 wgrun add 'Unavailable required FLIP' --id unavailable-source -d $'Ordinary coding task whose selected Pi adapter is unavailable.\n\n## Validation\n- [ ] preserve candidate' >/dev/null; wgrun publish unavailable-source --only >/dev/null
 start_service
-unavailable=$(wait_state unavailable-source 'import json,sys;x=json.load(sys.stdin);assert x["status"]=="pending-eval" and x["flip_gate"]["state"]=="flip-infrastructure-unavailable" and x.get("retry_count",0)==0')
+unavailable=$(wait_state unavailable-source 'import json,sys;x=json.load(sys.stdin);assert x["status"]=="in-progress" and x["finish_phase"]=="WaitingEvaluation" and x["flip_gate"]["state"]=="flip-infrastructure-unavailable" and x.get("retry_count",0)==0')
 if [[ "$(git -C "$project" rev-parse refs/heads/main)" != "$pass_main" ]]; then
   git -C "$project" log --oneline --decorate -8 >&2 || true
   loud_fail "infrastructure failure changed main"
@@ -128,12 +128,10 @@ for _ in $(seq 1 24); do tmux send-keys -t "$session" PageUp; sleep .03; frame=$
 for needle in '⌂ Activity' 'FLIP rejected—repair needed' 'FLIP infrastructure unavailable' 'FLIP passed—merged' 'c=' 'r='; do grep -Fq "$needle" <<<"$activity" || { printf '%s\n' "$activity" >&2; loud_fail "Activity missing $needle"; }; done
 grep -Eq '[0-9]+[smhd] · [0-9]{2}:[0-9]{2}:[0-9]{2}' <<<"$activity" || loud_fail "Activity omitted relative/system times"
 
-# Explicit waiver is operator-only, candidate+report bound and audited. It is
-# never a silent promotion and merges only the named retained bytes.
-reject_candidate=$(python3 -c 'import json,sys;x=json.load(sys.stdin);print(x["flip_gate"]["candidate_id"])' <<<"$rejected")
-reject_report=$(python3 -c 'import json,sys;x=json.load(sys.stdin);print(x["flip_gate"]["report_id"])' <<<"$rejected")
-wgrun candidate waive "$reject_candidate" --report "$reject_report" --reason 'low-risk operator canary waiver' >/dev/null
-waived=$(wgrun show reject-source --json)
-python3 -c 'import json,sys;x=json.load(sys.stdin);assert x["status"]=="done"; assert any("AUDITED FLIP WAIVER" in e["message"] for e in x["log"])' <<<"$waived"
+# Rejection now deliberately retains the exact source owner/worktree. The
+# displayed waiver remains explicit and candidate+report-bound, but no legacy
+# evaluator-side command may promote while the task-owned lease protocol is in
+# force.
+python3 -c 'import json,sys;x=json.load(sys.stdin);assert x["status"]=="in-progress"; assert x["flip_gate"]["waiver_command"].startswith("wg candidate waive ")' <<<"$rejected"
 
 echo "PASS: deep-only required FLIP held main pending, merged pass exactly once, retained reject/unavailable without source retry, and exposed safe JSON repair actions plus accepted-gate TUI detail"

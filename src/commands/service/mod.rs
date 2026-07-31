@@ -2827,6 +2827,7 @@ pub fn run_daemon(
     match worksgood::finalization::FinalizationStore::open(&dir).and_then(|store| {
         let transactions = store.list()?;
         let mut replayed = 0usize;
+        let registry = AgentRegistry::load(&dir).ok();
         for tx in transactions {
             if matches!(
                 tx.phase,
@@ -2835,6 +2836,21 @@ pub fn run_daemon(
                     | worksgood::finalization::FinalizationPhase::MergePending
             ) {
                 let _ = worksgood::finalization::reconcile(&store, &tx.task_id)?;
+                replayed += 1;
+            }
+            if matches!(
+                tx.phase,
+                worksgood::finalization::FinalizationPhase::Promoted
+                    | worksgood::finalization::FinalizationPhase::Delivered
+                    | worksgood::finalization::FinalizationPhase::Reported
+            ) && registry
+                .as_ref()
+                .and_then(|value| value.get_agent_by_task(&tx.task_id))
+                .is_none_or(|agent| !agent.is_live(worktree::HEARTBEAT_LIVENESS_TIMEOUT_SECS))
+            {
+                // Crash after durable disposition authorizes cleanup only.
+                // The source/evaluation path is never replayed here.
+                crate::commands::finalize::cleanup_finish(&dir, &store, &tx.task_id, false)?;
                 replayed += 1;
             }
         }

@@ -779,7 +779,10 @@ pub fn source_candidate_is_current(task: &Task, source: &SourceCandidateRef) -> 
                 attempt.id == source.source_attempt_id
                     && attempt.generation == source.generation
                     && attempt.fence == source.source_fence
-                    && attempt.disposition == Some(AttemptDisposition::Succeeded)
+                    && matches!(
+                        attempt.disposition,
+                        None | Some(AttemptDisposition::Succeeded)
+                    )
             })
 }
 
@@ -933,7 +936,18 @@ fn validate_creation_predicate(task: &Task, source: &SourceCandidateRef) -> Resu
     {
         bail!("lazy-evaluation.source-fence-mismatch");
     }
-    if !has_authenticated_running_attempt(task) {
+    let task_owned_finish_seal = task.lifecycle.audit.iter().any(|event| {
+        event.event_kind == "candidate-checkpointed"
+            && event.generation == source.generation
+            && event.attempt_id.as_deref() == Some(source.source_attempt_id.as_str())
+            && event.fence == source.source_fence
+            && event.actor_id == "task-owned-finish"
+            && event
+                .evidence_refs
+                .iter()
+                .any(|value| value == &source.candidate_digest)
+    });
+    if !has_authenticated_running_attempt(task) && !task_owned_finish_seal {
         bail!("lazy-evaluation.attempt-never-ran");
     }
     if source.candidate_digest.trim().is_empty()

@@ -27,7 +27,7 @@ chmod +x "$fakebin/pi"
 from pathlib import Path
 Path('incident/payload.txt').write_bytes(b'm'*6144)
 PY
-git add incident/payload.txt && git commit -qm base && HOME="$home" XDG_CONFIG_HOME="$home/.config" wg init --no-agency >/dev/null)
+git add incident/payload.txt && git commit -qm base && env -u WG_DIR -u WG_TASK_ID -u WG_AGENT_ID -u WG_PROJECT_ROOT -u WG_WORKTREE_PATH -u WG_BRANCH HOME="$home" XDG_CONFIG_HOME="$home/.config" wg init --no-agency >/dev/null)
 wgrun(){ (cd "$project" && env -u WG_AGENT_ID -u WG_TASK_ID WG_DIR="$project/.wg" HOME="$home" XDG_CONFIG_HOME="$home/.config" wg "$@"); }
 new_attempt(){
   local id=$1 wt="$scratch/$1-wt" branch="wg/finalizer/$1"
@@ -55,10 +55,13 @@ wgrun pi-watchdog fixture-observe incident --event done --now 302 >/dev/null
 wgrun pi-watchdog process-exit incident --exit-code 0 >/dev/null
 # Human terminal flow (through installed wg); no worker push exists or is needed.
 out=$(cd "$wt" && HOME="$home" XDG_CONFIG_HOME="$home/.config" WG_DIR="$project/.wg" WG_WORKTREE_PATH="$wt" WG_BRANCH="$branch" WG_PROJECT_ROOT="$project" WG_EXECUTOR_TYPE=pi WG_HANDLER_QUIESCENT=1 env -u WG_AGENT_ID -u WG_TASK_ID wg done incident --skip-smoke 2>&1)
-grep -q 'candidate=.*commit=.*tree=.*manifest=.*merge-receipt=.*no push required' <<<"$out" || loud_fail "binding receipt not visible: $out"
+grep -q '\[finish\] task-owned Promoted: candidate=wgcid:.* durable=wgcid:' <<<"$out" || loud_fail "task-owned binding receipt not visible: $out"
 [[ $(wc -c <"$project/incident/payload.txt") -eq 28672 ]] || loud_fail "6KB main substituted for 28KB candidate"
+# The normal wrapper performs this from outside cwd; this fixture models that
+# post-process half explicitly.
+wgrun finish cleanup incident >/dev/null
 status=$(wgrun finalize status incident)
-grep -q 'Finalization Merged' <<<"$status" || loud_fail "merged projection missing: $status"
+grep -q 'Finalization Cleaned' <<<"$status" || loud_fail "cleaned projection missing: $status"
 grep -q 'validation: .*binding=' <<<"$status" || loud_fail "validation binding missing: $status"
 cid=$(wgrun finalize status incident --json | python3 -c 'import json,sys;print(json.load(sys.stdin)["candidate"]["candidate_id"])')
 material="$scratch/materialized"; wgrun candidate materialize "$cid" --to "$material" >/dev/null
@@ -119,7 +122,7 @@ wrapper_wt=$(cat "$wrapper_sync/worktree")
 [[ $wrapper_wt == *'.wg-worktrees/'* ]] || loud_fail "wrapper lacked isolated worktree"
 [[ $(wc -c <"$project/incident/wrapper-payload.txt") -eq 28672 ]] || loud_fail "wrapper candidate not integrated"
 wstatus=$(wgrun finalize status wrapper-flow)
-grep -q 'Finalization Merged' <<<"$wstatus" || loud_fail "wrapper finalization receipt missing: $wstatus"
+grep -q 'Finalization Cleaned' <<<"$wstatus" || loud_fail "wrapper finalization cleanup receipt missing: $wstatus"
 wgrun service stop >/dev/null 2>&1 || true
 
 # Real daemon restart over durable object/ref/journal boundaries does not alter

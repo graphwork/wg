@@ -413,6 +413,9 @@ pub fn dependency_disposition(
             blocker_status: blocker.status,
         };
     }
+    let typed_input = graph
+        .get_task(dependent_id)
+        .is_some_and(|dependent| dependent.input_dependency_from(blocker_id));
     if !blocker.status.is_dep_satisfied() {
         let reason = if blocker.status == Status::Abandoned {
             format!("prerequisite {blocker_id} was abandoned")
@@ -420,6 +423,26 @@ pub fn dependency_disposition(
             format!("dependency status is {}", blocker.status)
         };
         return DependencyDisposition::Blocked { reason };
+    }
+    let disposition = blocker.effective_completion_disposition();
+    if typed_input {
+        if disposition != Some(crate::graph::CompletionDisposition::Delivered) {
+            return DependencyDisposition::Blocked {
+                reason: format!(
+                    "typed contribution input requires Completed(Delivered), observed {:?}",
+                    disposition
+                ),
+            };
+        }
+    } else if !dependent_id.starts_with('.')
+        && disposition != Some(crate::graph::CompletionDisposition::Landed)
+    {
+        return DependencyDisposition::Blocked {
+            reason: format!(
+                "ordinary after edge requires Completed(Landed), observed {:?}",
+                disposition
+            ),
+        };
     }
     if !dependent_id.starts_with('.') && is_eval_gate_pending(blocker_id, graph) {
         return DependencyDisposition::Blocked {
@@ -861,6 +884,36 @@ mod tests {
         let ready = ready_tasks(&graph);
         assert_eq!(ready.len(), 1);
         assert_eq!(ready[0].id, "blocked");
+    }
+
+    #[test]
+    fn delivered_success_satisfies_only_explicit_contribution_input_edges() {
+        let mut graph = WorkGraph::new();
+        let mut producer = make_task("producer", "Producer");
+        producer.status = Status::Done;
+        producer.completion_contract = crate::graph::CompletionContract::Deliver;
+        producer.completion_disposition = Some(crate::graph::CompletionDisposition::Delivered);
+
+        let mut ordinary = make_task("ordinary", "Ordinary");
+        ordinary.after = vec!["producer".into()];
+        let mut synthesis = make_task("synthesis", "Synthesis");
+        synthesis.after = vec!["producer".into()];
+        synthesis.input_dependencies = vec![crate::graph::TaskInputDependency {
+            task_id: "producer".into(),
+            kind: "contribution".into(),
+        }];
+        graph.add_node(Node::Task(producer));
+        graph.add_node(Node::Task(ordinary));
+        graph.add_node(Node::Task(synthesis));
+
+        assert!(matches!(
+            dependency_disposition("producer", "ordinary", &graph, None),
+            DependencyDisposition::Blocked { .. }
+        ));
+        assert_eq!(
+            dependency_disposition("producer", "synthesis", &graph, None),
+            DependencyDisposition::Satisfied
+        );
     }
 
     #[test]

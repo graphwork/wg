@@ -7,7 +7,7 @@
 //! requests to `LifecycleKernel` by command adapters.
 
 use anyhow::{Context, Result, bail};
-use chrono::Utc;
+use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -20,12 +20,20 @@ pub const SCHEMA_VERSION: u32 = 1;
 #[serde(rename_all = "kebab-case")]
 pub enum FinalizationPhase {
     NeedsFinalization,
+    WaitingFinishLease,
+    Integrating,
     RescueCheckpointed,
     CandidateCheckpointed,
     Validating,
     Evaluating,
+    WaitingEvaluation,
     MergePending,
     Merged,
+    Promoted,
+    Delivered,
+    Reported,
+    Cleaning,
+    Cleaned,
     RepairNeeded,
     FailedPreserved,
     OperatorHold,
@@ -197,6 +205,75 @@ pub struct MergeConflict {
     pub created_at: String,
 }
 
+/// The single repository-scoped right to prepare and advance the protected
+/// branch. The persisted tuple prevents a resumed/stale process, generation,
+/// attempt, or worktree from borrowing another task's authority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FinishLease {
+    pub schema_version: u32,
+    pub lease_id: String,
+    pub task_id: String,
+    pub generation: u64,
+    pub attempt_id: String,
+    pub attempt_fence: u64,
+    pub process_epoch: u32,
+    pub worktree_id: String,
+    pub worktree_lease_epoch: u64,
+    pub base_commit_oid: String,
+    pub base_tree_oid: String,
+    pub acquired_at: String,
+    pub expires_at: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum EvaluationReceiptOutcome {
+    Accepted,
+    Rejected,
+    InsufficientEvidence,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EvaluationReceipt {
+    pub receipt_id: String,
+    pub binding: CandidateBinding,
+    pub outcome: EvaluationReceiptOutcome,
+    pub evidence_id: String,
+    pub evaluator_identity: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum OutputDisposition {
+    Delivered,
+    Reported,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OutputReceipt {
+    pub receipt_id: String,
+    pub task_id: String,
+    pub disposition: OutputDisposition,
+    pub binding: CandidateBinding,
+    pub immutable_ref: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CleanupReceipt {
+    pub receipt_id: String,
+    pub task_id: String,
+    pub disposition: String,
+    pub durable_receipt_id: String,
+    pub worktree_id: String,
+    pub worktree_path: PathBuf,
+    pub branch: String,
+    pub removed: bool,
+    pub created_at: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FinalizationTransaction {
     pub schema_version: u32,
@@ -215,6 +292,14 @@ pub struct FinalizationTransaction {
     pub validation: Option<ValidationResult>,
     #[serde(default)]
     pub evaluation_request: Option<EvaluationRequest>,
+    #[serde(default)]
+    pub finish_lease_id: Option<String>,
+    #[serde(default)]
+    pub evaluation_receipt: Option<EvaluationReceipt>,
+    #[serde(default)]
+    pub output_receipt: Option<OutputReceipt>,
+    #[serde(default)]
+    pub cleanup_receipt: Option<CleanupReceipt>,
     pub merge_receipt: Option<MergeReceipt>,
     pub merge_conflict: Option<MergeConflict>,
     pub retained_reason: Option<String>,
@@ -231,7 +316,7 @@ pub struct FinalizationStore {
 impl FinalizationStore {
     pub fn open(wg_dir: &Path) -> Result<Self> {
         let root = wg_dir.join("finalization");
-        for child in ["objects", "transactions", "journal", "tmp"] {
+        for child in ["objects", "transactions", "journal", "tmp", "leases"] {
             fs::create_dir_all(root.join(child))?;
         }
         Ok(Self { root })
@@ -355,6 +440,446 @@ impl FinalizationStore {
     }
 }
 
+impl FinalizationStore {
+    fn finish_lease_path(&self) -> PathBuf {
+        self.root.join("leases").join("repository-finish.json")
+    }
+
+    pub fn load_finish_lease(&self) -> Result<Option<FinishLease>> {
+        let path = self.finish_lease_path();
+        if !path.exists() {
+            return Ok(None);
+        }
+        let lease: FinishLease = serde_json::from_slice(&fs::read(path)?)?;
+        Ok(Some(lease))
+    }
+}
+
+fn lease_is_expired(lease: &FinishLease, now: DateTime<Utc>) -> bool {
+    lease
+        .expires_at
+        .parse::<DateTime<Utc>>()
+        .map_or(true, |expires| expires <= now)
+}
+
+fn lease_matches_context(lease: &FinishLease, ctx: &FinalizationContext) -> bool {
+    lease.task_id == ctx.task_id
+        && lease.generation == ctx.generation
+        && lease.attempt_id == ctx.attempt_id
+        && lease.attempt_fence == ctx.attempt_fence
+        && lease.process_epoch == ctx.process_epoch
+        && lease.worktree_id == ctx.worktree_id
+        && lease.worktree_lease_epoch == ctx.worktree_lease_epoch
+}
+
+/// Acquire or idempotently renew the repository finish lease. The lease lock
+/// protects the lease file itself; its persisted expiry protects crash/restart.
+pub fn acquire_finish_lease(
+    store: &FinalizationStore,
+    ctx: &FinalizationContext,
+    ttl_seconds: i64,
+) -> Result<FinishLease> {
+    validate_context(ctx)?;
+    let _guard = FileLock::acquire(&store.root.join("leases").join("repository-finish.lock"))?;
+    let now = Utc::now();
+    if let Some(existing) = store.load_finish_lease()? {
+        if !lease_is_expired(&existing, now) && !lease_matches_context(&existing, ctx) {
+            bail!(
+                "finish.lease_busy: task={} generation={} attempt={} expires={}",
+                existing.task_id,
+                existing.generation,
+                existing.attempt_id,
+                existing.expires_at
+            );
+        }
+        if !lease_is_expired(&existing, now) && lease_matches_context(&existing, ctx) {
+            return Ok(existing);
+        }
+    }
+    let target = canonical_target_ref(&ctx.project_root)?;
+    let base = git_text(&ctx.project_root, &["rev-parse", target])?;
+    let tree = git_text(
+        &ctx.project_root,
+        &["rev-parse", &format!("{base}^{{tree}}")],
+    )?;
+    let acquired_at = now.to_rfc3339();
+    let expires_at = (now + Duration::seconds(ttl_seconds.max(1))).to_rfc3339();
+    let body = serde_json::json!({
+        "schema_version": SCHEMA_VERSION,
+        "task_id": ctx.task_id,
+        "generation": ctx.generation,
+        "attempt_id": ctx.attempt_id,
+        "attempt_fence": ctx.attempt_fence,
+        "process_epoch": ctx.process_epoch,
+        "worktree_id": ctx.worktree_id,
+        "worktree_lease_epoch": ctx.worktree_lease_epoch,
+        "base_commit_oid": base,
+        "base_tree_oid": tree,
+        "acquired_at": acquired_at,
+        "expires_at": expires_at,
+        "nonce": uuid::Uuid::now_v7().to_string(),
+    });
+    let lease = FinishLease {
+        schema_version: SCHEMA_VERSION,
+        lease_id: cid_value(&body)?,
+        task_id: ctx.task_id.clone(),
+        generation: ctx.generation,
+        attempt_id: ctx.attempt_id.clone(),
+        attempt_fence: ctx.attempt_fence,
+        process_epoch: ctx.process_epoch,
+        worktree_id: ctx.worktree_id.clone(),
+        worktree_lease_epoch: ctx.worktree_lease_epoch,
+        base_commit_oid: base,
+        base_tree_oid: tree,
+        acquired_at,
+        expires_at,
+    };
+    atomic_write(
+        &store.finish_lease_path(),
+        &serde_json::to_vec_pretty(&lease)?,
+    )?;
+    append_sync(
+        &store.root.join("journal").join("finish-lease.jsonl"),
+        &serde_json::to_vec(&serde_json::json!({"event":"acquired","lease":lease}))?,
+    )?;
+    Ok(lease)
+}
+
+pub fn release_finish_lease(store: &FinalizationStore, lease_id: &str) -> Result<()> {
+    let _guard = FileLock::acquire(&store.root.join("leases").join("repository-finish.lock"))?;
+    let Some(lease) = store.load_finish_lease()? else {
+        return Ok(());
+    };
+    if lease.lease_id != lease_id {
+        bail!("finish.lease_fenced: release token is not current");
+    }
+    let path = store.finish_lease_path();
+    if path.exists() {
+        fs::remove_file(path)?;
+    }
+    append_sync(
+        &store.root.join("journal").join("finish-lease.jsonl"),
+        &serde_json::to_vec(
+            &serde_json::json!({"event":"released","lease_id":lease_id,"at":Utc::now().to_rfc3339()}),
+        )?,
+    )
+}
+
+fn require_finish_lease(
+    store: &FinalizationStore,
+    ctx: &FinalizationContext,
+    lease_id: &str,
+) -> Result<FinishLease> {
+    let lease = store.load_finish_lease()?.context("finish.lease_missing")?;
+    if lease.lease_id != lease_id || !lease_matches_context(&lease, ctx) {
+        bail!("finish.lease_fenced: task/generation/attempt/process/worktree tuple differs");
+    }
+    if lease_is_expired(&lease, Utc::now()) {
+        bail!("finish.lease_expired: acquire a new lease in the same task session");
+    }
+    Ok(lease)
+}
+
+/// Bind a service verdict to the exact immutable candidate. Infrastructure and
+/// evidence insufficiency are first-class outcomes and can never be confused
+/// with semantic rejection.
+pub fn record_evaluation_receipt(
+    store: &FinalizationStore,
+    candidate_id: &str,
+    outcome: EvaluationReceiptOutcome,
+    evidence_id: &str,
+    evaluator_identity: &str,
+) -> Result<EvaluationReceipt> {
+    let candidate = store.read_candidate(candidate_id)?;
+    let body = serde_json::json!({
+        "binding": candidate.binding,
+        "outcome": outcome,
+        "evidence_id": evidence_id,
+        "evaluator_identity": evaluator_identity,
+    });
+    let receipt = EvaluationReceipt {
+        receipt_id: cid_value(&body)?,
+        binding: candidate.binding.clone(),
+        outcome,
+        evidence_id: evidence_id.into(),
+        evaluator_identity: evaluator_identity.into(),
+        created_at: Utc::now().to_rfc3339(),
+    };
+    store.put_named_object(&receipt.receipt_id, &receipt)?;
+    let mut tx = store
+        .load_task(&candidate.task_id)?
+        .context("finalization transaction missing")?;
+    if tx.candidate.as_ref().map(|value| &value.binding) != Some(&candidate.binding) {
+        bail!("candidate.binding_mismatch: evaluation names stale candidate");
+    }
+    tx.evaluation_receipt = Some(receipt.clone());
+    tx.phase = match outcome {
+        EvaluationReceiptOutcome::Accepted => FinalizationPhase::MergePending,
+        EvaluationReceiptOutcome::Rejected => FinalizationPhase::RepairNeeded,
+        EvaluationReceiptOutcome::InsufficientEvidence | EvaluationReceiptOutcome::Unavailable => {
+            FinalizationPhase::WaitingEvaluation
+        }
+    };
+    tx.retained_reason = match outcome {
+        EvaluationReceiptOutcome::Rejected => Some(format!("acceptance.rejected:{evidence_id}")),
+        EvaluationReceiptOutcome::InsufficientEvidence => {
+            Some(format!("evaluation.insufficient-evidence:{evidence_id}"))
+        }
+        EvaluationReceiptOutcome::Unavailable => {
+            Some(format!("evaluation.unavailable:{evidence_id}"))
+        }
+        EvaluationReceiptOutcome::Accepted => None,
+    };
+    tx.updated_at = Utc::now().to_rfc3339();
+    store.save(&tx)?;
+    Ok(receipt)
+}
+
+/// Promote the exact evaluated commit. Unlike the historical merge helper this
+/// operation creates no new tree or commit: the candidate itself is the result.
+pub fn promote_task_owned_candidate(
+    store: &FinalizationStore,
+    ctx: &FinalizationContext,
+    lease_id: &str,
+    candidate_id: &str,
+) -> Result<FinalizationTransaction> {
+    let lease = require_finish_lease(store, ctx, lease_id)?;
+    let candidate = store.read_candidate(candidate_id)?;
+    let mut tx = store
+        .load_task(&candidate.task_id)?
+        .context("finalization transaction missing")?;
+    if candidate.task_id != ctx.task_id
+        || candidate.generation != ctx.generation
+        || candidate.attempt_id != ctx.attempt_id
+        || candidate.attempt_fence != ctx.attempt_fence
+        || candidate.process_epoch != ctx.process_epoch
+        || candidate.worktree_id != ctx.worktree_id
+        || candidate.worktree_lease_epoch != ctx.worktree_lease_epoch
+        || candidate.base_commit_oid != lease.base_commit_oid
+    {
+        bail!("finish.candidate_fenced: candidate is not owned by current lease tuple");
+    }
+    let validation = tx
+        .validation
+        .as_ref()
+        .context("finish.validation_receipt_missing")?;
+    if !validation.passed || validation.binding != candidate.binding {
+        bail!("finish.validation_binding_mismatch");
+    }
+    let evaluation = tx
+        .evaluation_receipt
+        .as_ref()
+        .context("finish.evaluation_receipt_missing")?;
+    if evaluation.binding != candidate.binding
+        || evaluation.outcome != EvaluationReceiptOutcome::Accepted
+    {
+        bail!("finish.evaluation_not_accepted: exact candidate lacks accepted required evidence");
+    }
+    verify_candidate_at(store, &ctx.project_root, &candidate)?;
+    let ancestor = git_output(
+        &ctx.project_root,
+        &[
+            "merge-base",
+            "--is-ancestor",
+            &lease.base_commit_oid,
+            &candidate.candidate_commit_oid,
+        ],
+    )?;
+    if !ancestor.status.success() {
+        bail!("finish.integration_missing: leased main is not an ancestor of candidate");
+    }
+    if let Some(receipt) = tx.merge_receipt.as_ref() {
+        if receipt.binding == candidate.binding
+            && receipt.integration_commit_oid == candidate.candidate_commit_oid
+        {
+            return Ok(tx);
+        }
+    }
+    let target_ref = canonical_target_ref(&ctx.project_root)?;
+    let result_ref = format!(
+        "refs/wg/finish-results/{}",
+        cid_suffix(&cid_bytes(
+            format!("{}:{}", lease.lease_id, candidate.candidate_id).as_bytes()
+        ))
+    );
+    publish_ref(
+        &ctx.project_root,
+        &result_ref,
+        &candidate.candidate_commit_oid,
+    )?;
+    let _authority = FileLock::acquire(&ctx.project_root.join(".wg/merge-authority.lock"))?;
+    let current_lease = require_finish_lease(store, ctx, lease_id)?;
+    if current_lease.base_commit_oid != lease.base_commit_oid {
+        bail!("finish.lease_fenced: base changed");
+    }
+    let observed = git_text(&ctx.project_root, &["rev-parse", target_ref])?;
+    if observed != lease.base_commit_oid {
+        tx.phase = FinalizationPhase::Integrating;
+        tx.retained_reason = Some("finish.external_target_moved".into());
+        tx.replay_action = None;
+        tx.safe_next_command = format!("wg finish begin {}", candidate.task_id);
+        tx.updated_at = Utc::now().to_rfc3339();
+        store.save(&tx)?;
+        bail!(
+            "finish.external_target_moved: expected {} observed {}; synchronize in the same worktree/session",
+            lease.base_commit_oid,
+            observed
+        );
+    }
+    let update = git_output(
+        &ctx.project_root,
+        &[
+            "update-ref",
+            target_ref,
+            &candidate.candidate_commit_oid,
+            &lease.base_commit_oid,
+        ],
+    )?;
+    if !update.status.success() {
+        bail!("finish.external_target_moved: {}", stderr(&update));
+    }
+    if ctx.project_root.join(".git").exists() {
+        let reset = git_output(
+            &ctx.project_root,
+            &["reset", "--hard", &candidate.candidate_commit_oid],
+        )?;
+        if !reset.status.success() {
+            bail!(
+                "cleanup.failed_preserved: promotion succeeded: {}",
+                stderr(&reset)
+            );
+        }
+    }
+    let action_id = format!("finish:{}:{}", lease.lease_id, candidate.candidate_id);
+    let body = serde_json::json!({
+        "action": action_id,
+        "binding": candidate.binding,
+        "base": lease.base_commit_oid,
+        "integration": candidate.candidate_commit_oid,
+        "target": target_ref,
+        "evaluation": evaluation.receipt_id,
+        "validation": validation.result_id,
+    });
+    let receipt = MergeReceipt {
+        receipt_id: cid_value(&body)?,
+        action_id,
+        binding: candidate.binding.clone(),
+        base_commit_oid: lease.base_commit_oid.clone(),
+        expected_target_commit_oid: lease.base_commit_oid.clone(),
+        expected_target_tree_oid: lease.base_tree_oid.clone(),
+        integration_commit_oid: candidate.candidate_commit_oid.clone(),
+        result_tree_oid: candidate.candidate_tree_oid.clone(),
+        result_manifest_cid: candidate.content_manifest_cid.clone(),
+        candidate_projection_digest: candidate.delta_manifest_cid.clone(),
+        target_ref: target_ref.into(),
+        ref_cas: true,
+        created_at: Utc::now().to_rfc3339(),
+    };
+    store.put_named_object(&receipt.receipt_id, &receipt)?;
+    tx.phase = FinalizationPhase::Promoted;
+    tx.finish_lease_id = Some(lease.lease_id);
+    tx.merge_receipt = Some(receipt);
+    tx.merge_conflict = None;
+    tx.retained_reason = None;
+    tx.replay_action = None;
+    tx.safe_next_command = format!("wg finish cleanup {}", candidate.task_id);
+    tx.updated_at = Utc::now().to_rfc3339();
+    store.save(&tx)?;
+    Ok(tx)
+}
+
+pub fn publish_output(
+    store: &FinalizationStore,
+    task_id: &str,
+    disposition: OutputDisposition,
+) -> Result<FinalizationTransaction> {
+    let mut tx = store
+        .load_task(task_id)?
+        .context("finalization transaction missing")?;
+    let candidate = tx.candidate.as_ref().context("candidate missing")?;
+    let immutable_ref = match disposition {
+        OutputDisposition::Delivered => format!(
+            "refs/wg/contributions/{}/v{}",
+            safe_name(task_id),
+            candidate.candidate_version
+        ),
+        OutputDisposition::Reported => format!(
+            "refs/wg/reports/{}/v{}",
+            safe_name(task_id),
+            candidate.candidate_version
+        ),
+    };
+    publish_ref(
+        &tx.project_root,
+        &immutable_ref,
+        &candidate.candidate_commit_oid,
+    )?;
+    let body = serde_json::json!({"task":task_id,"disposition":disposition,"binding":candidate.binding,"ref":immutable_ref});
+    let receipt = OutputReceipt {
+        receipt_id: cid_value(&body)?,
+        task_id: task_id.into(),
+        disposition,
+        binding: candidate.binding.clone(),
+        immutable_ref,
+        created_at: Utc::now().to_rfc3339(),
+    };
+    store.put_named_object(&receipt.receipt_id, &receipt)?;
+    tx.phase = match disposition {
+        OutputDisposition::Delivered => FinalizationPhase::Delivered,
+        OutputDisposition::Reported => FinalizationPhase::Reported,
+    };
+    tx.output_receipt = Some(receipt);
+    tx.safe_next_command = format!("wg finish cleanup {task_id}");
+    tx.updated_at = Utc::now().to_rfc3339();
+    store.save(&tx)?;
+    Ok(tx)
+}
+
+pub fn record_cleanup(
+    store: &FinalizationStore,
+    task_id: &str,
+    disposition: &str,
+    durable_receipt_id: &str,
+    worktree_id: &str,
+    worktree_path: &Path,
+    branch: &str,
+) -> Result<CleanupReceipt> {
+    let body = serde_json::json!({"task":task_id,"disposition":disposition,"durable":durable_receipt_id,"worktree":worktree_id,"path":worktree_path,"branch":branch,"removed":true});
+    let receipt = CleanupReceipt {
+        receipt_id: cid_value(&body)?,
+        task_id: task_id.into(),
+        disposition: disposition.into(),
+        durable_receipt_id: durable_receipt_id.into(),
+        worktree_id: worktree_id.into(),
+        worktree_path: worktree_path.into(),
+        branch: branch.into(),
+        removed: true,
+        created_at: Utc::now().to_rfc3339(),
+    };
+    store.put_named_object(&receipt.receipt_id, &receipt)?;
+    let mut tx = store
+        .load_task(task_id)?
+        .context("finalization transaction missing")?;
+    tx.phase = FinalizationPhase::Cleaned;
+    tx.cleanup_receipt = Some(receipt.clone());
+    tx.safe_next_command = format!("wg show {task_id}");
+    tx.updated_at = Utc::now().to_rfc3339();
+    store.save(&tx)?;
+    Ok(receipt)
+}
+
+fn canonical_target_ref(root: &Path) -> Result<&'static str> {
+    for target in ["refs/heads/main", "refs/heads/master"] {
+        if git_output(root, &["rev-parse", "--verify", target])?
+            .status
+            .success()
+        {
+            return Ok(target);
+        }
+    }
+    bail!("finish.target_missing: main/master not found")
+}
+
 pub fn checkpoint_candidate(
     store: &FinalizationStore,
     ctx: &FinalizationContext,
@@ -377,6 +902,7 @@ pub fn checkpoint_rescue(
             && existing.terminal_reservation_id == ctx.terminal_reservation_id
             && existing.rescue.is_some()
             && (!promote || existing.candidate.is_some())
+            && existing.phase != FinalizationPhase::RepairNeeded
         {
             return Ok(existing);
         }
@@ -399,6 +925,17 @@ pub fn checkpoint_rescue(
     let head = git_text(&ctx.worktree_path, &["rev-parse", "HEAD"])?;
     let base = canonical_main_base(&ctx.project_root, &head)?;
     let (tree, commit) = snapshot_tree(store, ctx, &head)?;
+    if let Some(lease) = store.load_finish_lease()?
+        && lease_matches_context(&lease, ctx)
+        && !lease_is_expired(&lease, Utc::now())
+        && base != lease.base_commit_oid
+    {
+        bail!(
+            "finish.integration_missing: candidate base {} does not equal leased main {}; merge the exact begin base in this worktree",
+            base,
+            lease.base_commit_oid
+        );
+    }
     let manifest = manifest_for_tree(&ctx.project_root, &tree)?;
     let manifest_cid = store.put_object(&manifest)?;
     let delta = delta_manifest(&ctx.project_root, &base, &commit)?;
@@ -459,6 +996,15 @@ pub fn checkpoint_rescue(
         candidate: None,
         validation: None,
         evaluation_request: None,
+        finish_lease_id: store
+            .load_finish_lease()?
+            .filter(|lease| {
+                lease_matches_context(lease, ctx) && !lease_is_expired(lease, Utc::now())
+            })
+            .map(|lease| lease.lease_id),
+        evaluation_receipt: None,
+        output_receipt: None,
+        cleanup_receipt: None,
         merge_receipt: None,
         merge_conflict: None,
         retained_reason: None,
@@ -560,10 +1106,11 @@ pub fn checkpoint_rescue(
         read_only_materialization: true,
         created_at: Utc::now().to_rfc3339(),
     });
-    let required_flip_before_merge =
-        ctx.evaluation_policy == "required-deep-readonly-flip-before-merge";
+    let required_flip_before_merge = ctx.evaluation_policy
+        == "required-deep-readonly-flip-before-merge"
+        || ctx.evaluation_policy.starts_with("required-task-owned-");
     tx.phase = if required_flip_before_merge {
-        FinalizationPhase::Evaluating
+        FinalizationPhase::WaitingEvaluation
     } else {
         FinalizationPhase::CandidateCheckpointed
     };
@@ -619,6 +1166,7 @@ pub fn retain_rejected_candidate(
     if !matches!(
         tx.phase,
         FinalizationPhase::Evaluating
+            | FinalizationPhase::WaitingEvaluation
             | FinalizationPhase::CandidateCheckpointed
             | FinalizationPhase::RepairNeeded
     ) {
@@ -649,6 +1197,16 @@ pub fn merge_candidate(
         }
     }
     let project = tx.project_root.clone();
+    if let Some(lease) = store.load_finish_lease()?
+        && !lease_is_expired(&lease, Utc::now())
+    {
+        bail!(
+            "finish.lease_busy: protected main is owned by task {} generation {} attempt {}",
+            lease.task_id,
+            lease.generation,
+            lease.attempt_id
+        );
+    }
     // Merge is a downstream acceptance effect. Re-check the live graph here,
     // after candidate production and immediately before any target mutation,
     // so an abandoned/missing prerequisite that appeared during a live attempt
@@ -924,6 +1482,17 @@ pub fn accept_resolution_tree(
     manifest_cid: &str,
 ) -> Result<ResolutionAuthorityReceipt> {
     let target_ref = "refs/heads/main";
+    let finish_store = FinalizationStore::open(&project.join(".wg"))?;
+    if let Some(lease) = finish_store.load_finish_lease()?
+        && !lease_is_expired(&lease, Utc::now())
+    {
+        bail!(
+            "finish.lease_busy: protected main is owned by task {} generation {} attempt {}",
+            lease.task_id,
+            lease.generation,
+            lease.attempt_id
+        );
+    }
     let key = cid_bytes(
         format!(
             "wg-resolution-merge-receipt-v1\0{request_id}\0{descriptor_id}\0{target_ref}\0{expected_target_commit}\0{expected_target_tree}"
@@ -1026,7 +1595,7 @@ pub fn reconcile(store: &FinalizationStore, task: &str) -> Result<Option<Finaliz
         let c = tx.candidate.clone().context("candidate missing")?;
         tx.validation = Some(validate_candidate(store, &tx.project_root, &c)?);
         if c.evaluation_policy == "required-deep-readonly-flip-before-merge" {
-            tx.phase = FinalizationPhase::Evaluating;
+            tx.phase = FinalizationPhase::WaitingEvaluation;
             tx.replay_action = None;
             tx.safe_next_command = format!("wg evaluate run {} --flip", c.task_id);
         } else {
@@ -1043,6 +1612,11 @@ pub fn reconcile(store: &FinalizationStore, task: &str) -> Result<Option<Finaliz
         tx.phase,
         FinalizationPhase::CandidateCheckpointed | FinalizationPhase::MergePending
     ) {
+        if tx.finish_lease_id.is_some() {
+            // Promotion is source-agent authority. Restart may replay evidence
+            // preparation, but never perform the protected write on its behalf.
+            return Ok(Some(tx));
+        }
         let c = tx.candidate.clone().context("candidate missing")?;
         return merge_candidate(store, &c).map(Some);
     }

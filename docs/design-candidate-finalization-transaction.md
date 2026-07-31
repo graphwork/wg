@@ -1,6 +1,9 @@
 # Candidate finalization transaction
 
-**Status:** Implementation-ready refinement
+**Status:** Superseded for new successful task work by
+[Task-owned finish transaction](design-task-owned-finish-transaction.md).
+The immutable candidate, rescue, and legacy reconciliation formats below remain
+compatibility/storage substrate.
 
 **Date:** 2026-07-26
 

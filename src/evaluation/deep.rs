@@ -426,7 +426,10 @@ fn consume_required_pass(dir: &Path, task_id: &str, evaluation_id: &str) -> Resu
         let Some(task) = graph.get_task_mut(task_id) else {
             return false;
         };
-        if !matches!(task.status, Status::PendingEval | Status::FailedPendingEval) {
+        if !matches!(
+            task.status,
+            Status::InProgress | Status::PendingEval | Status::FailedPendingEval
+        ) {
             return false;
         }
         let Some(index) = task
@@ -451,6 +454,13 @@ fn consume_required_pass(dir: &Path, task_id: &str, evaluation_id: &str) -> Resu
 
         let merge = (|| -> Result<crate::finalization::FinalizationTransaction> {
             let store = FinalizationStore::open(dir)?;
+            let evaluation_receipt = crate::finalization::record_evaluation_receipt(
+                &store,
+                &snapshot.source.candidate_digest,
+                crate::finalization::EvaluationReceiptOutcome::Accepted,
+                &report.report_id,
+                "deep-readonly-flip-lane",
+            )?;
             let candidate = store.read_candidate(&snapshot.source.candidate_digest)?;
             if candidate.task_id != snapshot.source.task_id
                 || candidate.generation != snapshot.source.generation
@@ -462,6 +472,18 @@ fn consume_required_pass(dir: &Path, task_id: &str, evaluation_id: &str) -> Resu
                 bail!("required FLIP candidate/source binding mismatch");
             }
             store.verify_candidate(&candidate)?;
+            let transaction = store
+                .load_task(task_id)?
+                .context("finalization transaction missing")?;
+            if transaction.finish_lease_id.is_some() {
+                // Task-owned finish: the source agent is blocked in `wg finish
+                // submit` and alone may invoke protected promotion. The lane
+                // publishes evidence only; it never becomes a merge owner.
+                let _ = evaluation_receipt;
+                return Ok(transaction);
+            }
+            // Compatibility for transactions checkpointed before task-owned
+            // finish activation. New transactions always carry a finish lease.
             crate::finalization::merge_candidate(&store, &candidate)
         })();
         let transaction = match merge {
@@ -478,6 +500,41 @@ fn consume_required_pass(dir: &Path, task_id: &str, evaluation_id: &str) -> Resu
                 return true;
             }
         };
+        if transaction.finish_lease_id.is_some() {
+            let report_id = report.report_id.clone();
+            task.evaluation_records[index].diagnostic = Some(
+                "Required deep FLIP accepted exact candidate; waiting for the original task agent to promote and clean up"
+                    .into(),
+            );
+            if let Some(lifecycle) = task.evaluation_lifecycle.as_mut() {
+                lifecycle.linked_flip_verdict = Some(report_id.clone());
+                lifecycle.consumed_verdict = Some(report_id.clone());
+                lifecycle.execution_state =
+                    crate::eval_lifecycle::EvaluationExecutionState::Consumed;
+                lifecycle.outcome_provenance = Some(
+                    crate::eval_lifecycle::EvaluationOutcomeProvenance {
+                        outcome: crate::eval_lifecycle::EvaluationGateOutcome::Passed,
+                        evaluator_verdict: None,
+                        flip_verdict: Some(report_id.clone()),
+                        summary: format!(
+                            "required deep-readonly FLIP accepted exact candidate {}; source agent owns promotion",
+                            snapshot.source.candidate_digest
+                        ),
+                    },
+                );
+            }
+            task.log.push(LogEntry {
+                timestamp: Utc::now().to_rfc3339(),
+                actor: Some("deep-readonly-flip-lane".into()),
+                user: None,
+                message: format!(
+                    "FLIP accepted exact candidate {} with report {}; original source owner retained for promotion",
+                    snapshot.source.candidate_digest, report_id
+                ),
+            });
+            accepted = true;
+            return true;
+        }
         if let Some(conflict) = transaction.merge_conflict.as_ref() {
             let diagnostic = format!(
                 "FLIP passed but exact candidate merge needs repair ({}). Candidate={}; repair: `{}`",
@@ -1798,24 +1855,25 @@ fn finalize_success(
             && report.score >= snapshot.policy.threshold.unwrap_or(1.0);
         if snapshot.policy.applicability == EvaluationGateApplicability::Required
             && current_source
-            && matches!(task.status, Status::PendingEval | Status::FailedPendingEval)
             && !required_pass
         {
-            let request = TransitionRequest::new(
-                TransitionKind::AcceptanceRejected {
-                    evidence_ref: report_id.clone(),
-                },
-                LifecycleActor {
-                    kind: ActorKind::AcceptanceController,
-                    id: "deep-readonly-flip-lane".into(),
-                },
-                "deep_flip_rejected_repair_needed",
-                format!("deep-flip-reject:{task_id}:{report_id}"),
-            )
-            .with_evidence(report_id.clone());
-            if let Err(error) = apply_transition(task, request) {
-                conflict = Some(format!("deep rejection transition refused: {error}"));
-                return false;
+            if matches!(task.status, Status::PendingEval | Status::FailedPendingEval) {
+                let request = TransitionRequest::new(
+                    TransitionKind::AcceptanceRejected {
+                        evidence_ref: report_id.clone(),
+                    },
+                    LifecycleActor {
+                        kind: ActorKind::AcceptanceController,
+                        id: "deep-readonly-flip-lane".into(),
+                    },
+                    "deep_flip_rejected_repair_needed",
+                    format!("deep-flip-reject:{task_id}:{report_id}"),
+                )
+                .with_evidence(report_id.clone());
+                if let Err(error) = apply_transition(task, request) {
+                    conflict = Some(format!("deep rejection transition refused: {error}"));
+                    return false;
+                }
             }
             rejection_committed = true;
         }
@@ -1885,10 +1943,12 @@ fn finalize_success(
     if rejection_committed {
         let result = (|| -> Result<()> {
             let store = FinalizationStore::open(dir)?;
-            crate::finalization::retain_rejected_candidate(
+            crate::finalization::record_evaluation_receipt(
                 &store,
                 &snapshot.source.candidate_digest,
+                crate::finalization::EvaluationReceiptOutcome::Rejected,
                 &report_id,
+                "deep-readonly-flip-lane",
             )?;
             Ok(())
         })();

@@ -3,8 +3,9 @@ use std::process::Command;
 
 use tempfile::tempdir;
 use worksgood::finalization::{
-    CandidateBinding, FinalizationContext, FinalizationPhase, FinalizationStore, QuiescenceProof,
-    checkpoint_candidate, merge_candidate,
+    CandidateBinding, EvaluationReceiptOutcome, FinalizationContext, FinalizationPhase,
+    FinalizationStore, QuiescenceProof, acquire_finish_lease, checkpoint_candidate,
+    merge_candidate, promote_task_owned_candidate, record_evaluation_receipt, release_finish_lease,
 };
 
 fn git(root: &std::path::Path, args: &[&str]) -> String {
@@ -163,13 +164,13 @@ fn required_deep_flip_holds_candidate_across_reconcile_until_acceptance() {
     let mut ctx = context(&f);
     ctx.evaluation_policy = "required-deep-readonly-flip-before-merge".into();
     let tx = checkpoint_candidate(&store, &ctx).unwrap();
-    assert_eq!(tx.phase, FinalizationPhase::Evaluating);
+    assert_eq!(tx.phase, FinalizationPhase::WaitingEvaluation);
     assert!(tx.replay_action.is_none());
     assert!(tx.merge_receipt.is_none());
     let replay = worksgood::finalization::reconcile(&store, "incident")
         .unwrap()
         .unwrap();
-    assert_eq!(replay.phase, FinalizationPhase::Evaluating);
+    assert_eq!(replay.phase, FinalizationPhase::WaitingEvaluation);
     assert!(replay.merge_receipt.is_none());
     let rejected = worksgood::finalization::retain_rejected_candidate(
         &store,
@@ -319,6 +320,122 @@ fn restart_after_target_cas_reconstructs_one_receipt_and_repair_is_v2() {
             .candidate_version,
         1
     );
+}
+
+#[test]
+fn task_owned_finish_lease_fences_owner_and_promotes_exact_accepted_commit() {
+    let f = fixture();
+    let store = FinalizationStore::open(&f.wg).unwrap();
+    let ctx = context(&f);
+    let lease = acquire_finish_lease(&store, &ctx, 60).unwrap();
+    assert_eq!(lease.base_commit_oid, git(&f.root, &["rev-parse", "main"]));
+
+    let mut other = ctx.clone();
+    other.task_id = "other".into();
+    other.attempt_id = "attempt-other".into();
+    let busy = acquire_finish_lease(&store, &other, 60)
+        .unwrap_err()
+        .to_string();
+    assert!(busy.contains("finish.lease_busy"));
+
+    fs::write(f.wt.join("incident/payload.txt"), vec![b'f'; 12_345]).unwrap();
+    let tx = checkpoint_candidate(&store, &ctx).unwrap();
+    let candidate = tx.candidate.as_ref().unwrap();
+    let accepted = record_evaluation_receipt(
+        &store,
+        &candidate.candidate_id,
+        EvaluationReceiptOutcome::Accepted,
+        "deep-report-accepted",
+        "test-readonly-evaluator",
+    )
+    .unwrap();
+    assert_eq!(accepted.binding, candidate.binding);
+    let promoted =
+        promote_task_owned_candidate(&store, &ctx, &lease.lease_id, &candidate.candidate_id)
+            .unwrap();
+    assert_eq!(promoted.phase, FinalizationPhase::Promoted);
+    assert_eq!(
+        git(&f.root, &["rev-parse", "main"]),
+        candidate.candidate_commit_oid
+    );
+    assert_eq!(
+        promoted
+            .merge_receipt
+            .as_ref()
+            .unwrap()
+            .integration_commit_oid,
+        candidate.candidate_commit_oid,
+        "promotion must introduce no post-evaluation commit"
+    );
+    let replay =
+        promote_task_owned_candidate(&store, &ctx, &lease.lease_id, &candidate.candidate_id)
+            .unwrap();
+    assert_eq!(replay.merge_receipt, promoted.merge_receipt);
+    release_finish_lease(&store, &lease.lease_id).unwrap();
+}
+
+#[test]
+fn expired_finish_lease_is_reclaimable_but_stale_process_token_is_fenced() {
+    let f = fixture();
+    let store = FinalizationStore::open(&f.wg).unwrap();
+    let ctx = context(&f);
+    let stale = acquire_finish_lease(&store, &ctx, 1).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let mut resumed = ctx.clone();
+    resumed.process_epoch += 1;
+    let fresh = acquire_finish_lease(&store, &resumed, 60).unwrap();
+    assert_ne!(fresh.lease_id, stale.lease_id);
+    fs::write(f.wt.join("resumed.txt"), b"same task, fresh process epoch").unwrap();
+    let tx = checkpoint_candidate(&store, &resumed).unwrap();
+    let candidate = tx.candidate.as_ref().unwrap();
+    record_evaluation_receipt(
+        &store,
+        &candidate.candidate_id,
+        EvaluationReceiptOutcome::Accepted,
+        "accepted-after-resume",
+        "test-readonly-evaluator",
+    )
+    .unwrap();
+    let error =
+        promote_task_owned_candidate(&store, &ctx, &stale.lease_id, &candidate.candidate_id)
+            .unwrap_err()
+            .to_string();
+    assert!(error.contains("finish.lease_fenced"));
+    promote_task_owned_candidate(&store, &resumed, &fresh.lease_id, &candidate.candidate_id)
+        .unwrap();
+}
+
+#[test]
+fn rejection_and_infrastructure_are_candidate_bound_and_leave_main_unchanged() {
+    for outcome in [
+        EvaluationReceiptOutcome::Rejected,
+        EvaluationReceiptOutcome::InsufficientEvidence,
+        EvaluationReceiptOutcome::Unavailable,
+    ] {
+        let f = fixture();
+        let base = git(&f.root, &["rev-parse", "main"]);
+        let store = FinalizationStore::open(&f.wg).unwrap();
+        let ctx = context(&f);
+        let lease = acquire_finish_lease(&store, &ctx, 60).unwrap();
+        fs::write(f.wt.join("result.txt"), format!("{outcome:?}")).unwrap();
+        let tx = checkpoint_candidate(&store, &ctx).unwrap();
+        let candidate = tx.candidate.as_ref().unwrap();
+        let receipt = record_evaluation_receipt(
+            &store,
+            &candidate.candidate_id,
+            outcome,
+            "evaluation-evidence",
+            "test-readonly-evaluator",
+        )
+        .unwrap();
+        assert_eq!(receipt.binding, candidate.binding);
+        assert_eq!(git(&f.root, &["rev-parse", "main"]), base);
+        let error =
+            promote_task_owned_candidate(&store, &ctx, &lease.lease_id, &candidate.candidate_id)
+                .unwrap_err()
+                .to_string();
+        assert!(error.contains("finish.evaluation_not_accepted"));
+    }
 }
 
 #[test]

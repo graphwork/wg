@@ -554,7 +554,8 @@ pub enum Commands {
         skip_smoke: bool,
     },
 
-    /// Inspect and reconcile crash-safe candidate finalization transactions
+    /// Task-owned finish transaction (legacy spelling: `finalize`)
+    #[command(alias = "finish")]
     Finalize {
         #[command(subcommand)]
         command: FinalizeCommands,
@@ -2937,6 +2938,32 @@ pub enum Commands {
 
 #[derive(Subcommand)]
 pub enum FinalizeCommands {
+    /// Acquire the repository finish lease and return the exact current-main base
+    Begin {
+        id: String,
+        #[arg(long, default_value = "1800")]
+        ttl_seconds: i64,
+    },
+    /// Seal, evaluate and atomically promote/publish the task-owned result
+    Submit {
+        id: String,
+        #[arg(long)]
+        lease: Option<String>,
+        #[arg(long)]
+        commit: Option<String>,
+        #[arg(long, default_value = "1800")]
+        wait_seconds: u64,
+    },
+    /// Remove the owned worktree/branch, write cleanup receipt, then expose Done
+    Cleanup { id: String },
+    /// Set the explicit land/deliver/report contract
+    Contract { id: String, contract: String },
+    /// Add an explicitly typed immutable contribution input edge
+    Input {
+        id: String,
+        #[arg(long = "from")]
+        from_task: String,
+    },
     /// Show source/fence/lease, rescue, candidate, gate, merge and replay bindings
     Status { id: String },
     /// Create a rescue/candidate from a proven-quiescent leased worktree

@@ -1099,11 +1099,11 @@ args = ["-lc", "true"]
         let wrapper_path = agent_output_dir(&workgraph_dir, "agent-1").join("run.sh");
         let script = fs::read_to_string(&wrapper_path).unwrap();
 
-        // Worktree cleanup section is present and gated by env var check
-        // (merge-back is now handled by `wg done`, not the wrapper)
+        // Transactional cleanup is present and gated by the managed-worktree
+        // environment after promotion/output durability.
         assert!(
-            script.contains("# --- Worktree Cleanup (merge-back is handled by wg done) ---"),
-            "Wrapper should contain worktree cleanup section header"
+            script.contains("# --- Task-owned transactional cleanup ---"),
+            "Wrapper should contain task-owned cleanup section header"
         );
         assert!(
             script.contains(r#"if [ -n "$WG_WORKTREE_PATH" ] && [ -n "$WG_BRANCH" ] && [ -n "$WG_PROJECT_ROOT" ]"#),
@@ -1177,8 +1177,8 @@ args = ["-lc", "true"]
 
     #[test]
     fn test_wrapper_writes_cleanup_pending_marker() {
-        // The wrapper drops a `.wg-cleanup-pending` eligibility marker, but the
-        // disk sentinel never deletes source-bearing worktrees automatically.
+        // The wrapper cleans synchronously after a durable receipt. The marker
+        // is only its receipt-only crash/restart fallback.
         let temp_dir = TempDir::new().unwrap();
         let unique_id = get_unique_id();
         let task_id = format!("t{}", unique_id);
@@ -1205,7 +1205,7 @@ args = ["-lc", "true"]
             "Wrapper must verify it is running inside WG_WORKTREE_PATH before cleanup"
         );
         assert!(
-            script.contains("Skipping worktree cleanup"),
+            script.contains("Skipping task-owned cleanup"),
             "Wrapper must skip cleanup when WG_WORKTREE_PATH was inherited from a parent agent"
         );
     }
