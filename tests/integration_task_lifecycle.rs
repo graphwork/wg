@@ -37,6 +37,16 @@ fn wg_cmd(wg_dir: &Path, args: &[&str]) -> std::process::Output {
         .arg("--dir")
         .arg(wg_dir)
         .args(args)
+        // These commands exercise an independent fixture graph as an operator,
+        // not the Pi worker running this test. Do not leak the outer attempt's
+        // terminal authority into the child process.
+        .env_remove("WG_DIR")
+        .env_remove("WG_TASK_ID")
+        .env_remove("WG_AGENT_ID")
+        .env_remove("WG_EXECUTOR_TYPE")
+        .env_remove("WG_WORKTREE_PATH")
+        .env_remove("WG_HANDLER_QUIESCENT")
+        .env_remove("WG_SPAWN_RUN_ID")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -81,6 +91,21 @@ fn setup_workgraph(tmp: &TempDir, tasks: Vec<Task>) -> PathBuf {
 
 fn graph(wg_dir: &Path) -> WorkGraph {
     load_graph(wg_dir.join("graph.jsonl")).unwrap()
+}
+
+fn init_pi_watchdog_fixture(wg_dir: &Path, task_id: &str, worktree: &Path) {
+    wg_ok(
+        wg_dir,
+        &[
+            "pi-watchdog",
+            "fixture-init",
+            task_id,
+            "--worktree",
+            worktree.to_str().unwrap(),
+            "--now",
+            "0",
+        ],
+    );
 }
 
 // ===========================================================================
@@ -196,8 +221,8 @@ fn test_abandon_cascades_to_in_progress_system_tasks() {
 // Scenario 2: Retry + re-eval flow
 // ===========================================================================
 
-/// Full lifecycle: task done → eval scheduled → task fails → retry → done again.
-/// The old eval task from the first completion should not block the retry.
+/// Full lifecycle: eval scheduled → task fails → retry → done.
+/// The stale legacy eval row from the failed attempt should not block the retry.
 #[test]
 fn test_retry_after_failure_with_eval_task() {
     let tmp = TempDir::new().unwrap();
@@ -230,6 +255,7 @@ fn test_retry_after_failure_with_eval_task() {
         ],
     );
     wg_ok(&wg_dir, &["claim", "flaky"]);
+    init_pi_watchdog_fixture(&wg_dir, "flaky", tmp.path());
 
     // Simulate an eval task being created (as coordinator would)
     {
@@ -262,12 +288,20 @@ fn test_retry_after_failure_with_eval_task() {
     assert_eq!(task.retry_count, 1);
     assert_eq!(task.assigned, None, "Retry should clear assignment");
 
-    // Claim and complete again
+    // Claim and complete again. The retry owns a new attempt, so its Pi
+    // watchdog evidence must be bound to that attempt rather than reusing the
+    // first attempt's state.
     wg_ok(&wg_dir, &["claim", "flaky"]);
+    init_pi_watchdog_fixture(&wg_dir, "flaky", tmp.path());
     wg_ok(&wg_dir, &["done", "flaky"]);
 
     let g = graph(&wg_dir);
-    assert_eq!(g.get_task("flaky").unwrap().status, Status::PendingEval);
+    assert_eq!(g.get_task("flaky").unwrap().status, Status::Done);
+    assert_eq!(
+        g.get_task(".evaluate-flaky").unwrap().status,
+        Status::Abandoned,
+        "the stale evaluation row from the failed attempt must not gate the retry"
+    );
 }
 
 /// Retry clears assigned and failure_reason, allowing coordinator re-dispatch.
