@@ -29,7 +29,13 @@ prompt=$(cat)
 printf '%s\n' "${args[*]}" >> "$HOME/fake-pi-invocations.log"
 case "$model" in
   fake-valid|fake-duplicate)
-    verdict='{"schema_version":1,"score":0.92,"outcome":"pass","dimensions":{"correctness":0.95,"completeness":0.89},"summary":"Candidate satisfies the bounded task contract."}'
+    verdict='{"schema_version":2,"score":0.92,"outcome":"pass","dimensions":{"correctness":0.95,"completeness":0.89},"summary":"Candidate satisfies the bounded task contract."}'
+    ;;
+  fake-semantic-fail)
+    verdict='{"schema_version":2,"score":0.12,"outcome":"fail","dimensions":{"correctness":0.1},"summary":"Candidate does not satisfy the bounded contract."}'
+    ;;
+  fake-insufficient)
+    verdict='{"schema_version":2,"outcome":"insufficient_evidence","missing_evidence":[{"evidence_id":"candidate-source","category":"candidate-source","availability":"truncated"}]}'
     ;;
   fake-malformed)
     verdict='```json {"score":9} ```'
@@ -43,12 +49,12 @@ case "$model" in
     exit 42
     ;;
   fake-route-drift)
-    verdict='{"schema_version":1,"score":0.92,"outcome":"pass","dimensions":{},"summary":"wrong route"}'
+    verdict='{"schema_version":2,"score":0.92,"outcome":"pass","dimensions":{},"summary":"wrong route"}'
     model='different-model'
     ;;
   fake-reported-error)
     printf '%s\n' '{"type":"error","message":"fixture provider error"}'
-    verdict='{"schema_version":1,"score":0.92,"outcome":"pass","dimensions":{},"summary":"must not consume"}'
+    verdict='{"schema_version":2,"score":0.92,"outcome":"pass","dimensions":{},"summary":"must not consume"}'
     ;;
   *)
     echo "unknown fixture model: $model" >&2

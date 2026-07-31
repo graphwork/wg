@@ -1083,6 +1083,22 @@ fn validate_candidate(
         cid_bytes(format!("validate:{}:{}", c.candidate_id, c.validation_policy_cid).as_bytes());
     let body = serde_json::json!({"request":request_id,"binding":c.binding,"policy":c.validation_policy_cid,"tree":c.candidate_tree_oid,"manifest":cid,"passed":true});
     let result_id = cid_value(&body)?;
+    let existing_path = store.object_path(&result_id);
+    if existing_path.exists() {
+        let existing: ValidationResult = serde_json::from_slice(&fs::read(existing_path)?)?;
+        if existing.result_id != result_id
+            || existing.request_id != request_id
+            || existing.binding != c.binding
+            || existing.policy_cid != c.validation_policy_cid
+            || existing.materialized_tree_oid != c.candidate_tree_oid
+            || existing.materialized_manifest_cid != cid
+            || !existing.passed
+            || existing.validator_identity != "wg-deterministic-readonly-v1"
+        {
+            bail!("validation.result_id_binding_mismatch");
+        }
+        return Ok(existing);
+    }
     let result = ValidationResult {
         result_id,
         request_id,
@@ -1094,7 +1110,11 @@ fn validate_candidate(
         validator_identity: "wg-deterministic-readonly-v1".into(),
         created_at: Utc::now().to_rfc3339(),
     };
-    store.put_object(&result)?;
+    // The lifecycle/evaluation reference is `result_id`, so materialize the
+    // receipt under that exact immutable ID. Storing it only under the hash of
+    // the wrapper (which includes provenance fields) makes the referenced
+    // validation evidence deterministically unreadable.
+    store.put_named_object(&result.result_id, &result)?;
     Ok(result)
 }
 fn verify_candidate_at(

@@ -1184,6 +1184,18 @@ fn print_human_readable(details: &TaskDetails) {
                         "    evaluator failure: {:?} {} — {}",
                         failure.kind, failure.code, failure.message
                     );
+                    if !failure.safe_evidence_categories.is_empty() {
+                        println!(
+                            "    bounded evidence categories: {}",
+                            failure.safe_evidence_categories.join(", ")
+                        );
+                    }
+                    if !failure.safe_evidence_ids.is_empty() {
+                        println!(
+                            "    bounded evidence IDs: {}",
+                            failure.safe_evidence_ids.join(", ")
+                        );
+                    }
                 }
             }
             if let Some(verdict) = record.verdict.as_ref() {

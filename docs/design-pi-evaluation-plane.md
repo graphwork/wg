@@ -287,7 +287,9 @@ The builder includes only bounded, checkpoint-derived facts:
 - dependency result digests necessary to interpret the candidate; and
 - explicit truncation/missing-evidence markers carrying the full omitted CID and byte count.
 
-It does not include a live filesystem path, mutable `main`, full graph, unrelated chat, arbitrary configuration, source-agent credentials, or an executable command. If essential evidence does not fit, the builder emits `evidence_incomplete`; the only valid model decision is `inconclusive`.
+It does not include a live filesystem path, mutable `main`, full graph, unrelated chat, arbitrary configuration, source-agent credentials, or an executable command. The implemented sufficiency contract checks each required automatically generated locator before invocation. Missing/unreadable evidence is `EvidenceUnavailable`; truncated/omitted evidence is `InsufficientEvidence`, and the strict model protocol may return `insufficient_evidence` with WG-generated IDs/categories. These are non-semantic infrastructure outcomes: no score/verdict is consumed, no acceptance rejection or source retry occurs, and only the bounded retry/rebundle budget is charged.
+
+For coding/structural work, a complete bounded patch can support a candidate-bound advisory pass/fail but never required rejection authority: surrounding source semantics belong to deep read-only FLIP. A requested coding gate therefore keeps bounded secondary and selects required deep FLIP. Deep materializes the exact immutable candidate commit into its isolated read-only repository bundle; neither lane opens the mutable worker worktree or substitutes mutable `main`.
 
 ### 5.3 Content-safety framing
 

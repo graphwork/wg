@@ -14,6 +14,9 @@ use worksgood::evaluation::{
     EvaluationPolicySnapshot, EvaluationProduct, EvaluationRecord, EvaluationRouteCall,
     EvaluationRouteSnapshot, EvaluationState, SourceCandidateRef,
 };
+use worksgood::finalization::{
+    CandidateBinding, CandidateDescriptor, ContentManifest, ManifestEntry, ValidationResult,
+};
 use worksgood::graph::{LogEntry, Node, Status, Task, WorkGraph};
 use worksgood::parser::{load_graph, save_graph};
 
@@ -80,8 +83,132 @@ fn config(timeout: u64) -> Config {
     config
 }
 
+fn git(project: &Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(project)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {:?}: {}",
+        args,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+fn write_candidate_evidence(dir: &Path) {
+    let project = dir.parent().unwrap();
+    fs::create_dir_all(project.join("src")).unwrap();
+    git(project, &["init", "-q", "-b", "main"]);
+    git(project, &["config", "user.email", "bounded@test.invalid"]);
+    git(project, &["config", "user.name", "Bounded"]);
+    fs::write(project.join("src/example.rs"), "pub const VALUE: u8 = 1;\n").unwrap();
+    git(project, &["add", "src/example.rs"]);
+    git(project, &["commit", "-qm", "base"]);
+    let base = git(project, &["rev-parse", "HEAD"]);
+    let base_tree = git(project, &["rev-parse", "HEAD^{tree}"]);
+    fs::write(project.join("src/example.rs"), "pub const VALUE: u8 = 2;\n").unwrap();
+    git(project, &["add", "src/example.rs"]);
+    git(project, &["commit", "-qm", "candidate"]);
+    let commit = git(project, &["rev-parse", "HEAD"]);
+    let tree = git(project, &["rev-parse", "HEAD^{tree}"]);
+    let blob = git(project, &["rev-parse", "HEAD:src/example.rs"]);
+
+    let objects = dir.join("finalization/objects");
+    fs::create_dir_all(&objects).unwrap();
+    let binding = CandidateBinding {
+        candidate_id: "wgcid:v1:blake3:candidate".into(),
+        commit_oid: commit.clone(),
+        tree_oid: tree.clone(),
+        manifest_cid: "wgcid:v1:blake3:manifest".into(),
+        delta_manifest_cid: "wgcid:v1:blake3:delta".into(),
+    };
+    let descriptor = CandidateDescriptor {
+        schema_version: 1,
+        candidate_id: binding.candidate_id.clone(),
+        candidate_version: 1,
+        task_id: "source".into(),
+        generation: 3,
+        attempt_id: "attempt-3-9".into(),
+        attempt_fence: 9,
+        process_epoch: 1,
+        terminal_reservation_id: "terminal".into(),
+        quiescence_receipt_cid: "quiet".into(),
+        rescue_id: "rescue".into(),
+        worktree_id: "agent-source".into(),
+        worktree_lease_epoch: 1,
+        base_commit_oid: base.clone(),
+        base_tree_oid: base_tree,
+        worker_head_oid: commit.clone(),
+        candidate_commit_oid: commit.clone(),
+        candidate_tree_oid: tree.clone(),
+        content_manifest_cid: binding.manifest_cid.clone(),
+        delta_manifest_cid: binding.delta_manifest_cid.clone(),
+        validation_policy_cid: "validation-policy".into(),
+        evaluation_policy: "bounded-test".into(),
+        merge_policy_cid: "merge-policy".into(),
+        route_snapshot_cid: "route".into(),
+        immutable_ref: "refs/wg/candidates/source".into(),
+        created_at: "2026-07-28T00:00:00Z".into(),
+        binding: binding.clone(),
+    };
+    let content = fs::read(project.join("src/example.rs")).unwrap();
+    let manifest = ContentManifest {
+        schema_version: 1,
+        tree_oid: tree.clone(),
+        entries: vec![ManifestEntry {
+            path: "src/example.rs".into(),
+            git_mode: "100644".into(),
+            kind: "blob".into(),
+            git_object_oid: blob,
+            blake3_content_digest: format!("wgcid:v1:blake3:{}", blake3::hash(&content).to_hex()),
+            size: content.len() as u64,
+        }],
+    };
+    let validation = ValidationResult {
+        result_id: "wgcid:v1:blake3:validation".into(),
+        request_id: "validation-request".into(),
+        binding,
+        policy_cid: "validation-policy".into(),
+        materialized_tree_oid: tree,
+        materialized_manifest_cid: "wgcid:v1:blake3:manifest".into(),
+        passed: true,
+        validator_identity: "test-validator".into(),
+        created_at: "2026-07-28T00:00:00Z".into(),
+    };
+    for (cid, bytes) in [
+        (
+            "wgcid:v1:blake3:candidate",
+            serde_json::to_vec(&descriptor).unwrap(),
+        ),
+        (
+            "wgcid:v1:blake3:manifest",
+            serde_json::to_vec(&manifest).unwrap(),
+        ),
+        (
+            "wgcid:v1:blake3:delta",
+            serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1,
+                "base": base,
+                "candidate": commit,
+            }))
+            .unwrap(),
+        ),
+        (
+            "wgcid:v1:blake3:validation",
+            serde_json::to_vec(&validation).unwrap(),
+        ),
+    ] {
+        fs::write(objects.join(cid.replace(':', "_")), bytes).unwrap();
+    }
+}
+
 fn make_graph(dir: &Path, model: &str, applicability: EvaluationGateApplicability) {
     fs::create_dir_all(dir).unwrap();
+    write_candidate_evidence(dir);
     let source = SourceCandidateRef {
         task_id: "source".into(),
         generation: 3,
@@ -267,6 +394,121 @@ fn bounded_pi_verdict_consumed_exactly_once() {
 
 #[test]
 #[serial]
+fn sufficient_coding_bounded_fail_is_candidate_bound_advisory_not_rejection() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().join("home");
+    fs::create_dir_all(&home).unwrap();
+    let _env = test_env(&home);
+    let dir = tmp.path().join("wg");
+    make_graph(
+        &dir,
+        "fake-semantic-fail",
+        EvaluationGateApplicability::Required,
+    );
+
+    assert!(run_one_pending(&dir, &config(5)).unwrap().ran);
+    let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+    let task = graph.get_task("source").unwrap();
+    let record = &task.evaluation_records[0];
+    assert_eq!(record.state, EvaluationState::Consumed);
+    assert_eq!(
+        record.verdict.as_ref().unwrap().outcome,
+        worksgood::evaluation::BoundedVerdictOutcome::Fail
+    );
+    assert_eq!(task.status, Status::PendingEval);
+    assert_eq!(task.retry_count, 0);
+    assert_eq!(task.spawn_failures, 0);
+    assert!(
+        record
+            .diagnostic
+            .as_deref()
+            .unwrap()
+            .contains("coding-structural decisions require exact-candidate deep-readonly-flip")
+    );
+    assert!(
+        !task
+            .lifecycle
+            .audit
+            .iter()
+            .any(|event| event.event_kind.contains("acceptance-rejected"))
+    );
+}
+
+#[test]
+#[serial]
+fn missing_automatic_validation_receipt_is_evidence_unavailable_before_model() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().join("home");
+    fs::create_dir_all(&home).unwrap();
+    let _env = test_env(&home);
+    let dir = tmp.path().join("wg");
+    make_graph(&dir, "fake-valid", EvaluationGateApplicability::Required);
+    fs::remove_file(dir.join("finalization/objects/wgcid_v1_blake3_validation")).unwrap();
+
+    assert!(run_one_pending(&dir, &config(5)).unwrap().ran);
+    let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+    let task = graph.get_task("source").unwrap();
+    let record = &task.evaluation_records[0];
+    assert_eq!(record.state, EvaluationState::RetryBackoff);
+    assert!(record.verdict.is_none());
+    let failure = record.attempts[0].failure.as_ref().unwrap();
+    assert_eq!(
+        failure.kind,
+        worksgood::evaluation::EvaluationFailureKind::EvidenceUnavailable
+    );
+    assert!(
+        failure
+            .safe_evidence_categories
+            .contains(&"validation-receipt".into())
+    );
+    assert_eq!(task.status, Status::PendingEval);
+    assert!(!home.join("fake-pi-invocations.log").exists());
+}
+
+#[test]
+#[serial]
+fn model_can_return_structured_insufficient_evidence_without_semantic_verdict() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().join("home");
+    fs::create_dir_all(&home).unwrap();
+    let _env = test_env(&home);
+    let dir = tmp.path().join("wg");
+    make_graph(
+        &dir,
+        "fake-insufficient",
+        EvaluationGateApplicability::Required,
+    );
+
+    assert!(run_one_pending(&dir, &config(5)).unwrap().ran);
+    let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+    let task = graph.get_task("source").unwrap();
+    let record = &task.evaluation_records[0];
+    assert_eq!(record.state, EvaluationState::RetryBackoff);
+    assert!(record.verdict.is_none());
+    assert!(record.consumed_verdict_id.is_none());
+    let failure = record.attempts[0].failure.as_ref().unwrap();
+    assert_eq!(
+        failure.kind,
+        worksgood::evaluation::EvaluationFailureKind::InsufficientEvidence
+    );
+    assert_eq!(failure.code, "WG-EVAL-INSUFFICIENT-EVIDENCE");
+    assert!(failure.reported_usage.is_some());
+    assert!(record.evidence_manifest_id.is_some());
+    assert_eq!(
+        failure.safe_evidence_ids.first(),
+        record.evidence_manifest_id.as_ref()
+    );
+    assert!(
+        failure
+            .safe_evidence_ids
+            .contains(&"candidate-source".into())
+    );
+    assert_eq!(task.status, Status::PendingEval);
+    assert_eq!(task.retry_count, 0);
+}
+
+#[test]
+#[serial]
 fn pi_failure_never_cross_falls_back_executor() {
     let tmp = TempDir::new().unwrap();
     let home = tmp.path().join("home");
@@ -440,11 +682,11 @@ fn resource_deferral_does_not_charge_attempt_or_source_failure() {
 #[test]
 fn response_schema_example_is_closed_and_dimensions_are_bounded() {
     let example = serde_json::json!({
-        "schema_version": 1,
+        "schema_version": 2,
         "score": 0.9,
         "outcome": "pass",
         "dimensions": BTreeMap::from([("correctness", 0.9)]),
         "summary": "ok"
     });
-    assert_eq!(example["schema_version"], 1);
+    assert_eq!(example["schema_version"], 2);
 }
