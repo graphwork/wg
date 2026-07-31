@@ -2333,8 +2333,9 @@ script = "scenarios/provider_completion_refusal_breaker.sh"
 owners = [
     "integrate-luca-provider",
     "fix-sigkilled-wrapper",
+    "synthesize-post-lifecycle-convergence-ux",
 ]
-description = "Live credential-free daemon/spawn-breaker regression for Luca 02204b19's diagnosis: three fake Codex workers reach a real wg done blocked-graph refusal whose graph prose contains HTTP 401/quota, persist validated completion-refused provenance, and leave provider counters/service pause untouched; three genuine fake HTTP 401 wrapper crashes then reach threshold for exactly the canonical Codex handler+wire+endpoint health route. All six real generated run.sh wrappers are SIGKILLed after observing their heartbeat-watch descendant/process group; each watcher must exit promptly and the final scratch ownership scan must find no stale wrapper/shell/sleep/heartbeat process."
+description = "Live credential-free daemon/spawn-breaker regression for Luca 02204b19's diagnosis and the convergence cutover: three fake Codex workers reach a real wg done blocked-graph refusal whose graph prose contains HTTP 401/quota, persist validated completion-refused provenance, and leave provider counters/service pause untouched; three genuine fake HTTP 401 wrapper crashes then reach threshold for exactly the canonical Codex handler+wire+endpoint route-local breaker while global service_paused remains false. All six real generated run.sh wrappers are SIGKILLed after observing their heartbeat-watch descendant/process group; each watcher must exit promptly and the final scratch ownership scan must find no stale wrapper/shell/sleep/heartbeat process."
 timeout_seconds = 90
 
 [[scenario]]
@@ -2879,6 +2880,7 @@ script = "scenarios/worksgood_attended_pi_simple.sh"
 owners = [
     "simplify-attended-pi-setup",
     "make-worksgood-thin-existing-graph-launcher",
+    "synthesize-post-lifecycle-convergence-ux",
 ]
 description = "Candidate-binary credential-free real tmux/TUI human flow for the thin launcher boundary: on an existing graph, bare worksgood, worksgood tui, and wg tui cross the authenticated absolute sibling boundary with identical --dir <exact-graph> tui argv and setup-neutral state effects, without reading valid concierge state or preparing Pi/profile/config/service state. The graph opens with Pi absent; only New chat -> Pi shows an actionable transactional error. A fresh repository runs route-free/no-agency init exactly once and every later bare entry bypasses bootstrap. Explicit worksgood setup --model retains exact route, reasoning, and service gates."
 timeout_seconds = 240
@@ -2886,13 +2888,26 @@ timeout_seconds = 240
 [[scenario]]
 name = "task_owned_finish_transaction"
 script = "scenarios/task_owned_finish_transaction.sh"
-owners = ["implement-task-owned-finish-transaction"]
+owners = [
+    "implement-task-owned-finish-transaction",
+    "synthesize-post-lifecycle-convergence-ux",
+]
 description = "Installed-binary credential-free finish protocol: two same-base land tasks serialize under the repository lease and both reach main with exact evaluation receipts; a real conflict remains in the same source attempt/worktree; two deliver children publish retained immutable refs without moving main, clean immediately, and a synthesis land task alone combines/promotes them. Every terminal disposition has a cleanup receipt and no worktree."
 timeout_seconds = 180
 
 [[scenario]]
 name = "autonomous_actor_tui_visibility"
 script = "scenarios/autonomous_actor_tui_visibility.sh"
-owners = ["clarify-autonomous-actor-tui-visibility"]
+owners = [
+    "clarify-autonomous-actor-tui-visibility",
+    "synthesize-post-lifecycle-convergence-ux",
+]
 description = "Candidate-binary real tmux/TUI screenshot flow for typed graph presentation: explicit autonomous .quality/.assign-looking actors remain visible with the centered-dot glyph while ordinary-ID and evaluator plumbing collapse; ASCII/DOT/Mermaid agree; the labeled hidden-count control cycles hidden/running-only/all by keyboard and same-frame SGR mouse; active hidden plumbing remains parent-annotated and inspectable."
 timeout_seconds = 180
+
+[[scenario]]
+name = "post_lifecycle_convergence_ux"
+script = "scenarios/post_lifecycle_convergence_ux.sh"
+owners = ["synthesize-post-lifecycle-convergence-ux"]
+description = "Credential-free real-daemon integration for the service-owned deterministic convergence cutover: restart preserves a seeded future deadline/exponent/jitter tuple; an overdue unchanged goal wakes before the 60s safety tick, falls off at its cap, and stays live; a seeded exact Pi/OpenRouter route outage admits at most one credential-bearing probe lease, leaves global service pause false, performs no fallback, and creates no controller/probe/merge/cleanup graph task."
+timeout_seconds = 120

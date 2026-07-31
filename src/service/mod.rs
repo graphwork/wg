@@ -7,6 +7,7 @@
 //! - Agent registry for tracking running agents
 
 pub mod chat_compactor;
+pub mod convergence;
 pub mod coordinator_prompt;
 pub mod dispatch_boot;
 pub mod executor;
@@ -15,6 +16,11 @@ pub mod llm;
 pub mod provider_health;
 pub mod registry;
 
+pub use convergence::{
+    Admission as ConvergenceAdmission, ConvergencePolicy, ConvergenceStage, ConvergenceState,
+    RouteAdmission, RouteBreaker, RouteBreakerState, admit_goal_action, admit_route_action,
+    earliest_wake, reconcile_after_service_pass, reconcile_dir,
+};
 pub use dispatch_boot::{
     ChatSupervisorBootSpec, enumerate_chat_supervisors_for_boot,
     enumerate_chat_supervisors_from_graph,

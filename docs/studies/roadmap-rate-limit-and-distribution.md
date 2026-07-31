@@ -1,5 +1,10 @@
 # Roadmap: Rate-Limit Telemetry, Supervisor, Adaptive Parallelism & npm Distribution
 
+> **Historical roadmap.** Its supervisor/adaptive-controller track is
+> superseded by `docs/design-deterministic-convergence-reconciler.md`; telemetry
+> remains evidence, while one deterministic `wg service` scheduler owns durable
+> wakes and exact-route probes. Distribution decisions are unaffected.
+
 **Status:** synthesis / implementation roadmap (fan-in of four sibling study designs).
 **Date:** 2026-07-25
 **Owner task:** `synthesis-roadmap-from`

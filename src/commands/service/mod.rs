@@ -2978,6 +2978,22 @@ pub fn run_daemon(
     // Clean up legacy daemon-managed graph tasks from older coordinator models.
     cleanup_legacy_daemon_tasks(&dir, &logger);
 
+    // One service-owned convergence read model. Startup derives it from the
+    // authoritative graph/finalization/provider stores without advancing a
+    // deadline, so restart cannot redraw jitter or reset an exponent.
+    let convergence_policy =
+        worksgood::service::ConvergencePolicy::from(&config.coordinator.convergence);
+    match worksgood::service::reconcile_dir(&dir, &convergence_policy, chrono::Utc::now()) {
+        Ok(state) => logger.info(&format!(
+            "Convergence reconciler restored {} goal(s), {} route breaker(s)",
+            state.goals.len(),
+            state.route_breakers.len()
+        )),
+        Err(error) => logger.warn(&format!(
+            "Convergence state unavailable at startup; dispatch will fail closed: {error:#}"
+        )),
+    }
+
     // Auto-bootstrap agency when auto_evolve is enabled and agency isn't initialized.
     if config.agency.auto_evolve {
         let agency_dir = dir.join("agency");
@@ -3284,6 +3300,14 @@ pub fn run_daemon(
                 .saturating_sub(last_coordinator_tick.elapsed());
             poll_timeout_ms =
                 poll_timeout_ms.min(until_tick.as_millis().min(i32::MAX as u128) as i32);
+            if let Ok(Some(deadline)) = worksgood::service::earliest_wake(&dir) {
+                let until = deadline
+                    .signed_duration_since(chrono::Utc::now())
+                    .to_std()
+                    .unwrap_or_default();
+                poll_timeout_ms =
+                    poll_timeout_ms.min(until.as_millis().min(i32::MAX as u128) as i32);
+            }
         }
         // Floor: don't spin faster than 50ms even with a deadline in the past.
         poll_timeout_ms = poll_timeout_ms.max(50);
@@ -3682,6 +3706,16 @@ pub fn run_daemon(
             if last_coordinator_tick.elapsed() >= daemon_cfg.poll_interval {
                 should_tick = true;
             }
+            // The earliest persisted convergence deadline shares the same
+            // event loop. Restart loads this exact timestamp; it never resets
+            // the exponent or redraws deterministic jitter.
+            if worksgood::service::earliest_wake(&dir)
+                .ok()
+                .flatten()
+                .is_some_and(|deadline| deadline <= chrono::Utc::now())
+            {
+                should_tick = true;
+            }
         }
         // Short-circuit the tick phase if Shutdown was just processed.
         // Without this, an IPC Shutdown that arrives while should_tick is
@@ -3840,6 +3874,22 @@ pub fn run_daemon(
                     logger.error(&format!("Coordinator tick error: {}", e));
                     self_write_quiet_until = Some(Instant::now() + self_write_quiet_window);
                 }
+            }
+
+            // Every event/deadline/safety pass returns through the same durable
+            // reconciliation entry point. It observes authoritative receipts
+            // and advances at most one due unchanged goal; domain modules above
+            // remain the only mutation owners.
+            match worksgood::service::reconcile_after_service_pass(
+                &dir,
+                &convergence_policy,
+                chrono::Utc::now(),
+            ) {
+                Ok(Some(goal)) => logger.info(&format!(
+                    "Convergence pass advanced one unchanged wake: {goal}"
+                )),
+                Ok(None) => {}
+                Err(error) => logger.warn(&format!("Convergence pass held fail-closed: {error:#}")),
             }
 
             // --- Binary self-restart check ---

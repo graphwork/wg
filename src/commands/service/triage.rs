@@ -2123,8 +2123,8 @@ mod tests {
         assert_eq!(provider.consecutive_failures, 3);
         assert!(provider.is_paused);
         assert!(
-            health.service_paused,
-            "real provider auth failures remain visible"
+            !health.service_paused,
+            "route failures remain visible without pausing unrelated routes"
         );
     }
 

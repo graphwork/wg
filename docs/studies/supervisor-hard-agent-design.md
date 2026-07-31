@@ -1,5 +1,10 @@
 # Study: a long-lived "supervisor" hard-agent for graph health and auto-reset
 
+> **Historical / superseded.** The operator selected the deterministic,
+> service-owned design in `docs/design-deterministic-convergence-reconciler.md`.
+> No supervisor persona, reset controller, merge authority, or supervisor graph
+> task is implemented. This study remains only as decision history.
+
 **Status:** Proposed design (study deliverable, not an accepted implementation plan).
 **Date:** 2026-07-25
 **Owner task:** `study-long-lived`

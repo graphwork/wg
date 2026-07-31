@@ -1,7 +1,8 @@
-//! Provider health detection and auto-pause system
+//! Provider health evidence and route-key circuit breaking.
 //!
-//! Tracks provider failure patterns and implements circuit-breaker logic
-//! to pause the service when providers repeatedly fail with fatal errors.
+//! Failure classification remains here; durable wake/probe scheduling lives in
+//! `service::convergence`. A broken route never pauses unrelated routes and is
+//! never escaped through implicit model/provider fallback.
 
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -341,9 +342,10 @@ impl ProviderHealthStatus {
 
     /// Record a successful task completion - resets failure count
     pub fn record_success(&mut self) {
-        self.consecutive_failures = 0;
-        self.last_failure_at = None;
-        self.last_error = None;
+        // A successful credential-bearing attempt is the route probe receipt.
+        // Close the route breaker; the convergence scheduler then releases
+        // affected goals with deterministic staggering.
+        self.resume();
     }
 
     /// Pause this provider with a reason
@@ -395,8 +397,15 @@ impl ProviderHealth {
 
         let content = fs::read_to_string(&path)
             .with_context(|| format!("Failed to read provider health from {:?}", path))?;
-        let health: ProviderHealth = serde_json::from_str(&content)
+        let mut health: ProviderHealth = serde_json::from_str(&content)
             .with_context(|| format!("Failed to parse provider health from {:?}", path))?;
+        // Migration cutover: historical `service_paused` was a second global
+        // outage controller. Route statuses remain as evidence, but only the
+        // service convergence scheduler owns probe cadence and waking now.
+        health.service_paused = false;
+        health.pause_reason = None;
+        health.paused_at = None;
+        health.auto_resume_at = None;
         Ok(health)
     }
 
@@ -441,49 +450,32 @@ impl ProviderHealth {
         provider.record_success();
     }
 
-    /// Check if any providers should be paused and apply pause
+    /// Trip route-local breakers from typed health evidence.
+    ///
+    /// `behavior` is accepted for configuration compatibility, but neither
+    /// `pause` nor the retired `fallback` value may create global scheduling or
+    /// rerouting authority. `continue` remains the explicit opt-out.
     pub fn check_and_apply_pauses(&mut self, threshold: u32, behavior: &str) -> Vec<String> {
         let mut paused_providers = Vec::new();
+        self.service_paused = false;
+        self.pause_reason = None;
+        self.paused_at = None;
+        self.auto_resume_at = None;
 
         for provider in self.providers.values_mut() {
             if provider.should_pause(threshold) {
+                if behavior == "continue" {
+                    provider.resume();
+                    continue;
+                }
                 let reason = format!(
                     "{} consecutive fatal-provider errors (threshold: {}). Last error: {}",
                     provider.consecutive_failures,
                     threshold,
                     provider.last_error.as_deref().unwrap_or("unknown")
                 );
-                provider.pause(reason.clone());
+                provider.pause(reason);
                 paused_providers.push(provider.provider_id.clone());
-
-                match behavior {
-                    "pause" => {
-                        // Pause the entire service
-                        self.service_paused = true;
-                        self.pause_reason = Some(format!(
-                            "Provider '{}' failed {} consecutive times",
-                            provider.provider_id, provider.consecutive_failures
-                        ));
-                        self.paused_at = Some(Utc::now().to_rfc3339());
-                    }
-                    "fallback" => {
-                        // Just pause this provider, service continues with others
-                        // Fallback logic will be handled by the coordinator
-                    }
-                    "continue" => {
-                        // Just log the failure, don't pause anything
-                        provider.resume(); // Immediately unpause
-                    }
-                    _ => {
-                        // Default to pause behavior
-                        self.service_paused = true;
-                        self.pause_reason = Some(format!(
-                            "Provider '{}' failed {} consecutive times",
-                            provider.provider_id, provider.consecutive_failures
-                        ));
-                        self.paused_at = Some(Utc::now().to_rfc3339());
-                    }
-                }
             }
         }
 
@@ -505,29 +497,23 @@ impl ProviderHealth {
         }
     }
 
-    /// Check if the service should be paused
+    /// Global provider pause authority was retired. Dispatch consults the
+    /// exact route key through `service::convergence::admit_route_action`.
     pub fn should_pause_spawning(&self) -> bool {
-        self.service_paused
+        false
     }
 
     /// Get a summary of current health status
     pub fn get_status_summary(&self) -> String {
-        if self.service_paused {
+        let paused_count = self.providers.values().filter(|p| p.is_paused).count();
+        let total_count = self.providers.len();
+        if paused_count > 0 {
             format!(
-                "Service PAUSED: {}",
-                self.pause_reason.as_deref().unwrap_or("unknown reason")
+                "Service running, {}/{} routes unavailable",
+                paused_count, total_count
             )
         } else {
-            let paused_count = self.providers.values().filter(|p| p.is_paused).count();
-            let total_count = self.providers.len();
-            if paused_count > 0 {
-                format!(
-                    "Service running, {}/{} providers paused",
-                    paused_count, total_count
-                )
-            } else {
-                "Service running, all providers healthy".to_string()
-            }
+            "Service running, all routes healthy".to_string()
         }
     }
 }

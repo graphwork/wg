@@ -4453,6 +4453,45 @@ pub struct AgentConfig {
     pub reaper_grace_seconds: u64,
 }
 
+/// Durable service-owned convergence wake policy.
+///
+/// These values control scheduling only. They do not grant graph mutation,
+/// source editing, model fallback, or merge authority to the daemon.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConvergenceConfig {
+    /// First unchanged-goal wake delay.
+    #[serde(default = "default_convergence_base_seconds")]
+    pub base_seconds: u64,
+    /// Maximum unchanged-goal wake delay. Transient retry never exhausts.
+    #[serde(default = "default_convergence_cap_seconds")]
+    pub cap_seconds: u64,
+    /// Initial delay before one credential-bearing route probe may run.
+    #[serde(default = "default_route_probe_base_seconds")]
+    pub route_probe_base_seconds: u64,
+    /// Maximum route-probe falloff.
+    #[serde(default = "default_route_probe_cap_seconds")]
+    pub route_probe_cap_seconds: u64,
+    /// Fence lifetime for one goal action or route probe.
+    #[serde(default = "default_convergence_action_lease_seconds")]
+    pub action_lease_seconds: u64,
+    /// Deterministic jitter width is `delay / jitter_divisor`.
+    #[serde(default = "default_convergence_jitter_divisor")]
+    pub jitter_divisor: u64,
+}
+
+impl Default for ConvergenceConfig {
+    fn default() -> Self {
+        Self {
+            base_seconds: default_convergence_base_seconds(),
+            cap_seconds: default_convergence_cap_seconds(),
+            route_probe_base_seconds: default_route_probe_base_seconds(),
+            route_probe_cap_seconds: default_route_probe_cap_seconds(),
+            action_lease_seconds: default_convergence_action_lease_seconds(),
+            jitter_divisor: default_convergence_jitter_divisor(),
+        }
+    }
+}
+
 /// Coordinator-specific configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CoordinatorConfig {
@@ -4501,6 +4540,11 @@ pub struct CoordinatorConfig {
     /// 50–200 ms. Values below 10 ms are clamped up. Default: 100 ms.
     #[serde(default = "default_graph_watch_debounce_ms")]
     pub graph_watch_debounce_ms: u64,
+
+    /// One durable deterministic scheduler shared by startup replay, graph
+    /// events, deadlines, and safety ticks.
+    #[serde(default)]
+    pub convergence: ConvergenceConfig,
 
     /// Executor to use for spawned agents.
     /// When `None` (not set in config), `effective_executor()` auto-detects
@@ -4688,23 +4732,25 @@ pub struct CoordinatorConfig {
     #[serde(default = "default_scoped_verify_enabled")]
     pub scoped_verify_enabled: bool,
 
-    /// Provider failure handling behavior.
-    /// - "pause" (default): pause the service when providers fail consecutively
-    /// - "fallback": switch to fallback provider if configured
-    /// - "continue": keep going despite provider failures (legacy behavior)
+    /// Provider failure handling behavior (compatibility spelling).
+    /// - "pause" (default): trip only the exact route-key breaker
+    /// - "fallback": deprecated alias for the same exact-route break; no reroute
+    /// - "continue": keep going despite provider failures (explicit opt-out)
+    ///
+    /// Global service pause and implicit model/provider fallback are retired;
+    /// durable probe cadence belongs to `[coordinator.convergence]`.
     #[serde(default = "default_on_provider_failure")]
     pub on_provider_failure: String,
 
-    /// Number of consecutive fatal-provider errors before triggering auto-pause.
+    /// Number of consecutive fatal-provider errors before tripping the route breaker.
     /// Fatal-provider errors include auth failures, quota exhaustion, CLI missing.
     /// Transient errors (rate limits, network) and task errors don't count.
     /// Default: 3.
     #[serde(default = "default_provider_failure_threshold")]
     pub provider_failure_threshold: u32,
 
-    /// Cooldown period before auto-resuming from provider failure pause.
-    /// Format: "5m", "1h", "30s", etc. Empty string disables auto-resume.
-    /// Default: empty (manual resume only).
+    /// Deprecated global auto-resume cooldown. Parsed for compatibility; the
+    /// route-key convergence policy owns probe deadlines and recovery now.
     #[serde(default)]
     pub provider_failure_cooldown: String,
 
@@ -4864,6 +4910,30 @@ fn default_on_provider_failure() -> String {
 
 fn default_provider_failure_threshold() -> u32 {
     3
+}
+
+fn default_convergence_base_seconds() -> u64 {
+    5
+}
+
+fn default_convergence_cap_seconds() -> u64 {
+    6 * 60 * 60
+}
+
+fn default_route_probe_base_seconds() -> u64 {
+    30
+}
+
+fn default_route_probe_cap_seconds() -> u64 {
+    60 * 60
+}
+
+fn default_convergence_action_lease_seconds() -> u64 {
+    5 * 60
+}
+
+fn default_convergence_jitter_divisor() -> u64 {
+    4
 }
 
 fn default_max_agents() -> usize {
@@ -5148,6 +5218,7 @@ impl Default for CoordinatorConfig {
             poll_interval: default_poll_interval(),
             graph_watch_enabled: default_graph_watch_enabled(),
             graph_watch_debounce_ms: default_graph_watch_debounce_ms(),
+            convergence: ConvergenceConfig::default(),
             executor: None,
             model: None,
             provider: None,

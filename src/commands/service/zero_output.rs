@@ -1,8 +1,9 @@
 //! Zero-output agent detection and circuit-breaking respawn.
 //!
 //! Detects agents whose API call never returns (0 bytes written to stream files
-//! for extended periods), kills them, and manages respawn with per-task circuit
-//! breakers and global API-down detection.
+//! for extended periods), kills them, and preserves per-task evidence. Global
+//! API-down scheduling is retired: exact route breakers and probe leases live in
+//! the service convergence scheduler.
 
 #![allow(dead_code)]
 
@@ -33,12 +34,6 @@ const GLOBAL_OUTAGE_RATIO: f64 = 0.5;
 
 /// Minimum alive agents before global outage detection kicks in.
 const GLOBAL_OUTAGE_MIN_AGENTS: usize = 2;
-
-/// Maximum backoff duration for global spawn pause.
-const MAX_BACKOFF: Duration = Duration::from_secs(15 * 60);
-
-/// Initial backoff duration for global spawn pause.
-const INITIAL_BACKOFF: Duration = Duration::from_secs(60);
 
 /// Result of a zero-output detection sweep.
 #[derive(Debug, Default)]
@@ -133,52 +128,10 @@ impl ZeroOutputState {
             .unwrap_or(false)
     }
 
-    /// Activate global backoff with exponential increase.
-    pub fn activate_global_backoff(&mut self) {
-        let backoff_secs = match &self.global_backoff {
-            Some(existing) => {
-                // Double the backoff, capped at MAX_BACKOFF
-                (existing.backoff_secs * 2).min(MAX_BACKOFF.as_secs())
-            }
-            None => INITIAL_BACKOFF.as_secs(),
-        };
-
-        let resume_after = Utc::now() + chrono::Duration::seconds(backoff_secs as i64);
-        self.global_backoff = Some(GlobalBackoffState {
-            resume_after: resume_after.to_rfc3339(),
-            backoff_secs,
-            probe_dispatched: false,
-        });
-    }
-
-    /// Check if global spawning is paused due to backoff.
-    pub fn is_spawn_paused(&self) -> bool {
-        if let Some(ref backoff) = self.global_backoff
-            && let Ok(resume) = backoff.resume_after.parse::<DateTime<Utc>>()
-        {
-            return Utc::now() < resume;
-        }
-        false
-    }
-
-    /// Clear global backoff (probe succeeded, API is back).
+    /// Discard the migration-only global timer. Exact route breakers own all
+    /// active probe/backoff scheduling.
     pub fn clear_global_backoff(&mut self) {
         self.global_backoff = None;
-    }
-
-    /// Mark that a probe agent has been dispatched during backoff.
-    pub fn mark_probe_dispatched(&mut self) {
-        if let Some(ref mut backoff) = self.global_backoff {
-            backoff.probe_dispatched = true;
-        }
-    }
-
-    /// Check if a probe has already been dispatched in the current backoff period.
-    pub fn is_probe_dispatched(&self) -> bool {
-        self.global_backoff
-            .as_ref()
-            .map(|b| b.probe_dispatched)
-            .unwrap_or(false)
     }
 }
 
@@ -278,34 +231,27 @@ pub fn sweep_zero_output_agents(dir: &Path) -> ZeroOutputSweepResult {
         }
     }
 
-    // Global API-down detection: if >=50% of alive agents have zero output
+    // A zero-output quorum is evidence, not global scheduling authority. Each
+    // killed run is classified through its exact spawn route by provider
+    // health; the convergence scheduler owns one route-key probe and durable
+    // falloff. Never pause unrelated routes here.
     if alive_agents.len() >= GLOBAL_OUTAGE_MIN_AGENTS {
         let zero_ratio = zero_output_agents.len() as f64 / alive_agents.len() as f64;
         if zero_ratio >= GLOBAL_OUTAGE_RATIO {
             result.global_outage_detected = true;
-            state.activate_global_backoff();
             eprintln!(
-                "[zero-output] GLOBAL OUTAGE DETECTED: {}/{} agents have zero output ({}%). \
-                 Pausing spawns with {}s backoff.",
+                "[zero-output] route-outage evidence: {}/{} agents have zero output ({}%); exact route breakers decide waking",
                 zero_output_agents.len(),
                 alive_agents.len(),
                 (zero_ratio * 100.0) as u32,
-                state
-                    .global_backoff
-                    .as_ref()
-                    .map(|b| b.backoff_secs)
-                    .unwrap_or(0)
             );
         }
     }
+    // One-release migration: discard the former independent global timer.
+    state.clear_global_backoff();
 
-    // If no agents are zero-output zombies past threshold, we're done
+    // If no agents are zero-output zombies past threshold, we're done.
     if zero_output_agents.is_empty() {
-        // If we had a global backoff but agents are now producing output, clear it
-        if state.global_backoff.is_some() && !state.is_spawn_paused() {
-            state.clear_global_backoff();
-            eprintln!("[zero-output] Global backoff cleared — agents producing output.");
-        }
         state.save(dir);
         return result;
     }
@@ -470,13 +416,10 @@ pub fn sweep_zero_output_agents(dir: &Path) -> ZeroOutputSweepResult {
     result
 }
 
-/// Check if spawning should be paused due to global API-down backoff.
-///
-/// Called from the coordinator tick before spawning new agents.
-/// Returns `true` if spawning should be paused.
-pub fn should_pause_spawning(dir: &Path) -> bool {
-    let state = ZeroOutputState::load(dir);
-    state.is_spawn_paused()
+/// The legacy global zero-output pause is no longer scheduling authority.
+/// Exact-route admission is enforced by `service::convergence`.
+pub fn should_pause_spawning(_dir: &Path) -> bool {
+    false
 }
 
 /// Reset the zero-output counter for a task that has produced output.
@@ -553,62 +496,17 @@ mod tests {
     }
 
     #[test]
-    fn test_global_backoff_activation() {
-        let mut state = ZeroOutputState::default();
-        assert!(!state.is_spawn_paused());
-
-        state.activate_global_backoff();
-        assert!(state.is_spawn_paused());
-        assert_eq!(
-            state.global_backoff.as_ref().unwrap().backoff_secs,
-            INITIAL_BACKOFF.as_secs()
-        );
-    }
-
-    #[test]
-    fn test_global_backoff_exponential() {
-        let mut state = ZeroOutputState::default();
-
-        state.activate_global_backoff();
-        assert_eq!(
-            state.global_backoff.as_ref().unwrap().backoff_secs,
-            60 // INITIAL_BACKOFF
-        );
-
-        state.activate_global_backoff();
-        assert_eq!(state.global_backoff.as_ref().unwrap().backoff_secs, 120);
-
-        state.activate_global_backoff();
-        assert_eq!(state.global_backoff.as_ref().unwrap().backoff_secs, 240);
-
-        // Keep doubling until MAX_BACKOFF
-        state.activate_global_backoff();
-        assert_eq!(state.global_backoff.as_ref().unwrap().backoff_secs, 480);
-
-        state.activate_global_backoff();
-        assert_eq!(state.global_backoff.as_ref().unwrap().backoff_secs, 900); // MAX_BACKOFF = 15 min
-    }
-
-    #[test]
-    fn test_global_backoff_clear() {
-        let mut state = ZeroOutputState::default();
-        state.activate_global_backoff();
-        assert!(state.is_spawn_paused());
-
+    fn legacy_global_backoff_is_migration_data_only() {
+        let mut state = ZeroOutputState {
+            global_backoff: Some(GlobalBackoffState {
+                resume_after: (Utc::now() + chrono::Duration::hours(1)).to_rfc3339(),
+                backoff_secs: 900,
+                probe_dispatched: true,
+            }),
+            ..ZeroOutputState::default()
+        };
         state.clear_global_backoff();
-        assert!(!state.is_spawn_paused());
-    }
-
-    #[test]
-    fn test_probe_dispatch_tracking() {
-        let mut state = ZeroOutputState::default();
-        assert!(!state.is_probe_dispatched());
-
-        state.activate_global_backoff();
-        assert!(!state.is_probe_dispatched());
-
-        state.mark_probe_dispatched();
-        assert!(state.is_probe_dispatched());
+        assert!(state.global_backoff.is_none());
     }
 
     #[test]
@@ -759,13 +657,19 @@ mod tests {
 
         let mut state = ZeroOutputState::default();
         state.record_zero_output_kill("task-a");
-        state.activate_global_backoff();
+        state.global_backoff = Some(GlobalBackoffState {
+            resume_after: (Utc::now() + chrono::Duration::hours(1)).to_rfc3339(),
+            backoff_secs: 60,
+            probe_dispatched: false,
+        });
         state.save(dir);
 
         let loaded = ZeroOutputState::load(dir);
         assert_eq!(loaded.task_respawn_counts.get("task-a"), Some(&1));
-        assert!(loaded.global_backoff.is_some());
-        assert_eq!(loaded.global_backoff.unwrap().backoff_secs, 60);
+        assert!(
+            loaded.global_backoff.is_some(),
+            "legacy bytes still deserialize"
+        );
     }
 
     #[test]
@@ -777,12 +681,19 @@ mod tests {
         // Initially not paused
         assert!(!should_pause_spawning(dir));
 
-        // Activate backoff
-        let mut state = ZeroOutputState::default();
-        state.activate_global_backoff();
+        // Even a historical future backoff is ignored after the authority
+        // cutover; route-key convergence is the only admission gate.
+        let state = ZeroOutputState {
+            global_backoff: Some(GlobalBackoffState {
+                resume_after: (Utc::now() + chrono::Duration::hours(1)).to_rfc3339(),
+                backoff_secs: 900,
+                probe_dispatched: true,
+            }),
+            ..ZeroOutputState::default()
+        };
         state.save(dir);
 
-        assert!(should_pause_spawning(dir));
+        assert!(!should_pause_spawning(dir));
     }
 
     #[test]

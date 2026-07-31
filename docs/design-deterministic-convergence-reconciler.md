@@ -1,11 +1,13 @@
 # Deterministic daemon convergence reconciler
 
-**Status:** decision draft; not approved for implementation or publication
+**Status:** implemented by `synthesize-post-lifecycle-convergence-ux`
 
-**Operator gate:** this document does **not** supersede any task by itself. No
-implementation task may be published until an operator chooses one of the task
-migration options in [§12](#12-operator-decision-required). Until then, the
-published older controller tasks must remain non-dispatchable.
+**Operator decision recorded:** publishing the post-lifecycle synthesis batch
+selected §12 Option A (clean supersession). The three older controller tasks and
+their agency satellites are abandoned with explicit `superseded_by` metadata.
+The implementation is `src/service/convergence.rs` plus the single `wg service`
+event-loop and exact-route dispatch seams; there is no supervisor persona or
+adaptive outage controller.
 
 ## 1. Decision in one sentence
 
@@ -310,10 +312,10 @@ The existing service-process supervisor in
 process. Rename it only if necessary for clarity; do not mix its process restart
 budget with goal convergence state.
 
-## 11. Validation plan for the future implementation
+## 11. Implemented validation plan
 
-These checks are intentionally **not** implemented by this decision draft.
-They become the hard gate of the operator-approved implementation task.
+These checks are the hard gate of the integrated implementation and its owned
+`post_lifecycle_convergence_ux` smoke.
 
 ### Unit/integration
 
@@ -353,19 +355,19 @@ The smoke manifest must list the approved implementation task as owner. This
 draft must not add that manifest entry because no implementation task has been
 approved or published.
 
-## 12. Operator decision required
+## 12. Operator decision: Option A clean supersession
 
-The three older tasks are published and express overlapping authority:
+The three older tasks expressed overlapping authority:
 
 - `impl-supervisor-hard-agent` owns reset/requeue/backoff as a fourth persona;
 - `impl-adaptive-parallelism-controller` owns provider-pressure response through
   `max_agents`; and
 - `impl-supervisor-controller-composition` deliberately couples the two.
 
-Choose exactly one migration before any new implementation is added or
-published.
+The operator published the post-lifecycle batch and the integration owner
+recorded the choice as **Option A** before enabling the implementation.
 
-### Option A — recommended: clean supersession
+### Option A — selected: clean supersession
 
 Abandon all three older tasks (and their pending FLIP satellites) as superseded
 by one new `impl-deterministic-convergence-reconciler` task. Keep static
@@ -373,7 +375,7 @@ parallelism/runtime pin authority; convergence owns route breaker/probe and all
 durable wakes. This is the approved simpler model with the smallest authority
 surface.
 
-### Option B — retain budget allocation only
+### Option B — not selected: retain budget allocation only
 
 Supersede `impl-supervisor-hard-agent` and
 `impl-supervisor-controller-composition`. Rewrite
@@ -382,15 +384,15 @@ only: no task reset, retry/backoff, provider outage, breaker, probe, route
 fallback, or reconciler input. Remove its dependency on the supervisor. The
 convergence reconciler remains the sole owner of route/task wake policy.
 
-### Option C — edit in place
+### Option C — not selected: edit in place
 
 Rewrite `impl-supervisor-hard-agent` completely into this deterministic daemon
 reconciler, abandon the composition task, and narrow the adaptive controller as
 in Option B. This avoids a new task id but leaves misleading historical naming
 and is therefore not recommended.
 
-After the operator chooses, use explicit task metadata (`wg abandon ...
---superseded-by ...` or a full `wg edit` replacement) and rewire dependencies in
-one transaction-shaped maintenance pass. Do not merely add another task beside
-the old three. The downstream synthesis must carry this gate until the graph
-records the choice.
+The graph now records explicit abandonment/supersession for
+`impl-supervisor-hard-agent`, `impl-adaptive-parallelism-controller`, and
+`impl-supervisor-controller-composition`, plus their extant agency satellites.
+Static `runtime_max_agents` pinning remains an operator/config admission cap;
+it has no retry, breaker, probe, reroute, or graph-reset authority.

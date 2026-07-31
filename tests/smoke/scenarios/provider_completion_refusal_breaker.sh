@@ -125,10 +125,17 @@ run_wg() {
         WG_FAKE_SYNC_DIR="$WG_FAKE_SYNC_DIR" wg "$@"
 }
 
-if ! run_wg init --route codex-cli --no-agency >init.log 2>&1; then
+if ! run_wg init --no-agency >init.log 2>&1; then
     loud_fail "wg init failed: $(tail -10 init.log)"
 fi
 wg_dir="$project/.wg"
+if ! run_wg --dir "$wg_dir" config --local -m codex:gpt-5.5 --no-reload >>init.log 2>&1; then
+    loud_fail "Codex route config failed: $(tail -10 init.log)"
+fi
+run_wg --dir "$wg_dir" config set agency.auto_assign false >>init.log 2>&1 \
+    || loud_fail "failed to disable agency auto-assign: $(tail -10 init.log)"
+run_wg --dir "$wg_dir" config set dispatcher.worktree_isolation false >>init.log 2>&1 \
+    || loud_fail "failed to disable worktree isolation for fake wrappers: $(tail -10 init.log)"
 # Make dead-wrapper triage deterministic and fast for the smoke.
 python3 - "$wg_dir/config.toml" <<'PY'
 import pathlib, sys
@@ -171,7 +178,9 @@ for _ in $(seq 1 80); do
     sleep 0.25
 done
 if ! $started; then
-    loud_fail "fake refusal workers did not all start: $(ls -la "$WG_FAKE_SYNC_DIR" 2>/dev/null || true)"
+    loud_fail "fake refusal workers did not all start: $(ls -la "$WG_FAKE_SYNC_DIR" 2>/dev/null || true)
+daemon tail:
+$(tail -100 "$graph_dir/service/daemon.log" 2>/dev/null || true)"
 fi
 for n in 1 2 3; do
     run_wg add-dep "refusal-$n" "blocker-$n" >/dev/null 2>&1 \
@@ -237,7 +246,8 @@ assert len(providers) == 1, providers
 assert key.startswith("codex|openai-codex-cli|self-authenticated"), key
 assert value.get("consecutive_failures") == 3, value
 assert value.get("is_paused") is True, value
-assert h.get("service_paused") is True, h
+# Route-local breaker only: unrelated routes and the service remain live.
+assert h.get("service_paused") is False, h
 PY
     then
         auth_ok=true

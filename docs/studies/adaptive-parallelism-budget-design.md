@@ -1,5 +1,11 @@
 # Adaptive Parallelism & Cost/Time Budget Controller — Design
 
+> **Historical / superseded for automatic control.** Static
+> `runtime_max_agents` remains an operator/config admission cap, but the proposed
+> adaptive controller was retired. It has no task reset, retry, route-breaker,
+> probe, fallback, or convergence authority; see
+> `docs/design-deterministic-convergence-reconciler.md`.
+
 **Status:** design study (sibling of `ratelimit-cost-telemetry-design.md` and
 `supervisor-hard-agent-design.md`; feeds `synthesis-roadmap-from`).
 **Scope:** the control loop that turns the rate-limit / cost signal into the

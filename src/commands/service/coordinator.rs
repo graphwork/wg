@@ -3873,105 +3873,10 @@ fn compute_priority_inheritance(
 
 /// Spawn agents on ready tasks, up to `slots_available`. Returns the number of
 /// agents successfully spawned.
-/// Maximum number of rapid respawns allowed before the task is failed.
-const RESPAWN_MAX_RAPID: usize = 5;
-
-/// Time window (seconds) within which respawns are considered "rapid".
-const RESPAWN_WINDOW_SECS: i64 = 300; // 5 minutes
-
-/// Minimum seconds of backoff between respawns when rapid respawning is detected.
-/// Each successive rapid respawn doubles the backoff (exponential).
-const RESPAWN_BASE_BACKOFF_SECS: i64 = 60;
-
-/// Check if a task is in a rapid respawn loop and should be throttled.
 ///
-/// Examines the task's log for recent "process exited" / "Triage" entries
-/// that indicate the agent died without completing the task. Returns:
-/// - `Ok(())` if spawning should proceed
-/// - `Err(reason)` if spawning should be skipped (throttled or failed)
-fn check_respawn_throttle(task: &Task, graph_path: &Path) -> std::result::Result<(), String> {
-    let now = Utc::now();
-
-    // Count recent agent death events within the respawn window
-    let recent_deaths: Vec<&LogEntry> = task
-        .log
-        .iter()
-        .filter(|entry| {
-            // Match log messages from triage/cleanup that indicate agent death
-            (entry.message.contains("process exited")
-                || entry.message.contains("PID reused")
-                || entry.message.contains("Triage:"))
-                && entry
-                    .timestamp
-                    .parse::<chrono::DateTime<chrono::Utc>>()
-                    .map(|t| now.signed_duration_since(t).num_seconds() < RESPAWN_WINDOW_SECS)
-                    .unwrap_or(false)
-        })
-        .collect();
-
-    let death_count = recent_deaths.len();
-
-    // A single death is normal (OOM, signal, network hiccup).
-    // Only start throttling at 2+ rapid deaths in the window.
-    if death_count <= 1 {
-        return Ok(());
-    }
-
-    // Fail the task if too many rapid respawns
-    if death_count >= RESPAWN_MAX_RAPID {
-        // Save the failure to the graph
-        let task_id = task.id.clone();
-        let fail_reason = format!(
-            "Rapid respawn loop: {} agent deaths in {} seconds",
-            death_count, RESPAWN_WINDOW_SECS
-        );
-        let fail_msg = format!(
-            "Failed: rapid respawn loop detected ({} deaths in {}s window)",
-            death_count, RESPAWN_WINDOW_SECS
-        );
-        let _ = modify_graph(graph_path, |graph| {
-            if let Some(t) = graph.get_task_mut(&task_id) {
-                t.status = Status::Failed;
-                t.assigned = None;
-                t.failure_reason = Some(fail_reason.clone());
-                t.log.push(LogEntry {
-                    timestamp: now.to_rfc3339(),
-                    actor: Some("coordinator".to_string()),
-                    user: Some(worksgood::current_user()),
-                    message: fail_msg.clone(),
-                });
-                true
-            } else {
-                false
-            }
-        });
-        return Err(format!(
-            "rapid respawn loop ({} deaths), task failed",
-            death_count
-        ));
-    }
-
-    // Exponential backoff: base * 2^(death_count - 2)
-    // death_count=2 → 60s, 3 → 120s, 4 → 240s
-    let backoff_secs = RESPAWN_BASE_BACKOFF_SECS * (1i64 << (death_count - 2).min(6));
-
-    // Check time since last death
-    if let Some(last_death) = recent_deaths.last()
-        && let Ok(last_time) = last_death
-            .timestamp
-            .parse::<chrono::DateTime<chrono::Utc>>()
-    {
-        let elapsed = now.signed_duration_since(last_time).num_seconds();
-        if elapsed < backoff_secs {
-            return Err(format!(
-                "respawn backoff: {} deaths, waiting {}s ({}s elapsed)",
-                death_count, backoff_secs, elapsed
-            ));
-        }
-    }
-
-    Ok(())
-}
+/// Retry cadence is owned by the durable service convergence scheduler below;
+/// an unchanged transient can fall off to its cap but never becomes generic
+/// `Failed` merely because a counter was exhausted.
 
 /// Check if a task has exceeded the spawn failure threshold and should be skipped.
 ///
@@ -4409,6 +4314,8 @@ fn spawn_agents_for_ready_tasks(
     // Memoize loaded WCC-profile configs by name for this tick so a component
     // of N profiled tasks loads each profile file at most once.
     let mut profile_cache = worksgood::dispatch::ProfileCache::new();
+    let convergence_policy =
+        worksgood::service::ConvergencePolicy::from(&config.coordinator.convergence);
 
     // Sort ready tasks by priority with starvation prevention and priority inheritance
     let final_ready = sort_tasks_by_priority_with_features(graph, ready_tasks_raw, config);
@@ -4424,12 +4331,6 @@ fn spawn_agents_for_ready_tasks(
 
         // Skip daemon-managed loop tasks — handled directly by the daemon, not spawned as agents
         if is_daemon_managed(task) {
-            continue;
-        }
-
-        // Respawn throttle: detect rapid respawn loops and back off
-        if let Err(reason) = check_respawn_throttle(task, &gp) {
-            eprintln!("[dispatcher] Skipping '{}': {}", task.id, reason);
             continue;
         }
 
@@ -4509,6 +4410,28 @@ fn spawn_agents_for_ready_tasks(
         ) {
             note_admission_deferral(&mut summary, &gp, &task.id, &reason);
             continue;
+        }
+
+        // One durable, fenced action lease per goal. Local resource admission
+        // above is neutral: backpressure is not an attempted goal action and
+        // must remain visible on every tick. Identical actual retries use
+        // restart-stable exponential waking.
+        match worksgood::service::admit_goal_action(dir, task, &convergence_policy, Utc::now()) {
+            Ok(worksgood::service::ConvergenceAdmission::Allowed { .. }) => {}
+            Ok(worksgood::service::ConvergenceAdmission::Deferred { until, reason }) => {
+                eprintln!(
+                    "[reconciler] Deferring '{}': {} (next wake {})",
+                    task.id, reason, until
+                );
+                continue;
+            }
+            Err(error) => {
+                eprintln!(
+                    "[reconciler] Fail-closed for '{}': durable convergence state unavailable: {error:#}",
+                    task.id
+                );
+                continue;
+            }
         }
 
         // Shell-mode tasks run inline: fork `wg exec --shell` directly instead
@@ -4714,6 +4637,40 @@ fn spawn_agents_for_ready_tasks(
             }
         };
         let effective_executor = plan.executor.as_str().to_string();
+
+        // Exact handler+wire+endpoint breaker. One ordinary task may hold the
+        // credential-bearing probe lease; every other affected goal retains
+        // the same route and sleeps. There is no fallback route selection.
+        let route_id = worksgood::service::HealthRouteKey::from_spawn_plan(&plan).id();
+        match worksgood::service::admit_route_action(
+            dir,
+            &route_id,
+            &task.id,
+            &convergence_policy,
+            Utc::now(),
+        ) {
+            Ok(worksgood::service::RouteAdmission::Allowed) => {}
+            Ok(worksgood::service::RouteAdmission::Probe { action_id }) => {
+                eprintln!(
+                    "[reconciler] '{}' acquired route probe {} for {}",
+                    task.id, action_id, route_id
+                );
+            }
+            Ok(worksgood::service::RouteAdmission::Deferred { until, reason }) => {
+                eprintln!(
+                    "[reconciler] Deferring '{}' on exact route {}: {} (next wake {})",
+                    task.id, route_id, reason, until
+                );
+                continue;
+            }
+            Err(error) => {
+                eprintln!(
+                    "[reconciler] Fail-closed for '{}' route {}: {error:#}",
+                    task.id, route_id
+                );
+                continue;
+            }
+        }
 
         // Provenance: every spawn emits one line tracing each decision back to
         // the config knob that produced it. Eliminates silent-routing bugs.
@@ -5295,51 +5252,9 @@ pub fn coordinator_tick(
         return Ok(early_result);
     }
 
-    // Phase 5.5: Check if spawning is paused due to global API-down backoff.
-    if super::zero_output::should_pause_spawning(dir) {
-        eprintln!("[dispatcher] Spawning paused: global zero-output backoff active");
-        let cycle_analysis = graph.compute_cycle_analysis();
-        let final_ready = ready_tasks_with_peers_cycle_aware(&graph, dir, &cycle_analysis);
-        // Exclude daemon-managed loop tasks from ready count.
-        let ready_count = final_ready.iter().filter(|t| !is_daemon_managed(t)).count();
-        return Ok(TickResult {
-            agents_alive: alive_count,
-            tasks_ready: ready_count,
-            agents_spawned: 0,
-            spawn_breaker_tripped_tasks: 0,
-            admission_deferred_tasks: 0,
-            admission_deferred_reason: None,
-        });
-    }
-
-    // Phase 5.6: Check if spawning is paused due to provider health failures.
-    match worksgood::service::ProviderHealth::load(dir) {
-        Ok(provider_health) if provider_health.should_pause_spawning() => {
-            eprintln!(
-                "[dispatcher] Spawning paused: {}",
-                provider_health.get_status_summary()
-            );
-            let cycle_analysis = graph.compute_cycle_analysis();
-            let final_ready = ready_tasks_with_peers_cycle_aware(&graph, dir, &cycle_analysis);
-            // Exclude daemon-managed loop tasks from ready count.
-            let ready_count = final_ready.iter().filter(|t| !is_daemon_managed(t)).count();
-            return Ok(TickResult {
-                agents_alive: alive_count,
-                tasks_ready: ready_count,
-                agents_spawned: 0,
-                spawn_breaker_tripped_tasks: 0,
-                admission_deferred_tasks: 0,
-                admission_deferred_reason: None,
-            });
-        }
-        Err(e) => {
-            eprintln!(
-                "[dispatcher] Warning: failed to load provider health: {}",
-                e
-            );
-        }
-        _ => {} // Provider health is healthy, continue
-    }
+    // Phase 5.5: global outage/backoff controllers are retired. Phase 6
+    // performs exact-route admission after the single authoritative spawn plan
+    // has resolved handler + wire + endpoint.
 
     // Phase 6: Spawn agents on ready tasks
     let cycle_analysis = graph.compute_cycle_analysis();

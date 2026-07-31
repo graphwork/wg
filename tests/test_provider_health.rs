@@ -115,7 +115,7 @@ fn test_provider_health_consecutive_failures_trigger_pause() {
     // Apply pause
     let paused = health.check_and_apply_pauses(3, "pause");
     assert_eq!(paused, vec![provider_id]);
-    assert!(health.service_paused);
+    assert!(!health.service_paused, "only the exact route may break");
 
     let provider = health.get_or_create_provider(provider_id);
     assert!(provider.is_paused);
@@ -191,9 +191,9 @@ fn test_provider_health_continue_mode() {
 
     // Apply pause with continue behavior
     let paused = health.check_and_apply_pauses(3, "continue");
-    assert_eq!(paused, vec![provider_id]); // Still returned as would-be paused
+    assert!(paused.is_empty());
 
-    // But nothing should actually be paused
+    // Nothing should actually be paused
     assert!(!health.service_paused);
     let provider = health.get_or_create_provider(provider_id);
     assert!(!provider.is_paused); // Immediately unpaused in continue mode
@@ -358,11 +358,11 @@ fn test_provider_health_end_to_end_integration() -> Result<()> {
 
     // Step 4: Test auto-pause application with different behaviors
 
-    // Test "pause" behavior - service should be globally paused
+    // Test compatibility "pause" behavior - only this route breaks.
     let paused_providers = provider_health.check_and_apply_pauses(2, "pause");
     assert_eq!(paused_providers, vec![provider_id]);
-    assert!(provider_health.service_paused);
-    assert!(provider_health.pause_reason.is_some());
+    assert!(!provider_health.service_paused);
+    assert!(provider_health.pause_reason.is_none());
     assert!(
         provider_health
             .providers
@@ -375,10 +375,10 @@ fn test_provider_health_end_to_end_integration() -> Result<()> {
     provider_health.save(&temp_dir.path())?;
     let loaded_health = ProviderHealth::load(&temp_dir.path())?;
 
-    // Verify persistence worked correctly
-    assert!(loaded_health.service_paused);
-    assert!(loaded_health.pause_reason.is_some());
-    assert!(loaded_health.paused_at.is_some());
+    // Verify route-local persistence and global-pause migration.
+    assert!(!loaded_health.service_paused);
+    assert!(loaded_health.pause_reason.is_none());
+    assert!(loaded_health.paused_at.is_none());
 
     let loaded_provider = loaded_health.providers.get(provider_id).unwrap();
     assert!(loaded_provider.is_paused);
@@ -389,13 +389,16 @@ fn test_provider_health_end_to_end_integration() -> Result<()> {
 
     // Step 6: Test resume functionality
     let mut resume_health = ProviderHealth::load(&temp_dir.path())?;
-    let was_paused = resume_health.service_paused;
+    let route_was_paused = resume_health
+        .providers
+        .get(provider_id)
+        .is_some_and(|provider| provider.is_paused);
 
     // Apply resume logic
     resume_health.resume_service();
 
-    // Verify resume cleared all pause state
-    assert!(was_paused); // Confirm it was paused before
+    // Verify resume cleared all route pause state
+    assert!(route_was_paused);
     assert!(!resume_health.service_paused);
     assert!(resume_health.pause_reason.is_none());
     assert!(resume_health.paused_at.is_none());
@@ -452,7 +455,7 @@ fn test_provider_health_end_to_end_integration() -> Result<()> {
     );
 
     let paused = continue_health.check_and_apply_pauses(2, "continue");
-    assert_eq!(paused, vec![provider_id]); // Still reported as would-be paused
+    assert!(paused.is_empty());
     assert!(!continue_health.service_paused);
     assert!(
         !continue_health
@@ -503,19 +506,22 @@ fn test_provider_health_end_to_end_integration() -> Result<()> {
     assert!(
         status_health
             .get_status_summary()
-            .contains("all providers healthy")
+            .contains("all routes healthy")
     );
 
-    status_health.service_paused = true;
-    status_health.pause_reason = Some("Provider 'claude' failed 3 consecutive times".to_string());
-    assert!(status_health.get_status_summary().contains("PAUSED"));
-    assert!(status_health.get_status_summary().contains("claude"));
+    status_health
+        .get_or_create_provider("claude")
+        .pause("typed route failure".to_string());
+    assert!(
+        status_health
+            .get_status_summary()
+            .contains("routes unavailable")
+    );
 
-    // Step 11: Test pause state detection for spawning
-    assert!(status_health.should_pause_spawning()); // Service is paused
-
-    status_health.service_paused = false;
-    assert!(!status_health.should_pause_spawning()); // Service not paused
+    // Step 11: global spawn pause authority is retired. Dispatch consults the
+    // exact route through the convergence scheduler.
+    status_health.service_paused = true; // historical byte must be ignored
+    assert!(!status_health.should_pause_spawning());
 
     Ok(())
 }
