@@ -731,6 +731,21 @@ fn bounded_truncation_is_infrastructure_only_and_deep_reads_exact_candidate() {
         "preflight insufficiency must not invoke a semantic grader"
     );
 
+    // Move mutable main after finalization. Deep FLIP must still materialize
+    // the descriptor-bound candidate commit, never whatever the live branch
+    // or worker checkout happens to contain at observation time.
+    fs::write(
+        project.join("src/api.rs"),
+        "pub const MODE: &str = \"mutable-main-after-candidate\";\n",
+    )
+    .unwrap();
+    git(&project, &["add", "src/api.rs"]);
+    git(&project, &["commit", "-qm", "advance mutable main"]);
+    assert_ne!(
+        git(&project, &["show", "main:src/api.rs"]),
+        candidate_source_before
+    );
+
     assert!(run_one_pending(&dir, &config()).unwrap().ran);
     let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
     let deep = graph
