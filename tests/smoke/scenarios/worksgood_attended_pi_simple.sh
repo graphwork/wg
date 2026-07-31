@@ -106,11 +106,14 @@ done
 grep -Fq "stdin=<$input>" "$PI_LOG" \
     || loud_fail "real TUI did not forward keyboard input to Pi: $(capture) log=$(cat "$PI_LOG")"
 argv=$(grep '^argv=' "$PI_LOG")
-# Stateful attended-session ownership flags are expected. Model/provider,
-# reasoning, RPC, and hermetic-extension overrides are not.
-if grep -Eq -- '<--model>|<--provider>|<--thinking>|<--mode>|<rpc>|<-e>|<-ne>' <<<"$argv"; then
+# Stateful attended-session ownership and the exact WG plugin (-e) are
+# expected. Model/provider/reasoning overrides and unattended RPC/discovery
+# suppression are not. This reuses the accepted attended Pi PTY/plugin path.
+if grep -Eq -- '<--model>|<--provider>|<--thinking>|<--mode>|<rpc>|<-ne>' <<<"$argv"; then
     loud_fail "attended Pi argv contains managed/unattended model flags: $argv"
 fi
+grep -Eq -- '<-e> <.*/pi-worksgood/index\.js>' <<<"$argv" \
+    || loud_fail "attended Pi argv omitted the compatible WG plugin: $argv"
 python3 - "$G/graph.jsonl" <<'PY'
 import json,sys
 rows=[json.loads(x) for x in open(sys.argv[1]) if '"id":".chat-' in x]
@@ -121,6 +124,24 @@ assert chat.get('executor_preset_name')=='pi', chat
 assert chat.get('model') in (None,''), chat
 assert chat.get('reasoning') in (None,''), chat
 assert chat.get('command_argv')==['pi'], chat
+PY
+
+# Exercise the exact warm write-back command used by Pi's in-process model
+# picker. It may update this chat, but must not create or rewrite repository
+# worker/evaluator routing or service identity.
+chat_model='pi:openrouter:test/attended-choice'
+HOME="$HOME" WG_GLOBAL_DIR="$WG_GLOBAL_DIR" "$W" --dir "$G" \
+    chat model .chat-0 "$chat_model" --warm-pi-writeback >/dev/null
+python3 - "$G/graph.jsonl" "$G/service/coordinator-state-0.json" "$chat_model" <<'PY'
+import json,sys
+rows=[json.loads(x) for x in open(sys.argv[1]) if '"id":".chat-0"' in x]
+assert len(rows)==1, rows
+chat=rows[0]
+state=json.load(open(sys.argv[2]))
+assert chat.get('model') in (None,''), chat
+assert chat.get('command_argv')==['pi'], chat
+assert state.get('executor_override')=='pi', state
+assert state.get('model_override')==sys.argv[3], state
 PY
 [[ ! -e "$G/config.toml" && ! -e "$G/profile-selection.json" && ! -e "$G/service/state.json" ]] \
     || loud_fail "attended model/session activity rewrote automation state"
