@@ -8,19 +8,19 @@ use worksgood::config::ReasoningLevel;
 #[command(
     name = "worksgood",
     version,
-    about = "Simple attended Pi chat launcher (the complete expert CLI remains `wg`)",
-    after_help = "PRODUCT BOUNDARY:\n  Bare `worksgood` opens a route-free attended Pi chat surface. Pi owns login, model selection, and model switching; no worker/evaluator route or service is configured.\n  `worksgood setup` explicitly enables/configures unattended workers and evaluation (advanced). Those routes do not control the model selected inside an attended Pi chat.\n  This concierge does not rename or replace the complete `wg` expert CLI. Internal operations use one authenticated absolute sibling `wg` executable.\n\nBare non-TTY use refuses without mutation."
+    about = "Thin existing-graph TUI launcher (the complete expert CLI remains `wg`)",
+    after_help = "PRODUCT BOUNDARY:\n  In a repository that already has `.wg`, bare `worksgood` directly opens the exact same setup-neutral TUI as `wg tui`, using the authenticated absolute sibling `wg` executable and exact project graph. It does not inspect Pi, plugins, profiles, concierge state, config, or services.\n  In a new repository, bare `worksgood` performs one minimal route-free graph bootstrap and then opens that TUI. The TUI owns chat creation and reports executor availability only when a user chooses an executor.\n  `worksgood setup` explicitly enables/configures unattended workers and evaluation (advanced).\n\nNew-repository bootstrap and setup require an attended TTY."
 )]
 struct Cli {
     /// Repository/worktree target. Never falls back to ~/.wg.
     #[arg(long, global = true)]
     project: Option<PathBuf>,
 
-    /// Print one immutable redacted plan; write absolutely nothing.
+    /// Advanced concierge: print one immutable redacted plan; write absolutely nothing.
     #[arg(long, global = true)]
     dry_run: bool,
 
-    /// Configure one exact Pi route for every unattended LLM role (advanced).
+    /// Advanced concierge: configure one exact Pi route for every unattended LLM role.
     /// Worker reasoning defaults high; Eval/assign/FLIP reasoning defaults low.
     /// This never selects the model in an attended Pi chat.
     #[arg(
@@ -31,28 +31,28 @@ struct Cli {
     )]
     model: Option<String>,
 
-    /// Select an existing reusable base profile for automation (advanced).
+    /// Advanced concierge: select an existing reusable base profile for automation.
     #[arg(long, global = true)]
     profile: Option<String>,
 
-    /// Explicitly open a graph/TUI without checking Pi or running an LLM service.
+    /// Advanced concierge: configure a graph without an LLM service.
     #[arg(long, global = true, conflicts_with_all = ["profile", "model"])]
     without_ai: bool,
 
-    /// Exact unattended worker/chat route for an existing --profile (advanced).
+    /// Advanced concierge: exact unattended worker/chat route for an existing --profile.
     #[arg(long, global = true, requires = "profile", conflicts_with = "model")]
     strong_model: Option<String>,
 
-    /// Exact unattended Agency/FLIP/evaluation route. Use the same exact value as
+    /// Advanced concierge: exact unattended Agency/FLIP/evaluation route. Use the same exact value as
     /// --strong-model to explicitly choose “Same as worker”.
     #[arg(long, global = true, requires = "strong_model")]
     weak_model: Option<String>,
 
-    /// Unattended worker/chat effort. With --model, defaults to high.
+    /// Advanced concierge: unattended worker/chat effort. With --model, defaults to high.
     #[arg(long, global = true)]
     strong_reasoning: Option<ReasoningLevel>,
 
-    /// Unattended Eval/assign/FLIP/weak-role effort. With --model, defaults to low.
+    /// Advanced concierge: unattended Eval/assign/FLIP/weak-role effort. With --model, defaults to low.
     #[arg(long, global = true)]
     weak_reasoning: Option<ReasoningLevel>,
 
@@ -99,25 +99,53 @@ fn lifecycle_options(cli: &Cli, open_tui: bool) -> LifecycleOptions {
     }
 }
 
+fn advanced_concierge_option(cli: &Cli) -> Option<&'static str> {
+    if cli.dry_run {
+        Some("--dry-run")
+    } else if cli.model.is_some() {
+        Some("--model")
+    } else if cli.profile.is_some() {
+        Some("--profile")
+    } else if cli.without_ai {
+        Some("--without-ai")
+    } else if cli.strong_model.is_some() {
+        Some("--strong-model")
+    } else if cli.weak_model.is_some() {
+        Some("--weak-model")
+    } else if cli.strong_reasoning.is_some() {
+        Some("--strong-reasoning")
+    } else if cli.weak_reasoning.is_some() {
+        Some("--weak-reasoning")
+    } else {
+        None
+    }
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    if cli.model.is_some()
-        && matches!(
-            cli.command,
-            Some(Commands::Status | Commands::Stop | Commands::Restart | Commands::Tui)
-        )
+    if matches!(
+        cli.command,
+        Some(Commands::Status | Commands::Stop | Commands::Restart | Commands::Tui)
+    ) && let Some(option) = advanced_concierge_option(&cli)
     {
-        anyhow::bail!(
-            "--model is a setup/reconcile option; use it with bare `worksgood` or `worksgood setup`"
-        );
+        anyhow::bail!("{option} is an advanced concierge option; use it with `worksgood setup`");
     }
     match cli.command {
-        None => concierge::run_lifecycle(&lifecycle_options(&cli, true), false),
+        None => {
+            // No setup input means exactly the thin launcher. Retain the
+            // historical explicit-option shorthand as an advanced concierge
+            // request; `worksgood setup` is the discoverable/canonical form.
+            if advanced_concierge_option(&cli).is_some() || cli.yes {
+                concierge::run_lifecycle(&lifecycle_options(&cli, true))
+            } else {
+                concierge::run_bare(cli.project.as_deref())
+            }
+        }
         Some(Commands::Setup { rollback }) => {
             if rollback {
                 concierge::run_rollback(cli.project.as_deref())
             } else {
-                concierge::run_lifecycle(&lifecycle_options(&cli, false), true)
+                concierge::run_lifecycle(&lifecycle_options(&cli, false))
             }
         }
         Some(Commands::Status) => concierge::run_status(cli.project.as_deref()),
