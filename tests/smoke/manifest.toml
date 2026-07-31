@@ -2886,3 +2886,10 @@ script = "scenarios/task_owned_finish_transaction.sh"
 owners = ["implement-task-owned-finish-transaction"]
 description = "Installed-binary credential-free finish protocol: two same-base land tasks serialize under the repository lease and both reach main with exact evaluation receipts; a real conflict remains in the same source attempt/worktree; two deliver children publish retained immutable refs without moving main, clean immediately, and a synthesis land task alone combines/promotes them. Every terminal disposition has a cleanup receipt and no worktree."
 timeout_seconds = 180
+
+[[scenario]]
+name = "autonomous_actor_tui_visibility"
+script = "scenarios/autonomous_actor_tui_visibility.sh"
+owners = ["clarify-autonomous-actor-tui-visibility"]
+description = "Candidate-binary real tmux/TUI screenshot flow for typed graph presentation: explicit autonomous .quality/.assign-looking actors remain visible with the centered-dot glyph while ordinary-ID and evaluator plumbing collapse; ASCII/DOT/Mermaid agree; the labeled hidden-count control cycles hidden/running-only/all by keyboard and same-frame SGR mouse; active hidden plumbing remains parent-annotated and inspectable."
+timeout_seconds = 180

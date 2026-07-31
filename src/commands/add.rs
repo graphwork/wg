@@ -664,10 +664,19 @@ pub fn run_with_remote_provider(
     // (`wg add 'subtask' --after $WG_TASK_ID`). Tie-break is deterministic
     // (lexicographically smallest neighbor profile). See `dispatch::profile`.
     let inherited_profile = inherit_profile_from_neighbors(graph, &effective_after);
+    let actor_parent = std::env::var("WG_TASK_ID").ok().filter(|id| !id.is_empty());
+    let (presentation, task_origin) = worksgood::graph::presentation_for_new_task(
+        &task_id,
+        title,
+        actor_parent.clone(),
+        actor_parent.is_some(),
+    );
 
     let task = Task {
         id: task_id.clone(),
         title: title.to_string(),
+        presentation,
+        origin: task_origin,
         description: description.map(String::from),
         status: Status::Open,
         lifecycle: worksgood::lifecycle::LifecycleProjection::default(),
@@ -1188,9 +1197,17 @@ fn add_task_directly(
             (None, false, None)
         };
 
+        let (presentation, task_origin) = worksgood::graph::presentation_for_new_task(
+            &task_id,
+            title,
+            after.first().cloned(),
+            true,
+        );
         let task = Task {
             id: task_id.clone(),
             title: title.to_string(),
+            presentation,
+            origin: task_origin,
             description: description.map(String::from),
             status: Status::Open,
             lifecycle: worksgood::lifecycle::LifecycleProjection::default(),

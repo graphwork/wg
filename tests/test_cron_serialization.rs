@@ -7,6 +7,8 @@ fn test_cron_task_serialization() {
     let task = Task {
         id: "test-cron".to_string(),
         title: "Test Cron Task".to_string(),
+        presentation: worksgood::graph::TaskPresentation::Primary,
+        origin: worksgood::graph::TaskOrigin::default(),
         description: None,
         status: Status::Open,
         lifecycle: worksgood::lifecycle::LifecycleProjection::default(),

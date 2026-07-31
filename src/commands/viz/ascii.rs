@@ -308,6 +308,11 @@ pub(crate) fn generate_ascii(
         }
 
         let is_paused = task.is_some_and(|t| t.paused);
+        let automation_glyph = task
+            .map(|t| t.presentation.automation_glyph())
+            .filter(|glyph| !glyph.is_empty())
+            .map(|glyph| format!("{} ", glyph))
+            .unwrap_or_default();
         // Chat agent tasks: cyan for current (.chat-N), dark gray for legacy (.coordinator-N).
         // Paused tasks override the status color with a muted blue-gray so they read
         // as "open but on hold" rather than as the underlying status's normal hue.
@@ -472,9 +477,10 @@ pub(crate) fn generate_ascii(
             ("", "")
         };
         format!(
-            "{}{}{}{}  {}({}){}{}{}{}{}{}",
+            "{}{}{}{}{}  {}({}){}{}{}{}{}{}",
             color,
             pause_glyph,
+            automation_glyph,
             id,
             reset,
             paren_color,
@@ -1565,7 +1571,7 @@ pub(crate) fn truncate_lines(text: &str, max_columns: u16) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use worksgood::graph::{Node, Task};
+    use worksgood::graph::{Node, Task, TaskOrigin, TaskPresentation};
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {
@@ -1576,9 +1582,12 @@ mod tests {
     }
 
     fn make_internal_task(id: &str, title: &str, tag: &str, after: Vec<&str>) -> Task {
+        let parent = id.split_once('-').map(|(_, parent)| parent.to_string());
         Task {
             id: id.to_string(),
             title: title.to_string(),
+            presentation: TaskPresentation::Plumbing,
+            origin: TaskOrigin::plumbing(parent, title),
             tags: vec![tag.to_string(), "agency".to_string()],
             after: after.into_iter().map(String::from).collect(),
             ..Task::default()
@@ -3741,13 +3750,9 @@ mod tests {
         let mut graph = WorkGraph::new();
         let mut parent = make_task("my-task", "My Task");
         parent.status = Status::InProgress;
-        let assign = Task {
-            id: ".assign-my-task".to_string(),
-            title: "Assign my-task".to_string(),
-            tags: vec!["assignment".to_string(), "agency".to_string()],
-            status: Status::InProgress,
-            ..Task::default()
-        };
+        let mut assign =
+            make_internal_task(".assign-my-task", "Assign my-task", "assignment", vec![]);
+        assign.status = Status::InProgress;
         graph.add_node(Node::Task(parent));
         graph.add_node(Node::Task(assign));
 

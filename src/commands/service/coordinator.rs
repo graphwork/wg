@@ -1596,6 +1596,11 @@ fn build_auto_assign_tasks(
                 let create_task = Task {
                     id: create_task_id.clone(),
                     title: format!("Create agents: poor match for '{}'", source_id),
+                    presentation: worksgood::graph::TaskPresentation::Autonomous,
+                    origin: worksgood::graph::TaskOrigin::autonomous(
+                        Some(source_id.clone()),
+                        "expand the agent pool for an unmet task goal",
+                    ),
                     description: Some(desc),
                     status: Status::Open,
                     lifecycle: worksgood::lifecycle::LifecycleProjection::default(),
@@ -1894,6 +1899,11 @@ fn build_flip_verification_tasks(
         let verify_task = Task {
             id: verify_task_id.clone(),
             title: format!("Verify (FLIP {:.2}): {}", eval.score, source_title),
+            presentation: worksgood::graph::TaskPresentation::Plumbing,
+            origin: worksgood::graph::TaskOrigin::plumbing(
+                Some(source_task_id.clone()),
+                "repair and verification satellite",
+            ),
             description: Some(desc),
             status: Status::Open,
             lifecycle: worksgood::lifecycle::LifecycleProjection::default(),
@@ -2183,6 +2193,11 @@ fn build_separate_verify_tasks(
         let verify_task = Task {
             id: verify_task_id.clone(),
             title: format!("Verify: {}", source_title),
+            presentation: worksgood::graph::TaskPresentation::Plumbing,
+            origin: worksgood::graph::TaskOrigin::plumbing(
+                Some(source_task_id.clone()),
+                "independent verification satellite",
+            ),
             description: Some(desc),
             status: Status::Open,
             lifecycle: worksgood::lifecycle::LifecycleProjection::default(),
@@ -2400,9 +2415,15 @@ fn build_auto_evolve_task(
 
     let evolver_resolved = config.resolve_model_for_role(worksgood::config::DispatchRole::Evolver);
 
+    let evolve_parent = causal_ids.first().cloned();
     let evolve_task = Task {
         id: evolve_task_id.clone(),
         title: format!("Auto-evolve: {}", trigger_reason),
+        presentation: worksgood::graph::TaskPresentation::Autonomous,
+        origin: worksgood::graph::TaskOrigin::autonomous(
+            evolve_parent,
+            format!("auto-evolve: {}", trigger_reason),
+        ),
         description: Some(desc),
         status: Status::Open,
         lifecycle: worksgood::lifecycle::LifecycleProjection::default(),
@@ -2623,9 +2644,15 @@ fn build_auto_create_task(
         since_last, config.agency.auto_create_threshold, trigger_list,
     );
 
+    let create_parent = trigger_ids.first().cloned();
     let create_task = Task {
         id: create_task_id.clone(),
         title: format!("Auto-create: {} tasks since last creation", since_last),
+        presentation: worksgood::graph::TaskPresentation::Autonomous,
+        origin: worksgood::graph::TaskOrigin::autonomous(
+            create_parent,
+            "expand the agency primitive store",
+        ),
         description: Some(desc),
         status: Status::Open,
         lifecycle: worksgood::lifecycle::LifecycleProjection::default(),

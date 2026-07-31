@@ -196,6 +196,11 @@ pub fn run_fanout(
     let partition_task = Task {
         id: partition_task_id.clone(),
         title: format!("Evolve partition ({})", run_id),
+        presentation: worksgood::graph::TaskPresentation::Autonomous,
+        origin: worksgood::graph::TaskOrigin::autonomous(
+            None,
+            format!("partition evolution run {run_id}"),
+        ),
         description: Some(partition_description),
         status: Status::Done, // Already done — we just did the partitioning
         tags: vec!["evolution".into(), "partition".into()],
@@ -229,6 +234,11 @@ pub fn run_fanout(
         let analyzer_task = Task {
             id: task_id.clone(),
             title: format!("Evolve analyzer: {}", strategy.label()),
+            presentation: worksgood::graph::TaskPresentation::Autonomous,
+            origin: worksgood::graph::TaskOrigin::autonomous(
+                Some(partition_task_id.clone()),
+                format!("analyze evolution strategy {}", strategy.label()),
+            ),
             description: Some(description),
             status: Status::Open,
             after: vec![partition_task_id.clone()],
@@ -306,6 +316,11 @@ Write to `.wg/evolve-runs/{run_id}/synthesis-result.json`:
     let synthesize_task = Task {
         id: synthesize_task_id.clone(),
         title: format!("Evolve synthesizer ({})", run_id),
+        presentation: worksgood::graph::TaskPresentation::Autonomous,
+        origin: worksgood::graph::TaskOrigin::autonomous(
+            Some(partition_task_id.clone()),
+            format!("synthesize evolution run {run_id}"),
+        ),
         description: Some(synthesize_description),
         status: Status::Open,
         after: analyzer_task_ids.clone(),
@@ -350,6 +365,11 @@ Read from: `.wg/evolve-runs/{run_id}/synthesis-result.json`
     let apply_task = Task {
         id: apply_task_id.clone(),
         title: format!("Evolve apply ({})", run_id),
+        presentation: worksgood::graph::TaskPresentation::Autonomous,
+        origin: worksgood::graph::TaskOrigin::autonomous(
+            Some(synthesize_task_id.clone()),
+            format!("apply evolution run {run_id}"),
+        ),
         description: Some(apply_description),
         status: Status::Open,
         after: vec![synthesize_task_id.clone()],
@@ -441,6 +461,11 @@ Evaluate the results of the evolution run.
     let evaluate_task = Task {
         id: evaluate_task_id.clone(),
         title: format!("Evolve evaluate ({})", run_id),
+        presentation: worksgood::graph::TaskPresentation::Autonomous,
+        origin: worksgood::graph::TaskOrigin::autonomous(
+            Some(apply_task_id.clone()),
+            format!("evaluate evolution run {run_id}"),
+        ),
         description: Some(evaluate_description),
         status: Status::Open,
         after: vec![apply_task_id.clone()],

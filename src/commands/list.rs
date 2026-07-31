@@ -51,7 +51,7 @@ pub fn run(
 
     let tasks: Vec<_> = graph
         .tasks()
-        .filter(|t| show_all || !t.id.starts_with('.'))
+        .filter(|t| show_all || !t.is_plumbing())
         .filter(|t| status_filter.as_ref().is_none_or(|s| &t.status == s))
         .filter(|t| !paused_only || t.paused)
         .filter(|t| tags.iter().all(|tag| t.tags.contains(tag)))
@@ -241,7 +241,7 @@ mod tests {
     use chrono::Duration;
     use std::fs;
     use tempfile::tempdir;
-    use worksgood::graph::{Node, Task, WorkGraph};
+    use worksgood::graph::{Node, Task, TaskOrigin, TaskPresentation, WorkGraph};
     use worksgood::parser::{load_graph, save_graph};
 
     fn make_task(id: &str, title: &str, status: Status) -> Task {
@@ -920,37 +920,65 @@ mod tests {
         assert_eq!(filtered.len(), 2);
     }
 
-    // --- dot-prefix filtering tests ---
+    // --- typed presentation filtering tests ---
+
+    fn plumbing_task(id: &str, title: &str, status: Status, parent: &str) -> Task {
+        Task {
+            presentation: TaskPresentation::Plumbing,
+            origin: TaskOrigin::plumbing(Some(parent.to_string()), title),
+            ..make_task(id, title, status)
+        }
+    }
 
     #[test]
-    fn test_dot_prefix_hidden_by_default() {
+    fn test_plumbing_hidden_by_default() {
         let dir = tempdir().unwrap();
         setup_workgraph(
             dir.path(),
             vec![
                 make_task("real-task", "Real task", Status::Open),
-                make_task(".assign-real-task", "Assign real task", Status::Open),
-                make_task(".flip-real-task", "FLIP real task", Status::Done),
+                plumbing_task(
+                    ".assign-real-task",
+                    "Assign real task",
+                    Status::Open,
+                    "real-task",
+                ),
+                plumbing_task(
+                    ".flip-real-task",
+                    "FLIP real task",
+                    Status::Done,
+                    "real-task",
+                ),
             ],
         );
         let path = graph_path(dir.path());
         let graph = load_graph(&path).unwrap();
 
         // Without show_all: dot-prefixed tasks are hidden
-        let visible: Vec<_> = graph.tasks().filter(|t| !t.id.starts_with('.')).collect();
+        let visible: Vec<_> = graph.tasks().filter(|t| !t.is_plumbing()).collect();
         assert_eq!(visible.len(), 1);
         assert_eq!(visible[0].id, "real-task");
     }
 
     #[test]
-    fn test_dot_prefix_shown_with_all() {
+    fn test_plumbing_shown_with_all() {
         let dir = tempdir().unwrap();
         setup_workgraph(
             dir.path(),
             vec![
                 make_task("real-task", "Real task", Status::Open),
-                make_task(".assign-real-task", "Assign real task", Status::Open),
-                make_task(".flip-real-task", "FLIP real task", Status::Done),
+                plumbing_task(
+                    ".assign-real-task",
+                    "Assign real task",
+                    Status::Open,
+                    "real-task",
+                ),
+                plumbing_task(
+                    ".flip-real-task",
+                    "FLIP real task",
+                    Status::Done,
+                    "real-task",
+                ),
             ],
         );
         // show_all=true should show all 3 tasks
@@ -964,13 +992,13 @@ mod tests {
     }
 
     #[test]
-    fn test_dot_prefix_hidden_with_status_filter() {
+    fn test_plumbing_hidden_with_status_filter() {
         let dir = tempdir().unwrap();
         setup_workgraph(
             dir.path(),
             vec![
                 make_task("real-done", "Real done", Status::Done),
-                make_task(".flip-real-done", "FLIP done", Status::Done),
+                plumbing_task(".flip-real-done", "FLIP done", Status::Done, "real-done"),
             ],
         );
         // show_all=false with status filter should still hide dot-prefixed
@@ -979,7 +1007,7 @@ mod tests {
 
         let visible: Vec<_> = graph
             .tasks()
-            .filter(|t| !t.id.starts_with('.'))
+            .filter(|t| !t.is_plumbing())
             .filter(|t| t.status == Status::Done)
             .collect();
         assert_eq!(visible.len(), 1);

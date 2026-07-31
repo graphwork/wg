@@ -29,6 +29,8 @@ fn create_task_with_timeout(id: &str, verify_timeout: Option<String>) -> Task {
     Task {
         id: id.to_string(),
         title: format!("Test task {}", id),
+        presentation: worksgood::graph::TaskPresentation::Primary,
+        origin: worksgood::graph::TaskOrigin::default(),
         description: None,
         status: Status::Open,
         lifecycle: worksgood::lifecycle::LifecycleProjection::default(),

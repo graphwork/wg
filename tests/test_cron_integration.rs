@@ -249,6 +249,8 @@ fn create_test_task() -> Task {
     Task {
         id: "test".to_string(),
         title: "Test Task".to_string(),
+        presentation: worksgood::graph::TaskPresentation::Primary,
+        origin: worksgood::graph::TaskOrigin::default(),
         description: None,
         status: Status::Open,
         lifecycle: worksgood::lifecycle::LifecycleProjection::default(),

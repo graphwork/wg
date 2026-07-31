@@ -598,6 +598,80 @@ pub fn lower_priority(p: Priority) -> Priority {
     }
 }
 
+/// How a task participates in the user-facing graph.
+///
+/// This is deliberately independent of the task ID. A leading `.` remains a
+/// reserved namespace/scheduling concern, never a presentation policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum TaskPresentation {
+    /// User-requested or otherwise primary graph work.
+    #[default]
+    Primary,
+    /// Goal-bearing work requested by an autonomous actor/controller.
+    Autonomous,
+    /// Bounded agency/placement/verification machinery owned by a parent task.
+    Plumbing,
+}
+
+impl std::fmt::Display for TaskPresentation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Primary => f.write_str("primary"),
+            Self::Autonomous => f.write_str("autonomous ·"),
+            Self::Plumbing => f.write_str("plumbing (collapsed by default)"),
+        }
+    }
+}
+
+impl TaskPresentation {
+    pub fn is_plumbing(self) -> bool {
+        self == Self::Plumbing
+    }
+
+    pub fn automation_glyph(self) -> &'static str {
+        if self == Self::Autonomous { "·" } else { "" }
+    }
+}
+
+/// Typed provenance for the actor that introduced a graph task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum TaskOriginKind {
+    #[default]
+    User,
+    AutonomousActor,
+    AgencyPlumbing,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct TaskOrigin {
+    #[serde(default)]
+    pub kind: TaskOriginKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_task: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal: Option<String>,
+}
+
+impl TaskOrigin {
+    pub fn autonomous(parent_task: Option<String>, goal: impl Into<String>) -> Self {
+        Self {
+            kind: TaskOriginKind::AutonomousActor,
+            parent_task,
+            goal: Some(goal.into()),
+        }
+    }
+
+    pub fn plumbing(parent_task: Option<String>, goal: impl Into<String>) -> Self {
+        Self {
+            kind: TaskOriginKind::AgencyPlumbing,
+            parent_task,
+            goal: Some(goal.into()),
+        }
+    }
+}
+
 /// A task node.
 ///
 /// A task in the WG task graph with dependencies, status, and execution metadata.
@@ -609,6 +683,12 @@ pub fn lower_priority(p: Priority) -> Priority {
 pub struct Task {
     pub id: String,
     pub title: String,
+    /// Typed user-facing role. Renderers and filters MUST use this field rather
+    /// than interpreting `id` prefixes.
+    pub presentation: TaskPresentation,
+    /// Explicit actor/goal lineage. Plumbing and autonomous work name their
+    /// parent when one exists; daemon/reconciler ledger actors are not tasks.
+    pub origin: TaskOrigin,
     /// Detailed description of the task (body, acceptance criteria, etc.)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -958,6 +1038,8 @@ impl Default for Task {
         Self {
             id: String::new(),
             title: String::new(),
+            presentation: TaskPresentation::Primary,
+            origin: TaskOrigin::default(),
             description: None,
             status: Status::default(),
             lifecycle: crate::lifecycle::LifecycleProjection::default(),
@@ -1074,6 +1156,14 @@ impl Task {
             .any(|edge| edge.task_id == task_id && edge.kind == "contribution")
     }
 
+    pub fn is_plumbing(&self) -> bool {
+        self.presentation.is_plumbing()
+    }
+
+    pub fn is_autonomous(&self) -> bool {
+        self.presentation == TaskPresentation::Autonomous
+    }
+
     /// Bump `last_interaction_at` to now (UTC, RFC 3339).
     ///
     /// Called by `modify_graph` for every task whose persistent fields change
@@ -1153,10 +1243,27 @@ pub fn is_validated_system_task_id(task_id: &str) -> bool {
     PREFIXES.iter().any(|prefix| task_id.starts_with(prefix))
 }
 
+/// Historical namespaces used by bounded agency/placement/verification
+/// satellites. New code stamps [`TaskPresentation::Plumbing`] at creation;
+/// this helper exists for migration and scheduler compatibility only.
+pub fn is_legacy_plumbing_task_id(task_id: &str) -> bool {
+    [
+        ".assign-",
+        ".flip-",
+        ".evaluate-",
+        ".place-",
+        ".verify-",
+        ".sep-verify-",
+        ".respond-to-",
+    ]
+    .iter()
+    .any(|prefix| task_id.starts_with(prefix))
+}
+
 /// Returns `true` if the task ID represents agency lifecycle scaffolding.
 ///
-/// These nodes are real graph tasks so scheduling and audit trails can depend
-/// on them, but they are not user-visible work depth for guardrails.
+/// This remains a scheduler/cycle-analysis compatibility predicate. Graph
+/// presentation uses [`Task::is_plumbing`] instead.
 pub fn is_agency_scaffold_task(task_id: &str) -> bool {
     task_id.starts_with(".assign-")
         || task_id.starts_with(".flip-")
@@ -1931,6 +2038,73 @@ fn is_default_visibility(val: &str) -> bool {
     val == "internal"
 }
 
+/// Safe one-time classification for graph rows written before typed
+/// presentation metadata existed. Known bounded satellites collapse; known
+/// chat/user-board identities stay primary; other validated dot namespaces
+/// represent goal-bearing automation and therefore remain visible.
+fn legacy_task_presentation(
+    id: &str,
+    title: &str,
+    tags: &[String],
+) -> (TaskPresentation, TaskOrigin) {
+    if is_legacy_plumbing_task_id(id) {
+        let parent = [
+            ".assign-",
+            ".flip-",
+            ".evaluate-",
+            ".place-",
+            ".verify-",
+            ".sep-verify-",
+            ".respond-to-",
+        ]
+        .iter()
+        .find_map(|prefix| id.strip_prefix(prefix))
+        .map(str::to_owned);
+        return (
+            TaskPresentation::Plumbing,
+            TaskOrigin::plumbing(parent, title),
+        );
+    }
+    if id.starts_with('.')
+        && !tags
+            .iter()
+            .any(|tag| tag == "chat-loop" || tag == "coordinator-loop" || tag == "user-board")
+    {
+        return (
+            TaskPresentation::Autonomous,
+            TaskOrigin::autonomous(None, title),
+        );
+    }
+    (TaskPresentation::Primary, TaskOrigin::default())
+}
+
+/// Build explicit metadata for a newly-created task. Namespace inspection is
+/// confined to this creation boundary; no view derives visibility from it.
+pub fn presentation_for_new_task(
+    id: &str,
+    title: &str,
+    parent_task: Option<String>,
+    requested_by_autonomous_actor: bool,
+) -> (TaskPresentation, TaskOrigin) {
+    if is_legacy_plumbing_task_id(id) {
+        return (
+            TaskPresentation::Plumbing,
+            TaskOrigin::plumbing(parent_task, title),
+        );
+    }
+    let reserved_goal_actor = id.starts_with('.')
+        && !id.starts_with(".chat-")
+        && !id.starts_with(".coordinator-")
+        && !id.starts_with(".user-");
+    if requested_by_autonomous_actor || reserved_goal_actor {
+        return (
+            TaskPresentation::Autonomous,
+            TaskOrigin::autonomous(parent_task, title),
+        );
+    }
+    (TaskPresentation::Primary, TaskOrigin::default())
+}
+
 /// Legacy identity format: `{"role_id": "...", "motivation_id": "..."}`.
 /// Used for migrating old JSONL data that stored identity inline on tasks.
 #[derive(Deserialize)]
@@ -1944,6 +2118,12 @@ struct LegacyIdentity {
 struct TaskHelper {
     id: String,
     title: String,
+    /// Optional so absence can be distinguished from an explicit primary
+    /// classification during the one-time legacy migration.
+    #[serde(default)]
+    presentation: Option<TaskPresentation>,
+    #[serde(default)]
+    origin: Option<TaskOrigin>,
     #[serde(default)]
     description: Option<String>,
     #[serde(default)]
@@ -2157,9 +2337,20 @@ impl<'de> Deserialize<'de> for Task {
             (None, None) => None,
         };
 
+        // Compatibility migration is the only place allowed to inspect old
+        // namespaces for presentation. Once loaded, every renderer/filter uses
+        // these typed values, and an explicit value always wins even when the
+        // task ID looks like a historical satellite.
+        let (legacy_presentation, legacy_origin) =
+            legacy_task_presentation(&helper.id, &helper.title, &helper.tags);
+        let presentation = helper.presentation.unwrap_or(legacy_presentation);
+        let origin = helper.origin.unwrap_or(legacy_origin);
+
         Ok(Task {
             id: helper.id,
             title: helper.title,
+            presentation,
+            origin,
             description: helper.description,
             status: helper.status,
             lifecycle: helper.lifecycle,
@@ -3732,6 +3923,42 @@ mod tests {
             }
             _ => panic!("Expected Task"),
         }
+    }
+
+    #[test]
+    fn legacy_presentation_migration_is_safe_and_explicit_metadata_wins() {
+        let quality: Node = serde_json::from_str(
+            r#"{"id":".quality-pass-old","kind":"task","title":"Quality","status":"open"}"#,
+        )
+        .unwrap();
+        let assign: Node = serde_json::from_str(
+            r#"{"id":".assign-source","kind":"task","title":"Assign","status":"open"}"#,
+        )
+        .unwrap();
+        let explicit: Node = serde_json::from_str(
+            r#"{"id":".assign-visible-by-policy","kind":"task","title":"Named like plumbing","status":"open","presentation":"autonomous","origin":{"kind":"autonomous-actor","goal":"explicit policy"}}"#,
+        )
+        .unwrap();
+
+        let Node::Task(quality) = quality else {
+            panic!("task")
+        };
+        let Node::Task(assign) = assign else {
+            panic!("task")
+        };
+        let Node::Task(explicit) = explicit else {
+            panic!("task")
+        };
+        assert_eq!(quality.presentation, TaskPresentation::Autonomous);
+        assert_eq!(quality.origin.kind, TaskOriginKind::AutonomousActor);
+        assert_eq!(assign.presentation, TaskPresentation::Plumbing);
+        assert_eq!(assign.origin.parent_task.as_deref(), Some("source"));
+        assert_eq!(explicit.presentation, TaskPresentation::Autonomous);
+        assert_eq!(explicit.origin.goal.as_deref(), Some("explicit policy"));
+
+        let migrated = serde_json::to_string(&Node::Task(assign)).unwrap();
+        assert!(migrated.contains("\"presentation\":\"plumbing\""));
+        assert!(migrated.contains("\"parent_task\":\"source\""));
     }
 
     #[test]

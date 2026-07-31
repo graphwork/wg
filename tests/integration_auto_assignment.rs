@@ -229,6 +229,11 @@ fn build_assign_subgraph(dir: &Path) {
             failure_signal: None,
             id: assign_task_id.clone(),
             title: format!("Assign agent for: {}", ready_task.title),
+            presentation: worksgood::graph::TaskPresentation::Plumbing,
+            origin: worksgood::graph::TaskOrigin::plumbing(
+                Some(ready_task.id.clone()),
+                "agent assignment",
+            ),
             description: Some(desc),
             status: Status::Open,
             lifecycle: worksgood::lifecycle::LifecycleProjection::default(),

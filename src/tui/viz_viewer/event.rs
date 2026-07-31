@@ -3158,18 +3158,11 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
             app.show_total_tokens = !app.show_total_tokens;
         }
 
-        // Period: toggle system task visibility
-        KeyCode::Char('.') => {
-            app.show_system_tasks = !app.show_system_tasks;
-            app.system_tasks_just_toggled = true;
-            app.force_refresh();
-        }
-
-        // Shift+Period (<): toggle showing only running system tasks
-        KeyCode::Char('<') => {
-            app.show_running_system_tasks = !app.show_running_system_tasks;
-            app.system_tasks_just_toggled = true;
-            app.force_refresh();
+        // One automation/plumbing control: hidden → running only → all.
+        // Keep both historical keys as compatible aliases for the same clear
+        // cycle rather than two independent, contradictory toggles.
+        KeyCode::Char('.') | KeyCode::Char('<') => {
+            app.cycle_automation_visibility();
         }
 
         // *: toggle touch echo (click/touch visual feedback)
@@ -5405,6 +5398,15 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                 return;
             }
 
+            // The centered-dot automation/plumbing indicator is a same-frame,
+            // labeled control and follows the exact keyboard cycle.
+            if app.last_automation_indicator_area.width > 0
+                && app.last_automation_indicator_area.contains(pos)
+            {
+                app.cycle_automation_visibility();
+                return;
+            }
+
             // Service health badge click
             let in_service_badge =
                 app.last_service_badge_area.width > 0 && app.last_service_badge_area.contains(pos);
@@ -7246,6 +7248,39 @@ mod scrollbar_tests {
         let mut app = VizApp::from_viz_output_for_test(&viz);
         app.workgraph_dir = tmp.path().to_path_buf();
         (app, tmp)
+    }
+
+    #[test]
+    fn keyboard_and_mouse_share_three_state_plumbing_cycle() {
+        use crate::tui::viz_viewer::state::AutomationVisibilityMode;
+
+        let (mut app, _tmp) = build_test_app();
+        app.show_system_tasks = false;
+        app.show_running_system_tasks = false;
+        assert_eq!(
+            app.automation_visibility_mode(),
+            AutomationVisibilityMode::Hidden
+        );
+
+        super::handle_key(&mut app, KeyCode::Char('.'), KeyModifiers::NONE);
+        assert_eq!(
+            app.automation_visibility_mode(),
+            AutomationVisibilityMode::RunningOnly
+        );
+
+        // `<` remains a compatible key but now advances the same unified mode.
+        super::handle_key(&mut app, KeyCode::Char('<'), KeyModifiers::NONE);
+        assert_eq!(
+            app.automation_visibility_mode(),
+            AutomationVisibilityMode::All
+        );
+
+        app.last_automation_indicator_area = Rect::new(20, 4, 24, 1);
+        handle_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 4, 25);
+        assert_eq!(
+            app.automation_visibility_mode(),
+            AutomationVisibilityMode::Hidden
+        );
     }
 
     /// Configure the app's graph scroll state so that scrollbar interactions

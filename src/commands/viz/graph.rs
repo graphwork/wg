@@ -270,10 +270,15 @@ pub fn generate_graph_with_overrides(
         // Prefix paused id line with ‖ glyph for redundant signaling.
         // U+2016 (DOUBLE VERTICAL LINE) is used instead of U+23F8 (PAUSE SYMBOL)
         // to avoid emoji-presentation rendering on terminals with color-emoji fonts.
-        let display_line1 = if task.paused {
-            format!("‖ {}", line1)
+        let identity_line = if task.is_autonomous() {
+            format!("· {}", line1)
         } else {
             line1.clone()
+        };
+        let display_line1 = if task.paused {
+            format!("‖ {}", identity_line)
+        } else {
+            identity_line
         };
         let display_width = display_line1.chars().count().max(line2.chars().count());
         let color_line1 = format!(

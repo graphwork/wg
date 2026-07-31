@@ -126,6 +126,11 @@ pub fn scaffold_flip_task(graph: &mut WorkGraph, task_id: &str, config: &Config)
     let flip_task = Task {
         id: flip_task_id.clone(),
         title: format!("FLIP: {}", task_id),
+        presentation: worksgood::graph::TaskPresentation::Plumbing,
+        origin: worksgood::graph::TaskOrigin::plumbing(
+            Some(task_id.to_string()),
+            "FLIP evaluation",
+        ),
         description: Some(format!(
             "Run FLIP (Fidelity via Latent Intent Probing) evaluation for task '{}'.",
             task_id,
@@ -192,6 +197,11 @@ pub fn scaffold_full_pipeline(
         let assign_task = Task {
             id: assign_task_id.clone(),
             title: format!("Assign agent for: {}", task_title),
+            presentation: worksgood::graph::TaskPresentation::Plumbing,
+            origin: worksgood::graph::TaskOrigin::plumbing(
+                Some(task_id.to_string()),
+                "agent assignment",
+            ),
             status: Status::Open,
             after: vec![],
             before: vec![task_id.to_string()],
@@ -350,6 +360,11 @@ pub fn scaffold_assign_task(graph: &mut WorkGraph, task_id: &str, task_title: &s
     let assign_task = Task {
         id: assign_task_id.clone(),
         title: format!("Assign agent for: {}", task_title),
+        presentation: worksgood::graph::TaskPresentation::Plumbing,
+        origin: worksgood::graph::TaskOrigin::plumbing(
+            Some(task_id.to_string()),
+            "agent assignment",
+        ),
         status: Status::Open,
         priority,
         after: vec![],
@@ -460,6 +475,11 @@ pub fn scaffold_eval_task(
     let eval_task = Task {
         id: eval_task_id.clone(),
         title: format!("Evaluate: {}", task_title),
+        presentation: worksgood::graph::TaskPresentation::Plumbing,
+        origin: worksgood::graph::TaskOrigin::plumbing(
+            Some(task_id.to_string()),
+            "task evaluation",
+        ),
         description: Some(desc),
         status: Status::Open,
         priority,

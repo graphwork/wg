@@ -155,15 +155,12 @@ impl Default for VizOptions {
     }
 }
 
-/// Returns true if the task is an auto-generated internal task.
-/// Chat (coordinator) tasks are exempt — always visible.
+/// Returns true when typed presentation marks a task as bounded plumbing.
+/// IDs and tags are intentionally irrelevant here: autonomous goal actors may
+/// use reserved dot namespaces and remain visible, while an ordinary-looking
+/// ID can still be explicitly collapsed as plumbing.
 fn is_internal_task(task: &Task) -> bool {
-    if task.tags.iter().any(|t| {
-        t == "coordinator-loop" || t == "chat-loop" || t == "user-board" || t == "evolution"
-    }) {
-        return false;
-    }
-    worksgood::graph::is_system_task(&task.id)
+    task.is_plumbing()
 }
 
 /// Returns true if the task is a legacy coordinator task (`.coordinator-N` with `coordinator-loop` tag).
@@ -216,21 +213,10 @@ fn compute_phase_annotation(internal_task: &Task) -> &'static str {
     }
 }
 
-/// Extract the parent task ID from a system task ID.
-fn system_task_parent_id(id: &str) -> Option<String> {
-    for prefix in &[
-        ".assign-",
-        ".evaluate-",
-        ".verify-",
-        ".flip-",
-        ".respond-to-",
-        ".place-", // Legacy: kept so old .place-* tasks still resolve
-    ] {
-        if let Some(rest) = id.strip_prefix(prefix) {
-            return Some(rest.to_string());
-        }
-    }
-    None
+/// Resolve the parent named by typed task origin. Legacy rows receive this
+/// value during deserialization, before visualization begins.
+fn plumbing_parent_id(task: &Task) -> Option<String> {
+    task.origin.parent_task.clone()
 }
 
 /// Filter out internal tasks and compute phase annotations for their parent tasks.
@@ -252,7 +238,7 @@ pub(crate) fn filter_internal_tasks<'a>(
         }
         internal_ids.insert(task.id.as_str());
 
-        if let Some(pid) = system_task_parent_id(&task.id)
+        if let Some(pid) = plumbing_parent_id(task)
             && is_pipeline_active(task)
         {
             let annotation = compute_phase_annotation(task);
@@ -302,7 +288,7 @@ pub(crate) fn filter_internal_tasks_running_only<'a>(
         if !is_internal_task(task) {
             continue;
         }
-        if let Some(pid) = system_task_parent_id(&task.id)
+        if let Some(pid) = plumbing_parent_id(task)
             && is_pipeline_active(task)
         {
             let annotation = compute_phase_annotation(task);
@@ -329,8 +315,9 @@ pub(crate) fn filter_internal_tasks_running_only<'a>(
             if !is_internal_task(t) {
                 return true;
             }
-            // Keep only running internal tasks
-            matches!(t.status, Status::InProgress | Status::Open)
+            // Keep only genuinely active plumbing; queued Open satellites stay
+            // collapsed until the daemon actually starts their phase.
+            is_pipeline_active(t)
         })
         .collect();
 
@@ -722,7 +709,7 @@ pub fn generate_viz_output_from_graph(
         if !is_internal_task(task) {
             continue;
         }
-        let parent_id = system_task_parent_id(&task.id);
+        let parent_id = plumbing_parent_id(task);
         let Some(pid) = parent_id else { continue };
         let usage = task
             .token_usage
@@ -1014,7 +1001,7 @@ fn calculate_critical_path(graph: &WorkGraph, active_ids: &HashSet<&str>) -> Has
 mod tests {
     use super::*;
     use worksgood::format_hours;
-    use worksgood::graph::{ArchivedBoundary, Estimate, Node, Task};
+    use worksgood::graph::{ArchivedBoundary, Estimate, Node, Task, TaskOrigin, TaskPresentation};
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {
@@ -1037,9 +1024,33 @@ mod tests {
     }
 
     fn make_internal_task(id: &str, title: &str, tag: &str, after: Vec<&str>) -> Task {
+        let plumbing =
+            worksgood::graph::is_legacy_plumbing_task_id(id) || id.starts_with(".respond-to-");
+        let parent = [
+            ".assign-",
+            ".flip-",
+            ".evaluate-",
+            ".place-",
+            ".verify-",
+            ".sep-verify-",
+            ".respond-to-",
+        ]
+        .iter()
+        .find_map(|prefix| id.strip_prefix(prefix))
+        .map(str::to_owned);
         Task {
             id: id.to_string(),
             title: title.to_string(),
+            presentation: if plumbing {
+                TaskPresentation::Plumbing
+            } else {
+                TaskPresentation::Primary
+            },
+            origin: if plumbing {
+                TaskOrigin::plumbing(parent, title)
+            } else {
+                TaskOrigin::default()
+            },
             tags: vec![tag.to_string(), "agency".to_string()],
             after: after.into_iter().map(String::from).collect(),
             ..Task::default()
@@ -1213,6 +1224,59 @@ mod tests {
             !is_internal_task(&labeled_normal),
             "label tags must not make a normal task internal"
         );
+    }
+
+    #[test]
+    fn typed_presentation_not_name_controls_all_static_views() {
+        let mut graph = WorkGraph::new();
+        let primary = make_task("parent", "Parent");
+        let autonomous = Task {
+            id: ".quality-pass-batch".into(),
+            title: "Quality pass".into(),
+            presentation: TaskPresentation::Autonomous,
+            origin: TaskOrigin::autonomous(Some("parent".into()), "raise batch quality"),
+            after: vec!["parent".into()],
+            ..Task::default()
+        };
+        // Deliberately has no dot/prefix: typed plumbing must still collapse.
+        let plumbing = Task {
+            id: "ordinary-looking-helper".into(),
+            title: "Verifier".into(),
+            presentation: TaskPresentation::Plumbing,
+            origin: TaskOrigin::plumbing(Some("parent".into()), "verification satellite"),
+            status: Status::InProgress,
+            ..Task::default()
+        };
+        graph.add_node(Node::Task(primary));
+        graph.add_node(Node::Task(autonomous));
+        graph.add_node(Node::Task(plumbing));
+
+        let (filtered, annotations) =
+            filter_internal_tasks(&graph, graph.tasks().collect(), &HashMap::new());
+        let ids: HashSet<&str> = filtered.iter().map(|task| task.id.as_str()).collect();
+        assert!(ids.contains(".quality-pass-batch"));
+        assert!(!ids.contains("ordinary-looking-helper"));
+
+        let ascii = ascii::generate_ascii(
+            &graph,
+            &filtered,
+            &ids,
+            &annotations,
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::Tree,
+            &HashSet::new(),
+            "gray",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        let critical = HashSet::new();
+        let dot = dot::generate_dot(&graph, &filtered, &ids, &critical, &annotations);
+        let mermaid = dot::generate_mermaid(&graph, &filtered, &ids, &critical, &annotations);
+        for rendered in [&ascii.text, &dot, &mermaid] {
+            assert!(rendered.contains("· .quality-pass-batch"), "{rendered}");
+            assert!(!rendered.contains("ordinary-looking-helper"), "{rendered}");
+        }
     }
 
     #[test]
@@ -1409,6 +1473,8 @@ mod tests {
         let evolve = Task {
             id: ".evolve-auto-20260402-150000".to_string(),
             title: "Auto-evolve: threshold".to_string(),
+            presentation: TaskPresentation::Autonomous,
+            origin: TaskOrigin::autonomous(None, "evolve agency"),
             status: Status::Open,
             tags: vec!["evolution".to_string(), "agency".to_string()],
             ..Task::default()
@@ -1422,6 +1488,8 @@ mod tests {
         let partition = Task {
             id: ".evolve-partition-1".to_string(),
             title: "Partition".to_string(),
+            presentation: TaskPresentation::Autonomous,
+            origin: TaskOrigin::autonomous(None, "partition evolution"),
             tags: vec!["evolution".to_string(), "partition".to_string()],
             ..Task::default()
         };
@@ -1430,6 +1498,8 @@ mod tests {
         let analyze = Task {
             id: ".evolve-analyze-mutation-1".to_string(),
             title: "Analyze".to_string(),
+            presentation: TaskPresentation::Autonomous,
+            origin: TaskOrigin::autonomous(None, "analyze evolution"),
             tags: vec!["evolution".to_string(), "analyzer".to_string()],
             ..Task::default()
         };
@@ -1439,12 +1509,7 @@ mod tests {
         let assign = make_internal_task(".assign-foo", "Assign", "assignment", vec![]);
         assert!(is_internal_task(&assign));
 
-        let flip = Task {
-            id: ".flip-foo".to_string(),
-            title: "FLIP: foo".to_string(),
-            tags: vec!["evaluation".to_string()],
-            ..Task::default()
-        };
+        let flip = make_internal_task(".flip-foo", "FLIP: foo", "evaluation", vec![]);
         assert!(is_internal_task(&flip));
     }
 
@@ -1511,11 +1576,12 @@ mod tests {
         let (filtered, annots) =
             filter_internal_tasks_running_only(&graph, graph.tasks().collect(), &empty);
 
-        // Both b and in-progress .assign-b and open .evaluate-b should be kept (visibility)
+        // Only b and genuinely active .assign-b are kept. Queued Open
+        // plumbing remains collapsed in running-only mode.
         let ids: HashSet<&str> = filtered.iter().map(|t| t.id.as_str()).collect();
         assert!(ids.contains("b"));
         assert!(ids.contains(".assign-b"));
-        assert!(ids.contains(".evaluate-b"));
+        assert!(!ids.contains(".evaluate-b"));
 
         // Only the in-progress .assign-b should produce an annotation, not the open .evaluate-b
         assert!(annots.contains_key("b"), "Expected annotation for task b");
@@ -1545,14 +1611,14 @@ mod tests {
         parent.status = Status::Open;
         parent.after = vec![".assign-my-task".to_string()];
 
-        let assign = Task {
-            id: ".assign-my-task".to_string(),
-            title: "Assign agent for: my-task".to_string(),
-            status: Status::Open,
-            before: vec!["my-task".to_string()],
-            tags: vec!["assignment".to_string(), "agency".to_string()],
-            ..Task::default()
-        };
+        let mut assign = make_internal_task(
+            ".assign-my-task",
+            "Assign agent for: my-task",
+            "assignment",
+            vec![],
+        );
+        assign.status = Status::Open;
+        assign.before = vec!["my-task".to_string()];
 
         graph.add_node(Node::Task(parent));
         graph.add_node(Node::Task(assign));
@@ -1589,14 +1655,14 @@ mod tests {
         parent.status = Status::Open;
         parent.after = vec![".assign-my-task".to_string()];
 
-        let assign = Task {
-            id: ".assign-my-task".to_string(),
-            title: "Assign agent for: my-task".to_string(),
-            status: Status::InProgress,
-            before: vec!["my-task".to_string()],
-            tags: vec!["assignment".to_string(), "agency".to_string()],
-            ..Task::default()
-        };
+        let mut assign = make_internal_task(
+            ".assign-my-task",
+            "Assign agent for: my-task",
+            "assignment",
+            vec![],
+        );
+        assign.status = Status::InProgress;
+        assign.before = vec!["my-task".to_string()];
 
         graph.add_node(Node::Task(parent));
         graph.add_node(Node::Task(assign));

@@ -40,6 +40,8 @@ fn is_bool_false(val: &bool) -> bool {
 struct TaskDetails {
     id: String,
     title: String,
+    presentation: worksgood::graph::TaskPresentation,
+    origin: worksgood::graph::TaskOrigin,
     #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<String>,
     status: Status,
@@ -810,6 +812,8 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
     let details = TaskDetails {
         id: task.id.clone(),
         title: task.title.clone(),
+        presentation: task.presentation,
+        origin: task.origin.clone(),
         description: task.description.clone(),
         status: task.status,
         completion_contract: task.completion_contract,
@@ -913,6 +917,14 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
 fn print_human_readable(details: &TaskDetails) {
     println!("Task: {}", details.id);
     println!("Title: {}", details.title);
+    println!("Presentation: {}", details.presentation);
+    println!("Origin actor: {:?}", details.origin.kind);
+    if let Some(parent) = &details.origin.parent_task {
+        println!("Origin parent: {}", parent);
+    }
+    if let Some(goal) = &details.origin.goal {
+        println!("Origin goal: {}", goal);
+    }
     if details.paused {
         println!("Status: {} (PAUSED)", details.status);
     } else {
@@ -2235,6 +2247,8 @@ mod tests {
         let details = TaskDetails {
             id: "t1".to_string(),
             title: "Test Task".to_string(),
+            presentation: worksgood::graph::TaskPresentation::Primary,
+            origin: worksgood::graph::TaskOrigin::default(),
             description: Some("Test description".to_string()),
             status: Status::InProgress,
             completion_contract: CompletionContract::Land,

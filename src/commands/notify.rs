@@ -323,6 +323,8 @@ mod tests {
         Task {
             id: "test-task".to_string(),
             title: "Test Task Title".to_string(),
+            presentation: worksgood::graph::TaskPresentation::Primary,
+            origin: worksgood::graph::TaskOrigin::default(),
             description: Some("This is a test description".to_string()),
             status: Status::InProgress,
             lifecycle: worksgood::lifecycle::LifecycleProjection::default(),

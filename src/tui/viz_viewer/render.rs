@@ -2184,6 +2184,7 @@ fn draw_minimized_strip(frame: &mut Frame, area: Rect, hover: bool) {
 enum ContextBarControl {
     TaskDetail,
     TaskLog,
+    Automation,
     Search,
     Controls,
     Help,
@@ -3211,6 +3212,14 @@ fn render_context_row(frame: &mut Frame, app: &mut VizApp, area: Rect, _chat: bo
             reserve(ContextBarControl::Next, " › ".to_string(), 100, false);
         }
     }
+    if app.task_counts.plumbing_total > 0 {
+        let automation_label = format!(
+            " · plumbing: {} · {} hidden ",
+            app.automation_visibility_mode().label(),
+            app.hidden_plumbing_count()
+        );
+        reserve(ContextBarControl::Automation, automation_label, 0, true);
+    }
     reserve(ContextBarControl::Search, search_text, 28, active_search);
     reserve(
         ContextBarControl::Controls,
@@ -3323,12 +3332,16 @@ fn render_context_row(frame: &mut Frame, app: &mut VizApp, area: Rect, _chat: bo
             ContextBarControl::TaskDetail | ContextBarControl::TaskLog => {
                 bar_style.add_modifier(Modifier::UNDERLINED)
             }
+            ContextBarControl::Automation => bar_style
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
             _ => bar_style,
         };
         frame.render_widget(Paragraph::new(text).style(style), rect);
         match kind {
             ContextBarControl::TaskDetail => app.last_context_detail_area = rect,
             ContextBarControl::TaskLog => app.last_context_log_area = rect,
+            ContextBarControl::Automation => app.last_automation_indicator_area = rect,
             ContextBarControl::Search => app.last_context_search_area = rect,
             ContextBarControl::Controls => app.last_context_controls_area = rect,
             ContextBarControl::Help => app.last_context_help_area = rect,
@@ -12139,8 +12152,7 @@ fn draw_help_overlay(frame: &mut Frame, app: &mut VizApp) {
         binding("m", "Toggle mouse capture"),
         binding("X", "Swap scroll axis (for Termux)"),
         binding("r", "Force refresh"),
-        binding(".", "Toggle system tasks (visible by default)"),
-        binding("<", "Toggle running system tasks only"),
+        binding(". / <", "Cycle plumbing: hidden → running only → all"),
         binding("*", "Toggle touch echo (click feedback)"),
         binding("L", "Toggle chat log"),
         binding("?", "Toggle this help"),
@@ -17807,6 +17819,11 @@ mod tests {
         let mut internal = worksgood::graph::Task {
             id: internal_id.to_string(),
             title: internal_title.to_string(),
+            presentation: worksgood::graph::TaskPresentation::Plumbing,
+            origin: worksgood::graph::TaskOrigin::plumbing(
+                Some(parent_id.to_string()),
+                internal_title,
+            ),
             tags: vec![internal_tag.to_string(), "agency".to_string()],
             after: internal_after.into_iter().map(String::from).collect(),
             status: Status::InProgress,
@@ -17970,6 +17987,11 @@ mod tests {
         let assign = worksgood::graph::Task {
             id: ".assign-parent".to_string(),
             title: "Assign parent".to_string(),
+            presentation: worksgood::graph::TaskPresentation::Plumbing,
+            origin: worksgood::graph::TaskOrigin::plumbing(
+                Some("parent".to_string()),
+                "assign parent",
+            ),
             tags: vec!["assignment".to_string(), "agency".to_string()],
             status: Status::InProgress,
             ..worksgood::graph::Task::default()
@@ -17979,6 +18001,11 @@ mod tests {
         let eval = worksgood::graph::Task {
             id: ".evaluate-parent".to_string(),
             title: "Evaluate parent".to_string(),
+            presentation: worksgood::graph::TaskPresentation::Plumbing,
+            origin: worksgood::graph::TaskOrigin::plumbing(
+                Some("parent".to_string()),
+                "evaluate parent",
+            ),
             tags: vec!["evaluation".to_string(), "agency".to_string()],
             after: vec!["parent".to_string()],
             status: Status::InProgress,
@@ -18261,6 +18288,28 @@ mod tests {
         (0..width)
             .map(|x| terminal.backend().buffer().cell((x, 0)).unwrap().symbol())
             .collect()
+    }
+
+    #[test]
+    fn centered_dot_plumbing_control_reports_mode_and_hidden_count() {
+        let (mut app, _tmp) = build_app_for_tab_color_test(&[0]);
+        app.task_counts.plumbing_total = 4;
+        app.task_counts.plumbing_running = 1;
+
+        let hidden = context_row_text(&mut app, 160);
+        assert!(hidden.contains("· plumbing: hidden · 4 hidden"), "{hidden}");
+        assert!(app.last_automation_indicator_area.width > 0);
+
+        app.cycle_automation_visibility();
+        let running = context_row_text(&mut app, 160);
+        assert!(
+            running.contains("· plumbing: running only · 3 hidden"),
+            "{running}"
+        );
+
+        app.cycle_automation_visibility();
+        let all = context_row_text(&mut app, 160);
+        assert!(all.contains("· plumbing: all · 0 hidden"), "{all}");
     }
 
     #[test]

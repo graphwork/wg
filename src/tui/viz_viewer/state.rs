@@ -8606,6 +8606,23 @@ pub fn extract_section_name(line: &str) -> Option<String> {
 /// `in_progress` uses `Status::is_active()` so it matches what `wg viz`
 /// highlights as "running" (InProgress + PendingValidation + PendingEval).
 /// See the rationale on `Status::is_active`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutomationVisibilityMode {
+    Hidden,
+    RunningOnly,
+    All,
+}
+
+impl AutomationVisibilityMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Hidden => "hidden",
+            Self::RunningOnly => "running only",
+            Self::All => "all",
+        }
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct TaskCounts {
     pub total: usize,
@@ -8624,6 +8641,9 @@ pub struct TaskCounts {
     pub failed: usize,
     pub blocked: usize,
     pub archived: usize,
+    /// Typed plumbing population, independent of dot-prefixed identity.
+    pub plumbing_total: usize,
+    pub plumbing_running: usize,
 }
 
 /// Active cycle timing info for status bar display.
@@ -8816,10 +8836,11 @@ pub struct VizApp {
     pub show_help: bool,
     pub help: HelpOverlayState,
 
-    // ── System task visibility ──
-    /// When true, show system tasks (dot-prefixed) in the graph view.
+    // ── Automation/plumbing visibility ──
+    /// Compatibility storage for the unified hidden → running-only → all
+    /// plumbing control. Autonomous goal actors are never collapsed.
     pub show_system_tasks: bool,
-    /// When true, show only running (in-progress/open) system tasks in the graph view.
+    /// When true, show only running plumbing in the graph view.
     pub show_running_system_tasks: bool,
     /// Set to true when system task visibility was just toggled, so that
     /// newly appearing tasks get a `Revealed` animation instead of `NewTask`.
@@ -8894,6 +8915,8 @@ pub struct VizApp {
     /// Stable task + source-tab identity owning the D/L rectangles above.
     pub context_task_switch_owner: Option<(String, RightPanelTab)>,
     pub last_context_search_area: Rect,
+    /// Labeled centered-dot automation/plumbing visibility control.
+    pub last_automation_indicator_area: Rect,
     pub last_context_controls_area: Rect,
     pub last_context_help_area: Rect,
     /// Discoverable Chat-PTY escape into the one-row Panel/Layout editor.
@@ -9612,6 +9635,49 @@ pub struct ViewportScroll {
 }
 
 impl VizApp {
+    pub fn automation_visibility_mode(&self) -> AutomationVisibilityMode {
+        if self.show_system_tasks {
+            AutomationVisibilityMode::All
+        } else if self.show_running_system_tasks {
+            AutomationVisibilityMode::RunningOnly
+        } else {
+            AutomationVisibilityMode::Hidden
+        }
+    }
+
+    pub fn hidden_plumbing_count(&self) -> usize {
+        match self.automation_visibility_mode() {
+            AutomationVisibilityMode::Hidden => self.task_counts.plumbing_total,
+            AutomationVisibilityMode::RunningOnly => self
+                .task_counts
+                .plumbing_total
+                .saturating_sub(self.task_counts.plumbing_running),
+            AutomationVisibilityMode::All => 0,
+        }
+    }
+
+    /// Cycle the one automation/plumbing presentation control. The two legacy
+    /// booleans remain config-compatible storage, but impossible combinations
+    /// are normalized here.
+    pub fn cycle_automation_visibility(&mut self) {
+        match self.automation_visibility_mode() {
+            AutomationVisibilityMode::Hidden => {
+                self.show_system_tasks = false;
+                self.show_running_system_tasks = true;
+            }
+            AutomationVisibilityMode::RunningOnly => {
+                self.show_system_tasks = true;
+                self.show_running_system_tasks = false;
+            }
+            AutomationVisibilityMode::All => {
+                self.show_system_tasks = false;
+                self.show_running_system_tasks = false;
+            }
+        }
+        self.system_tasks_just_toggled = true;
+        self.force_refresh();
+    }
+
     /// Create a new VizApp.
     ///
     /// `mouse_override`: `Some(false)` forces mouse off (--no-mouse),
@@ -10406,6 +10472,7 @@ impl VizApp {
             last_context_log_area: Rect::default(),
             context_task_switch_owner: None,
             last_context_search_area: Rect::default(),
+            last_automation_indicator_area: Rect::default(),
             last_context_controls_area: Rect::default(),
             last_context_help_area: Rect::default(),
             task_picker_selected_id: None,
@@ -12627,6 +12694,12 @@ impl VizApp {
 
         for task in graph.tasks() {
             counts.total += 1;
+            if task.is_plumbing() {
+                counts.plumbing_total += 1;
+                if task.status.is_active() {
+                    counts.plumbing_running += 1;
+                }
+            }
             if task
                 .tags
                 .iter()
@@ -13890,6 +13963,14 @@ impl VizApp {
             format!("── {} ──", task.id)
         });
         lines.push(format!("Title: {}", task.title));
+        lines.push(format!("Presentation: {}", task.presentation));
+        lines.push(format!("Origin actor: {:?}", task.origin.kind));
+        if let Some(parent) = &task.origin.parent_task {
+            lines.push(format!("Origin parent: {}", parent));
+        }
+        if let Some(goal) = &task.origin.goal {
+            lines.push(format!("Origin goal: {}", goal));
+        }
         lines.push(format!("Status: {:?}", task.status));
         if let Some(ref agent) = task.assigned {
             lines.push(format!("Agent: {}", agent));
@@ -14849,6 +14930,14 @@ impl VizApp {
         // ── Header ──
         lines.push(format!("── {} ──", task.id));
         lines.push(format!("Title: {}", task.title));
+        lines.push(format!("Presentation: {}", task.presentation));
+        lines.push(format!("Origin actor: {:?}", task.origin.kind));
+        if let Some(parent) = &task.origin.parent_task {
+            lines.push(format!("Origin parent: {}", parent));
+        }
+        if let Some(goal) = &task.origin.goal {
+            lines.push(format!("Origin goal: {}", goal));
+        }
         lines.push(format!("Status: {:?}", task.status));
         if let Some(ref agent) = task.assigned {
             lines.push(format!("Agent: {}", agent));
@@ -16274,6 +16363,7 @@ impl VizApp {
             last_context_log_area: Rect::default(),
             context_task_switch_owner: None,
             last_context_search_area: Rect::default(),
+            last_automation_indicator_area: Rect::default(),
             last_context_controls_area: Rect::default(),
             last_context_help_area: Rect::default(),
             task_picker_selected_id: None,
@@ -21936,6 +22026,7 @@ impl VizApp {
         self.last_context_log_area = Rect::default();
         self.context_task_switch_owner = None;
         self.last_context_search_area = Rect::default();
+        self.last_automation_indicator_area = Rect::default();
         self.last_context_controls_area = Rect::default();
         self.last_context_help_area = Rect::default();
         self.last_context_layout_area = Rect::default();

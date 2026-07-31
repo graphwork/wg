@@ -241,6 +241,8 @@ pub fn run(
             let task = Task {
                 id: task_id.clone(),
                 title: rendered.title.clone(),
+                presentation: worksgood::graph::TaskPresentation::Primary,
+                origin: worksgood::graph::TaskOrigin::default(),
                 description: Some(rendered.description.clone()),
                 status: Status::Open,
                 lifecycle: worksgood::lifecycle::LifecycleProjection::default(),

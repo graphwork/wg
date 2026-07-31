@@ -90,6 +90,11 @@ pub(crate) fn defer_self_mutation(
             op.op,
             op.target_id.as_deref().unwrap_or("?")
         ),
+        presentation: worksgood::graph::TaskPresentation::Autonomous,
+        origin: worksgood::graph::TaskOrigin::autonomous(
+            None,
+            "review an evolver-requested mutation",
+        ),
         description: Some(desc),
         status: Status::Open,
         lifecycle: worksgood::lifecycle::LifecycleProjection::default(),

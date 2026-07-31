@@ -1935,6 +1935,8 @@ mod tests {
         Task {
             id: id.to_string(),
             title: title.to_string(),
+            presentation: crate::graph::TaskPresentation::Primary,
+            origin: crate::graph::TaskOrigin::default(),
             description: Some("Test description".to_string()),
             status: crate::graph::Status::Open,
             lifecycle: crate::lifecycle::LifecycleProjection::default(),

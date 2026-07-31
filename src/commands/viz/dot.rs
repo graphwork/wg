@@ -54,9 +54,10 @@ pub(crate) fn generate_dot(
             .unwrap_or_default();
 
         let pause_prefix = if task.paused { "‖ " } else { "" };
+        let automation_prefix = if task.is_autonomous() { "· " } else { "" };
         let label = format!(
-            "{}{}\\n{}{}{}",
-            pause_prefix, task.id, task.title, hours_str, phase_str
+            "{}{}{}\\n{}{}{}",
+            pause_prefix, automation_prefix, task.id, task.title, hours_str, phase_str
         );
 
         // Check if on critical path
@@ -199,7 +200,11 @@ pub(crate) fn generate_mermaid(
             .map(|a| format!(" {}", a.text))
             .unwrap_or_default();
 
-        let label = format!("{}: {}{}{}", task.id, title, hours_str, phase_str);
+        let automation_prefix = if task.is_autonomous() { "· " } else { "" };
+        let label = format!(
+            "{}{}: {}{}{}",
+            automation_prefix, task.id, title, hours_str, phase_str
+        );
 
         // Mermaid node shape based on status
         let node = match task.status {
@@ -339,7 +344,7 @@ pub(crate) fn render_dot(dot_content: &str, output_path: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use worksgood::graph::{Estimate, Node, Task};
+    use worksgood::graph::{Estimate, Node, Task, TaskOrigin, TaskPresentation};
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {
@@ -362,9 +367,12 @@ mod tests {
     }
 
     fn make_internal_task(id: &str, title: &str, tag: &str, after: Vec<&str>) -> Task {
+        let parent = id.split_once('-').map(|(_, parent)| parent.to_string());
         Task {
             id: id.to_string(),
             title: title.to_string(),
+            presentation: TaskPresentation::Plumbing,
+            origin: TaskOrigin::plumbing(parent, title),
             tags: vec![tag.to_string(), "agency".to_string()],
             after: after.into_iter().map(String::from).collect(),
             ..Task::default()

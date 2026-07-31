@@ -1921,6 +1921,11 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
             graph.add_node(Node::Task(Task {
                 id: assign_task_id,
                 title: format!("Assign agent for: {task_title_for_audit}"),
+                presentation: worksgood::graph::TaskPresentation::Plumbing,
+                origin: worksgood::graph::TaskOrigin::plumbing(
+                    Some(task_id_for_audit.clone()),
+                    "direct dispatch assignment receipt",
+                ),
                 description: Some(description),
                 status: Status::Done,
                 before: vec![task_id_for_audit.clone()],

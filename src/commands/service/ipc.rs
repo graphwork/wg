@@ -1449,9 +1449,17 @@ fn handle_add_task_with_reasoning(
         (None, false, None)
     };
 
+    let (presentation, task_origin) = worksgood::graph::presentation_for_new_task(
+        &task_id,
+        title,
+        after.first().cloned(),
+        origin.is_some(),
+    );
     let task = Task {
         id: task_id.clone(),
         title: title.to_string(),
+        presentation,
+        origin: task_origin,
         description: description.map(String::from),
         status: Status::Open,
         lifecycle: worksgood::lifecycle::LifecycleProjection::default(),
