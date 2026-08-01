@@ -402,7 +402,7 @@ fn socket_name(path: &Path) -> std::io::Result<interprocess::local_socket::Name<
     format!("workgraph-daemon-{:016x}", hasher.finish()).to_ns_name::<GenericNamespaced>()
 }
 
-fn socket_status_identity(socket: &Path) -> Result<ServiceIdentity> {
+fn socket_status_identity_at(socket: &Path) -> Result<ServiceIdentity> {
     let mut stream = Stream::connect(socket_name(socket)?)
         .with_context(|| format!("Could not connect to {}", socket.display()))?;
     #[cfg(unix)]
@@ -432,6 +432,23 @@ fn socket_status_identity(socket: &Path) -> Result<ServiceIdentity> {
             .ok_or_else(|| anyhow::anyhow!("Service handshake omitted identity"))?,
     )
     .context("Service handshake identity is malformed")
+}
+
+fn socket_status_identity(socket: &Path) -> Result<ServiceIdentity> {
+    // Current daemons expose Status on the independently-serviced attended-chat
+    // lane. Prefer it so a slow coordinator/evaluation tick cannot turn an
+    // identity check into a false "unresponsive" result. A daemon predating
+    // chat.sock falls back to the general lane for compatibility.
+    let chat_socket = socket.with_file_name("chat.sock");
+    match socket_status_identity_at(&chat_socket) {
+        Ok(identity) => Ok(identity),
+        Err(chat_error) => socket_status_identity_at(socket).with_context(|| {
+            format!(
+                "Dedicated chat identity lane {} was unavailable ({chat_error:#})",
+                chat_socket.display()
+            )
+        }),
+    }
 }
 
 /// Observe a service without repairing, removing, signalling, or creating any

@@ -34,6 +34,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 #[cfg(unix)]
 use signals::{SignalDisposition, disposition_for, signal_name};
+use std::collections::BTreeSet;
 use std::fs;
 use std::io::IsTerminal;
 use std::io::{BufRead, BufReader, Read as _, Write};
@@ -639,6 +640,11 @@ pub struct ServiceState {
     /// re-spawned.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supervisor_pid: Option<u32>,
+    /// OS birth identity for `supervisor_pid`. A stored PID without this
+    /// matching token is never sufficient authority to signal a supervisor:
+    /// the number may have been reused by an unrelated process.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supervisor_pid_start_identity: Option<String>,
 }
 
 impl ServiceState {
@@ -992,7 +998,12 @@ impl CoordinatorState {
         let mut state = self.clone();
         if path.exists()
             && let Some(disk) = load_runtime_json_or_quarantine::<Self>(&path, "coordinator state")
-            && disk.route_generation > state.route_generation
+            // Equal non-zero generations describe the same atomic route
+            // decision. A daemon-wide runtime snapshot carries no per-chat
+            // tuple, so it must not erase the already-durable chat-0 route on
+            // startup/restart merely because both sides read generation 1.
+            && disk.route_generation > 0
+            && disk.route_generation >= state.route_generation
         {
             state.executor_override = disk.executor_override;
             state.model_override = disk.model_override;
@@ -1089,7 +1100,9 @@ impl CoordinatorState {
     }
 
     /// Remove ALL per-coordinator state files and the legacy shared file.
-    /// Used on daemon shutdown to clean up all coordinator state.
+    /// Reserved for explicit purge/migration cleanup. Ordinary daemon shutdown
+    /// must preserve these files because they also contain durable per-chat
+    /// route generations and attended model/session continuity.
     #[allow(dead_code)]
     pub fn remove_all(dir: &Path) {
         let service_dir = dir.join("service");
@@ -1438,6 +1451,17 @@ pub fn run_start(
     if let Some(state) = ServiceState::load(dir)? {
         if is_process_alive(state.pid) {
             if force {
+                let observation = worksgood::service_identity::observe_service(dir);
+                if observation.health != worksgood::service_identity::ServiceHealth::Healthy {
+                    anyhow::bail!(
+                        "service start --force refused for {}: {:?}: {}; an unverified or PID-reused owner will not be signalled",
+                        dir.canonicalize()
+                            .unwrap_or_else(|_| dir.to_path_buf())
+                            .display(),
+                        observation.health,
+                        observation.detail
+                    );
+                }
                 // Kill existing daemon before starting a new one
                 if !json {
                     println!(
@@ -1460,8 +1484,19 @@ pub fn run_start(
                     }
                     std::thread::sleep(Duration::from_millis(200));
                 }
-                // If still alive, kill it
+                // If still alive, signal only the exact recorded process
+                // birth. A reused numeric PID is never restart authority.
                 if is_process_alive(state.pid) {
+                    let birth_matches = state.pid_start_identity.as_ref().is_some_and(|birth| {
+                        worksgood::service_identity::pid_start_identity(state.pid).as_ref()
+                            == Some(birth)
+                    });
+                    if !birth_matches {
+                        anyhow::bail!(
+                            "refusing to signal daemon PID {} during force-start: its process-birth identity changed",
+                            state.pid
+                        );
+                    }
                     kill_process_graceful(state.pid, 5)?;
                 }
                 // Clean up
@@ -1643,6 +1678,7 @@ pub fn run_start(
             pid_start_identity: worksgood::service_identity::pid_start_identity(pid),
             identity: Some(service_identity),
             supervisor_pid: None,
+            supervisor_pid_start_identity: None,
         };
         state.save(dir)?;
     } else {
@@ -4088,9 +4124,10 @@ pub fn run_daemon(
     let _ = chat_lane_handle.join();
     let _ = fs::remove_file(&chat_socket);
     let _ = fs::remove_file(&socket);
-    // Clean up coordinator prompt file
+    // Clean up the transient prompt and service-owner record. Do NOT remove
+    // CoordinatorState: per-chat route generations (especially chat 0) and
+    // attended session continuity are durable across service restart.
     let _ = fs::remove_file(dir.join("service").join("coordinator-prompt.txt"));
-    CoordinatorState::remove(&dir);
     ServiceState::remove(&dir)?;
 
     logger.info("Daemon shutdown complete");
@@ -4152,6 +4189,28 @@ fn check_service_control_context(
 /// Stop the service daemon
 pub fn run_stop(dir: &Path, force: bool, kill_agents: bool, json: bool) -> Result<()> {
     guard_service_control_from_worker()?;
+    let observation = worksgood::service_identity::observe_service(dir);
+    match observation.health {
+        worksgood::service_identity::ServiceHealth::Healthy
+        | worksgood::service_identity::ServiceHealth::Down => {}
+        worksgood::service_identity::ServiceHealth::StalePid
+            if observation.state.as_ref().is_some_and(|state| {
+                worksgood::service_identity::pid_start_identity(state.pid).is_none()
+            }) =>
+        {
+            // Proven-dead state may be removed without signalling anything.
+        }
+        health => {
+            anyhow::bail!(
+                "service stop refused for {}: {:?}: {}; no process was signalled",
+                dir.canonicalize()
+                    .unwrap_or_else(|_| dir.to_path_buf())
+                    .display(),
+                health,
+                observation.detail
+            );
+        }
+    }
     run_stop_inner(dir, force, kill_agents, json)
 }
 
@@ -4169,6 +4228,31 @@ fn run_stop_inner(dir: &Path, force: bool, kill_agents: bool, json: bool) -> Res
             return Ok(());
         }
     };
+
+    // Re-authenticate immediately before the shutdown request. This second
+    // check closes the plan→apply gap for controlled restart: a state file
+    // swapped after the caller's preflight cannot redirect the socket or PID.
+    if is_process_alive(state.pid) {
+        let observation = worksgood::service_identity::observe_service(dir);
+        let state_agrees = observation.state.as_ref().is_some_and(|observed| {
+            observed.pid == state.pid
+                && observed.socket_path == state.socket_path
+                && observed.pid_start_identity == state.pid_start_identity
+                && observed.identity == state.identity
+        });
+        if observation.health != worksgood::service_identity::ServiceHealth::Healthy
+            || !state_agrees
+        {
+            anyhow::bail!(
+                "service stop apply refused for {}: {:?}: {}; authenticated state changed before shutdown, so no process was signalled",
+                dir.canonicalize()
+                    .unwrap_or_else(|_| dir.to_path_buf())
+                    .display(),
+                observation.health,
+                observation.detail
+            );
+        }
+    }
 
     // Try to send shutdown command via socket
     let socket = PathBuf::from(&state.socket_path);
@@ -4199,6 +4283,17 @@ fn run_stop_inner(dir: &Path, force: bool, kill_agents: bool, json: bool) -> Res
     if let Some(spid) = supervisor_pid
         && is_process_alive(spid)
     {
+        let birth_matches = state
+            .supervisor_pid_start_identity
+            .as_ref()
+            .is_some_and(|birth| {
+                worksgood::service_identity::pid_start_identity(spid).as_ref() == Some(birth)
+            });
+        if !birth_matches {
+            anyhow::bail!(
+                "refusing to signal supervisor PID {spid}: its recorded process-birth identity is absent or changed"
+            );
+        }
         if force {
             // Kills the supervisor's whole descendant tree (daemon included).
             let _ = kill_process_force(spid);
@@ -4209,6 +4304,15 @@ fn run_stop_inner(dir: &Path, force: bool, kill_agents: bool, json: bool) -> Res
     // Ensure the daemon itself is gone regardless (unsupervised, or the
     // supervisor tree didn't reach it in time).
     if is_process_alive(state.pid) {
+        let birth_matches = state.pid_start_identity.as_ref().is_some_and(|birth| {
+            worksgood::service_identity::pid_start_identity(state.pid).as_ref() == Some(birth)
+        });
+        if !birth_matches {
+            anyhow::bail!(
+                "refusing to signal daemon PID {}: its recorded process-birth identity is absent or changed",
+                state.pid
+            );
+        }
         if force {
             kill_process_force(state.pid)?;
         } else {
@@ -4276,6 +4380,26 @@ fn run_stop_inner(dir: &Path, force: bool, kill_agents: bool, json: bool) -> Res
 /// restart is transparent.
 pub fn run_restart(dir: &Path, json: bool) -> Result<()> {
     guard_service_control_from_worker()?;
+
+    // A restart is a mutation of one exact service owner. Authenticate the
+    // graph/socket/state/PID-birth handshake before asking it to stop. Legacy,
+    // unresponsive, foreign, or PID-reused state is evidence to refuse — not
+    // authority to kill whichever process currently owns the numeric PID.
+    let observation = worksgood::service_identity::observe_service(dir);
+    match observation.health {
+        worksgood::service_identity::ServiceHealth::Down => {}
+        worksgood::service_identity::ServiceHealth::Healthy => {}
+        health => {
+            anyhow::bail!(
+                "service restart refused for {}: {:?}: {}; no process was signalled",
+                dir.canonicalize()
+                    .unwrap_or_else(|_| dir.to_path_buf())
+                    .display(),
+                health,
+                observation.detail
+            );
+        }
+    }
 
     // Capture the current daemon's effective config before stopping.
     let prior_config = CoordinatorState::load(dir);
@@ -5004,7 +5128,244 @@ pub fn run_thaw(dir: &Path, json: bool) -> Result<()> {
     Ok(())
 }
 
-/// Create a new coordinator session via IPC
+#[derive(Debug)]
+struct ChatCreateBaseline {
+    chat_ids: BTreeSet<u32>,
+}
+
+impl ChatCreateBaseline {
+    fn capture(dir: &Path) -> Result<Self> {
+        let graph = worksgood::parser::load_graph(crate::commands::graph_path(dir))
+            .context("Failed to capture the pre-create graph identity")?;
+        Ok(Self {
+            chat_ids: graph
+                .tasks()
+                .filter_map(|task| worksgood::chat_id::parse_chat_task_id(&task.id))
+                .collect(),
+        })
+    }
+
+    fn unreceipted_chat_ids(&self, dir: &Path) -> Result<Vec<u32>> {
+        let graph = worksgood::parser::load_graph(crate::commands::graph_path(dir))
+            .context("Failed to authenticate the post-create graph state")?;
+        Ok(graph
+            .tasks()
+            .filter_map(|task| worksgood::chat_id::parse_chat_task_id(&task.id))
+            .filter(|chat_id| !self.chat_ids.contains(chat_id))
+            .collect())
+    }
+}
+
+fn shell_quote_path(path: &Path) -> String {
+    format!("'{}'", path.display().to_string().replace("'", "'\\''"))
+}
+
+fn chat_service_recovery_command(dir: &Path) -> String {
+    let exact = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+    format!(
+        "wg --dir {} service restart",
+        shell_quote_path(exact.as_path())
+    )
+}
+
+fn chat_service_refusal(dir: &Path, reason: impl std::fmt::Display) -> anyhow::Error {
+    anyhow::anyhow!(
+        "chat service for the explicit graph {} could not be authenticated as compatible: {}; no process was signalled and no chat was created. Recover only this project with: {}",
+        dir.canonicalize()
+            .unwrap_or_else(|_| dir.to_path_buf())
+            .display(),
+        reason,
+        chat_service_recovery_command(dir)
+    )
+}
+
+fn current_chat_service_identity(
+    dir: &Path,
+) -> Result<worksgood::service_identity::ServiceIdentity> {
+    let executable = std::env::current_exe().context("Failed to locate the current wg image")?;
+    let config = Config::load_merged(dir)?;
+    worksgood::service_identity::expected_identity(dir, &executable, &config)
+}
+
+fn wait_for_chat_service_identity(
+    dir: &Path,
+    expected: &worksgood::service_identity::ServiceIdentity,
+) -> Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        let observation = worksgood::service_identity::observe_service(dir);
+        if observation.health == worksgood::service_identity::ServiceHealth::Healthy
+            && observation.handshake_identity.as_ref() == Some(expected)
+        {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(chat_service_refusal(
+                dir,
+                format!(
+                    "replacement service identity did not converge: {:?}: {}",
+                    observation.health, observation.detail
+                ),
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// Authenticate the exact project service before chat mutation. A verified
+/// older content build is restarted through the current binary and then
+/// re-authenticated. An unverified/foreign/unresponsive daemon is never
+/// signalled automatically; the caller receives an exact project-scoped action.
+fn authenticated_restart_command(executable: &Path, exact_graph: &Path) -> process::Command {
+    let mut command = process::Command::new(executable);
+    command
+        .arg("--dir")
+        .arg(exact_graph)
+        .args(["service", "restart"])
+        .env_remove("WG_DIR");
+    command
+}
+
+fn ensure_chat_service_compatible(dir: &Path) -> Result<()> {
+    let observation = worksgood::service_identity::observe_service(dir);
+    if observation.health != worksgood::service_identity::ServiceHealth::Healthy {
+        return Err(chat_service_refusal(
+            dir,
+            format!("{:?}: {}", observation.health, observation.detail),
+        ));
+    }
+    let actual = observation
+        .handshake_identity
+        .as_ref()
+        .ok_or_else(|| chat_service_refusal(dir, "healthy observation omitted live identity"))?;
+    let expected = current_chat_service_identity(dir)?;
+    let same_build = actual.protocol == expected.protocol
+        && actual.executable_sha256 == expected.executable_sha256
+        && actual.build_id == expected.build_id;
+    if same_build {
+        return Ok(());
+    }
+
+    // `run_restart` independently re-observes and authenticates the graph,
+    // socket, state identity, and PID birth before it can signal anything.
+    // Execute it as an explicit project-scoped child of THIS binary. Removing
+    // WG_DIR prevents a sibling worker/chat environment from redirecting the
+    // restart target; stdout is captured so `wg chat create --json` remains a
+    // single durable-receipt document.
+    let executable = std::env::current_exe().context("Failed to locate the current wg image")?;
+    let exact = dir
+        .canonicalize()
+        .with_context(|| format!("Failed to canonicalize explicit graph {}", dir.display()))?;
+    let output = authenticated_restart_command(&executable, &exact)
+        .output()
+        .with_context(|| {
+            format!(
+                "Failed to run authenticated project restart with {}",
+                executable.display()
+            )
+        })?;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(chat_service_refusal(
+            &exact,
+            format!(
+                "verified daemon uses obsolete build {} (current {}), but controlled restart failed: {}",
+                actual.build_id,
+                expected.build_id,
+                if detail.is_empty() {
+                    output.status.to_string()
+                } else {
+                    detail
+                }
+            ),
+        ));
+    }
+    wait_for_chat_service_identity(&exact, &expected)
+}
+
+fn reconciled_chat_response(
+    chat_id: u32,
+    request_id: &str,
+    name: Option<&str>,
+    lost_response: bool,
+) -> IpcResponse {
+    IpcResponse::success(serde_json::json!({
+        "coordinator_id": chat_id,
+        "chat_id": chat_id,
+        "task_id": worksgood::chat_id::format_chat_task_id(chat_id),
+        "request_id": request_id,
+        "durable_receipt": true,
+        "reconciled": lost_response,
+        "name": name,
+    }))
+}
+
+fn response_chat_id(response: &IpcResponse) -> Option<u32> {
+    response.data.as_ref().and_then(|data| {
+        data.get("chat_id")
+            .or_else(|| data.get("coordinator_id"))
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|id| u32::try_from(id).ok())
+    })
+}
+
+fn verify_chat_create_response(
+    dir: &Path,
+    request_id: &str,
+    name: Option<&str>,
+    response: IpcResponse,
+) -> Result<IpcResponse> {
+    if !response.ok {
+        return Ok(response);
+    }
+    let receipt = reconcile_chat_create(dir, request_id).ok_or_else(|| {
+        chat_service_refusal(
+            dir,
+            "daemon acknowledged chat creation without the durable request-id graph receipt; refusing to claim success",
+        )
+    })?;
+    if let Some(reported) = response_chat_id(&response)
+        && reported != receipt
+    {
+        anyhow::bail!(
+            "chat service response named .chat-{reported}, but durable request receipt names .chat-{receipt}; refusing ambiguous success"
+        );
+    }
+    Ok(reconciled_chat_response(receipt, request_id, name, false))
+}
+
+fn ambiguous_chat_create_error(
+    dir: &Path,
+    baseline: &ChatCreateBaseline,
+    transport_error: &anyhow::Error,
+) -> Option<anyhow::Error> {
+    let residue = match baseline.unreceipted_chat_ids(dir) {
+        Ok(residue) => residue,
+        Err(error) => {
+            return Some(chat_service_refusal(
+                dir,
+                format!(
+                    "chat-create response was lost ({transport_error:#}) and the graph could not be re-read to exclude an ambiguous commit ({error:#}); the request was not retried"
+                ),
+            ));
+        }
+    };
+    (!residue.is_empty()).then(|| {
+        chat_service_refusal(
+            dir,
+            format!(
+                "chat-create response was lost ({transport_error:#}) and new unreceipted chat rows {:?} appeared; ownership is ambiguous, so the request was not retried",
+                residue
+            ),
+        )
+    })
+}
+
+/// Create a new coordinator session via IPC.
+///
+/// Success is returned only after the graph contains the exact request-id
+/// receipt. One transport retry reuses the SAME request id, and occurs only
+/// when the pre-create graph proves no unreceipted chat appeared.
 pub fn run_create_coordinator(
     dir: &Path,
     request_id: &str,
@@ -5015,6 +5376,8 @@ pub fn run_create_coordinator(
     command: Option<&str>,
     json: bool,
 ) -> Result<()> {
+    let baseline = ChatCreateBaseline::capture(dir)?;
+    ensure_chat_service_compatible(dir)?;
     let request = IpcRequest::CreateChat {
         request_id: Some(request_id.to_string()),
         name: name.map(|s| s.to_string()),
@@ -5023,27 +5386,51 @@ pub fn run_create_coordinator(
         endpoint: endpoint.map(|s| s.to_string()),
         command: command.map(|s| s.to_string()),
     };
+
     let response = match send_chat_create_request(dir, &request) {
-        Ok(response) => response,
-        Err(ipc_error) => match reconcile_chat_create(dir, request_id) {
-            Some(chat_id) => {
+        Ok(response) => verify_chat_create_response(dir, request_id, name, response)?,
+        Err(first_error) => {
+            if let Some(chat_id) = reconcile_chat_create(dir, request_id) {
                 eprintln!(
-                    "warning: chat-create response was lost ({ipc_error}); reconciled committed {} by request id",
+                    "warning: chat-create response was lost ({first_error}); reconciled committed {} by durable request id",
                     worksgood::chat_id::format_chat_task_id(chat_id)
                 );
-                IpcResponse::success(serde_json::json!({
-                    "coordinator_id": chat_id,
-                    "chat_id": chat_id,
-                    "task_id": worksgood::chat_id::format_chat_task_id(chat_id),
-                    "request_id": request_id,
-                    "reconciled": true,
-                    "name": name,
-                }))
+                reconciled_chat_response(chat_id, request_id, name, true)
+            } else {
+                if let Some(error) = ambiguous_chat_create_error(dir, &baseline, &first_error) {
+                    return Err(error);
+                }
+                // Re-authenticate before retrying. This detects a daemon that
+                // became obsolete/unresponsive during the lost request and
+                // either performs the controlled same-graph replacement or
+                // emits the exact project-scoped recovery command.
+                ensure_chat_service_compatible(dir).with_context(|| {
+                    format!(
+                        "chat-create response was lost before a durable commit: {first_error:#}"
+                    )
+                })?;
+                match send_chat_create_request(dir, &request) {
+                    Ok(response) => verify_chat_create_response(dir, request_id, name, response)?,
+                    Err(retry_error) => {
+                        if let Some(chat_id) = reconcile_chat_create(dir, request_id) {
+                            reconciled_chat_response(chat_id, request_id, name, true)
+                        } else {
+                            if let Some(error) =
+                                ambiguous_chat_create_error(dir, &baseline, &retry_error)
+                            {
+                                return Err(error);
+                            }
+                            return Err(chat_service_refusal(
+                                dir,
+                                format!(
+                                    "same-request retry received no response and produced no durable receipt: {retry_error:#}"
+                                ),
+                            ));
+                        }
+                    }
+                }
             }
-            None => return Err(ipc_error).context(
-                "chat creation did not produce a reconcilable graph commit; no chat/runtime residue was found",
-            ),
-        },
+        }
     };
 
     if !response.ok {
@@ -5069,7 +5456,7 @@ pub fn run_create_coordinator(
 fn reconcile_chat_create(dir: &Path, request_id: &str) -> Option<u32> {
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
-        if let Ok(graph) = worksgood::parser::load_graph(&crate::commands::graph_path(dir))
+        if let Ok(graph) = worksgood::parser::load_graph(crate::commands::graph_path(dir))
             && let Some(chat_id) = graph.tasks().find_map(|task| {
                 (ipc::chat_create_request_id(task) == Some(request_id))
                     .then(|| worksgood::chat_id::parse_chat_task_id(&task.id))
@@ -5882,6 +6269,7 @@ mod tests {
             pid_start_identity: None,
             identity: None,
             supervisor_pid: None,
+            supervisor_pid_start_identity: None,
         }
         .save(dir)
         .unwrap();
@@ -5912,6 +6300,7 @@ mod tests {
             pid_start_identity: None,
             identity: None,
             supervisor_pid: None,
+            supervisor_pid_start_identity: None,
         };
 
         state.save(temp_dir.path()).unwrap();
@@ -6033,6 +6422,7 @@ mod tests {
             pid_start_identity: None,
             identity: None,
             supervisor_pid: None,
+            supervisor_pid_start_identity: None,
         };
         state.save(dir).unwrap();
         fs::write(
@@ -6071,6 +6461,7 @@ mod tests {
             pid_start_identity: None,
             identity: None,
             supervisor_pid: None,
+            supervisor_pid_start_identity: None,
         };
         state.save(dir).unwrap();
 
@@ -6195,6 +6586,7 @@ mod tests {
             pid_start_identity: None,
             identity: None,
             supervisor_pid: None,
+            supervisor_pid_start_identity: None,
         };
         state.save(dir).unwrap();
 
@@ -6306,6 +6698,131 @@ mod tests {
             status_line
         );
         assert!(status_line.contains("0 alive"));
+    }
+
+    #[test]
+    fn chat_recovery_command_is_exact_and_shell_safe() {
+        let temp = TempDir::new().unwrap();
+        let graph = temp.path().join("project with ' quote").join(".wg");
+        fs::create_dir_all(&graph).unwrap();
+        let command = chat_service_recovery_command(&graph);
+        assert!(command.starts_with("wg --dir '"));
+        assert!(command.ends_with(" service restart"));
+        assert!(command.contains("'\\''"), "single quote must be shell-safe");
+        assert!(command.contains(&temp.path().display().to_string()));
+    }
+
+    #[test]
+    fn authenticated_chat_restart_child_pins_graph_and_removes_wg_dir() {
+        let command = authenticated_restart_command(
+            Path::new("/candidate/wg"),
+            Path::new("/exact/project/.wg"),
+        );
+        let args: Vec<_> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args, ["--dir", "/exact/project/.wg", "service", "restart"]);
+        assert!(
+            command
+                .get_envs()
+                .any(|(key, value)| { key == "WG_DIR" && value.is_none() })
+        );
+    }
+
+    #[test]
+    fn unreceipted_chat_row_blocks_same_request_retry() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path();
+        fs::create_dir_all(dir.join("service")).unwrap();
+        worksgood::parser::save_graph(
+            &worksgood::graph::WorkGraph::new(),
+            &dir.join("graph.jsonl"),
+        )
+        .unwrap();
+        let baseline = ChatCreateBaseline::capture(dir).unwrap();
+        ipc::create_chat_in_graph(dir, Some("legacy"), None, None, None, Some("cat")).unwrap();
+        let transport = anyhow::anyhow!("lost response");
+        let error = ambiguous_chat_create_error(dir, &baseline, &transport)
+            .expect("an unreceipted new row is ambiguous")
+            .to_string();
+        assert!(error.contains("ownership is ambiguous"));
+        assert!(error.contains("[0]"));
+    }
+
+    #[test]
+    fn unreadable_post_create_graph_blocks_same_request_retry() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path();
+        fs::create_dir_all(dir.join("service")).unwrap();
+        worksgood::parser::save_graph(
+            &worksgood::graph::WorkGraph::new(),
+            &dir.join("graph.jsonl"),
+        )
+        .unwrap();
+        let baseline = ChatCreateBaseline::capture(dir).unwrap();
+        fs::remove_file(dir.join("graph.jsonl")).unwrap();
+        let transport = anyhow::anyhow!("lost response");
+        let error = ambiguous_chat_create_error(dir, &baseline, &transport)
+            .expect("an unreadable graph cannot prove retry safety")
+            .to_string();
+        assert!(error.contains("could not be re-read"));
+        assert!(error.contains("request was not retried"));
+    }
+
+    #[test]
+    fn successful_create_response_requires_matching_durable_receipt() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path();
+        fs::create_dir_all(dir.join("service")).unwrap();
+        worksgood::parser::save_graph(
+            &worksgood::graph::WorkGraph::new(),
+            &dir.join("graph.jsonl"),
+        )
+        .unwrap();
+        let chat_id = ipc::create_chat_in_graph_with_request_id(
+            dir,
+            Some("durable-request"),
+            Some("durable"),
+            None,
+            None,
+            None,
+            Some("cat"),
+        )
+        .unwrap();
+        let response = IpcResponse::success(serde_json::json!({"chat_id": chat_id}));
+        let verified =
+            verify_chat_create_response(dir, "durable-request", Some("durable"), response).unwrap();
+        assert_eq!(response_chat_id(&verified), Some(chat_id));
+        assert_eq!(
+            verified.data.as_ref().unwrap()["durable_receipt"],
+            serde_json::Value::Bool(true)
+        );
+    }
+
+    #[test]
+    fn pid_reused_legacy_state_cannot_authorize_restart_signal() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path();
+        fs::create_dir_all(dir.join("service")).unwrap();
+        ServiceState {
+            pid: std::process::id(),
+            socket_path: default_socket_path(dir).display().to_string(),
+            started_at: chrono::Utc::now().to_rfc3339(),
+            pid_start_identity: Some("proc-start:definitely-not-this-process".to_string()),
+            identity: None,
+            supervisor_pid: None,
+            supervisor_pid_start_identity: None,
+        }
+        .save(dir)
+        .unwrap();
+
+        let error = run_restart(dir, false)
+            .expect_err("PID birth mismatch must refuse restart")
+            .to_string();
+        assert!(error.contains("restart refused"));
+        assert!(error.contains("no process was signalled"));
+        assert!(is_process_alive(std::process::id()));
     }
 
     #[test]
@@ -6564,6 +7081,34 @@ mod tests {
 
         // Non-zero coordinator should NOT fall back to legacy
         assert!(CoordinatorState::load_for(dir, 1).is_none());
+    }
+
+    #[test]
+    fn equal_generation_daemon_snapshot_preserves_chat_zero_route_tuple() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+        fs::create_dir_all(dir.join("service")).unwrap();
+
+        let durable = CoordinatorState {
+            executor_override: Some("pi".to_string()),
+            model_override: Some("pi:zai:glm-5.2".to_string()),
+            route_generation: 1,
+            ..Default::default()
+        };
+        durable.save_for(dir, 0);
+
+        let daemon_snapshot = CoordinatorState {
+            ticks: 9,
+            route_generation: 1,
+            ..Default::default()
+        };
+        daemon_snapshot.save_for(dir, 0);
+
+        let persisted = CoordinatorState::load_for(dir, 0).unwrap();
+        assert_eq!(persisted.ticks, 9);
+        assert_eq!(persisted.route_generation, 1);
+        assert_eq!(persisted.executor_override.as_deref(), Some("pi"));
+        assert_eq!(persisted.model_override.as_deref(), Some("pi:zai:glm-5.2"));
     }
 
     #[test]

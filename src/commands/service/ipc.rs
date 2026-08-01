@@ -421,32 +421,45 @@ pub(crate) fn handle_chat_control_connection(
             return Ok(None);
         }
     };
-    let IpcRequest::CreateChat {
-        request_id,
-        name,
-        model,
-        executor,
-        endpoint,
-        command,
-    } = request
-    else {
-        let response = IpcResponse::error("Dedicated chat IPC lane accepts only create_chat");
-        write_response_or_cancel(&stream, &response, logger)?;
-        return Ok(None);
+    let (response, chat_id) = match request {
+        // Chat clients authenticate graph/build/protocol/PID identity through
+        // this independently-serviced lane before mutation. Keeping Status
+        // here prevents a slow dispatcher tick from making a healthy current
+        // daemon look obsolete or unresponsive.
+        IpcRequest::Status => (handle_status(dir), None),
+        IpcRequest::CreateChat {
+            request_id,
+            name,
+            model,
+            executor,
+            endpoint,
+            command,
+        } => {
+            logger.info(&format!(
+                "Chat IPC CreateChat: request_id={request_id:?}, name={name:?}, model={model:?}, executor={executor:?}"
+            ));
+            // Deterministic pre-commit response-loss boundary for recovery
+            // tests. The connection closes without graph/route/runtime
+            // mutation; the client may retry only the same request identity.
+            if std::env::var_os("WG_TEST_CHAT_CREATE_DROP_BEFORE_COMMIT").is_some() {
+                logger.info("Chat IPC test hook dropped request before durable commit");
+                return Ok(None);
+            }
+            handle_create_coordinator(
+                dir,
+                request_id.as_deref(),
+                name.as_deref(),
+                model.as_deref(),
+                executor.as_deref(),
+                endpoint.as_deref(),
+                command.as_deref(),
+            )
+        }
+        _ => (
+            IpcResponse::error("Dedicated chat IPC lane accepts only status or create_chat"),
+            None,
+        ),
     };
-
-    logger.info(&format!(
-        "Chat IPC CreateChat: request_id={request_id:?}, name={name:?}, model={model:?}, executor={executor:?}"
-    ));
-    let (response, chat_id) = handle_create_coordinator(
-        dir,
-        request_id.as_deref(),
-        name.as_deref(),
-        model.as_deref(),
-        executor.as_deref(),
-        endpoint.as_deref(),
-        command.as_deref(),
-    );
 
     // Deterministic response-loss boundary for credential-free regression
     // tests: delay only after the graph/route transaction committed.
