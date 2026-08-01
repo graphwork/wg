@@ -1,9 +1,11 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
-use worksgood::graph::{ArchivedBoundary, Node, Status, Task};
+use worksgood::graph::{ArchivedBoundary, Node, Status, Task, WorkGraph};
 use worksgood::parser::{load_graph, modify_graph};
 
 use super::graph_path;
@@ -14,6 +16,157 @@ fn archive_path(dir: &Path) -> std::path::PathBuf {
 
 fn last_batch_path(dir: &Path) -> std::path::PathBuf {
     dir.join("archive-last-batch.json")
+}
+
+const AUTO_ARCHIVE_STATE_VERSION: u32 = 1;
+/// A normal daemon tick may archive at most this many newly-eligible tasks.
+/// Anything larger becomes an attended operation with an exact persisted plan.
+pub const MAX_AUTOMATIC_INCREMENTAL_BATCH: usize = 10;
+/// A daemon that has not advanced its archival watermark for this long is no
+/// longer a routine incremental run. It must be acknowledged by an operator.
+pub const MAX_AUTOMATIC_WATERMARK_GAP_SECS: i64 = 48 * 60 * 60;
+
+fn automatic_state_path(dir: &Path) -> std::path::PathBuf {
+    dir.join("archive-auto-state.json")
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AutomaticArchivePlanTask {
+    pub id: String,
+    /// Digest of the complete task record. Confirmation refuses if the task
+    /// changed after the dry-run was persisted.
+    pub digest: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AutomaticArchivePending {
+    pub created_at: String,
+    pub evaluated_cutoff: String,
+    pub retention_days: u64,
+    pub build_id: String,
+    pub reason: String,
+    pub tasks: Vec<AutomaticArchivePlanTask>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct AutomaticArchiveReceipt {
+    confirmed_at: String,
+    cutoff: String,
+    retention_days: u64,
+    build_id: String,
+    task_ids: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct AutomaticArchiveState {
+    version: u32,
+    retention_days: u64,
+    #[serde(default)]
+    last_confirmed_cutoff: Option<String>,
+    #[serde(default)]
+    acknowledged_build_id: Option<String>,
+    #[serde(default)]
+    pending: Option<AutomaticArchivePending>,
+    #[serde(default)]
+    last_receipt: Option<AutomaticArchiveReceipt>,
+}
+
+impl AutomaticArchiveState {
+    fn disabled() -> Self {
+        Self {
+            version: AUTO_ARCHIVE_STATE_VERSION,
+            retention_days: 0,
+            last_confirmed_cutoff: None,
+            acknowledged_build_id: None,
+            pending: None,
+            last_receipt: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct AutomaticArchiveStatus {
+    pub enabled: bool,
+    pub retention_days: u64,
+    pub pending: bool,
+    pub pending_count: usize,
+    pub reason: Option<String>,
+    pub task_ids: Vec<String>,
+    pub dry_run_command: Option<String>,
+    pub confirm_command: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AutomaticArchiveOutcome {
+    Disabled,
+    Held { count: usize, reason: String },
+    Archived { count: usize },
+    Advanced,
+}
+
+fn load_automatic_state(dir: &Path) -> Result<Option<AutomaticArchiveState>> {
+    let path = automatic_state_path(dir);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let bytes = std::fs::read(&path).with_context(|| {
+        format!(
+            "Failed to read automatic archival state: {}",
+            path.display()
+        )
+    })?;
+    let state: AutomaticArchiveState = serde_json::from_slice(&bytes).with_context(|| {
+        format!(
+            "Failed to parse automatic archival state: {}",
+            path.display()
+        )
+    })?;
+    if state.version != AUTO_ARCHIVE_STATE_VERSION {
+        anyhow::bail!(
+            "Unsupported automatic archival state version {} (expected {})",
+            state.version,
+            AUTO_ARCHIVE_STATE_VERSION
+        );
+    }
+    Ok(Some(state))
+}
+
+fn save_automatic_state(dir: &Path, state: &AutomaticArchiveState) -> Result<()> {
+    let path = automatic_state_path(dir);
+    let tmp = path.with_extension("json.tmp");
+    let bytes = serde_json::to_vec_pretty(state)?;
+    std::fs::write(&tmp, bytes).with_context(|| {
+        format!(
+            "Failed to write automatic archival state: {}",
+            tmp.display()
+        )
+    })?;
+    std::fs::rename(&tmp, &path).with_context(|| {
+        format!(
+            "Failed to install automatic archival state: {}",
+            path.display()
+        )
+    })?;
+    Ok(())
+}
+
+fn task_digest(task: &Task) -> Result<String> {
+    let bytes = serde_json::to_vec(&Node::Task(task.clone()))?;
+    Ok(format!("sha256:{}", hex::encode(Sha256::digest(bytes))))
+}
+
+fn task_timestamp(task: &Task) -> Option<DateTime<Utc>> {
+    task.completed_at
+        .as_deref()
+        .or(task.created_at.as_deref())
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+        .map(|value| value.with_timezone(&Utc))
+}
+
+pub(crate) fn current_build_id() -> Result<String> {
+    let executable = std::env::current_exe().context("Failed to locate current wg executable")?;
+    let digest = worksgood::service_identity::executable_sha256(&executable)?;
+    Ok(worksgood::service_identity::build_id(&digest))
 }
 
 /// Store batch metadata so we can undo the last archive operation
@@ -128,15 +281,37 @@ fn archived_boundary_for(task: &Task, graph: &worksgood::graph::WorkGraph) -> Ar
     }
 }
 
-/// Append tasks to the archive file
+/// Append tasks to the archive file.
+///
+/// Existing identical records are accepted so a crash between the append and
+/// graph replacement can be retried safely. A conflicting record with the same
+/// ID fails closed rather than silently producing two histories.
 fn append_to_archive(tasks: &[Task], archive_path: &Path) -> Result<()> {
+    let existing = load_archive(archive_path)?;
+    let mut to_append = Vec::new();
+    for task in tasks {
+        if let Some(prior) = existing.iter().find(|candidate| candidate.id == task.id) {
+            if task_digest(prior)? != task_digest(task)? {
+                anyhow::bail!(
+                    "Archive already contains a different record for task '{}'; refusing to overwrite history",
+                    task.id
+                );
+            }
+        } else {
+            to_append.push(task);
+        }
+    }
+    if to_append.is_empty() {
+        return Ok(());
+    }
+
     let mut file = OpenOptions::new()
         .create(true)
         .append(true)
         .open(archive_path)
         .with_context(|| format!("Failed to open archive file: {:?}", archive_path))?;
 
-    for task in tasks {
+    for task in to_append {
         let node = Node::Task(task.clone());
         let json = serde_json::to_string(&node)
             .with_context(|| format!("Failed to serialize task: {}", task.id))?;
@@ -547,72 +722,550 @@ pub fn run(
     Ok(())
 }
 
-/// Run automatic archival (called by the daemon's archive cycle).
-/// Archives done/abandoned tasks older than `retention_days` while leaving
-/// durable boundary markers for any active-view cut edges.
-/// Returns the number of tasks archived.
-pub fn run_automatic(dir: &Path, retention_days: u64) -> Result<usize> {
-    if retention_days == 0 {
-        return Ok(0);
-    }
-
-    let path = graph_path(dir);
-    if !path.exists() {
-        return Ok(0);
-    }
-
-    let older_duration = Duration::days(retention_days as i64);
-    let graph = load_graph(&path).context("Failed to load graph")?;
-    let arch_path = archive_path(dir);
-
-    // Find archivable tasks: done/abandoned, old enough, not system tasks.
-    let tasks_to_archive: Vec<Task> = graph
-        .tasks()
-        .filter(|t| should_archive(t, Some(&older_duration)))
-        .filter(|t| !t.id.starts_with('.')) // Skip system/internal tasks
-        .cloned()
-        .collect();
-
+fn archive_automatic_batch(
+    dir: &Path,
+    graph: &WorkGraph,
+    tasks_to_archive: &[Task],
+    retention_days: u64,
+) -> Result<usize> {
     if tasks_to_archive.is_empty() {
         return Ok(0);
     }
+    let path = graph_path(dir);
+    let arch_path = archive_path(dir);
 
-    // Append to archive
-    append_to_archive(&tasks_to_archive, &arch_path)?;
-
-    // Save batch metadata for undo
-    let archived_ids: Vec<String> = tasks_to_archive.iter().map(|t| t.id.clone()).collect();
+    // The append is idempotent for an identical record, making a retry after a
+    // crash safe. Batch metadata is installed before the graph replacement so
+    // the exact records always have an undo receipt.
+    append_to_archive(tasks_to_archive, &arch_path)?;
+    let archived_ids: Vec<String> = tasks_to_archive
+        .iter()
+        .map(|task| task.id.clone())
+        .collect();
     save_batch_metadata(dir, &archived_ids)?;
 
-    // Replace full tasks with compact boundary markers. Exact task records
-    // and edges remain in the archive for restoration.
     let boundaries: Vec<ArchivedBoundary> = tasks_to_archive
         .iter()
-        .map(|task| archived_boundary_for(task, &graph))
+        .map(|task| archived_boundary_for(task, graph))
         .collect();
-    modify_graph(&path, |graph| {
+    modify_graph(&path, |active| {
         for boundary in &boundaries {
-            graph.take_node(&boundary.id);
-            graph.add_node(Node::ArchivedBoundary(boundary.clone()));
+            active.take_node(&boundary.id);
+            active.add_node(Node::ArchivedBoundary(boundary.clone()));
         }
         true
     })
     .context("Failed to modify graph")?;
     super::notify_graph_changed(dir);
 
-    // Record provenance
     let config = worksgood::config::Config::load_or_default(dir);
-    let task_ids: Vec<&str> = tasks_to_archive.iter().map(|t| t.id.as_str()).collect();
+    let task_ids: Vec<&str> = tasks_to_archive
+        .iter()
+        .map(|task| task.id.as_str())
+        .collect();
     let _ = worksgood::provenance::record(
         dir,
         "archive",
         None,
         None,
-        serde_json::json!({ "task_ids": task_ids, "automatic": true, "retention_days": retention_days }),
+        serde_json::json!({
+            "task_ids": task_ids,
+            "automatic": true,
+            "retention_days": retention_days,
+        }),
         config.log.rotation_threshold,
     );
 
     Ok(tasks_to_archive.len())
+}
+
+fn eligible_automatic_tasks(
+    graph: &WorkGraph,
+    lower_exclusive: Option<DateTime<Utc>>,
+    cutoff: DateTime<Utc>,
+) -> Vec<Task> {
+    let mut tasks: Vec<Task> = graph
+        .tasks()
+        .filter(|task| matches!(task.status, Status::Done | Status::Abandoned))
+        .filter(|task| !task.id.starts_with('.'))
+        .filter(|task| {
+            task_timestamp(task).is_some_and(|timestamp| {
+                timestamp <= cutoff && lower_exclusive.is_none_or(|lower| timestamp > lower)
+            })
+        })
+        .cloned()
+        .collect();
+    tasks.sort_by(|left, right| left.id.cmp(&right.id));
+    tasks
+}
+
+fn pending_plan(
+    tasks: &[Task],
+    retention_days: u64,
+    build_id: &str,
+    cutoff: DateTime<Utc>,
+    reason: impl Into<String>,
+    now: DateTime<Utc>,
+) -> Result<AutomaticArchivePending> {
+    let tasks = tasks
+        .iter()
+        .map(|task| {
+            Ok(AutomaticArchivePlanTask {
+                id: task.id.clone(),
+                digest: task_digest(task)?,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(AutomaticArchivePending {
+        created_at: now.to_rfc3339(),
+        evaluated_cutoff: cutoff.to_rfc3339(),
+        retention_days,
+        build_id: build_id.to_string(),
+        reason: reason.into(),
+        tasks,
+    })
+}
+
+fn persist_hold(
+    dir: &Path,
+    mut state: AutomaticArchiveState,
+    pending: AutomaticArchivePending,
+) -> Result<AutomaticArchiveOutcome> {
+    let count = pending.tasks.len();
+    let reason = pending.reason.clone();
+    state.retention_days = pending.retention_days;
+    state.pending = Some(pending);
+    save_automatic_state(dir, &state)?;
+    Ok(AutomaticArchiveOutcome::Held { count, reason })
+}
+
+/// Recompute a held plan without performing any archival. This is used when a
+/// new build inherits an older build's pending plan and when the operator asks
+/// for a fresh dry-run after task bytes changed.
+fn refresh_pending_plan_at(
+    dir: &Path,
+    retention_days: u64,
+    build_id: &str,
+    now: DateTime<Utc>,
+    reason_override: Option<String>,
+) -> Result<AutomaticArchiveOutcome> {
+    let graph = load_graph(graph_path(dir)).context("Failed to load graph")?;
+    let cutoff = now - Duration::days(retention_days as i64);
+    let state = load_automatic_state(dir)?;
+    let mut state = state.unwrap_or(AutomaticArchiveState {
+        version: AUTO_ARCHIVE_STATE_VERSION,
+        retention_days,
+        last_confirmed_cutoff: None,
+        acknowledged_build_id: None,
+        pending: None,
+        last_receipt: None,
+    });
+    let last_cutoff = state
+        .last_confirmed_cutoff
+        .as_deref()
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+        .map(|value| value.with_timezone(&Utc));
+    let tasks = match last_cutoff {
+        Some(lower) if cutoff > lower => eligible_automatic_tasks(&graph, Some(lower), cutoff),
+        Some(_) => Vec::new(),
+        None => eligible_automatic_tasks(&graph, None, cutoff),
+    };
+    let reason = reason_override
+        .or_else(|| state.pending.as_ref().map(|pending| pending.reason.clone()))
+        .unwrap_or_else(|| {
+            "no persisted automatic archival acknowledgment (legacy/unverified startup)".to_string()
+        });
+    let pending = pending_plan(&tasks, retention_days, build_id, cutoff, reason, now)?;
+    // Do not let stale pending metadata supply dispatch authority after the
+    // refresh. Only the last confirmed receipt remains authoritative.
+    state.pending = None;
+    persist_hold(dir, state, pending)
+}
+
+/// Read the operator-facing automatic archival state. A malformed receipt is
+/// reported as a hold rather than being ignored; no caller may infer permission
+/// to archive from unreadable state.
+pub fn automatic_status(dir: &Path) -> AutomaticArchiveStatus {
+    let retention_days = worksgood::config::Config::load_or_default(dir)
+        .coordinator
+        .archive_retention_days;
+    if retention_days == 0 {
+        return AutomaticArchiveStatus {
+            enabled: false,
+            retention_days,
+            pending: false,
+            pending_count: 0,
+            reason: None,
+            task_ids: Vec::new(),
+            dry_run_command: None,
+            confirm_command: None,
+        };
+    }
+    match load_automatic_state(dir) {
+        Ok(Some(state)) => match state.pending {
+            Some(pending) => AutomaticArchiveStatus {
+                enabled: true,
+                retention_days,
+                pending: true,
+                pending_count: pending.tasks.len(),
+                reason: Some(pending.reason),
+                task_ids: pending.tasks.into_iter().map(|task| task.id).collect(),
+                dry_run_command: Some("wg archive auto --dry-run".to_string()),
+                confirm_command: Some("wg archive auto --confirm".to_string()),
+            },
+            None => AutomaticArchiveStatus {
+                enabled: true,
+                retention_days,
+                pending: false,
+                pending_count: 0,
+                reason: None,
+                task_ids: Vec::new(),
+                dry_run_command: None,
+                confirm_command: None,
+            },
+        },
+        Ok(None) => AutomaticArchiveStatus {
+            enabled: true,
+            retention_days,
+            pending: true,
+            pending_count: 0,
+            reason: Some(
+                "no persisted automatic archival acknowledgment; awaiting first daemon maintenance pass"
+                    .to_string(),
+            ),
+            task_ids: Vec::new(),
+            dry_run_command: Some("wg archive auto --dry-run".to_string()),
+            confirm_command: Some("wg archive auto --confirm".to_string()),
+        },
+        Err(error) => AutomaticArchiveStatus {
+            enabled: true,
+            retention_days,
+            pending: true,
+            pending_count: 0,
+            reason: Some(format!("automatic archival state is unreadable: {error:#}")),
+            task_ids: Vec::new(),
+            dry_run_command: Some("wg archive auto --dry-run".to_string()),
+            confirm_command: None,
+        },
+    }
+}
+
+/// Guarded daemon archival. A first run, build change, retention change, long
+/// watermark gap, or oversized batch persists an exact dry-run and stops. Only
+/// an acknowledged, small, recent interval may archive without attendance.
+pub fn run_automatic(
+    dir: &Path,
+    retention_days: u64,
+    build_id: &str,
+) -> Result<AutomaticArchiveOutcome> {
+    run_automatic_at(dir, retention_days, build_id, Utc::now())
+}
+
+fn run_automatic_at(
+    dir: &Path,
+    retention_days: u64,
+    build_id: &str,
+    now: DateTime<Utc>,
+) -> Result<AutomaticArchiveOutcome> {
+    if retention_days == 0 {
+        let mut state = load_automatic_state(dir)?.unwrap_or_else(AutomaticArchiveState::disabled);
+        if state.retention_days != 0 || state.pending.is_some() {
+            state.retention_days = 0;
+            state.pending = None;
+            save_automatic_state(dir, &state)?;
+        }
+        return Ok(AutomaticArchiveOutcome::Disabled);
+    }
+
+    let path = graph_path(dir);
+    if !path.exists() {
+        return Ok(AutomaticArchiveOutcome::Advanced);
+    }
+    let graph = load_graph(&path).context("Failed to load graph")?;
+    let cutoff = now - Duration::days(retention_days as i64);
+    let state = load_automatic_state(dir)?;
+
+    let Some(mut state) = state else {
+        let tasks = eligible_automatic_tasks(&graph, None, cutoff);
+        let pending = pending_plan(
+            &tasks,
+            retention_days,
+            build_id,
+            cutoff,
+            "no persisted automatic archival acknowledgment (legacy/unverified startup)",
+            now,
+        )?;
+        return persist_hold(
+            dir,
+            AutomaticArchiveState {
+                version: AUTO_ARCHIVE_STATE_VERSION,
+                retention_days,
+                last_confirmed_cutoff: None,
+                acknowledged_build_id: None,
+                pending: None,
+                last_receipt: None,
+            },
+            pending,
+        );
+    };
+
+    if let Some(pending) = state.pending.as_ref() {
+        if pending.build_id != build_id || pending.retention_days != retention_days {
+            let reason = if pending.retention_days != retention_days {
+                format!(
+                    "retention changed from {}d to {}d while archival was held",
+                    pending.retention_days, retention_days
+                )
+            } else {
+                format!(
+                    "daemon build changed from {} to {} while archival was held",
+                    pending.build_id, build_id
+                )
+            };
+            return refresh_pending_plan_at(dir, retention_days, build_id, now, Some(reason));
+        }
+        return Ok(AutomaticArchiveOutcome::Held {
+            count: pending.tasks.len(),
+            reason: pending.reason.clone(),
+        });
+    }
+
+    let Some(last_cutoff) = state
+        .last_confirmed_cutoff
+        .as_deref()
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+        .map(|value| value.with_timezone(&Utc))
+    else {
+        let tasks = eligible_automatic_tasks(&graph, None, cutoff);
+        let pending = pending_plan(
+            &tasks,
+            retention_days,
+            build_id,
+            cutoff,
+            "automatic archival receipt has no verified watermark",
+            now,
+        )?;
+        return persist_hold(dir, state, pending);
+    };
+
+    let tasks = if cutoff > last_cutoff {
+        eligible_automatic_tasks(&graph, Some(last_cutoff), cutoff)
+    } else {
+        Vec::new()
+    };
+
+    // Configuration/build identity changes require acknowledgment even when a
+    // clock correction or longer retention moved the eligibility cutoff back.
+    // The exact plan is empty in that case; confirmation only re-baselines the
+    // trusted watermark and cannot resurrect pre-watermark history.
+    let reason = if state.retention_days != retention_days {
+        Some(format!(
+            "retention changed from {}d to {}d",
+            state.retention_days, retention_days
+        ))
+    } else if state.acknowledged_build_id.as_deref() != Some(build_id) {
+        Some(format!(
+            "daemon build changed from {} to {}",
+            state
+                .acknowledged_build_id
+                .as_deref()
+                .unwrap_or("unverified"),
+            build_id
+        ))
+    } else {
+        None
+    };
+    if let Some(reason) = reason {
+        let pending = pending_plan(&tasks, retention_days, build_id, cutoff, reason, now)?;
+        return persist_hold(dir, state, pending);
+    }
+
+    // Never move a watermark backwards after an ordinary clock correction.
+    if cutoff <= last_cutoff {
+        return Ok(AutomaticArchiveOutcome::Advanced);
+    }
+
+    let reason = if cutoff.signed_duration_since(last_cutoff).num_seconds()
+        > MAX_AUTOMATIC_WATERMARK_GAP_SECS
+    {
+        Some(format!(
+            "archival watermark is overdue by more than {} hours",
+            MAX_AUTOMATIC_WATERMARK_GAP_SECS / 3600
+        ))
+    } else if tasks.len() > MAX_AUTOMATIC_INCREMENTAL_BATCH {
+        Some(format!(
+            "{} newly eligible tasks exceeds the unattended limit of {}",
+            tasks.len(),
+            MAX_AUTOMATIC_INCREMENTAL_BATCH
+        ))
+    } else {
+        None
+    };
+
+    if let Some(reason) = reason {
+        let pending = pending_plan(&tasks, retention_days, build_id, cutoff, reason, now)?;
+        return persist_hold(dir, state, pending);
+    }
+
+    let count = archive_automatic_batch(dir, &graph, &tasks, retention_days)?;
+    state.retention_days = retention_days;
+    state.last_confirmed_cutoff = Some(cutoff.to_rfc3339());
+    state.acknowledged_build_id = Some(build_id.to_string());
+    state.last_receipt = Some(AutomaticArchiveReceipt {
+        confirmed_at: now.to_rfc3339(),
+        cutoff: cutoff.to_rfc3339(),
+        retention_days,
+        build_id: build_id.to_string(),
+        task_ids: tasks.iter().map(|task| task.id.clone()).collect(),
+    });
+    save_automatic_state(dir, &state)?;
+    if count == 0 {
+        Ok(AutomaticArchiveOutcome::Advanced)
+    } else {
+        Ok(AutomaticArchiveOutcome::Archived { count })
+    }
+}
+
+fn confirm_automatic_at(dir: &Path, build_id: &str, now: DateTime<Utc>) -> Result<Vec<String>> {
+    let config = worksgood::config::Config::load_or_default(dir);
+    let retention_days = config.coordinator.archive_retention_days;
+    if retention_days == 0 {
+        anyhow::bail!(
+            "Automatic archival is disabled (coordinator.archive_retention_days=0); nothing to confirm"
+        );
+    }
+    let mut state = load_automatic_state(dir)?
+        .ok_or_else(|| anyhow::anyhow!("No persisted automatic archival plan. Start the daemon or run `wg archive auto --dry-run` first."))?;
+    let pending = state.pending.clone().ok_or_else(|| {
+        anyhow::anyhow!("No automatic archival is pending operator confirmation.")
+    })?;
+    if pending.retention_days != retention_days {
+        anyhow::bail!(
+            "Pending plan uses {}d retention but current config uses {}d; run `wg archive auto --dry-run` to create a new exact plan",
+            pending.retention_days,
+            retention_days
+        );
+    }
+    if pending.build_id != build_id {
+        anyhow::bail!(
+            "Pending plan was created by build '{}' but this command is '{}'; restart the daemon and review a plan from the candidate binary",
+            pending.build_id,
+            build_id
+        );
+    }
+
+    let graph = load_graph(graph_path(dir)).context("Failed to load graph")?;
+    let archived = load_archive(&archive_path(dir))?;
+    let mut active_tasks = Vec::new();
+    for planned in &pending.tasks {
+        if let Some(task) = graph.get_task(&planned.id) {
+            let actual = task_digest(task)?;
+            if actual != planned.digest {
+                anyhow::bail!(
+                    "Task '{}' changed after the dry-run (expected {}, found {}); refusing stale confirmation",
+                    planned.id,
+                    planned.digest,
+                    actual
+                );
+            }
+            active_tasks.push(task.clone());
+        } else if let Some(task) = archived.iter().find(|task| task.id == planned.id) {
+            if task_digest(task)? != planned.digest {
+                anyhow::bail!(
+                    "Archived task '{}' does not match the confirmed plan; refusing to finalize receipt",
+                    planned.id
+                );
+            }
+        } else {
+            anyhow::bail!(
+                "Task '{}' from the confirmed plan is neither active nor archived; refusing partial archival",
+                planned.id
+            );
+        }
+    }
+
+    archive_automatic_batch(dir, &graph, &active_tasks, retention_days)?;
+    let confirmed_ids: Vec<String> = pending.tasks.iter().map(|task| task.id.clone()).collect();
+    // If a previous attempt crashed after archiving only part of the plan, make
+    // the undo receipt cover the complete exact confirmation batch.
+    if !confirmed_ids.is_empty() {
+        save_batch_metadata(dir, &confirmed_ids)?;
+    }
+    state.retention_days = retention_days;
+    state.last_confirmed_cutoff = Some(pending.evaluated_cutoff.clone());
+    state.acknowledged_build_id = Some(build_id.to_string());
+    state.pending = None;
+    state.last_receipt = Some(AutomaticArchiveReceipt {
+        confirmed_at: now.to_rfc3339(),
+        cutoff: pending.evaluated_cutoff,
+        retention_days,
+        build_id: build_id.to_string(),
+        task_ids: confirmed_ids.clone(),
+    });
+    save_automatic_state(dir, &state)?;
+    Ok(confirmed_ids)
+}
+
+/// Operator surface for inspecting and confirming the exact held batch.
+pub fn run_auto_control(dir: &Path, dry_run: bool, confirm: bool, json: bool) -> Result<()> {
+    if confirm {
+        let build_id = current_build_id()?;
+        let ids = confirm_automatic_at(dir, &build_id, Utc::now())?;
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "confirmed": true,
+                    "archived_count": ids.len(),
+                    "task_ids": ids,
+                    "undo_command": "wg archive --undo",
+                }))?
+            );
+        } else {
+            println!("Confirmed automatic archival of {} tasks.", ids.len());
+            for id in &ids {
+                println!("  {id}");
+            }
+            if !ids.is_empty() {
+                println!("Undo this exact batch with: wg archive --undo");
+            }
+        }
+        return Ok(());
+    }
+
+    // Make the dry-run independently actionable before the daemon's first
+    // pass, after an upgrade, and after task bytes changed. Refreshing a held
+    // plan is always non-destructive; acknowledged incremental mode is left
+    // untouched when no hold exists.
+    let retention_days = worksgood::config::Config::load_or_default(dir)
+        .coordinator
+        .archive_retention_days;
+    if retention_days > 0 && automatic_status(dir).pending {
+        let build_id = current_build_id()?;
+        let _ = refresh_pending_plan_at(dir, retention_days, &build_id, Utc::now(), None)?;
+    }
+    let status = automatic_status(dir);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&status)?);
+    } else if !status.enabled {
+        println!("Automatic archival is disabled (coordinator.archive_retention_days=0).");
+    } else if status.pending {
+        println!(
+            "Automatic archival pending operator confirmation: {} task(s)",
+            status.pending_count
+        );
+        if let Some(reason) = status.reason.as_deref() {
+            println!("Reason: {reason}");
+        }
+        for id in &status.task_ids {
+            println!("  {id}");
+        }
+        println!("Confirm this exact batch once: wg archive auto --confirm");
+    } else {
+        println!("Automatic archival is acknowledged; no batch is pending.");
+    }
+    let _ = dry_run; // The no-confirm path is always non-destructive.
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1544,126 +2197,370 @@ mod tests {
         assert_eq!(graph.get_task("t2").unwrap().after, vec!["t1"]);
     }
 
-    #[test]
-    fn test_run_automatic() {
-        let dir = tempdir().unwrap();
-        let wg_dir = dir.path();
-        std::fs::create_dir_all(wg_dir).unwrap();
-        let graph_file = wg_dir.join("graph.jsonl");
+    fn set_retention(dir: &Path, days: u64) {
+        std::fs::write(
+            dir.join("config.toml"),
+            format!("[coordinator]\narchive_retention_days = {days}\n"),
+        )
+        .unwrap();
+    }
 
-        // Create a graph with old done task and recent open task
-        let mut graph = WorkGraph::new();
-        let mut done_task = make_task(
-            "t1",
-            "Old Done Task",
-            Status::Done,
-            Some(&(Utc::now() - Duration::days(40)).to_rfc3339()),
-        );
-        done_task.created_at = Some((Utc::now() - Duration::days(40)).to_rfc3339());
-        graph.add_node(Node::Task(done_task));
-        graph.add_node(Node::Task(make_task("t2", "Open Task", Status::Open, None)));
-
-        // Recent done task (should NOT be archived with 30d retention)
-        let mut recent_done = make_task(
-            "t3",
-            "Recent Done",
-            Status::Done,
-            Some(&(Utc::now() - Duration::days(5)).to_rfc3339()),
-        );
-        recent_done.created_at = Some((Utc::now() - Duration::days(5)).to_rfc3339());
-        graph.add_node(Node::Task(recent_done));
-
-        save_graph(&graph, &graph_file).unwrap();
-
-        // Run automatic with 30 day retention
-        let count = run_automatic(wg_dir, 30).unwrap();
-        assert_eq!(count, 1);
-
-        // Verify old done task is archived, recent ones remain
-        let loaded = load_graph(&graph_file).unwrap();
-        assert!(loaded.get_task("t1").is_none()); // archived
-        assert!(loaded.get_task("t2").is_some()); // open, not archived
-        assert!(loaded.get_task("t3").is_some()); // recent done, not archived
-
-        // Verify archived task is in archive file
-        let arch_path = wg_dir.join("archive.jsonl");
-        let archived = load_archive(&arch_path).unwrap();
-        assert_eq!(archived.len(), 1);
-        assert_eq!(archived[0].id, "t1");
+    fn fixed_now() -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339("2026-08-01T07:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc)
     }
 
     #[test]
-    fn test_run_automatic_skips_system_tasks() {
+    fn automatic_first_legacy_restart_holds_month_old_backlog() {
         let dir = tempdir().unwrap();
         let wg_dir = dir.path();
-        std::fs::create_dir_all(wg_dir).unwrap();
         let graph_file = wg_dir.join("graph.jsonl");
+        set_retention(wg_dir, 7);
 
-        let mut graph = WorkGraph::new();
-        let mut sys_task = make_task(
-            ".compact-0",
-            "System Task",
-            Status::Done,
-            Some(&(Utc::now() - Duration::days(40)).to_rfc3339()),
-        );
-        sys_task.created_at = Some((Utc::now() - Duration::days(40)).to_rfc3339());
-        graph.add_node(Node::Task(sys_task));
-        save_graph(&graph, &graph_file).unwrap();
-
-        // System tasks should not be auto-archived
-        let count = run_automatic(wg_dir, 7).unwrap();
-        assert_eq!(count, 0);
-    }
-
-    #[test]
-    fn test_run_automatic_disabled_with_zero_retention() {
-        let dir = tempdir().unwrap();
-        let wg_dir = dir.path();
-        std::fs::create_dir_all(wg_dir).unwrap();
-        let graph_file = wg_dir.join("graph.jsonl");
-
+        let now = fixed_now();
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_task(
-            "t1",
-            "Done Task",
+            "historical",
+            "Month-old result",
             Status::Done,
-            Some(&(Utc::now() - Duration::days(40)).to_rfc3339()),
+            Some(&(now - Duration::days(38)).to_rfc3339()),
         )));
         save_graph(&graph, &graph_file).unwrap();
 
-        // retention_days=0 disables archival
-        let count = run_automatic(wg_dir, 0).unwrap();
-        assert_eq!(count, 0);
+        let outcome = run_automatic_at(wg_dir, 7, "candidate-build", now).unwrap();
+        assert!(matches!(
+            outcome,
+            AutomaticArchiveOutcome::Held { count: 1, .. }
+        ));
+        assert!(
+            load_graph(&graph_file)
+                .unwrap()
+                .get_task("historical")
+                .is_some()
+        );
+        assert!(load_archive(&archive_path(wg_dir)).unwrap().is_empty());
+
+        let status = automatic_status(wg_dir);
+        assert!(status.pending);
+        assert_eq!(status.pending_count, 1);
+        assert_eq!(status.task_ids, vec!["historical"]);
+        assert_eq!(
+            status.confirm_command.as_deref(),
+            Some("wg archive auto --confirm")
+        );
     }
 
     #[test]
-    fn test_run_automatic_keeps_boundary_for_active_dependents() {
+    fn automatic_confirmation_archives_exact_batch_once_and_undo_is_lossless() {
         let dir = tempdir().unwrap();
         let wg_dir = dir.path();
-        std::fs::create_dir_all(wg_dir).unwrap();
         let graph_file = wg_dir.join("graph.jsonl");
+        set_retention(wg_dir, 7);
+        let now = fixed_now();
+
+        let mut historical = make_task(
+            "historical",
+            "Exact historical result",
+            Status::Done,
+            Some(&(now - Duration::days(38)).to_rfc3339()),
+        );
+        historical.created_at = Some((now - Duration::days(40)).to_rfc3339());
+        historical.after = vec!["foundation".to_string()];
+        historical.before = vec!["active".to_string()];
+        historical.log = vec![worksgood::graph::LogEntry {
+            timestamp: (now - Duration::days(20)).to_rfc3339(),
+            actor: Some("operator".to_string()),
+            user: Some("tester".to_string()),
+            message: "kept log line".to_string(),
+        }];
+        let mut active = make_task("active", "Still active", Status::Open, None);
+        active.after = vec!["historical".to_string()];
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(historical));
+        graph.add_node(Node::Task(active));
+        save_graph(&graph, &graph_file).unwrap();
+        // Compare against the exact canonical task bytes as persisted (the
+        // parser may populate derived interaction timestamps on first load).
+        let original = load_graph(&graph_file)
+            .unwrap()
+            .get_task("historical")
+            .unwrap()
+            .clone();
+
+        run_automatic_at(wg_dir, 7, "candidate-build", now).unwrap();
+        let ids = confirm_automatic_at(wg_dir, "candidate-build", now).unwrap();
+        assert_eq!(ids, vec!["historical"]);
+        let archived_graph = load_graph(&graph_file).unwrap();
+        assert!(archived_graph.get_task("historical").is_none());
+        assert!(archived_graph.get_archived_boundary("historical").is_some());
+        assert_eq!(
+            archived_graph.get_task("active").unwrap().after,
+            vec!["historical"]
+        );
+        assert_eq!(load_archive(&archive_path(wg_dir)).unwrap().len(), 1);
+
+        // A second confirmation cannot reapply or duplicate the receipt.
+        assert!(confirm_automatic_at(wg_dir, "candidate-build", now).is_err());
+        assert_eq!(load_archive(&archive_path(wg_dir)).unwrap().len(), 1);
+
+        undo(wg_dir).unwrap();
+        let restored = load_graph(&graph_file).unwrap();
+        assert_eq!(restored.get_task("historical"), Some(&original));
+        assert_eq!(
+            restored.get_task("active").unwrap().after,
+            vec!["historical"]
+        );
+        assert!(load_archive(&archive_path(wg_dir)).unwrap().is_empty());
+    }
+
+    #[test]
+    fn automatic_zero_retention_is_non_destructive() {
+        let dir = tempdir().unwrap();
+        let wg_dir = dir.path();
+        let graph_file = wg_dir.join("graph.jsonl");
+        set_retention(wg_dir, 0);
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_task(
+            "historical",
+            "Done Task",
+            Status::Done,
+            Some("2020-01-01T00:00:00Z"),
+        )));
+        save_graph(&graph, &graph_file).unwrap();
+
+        assert_eq!(
+            run_automatic_at(wg_dir, 0, "candidate-build", fixed_now()).unwrap(),
+            AutomaticArchiveOutcome::Disabled
+        );
+        assert!(
+            load_graph(&graph_file)
+                .unwrap()
+                .get_task("historical")
+                .is_some()
+        );
+        assert!(!automatic_status(wg_dir).enabled);
+    }
+
+    #[test]
+    fn acknowledged_restart_archives_only_newly_eligible_increment() {
+        let dir = tempdir().unwrap();
+        let wg_dir = dir.path();
+        let graph_file = wg_dir.join("graph.jsonl");
+        set_retention(wg_dir, 7);
+        let now = fixed_now();
 
         let mut graph = WorkGraph::new();
-        let mut done_task = make_task(
-            "t1",
+        graph.add_node(Node::Task(make_task(
+            "backlog",
+            "Initial backlog",
+            Status::Done,
+            Some(&(now - Duration::days(30)).to_rfc3339()),
+        )));
+        save_graph(&graph, &graph_file).unwrap();
+        run_automatic_at(wg_dir, 7, "candidate-build", now).unwrap();
+        confirm_automatic_at(wg_dir, "candidate-build", now).unwrap();
+
+        // This task crosses the 7-day cutoff during the next routine 24h
+        // interval. The already-confirmed historical cutoff is not rescanned.
+        let mut graph = load_graph(&graph_file).unwrap();
+        graph.add_node(Node::Task(make_task(
+            "increment",
+            "Newly eligible",
+            Status::Done,
+            Some(&(now - Duration::hours(156)).to_rfc3339()),
+        )));
+        // Simulate an imported ancient record after acknowledgment. It lies
+        // before the watermark and must not resurrect the historical backlog.
+        graph.add_node(Node::Task(make_task(
+            "pre-watermark-import",
+            "Old import",
+            Status::Done,
+            Some(&(now - Duration::days(60)).to_rfc3339()),
+        )));
+        save_graph(&graph, &graph_file).unwrap();
+
+        assert_eq!(
+            run_automatic_at(wg_dir, 7, "candidate-build", now + Duration::days(1)).unwrap(),
+            AutomaticArchiveOutcome::Archived { count: 1 }
+        );
+        let graph = load_graph(&graph_file).unwrap();
+        assert!(graph.get_task("increment").is_none());
+        assert!(graph.get_task("pre-watermark-import").is_some());
+        assert_eq!(load_archive(&archive_path(wg_dir)).unwrap().len(), 2);
+
+        assert_eq!(
+            run_automatic_at(
+                wg_dir,
+                7,
+                "candidate-build",
+                now + Duration::days(1) + Duration::hours(1)
+            )
+            .unwrap(),
+            AutomaticArchiveOutcome::Advanced
+        );
+        assert_eq!(load_archive(&archive_path(wg_dir)).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn pending_plan_is_rebased_to_candidate_build_after_upgrade() {
+        let dir = tempdir().unwrap();
+        let wg_dir = dir.path();
+        let graph_file = wg_dir.join("graph.jsonl");
+        set_retention(wg_dir, 7);
+        let now = fixed_now();
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_task(
+            "historical",
+            "Historical",
+            Status::Done,
+            Some(&(now - Duration::days(30)).to_rfc3339()),
+        )));
+        save_graph(&graph, &graph_file).unwrap();
+
+        run_automatic_at(wg_dir, 7, "build-a", now).unwrap();
+        let outcome = run_automatic_at(wg_dir, 7, "build-b", now + Duration::minutes(1)).unwrap();
+        assert!(matches!(
+            outcome,
+            AutomaticArchiveOutcome::Held { count: 1, reason }
+                if reason.contains("build changed")
+        ));
+        let state = load_automatic_state(wg_dir).unwrap().unwrap();
+        assert_eq!(state.pending.as_ref().unwrap().build_id, "build-b");
+        assert_eq!(
+            confirm_automatic_at(wg_dir, "build-b", now + Duration::minutes(1)).unwrap(),
+            vec!["historical"]
+        );
+    }
+
+    #[test]
+    fn acknowledged_build_change_holds_even_small_increment() {
+        let dir = tempdir().unwrap();
+        let wg_dir = dir.path();
+        let graph_file = wg_dir.join("graph.jsonl");
+        set_retention(wg_dir, 7);
+        let now = fixed_now();
+        save_graph(&WorkGraph::new(), &graph_file).unwrap();
+        run_automatic_at(wg_dir, 7, "build-a", now).unwrap();
+        confirm_automatic_at(wg_dir, "build-a", now).unwrap();
+
+        let outcome = run_automatic_at(wg_dir, 7, "build-b", now + Duration::hours(1)).unwrap();
+        assert!(matches!(
+            outcome,
+            AutomaticArchiveOutcome::Held { count: 0, reason }
+                if reason.contains("build changed")
+        ));
+    }
+
+    #[test]
+    fn acknowledged_long_downtime_holds_even_empty_batch() {
+        let dir = tempdir().unwrap();
+        let wg_dir = dir.path();
+        let graph_file = wg_dir.join("graph.jsonl");
+        set_retention(wg_dir, 7);
+        let now = fixed_now();
+        save_graph(&WorkGraph::new(), &graph_file).unwrap();
+        run_automatic_at(wg_dir, 7, "candidate-build", now).unwrap();
+        confirm_automatic_at(wg_dir, "candidate-build", now).unwrap();
+
+        let outcome =
+            run_automatic_at(wg_dir, 7, "candidate-build", now + Duration::days(3)).unwrap();
+        assert!(matches!(
+            outcome,
+            AutomaticArchiveOutcome::Held { count: 0, reason }
+                if reason.contains("overdue")
+        ));
+    }
+
+    #[test]
+    fn acknowledged_oversized_increment_holds_exact_ids() {
+        let dir = tempdir().unwrap();
+        let wg_dir = dir.path();
+        let graph_file = wg_dir.join("graph.jsonl");
+        set_retention(wg_dir, 7);
+        let now = fixed_now();
+        save_graph(&WorkGraph::new(), &graph_file).unwrap();
+        run_automatic_at(wg_dir, 7, "candidate-build", now).unwrap();
+        confirm_automatic_at(wg_dir, "candidate-build", now).unwrap();
+
+        let mut graph = WorkGraph::new();
+        for index in 0..=MAX_AUTOMATIC_INCREMENTAL_BATCH {
+            graph.add_node(Node::Task(make_task(
+                &format!("increment-{index:02}"),
+                "Increment",
+                Status::Done,
+                Some(&(now - Duration::days(7) + Duration::minutes(30)).to_rfc3339()),
+            )));
+        }
+        save_graph(&graph, &graph_file).unwrap();
+        let outcome =
+            run_automatic_at(wg_dir, 7, "candidate-build", now + Duration::hours(1)).unwrap();
+        assert!(matches!(
+            outcome,
+            AutomaticArchiveOutcome::Held { count, reason }
+                if count == MAX_AUTOMATIC_INCREMENTAL_BATCH + 1
+                    && reason.contains("unattended limit")
+        ));
+        let status = automatic_status(wg_dir);
+        assert_eq!(status.pending_count, MAX_AUTOMATIC_INCREMENTAL_BATCH + 1);
+        assert_eq!(status.task_ids.first().unwrap(), "increment-00");
+        assert_eq!(status.task_ids.last().unwrap(), "increment-10");
+        assert!(load_archive(&archive_path(wg_dir)).unwrap().is_empty());
+    }
+
+    #[test]
+    fn acknowledged_retention_change_requires_new_confirmation() {
+        let dir = tempdir().unwrap();
+        let wg_dir = dir.path();
+        let graph_file = wg_dir.join("graph.jsonl");
+        set_retention(wg_dir, 7);
+        let now = fixed_now();
+        save_graph(&WorkGraph::new(), &graph_file).unwrap();
+        run_automatic_at(wg_dir, 7, "candidate-build", now).unwrap();
+        confirm_automatic_at(wg_dir, "candidate-build", now).unwrap();
+
+        set_retention(wg_dir, 8);
+        let outcome =
+            run_automatic_at(wg_dir, 8, "candidate-build", now + Duration::hours(1)).unwrap();
+        assert!(matches!(
+            outcome,
+            AutomaticArchiveOutcome::Held { count: 0, reason }
+                if reason.contains("retention changed")
+        ));
+    }
+
+    #[test]
+    fn automatic_skips_system_tasks_and_preserves_active_boundary() {
+        let dir = tempdir().unwrap();
+        let wg_dir = dir.path();
+        let graph_file = wg_dir.join("graph.jsonl");
+        set_retention(wg_dir, 7);
+        let now = fixed_now();
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_task(
+            ".compact-0",
+            "System Task",
+            Status::Done,
+            Some(&(now - Duration::days(40)).to_rfc3339()),
+        )));
+        let mut done = make_task(
+            "done",
             "Done With Deps",
             Status::Done,
-            Some(&(Utc::now() - Duration::days(40)).to_rfc3339()),
+            Some(&(now - Duration::days(40)).to_rfc3339()),
         );
-        done_task.created_at = Some((Utc::now() - Duration::days(40)).to_rfc3339());
-        done_task.before = vec!["t2".to_string()];
-        graph.add_node(Node::Task(done_task));
-
-        let mut active = make_task("t2", "In Progress Task", Status::InProgress, None);
-        active.after = vec!["t1".to_string()];
+        done.before = vec!["active".to_string()];
+        graph.add_node(Node::Task(done));
+        let mut active = make_task("active", "In Progress", Status::InProgress, None);
+        active.after = vec!["done".to_string()];
         graph.add_node(Node::Task(active));
         save_graph(&graph, &graph_file).unwrap();
 
-        let count = run_automatic(wg_dir, 7).unwrap();
-        assert_eq!(count, 1);
+        run_automatic_at(wg_dir, 7, "candidate-build", now).unwrap();
+        confirm_automatic_at(wg_dir, "candidate-build", now).unwrap();
         let graph = load_graph(&graph_file).unwrap();
-        assert!(graph.get_task("t1").is_none());
-        assert!(graph.get_archived_boundary("t1").is_some());
-        assert_eq!(graph.get_task("t2").unwrap().after, vec!["t1"]);
+        assert!(graph.get_task(".compact-0").is_some());
+        assert!(graph.get_archived_boundary("done").is_some());
+        assert_eq!(graph.get_task("active").unwrap().after, vec!["done"]);
     }
 }

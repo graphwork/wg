@@ -1602,6 +1602,9 @@ fn main() -> Result<()> {
             ids,
             command,
         } => match command {
+            Some(cli::ArchiveCommands::Auto { dry_run, confirm }) => {
+                commands::archive::run_auto_control(&workgraph_dir, dry_run, confirm, cli.json)
+            }
             Some(cli::ArchiveCommands::Search { query, limit }) => {
                 commands::archive::search(&workgraph_dir, &query, limit, cli.json)
             }

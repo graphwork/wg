@@ -4628,9 +4628,9 @@ pub struct CoordinatorConfig {
     pub max_coordinators: usize,
 
     /// Archive tasks completed/abandoned more than this many days ago.
-    /// The archive cycle (.archive-0) runs periodically and moves old
-    /// done/abandoned tasks to .wg/archive.jsonl. Default: 7 days.
-    /// Set to 0 to disable automatic archival.
+    /// Automatic archival is opt-in and guarded by an acknowledged watermark;
+    /// first/overdue/build-changed batches require `wg archive auto --confirm`.
+    /// Default: 0 (disabled) so attended projects preserve visible history.
     #[serde(default = "default_archive_retention_days")]
     pub archive_retention_days: u64,
 
@@ -4998,7 +4998,7 @@ fn default_max_coordinators() -> usize {
 }
 
 fn default_archive_retention_days() -> u64 {
-    7
+    0
 }
 
 fn default_verify_mode() -> String {
