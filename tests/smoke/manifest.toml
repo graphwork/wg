@@ -2934,3 +2934,10 @@ script = "scenarios/control_plane_candidate_boundary.sh"
 owners = ["fix-candidate-wg-control-plane-destruction"]
 description = "Candidate-binary, credential-free two-graph regression for the critical .wg destruction incident: a worker force-commits its runtime .wg symlink and candidate sealing refuses before any immutable candidate/protected ref/root projection while exact graph/config/chat digests and root identity stay unchanged; a second isolated graph lands ordinary source through exact-path projection with worker graph access exclusively through absolute WG_DIR, emits a durable external snapshot receipt, and a vanished control path reports full ENOENT + path without recreating a hollow .wg."
 timeout_seconds = 240
+
+[[scenario]]
+name = "automatic_archival_restart_hold"
+script = "scenarios/automatic_archival_restart_hold.sh"
+owners = ["fix-surprise-startup-archival"]
+description = "Candidate-binary credential-free real daemon + attended tmux/TUI regression for surprise backlog archival: a legacy service state and 38-day-old terminal graph with explicit 7d retention restart into an exact visible operator hold with zero archived records; service status/TUI expose dry-run+confirm; confirmation applies the exact IDs once; undo restores canonical task bytes/status/log/dependencies; an acknowledged restart processes only one newly-eligible incremental task without rescanning restored pre-watermark history; retention=0 remains non-destructive."
+timeout_seconds = 240

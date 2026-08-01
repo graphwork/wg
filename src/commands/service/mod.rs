@@ -2368,12 +2368,20 @@ fn run_pending_chat_compactions(dir: &Path, logger: &DaemonLogger) {
 }
 
 /// Run automatic archival directly from the daemon without graph control tasks.
-fn run_automatic_archival(dir: &Path, archival_error_count: &mut u64, logger: &DaemonLogger) {
+/// Destructive work is guarded by the persisted receipt/watermark in
+/// `archive-auto-state.json`; a hold is logged once per distinct plan.
+fn run_automatic_archival(
+    dir: &Path,
+    build_id: &str,
+    archival_error_count: &mut u64,
+    archival_hold_notice: &mut Option<String>,
+    logger: &DaemonLogger,
+) {
     let config = worksgood::config::Config::load_or_default(dir);
     let retention_days = config.coordinator.archive_retention_days;
 
-    match crate::commands::archive::run_automatic(dir, retention_days) {
-        Ok(count) => {
+    match crate::commands::archive::run_automatic(dir, retention_days, build_id) {
+        Ok(outcome) => {
             if *archival_error_count > 0 {
                 logger.info(&format!(
                     "Archival recovered after {} consecutive error(s)",
@@ -2381,16 +2389,36 @@ fn run_automatic_archival(dir: &Path, archival_error_count: &mut u64, logger: &D
                 ));
             }
             *archival_error_count = 0;
-            logger.info(&format!(
-                "Archival complete: {} tasks archived (retention: {}d)",
-                count, retention_days
-            ));
+            match outcome {
+                crate::commands::archive::AutomaticArchiveOutcome::Disabled => {
+                    *archival_hold_notice = None;
+                }
+                crate::commands::archive::AutomaticArchiveOutcome::Held { count, reason } => {
+                    let key = format!("{count}:{reason}");
+                    if archival_hold_notice.as_deref() != Some(key.as_str()) {
+                        logger.warn(&format!(
+                            "ARCHIVAL HOLD: {count} task(s) pending operator confirmation ({reason}). Dry-run: `wg archive auto --dry-run`; confirm exact batch: `wg archive auto --confirm`"
+                        ));
+                        *archival_hold_notice = Some(key);
+                    }
+                }
+                crate::commands::archive::AutomaticArchiveOutcome::Archived { count } => {
+                    *archival_hold_notice = None;
+                    logger.info(&format!(
+                        "Incremental archival complete: {} tasks archived (retention: {}d)",
+                        count, retention_days
+                    ));
+                }
+                crate::commands::archive::AutomaticArchiveOutcome::Advanced => {
+                    *archival_hold_notice = None;
+                }
+            }
         }
         Err(e) => {
             *archival_error_count += 1;
             if *archival_error_count == 1 || (*archival_error_count).is_multiple_of(5) {
                 logger.error(&format!(
-                    "Archival error (#{} consecutive): {:#}",
+                    "Archival error (#{} consecutive; automatic archival held): {:#}",
                     *archival_error_count, e
                 ));
             }
@@ -3301,8 +3329,13 @@ pub fn run_daemon(
     // Load max_coordinators limit from config
     let max_coordinators = config.coordinator.max_coordinators;
 
-    // Restore error counts from persisted state so they survive daemon restarts
+    // Restore error counts from persisted state so they survive daemon restarts.
+    // The build identity is part of the archival acknowledgment boundary: a
+    // binary replacement must be reviewed before destructive maintenance.
     let mut archival_error_count: u64 = 0;
+    let mut archival_hold_notice: Option<String> = None;
+    let archival_build_id = crate::commands::archive::current_build_id()
+        .unwrap_or_else(|_| "unverified-build".to_string());
     let mut registry_refresh_state = RegistryRefreshState::default();
 
     while running {
@@ -3897,8 +3930,16 @@ pub fn run_daemon(
                     // Keep per-coordinator chat history compact without polluting the graph.
                     run_pending_chat_compactions(&dir, &logger);
 
-                    // Automatic archival runs directly in the daemon.
-                    run_automatic_archival(&dir, &mut archival_error_count, &logger);
+                    // Automatic archival runs directly in the daemon, but a
+                    // first/overdue/build-changed backlog is held for an exact
+                    // operator confirmation rather than applied on restart.
+                    run_automatic_archival(
+                        &dir,
+                        &archival_build_id,
+                        &mut archival_error_count,
+                        &mut archival_hold_notice,
+                        &logger,
+                    );
 
                     // Registry refresh runs directly in the daemon and is time-gated.
                     run_registry_refresh(&dir, &mut registry_refresh_state, &logger);
@@ -4406,8 +4447,32 @@ pub fn run_restart(dir: &Path, json: bool) -> Result<()> {
     )
 }
 
+fn print_automatic_archival_status(status: &crate::commands::archive::AutomaticArchiveStatus) {
+    if !status.enabled {
+        println!("Automatic archival: disabled (retention=0; visible history preserved)");
+    } else if status.pending {
+        println!(
+            "Automatic archival: PENDING OPERATOR CONFIRMATION ({} task(s), retention={}d)",
+            status.pending_count, status.retention_days
+        );
+        if let Some(reason) = status.reason.as_deref() {
+            println!("  Hold reason: {reason}");
+        }
+        println!("  Dry-run: wg archive auto --dry-run");
+        if status.confirm_command.is_some() {
+            println!("  Confirm exact batch once: wg archive auto --confirm");
+        }
+    } else {
+        println!(
+            "Automatic archival: acknowledged incremental mode (retention={}d)",
+            status.retention_days
+        );
+    }
+}
+
 /// Show service status
 pub fn run_status(dir: &Path, json: bool) -> Result<()> {
+    let automatic_archival = crate::commands::archive::automatic_status(dir);
     // Surface collected config-load diagnostics once (deduplicated) for the
     // human-facing status view — BEFORE any early return so a graph with no
     // daemon still reports config health. JSON mode stays silent on stderr
@@ -4429,7 +4494,8 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
                     let output = serde_json::json!({
                         "status": "running_orphaned",
                         "orphan_pids": orphans,
-                        "note": "Daemon process exists but service/state.json is missing or corrupt. Run `wg service start --force` to recover state."
+                        "note": "Daemon process exists but service/state.json is missing or corrupt. Run `wg service start --force` to recover state.",
+                        "automatic_archival": automatic_archival,
                     });
                     println!("{}", serde_json::to_string_pretty(&output)?);
                 } else {
@@ -4441,16 +4507,19 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
                     println!(
                         "  Run `wg service start --force` to recreate service state after killing the orphan daemon."
                     );
+                    print_automatic_archival_status(&automatic_archival);
                 }
                 return Ok(());
             }
             if json {
                 let output = serde_json::json!({
                     "status": "not_running",
+                    "automatic_archival": automatic_archival,
                 });
                 println!("{}", serde_json::to_string_pretty(&output)?);
             } else {
                 println!("Service: not running");
+                print_automatic_archival_status(&automatic_archival);
             }
             return Ok(());
         }
@@ -4465,10 +4534,12 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
             let output = serde_json::json!({
                 "status": "not_running",
                 "note": "Cleaned up stale state",
+                "automatic_archival": automatic_archival,
             });
             println!("{}", serde_json::to_string_pretty(&output)?);
         } else {
             println!("Service: not running (cleaned up stale state)");
+            print_automatic_archival_status(&automatic_archival);
         }
         return Ok(());
     }
@@ -4557,6 +4628,7 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
             "retained_worktree_cleanup": cleanup,
             "worktree_observers": worktree_observers,
             "worktree_activity_clocks": worktree_activity_clocks,
+            "automatic_archival": automatic_archival,
             "worktree_observer_policy": {
                 "meaningful_silence_secs": worksgood::worktree_observer::DEFAULT_MEANINGFUL_SILENCE_SECS,
                 "observed_activity_grace_secs": worksgood::worktree_observer::DEFAULT_OBSERVED_ACTIVITY_GRACE_SECS,
@@ -4661,6 +4733,7 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
             "Dispatcher: enabled{}, max_agents={}, poll_interval={}s, executor={}, model={}",
             state_str, coord.max_agents, coord.poll_interval, executor_display, model_str
         );
+        print_automatic_archival_status(&automatic_archival);
         if coord.frozen && !coord.frozen_pids.is_empty() {
             println!("  Frozen PIDs: {:?}", coord.frozen_pids);
         }

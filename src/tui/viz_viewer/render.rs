@@ -2407,7 +2407,7 @@ fn activity_pulse_failure(app: &VizApp) -> bool {
         .async_fs
         .cached_disk_snapshot()
         .is_some_and(|snapshot| snapshot.level != worksgood::disk_sentinel::DiskLevel::Healthy);
-    !app.vitals.daemon_running || coord_stale || disk_warning
+    !app.vitals.daemon_running || coord_stale || disk_warning || app.service_health.archival_pending
 }
 
 fn cached_activity_pulse(app: &VizApp, symbols: SymbolMode) -> String {
@@ -2438,6 +2438,12 @@ fn cached_activity_pulse(app: &VizApp, symbols: SymbolMode) -> String {
             if app.task_counts.pending_eval > 0 {
                 pulse.push_str(&format!("∴{}", app.task_counts.pending_eval));
             }
+            if app.service_health.archival_pending {
+                pulse.push_str(&format!(
+                    " ARCHIVE-HOLD:{}",
+                    app.service_health.archival_pending_count
+                ));
+            }
             pulse
         }
         SymbolMode::Letters => {
@@ -2455,6 +2461,12 @@ fn cached_activity_pulse(app: &VizApp, symbols: SymbolMode) -> String {
             }
             if app.task_counts.pending_eval > 0 {
                 pulse.push_str(&format!("E{}", app.task_counts.pending_eval));
+            }
+            if app.service_health.archival_pending {
+                pulse.push_str(&format!(
+                    " ARCHIVE-HOLD:{}",
+                    app.service_health.archival_pending_count
+                ));
             }
             pulse
         }
@@ -11638,6 +11650,41 @@ fn draw_service_health_detail(frame: &mut Frame, app: &VizApp) {
         }
     }
 
+    if health.archival_pending {
+        lines.push(Line::from(vec![
+            Span::styled("  Automatic archival: ", label_style),
+            Span::styled(
+                format!(
+                    "PENDING OPERATOR CONFIRMATION ({} task(s))",
+                    health.archival_pending_count
+                ),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]));
+        if let Some(reason) = health.archival_pending_reason.as_deref() {
+            lines.push(Line::from(vec![
+                Span::styled("  Hold reason: ", label_style),
+                Span::styled(reason.to_string(), Style::default().fg(Color::Yellow)),
+            ]));
+        }
+        lines.push(Line::from(vec![
+            Span::styled("  Dry-run: ", dim_style),
+            Span::styled(
+                "wg archive auto --dry-run",
+                Style::default().fg(Color::Cyan),
+            ),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("  Confirm exact batch: ", dim_style),
+            Span::styled(
+                "wg archive auto --confirm",
+                Style::default().fg(Color::Cyan),
+            ),
+        ]));
+    }
+
     lines.push(Line::from(""));
 
     // Stuck tasks
@@ -11770,6 +11817,33 @@ fn draw_service_control_panel(frame: &mut Frame, app: &VizApp) {
         ),
         Span::styled(format!("  ({} total)", health.agents_total), dim_style),
     ]));
+    if health.archival_pending {
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::styled("  ARCHIVAL HOLD: ", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                format!(
+                    "{} task(s) require confirmation",
+                    health.archival_pending_count
+                ),
+                value_style,
+            ),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("  Review: ", dim_style),
+            Span::styled(
+                "wg archive auto --dry-run",
+                Style::default().fg(Color::Cyan),
+            ),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("  Confirm: ", dim_style),
+            Span::styled(
+                "wg archive auto --confirm",
+                Style::default().fg(Color::Cyan),
+            ),
+        ]));
+    }
     if !health.recent_errors.is_empty() {
         lines.push(Line::from(""));
         lines.push(Line::from(vec![Span::styled(

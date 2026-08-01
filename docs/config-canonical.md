@@ -104,7 +104,7 @@ The whole table renames `[coordinator]` → `[dispatcher]` automatically (`LEGAC
 | `eval_frequency` | Coordinator turn-eval cadence. `every_5` etc. | `:2849, 3112` | `"every_5"` | G | current |
 | `worktree_isolation` | Isolate each agent in its own git worktree. | `:2855, 3116` | `true` | G | current |
 | `max_coordinators` | Concurrent chat (LLM) sessions cap. | `:2860, 3120` | `16` | G | current. **NOTE: there is NO `max_chats` alias.** |
-| `archive_retention_days` | Days before done/abandoned tasks archived (0 disables). | `:2867, 3124` | `7` | G | current |
+| `archive_retention_days` | Opt-in days before guarded automatic archival (0 disables; first/overdue/build-changed batches require `wg archive auto --confirm`). | `src/config.rs` | `0` | G | current |
 | `registry_refresh_interval` | Seconds between OpenRouter registry refresh (0 disables). | `:2875, 3160` | `86400` | G | current |
 | `verify_mode` | `inline` or `separate` for legacy verify-cmd tasks. | `:2883, 3128` | `"inline"` | — | **soon-to-deprecate** — replaced by `## Validation` section in task descriptions; agency evaluator reads it instead |
 | `verify_autospawn_enabled` | Master switch for `.verify-*` shadow tasks. | `:2897` | `false` | — | **deprecated** (2026-04-17) — runaway meta-task cascades; replacement is `.evaluate-*` + `wg rescue` |

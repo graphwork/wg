@@ -5550,6 +5550,11 @@ pub struct ServiceHealthState {
     pub paused: bool,
     /// Reason for being paused (if paused).
     pub pause_reason: Option<String>,
+    /// Automatic task archival is held until an operator confirms the exact
+    /// persisted dry-run. This is a visibility warning, not a service pause.
+    pub archival_pending: bool,
+    pub archival_pending_count: usize,
+    pub archival_pending_reason: Option<String>,
     /// Whether the pause is due to provider errors.
     pub provider_auto_pause: bool,
     /// Previous provider auto-pause state (for detecting changes).
@@ -5586,6 +5591,9 @@ impl Default for ServiceHealthState {
             agents_total: 0,
             paused: false,
             pause_reason: None,
+            archival_pending: false,
+            archival_pending_count: 0,
+            archival_pending_reason: None,
             provider_auto_pause: false,
             prev_provider_auto_pause: false,
             stuck_tasks: Vec::new(),
@@ -18697,6 +18705,10 @@ impl VizApp {
         // and input paths consume the cached result below and never probe.
         let service_observation = worksgood::service_identity::observe_service(dir);
         self.service_health.authoritative = None;
+        let archival = crate::commands::archive::automatic_status(dir);
+        self.service_health.archival_pending = archival.pending;
+        self.service_health.archival_pending_count = archival.pending_count;
+        self.service_health.archival_pending_reason = archival.reason;
 
         // 1. Load service state
         let state = ServiceState::load(dir).ok().flatten();
@@ -18947,6 +18959,7 @@ impl VizApp {
             // Provider errors are serious - show as red
             self.service_health.level = ServiceHealthLevel::Red;
         } else if coord.paused
+            || self.service_health.archival_pending
             || uptime_secs.is_some_and(|s| s < 30)
             || stuck_count > 0
             || !self.service_health.recent_errors.is_empty()
@@ -18961,6 +18974,11 @@ impl VizApp {
             } else {
                 "PAUSED".to_string()
             }
+        } else if self.service_health.archival_pending {
+            format!(
+                "ARCHIVE HOLD:{}",
+                self.service_health.archival_pending_count
+            )
         } else {
             count_label
         };

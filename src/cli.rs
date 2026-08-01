@@ -5049,6 +5049,17 @@ pub enum EvolveReviewCommands {
 
 #[derive(Subcommand)]
 pub enum ArchiveCommands {
+    /// Inspect or confirm the daemon's held automatic-archival batch
+    Auto {
+        /// Show the exact persisted IDs/count without changing the graph
+        #[arg(long, conflicts_with = "confirm")]
+        dry_run: bool,
+
+        /// Archive the exact persisted batch once and advance its watermark
+        #[arg(long)]
+        confirm: bool,
+    },
+
     /// Search archived tasks by title, description, and tags
     Search {
         /// Search query (case-insensitive substring match)
