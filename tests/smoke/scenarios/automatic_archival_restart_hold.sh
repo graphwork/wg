@@ -7,18 +7,17 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/_helpers.sh"
 unset WG_AGENT_ID WG_EXECUTOR_TYPE WG_MODEL WG_TIER WG_SPAWN_EPOCH
-command -v cargo >/dev/null 2>&1 || loud_skip "MISSING CARGO" "cargo is required"
 command -v python3 >/dev/null 2>&1 || loud_skip "MISSING PYTHON3" "python3 is required"
 command -v tmux >/dev/null 2>&1 || loud_skip "MISSING TMUX" "tmux is required for the attended TUI proof"
 
 scratch=$(make_scratch)
-REPO_ROOT="$(cd "$HERE/../../.." && pwd)"
 if [[ -n "${WG_SMOKE_CANDIDATE_BIN:-}" ]]; then
   WG_BIN="$WG_SMOKE_CANDIDATE_BIN"
 else
-  export CARGO_TARGET_DIR="$scratch/candidate-target"
-  (cd "$REPO_ROOT" && CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 cargo build --quiet --bin wg)
-  WG_BIN="$CARGO_TARGET_DIR/debug/wg"
+  # `wg done` runs this after the project-required candidate install. Avoid a
+  # second full Rust link inside the scenario (which can exceed the smoke
+  # timeout and tests build latency rather than archival behavior).
+  WG_BIN="$(command -v wg 2>/dev/null || true)"
 fi
 [[ -x "$WG_BIN" ]] || loud_fail "candidate binary missing: $WG_BIN"
 export PATH="$(dirname "$WG_BIN"):$PATH"
