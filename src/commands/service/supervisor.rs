@@ -166,6 +166,9 @@ pub fn run_supervisor(
             pid_start_identity: worksgood::service_identity::pid_start_identity(daemon_pid),
             identity: identity.clone(),
             supervisor_pid: Some(std::process::id()),
+            supervisor_pid_start_identity: worksgood::service_identity::pid_start_identity(
+                std::process::id(),
+            ),
         };
         if let Err(e) = state.save(&dir) {
             logger.warn(&format!("Supervisor: failed to write state.json: {}", e));

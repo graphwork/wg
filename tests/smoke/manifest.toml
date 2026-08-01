@@ -176,6 +176,15 @@ description = "Candidate-binary real TUI/tmux/Fake-Pi regression for the product
 timeout_seconds = 90
 
 [[scenario]]
+name = "tui_chat_obsolete_daemon_recovery"
+script = "scenarios/tui_chat_obsolete_daemon_recovery.sh"
+owners = [
+    "fix-chat-create-obsolete-daemon",
+]
+description = "Candidate-binary real TUI/tmux/Fake-Pi recovery for an authenticated obsolete project daemon: launches the service from a runnable content-skewed candidate and removes its dedicated chat.sock, then launches the current TUI with an explicit graph plus a hostile inherited sibling WG_DIR. The attended New-chat action must authenticate the exact graph/service/PID-birth/build identity, controlled-restart only that daemon on the current binary, reuse one durable request id, and visibly attach exactly one route-less Pi .chat-1. The sibling graph plus an existing archived chat's graph row, route generation, and history remain byte-stable; no generic unreconcilable error or duplicate process is allowed. Credential-free."
+timeout_seconds = 90
+
+[[scenario]]
 name = "tui_chat_composer_newlines_pty"
 script = "scenarios/tui_chat_composer_newlines_pty.sh"
 owners = [
