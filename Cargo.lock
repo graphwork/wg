@@ -8011,6 +8011,7 @@ dependencies = [
  "tracing",
  "tui-term",
  "tui-tree-widget",
+ "unicode-normalization",
  "unicode-width 0.2.2",
  "url",
  "urlencoding",

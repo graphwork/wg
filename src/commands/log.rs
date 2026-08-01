@@ -18,10 +18,10 @@ pub fn run_add(
     agent_id: Option<&str>,
 ) -> Result<()> {
     let path = super::graph_path(dir);
-    if !path.exists() {
-        anyhow::bail!("WG not initialized. Run 'wg init' first.");
-    }
-
+    // Do not preflight with `Path::exists()` (it strips the OS error). The
+    // parser's path-aware lock/open error remains in the anyhow source chain,
+    // yielding `Failed to save graph: ... ENOENT ... path=...` without ever
+    // recreating a vanished live `.wg`.
     let mut error: Option<anyhow::Error> = None;
 
     let _graph = modify_graph(&path, |graph| {

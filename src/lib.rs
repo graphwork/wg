@@ -33,6 +33,7 @@ pub mod config;
 pub mod config_defaults;
 pub mod config_migrate;
 pub mod context_scope;
+pub mod control_plane;
 pub mod cron;
 pub mod cycle;
 pub mod disk_sentinel;

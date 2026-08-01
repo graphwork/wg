@@ -1410,6 +1410,11 @@ pub fn run_start(
     no_supervise: bool,
 ) -> Result<()> {
     guard_service_control_from_worker()?;
+    let project_root = dir.parent().context("service graph has no project root")?;
+    if project_root.join(".git").exists() {
+        worksgood::control_plane::assert_live_identity(project_root)?;
+        worksgood::control_plane::assert_repository_has_no_tracked_control(project_root)?;
+    }
 
     // Handler-first: a bare-provider `--model` launch arg (the 14h-401
     // incident) must warn loudly here, on the user's terminal, before the
@@ -2611,6 +2616,11 @@ pub fn run_daemon(
     no_coordinator_agent: bool,
     no_pin: bool,
 ) -> Result<()> {
+    let project_root = dir.parent().context("daemon graph has no project root")?;
+    if project_root.join(".git").exists() {
+        worksgood::control_plane::assert_live_identity(project_root)?;
+        worksgood::control_plane::assert_repository_has_no_tracked_control(project_root)?;
+    }
     worksgood::execution_selection::require(
         dir,
         cli_model.map(|m| (m, false)),

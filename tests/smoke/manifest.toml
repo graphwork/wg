@@ -2927,3 +2927,10 @@ script = "scenarios/reopen_waits_for_pi_owner_release.sh"
 owners = ["fix-reopen-before-owner-release-race"]
 description = "Candidate-binary credential-free real terminal/daemon Fake-Pi regression for reopen ownership fencing across abandon→retry, direct requeue, and abandon→reset: exact Pi processes, wrappers, and dirty leased worktrees remain live while each operator command first records a visible waiting-for-owner-release intent outside readiness and breaker accounting; three owners exit normally while a fourth is SIGKILLed with its watchdog deliberately still Active, and daemon restart reaps both process owners, clears stale-live Pi/worktree ownership without indefinite deferral, atomically enables exactly one generation/attempt, preserves WIP/session/runtime evidence, and rejects late old-owner evidence."
 timeout_seconds = 240
+
+[[scenario]]
+name = "control_plane_candidate_boundary"
+script = "scenarios/control_plane_candidate_boundary.sh"
+owners = ["fix-candidate-wg-control-plane-destruction"]
+description = "Candidate-binary, credential-free two-graph regression for the critical .wg destruction incident: a worker force-commits its runtime .wg symlink and candidate sealing refuses before any immutable candidate/protected ref/root projection while exact graph/config/chat digests and root identity stay unchanged; a second isolated graph lands ordinary source through exact-path projection with worker graph access exclusively through absolute WG_DIR, emits a durable external snapshot receipt, and a vanished control path reports full ENOENT + path without recreating a hollow .wg."
+timeout_seconds = 240

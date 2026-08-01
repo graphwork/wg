@@ -295,6 +295,32 @@ pub fn run_candidate(dir: &Path, command: CandidateCommands, json: bool) -> Resu
             );
             Ok(())
         }
+        CandidateCommands::RecoverControlPlane { yes } => {
+            if std::env::var_os("WG_AGENT_ID").is_some() {
+                bail!(
+                    "control-plane.recovery_operator_only: workers cannot rewrite repository history"
+                );
+            }
+            let project = dir.parent().unwrap_or(dir);
+            match worksgood::control_plane::recover_tracked_control_plane(project, yes)? {
+                Some(receipt) => {
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&receipt)?);
+                    } else {
+                        println!(
+                            "Recovered tracked control plane without touching live bytes: {} -> {} ref={} removed=[{}] snapshot={}",
+                            receipt.old_commit,
+                            receipt.new_commit,
+                            receipt.target_ref,
+                            receipt.removed_paths.join(", "),
+                            receipt.snapshot_receipt
+                        );
+                    }
+                }
+                None => println!("Control plane is clean: no protected Git entries"),
+            }
+            Ok(())
+        }
     }
 }
 
@@ -793,10 +819,14 @@ fn add_input_dependency(dir: &Path, id: &str, from: &str) -> Result<()> {
     Ok(())
 }
 
-fn checkpoint_uncommitted_source_work(id: &str) -> Result<()> {
+fn checkpoint_uncommitted_source_work(dir: &Path, id: &str) -> Result<()> {
     let worktree = std::env::var_os("WG_WORKTREE_PATH")
         .map(PathBuf::from)
         .context("worktree path unavailable")?;
+    let project = dir.parent().unwrap_or(dir);
+    let head = git(&worktree, &["rev-parse", "HEAD"])?;
+    let base = git(&project, &["merge-base", &head, "HEAD"])?;
+    worksgood::control_plane::assert_worker_boundary(project, &worktree, &base, &head)?;
     let add = Command::new("git")
         .args(["add", "-A"])
         .current_dir(&worktree)
@@ -808,23 +838,14 @@ fn checkpoint_uncommitted_source_work(id: &str) -> Result<()> {
             String::from_utf8_lossy(&add.stderr).trim()
         );
     }
-    // A managed worktree contains a `.wg` symlink to the live graph. It is
-    // transaction control state, never task output; committing it would make
-    // target checkout attempt to replace/delete its own graph. Preserve a
-    // repository-owned path only when it was already tracked at source HEAD.
-    for control in [".wg", ".wg-cleanup-pending"] {
-        let tracked = Command::new("git")
-            .args(["ls-tree", "--name-only", "HEAD", "--", control])
-            .current_dir(&worktree)
-            .output()
-            .is_ok_and(|output| output.status.success() && !output.stdout.is_empty());
-        if !tracked {
-            let _ = Command::new("git")
-                .args(["reset", "-q", "HEAD", "--", control])
-                .current_dir(&worktree)
-                .status();
-        }
-    }
+    // Inspect the resulting index as a second, unskippable boundary. This is
+    // deliberately after `git add`: ignore/pathspec configuration is not
+    // trusted to keep compatibility/case variants out of a commit.
+    worksgood::control_plane::assert_index_has_no_control_plane(&worktree)?;
+    let _ = Command::new("git")
+        .args(["reset", "-q", "HEAD", "--", ".wg-cleanup-pending"])
+        .current_dir(&worktree)
+        .status();
     let staged = Command::new("git")
         .args(["diff", "--cached", "--quiet", "--exit-code"])
         .current_dir(&worktree)
@@ -856,7 +877,7 @@ pub fn task_owned_done(dir: &Path, id: &str) -> Result<bool> {
     }
     let contract = task.completion_contract;
     drop(graph);
-    checkpoint_uncommitted_source_work(id)?;
+    checkpoint_uncommitted_source_work(dir, id)?;
     let store = FinalizationStore::open(dir)?;
     let lease = if contract == worksgood::graph::CompletionContract::Land {
         Some(begin_finish(dir, &store, id, 1800)?.lease_id)

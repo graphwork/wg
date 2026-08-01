@@ -146,6 +146,7 @@ pub fn run_with_route(
     write_repo_gitignore(dir)?;
     let graph_path = dir.join("graph.jsonl");
     fs::write(&graph_path, "").context("Failed to create graph.jsonl")?;
+    record_control_identity_if_git(dir)?;
     let gitignore_path = dir.join(".gitignore");
     fs::write(&gitignore_path, GITIGNORE_CONTENT).context("Failed to create .gitignore")?;
     write_executor_templates(dir)?;
@@ -258,6 +259,7 @@ fn run_graph_only(dir: &Path, no_agency: bool) -> Result<()> {
     fs::create_dir_all(dir).context("Failed to create WG directory")?;
     write_repo_gitignore(dir)?;
     fs::write(dir.join("graph.jsonl"), "").context("Failed to create graph.jsonl")?;
+    record_control_identity_if_git(dir)?;
     fs::write(dir.join(".gitignore"), GITIGNORE_CONTENT).context("Failed to create .gitignore")?;
     write_executor_templates(dir)?;
     println!("Initialized WG at {} (graph-only)", dir.display());
@@ -309,6 +311,23 @@ fn suggested_model_for_executor(executor: &str) -> &'static str {
         "shell" => "shell  # exec_mode, not an LLM model",
         _ => "pi:<provider>:<model>",
     }
+}
+
+/// Write the repo-level .gitignore entry for the WG dir basename.
+fn record_control_identity_if_git(dir: &Path) -> Result<()> {
+    let Some(project) = dir.parent() else {
+        return Ok(());
+    };
+    if dir.file_name().and_then(|name| name.to_str()) == Some(".wg")
+        && project.join(".git").exists()
+    {
+        // Establish the durable external inode/path receipt at initialization,
+        // before any later worktree or protected-ref operation can observe a
+        // substituted real directory as its first baseline.
+        worksgood::control_plane::assert_live_identity(project)
+            .context("Failed to establish durable .wg control identity")?;
+    }
+    Ok(())
 }
 
 /// Write the repo-level .gitignore entry for the WG dir basename.
@@ -490,6 +509,7 @@ pub fn run(
 
     let graph_path = dir.join("graph.jsonl");
     fs::write(&graph_path, "").context("Failed to create graph.jsonl")?;
+    record_control_identity_if_git(dir)?;
 
     // Create .gitignore to protect against accidental credential commits
     let gitignore_path = dir.join(".gitignore");

@@ -9,6 +9,14 @@ use thiserror::Error;
 pub enum ParseError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("I/O {op}: {code} {source} path={path}")]
+    IoPath {
+        op: &'static str,
+        code: String,
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
     #[error("JSON error on line {line}: {source}")]
     Json {
         line: usize,
@@ -16,6 +24,45 @@ pub enum ParseError {
     },
     #[error("Lock error: {0}")]
     Lock(String),
+}
+
+fn errno_name(error: &std::io::Error) -> String {
+    match error.raw_os_error() {
+        #[cfg(unix)]
+        Some(libc::ENOENT) => "ENOENT".into(),
+        #[cfg(unix)]
+        Some(libc::EACCES) => "EACCES".into(),
+        #[cfg(unix)]
+        Some(libc::ENOTDIR) => "ENOTDIR".into(),
+        #[cfg(unix)]
+        Some(libc::EROFS) => "EROFS".into(),
+        #[cfg(unix)]
+        Some(libc::ENOSPC) => "ENOSPC".into(),
+        Some(code) => format!("errno={code}"),
+        None => format!("kind={:?}", error.kind()),
+    }
+}
+
+fn io_at(op: &'static str, path: &Path, source: std::io::Error) -> ParseError {
+    ParseError::IoPath {
+        op,
+        code: errno_name(&source),
+        path: path.to_path_buf(),
+        source,
+    }
+}
+
+fn is_missing_live_control_parent(parent: &Path) -> bool {
+    if parent.file_name() != Some(std::ffi::OsStr::new(".wg")) {
+        return false;
+    }
+    let explicit = std::env::var_os("WG_DIR")
+        .map(PathBuf::from)
+        .is_some_and(|configured| configured == parent);
+    let git_project = parent
+        .parent()
+        .is_some_and(|project| project.join(".git").exists());
+    explicit || git_project
 }
 
 /// RAII guard for file locks - automatically releases lock on drop
@@ -52,16 +99,16 @@ impl FileLock {
     fn try_acquire_shared<P: AsRef<Path>>(lock_path: P) -> Result<Option<Self>, ParseError> {
         use std::os::unix::io::AsRawFd;
 
-        if let Some(parent) = lock_path.as_ref().parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-
+        let lock_path = lock_path.as_ref();
+        // Never recreate a missing graph/control directory as a side effect of
+        // locking. A vanished `.wg` must stay a loud ENOENT with its exact path.
         let file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
-            .open(&lock_path)?;
+            .open(lock_path)
+            .map_err(|error| io_at("open graph lock", lock_path, error))?;
 
         let fd = file.as_raw_fd();
         let policy = crate::lock::RetryPolicy::default();
@@ -85,8 +132,7 @@ impl FileLock {
             Ok(()) => Ok(Some(FileLock { file })),
             Err(err) => Err(ParseError::Lock(format!(
                 "Failed to acquire shared lock on {:?}: {}",
-                lock_path.as_ref(),
-                err
+                lock_path, err
             ))),
         }
     }
@@ -103,16 +149,27 @@ impl FileLock {
     ) -> Result<Self, ParseError> {
         use std::os::unix::io::AsRawFd;
 
-        if let Some(parent) = lock_path.as_ref().parent() {
-            std::fs::create_dir_all(parent)?;
+        let lock_path = lock_path.as_ref();
+        if let Some(parent) = lock_path.parent()
+            && !parent.exists()
+            && !is_missing_live_control_parent(parent)
+        {
+            // `save_graph` remains a usable generic library primitive for new
+            // non-project fixtures. A Git project's exact `.wg`, or an
+            // explicitly selected WG_DIR, is different: disappearance is an
+            // incident signal and must never be recreated hollow.
+            std::fs::create_dir_all(parent)
+                .map_err(|error| io_at("create graph parent", parent, error))?;
         }
-
+        // Fail closed if a live graph parent vanished; lock acquisition must
+        // not silently recreate an empty control plane.
         let file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
-            .open(&lock_path)?;
+            .open(lock_path)
+            .map_err(|error| io_at("open graph lock", lock_path, error))?;
 
         let fd = file.as_raw_fd();
         let policy = crate::lock::RetryPolicy::default();
@@ -127,8 +184,7 @@ impl FileLock {
         .map_err(|err| {
             ParseError::Lock(format!(
                 "Failed to acquire lock on {:?}: {}",
-                lock_path.as_ref(),
-                err
+                lock_path, err
             ))
         })?;
 
@@ -165,7 +221,8 @@ fn get_lock_path<P: AsRef<Path>>(graph_path: P) -> PathBuf {
 /// Callers must hold the flock themselves or use [`load_graph`] which
 /// acquires it automatically.
 fn load_graph_inner<P: AsRef<Path>>(path: P) -> Result<WorkGraph, ParseError> {
-    let file = File::open(path)?;
+    let path = path.as_ref();
+    let file = File::open(path).map_err(|error| io_at("open graph", path, error))?;
     let reader = BufReader::new(file);
     let mut graph = WorkGraph::new();
 
@@ -241,22 +298,29 @@ fn save_graph_inner<P: AsRef<Path>>(graph: &WorkGraph, path: P) -> Result<(), Pa
             .write(true)
             .create(true)
             .truncate(true)
-            .open(&tmp_path)?;
+            .open(&tmp_path)
+            .map_err(|error| io_at("open graph temporary", &tmp_path, error))?;
 
         for node in graph.nodes() {
             let json =
                 serde_json::to_string(node).map_err(|e| ParseError::Json { line: 0, source: e })?;
-            writeln!(file, "{}", json)?;
+            writeln!(file, "{}", json)
+                .map_err(|error| io_at("write graph temporary", &tmp_path, error))?;
         }
 
-        file.flush()?;
+        file.flush()
+            .map_err(|error| io_at("flush graph temporary", &tmp_path, error))?;
         #[cfg(unix)]
         {
             use std::os::unix::io::AsRawFd;
             // fsync to ensure data is on disk before rename
             let rc = unsafe { libc::fsync(file.as_raw_fd()) };
             if rc != 0 {
-                return Err(ParseError::Io(std::io::Error::last_os_error()));
+                return Err(io_at(
+                    "fsync graph temporary",
+                    &tmp_path,
+                    std::io::Error::last_os_error(),
+                ));
             }
         }
 
@@ -264,7 +328,7 @@ fn save_graph_inner<P: AsRef<Path>>(graph: &WorkGraph, path: P) -> Result<(), Pa
     })();
 
     if result.is_ok() {
-        std::fs::rename(&tmp_path, path)?;
+        std::fs::rename(&tmp_path, path).map_err(|error| io_at("replace graph", path, error))?;
     } else {
         // Clean up temp file on failure
         let _ = std::fs::remove_file(&tmp_path);
@@ -466,7 +530,14 @@ mod tests {
     fn test_load_nonexistent_file_returns_error() {
         let result = load_graph("/nonexistent/path/graph.jsonl");
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), ParseError::Io(_)));
+        let error = result.unwrap_err();
+        assert!(matches!(error, ParseError::IoPath { .. }));
+        let diagnostic = error.to_string();
+        assert!(diagnostic.contains("ENOENT"), "{diagnostic}");
+        assert!(
+            diagnostic.contains("path=/nonexistent/path/graph.lock"),
+            "{diagnostic}"
+        );
     }
 
     // ---- Edge case tests for error handling ----
@@ -832,10 +903,22 @@ mod tests {
     }
 
     #[test]
-    fn test_save_to_nonexistent_directory() {
+    fn test_save_to_nonexistent_directory_retains_errno_and_path() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join(".git")).unwrap();
+        let missing = root.path().join(".wg/graph.jsonl");
         let graph = WorkGraph::new();
-        let result = save_graph(&graph, "/nonexistent/deep/path/graph.jsonl");
-        assert!(result.is_err());
+        let error = save_graph(&graph, &missing).unwrap_err().to_string();
+        assert!(error.contains("ENOENT"), "{error}");
+        assert!(error.contains("path="), "{error}");
+        assert!(
+            error.contains(".wg/graph.lock"),
+            "full failing path missing: {error}"
+        );
+        assert!(
+            !root.path().join(".wg").exists(),
+            "a failed graph mutation must not recreate a hollow control plane"
+        );
     }
 
     #[test]

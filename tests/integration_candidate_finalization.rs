@@ -90,10 +90,41 @@ fn candidate_binds_28kb_bytes_not_6kb_main_and_is_immutable() {
     let f = fixture();
     fs::write(f.wt.join("incident/payload.txt"), vec![b'c'; 28_672]).unwrap();
     fs::write(f.wt.join("untracked.txt"), b"preserve me").unwrap();
+    fs::write(f.wg.join("config.toml"), b"checkpoint-config\n").unwrap();
+    fs::create_dir_all(f.wg.join("chat/session-checkpoint")).unwrap();
+    fs::write(f.wg.join("chat/sessions.json"), b"checkpoint-registry\n").unwrap();
+    fs::write(
+        f.wg.join("chat/session-checkpoint/conversation.jsonl"),
+        b"checkpoint-chat\n",
+    )
+    .unwrap();
+    let control_paths = [
+        f.wg.join("config.toml"),
+        f.wg.join("chat/sessions.json"),
+        f.wg.join("chat/session-checkpoint/conversation.jsonl"),
+    ];
+    let control_before: Vec<_> = control_paths
+        .iter()
+        .map(|path| blake3::hash(&fs::read(path).unwrap()))
+        .collect();
     #[cfg(unix)]
     std::os::unix::fs::symlink(&f.wg, f.wt.join(".wg")).unwrap();
     let store = FinalizationStore::open(&f.wg).unwrap();
     let tx = checkpoint_candidate(&store, &context(&f)).unwrap();
+    let checkpoint_replay = checkpoint_candidate(&store, &context(&f)).unwrap();
+    assert_eq!(
+        checkpoint_replay.candidate.as_ref().unwrap().candidate_id,
+        tx.candidate.as_ref().unwrap().candidate_id,
+        "restart around checkpoint must seal the same immutable candidate"
+    );
+    for (path, digest) in control_paths.iter().zip(control_before) {
+        assert_eq!(
+            blake3::hash(&fs::read(path).unwrap()),
+            digest,
+            "{}",
+            path.display()
+        );
+    }
     assert_eq!(tx.phase, FinalizationPhase::CandidateCheckpointed);
     let candidate = tx.candidate.as_ref().unwrap();
     let reloaded = store.read_candidate(&candidate.candidate_id).unwrap();
@@ -153,6 +184,65 @@ fn candidate_binds_28kb_bytes_not_6kb_main_and_is_immutable() {
         ],
     );
     assert_eq!(immutable.len(), 28_672);
+}
+
+#[cfg(unix)]
+#[test]
+fn committed_self_referential_runtime_link_is_refused_before_sealing_and_live_bytes_survive() {
+    use std::os::unix::fs::symlink;
+
+    let f = fixture();
+    fs::write(f.wg.join("graph.jsonl"), b"graph-before\n").unwrap();
+    fs::write(f.wg.join("config.toml"), b"model = 'before'\n").unwrap();
+    fs::create_dir_all(f.wg.join("chat/session-a")).unwrap();
+    fs::write(
+        f.wg.join("chat/sessions.json"),
+        b"{\"session-a\":{\"title\":\"before\"}}\n",
+    )
+    .unwrap();
+    fs::write(
+        f.wg.join("chat/session-a/conversation.jsonl"),
+        b"chat-before\n",
+    )
+    .unwrap();
+    let protected = [
+        f.wg.join("graph.jsonl"),
+        f.wg.join("config.toml"),
+        f.wg.join("chat/sessions.json"),
+        f.wg.join("chat/session-a/conversation.jsonl"),
+    ];
+    let before: Vec<_> = protected
+        .iter()
+        .map(|path| blake3::hash(&fs::read(path).unwrap()))
+        .collect();
+    let main_before = git(&f.root, &["rev-parse", "main"]);
+
+    symlink(&f.wg, f.wt.join(".wg")).unwrap();
+    git(&f.wt, &["add", "-f", ".wg"]);
+    git(
+        &f.wt,
+        &["commit", "-m", "accidentally track runtime graph link"],
+    );
+
+    let store = FinalizationStore::open(&f.wg).unwrap();
+    let error = checkpoint_candidate(&store, &context(&f))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("control-plane.tracked_tree_refused"),
+        "{error}"
+    );
+    assert!(store.load_task("incident").unwrap().is_none());
+    assert_eq!(git(&f.root, &["rev-parse", "main"]), main_before);
+    assert!(fs::symlink_metadata(&f.wg).unwrap().file_type().is_dir());
+    for (path, digest) in protected.iter().zip(before) {
+        assert_eq!(
+            blake3::hash(&fs::read(path).unwrap()),
+            digest,
+            "{}",
+            path.display()
+        );
+    }
 }
 
 #[test]
@@ -215,7 +305,7 @@ fn merge_is_content_bound_exactly_once_and_conflict_is_retained() {
     let store = FinalizationStore::open(&f.wg).unwrap();
     let tx = checkpoint_candidate(&store, &context(&f)).unwrap();
     fs::write(f.root.join("incident/payload.txt"), vec![b'z'; 6_144]).unwrap();
-    git(&f.root, &["add", "."]);
+    git(&f.root, &["add", "incident/payload.txt"]);
     git(&f.root, &["commit", "-m", "main moved"]);
     let held = merge_candidate(&store, &tx.candidate.unwrap()).unwrap();
     assert_eq!(held.phase, FinalizationPhase::RepairNeeded);
@@ -259,6 +349,31 @@ fn failure_rescue_preserves_dirty_tracked_untracked_and_deleted() {
 #[test]
 fn restart_after_target_cas_reconstructs_one_receipt_and_repair_is_v2() {
     let f = fixture();
+    // Keep the live dependency fence authoritative while pinning a minimal
+    // source task row whose exact bytes can be checked across crash replay.
+    fs::write(
+        f.wg.join("graph.jsonl"),
+        b"{\"kind\":\"task\",\"id\":\"incident\",\"title\":\"incident\"}\n",
+    )
+    .unwrap();
+    fs::write(f.wg.join("config.toml"), b"# config-crash-stable\n").unwrap();
+    fs::create_dir_all(f.wg.join("chat/session-crash")).unwrap();
+    fs::write(f.wg.join("chat/sessions.json"), b"registry-crash-stable\n").unwrap();
+    fs::write(
+        f.wg.join("chat/session-crash/conversation.jsonl"),
+        b"conversation-crash-stable\n",
+    )
+    .unwrap();
+    let control_paths = [
+        f.wg.join("graph.jsonl"),
+        f.wg.join("config.toml"),
+        f.wg.join("chat/sessions.json"),
+        f.wg.join("chat/session-crash/conversation.jsonl"),
+    ];
+    let control_before: Vec<_> = control_paths
+        .iter()
+        .map(|path| blake3::hash(&fs::read(path).unwrap()))
+        .collect();
     fs::write(f.wt.join("incident/payload.txt"), vec![b'c'; 28_672]).unwrap();
     let store = FinalizationStore::open(&f.wg).unwrap();
     let tx = checkpoint_candidate(&store, &context(&f)).unwrap();
@@ -287,6 +402,9 @@ fn restart_after_target_cas_reconstructs_one_receipt_and_repair_is_v2() {
         serde_json::to_vec_pretty(&crashed).unwrap(),
     )
     .unwrap();
+    // Model a crash after ref CAS but before root projection. Replay must apply
+    // only the candidate's exact source path and leave control bytes untouched.
+    fs::write(f.root.join("incident/payload.txt"), vec![b'm'; 6_144]).unwrap();
     let replayed = worksgood::finalization::reconcile(&store, "incident")
         .unwrap()
         .unwrap();
@@ -296,6 +414,21 @@ fn restart_after_target_cas_reconstructs_one_receipt_and_repair_is_v2() {
         first_receipt
     );
     assert_eq!(git(&f.root, &["rev-parse", "main"]), integration);
+    assert_eq!(
+        fs::metadata(f.root.join("incident/payload.txt"))
+            .unwrap()
+            .len(),
+        28_672,
+        "restart replay did not finish exact-path projection"
+    );
+    for (path, digest) in control_paths.iter().zip(control_before) {
+        assert_eq!(
+            blake3::hash(&fs::read(path).unwrap()),
+            digest,
+            "{}",
+            path.display()
+        );
+    }
 
     // A lifecycle-authorized repair source gets a new immutable version; v1
     // remains readable and can never be retagged by later mutable bytes.

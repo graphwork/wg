@@ -256,6 +256,13 @@ fn remove_worktree_source_safe(
     worktree_path: &Path,
     branch: Option<&str>,
 ) -> Result<()> {
+    let _control_snapshot = worksgood::control_plane::snapshot_live_control(
+        project_root,
+        &format!(
+            "source-safe-remove-worktree:{}",
+            branch.unwrap_or("detached")
+        ),
+    )?;
     let marker = worktree_path.join(CLEANUP_PENDING_MARKER);
     if marker.exists() {
         fs::remove_file(&marker).with_context(|| {
@@ -298,6 +305,10 @@ fn remove_worktree_source_safe(
 
 /// Remove a worktree and its branch. Force-removes to discard uncommitted changes.
 pub fn remove_worktree(project_root: &Path, worktree_path: &Path, branch: &str) -> Result<()> {
+    let _control_snapshot = worksgood::control_plane::snapshot_live_control(
+        project_root,
+        &format!("remove-worktree:{branch}"),
+    )?;
     let timer = CleanupTimer::start(format!("remove_worktree: {}", branch));
     let mut resources = ResourceRecoveryStats::default();
     let mut cleanup_errors = Vec::new();
@@ -614,6 +625,22 @@ pub fn recover_commits(project_root: &Path, branch: &str, agent_id: &str) -> usi
         .unwrap_or(0);
 
     if commit_count > 0 {
+        if let Err(error) =
+            worksgood::control_plane::assert_tree_has_no_control_plane(project_root, branch)
+        {
+            eprintln!("[worktree] REFUSED recovery ref for {}: {error:#}", branch);
+            return 0;
+        }
+        if let Err(error) = worksgood::control_plane::snapshot_live_control(
+            project_root,
+            &format!("recover-worktree-commits:{branch}"),
+        ) {
+            eprintln!(
+                "[worktree] REFUSED recovery ref for {} because control snapshot failed: {error:#}",
+                branch
+            );
+            return 0;
+        }
         let recovery_branch = format!("recover/{}", branch.strip_prefix("wg/").unwrap_or(branch));
         eprintln!(
             "[worktree] Dead agent {} had {} commits on {}. Creating recovery branch: {}",
@@ -2429,6 +2456,10 @@ mod tests {
             .output()
             .unwrap();
         fs::write(path.join("file.txt"), "hello").unwrap();
+        // Service worktree operations are only valid for an initialized WG
+        // project; production now snapshots this real control directory before
+        // touching root worktree/ref state.
+        fs::create_dir(path.join(".wg")).unwrap();
         Command::new("git")
             .args(["add", "."])
             .current_dir(path)
