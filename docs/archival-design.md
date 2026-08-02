@@ -1,9 +1,16 @@
 # Archival Behavior + Cross-Graph Overlay Design
 
-**Status:** Design proposal
-**Date:** 2026-04-28
+**Status:** Historical overlay design; current archival safety policy noted below
+**Date:** 2026-04-28 (safety policy updated 2026-08-02)
 **Source task:** `research-archival-behavior`
-**Out of scope:** code changes, format changes to `graph.jsonl`, implementation.
+**Out of scope:** format changes to `graph.jsonl`.
+
+> **Current operator policy:** automatic task archival is disabled by default
+> (`dispatcher.archive_retention_days = 0`). Archive is organization, not
+> backup or cleanup. Evidence-bearing development graphs should use manual
+> dry-run/review. See [Automatic task archival is opt-in](automatic-task-archival.md)
+> for the current risk model, guarded confirmation flow, and reload/upgrade
+> behavior. Task archival is separate from bounded stream/cache cleanup.
 
 ---
 
@@ -19,12 +26,12 @@ We have **five separate archival mechanisms** today, each with its own format, l
 
 ### 2.1 `.wg/archive.jsonl` — task archive *(graph-shaped, partial overlay exists)*
 
-**What it is.** A separate JSONL file written by `wg archive`. Each line is a serialized `Node::Task` — same schema as `graph.jsonl`, but living in a sibling file. Done/Abandoned tasks with no active downstream dependents are eligible.
+**What it is.** A separate JSONL file written by `wg archive`. Each line is a serialized `Node::Task` — same schema as `graph.jsonl`, but living in a sibling file. Done/Abandoned tasks are eligible; an archived dependency cut leaves a compact `ArchivedBoundary` in the active graph so downstream semantics and visualization remain honest.
 
 **Who writes it.**
-- `wg archive [ids...]` — explicit user invocation. Validates `Done | Abandoned` and `!has_active_dependents`. Bulk operations require `--yes`. (`src/commands/archive.rs:372` `run`)
-- `wg archive --undo` — restore last batch. Sister file `archive-last-batch.json` holds the most recent set of ids for one-shot rollback. (`src/commands/archive.rs:303` `undo`)
-- `archive::run_automatic(dir, retention_days)` — daemon-callable; archives tasks older than `retention_days` whose ids do NOT start with `.` (system tasks excluded). Provenance `{"automatic": true, ...}`. (`src/commands/archive.rs:530`)
+- `wg archive [ids...]` — explicit user invocation. Validates `Done | Abandoned`; explicit IDs are attended, while bulk operations require `--yes`. Archived dependency cuts remain represented by compact boundary nodes in the active graph.
+- `wg archive --undo` — restore last batch. Sister file `archive-last-batch.json` holds the most recent set of ids for one-shot rollback.
+- `archive::run_automatic(dir, retention_days, build_id)` — daemon-callable and disabled at retention `0`. A non-zero opt-in uses a persisted watermark and exact digest-pinned hold: first, overdue, build-changed, retention-changed, or oversized batches require `wg archive auto --dry-run` followed by `wg archive auto --confirm`. System-task IDs beginning with `.` are excluded. Provenance records `{"automatic": true, ...}`.
 
 **Who reads it.**
 - `wg archive --list` and `wg archive search <query>` (`src/commands/archive.rs:186` `search`).

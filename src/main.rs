@@ -22,6 +22,7 @@ mod cli;
 mod commands;
 mod terminal_host;
 mod tui;
+mod worker_cli;
 
 use cli::*;
 
@@ -729,6 +730,17 @@ fn main() -> Result<()> {
         let rewritten = rewrite_config_reset_argv(argv);
         Cli::parse_from(rewritten)
     };
+
+    // A worker capability is a hard authority boundary. Handle/refuse the
+    // command before graph discovery, canonicalization, or usage logging so a
+    // guessed `.wg` can never become a filesystem fallback.
+    if !cli.help
+        && !cli.help_all
+        && let Some(command) = cli.command.as_ref()
+        && worker_cli::maybe_run(command, cli.json)?.is_some()
+    {
+        return Ok(());
+    }
 
     let workgraph_dir = resolve_workgraph_dir(
         cli.dir.clone(),

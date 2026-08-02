@@ -212,7 +212,7 @@ pub fn assert_repository_has_no_tracked_control(project: &Path) -> Result<()> {
 /// Reject protected changes before candidate/rescue sealing. The exact legacy
 /// managed `.wg` symlink is tolerated only while it is absent from both HEAD
 /// and the index and resolves to the expected live directory. New worktrees do
-/// not create that link; workers use the inherited absolute `WG_DIR` instead.
+/// not create that link; workers use an attempt-scoped daemon capability.
 pub fn assert_worker_boundary(
     project: &Path,
     worktree: &Path,

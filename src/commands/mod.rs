@@ -296,7 +296,12 @@ pub fn rerun_poison_descendants(dir: &Path, poisoned_task: &str, reset: bool) ->
 /// Best-effort notification to the service daemon that the graph has changed.
 /// Silently ignores all errors (daemon not running, socket unavailable, etc.)
 pub fn notify_graph_changed(dir: &Path) {
-    let _ = service::send_request(dir, &service::IpcRequest::GraphChanged);
+    // A worker request is already executing on the daemon's only control-lane
+    // thread. Self-connecting here would deadlock until the client timeout;
+    // the outer IPC dispatch marks the graph dirty after the operation.
+    if !service::in_worker_control_operation() {
+        let _ = service::send_request(dir, &service::IpcRequest::GraphChanged);
+    }
 }
 
 /// Best-effort kick to the service daemon: wake up and run one tick *now*,
@@ -308,7 +313,9 @@ pub fn notify_graph_changed(dir: &Path) {
 /// periodic poll_interval safety net catches anything that would have been
 /// missed if the kick failed to deliver.
 pub fn notify_kick(dir: &Path) {
-    let _ = service::send_request(dir, &service::IpcRequest::KickDispatcher);
+    if !service::in_worker_control_operation() {
+        let _ = service::send_request(dir, &service::IpcRequest::KickDispatcher);
+    }
 }
 
 /// Write a marker file so the TUI can auto-focus on a newly created task.

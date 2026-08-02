@@ -11,6 +11,8 @@ model = "claude:opus"
 [dispatcher]
 model = "claude:opus"
 max_agents = 8
+# Automatic task archival is disabled by default (retention 0). Deliberately
+# opt in per project after reviewing the exact evidence-bearing batch.
 
 [tiers]
 fast = "claude:haiku"

@@ -1240,7 +1240,14 @@ pub fn run_auto_control(dir: &Path, dry_run: bool, confirm: bool, json: bool) ->
     let retention_days = worksgood::config::Config::load_or_default(dir)
         .coordinator
         .archive_retention_days;
-    if retention_days > 0 && automatic_status(dir).pending {
+    if retention_days == 0 {
+        // A dry-run after disabling is also an immediate, non-destructive
+        // cancellation point for an older held plan. The daemon performs the
+        // same transition on reload/tick, but the attended control surface
+        // should not leave stale pending authority on disk while reporting
+        // that archival is disabled.
+        let _ = run_automatic(dir, 0, "disabled")?;
+    } else if automatic_status(dir).pending {
         let build_id = current_build_id()?;
         let _ = refresh_pending_plan_at(dir, retention_days, &build_id, Utc::now(), None)?;
     }
@@ -2340,6 +2347,89 @@ mod tests {
                 .is_some()
         );
         assert!(!automatic_status(wg_dir).enabled);
+    }
+
+    #[test]
+    fn disabling_retention_clears_held_batch_without_archiving_or_rewriting_graph() {
+        let dir = tempdir().unwrap();
+        let wg_dir = dir.path();
+        let graph_file = wg_dir.join("graph.jsonl");
+        let now = fixed_now();
+        set_retention(wg_dir, 7);
+
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_task(
+            "done-evidence",
+            "Historical completion evidence",
+            Status::Done,
+            Some(&(now - Duration::days(40)).to_rfc3339()),
+        )));
+        let mut abandoned = make_task(
+            "abandoned-evidence",
+            "Historical incident evidence",
+            Status::Abandoned,
+            None,
+        );
+        abandoned.created_at = Some((now - Duration::days(40)).to_rfc3339());
+        graph.add_node(Node::Task(abandoned));
+        graph.add_node(Node::Task(make_task(
+            "visible-open",
+            "Visible active task",
+            Status::Open,
+            None,
+        )));
+        save_graph(&graph, &graph_file).unwrap();
+        let before = std::fs::read(&graph_file).unwrap();
+
+        let held = run_automatic_at(wg_dir, 7, "old-build", now).unwrap();
+        assert!(matches!(
+            held,
+            AutomaticArchiveOutcome::Held { count: 2, .. }
+        ));
+        assert_eq!(
+            load_automatic_state(wg_dir)
+                .unwrap()
+                .unwrap()
+                .pending
+                .as_ref()
+                .unwrap()
+                .tasks
+                .len(),
+            2
+        );
+
+        // Model a config reload followed by a candidate-daemon restart. Both
+        // passes must see the hard disable, clear the stale dispatch plan, and
+        // leave every visible task byte/status untouched.
+        set_retention(wg_dir, 0);
+        for (build, at) in [
+            ("old-build", now + Duration::minutes(1)),
+            ("candidate-build", now + Duration::minutes(2)),
+        ] {
+            assert_eq!(
+                run_automatic_at(wg_dir, 0, build, at).unwrap(),
+                AutomaticArchiveOutcome::Disabled
+            );
+        }
+
+        let state = load_automatic_state(wg_dir).unwrap().unwrap();
+        assert_eq!(state.retention_days, 0);
+        assert!(state.pending.is_none());
+        assert_eq!(std::fs::read(&graph_file).unwrap(), before);
+        assert!(load_archive(&archive_path(wg_dir)).unwrap().is_empty());
+        let active = load_graph(&graph_file).unwrap();
+        assert_eq!(
+            active.get_task("done-evidence").unwrap().status,
+            Status::Done
+        );
+        assert_eq!(
+            active.get_task("abandoned-evidence").unwrap().status,
+            Status::Abandoned
+        );
+        assert_eq!(
+            active.get_task("visible-open").unwrap().status,
+            Status::Open
+        );
     }
 
     #[test]
