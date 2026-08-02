@@ -13,6 +13,13 @@ project="$scratch/project"
 home="$scratch/home"
 evidence="$scratch/evidence"
 mkdir -p "$project" "$home" "$scratch/bin" "$evidence"
+debug_copy() {
+  rm -rf /tmp/wg-brokered-smoke-debug
+  mkdir -p /tmp/wg-brokered-smoke-debug
+  env > /tmp/wg-brokered-smoke-debug/env
+  cp -a "$project/daemon.log" "$project/.wg/service/daemon.log" "$project/.wg/agents" "$evidence" /tmp/wg-brokered-smoke-debug/ 2>/dev/null || true
+}
+add_cleanup_hook debug_copy
 ln -s "$WG_BIN" "$scratch/bin/wg"
 cat >"$scratch/bin/pi" <<'SH'
 #!/usr/bin/env bash
