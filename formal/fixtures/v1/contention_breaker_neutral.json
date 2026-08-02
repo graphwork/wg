@@ -1,0 +1,121 @@
+{
+  "wire_version": 1,
+  "name": "contention_breaker_neutral",
+  "initial": {
+    "wire_version": 1,
+    "phase": "running",
+    "owner": {
+      "task_id": "fix-candidate-wg-control-plane-destruction",
+      "generation": 0,
+      "attempt_id": "attempt-0-1",
+      "attempt_fence": 1,
+      "wrapper_epoch": 1,
+      "child_epoch": 1,
+      "wrapper_identity_digest": "b3:wrapper-attempt-0-1",
+      "child_identity_digest": "b3:native-pi-attempt-0-1",
+      "owned_child": true
+    },
+    "worktree_lease": {
+      "task_id": "fix-candidate-wg-control-plane-destruction",
+      "generation": 0,
+      "attempt_id": "attempt-0-1",
+      "attempt_fence": 1,
+      "wrapper_epoch": 1,
+      "child_epoch": 1,
+      "wrapper_identity_digest": "b3:wrapper-attempt-0-1",
+      "child_identity_digest": "b3:native-pi-attempt-0-1",
+      "owned_child": true
+    },
+    "session_lease": {
+      "task_id": "fix-candidate-wg-control-plane-destruction",
+      "generation": 0,
+      "attempt_id": "attempt-0-1",
+      "attempt_fence": 1,
+      "wrapper_epoch": 1,
+      "child_epoch": 1,
+      "wrapper_identity_digest": "b3:wrapper-attempt-0-1",
+      "child_identity_digest": "b3:native-pi-attempt-0-1",
+      "owned_child": true
+    },
+    "finish_lease": null,
+    "settled": false,
+    "owner_proven_dead": false,
+    "pending_action": null,
+    "action_deadline": null,
+    "candidate": null,
+    "accepted_candidate": null,
+    "finish_tx": null,
+    "promotion_count": 0,
+    "breaker_charges": 0,
+    "inert_messages": 0
+  },
+  "events": [
+    {
+      "type": "ownership_contention",
+      "caller": {
+        "task_id": "fix-candidate-wg-control-plane-destruction",
+        "generation": 0,
+        "attempt_id": "attempt-0-0",
+        "attempt_fence": 0,
+        "wrapper_epoch": 9,
+        "child_epoch": 9,
+        "wrapper_identity_digest": "b3:unrelated-wrapper",
+        "child_identity_digest": "b3:unrelated-child",
+        "owned_child": true
+      }
+    }
+  ],
+  "expected_decisions": [
+    {
+      "status": "noop"
+    }
+  ],
+  "expected_final": {
+    "wire_version": 1,
+    "phase": "running",
+    "owner": {
+      "task_id": "fix-candidate-wg-control-plane-destruction",
+      "generation": 0,
+      "attempt_id": "attempt-0-1",
+      "attempt_fence": 1,
+      "wrapper_epoch": 1,
+      "child_epoch": 1,
+      "wrapper_identity_digest": "b3:wrapper-attempt-0-1",
+      "child_identity_digest": "b3:native-pi-attempt-0-1",
+      "owned_child": true
+    },
+    "worktree_lease": {
+      "task_id": "fix-candidate-wg-control-plane-destruction",
+      "generation": 0,
+      "attempt_id": "attempt-0-1",
+      "attempt_fence": 1,
+      "wrapper_epoch": 1,
+      "child_epoch": 1,
+      "wrapper_identity_digest": "b3:wrapper-attempt-0-1",
+      "child_identity_digest": "b3:native-pi-attempt-0-1",
+      "owned_child": true
+    },
+    "session_lease": {
+      "task_id": "fix-candidate-wg-control-plane-destruction",
+      "generation": 0,
+      "attempt_id": "attempt-0-1",
+      "attempt_fence": 1,
+      "wrapper_epoch": 1,
+      "child_epoch": 1,
+      "wrapper_identity_digest": "b3:wrapper-attempt-0-1",
+      "child_identity_digest": "b3:native-pi-attempt-0-1",
+      "owned_child": true
+    },
+    "finish_lease": null,
+    "pending_action": null,
+    "action_deadline": null,
+    "candidate": null,
+    "accepted_candidate": null,
+    "finish_tx": null,
+    "promotion_count": 0,
+    "breaker_charges": 0,
+    "dependency_satisfied": false,
+    "recovery_rank": 0,
+    "inert_messages": 0
+  }
+}

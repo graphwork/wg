@@ -76,6 +76,38 @@ jobs:
       - name: cargo test (doc tests)
         run: cargo test --doc
 
+  lifecycle-formal:
+    name: Lean lifecycle proofs & Rust conformance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned Lean toolchain
+        uses: leanprover/lean-action@v1
+        with:
+          auto-config: false
+          use-github-cache: true
+          lake-package-directory: formal
+
+      - name: Reject Lean proof escapes
+        run: |
+          if grep -RInE --include='*.lean' \
+            '(^|[^[:alnum:]_])(sorry|admit)([^[:alnum:]_]|$)|^[[:space:]]*(unsafe|axiom)[[:space:]]' \
+            formal; then
+            echo '::error::Lean proof placeholder, unsafe declaration, or unscoped axiom found'
+            exit 1
+          fi
+
+      - name: lake build (pinned lifecycle proofs)
+        working-directory: formal
+        run: lake build
+
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust/JSON lifecycle reducer conformance
+        run: cargo test --locked --test lifecycle_protocol_conformance
+
   integration:
     name: Integration Tests (stable)
     runs-on: ubuntu-latest

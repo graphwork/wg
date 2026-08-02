@@ -1,0 +1,6 @@
+name = "wg-lifecycle"
+version = "1.0.0"
+defaultTargets = ["WGLifecycle"]
+
+[[lean_lib]]
+name = "WGLifecycle"
