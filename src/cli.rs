@@ -5513,6 +5513,9 @@ pub enum PiWatchdogCommands {
         agent_dir: PathBuf,
         #[arg(long)]
         pid: u32,
+        /// Exact attempt-owning wrapper PID (the native Pi child is its child).
+        #[arg(long)]
+        wrapper_pid: Option<u32>,
     },
     /// Internal exact process-exit reconciliation; preserves generic failure when unauthorized.
     #[command(name = "process-exit", hide = true)]

@@ -2934,3 +2934,10 @@ script = "scenarios/automatic_archival_restart_hold.sh"
 owners = ["fix-surprise-startup-archival"]
 description = "Candidate-binary credential-free real daemon + attended tmux/TUI regression for surprise backlog archival: a legacy service state and 38-day-old terminal graph with explicit 7d retention restart into an exact visible operator hold with zero archived records; service status/TUI expose dry-run+confirm; confirmation applies the exact IDs once; undo restores canonical task bytes/status/log/dependencies; an acknowledged restart processes only one newly-eligible incremental task without rescanning restored pre-watermark history; retention=0 remains non-destructive."
 timeout_seconds = 240
+
+[[scenario]]
+name = "exited_worker_finish_convergence"
+script = "scenarios/exited_worker_finish_convergence.sh"
+owners = ["fix-exited-worker-finish-convergence-deadlock", "formalize-lifecycle-finish-lean4"]
+description = "Candidate-binary credential-free generated-wrapper/Fake-Pi regression for the production deadlock topology: the wrapper durably binds itself as parent of the native child, the first child writes 28KiB WIP and settles/exits with no finish transaction, and the live daemon fences the proven-dead owner exactly once then automatically resumes the exact session/worktree. The continuation lands and cleans once with monotonically fenced generation/attempt epochs, no competitor, WIP loss, duplicate promotion, spawn-breaker charge, or operator retry; restart is idempotent, and why-blocked exposes the concrete convergence action/deadline instead of saying unblocked."
+timeout_seconds = 180

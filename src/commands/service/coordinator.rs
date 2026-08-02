@@ -82,6 +82,21 @@ fn cleanup_and_count_alive(
         );
     }
 
+    // A dead Pi wrapper is not a generic lost attempt. Consume its durable
+    // finish handoff before orphan sweeping: receipted transactions advance
+    // exactly once; an absent transaction fences the dead tuple and reopens
+    // the same session/worktree without charging a breaker or discarding WIP.
+    match crate::commands::finalize::converge_exited_worker_finishes(dir) {
+        Ok(actions) if !actions.is_empty() => eprintln!(
+            "[dispatcher] Exited-worker finish convergence: {:?}",
+            actions
+        ),
+        Ok(_) => {}
+        Err(error) => {
+            eprintln!("[dispatcher] Exited-worker finish convergence held fail-closed: {error:#}")
+        }
+    }
+
     // Reconciliation safety net: catch orphaned InProgress tasks whose agents
     // are Dead in registry but weren't unclaimed (split-save race condition).
     match crate::commands::sweep::reconcile_orphaned_tasks(dir, graph_path) {
