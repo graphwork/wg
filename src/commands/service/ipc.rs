@@ -735,14 +735,22 @@ fn execute_worker_operation(
                 converged,
                 full_smoke,
             } => {
-                crate::commands::done::run(
+                let registry = AgentRegistry::load(dir)?;
+                let agent = registry
+                    .get_agent(&binding.agent_id)
+                    .ok_or_else(|| anyhow::anyhow!("worker_control.agent_registry_missing"))?;
+                let worktree_path = agent
+                    .worktree_path
+                    .as_deref()
+                    .map(std::path::Path::new)
+                    .ok_or_else(|| anyhow::anyhow!("worker_control.worktree_missing"))?;
+                crate::commands::done::run_from_worker_control(
                     dir,
                     &binding.task_id,
                     converged,
-                    false,
-                    false,
                     full_smoke,
-                    false,
+                    worktree_path,
+                    &binding.agent_id,
                 )?;
                 Ok(serde_json::json!({"handoff": "done"}))
             }

@@ -305,11 +305,64 @@ fn one_line_error(stderr: &[u8]) -> String {
         .to_string()
 }
 
+#[derive(Clone)]
 struct WorktreeInfo {
     worktree_path: String,
     branch: String,
     project_root: String,
     agent_id: Option<String>,
+}
+
+thread_local! {
+    /// The daemon executes capability-brokered worker operations on its own
+    /// thread, where process-wide worker environment variables are
+    /// intentionally absent. Preserve the exact authenticated worktree
+    /// context thread-locally so `wg done` cannot silently fall back to the
+    /// graph-root/human completion path.
+    static BROKERED_WORKTREE: std::cell::RefCell<Option<WorktreeInfo>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
+pub(crate) fn run_from_worker_control(
+    dir: &Path,
+    id: &str,
+    converged: bool,
+    full_smoke: bool,
+    worktree_path: &Path,
+    agent_id: &str,
+) -> Result<()> {
+    let branch_output = std::process::Command::new("git")
+        .args([
+            "-C",
+            &worktree_path.to_string_lossy(),
+            "branch",
+            "--show-current",
+        ])
+        .output()
+        .context("failed to inspect brokered worker branch")?;
+    if !branch_output.status.success() {
+        anyhow::bail!("failed to inspect brokered worker branch");
+    }
+    let branch =
+        String::from_utf8(branch_output.stdout).context("brokered worker branch is not UTF-8")?;
+    let project_root = dir
+        .parent()
+        .context("worker control graph directory has no project root")?
+        .to_string_lossy()
+        .to_string();
+    let context = WorktreeInfo {
+        worktree_path: worktree_path.to_string_lossy().to_string(),
+        branch: branch.trim().to_string(),
+        project_root,
+        agent_id: Some(agent_id.to_string()),
+    };
+    BROKERED_WORKTREE.with(|slot| {
+        let previous = slot.replace(Some(context));
+        let result = run_inner(dir, id, converged, false, false, true, full_smoke, false);
+        slot.replace(previous);
+        result
+    })
 }
 
 /// Detect git's "no changes staged" messages from a failed `git commit`.
@@ -346,6 +399,9 @@ fn is_no_changes_to_commit(stdout: &str, stderr: &str) -> bool {
 /// agent's `WG_WORKTREE_PATH` exported. Acting on a worktree that doesn't
 /// belong to the project we're managing would mutate the wrong git tree.
 fn detect_worktree(wg_dir: &Path) -> Option<WorktreeInfo> {
+    if let Some(context) = BROKERED_WORKTREE.with(|slot| slot.borrow().clone()) {
+        return Some(context);
+    }
     let wt_path = std::env::var("WG_WORKTREE_PATH").ok()?;
     let branch = std::env::var("WG_BRANCH").ok()?;
     let project_root = std::env::var("WG_PROJECT_ROOT").ok()?;
@@ -2499,7 +2555,13 @@ fn run_inner(
     // leased integration, exact-candidate evaluation, protected promotion and
     // wrapper-owned cleanup. Graph-less/operator compatibility below remains
     // only for historical transactions without a managed source worktree.
-    if detect_worktree(dir).is_some() && crate::commands::finalize::task_owned_done(dir, id)? {
+    if let Some(worktree) = detect_worktree(dir)
+        && crate::commands::finalize::task_owned_done(
+            dir,
+            id,
+            Some(Path::new(&worktree.worktree_path)),
+        )?
+    {
         return Ok(());
     }
 

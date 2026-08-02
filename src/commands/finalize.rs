@@ -1155,9 +1155,14 @@ fn add_input_dependency(dir: &Path, id: &str, from: &str) -> Result<()> {
     Ok(())
 }
 
-fn checkpoint_uncommitted_source_work(dir: &Path, id: &str) -> Result<()> {
-    let worktree = std::env::var_os("WG_WORKTREE_PATH")
-        .map(PathBuf::from)
+fn checkpoint_uncommitted_source_work(
+    dir: &Path,
+    id: &str,
+    worktree_override: Option<&Path>,
+) -> Result<()> {
+    let worktree = worktree_override
+        .map(Path::to_path_buf)
+        .or_else(|| std::env::var_os("WG_WORKTREE_PATH").map(PathBuf::from))
         .context("worktree path unavailable")?;
     let project = dir.parent().unwrap_or(dir);
     let head = git(&worktree, &["rev-parse", "HEAD"])?;
@@ -1205,7 +1210,7 @@ fn checkpoint_uncommitted_source_work(dir: &Path, id: &str) -> Result<()> {
 }
 
 /// Entry used by `wg done` after all ordinary deliverable/verify/smoke gates.
-pub fn task_owned_done(dir: &Path, id: &str) -> Result<bool> {
+pub fn task_owned_done(dir: &Path, id: &str, worktree_override: Option<&Path>) -> Result<bool> {
     let graph = load_graph(dir.join("graph.jsonl"))?;
     let task = graph.get_task_or_err(id)?;
     if task.status != worksgood::graph::Status::InProgress {
@@ -1213,7 +1218,7 @@ pub fn task_owned_done(dir: &Path, id: &str) -> Result<bool> {
     }
     let contract = task.completion_contract;
     drop(graph);
-    checkpoint_uncommitted_source_work(dir, id)?;
+    checkpoint_uncommitted_source_work(dir, id, worktree_override)?;
     let store = FinalizationStore::open(dir)?;
     let lease = if contract == worksgood::graph::CompletionContract::Land {
         Some(begin_finish(dir, &store, id, 1800)?.lease_id)

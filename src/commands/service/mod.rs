@@ -6036,7 +6036,11 @@ pub fn send_worker_request_endpoint(
     };
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
     std::thread::spawn(move || {
-        let _ = tx.send(send_request_to_socket(&endpoint, &ipc_request));
+        let _ = tx.send(send_request_to_socket_with_timeout(
+            &endpoint,
+            &ipc_request,
+            IPC_REQUEST_DEADLINE,
+        ));
     });
     match rx.recv_timeout(IPC_REQUEST_DEADLINE) {
         Ok(result) => result,
@@ -6078,6 +6082,14 @@ fn send_request_inner(dir: &Path, request: &IpcRequest) -> Result<IpcResponse> {
 }
 
 fn send_request_to_socket(socket: &Path, request: &IpcRequest) -> Result<IpcResponse> {
+    send_request_to_socket_with_timeout(socket, request, Duration::from_secs(2))
+}
+
+fn send_request_to_socket_with_timeout(
+    socket: &Path,
+    request: &IpcRequest,
+    client_timeout: Duration,
+) -> Result<IpcResponse> {
     // Retry transient connection failures with short backoff.
     const MAX_RETRIES: u32 = 2;
     const BASE_BACKOFF_MS: u64 = 50;
@@ -6097,14 +6109,13 @@ fn send_request_to_socket(socket: &Path, request: &IpcRequest) -> Result<IpcResp
                 // answers this connection. Bound both halves so user-facing
                 // commands such as `wg chat create` and `wg chat resume` fail
                 // with an actionable error instead of hanging forever.
-                const IPC_CLIENT_TIMEOUT: Duration = Duration::from_secs(2);
                 #[cfg(unix)]
                 {
                     stream
-                        .set_recv_timeout(Some(IPC_CLIENT_TIMEOUT))
+                        .set_recv_timeout(Some(client_timeout))
                         .context("Failed to set service IPC receive timeout")?;
                     stream
-                        .set_send_timeout(Some(IPC_CLIENT_TIMEOUT))
+                        .set_send_timeout(Some(client_timeout))
                         .context("Failed to set service IPC send timeout")?;
                 }
 
@@ -6117,7 +6128,7 @@ fn send_request_to_socket(socket: &Path, request: &IpcRequest) -> Result<IpcResp
                     let line = line.with_context(|| {
                         format!(
                             "Service IPC response timed out after {}s; the daemon is alive but unresponsive — restart with 'wg service start --force'",
-                            IPC_CLIENT_TIMEOUT.as_secs()
+                            client_timeout.as_secs()
                         )
                     })?;
                     if !line.is_empty() {
