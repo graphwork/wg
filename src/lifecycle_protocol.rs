@@ -22,7 +22,7 @@ pub struct WrapperChildCapability {
     pub task_id: String,
     pub generation: u64,
     pub attempt_id: String,
-    pub attempt_fence: u64,
+    pub fence: u64,
     pub wrapper_epoch: u64,
     pub child_epoch: u64,
     pub wrapper_identity_digest: String,

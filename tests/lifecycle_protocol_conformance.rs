@@ -11,7 +11,7 @@ fn cap() -> Capability {
         task_id: "fix-candidate-wg-control-plane-destruction".into(),
         generation: 0,
         attempt_id: "attempt-0-1".into(),
-        attempt_fence: 1,
+        fence: 1,
         wrapper_epoch: 1,
         child_epoch: 1,
         wrapper_identity_digest: "b3:wrapper-attempt-0-1".into(),
@@ -25,7 +25,7 @@ fn stale_cap() -> Capability {
         task_id: "fix-candidate-wg-control-plane-destruction".into(),
         generation: 0,
         attempt_id: "attempt-0-0".into(),
-        attempt_fence: 0,
+        fence: 0,
         wrapper_epoch: 9,
         child_epoch: 9,
         wrapper_identity_digest: "b3:unrelated-wrapper".into(),
@@ -436,7 +436,7 @@ fn convergence_cuts_preserve_identity_and_decrease_rank() {
     assert_eq!(next.task_id, cap().task_id);
     assert_eq!(next.attempt_id, cap().attempt_id);
     assert_eq!(next.generation, cap().generation);
-    assert_eq!(next.attempt_fence, cap().attempt_fence);
+    assert_eq!(next.fence, cap().fence);
     assert_eq!(continued.worktree_lease.as_ref(), Some(next));
     assert_eq!(continued.session_lease.as_ref(), Some(next));
     assert_eq!(continued.breaker_charges, 0);

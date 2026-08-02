@@ -158,7 +158,7 @@ theorem deterministic_same_session_continuation
     ∃ cap, final.owner = some cap ∧ final.worktreeLease = some cap ∧
       final.sessionLease = some cap ∧ cap.taskId = caller.taskId ∧
       cap.attemptId = caller.attemptId ∧ cap.generation = caller.generation ∧
-      cap.attemptFence = caller.attemptFence ∧
+      cap.fence = caller.fence ∧
       cap.wrapperIdentityDigest = caller.wrapperIdentityDigest ∧
       cap.childIdentityDigest = caller.childIdentityDigest ∧
       cap.ownedChild = caller.ownedChild ∧ final.pending = none := by

@@ -41,7 +41,7 @@ theorem owner_death_same_session_continuation :
     ∃ next, continued.owner = some next ∧ continued.worktreeLease = some next ∧
       continued.sessionLease = some next ∧ next.taskId = cap.taskId ∧
       next.attemptId = cap.attemptId ∧ next.generation = cap.generation ∧
-      next.attemptFence = cap.attemptFence ∧ next.wrapperEpoch = 2 ∧ next.childEpoch = 2 ∧
+      next.fence = cap.fence ∧ next.wrapperEpoch = 2 ∧ next.childEpoch = 2 ∧
       next.wrapperIdentityDigest = cap.wrapperIdentityDigest ∧
       next.childIdentityDigest = cap.childIdentityDigest ∧ next.ownedChild = true := by
   native_decide
@@ -102,11 +102,25 @@ theorem protected_candidate_mutation_rejected :
       .rejected .candidateNotProtected := by
   native_decide
 
-/-- Exact runtime reducer wire semantics at the production incident cut. -/
+def deadTxCut : State := (reduce txCut (.ownerProvenDead cap true 101)).1
+
+def deadPromotedCut : State := (reduce promotedCut (.ownerProvenDead cap true 101)).1
+
+def observedCleaned : State := { s5 with ownerProvenDead := true }
+
+/-- Exact runtime reducer wire semantics for every committed JSON crash cut. -/
 theorem exited_worker_runtime_wire_incident :
     exitedWorkerFinishReducerVersion = 1 ∧
+    finishConvergenceRank deadWithoutReceipt = .awaitReceipt ∧
+    finishConvergenceAction cap cap deadWithoutReceipt = .resumeSameSession ∧
     finishConvergenceRank deadCut = .receiptNoTransaction ∧
     finishConvergenceAction cap cap deadCut = .resumeSameSession ∧
+    finishConvergenceRank deadTxCut = .transactionDurable ∧
+    finishConvergenceAction cap cap deadTxCut = .promote ∧
+    finishConvergenceRank deadPromotedCut = .promoted ∧
+    finishConvergenceAction cap cap deadPromotedCut = .cleanup ∧
+    finishConvergenceRank observedCleaned = .cleaned ∧
+    finishConvergenceAction cap cap observedCleaned = .complete ∧
     finishConvergenceAction stale cap deadCut = .rejectStale := by
   native_decide
 

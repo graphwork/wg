@@ -1,0 +1,118 @@
+{
+  "reducer_version": 1,
+  "capability": {
+    "task_id": "fix-candidate-wg-control-plane-destruction",
+    "generation": 0,
+    "attempt_id": "attempt-0-1",
+    "fence": 1,
+    "wrapper_epoch": 1,
+    "child_epoch": 1,
+    "wrapper_identity_digest": "b3:wrapper-attempt-0-1",
+    "child_identity_digest": "b3:native-pi-attempt-0-1",
+    "owned_child": true
+  },
+  "cases": [
+    {
+      "name": "crash_before_receipt",
+      "owner_proven_dead": true,
+      "completion_receipted": false,
+      "transaction_phase": null,
+      "now_unix": 100,
+      "expected": {
+        "reducer_version": 1,
+        "rank": "await_receipt",
+        "pending_action": "resume_same_session",
+        "deadline_unix": 105
+      }
+    },
+    {
+      "name": "incident_receipt_no_transaction",
+      "owner_proven_dead": true,
+      "completion_receipted": true,
+      "transaction_phase": null,
+      "now_unix": 100,
+      "expected": {
+        "reducer_version": 1,
+        "rank": "receipt_no_transaction",
+        "pending_action": "resume_same_session",
+        "deadline_unix": 105
+      }
+    },
+    {
+      "name": "crash_after_transaction",
+      "owner_proven_dead": true,
+      "completion_receipted": true,
+      "transaction_phase": "merge-pending",
+      "now_unix": 100,
+      "expected": {
+        "reducer_version": 1,
+        "rank": "transaction_durable",
+        "pending_action": "promote",
+        "deadline_unix": 105
+      }
+    },
+    {
+      "name": "crash_after_promotion",
+      "owner_proven_dead": true,
+      "completion_receipted": true,
+      "transaction_phase": "promoted",
+      "now_unix": 100,
+      "expected": {
+        "reducer_version": 1,
+        "rank": "promoted",
+        "pending_action": "cleanup",
+        "deadline_unix": 105
+      }
+    },
+    {
+      "name": "crash_after_cleanup",
+      "owner_proven_dead": true,
+      "completion_receipted": true,
+      "transaction_phase": "cleaned",
+      "now_unix": 100,
+      "expected": {
+        "reducer_version": 1,
+        "rank": "cleaned",
+        "pending_action": "complete",
+        "deadline_unix": null
+      }
+    },
+    {
+      "name": "live_wrapper_waits_for_handoff",
+      "owner_proven_dead": false,
+      "completion_receipted": true,
+      "transaction_phase": null,
+      "now_unix": 100,
+      "expected": {
+        "reducer_version": 1,
+        "rank": "receipt_no_transaction",
+        "pending_action": "wait_for_receipt",
+        "deadline_unix": 105
+      }
+    },
+    {
+      "name": "stale_unrelated_wrapper",
+      "presented_capability": {
+        "task_id": "fix-candidate-wg-control-plane-destruction",
+        "generation": 0,
+        "attempt_id": "attempt-0-1",
+        "fence": 1,
+        "wrapper_epoch": 1,
+        "child_epoch": 1,
+        "wrapper_identity_digest": "b3:unrelated-wrapper",
+        "child_identity_digest": "b3:native-pi-attempt-0-1",
+        "owned_child": true
+      },
+      "owner_proven_dead": true,
+      "completion_receipted": true,
+      "transaction_phase": "promoted",
+      "now_unix": 100,
+      "expected": {
+        "reducer_version": 1,
+        "rank": "promoted",
+        "pending_action": "reject_stale",
+        "deadline_unix": null
+      }
+    }
+  ]
+}

@@ -10,7 +10,7 @@ def cap : Capability := {
   taskId := 949
   generation := 0
   attemptId := 1
-  attemptFence := 1
+  fence := 1
   wrapperEpoch := 1
   childEpoch := 1
   wrapperIdentityDigest := 10001
@@ -22,7 +22,7 @@ def stale : Capability := {
   taskId := 949
   generation := 0
   attemptId := 0
-  attemptFence := 0
+  fence := 0
   wrapperEpoch := 9
   childEpoch := 9
   wrapperIdentityDigest := 90001
@@ -92,7 +92,7 @@ theorem dead_wrapper_continues_without_competitor :
     ∃ next, continued.owner = some next ∧ continued.worktreeLease = some next ∧
       continued.sessionLease = some next ∧ next.taskId = cap.taskId ∧
       next.generation = cap.generation ∧ next.attemptId = cap.attemptId ∧
-      next.attemptFence = cap.attemptFence ∧ continued.pending = none := by
+      next.fence = cap.fence ∧ continued.pending = none := by
   native_decide
 
 /-- An unrelated stale process remains inert at the exact crash cut. -/

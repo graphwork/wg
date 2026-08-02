@@ -32,7 +32,7 @@ structure Capability where
   taskId : Nat
   generation : Nat
   attemptId : Nat
-  attemptFence : Nat
+  fence : Nat
   wrapperEpoch : Nat
   childEpoch : Nat
   wrapperIdentityDigest : Nat
