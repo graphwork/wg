@@ -1,10 +1,36 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use serde::Deserialize;
+use worksgood::finalization::FinalizationPhase;
 use worksgood::lifecycle_protocol::{
     Candidate, Capability, Decision, Event, LIFECYCLE_WIRE_VERSION, PendingAction, RejectReason,
     State, SuccessfulDisposition, TaskPhase, TraceFixture, reduce, replay,
 };
+use worksgood::service::convergence::EXITED_WORKER_FINISH_REDUCER_VERSION;
+use worksgood::service::{
+    FinishConvergenceSnapshot, WrapperChildCapability as RuntimeCapability,
+    reduce_exited_worker_finish,
+};
+
+#[derive(Debug, Deserialize)]
+struct RuntimeFixture {
+    reducer_version: u32,
+    capability: RuntimeCapability,
+    cases: Vec<RuntimeCase>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RuntimeCase {
+    name: String,
+    #[serde(default)]
+    presented_capability: Option<RuntimeCapability>,
+    owner_proven_dead: bool,
+    completion_receipted: bool,
+    transaction_phase: Option<FinalizationPhase>,
+    now_unix: i64,
+    expected: serde_json::Value,
+}
 
 fn cap() -> Capability {
     Capability {
@@ -258,6 +284,11 @@ fn fixture_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("formal/fixtures/v1")
 }
 
+fn runtime_fixture_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("formal/fixtures/runtime/v1/exited_worker_finish.json")
+}
+
 #[test]
 fn lifecycle_golden_traces_match_reference_reducer() {
     let expected = fixtures();
@@ -290,6 +321,42 @@ fn lifecycle_golden_traces_match_reference_reducer() {
         assert_eq!(decisions, fixture.expected_decisions, "{path:?}");
         assert_eq!(actual.normalized(), fixture.expected_final, "{path:?}");
         assert!(expected.contains(&fixture), "unexpected golden {path:?}");
+    }
+}
+
+#[test]
+fn production_exited_worker_reducer_matches_runtime_golden() {
+    let path = runtime_fixture_path();
+    let fixture: RuntimeFixture = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(
+        fixture.reducer_version,
+        EXITED_WORKER_FINISH_REDUCER_VERSION
+    );
+
+    // The formal incident and production reducer capability are byte-identical,
+    // including the final `fence` spelling and both process identity digests.
+    assert_eq!(
+        serde_json::to_value(&fixture.capability).unwrap(),
+        serde_json::to_value(cap()).unwrap()
+    );
+
+    for case in fixture.cases {
+        let actual = reduce_exited_worker_finish(&FinishConvergenceSnapshot {
+            presented_capability: case
+                .presented_capability
+                .unwrap_or_else(|| fixture.capability.clone()),
+            authoritative_capability: fixture.capability.clone(),
+            owner_proven_dead: case.owner_proven_dead,
+            completion_receipted: case.completion_receipted,
+            transaction_phase: case.transaction_phase,
+            now_unix: case.now_unix,
+        });
+        assert_eq!(
+            serde_json::to_value(actual).unwrap(),
+            case.expected,
+            "runtime convergence case {}",
+            case.name
+        );
     }
 }
 
