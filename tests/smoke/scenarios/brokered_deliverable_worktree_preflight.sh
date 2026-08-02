@@ -4,7 +4,10 @@ set -euo pipefail
 # Unix-domain sockets cap path length; keep this long-named scenario's root short.
 export WG_SMOKE_ROOT="${WG_SMOKE_ROOT:-/tmp/wg-bd}"
 source "$(dirname "$0")/_helpers.sh"
-: "${WG_BIN:?smoke harness must provide candidate WG_BIN}"
+if [[ -z ${WG_BIN:-} ]]; then
+  require_wg
+  WG_BIN=$(command -v wg)
+fi
 [[ -x $WG_BIN ]] || loud_fail "candidate WG_BIN is not executable: $WG_BIN"
 
 scratch=$(make_scratch)
