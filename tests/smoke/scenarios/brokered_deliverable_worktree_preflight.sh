@@ -2,7 +2,7 @@
 # Candidate-binary regression for brokered deliverable preflight root binding.
 set -euo pipefail
 # Unix-domain sockets cap path length; keep this long-named scenario's root short.
-export WG_SMOKE_ROOT="${WG_SMOKE_ROOT:-/tmp/wg-bd}"
+export WG_SMOKE_ROOT="/tmp/wg-bd-${BASHPID}"
 source "$(dirname "$0")/_helpers.sh"
 if [[ -z ${WG_BIN:-} ]]; then
   require_wg
