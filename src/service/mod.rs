@@ -18,8 +18,10 @@ pub mod registry;
 
 pub use convergence::{
     Admission as ConvergenceAdmission, ConvergencePolicy, ConvergenceStage, ConvergenceState,
-    RouteAdmission, RouteBreaker, RouteBreakerState, admit_goal_action, admit_route_action,
-    earliest_wake, reconcile_after_service_pass, reconcile_dir,
+    FinishConvergenceAction, FinishConvergenceDecision, FinishConvergenceRank,
+    FinishConvergenceSnapshot, RouteAdmission, RouteBreaker, RouteBreakerState,
+    WrapperChildCapability, admit_goal_action, admit_route_action, earliest_wake,
+    reconcile_after_service_pass, reconcile_dir, reduce_exited_worker_finish,
 };
 pub use dispatch_boot::{
     ChatSupervisorBootSpec, enumerate_chat_supervisors_for_boot,

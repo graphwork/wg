@@ -3172,11 +3172,13 @@ fi
             // summary. No bash-emitted bookend — the bridge owns stream.jsonl.
             let raw_stream_file = output_dir.join("raw_stream.jsonl");
             let raw_str = raw_stream_file.to_string_lossy().to_string();
+            let bootstrap_gate = output_dir.join("pi-bootstrap.gate");
             let cmd = format!(
-                "{{ {timed_command} > >(tee -a {raw} >> \"$OUTPUT_FILE\") 2>> \"$OUTPUT_FILE\" & WG_PI_CHILD_PID=$!; if ! wg pi-watchdog bootstrap \"$TASK_ID\" --agent-dir {dir} --pid $WG_PI_CHILD_PID 2>> \"$OUTPUT_FILE\"; then kill $WG_PI_CHILD_PID 2>/dev/null || true; wait $WG_PI_CHILD_PID 2>/dev/null || true; (exit 125); else wg pi-stream-observe --agent-dir {dir} --follow-pid $WG_PI_CHILD_PID 2>> \"$OUTPUT_FILE\" & WG_PI_OBSERVER_PID=$!; wait $WG_PI_CHILD_PID; WG_PI_EXIT_CODE=$?; wait $WG_PI_OBSERVER_PID || echo \"[wrapper] WARNING: Pi native observer held; exact continuation will fail closed\" >> \"$OUTPUT_FILE\"; (exit $WG_PI_EXIT_CODE); fi; }}",
+                "{{ WG_PI_BOOTSTRAP_GATE={gate}; rm -f \"$WG_PI_BOOTSTRAP_GATE\"; {{ WG_PI_WRAPPER_PID=$$; while [ ! -f \"$WG_PI_BOOTSTRAP_GATE\" ]; do kill -0 $WG_PI_WRAPPER_PID 2>/dev/null || exit 125; sleep 0.01; done; exec {timed_command}; }} > >(tee -a {raw} >> \"$OUTPUT_FILE\") 2>> \"$OUTPUT_FILE\" & WG_PI_CHILD_PID=$!; if ! wg pi-watchdog bootstrap \"$TASK_ID\" --agent-dir {dir} --pid $WG_PI_CHILD_PID --wrapper-pid $$ 2>> \"$OUTPUT_FILE\"; then kill $WG_PI_CHILD_PID 2>/dev/null || true; wait $WG_PI_CHILD_PID 2>/dev/null || true; rm -f \"$WG_PI_BOOTSTRAP_GATE\"; (exit 125); else : > \"$WG_PI_BOOTSTRAP_GATE\"; wg pi-stream-observe --agent-dir {dir} --follow-pid $WG_PI_CHILD_PID 2>> \"$OUTPUT_FILE\" & WG_PI_OBSERVER_PID=$!; wait $WG_PI_CHILD_PID; WG_PI_EXIT_CODE=$?; wait $WG_PI_OBSERVER_PID || echo \"[wrapper] WARNING: Pi native observer held; exact continuation will fail closed\" >> \"$OUTPUT_FILE\"; rm -f \"$WG_PI_BOOTSTRAP_GATE\"; (exit $WG_PI_EXIT_CODE); fi; }}",
                 timed_command = timed_command,
                 raw = shell_escape(&raw_str),
                 dir = shell_escape(&output_dir.to_string_lossy()),
+                gate = shell_escape(&bootstrap_gate.to_string_lossy()),
             );
             let bridge = format!(
                 "wg pi-stream-bridge --agent-dir {dir} --exit-code $EXIT_CODE --follow-pid \"$WG_PI_CHILD_PID\" 2>> \"$OUTPUT_FILE\" \
@@ -6296,6 +6298,34 @@ mod tests {
         assert!(
             fallback.contains("} {HEARTBEAT_GUARD_FD}>&-"),
             "fallback executor must not inherit the heartbeat guard writer"
+        );
+    }
+
+    #[test]
+    fn pi_wrapper_binds_parent_and_native_child_as_distinct_terminal_authorities() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let wrapper_path = write_wrapper_script(
+            temp_dir.path(),
+            "pi-topology",
+            "/tmp/output.log",
+            "pi --mode json",
+            None,
+            "pi",
+            None,
+        )
+        .unwrap();
+        let script = std::fs::read_to_string(wrapper_path).unwrap();
+        assert!(script.contains("WG_PI_CHILD_PID=$!"));
+        assert!(script.contains("pi-bootstrap.gate"));
+        assert!(script.contains("--pid $WG_PI_CHILD_PID --wrapper-pid $$"));
+        assert!(script.contains(": > \"$WG_PI_BOOTSTRAP_GATE\""));
+        assert!(script.contains("wait $WG_PI_CHILD_PID"));
+        let bind = script.find("--wrapper-pid $$").unwrap();
+        let release = script.find(": > \"$WG_PI_BOOTSTRAP_GATE\"").unwrap();
+        let post_release_wait = release + script[release..].find("wait $WG_PI_CHILD_PID").unwrap();
+        assert!(
+            bind < release && release < post_release_wait,
+            "wrapper/native topology must be durably bound before the child is released to exec"
         );
     }
 

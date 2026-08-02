@@ -6,7 +6,7 @@ use worksgood::finalization::{
     FinalizationContext, FinalizationStore, QuiescenceProof, checkpoint_candidate,
     checkpoint_rescue,
 };
-use worksgood::parser::load_graph;
+use worksgood::parser::{load_graph, modify_graph};
 
 use crate::cli::{CandidateCommands, FinalizeCommands};
 
@@ -645,6 +645,342 @@ fn terminal_evaluation_infrastructure(
         }
     }
     Ok(None)
+}
+
+/// Converge durable finish handoffs after the exact attempt-owning wrapper has
+/// exited.  This is deliberately bounded and semantic-neutral:
+///
+/// * a sealed/validated transaction may advance only by its exact receipts;
+/// * a promoted/output transaction may perform cleanup only;
+/// * an exited Pi owner with no transaction is fenced and reopened on the same
+///   session/worktree so the agent, not process silence, supplies semantics.
+///
+/// Replaying this function after a crash is idempotent at every boundary.
+pub(crate) fn converge_exited_worker_finishes(dir: &Path) -> Result<Vec<String>> {
+    let store = FinalizationStore::open(dir)?;
+    let registry = worksgood::service::AgentRegistry::load(dir)
+        .unwrap_or_else(|_| worksgood::service::AgentRegistry::new());
+    let graph_path = dir.join("graph.jsonl");
+    let mut converged = Vec::new();
+
+    for original in store.list()? {
+        let graph = load_graph(&graph_path)?;
+        let Some(task) = graph.get_task(&original.task_id) else {
+            continue;
+        };
+        let owner_id = original
+            .candidate
+            .as_ref()
+            .map(|candidate| candidate.worktree_id.as_str())
+            .or_else(|| {
+                original
+                    .rescue
+                    .as_ref()
+                    .map(|rescue| rescue.worktree_id.as_str())
+            })
+            .or(task.assigned.as_deref())
+            .unwrap_or("retained");
+        if owner_is_live(&registry, &original.task_id, owner_id) {
+            continue;
+        }
+        let source_is_current = original.generation == task.lifecycle.generation
+            && original.attempt_id
+                == task
+                    .lifecycle
+                    .current_attempt
+                    .as_ref()
+                    .map(|attempt| attempt.id.as_str())
+                    .unwrap_or_default()
+            && original.attempt_fence == task.lifecycle.fence;
+        if !source_is_current && task.status != worksgood::graph::Status::Done {
+            continue;
+        }
+
+        let _ = worksgood::finalization::reconcile(&store, &original.task_id)?;
+        let mut tx = store
+            .load_task(&original.task_id)?
+            .context("finish transaction disappeared during convergence")?;
+        if matches!(
+            tx.phase,
+            worksgood::finalization::FinalizationPhase::Promoted
+                | worksgood::finalization::FinalizationPhase::Delivered
+                | worksgood::finalization::FinalizationPhase::Reported
+                | worksgood::finalization::FinalizationPhase::Cleaning
+        ) {
+            cleanup_finish(dir, &store, &tx.task_id, false)?;
+            converged.push(format!("{}:cleanup", tx.task_id));
+            continue;
+        }
+        if !source_is_current {
+            continue;
+        }
+        let Some(candidate) = tx.candidate.clone() else {
+            continue;
+        };
+
+        if tx.evaluation_receipt.is_none()
+            && candidate.evaluation_policy == "none"
+            && matches!(
+                tx.phase,
+                worksgood::finalization::FinalizationPhase::CandidateCheckpointed
+                    | worksgood::finalization::FinalizationPhase::MergePending
+            )
+        {
+            worksgood::finalization::record_evaluation_receipt(
+                &store,
+                &candidate.candidate_id,
+                worksgood::finalization::EvaluationReceiptOutcome::Accepted,
+                "evaluation-not-required",
+                "exited-owner-convergence",
+            )?;
+            tx = store
+                .load_task(&tx.task_id)?
+                .context("finish transaction disappeared after evaluation receipt")?;
+        }
+
+        match task.completion_contract {
+            worksgood::graph::CompletionContract::Land
+                if tx.phase == worksgood::finalization::FinalizationPhase::MergePending
+                    && tx.evaluation_receipt.as_ref().is_some_and(|receipt| {
+                        receipt.outcome
+                            == worksgood::finalization::EvaluationReceiptOutcome::Accepted
+                    }) =>
+            {
+                let ctx = context_from_transaction(&tx, &candidate);
+                let lease = worksgood::finalization::acquire_finish_lease(&store, &ctx, 1800)?;
+                worksgood::finalization::promote_task_owned_candidate(
+                    &store,
+                    &ctx,
+                    &lease.lease_id,
+                    &candidate.candidate_id,
+                )?;
+                cleanup_finish(dir, &store, &tx.task_id, false)?;
+                converged.push(format!("{}:promote+cleanup", tx.task_id));
+            }
+            worksgood::graph::CompletionContract::Deliver
+                if tx.validation.as_ref().is_some_and(|receipt| receipt.passed) =>
+            {
+                worksgood::finalization::publish_output(
+                    &store,
+                    &tx.task_id,
+                    worksgood::finalization::OutputDisposition::Delivered,
+                )?;
+                cleanup_finish(dir, &store, &tx.task_id, false)?;
+                converged.push(format!("{}:deliver+cleanup", tx.task_id));
+            }
+            worksgood::graph::CompletionContract::Report
+                if tx.validation.as_ref().is_some_and(|receipt| receipt.passed) =>
+            {
+                worksgood::finalization::publish_output(
+                    &store,
+                    &tx.task_id,
+                    worksgood::finalization::OutputDisposition::Reported,
+                )?;
+                cleanup_finish(dir, &store, &tx.task_id, false)?;
+                converged.push(format!("{}:report+cleanup", tx.task_id));
+            }
+            _ => {}
+        }
+    }
+
+    // No transaction means there is no durable semantic completion to replay.
+    // Fence the dead tuple once and continue the exact session/worktree instead.
+    let graph = load_graph(&graph_path)?;
+    let candidates = graph
+        .tasks()
+        .filter(|task| task.status == worksgood::graph::Status::InProgress)
+        .filter(|task| task.lifecycle.pi_continuation.is_some())
+        .filter(|task| store.load_task(&task.id).ok().flatten().is_none())
+        .filter_map(|task| {
+            let attempt = task.lifecycle.current_attempt.as_ref()?;
+            let key = worksgood::attempt_runtime::AttemptRuntimeKey::for_attempt(task, attempt);
+            let state_path =
+                worksgood::attempt_runtime::resolve_component(dir, &key, "pi/state.json")
+                    .ok()??;
+            let watchdog = worksgood::pi_watchdog::PiWatchdog::open(&state_path).ok()?;
+            let state = watchdog.state();
+            let wrapper = state.terminal_wrapper.as_ref()?;
+            let handoff = state.completion_handoff.as_ref();
+            let presented = worksgood::service::WrapperChildCapability {
+                task_id: handoff
+                    .map(|value| value.source.task_id.clone())
+                    .unwrap_or_else(|| state.source.task_id.clone()),
+                generation: handoff
+                    .map(|value| value.source.generation)
+                    .unwrap_or(state.source.generation),
+                attempt_id: handoff
+                    .map(|value| value.source.attempt_id.clone())
+                    .unwrap_or_else(|| state.source.attempt_id.clone()),
+                fence: handoff
+                    .map(|value| value.source.attempt_fence)
+                    .unwrap_or(state.source.attempt_fence),
+                wrapper_epoch: handoff
+                    .map(|value| value.process_epoch)
+                    .unwrap_or(state.process_epoch),
+                child_epoch: handoff
+                    .map(|value| value.process_epoch)
+                    .unwrap_or(state.process_epoch),
+                wrapper_identity_digest: handoff
+                    .and_then(|value| value.terminal_wrapper_identity_digest.clone())
+                    .unwrap_or_else(|| wrapper.digest()),
+                child_identity_digest: handoff
+                    .map(|value| value.process_identity_digest.clone())
+                    .unwrap_or_else(|| state.process.digest()),
+                // `terminal_wrapper` is persisted only after bootstrap proved
+                // the native process was this exact wrapper's direct child.
+                owned_child: true,
+            };
+            let authoritative = worksgood::service::WrapperChildCapability {
+                task_id: task.id.clone(),
+                generation: task.lifecycle.generation,
+                attempt_id: attempt.id.clone(),
+                fence: task.lifecycle.fence,
+                wrapper_epoch: task.lifecycle.pi_process_epoch,
+                child_epoch: task.lifecycle.pi_process_epoch,
+                wrapper_identity_digest: wrapper.digest(),
+                child_identity_digest: task.lifecycle.pi_process_identity_digest.clone(),
+                owned_child: true,
+            };
+            let owner_dead = task
+                .assigned
+                .as_deref()
+                .is_none_or(|owner| !owner_is_live(&registry, &task.id, owner));
+            let decision = worksgood::service::reduce_exited_worker_finish(
+                &worksgood::service::FinishConvergenceSnapshot {
+                    presented_capability: presented,
+                    authoritative_capability: authoritative,
+                    owner_proven_dead: owner_dead && !exact_process_is_live(&state.process),
+                    completion_receipted: handoff.is_some(),
+                    transaction_phase: None,
+                    now_unix: chrono::Utc::now().timestamp(),
+                },
+            );
+            (decision.pending_action
+                == worksgood::service::FinishConvergenceAction::ResumeSameSession
+                && decision.deadline_unix.is_some()
+                && state.source.worktree_path.exists()
+                && state.session.session_file.exists())
+            .then(|| {
+                (
+                    task.id.clone(),
+                    state.session.session_id.clone(),
+                    state.source.attempt_id.clone(),
+                    state.source.attempt_fence,
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    drop(graph);
+
+    for (task_id, session_id, attempt_id, source_fence) in candidates {
+        let mut requested = false;
+        let session = session_id.clone();
+        modify_graph(&graph_path, |graph| {
+            let Some(task) = graph.get_task_mut(&task_id) else {
+                return false;
+            };
+            if task.status != worksgood::graph::Status::InProgress
+                || task.lifecycle.fence != source_fence
+                || task
+                    .lifecycle
+                    .current_attempt
+                    .as_ref()
+                    .is_none_or(|attempt| attempt.id != attempt_id)
+            {
+                return false;
+            }
+            task.session_id = Some(session.clone());
+            match super::reopen::request(
+                task,
+                "exited-worker-convergence",
+                false,
+                true,
+                "resume exact exited-worker session/worktree",
+                worksgood::lifecycle::LifecycleActor {
+                    kind: worksgood::lifecycle::ActorKind::Reconciler,
+                    id: "exited-worker-finish-convergence".into(),
+                },
+                "proven_dead_owner_resume_same_session",
+            ) {
+                Ok((_, created)) => {
+                    requested = created;
+                    if created {
+                        task.log.push(worksgood::graph::LogEntry {
+                            timestamp: chrono::Utc::now().to_rfc3339(),
+                            actor: Some("exited-worker-finish-convergence".into()),
+                            user: Some(worksgood::current_user()),
+                            message: format!(
+                                "Exact owner exited without a finish transaction; fenced once and scheduled same-session/worktree continuation (session={session_id})"
+                            ),
+                        });
+                    }
+                    created
+                }
+                Err(_) => false,
+            }
+        })?;
+        if requested {
+            converged.push(format!("{task_id}:resume-same-session"));
+        }
+    }
+    Ok(converged)
+}
+
+fn context_from_transaction(
+    tx: &worksgood::finalization::FinalizationTransaction,
+    candidate: &worksgood::finalization::CandidateDescriptor,
+) -> FinalizationContext {
+    FinalizationContext {
+        task_id: tx.task_id.clone(),
+        generation: tx.generation,
+        attempt_id: tx.attempt_id.clone(),
+        attempt_fence: tx.attempt_fence,
+        process_epoch: candidate.process_epoch,
+        worktree_id: candidate.worktree_id.clone(),
+        worktree_lease_epoch: tx.worktree_lease_epoch,
+        worktree_path: tx.worktree_path.clone(),
+        project_root: tx.project_root.clone(),
+        terminal_reservation_id: tx.terminal_reservation_id.clone(),
+        evaluation_policy: candidate.evaluation_policy.clone(),
+        route_snapshot_cid: candidate.route_snapshot_cid.clone(),
+        quiescence: tx.quiescence.clone(),
+    }
+}
+
+fn owner_is_live(
+    registry: &worksgood::service::AgentRegistry,
+    task_id: &str,
+    owner_id: &str,
+) -> bool {
+    let Some(owner) = registry.get_agent(owner_id) else {
+        return false;
+    };
+    if owner.task_id != task_id || !worksgood::service::is_process_alive(owner.pid) {
+        return false;
+    }
+    owner
+        .started_at
+        .parse::<chrono::DateTime<chrono::Utc>>()
+        .map(|started| worksgood::service::verify_process_identity(owner.pid, started.timestamp()))
+        .unwrap_or(true)
+}
+
+fn exact_process_is_live(process: &worksgood::pi_watchdog::ProcessIdentity) -> bool {
+    if !worksgood::service::is_process_alive(process.pid) {
+        return false;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let boot_matches = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
+            .ok()
+            .is_some_and(|value| value.trim() == process.boot_id);
+        boot_matches
+            && worksgood::service::read_proc_start_ticks(process.pid) == Some(process.start_ticks)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        true
+    }
 }
 
 pub(crate) fn cleanup_finish(

@@ -18,7 +18,151 @@ use crate::parser::load_graph;
 use crate::service::ProviderHealth;
 
 pub const CONVERGENCE_SCHEMA_VERSION: u32 = 1;
+/// Wire/conformance version for the pure exited-worker finish reducer.  This
+/// is intentionally independent from the durable scheduler schema: changing
+/// transition meaning must be loud to model/replay consumers.
+pub const EXITED_WORKER_FINISH_REDUCER_VERSION: u32 = 1;
 const STATE_FILE: &str = "convergence-state.json";
+const EXITED_WORKER_CONVERGENCE_DELAY_SECS: i64 = 5;
+
+/// Exact capability established while the wrapper still owns the native Pi
+/// child.  Wrapper and child are peers in this tuple, not an inverted ancestry
+/// claim: the wrapper is the child's authenticated parent/supervisor.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WrapperChildCapability {
+    pub task_id: String,
+    pub generation: u64,
+    pub attempt_id: String,
+    pub fence: u64,
+    pub wrapper_epoch: u32,
+    pub child_epoch: u32,
+    pub wrapper_identity_digest: String,
+    pub child_identity_digest: String,
+    pub owned_child: bool,
+}
+
+/// Monotone transaction rank used by runtime replay and the Lean conformance
+/// model.  `AwaitReceipt` remains semantic-neutral: a dead process is never
+/// interpreted as successful merely because no receipt exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FinishConvergenceRank {
+    AwaitReceipt,
+    ReceiptNoTransaction,
+    TransactionDurable,
+    Promoted,
+    Cleaned,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FinishConvergenceAction {
+    WaitForReceipt,
+    ResumeSameSession,
+    AdvanceTransaction,
+    Promote,
+    Cleanup,
+    Complete,
+    RejectStale,
+}
+
+impl FinishConvergenceAction {
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::WaitForReceipt => "wait for exact wrapper/child completion receipt",
+            Self::ResumeSameSession => {
+                "release exact dead owner once and resume the same session/worktree"
+            }
+            Self::AdvanceTransaction => "advance the exact durable finish transaction",
+            Self::Promote => "promote the already-validated exact candidate once",
+            Self::Cleanup => "clean the already-promoted task-owned worktree once",
+            Self::Complete => "completion convergence is finished",
+            Self::RejectStale => "reject stale or unrelated terminal writer",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FinishConvergenceSnapshot {
+    pub presented_capability: WrapperChildCapability,
+    pub authoritative_capability: WrapperChildCapability,
+    pub owner_proven_dead: bool,
+    pub completion_receipted: bool,
+    pub transaction_phase: Option<FinalizationPhase>,
+    pub now_unix: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FinishConvergenceDecision {
+    pub reducer_version: u32,
+    pub rank: FinishConvergenceRank,
+    pub pending_action: FinishConvergenceAction,
+    /// Required for every nonterminal, non-rejection decision.  The service
+    /// may act sooner, but it may never leave this condition unscheduled.
+    pub deadline_unix: Option<i64>,
+}
+
+/// Pure, total reducer for the exited-worker handoff.  It authorizes no I/O;
+/// callers execute its single action under the existing lifecycle/finalization
+/// CAS fences.  Replaying identical evidence therefore yields an identical
+/// decision and cannot charge a breaker or create a competing owner.
+pub fn reduce_exited_worker_finish(
+    snapshot: &FinishConvergenceSnapshot,
+) -> FinishConvergenceDecision {
+    let rank = match snapshot.transaction_phase {
+        None if snapshot.completion_receipted => FinishConvergenceRank::ReceiptNoTransaction,
+        None => FinishConvergenceRank::AwaitReceipt,
+        Some(FinalizationPhase::Promoted)
+        | Some(FinalizationPhase::Delivered)
+        | Some(FinalizationPhase::Reported)
+        | Some(FinalizationPhase::Cleaning) => FinishConvergenceRank::Promoted,
+        Some(FinalizationPhase::Cleaned) => FinishConvergenceRank::Cleaned,
+        Some(_) => FinishConvergenceRank::TransactionDurable,
+    };
+    if !snapshot.presented_capability.owned_child
+        || snapshot.presented_capability != snapshot.authoritative_capability
+    {
+        return FinishConvergenceDecision {
+            reducer_version: EXITED_WORKER_FINISH_REDUCER_VERSION,
+            rank,
+            pending_action: FinishConvergenceAction::RejectStale,
+            deadline_unix: None,
+        };
+    }
+
+    let action = if !snapshot.owner_proven_dead {
+        FinishConvergenceAction::WaitForReceipt
+    } else {
+        match snapshot.transaction_phase {
+            None => FinishConvergenceAction::ResumeSameSession,
+            Some(FinalizationPhase::MergePending | FinalizationPhase::Merged) => {
+                FinishConvergenceAction::Promote
+            }
+            Some(
+                FinalizationPhase::Promoted
+                | FinalizationPhase::Delivered
+                | FinalizationPhase::Reported
+                | FinalizationPhase::Cleaning,
+            ) => FinishConvergenceAction::Cleanup,
+            Some(FinalizationPhase::Cleaned) => FinishConvergenceAction::Complete,
+            Some(_) => FinishConvergenceAction::AdvanceTransaction,
+        }
+    };
+    FinishConvergenceDecision {
+        reducer_version: EXITED_WORKER_FINISH_REDUCER_VERSION,
+        rank,
+        pending_action: action,
+        deadline_unix: (!matches!(
+            action,
+            FinishConvergenceAction::Complete | FinishConvergenceAction::RejectStale
+        ))
+        .then(|| {
+            snapshot
+                .now_unix
+                .saturating_add(EXITED_WORKER_CONVERGENCE_DELAY_SECS)
+        }),
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConvergencePolicy {
@@ -127,6 +271,12 @@ pub struct GoalRecord {
     pub stage: ConvergenceStage,
     pub blocker: BlockerClass,
     pub next_wake_at: String,
+    /// Derived read-model projection, never a second lifecycle authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finish_convergence_rank: Option<FinishConvergenceRank>,
+    /// Concrete bounded action shown by status/why-blocked and replay tooling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_convergence_action: Option<FinishConvergenceAction>,
     pub backoff: BackoffState,
     pub last_authoritative_progress: ProgressStamp,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -279,11 +429,15 @@ impl ConvergenceState {
                     record.goal = goal;
                     record.priority = task.priority;
                     record.stage = stage;
+                    let (rank, action) = finish_projection(&task, transaction);
+                    record.finish_convergence_rank = rank;
+                    record.pending_convergence_action = action;
                     record.needs_human = needs_human;
                 }
                 Some(record) => {
                     *record = new_goal_record(
                         &task,
+                        transaction,
                         goal,
                         stage,
                         blocker,
@@ -298,6 +452,7 @@ impl ConvergenceState {
                         key,
                         new_goal_record(
                             &task,
+                            transaction,
                             goal,
                             stage,
                             blocker,
@@ -646,6 +801,7 @@ pub fn earliest_wake(dir: &Path) -> Result<Option<DateTime<Utc>>> {
 
 fn new_goal_record(
     task: &Task,
+    transaction: Option<&FinalizationTransaction>,
     goal: GoalRef,
     stage: ConvergenceStage,
     blocker: BlockerClass,
@@ -654,12 +810,16 @@ fn new_goal_record(
     policy: &ConvergencePolicy,
     now: DateTime<Utc>,
 ) -> GoalRecord {
+    let (finish_convergence_rank, pending_convergence_action) =
+        finish_projection(task, transaction);
     GoalRecord {
         goal,
         priority: task.priority,
         stage,
         blocker,
         next_wake_at: now.to_rfc3339(),
+        finish_convergence_rank,
+        pending_convergence_action,
         backoff: BackoffState {
             class: blocker,
             failures_without_progress: 0,
@@ -726,6 +886,25 @@ fn classify_stage(
             BlockerClass::Dispatch,
             None,
         ),
+        Status::InProgress
+            if task.lifecycle.pi_terminal_reservation.is_some()
+                || task.lifecycle.audit.iter().any(|event| {
+                    event.generation == task.lifecycle.generation
+                        && event.attempt_id.as_deref()
+                            == task
+                                .lifecycle
+                                .current_attempt
+                                .as_ref()
+                                .map(|attempt| attempt.id.as_str())
+                        && event.event_kind == "pi-process-epoch-exited"
+                }) =>
+        {
+            (
+                ConvergenceStage::AwaitSourceFinish,
+                BlockerClass::SourceFinish,
+                None,
+            )
+        }
         Status::InProgress => (ConvergenceStage::ObserveOwner, BlockerClass::Dispatch, None),
         Status::Waiting => (ConvergenceStage::AwaitWait, BlockerClass::Wait, None),
         Status::PendingEval | Status::FailedPendingEval | Status::PendingValidation => (
@@ -742,6 +921,60 @@ fn classify_stage(
         ),
         Status::Done | Status::Abandoned => unreachable!("terminal tasks are filtered"),
     }
+}
+
+fn finish_projection(
+    task: &Task,
+    transaction: Option<&FinalizationTransaction>,
+) -> (
+    Option<FinishConvergenceRank>,
+    Option<FinishConvergenceAction>,
+) {
+    if let Some(transaction) = transaction {
+        let (rank, action) = match transaction.phase {
+            FinalizationPhase::MergePending | FinalizationPhase::Merged => (
+                FinishConvergenceRank::TransactionDurable,
+                FinishConvergenceAction::Promote,
+            ),
+            FinalizationPhase::Promoted
+            | FinalizationPhase::Delivered
+            | FinalizationPhase::Reported
+            | FinalizationPhase::Cleaning => (
+                FinishConvergenceRank::Promoted,
+                FinishConvergenceAction::Cleanup,
+            ),
+            FinalizationPhase::Cleaned => (
+                FinishConvergenceRank::Cleaned,
+                FinishConvergenceAction::Complete,
+            ),
+            _ => (
+                FinishConvergenceRank::TransactionDurable,
+                FinishConvergenceAction::AdvanceTransaction,
+            ),
+        };
+        return (Some(rank), Some(action));
+    }
+    let exact_epoch_exited = task.lifecycle.audit.iter().any(|event| {
+        event.generation == task.lifecycle.generation
+            && event.attempt_id.as_deref()
+                == task
+                    .lifecycle
+                    .current_attempt
+                    .as_ref()
+                    .map(|attempt| attempt.id.as_str())
+            && event.event_kind == "pi-process-epoch-exited"
+    });
+    if exact_epoch_exited || task.lifecycle.pi_terminal_reservation.is_some() {
+        return (
+            Some(if task.lifecycle.pi_terminal_reservation.is_some() {
+                FinishConvergenceRank::ReceiptNoTransaction
+            } else {
+                FinishConvergenceRank::AwaitReceipt
+            }),
+            Some(FinishConvergenceAction::ResumeSameSession),
+        );
+    }
+    (None, None)
 }
 
 fn authoritative_progress(
@@ -763,6 +996,10 @@ fn authoritative_progress(
                     | "evaluation-evidence"
                     | "candidate-checkpointed"
                     | "reconciliation-issue"
+                    | "pi-terminal-intent"
+                    | "pi-process-epoch-exited"
+                    | "reopen-requested"
+                    | "reopen-owner-released"
             )
         })
         .map(|event| event.event_id.as_str())
@@ -877,6 +1114,123 @@ mod tests {
             status: Status::Open,
             ..Task::default()
         }
+    }
+
+    fn wrapper_capability() -> WrapperChildCapability {
+        WrapperChildCapability {
+            task_id: "incident".into(),
+            generation: 0,
+            attempt_id: "attempt-0-1".into(),
+            fence: 1,
+            wrapper_epoch: 1,
+            child_epoch: 1,
+            wrapper_identity_digest: "wrapper:3913000:start:10".into(),
+            child_identity_digest: "child:3913691:start:11".into(),
+            owned_child: true,
+        }
+    }
+
+    #[test]
+    fn exited_worker_finish_reducer_crash_boundaries_are_monotone_and_exact() {
+        let capability = wrapper_capability();
+        let decide = |receipted, phase| {
+            reduce_exited_worker_finish(&FinishConvergenceSnapshot {
+                presented_capability: capability.clone(),
+                authoritative_capability: capability.clone(),
+                owner_proven_dead: true,
+                completion_receipted: receipted,
+                transaction_phase: phase,
+                now_unix: 100,
+            })
+        };
+        let boundaries = [
+            (
+                decide(false, None),
+                FinishConvergenceRank::AwaitReceipt,
+                FinishConvergenceAction::ResumeSameSession,
+            ),
+            (
+                decide(true, None),
+                FinishConvergenceRank::ReceiptNoTransaction,
+                FinishConvergenceAction::ResumeSameSession,
+            ),
+            (
+                decide(true, Some(FinalizationPhase::MergePending)),
+                FinishConvergenceRank::TransactionDurable,
+                FinishConvergenceAction::Promote,
+            ),
+            (
+                decide(true, Some(FinalizationPhase::Promoted)),
+                FinishConvergenceRank::Promoted,
+                FinishConvergenceAction::Cleanup,
+            ),
+            (
+                decide(true, Some(FinalizationPhase::Cleaned)),
+                FinishConvergenceRank::Cleaned,
+                FinishConvergenceAction::Complete,
+            ),
+        ];
+        for pair in boundaries.windows(2) {
+            assert!(pair[0].0.rank <= pair[1].0.rank, "rank must be monotone");
+        }
+        for (decision, rank, action) in boundaries {
+            assert_eq!(decision.reducer_version, 1);
+            assert_eq!(decision.rank, rank);
+            assert_eq!(decision.pending_action, action);
+            if action == FinishConvergenceAction::Complete {
+                assert_eq!(decision.deadline_unix, None);
+            } else {
+                assert_eq!(decision.deadline_unix, Some(105));
+            }
+        }
+
+        let waiting = reduce_exited_worker_finish(&FinishConvergenceSnapshot {
+            presented_capability: capability.clone(),
+            authoritative_capability: capability.clone(),
+            owner_proven_dead: false,
+            completion_receipted: true,
+            transaction_phase: None,
+            now_unix: 100,
+        });
+        assert_eq!(
+            waiting.pending_action,
+            FinishConvergenceAction::WaitForReceipt
+        );
+        assert_eq!(waiting.deadline_unix, Some(105));
+
+        let mut unrelated = capability.clone();
+        unrelated.wrapper_identity_digest = "unrelated:pid:start".into();
+        let rejected = reduce_exited_worker_finish(&FinishConvergenceSnapshot {
+            presented_capability: unrelated,
+            authoritative_capability: capability,
+            owner_proven_dead: true,
+            completion_receipted: true,
+            transaction_phase: Some(FinalizationPhase::Promoted),
+            now_unix: 100,
+        });
+        assert_eq!(
+            rejected.pending_action,
+            FinishConvergenceAction::RejectStale
+        );
+        assert_eq!(rejected.deadline_unix, None);
+        assert_eq!(rejected.rank, FinishConvergenceRank::Promoted);
+    }
+
+    #[test]
+    fn exited_worker_finish_decision_wire_fixture_is_versioned() {
+        let capability = wrapper_capability();
+        let decision = reduce_exited_worker_finish(&FinishConvergenceSnapshot {
+            presented_capability: capability.clone(),
+            authoritative_capability: capability,
+            owner_proven_dead: true,
+            completion_receipted: true,
+            transaction_phase: None,
+            now_unix: 100,
+        });
+        assert_eq!(
+            serde_json::to_string(&decision).unwrap(),
+            r#"{"reducer_version":1,"rank":"receipt_no_transaction","pending_action":"resume_same_session","deadline_unix":105}"#
+        );
     }
 
     #[test]
@@ -1039,6 +1393,47 @@ mod tests {
         assert_eq!(
             classify_stage(&working, None).0,
             ConvergenceStage::ObserveOwner
+        );
+        working.lifecycle.pi_terminal_reservation =
+            Some(crate::pi_watchdog::TerminalIntentReceipt {
+                task_id: working.id.clone(),
+                generation: working.lifecycle.generation,
+                attempt_id: "attempt-0-1".into(),
+                attempt_fence: working.lifecycle.fence,
+                process_epoch: 1,
+                process_identity_digest: "exact-process".into(),
+                tool_call_id: "wg-done".into(),
+                disposition: crate::pi_watchdog::TerminalDisposition::SuccessIntent,
+                idempotency_key: "terminal-once".into(),
+            });
+        assert_eq!(
+            classify_stage(&working, None),
+            (
+                ConvergenceStage::AwaitSourceFinish,
+                BlockerClass::SourceFinish,
+                None
+            ),
+            "receipted Pi completion must have a scheduled convergence wake"
+        );
+        let now = DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let mut pending = ConvergenceState::default();
+        pending.reconcile_goals(
+            std::iter::once(working.clone()),
+            &BTreeMap::new(),
+            &policy(),
+            now,
+        );
+        let record = pending.goals.get("working#0").unwrap();
+        assert_eq!(record.next_wake_at, now.to_rfc3339());
+        assert_eq!(
+            record.finish_convergence_rank,
+            Some(FinishConvergenceRank::ReceiptNoTransaction)
+        );
+        assert_eq!(
+            record.pending_convergence_action,
+            Some(FinishConvergenceAction::ResumeSameSession)
         );
         assert_eq!(
             classify_stage(&waiting, None).0,
