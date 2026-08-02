@@ -27,6 +27,28 @@ mod triage;
 pub(crate) mod worktree;
 pub(crate) mod zero_output;
 
+thread_local! {
+    static IN_WORKER_CONTROL_OPERATION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+pub(crate) fn in_worker_control_operation() -> bool {
+    IN_WORKER_CONTROL_OPERATION.with(std::cell::Cell::get)
+}
+
+pub(crate) fn with_worker_control_operation<T>(f: impl FnOnce() -> T) -> T {
+    IN_WORKER_CONTROL_OPERATION.with(|active| {
+        let prior = active.replace(true);
+        struct Reset<'a>(&'a std::cell::Cell<bool>, bool);
+        impl Drop for Reset<'_> {
+            fn drop(&mut self) {
+                self.0.set(self.1);
+            }
+        }
+        let _reset = Reset(active, prior);
+        f()
+    })
+}
+
 pub use ipc::{IpcRequest, IpcResponse};
 
 use anyhow::{Context, Result};
@@ -4585,6 +4607,7 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
     let log_exists = log_path.exists();
     let recent_errors = tail_log_since(dir, 5, Some("ERROR"), started_at);
     let recent_fatals = tail_log_since(dir, 5, Some("FATAL"), started_at);
+    let worker_filesystem_isolation = worksgood::worker_control::filesystem_isolation_status();
 
     if json {
         let mut output = serde_json::json!({
@@ -4594,6 +4617,11 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
             "started_at": state.started_at,
             "pid_start_identity": state.pid_start_identity,
             "identity": state.identity,
+            "worker_control": {
+                "protocol": worksgood::worker_control::WORKER_CONTROL_PROTOCOL,
+                "capability_broker": "enforced",
+                "filesystem_isolation": &worker_filesystem_isolation,
+            },
             "uptime": uptime,
             "agents": {
                 "alive": alive_count,
@@ -4668,6 +4696,15 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
         println!("Service: running (PID {})", state.pid);
         println!("Socket: {}", state.socket_path);
         println!("Uptime: {}", uptime);
+        println!(
+            "Worker control: capability broker enforced; filesystem isolation: {} ({})",
+            if worker_filesystem_isolation.enforced {
+                "ENFORCED"
+            } else {
+                "DEGRADED"
+            },
+            worker_filesystem_isolation.reason
+        );
         if let Some(identity) = state.identity.as_ref() {
             println!("Graph identity: {}", identity.graph_digest);
             println!(
@@ -5985,6 +6022,34 @@ pub fn send_request(dir: &Path, request: &IpcRequest) -> Result<IpcResponse> {
     }
 }
 
+/// Send a capability-authenticated worker request to the exact endpoint passed
+/// by the daemon. This path deliberately does not resolve or open a graph
+/// directory/state file in the worker process.
+pub fn send_worker_request_endpoint(
+    endpoint: &Path,
+    request: &worksgood::worker_control::WorkerRequestEnvelope,
+) -> Result<IpcResponse> {
+    const IPC_REQUEST_DEADLINE: Duration = Duration::from_secs(30);
+    let endpoint = endpoint.to_path_buf();
+    let ipc_request = IpcRequest::Worker {
+        request: request.clone(),
+    };
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let _ = tx.send(send_request_to_socket(&endpoint, &ipc_request));
+    });
+    match rx.recv_timeout(IPC_REQUEST_DEADLINE) {
+        Ok(result) => result,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => anyhow::bail!(
+            "Worker control IPC timed out after {}s; retry with the same request id",
+            IPC_REQUEST_DEADLINE.as_secs()
+        ),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            anyhow::bail!("Worker control IPC exited without a response")
+        }
+    }
+}
+
 fn send_request_inner(dir: &Path, request: &IpcRequest) -> Result<IpcResponse> {
     let state = ServiceState::load(dir)?.ok_or_else(|| {
         anyhow::anyhow!("Service not running (no state file). Start it with 'wg service start'.")
@@ -6009,6 +6074,10 @@ fn send_request_inner(dir: &Path, request: &IpcRequest) -> Result<IpcResponse> {
         );
     }
 
+    send_request_to_socket(&socket, request)
+}
+
+fn send_request_to_socket(socket: &Path, request: &IpcRequest) -> Result<IpcResponse> {
     // Retry transient connection failures with short backoff.
     const MAX_RETRIES: u32 = 2;
     const BASE_BACKOFF_MS: u64 = 50;
@@ -6021,7 +6090,7 @@ fn send_request_inner(dir: &Path, request: &IpcRequest) -> Result<IpcResponse> {
             ));
         }
 
-        match connect_to_socket(&socket) {
+        match connect_to_socket(socket) {
             Ok(mut stream) => {
                 // A live PID and socket do not guarantee a responsive daemon:
                 // the coordinator thread may be wedged before it accepts or
@@ -6076,10 +6145,9 @@ fn send_request_inner(dir: &Path, request: &IpcRequest) -> Result<IpcResponse> {
 
     let err = last_err.unwrap();
     anyhow::bail!(
-        "Could not connect to service at {:?} (PID {}, {} retries exhausted): {}. \
-         The daemon may be overloaded — try again, or restart with 'wg service start --force'.",
+        "Could not connect to service at {:?} ({} retries exhausted): {}. \
+         The daemon may be overloaded — try again with the same request id",
         socket,
-        state.pid,
         MAX_RETRIES,
         err
     )

@@ -1453,8 +1453,10 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
         cmd.env(key, value);
     }
 
-    // Add task ID and agent ID to environment
-    cmd.env("WG_DIR", dir);
+    // Add task identity, but never expose the raw graph path. The opaque
+    // attempt capability and exact daemon endpoint are injected only after the
+    // lifecycle claim succeeds below.
+    cmd.env_remove("WG_DIR");
     cmd.env("WG_TASK_ID", task_id);
     if let Some(chat_id) = worksgood::chat_id::parse_chat_task_id(task_id) {
         cmd.env("WG_CHAT_ID", task_id);
@@ -1591,6 +1593,7 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
     );
     let mut attempt_runtime_dir: Option<PathBuf> = None;
     let mut observer_state_dir: Option<PathBuf> = None;
+    let mut worker_capability_digest: Option<String> = None;
 
     // The wrapper is spawned behind an unpublished launch gate. It cannot
     // start the handler until every durable transaction boundary succeeds.
@@ -1601,6 +1604,66 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
         spawn_fault("claim")?;
         let runtime_dir = worksgood::attempt_runtime::ensure_namespace(dir, &runtime_key)?;
         attempt_runtime_dir = Some(runtime_dir);
+
+        let endpoint = match crate::commands::service::ServiceState::load(dir)? {
+            Some(service_state) => PathBuf::from(service_state.socket_path),
+            #[cfg(test)]
+            None => {
+                // Unit spawn tests terminate the wrapper before it calls WG.
+                // Production remains daemon-only.
+                let endpoint = dir.join("service/test-worker-control.sock");
+                if let Some(parent) = endpoint.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::write(&endpoint, b"test-only-not-a-socket")?;
+                endpoint
+            }
+            #[cfg(not(test))]
+            None => anyhow::bail!(
+                "worker_control.daemon_required: task workers launch only through a live daemon capability channel"
+            ),
+        };
+        if !endpoint.exists() {
+            anyhow::bail!("worker_control.endpoint_missing: {}", endpoint.display());
+        }
+        let (worker_token, worker_binding) = worksgood::worker_control::mint_attempt_capability(
+            dir,
+            task_id,
+            claim_snapshot.generation,
+            &claim_snapshot.attempt_id,
+            claim_snapshot.attempt_fence,
+            claim_snapshot.attempt_fence,
+            &temp_agent_id,
+        )?;
+        worker_capability_digest = Some(worker_binding.token_sha256.clone());
+        cmd.env("WG_WORKER_IPC", &endpoint);
+        cmd.env("WG_WORKER_CAPABILITY", &worker_token);
+        cmd.env(
+            "WG_WORKER_CONTROL_PROTOCOL",
+            worksgood::worker_control::WORKER_CONTROL_PROTOCOL,
+        );
+        cmd.env("WG_GRAPH_ID", &worker_binding.graph_id);
+        let isolation = worksgood::worker_control::filesystem_isolation_status();
+        cmd.env(
+            "WG_WORKER_FILESYSTEM_ISOLATION",
+            if isolation.enforced {
+                "enforced"
+            } else {
+                "degraded"
+            },
+        );
+        if !isolation.enforced {
+            eprintln!(
+                "WARNING: worker {} filesystem isolation is DEGRADED: {}",
+                temp_agent_id, isolation.reason
+            );
+            if std::env::var_os("WG_REQUIRE_HARD_WORKER_ISOLATION").is_some() {
+                anyhow::bail!(
+                    "worker_control.hard_isolation_required: {}",
+                    isolation.reason
+                );
+            }
+        }
         workspace.prepare_launch()?;
         if needs_worktree {
             let info = worktree_info.as_ref().ok_or_else(|| {
@@ -1840,6 +1903,11 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
                 && rollback.kind() != std::io::ErrorKind::NotFound
             {
                 rollback_errors.push(format!("worktree observer preparation: {rollback}"));
+            }
+            if let Some(digest) = worker_capability_digest.as_deref()
+                && let Err(rollback) = worksgood::worker_control::revoke_capability(dir, digest)
+            {
+                rollback_errors.push(format!("worker capability: {rollback:#}"));
             }
             return Err(error).with_context(|| {
                 format!(
@@ -3311,11 +3379,12 @@ unset CLAUDE_CODE_SDK_HAS_OAUTH_REFRESH
 # launch permit. Native events only wake content reconciliation.
 if [ -n "${{WG_WORKTREE_OBSERVER_STATE_DIR:-}}" ]; then
     if command -v setsid >/dev/null 2>&1; then
-        setsid wg worktree-observer-run --state-dir "$WG_WORKTREE_OBSERVER_STATE_DIR" --parent-pid "$$" >/dev/null 2>&1 &
+        setsid env -u WG_WORKER_CAPABILITY -u WG_WORKER_IPC -u WG_TASK_ID wg worktree-observer-run --state-dir "$WG_WORKTREE_OBSERVER_STATE_DIR" --parent-pid "$$" >/dev/null 2>&1 &
     else
-        nohup wg worktree-observer-run --state-dir "$WG_WORKTREE_OBSERVER_STATE_DIR" --parent-pid "$$" </dev/null >/dev/null 2>&1 &
+        nohup env -u WG_WORKER_CAPABILITY -u WG_WORKER_IPC -u WG_TASK_ID wg worktree-observer-run --state-dir "$WG_WORKTREE_OBSERVER_STATE_DIR" --parent-pid "$$" </dev/null >/dev/null 2>&1 &
     fi
     WG_WORKTREE_OBSERVER_PID=$!
+    unset WG_WORKTREE_OBSERVER_STATE_DIR
 fi
 # Guarded heartbeat watcher — keeps registry heartbeat fresh while this wrapper
 # owns the anonymous pipe's write descriptor. The executor runs with that

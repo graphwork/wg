@@ -2,8 +2,8 @@
 //!
 //! When worktree isolation is enabled, each agent gets its own git worktree
 //! at `.wg-worktrees/<agent-id>/`, branched from HEAD. Graph access is
-//! out-of-band through the absolute `WG_DIR` inherited by the worker; `.wg`
-//! is never materialized inside candidate source.
+//! out-of-band through an attempt-scoped daemon capability; `.wg` is never
+//! materialized inside candidate source or exported to the worker.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -318,8 +318,9 @@ pub fn create_worktree(
         )));
     }
 
-    // The worker launcher passes the canonical graph as absolute `WG_DIR`.
-    // Do not create a helper in the checked-out namespace: even an ignored
+    // The trusted launcher keeps the canonical graph only to mint an opaque
+    // attempt capability. Do not create a helper in the checked-out namespace:
+    // even an ignored
     // symlink can be force-added and later promoted by a careless Git tree
     // operation. Administrative ownership already lives out-of-band under
     // `.git/worktrees/<id>/`.
@@ -1172,7 +1173,7 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(info.workgraph_dir.join("marker")).unwrap(),
             "test",
-            "the launcher-owned absolute graph path remains usable as WG_DIR"
+            "the trusted launcher retains graph access for capability issuance"
         );
 
         remove_worktree(&project, &info.path, &info.branch).unwrap();
