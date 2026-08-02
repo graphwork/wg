@@ -2943,6 +2943,13 @@ description = "Candidate-binary credential-free real daemon + attended tmux/TUI 
 timeout_seconds = 240
 
 [[scenario]]
+name = "automatic_archival_opt_in"
+script = "scenarios/automatic_archival_opt_in.sh"
+owners = ["make-automatic-archival-opt-in"]
+description = "Candidate-binary clean-room daemon/terminal proof with isolated HOME and explicit --dir: a missing/fresh retention key resolves to 0; old Done evidence survives start plus restart/upgrade simulation; service status and archive auto --dry-run report disabled; a live held batch is cancelled by retention=0 reload/restart with graph bytes and visible states preserved; deliberate short-retention opt-in archives only the exact digest-reviewed batch while a later eligible record stays visible and manually previewable. Credential-free."
+timeout_seconds = 180
+
+[[scenario]]
 name = "exited_worker_finish_convergence"
 script = "scenarios/exited_worker_finish_convergence.sh"
 owners = ["fix-exited-worker-finish-convergence-deadlock", "formalize-lifecycle-finish-lean4"]

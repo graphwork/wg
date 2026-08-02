@@ -1338,9 +1338,12 @@ is_default = true
 
     #[test]
     fn test_starter_templates_parse_as_full_config() {
-        // Each starter template must parse as a complete Config — that's
+        // Each built-in template must parse as a complete Config — that's
         // the whole point of the snapshot model: profile file = config file.
-        for name in STARTER_NAMES {
+        // Templates deliberately omit archive_retention_days so profile
+        // switches preserve an operator's explicit non-zero global/project
+        // value; when absent they must resolve to the safe disabled default.
+        for name in ["pi", "claude", "codex", "nex", "opencode"] {
             let tmpl = starter_template(name).unwrap();
             let result = toml::from_str::<Config>(tmpl);
             assert!(
@@ -1348,6 +1351,15 @@ is_default = true
                 "Starter template '{}' must parse as Config: {:?}",
                 name,
                 result
+            );
+            assert_eq!(
+                result.unwrap().coordinator.archive_retention_days,
+                0,
+                "starter profile '{name}' must not activate automatic task archival"
+            );
+            assert!(
+                tmpl.contains("Automatic task archival is disabled by default"),
+                "starter profile '{name}' must explain its non-destructive default"
             );
         }
     }
@@ -2682,6 +2694,30 @@ max_agents = 8
                 .and_then(|m| m.as_integer()),
             Some(2),
             "explicit local max_agents must win over the profile default"
+        );
+    }
+
+    #[test]
+    fn project_profile_archive_opt_in_survives_overlay_and_reload() {
+        let existing = r#"
+[dispatcher]
+model = "pi:openrouter:z-ai/glm-5.2"
+"#
+        .parse::<toml::Value>()
+        .unwrap();
+        let profile = r#"
+[dispatcher]
+model = "pi:openrouter:z-ai/glm-5.2"
+archive_retention_days = 45
+"#
+        .parse::<toml::Value>()
+        .unwrap();
+        let merged = overlay_project_profile(existing, &profile);
+        let serialized = toml::to_string_pretty(&merged).unwrap();
+        let reloaded: Config = toml::from_str(&serialized).unwrap();
+        assert_eq!(
+            reloaded.coordinator.archive_retention_days, 45,
+            "a custom profile's deliberate non-zero policy must survive load/reload"
         );
     }
 
