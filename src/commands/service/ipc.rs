@@ -739,6 +739,9 @@ fn execute_worker_operation(
                 let agent = registry
                     .get_agent(&binding.agent_id)
                     .ok_or_else(|| anyhow::anyhow!("worker_control.agent_registry_missing"))?;
+                if agent.task_id != binding.task_id {
+                    anyhow::bail!("worker_control.worktree_task_mismatch");
+                }
                 let worktree_path = agent
                     .worktree_path
                     .as_deref()
@@ -871,6 +874,44 @@ fn handle_worker_request(
     request: WorkerRequestEnvelope,
     logger: &DaemonLogger,
 ) -> IpcResponse {
+    // Replay the exact durable response before checking whether the mutation
+    // released its attempt owner. This is safe because the journal binds the
+    // request id to the capability-token digest and operation; a different
+    // token or operation still fails closed. Fresh requests continue through
+    // full live-capability validation below.
+    match worksgood::worker_control::replay_request(
+        dir,
+        &request.request_id,
+        &request.capability,
+        request.operation.kind(),
+    ) {
+        Ok(Some(worksgood::worker_control::BeginRequest::Completed(response))) => {
+            let task_id = worksgood::worker_control::lookup_capability(dir, &request.capability)
+                .ok()
+                .map(|binding| binding.task_id);
+            audit_worker_request(
+                dir,
+                &request,
+                task_id.as_deref(),
+                "replayed",
+                "completed response replayed",
+                logger,
+            );
+            return worker_response_from_stored(response);
+        }
+        Ok(Some(worksgood::worker_control::BeginRequest::Pending)) => {
+            let reason = "worker_control.request_pending_reconciliation: mutation may already be durable; refusing duplicate execution";
+            audit_worker_request(dir, &request, None, "held", reason, logger);
+            return IpcResponse::error(reason);
+        }
+        Ok(Some(worksgood::worker_control::BeginRequest::Fresh)) => unreachable!(),
+        Ok(None) => {}
+        Err(error) => {
+            audit_worker_request(dir, &request, None, "rejected", &error.to_string(), logger);
+            return IpcResponse::error(&error.to_string());
+        }
+    }
+
     let binding = match validate_worker_capability(dir, &request) {
         Ok(binding) => binding,
         Err(error) => {
@@ -3028,6 +3069,10 @@ mod tests {
         };
         let logger = DaemonLogger::open(temp.path()).unwrap();
         let first = handle_worker_request(temp.path(), request.clone(), &logger);
+        // Completion-like mutations release or replace their owner before a
+        // client that lost the response can retry. The exact request journal
+        // must win over the now-stale live capability check.
+        write_owned_task(temp.path(), 2, 3);
         let second = handle_worker_request(temp.path(), request, &logger);
         assert!(first.ok);
         assert_eq!(first.data, second.data);

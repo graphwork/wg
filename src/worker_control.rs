@@ -403,6 +403,43 @@ pub fn lookup_capability(dir: &Path, token: &str) -> Result<AttemptCapabilityBin
         .ok_or_else(|| anyhow::anyhow!("worker_control.capability_unknown"))
 }
 
+fn validate_request_id(request_id: &str) -> Result<()> {
+    if request_id.is_empty()
+        || request_id.len() > 128
+        || !request_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b':' | b'.'))
+    {
+        bail!("worker_control.request_id_invalid");
+    }
+    Ok(())
+}
+
+/// Inspect an already-journaled request without creating a fresh intent.
+/// This lets an exact retry recover its completed response after the mutation
+/// itself released/fenced the attempt capability (notably `done`). Token and
+/// operation must still match the authenticated journal entry byte-for-byte.
+pub fn replay_request(
+    dir: &Path,
+    request_id: &str,
+    token: &str,
+    operation: WorkerOperationKind,
+) -> Result<Option<BeginRequest>> {
+    validate_request_id(request_id)?;
+    let digest = token_digest(token);
+    let registry = load_registry(dir)?;
+    let Some(existing) = registry.requests.get(request_id) else {
+        return Ok(None);
+    };
+    if existing.token_sha256 != digest || existing.operation != operation {
+        bail!("worker_control.request_id_conflict");
+    }
+    Ok(Some(match &existing.state {
+        RequestJournalState::Pending => BeginRequest::Pending,
+        RequestJournalState::Completed(response) => BeginRequest::Completed(response.clone()),
+    }))
+}
+
 /// Persist the request intent before mutation. A daemon crash after this point
 /// yields `Pending` on replay, which fails closed instead of duplicating the
 /// mutation. Completed replies are replayed byte-for-byte.
@@ -412,25 +449,12 @@ pub fn begin_request(
     token: &str,
     operation: WorkerOperationKind,
 ) -> Result<BeginRequest> {
-    if request_id.is_empty()
-        || request_id.len() > 128
-        || !request_id
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b':' | b'.'))
-    {
-        bail!("worker_control.request_id_invalid");
+    validate_request_id(request_id)?;
+    if let Some(existing) = replay_request(dir, request_id, token, operation)? {
+        return Ok(existing);
     }
     let digest = token_digest(token);
     let mut registry = load_registry(dir)?;
-    if let Some(existing) = registry.requests.get(request_id) {
-        if existing.token_sha256 != digest || existing.operation != operation {
-            bail!("worker_control.request_id_conflict");
-        }
-        return Ok(match &existing.state {
-            RequestJournalState::Pending => BeginRequest::Pending,
-            RequestJournalState::Completed(response) => BeginRequest::Completed(response.clone()),
-        });
-    }
     registry.requests.insert(
         request_id.to_string(),
         RequestJournalEntry {

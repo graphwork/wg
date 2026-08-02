@@ -14,7 +14,7 @@ pub fn run_finalize(dir: &Path, command: FinalizeCommands, json: bool) -> Result
     let store = FinalizationStore::open(dir)?;
     match command {
         FinalizeCommands::Begin { id, ttl_seconds } => {
-            let lease = begin_finish(dir, &store, &id, ttl_seconds)?;
+            let lease = begin_finish(dir, &store, &id, ttl_seconds, None)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&lease)?);
             } else {
@@ -42,6 +42,7 @@ pub fn run_finalize(dir: &Path, command: FinalizeCommands, json: bool) -> Result
                 lease.as_deref(),
                 commit.as_deref(),
                 wait_seconds,
+                None,
             )?;
             print_tx(&tx, json)
         }
@@ -324,15 +325,24 @@ pub fn run_candidate(dir: &Path, command: CandidateCommands, json: bool) -> Resu
     }
 }
 
-fn finish_context(dir: &Path, id: &str) -> Result<FinalizationContext> {
-    if std::env::var_os("WG_AGENT_ID").is_some() && std::env::var("WG_TASK_ID").as_deref() != Ok(id)
+fn finish_context(
+    dir: &Path,
+    id: &str,
+    worktree_override: Option<&Path>,
+) -> Result<FinalizationContext> {
+    // A brokered caller has already authenticated the exact task/agent/root
+    // tuple and passes that retained worktree explicitly. Only direct worker
+    // calls use process environment as their ownership proof.
+    if worktree_override.is_none()
+        && std::env::var_os("WG_AGENT_ID").is_some()
+        && std::env::var("WG_TASK_ID").as_deref() != Ok(id)
     {
         bail!("finish.source_owner_mismatch: a worker may finish only its own task");
     }
     context_from_current(
         dir,
         id,
-        None,
+        worktree_override.map(Path::to_path_buf),
         Some(format!(
             "finish-live:{}:{}",
             id,
@@ -347,6 +357,7 @@ fn begin_finish(
     store: &FinalizationStore,
     id: &str,
     ttl_seconds: i64,
+    worktree_override: Option<&Path>,
 ) -> Result<worksgood::finalization::FinishLease> {
     let graph = load_graph(dir.join("graph.jsonl"))?;
     let task = graph.get_task_or_err(id)?;
@@ -360,7 +371,7 @@ fn begin_finish(
     if task.status != worksgood::graph::Status::InProgress {
         bail!("finish.source_not_working: task status is {}", task.status);
     }
-    let ctx = finish_context(dir, id)?;
+    let ctx = finish_context(dir, id, worktree_override)?;
     let lease = worksgood::finalization::acquire_finish_lease(store, &ctx, ttl_seconds)?;
     integrate_leased_base(&ctx.worktree_path, &lease.base_commit_oid)?;
     Ok(lease)
@@ -488,6 +499,7 @@ fn submit_finish(
     lease_arg: Option<&str>,
     commit: Option<&str>,
     wait_seconds: u64,
+    worktree_override: Option<&Path>,
 ) -> Result<worksgood::finalization::FinalizationTransaction> {
     let graph = load_graph(dir.join("graph.jsonl"))?;
     let completion_contract = graph.get_task_or_err(id)?.completion_contract;
@@ -503,7 +515,7 @@ fn submit_finish(
     {
         return Ok(existing);
     }
-    let mut ctx = finish_context(dir, id)?;
+    let mut ctx = finish_context(dir, id, worktree_override)?;
     if let Some(expected) = commit {
         let head = git(&ctx.worktree_path, &["rev-parse", "HEAD"])?;
         let resolved = git(&ctx.worktree_path, &["rev-parse", expected])?;
@@ -1221,11 +1233,19 @@ pub fn task_owned_done(dir: &Path, id: &str, worktree_override: Option<&Path>) -
     checkpoint_uncommitted_source_work(dir, id, worktree_override)?;
     let store = FinalizationStore::open(dir)?;
     let lease = if contract == worksgood::graph::CompletionContract::Land {
-        Some(begin_finish(dir, &store, id, 1800)?.lease_id)
+        Some(begin_finish(dir, &store, id, 1800, worktree_override)?.lease_id)
     } else {
         None
     };
-    let tx = submit_finish(dir, &store, id, lease.as_deref(), Some("HEAD"), 1800)?;
+    let tx = submit_finish(
+        dir,
+        &store,
+        id,
+        lease.as_deref(),
+        Some("HEAD"),
+        1800,
+        worktree_override,
+    )?;
     eprintln!(
         "[finish] task-owned {:?}: candidate={} durable={} cleanup will run from wrapper after cwd exit",
         tx.phase,
