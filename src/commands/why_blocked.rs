@@ -29,6 +29,13 @@ struct RootBlocker<'a> {
     is_ready: bool,
 }
 
+#[derive(Debug, Clone)]
+struct PendingConvergence {
+    action: String,
+    deadline: String,
+    rank: Option<String>,
+}
+
 pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
     let (graph, _path) = super::load_workgraph(dir)?;
 
@@ -68,6 +75,7 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
 
     // Count total blocking tasks
     let total_blockers = count_blockers(&blocking_tree);
+    let pending_convergence = pending_convergence(dir, task);
 
     if json {
         print_json(
@@ -77,6 +85,7 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
             &root_blockers,
             &phantom_root_ids,
             total_blockers,
+            pending_convergence.as_ref(),
         )?;
     } else {
         print_human(
@@ -86,6 +95,7 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
             &root_blockers,
             &phantom_root_ids,
             total_blockers,
+            pending_convergence.as_ref(),
         );
     }
 
@@ -223,6 +233,68 @@ fn count_blockers(tree: &BlockingTree) -> usize {
     tree.nodes.len().saturating_sub(1)
 }
 
+fn pending_convergence(dir: &Path, task: &Task) -> Option<PendingConvergence> {
+    let tx = worksgood::finalization::FinalizationStore::open(dir)
+        .ok()
+        .and_then(|store| store.load_task(&task.id).ok().flatten());
+    let record = worksgood::service::ConvergenceState::load(dir)
+        .ok()
+        .and_then(|state| {
+            state
+                .goals
+                .get(&format!("{}#{}", task.id, task.lifecycle.generation))
+                .cloned()
+        });
+    let deadline = record
+        .as_ref()
+        .map(|record| record.next_wake_at.clone())
+        .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+    let projected_action = record
+        .as_ref()
+        .and_then(|record| record.pending_convergence_action)
+        .map(|action| action.description().to_string());
+    let projected_rank = record
+        .as_ref()
+        .and_then(|record| record.finish_convergence_rank)
+        .and_then(|rank| serde_json::to_value(rank).ok())
+        .and_then(|value| value.as_str().map(str::to_owned));
+    if let Some(intent) = task.lifecycle.reopen_intent.as_ref() {
+        return Some(PendingConvergence {
+            action: projected_action.unwrap_or_else(|| {
+                format!(
+                    "release exact dead owner once, then resume session/worktree ({})",
+                    intent.operation
+                )
+            }),
+            deadline,
+            rank: projected_rank,
+        });
+    }
+    if let Some(tx) = tx
+        && tx.cleanup_receipt.is_none()
+    {
+        return Some(PendingConvergence {
+            action: projected_action.unwrap_or(tx.safe_next_command),
+            deadline,
+            rank: projected_rank,
+        });
+    }
+    let pi_exit_pending = task.status == Status::InProgress
+        && (task.lifecycle.pi_terminal_reservation.is_some()
+            || task.lifecycle.audit.iter().any(|event| {
+                event.generation == task.lifecycle.generation
+                    && event.event_kind == "pi-process-epoch-exited"
+            }));
+    pi_exit_pending.then(|| PendingConvergence {
+        action: projected_action.unwrap_or_else(|| {
+            "finish exact durable receipt, or fence dead owner and resume the same session/worktree"
+                .into()
+        }),
+        deadline,
+        rank: projected_rank,
+    })
+}
+
 fn print_human(
     graph: &WorkGraph,
     task: &Task,
@@ -230,6 +302,7 @@ fn print_human(
     root_blockers: &[RootBlocker],
     phantom_roots: &[String],
     total: usize,
+    pending_convergence: Option<&PendingConvergence>,
 ) {
     println!("Task: {}", task.id);
     let root = &tree.nodes[tree.root];
@@ -237,7 +310,14 @@ fn print_human(
     if root.children.is_empty() {
         println!("Status: {:?}", task.status);
         println!();
-        if root.eval_bypasses.is_empty() {
+        if let Some(pending) = pending_convergence {
+            println!("{} is waiting on lifecycle convergence.", task.id);
+            println!("Pending action: {}", pending.action);
+            if let Some(rank) = pending.rank.as_deref() {
+                println!("Convergence rank: {rank}");
+            }
+            println!("Deadline: {}", pending.deadline);
+        } else if root.eval_bypasses.is_empty() {
             println!("{} has no blockers.", task.id);
         } else {
             println!(
@@ -389,6 +469,7 @@ fn print_json(
     root_blockers: &[RootBlocker],
     phantom_roots: &[String],
     total: usize,
+    pending_convergence: Option<&PendingConvergence>,
 ) -> Result<()> {
     let mut all_root_blockers: Vec<serde_json::Value> = root_blockers
         .iter()
@@ -472,7 +553,12 @@ fn print_json(
             "status": task.status,
         },
         "dispatcher_ready_via_evaluation_system_bypass": root.children.is_empty() && !root.eval_bypasses.is_empty(),
-        "is_blocked": !root.children.is_empty(),
+        "is_blocked": !root.children.is_empty() || pending_convergence.is_some(),
+        "pending_convergence": pending_convergence.map(|pending| serde_json::json!({
+            "action": pending.action,
+            "deadline": pending.deadline,
+            "rank": pending.rank,
+        })),
         "blocking_chain": blocking_chain,
         "root_blockers": all_root_blockers,
         "total_blockers": total,
