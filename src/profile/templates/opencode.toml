@@ -17,6 +17,8 @@ model = "opencode:openrouter/stepfun/step-3.7-flash"
 [dispatcher]
 model = "opencode:openrouter/stepfun/step-3.7-flash"
 max_agents = 8
+# Automatic task archival is disabled by default (retention 0). Deliberately
+# opt in per project after reviewing the exact evidence-bearing batch.
 
 [tiers]
 fast = "opencode:openrouter/stepfun/step-3.7-flash"

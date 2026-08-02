@@ -3718,6 +3718,12 @@ marker at each cut, while `archive.jsonl` preserves the full task and exact
 predecessor/successor history. Active successors remain ready when their
 archived predecessor was complete; restore/undo reinstates the original edges.
 
+Automatic task archival is **disabled by default**
+(`dispatcher.archive_retention_days = 0`) so restarts and upgrades preserve
+visible history. Archive is organization, not backup or stream/cache cleanup.
+For evidence-bearing graphs, prefer manual dry-run/review. See
+[`automatic-task-archival.md`](automatic-task-archival.md).
+
 ```bash
 wg archive [OPTIONS] [IDS]...
 ```
@@ -3728,6 +3734,8 @@ wg archive [OPTIONS] [IDS]...
 **Subcommands:**
 | Subcommand | Description |
 |------------|-------------|
+| `auto --dry-run` | Report disabled state or inspect/persist the exact held automatic batch without mutation |
+| `auto --confirm` | Archive the exact held, digest-matching batch once (refuses at retention 0) |
 | `search` | Search archived tasks by title, description, and tags |
 | `restore` | Restore an archived task back into the active graph |
 
@@ -3745,8 +3753,11 @@ wg archive [OPTIONS] [IDS]...
 wg archive --dry-run
 # Preview which tasks would be archived
 
-wg archive --older 30d
-# Archive tasks completed more than 30 days ago
+wg archive --older 30d --dry-run
+# Review tasks completed more than 30 days ago without mutation
+
+wg archive --older 30d --yes
+# Explicitly confirm the reviewed bulk operation
 
 wg archive --list
 # Show previously archived tasks
@@ -3762,6 +3773,12 @@ wg archive search "auth"
 
 wg archive restore my-old-task
 # Restore an archived task back into the active graph
+
+wg archive auto --dry-run
+# Report disabled behavior, or inspect the exact held opt-in batch
+
+wg archive auto --confirm
+# Confirm that exact held batch once; refuses when automatic retention is 0
 ```
 
 ---

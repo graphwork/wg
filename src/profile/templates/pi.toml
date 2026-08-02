@@ -11,6 +11,8 @@ model = "pi:openrouter:z-ai/glm-5.2"
 [dispatcher]
 model = "pi:openrouter:z-ai/glm-5.2"
 max_agents = 8
+# Automatic task archival is disabled by default (retention 0). Deliberately
+# opt in per project after reviewing the exact evidence-bearing batch.
 
 # Predictive build admission is an advanced opt-in. Recovery must not be
 # blocked by a historical cold-build projection for an already-warm target.
