@@ -375,6 +375,7 @@ impl FinalizationStore {
         Ok(value)
     }
     pub fn materialize_commit(&self, project_root: &Path, commit: &str, to: &Path) -> Result<()> {
+        crate::control_plane::assert_tree_has_no_control_plane(project_root, commit)?;
         if to.exists() && fs::read_dir(to)?.next().is_some() {
             bail!("materialize target is not empty");
         }
@@ -480,6 +481,8 @@ pub fn acquire_finish_lease(
     ttl_seconds: i64,
 ) -> Result<FinishLease> {
     validate_context(ctx)?;
+    crate::control_plane::assert_live_identity(&ctx.project_root)?;
+    crate::control_plane::assert_repository_has_no_tracked_control(&ctx.project_root)?;
     let _guard = FileLock::acquire(&store.root.join("leases").join("repository-finish.lock"))?;
     let now = Utc::now();
     if let Some(existing) = store.load_finish_lease()? {
@@ -676,6 +679,7 @@ pub fn promote_task_owned_candidate(
         bail!("finish.evaluation_not_accepted: exact candidate lacks accepted required evidence");
     }
     verify_candidate_at(store, &ctx.project_root, &candidate)?;
+    crate::control_plane::assert_repository_has_no_tracked_control(&ctx.project_root)?;
     let ancestor = git_output(
         &ctx.project_root,
         &[
@@ -708,12 +712,16 @@ pub fn promote_task_owned_candidate(
         &candidate.candidate_commit_oid,
     )?;
     let _authority = FileLock::acquire(&ctx.project_root.join(".wg/merge-authority.lock"))?;
+    let _control_snapshot = crate::control_plane::snapshot_live_control(
+        &ctx.project_root,
+        &format!("promote-task-owned:{}", candidate.candidate_id),
+    )?;
     let current_lease = require_finish_lease(store, ctx, lease_id)?;
     if current_lease.base_commit_oid != lease.base_commit_oid {
         bail!("finish.lease_fenced: base changed");
     }
     let observed = git_text(&ctx.project_root, &["rev-parse", target_ref])?;
-    if observed != lease.base_commit_oid {
+    if observed != lease.base_commit_oid && observed != candidate.candidate_commit_oid {
         tx.phase = FinalizationPhase::Integrating;
         tx.retained_reason = Some("finish.external_target_moved".into());
         tx.replay_action = None;
@@ -726,30 +734,28 @@ pub fn promote_task_owned_candidate(
             observed
         );
     }
-    let update = git_output(
-        &ctx.project_root,
-        &[
-            "update-ref",
-            target_ref,
-            &candidate.candidate_commit_oid,
-            &lease.base_commit_oid,
-        ],
-    )?;
-    if !update.status.success() {
-        bail!("finish.external_target_moved: {}", stderr(&update));
-    }
-    if ctx.project_root.join(".git").exists() {
-        let reset = git_output(
+    if observed == lease.base_commit_oid {
+        let update = git_output(
             &ctx.project_root,
-            &["reset", "--hard", &candidate.candidate_commit_oid],
+            &[
+                "update-ref",
+                target_ref,
+                &candidate.candidate_commit_oid,
+                &lease.base_commit_oid,
+            ],
         )?;
-        if !reset.status.success() {
-            bail!(
-                "cleanup.failed_preserved: promotion succeeded: {}",
-                stderr(&reset)
-            );
+        if !update.status.success() {
+            bail!("finish.external_target_moved: {}", stderr(&update));
         }
     }
+    crate::control_plane::project_exact_paths(
+        &ctx.project_root,
+        &lease.base_commit_oid,
+        &candidate.candidate_commit_oid,
+    )
+    .context(
+        "cleanup.failed_preserved: protected ref advanced; exact-path projection is replayable",
+    )?;
     let action_id = format!("finish:{}:{}", lease.lease_id, candidate.candidate_id);
     let body = serde_json::json!({
         "action": action_id,
@@ -893,6 +899,8 @@ pub fn checkpoint_rescue(
     promote: bool,
 ) -> Result<FinalizationTransaction> {
     validate_context(ctx)?;
+    crate::control_plane::assert_live_identity(&ctx.project_root)?;
+    crate::control_plane::assert_repository_has_no_tracked_control(&ctx.project_root)?;
     let mut next_candidate_version = 1u64;
     if let Some(existing) = store.load_task(&ctx.task_id)? {
         if existing.generation == ctx.generation
@@ -924,7 +932,18 @@ pub fn checkpoint_rescue(
     }
     let head = git_text(&ctx.worktree_path, &["rev-parse", "HEAD"])?;
     let base = canonical_main_base(&ctx.project_root, &head)?;
+    crate::control_plane::assert_worker_boundary(
+        &ctx.project_root,
+        &ctx.worktree_path,
+        &base,
+        &head,
+    )?;
+    let _control_snapshot = crate::control_plane::snapshot_live_control(
+        &ctx.project_root,
+        &format!("candidate-checkpoint:{}:{}", ctx.task_id, ctx.attempt_id),
+    )?;
     let (tree, commit) = snapshot_tree(store, ctx, &head)?;
+    crate::control_plane::assert_tree_has_no_control_plane(&ctx.project_root, &tree)?;
     if let Some(lease) = store.load_finish_lease()?
         && lease_matches_context(&lease, ctx)
         && !lease_is_expired(&lease, Utc::now())
@@ -1264,6 +1283,7 @@ pub fn merge_candidate(
         }
     }
     verify_candidate_at(store, &project, candidate)?;
+    crate::control_plane::assert_repository_has_no_tracked_control(&project)?;
     let target_ref = "refs/heads/main";
     let action_id = format!(
         "merge:{}:{}:{}:{}",
@@ -1281,6 +1301,15 @@ pub fn merge_candidate(
         if let Ok(prepared) = git_text(&project, &["rev-parse", "--verify", &result_ref])
             && prepared == observed
         {
+            crate::control_plane::snapshot_live_control(
+                &project,
+                &format!("merge-replay:{}", candidate.candidate_id),
+            )?;
+            crate::control_plane::project_exact_paths(
+                &project,
+                &candidate.base_commit_oid,
+                &prepared,
+            )?;
             let result_tree =
                 git_text(&project, &["rev-parse", &format!("{}^{{tree}}", prepared)])?;
             let expected_tree = git_text(
@@ -1401,6 +1430,10 @@ pub fn merge_candidate(
     publish_ref(&project, &result_ref, &integration)?;
     let lock = project.join(".wg").join("merge-authority.lock");
     let _guard = FileLock::acquire(&lock)?;
+    let _control_snapshot = crate::control_plane::snapshot_live_control(
+        &project,
+        &format!("merge-candidate:{}", candidate.candidate_id),
+    )?;
     let again = git_text(&project, &["rev-parse", target_ref])?;
     if again != observed {
         bail!("merge.target_moved: target changed before CAS");
@@ -1412,15 +1445,9 @@ pub fn merge_candidate(
     if !update.status.success() {
         bail!("merge.target_moved: {}", stderr(&update));
     }
-    if project.join(".git").exists() {
-        let reset = git_output(&project, &["reset", "--hard", &integration])?;
-        if !reset.status.success() {
-            bail!(
-                "cleanup.failed_preserved: target advanced but checkout sync failed: {}",
-                stderr(&reset)
-            );
-        }
-    }
+    crate::control_plane::project_exact_paths(&project, &observed, &integration).context(
+        "cleanup.failed_preserved: target advanced; exact-path projection is replayable",
+    )?;
     let result_manifest = manifest_for_tree(&project, &result_tree)?;
     let result_manifest_cid = store.put_object(&result_manifest)?;
     let projection = candidate_projection_digest(
@@ -1482,6 +1509,9 @@ pub fn accept_resolution_tree(
     manifest_cid: &str,
 ) -> Result<ResolutionAuthorityReceipt> {
     let target_ref = "refs/heads/main";
+    crate::control_plane::assert_live_identity(project)?;
+    crate::control_plane::assert_tree_has_no_control_plane(project, accepted_tree)?;
+    crate::control_plane::assert_repository_has_no_tracked_control(project)?;
     let finish_store = FinalizationStore::open(&project.join(".wg"))?;
     if let Some(lease) = finish_store.load_finish_lease()?
         && !lease_is_expired(&lease, Utc::now())
@@ -1505,6 +1535,11 @@ pub fn accept_resolution_tree(
         if let Ok(prepared) = git_text(project, &["rev-parse", "--verify", &result_ref])
             && prepared == observed
         {
+            crate::control_plane::snapshot_live_control(
+                project,
+                &format!("resolution-replay:{descriptor_id}"),
+            )?;
+            crate::control_plane::project_exact_paths(project, expected_target_commit, &prepared)?;
             let tree = git_text(project, &["rev-parse", &format!("{prepared}^{{tree}}")])?;
             if tree != accepted_tree || manifest_cid_for_tree(project, &tree)? != manifest_cid {
                 bail!("MR_OUTPUT_BINDING_MISMATCH: replay tree/manifest differs");
@@ -1522,6 +1557,10 @@ pub fn accept_resolution_tree(
     if observed_tree != expected_target_tree {
         bail!("MR_TARGET_MOVED: canonical target tree differs from snapshot");
     }
+    let _import_snapshot = crate::control_plane::snapshot_live_control(
+        project,
+        &format!("import-resolution:{descriptor_id}"),
+    )?;
     let fetch = Command::new("git")
         .args(["-C"])
         .arg(project)
@@ -1551,6 +1590,10 @@ pub fn accept_resolution_tree(
     publish_ref(project, &result_ref, &integration)?;
     let lock = project.join(".wg").join("merge-authority.lock");
     let _guard = FileLock::acquire(&lock)?;
+    let _control_snapshot = crate::control_plane::snapshot_live_control(
+        project,
+        &format!("accept-resolution:{descriptor_id}"),
+    )?;
     if git_text(project, &["rev-parse", target_ref])? != expected_target_commit {
         bail!("MR_TARGET_MOVED: target changed before resolution CAS");
     }
@@ -1566,15 +1609,8 @@ pub fn accept_resolution_tree(
     if !update.status.success() {
         bail!("MR_TARGET_MOVED: {}", stderr(&update));
     }
-    if project.join(".git").exists() {
-        let reset = git_output(project, &["reset", "--hard", &integration])?;
-        if !reset.status.success() {
-            bail!(
-                "cleanup.failed_preserved: resolution CAS succeeded: {}",
-                stderr(&reset)
-            );
-        }
-    }
+    crate::control_plane::project_exact_paths(project, expected_target_commit, &integration)
+        .context("cleanup.failed_preserved: resolution CAS succeeded; exact-path projection is replayable")?;
     let final_tree = git_text(project, &["rev-parse", &format!("{integration}^{{tree}}")])?;
     if final_tree != accepted_tree {
         bail!("MR_OUTPUT_BINDING_MISMATCH: accepted result tree changed");
@@ -1696,6 +1732,10 @@ fn verify_candidate_at(
     project: &Path,
     c: &CandidateDescriptor,
 ) -> Result<()> {
+    crate::control_plane::assert_live_identity(project)?;
+    crate::control_plane::assert_tree_has_no_control_plane(project, &c.base_commit_oid)?;
+    crate::control_plane::assert_tree_has_no_control_plane(project, &c.candidate_commit_oid)?;
+    crate::control_plane::assert_tree_has_no_control_plane(project, &c.candidate_tree_oid)?;
     let tree = git_text(
         project,
         &["rev-parse", &format!("{}^{{tree}}", c.candidate_commit_oid)],
@@ -1724,24 +1764,17 @@ fn snapshot_tree(
     let mut add = git_command(&ctx.worktree_path, &["add", "-A", "--", "."]);
     add.env("GIT_INDEX_FILE", &index);
     run_ok(add, "snapshot source")?;
-    // Exact root lifecycle controls are never candidate source. Managed
-    // worktrees contain a `.wg` symlink back to the live graph; capturing it
-    // would let a later target checkout replace/delete its own graph. A path
-    // tracked by the repository at HEAD remains source and is not excluded.
+    // Exact root lifecycle controls are never candidate source. The protected
+    // tree/index/status checks above reject every tracked or variant spelling;
+    // force-removal here is defense in depth for a verified legacy ignored
+    // helper and the runtime cleanup marker.
     for control in [".wg", ".wg-cleanup-pending"] {
-        let tracked_in_head = git_output(
+        let mut rm = git_command(
             &ctx.worktree_path,
-            &["ls-tree", "--name-only", "HEAD", "--", control],
-        )
-        .is_ok_and(|o| o.status.success() && !o.stdout.is_empty());
-        if !tracked_in_head {
-            let mut rm = git_command(
-                &ctx.worktree_path,
-                &["update-index", "--force-remove", "--", control],
-            );
-            rm.env("GIT_INDEX_FILE", &index);
-            let _ = rm.output();
-        }
+            &["update-index", "--force-remove", "--", control],
+        );
+        rm.env("GIT_INDEX_FILE", &index);
+        let _ = rm.output();
     }
     let mut write = git_command(&ctx.worktree_path, &["write-tree"]);
     write.env("GIT_INDEX_FILE", &index);
@@ -1901,6 +1934,9 @@ fn commit_tree(root: &Path, tree: &str, parents: &[&str], message: &str) -> Resu
     Ok(String::from_utf8(out.stdout)?.trim().into())
 }
 fn publish_ref(root: &Path, name: &str, oid: &str) -> Result<()> {
+    crate::control_plane::assert_tree_has_no_control_plane(root, oid)?;
+    let _control_snapshot =
+        crate::control_plane::snapshot_live_control(root, &format!("publish-ref:{name}"))?;
     if let Ok(existing) = git_text(root, &["rev-parse", "--verify", name]) {
         if existing == oid {
             return Ok(());

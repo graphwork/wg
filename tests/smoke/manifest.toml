@@ -2929,6 +2929,13 @@ description = "Candidate-binary credential-free real terminal/daemon Fake-Pi reg
 timeout_seconds = 240
 
 [[scenario]]
+name = "control_plane_candidate_boundary"
+script = "scenarios/control_plane_candidate_boundary.sh"
+owners = ["fix-candidate-wg-control-plane-destruction"]
+description = "Candidate-binary, credential-free two-graph regression for the critical .wg destruction incident: a worker force-commits its runtime .wg symlink and candidate sealing refuses before any immutable candidate/protected ref/root projection while exact graph/config/chat digests and root identity stay unchanged; a second isolated graph lands ordinary source through exact-path projection with worker graph access exclusively through absolute WG_DIR, emits a durable external snapshot receipt, and a vanished control path reports full ENOENT + path without recreating a hollow .wg."
+timeout_seconds = 240
+
+[[scenario]]
 name = "automatic_archival_restart_hold"
 script = "scenarios/automatic_archival_restart_hold.sh"
 owners = ["fix-surprise-startup-archival"]

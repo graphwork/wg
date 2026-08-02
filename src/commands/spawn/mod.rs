@@ -461,6 +461,7 @@ mod tests {
 
         // Now create the graph file in the copied .wg directory
         let wg_dir = dir.join(".wg");
+        fs::create_dir_all(&wg_dir).unwrap();
         let graph_path = wg_dir.join("graph.jsonl");
         let mut graph = WorkGraph::new();
         for task in &tasks {

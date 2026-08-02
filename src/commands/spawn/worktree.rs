@@ -1,8 +1,9 @@
 //! Git worktree isolation for spawned agents.
 //!
 //! When worktree isolation is enabled, each agent gets its own git worktree
-//! at `.wg-worktrees/<agent-id>/`, branched from HEAD. The `.wg/`
-//! directory is symlinked into the worktree so the `wg` CLI works normally.
+//! at `.wg-worktrees/<agent-id>/`, branched from HEAD. Graph access is
+//! out-of-band through the absolute `WG_DIR` inherited by the worker; `.wg`
+//! is never materialized inside candidate source.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -104,7 +105,7 @@ fn collision(message: impl Into<String>) -> anyhow::Error {
 /// 1. Error out if a worktree/branch with the same name already exists — worktrees
 ///    are sacred and must only be removed by explicit user action (`wg worktree archive`)
 /// 2. `git worktree add .wg-worktrees/<agent-id> -b wg/<agent-id>/<task-id> HEAD`
-/// 3. Symlink `.wg` into the worktree
+/// 3. Keep graph access out-of-band through the launch environment
 /// 4. Run `worktree-setup.sh` if it exists (best-effort)
 pub fn create_worktree(
     project_root: &Path,
@@ -112,6 +113,12 @@ pub fn create_worktree(
     agent_id: &str,
     task_id: &str,
 ) -> Result<WorktreeInfo> {
+    worksgood::control_plane::assert_live_identity(project_root)?;
+    worksgood::control_plane::assert_repository_has_no_tracked_control(project_root)?;
+    let _control_snapshot = worksgood::control_plane::snapshot_live_control(
+        project_root,
+        &format!("create-worktree:{agent_id}:{task_id}"),
+    )?;
     let branch = format!("wg/{}/{}", agent_id, task_id);
     let worktrees_dir = project_root.join(".wg-worktrees");
     let worktree_dir = worktrees_dir.join(agent_id);
@@ -311,25 +318,16 @@ pub fn create_worktree(
         )));
     }
 
-    let symlink_target = match workgraph_dir.canonicalize() {
-        Ok(path) => path,
-        Err(error) => {
-            let cleanup = rollback_created_worktree(&info);
-            return Err(error).with_context(|| {
-                format!(
-                    "failed to canonicalize WG graph for {}; rollback={:?}",
-                    info.path.display(),
-                    cleanup
-                )
-            });
-        }
-    };
-    let symlink_path = info.path.join(".wg");
-    if let Err(error) = create_workgraph_link(&symlink_target, &symlink_path) {
+    // The worker launcher passes the canonical graph as absolute `WG_DIR`.
+    // Do not create a helper in the checked-out namespace: even an ignored
+    // symlink can be force-added and later promoted by a careless Git tree
+    // operation. Administrative ownership already lives out-of-band under
+    // `.git/worktrees/<id>/`.
+    if let Err(error) = workgraph_dir.canonicalize() {
         let cleanup = rollback_created_worktree(&info);
         return Err(error).with_context(|| {
             format!(
-                "failed to link WG graph into {}; rollback={:?}",
+                "failed to canonicalize out-of-band WG graph for {}; rollback={:?}",
                 info.path.display(),
                 cleanup
             )
@@ -338,7 +336,7 @@ pub fn create_worktree(
     if let Err(error) = creation_fault("graph-linked") {
         let cleanup = rollback_created_worktree(&info);
         return Err(error.context(format!(
-            "worktree graph-link boundary failed; cleanup={cleanup:?}"
+            "worktree out-of-band graph boundary failed; cleanup={cleanup:?}"
         )));
     }
 
@@ -564,7 +562,7 @@ fn same_canonical_path(left: &Path, right: &Path) -> bool {
 }
 
 /// Verify filesystem identity, Git's administrative indirection and porcelain
-/// registration, branch ownership, and the shared `.wg` link. A caller must run
+/// registration, branch ownership, and out-of-band graph identity. A caller must run
 /// this immediately before process launch; mere directory existence is never
 /// sufficient evidence of isolation.
 pub fn verify_worktree_info(info: &WorktreeInfo) -> Result<WorktreeInfo> {
@@ -649,20 +647,35 @@ pub fn verify_worktree_info(info: &WorktreeInfo) -> Result<WorktreeInfo> {
     }
 
     let graph_link = info.path.join(".wg");
-    let graph_target = graph_link
-        .canonicalize()
-        .with_context(|| format!("missing/corrupt WG graph link at {}", graph_link.display()))?;
     let expected_graph = info
         .workgraph_dir
         .canonicalize()
-        .context("failed to canonicalize expected WG graph")?;
-    if graph_target != expected_graph {
-        anyhow::bail!(
-            "WG graph link mismatch at {}: expected {}, found {}",
-            graph_link.display(),
-            expected_graph.display(),
-            graph_target.display()
-        );
+        .context("failed to canonicalize expected out-of-band WG graph")?;
+    match fs::symlink_metadata(&graph_link) {
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            // Retry compatibility for worktrees minted before graph plumbing
+            // moved out-of-band. It must remain untracked and point exactly at
+            // this project's canonical graph; candidate sealing independently
+            // refuses it if it ever enters HEAD or the index.
+            let graph_target = graph_link.canonicalize().with_context(|| {
+                format!("corrupt legacy WG graph link at {}", graph_link.display())
+            })?;
+            if graph_target != expected_graph {
+                anyhow::bail!(
+                    "legacy WG graph link mismatch at {}: expected {}, found {}",
+                    graph_link.display(),
+                    expected_graph.display(),
+                    graph_target.display()
+                );
+            }
+            worksgood::control_plane::assert_index_has_no_control_plane(&info.path)?;
+        }
+        Ok(_) => anyhow::bail!(
+            "protected source path {} must be absent (or a verified legacy runtime symlink)",
+            graph_link.display()
+        ),
+        Err(error) => return Err(error.into()),
     }
 
     let ownership_path = gitdir.join(OWNER_FILE);
@@ -720,6 +733,10 @@ fn status_has_unknown_changes(info: &WorktreeInfo) -> Result<bool> {
 /// Roll back only a worktree carrying the exact private ownership token minted
 /// by this process. Dirty source is preserved untouched and reported loudly.
 pub fn rollback_created_worktree(info: &WorktreeInfo) -> Result<()> {
+    let _control_snapshot = worksgood::control_plane::snapshot_live_control(
+        &info.project_root,
+        &format!("rollback-worktree:{}:{}", info.agent_id, info.task_id),
+    )?;
     if info.owner_token.is_none() {
         anyhow::bail!(
             "refusing rollback of legacy/unowned worktree {}",
@@ -776,6 +793,13 @@ pub fn rollback_created_worktree(info: &WorktreeInfo) -> Result<()> {
 }
 
 fn cleanup_unlaunched_worktree(info: &WorktreeInfo) -> Result<()> {
+    let _control_snapshot = worksgood::control_plane::snapshot_live_control(
+        &info.project_root,
+        &format!(
+            "cleanup-unlaunched-worktree:{}:{}",
+            info.agent_id, info.task_id
+        ),
+    )?;
     // Used only between successful `git worktree add` and owner-record write.
     // The target path was atomically reserved by this call and no hook or child
     // has run, so exact Git path+branch registration is sufficient ownership.
@@ -831,30 +855,6 @@ fn cleanup_unlaunched_worktree(info: &WorktreeInfo) -> Result<()> {
         );
     }
     Ok(())
-}
-
-#[cfg(unix)]
-fn create_workgraph_link(target: &Path, link: &Path) -> Result<()> {
-    std::os::unix::fs::symlink(target, link).context("Failed to symlink .wg into worktree")
-}
-
-#[cfg(windows)]
-fn create_workgraph_link(target: &Path, link: &Path) -> Result<()> {
-    // Prefer a directory junction over a symlink so the link works without
-    // Developer Mode or admin privileges (see `create_windows_link`).
-    create_windows_link(target, link).with_context(|| {
-        format!(
-            "Failed to link .wg into worktree from {} to {}",
-            link.display(),
-            target.display()
-        )
-    })
-}
-
-#[cfg(not(any(unix, windows)))]
-fn create_workgraph_link(target: &Path, link: &Path) -> Result<()> {
-    let _ = (target, link);
-    anyhow::bail!("worktree .wg linking is not supported on this platform")
 }
 
 /// Find an existing worktree for a given task by scanning `.wg-worktrees/`
@@ -945,7 +945,11 @@ pub fn find_worktree_for_task(project_root: &Path, task_id: &str) -> Option<(Pat
 
 /// Remove a worktree and its branch. Force-removes to discard uncommitted changes.
 pub fn remove_worktree(project_root: &Path, worktree_path: &Path, branch: &str) -> Result<()> {
-    // Remove the symlink first (git worktree remove won't remove it)
+    let _control_snapshot = worksgood::control_plane::snapshot_live_control(
+        project_root,
+        &format!("remove-worktree:{branch}"),
+    )?;
+    // Remove the legacy symlink first (new worktrees never contain one).
     let symlink_path = worktree_path.join(".wg");
     if symlink_path.exists() {
         let _ = std::fs::remove_file(&symlink_path);
@@ -976,40 +980,6 @@ pub fn remove_worktree(project_root: &Path, worktree_path: &Path, branch: &str) 
     // temporarily missing during concurrent cleanup, causing data loss.
 
     Ok(())
-}
-
-/// Create a directory-link at `link_path` pointing to `target` on Windows.
-///
-/// Prefers a junction (`mklink /J`) over a symlink because junctions work for
-/// every user without Developer Mode or admin privileges. A junction only
-/// supports absolute local paths and only links directories, both of which
-/// are true for `.workgraph`. If `mklink` isn't available we fall back to
-/// `symlink_dir`, which will fail helpfully if the user doesn't have the
-/// required privileges.
-#[cfg(windows)]
-fn create_windows_link(target: &Path, link_path: &Path) -> Result<()> {
-    use std::os::windows::process::CommandExt;
-    // `mklink` is a cmd.exe builtin, not an .exe; must invoke through cmd.
-    // `/J` = directory junction. CREATE_NO_WINDOW = 0x08000000 suppresses the
-    // flashing console window when running from a GUI context.
-    let status = Command::new("cmd")
-        .args([
-            "/C",
-            "mklink",
-            "/J",
-            &link_path.to_string_lossy(),
-            &target.to_string_lossy(),
-        ])
-        .creation_flags(0x0800_0000)
-        .status();
-
-    match status {
-        Ok(s) if s.success() => Ok(()),
-        _ => std::os::windows::fs::symlink_dir(target, link_path).context(
-            "mklink /J failed and symlink_dir fallback also failed; \
-             junctions normally work without admin — is cmd.exe on PATH?",
-        ),
-    }
 }
 
 #[cfg(test)]
@@ -1063,7 +1033,10 @@ mod tests {
         let info = create_worktree(&project, &wg_dir, "agent-1", "task-foo").unwrap();
         assert!(info.path.exists());
         assert_eq!(info.branch, "wg/agent-1/task-foo");
-        assert!(info.path.join(".wg").exists()); // symlink
+        assert!(
+            !info.path.join(".wg").exists(),
+            "control plane must stay outside candidate source"
+        );
         assert!(info.path.join("file.txt").exists()); // source checked out
 
         // Cleanup
@@ -1180,7 +1153,7 @@ mod tests {
     }
 
     #[test]
-    fn test_worktree_symlink_points_to_workgraph() {
+    fn test_worktree_graph_access_is_out_of_band() {
         let temp = TempDir::new().unwrap();
         let project = temp.path().join("project");
         std::fs::create_dir_all(&project).unwrap();
@@ -1192,18 +1165,14 @@ mod tests {
         std::fs::write(wg_dir.join("marker"), "test").unwrap();
 
         let info = create_worktree(&project, &wg_dir, "agent-2", "task-bar").unwrap();
-        let symlink = info.path.join(".wg");
-        // On Unix this is a symlink; on Windows it's a directory junction
-        // (a reparse point that isn't classified as a symlink by the stdlib
-        // but resolves identically for I/O).
-        #[cfg(unix)]
-        assert!(symlink.is_symlink());
-        #[cfg(windows)]
-        assert!(symlink.exists(), "link should be readable");
-        // The marker file should be readable through the link
+        assert!(
+            !info.path.join(".wg").exists(),
+            "no trackable helper may exist in the worker source tree"
+        );
         assert_eq!(
-            std::fs::read_to_string(symlink.join("marker")).unwrap(),
-            "test"
+            std::fs::read_to_string(info.workgraph_dir.join("marker")).unwrap(),
+            "test",
+            "the launcher-owned absolute graph path remains usable as WG_DIR"
         );
 
         remove_worktree(&project, &info.path, &info.branch).unwrap();

@@ -3097,6 +3097,12 @@ pub enum CandidateCommands {
         #[arg(long)]
         reason: String,
     },
+    /// Remove accidentally tracked `.wg` entries from Git without touching live control data
+    RecoverControlPlane {
+        /// Execute the recovery commit (default is a loud non-mutating report)
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand)]

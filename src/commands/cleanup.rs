@@ -432,6 +432,14 @@ fn attempt_manual_worktree_cleanup(
     worktree_path: &Path,
     branch: &str,
 ) -> Result<()> {
+    // A failure of the standard path may itself be an identity/snapshot
+    // refusal. Never turn that fail-closed result into an unguarded manual
+    // `git worktree remove` or recursive filesystem deletion.
+    worksgood::control_plane::assert_repository_has_no_tracked_control(project_root)?;
+    let _control_snapshot = worksgood::control_plane::snapshot_live_control(
+        project_root,
+        &format!("manual-worktree-cleanup:{branch}"),
+    )?;
     let mut cleanup_errors = Vec::new();
 
     // Step 1: Clean up .wg symlink with permission handling
@@ -484,6 +492,7 @@ fn attempt_manual_worktree_cleanup(
     }
 
     // Step 3: Try git worktree remove
+    worksgood::control_plane::assert_live_identity(project_root)?;
     let output = Command::new("git")
         .args(["worktree", "remove", "--force"])
         .arg(worktree_path)
@@ -497,6 +506,7 @@ fn attempt_manual_worktree_cleanup(
     }
 
     // Step 4: Try to remove the branch
+    worksgood::control_plane::assert_live_identity(project_root)?;
     let output = Command::new("git")
         .args(["branch", "-D", branch])
         .current_dir(project_root)

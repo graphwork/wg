@@ -76,8 +76,22 @@ pub fn archive(workgraph_dir: &Path, agent_id: &str, remove: bool) -> Result<()>
         );
     }
 
+    worksgood::control_plane::assert_live_identity(project_root)?;
+    worksgood::control_plane::assert_repository_has_no_tracked_control(project_root)?;
+    let head = git_text(&wt_path, &["rev-parse", "HEAD"])?;
+    let base = git_text(project_root, &["merge-base", &head, "refs/heads/main"])?;
+    worksgood::control_plane::assert_worker_boundary(project_root, &wt_path, &base, &head)?;
+
+    let dirty = has_uncommitted_changes(&wt_path);
+    if dirty || remove {
+        worksgood::control_plane::snapshot_live_control(
+            project_root,
+            &format!("worktree-archive:{agent_id}:remove={remove}"),
+        )?;
+    }
+
     // Check for uncommitted changes and auto-commit them
-    if has_uncommitted_changes(&wt_path) {
+    if dirty {
         eprintln!(
             "[worktree] Committing uncommitted changes in {} ...",
             agent_id
@@ -93,6 +107,19 @@ pub fn archive(workgraph_dir: &Path, agent_id: &str, remove: bool) -> Result<()>
         if !add.status.success() {
             let stderr = String::from_utf8_lossy(&add.stderr);
             anyhow::bail!("git add failed: {}", stderr.trim());
+        }
+        if let Err(error) = worksgood::control_plane::assert_index_has_no_control_plane(&wt_path) {
+            // Defense in depth for an exact legacy helper that an unusual Git
+            // exclude configuration allowed `git add -A` to stage. Remove only
+            // protected index entries; never touch their live working bytes.
+            for protected in worksgood::control_plane::protected_index_paths(&wt_path)? {
+                let _ = Command::new("git")
+                    .args(["update-index", "--force-remove", "--"])
+                    .arg(protected)
+                    .current_dir(&wt_path)
+                    .output();
+            }
+            return Err(error);
         }
 
         // Commit with archive message
@@ -117,6 +144,8 @@ pub fn archive(workgraph_dir: &Path, agent_id: &str, remove: bool) -> Result<()>
                 "[worktree] Committed: {}",
                 String::from_utf8_lossy(&commit.stdout).trim()
             );
+            let committed = git_text(&wt_path, &["rev-parse", "HEAD"])?;
+            worksgood::control_plane::assert_tree_has_no_control_plane(project_root, &committed)?;
         }
     } else {
         eprintln!("[worktree] No uncommitted changes in {}", agent_id);
@@ -164,6 +193,22 @@ pub fn archive(workgraph_dir: &Path, agent_id: &str, remove: bool) -> Result<()>
 /// the worktree protected.
 pub(crate) fn has_uncommitted_changes(wt_path: &Path) -> bool {
     worksgood::disk_sentinel::worktree_has_user_source_changes(wt_path)
+}
+
+fn git_text(root: &Path, args: &[&str]) -> Result<String> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(root)
+        .output()
+        .with_context(|| format!("run git {} in {}", args.join(" "), root.display()))?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8(output.stdout)?.trim().to_string())
 }
 
 fn dir_size_human(path: &Path) -> String {
