@@ -18,12 +18,15 @@ and unscoped `axiom` declarations in checked-in Lean sources.
 ## Model boundary
 
 `WGLifecycle/Model.lean` defines the version-1 wire state, events, executable
-`reduce`, induced `Step`, and `Reachable`. The matching production-facing pure
-reducer is `src/lifecycle_protocol.rs`. Effectful process observers,
-finalization storage, Git promotion, and cleanup adapters are outside the
-model: they may emit an event only after obtaining the corresponding durable
-fact, then persist the reducer result atomically. They must not independently
-decide a lifecycle edge.
+`reduce`, induced `Step`, and `Reachable`. The matching composite executable
+reference is `src/lifecycle_protocol.rs`. The urgent production incident path
+is additionally centralized in the pure
+`service::convergence::reduce_exited_worker_finish`; service planning calls it
+directly, and the runtime fixture below is replayed through that exact function.
+Effectful process observers, finalization storage, Git promotion, and cleanup
+adapters are outside the model: they may emit an event only after obtaining the
+corresponding durable fact, then persist the reducer result atomically. They
+must not independently decide a lifecycle edge.
 
 The modeled state includes:
 
@@ -89,10 +92,18 @@ wire traces and normalized decisions/states for:
   cleanup;
 - terminal message resurrection and breaker-neutral ownership contention.
 
+`formal/fixtures/runtime/v1/exited_worker_finish.json` separately pins the
+production reducer's byte names:
+`EXITED_WORKER_FINISH_REDUCER_VERSION`, `WrapperChildCapability` with exact
+`task_id/generation/attempt_id/fence/wrapper_epoch/child_epoch/identity digest/owned_child`
+fields, `FinishConvergenceRank`, and `FinishConvergenceAction`.
+
 `tests/lifecycle_protocol_conformance.rs` deserializes every committed fixture
-and replays it through the exact reducer compiled from `src/`, then compares
-normalized state and every decision. This makes the reducer, not a test-only
-mapping, the executable implementation seam.
+and replays it through the reducers compiled from `src/`, then compares
+normalized state and every decision. The runtime vector constructs the real
+`FinishConvergenceSnapshot` and invokes the same
+`reduce_exited_worker_finish` used by service planning. This makes production
+reducers, not test-only mappings, the executable implementation seam.
 
 ## Updating model and implementation together
 
