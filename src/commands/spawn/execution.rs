@@ -1764,15 +1764,19 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
         if !endpoint.exists() {
             anyhow::bail!("worker_control.endpoint_missing: {}", endpoint.display());
         }
-        let (worker_token, worker_binding) = worksgood::worker_control::mint_attempt_capability(
-            dir,
-            task_id,
-            claim_snapshot.generation,
-            &claim_snapshot.attempt_id,
-            claim_snapshot.attempt_fence,
-            claim_snapshot.attempt_fence,
-            &temp_agent_id,
-        )?;
+        let (worker_token, worker_binding) =
+            worksgood::worker_control::mint_attempt_capability_for_worktree(
+                dir,
+                task_id,
+                claim_snapshot.generation,
+                &claim_snapshot.attempt_id,
+                claim_snapshot.attempt_fence,
+                claim_snapshot.attempt_fence,
+                &temp_agent_id,
+                worktree_info
+                    .as_ref()
+                    .map(|worktree| worktree.path.as_path()),
+            )?;
         worker_capability_digest = Some(worker_binding.token_sha256.clone());
         cmd.env("WG_WORKER_IPC", &endpoint);
         cmd.env("WG_WORKER_CAPABILITY", &worker_token);

@@ -438,7 +438,10 @@ pub fn verify_bound_worktree(binding: &AttemptCapabilityBinding) -> Result<PathB
     Ok(PathBuf::from(observed_path))
 }
 
-/// Mint an opaque bearer capability.  Only its digest is made durable.
+/// Mint an opaque bearer capability. Only its digest is made durable. Legacy
+/// callers bind the conventional agent-named path; spawn uses
+/// [`mint_attempt_capability_for_worktree`] so retry-in-place can bind the
+/// retained checkout whose directory name belongs to the prior dead owner.
 pub fn mint_attempt_capability(
     dir: &Path,
     task_id: &str,
@@ -447,6 +450,28 @@ pub fn mint_attempt_capability(
     fence: u64,
     lease_epoch: u64,
     agent_id: &str,
+) -> Result<(String, AttemptCapabilityBinding)> {
+    mint_attempt_capability_for_worktree(
+        dir,
+        task_id,
+        generation,
+        attempt_id,
+        fence,
+        lease_epoch,
+        agent_id,
+        None,
+    )
+}
+
+pub fn mint_attempt_capability_for_worktree(
+    dir: &Path,
+    task_id: &str,
+    generation: u64,
+    attempt_id: &str,
+    fence: u64,
+    lease_epoch: u64,
+    agent_id: &str,
+    explicit_worktree: Option<&Path>,
 ) -> Result<(String, AttemptCapabilityBinding)> {
     let mut random = [0_u8; 32];
     getrandom::getrandom(&mut random).context("generate worker capability")?;
@@ -464,7 +489,15 @@ pub fn mint_attempt_capability(
         .and_then(|task| task.lifecycle.pi_continuation.as_ref())
         .map(|proof| proof.session_proof_digest.clone())
         .unwrap_or_else(|| digest_text(format!("session:{task_id}:{generation}:{attempt_id}")));
-    let (worktree_path, worktree_identity_digest) = bound_worktree(dir, agent_id)?;
+    let (worktree_path, worktree_identity_digest) = match explicit_worktree {
+        Some(path) => worktree_identity(path).with_context(|| {
+            format!(
+                "bind explicit retained worktree {} for {agent_id}",
+                path.display()
+            )
+        })?,
+        None => bound_worktree(dir, agent_id)?,
+    };
     let save_source = AttemptSaveKey {
         graph_id: graph_id.clone(),
         task_id: task_id.to_string(),
@@ -513,10 +546,54 @@ pub fn revoke_capability(dir: &Path, token_sha256: &str) -> Result<()> {
 
 pub fn lookup_capability(dir: &Path, token: &str) -> Result<AttemptCapabilityBinding> {
     let digest = token_digest(token);
-    load_registry(dir)?
+    let mut capabilities = load_registry(dir)?;
+    let mut binding = capabilities
         .capabilities
-        .remove(&digest)
-        .ok_or_else(|| anyhow::anyhow!("worker_control.capability_unknown"))
+        .get(&digest)
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("worker_control.capability_unknown"))?;
+
+    // Compatibility convergence for capabilities minted before retry-in-place
+    // supplied the retained worktree path explicitly. Repair is narrowly
+    // fenced: the originally bound path must never have existed, the current
+    // graph tuple must still name this exact owner, the locked spawn registry
+    // must name one existing alternate path, and no save transaction may have
+    // begun under the old identity. No source/owner/observer bytes are edited.
+    if !Path::new(&binding.worktree_path).exists() {
+        let graph = crate::parser::load_graph(dir.join("graph.jsonl"))?;
+        let exact_owner = graph.get_task(&binding.task_id).is_some_and(|task| {
+            task.lifecycle.generation == binding.generation
+                && task.lifecycle.fence == binding.fence
+                && task.assigned.as_deref() == Some(binding.agent_id.as_str())
+                && task
+                    .lifecycle
+                    .current_attempt
+                    .as_ref()
+                    .is_some_and(|attempt| {
+                        attempt.id == binding.attempt_id && attempt.fence == binding.fence
+                    })
+        });
+        if exact_owner
+            && let Some(path) = crate::service::registry::AgentRegistry::load(dir)?
+                .get_agent(&binding.agent_id)
+                .and_then(|agent| agent.worktree_path.clone())
+        {
+            let old_transaction = binding
+                .save_source
+                .transaction_id()
+                .map_err(anyhow::Error::msg)?;
+            if load_save_transaction(dir, &old_transaction)?.is_none() {
+                let (canonical, identity) = worktree_identity(Path::new(&path))?;
+                binding.worktree_path = canonical;
+                binding.save_source.worktree_identity_digest = identity;
+                capabilities
+                    .capabilities
+                    .insert(digest.clone(), binding.clone());
+                save_registry(dir, &capabilities)?;
+            }
+        }
+    }
+    Ok(binding)
 }
 
 fn validate_request_id(request_id: &str) -> Result<()> {
@@ -1064,6 +1141,52 @@ mod tests {
         let bytes = fs::read(registry_path(temp.path())).unwrap();
         assert!(!String::from_utf8_lossy(&bytes).contains(&token));
         assert_eq!(lookup_capability(temp.path(), &token).unwrap(), binding);
+    }
+
+    #[test]
+    fn legacy_capability_rebinds_once_to_registered_retained_worktree() {
+        let project = tempfile::tempdir().unwrap();
+        let dir = project.path().join(".wg");
+        fs::create_dir_all(&dir).unwrap();
+        let retained = project.path().join(".wg-worktrees/agent-old");
+        fs::create_dir_all(&retained).unwrap();
+        fs::write(retained.join(".git"), "gitdir: retained-admin\n").unwrap();
+        let row = serde_json::json!({
+            "kind": "task",
+            "id": "task-a",
+            "title": "Task A",
+            "status": "in-progress",
+            "assigned": "agent-2",
+            "lifecycle": {
+                "generation": 1,
+                "fence": 2,
+                "attempt_sequence": 1,
+                "current_attempt": {
+                    "id": "attempt-1-1",
+                    "generation": 1,
+                    "fence": 2,
+                    "actor_id": "agent-2"
+                }
+            }
+        });
+        fs::write(dir.join("graph.jsonl"), format!("{row}\n")).unwrap();
+        let mut agents = crate::service::registry::AgentRegistry::new();
+        agents.next_agent_id = 2;
+        let id = agents.register_agent(std::process::id(), "task-a", "pi", "/tmp/retained-output");
+        assert_eq!(id, "agent-2");
+        agents.set_worktree_path(&id, &retained);
+        agents.save(&dir).unwrap();
+
+        let (token, original) =
+            mint_attempt_capability(&dir, "task-a", 1, "attempt-1-1", 2, 2, "agent-2").unwrap();
+        assert!(!Path::new(&original.worktree_path).exists());
+        let repaired = lookup_capability(&dir, &token).unwrap();
+        assert_eq!(
+            Path::new(&repaired.worktree_path),
+            retained.canonicalize().unwrap()
+        );
+        assert_eq!(verify_bound_worktree(&repaired).unwrap(), retained);
+        assert_eq!(lookup_capability(&dir, &token).unwrap(), repaired);
     }
 
     #[test]

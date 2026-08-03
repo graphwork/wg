@@ -91,7 +91,7 @@ $launched || loud_fail "current attempt never dispatched from retained worktree:
 [[ "$(sha256sum "$wt/valuable-wip.txt" | awk '{print $1}')" == "$wip_hash" ]] || loud_fail 'dirty worktree evidence was edited or deleted'
 [[ "$(cat "$wt/fresh-dispatch.txt")" == fresh-dispatch ]] || loud_fail 'new worker did not execute in retained worktree'
 
-python3 - "$G/service/worktree-spawn-reclaims-v1.json" "$G/graph.jsonl" "$G/service/registry.json" <<'PY' || loud_fail 'reclaim/dispatch accounting drifted'
+python3 - "$G/service/worktree-spawn-reclaims-v1.json" "$G/graph.jsonl" "$G/service/registry.json" "$G/service/worker-capabilities.json" <<'PY' || loud_fail 'reclaim/dispatch accounting drifted'
 import json,sys
 ledger=json.load(open(sys.argv[1]))
 assert ledger['schema_version']==1,ledger
@@ -111,6 +111,10 @@ assert task['lifecycle']['fence']==1,task['lifecycle']
 registry=json.load(open(sys.argv[3]))
 assert registry['agents']['agent-1']['worktree_path']==ack['worktree_path'],registry
 assert registry['agents']['agent-2']['worktree_path']==ack['worktree_path'],registry
+capabilities=json.load(open(sys.argv[4]))['capabilities']
+current=next(v for v in capabilities.values() if v['agent_id']=='agent-2')
+assert current['worktree_path']==ack['worktree_path'],current
+assert not current['save_source']['worktree_identity_digest'].startswith('missing:'),current
 PY
 
 # The versioned pure incident trace is independently byte-stable.
