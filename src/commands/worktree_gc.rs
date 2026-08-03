@@ -469,6 +469,24 @@ mod tests {
         p
     }
 
+    fn make_merged_git_worktree(
+        project_root: &Path,
+        worktrees_dir: &Path,
+        agent_id: &str,
+    ) -> PathBuf {
+        let path = worktrees_dir.join(agent_id);
+        let branch = format!("wg/{agent_id}/test");
+        let status = std::process::Command::new("git")
+            .args(["worktree", "add", "-q", "-b", &branch])
+            .arg(&path)
+            .arg("HEAD")
+            .current_dir(project_root)
+            .status()
+            .unwrap();
+        assert!(status.success(), "failed to create test worktree");
+        path
+    }
+
     fn agent_entry(
         id: &str,
         task_id: &str,
@@ -588,8 +606,8 @@ mod tests {
             } => {
                 assert_eq!(agent_id, "agent-1");
                 assert!(
-                    reason.contains("non-terminal"),
-                    "reason should cite non-terminal task, got: {}",
+                    reason.contains("lacks a verified v2 GraphSave"),
+                    "reason should cite the missing retention receipt, got: {}",
                     reason
                 );
             }
@@ -602,8 +620,8 @@ mod tests {
         // Worktree whose owning agent is terminal (Done) AND owning task is
         // terminal (Done) AND no uncommitted changes → classified Remove.
         let tmp = TempDir::new().unwrap();
-        let (wg_dir, _proj, worktrees_dir) = fixture(&tmp);
-        make_worktree_dir(&worktrees_dir, "agent-42");
+        let (wg_dir, project_root, worktrees_dir) = fixture(&tmp);
+        make_merged_git_worktree(&project_root, &worktrees_dir, "agent-42");
 
         write_registry(
             &wg_dir,
@@ -682,7 +700,7 @@ mod tests {
     }
 
     #[test]
-    fn worktree_gc_removes_failed_and_abandoned_tasks() {
+    fn worktree_gc_retains_failed_and_abandoned_without_work_save() {
         let tmp = TempDir::new().unwrap();
         let (wg_dir, _proj, worktrees_dir) = fixture(&tmp);
         make_worktree_dir(&worktrees_dir, "agent-fail");
@@ -705,12 +723,16 @@ mod tests {
         let now = chrono::Utc::now().timestamp() as u64;
         let decisions = plan(&wg_dir, None, now).unwrap();
         assert_eq!(decisions.len(), 2);
-        for d in &decisions {
-            assert!(
-                matches!(d, Decision::Remove { .. }),
-                "expected Remove, got {:?}",
-                d
-            );
+        for decision in &decisions {
+            match decision {
+                Decision::Skip { reason, .. } => {
+                    assert!(
+                        reason.contains("lacks a verified v2 GraphSave"),
+                        "unexpected retention reason: {reason}"
+                    );
+                }
+                other => panic!("expected retained evidence, got {other:?}"),
+            }
         }
     }
 
@@ -755,10 +777,9 @@ mod tests {
     }
 
     #[test]
-    fn worktree_gc_removes_when_task_missing_from_graph() {
-        // Registry says agent is Done with task-id "t-gone", but the task has
-        // already been gc'd from the graph → missing-from-graph is treated
-        // as terminal (no data says otherwise).
+    fn worktree_gc_retains_when_task_missing_from_graph() {
+        // Registry status is not retention authority. If the task boundary is
+        // missing, no GraphSave can be verified and the worktree must remain.
         let tmp = TempDir::new().unwrap();
         let (wg_dir, _proj, worktrees_dir) = fixture(&tmp);
         make_worktree_dir(&worktrees_dir, "agent-terminal");
@@ -776,7 +797,12 @@ mod tests {
         let now = chrono::Utc::now().timestamp() as u64;
         let decisions = plan(&wg_dir, None, now).unwrap();
         assert_eq!(decisions.len(), 1);
-        assert!(matches!(decisions[0], Decision::Remove { .. }));
+        match &decisions[0] {
+            Decision::Skip { reason, .. } => {
+                assert!(reason.contains("lacks a verified v2 GraphSave"));
+            }
+            other => panic!("expected retained evidence, got {other:?}"),
+        }
     }
 
     #[test]

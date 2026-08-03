@@ -1,8 +1,8 @@
 //! `wg recover` — batch recovery for credit-exhaustion / mass-failure scenarios.
 //!
-//! Surveys failed tasks and resets them in one operation: retries user-tasks,
-//! abandons agency followups (`.evaluate-*` / `.flip-*` / `.assign-*` / `.verify-*`)
-//! so they regenerate fresh from their parents.
+//! Surveys failed tasks and resets them in one operation: retries user tasks
+//! while retaining agency followups (`.evaluate-*` / `.flip-*` / `.assign-*` /
+//! `.verify-*`) until an exact WorkSave authorizes their atomic abort.
 //!
 //! Defaults to dry-run; pass `--yes` to execute.
 //!
@@ -28,11 +28,11 @@ pub struct RecoverOptions {
     /// Filter expression(s) (e.g., `status=failed`, `tag=foo`,
     /// `id-prefix=tui-`, `attempts<=2`, `error~timeout`). AND-combined.
     pub filter: Vec<String>,
-    /// Override model on each user-task before retry (provider:model format).
+    /// Override model on each user-task before retry (`pi:<provider>:<model>`).
     pub set_model: Option<String>,
-    /// Override endpoint on each user-task before retry.
+    /// Legacy unsupported option retained for a loud compatibility error.
     pub set_endpoint: Option<String>,
-    /// Keep agency followups instead of abandoning them.
+    /// Leave agency followups untouched instead of recording a retention hold.
     pub keep_agency: bool,
     /// Skip tasks whose retry_count >= max_attempts.
     pub max_attempts: u32,
@@ -106,7 +106,7 @@ pub fn build_plan(tasks: &[Task], opts: &RecoverOptions) -> Result<Plan> {
         };
 
         if worksgood::graph::is_system_task(&task.id) {
-            // Agency followups: abandon (unless --keep-agency).
+            // Agency followups: record a retention hold unless explicitly kept.
             if is_agency_followup(&task.id) && !opts.keep_agency {
                 plan.agency_abandons.push(PlanEntry {
                     action: PlanAction::AbandonFollowup,
@@ -493,7 +493,7 @@ pub fn run(dir: &Path, opts: RecoverOptions) -> Result<()> {
         }
         apply_plan(dir, &plan, &opts)?;
         println!(
-            "\nApplied: {} retried, {} abandoned",
+            "\nApplied: {} retried, {} agency followups retained pending atomic abort",
             plan.user_retries.len(),
             plan.agency_abandons.len()
         );
@@ -607,7 +607,7 @@ mod tests {
     }
 
     #[test]
-    fn test_recover_yes_abandons_agency_followups() {
+    fn test_recover_yes_retains_agency_followups_without_work_save() {
         let dir = tempdir().unwrap();
         let dp = dir.path();
         let t1 = task("user-a", Status::Failed);
@@ -626,14 +626,14 @@ mod tests {
 
         let g = load_graph(graph_path(dp)).unwrap();
         assert_eq!(g.get_task("user-a").unwrap().status, Status::Open);
-        assert_eq!(
-            g.get_task(".evaluate-user-a").unwrap().status,
-            Status::Abandoned
-        );
-        assert_eq!(
-            g.get_task(".flip-user-a").unwrap().status,
-            Status::Abandoned
-        );
+        for id in [".evaluate-user-a", ".flip-user-a"] {
+            let followup = g.get_task(id).unwrap();
+            assert_eq!(followup.status, Status::Failed);
+            assert!(followup.log.iter().any(|entry| {
+                entry.actor.as_deref() == Some("recover-retention-barrier")
+                    && entry.message.contains("no exact WorkSave")
+            }));
+        }
     }
 
     #[test]
@@ -672,7 +672,7 @@ mod tests {
         let opts = RecoverOptions {
             yes: true,
             max_attempts: 5,
-            set_model: Some("openrouter:anthropic/claude-sonnet-4-6".to_string()),
+            set_model: Some("pi:openrouter:anthropic/claude-sonnet-4-6".to_string()),
             ..Default::default()
         };
         run(dp, opts).unwrap();
@@ -682,7 +682,7 @@ mod tests {
         assert_eq!(t.status, Status::Open);
         assert_eq!(
             t.model.as_deref(),
-            Some("openrouter:anthropic/claude-sonnet-4-6")
+            Some("pi:openrouter:anthropic/claude-sonnet-4-6")
         );
     }
 
@@ -909,7 +909,7 @@ mod tests {
     }
 
     #[test]
-    fn test_recover_set_endpoint_edits_before_retry() {
+    fn test_recover_set_endpoint_is_rejected_without_mutation() {
         let dir = tempdir().unwrap();
         let dp = dir.path();
         let t1 = task("user-a", Status::Failed);
@@ -921,13 +921,13 @@ mod tests {
             set_endpoint: Some("openrouter".to_string()),
             ..Default::default()
         };
-        run(dp, opts).unwrap();
+        let err = run(dp, opts).unwrap_err();
+        assert!(err.to_string().contains("--set-endpoint is unsupported"));
 
         let g = load_graph(graph_path(dp)).unwrap();
-        assert_eq!(
-            g.get_task("user-a").unwrap().endpoint.as_deref(),
-            Some("openrouter")
-        );
+        let task = g.get_task("user-a").unwrap();
+        assert_eq!(task.status, Status::Failed);
+        assert_eq!(task.endpoint, None);
     }
 
     #[test]
@@ -965,6 +965,6 @@ mod tests {
             ..Default::default()
         };
         let err = run(dp, opts).unwrap_err();
-        assert!(err.to_string().contains("Invalid --set-model"));
+        assert!(err.to_string().contains("WG-PI-ROUTE-REQUIRED"));
     }
 }

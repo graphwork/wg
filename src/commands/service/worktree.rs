@@ -3189,15 +3189,15 @@ mod tests {
         assert!(wt.join(CLEANUP_PENDING_MARKER).exists());
     }
 
-    /// New retention policy (worktree-retention-don):
-    /// Both eval-pass AND merge-to-main are required. Either alone keeps the
-    /// worktree alive.
+    /// Atomic retention policy: a verified GraphSave already binds the
+    /// required validation receipts. Cached evaluator task status is not
+    /// retention authority; GraphSave plus merge reachability is.
     #[test]
-    fn test_worktree_reaped_only_after_eval_pass_and_merge() {
+    fn test_worktree_reaped_only_after_graph_save_and_merge() {
         use worksgood::graph::Status;
         use worksgood::service::registry::AgentStatus;
 
-        // ---- Scenario A: Done but eval pending → KEEP ----
+        // ---- Scenario A: GraphSave + merged, stale eval row → REAP ----
         let temp_a = TempDir::new().unwrap();
         let project_a = temp_a.path().join("project");
         fs::create_dir_all(&project_a).unwrap();
@@ -3219,12 +3219,12 @@ mod tests {
 
         assert_eq!(
             sweep_cleanup_pending_worktrees(&wg_dir_a).unwrap(),
-            0,
-            "Done + merged but eval not yet Done → MUST keep worktree"
+            1,
+            "GraphSave is validation authority; stale eval status must not block cleanup"
         );
-        assert!(wt_a.exists());
+        assert!(!wt_a.exists());
 
-        // ---- Scenario B: Done + eval-pass but NOT merged → KEEP ----
+        // ---- Scenario B: GraphSave but NOT merged → KEEP ----
         let temp_b = TempDir::new().unwrap();
         let project_b = temp_b.path().join("project");
         fs::create_dir_all(&project_b).unwrap();
@@ -3265,11 +3265,11 @@ mod tests {
         assert_eq!(
             sweep_cleanup_pending_worktrees(&wg_dir_b).unwrap(),
             0,
-            "Done + eval-pass but not merged → MUST keep worktree"
+            "GraphSave without merge reachability → MUST keep worktree"
         );
         assert!(wt_b.exists());
 
-        // ---- Scenario C: Done + eval-pass + merged → REAP ----
+        // ---- Scenario C: GraphSave + merged → REAP ----
         let temp_c = TempDir::new().unwrap();
         let project_c = temp_c.path().join("project");
         fs::create_dir_all(&project_c).unwrap();
@@ -3292,7 +3292,7 @@ mod tests {
         assert_eq!(
             sweep_cleanup_pending_worktrees(&wg_dir_c).unwrap(),
             1,
-            "Done + eval-pass + merged → reap"
+            "GraphSave + merged → reap"
         );
         assert!(!wt_c.exists());
     }

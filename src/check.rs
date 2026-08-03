@@ -338,8 +338,49 @@ pub fn check_all(graph: &WorkGraph) -> CheckResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::{Node, Status};
+    use crate::graph::{CompletionDisposition, Node, Status, Task};
+    use crate::lifecycle::{ActorKind, LifecycleEvent, LifecycleEventProjection};
     use crate::test_helpers::make_task;
+
+    fn mark_graph_saved(task: &mut Task) {
+        let receipt = format!("wgcid:v2:blake3:{:064}", 1);
+        task.status = Status::Done;
+        task.completion_disposition = Some(CompletionDisposition::Landed);
+        task.completion_receipt = Some(receipt.clone());
+        task.lifecycle.audit.push(LifecycleEvent {
+            schema_version: 2,
+            event_id: format!("graph-save:{}", task.id),
+            idempotency_key: format!("graph-save:{}", task.id),
+            task_id: task.id.clone(),
+            task_revision: 1,
+            generation: 0,
+            event_kind: "graph-save-committed".into(),
+            old_state: Status::InProgress,
+            new_state: Status::Done,
+            actor_kind: ActorKind::Reconciler,
+            actor_id: "test".into(),
+            attempt_id: None,
+            fence: 0,
+            reason_code: "test-fixture".into(),
+            evidence_refs: vec![receipt],
+            occurred_at: "2024-01-01T00:00:00Z".into(),
+            committed_at: "2024-01-01T00:00:00Z".into(),
+            projection: LifecycleEventProjection {
+                status: Status::Done,
+                generation: 0,
+                revision: 1,
+                fence: 0,
+                attempt_sequence: 0,
+                current_attempt: None,
+                pi_process_epoch: 0,
+                pi_process_identity_digest: String::new(),
+                pi_continuation_epoch: 0,
+                pi_continuation: None,
+                pi_terminal_reservation: None,
+                reopen_intent: None,
+            },
+        });
+    }
 
     #[test]
     fn audit_flags_live_and_done_descendants_without_mutating_history() {
@@ -759,7 +800,7 @@ mod tests {
     fn test_stuck_blocked_all_deps_done() {
         let mut graph = WorkGraph::new();
         let mut dep = make_task("dep", "Dependency");
-        dep.status = Status::Done;
+        mark_graph_saved(&mut dep);
         let mut blocked = make_task("blocked", "Blocked task");
         blocked.status = Status::Blocked;
         blocked.after = vec!["dep".to_string()];
@@ -836,7 +877,7 @@ mod tests {
     fn test_stuck_blocked_are_warnings_not_errors() {
         let mut graph = WorkGraph::new();
         let mut dep = make_task("dep", "Done dep");
-        dep.status = Status::Done;
+        mark_graph_saved(&mut dep);
         let mut blocked = make_task("blocked", "Blocked task");
         blocked.status = Status::Blocked;
         blocked.after = vec!["dep".to_string()];
