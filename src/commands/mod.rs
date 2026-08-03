@@ -159,6 +159,7 @@ pub mod viz;
 pub mod wait;
 pub mod watch;
 pub mod why_blocked;
+pub mod work_save;
 pub mod workload;
 pub mod worktree_cmd;
 pub mod worktree_gc;
