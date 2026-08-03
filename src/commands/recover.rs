@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
 use worksgood::graph::{FailureReason, LogEntry, Status, Task};
-use worksgood::lifecycle::{LifecycleActor, TransitionKind, TransitionRequest, apply_transition};
+use worksgood::lifecycle::LifecycleActor;
 use worksgood::parser::modify_graph;
 
 #[cfg(test)]
@@ -356,50 +356,23 @@ fn apply_plan(dir: &Path, plan: &Plan, opts: &RecoverOptions) -> Result<()> {
             }
         }
 
-        // Abandon agency followups. Don't skip Failed — that's the whole point
-        // of recover: failed followups need to be cleared so the agency pipeline
-        // regenerates them from the freshly-retried parent. But preserve Done
-        // and already-Abandoned status (no work to do).
+        // Legacy `recover` used to supersede and abandon agency followups in
+        // place. That can advance a generation without first saving the exact
+        // prior attempt, and can erase the only pointer to quarantined legacy
+        // evidence. Retain these rows until the SaveTransaction convergence
+        // adapter records AbortedPreserved; the parent retry remains fenced and
+        // explicit rather than silently blessing/destructively clearing them.
         for entry in &plan.agency_abandons {
-            if let Some(task) = graph.get_task_mut(&entry.id) {
-                if task.status != Status::Done && task.status != Status::Abandoned {
-                    let generation = task.lifecycle.generation;
-                    if task.status.is_terminal() {
-                        let supersede = TransitionRequest::new(
-                            TransitionKind::GenerationCreated,
-                            LifecycleActor::operator(user.clone()),
-                            "batch_recover_supersede_followup",
-                            format!("recover-supersede:{}:{generation}", task.id),
-                        );
-                        if apply_transition(task, supersede).is_err() {
-                            continue;
-                        }
-                    }
-                    let request = TransitionRequest::new(
-                        TransitionKind::Abandoned,
-                        LifecycleActor::operator(user.clone()),
-                        "batch_recover_abandon_followup",
-                        format!("recover-abandon:{}:{}", task.id, task.lifecycle.generation),
-                    );
-                    if apply_transition(task, request).is_err() {
-                        continue;
-                    }
-                    task.failure_reason = Some(
-                        "Auto-abandoned by `wg recover` so it regenerates from parent".to_string(),
-                    );
-                    task.log.push(LogEntry {
-                        timestamp: now.clone(),
-                        actor: None,
-                        user: Some(user.clone()),
-                        message: format!(
-                            "Abandoned by `wg recover`{}",
-                            opts.reason
-                                .as_deref()
-                                .map(|r| format!(" — reason: {}", r))
-                                .unwrap_or_default()
-                        ),
-                    });
-                }
+            if let Some(task) = graph.get_task_mut(&entry.id)
+                && task.status != Status::Done
+                && task.status != Status::Abandoned
+            {
+                task.log.push(LogEntry {
+                    timestamp: now.clone(),
+                    actor: Some("recover-retention-barrier".to_string()),
+                    user: Some(user.clone()),
+                    message: "Retained agency followup: no exact WorkSave/AbortedPreserved receipt authorizes generation advance".to_string(),
+                });
             }
         }
 
@@ -418,7 +391,7 @@ fn apply_plan(dir: &Path, plan: &Plan, opts: &RecoverOptions) -> Result<()> {
         None,
         serde_json::json!({
             "retried": plan.user_retries.iter().map(|e| &e.id).collect::<Vec<_>>(),
-            "abandoned": plan.agency_abandons.iter().map(|e| &e.id).collect::<Vec<_>>(),
+            "agency_retained_pending_atomic_abort": plan.agency_abandons.iter().map(|e| &e.id).collect::<Vec<_>>(),
             "skipped": plan.skipped.iter().map(|e| &e.id).collect::<Vec<_>>(),
             "set_model": opts.set_model,
             "set_endpoint": opts.set_endpoint,
@@ -438,7 +411,7 @@ pub fn print_plan(plan: &Plan, opts: &RecoverOptions) {
         if opts.keep_agency {
             "kept"
         } else {
-            "will abandon, auto-recreate"
+            "retained pending WorkSave/atomic abort"
         },
         plan.agency_abandons.len()
     );

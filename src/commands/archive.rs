@@ -1295,6 +1295,8 @@ mod tests {
         let receipt = format!("wgcid:v2:blake3:{:064}", 1);
         task.completion_disposition = Some(CompletionDisposition::Landed);
         task.completion_receipt = Some(receipt.clone());
+        task.lifecycle.revision = 1;
+        task.lifecycle.ledger_head = Some(format!("graph-save:{}", task.id));
         task.lifecycle.audit.push(LifecycleEvent {
             schema_version: 2,
             event_id: format!("graph-save:{}", task.id),
@@ -1537,7 +1539,10 @@ mod tests {
         assert!(graph.get_archived_boundary("first").is_some());
         assert!(graph.get_archived_boundary("middle").is_some());
         assert_eq!(graph.get_task("active").unwrap().after, vec!["middle"]);
-        assert_eq!(worksgood::query::ready_tasks(&graph)[0].id, "active");
+        assert!(
+            worksgood::query::ready_tasks(&graph).is_empty(),
+            "the current ArchivedBoundary schema cannot preserve GraphSave proof, so the edge must fail closed"
+        );
 
         restore(wg_dir, "middle", false).unwrap();
         restore(wg_dir, "first", false).unwrap();
@@ -2100,7 +2105,7 @@ mod tests {
             result
                 .unwrap_err()
                 .to_string()
-                .contains("only done/abandoned tasks")
+                .contains("lacks a verified v2 GraphSave")
         );
     }
 

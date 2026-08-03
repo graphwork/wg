@@ -874,28 +874,9 @@ fn cleanup_git(
         }
     }
 
-    // Prune worktree references
-    if args.execute {
-        let output = Command::new("git")
-            .args(["worktree", "prune"])
-            .current_dir(project_root)
-            .output()
-            .context("Failed to execute git worktree prune")?;
-
-        if output.status.success() {
-            println!("✓ Git worktree pruning completed");
-            summary.git_operations += 1;
-        } else {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let error_msg = format!("Git worktree prune failed: {}", stderr.trim());
-            if args.force {
-                eprintln!("⚠ {}", error_msg);
-                summary.errors.push(error_msg);
-            } else {
-                return Err(anyhow!(error_msg));
-            }
-        }
-    }
+    // Do not run global `git worktree prune`: missing administrative paths can
+    // belong to unresolved/quarantined SaveTransactions. Only the
+    // receipt-aware worktree sweep may remove exact leased metadata.
 
     Ok(())
 }

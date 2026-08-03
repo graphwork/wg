@@ -188,7 +188,28 @@ pub fn plan(
             continue;
         }
 
-        // Gate 4: uncommitted changes.
+        // Gate 4: the exact branch must still be reachable from the target
+        // branch. The GraphSave projection is necessary but the legacy row
+        // does not itself materialize the immutable bundle for this adapter.
+        let branch = find_branch_for_worktree(&project_root, &path);
+        if !super::service::worktree::is_safe_to_reap(
+            graph.as_ref(),
+            task_id.as_deref(),
+            &project_root,
+            branch.as_deref(),
+        ) {
+            decisions.push(Decision::Skip {
+                agent_id: name.clone(),
+                path,
+                reason:
+                    "verified GraphSave branch is missing or not reachable from the target branch"
+                        .to_string(),
+            });
+            continue;
+        }
+
+        // Gate 5: bytes created after GraphSave are contradictory evidence,
+        // never something `--force` may discard.
         if super::worktree_cmd::has_uncommitted_changes(&path) {
             decisions.push(Decision::Skip {
                 agent_id: name.clone(),
@@ -359,7 +380,11 @@ pub fn run(workgraph_dir: &Path, apply: bool, force: bool) -> Result<()> {
     for (agent_id, path, reason) in &to_remove {
         let branch = find_branch_for_worktree(&project_root, path)
             .unwrap_or_else(|| format!("wg/{}/unknown", agent_id));
-        match crate::commands::service::worktree::remove_worktree(&project_root, path, &branch) {
+        match crate::commands::service::worktree::remove_worktree_source_safe(
+            &project_root,
+            path,
+            Some(&branch),
+        ) {
             Ok(()) => {
                 ok += 1;
                 println!("[removed] {} — {}", agent_id, reason);

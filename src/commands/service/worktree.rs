@@ -26,7 +26,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime};
 use worksgood::config::ResourceManagementConfig;
 use worksgood::metrics::{CleanupTimer, ResourceRecoveryStats, record_recovery_branch};
 
@@ -236,7 +236,7 @@ fn calculate_directory_size(dir: &Path) -> Result<u64> {
 /// The lifecycle marker is removed, then `git worktree remove` runs WITHOUT
 /// `--force`; a source change racing the earlier status check makes git refuse.
 /// There is deliberately no filesystem fallback.
-fn remove_worktree_source_safe(
+pub(crate) fn remove_worktree_source_safe(
     project_root: &Path,
     worktree_path: &Path,
     branch: Option<&str>,
@@ -836,70 +836,37 @@ pub fn cleanup_orphaned_worktrees(dir: &Path) -> Result<usize> {
                 );
                 continue;
             }
-            eprintln!("[worktree] Cleaning orphaned worktree: {}", name);
-
-            // Try to find the branch from git porcelain output
-            let branch = branch_opt;
-
-            if let Some(ref branch) = branch {
-                // Use the enhanced cleanup function with retry logic
-                cleanup_dead_agent_worktree(project_root, &wt_path, branch, &name);
-            } else {
+            if worksgood::disk_sentinel::worktree_has_user_source_changes(&wt_path) {
                 eprintln!(
-                    "[worktree] No git branch found for orphaned worktree {}, attempting manual cleanup",
+                    "[worktree] Preserving orphan {} because bytes changed after its GraphSave projection",
                     name
                 );
-
-                // No branch found — use fallback cleanup with error reporting
-                let mut cleanup_errors = Vec::new();
-
-                // Remove .wg symlink
-                let symlink_path = wt_path.join(".wg");
-                if symlink_path.exists()
-                    && let Err(e) = fs::remove_file(&symlink_path)
-                {
-                    cleanup_errors.push(format!("Failed to remove .wg symlink: {}", e));
-                }
-
-                // Remove isolated cargo target directory
-                let target_dir = wt_path.join("target");
-                if target_dir.exists()
-                    && let Err(e) = fs::remove_dir_all(&target_dir)
-                {
-                    cleanup_errors.push(format!("Failed to remove target directory: {}", e));
-                }
-
-                // Try git worktree remove
-                let output = Command::new("git")
-                    .args(["worktree", "remove", "--force"])
-                    .arg(&wt_path)
-                    .current_dir(project_root)
-                    .output();
-
-                match output {
-                    Ok(output) if !output.status.success() => {
-                        let stderr = String::from_utf8_lossy(&output.stderr);
-                        cleanup_errors
-                            .push(format!("Git worktree remove failed: {}", stderr.trim()));
-                    }
-                    Err(e) => {
-                        cleanup_errors
-                            .push(format!("Failed to execute git worktree remove: {}", e));
-                    }
-                    _ => {} // Success case
-                }
-
-                if !cleanup_errors.is_empty() {
-                    eprintln!(
-                        "[worktree] Warnings during manual cleanup of {}: {}",
-                        name,
-                        cleanup_errors.join("; ")
-                    );
-                }
+                continue;
             }
-
-            cleaned += 1;
-            record_orphaned_cleanup();
+            let Some(branch) = branch_opt.as_deref() else {
+                // `is_safe_to_reap` currently rejects this too. Keep the
+                // explicit guard here so a future predicate relaxation cannot
+                // revive the old force-delete fallback.
+                eprintln!(
+                    "[worktree] Preserving orphan {} because no exact branch identity is available",
+                    name
+                );
+                continue;
+            };
+            eprintln!(
+                "[worktree] Cleaning receipt-backed orphaned worktree: {}",
+                name
+            );
+            match remove_worktree_source_safe(project_root, &wt_path, Some(branch)) {
+                Ok(()) => {
+                    cleaned += 1;
+                    record_orphaned_cleanup();
+                }
+                Err(error) => eprintln!(
+                    "[worktree] Preserving orphan {} after source-safe cleanup refusal: {error:#}",
+                    name
+                ),
+            }
         }
     }
 
@@ -1757,123 +1724,12 @@ impl Drop for RetainedWorktreeCleanupLane {
 /// Called periodically from the triage loop. Only removes worktrees
 /// whose agents are no longer alive.
 #[allow(dead_code)]
-pub fn prune_stale_worktrees(dir: &Path, max_age_secs: u64) -> Result<usize> {
-    let project_root = dir
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("Cannot determine project root from {:?}", dir))?;
-    let worktrees_dir = project_root.join(WORKTREES_DIR);
-
-    if !worktrees_dir.exists() {
-        return Ok(0);
-    }
-
-    let registry = worksgood::service::registry::AgentRegistry::load(dir)?;
-    let mut pruned = 0;
-
-    for entry in fs::read_dir(&worktrees_dir)? {
-        let entry = entry?;
-        let name = entry.file_name().to_string_lossy().to_string();
-
-        if !name.starts_with("agent-") {
-            continue;
-        }
-
-        // Skip alive agents
-        let is_alive = registry
-            .agents
-            .get(&name)
-            .map(|a| a.is_live(HEARTBEAT_LIVENESS_TIMEOUT_SECS))
-            .unwrap_or(false);
-
-        if is_alive {
-            continue;
-        }
-
-        // Check age
-        let meta = match entry.metadata() {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
-        let modified = match meta.modified() {
-            Ok(t) => t,
-            Err(_) => continue,
-        };
-        let age = match modified.elapsed() {
-            Ok(d) => d,
-            Err(_) => continue,
-        };
-
-        if age.as_secs() > max_age_secs {
-            let wt_path = entry.path();
-            eprintln!(
-                "[worktree] Pruning stale worktree {} (age: {}s > {}s)",
-                name,
-                age.as_secs(),
-                max_age_secs
-            );
-
-            let branch = find_branch_for_worktree(project_root, &wt_path);
-            if let Some(ref branch) = branch {
-                // Use the enhanced cleanup function with retry logic
-                cleanup_dead_agent_worktree(project_root, &wt_path, branch, &name);
-            } else {
-                eprintln!(
-                    "[worktree] No git branch found for stale worktree {}, attempting manual cleanup",
-                    name
-                );
-
-                // Use fallback cleanup with error reporting (same as orphaned cleanup)
-                let mut cleanup_errors = Vec::new();
-
-                let symlink_path = wt_path.join(".wg");
-                if symlink_path.exists()
-                    && let Err(e) = fs::remove_file(&symlink_path)
-                {
-                    cleanup_errors.push(format!("Failed to remove .wg symlink: {}", e));
-                }
-
-                let target_dir = wt_path.join("target");
-                if target_dir.exists()
-                    && let Err(e) = fs::remove_dir_all(&target_dir)
-                {
-                    cleanup_errors.push(format!("Failed to remove target directory: {}", e));
-                }
-
-                let output = Command::new("git")
-                    .args(["worktree", "remove", "--force"])
-                    .arg(&wt_path)
-                    .current_dir(project_root)
-                    .output();
-
-                match output {
-                    Ok(output) if !output.status.success() => {
-                        let stderr = String::from_utf8_lossy(&output.stderr);
-                        cleanup_errors
-                            .push(format!("Git worktree remove failed: {}", stderr.trim()));
-                    }
-                    Err(e) => {
-                        cleanup_errors
-                            .push(format!("Failed to execute git worktree remove: {}", e));
-                    }
-                    _ => {} // Success case
-                }
-
-                if !cleanup_errors.is_empty() {
-                    eprintln!(
-                        "[worktree] Warnings during manual cleanup of stale {}: {}",
-                        name,
-                        cleanup_errors.join("; ")
-                    );
-                }
-            }
-
-            pruned += 1;
-        }
-    }
-
-    // NOTE: No global `git worktree prune` — concurrent agents may be running.
-
-    Ok(pruned)
+pub fn prune_stale_worktrees(dir: &Path, _max_age_secs: u64) -> Result<usize> {
+    // Age and owner liveness are observations, not WorkSave/cleanup authority.
+    // Reuse the receipt-backed orphan scanner; it rechecks GraphSave, branch
+    // reachability, source cleanliness, and exact branch identity immediately
+    // before a non-force removal. Unproven worktrees remain quarantined.
+    cleanup_orphaned_worktrees(dir)
 }
 
 /// Get all recovery branches sorted by age (oldest first).
@@ -1956,71 +1812,16 @@ fn get_recovery_branches(project_root: &Path) -> Result<Vec<(String, u64)>> {
 #[allow(dead_code)]
 fn prune_recovery_branches(
     project_root: &Path,
-    config: &ResourceManagementConfig,
+    _config: &ResourceManagementConfig,
 ) -> Result<usize> {
-    let current_time = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|e| anyhow!("Failed to get current time: {}", e))?
-        .as_secs();
-
-    let recovery_branches = get_recovery_branches(project_root)?;
-    let mut pruned_count = 0;
-
-    // Age-based pruning
-    if config.recovery_branch_max_age > 0 {
-        for (branch, timestamp) in &recovery_branches {
-            let age = current_time.saturating_sub(*timestamp);
-            if age > config.recovery_branch_max_age {
-                eprintln!(
-                    "[recovery] Pruning aged recovery branch {} (age: {}s > {}s)",
-                    branch, age, config.recovery_branch_max_age
-                );
-
-                if let Err(e) = delete_recovery_branch(project_root, branch) {
-                    eprintln!(
-                        "[recovery] Failed to delete aged recovery branch {}: {}",
-                        branch, e
-                    );
-                } else {
-                    pruned_count += 1;
-                }
-            }
-        }
+    let retained = get_recovery_branches(project_root)?;
+    if !retained.is_empty() {
+        eprintln!(
+            "[recovery] Retaining {} recovery branch(es): age/count are not GraphSave cleanup receipts",
+            retained.len()
+        );
     }
-
-    // Count-based pruning
-    if config.recovery_branch_max_count > 0 {
-        // Get fresh list after age-based pruning
-        let remaining_branches = get_recovery_branches(project_root)?;
-        let excess_count = remaining_branches
-            .len()
-            .saturating_sub(config.recovery_branch_max_count as usize);
-
-        if excess_count > 0 {
-            eprintln!(
-                "[recovery] Pruning {} excess recovery branches (limit: {})",
-                excess_count, config.recovery_branch_max_count
-            );
-
-            // Prune oldest branches first
-            for (branch, _) in remaining_branches.iter().take(excess_count) {
-                if let Err(e) = delete_recovery_branch(project_root, branch) {
-                    eprintln!(
-                        "[recovery] Failed to delete excess recovery branch {}: {}",
-                        branch, e
-                    );
-                } else {
-                    pruned_count += 1;
-                }
-            }
-        }
-    }
-
-    if pruned_count > 0 {
-        eprintln!("[recovery] Pruned {} recovery branches", pruned_count);
-    }
-
-    Ok(pruned_count)
+    Ok(0)
 }
 
 /// Delete a recovery branch both locally and remotely (if present).
@@ -2306,49 +2107,25 @@ impl CleanupWorker {
     fn process_job(&self, job: CleanupJob) {
         match job.job_type {
             CleanupJobType::DeadAgent {
-                ref project_root,
                 ref worktree_path,
-                ref branch,
                 ref agent_id,
-            } => {
-                eprintln!("[cleanup] Processing dead agent cleanup: {}", agent_id);
-                cleanup_dead_agent_worktree_with_config(
-                    project_root,
-                    worktree_path,
-                    branch,
-                    agent_id,
-                    Some(&self.config),
-                );
+                ..
             }
-            CleanupJobType::OrphanedWorktree {
-                ref project_root,
+            | CleanupJobType::OrphanedWorktree {
                 ref worktree_path,
                 ref agent_id,
+                ..
             } => {
+                // Legacy queue jobs do not carry a task/source tuple, GraphSave
+                // CID, cleanup plan, or worktree lease. Liveness alone cannot
+                // authorize deletion, even with the resource-manager `force`
+                // configuration. The receipt-aware sweep is the only automatic
+                // removal lane.
                 eprintln!(
-                    "[cleanup] Processing orphaned worktree cleanup: {}",
-                    agent_id
+                    "[cleanup] Retaining queued worktree {} at {}: missing verified GraphSave cleanup authority",
+                    agent_id,
+                    worktree_path.display()
                 );
-
-                // Try to find the branch for this worktree
-                if let Some(branch) = find_branch_for_worktree(project_root, worktree_path) {
-                    cleanup_dead_agent_worktree_with_config(
-                        project_root,
-                        worktree_path,
-                        &branch,
-                        agent_id,
-                        Some(&self.config),
-                    );
-                } else {
-                    // Fallback to manual cleanup
-                    eprintln!(
-                        "[cleanup] No branch found for orphaned worktree {}, using manual cleanup",
-                        agent_id
-                    );
-                    if let Err(e) = attempt_force_cleanup(worktree_path) {
-                        eprintln!("[cleanup] Manual cleanup failed for {}: {}", agent_id, e);
-                    }
-                }
             }
             CleanupJobType::RecoveryBranchPrune { ref project_root } => {
                 eprintln!("[cleanup] Processing recovery branch pruning");

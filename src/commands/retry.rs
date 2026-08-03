@@ -1875,10 +1875,10 @@ mod tests {
         );
     }
 
-    /// `wg retry --fresh` discards the prior worktree + branch so the next
-    /// spawn allocates a clean one off main.
+    /// `wg retry --fresh` cannot discard a prior worktree until an exact
+    /// WorkSave and discard receipt exist.
     #[test]
-    fn test_retry_fresh_flag_allocates_new_worktree() {
+    fn test_retry_fresh_flag_retains_unreceipted_worktree() {
         let temp = tempdir().unwrap();
         let project = temp.path().join("project");
         fs::create_dir_all(&project).unwrap();
@@ -1894,20 +1894,18 @@ mod tests {
         let wt = create_worktree(&project, "agent-prior", "retry-fresh");
         assert!(wt.exists());
 
-        let result = run(&wg_dir, "retry-fresh", false, /*fresh=*/ true, None);
-        assert!(result.is_ok(), "retry --fresh should succeed: {:?}", result);
-
-        // --fresh: worktree dir is REMOVED.
-        assert!(!wt.exists(), "retry --fresh must remove the prior worktree");
-        // Branch is also deleted
+        let error = run(&wg_dir, "retry-fresh", false, /*fresh=*/ true, None)
+            .expect_err("unreceipted fresh retry must hold");
+        assert!(error.to_string().contains("capture an exact WorkSave"));
+        assert!(wt.exists(), "fresh retry must retain unreceipted work");
         let branches = std::process::Command::new("git")
             .args(["branch", "--list", "wg/agent-prior/retry-fresh"])
             .current_dir(&project)
             .output()
             .unwrap();
         assert!(
-            !String::from_utf8_lossy(&branches.stdout).contains("wg/agent-prior/retry-fresh"),
-            "branch must be deleted on --fresh"
+            String::from_utf8_lossy(&branches.stdout).contains("wg/agent-prior/retry-fresh"),
+            "recovery branch must remain until cleanup is receipted"
         );
     }
 }

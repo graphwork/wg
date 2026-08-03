@@ -285,13 +285,43 @@ pub fn run(dir: &Path, seeds: &[String], opts: ResetOptions) -> Result<ResetRepo
         let mut purge_set: HashSet<String> = meta_set.clone();
         purge_set.extend(satellites_set.iter().cloned());
         let all_task_ids: Vec<String> = graph.tasks().map(|t| t.id.clone()).collect();
+        let mut actually_removed = HashSet::new();
         for id in &purge_set {
-            if graph.remove_node(id).is_some() {
+            // Deleting a historical/running system row would erase the only
+            // pointer to its exact attempt or quarantined legacy evidence.
+            // Only a never-started, evidence-free scaffold can be stripped.
+            let safe_empty_scaffold = graph.get_task(id).is_some_and(|task| {
+                task.status == worksgood::graph::Status::Open
+                    && task.assigned.is_none()
+                    && task.lifecycle.current_attempt.is_none()
+                    && task.lifecycle.audit.is_empty()
+                    && task.session_id.is_none()
+                    && task.checkpoint.is_none()
+            });
+            if safe_empty_scaffold && graph.remove_node(id).is_some() {
+                actually_removed.insert(id.clone());
                 stripped_count += 1;
+            } else if let Some(task) = graph.get_task_mut(id)
+                && task.lifecycle.reopen_intent.is_none()
+            {
+                // Retain the row and fence/reopen it as a new generation. The
+                // WorkSave/convergence adapter may later prove the old source
+                // aborted-preserved; reset itself never erases the evidence.
+                let _ = super::reopen::request(
+                    task,
+                    "reset-meta",
+                    false,
+                    false,
+                    "reset retained system evidence in a new attempt",
+                    LifecycleActor::operator(user.clone()),
+                    "explicit_reset_meta",
+                );
             }
+        }
+        for id in &actually_removed {
             for tid in &all_task_ids {
-                if purge_set.contains(tid) {
-                    continue; // already deleted
+                if actually_removed.contains(tid) {
+                    continue;
                 }
                 if let Some(t) = graph.get_task_mut(tid) {
                     t.after.retain(|a| a != id);
@@ -569,8 +599,8 @@ mod tests {
 
         assert_eq!(report.reset_count, 2, "t + s should be reset");
         assert_eq!(
-            report.stripped_count, 2,
-            ".flip-t + .evaluate-t should be stripped"
+            report.stripped_count, 1,
+            "only evidence-free meta may be stripped"
         );
 
         let g = load_graph(&super::super::graph_path(dir.path())).unwrap();
@@ -582,8 +612,8 @@ mod tests {
         // s reset (was already Open but gets a log entry)
         let s = g.get_task("s").unwrap();
         assert_eq!(s.status, Status::Open);
-        // meta tasks gone
-        assert!(g.get_task(".flip-t").is_none());
+        // Only evidence-free scaffolding is removed; failed legacy evidence is retained.
+        assert!(g.get_task(".flip-t").is_some());
         assert!(g.get_task(".evaluate-t").is_none());
         // p unchanged — it's backward from t, not in forward closure
         assert_eq!(g.get_task("p").unwrap().status, Status::Done);
@@ -700,8 +730,9 @@ mod tests {
             "--also-strip-meta must also clear assigned"
         );
         assert!(t.started_at.is_none());
-        // meta tasks gone (regression check on existing strip behavior)
-        assert!(g.get_task(".flip-t").is_none());
+        // Evidence-free Open scaffolding may be removed, but the failed row is
+        // retained until WorkSave/AbortedPreserved authorizes supersession.
+        assert!(g.get_task(".flip-t").is_some());
         assert!(g.get_task(".evaluate-t").is_none());
     }
 
