@@ -76,11 +76,23 @@ pub(crate) fn scoped_performance_for_agent(
         .evaluations
         .iter()
         .filter(|eval_ref| classify_history_ref(eval_ref, graph) == history_class)
+        // Imported/legacy `Done` rows are not performance evidence. The
+        // assignment one-shot may learn only from a lifecycle-verified
+        // GraphSave projection in the current graph.
+        .filter(|eval_ref| {
+            graph
+                .and_then(|graph| graph.get_task(&eval_ref.task_id))
+                .is_some_and(|task| task.graph_save_completion_disposition().is_some())
+        })
         .map(|eval_ref| eval_ref.score)
         .filter(|score| score.is_finite())
         .collect();
 
     if scores.is_empty() {
+        // Preserve role-routing for bootstrap system agents whose aggregate was
+        // minted before per-task refs existed. This statistic never authorizes
+        // a dependency or projects Done; ordinary work history still requires
+        // an exact task-bound GraphSave above.
         if history_class == AssignmentHistoryClass::SystemAgency
             && agent.performance.evaluations.is_empty()
             && agent.performance.task_count > 0
@@ -736,12 +748,8 @@ mod tests {
         );
 
         assert_eq!(evaluator_actual, ScopedPerformance::default());
-        assert_eq!(programmer_actual.task_count, 1);
-        assert_eq!(programmer_actual.avg_score, Some(0.82));
-        assert!(
-            programmer_actual.avg_score.unwrap_or(0.0) > evaluator_actual.avg_score.unwrap_or(0.0),
-            "actual-work ranking should surface the programmer over system-only evaluator"
-        );
+        assert_eq!(programmer_actual, ScopedPerformance::default());
+        assert_eq!(evaluator_actual, ScopedPerformance::default());
     }
 
     #[test]
@@ -768,8 +776,7 @@ mod tests {
             AssignmentHistoryClass::SystemAgency,
         );
 
-        assert_eq!(evaluator_system.task_count, 2);
-        assert!((evaluator_system.avg_score.unwrap() - 0.95).abs() < f64::EPSILON);
+        assert_eq!(evaluator_system, ScopedPerformance::default());
         assert_eq!(programmer_system, ScopedPerformance::default());
     }
 
@@ -798,7 +805,12 @@ mod tests {
         assert!(catalog.contains("Default Evaluator"));
         assert!(catalog.contains("history=actual_work, score=none, tasks=0"));
         assert!(catalog.contains("Careful Programmer"));
-        assert!(catalog.contains("history=actual_work, score=0.82, tasks=1"));
+        assert_eq!(
+            catalog
+                .matches("history=actual_work, score=none, tasks=0")
+                .count(),
+            2
+        );
 
         let task = Task {
             id: "build-widget".to_string(),
@@ -841,8 +853,7 @@ mod tests {
             AssignmentHistoryClass::SystemAgency,
         );
 
-        assert_eq!(actual.task_count, 1);
-        assert_eq!(actual.avg_score, Some(1.0));
+        assert_eq!(actual, ScopedPerformance::default());
         assert_eq!(system, ScopedPerformance::default());
     }
 

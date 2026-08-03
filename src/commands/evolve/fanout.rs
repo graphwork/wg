@@ -168,8 +168,8 @@ pub fn run_fanout(
     let partition_description = if autopoietic {
         format!(
             "## Evolver Partition ({run_id})\n\n\
-             ### Iteration 0 (Pre-completed)\n\
-             Partitioned {n_evals} evaluations into {n_slices} strategy slices.\n\
+             ### Iteration 0 (Staged, Requires Completion)\n\
+             Staged {n_evals} evaluations into {n_slices} strategy slices. Verify the immutable slice files, then complete this task through the normal SaveTransaction path.\n\
              Pre-evolution snapshot: `.wg/evolve-runs/{run_id}/snapshot-iter-0.json`\n\n\
              ### On Re-Iteration\n\
              When this task re-opens after a cycle reset:\n\
@@ -186,7 +186,7 @@ pub fn run_fanout(
         )
     } else {
         format!(
-            "Partitioned {} evaluations into {} strategy slices.\nRun dir: .wg/evolve-runs/{}",
+            "Staged {} evaluations into {} strategy slices.\nRun dir: .wg/evolve-runs/{}\n\nVerify every `*-slice.json` file matches the run config, then complete this task through the normal SaveTransaction path. Staged bytes alone are not completion evidence.",
             evaluations.len(),
             slices.len(),
             run_id
@@ -202,9 +202,10 @@ pub fn run_fanout(
             format!("partition evolution run {run_id}"),
         ),
         description: Some(partition_description),
-        status: Status::Done, // Already done — we just did the partitioning
+        // Staging files is not a GraphSave. The partition task must pass the
+        // ordinary terminal protocol before it can authorize analyzers.
+        status: Status::Open,
         tags: vec!["evolution".into(), "partition".into()],
-        completed_at: Some(chrono::Utc::now().to_rfc3339()),
         ..Task::default()
     };
     graph.add_node(Node::Task(partition_task));
@@ -976,12 +977,9 @@ mod tests {
             .collect();
         assert!(!analyzers.is_empty(), "Should have at least one analyzer");
 
-        // 1. Partition is Done for iteration 0 (pre-computed)
-        assert_eq!(
-            partition.status,
-            Status::Done,
-            "Partition should be Done for iteration 0"
-        );
+        // 1. Partition bytes are staged, but the task remains Open until an
+        // exact terminal SaveTransaction commits a GraphSave.
+        assert_eq!(partition.status, Status::Open);
 
         // 2. All other tasks are Open
         assert_eq!(synthesize.status, Status::Open);

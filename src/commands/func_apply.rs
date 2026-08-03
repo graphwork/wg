@@ -629,9 +629,12 @@ fn execute_plan_or_fallback(
 ) -> Result<Vec<TaskTemplate>> {
     let planner_task_id = format!("{}-{}", prefix, planning.planner_template.template_id);
 
-    // Check if planner task exists and is Done
+    // A raw legacy `Done` is not planner-output authority. Only the lifecycle
+    // projection of a verified v2 GraphSave may feed generated task text into
+    // a new graph.
     if let Some(task) = graph.get_task(&planner_task_id)
         && task.status == worksgood::graph::Status::Done
+        && task.graph_save_completion_disposition().is_some()
         && let Some(generated) = try_parse_planner_output(task)
     {
         // Validate against constraints if enabled
@@ -1854,7 +1857,7 @@ mod tests {
     }
 
     #[test]
-    fn instantiate_v2_uses_planner_output() {
+    fn instantiate_v2_ignores_legacy_done_planner_output() {
         use worksgood::graph::{LogEntry, Node, Status, Task};
 
         let tmp = TempDir::new().unwrap();
@@ -1929,15 +1932,10 @@ mod tests {
         .unwrap();
 
         let graph = load_graph(dir.join("graph.jsonl")).unwrap();
-        // Should use planner output, not static tasks
-        assert!(
-            graph.get_task("auth-design").is_some(),
-            "planner-generated 'design' task should exist"
-        );
-        assert!(
-            graph.get_task("auth-build").is_some(),
-            "planner-generated 'build' task should exist"
-        );
+        // The unverified legacy Done planner is quarantined as input. Static
+        // fallback is empty in this fixture, so no generated task is created.
+        assert!(graph.get_task("auth-design").is_none());
+        assert!(graph.get_task("auth-build").is_none());
     }
 
     // ── extract_yaml_block tests ──
