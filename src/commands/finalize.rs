@@ -1184,13 +1184,32 @@ fn project_cleaned_success(
                 task.retry_count = task.retry_count.saturating_sub(1);
             }
         }
-        task.completion_disposition = Some(match evidence.disposition {
+        let disposition = match evidence.disposition {
             "landed" => worksgood::graph::CompletionDisposition::Landed,
             "delivered" => worksgood::graph::CompletionDisposition::Delivered,
             _ => worksgood::graph::CompletionDisposition::Reported,
-        });
+        };
+        let already_projected = task.status == worksgood::graph::Status::Done
+            && task.completion_disposition.as_ref() == Some(&disposition)
+            && task.completion_receipt.as_deref() == Some(cleanup_receipt.receipt_id.as_str())
+            && task.completed_at.is_some()
+            && task.failure_class.is_none()
+            && task.failure_reason.is_none()
+            && task.failure_signal.is_none()
+            && task.assigned.is_none();
+        if already_projected {
+            // Cleanup convergence is polled repeatedly by the daemon. Once the
+            // exact durable receipt is projected, the poll must be a true
+            // no-op: rewriting `completed_at`/`last_interaction_at` on every
+            // tick makes terminal tasks appear to run again and continuously
+            // reorders the TUI.
+            return false;
+        }
+        task.completion_disposition = Some(disposition);
         task.completion_receipt = Some(cleanup_receipt.receipt_id.clone());
-        task.completed_at = Some(chrono::Utc::now().to_rfc3339());
+        if task.completed_at.is_none() {
+            task.completed_at = Some(chrono::Utc::now().to_rfc3339());
+        }
         task.failure_class = None;
         task.failure_reason = None;
         task.failure_signal = None;
