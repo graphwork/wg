@@ -46,6 +46,19 @@ struct FailedPrerequisiteFixture {
     trace: DecisionTrace,
 }
 
+#[derive(Debug, Deserialize)]
+struct WorktreeSpawnFixture {
+    name: String,
+    expected_actions: Vec<PlannerActionKind>,
+    trace: DecisionTrace,
+}
+
+fn worktree_spawn_fixture() -> WorktreeSpawnFixture {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("formal/fixtures/daemon/v3/stale_worktree_spawn_owner.json");
+    serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
+}
+
 fn failed_prerequisite_fixtures() -> Vec<FailedPrerequisiteFixture> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("formal/fixtures/daemon/v2");
     let mut paths = fs::read_dir(root)
@@ -102,7 +115,9 @@ fn every_seeded_incident_violates_historical_and_converges_corrected() {
                         worksgood::service::Observation::Task(task) => {
                             task.incidents.iter().next().copied()
                         }
-                        _ => None,
+                        worksgood::service::Observation::WorktreeSpawn(_)
+                        | worksgood::service::Observation::EffectAcknowledged { .. }
+                        | worksgood::service::Observation::Crash => None,
                     })
                     .unwrap()
             )
@@ -306,6 +321,115 @@ fn nonsemantic_budget_property_emits_exactly_one_retry_or_reconciliation_while_s
 }
 
 #[test]
+fn stale_worktree_reclaim_and_current_dispatch_are_exactly_once_and_replayable() {
+    let fixture = worktree_spawn_fixture();
+    let first = replay_bytes(&fixture.trace).unwrap();
+    let second = replay_bytes(&fixture.trace).unwrap();
+    assert_eq!(first, second, "{} replay bytes drifted", fixture.name);
+
+    let report = replay_daemon(&fixture.trace).unwrap();
+    assert!(report.steps.iter().all(|step| step.violations.is_empty()));
+    let actions = report.steps[0]
+        .effects
+        .iter()
+        .map(|effect| effect.action)
+        .collect::<Vec<_>>();
+    assert_eq!(actions, fixture.expected_actions);
+    assert!(report.steps[1].effects.is_empty());
+    assert_eq!(report.final_state.effects.len(), 2);
+    let reclaim = &report.steps[0].effects[0];
+    let dispatch = &report.steps[0].effects[1];
+    assert_eq!(reclaim.action, PlannerActionKind::ReclaimRetainWorktree);
+    assert_eq!(dispatch.action, PlannerActionKind::SpawnAttempt);
+    assert_eq!(reclaim.task.generation, 0);
+    assert_eq!(reclaim.task.fence, 1);
+    assert_eq!(dispatch.task.generation, 1);
+    assert_eq!(dispatch.task.fence, 2);
+    assert_eq!(dispatch.prerequisite.as_ref(), Some(&reclaim.task));
+
+    let mut ack_trace = fixture.trace.clone();
+    ack_trace.observations.truncate(1);
+    for (offset, effect) in report.steps[0].effects.iter().enumerate() {
+        ack_trace
+            .observations
+            .push(worksgood::service::ObservationEnvelope {
+                sequence: 2 + offset as u64,
+                logical_time: 1_785_780_001 + offset as u64,
+                observation: worksgood::service::Observation::EffectAcknowledged {
+                    effect_id: effect.effect_id.clone(),
+                    outcome: worksgood::service::PlannerAckOutcome::Succeeded,
+                },
+            });
+    }
+    let mut repeated = fixture.trace.observations[0].clone();
+    repeated.sequence = 4;
+    repeated.logical_time = 1_785_780_004;
+    ack_trace.observations.push(repeated);
+    let acknowledged = replay_daemon(&ack_trace).unwrap();
+    assert!(acknowledged.steps[3].effects.is_empty());
+    assert_eq!(acknowledged.final_state.effects.len(), 2);
+    assert!(
+        acknowledged
+            .final_state
+            .effects
+            .values()
+            .all(|effect| matches!(
+                effect.status,
+                worksgood::service::planner::EffectStatus::Acknowledged(
+                    worksgood::service::PlannerAckOutcome::Succeeded
+                )
+            ))
+    );
+
+    let mut live = fixture.trace.clone();
+    live.observations.truncate(1);
+    let worksgood::service::Observation::WorktreeSpawn(observation) =
+        &mut live.observations[0].observation
+    else {
+        panic!("fixture must be a worktree spawn observation")
+    };
+    observation.owner = worksgood::service::PlannerOwnerEvidence::AuthenticatedLive {
+        actor_id: worksgood::service::PlannerOpaqueId::new("agent-live").unwrap(),
+        lease_id: worksgood::service::PlannerOpaqueId::new("attempt-live").unwrap(),
+    };
+    let protected = replay_daemon(&live).unwrap();
+    assert!(protected.steps[0].violations.is_empty());
+    assert!(protected.steps[0].effects.is_empty());
+
+    let mut unproven = fixture.trace.clone();
+    unproven.observations.truncate(1);
+    let worksgood::service::Observation::WorktreeSpawn(observation) =
+        &mut unproven.observations[0].observation
+    else {
+        unreachable!()
+    };
+    observation.owner = worksgood::service::PlannerOwnerEvidence::None;
+    let refused = replay_daemon(&unproven).unwrap();
+    assert!(
+        refused.steps[0]
+            .violations
+            .contains(&PlannerViolationCode::UnprovenWorktreeOwnership)
+    );
+    assert!(refused.steps[0].effects.is_empty());
+
+    let mut missing_evidence = fixture.trace.clone();
+    missing_evidence.observations.truncate(1);
+    let worksgood::service::Observation::WorktreeSpawn(observation) =
+        &mut missing_evidence.observations[0].observation
+    else {
+        unreachable!()
+    };
+    observation.owner_token = worksgood::service::PlannerEvidenceSlot::Absent;
+    let refused = replay_daemon(&missing_evidence).unwrap();
+    assert!(
+        refused.steps[0]
+            .violations
+            .contains(&PlannerViolationCode::UnprovenWorktreeOwnership)
+    );
+    assert!(refused.steps[0].effects.is_empty());
+}
+
+#[test]
 fn fixture_codes_cover_all_required_incidents() {
     let observed = load_fixtures()
         .into_iter()
@@ -316,7 +440,9 @@ fn fixture_codes_cover_all_required_incidents() {
                 .into_iter()
                 .flat_map(|entry| match entry.observation {
                     worksgood::service::Observation::Task(task) => task.incidents,
-                    _ => Default::default(),
+                    worksgood::service::Observation::WorktreeSpawn(_)
+                    | worksgood::service::Observation::EffectAcknowledged { .. }
+                    | worksgood::service::Observation::Crash => Default::default(),
                 })
         })
         .collect::<std::collections::BTreeSet<_>>();

@@ -2992,3 +2992,10 @@ script = "scenarios/failed_prerequisite_convergence.sh"
 owners = ["fix-nonsemantic-failed-dependency-convergence"]
 description = "Candidate-binary credential-free real-daemon regression for the live atomic-save rollout halt: with all owners exited, an unfinished descendant whose only prerequisite is a typed zero-progress source failure cannot remain silently blocked. The daemon emits exactly one bounded source retry, preserves the exact session evidence in the lifecycle ledger, creates a durable convergence state/deadline, and makes the source runnable without retrying semantic rejection."
 timeout_seconds = 120
+
+[[scenario]]
+name = "stale_worktree_spawn_owner_convergence"
+script = "scenarios/stale_worktree_spawn_owner_convergence.sh"
+owners = ["fix-stale-worktree-spawn-owner-convergence"]
+description = "Candidate-binary real-daemon regression seeded with a proven-dead registered spawn owner, private wg-spawn-owner token, dirty WIP, and exact observer state: preparation records one replay-safe reclaim/retain acknowledgement without editing evidence, dispatches one current attempt in the reused verified worktree, protects generation/fence and remains breaker/Dispatch-falloff neutral; the v3 pure trace replays byte-identically."
+timeout_seconds = 180
