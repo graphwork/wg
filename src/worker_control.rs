@@ -11,10 +11,16 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::io::{Seek, Write};
 
-pub const WORKER_CONTROL_PROTOCOL: &str = "worksgood-worker-control-v1";
+use crate::completion_evidence::{AttemptSaveKey, content_cid};
+use crate::save_transaction::{
+    SaveFact, SavePhase, SaveTransactionKernel, SaveTransactionState, SaveTransitionRequest,
+};
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+
+pub const WORKER_CONTROL_PROTOCOL: &str = "worksgood-worker-control-v2";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -54,6 +60,11 @@ pub struct AttemptCapabilityBinding {
     pub agent_id: String,
     pub token_sha256: String,
     pub issued_at: String,
+    /// Exact immutable source tuple and root selected before launch. Brokered
+    /// completion must use these bytes, never reconstruct a path from the
+    /// mutable agent registry or daemon-thread environment.
+    pub save_source: AttemptSaveKey,
+    pub worktree_path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revoked_at: Option<String>,
     pub allowed_operations: Vec<WorkerOperationKind>,
@@ -105,9 +116,21 @@ impl WorkerOperationKind {
             Self::Heartbeat,
         ]
     }
+
+    fn after_terminal_reservation_operations() -> Vec<Self> {
+        vec![
+            Self::Show,
+            Self::Context,
+            Self::MessageRead,
+            Self::MessagePoll,
+            Self::ArtifactList,
+            Self::DependencyArtifactRead,
+            Self::Heartbeat,
+        ]
+    }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "operation", rename_all = "snake_case")]
 pub enum WorkerOperation {
     Show {
@@ -207,7 +230,7 @@ impl WorkerOperation {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum FinishHandoffAction {
     Settle,
@@ -254,6 +277,11 @@ pub enum RequestJournalState {
 pub struct RequestJournalEntry {
     pub token_sha256: String,
     pub operation: WorkerOperationKind,
+    /// Content digest of the complete operation, not merely its enum tag.
+    /// Reusing an intent key with changed flags/body is a conflict.
+    pub operation_cid: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub save_transaction_id: Option<String>,
     pub started_at: String,
     pub state: RequestJournalState,
 }
@@ -350,6 +378,66 @@ pub fn token_digest(token: &str) -> String {
     hex::encode(Sha256::digest(token.as_bytes()))
 }
 
+fn digest_text(value: impl AsRef<[u8]>) -> String {
+    format!("b3:{}", blake3::hash(value.as_ref()).to_hex())
+}
+
+fn worktree_identity(path: &Path) -> Result<(String, String)> {
+    let canonical = path
+        .canonicalize()
+        .with_context(|| format!("canonicalize bound worktree {}", path.display()))?;
+    let git_marker = fs::read(canonical.join(".git")).unwrap_or_default();
+    let metadata = fs::metadata(&canonical)?;
+    #[cfg(unix)]
+    let identity_material = {
+        use std::os::unix::fs::MetadataExt;
+        format!(
+            "{}\0{}\0{}\0{}",
+            canonical.display(),
+            metadata.dev(),
+            metadata.ino(),
+            String::from_utf8_lossy(&git_marker)
+        )
+    };
+    #[cfg(not(unix))]
+    let identity_material = format!(
+        "{}\0{}",
+        canonical.display(),
+        String::from_utf8_lossy(&git_marker)
+    );
+    Ok((
+        canonical.to_string_lossy().into_owned(),
+        digest_text(identity_material),
+    ))
+}
+
+fn bound_worktree(dir: &Path, agent_id: &str) -> Result<(String, String)> {
+    let project = dir
+        .parent()
+        .context("graph directory has no project root")?;
+    let candidate = project.join(".wg-worktrees").join(agent_id);
+    match worktree_identity(&candidate) {
+        Ok(identity) => Ok(identity),
+        Err(_) => {
+            // Capability minting also serves non-worktree unit/inline tasks.
+            // Bind the selected path now, but terminal handoff will refuse it
+            // until that exact root exists and its filesystem identity verifies.
+            let path = candidate.to_string_lossy().into_owned();
+            Ok((path.clone(), digest_text(format!("missing:{path}"))))
+        }
+    }
+}
+
+pub fn verify_bound_worktree(binding: &AttemptCapabilityBinding) -> Result<PathBuf> {
+    let (observed_path, observed_digest) = worktree_identity(Path::new(&binding.worktree_path))?;
+    if observed_path != binding.worktree_path
+        || observed_digest != binding.save_source.worktree_identity_digest
+    {
+        bail!("worker_control.worktree_identity_mismatch");
+    }
+    Ok(PathBuf::from(observed_path))
+}
+
 /// Mint an opaque bearer capability.  Only its digest is made durable.
 pub fn mint_attempt_capability(
     dir: &Path,
@@ -362,11 +450,37 @@ pub fn mint_attempt_capability(
 ) -> Result<(String, AttemptCapabilityBinding)> {
     let mut random = [0_u8; 32];
     getrandom::getrandom(&mut random).context("generate worker capability")?;
-    let token = format!("wgcap_v1_{}", hex::encode(random));
+    let token = format!("wgcap_v2_{}", hex::encode(random));
     let digest = token_digest(&token);
+    let graph_id = load_or_create_graph_identity(dir)?;
+    let graph = crate::parser::load_graph(dir.join("graph.jsonl")).ok();
+    let task = graph.as_ref().and_then(|graph| graph.get_task(task_id));
+    let process_epoch = task.map_or(0, |task| task.lifecycle.pi_process_epoch);
+    let route_snapshot_cid = task
+        .and_then(|task| task.lifecycle.pi_continuation.as_ref())
+        .map(|proof| proof.route_snapshot_digest.clone())
+        .unwrap_or_else(|| digest_text(format!("route:{task_id}:{generation}:{attempt_id}")));
+    let session_proof_digest = task
+        .and_then(|task| task.lifecycle.pi_continuation.as_ref())
+        .map(|proof| proof.session_proof_digest.clone())
+        .unwrap_or_else(|| digest_text(format!("session:{task_id}:{generation}:{attempt_id}")));
+    let (worktree_path, worktree_identity_digest) = bound_worktree(dir, agent_id)?;
+    let save_source = AttemptSaveKey {
+        graph_id: graph_id.clone(),
+        task_id: task_id.to_string(),
+        generation,
+        attempt_id: attempt_id.to_string(),
+        attempt_fence: fence,
+        worktree_lease_epoch: lease_epoch,
+        process_epoch,
+        wrapper_epoch: process_epoch.max(1),
+        route_snapshot_cid,
+        session_proof_digest,
+        worktree_identity_digest,
+    };
     let binding = AttemptCapabilityBinding {
         protocol: WORKER_CONTROL_PROTOCOL.to_string(),
-        graph_id: load_or_create_graph_identity(dir)?,
+        graph_id,
         task_id: task_id.to_string(),
         generation,
         attempt_id: attempt_id.to_string(),
@@ -375,6 +489,8 @@ pub fn mint_attempt_capability(
         agent_id: agent_id.to_string(),
         token_sha256: digest.clone(),
         issued_at: Utc::now().to_rfc3339(),
+        save_source,
+        worktree_path,
         revoked_at: None,
         allowed_operations: WorkerOperationKind::default_attempt_operations(),
     };
@@ -423,7 +539,7 @@ pub fn replay_request(
     dir: &Path,
     request_id: &str,
     token: &str,
-    operation: WorkerOperationKind,
+    operation: &WorkerOperation,
 ) -> Result<Option<BeginRequest>> {
     validate_request_id(request_id)?;
     let digest = token_digest(token);
@@ -431,7 +547,11 @@ pub fn replay_request(
     let Some(existing) = registry.requests.get(request_id) else {
         return Ok(None);
     };
-    if existing.token_sha256 != digest || existing.operation != operation {
+    let operation_cid = content_cid(operation).map_err(anyhow::Error::msg)?;
+    if existing.token_sha256 != digest
+        || existing.operation != operation.kind()
+        || existing.operation_cid != operation_cid
+    {
         bail!("worker_control.request_id_conflict");
     }
     Ok(Some(match &existing.state {
@@ -447,7 +567,7 @@ pub fn begin_request(
     dir: &Path,
     request_id: &str,
     token: &str,
-    operation: WorkerOperationKind,
+    operation: &WorkerOperation,
 ) -> Result<BeginRequest> {
     validate_request_id(request_id)?;
     if let Some(existing) = replay_request(dir, request_id, token, operation)? {
@@ -459,7 +579,9 @@ pub fn begin_request(
         request_id.to_string(),
         RequestJournalEntry {
             token_sha256: digest,
-            operation,
+            operation: operation.kind(),
+            operation_cid: content_cid(operation).map_err(anyhow::Error::msg)?,
+            save_transaction_id: None,
             started_at: Utc::now().to_rfc3339(),
             state: RequestJournalState::Pending,
         },
@@ -480,6 +602,433 @@ pub fn complete_request(
         .ok_or_else(|| anyhow::anyhow!("worker_control.request_intent_missing"))?;
     entry.state = RequestJournalState::Completed(response);
     save_registry(dir, &registry)
+}
+
+fn completion_root(dir: &Path) -> PathBuf {
+    dir.join("completion").join("v2")
+}
+
+fn transaction_slot(transaction_id: &str) -> String {
+    blake3::hash(transaction_id.as_bytes()).to_hex().to_string()
+}
+
+fn transaction_head_path(dir: &Path, transaction_id: &str) -> PathBuf {
+    completion_root(dir)
+        .join("transactions")
+        .join(transaction_slot(transaction_id))
+        .join("head.json")
+}
+
+fn transaction_journal_path(dir: &Path, transaction_id: &str) -> PathBuf {
+    completion_root(dir)
+        .join("journal")
+        .join(format!("{}.jsonl", transaction_slot(transaction_id)))
+}
+
+pub fn store_completion_object<T: Serialize>(dir: &Path, value: &T) -> Result<String> {
+    let cid = content_cid(value).map_err(anyhow::Error::msg)?;
+    let objects = completion_root(dir).join("objects");
+    fs::create_dir_all(&objects)?;
+    atomic_write(
+        &objects.join(transaction_slot(&cid)),
+        &serde_json::to_vec(value)?,
+    )?;
+    Ok(cid)
+}
+
+pub fn load_save_transaction(
+    dir: &Path,
+    transaction_id: &str,
+) -> Result<Option<SaveTransactionState>> {
+    let journal = transaction_journal_path(dir, transaction_id);
+    if journal.exists() {
+        let (state, _, _) = read_save_journal(dir, transaction_id)?;
+        if let Some(state) = &state {
+            // head.json is a rebuildable projection. Repair a missing/stale
+            // head after a crash between journal fsync and atomic replacement.
+            let head = transaction_head_path(dir, transaction_id);
+            let head_matches = fs::read(&head)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<SaveTransactionState>(&bytes).ok())
+                .is_some_and(|head| head == *state);
+            if !head_matches {
+                atomic_write(&head, &serde_json::to_vec_pretty(state)?)?;
+            }
+        }
+        return Ok(state);
+    }
+
+    // Compatibility for a head written before the journal adapter landed.
+    let path = transaction_head_path(dir, transaction_id);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let state: SaveTransactionState = serde_json::from_slice(&fs::read(&path)?)
+        .with_context(|| format!("parse SaveTransaction head {}", path.display()))?;
+    if state.transaction_id != transaction_id {
+        bail!("worker_control.save_transaction_slot_mismatch");
+    }
+    Ok(Some(state))
+}
+
+pub fn list_save_transactions(dir: &Path) -> Result<Vec<SaveTransactionState>> {
+    let mut transaction_ids = std::collections::BTreeSet::new();
+    let transactions = completion_root(dir).join("transactions");
+    if transactions.exists() {
+        for entry in fs::read_dir(transactions)? {
+            let head = entry?.path().join("head.json");
+            if let Ok(bytes) = fs::read(&head)
+                && let Ok(state) = serde_json::from_slice::<SaveTransactionState>(&bytes)
+            {
+                transaction_ids.insert(state.transaction_id);
+            }
+        }
+    }
+    // A crash may leave the authoritative journal fsynced without head.json.
+    // Read only the transaction id candidate here; load_save_transaction then
+    // validates the complete checksum chain and every referenced state object.
+    let journals = completion_root(dir).join("journal");
+    if journals.exists() {
+        for entry in fs::read_dir(journals)? {
+            let bytes = fs::read(entry?.path())?;
+            let Some(line) = bytes.split_inclusive(|byte| *byte == b'\n').next() else {
+                continue;
+            };
+            if !line.ends_with(b"\n") {
+                continue;
+            }
+            if let Ok(frame) = serde_json::from_slice::<SaveJournalFrame>(&line[..line.len() - 1]) {
+                transaction_ids.insert(frame.transaction_id);
+            }
+        }
+    }
+    let mut states = Vec::new();
+    for transaction_id in transaction_ids {
+        if let Some(state) = load_save_transaction(dir, &transaction_id)? {
+            states.push(state);
+        }
+    }
+    states.sort_by(|a, b| a.transaction_id.cmp(&b.transaction_id));
+    Ok(states)
+}
+
+pub fn save_transaction_matches_task(
+    state: &SaveTransactionState,
+    task: &crate::graph::Task,
+) -> bool {
+    state.source.task_id == task.id
+        && state.source.generation == task.lifecycle.generation
+        && state.source.attempt_fence == task.lifecycle.fence
+        && task
+            .lifecycle
+            .current_attempt
+            .as_ref()
+            .is_some_and(|attempt| attempt.id == state.source.attempt_id)
+}
+
+pub fn save_transaction_for_task(
+    dir: &Path,
+    task: &crate::graph::Task,
+) -> Result<Option<SaveTransactionState>> {
+    Ok(list_save_transactions(dir)?
+        .into_iter()
+        .filter(|state| save_transaction_matches_task(state, task))
+        .max_by_key(|state| state.revision))
+}
+
+pub fn save_transaction_bindings(
+    dir: &Path,
+) -> Result<Vec<(AttemptCapabilityBinding, SaveTransactionState)>> {
+    let registry = load_registry(dir)?;
+    let mut bound = Vec::new();
+    for binding in registry.capabilities.values() {
+        let transaction_id = binding
+            .save_source
+            .transaction_id()
+            .map_err(anyhow::Error::msg)?;
+        if let Some(state) = load_save_transaction(dir, &transaction_id)? {
+            bound.push((binding.clone(), state));
+        }
+    }
+    bound.sort_by(|(left, _), (right, _)| {
+        left.save_source
+            .task_id
+            .cmp(&right.save_source.task_id)
+            .then_with(|| {
+                left.save_source
+                    .generation
+                    .cmp(&right.save_source.generation)
+            })
+            .then_with(|| {
+                left.save_source
+                    .attempt_id
+                    .cmp(&right.save_source.attempt_id)
+            })
+    });
+    bound.dedup_by(|(_, left), (_, right)| left.transaction_id == right.transaction_id);
+    Ok(bound)
+}
+
+pub fn request_save_transaction(
+    dir: &Path,
+    request_id: &str,
+) -> Result<Option<SaveTransactionState>> {
+    let mut registry = load_registry(dir)?;
+    if let Some(transaction_id) = registry
+        .requests
+        .get(request_id)
+        .and_then(|entry| entry.save_transaction_id.as_deref())
+    {
+        return load_save_transaction(dir, transaction_id);
+    }
+
+    // Crash cut: the SaveTransaction frame may be durable while the request
+    // journal's rebuildable transaction pointer is not. Discover the exact
+    // idempotency key from authoritative transaction heads and repair only
+    // that cache link; never execute the terminal operation again.
+    let discovered = list_save_transactions(dir)?
+        .into_iter()
+        .find(|state| state.requests.contains_key(request_id));
+    if let Some(state) = &discovered
+        && let Some(entry) = registry.requests.get_mut(request_id)
+    {
+        entry.save_transaction_id = Some(state.transaction_id.clone());
+        save_registry(dir, &registry)?;
+    }
+    Ok(discovered)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SaveJournalFrame {
+    schema_version: u32,
+    transaction_id: String,
+    revision: u64,
+    prior_phase: SavePhase,
+    next_phase: SavePhase,
+    action_key: String,
+    idempotency_key: String,
+    state_cid: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    prior_frame_cid: Option<String>,
+    committed_at: String,
+    frame_cid: String,
+}
+
+#[derive(Serialize)]
+struct SaveJournalFrameMaterial<'a> {
+    schema_version: u32,
+    transaction_id: &'a str,
+    revision: u64,
+    prior_phase: SavePhase,
+    next_phase: SavePhase,
+    action_key: &'a str,
+    idempotency_key: &'a str,
+    state_cid: &'a str,
+    prior_frame_cid: Option<&'a str>,
+    committed_at: &'a str,
+}
+
+fn frame_cid(frame: &SaveJournalFrame) -> Result<String> {
+    content_cid(&SaveJournalFrameMaterial {
+        schema_version: frame.schema_version,
+        transaction_id: &frame.transaction_id,
+        revision: frame.revision,
+        prior_phase: frame.prior_phase,
+        next_phase: frame.next_phase,
+        action_key: &frame.action_key,
+        idempotency_key: &frame.idempotency_key,
+        state_cid: &frame.state_cid,
+        prior_frame_cid: frame.prior_frame_cid.as_deref(),
+        committed_at: &frame.committed_at,
+    })
+    .map_err(anyhow::Error::msg)
+}
+
+/// Return the last checksum-valid state, its frame CID, and the byte boundary
+/// through which the journal is valid. A torn/corrupt tail is ignored and
+/// truncated before the next append; no later frame can validate across it.
+fn read_save_journal(
+    dir: &Path,
+    transaction_id: &str,
+) -> Result<(Option<SaveTransactionState>, Option<String>, u64)> {
+    let path = transaction_journal_path(dir, transaction_id);
+    if !path.exists() {
+        return Ok((None, None, 0));
+    }
+    let bytes = fs::read(&path)?;
+    let mut valid_len = 0_u64;
+    let mut prior_frame_cid: Option<String> = None;
+    let mut prior_state: Option<SaveTransactionState> = None;
+    for line in bytes.split_inclusive(|byte| *byte == b'\n') {
+        if !line.ends_with(b"\n") {
+            break;
+        }
+        let Ok(frame) = serde_json::from_slice::<SaveJournalFrame>(&line[..line.len() - 1]) else {
+            break;
+        };
+        if frame.schema_version != 2
+            || frame.transaction_id != transaction_id
+            || frame.prior_frame_cid != prior_frame_cid
+            || frame_cid(&frame)? != frame.frame_cid
+        {
+            break;
+        }
+        let object = completion_root(dir)
+            .join("objects")
+            .join(transaction_slot(&frame.state_cid));
+        let Ok(state_bytes) = fs::read(object) else {
+            break;
+        };
+        let Ok(state) = serde_json::from_slice::<SaveTransactionState>(&state_bytes) else {
+            break;
+        };
+        if state.transaction_id != transaction_id
+            || state.revision != frame.revision
+            || state.phase != frame.next_phase
+            || content_cid(&state).map_err(anyhow::Error::msg)? != frame.state_cid
+            || prior_state.as_ref().is_some_and(|prior| {
+                prior.revision.saturating_add(1) != state.revision
+                    || prior.phase != frame.prior_phase
+            })
+        {
+            break;
+        }
+        valid_len = valid_len.saturating_add(line.len() as u64);
+        prior_frame_cid = Some(frame.frame_cid);
+        prior_state = Some(state);
+    }
+    Ok((prior_state, prior_frame_cid, valid_len))
+}
+
+fn save_commit_mutex() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+pub fn commit_save_transition(
+    dir: &Path,
+    request: SaveTransitionRequest,
+) -> Result<SaveTransactionState> {
+    let _guard = save_commit_mutex()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let transaction_id = request
+        .source
+        .transaction_id()
+        .map_err(anyhow::Error::msg)?;
+    let current = load_save_transaction(dir, &transaction_id)?
+        .unwrap_or(SaveTransactionState::new(request.source.clone()).map_err(anyhow::Error::msg)?);
+    let prior_phase = current.phase;
+    let action_key = request.action_key.clone();
+    let idempotency_key = request.idempotency_key.clone();
+    let plan = SaveTransactionKernel::transition(&current, request).map_err(anyhow::Error::msg)?;
+    if plan.duplicate {
+        return Ok(plan.state);
+    }
+
+    let objects = completion_root(dir).join("objects");
+    fs::create_dir_all(&objects)?;
+    let state_cid = content_cid(&plan.state).map_err(anyhow::Error::msg)?;
+    atomic_write(
+        &objects.join(transaction_slot(&state_cid)),
+        &serde_json::to_vec(&plan.state)?,
+    )?;
+    let journal = transaction_journal_path(dir, &transaction_id);
+    fs::create_dir_all(journal.parent().context("journal has no parent")?)?;
+    let (_, prior_frame_cid, valid_len) = read_save_journal(dir, &transaction_id)?;
+    let mut frame = SaveJournalFrame {
+        schema_version: 2,
+        transaction_id: transaction_id.clone(),
+        revision: plan.state.revision,
+        prior_phase,
+        next_phase: plan.state.phase,
+        action_key,
+        idempotency_key,
+        state_cid,
+        prior_frame_cid,
+        committed_at: Utc::now().to_rfc3339(),
+        frame_cid: String::new(),
+    };
+    frame.frame_cid = frame_cid(&frame)?;
+    let mut options = OpenOptions::new();
+    options.create(true).write(true);
+    let mut file = options.open(&journal)?;
+    file.set_len(valid_len)?;
+    file.seek(std::io::SeekFrom::Start(valid_len))?;
+    serde_json::to_writer(&mut file, &frame)?;
+    file.write_all(b"\n")?;
+    file.sync_all()?;
+    if let Some(parent) = journal.parent()
+        && let Ok(parent_file) = fs::File::open(parent)
+    {
+        parent_file.sync_all()?;
+    }
+    atomic_write(
+        &transaction_head_path(dir, &transaction_id),
+        &serde_json::to_vec_pretty(&plan.state)?,
+    )?;
+    Ok(plan.state)
+}
+
+pub fn prepare_done_transaction(
+    dir: &Path,
+    binding: &AttemptCapabilityBinding,
+    request_id: &str,
+    operation: &WorkerOperation,
+) -> Result<SaveTransactionState> {
+    if !matches!(operation, WorkerOperation::DoneHandoff { .. }) {
+        bail!("worker_control.save_intent_operation_invalid");
+    }
+    let transaction_id = binding
+        .save_source
+        .transaction_id()
+        .map_err(anyhow::Error::msg)?;
+    verify_bound_worktree(binding)?;
+    let operation_cid = store_completion_object(dir, operation)?;
+    let state = load_save_transaction(dir, &transaction_id)?.unwrap_or(
+        SaveTransactionState::new(binding.save_source.clone()).map_err(anyhow::Error::msg)?,
+    );
+    let next = commit_save_transition(
+        dir,
+        SaveTransitionRequest {
+            source: binding.save_source.clone(),
+            expected_revision: state.revision,
+            expected_phase: state.phase,
+            next_phase: SavePhase::Prepared,
+            idempotency_key: request_id.to_string(),
+            action_key: format!("prepare:{request_id}"),
+            fact: SaveFact::Evidence {
+                cid: operation_cid,
+                binding: None,
+            },
+        },
+    )?;
+    let mut registry = load_registry(dir)?;
+    if let Some(entry) = registry.requests.get_mut(request_id) {
+        entry.save_transaction_id = Some(transaction_id);
+    }
+    if let Some(capability) = registry.capabilities.get_mut(&binding.token_sha256) {
+        capability.allowed_operations =
+            WorkerOperationKind::after_terminal_reservation_operations();
+    }
+    save_registry(dir, &registry)?;
+    Ok(next)
+}
+
+pub fn save_transaction_for_agent(
+    dir: &Path,
+    agent_id: &str,
+) -> Result<Option<SaveTransactionState>> {
+    Ok(save_transaction_bindings(dir)?
+        .into_iter()
+        .filter(|(binding, _)| binding.agent_id == agent_id)
+        .map(|(_, state)| state)
+        .max_by(|left, right| {
+            left.source
+                .generation
+                .cmp(&right.source.generation)
+                .then_with(|| left.revision.cmp(&right.revision))
+        }))
 }
 
 pub fn append_audit(dir: &Path, event: &WorkerAuditEvent) -> Result<()> {
@@ -525,6 +1074,78 @@ mod tests {
         assert_eq!(status.mode, FilesystemIsolationMode::Degraded);
         assert!(!status.enforced);
         assert!(status.reason.contains("same-uid"));
+    }
+
+    #[test]
+    fn transaction_journal_rebuilds_head_and_truncates_torn_tail() {
+        let project = tempfile::tempdir().unwrap();
+        let dir = project.path().join(".wg");
+        fs::create_dir_all(&dir).unwrap();
+        let worktree = project.path().join(".wg-worktrees/agent-1");
+        fs::create_dir_all(&worktree).unwrap();
+        fs::write(worktree.join(".git"), "gitdir: test\n").unwrap();
+        let row = serde_json::json!({
+            "kind": "task",
+            "id": "task-a",
+            "title": "Task A",
+            "status": "in-progress",
+            "assigned": "agent-1",
+            "lifecycle": {
+                "generation": 1,
+                "fence": 2,
+                "attempt_sequence": 1,
+                "current_attempt": {
+                    "id": "attempt-1-1",
+                    "generation": 1,
+                    "fence": 2,
+                    "actor_id": "agent-1"
+                }
+            }
+        });
+        fs::write(dir.join("graph.jsonl"), format!("{row}\n")).unwrap();
+        let (token, binding) =
+            mint_attempt_capability(&dir, "task-a", 1, "attempt-1-1", 2, 2, "agent-1").unwrap();
+        let operation = WorkerOperation::DoneHandoff {
+            converged: false,
+            full_smoke: false,
+        };
+        begin_request(&dir, "intent-1", &token, &operation).unwrap();
+        let prepared = prepare_done_transaction(&dir, &binding, "intent-1", &operation).unwrap();
+        let head = transaction_head_path(&dir, &prepared.transaction_id);
+        fs::remove_file(&head).unwrap();
+        assert_eq!(
+            load_save_transaction(&dir, &prepared.transaction_id)
+                .unwrap()
+                .unwrap(),
+            prepared
+        );
+        let journal = transaction_journal_path(&dir, &prepared.transaction_id);
+        let mut file = OpenOptions::new().append(true).open(&journal).unwrap();
+        file.write_all(b"{torn").unwrap();
+        file.sync_all().unwrap();
+        let loaded = load_save_transaction(&dir, &prepared.transaction_id)
+            .unwrap()
+            .unwrap();
+        let next = commit_save_transition(
+            &dir,
+            SaveTransitionRequest {
+                source: loaded.source.clone(),
+                expected_revision: loaded.revision,
+                expected_phase: loaded.phase,
+                next_phase: SavePhase::Quiescing,
+                idempotency_key: "quiesce-1".into(),
+                action_key: "quiesce-1".into(),
+                fact: SaveFact::Evidence {
+                    cid: "quiescence-cid".into(),
+                    binding: None,
+                },
+            },
+        )
+        .unwrap();
+        assert_eq!(next.phase, SavePhase::Quiescing);
+        let journal_bytes = fs::read(journal).unwrap();
+        assert!(!journal_bytes.windows(5).any(|window| window == b"{torn"));
+        assert!(journal_bytes.ends_with(b"\n"));
     }
 
     #[test]

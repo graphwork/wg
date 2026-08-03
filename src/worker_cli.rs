@@ -21,11 +21,23 @@ fn task_matches(task: &str) -> Result<()> {
     Ok(())
 }
 
-fn request_id() -> String {
-    std::env::var("WG_WORKER_REQUEST_ID")
+fn request_id(operation: &WorkerOperation, capability: &str) -> String {
+    if let Some(value) = std::env::var("WG_WORKER_REQUEST_ID")
         .ok()
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| format!("worker:{}", uuid::Uuid::now_v7()))
+    {
+        return value;
+    }
+    if matches!(operation, WorkerOperation::DoneHandoff { .. }) {
+        // Done is a terminal intent, not an ordinary RPC. Reinvoking the CLI
+        // after a lost response must reuse the same key; changed flags then
+        // conflict against the broker's full-operation CID under that key.
+        return format!(
+            "intent:{}",
+            worksgood::worker_control::token_digest(capability)
+        );
+    }
+    format!("worker:{}", uuid::Uuid::now_v7())
 }
 
 fn render_response(
@@ -99,7 +111,7 @@ fn send(operation: WorkerOperation) -> Result<()> {
         std::env::var("WG_WORKER_CAPABILITY").context("worker capability token is unavailable")?;
     let envelope = WorkerRequestEnvelope {
         protocol: WORKER_CONTROL_PROTOCOL.to_string(),
-        request_id: request_id(),
+        request_id: request_id(&operation, &capability),
         capability,
         operation: operation.clone(),
     };
