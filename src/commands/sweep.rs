@@ -29,6 +29,13 @@ use worksgood::service::registry::{AgentRegistry, AgentStatus};
 
 use super::{graph_path, is_process_alive};
 
+fn has_replayable_save_transaction(dir: &Path, task: &Task) -> bool {
+    worksgood::worker_control::save_transaction_for_task(dir, task)
+        .ok()
+        .flatten()
+        .is_some()
+}
+
 fn has_exact_durable_success(dir: &Path, task: &Task) -> bool {
     worksgood::finalization::FinalizationStore::open(dir)
         .and_then(|store| store.load_task(&task.id))
@@ -95,7 +102,9 @@ pub fn find_orphaned_tasks(dir: &Path) -> Result<Vec<OrphanedTask>> {
         // A durable exact-attempt promotion/output is already terminal
         // success. Sweep may report neither a failure nor a replacement owner;
         // task-owned cleanup/convergence owns the remaining projection.
-        if task.status == Status::InProgress && has_exact_durable_success(dir, task) {
+        if task.status == Status::InProgress
+            && (has_replayable_save_transaction(dir, task) || has_exact_durable_success(dir, task))
+        {
             continue;
         }
         // A policy-valid Pi continuation authorization is the lifecycle
@@ -477,7 +486,10 @@ pub fn reconcile_orphaned_tasks(dir: &Path, graph_path: &Path) -> Result<usize> 
                 // A task-owned accepted promotion/output is stronger than a
                 // dead-process observation. Exact cleanup/convergence retains
                 // authority and the orphan sweep must stay observational.
-                if task.status == Status::InProgress && has_exact_durable_success(dir, task) {
+                if task.status == Status::InProgress
+                    && (has_replayable_save_transaction(dir, task)
+                        || has_exact_durable_success(dir, task))
+                {
                     return None;
                 }
                 // Pi's exact process-exit/finalization lane remains authority

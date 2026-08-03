@@ -82,6 +82,20 @@ fn cleanup_and_count_alive(
         );
     }
 
+    // A brokered terminal intent is already durable authority. Re-read its
+    // SaveTransaction after triage has established exact owner death and
+    // replay only reducer-authorized mechanics before any generic orphan lane.
+    match worksgood::service::convergence::replay_dead_owner_save_transactions(dir) {
+        Ok(actions) if !actions.is_empty() => eprintln!(
+            "[dispatcher] Dead-owner SaveTransaction convergence: {:?}",
+            actions
+        ),
+        Ok(_) => {}
+        Err(error) => eprintln!(
+            "[dispatcher] Dead-owner SaveTransaction convergence held fail-closed: {error:#}"
+        ),
+    }
+
     // A dead Pi wrapper is not a generic lost attempt. Consume its durable
     // finish handoff before orphan sweeping: receipted transactions advance
     // exactly once; an absent transaction fences the dead tuple and reopens
@@ -4446,6 +4460,16 @@ fn spawn_agents_for_ready_tasks(
         match worksgood::service::admit_goal_action(dir, task, &convergence_policy, Utc::now()) {
             Ok(worksgood::service::ConvergenceAdmission::Allowed { .. }) => {}
             Ok(worksgood::service::ConvergenceAdmission::Deferred { until, reason }) => {
+                // A durable future wake is a forward disposition, not an
+                // unexplained zero-spawn tick. Keep this out of the graph
+                // admission ledger (which would look like authoritative
+                // progress and reset falloff), but report it to the daemon's
+                // exhaustiveness monitor.
+                summary.admission_deferred_tasks =
+                    summary.admission_deferred_tasks.saturating_add(1);
+                summary
+                    .admission_deferred_reason
+                    .get_or_insert_with(|| format!("{reason} (durable convergence wake {until})"));
                 eprintln!(
                     "[reconciler] Deferring '{}': {} (next wake {})",
                     task.id, reason, until

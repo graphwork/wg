@@ -3917,6 +3917,15 @@ pub fn run_daemon(
                                 "Spawn circuit breaker tripped on {} task(s) this tick — they are skipped (per-task) and self-heal via cooldown / `wg retry` / clear-on-success. Other tasks dispatch normally.",
                                 result.spawn_breaker_tripped_tasks
                             ));
+                        } else if let Ok(Some(deadline)) = worksgood::service::earliest_wake(&dir)
+                            && deadline > chrono::Utc::now()
+                        {
+                            // The durable convergence scheduler already owns
+                            // the next forward action. A future wake is not a
+                            // planner wedge and must never pause the daemon.
+                            logger.info(&format!(
+                                "Dispatch deferred by durable convergence wake at {deadline}"
+                            ));
                         } else {
                             // "No blockers" with no runnable action, live owner,
                             // explicit wait, or convergence deadline is a planner
@@ -3927,12 +3936,16 @@ pub fn run_daemon(
                                 let graph_id = worksgood::service::PlannerOpaqueId::new(
                                     worksgood::worker_control::load_or_create_graph_identity(&dir)?,
                                 )?;
-                                let mut store =
-                                    worksgood::service::PlannerStore::open(&dir, graph_id.clone())?;
-                                let sequence =
-                                    store.state().last_sequence.unwrap_or(0).saturating_add(1);
+                                // The monitor and replay planner must reduce
+                                // the exact same typed observation from the
+                                // exact same initial state. Reusing the
+                                // long-lived PlannerStore here can be absorbing
+                                // fail-closed state from an older incident and
+                                // made the monitor disagree with its own replay.
+                                let planner_state =
+                                    worksgood::service::PlannerState::new(graph_id.clone());
                                 let observation = worksgood::service::ObservationEnvelope {
-                                    sequence,
+                                    sequence: 1,
                                     logical_time: coord_state.ticks,
                                     observation: worksgood::service::Observation::Task(Box::new(
                                         worksgood::service::PlannerTaskObservation {
@@ -3960,12 +3973,17 @@ pub fn run_daemon(
                                         },
                                     )),
                                 };
-                                let step = store.apply(observation)?;
+                                let (step, replay_path) = worksgood::service::plan_guarded(
+                                    &dir,
+                                    &planner_state,
+                                    &observation,
+                                )?;
                                 if !step.violations.contains(
                                     &worksgood::service::PlannerViolationCode::NoForwardDisposition,
-                                ) {
+                                ) || replay_path.is_none()
+                                {
                                     anyhow::bail!(
-                                        "dispatch exhaustiveness monitor did not reproduce no-forward violation"
+                                        "dispatch exhaustiveness monitor and replay planner disagreed"
                                     );
                                 }
                                 Ok(())

@@ -267,6 +267,13 @@ fn detect_dead_reason(
     None
 }
 
+fn replayable_save_transaction_for_dead_agent(dir: &Path, task: &Task) -> bool {
+    worksgood::worker_control::save_transaction_for_task(dir, task)
+        .ok()
+        .flatten()
+        .is_some()
+}
+
 fn exact_durable_success_for_dead_agent(
     store: &worksgood::finalization::FinalizationStore,
     task: &Task,
@@ -403,7 +410,15 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
                         )
                     });
             if task.status == Status::InProgress && !pi_watchdog_owns_exit {
-                if exact_durable_success_for_dead_agent(&finalization_store, task, agent_id) {
+                if replayable_save_transaction_for_dead_agent(dir, task) {
+                    // The exact terminal intent is already write-ahead. The
+                    // SaveTransaction convergence lane owns quiescence,
+                    // capture, effect and cleanup replay; generic triage must
+                    // neither invent success nor destroy that authority with
+                    // AttemptLost.
+                    tasks_modified = true;
+                } else if exact_durable_success_for_dead_agent(&finalization_store, task, agent_id)
+                {
                     // The exact task-owned completion crossed its durable
                     // promotion/output boundary before this process exit.
                     // Preserve the exit below as evidence, but never emit
@@ -494,6 +509,7 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
                 let pi_watchdog_owns_exit = fresh.lifecycle.pi_continuation.as_ref().is_some_and(|authorization| {
                     matches!(authorization.state, worksgood::lifecycle::PiAuthorizationState::Active | worksgood::lifecycle::PiAuthorizationState::HeldOperatorRequired | worksgood::lifecycle::PiAuthorizationState::Consumed)
                 });
+                let save_replay = replayable_save_transaction_for_dead_agent(dir, fresh);
                 let durable_success = exact_durable_success_for_dead_agent(
                     &finalization_store,
                     fresh,
@@ -501,7 +517,7 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
                 );
                 if fresh.status == Status::InProgress
                     && !pi_watchdog_owns_exit
-                    && durable_success
+                    && (save_replay || durable_success)
                 {
                     let marker = format!(
                         "late-process-diagnostic:{}:{}:{}",
@@ -522,9 +538,15 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
                             timestamp: Utc::now().to_rfc3339(),
                             actor: Some("late-process-diagnostic".into()),
                             user: Some(worksgood::current_user()),
-                            message: format!(
-                                "{marker} dead-agent observation retained after exact durable task-owned success; AttemptLost authority suppressed"
-                            ),
+                            message: if save_replay {
+                                format!(
+                                    "{marker} dead-agent observation retained for exact SaveTransaction replay; AttemptLost authority suppressed"
+                                )
+                            } else {
+                                format!(
+                                    "{marker} dead-agent observation retained after exact durable task-owned success; AttemptLost authority suppressed"
+                                )
+                            },
                         });
                         modified = true;
                     }
@@ -1900,6 +1922,78 @@ mod tests {
             AgentStatus::Dead,
             "Agent should be marked dead in registry"
         );
+    }
+
+    #[test]
+    fn test_dead_agent_with_terminal_intent_is_left_for_save_replay() {
+        let project = TempDir::new().unwrap();
+        let wg_dir = project.path().join(".wg");
+        fs::create_dir_all(&wg_dir).unwrap();
+        fs::write(
+            wg_dir.join("config.toml"),
+            "[agent]\nreaper_grace_seconds = 0\n",
+        )
+        .unwrap();
+        let worktree = project.path().join(".wg-worktrees/agent-1");
+        fs::create_dir_all(&worktree).unwrap();
+        fs::write(worktree.join(".git"), "gitdir: test\n").unwrap();
+        let row = serde_json::json!({
+            "kind": "task",
+            "id": "task-1",
+            "title": "Task with prepared completion",
+            "status": "in-progress",
+            "assigned": "agent-1",
+            "lifecycle": {
+                "generation": 1,
+                "fence": 2,
+                "attempt_sequence": 1,
+                "current_attempt": {
+                    "id": "attempt-1-1",
+                    "generation": 1,
+                    "fence": 2,
+                    "actor_id": "agent-1"
+                }
+            }
+        });
+        let gpath = wg_dir.join("graph.jsonl");
+        fs::write(&gpath, format!("{row}\n")).unwrap();
+        let (token, binding) = worksgood::worker_control::mint_attempt_capability(
+            &wg_dir,
+            "task-1",
+            1,
+            "attempt-1-1",
+            2,
+            2,
+            "agent-1",
+        )
+        .unwrap();
+        let operation = worksgood::worker_control::WorkerOperation::DoneHandoff {
+            converged: false,
+            full_smoke: false,
+        };
+        worksgood::worker_control::begin_request(&wg_dir, "intent-1", &token, &operation).unwrap();
+        worksgood::worker_control::prepare_done_transaction(
+            &wg_dir, &binding, "intent-1", &operation,
+        )
+        .unwrap();
+
+        let mut registry = AgentRegistry::new();
+        let agent_id = registry.register_agent(999_999_999, "task-1", "test", "/tmp/out.log");
+        assert_eq!(agent_id, "agent-1");
+        registry.save(&wg_dir).unwrap();
+        assert_eq!(
+            cleanup_dead_agents(&wg_dir, &gpath).unwrap(),
+            vec![agent_id]
+        );
+
+        let graph = worksgood::parser::load_graph(&gpath).unwrap();
+        let task = graph.get_task("task-1").unwrap();
+        assert_eq!(task.status, Status::InProgress);
+        assert_eq!(task.assigned.as_deref(), Some("agent-1"));
+        assert!(task.log.iter().any(|entry| {
+            entry.message.contains("SaveTransaction replay")
+                && entry.message.contains("AttemptLost authority suppressed")
+        }));
     }
 
     #[test]

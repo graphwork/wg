@@ -15,13 +15,15 @@ use crate::config::ConvergenceConfig;
 use crate::finalization::{FinalizationPhase, FinalizationStore, FinalizationTransaction};
 use crate::graph::{Status, Task};
 use crate::parser::load_graph;
-use crate::service::ProviderHealth;
+use crate::save_transaction::{SaveFact, SavePhase, SaveTransactionState, SaveTransitionRequest};
+use crate::service::{AgentStatus, ProviderHealth};
 
 pub const CONVERGENCE_SCHEMA_VERSION: u32 = 1;
 /// Wire/conformance version for the pure exited-worker finish reducer.  This
 /// is intentionally independent from the durable scheduler schema: changing
 /// transition meaning must be loud to model/replay consumers.
 pub const EXITED_WORKER_FINISH_REDUCER_VERSION: u32 = 1;
+pub const SAVE_TRANSACTION_REPLAY_VERSION: u32 = 1;
 const STATE_FILE: &str = "convergence-state.json";
 const EXITED_WORKER_CONVERGENCE_DELAY_SECS: i64 = 5;
 
@@ -100,6 +102,77 @@ pub struct FinishConvergenceDecision {
     /// Required for every nonterminal, non-rejection decision.  The service
     /// may act sooner, but it may never leave this condition unscheduled.
     pub deadline_unix: Option<i64>,
+}
+
+/// Mechanics a daemon may replay from an existing SaveTransaction. Semantic
+/// evidence remains task-owner/evaluator authority and therefore only waits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SaveReplayAction {
+    WaitForOwnerExit,
+    Quiesce,
+    CaptureWorkSave,
+    AdvanceMechanics,
+    AwaitSemanticEvidence,
+    ReplayEffect,
+    ReplayCleanup,
+    ReplayGraphSave,
+    Hold,
+    Complete,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SaveReplayDecision {
+    pub reducer_version: u32,
+    pub transaction_id: String,
+    pub phase: SavePhase,
+    pub recovery_rank: usize,
+    pub action: SaveReplayAction,
+    pub deadline_unix: Option<i64>,
+}
+
+/// Pure replay plan. The daemon never changes disposition or manufactures an
+/// acceptance verdict: phases that require either return AwaitSemanticEvidence.
+pub fn reduce_save_transaction_replay(
+    state: &SaveTransactionState,
+    owner_proven_dead: bool,
+    now_unix: i64,
+) -> SaveReplayDecision {
+    let action = if !owner_proven_dead && state.phase < SavePhase::EffectCommitted {
+        SaveReplayAction::WaitForOwnerExit
+    } else {
+        match state.phase {
+            SavePhase::Absent => SaveReplayAction::Hold,
+            SavePhase::Prepared => SaveReplayAction::Quiesce,
+            SavePhase::Quiescing => SaveReplayAction::CaptureWorkSave,
+            SavePhase::WorkSaved => SaveReplayAction::AdvanceMechanics,
+            SavePhase::CandidateSealed | SavePhase::Validated | SavePhase::AwaitingAcceptance => {
+                SaveReplayAction::AwaitSemanticEvidence
+            }
+            SavePhase::Accepted => SaveReplayAction::AdvanceMechanics,
+            SavePhase::DispositionRecorded | SavePhase::EffectPrepared => {
+                SaveReplayAction::ReplayEffect
+            }
+            SavePhase::EffectCommitted | SavePhase::CleanupPrepared => {
+                SaveReplayAction::ReplayCleanup
+            }
+            SavePhase::CleanupCommitted => SaveReplayAction::ReplayGraphSave,
+            SavePhase::GraphSaved | SavePhase::AbortedPreserved => SaveReplayAction::Complete,
+            SavePhase::NeedsRepair | SavePhase::UpgradeBlocked | SavePhase::NeedsReconciliation => {
+                SaveReplayAction::Hold
+            }
+        }
+    };
+    let deadline_unix = (!matches!(action, SaveReplayAction::Complete | SaveReplayAction::Hold))
+        .then(|| now_unix.saturating_add(EXITED_WORKER_CONVERGENCE_DELAY_SECS));
+    SaveReplayDecision {
+        reducer_version: SAVE_TRANSACTION_REPLAY_VERSION,
+        transaction_id: state.transaction_id.clone(),
+        phase: state.phase,
+        recovery_rank: state.recovery_rank(),
+        action,
+        deadline_unix,
+    }
 }
 
 /// Pure, total reducer for the exited-worker handoff.  It authorizes no I/O;
@@ -199,6 +272,10 @@ impl From<&ConvergenceConfig> for ConvergencePolicy {
 #[serde(rename_all = "kebab-case")]
 pub enum ConvergenceStage {
     ObserveOwner,
+    /// A graph dependency or not-before condition is not a failed dispatch
+    /// attempt. It owns no retry budget and schedules no convergence wake;
+    /// the graph change that makes the task ready resets it to AwaitDispatch.
+    AwaitDependency,
     AwaitDispatch,
     AwaitWait,
     AwaitEvaluation,
@@ -211,13 +288,14 @@ pub enum ConvergenceStage {
 
 impl ConvergenceStage {
     fn schedules_wake(self) -> bool {
-        !matches!(self, Self::ObserveOwner)
+        !matches!(self, Self::ObserveOwner | Self::AwaitDependency)
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum BlockerClass {
+    Dependency,
     Dispatch,
     Wait,
     EvaluationInfrastructure,
@@ -399,6 +477,8 @@ impl ConvergenceState {
         &mut self,
         tasks: impl Iterator<Item = Task>,
         transactions: &BTreeMap<String, FinalizationTransaction>,
+        save_transactions: Option<&BTreeMap<String, SaveTransactionState>>,
+        dispatchable: Option<&BTreeSet<String>>,
         policy: &ConvergencePolicy,
         now: DateTime<Utc>,
     ) {
@@ -410,8 +490,11 @@ impl ConvergenceState {
             let key = goal_key(&task);
             live.insert(key.clone());
             let transaction = transactions.get(&task.id);
-            let (stage, blocker, needs_human) = classify_stage(&task, transaction);
-            let progress = authoritative_progress(&task, transaction);
+            let save_transaction = save_transactions.and_then(|values| values.get(&task.id));
+            let is_dispatchable = dispatchable.is_none_or(|ready| ready.contains(&task.id));
+            let (stage, blocker, needs_human) =
+                classify_stage_full(&task, transaction, save_transaction, is_dispatchable);
+            let progress = authoritative_progress(&task, transaction, save_transaction);
             let goal = GoalRef {
                 task_id: task.id.clone(),
                 generation: task.lifecycle.generation,
@@ -429,7 +512,8 @@ impl ConvergenceState {
                     record.goal = goal;
                     record.priority = task.priority;
                     record.stage = stage;
-                    let (rank, action) = finish_projection(&task, transaction);
+                    let (rank, action) =
+                        finish_projection_full(&task, transaction, save_transaction);
                     record.finish_convergence_rank = rank;
                     record.pending_convergence_action = action;
                     record.needs_human = needs_human;
@@ -438,6 +522,7 @@ impl ConvergenceState {
                     *record = new_goal_record(
                         &task,
                         transaction,
+                        save_transaction,
                         goal,
                         stage,
                         blocker,
@@ -453,6 +538,7 @@ impl ConvergenceState {
                         new_goal_record(
                             &task,
                             transaction,
+                            save_transaction,
                             goal,
                             stage,
                             blocker,
@@ -720,6 +806,107 @@ impl ConvergenceState {
     }
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct DeadOwnerQuiescenceFact<'a> {
+    schema_version: u32,
+    transaction_id: &'a str,
+    task_id: &'a str,
+    generation: u64,
+    attempt_id: &'a str,
+    attempt_fence: u64,
+    agent_id: &'a str,
+    registry_completed_at: &'a str,
+}
+
+/// Replay the first authorized mechanical edge for terminal intents whose
+/// exact owner has been marked dead by triage. Later phases are deliberately
+/// returned as plans for their owning adapters; this function never invents a
+/// validation/FLIP verdict, disposition, effect target, or cleanup receipt.
+pub fn replay_dead_owner_save_transactions(dir: &Path) -> Result<Vec<SaveReplayDecision>> {
+    let graph = load_graph(dir.join("graph.jsonl"))?;
+    let registry = crate::service::AgentRegistry::load(dir)?;
+    let mut decisions = Vec::new();
+    for state in crate::worker_control::list_save_transactions(dir)? {
+        let Some(task) = graph.get_task(&state.source.task_id) else {
+            continue;
+        };
+        if !crate::worker_control::save_transaction_matches_task(&state, task) {
+            continue;
+        }
+        let Some(agent_id) = task.assigned.as_deref() else {
+            continue;
+        };
+        let owner_dead = registry
+            .get_agent(agent_id)
+            .is_some_and(|agent| agent.status == AgentStatus::Dead);
+        let decision = reduce_save_transaction_replay(&state, owner_dead, Utc::now().timestamp());
+        if decision.action != SaveReplayAction::Quiesce {
+            decisions.push(decision);
+            continue;
+        }
+        let agent = registry
+            .get_agent(agent_id)
+            .expect("owner_dead requires a registry entry");
+        let completed_at = agent.completed_at.as_deref().unwrap_or("dead-observed");
+        let fact = DeadOwnerQuiescenceFact {
+            schema_version: 2,
+            transaction_id: &state.transaction_id,
+            task_id: &state.source.task_id,
+            generation: state.source.generation,
+            attempt_id: &state.source.attempt_id,
+            attempt_fence: state.source.attempt_fence,
+            agent_id,
+            registry_completed_at: completed_at,
+        };
+        let fact_cid = crate::worker_control::store_completion_object(dir, &fact)?;
+        let next = crate::worker_control::commit_save_transition(
+            dir,
+            SaveTransitionRequest {
+                source: state.source.clone(),
+                expected_revision: state.revision,
+                expected_phase: state.phase,
+                next_phase: SavePhase::Quiescing,
+                idempotency_key: format!("quiesce:{}:{completed_at}", state.transaction_id),
+                action_key: format!("quiesce:{}", state.transaction_id),
+                fact: SaveFact::Evidence {
+                    cid: fact_cid,
+                    binding: None,
+                },
+            },
+        )?;
+        decisions.push(reduce_save_transaction_replay(
+            &next,
+            true,
+            Utc::now().timestamp(),
+        ));
+    }
+    Ok(decisions)
+}
+
+fn exact_save_transactions_by_task(
+    dir: &Path,
+    graph: &crate::graph::WorkGraph,
+) -> BTreeMap<String, SaveTransactionState> {
+    let mut values = BTreeMap::new();
+    if let Ok(states) = crate::worker_control::list_save_transactions(dir) {
+        for state in states {
+            let Some(task) = graph.get_task(&state.source.task_id) else {
+                continue;
+            };
+            if !crate::worker_control::save_transaction_matches_task(&state, task) {
+                continue;
+            }
+            let replace = values
+                .get(&task.id)
+                .is_none_or(|current: &SaveTransactionState| current.revision < state.revision);
+            if replace {
+                values.insert(task.id.clone(), state);
+            }
+        }
+    }
+    values
+}
+
 /// Refresh the durable read model from authoritative graph/finalization/route
 /// evidence. This performs no graph mutation.
 pub fn reconcile_dir(
@@ -729,13 +916,27 @@ pub fn reconcile_dir(
 ) -> Result<ConvergenceState> {
     let mut state = ConvergenceState::load(dir)?;
     let graph = load_graph(dir.join("graph.jsonl"))?;
+    // Readiness is authoritative dependency state. Merely existing in Open is
+    // not a dispatch attempt: blocked work must be falloff/breaker-neutral.
+    let dispatchable = crate::query::ready_tasks(&graph)
+        .into_iter()
+        .map(|task| task.id.clone())
+        .collect::<BTreeSet<_>>();
     let transactions = FinalizationStore::open(dir)
         .and_then(|store| store.list())
         .unwrap_or_default()
         .into_iter()
         .map(|transaction| (transaction.task_id.clone(), transaction))
         .collect::<BTreeMap<_, _>>();
-    state.reconcile_goals(graph.tasks().cloned(), &transactions, policy, now);
+    let save_transactions = exact_save_transactions_by_task(dir, &graph);
+    state.reconcile_goals(
+        graph.tasks().cloned(),
+        &transactions,
+        Some(&save_transactions),
+        Some(&dispatchable),
+        policy,
+        now,
+    );
     if let Ok(health) = ProviderHealth::load(dir) {
         state.sync_route_health(&health, policy, now);
     }
@@ -770,7 +971,14 @@ pub fn admit_goal_action(
     let mut state = ConvergenceState::load(dir)?;
     if !state.goals.contains_key(&goal_key(task)) {
         let transactions = BTreeMap::new();
-        state.reconcile_goals(std::iter::once(task.clone()), &transactions, policy, now);
+        state.reconcile_goals(
+            std::iter::once(task.clone()),
+            &transactions,
+            None,
+            None,
+            policy,
+            now,
+        );
     }
     let admission = state.claim_goal_action(task, policy, now);
     state.save(dir)?;
@@ -802,6 +1010,7 @@ pub fn earliest_wake(dir: &Path) -> Result<Option<DateTime<Utc>>> {
 fn new_goal_record(
     task: &Task,
     transaction: Option<&FinalizationTransaction>,
+    save_transaction: Option<&SaveTransactionState>,
     goal: GoalRef,
     stage: ConvergenceStage,
     blocker: BlockerClass,
@@ -811,7 +1020,7 @@ fn new_goal_record(
     now: DateTime<Utc>,
 ) -> GoalRecord {
     let (finish_convergence_rank, pending_convergence_action) =
-        finish_projection(task, transaction);
+        finish_projection_full(task, transaction, save_transaction);
     GoalRecord {
         goal,
         priority: task.priority,
@@ -837,6 +1046,69 @@ fn classify_stage(
     task: &Task,
     transaction: Option<&FinalizationTransaction>,
 ) -> (ConvergenceStage, BlockerClass, Option<String>) {
+    classify_stage_with_readiness(task, transaction, true)
+}
+
+fn classify_stage_with_readiness(
+    task: &Task,
+    transaction: Option<&FinalizationTransaction>,
+    dispatchable: bool,
+) -> (ConvergenceStage, BlockerClass, Option<String>) {
+    classify_stage_full(task, transaction, None, dispatchable)
+}
+
+fn classify_stage_full(
+    task: &Task,
+    transaction: Option<&FinalizationTransaction>,
+    save_transaction: Option<&SaveTransactionState>,
+    dispatchable: bool,
+) -> (ConvergenceStage, BlockerClass, Option<String>) {
+    if let Some(save) = save_transaction {
+        let (stage, blocker, needs_human) = match save.phase {
+            SavePhase::Absent
+            | SavePhase::Prepared
+            | SavePhase::Quiescing
+            | SavePhase::WorkSaved
+            | SavePhase::Accepted => (
+                ConvergenceStage::AwaitSourceFinish,
+                BlockerClass::SourceFinish,
+                None,
+            ),
+            SavePhase::CandidateSealed | SavePhase::Validated | SavePhase::AwaitingAcceptance => (
+                ConvergenceStage::AwaitEvaluation,
+                BlockerClass::EvaluationInfrastructure,
+                None,
+            ),
+            SavePhase::DispositionRecorded | SavePhase::EffectPrepared => (
+                ConvergenceStage::AwaitPromotion,
+                BlockerClass::Promotion,
+                None,
+            ),
+            SavePhase::EffectCommitted
+            | SavePhase::CleanupPrepared
+            | SavePhase::CleanupCommitted
+            | SavePhase::GraphSaved => {
+                (ConvergenceStage::AwaitCleanup, BlockerClass::Cleanup, None)
+            }
+            SavePhase::NeedsRepair => (
+                ConvergenceStage::AwaitSourceRepair,
+                BlockerClass::SourceRepair,
+                save.hold_reason.clone(),
+            ),
+            SavePhase::AbortedPreserved
+            | SavePhase::UpgradeBlocked
+            | SavePhase::NeedsReconciliation => (
+                ConvergenceStage::NeedsHuman,
+                BlockerClass::NeedsHuman,
+                Some(
+                    save.hold_reason
+                        .clone()
+                        .unwrap_or_else(|| format!("SaveTransaction held at {:?}", save.phase)),
+                ),
+            ),
+        };
+        return (stage, blocker, needs_human);
+    }
     if let Some(transaction) = transaction {
         let stage = match transaction.phase {
             FinalizationPhase::RepairNeeded | FinalizationPhase::FailedPreserved => {
@@ -881,6 +1153,11 @@ fn classify_stage(
         );
     }
     match task.status {
+        Status::Open | Status::Blocked | Status::Incomplete if !dispatchable => (
+            ConvergenceStage::AwaitDependency,
+            BlockerClass::Dependency,
+            None,
+        ),
         Status::Open | Status::Blocked | Status::Incomplete => (
             ConvergenceStage::AwaitDispatch,
             BlockerClass::Dispatch,
@@ -930,6 +1207,43 @@ fn finish_projection(
     Option<FinishConvergenceRank>,
     Option<FinishConvergenceAction>,
 ) {
+    finish_projection_full(task, transaction, None)
+}
+
+fn finish_projection_full(
+    task: &Task,
+    transaction: Option<&FinalizationTransaction>,
+    save_transaction: Option<&SaveTransactionState>,
+) -> (
+    Option<FinishConvergenceRank>,
+    Option<FinishConvergenceAction>,
+) {
+    if let Some(save) = save_transaction {
+        let projection = match save.phase {
+            SavePhase::DispositionRecorded | SavePhase::EffectPrepared => (
+                FinishConvergenceRank::TransactionDurable,
+                FinishConvergenceAction::Promote,
+            ),
+            SavePhase::EffectCommitted
+            | SavePhase::CleanupPrepared
+            | SavePhase::CleanupCommitted => (
+                FinishConvergenceRank::Promoted,
+                FinishConvergenceAction::Cleanup,
+            ),
+            SavePhase::GraphSaved | SavePhase::AbortedPreserved => (
+                FinishConvergenceRank::Cleaned,
+                FinishConvergenceAction::Complete,
+            ),
+            SavePhase::NeedsRepair | SavePhase::UpgradeBlocked | SavePhase::NeedsReconciliation => {
+                return (Some(FinishConvergenceRank::TransactionDurable), None);
+            }
+            _ => (
+                FinishConvergenceRank::TransactionDurable,
+                FinishConvergenceAction::AdvanceTransaction,
+            ),
+        };
+        return (Some(projection.0), Some(projection.1));
+    }
     if let Some(transaction) = transaction {
         let (rank, action) = match transaction.phase {
             FinalizationPhase::MergePending | FinalizationPhase::Merged => (
@@ -980,6 +1294,7 @@ fn finish_projection(
 fn authoritative_progress(
     task: &Task,
     transaction: Option<&FinalizationTransaction>,
+    save_transaction: Option<&SaveTransactionState>,
 ) -> ProgressStamp {
     let meaningful_events = task
         .lifecycle
@@ -1021,6 +1336,14 @@ fn authoritative_progress(
         "goal": goal_digest(task),
         "events": meaningful_events,
         "transaction": tx,
+        "save_transaction": save_transaction.map(|save| serde_json::json!({
+            "transaction_id": save.transaction_id,
+            "revision": save.revision,
+            "phase": save.phase,
+            "evidence": save.evidence_cids,
+            "graph_save": save.graph_save_cid,
+            "hold": save.hold_reason,
+        })),
         "completion_receipt": task.completion_receipt,
         "completion_disposition": task.completion_disposition,
     });
@@ -1234,6 +1557,163 @@ mod tests {
     }
 
     #[test]
+    fn save_transaction_replay_never_invents_semantic_evidence() {
+        let source = crate::completion_evidence::AttemptSaveKey {
+            graph_id: "graph".into(),
+            task_id: "task".into(),
+            generation: 1,
+            attempt_id: "attempt-1-1".into(),
+            attempt_fence: 2,
+            worktree_lease_epoch: 2,
+            process_epoch: 1,
+            wrapper_epoch: 1,
+            route_snapshot_cid: "route".into(),
+            session_proof_digest: "session".into(),
+            worktree_identity_digest: "root".into(),
+        };
+        let mut state = SaveTransactionState::new(source).unwrap();
+        state.phase = SavePhase::Prepared;
+        assert_eq!(
+            reduce_save_transaction_replay(&state, true, 100).action,
+            SaveReplayAction::Quiesce
+        );
+        state.phase = SavePhase::Validated;
+        assert_eq!(
+            reduce_save_transaction_replay(&state, true, 100).action,
+            SaveReplayAction::AwaitSemanticEvidence
+        );
+        state.phase = SavePhase::EffectPrepared;
+        assert_eq!(
+            reduce_save_transaction_replay(&state, true, 100).action,
+            SaveReplayAction::ReplayEffect
+        );
+    }
+
+    #[test]
+    fn dead_owner_prepared_intent_replays_once_to_quiescing() {
+        let project = TempDir::new().unwrap();
+        let dir = project.path().join(".wg");
+        std::fs::create_dir_all(&dir).unwrap();
+        let worktree = project.path().join(".wg-worktrees/agent-1");
+        std::fs::create_dir_all(&worktree).unwrap();
+        std::fs::write(worktree.join(".git"), "gitdir: test\n").unwrap();
+        let row = serde_json::json!({
+            "kind": "task",
+            "id": "task-a",
+            "title": "Task A",
+            "status": "in-progress",
+            "assigned": "agent-1",
+            "lifecycle": {
+                "generation": 1,
+                "fence": 2,
+                "attempt_sequence": 1,
+                "current_attempt": {
+                    "id": "attempt-1-1",
+                    "generation": 1,
+                    "fence": 2,
+                    "actor_id": "agent-1"
+                }
+            }
+        });
+        std::fs::write(dir.join("graph.jsonl"), format!("{row}\n")).unwrap();
+        let (token, binding) = crate::worker_control::mint_attempt_capability(
+            &dir,
+            "task-a",
+            1,
+            "attempt-1-1",
+            2,
+            2,
+            "agent-1",
+        )
+        .unwrap();
+        let operation = crate::worker_control::WorkerOperation::DoneHandoff {
+            converged: false,
+            full_smoke: false,
+        };
+        crate::worker_control::begin_request(&dir, "intent-1", &token, &operation).unwrap();
+        let prepared =
+            crate::worker_control::prepare_done_transaction(&dir, &binding, "intent-1", &operation)
+                .unwrap();
+        assert_eq!(prepared.phase, SavePhase::Prepared);
+
+        let mut registry = crate::service::AgentRegistry::new();
+        let agent_id = registry.register_agent(999_999, "task-a", "pi", "output.log");
+        assert_eq!(agent_id, "agent-1");
+        let agent = registry.get_agent_mut(&agent_id).unwrap();
+        agent.status = AgentStatus::Dead;
+        agent.completed_at = Some("2026-01-01T00:00:00Z".into());
+        registry.save(&dir).unwrap();
+
+        let first = replay_dead_owner_save_transactions(&dir).unwrap();
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].phase, SavePhase::Quiescing);
+        assert_eq!(first[0].action, SaveReplayAction::CaptureWorkSave);
+        let after_first =
+            crate::worker_control::load_save_transaction(&dir, &prepared.transaction_id)
+                .unwrap()
+                .unwrap();
+        assert_eq!(after_first.revision, 2);
+
+        let second = replay_dead_owner_save_transactions(&dir).unwrap();
+        assert_eq!(second[0].action, SaveReplayAction::CaptureWorkSave);
+        let after_second =
+            crate::worker_control::load_save_transaction(&dir, &prepared.transaction_id)
+                .unwrap()
+                .unwrap();
+        assert_eq!(after_second.revision, after_first.revision);
+        let task = load_graph(dir.join("graph.jsonl"))
+            .unwrap()
+            .get_task("task-a")
+            .unwrap()
+            .clone();
+        assert_eq!(task.status, Status::InProgress);
+    }
+
+    #[test]
+    fn dependency_blocked_work_is_falloff_neutral_until_ready() {
+        let now = DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let blocked = task("blocked");
+        let mut state = ConvergenceState::default();
+        let none_ready = BTreeSet::new();
+        state.reconcile_goals(
+            std::iter::once(blocked.clone()),
+            &BTreeMap::new(),
+            None,
+            Some(&none_ready),
+            &policy(),
+            now,
+        );
+        assert!(state.earliest_wake().is_none());
+        assert!(
+            state
+                .advance_one_due_without_progress(&policy(), now)
+                .is_none()
+        );
+        let record = state.goals.get("blocked#0").unwrap();
+        assert_eq!(record.stage, ConvergenceStage::AwaitDependency);
+        assert_eq!(record.backoff.failures_without_progress, 0);
+
+        let ready = BTreeSet::from(["blocked".to_string()]);
+        state.reconcile_goals(
+            std::iter::once(blocked.clone()),
+            &BTreeMap::new(),
+            None,
+            Some(&ready),
+            &policy(),
+            now + Duration::seconds(1),
+        );
+        let ready_record = state.goals.get("blocked#0").unwrap();
+        assert_eq!(ready_record.stage, ConvergenceStage::AwaitDispatch);
+        assert_eq!(ready_record.backoff.failures_without_progress, 0);
+        assert!(matches!(
+            state.claim_goal_action(&blocked, &policy(), now + Duration::seconds(1)),
+            Admission::Allowed { .. }
+        ));
+    }
+
+    #[test]
     fn restart_preserves_deadline_exponent_seed_and_pending_lease_byte_for_byte() {
         let dir = TempDir::new().unwrap();
         std::fs::create_dir_all(dir.path().join("service")).unwrap();
@@ -1242,7 +1722,14 @@ mod tests {
             .with_timezone(&Utc);
         let mut state = ConvergenceState::default();
         let t = task("goal");
-        state.reconcile_goals(std::iter::once(t.clone()), &BTreeMap::new(), &policy(), now);
+        state.reconcile_goals(
+            std::iter::once(t.clone()),
+            &BTreeMap::new(),
+            None,
+            None,
+            &policy(),
+            now,
+        );
         assert!(matches!(
             state.claim_goal_action(&t, &policy(), now),
             Admission::Allowed { .. }
@@ -1266,7 +1753,14 @@ mod tests {
             .with_timezone(&Utc);
         let mut state = ConvergenceState::default();
         let mut t = task("goal");
-        state.reconcile_goals(std::iter::once(t.clone()), &BTreeMap::new(), &policy(), now);
+        state.reconcile_goals(
+            std::iter::once(t.clone()),
+            &BTreeMap::new(),
+            None,
+            None,
+            &policy(),
+            now,
+        );
         state.claim_goal_action(&t, &policy(), now);
         state.claim_goal_action(&t, &policy(), now + Duration::seconds(10));
         let record = state.goals.get("goal#0").unwrap();
@@ -1309,6 +1803,8 @@ mod tests {
         state.reconcile_goals(
             std::iter::once(t),
             &BTreeMap::new(),
+            None,
+            None,
             &policy(),
             now + Duration::seconds(11),
         );
@@ -1422,6 +1918,8 @@ mod tests {
         pending.reconcile_goals(
             std::iter::once(working.clone()),
             &BTreeMap::new(),
+            None,
+            None,
             &policy(),
             now,
         );

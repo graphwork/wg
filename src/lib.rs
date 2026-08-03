@@ -108,6 +108,7 @@ pub mod trust;
 pub mod usage;
 pub mod vendor_history;
 pub mod verify_lint;
+pub mod work_save;
 pub mod worker_control;
 pub mod workgraph_dir;
 pub mod worktree_observer;
