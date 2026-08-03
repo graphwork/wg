@@ -2964,6 +2964,13 @@ description = "Candidate-binary credential-free real-daemon/Fake-Pi regression f
 timeout_seconds = 180
 
 [[scenario]]
+name = "late_exit_durable_success_precedence"
+script = "scenarios/late_exit_durable_success_precedence.sh"
+owners = ["fix-late-exit-overwrites-durable-success"]
+description = "Candidate-binary credential-free generated-wrapper regression for first-terminal-result-wins: a shell worker commits and completes task-owned Land, then deliberately exits 73. The exact accepted promotion suppresses AttemptFailed/Lost while retaining the exit diagnostic; cleanup projects Done/Landed/Cleaned once, main promotion and lifecycle success occur once, and the dependent readiness edge appears exactly once across replayed reads."
+timeout_seconds = 180
+
+[[scenario]]
 name = "worker_control_capability_broker"
 script = "scenarios/worker_control_capability_broker.sh"
 owners = ["isolate-worker-control-plane-filesystem"]

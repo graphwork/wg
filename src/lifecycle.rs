@@ -270,6 +270,14 @@ pub enum TransitionKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         class: Option<FailureClass>,
     },
+    /// Project an exact, already-durable task-owned finish transaction after
+    /// a process observer won the graph race with a late failure.  The command
+    /// adapter must validate the transaction's task/generation/attempt/fence,
+    /// accepted output/promotion receipt, and cleanup receipt before requesting
+    /// this narrow compensating projection.
+    DurableSuccessProjected {
+        acceptance_ref: String,
+    },
     AttemptLost,
     AttemptParked,
     WaitSatisfied {
@@ -364,6 +372,7 @@ impl TransitionKind {
             Self::ReservationCancelled => "reservation-cancelled",
             Self::AttemptSucceeded { .. } => "attempt-succeeded",
             Self::AttemptFailed { .. } => "attempt-failed",
+            Self::DurableSuccessProjected { .. } => "durable-success-projected",
             Self::AttemptLost => "attempt-lost",
             Self::AttemptParked => "attempt-parked",
             Self::WaitSatisfied { .. } => "wait-satisfied",
@@ -667,6 +676,46 @@ impl LifecycleKernel {
                 Self::require_running_attempt(task, &request)?;
                 Self::terminalize_attempt(&mut projection, AttemptDisposition::Failed)?;
                 new_state = Status::Failed;
+            }
+            TransitionKind::DurableSuccessProjected { acceptance_ref } => {
+                Self::require_actor(&request, &[ActorKind::Finalizer, ActorKind::Reconciler])?;
+                if acceptance_ref.trim().is_empty() {
+                    return Err(TransitionRejection::new(
+                        "acceptance_evidence_missing",
+                        "durable success projection requires an exact cleanup receipt",
+                    ));
+                }
+                if !matches!(old_state, Status::InProgress | Status::Failed) {
+                    return Err(Self::state_rejection(old_state));
+                }
+                let attempt = projection.current_attempt.as_mut().ok_or_else(|| {
+                    TransitionRejection::new(
+                        "attempt_missing",
+                        "durable success projection requires the exact current attempt",
+                    )
+                })?;
+                if attempt.generation != projection.generation
+                    || attempt.fence != projection.fence
+                    || request.expected.attempt_id.as_deref() != Some(attempt.id.as_str())
+                    || request.expected.generation != Some(projection.generation)
+                    || request.expected.fence != Some(projection.fence)
+                {
+                    return Err(TransitionRejection::new(
+                        "stale_attempt",
+                        "durable success projection is not bound to the exact current attempt",
+                    ));
+                }
+                if !matches!(
+                    attempt.disposition,
+                    None | Some(AttemptDisposition::Failed) | Some(AttemptDisposition::Lost)
+                ) {
+                    return Err(TransitionRejection::new(
+                        "attempt_already_terminal",
+                        "a non-failure terminal disposition already won",
+                    ));
+                }
+                attempt.disposition = Some(AttemptDisposition::Succeeded);
+                new_state = Status::Done;
             }
             TransitionKind::AttemptLost => {
                 Self::require_actor(
@@ -1157,7 +1206,9 @@ impl LifecycleKernel {
             && new_state != old_state
             && !matches!(
                 kind,
-                TransitionKind::GenerationCreated | TransitionKind::ReopenOwnerReleased { .. }
+                TransitionKind::GenerationCreated
+                    | TransitionKind::ReopenOwnerReleased { .. }
+                    | TransitionKind::DurableSuccessProjected { .. }
             )
         {
             return Err(TransitionRejection::new(

@@ -267,6 +267,39 @@ fn detect_dead_reason(
     None
 }
 
+fn exact_durable_success_for_dead_agent(
+    store: &worksgood::finalization::FinalizationStore,
+    task: &Task,
+    agent_id: &str,
+) -> bool {
+    store
+        .load_task(&task.id)
+        .ok()
+        .flatten()
+        .filter(|tx| {
+            tx.candidate
+                .as_ref()
+                .is_some_and(|candidate| candidate.worktree_id == agent_id)
+                && task
+                    .lifecycle
+                    .current_attempt
+                    .as_ref()
+                    .is_some_and(|attempt| attempt.actor_id == agent_id)
+        })
+        .and_then(|tx| {
+            tx.exact_durable_success(
+                &task.id,
+                task.lifecycle.generation,
+                task.lifecycle
+                    .current_attempt
+                    .as_ref()
+                    .map(|attempt| attempt.id.as_str()),
+                task.lifecycle.fence,
+            )
+        })
+        .is_some()
+}
+
 /// Clean up dead agents (process exited)
 /// Returns list of cleaned up agent IDs
 pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<String>> {
@@ -346,11 +379,12 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
     // Load config for triage settings (already loaded above as `config`)
 
     // Unclaim their tasks (if still in progress - agent may have completed or failed them already)
+    let finalization_store = worksgood::finalization::FinalizationStore::open(dir)?;
     let mut graph = load_graph(graph_path).context("Failed to load graph")?;
     let mut tasks_modified = false;
     let mut resource_exhausted_tasks: Vec<String> = Vec::new();
 
-    for (agent_id, task_id, pid, output_file, reason) in &dead {
+    for (agent_id, task_id, _pid, output_file, reason) in &dead {
         if let Some(task) = graph.get_task_mut(task_id) {
             // Process observation is evidence only. A conclusively dead
             // current worker may request one fenced AttemptLost transition in
@@ -369,22 +403,30 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
                         )
                     });
             if task.status == Status::InProgress && !pi_watchdog_owns_exit {
-                if dead_attempt_exhausted_disk(dir, output_file) {
-                    task.failure_class = Some(FailureClass::ResourceExhaustedDisk);
-                    task.failure_reason =
-                        Some("Disk resource exhausted during the running attempt".to_string());
-                    resource_exhausted_tasks.push(task_id.clone());
+                if exact_durable_success_for_dead_agent(&finalization_store, task, agent_id) {
+                    // The exact task-owned completion crossed its durable
+                    // promotion/output boundary before this process exit.
+                    // Preserve the exit below as evidence, but never emit
+                    // AttemptLost or populate lifecycle-authoritative failure.
+                    tasks_modified = true;
                 } else {
-                    task.failure_class = Some(FailureClass::AgentExitNonzero);
-                    task.failure_reason = Some(match reason {
-                        DeadReason::ProcessExited => "worker process exited".to_string(),
-                        DeadReason::PidReused => "worker PID identity was reused".to_string(),
-                        DeadReason::HeartbeatTimeout => {
-                            "worker heartbeat timed out after process verification".to_string()
-                        }
-                    });
+                    if dead_attempt_exhausted_disk(dir, output_file) {
+                        task.failure_class = Some(FailureClass::ResourceExhaustedDisk);
+                        task.failure_reason =
+                            Some("Disk resource exhausted during the running attempt".to_string());
+                        resource_exhausted_tasks.push(task_id.clone());
+                    } else {
+                        task.failure_class = Some(FailureClass::AgentExitNonzero);
+                        task.failure_reason = Some(match reason {
+                            DeadReason::ProcessExited => "worker process exited".to_string(),
+                            DeadReason::PidReused => "worker PID identity was reused".to_string(),
+                            DeadReason::HeartbeatTimeout => {
+                                "worker heartbeat timed out after process verification".to_string()
+                            }
+                        });
+                    }
+                    tasks_modified = true;
                 }
-                tasks_modified = true;
             }
         }
     }
@@ -452,7 +494,41 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
                 let pi_watchdog_owns_exit = fresh.lifecycle.pi_continuation.as_ref().is_some_and(|authorization| {
                     matches!(authorization.state, worksgood::lifecycle::PiAuthorizationState::Active | worksgood::lifecycle::PiAuthorizationState::HeldOperatorRequired | worksgood::lifecycle::PiAuthorizationState::Consumed)
                 });
-                if fresh.status == Status::InProgress && !pi_watchdog_owns_exit {
+                let durable_success = exact_durable_success_for_dead_agent(
+                    &finalization_store,
+                    fresh,
+                    agent_id,
+                );
+                if fresh.status == Status::InProgress
+                    && !pi_watchdog_owns_exit
+                    && durable_success
+                {
+                    let marker = format!(
+                        "late-process-diagnostic:{}:{}:{}",
+                        fresh.lifecycle.generation,
+                        fresh
+                            .lifecycle
+                            .current_attempt
+                            .as_ref()
+                            .map(|attempt| attempt.id.as_str())
+                            .unwrap_or("missing"),
+                        fresh.lifecycle.fence
+                    );
+                    if !fresh.log.iter().any(|entry| {
+                        entry.actor.as_deref() == Some("late-process-diagnostic")
+                            && entry.message.contains(&marker)
+                    }) {
+                        fresh.log.push(LogEntry {
+                            timestamp: Utc::now().to_rfc3339(),
+                            actor: Some("late-process-diagnostic".into()),
+                            user: Some(worksgood::current_user()),
+                            message: format!(
+                                "{marker} dead-agent observation retained after exact durable task-owned success; AttemptLost authority suppressed"
+                            ),
+                        });
+                        modified = true;
+                    }
+                } else if fresh.status == Status::InProgress && !pi_watchdog_owns_exit {
                     let generation = fresh.lifecycle.generation;
                     let mut request = TransitionRequest::new(
                         TransitionKind::AttemptLost,

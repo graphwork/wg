@@ -718,6 +718,7 @@ pub(crate) fn converge_exited_worker_finishes(dir: &Path) -> Result<Vec<String>>
                 | worksgood::finalization::FinalizationPhase::Delivered
                 | worksgood::finalization::FinalizationPhase::Reported
                 | worksgood::finalization::FinalizationPhase::Cleaning
+                | worksgood::finalization::FinalizationPhase::Cleaned
         ) {
             cleanup_finish(dir, &store, &tx.task_id, false)?;
             converged.push(format!("{}:cleanup", tx.task_id));
@@ -1003,6 +1004,11 @@ pub(crate) fn cleanup_finish(
 ) -> Result<()> {
     let tx = store.load_task(id)?.context("finish transaction missing")?;
     if let Some(receipt) = tx.cleanup_receipt.as_ref() {
+        // The cleanup receipt may have won its durable-file race immediately
+        // before a late wrapper/provider failure won graph.jsonl.  Replay must
+        // therefore converge the exact transaction even when cleanup itself is
+        // already an idempotent no-op.
+        project_cleaned_success(dir, &tx)?;
         if json {
             println!("{}", serde_json::to_string_pretty(receipt)?);
         } else {
@@ -1069,52 +1075,130 @@ pub(crate) fn cleanup_finish(
     if let Some(lease) = tx.finish_lease_id.as_deref() {
         let _ = worksgood::finalization::release_finish_lease(store, lease);
     }
+    let cleaned = store
+        .load_task(id)?
+        .context("finish transaction disappeared after cleanup receipt")?;
+    project_cleaned_success(dir, &cleaned)?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&receipt)?);
+    } else {
+        println!("Completed({}) cleanup={}", disposition, receipt.receipt_id);
+    }
+    Ok(())
+}
+
+fn project_cleaned_success(
+    dir: &Path,
+    tx: &worksgood::finalization::FinalizationTransaction,
+) -> Result<()> {
+    let cleanup_receipt = tx
+        .cleanup_receipt
+        .as_ref()
+        .context("cleanup receipt missing from cleaned transaction")?;
     let mut transition_error = None;
     worksgood::parser::modify_graph(dir.join("graph.jsonl"), |graph| {
-        let Some(task) = graph.get_task_mut(id) else {
+        let Some(task) = graph.get_task_mut(&tx.task_id) else {
             transition_error = Some("task disappeared after cleanup".into());
             return false;
         };
+        let evidence = tx.exact_durable_success(
+            &task.id,
+            task.lifecycle.generation,
+            task.lifecycle
+                .current_attempt
+                .as_ref()
+                .map(|attempt| attempt.id.as_str()),
+            task.lifecycle.fence,
+        );
+        let Some(evidence) = evidence.filter(|value| value.cleanup_receipt_id.is_some()) else {
+            if task.status != worksgood::graph::Status::Done {
+                transition_error = Some(
+                    "cleaned transaction is not bound to the exact current task/generation/attempt/fence"
+                        .into(),
+                );
+            }
+            // Historical Done rows without an attempt tuple remain untouched:
+            // their old cleanup command stays idempotent, but the receipt is
+            // not silently upgraded into new success authority.
+            return false;
+        };
+
         if task.status != worksgood::graph::Status::Done {
-            let mut request = worksgood::lifecycle::TransitionRequest::new(
+            let failure_won_graph_race = task.status == worksgood::graph::Status::Failed
+                || task
+                    .lifecycle
+                    .current_attempt
+                    .as_ref()
+                    .is_some_and(|attempt| attempt.disposition.is_some());
+            let kind = if failure_won_graph_race {
+                worksgood::lifecycle::TransitionKind::DurableSuccessProjected {
+                    acceptance_ref: cleanup_receipt.receipt_id.clone(),
+                }
+            } else {
                 worksgood::lifecycle::TransitionKind::AttemptSucceeded {
-                    acceptance_ref: Some(receipt.receipt_id.clone()),
+                    acceptance_ref: Some(cleanup_receipt.receipt_id.clone()),
                     manual_review: false,
-                },
+                }
+            };
+            let actor_kind = if failure_won_graph_race {
+                worksgood::lifecycle::ActorKind::Reconciler
+            } else {
+                worksgood::lifecycle::ActorKind::ProcessObserver
+            };
+            let mut request = worksgood::lifecycle::TransitionRequest::new(
+                kind,
                 worksgood::lifecycle::LifecycleActor {
-                    kind: worksgood::lifecycle::ActorKind::ProcessObserver,
+                    kind: actor_kind,
                     id: "task-wrapper-cleanup".into(),
                 },
-                "completion_cleanup_committed",
-                format!("finish-cleanup:{}:{}", id, receipt.receipt_id),
+                if failure_won_graph_race {
+                    "durable_success_precedes_late_process_failure"
+                } else {
+                    "completion_cleanup_committed"
+                },
+                format!(
+                    "finish-cleanup:{}:{}",
+                    tx.task_id, cleanup_receipt.receipt_id
+                ),
             )
-            .with_evidence(durable_receipt.clone())
-            .with_evidence(receipt.receipt_id.clone());
-            if task.lifecycle.current_attempt.is_some() {
-                request.expected = worksgood::lifecycle::FenceExpectation::current(task);
-            }
+            .with_evidence(evidence.durable_receipt_id.clone())
+            .with_evidence(cleanup_receipt.receipt_id.clone());
+            request.expected = worksgood::lifecycle::FenceExpectation::current(task);
             if let Err(value) = worksgood::lifecycle::apply_transition(task, request) {
                 transition_error = Some(value.to_string());
                 return false;
             }
+            if failure_won_graph_race {
+                let diagnostic = task
+                    .failure_reason
+                    .as_deref()
+                    .unwrap_or("late worker/process exit");
+                task.log.push(worksgood::graph::LogEntry {
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    actor: Some("durable-success-convergence".into()),
+                    user: Some(worksgood::current_user()),
+                    message: format!(
+                        "Durable task-owned finish took terminal precedence; retained late process diagnostic without lifecycle authority: {diagnostic}"
+                    ),
+                });
+                task.retry_count = task.retry_count.saturating_sub(1);
+            }
         }
-        task.completion_disposition = Some(match disposition {
+        task.completion_disposition = Some(match evidence.disposition {
             "landed" => worksgood::graph::CompletionDisposition::Landed,
             "delivered" => worksgood::graph::CompletionDisposition::Delivered,
             _ => worksgood::graph::CompletionDisposition::Reported,
         });
-        task.completion_receipt = Some(receipt.receipt_id.clone());
+        task.completion_receipt = Some(cleanup_receipt.receipt_id.clone());
         task.completed_at = Some(chrono::Utc::now().to_rfc3339());
+        task.failure_class = None;
+        task.failure_reason = None;
+        task.failure_signal = None;
         task.assigned = None;
         true
     })?;
     if let Some(error) = transition_error {
         bail!("cleanup.status_receipt_failed: {error}");
-    }
-    if json {
-        println!("{}", serde_json::to_string_pretty(&receipt)?);
-    } else {
-        println!("Completed({}) cleanup={}", disposition, receipt.receipt_id);
     }
     Ok(())
 }
