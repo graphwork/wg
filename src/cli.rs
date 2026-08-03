@@ -6671,6 +6671,15 @@ pub enum ServiceCommands {
     /// Show service status
     Status,
 
+    /// Replay a versioned daemon decision trace offline without external effects
+    Replay {
+        /// Redacted decision-trace JSON file
+        trace: PathBuf,
+        /// Optional path for the byte-stable normalized replay report
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+
     /// Reload daemon configuration without restarting
     ///
     /// With flags: applies the specified overrides to the running daemon.

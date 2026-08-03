@@ -1,0 +1,51 @@
+{
+  "name": "reopen_before_owner_release",
+  "expected_historical_violation": "reopen_before_owner_release",
+  "expected_corrected_action": "release_dead_owner",
+  "expected_corrected_wait": null,
+  "trace": {
+    "trace_schema_version": 1,
+    "planner_schema_version": 1,
+    "redaction": "typed_identifiers_and_digests_only",
+    "ruleset": "historical",
+    "initial_state": {
+      "schema_version": 1,
+      "graph_id": "graph-fixture",
+      "logical_time": 0,
+      "last_sequence": null,
+      "seen_observations": {},
+      "tasks": {},
+      "effects": {},
+      "early_acknowledgements": {},
+      "repaired_incidents": [],
+      "fail_closed": false
+    },
+    "observations": [
+      {
+        "sequence": 1,
+        "logical_time": 100,
+        "observation": {
+          "type": "task",
+          "key": {
+            "graph_id": "graph-fixture",
+            "task_id": "task-2",
+            "generation": 1,
+            "attempt_id": "attempt-2-1",
+            "fence": 2
+          },
+          "progress_id": "progress-incident",
+          "unfinished": true,
+          "owner": {
+            "kind": "authenticated_live",
+            "actor_id": "actor-current",
+            "lease_id": "lease-current"
+          },
+          "incidents": [
+            "reopen_before_owner_release"
+          ],
+          "runnable": "spawn_attempt"
+        }
+      }
+    ]
+  }
+}

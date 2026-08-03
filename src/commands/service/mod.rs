@@ -21,6 +21,7 @@ pub(crate) mod coordinator;
 pub(crate) mod coordinator_agent;
 pub(crate) mod human_dispatch;
 pub mod ipc;
+pub(crate) mod replay;
 pub(crate) mod signals;
 pub(crate) mod supervisor;
 mod triage;
@@ -3227,14 +3228,9 @@ pub fn run_daemon(
     // Track last coordinator tick time - run immediately on start
     let mut last_coordinator_tick = Instant::now() - daemon_cfg.poll_interval;
 
-    // Dispatch watchdog (fix-wedge): count consecutive ticks that found ready
-    // tasks but spawned nothing AND have zero live agents. That combination is
-    // the signature of a starved/wedged dispatcher (e.g. a stuck coordinator
-    // sub-loop) — normal "at capacity" ticks have live agents, and normal idle
-    // ticks have no ready tasks. After WATCHDOG_STALL_TICKS we log LOUDLY so the
-    // wedge is diagnosable instead of silently looping until a manual restart.
-    const WATCHDOG_STALL_TICKS: u32 = 5;
-    let mut no_dispatch_progress_ticks: u32 = 0;
+    // Dispatch forward-progress exhaustiveness is checked after every tick.
+    // Unlike the former five-tick warning counter, a state with ready work and
+    // no action/owner/wait/deadline captures replay evidence and holds now.
 
     // Settling deadline: when a GraphChanged event arrives, we schedule a tick
     // after a settling delay. Each subsequent GraphChanged resets the deadline,
@@ -3905,7 +3901,7 @@ pub fn run_daemon(
                         result.spawn_breaker_tripped_tasks
                     ));
 
-                    // Dispatch watchdog (fix-wedge): detect a starved dispatcher —
+                    // Planner invariant monitor: detect a starved dispatcher —
                     // ready tasks present, yet nothing spawned and no live agents.
                     if result.tasks_ready > 0
                         && result.agents_spawned == 0
@@ -3914,36 +3910,79 @@ pub fn run_daemon(
                     {
                         // A per-task spawn circuit breaker tripping explains a
                         // "spawned=0" tick without a wedge: the breaker skips
-                        // ONLY the affected task (and self-heals). Don't ramp
-                        // the wedge counter on account of it; surface it instead.
+                        // ONLY the affected task (and self-heals). It is an
+                        // explicit wait/deadline class, so surface it without a hold.
                         if result.spawn_breaker_tripped_tasks > 0 {
                             logger.info(&format!(
                                 "Spawn circuit breaker tripped on {} task(s) this tick — they are skipped (per-task) and self-heal via cooldown / `wg retry` / clear-on-success. Other tasks dispatch normally.",
                                 result.spawn_breaker_tripped_tasks
                             ));
-                            no_dispatch_progress_ticks = 0;
                         } else {
-                            no_dispatch_progress_ticks =
-                                no_dispatch_progress_ticks.saturating_add(1);
-                            if no_dispatch_progress_ticks == WATCHDOG_STALL_TICKS
-                                || (no_dispatch_progress_ticks > WATCHDOG_STALL_TICKS
-                                    && no_dispatch_progress_ticks
-                                        .is_multiple_of(WATCHDOG_STALL_TICKS))
-                            {
-                                logger.warn(&format!(
-                                "DISPATCH WATCHDOG: {} consecutive ticks with {} ready task(s) but \
-                                 0 spawned and 0 live agents — dispatcher appears wedged. Check for a \
-                                 stuck coordinator sub-loop / stale session sentinels; `wg service \
-                                 restart` clears it if this persists.",
-                                no_dispatch_progress_ticks, result.tasks_ready
-                            ));
+                            // "No blockers" with no runnable action, live owner,
+                            // explicit wait, or convergence deadline is a planner
+                            // invariant violation, not a condition to count for
+                            // five more mutating ticks. Persist the minimal replay
+                            // input before placing the daemon in a fail-closed hold.
+                            let capture = (|| -> Result<()> {
+                                let graph_id = worksgood::service::PlannerOpaqueId::new(
+                                    worksgood::worker_control::load_or_create_graph_identity(&dir)?,
+                                )?;
+                                let mut store =
+                                    worksgood::service::PlannerStore::open(&dir, graph_id.clone())?;
+                                let sequence =
+                                    store.state().last_sequence.unwrap_or(0).saturating_add(1);
+                                let observation = worksgood::service::ObservationEnvelope {
+                                    sequence,
+                                    logical_time: coord_state.ticks,
+                                    observation: worksgood::service::Observation::Task(Box::new(
+                                        worksgood::service::PlannerTaskObservation {
+                                            key: worksgood::service::PlannerTaskKey {
+                                                graph_id,
+                                                task_id: worksgood::service::PlannerOpaqueId::new(
+                                                    "dispatch-exhaustiveness",
+                                                )?,
+                                                generation: coord_state.ticks,
+                                                attempt_id:
+                                                    worksgood::service::PlannerOpaqueId::new(
+                                                        "daemon-dispatch",
+                                                    )?,
+                                                fence: coord_state.route_generation,
+                                            },
+                                            progress_id: worksgood::service::PlannerOpaqueId::new(
+                                                format!("tick-{}", coord_state.ticks),
+                                            )?,
+                                            unfinished: true,
+                                            owner: worksgood::service::PlannerOwnerEvidence::None,
+                                            runnable: None,
+                                            external_wait: None,
+                                            scheduled: None,
+                                            incidents: BTreeSet::new(),
+                                        },
+                                    )),
+                                };
+                                let step = store.apply(observation)?;
+                                if !step.violations.contains(
+                                    &worksgood::service::PlannerViolationCode::NoForwardDisposition,
+                                ) {
+                                    anyhow::bail!(
+                                        "dispatch exhaustiveness monitor did not reproduce no-forward violation"
+                                    );
+                                }
+                                Ok(())
+                            })();
+                            daemon_cfg.paused = true;
+                            coord_state.paused = true;
+                            coord_state.save(&dir);
+                            match capture {
+                                Ok(()) => logger.error(
+                                    "DISPATCH PLANNER INVARIANT: ready unfinished work had no action, authenticated live owner, external wait, or convergence deadline. Minimal replay was persisted under service/replay before the daemon entered fail-closed hold; run `wg service replay <bundle>`.",
+                                ),
+                                Err(error) => logger.error(&format!(
+                                    "DISPATCH PLANNER INVARIANT: replay capture failed ({error:#}); daemon still entered fail-closed hold and will perform no further coordinator mutation"
+                                )),
                             }
+                            continue;
                         }
-                    } else {
-                        // Intentional opt-in admission deferral is progress in
-                        // the dispatch decision, not a stuck dispatcher. Reset
-                        // the wedge counter so status/logs never conflate them.
-                        no_dispatch_progress_ticks = 0;
                     }
 
                     // Dispatch notifications for task state changes (failures, blocks)

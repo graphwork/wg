@@ -13,6 +13,7 @@ pub mod dispatch_boot;
 pub mod executor;
 pub mod graph_watcher;
 pub mod llm;
+pub mod planner;
 pub mod provider_health;
 pub mod registry;
 
@@ -29,6 +30,16 @@ pub use dispatch_boot::{
 };
 pub use executor::{
     ExecutorConfig, ExecutorRegistry, ExecutorSettings, PromptTemplate, TemplateVars,
+};
+pub use planner::{
+    AckOutcome as PlannerAckOutcome, ActionKind as PlannerActionKind, DecisionTrace,
+    ExternalWait as PlannerExternalWait, IncidentCode as PlannerIncidentCode, Observation,
+    ObservationEnvelope, OpaqueId as PlannerOpaqueId, OwnerEvidence as PlannerOwnerEvidence,
+    PlannedEffect, PlannerRuleset, PlannerState, PlannerStep, PlannerStore, RedactionPolicy,
+    ReplayReport, ScheduledAction as PlannerScheduledAction, TaskKey as PlannerTaskKey,
+    TaskObservation as PlannerTaskObservation, ViolationCode as PlannerViolationCode,
+    WaitKind as PlannerWaitKind, plan as plan_daemon_step, plan_guarded, replay as replay_daemon,
+    replay_bytes,
 };
 pub use provider_health::{
     AgentExecutionOutcome, CompletionRefusalCode, ExecutionOutcome, ExecutorFailure,

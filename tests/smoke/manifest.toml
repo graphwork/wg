@@ -2976,3 +2976,12 @@ script = "scenarios/worker_control_capability_broker.sh"
 owners = ["isolate-worker-control-plane-filesystem"]
 description = "Candidate-binary credential-free real-daemon worker regression: a live Fake-Pi worker launches without WG_DIR or a candidate .wg entry, uses an opaque attempt capability for scoped show/log over typed IPC, is refused graph enumeration, persists no bearer token, commits ordinary candidate source, emits allow/reject audit evidence, and reports the filesystem guarantee as degraded rather than falsely equating environment omission/worktree separation with mount isolation."
 timeout_seconds = 180
+
+[[scenario]]
+name = "daemon_planner_replay"
+script = "scenarios/daemon_planner_replay.sh"
+owners = [
+    "formalize-daemon-planner-replay",
+]
+description = "Candidate-binary replay of a permanent daemon incident trace is byte-identical across repeated offline runs, emits the corrected idempotent action, keeps graph state unchanged, and contains only the typed redacted planner wire."
+timeout_seconds = 30

@@ -72,6 +72,11 @@ death produces `pending + deadline`. Recovery rank is:
   finish transaction; the exact owning wrapper creates it and converges once.
 - `Golden.lean`: Lean-side executable checks named identically to the committed
   Rust/JSON conformance vectors.
+- `DaemonPlanner.lean`: the four-way unfinished-work exhaustiveness invariant,
+  fail-closed normalization, incident repair coverage, logical-effect
+  acknowledgement idempotence, and conditional useful-scheduling liveness.
+  The matching executable Rust planner is `src/service/planner.rs`; permanent
+  incident traces live under `formal/fixtures/daemon/v1/`.
 
 There are no proof placeholders or correctness axioms. Deliberately weakening
 stale-capability checks, allowing a second promotion, or allowing terminal
@@ -131,3 +136,23 @@ Runtime adapters that consume this reducer must additionally exercise their
 real restart/process/storage path in candidate-binary smoke tests. Those tests
 are the evidence for OS/storage assumptions; the Lean model does not pretend
 to prove them.
+
+## Daemon planner/replay boundary
+
+The daemon planner wire is independently versioned by
+`DAEMON_PLANNER_SCHEMA_VERSION` and `DAEMON_TRACE_SCHEMA_VERSION`. Its function
+is:
+
+```text
+normalized control state + ordered typed observation/ack + logical time
+  -> normalized control state + explicit idempotent logical effects
+```
+
+`wg service replay <trace>` invokes only this pure reducer and cannot call an
+adapter. Trace identifiers use a validated bounded alphabet; prompt/model
+output, paths, endpoints, credentials and arbitrary content have no wire type.
+Production guards persist the minimal typed input bundle before returning a
+fail-closed hold, retaining a bounded number of bundles. The planner proves no
+claim about PID truth, Git/NFS durability, provider behavior, signal delivery,
+or physical exactly-once execution: adapters supply typed evidence and retry
+logical effect IDs idempotently.

@@ -1,0 +1,221 @@
+use serde::Deserialize;
+use std::fs;
+use std::path::{Path, PathBuf};
+use worksgood::service::{
+    DecisionTrace, PlannedEffect, PlannerActionKind, PlannerIncidentCode, PlannerRuleset,
+    PlannerViolationCode, PlannerWaitKind, ReplayReport, replay_bytes, replay_daemon,
+};
+
+#[derive(Debug, Deserialize)]
+struct IncidentFixture {
+    name: String,
+    expected_historical_violation: PlannerViolationCode,
+    expected_corrected_action: Option<PlannerActionKind>,
+    expected_corrected_wait: Option<PlannerWaitKind>,
+    trace: DecisionTrace,
+}
+
+fn fixtures_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("formal")
+        .join("fixtures")
+        .join("daemon")
+        .join("v1")
+}
+
+fn load_fixtures() -> Vec<IncidentFixture> {
+    let mut paths = fs::read_dir(fixtures_dir())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths
+        .into_iter()
+        .map(|path| serde_json::from_slice(&fs::read(path).unwrap()).unwrap())
+        .collect()
+}
+
+#[test]
+fn every_seeded_incident_violates_historical_and_converges_corrected() {
+    let fixtures = load_fixtures();
+    assert_eq!(fixtures.len(), 9);
+    for mut fixture in fixtures {
+        assert_eq!(fixture.trace.ruleset, PlannerRuleset::Historical);
+        let historical = replay_daemon(&fixture.trace).unwrap();
+        assert!(
+            historical.steps[0]
+                .violations
+                .contains(&fixture.expected_historical_violation),
+            "{} did not expose its named historical violation",
+            fixture.name
+        );
+
+        fixture.trace.ruleset = PlannerRuleset::Corrected;
+        let corrected = replay_daemon(&fixture.trace).unwrap();
+        assert!(
+            corrected.steps[0].violations.is_empty(),
+            "{} did not converge under corrected rules: {:?}",
+            fixture.name,
+            corrected.steps[0].violations
+        );
+        let task = corrected.final_state.tasks.values().next().unwrap();
+        let forward_count = usize::from(task.runnable.is_some())
+            + usize::from(matches!(
+                task.owner,
+                worksgood::service::PlannerOwnerEvidence::AuthenticatedLive { .. }
+            ))
+            + usize::from(task.external_wait.is_some())
+            + usize::from(task.scheduled.is_some());
+        assert_eq!(forward_count, 1, "{} lacks one forward class", fixture.name);
+        assert!(
+            corrected.final_state.repaired_incidents.contains(
+                &fixture
+                    .trace
+                    .observations
+                    .iter()
+                    .find_map(|entry| match &entry.observation {
+                        worksgood::service::Observation::Task(task) => {
+                            task.incidents.iter().next().copied()
+                        }
+                        _ => None,
+                    })
+                    .unwrap()
+            )
+        );
+        match fixture.expected_corrected_action {
+            Some(action) => assert!(
+                corrected.steps[0]
+                    .effects
+                    .iter()
+                    .any(|effect| effect.action == action),
+                "{} did not emit {:?}",
+                fixture.name,
+                action
+            ),
+            None => assert!(corrected.steps[0].effects.is_empty()),
+        }
+        if let Some(wait) = fixture.expected_corrected_wait {
+            assert_eq!(task.external_wait.as_ref().unwrap().kind, wait);
+        }
+    }
+}
+
+#[test]
+fn repeated_offline_replay_is_byte_identical_and_has_no_filesystem_effects() {
+    for fixture in load_fixtures() {
+        let before = fs::read_dir(fixtures_dir()).unwrap().count();
+        let first = replay_bytes(&fixture.trace).unwrap();
+        let second = replay_bytes(&fixture.trace).unwrap();
+        assert_eq!(first, second, "{} replay bytes drifted", fixture.name);
+        assert_eq!(before, fs::read_dir(fixtures_dir()).unwrap().count());
+        let report: ReplayReport = serde_json::from_slice(&first).unwrap();
+        assert_eq!(report.steps.len(), 1);
+    }
+}
+
+#[test]
+fn crash_boundaries_and_reordered_duplicate_acks_are_logically_exactly_once() {
+    let mut fixture = load_fixtures()
+        .into_iter()
+        .find(|fixture| fixture.name == "target_moved_during_finish")
+        .unwrap();
+    fixture.trace.ruleset = PlannerRuleset::Corrected;
+    let issued = replay_daemon(&fixture.trace).unwrap();
+    let effect = issued.steps[0].effects[0].clone();
+
+    let mut trace = fixture.trace.clone();
+    trace
+        .observations
+        .push(worksgood::service::ObservationEnvelope {
+            sequence: 2,
+            logical_time: 101,
+            observation: worksgood::service::Observation::Crash,
+        });
+    let mut repeated = trace.observations[0].clone();
+    repeated.sequence = 3;
+    repeated.logical_time = 102;
+    trace.observations.push(repeated);
+    for sequence in [4, 5] {
+        trace
+            .observations
+            .push(worksgood::service::ObservationEnvelope {
+                sequence,
+                logical_time: 102 + sequence,
+                observation: worksgood::service::Observation::EffectAcknowledged {
+                    effect_id: effect.effect_id.clone(),
+                    outcome: worksgood::service::PlannerAckOutcome::Succeeded,
+                },
+            });
+    }
+    let report = replay_daemon(&trace).unwrap();
+    assert_eq!(
+        report
+            .steps
+            .iter()
+            .flat_map(|step| &step.effects)
+            .filter(|candidate| candidate.effect_id == effect.effect_id)
+            .count(),
+        1
+    );
+    assert_eq!(report.final_state.effects.len(), 1);
+}
+
+#[test]
+fn two_tasks_two_attempts_stale_and_current_effects_never_alias() {
+    let fixture = load_fixtures()
+        .into_iter()
+        .find(|fixture| fixture.name == "target_moved_during_finish")
+        .unwrap();
+    let first_observation = fixture.trace.observations[0].clone();
+    let mut second_observation = first_observation.clone();
+    second_observation.sequence = 2;
+    if let worksgood::service::Observation::Task(task) = &mut second_observation.observation {
+        task.key.task_id = worksgood::service::PlannerOpaqueId::new("task-current").unwrap();
+        task.key.attempt_id = worksgood::service::PlannerOpaqueId::new("attempt-current").unwrap();
+        task.key.fence += 1;
+    }
+    let mut trace = fixture.trace;
+    trace.ruleset = PlannerRuleset::Corrected;
+    trace.observations = vec![first_observation, second_observation];
+    let report = replay_daemon(&trace).unwrap();
+    let effects = report
+        .steps
+        .iter()
+        .flat_map(|step| step.effects.iter())
+        .collect::<Vec<&PlannedEffect>>();
+    assert_eq!(effects.len(), 2);
+    assert_ne!(effects[0].effect_id, effects[1].effect_id);
+    assert_ne!(effects[0].task, effects[1].task);
+}
+
+#[test]
+fn fixture_codes_cover_all_required_incidents() {
+    let observed = load_fixtures()
+        .into_iter()
+        .flat_map(|fixture| {
+            fixture
+                .trace
+                .observations
+                .into_iter()
+                .flat_map(|entry| match entry.observation {
+                    worksgood::service::Observation::Task(task) => task.incidents,
+                    _ => Default::default(),
+                })
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    let expected = [
+        PlannerIncidentCode::ExitedWrapperRejectedStale,
+        PlannerIncidentCode::ReopenBeforeOwnerRelease,
+        PlannerIncidentCode::ParkResumeOverlap,
+        PlannerIncidentCode::ObsoleteDaemonChatCreationLostResponse,
+        PlannerIncidentCode::TargetMovedDuringFinish,
+        PlannerIncidentCode::SurpriseArchivalBacklog,
+        PlannerIncidentCode::ControlPlaneCandidateReplacement,
+        PlannerIncidentCode::DeadPiOwnerRetainingLeases,
+        PlannerIncidentCode::AbandonedDependencySatisfiedReadiness,
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(observed, expected);
+}

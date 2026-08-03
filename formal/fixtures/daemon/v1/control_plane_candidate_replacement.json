@@ -1,0 +1,49 @@
+{
+  "name": "control_plane_candidate_replacement",
+  "expected_historical_violation": "control_plane_candidate_replacement",
+  "expected_corrected_action": "fail_closed_hold",
+  "expected_corrected_wait": null,
+  "trace": {
+    "trace_schema_version": 1,
+    "planner_schema_version": 1,
+    "redaction": "typed_identifiers_and_digests_only",
+    "ruleset": "historical",
+    "initial_state": {
+      "schema_version": 1,
+      "graph_id": "graph-fixture",
+      "logical_time": 0,
+      "last_sequence": null,
+      "seen_observations": {},
+      "tasks": {},
+      "effects": {},
+      "early_acknowledgements": {},
+      "repaired_incidents": [],
+      "fail_closed": false
+    },
+    "observations": [
+      {
+        "sequence": 1,
+        "logical_time": 100,
+        "observation": {
+          "type": "task",
+          "key": {
+            "graph_id": "graph-fixture",
+            "task_id": "task-7",
+            "generation": 1,
+            "attempt_id": "attempt-7-1",
+            "fence": 7
+          },
+          "progress_id": "progress-incident",
+          "unfinished": true,
+          "owner": {
+            "kind": "none"
+          },
+          "incidents": [
+            "control_plane_candidate_replacement"
+          ],
+          "runnable": "promote_candidate"
+        }
+      }
+    ]
+  }
+}
