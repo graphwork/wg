@@ -2,12 +2,12 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
 use worksgood::graph::{LogEntry, Status};
-use worksgood::parser::modify_graph;
+use worksgood::parser::{load_graph, modify_graph};
 
 #[cfg(test)]
 use super::graph_path;
 #[cfg(test)]
-use worksgood::parser::{load_graph, save_graph};
+use worksgood::parser::save_graph;
 
 /// Reject a task that is pending validation, reopening it with feedback.
 /// If rejection_count >= max_rejections, the task is failed instead.
@@ -16,6 +16,18 @@ pub fn run(dir: &Path, id: &str, reason: &str) -> Result<()> {
     if !path.exists() {
         anyhow::bail!("WG not initialized. Run 'wg init' first.");
     }
+
+    let preflight = load_graph(&path).context("Failed to load graph")?;
+    let preflight_task = preflight
+        .get_task(id)
+        .ok_or_else(|| anyhow::anyhow!("Task '{}' not found", id))?;
+    if matches!(
+        preflight_task.status,
+        Status::PendingValidation | Status::PendingEval
+    ) {
+        super::finalize::record_terminal_abort(dir, id, reason)?;
+    }
+    drop(preflight);
 
     let mut error: Option<anyhow::Error> = None;
     let mut rejection_count: u32 = 0;

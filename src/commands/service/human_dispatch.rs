@@ -262,10 +262,21 @@ pub fn try_complete_human_task_on_reply(
         }
     }
 
+    if let Err(error) = crate::commands::finalize::commit_terminal_success_in_graph(
+        dir,
+        graph,
+        task_id,
+        Some("human-dispatch"),
+        "human_reply_graphsave",
+    ) {
+        eprintln!(
+            "[dispatcher] Refused human terminal projection for '{}': {}",
+            task_id, error
+        );
+        return false;
+    }
     if let Some(t) = graph.get_task_mut(task_id) {
-        t.status = Status::Done;
         t.wait_condition = None;
-        t.completed_at = Some(Utc::now().to_rfc3339());
         for a in &written_artifacts {
             if !t.artifacts.contains(a) {
                 t.artifacts.push(a.clone());

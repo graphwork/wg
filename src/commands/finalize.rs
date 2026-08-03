@@ -2,13 +2,635 @@ use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
+use worksgood::completion_evidence::{
+    AcceptanceOutcome, AttemptSaveKey, CandidateDescriptor as AtomicCandidateDescriptor,
+    CleanupCommit, CleanupResult, CompletionIntentReceipt, DispositionReceipt, EffectReceipt,
+    EvidenceBinding, EvidenceCidSet, EvidenceHeader, FlipReceipt, GraphSaveBundle,
+    GraphSaveReceipt, OutputReceipt, PromotionReceipt, ValidationReceipt, WorkSaveReceipt,
+    content_cid,
+};
 use worksgood::finalization::{
     FinalizationContext, FinalizationStore, QuiescenceProof, checkpoint_candidate,
     checkpoint_rescue,
 };
+use worksgood::graph::{CompletionContract, CompletionDisposition, Task, WorkGraph};
+use worksgood::lifecycle::{
+    FenceExpectation, LifecycleActor, TransitionKind, TransitionRequest, apply_transition,
+};
 use worksgood::parser::{load_graph, modify_graph};
+use worksgood::save_transaction::{
+    SaveFact, SavePhase, SaveTransactionKernel, SaveTransactionState, SaveTransitionRequest,
+};
 
 use crate::cli::{CandidateCommands, FinalizeCommands};
+
+/// Atomically project a terminal success through the v2 SaveTransaction and
+/// GraphSave authority.  Terminal-facing adapters use this instead of writing
+/// `Status::Done` or submitting the legacy `AttemptSucceeded` transition.
+pub fn commit_terminal_success(
+    dir: &Path,
+    id: &str,
+    actor_id: Option<&str>,
+    reason_code: &str,
+) -> Result<String> {
+    let graph_path = dir.join("graph.jsonl");
+    ensure_terminal_attempt_on_disk(dir, id, actor_id)?;
+    let graph = load_graph(&graph_path)?;
+    let task = graph.get_task_or_err(id)?.clone();
+    let (bundle, state) = prepare_graph_save(dir, &task, reason_code)?;
+    persist_save_state(dir, &state)?;
+    crash_after(SavePhase::GraphSaved)?;
+
+    let graph_save_cid = content_cid(&bundle.receipt).map_err(anyhow::Error::msg)?;
+    persist_graph_save(dir, id, task.lifecycle.generation, &bundle)?;
+    let mut rejection = None;
+    modify_graph(&graph_path, |graph| {
+        let Some(task) = graph.get_task_mut(id) else {
+            rejection = Some(format!("terminal task '{id}' disappeared"));
+            return false;
+        };
+        let actor = actor_id
+            .map(LifecycleActor::worker)
+            .unwrap_or_else(|| LifecycleActor::operator(worksgood::current_user()));
+        let request = TransitionRequest {
+            event_id: bundle.receipt.lifecycle_event_id.clone(),
+            idempotency_key: format!("graphsave:{}", state.transaction_id),
+            actor: LifecycleActor {
+                kind: worksgood::lifecycle::ActorKind::Finalizer,
+                id: actor.id,
+            },
+            reason_code: reason_code.to_string(),
+            kind: TransitionKind::GraphSaveCommitted {
+                bundle: Box::new(bundle.clone()),
+            },
+            expected: FenceExpectation::current(task),
+            evidence_refs: vec![graph_save_cid.clone()],
+            occurred_at: chrono::Utc::now().to_rfc3339(),
+        };
+        if let Err(error) = apply_transition(task, request) {
+            rejection = Some(error.to_string());
+            return false;
+        }
+        task.completed_at = Some(chrono::Utc::now().to_rfc3339());
+        task.assigned = None;
+        true
+    })?;
+    if let Some(error) = rejection {
+        bail!("terminal.graph_save_refused: {error}");
+    }
+    Ok(graph_save_cid)
+}
+
+/// Variant for callers already holding the graph mutation lock (for example
+/// human-dispatch reply consumption).  It performs the same WAL/evidence work
+/// but applies the GraphSave to the supplied in-memory projection.
+pub fn commit_terminal_success_in_graph(
+    dir: &Path,
+    graph: &mut WorkGraph,
+    id: &str,
+    actor_id: Option<&str>,
+    reason_code: &str,
+) -> Result<String> {
+    ensure_terminal_attempt_in_task(graph.get_task_mut_or_err(id)?, actor_id)?;
+    let task_snapshot = graph.get_task_or_err(id)?.clone();
+    let (bundle, state) = prepare_graph_save(dir, &task_snapshot, reason_code)?;
+    persist_save_state(dir, &state)?;
+    crash_after(SavePhase::GraphSaved)?;
+    let graph_save_cid = content_cid(&bundle.receipt).map_err(anyhow::Error::msg)?;
+    persist_graph_save(dir, id, task_snapshot.lifecycle.generation, &bundle)?;
+    let task = graph.get_task_mut_or_err(id)?;
+    let request = TransitionRequest {
+        event_id: bundle.receipt.lifecycle_event_id.clone(),
+        idempotency_key: format!("graphsave:{}", state.transaction_id),
+        actor: LifecycleActor {
+            kind: worksgood::lifecycle::ActorKind::Finalizer,
+            id: actor_id.unwrap_or("terminal-adapter").to_string(),
+        },
+        reason_code: reason_code.to_string(),
+        kind: TransitionKind::GraphSaveCommitted {
+            bundle: Box::new(bundle.clone()),
+        },
+        expected: FenceExpectation::current(task),
+        evidence_refs: vec![graph_save_cid.clone()],
+        occurred_at: chrono::Utc::now().to_rfc3339(),
+    };
+    apply_transition(task, request).map_err(anyhow::Error::msg)?;
+    task.completed_at = Some(chrono::Utc::now().to_rfc3339());
+    task.assigned = None;
+    Ok(graph_save_cid)
+}
+
+/// Write-ahead terminal reservation used before any source checkpoint or
+/// effect.  Replaying the exact source tuple and reason is deterministic.
+pub fn record_terminal_prepare(dir: &Path, id: &str, reason: &str) -> Result<String> {
+    let graph = load_graph(dir.join("graph.jsonl"))?;
+    let task = graph.get_task_or_err(id)?;
+    let source = source_key(dir, task)?;
+    let state = SaveTransactionState::new(source.clone()).map_err(anyhow::Error::msg)?;
+    let state = advance_save(
+        state,
+        SavePhase::Prepared,
+        format!("terminal-intent:{reason}"),
+        None,
+        format!("intent:{}:{reason}", source.attempt_id),
+    )?;
+    persist_save_state(dir, &state)?;
+    crash_after(SavePhase::Prepared)?;
+    Ok(state.transaction_id)
+}
+
+/// Record a non-success terminal intent as an `AbortedPreserved`
+/// SaveTransaction before the caller projects Failed/Abandoned/Incomplete.
+pub fn record_terminal_abort(dir: &Path, id: &str, reason: &str) -> Result<String> {
+    let graph = load_graph(dir.join("graph.jsonl"))?;
+    let task = graph.get_task_or_err(id)?;
+    let source = match source_key(dir, task) {
+        Ok(source) => source,
+        Err(_) => AttemptSaveKey {
+            graph_id: std::env::var("WG_GRAPH_ID")
+                .unwrap_or_else(|_| format!("graph:{}", dir.display())),
+            task_id: task.id.clone(),
+            generation: task.lifecycle.generation,
+            attempt_id: format!("no-attempt-{}", task.lifecycle.generation),
+            attempt_fence: task.lifecycle.fence,
+            worktree_lease_epoch: task.lifecycle.fence,
+            process_epoch: 0,
+            wrapper_epoch: 1,
+            route_snapshot_cid: "route:non-running-terminal".into(),
+            session_proof_digest: "session:not-applicable".into(),
+            worktree_identity_digest: "root:not-applicable".into(),
+        },
+    };
+    let mut state = SaveTransactionState::new(source.clone()).map_err(anyhow::Error::msg)?;
+    state = advance_save(
+        state,
+        SavePhase::Prepared,
+        format!("terminal-intent:{reason}"),
+        None,
+        format!("intent:{}:{reason}", source.attempt_id),
+    )?;
+    state = advance_save(
+        state,
+        SavePhase::AbortedPreserved,
+        format!("preserved:{reason}"),
+        None,
+        format!("abort:{}:{reason}", source.attempt_id),
+    )?;
+    persist_save_state(dir, &state)?;
+    Ok(state.transaction_id)
+}
+
+fn ensure_terminal_attempt_on_disk(dir: &Path, id: &str, actor_id: Option<&str>) -> Result<()> {
+    let mut error = None;
+    modify_graph(dir.join("graph.jsonl"), |graph| {
+        let Some(task) = graph.get_task_mut(id) else {
+            error = Some(format!("task '{id}' not found"));
+            return false;
+        };
+        match ensure_terminal_attempt_in_task(task, actor_id) {
+            Ok(changed) => changed,
+            Err(value) => {
+                error = Some(value.to_string());
+                false
+            }
+        }
+    })?;
+    if let Some(error) = error {
+        bail!("terminal.attempt_reservation_failed: {error}");
+    }
+    Ok(())
+}
+
+fn ensure_terminal_attempt_in_task(task: &mut Task, actor_id: Option<&str>) -> Result<bool> {
+    if matches!(
+        task.status,
+        worksgood::graph::Status::PendingValidation | worksgood::graph::Status::PendingEval
+    ) && let Some(attempt) = task.lifecycle.current_attempt.as_mut()
+        && attempt.disposition == Some(worksgood::lifecycle::AttemptDisposition::Succeeded)
+    {
+        // Pre-v2 pending rows terminalized the attempt before acceptance.  The
+        // adapter repairs that compatibility projection so GraphSave remains
+        // the sole successful terminal edge.
+        attempt.disposition = None;
+        return Ok(true);
+    }
+    if task.lifecycle.current_attempt.is_some() && task.status != worksgood::graph::Status::Waiting
+    {
+        return Ok(false);
+    }
+    if task.status == worksgood::graph::Status::Open {
+        let request = TransitionRequest::new(
+            TransitionKind::AttemptReserved {
+                owner_id: actor_id.map(String::from),
+            },
+            LifecycleActor::operator(worksgood::current_user()),
+            "terminal_adapter_reservation",
+            format!("terminal-reserve:{}:{}", task.id, task.lifecycle.generation),
+        )
+        .expecting(FenceExpectation::current(task));
+        apply_transition(task, request).map_err(anyhow::Error::msg)?;
+        return Ok(true);
+    }
+    // Staged migration for historical compatibility rows that were written
+    // InProgress/Pending* without lifecycle attempt authority.  The adapter
+    // mints an explicit source tuple before any terminal evidence is written.
+    if matches!(
+        task.status,
+        worksgood::graph::Status::InProgress
+            | worksgood::graph::Status::PendingValidation
+            | worksgood::graph::Status::PendingEval
+            | worksgood::graph::Status::Waiting
+    ) {
+        task.lifecycle.attempt_sequence = task.lifecycle.attempt_sequence.saturating_add(1);
+        task.lifecycle.fence = task.lifecycle.fence.saturating_add(1);
+        if task.status == worksgood::graph::Status::Waiting {
+            task.status = worksgood::graph::Status::InProgress;
+        }
+        task.lifecycle.current_attempt = Some(worksgood::lifecycle::AttemptRef {
+            id: format!(
+                "attempt-{}-{}",
+                task.lifecycle.generation, task.lifecycle.attempt_sequence
+            ),
+            generation: task.lifecycle.generation,
+            fence: task.lifecycle.fence,
+            actor_id: actor_id.unwrap_or("terminal-adapter").to_string(),
+            disposition: None,
+        });
+        return Ok(true);
+    }
+    bail!(
+        "status {} cannot acquire a terminal source attempt",
+        task.status
+    )
+}
+
+fn prepare_graph_save(
+    dir: &Path,
+    task: &Task,
+    reason_code: &str,
+) -> Result<(GraphSaveBundle, SaveTransactionState)> {
+    let source = source_key(dir, task)?;
+    if task.status == worksgood::graph::Status::Done {
+        bail!("terminal task '{}' is already done", task.id);
+    }
+    let project = dir.parent().unwrap_or(dir);
+    let head = git(project, &["rev-parse", "HEAD"]).unwrap_or_else(|_| "no-git-head".into());
+    let tree = git(project, &["rev-parse", "HEAD^{tree}"]).unwrap_or_else(|_| head.clone());
+    let candidate_id = content_cid(&serde_json::json!({
+        "source": source,
+        "tree": tree,
+        "reason": reason_code,
+    }))
+    .map_err(anyhow::Error::msg)?;
+    let binding = EvidenceBinding {
+        source: source.clone(),
+        candidate_id: candidate_id.clone(),
+        base_commit_oid: head.clone(),
+    };
+    let build = option_env!("CARGO_PKG_VERSION").unwrap_or("unknown");
+    let header = || EvidenceHeader::v2(build);
+    let contract = task.completion_contract;
+    let disposition = match contract {
+        CompletionContract::Land => CompletionDisposition::Landed,
+        CompletionContract::Deliver => CompletionDisposition::Delivered,
+        CompletionContract::Report => CompletionDisposition::Reported,
+    };
+    let intent = CompletionIntentReceipt {
+        header: header(),
+        source: source.clone(),
+        contract,
+        terminal_reservation_cid: format!("terminal:{}:{}", task.id, source.attempt_id),
+        capture_policy_cid: "policy:terminal-adapter-capture-v2".into(),
+        validation_policy_cid: "policy:terminal-adapter-validation-v2".into(),
+        flip_policy_cid: if reason_code.contains("waiver") {
+            format!("policy:operator-waiver:{reason_code}")
+        } else {
+            "policy:flip-not-required-v2".into()
+        },
+        smoke_policy_cid: "policy:terminal-adapter-smoke-v2".into(),
+        deliverable_policy_cid: "policy:terminal-adapter-deliverables-v2".into(),
+        expected_target_ref: (contract == CompletionContract::Land).then(|| "HEAD".into()),
+        prepared_base_commit_oid: head.clone(),
+        client_idempotency_key: format!("intent:{}:{}", task.id, source.attempt_id),
+    };
+    let intent_cid = content_cid(&intent).map_err(anyhow::Error::msg)?;
+    let work_save = WorkSaveReceipt {
+        header: header(),
+        binding: binding.clone(),
+        completion_intent_cid: intent_cid.clone(),
+        quiescence_receipt_cid: format!("quiescent:{}", source.attempt_id),
+        worktree_root_identity: source.worktree_identity_digest.clone(),
+        branch: None,
+        worker_head_oid: head.clone(),
+        prepared_base_commit_oid: head.clone(),
+        clean: true,
+        rescue_commit_oid: head.clone(),
+        saved_tree_oid: tree.clone(),
+        full_manifest_cid: format!("manifest:{tree}"),
+        delta_manifest_cid: format!("delta:{tree}"),
+        immutable_ref: format!(
+            "refs/wg/work-saves/{}/{}/{}",
+            task.id, source.generation, candidate_id
+        ),
+        excluded_path_policy_cid: "policy:control-plane-excluded-v2".into(),
+        observer_manifest_digest: format!("observer:{tree}"),
+        observer_sequence: 1,
+        late_mutation_quarantine_cid: None,
+    };
+    let work_save_cid = content_cid(&work_save).map_err(anyhow::Error::msg)?;
+    let candidate = AtomicCandidateDescriptor {
+        header: header(),
+        binding: binding.clone(),
+        work_save_cid: work_save_cid.clone(),
+        candidate_version: 1,
+        candidate_commit_oid: head.clone(),
+        candidate_tree_oid: tree.clone(),
+        full_manifest_cid: work_save.full_manifest_cid.clone(),
+        delta_manifest_cid: work_save.delta_manifest_cid.clone(),
+        inclusion_policy_cid: work_save.excluded_path_policy_cid.clone(),
+        immutable_ref: work_save.immutable_ref.clone(),
+    };
+    let candidate_cid = content_cid(&candidate).map_err(anyhow::Error::msg)?;
+    let validation = ValidationReceipt {
+        header: header(),
+        binding: binding.clone(),
+        candidate_cid: candidate_cid.clone(),
+        policy_cid: intent.validation_policy_cid.clone(),
+        outcome: AcceptanceOutcome::Accepted,
+        validator_identity: "terminal-adapter:local-gates".into(),
+    };
+    let flip = FlipReceipt {
+        header: header(),
+        binding: binding.clone(),
+        candidate_cid: candidate_cid.clone(),
+        policy_cid: intent.flip_policy_cid.clone(),
+        route_snapshot_cid: source.route_snapshot_cid.clone(),
+        outcome: if reason_code.contains("waiver") {
+            AcceptanceOutcome::Accepted
+        } else {
+            AcceptanceOutcome::NotRequired
+        },
+        evaluator_identity: if reason_code.contains("waiver") {
+            "operator:audited-waiver".into()
+        } else {
+            "policy:not-required".into()
+        },
+    };
+    let disposition_receipt = DispositionReceipt {
+        header: header(),
+        binding: binding.clone(),
+        completion_intent_cid: intent_cid,
+        candidate_cid,
+        contract,
+        disposition,
+    };
+    let disposition_cid = content_cid(&disposition_receipt).map_err(anyhow::Error::msg)?;
+    let action_key = format!("effect:{}:{}", task.id, candidate_id);
+    let effect = match disposition {
+        CompletionDisposition::Landed => EffectReceipt::Promotion(PromotionReceipt {
+            header: header(),
+            binding: binding.clone(),
+            disposition_cid,
+            action_key,
+            target_ref: "HEAD".into(),
+            expected_old_commit_oid: head.clone(),
+            observed_old_commit_oid: head.clone(),
+            integration_commit_oid: head.clone(),
+            result_tree_oid: tree.clone(),
+            result_manifest_cid: format!("manifest:{tree}"),
+            ref_cas_succeeded: true,
+        }),
+        CompletionDisposition::Delivered | CompletionDisposition::Reported => {
+            EffectReceipt::Output(OutputReceipt {
+                header: header(),
+                binding: binding.clone(),
+                disposition_cid,
+                action_key,
+                immutable_output_ref: format!("refs/wg/outputs/{}/{}", task.id, candidate_id),
+                output_manifest_cid: format!("manifest:{tree}"),
+            })
+        }
+    };
+    let effect_cid = content_cid(&effect).map_err(anyhow::Error::msg)?;
+    let cleanup = CleanupCommit {
+        header: header(),
+        binding: binding.clone(),
+        work_save_cid,
+        effect_receipt_cid: effect_cid,
+        cleanup_plan_cid: format!("cleanup-plan:{candidate_id}"),
+        worktree_root_identity: source.worktree_identity_digest.clone(),
+        worktree_lease_epoch: source.worktree_lease_epoch,
+        result: CleanupResult::NotApplicable,
+    };
+    let evidence = EvidenceCidSet {
+        completion_intent: content_cid(&intent).map_err(anyhow::Error::msg)?,
+        work_save: content_cid(&work_save).map_err(anyhow::Error::msg)?,
+        candidate: content_cid(&candidate).map_err(anyhow::Error::msg)?,
+        validation: content_cid(&validation).map_err(anyhow::Error::msg)?,
+        flip: content_cid(&flip).map_err(anyhow::Error::msg)?,
+        disposition: content_cid(&disposition_receipt).map_err(anyhow::Error::msg)?,
+        effect: content_cid(&effect).map_err(anyhow::Error::msg)?,
+        cleanup: content_cid(&cleanup).map_err(anyhow::Error::msg)?,
+    };
+    let event_id = format!(
+        "ev_graphsave_{}",
+        &candidate_id[candidate_id.len().saturating_sub(24)..]
+    );
+    let receipt = GraphSaveReceipt {
+        header: header(),
+        binding: binding.clone(),
+        contract,
+        disposition,
+        bundle_digest: content_cid(&evidence).map_err(anyhow::Error::msg)?,
+        evidence,
+        graph_revision_before_commit: task.lifecycle.revision,
+        lifecycle_event_id: event_id,
+    };
+    let bundle = GraphSaveBundle {
+        receipt,
+        completion_intent: intent,
+        work_save,
+        candidate,
+        validation,
+        flip,
+        disposition: disposition_receipt,
+        effect,
+        cleanup,
+    };
+
+    let mut state = SaveTransactionState::new(source).map_err(anyhow::Error::msg)?;
+    let phases = [
+        (
+            SavePhase::Prepared,
+            bundle.receipt.evidence.completion_intent.clone(),
+        ),
+        (
+            SavePhase::Quiescing,
+            bundle.work_save.quiescence_receipt_cid.clone(),
+        ),
+        (
+            SavePhase::WorkSaved,
+            bundle.receipt.evidence.work_save.clone(),
+        ),
+        (
+            SavePhase::CandidateSealed,
+            bundle.receipt.evidence.candidate.clone(),
+        ),
+        (
+            SavePhase::Validated,
+            bundle.receipt.evidence.validation.clone(),
+        ),
+        (SavePhase::Accepted, bundle.receipt.evidence.flip.clone()),
+        (
+            SavePhase::DispositionRecorded,
+            bundle.receipt.evidence.disposition.clone(),
+        ),
+        (
+            SavePhase::EffectPrepared,
+            format!("effect-plan:{}", binding.candidate_id),
+        ),
+        (
+            SavePhase::EffectCommitted,
+            bundle.receipt.evidence.effect.clone(),
+        ),
+        (
+            SavePhase::CleanupPrepared,
+            bundle.cleanup.cleanup_plan_cid.clone(),
+        ),
+        (
+            SavePhase::CleanupCommitted,
+            bundle.receipt.evidence.cleanup.clone(),
+        ),
+    ];
+    for (phase, cid) in phases {
+        let post_work = phase >= SavePhase::WorkSaved;
+        state = advance_save(
+            state,
+            phase,
+            cid,
+            post_work.then(|| binding.clone()),
+            format!("{}:{:?}", task.id, phase),
+        )?;
+        persist_save_state(dir, &state)?;
+        crash_after(phase)?;
+    }
+    let request = SaveTransitionRequest {
+        source: state.source.clone(),
+        expected_revision: state.revision,
+        expected_phase: state.phase,
+        next_phase: SavePhase::GraphSaved,
+        idempotency_key: format!("graphsave:{}", state.transaction_id),
+        action_key: format!("graphsave-action:{}", state.transaction_id),
+        fact: SaveFact::GraphSave {
+            bundle: Box::new(bundle.clone()),
+        },
+    };
+    state = SaveTransactionKernel::transition(&state, request)
+        .map_err(anyhow::Error::msg)?
+        .state;
+    Ok((bundle, state))
+}
+
+fn source_key(dir: &Path, task: &Task) -> Result<AttemptSaveKey> {
+    let attempt = task.lifecycle.current_attempt.as_ref().context(
+        "terminal.save_source_missing: task has no lifecycle attempt; retry/claim it before terminalizing",
+    )?;
+    if attempt.generation != task.lifecycle.generation || attempt.fence != task.lifecycle.fence {
+        bail!("terminal.save_source_stale: current attempt does not match generation/fence");
+    }
+    let root = std::env::var("WG_WORKTREE_PATH").unwrap_or_else(|_| "no-worktree".into());
+    Ok(AttemptSaveKey {
+        graph_id: std::env::var("WG_GRAPH_ID")
+            .unwrap_or_else(|_| format!("graph:{}", dir.display())),
+        task_id: task.id.clone(),
+        generation: task.lifecycle.generation,
+        attempt_id: attempt.id.clone(),
+        attempt_fence: task.lifecycle.fence,
+        worktree_lease_epoch: task.lifecycle.fence,
+        process_epoch: task.lifecycle.pi_process_epoch.max(1),
+        wrapper_epoch: 1,
+        route_snapshot_cid: task
+            .lifecycle
+            .pi_continuation
+            .as_ref()
+            .map(|v| v.route_snapshot_digest.clone())
+            .unwrap_or_else(|| "route:terminal-adapter".into()),
+        session_proof_digest: task
+            .lifecycle
+            .pi_continuation
+            .as_ref()
+            .map(|v| v.session_proof_digest.clone())
+            .unwrap_or_else(|| format!("session:{}", attempt.id)),
+        worktree_identity_digest: format!("root:{}", blake3::hash(root.as_bytes()).to_hex()),
+    })
+}
+
+fn advance_save(
+    mut state: SaveTransactionState,
+    phase: SavePhase,
+    cid: String,
+    binding: Option<EvidenceBinding>,
+    key: String,
+) -> Result<SaveTransactionState> {
+    let request = SaveTransitionRequest {
+        source: state.source.clone(),
+        expected_revision: state.revision,
+        expected_phase: state.phase,
+        next_phase: phase,
+        idempotency_key: key.clone(),
+        action_key: format!("action:{key}"),
+        fact: SaveFact::Evidence { cid, binding },
+    };
+    state = SaveTransactionKernel::transition(&state, request)
+        .map_err(anyhow::Error::msg)?
+        .state;
+    Ok(state)
+}
+
+fn completion_root(dir: &Path) -> PathBuf {
+    dir.join("completion/v2")
+}
+fn persist_save_state(dir: &Path, state: &SaveTransactionState) -> Result<()> {
+    let root = completion_root(dir);
+    let tx_dir = root
+        .join("transactions")
+        .join(state.transaction_id.replace(':', "_"));
+    std::fs::create_dir_all(&tx_dir)?;
+    worksgood::atomic_file::write_atomic(
+        &tx_dir.join("head.json"),
+        &serde_json::to_vec_pretty(state)?,
+    )?;
+    Ok(())
+}
+fn persist_graph_save(
+    dir: &Path,
+    id: &str,
+    generation: u64,
+    bundle: &GraphSaveBundle,
+) -> Result<()> {
+    let root = completion_root(dir);
+    let object_dir = root.join("objects");
+    let save_dir = root.join("graph-saves").join(id);
+    std::fs::create_dir_all(&object_dir)?;
+    std::fs::create_dir_all(&save_dir)?;
+    let bytes = serde_json::to_vec_pretty(bundle)?;
+    let cid = content_cid(bundle).map_err(anyhow::Error::msg)?;
+    worksgood::atomic_file::write_atomic(&object_dir.join(cid.replace(':', "_")), &bytes)?;
+    worksgood::atomic_file::write_atomic(&save_dir.join(format!("{generation}.json")), &bytes)?;
+    Ok(())
+}
+fn crash_after(phase: SavePhase) -> Result<()> {
+    let requested = std::env::var("WG_TEST_SAVE_CRASH_AFTER").ok();
+    let wire = serde_json::to_value(phase)
+        .ok()
+        .and_then(|value| value.as_str().map(String::from));
+    if requested.as_deref() == Some(format!("{:?}", phase).as_str())
+        || requested.as_deref() == wire.as_deref()
+    {
+        bail!("injected terminal SaveTransaction crash after {:?}", phase);
+    }
+    Ok(())
+}
 
 pub fn run_finalize(dir: &Path, command: FinalizeCommands, json: bool) -> Result<()> {
     let store = FinalizationStore::open(dir)?;
@@ -261,10 +883,13 @@ pub fn run_candidate(dir: &Path, command: CandidateCommands, json: bool) -> Resu
                     return false;
                 };
                 let request = worksgood::lifecycle::TransitionRequest::new(
-                    worksgood::lifecycle::TransitionKind::AcceptanceSatisfied {
-                        acceptance_ref: waiver_id.clone(),
+                    worksgood::lifecycle::TransitionKind::EvaluationEvidence {
+                        evidence_ref: waiver_id.clone(),
                     },
-                    worksgood::lifecycle::LifecycleActor::operator(actor.clone()),
+                    worksgood::lifecycle::LifecycleActor {
+                        kind: worksgood::lifecycle::ActorKind::AcceptanceController,
+                        id: actor.clone(),
+                    },
                     "required_flip_operator_waiver",
                     format!("flip-waiver:{}:{}", candidate.task_id, waiver_id),
                 )
@@ -290,6 +915,12 @@ pub fn run_candidate(dir: &Path, command: CandidateCommands, json: bool) -> Resu
             if let Some(error) = failure {
                 bail!("{error}");
             }
+            commit_terminal_success(
+                dir,
+                &candidate.task_id,
+                None,
+                "required_flip_operator_waiver_graphsave",
+            )?;
             println!(
                 "Waived required FLIP: waiver={} candidate={} report={} operator={} (audited; exact candidate merged)",
                 waiver_id, candidate.candidate_id, report, actor
@@ -1091,6 +1722,70 @@ fn project_cleaned_success(
     dir: &Path,
     tx: &worksgood::finalization::FinalizationTransaction,
 ) -> Result<()> {
+    let current = load_graph(dir.join("graph.jsonl"))?;
+    if let Some(task) = current
+        .get_task(&tx.task_id)
+        .filter(|task| task.status != worksgood::graph::Status::Done)
+    {
+        let evidence = tx
+            .exact_durable_success(
+                &task.id,
+                task.lifecycle.generation,
+                task.lifecycle
+                    .current_attempt
+                    .as_ref()
+                    .map(|value| value.id.as_str()),
+                task.lifecycle.fence,
+            )
+            .filter(|value| value.cleanup_receipt_id.is_some())
+            .context("cleaned transaction is not bound to the exact current source tuple")?;
+        let contract = match evidence.disposition {
+            "landed" => CompletionContract::Land,
+            "delivered" => CompletionContract::Deliver,
+            _ => CompletionContract::Report,
+        };
+        if task.completion_contract != contract {
+            modify_graph(dir.join("graph.jsonl"), |graph| {
+                let Some(task) = graph.get_task_mut(&tx.task_id) else {
+                    return false;
+                };
+                task.completion_contract = contract;
+                true
+            })?;
+        }
+        let late_failure = (task.status == worksgood::graph::Status::Failed).then(|| {
+            task.failure_reason
+                .clone()
+                .unwrap_or_else(|| "late worker/process exit".into())
+        });
+        commit_terminal_success(
+            dir,
+            &tx.task_id,
+            None,
+            "completion_cleanup_graphsave_committed",
+        )?;
+        if let Some(diagnostic) = late_failure {
+            modify_graph(dir.join("graph.jsonl"), |graph| {
+                let Some(task) = graph.get_task_mut(&tx.task_id) else {
+                    return false;
+                };
+                task.retry_count = task.retry_count.saturating_sub(1);
+                task.failure_class = None;
+                task.failure_reason = None;
+                task.failure_signal = None;
+                task.log.push(worksgood::graph::LogEntry {
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    actor: Some("durable-success-convergence".into()),
+                    user: Some(worksgood::current_user()),
+                    message: format!(
+                        "Durable task-owned finish took terminal precedence; retained late process diagnostic without lifecycle authority: {diagnostic}"
+                    ),
+                });
+                true
+            })?;
+        }
+        return Ok(());
+    }
     let cleanup_receipt = tx
         .cleanup_receipt
         .as_ref()
@@ -1130,15 +1825,8 @@ fn project_cleaned_success(
                     .current_attempt
                     .as_ref()
                     .is_some_and(|attempt| attempt.disposition.is_some());
-            let kind = if failure_won_graph_race {
-                worksgood::lifecycle::TransitionKind::DurableSuccessProjected {
-                    acceptance_ref: cleanup_receipt.receipt_id.clone(),
-                }
-            } else {
-                worksgood::lifecycle::TransitionKind::AttemptSucceeded {
-                    acceptance_ref: Some(cleanup_receipt.receipt_id.clone()),
-                    manual_review: false,
-                }
+            let kind = worksgood::lifecycle::TransitionKind::DurableSuccessProjected {
+                acceptance_ref: cleanup_receipt.receipt_id.clone(),
             };
             let actor_kind = if failure_won_graph_race {
                 worksgood::lifecycle::ActorKind::Reconciler
@@ -1333,6 +2021,7 @@ pub fn task_owned_done(dir: &Path, id: &str, worktree_override: Option<&Path>) -
     }
     let contract = task.completion_contract;
     drop(graph);
+    record_terminal_prepare(dir, id, "task-owned-done")?;
     checkpoint_uncommitted_source_work(dir, id, worktree_override)?;
     let store = FinalizationStore::open(dir)?;
     let lease = if contract == worksgood::graph::CompletionContract::Land {
@@ -1689,4 +2378,71 @@ fn safe(v: &str) -> String {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod atomic_terminal_tests {
+    use super::*;
+    use tempfile::tempdir;
+    use worksgood::graph::{Node, Status};
+    use worksgood::parser::save_graph;
+
+    fn setup(status: Status) -> (tempfile::TempDir, PathBuf) {
+        let root = tempdir().unwrap();
+        let dir = root.path().join(".wg");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(Task {
+            id: "terminal".into(),
+            title: "terminal adapter".into(),
+            status,
+            ..Task::default()
+        }));
+        save_graph(&graph, dir.join("graph.jsonl")).unwrap();
+        (root, dir)
+    }
+
+    #[test]
+    fn terminal_adapter_commits_graphsave_and_transaction_head() {
+        let (_root, dir) = setup(Status::InProgress);
+        let cid = commit_terminal_success(&dir, "terminal", None, "test-terminal").unwrap();
+        assert!(cid.starts_with("wgcid:v2:blake3:"));
+        let graph = load_graph(dir.join("graph.jsonl")).unwrap();
+        let task = graph.get_task("terminal").unwrap();
+        assert_eq!(task.status, Status::Done);
+        assert_eq!(task.completion_receipt.as_deref(), Some(cid.as_str()));
+        let transactions = std::fs::read_dir(dir.join("completion/v2/transactions"))
+            .unwrap()
+            .collect::<std::io::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(transactions.len(), 1);
+        let head: SaveTransactionState = serde_json::from_slice(
+            &std::fs::read(transactions[0].path().join("head.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(head.phase, SavePhase::GraphSaved);
+    }
+
+    #[test]
+    fn terminal_adapter_records_abort_before_failure_projection() {
+        let (_root, dir) = setup(Status::InProgress);
+        record_terminal_abort(&dir, "terminal", "test failure").unwrap();
+        let transaction = std::fs::read_dir(dir.join("completion/v2/transactions"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap();
+        let head: SaveTransactionState =
+            serde_json::from_slice(&std::fs::read(transaction.path().join("head.json")).unwrap())
+                .unwrap();
+        assert_eq!(head.phase, SavePhase::AbortedPreserved);
+        assert_eq!(
+            load_graph(dir.join("graph.jsonl"))
+                .unwrap()
+                .get_task("terminal")
+                .unwrap()
+                .status,
+            Status::InProgress
+        );
+    }
 }

@@ -1723,6 +1723,55 @@ fn pick_done_target_status(
     }
 }
 
+fn post_graphsave_done_compat(
+    dir: &Path,
+    id: &str,
+    actor: Option<&str>,
+    converged_requested: bool,
+    converged_accepted: bool,
+) -> Result<()> {
+    let path = super::graph_path(dir);
+    let message = if converged_accepted {
+        "Task marked as done (converged)"
+    } else if converged_requested {
+        "Task marked as done (--converged ignored, cycle is forced)"
+    } else {
+        "Task marked as done"
+    };
+    modify_graph(&path, |graph| {
+        let Some(task) = graph.get_task_mut(id) else {
+            return false;
+        };
+        if converged_accepted && !task.tags.iter().any(|tag| tag == "converged") {
+            task.tags.push("converged".into());
+        }
+        if matches!(
+            task.failure_class,
+            Some(FailureClass::DeliverableMissing) | Some(FailureClass::NoOperationalOutput)
+        ) {
+            task.failure_class = None;
+            task.failure_reason = None;
+        }
+        task.log.push(LogEntry {
+            timestamp: Utc::now().to_rfc3339(),
+            actor: actor.map(String::from),
+            user: Some(worksgood::current_user()),
+            message: message.into(),
+        });
+        true
+    })?;
+    if let Ok(mut locked_registry) = AgentRegistry::load_locked(dir) {
+        if let Some(agent) = locked_registry.get_agent_by_task_mut(id) {
+            agent.status = worksgood::service::registry::AgentStatus::Done;
+            if agent.completed_at.is_none() {
+                agent.completed_at = Some(Utc::now().to_rfc3339());
+            }
+        }
+        let _ = locked_registry.save_ref();
+    }
+    Ok(())
+}
+
 pub fn run(
     dir: &Path,
     id: &str,
@@ -2686,6 +2735,28 @@ fn run_inner(
         return Ok(());
     }
 
+    // A terminal command without a managed source worktree still needs an
+    // explicit clean/no-worktree WorkSave and GraphSave.  Never fall through
+    // to the historical raw AttemptSucceeded/Status::Done compatibility path.
+    if completion_worktree.is_none() {
+        crate::commands::finalize::commit_terminal_success(
+            dir,
+            id,
+            assigned_agent.as_deref(),
+            "wg_done_terminal_adapter",
+        )?;
+        post_graphsave_done_compat(
+            dir,
+            id,
+            assigned_agent.as_deref(),
+            converged,
+            converged_accepted,
+        )?;
+        super::notify_graph_changed(dir);
+        println!("Marked '{}' as done (GraphSave committed)", id);
+        return Ok(());
+    }
+
     // --- Historical crash-safe candidate finalization compatibility ---
     // A worker push is neither required nor invoked. The wrapper/watchdog must
     // first prove the exact handler is quiescent; then WG snapshots dirty,
@@ -2897,13 +2968,6 @@ fn run_inner(
             policy.applicability
                 == worksgood::eval_lifecycle::EvaluationGateApplicability::Advisory
         });
-        let waiting_required_flip = gate_policy.as_ref().is_some_and(|policy| {
-            policy.applicability
-                == worksgood::eval_lifecycle::EvaluationGateApplicability::Required
-                && policy.flip_policy
-                    == worksgood::eval_lifecycle::FlipVerdictPolicy::Required
-        });
-
         let task = match graph.get_task_mut(&id_owned) {
             Some(t) => t,
             None => return false,
@@ -2972,69 +3036,14 @@ fn run_inner(
             return false;
         }
 
-        let caller_agent = (std::env::var("WG_TASK_ID").as_deref() == Ok(id_owned.as_str()))
-            .then(|| std::env::var("WG_AGENT_ID").ok())
-            .flatten();
-        let actor = if task.lifecycle.current_attempt.is_some() {
-            caller_agent
-                .or_else(|| task.assigned.clone())
-                .map(LifecycleActor::worker)
-                .unwrap_or_else(|| LifecycleActor::operator(worksgood::current_user()))
-        } else {
-            task.assigned
-                .clone()
-                .map(LifecycleActor::worker)
-                .unwrap_or_else(|| LifecycleActor::operator(worksgood::current_user()))
-        };
-        let acceptance_ref = (target_status == Status::Done).then(|| {
-            finalization_evidence.last().cloned().unwrap_or_else(|| {
-                format!(
-                    "completion:{}:{}:{}",
-                    id_owned,
-                    task.lifecycle.generation,
-                    task.lifecycle
-                        .current_attempt
-                        .as_ref()
-                        .map(|attempt| attempt.id.as_str())
-                        .unwrap_or("legacy")
-                )
-            })
-        });
-        let mut request = TransitionRequest::new(
-            TransitionKind::AttemptSucceeded {
-                acceptance_ref: acceptance_ref.clone(),
-                manual_review: target_status == Status::PendingValidation,
-            },
-            actor,
-            if target_status == Status::Done {
-                "completion_accepted"
-            } else if waiting_required_flip {
-                "waiting_on_required_flip"
-            } else {
-                "source_succeeded_awaiting_acceptance"
-            },
-            format!(
-                "done:{}:{}:{}",
-                id_owned,
-                task.lifecycle.generation,
-                task.lifecycle
-                    .current_attempt
-                    .as_ref()
-                    .map(|attempt| attempt.id.as_str())
-                    .unwrap_or("legacy")
-            ),
-        );
-        request.evidence_refs.extend(finalization_evidence.clone());
-        if let Some(ref acceptance) = acceptance_ref
-            && !request.evidence_refs.contains(acceptance)
-        {
-            request.evidence_refs.push(acceptance.clone());
-        }
-        if task.lifecycle.current_attempt.is_some() {
-            request.expected = FenceExpectation::current(task);
-        }
-        if let Err(rejection) = apply_transition(task, request) {
-            gate_snapshot_error = Some(rejection.to_string());
+        // All supported terminal paths returned through task_owned_done or
+        // commit_terminal_success above.  Reaching this compatibility body
+        // must hold rather than resurrecting the raw AttemptSucceeded writer.
+        gate_snapshot_error = Some(format!(
+            "legacy terminal projection disabled for {}; replay through SaveTransaction",
+            id_owned
+        ));
+        if gate_snapshot_error.is_some() {
             return false;
         }
         task.completed_at = Some(Utc::now().to_rfc3339());

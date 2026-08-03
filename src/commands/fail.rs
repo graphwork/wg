@@ -222,6 +222,16 @@ fn run_inner(
         ))
     };
 
+    // Persist the non-success terminal transaction before projecting failure.
+    // Evaluation rejection has its own exact candidate-bound receipt path.
+    if !eval_reject {
+        super::finalize::record_terminal_abort(
+            dir,
+            id,
+            reason.unwrap_or("task failed without an explicit reason"),
+        )?;
+    }
+
     // Atomically load the freshest graph, apply the mutation, and save.
     // Using modify_graph prevents lost updates from concurrent graph writers.
     let mut retry_count = 0u32;
@@ -804,14 +814,18 @@ mod tests {
             task.completion_disposition,
             Some(worksgood::graph::CompletionDisposition::Reported)
         );
-        assert_eq!(task.completion_receipt.as_deref(), Some("cleanup:c433cb68"));
+        assert!(
+            task.completion_receipt
+                .as_deref()
+                .is_some_and(|value| value.starts_with("wgcid:v2:blake3:"))
+        );
         assert_eq!(task.retry_count, 0);
         assert!(task.lifecycle.audit.iter().any(|event| {
-            event.event_kind == "durable-success-projected"
+            event.event_kind == "graph-save-committed"
                 && event
                     .evidence_refs
                     .iter()
-                    .any(|value| value == "output:c433cb68")
+                    .any(|value| value.starts_with("wgcid:v2:blake3:"))
         }));
         assert!(task.log.iter().any(|entry| {
             entry.message.contains("provider-unavailable")
