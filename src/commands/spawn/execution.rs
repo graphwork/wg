@@ -2416,8 +2416,32 @@ fn attest_selected_prior_pi_leaf(
             continue;
         }
         found_session_proof = true;
-        if proof.session_file == selected_file && proof.branch_leaf == selected_leaf {
+        if proof.session_file != selected_file {
+            continue;
+        }
+        if proof.branch_leaf == selected_leaf {
             return Ok(());
+        }
+        // The watchdog may have persisted a truthful prefix before the native
+        // Pi child appended its final journal records and exited. Exact-session
+        // continuation must accept that append-only extension rather than
+        // demanding that the last watchdog poll observed the final byte. The
+        // selected journal has already passed canonical journal selection; now
+        // bind its prefix to the durable watchdog proof so replacement or
+        // mutation of any attested byte still fails closed.
+        let bytes = fs::read(selected_file).with_context(|| {
+            format!(
+                "failed to read selected Pi journal {}",
+                selected_file.display()
+            )
+        })?;
+        let prefix_len = usize::try_from(proof.append_prefix_len)
+            .context("attested Pi journal prefix length does not fit this platform")?;
+        if prefix_len <= bytes.len() {
+            let prefix_leaf = format!("b3:{}", blake3::hash(&bytes[..prefix_len]).to_hex());
+            if prefix_leaf == proof.append_prefix_digest {
+                return Ok(());
+            }
         }
     }
     if found_session_proof {
