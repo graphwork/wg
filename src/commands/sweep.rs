@@ -19,7 +19,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
 
-use worksgood::graph::{LogEntry, Status};
+use worksgood::graph::{LogEntry, Status, Task};
 use worksgood::lifecycle::{
     ActorKind, FenceExpectation, LifecycleActor, TransitionKind, TransitionRequest,
     apply_transition,
@@ -28,6 +28,32 @@ use worksgood::parser::{load_graph, modify_graph};
 use worksgood::service::registry::{AgentRegistry, AgentStatus};
 
 use super::{graph_path, is_process_alive};
+
+fn has_exact_durable_success(dir: &Path, task: &Task) -> bool {
+    worksgood::finalization::FinalizationStore::open(dir)
+        .and_then(|store| store.load_task(&task.id))
+        .ok()
+        .flatten()
+        .filter(|tx| {
+            task.assigned.as_deref().is_some_and(|owner| {
+                tx.candidate
+                    .as_ref()
+                    .is_some_and(|candidate| candidate.worktree_id == owner)
+            })
+        })
+        .and_then(|tx| {
+            tx.exact_durable_success(
+                &task.id,
+                task.lifecycle.generation,
+                task.lifecycle
+                    .current_attempt
+                    .as_ref()
+                    .map(|attempt| attempt.id.as_str()),
+                task.lifecycle.fence,
+            )
+        })
+        .is_some()
+}
 
 /// Information about an orphaned task found by sweep
 #[derive(Debug, Clone)]
@@ -66,6 +92,12 @@ pub fn find_orphaned_tasks(dir: &Path) -> Result<Vec<OrphanedTask>> {
     let mut orphaned = Vec::new();
 
     for task in graph.tasks() {
+        // A durable exact-attempt promotion/output is already terminal
+        // success. Sweep may report neither a failure nor a replacement owner;
+        // task-owned cleanup/convergence owns the remaining projection.
+        if task.status == Status::InProgress && has_exact_durable_success(dir, task) {
+            continue;
+        }
         // A policy-valid Pi continuation authorization is the lifecycle
         // kernel's narrow pre-terminal hold. Generic dead-owner cleanup must
         // not create another attempt/owner while that exact source is being
@@ -442,6 +474,12 @@ pub fn reconcile_orphaned_tasks(dir: &Path, graph_path: &Path) -> Result<usize> 
             .tasks()
             .filter(|task| matches!(task.status, Status::InProgress | Status::Open))
             .filter_map(|task| {
+                // A task-owned accepted promotion/output is stronger than a
+                // dead-process observation. Exact cleanup/convergence retains
+                // authority and the orphan sweep must stay observational.
+                if task.status == Status::InProgress && has_exact_durable_success(dir, task) {
+                    return None;
+                }
                 // Pi's exact process-exit/finalization lane remains authority
                 // after the wrapper dies, including after a terminal intent
                 // consumes continuation budget. Generic orphan recovery must

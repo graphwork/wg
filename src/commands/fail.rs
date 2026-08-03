@@ -68,6 +68,19 @@ fn run_inner(
     class: Option<FailureClass>,
     eval_reject: bool,
 ) -> Result<()> {
+    // A task-owned `wg done` returns only after an accepted promotion/output
+    // receipt is durable. From that boundary onward wrapper/provider exit is
+    // diagnostic evidence, not a competing terminal writer. This check is
+    // exact-source fenced and intentionally does not cover legacy status-only
+    // Done rows or semantic evaluation rejection.
+    if !eval_reject && contain_late_failure_after_durable_success(dir, id, reason, class)? {
+        println!(
+            "Task '{}' already has exact durable successful finalization; retained late process failure as diagnostic only",
+            id
+        );
+        return Ok(());
+    }
+
     // Pre-check with a non-atomic read (gate only — not used for mutation).
     {
         let (graph, _path) = super::load_workgraph_mut(dir)?;
@@ -101,7 +114,8 @@ fn run_inner(
     // Pi terminal tools reserve intent while the source handler can still
     // write. The post-wait wrapper calls `wg finalize settle`, which re-enters
     // here with WG_HANDLER_QUIESCENT=1 and rescue-checkpoints before failure.
-    let in_isolated_worktree = std::env::var_os("WG_WORKTREE_PATH").is_some();
+    let in_isolated_worktree = std::env::var_os("WG_WORKTREE_PATH").is_some()
+        && std::env::var("WG_TASK_ID").as_deref() == Ok(id);
     let handler_quiescent = std::env::var("WG_HANDLER_QUIESCENT").as_deref() == Ok("1");
     if !eval_reject
         && in_isolated_worktree
@@ -455,11 +469,493 @@ fn run_inner(
     Ok(())
 }
 
+fn contain_late_failure_after_durable_success(
+    dir: &Path,
+    id: &str,
+    reason: Option<&str>,
+    class: Option<FailureClass>,
+) -> Result<bool> {
+    let store = worksgood::finalization::FinalizationStore::open(dir)?;
+    let Some(tx) = store.load_task(id)? else {
+        return Ok(false);
+    };
+    let presented_agent = (std::env::var("WG_TASK_ID").as_deref() == Ok(id))
+        .then(|| std::env::var("WG_AGENT_ID").ok())
+        .flatten();
+    if presented_agent.as_deref().is_some_and(|agent| {
+        tx.candidate
+            .as_ref()
+            .is_none_or(|candidate| candidate.worktree_id != agent)
+    }) {
+        // Do not let an old wrapper borrow the current attempt's transaction.
+        // The ordinary lifecycle path below will reject its stale actor/fence.
+        return Ok(false);
+    }
+
+    let mut contained = false;
+    let class_text = class
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "unclassified-process-exit".into());
+    let reason_text = reason.unwrap_or("late worker/process exit").to_string();
+    let diagnostic_key = format!(
+        "late-process-diagnostic:{}:{}:{}:{}",
+        tx.generation, tx.attempt_id, tx.attempt_fence, class_text
+    );
+    modify_graph(super::graph_path(dir), |graph| {
+        let Some(task) = graph.get_task_mut(id) else {
+            return false;
+        };
+        let Some(evidence) = tx.exact_durable_success(
+            &task.id,
+            task.lifecycle.generation,
+            task.lifecycle
+                .current_attempt
+                .as_ref()
+                .map(|attempt| attempt.id.as_str()),
+            task.lifecycle.fence,
+        ) else {
+            return false;
+        };
+        contained = true;
+        if task.log.iter().any(|entry| {
+            entry.actor.as_deref() == Some("late-process-diagnostic")
+                && entry.message.contains(&diagnostic_key)
+        }) {
+            return false;
+        }
+        task.log.push(LogEntry {
+            timestamp: Utc::now().to_rfc3339(),
+            actor: Some("late-process-diagnostic".into()),
+            user: Some(worksgood::current_user()),
+            message: format!(
+                "{diagnostic_key} observed after durable {} receipt {}; lifecycle authority suppressed: {}",
+                evidence.disposition, evidence.durable_receipt_id, reason_text
+            ),
+        });
+        true
+    })?;
+    Ok(contained)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::tempdir;
+    use worksgood::finalization::{
+        CandidateBinding, CandidateDescriptor, CleanupReceipt, EvaluationReceipt,
+        EvaluationReceiptOutcome, FinalizationPhase, FinalizationTransaction, MergeReceipt,
+        OutputDisposition, OutputReceipt, QuiescenceProof, ValidationResult,
+    };
     use worksgood::test_helpers::{make_task_with_status as make_task, setup_workgraph};
+
+    fn running_task(id: &str, agent: &str) -> worksgood::graph::Task {
+        let mut task = make_task(id, id, Status::Open);
+        let request = TransitionRequest::new(
+            TransitionKind::AttemptReserved {
+                owner_id: Some(agent.into()),
+            },
+            LifecycleActor {
+                kind: ActorKind::Dispatcher,
+                id: "fixture-dispatcher".into(),
+            },
+            "fixture_reserve",
+            format!("fixture-reserve:{id}"),
+        );
+        apply_transition(&mut task, request).unwrap();
+        task.assigned = Some(agent.into());
+        task
+    }
+
+    fn incident_transaction(
+        task: &worksgood::graph::Task,
+        land: bool,
+        cleaned: bool,
+    ) -> FinalizationTransaction {
+        let attempt = task.lifecycle.current_attempt.as_ref().unwrap();
+        let commit = if land { "347a1696" } else { "c433cb68" };
+        let binding = CandidateBinding {
+            candidate_id: format!("candidate:{commit}"),
+            commit_oid: commit.into(),
+            tree_oid: format!("tree:{commit}"),
+            manifest_cid: format!("manifest:{commit}"),
+            delta_manifest_cid: "delta".into(),
+        };
+        let candidate = CandidateDescriptor {
+            schema_version: 1,
+            candidate_id: binding.candidate_id.clone(),
+            candidate_version: 1,
+            task_id: task.id.clone(),
+            generation: task.lifecycle.generation,
+            attempt_id: attempt.id.clone(),
+            attempt_fence: task.lifecycle.fence,
+            process_epoch: 1,
+            terminal_reservation_id: format!("terminal:{}", task.id),
+            quiescence_receipt_cid: format!("quiescence:{}", task.id),
+            rescue_id: format!("rescue:{}", task.id),
+            worktree_id: attempt.actor_id.clone(),
+            worktree_lease_epoch: task.lifecycle.fence,
+            base_commit_oid: "base".into(),
+            base_tree_oid: "base-tree".into(),
+            // The broker incident retained later smoke commits through
+            // ccf51d90 after its first durable c433cb68 output.
+            worker_head_oid: if land {
+                commit.into()
+            } else {
+                "ccf51d90".into()
+            },
+            candidate_commit_oid: commit.into(),
+            candidate_tree_oid: binding.tree_oid.clone(),
+            content_manifest_cid: binding.manifest_cid.clone(),
+            delta_manifest_cid: "delta".into(),
+            validation_policy_cid: "validation-policy".into(),
+            evaluation_policy: "none".into(),
+            merge_policy_cid: "merge-policy".into(),
+            route_snapshot_cid: "route".into(),
+            immutable_ref: format!("refs/wg/fixtures/{}", task.id),
+            created_at: "2026-08-03T00:00:00Z".into(),
+            binding: binding.clone(),
+        };
+        let validation = ValidationResult {
+            result_id: "validation".into(),
+            request_id: "validation-request".into(),
+            binding: binding.clone(),
+            policy_cid: "validation-policy".into(),
+            materialized_tree_oid: binding.tree_oid.clone(),
+            materialized_manifest_cid: binding.manifest_cid.clone(),
+            passed: true,
+            validator_identity: "fixture".into(),
+            created_at: "2026-08-03T00:00:01Z".into(),
+        };
+        let merge_receipt = land.then(|| MergeReceipt {
+            receipt_id: "merge:347a1696".into(),
+            action_id: "merge-action".into(),
+            binding: binding.clone(),
+            base_commit_oid: "base".into(),
+            expected_target_commit_oid: "base".into(),
+            expected_target_tree_oid: "base-tree".into(),
+            integration_commit_oid: "347a1696".into(),
+            result_tree_oid: binding.tree_oid.clone(),
+            result_manifest_cid: binding.manifest_cid.clone(),
+            candidate_projection_digest: "delta".into(),
+            target_ref: "refs/heads/main".into(),
+            ref_cas: true,
+            created_at: "2026-08-03T00:00:02Z".into(),
+        });
+        let output_receipt = (!land).then(|| OutputReceipt {
+            receipt_id: "output:c433cb68".into(),
+            task_id: task.id.clone(),
+            disposition: OutputDisposition::Reported,
+            binding: binding.clone(),
+            immutable_ref: format!("refs/wg/reports/{}/v1", task.id),
+            created_at: "2026-08-03T00:00:02Z".into(),
+        });
+        let durable_receipt_id = if land {
+            "merge:347a1696"
+        } else {
+            "output:c433cb68"
+        };
+        let cleanup_receipt = cleaned.then(|| CleanupReceipt {
+            receipt_id: format!("cleanup:{commit}"),
+            task_id: task.id.clone(),
+            disposition: if land { "landed" } else { "reported" }.into(),
+            durable_receipt_id: durable_receipt_id.into(),
+            worktree_id: attempt.actor_id.clone(),
+            worktree_path: std::path::PathBuf::from(format!("/retained/{}", task.id)),
+            branch: format!("wg/source/{}", task.id),
+            removed: true,
+            created_at: "2026-08-03T00:00:03Z".into(),
+        });
+        FinalizationTransaction {
+            schema_version: 1,
+            task_id: task.id.clone(),
+            generation: task.lifecycle.generation,
+            attempt_id: attempt.id.clone(),
+            attempt_fence: task.lifecycle.fence,
+            worktree_lease_epoch: task.lifecycle.fence,
+            worktree_path: std::path::PathBuf::from(format!("/retained/{}", task.id)),
+            project_root: std::path::PathBuf::from("/project"),
+            phase: if cleaned {
+                FinalizationPhase::Cleaned
+            } else if land {
+                FinalizationPhase::Promoted
+            } else {
+                FinalizationPhase::Reported
+            },
+            terminal_reservation_id: format!("terminal:{}", task.id),
+            quiescence: QuiescenceProof {
+                receipt_cid: format!("quiescence:{}", task.id),
+                process_identity_digest: "process".into(),
+                process_group_empty: true,
+                nonce_pipe_eof: true,
+                observed_manifest_digest: None,
+            },
+            rescue: None,
+            candidate: Some(candidate),
+            validation: Some(validation),
+            evaluation_request: None,
+            finish_lease_id: land.then(|| "lease".into()),
+            evaluation_receipt: land.then(|| EvaluationReceipt {
+                receipt_id: "evaluation:accepted".into(),
+                binding,
+                outcome: EvaluationReceiptOutcome::Accepted,
+                evidence_id: "evaluation-not-required".into(),
+                evaluator_identity: "fixture".into(),
+                created_at: "2026-08-03T00:00:02Z".into(),
+            }),
+            output_receipt,
+            cleanup_receipt,
+            merge_receipt,
+            merge_conflict: None,
+            retained_reason: None,
+            replay_action: None,
+            safe_next_command: format!("wg show {}", task.id),
+            updated_at: "2026-08-03T00:00:03Z".into(),
+        }
+    }
+
+    fn write_transaction(dir: &Path, tx: &FinalizationTransaction) {
+        let store = worksgood::finalization::FinalizationStore::open(dir).unwrap();
+        let path = store
+            .root()
+            .join("transactions")
+            .join(format!("{}.json", tx.task_id));
+        std::fs::write(path, serde_json::to_vec_pretty(tx).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn formal_incident_durable_land_then_provider_timeout_stays_successful() {
+        let dir = tempdir().unwrap();
+        let task = running_task("formalize-lifecycle-finish-lean4", "agent-formal");
+        let tx = incident_transaction(&task, true, false);
+        setup_workgraph(dir.path(), vec![task]);
+        write_transaction(dir.path(), &tx);
+
+        run(
+            dir.path(),
+            "formalize-lifecycle-finish-lean4",
+            Some("provider timeout after main 347a1696"),
+            Some(FailureClass::AgentExitNonzero),
+        )
+        .unwrap();
+
+        let graph = load_graph(graph_path(dir.path())).unwrap();
+        let task = graph.get_task("formalize-lifecycle-finish-lean4").unwrap();
+        assert_eq!(task.status, Status::InProgress);
+        assert_eq!(task.retry_count, 0);
+        assert!(
+            !task
+                .lifecycle
+                .audit
+                .iter()
+                .any(|event| event.event_kind == "attempt-failed")
+        );
+        assert!(task.log.iter().any(|entry| {
+            entry.actor.as_deref() == Some("late-process-diagnostic")
+                && entry.message.contains("provider timeout")
+                && entry.message.contains("347a1696")
+        }));
+    }
+
+    #[test]
+    fn broker_incident_cleaned_then_provider_unavailable_converges_success() {
+        let dir = tempdir().unwrap();
+        let task = running_task(
+            "fix-brokered-deliverable-preflight-worktree",
+            "agent-broker",
+        );
+        setup_workgraph(dir.path(), vec![task.clone()]);
+        // Model the graph side of the incident winning first, without
+        // inheriting this test runner's real Pi wrapper environment.
+        modify_graph(graph_path(dir.path()), |graph| {
+            let task = graph.get_task_mut(&task.id).unwrap();
+            let mut request = TransitionRequest::new(
+                TransitionKind::AttemptFailed {
+                    class: Some(FailureClass::AgentExitNonzero),
+                },
+                LifecycleActor::worker("agent-broker"),
+                "source_execution_failed",
+                "incident-provider-unavailable",
+            );
+            request.expected = FenceExpectation::current(task);
+            apply_transition(task, request).unwrap();
+            task.retry_count = 1;
+            task.failure_class = Some(FailureClass::AgentExitNonzero);
+            task.failure_reason = Some("provider-unavailable after wg done succeeded".into());
+            task.log.push(LogEntry {
+                timestamp: Utc::now().to_rfc3339(),
+                actor: Some("agent-broker".into()),
+                user: Some("fixture".into()),
+                message: "Task marked as failed: provider-unavailable after wg done succeeded"
+                    .into(),
+            });
+            true
+        })
+        .unwrap();
+        let cleaned = incident_transaction(&task, false, true);
+        write_transaction(dir.path(), &cleaned);
+
+        let store = worksgood::finalization::FinalizationStore::open(dir.path()).unwrap();
+        super::super::finalize::cleanup_finish(dir.path(), &store, &task.id, false).unwrap();
+
+        let graph = load_graph(graph_path(dir.path())).unwrap();
+        let task = graph.get_task(&task.id).unwrap();
+        assert_eq!(task.status, Status::Done);
+        assert_eq!(
+            task.completion_disposition,
+            Some(worksgood::graph::CompletionDisposition::Reported)
+        );
+        assert_eq!(task.completion_receipt.as_deref(), Some("cleanup:c433cb68"));
+        assert_eq!(task.retry_count, 0);
+        assert!(task.lifecycle.audit.iter().any(|event| {
+            event.event_kind == "durable-success-projected"
+                && event
+                    .evidence_refs
+                    .iter()
+                    .any(|value| value == "output:c433cb68")
+        }));
+        assert!(task.log.iter().any(|entry| {
+            entry.message.contains("provider-unavailable")
+                && entry.message.contains("without lifecycle authority")
+        }));
+    }
+
+    #[test]
+    fn durable_success_evidence_rejects_each_stale_source_coordinate() {
+        let task = running_task("tuple-fence", "agent-tuple");
+        let tx = incident_transaction(&task, false, true);
+        let attempt = task.lifecycle.current_attempt.as_ref().unwrap();
+        assert!(
+            tx.exact_durable_success(
+                &task.id,
+                task.lifecycle.generation,
+                Some(&attempt.id),
+                task.lifecycle.fence,
+            )
+            .is_some()
+        );
+        assert!(
+            tx.exact_durable_success(
+                &task.id,
+                task.lifecycle.generation + 1,
+                Some(&attempt.id),
+                task.lifecycle.fence,
+            )
+            .is_none()
+        );
+        assert!(
+            tx.exact_durable_success(
+                &task.id,
+                task.lifecycle.generation,
+                Some("attempt-newer"),
+                task.lifecycle.fence,
+            )
+            .is_none()
+        );
+        assert!(
+            tx.exact_durable_success(
+                &task.id,
+                task.lifecycle.generation,
+                Some(&attempt.id),
+                task.lifecycle.fence + 1,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn cleaned_transaction_does_not_upgrade_unrelated_legacy_done_row() {
+        let dir = tempdir().unwrap();
+        let running = running_task("legacy-done", "agent-old");
+        let cleaned = incident_transaction(&running, false, true);
+        let legacy = make_task("legacy-done", "legacy", Status::Done);
+        setup_workgraph(dir.path(), vec![legacy]);
+        write_transaction(dir.path(), &cleaned);
+        let store = worksgood::finalization::FinalizationStore::open(dir.path()).unwrap();
+
+        super::super::finalize::cleanup_finish(dir.path(), &store, "legacy-done", false).unwrap();
+
+        let graph = load_graph(graph_path(dir.path())).unwrap();
+        let task = graph.get_task("legacy-done").unwrap();
+        assert_eq!(task.status, Status::Done);
+        assert_eq!(task.completion_disposition, None);
+        assert_eq!(task.completion_receipt, None);
+        assert!(
+            !task
+                .lifecycle
+                .audit
+                .iter()
+                .any(|event| event.event_kind == "durable-success-projected")
+        );
+    }
+
+    #[test]
+    fn stale_durable_transaction_cannot_bless_newer_attempt() {
+        let dir = tempdir().unwrap();
+        let mut task = running_task("stale-finalization", "agent-old");
+        let stale = incident_transaction(&task, false, true);
+        apply_transition(
+            &mut task,
+            TransitionRequest::new(
+                TransitionKind::GenerationCreated,
+                LifecycleActor::operator("fixture"),
+                "fixture_retry",
+                "fixture-retry:stale-finalization",
+            ),
+        )
+        .unwrap();
+        apply_transition(
+            &mut task,
+            TransitionRequest::new(
+                TransitionKind::AttemptReserved {
+                    owner_id: Some("agent-new".into()),
+                },
+                LifecycleActor {
+                    kind: ActorKind::Dispatcher,
+                    id: "fixture-dispatcher".into(),
+                },
+                "fixture_reserve_new",
+                "fixture-reserve-new:stale-finalization",
+            ),
+        )
+        .unwrap();
+        task.assigned = Some("agent-new".into());
+        setup_workgraph(dir.path(), vec![task]);
+        write_transaction(dir.path(), &stale);
+
+        assert!(
+            !contain_late_failure_after_durable_success(
+                dir.path(),
+                "stale-finalization",
+                Some("new attempt genuine process failure"),
+                Some(FailureClass::AgentExitNonzero),
+            )
+            .unwrap()
+        );
+        modify_graph(graph_path(dir.path()), |graph| {
+            let task = graph.get_task_mut("stale-finalization").unwrap();
+            let mut request = TransitionRequest::new(
+                TransitionKind::AttemptFailed {
+                    class: Some(FailureClass::AgentExitNonzero),
+                },
+                LifecycleActor::worker("agent-new"),
+                "source_execution_failed",
+                "new-attempt-genuine-failure",
+            );
+            request.expected = FenceExpectation::current(task);
+            apply_transition(task, request).unwrap();
+            true
+        })
+        .unwrap();
+        let graph = load_graph(graph_path(dir.path())).unwrap();
+        let task = graph.get_task("stale-finalization").unwrap();
+        assert_eq!(task.status, Status::Failed);
+        assert!(
+            task.lifecycle
+                .audit
+                .iter()
+                .any(|event| event.event_kind == "attempt-failed")
+        );
+    }
 
     #[test]
     fn test_fail_in_progress_task() {
