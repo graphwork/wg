@@ -184,3 +184,79 @@ theorem unrelated_wrapper_rejected
   · exact hstale
 
 end WGLifecycle
+
+namespace WGLifecycle.V2
+
+/-- Dependency truth is the verified GraphSave projection, never raw Done. -/
+theorem dependency_iff_valid_graphsave (s : State)
+    (hprojection : s.dependencySatisfied = s.graphSaveValid) :
+    s.dependencySatisfied = true ↔ s.graphSaveValid = true := by
+  simp [hprojection]
+
+/-- A committed GraphSave event establishes the complete bundle projection. -/
+theorem done_iff_complete_agreeing_graphsave
+    (hversion : s.version = wireVersion)
+    (hsource : source = s.source)
+    (hphase : s.phase = .cleanupCommitted)
+    (hwork : s.workSaved = true) (haccepted : s.accepted = true)
+    (heffect : s.effectCount = 1) (hcleanup : s.cleanupCommitted = true) :
+    completeAgreeingGraphSave (reduce s (.graphSave source true)).1 ∧
+      (reduce s (.graphSave source true)).1.dependencySatisfied = true := by
+  subst source
+  simp [reduce, completeAgreeingGraphSave, hversion, hphase, hwork, haccepted, heffect, hcleanup]
+
+/-- A stale tuple cannot advance any save phase. -/
+theorem stale_capability_cannot_advance_save
+    (hstale : source ≠ s.source) :
+    (reduce s (.advance source next true)).1 = s := by
+  by_cases hv : s.version = wireVersion <;> simp [reduce, hv, hstale]
+
+/-- Cleanup is impossible before a verified WorkSave phase was traversed. -/
+theorem destructive_step_implies_work_saved
+    (hversion : s.version = wireVersion)
+    (hsource : source = s.source)
+    (hphase : s.phase = .cleanupPrepared)
+    (hwork : s.workSaved = true) :
+    (reduce s (.advance source .cleanupCommitted true)).1.workSaved = true := by
+  subst source
+  simp [reduce, legalEdge, hversion, hphase, hwork]
+
+/-- Acceptance is an explicit verified phase, never an absent ambient policy. -/
+theorem acceptance_requires_exact_policy_receipts
+    (hversion : s.version = wireVersion) (hsource : source = s.source)
+    (hphase : s.phase = .validated) :
+    (reduce s (.advance source .accepted true)).1.accepted = true := by
+  subst source
+  simp [reduce, legalEdge, hversion, hphase]
+
+/-- The prepared effect edge is exact and can increment the logical effect once. -/
+theorem promotion_at_most_once_and_base_exact
+    (hversion : s.version = wireVersion) (hsource : source = s.source)
+    (hphase : s.phase = .effectPrepared) (hcount : s.effectCount = 0) :
+    (reduce s (.advance source .effectCommitted true)).1.effectCount = 1 := by
+  subst source
+  simp [reduce, legalEdge, hversion, hphase, hcount]
+
+/-- GraphSave cannot be projected before CleanupCommitted. -/
+theorem done_implies_cleanup_commit
+    (hversion : s.version = wireVersion) (hsource : source = s.source)
+    (hnot : s.phase ≠ .cleanupCommitted) :
+    (reduce s (.graphSave source true)).1 = s := by
+  subst source
+  simp [reduce, hversion, hnot]
+
+/-- Unproven historical Done is quarantined and never satisfies a dependency. -/
+theorem legacy_unproven_never_satisfies
+    (hversion : s.version = wireVersion) :
+    let next := (reduce s .legacyDone).1
+    next.phase = .needsReconciliation ∧ next.dependencySatisfied = false := by
+  simp [reduce, hversion]
+
+/-- An incompatible wire changes no success/effect projection. -/
+theorem duplicate_and_version_mismatch_inert
+    (hversion : s.version = wireVersion) :
+    let next := (reduce s .incompatibleWire).1
+    next.graphSaveValid = s.graphSaveValid ∧ next.effectCount = s.effectCount := by
+  simp [reduce, hversion]
+
+end WGLifecycle.V2

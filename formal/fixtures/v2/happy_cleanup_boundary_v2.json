@@ -1,0 +1,561 @@
+{
+  "schema_version": 2,
+  "name": "happy_cleanup_boundary_v2",
+  "initial": {
+    "schema_version": 2,
+    "transaction_id": "wgcid:v2:blake3:5a05471a222dd12190c4fcada05f1bc0979f259e7c7bedbb2a3c106e197588b3",
+    "source": {
+      "graph_id": "graph:v2:golden",
+      "task_id": "atomic-save-formal-rust-traces",
+      "generation": 2,
+      "attempt_id": "attempt-2-1",
+      "attempt_fence": 7,
+      "worktree_lease_epoch": 3,
+      "process_epoch": 1,
+      "wrapper_epoch": 1,
+      "route_snapshot_cid": "wgcid:v2:route",
+      "session_proof_digest": "b3:session",
+      "worktree_identity_digest": "b3:root"
+    },
+    "revision": 0,
+    "phase": "absent",
+    "evidence_cids": {},
+    "requests": {}
+  },
+  "steps": [
+    {
+      "request": {
+        "source": {
+          "graph_id": "graph:v2:golden",
+          "task_id": "atomic-save-formal-rust-traces",
+          "generation": 2,
+          "attempt_id": "attempt-2-1",
+          "attempt_fence": 7,
+          "worktree_lease_epoch": 3,
+          "process_epoch": 1,
+          "wrapper_epoch": 1,
+          "route_snapshot_cid": "wgcid:v2:route",
+          "session_proof_digest": "b3:session",
+          "worktree_identity_digest": "b3:root"
+        },
+        "expected_revision": 0,
+        "expected_phase": "absent",
+        "next_phase": "prepared",
+        "idempotency_key": "step-0",
+        "action_key": "action:step-0",
+        "fact": {
+          "kind": "evidence",
+          "cid": "wgcid:v2:step-0"
+        }
+      },
+      "expected": {
+        "status": "applied"
+      }
+    },
+    {
+      "request": {
+        "source": {
+          "graph_id": "graph:v2:golden",
+          "task_id": "atomic-save-formal-rust-traces",
+          "generation": 2,
+          "attempt_id": "attempt-2-1",
+          "attempt_fence": 7,
+          "worktree_lease_epoch": 3,
+          "process_epoch": 1,
+          "wrapper_epoch": 1,
+          "route_snapshot_cid": "wgcid:v2:route",
+          "session_proof_digest": "b3:session",
+          "worktree_identity_digest": "b3:root"
+        },
+        "expected_revision": 1,
+        "expected_phase": "prepared",
+        "next_phase": "quiescing",
+        "idempotency_key": "step-1",
+        "action_key": "action:step-1",
+        "fact": {
+          "kind": "evidence",
+          "cid": "wgcid:v2:step-1"
+        }
+      },
+      "expected": {
+        "status": "applied"
+      }
+    },
+    {
+      "request": {
+        "source": {
+          "graph_id": "graph:v2:golden",
+          "task_id": "atomic-save-formal-rust-traces",
+          "generation": 2,
+          "attempt_id": "attempt-2-1",
+          "attempt_fence": 7,
+          "worktree_lease_epoch": 3,
+          "process_epoch": 1,
+          "wrapper_epoch": 1,
+          "route_snapshot_cid": "wgcid:v2:route",
+          "session_proof_digest": "b3:session",
+          "worktree_identity_digest": "b3:root"
+        },
+        "expected_revision": 2,
+        "expected_phase": "quiescing",
+        "next_phase": "work-saved",
+        "idempotency_key": "step-2",
+        "action_key": "action:step-2",
+        "fact": {
+          "kind": "evidence",
+          "cid": "wgcid:v2:step-2",
+          "binding": {
+            "source": {
+              "graph_id": "graph:v2:golden",
+              "task_id": "atomic-save-formal-rust-traces",
+              "generation": 2,
+              "attempt_id": "attempt-2-1",
+              "attempt_fence": 7,
+              "worktree_lease_epoch": 3,
+              "process_epoch": 1,
+              "wrapper_epoch": 1,
+              "route_snapshot_cid": "wgcid:v2:route",
+              "session_proof_digest": "b3:session",
+              "worktree_identity_digest": "b3:root"
+            },
+            "candidate_id": "candidate:b3:exact",
+            "base_commit_oid": "base:b3:main"
+          }
+        }
+      },
+      "expected": {
+        "status": "applied"
+      }
+    },
+    {
+      "request": {
+        "source": {
+          "graph_id": "graph:v2:golden",
+          "task_id": "atomic-save-formal-rust-traces",
+          "generation": 2,
+          "attempt_id": "attempt-2-1",
+          "attempt_fence": 7,
+          "worktree_lease_epoch": 3,
+          "process_epoch": 1,
+          "wrapper_epoch": 1,
+          "route_snapshot_cid": "wgcid:v2:route",
+          "session_proof_digest": "b3:session",
+          "worktree_identity_digest": "b3:root"
+        },
+        "expected_revision": 3,
+        "expected_phase": "work-saved",
+        "next_phase": "candidate-sealed",
+        "idempotency_key": "step-3",
+        "action_key": "action:step-3",
+        "fact": {
+          "kind": "evidence",
+          "cid": "wgcid:v2:step-3",
+          "binding": {
+            "source": {
+              "graph_id": "graph:v2:golden",
+              "task_id": "atomic-save-formal-rust-traces",
+              "generation": 2,
+              "attempt_id": "attempt-2-1",
+              "attempt_fence": 7,
+              "worktree_lease_epoch": 3,
+              "process_epoch": 1,
+              "wrapper_epoch": 1,
+              "route_snapshot_cid": "wgcid:v2:route",
+              "session_proof_digest": "b3:session",
+              "worktree_identity_digest": "b3:root"
+            },
+            "candidate_id": "candidate:b3:exact",
+            "base_commit_oid": "base:b3:main"
+          }
+        }
+      },
+      "expected": {
+        "status": "applied"
+      }
+    },
+    {
+      "request": {
+        "source": {
+          "graph_id": "graph:v2:golden",
+          "task_id": "atomic-save-formal-rust-traces",
+          "generation": 2,
+          "attempt_id": "attempt-2-1",
+          "attempt_fence": 7,
+          "worktree_lease_epoch": 3,
+          "process_epoch": 1,
+          "wrapper_epoch": 1,
+          "route_snapshot_cid": "wgcid:v2:route",
+          "session_proof_digest": "b3:session",
+          "worktree_identity_digest": "b3:root"
+        },
+        "expected_revision": 4,
+        "expected_phase": "candidate-sealed",
+        "next_phase": "validated",
+        "idempotency_key": "step-4",
+        "action_key": "action:step-4",
+        "fact": {
+          "kind": "evidence",
+          "cid": "wgcid:v2:step-4",
+          "binding": {
+            "source": {
+              "graph_id": "graph:v2:golden",
+              "task_id": "atomic-save-formal-rust-traces",
+              "generation": 2,
+              "attempt_id": "attempt-2-1",
+              "attempt_fence": 7,
+              "worktree_lease_epoch": 3,
+              "process_epoch": 1,
+              "wrapper_epoch": 1,
+              "route_snapshot_cid": "wgcid:v2:route",
+              "session_proof_digest": "b3:session",
+              "worktree_identity_digest": "b3:root"
+            },
+            "candidate_id": "candidate:b3:exact",
+            "base_commit_oid": "base:b3:main"
+          }
+        }
+      },
+      "expected": {
+        "status": "applied"
+      }
+    },
+    {
+      "request": {
+        "source": {
+          "graph_id": "graph:v2:golden",
+          "task_id": "atomic-save-formal-rust-traces",
+          "generation": 2,
+          "attempt_id": "attempt-2-1",
+          "attempt_fence": 7,
+          "worktree_lease_epoch": 3,
+          "process_epoch": 1,
+          "wrapper_epoch": 1,
+          "route_snapshot_cid": "wgcid:v2:route",
+          "session_proof_digest": "b3:session",
+          "worktree_identity_digest": "b3:root"
+        },
+        "expected_revision": 5,
+        "expected_phase": "validated",
+        "next_phase": "accepted",
+        "idempotency_key": "step-5",
+        "action_key": "action:step-5",
+        "fact": {
+          "kind": "evidence",
+          "cid": "wgcid:v2:step-5",
+          "binding": {
+            "source": {
+              "graph_id": "graph:v2:golden",
+              "task_id": "atomic-save-formal-rust-traces",
+              "generation": 2,
+              "attempt_id": "attempt-2-1",
+              "attempt_fence": 7,
+              "worktree_lease_epoch": 3,
+              "process_epoch": 1,
+              "wrapper_epoch": 1,
+              "route_snapshot_cid": "wgcid:v2:route",
+              "session_proof_digest": "b3:session",
+              "worktree_identity_digest": "b3:root"
+            },
+            "candidate_id": "candidate:b3:exact",
+            "base_commit_oid": "base:b3:main"
+          }
+        }
+      },
+      "expected": {
+        "status": "applied"
+      }
+    },
+    {
+      "request": {
+        "source": {
+          "graph_id": "graph:v2:golden",
+          "task_id": "atomic-save-formal-rust-traces",
+          "generation": 2,
+          "attempt_id": "attempt-2-1",
+          "attempt_fence": 7,
+          "worktree_lease_epoch": 3,
+          "process_epoch": 1,
+          "wrapper_epoch": 1,
+          "route_snapshot_cid": "wgcid:v2:route",
+          "session_proof_digest": "b3:session",
+          "worktree_identity_digest": "b3:root"
+        },
+        "expected_revision": 6,
+        "expected_phase": "accepted",
+        "next_phase": "disposition-recorded",
+        "idempotency_key": "step-6",
+        "action_key": "action:step-6",
+        "fact": {
+          "kind": "evidence",
+          "cid": "wgcid:v2:step-6",
+          "binding": {
+            "source": {
+              "graph_id": "graph:v2:golden",
+              "task_id": "atomic-save-formal-rust-traces",
+              "generation": 2,
+              "attempt_id": "attempt-2-1",
+              "attempt_fence": 7,
+              "worktree_lease_epoch": 3,
+              "process_epoch": 1,
+              "wrapper_epoch": 1,
+              "route_snapshot_cid": "wgcid:v2:route",
+              "session_proof_digest": "b3:session",
+              "worktree_identity_digest": "b3:root"
+            },
+            "candidate_id": "candidate:b3:exact",
+            "base_commit_oid": "base:b3:main"
+          }
+        }
+      },
+      "expected": {
+        "status": "applied"
+      }
+    },
+    {
+      "request": {
+        "source": {
+          "graph_id": "graph:v2:golden",
+          "task_id": "atomic-save-formal-rust-traces",
+          "generation": 2,
+          "attempt_id": "attempt-2-1",
+          "attempt_fence": 7,
+          "worktree_lease_epoch": 3,
+          "process_epoch": 1,
+          "wrapper_epoch": 1,
+          "route_snapshot_cid": "wgcid:v2:route",
+          "session_proof_digest": "b3:session",
+          "worktree_identity_digest": "b3:root"
+        },
+        "expected_revision": 7,
+        "expected_phase": "disposition-recorded",
+        "next_phase": "effect-prepared",
+        "idempotency_key": "step-7",
+        "action_key": "action:step-7",
+        "fact": {
+          "kind": "evidence",
+          "cid": "wgcid:v2:step-7",
+          "binding": {
+            "source": {
+              "graph_id": "graph:v2:golden",
+              "task_id": "atomic-save-formal-rust-traces",
+              "generation": 2,
+              "attempt_id": "attempt-2-1",
+              "attempt_fence": 7,
+              "worktree_lease_epoch": 3,
+              "process_epoch": 1,
+              "wrapper_epoch": 1,
+              "route_snapshot_cid": "wgcid:v2:route",
+              "session_proof_digest": "b3:session",
+              "worktree_identity_digest": "b3:root"
+            },
+            "candidate_id": "candidate:b3:exact",
+            "base_commit_oid": "base:b3:main"
+          }
+        }
+      },
+      "expected": {
+        "status": "applied"
+      }
+    },
+    {
+      "request": {
+        "source": {
+          "graph_id": "graph:v2:golden",
+          "task_id": "atomic-save-formal-rust-traces",
+          "generation": 2,
+          "attempt_id": "attempt-2-1",
+          "attempt_fence": 7,
+          "worktree_lease_epoch": 3,
+          "process_epoch": 1,
+          "wrapper_epoch": 1,
+          "route_snapshot_cid": "wgcid:v2:route",
+          "session_proof_digest": "b3:session",
+          "worktree_identity_digest": "b3:root"
+        },
+        "expected_revision": 8,
+        "expected_phase": "effect-prepared",
+        "next_phase": "effect-committed",
+        "idempotency_key": "step-8",
+        "action_key": "action:step-8",
+        "fact": {
+          "kind": "evidence",
+          "cid": "wgcid:v2:step-8",
+          "binding": {
+            "source": {
+              "graph_id": "graph:v2:golden",
+              "task_id": "atomic-save-formal-rust-traces",
+              "generation": 2,
+              "attempt_id": "attempt-2-1",
+              "attempt_fence": 7,
+              "worktree_lease_epoch": 3,
+              "process_epoch": 1,
+              "wrapper_epoch": 1,
+              "route_snapshot_cid": "wgcid:v2:route",
+              "session_proof_digest": "b3:session",
+              "worktree_identity_digest": "b3:root"
+            },
+            "candidate_id": "candidate:b3:exact",
+            "base_commit_oid": "base:b3:main"
+          }
+        }
+      },
+      "expected": {
+        "status": "applied"
+      }
+    },
+    {
+      "request": {
+        "source": {
+          "graph_id": "graph:v2:golden",
+          "task_id": "atomic-save-formal-rust-traces",
+          "generation": 2,
+          "attempt_id": "attempt-2-1",
+          "attempt_fence": 7,
+          "worktree_lease_epoch": 3,
+          "process_epoch": 1,
+          "wrapper_epoch": 1,
+          "route_snapshot_cid": "wgcid:v2:route",
+          "session_proof_digest": "b3:session",
+          "worktree_identity_digest": "b3:root"
+        },
+        "expected_revision": 9,
+        "expected_phase": "effect-committed",
+        "next_phase": "cleanup-prepared",
+        "idempotency_key": "step-9",
+        "action_key": "action:step-9",
+        "fact": {
+          "kind": "evidence",
+          "cid": "wgcid:v2:step-9",
+          "binding": {
+            "source": {
+              "graph_id": "graph:v2:golden",
+              "task_id": "atomic-save-formal-rust-traces",
+              "generation": 2,
+              "attempt_id": "attempt-2-1",
+              "attempt_fence": 7,
+              "worktree_lease_epoch": 3,
+              "process_epoch": 1,
+              "wrapper_epoch": 1,
+              "route_snapshot_cid": "wgcid:v2:route",
+              "session_proof_digest": "b3:session",
+              "worktree_identity_digest": "b3:root"
+            },
+            "candidate_id": "candidate:b3:exact",
+            "base_commit_oid": "base:b3:main"
+          }
+        }
+      },
+      "expected": {
+        "status": "applied"
+      }
+    },
+    {
+      "request": {
+        "source": {
+          "graph_id": "graph:v2:golden",
+          "task_id": "atomic-save-formal-rust-traces",
+          "generation": 2,
+          "attempt_id": "attempt-2-1",
+          "attempt_fence": 7,
+          "worktree_lease_epoch": 3,
+          "process_epoch": 1,
+          "wrapper_epoch": 1,
+          "route_snapshot_cid": "wgcid:v2:route",
+          "session_proof_digest": "b3:session",
+          "worktree_identity_digest": "b3:root"
+        },
+        "expected_revision": 10,
+        "expected_phase": "cleanup-prepared",
+        "next_phase": "cleanup-committed",
+        "idempotency_key": "step-10",
+        "action_key": "action:step-10",
+        "fact": {
+          "kind": "evidence",
+          "cid": "wgcid:v2:step-10",
+          "binding": {
+            "source": {
+              "graph_id": "graph:v2:golden",
+              "task_id": "atomic-save-formal-rust-traces",
+              "generation": 2,
+              "attempt_id": "attempt-2-1",
+              "attempt_fence": 7,
+              "worktree_lease_epoch": 3,
+              "process_epoch": 1,
+              "wrapper_epoch": 1,
+              "route_snapshot_cid": "wgcid:v2:route",
+              "session_proof_digest": "b3:session",
+              "worktree_identity_digest": "b3:root"
+            },
+            "candidate_id": "candidate:b3:exact",
+            "base_commit_oid": "base:b3:main"
+          }
+        }
+      },
+      "expected": {
+        "status": "applied"
+      }
+    }
+  ],
+  "expected_final": {
+    "schema_version": 2,
+    "transaction_id": "wgcid:v2:blake3:5a05471a222dd12190c4fcada05f1bc0979f259e7c7bedbb2a3c106e197588b3",
+    "source": {
+      "graph_id": "graph:v2:golden",
+      "task_id": "atomic-save-formal-rust-traces",
+      "generation": 2,
+      "attempt_id": "attempt-2-1",
+      "attempt_fence": 7,
+      "worktree_lease_epoch": 3,
+      "process_epoch": 1,
+      "wrapper_epoch": 1,
+      "route_snapshot_cid": "wgcid:v2:route",
+      "session_proof_digest": "b3:session",
+      "worktree_identity_digest": "b3:root"
+    },
+    "revision": 11,
+    "phase": "cleanup-committed",
+    "binding": {
+      "source": {
+        "graph_id": "graph:v2:golden",
+        "task_id": "atomic-save-formal-rust-traces",
+        "generation": 2,
+        "attempt_id": "attempt-2-1",
+        "attempt_fence": 7,
+        "worktree_lease_epoch": 3,
+        "process_epoch": 1,
+        "wrapper_epoch": 1,
+        "route_snapshot_cid": "wgcid:v2:route",
+        "session_proof_digest": "b3:session",
+        "worktree_identity_digest": "b3:root"
+      },
+      "candidate_id": "candidate:b3:exact",
+      "base_commit_oid": "base:b3:main"
+    },
+    "evidence_cids": {
+      "prepared": "wgcid:v2:step-0",
+      "quiescing": "wgcid:v2:step-1",
+      "work-saved": "wgcid:v2:step-2",
+      "candidate-sealed": "wgcid:v2:step-3",
+      "validated": "wgcid:v2:step-4",
+      "accepted": "wgcid:v2:step-5",
+      "disposition-recorded": "wgcid:v2:step-6",
+      "effect-prepared": "wgcid:v2:step-7",
+      "effect-committed": "wgcid:v2:step-8",
+      "cleanup-prepared": "wgcid:v2:step-9",
+      "cleanup-committed": "wgcid:v2:step-10"
+    },
+    "requests": {
+      "step-0": "wgcid:v2:blake3:9020e2b15c5c0f9c72aefc169edaf7d082bfec619441dd51108c0fa02010558c",
+      "step-1": "wgcid:v2:blake3:df20e2bf9efdd983cdcb62832beb80f887737b4144a94d24db331ab73df1c9b9",
+      "step-10": "wgcid:v2:blake3:b4a20da0a9c19a33e0ad4ea0f2b2ebc225aae15646f2b1a30e7679ea0f6e3a66",
+      "step-2": "wgcid:v2:blake3:0cf2b45e20fa393a06e59fc4ec9b1ff86b6cf3c3c9da221d28aa3cc1b56eae3a",
+      "step-3": "wgcid:v2:blake3:13b2c94845ef3bdee1278d1555d1acd532e8c3ac40ccf249580335ac1cd3f9fa",
+      "step-4": "wgcid:v2:blake3:c568ea9e9770f4d034390eae01453ee447d0f38830e34c1c99b9845e7046d440",
+      "step-5": "wgcid:v2:blake3:ee20f4fac9de96199819b7db53c0cc9385bd7f12fd111c4bac8e2188b7fd51fe",
+      "step-6": "wgcid:v2:blake3:b6b19d144a949c42d3c1669609bf1a25a319d27e8398614c452c75b53d6d4ad1",
+      "step-7": "wgcid:v2:blake3:53630de90b1de3ba3b3732e26f9904d6063554db7e951127ae64f8581d2eaa20",
+      "step-8": "wgcid:v2:blake3:5e51814bf898020fe4a7eda26e37a71e8af83ba49d59f91db7779e56e28cb2ac",
+      "step-9": "wgcid:v2:blake3:77cce8221bb75bf59ef3514ba2017932011cd1b6ca9d868c855ffad0cb1a9170"
+    }
+  }
+}

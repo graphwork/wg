@@ -125,3 +125,50 @@ theorem exited_worker_runtime_wire_incident :
   native_decide
 
 end WGLifecycle.Golden
+
+namespace WGLifecycle.V2.Golden
+
+open WGLifecycle.V2
+
+def binding : Binding := {
+  generation := 2, attempt := 1, fence := 7, worktreeLease := 3,
+  candidate := 1001, base := 500 }
+
+def happyEvents : List Event := [
+  .advance binding .prepared true, .advance binding .quiescing true,
+  .advance binding .workSaved true, .advance binding .candidateSealed true,
+  .advance binding .validated true, .advance binding .accepted true,
+  .advance binding .dispositionRecorded true, .advance binding .effectPrepared true,
+  .advance binding .effectCommitted true, .advance binding .cleanupPrepared true,
+  .advance binding .cleanupCommitted true, .graphSave binding true]
+
+def happy : State := run (initial binding) happyEvents
+
+theorem happy_land_deliver_report_v2 :
+    happy.phase = .graphSaved ∧ happy.graphSaveValid = true ∧
+    happy.dependencySatisfied = true ∧ happy.workSaved = true ∧
+    happy.accepted = true ∧ happy.effectCount = 1 ∧ happy.cleanupCommitted = true := by
+  native_decide
+
+theorem missing_each_receipt_blocks_done :
+    (reduce (initial binding) (.graphSave binding true)).2 = .rejected ∧
+    (reduce { initial binding with phase := .cleanupCommitted }
+      (.graphSave binding false)).2 = .rejected := by
+  native_decide
+
+theorem stale_actor_v2 :
+    (reduce (initial binding)
+      (.advance { binding with fence := 8 } .prepared true)).2 = .rejected := by
+  native_decide
+
+theorem duplicate_effect_v2 :
+    let prepared := { initial binding with
+      phase := .effectPrepared
+      workSaved := true
+      accepted := true }
+    let committed := (reduce prepared (.advance binding .effectCommitted true)).1
+    (reduce committed (.advance binding .effectCommitted true)).1 = committed ∧
+      committed.effectCount = 1 := by
+  native_decide
+
+end WGLifecycle.V2.Golden

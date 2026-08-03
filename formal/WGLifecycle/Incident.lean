@@ -112,3 +112,27 @@ theorem motivating_trace_not_stuck :
   native_decide
 
 end WGLifecycle.Incident
+
+namespace WGLifecycle.V2.Incident
+
+open WGLifecycle.V2
+
+def binding : Binding := {
+  generation := 4, attempt := 5, fence := 5, worktreeLease := 2,
+  candidate := 51942, base := 3471696 }
+
+def falseDone : State := (reduce (initial binding) .legacyDone).1
+
+theorem false_done_is_quarantined :
+    falseDone.phase = .needsReconciliation ∧
+    falseDone.graphSaveValid = false ∧ falseDone.dependencySatisfied = false := by
+  native_decide
+
+/-- A stale prior-attempt frame cannot repair or complete the incident. -/
+def staleBinding : Binding := { binding with generation := 3, attempt := 4, fence := 4 }
+
+theorem stale_incident_frame_inert :
+    (reduce (initial binding) (.advance staleBinding .prepared true)).1 = initial binding := by
+  native_decide
+
+end WGLifecycle.V2.Incident
