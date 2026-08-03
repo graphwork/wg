@@ -85,9 +85,10 @@ message resurrection invalidates the named proofs and/or golden decisions.
 
 ## Wire schema and conformance
 
-The schema version is `1` in both `wireVersion` and
-`LIFECYCLE_WIRE_VERSION`. `formal/fixtures/v1/*.json` contains deterministic
-wire traces and normalized decisions/states for:
+The completed lifecycle schema remains version `1` in both the original
+`wireVersion` and `LIFECYCLE_WIRE_VERSION`. `formal/fixtures/v1/*.json` is
+unchanged and contains deterministic wire traces and normalized
+decisions/states for:
 
 - happy Land, Deliver, and Report;
 - the exact production incident;
@@ -110,6 +111,31 @@ normalized state and every decision. The runtime vector constructs the real
 `FinishConvergenceSnapshot` and invokes the same
 `reduce_exited_worker_finish` used by service planning. This makes production
 reducers, not test-only mappings, the executable implementation seam.
+
+## Atomic-save v2 extension
+
+`WGLifecycle.V2` is a separate abstraction beside the completed v1 program. It
+models the monotone SaveTransaction phases, exact attempt/candidate/base
+binding, explicit WorkSave/acceptance/effect/cleanup facts, GraphSave-derived
+dependency truth, fail-closed legacy quarantine, retry-as-new-generation, and
+exact-continuation proof. The named v2 theorems correspond to the traceability
+matrix in `docs/design-atomic-graph-work-save.md`.
+
+The v2 fixture wire lives only under `formal/fixtures/v2/`; no v1 fixture is
+rewritten or reinterpreted. `tests/save_transaction_conformance.rs` deserializes
+those requests and replays them through the production
+`SaveTransactionKernel`, covering the full pre-GraphSave monotone prefix,
+exact duplicate/conflicting replay, stale source tuples, illegal skipped
+phases, and legacy reconciliation holds. GraphSave bundle verification remains
+the production `verify_graph_save_bundle` guard exercised by the kernel and its
+unit/integration tests.
+
+Receipt booleans in `WGLifecycle.V2` mean **verified durable facts supplied by
+adapters**. Lean does not verify Git operations, fsync, rename behavior, process
+identity, quiescence, sockets, signals, filesystems, evaluator behavior, or
+physical effects. `V2.EnvironmentAssumptions` states the conditional liveness
+boundary explicitly; Rust adapter and candidate-binary fault tests are required
+to discharge it operationally.
 
 ## Updating model and implementation together
 

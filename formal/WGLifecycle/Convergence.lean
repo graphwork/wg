@@ -210,3 +210,56 @@ theorem conditional_convergence
   exact ⟨event, haction, reduce_preserves_invariant hsafe⟩
 
 end WGLifecycle
+
+namespace WGLifecycle.V2
+
+/-- Missing monotone commits from GraphSave; holds have no automatic rank. -/
+def recoveryRank : SavePhase → Nat
+  | .absent => 13 | .prepared => 12 | .quiescing => 11 | .workSaved => 10
+  | .candidateSealed => 9 | .validated => 8 | .awaitingAcceptance => 7
+  | .accepted => 6 | .dispositionRecorded => 5 | .effectPrepared => 4
+  | .effectCommitted => 3 | .cleanupPrepared => 2 | .cleanupCommitted => 1
+  | .graphSaved => 0
+  | _ => 14
+
+/-- Every normal durable edge strictly lowers recovery rank. -/
+theorem durable_edge_decreases_rank
+    (h : legalEdge phase next = true)
+    (hnormal : next ≠ .needsRepair ∧ next ≠ .upgradeBlocked ∧
+      next ≠ .needsReconciliation ∧ next ≠ .abortedPreserved) :
+    recoveryRank next < recoveryRank phase := by
+  cases phase <;> cases next <;> simp [legalEdge, recoveryRank] at h hnormal ⊢
+
+/-- Retry is a new generation and requires an already saved prior attempt. -/
+theorem reset_is_new_generation
+    (hversion : s.version = wireVersion) (hsource : source = s.source)
+    (hsaved : s.workSaved = true) :
+    (reduce s (.retry source)).1.generation = source.generation + 1 := by
+  subst source
+  simp [reduce, initial, hversion, hsaved]
+
+/-- Same-attempt continuation is inert unless the exact proof and tuple agree. -/
+theorem resume_same_requires_exact_continuation_proof
+    (hversion : s.version = wireVersion) :
+    (reduce s (.resumeSame source false)).1 = s := by
+  simp [reduce, hversion]
+
+/-- Conditional liveness names adapter obligations without modeling them. -/
+structure EnvironmentAssumptions where
+  committedWritesSurviveOrFailDetectably : Prop
+  collisionResistanceAndAtomicCas : Prop
+  truthfulQuiescenceAndRootObservations : Prop
+  completeExclusionPolicy : Prop
+  eventualCompatibleFairReplay : Prop
+  unsupportedAdaptersFailClosed : Prop
+
+/-- A useful, verified normal edge is available when supplied by fair adapters. -/
+theorem dead_owner_not_parked_conditionally
+    (_env : EnvironmentAssumptions)
+    (hversion : s.version = wireVersion) (hsource : source = s.source)
+    (hedge : legalEdge s.phase next = true) (hverified : verified = true) :
+    (reduce s (.advance source next verified)).2 = .applied := by
+  subst source
+  simp [reduce, hversion, hedge, hverified]
+
+end WGLifecycle.V2

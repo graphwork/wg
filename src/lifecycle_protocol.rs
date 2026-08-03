@@ -537,3 +537,64 @@ pub fn replay(initial: &State, events: &[Event]) -> (State, Vec<Decision>) {
         },
     )
 }
+
+/// Version-2 golden trace input for the canonical [`SaveTransactionKernel`].
+///
+/// This is deliberately an executable wire trace, not a second implementation
+/// of the save reducer. Facts represent already-verified durable adapter input.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SaveTraceStepV2 {
+    pub request: crate::save_transaction::SaveTransitionRequest,
+    pub expected: SaveTraceDecisionV2,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "kebab-case")]
+pub enum SaveTraceDecisionV2 {
+    Applied,
+    Duplicate,
+    Rejected { code: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SaveTraceFixtureV2 {
+    pub schema_version: u32,
+    pub name: String,
+    pub initial: crate::save_transaction::SaveTransactionState,
+    pub steps: Vec<SaveTraceStepV2>,
+    pub expected_final: crate::save_transaction::SaveTransactionState,
+}
+
+/// Replay a v2 fixture through the production pure reducer.
+pub fn replay_save_trace_v2(
+    fixture: &SaveTraceFixtureV2,
+) -> (
+    crate::save_transaction::SaveTransactionState,
+    Vec<SaveTraceDecisionV2>,
+) {
+    use crate::save_transaction::SaveTransactionKernel;
+
+    fixture.steps.iter().fold(
+        (
+            fixture.initial.clone(),
+            Vec::with_capacity(fixture.steps.len()),
+        ),
+        |(state, mut decisions), step| match SaveTransactionKernel::transition(
+            &state,
+            step.request.clone(),
+        ) {
+            Ok(plan) => {
+                decisions.push(if plan.duplicate {
+                    SaveTraceDecisionV2::Duplicate
+                } else {
+                    SaveTraceDecisionV2::Applied
+                });
+                (plan.state, decisions)
+            }
+            Err(error) => {
+                decisions.push(SaveTraceDecisionV2::Rejected { code: error.code });
+                (state, decisions)
+            }
+        },
+    )
+}

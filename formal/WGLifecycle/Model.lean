@@ -316,3 +316,116 @@ def finishConvergenceAction (presented authoritative : Capability)
     else if tx.promotionReceipt then .cleanup else .promote
 
 end WGLifecycle
+
+/-!
+Version 2 is a new abstraction layered beside the completed version-1 program
+above.  Receipt booleans denote facts already verified by Rust adapters; they
+are not models of Git, storage, processes, or filesystems.
+-/
+namespace WGLifecycle.V2
+
+def wireVersion : Nat := 2
+
+inductive SavePhase where
+  | absent | prepared | quiescing | workSaved | candidateSealed | validated
+  | awaitingAcceptance | accepted | dispositionRecorded | effectPrepared
+  | effectCommitted | cleanupPrepared | cleanupCommitted | graphSaved
+  | needsRepair | abortedPreserved | upgradeBlocked | needsReconciliation
+  deriving DecidableEq, Repr
+
+structure Binding where
+  generation : Nat
+  attempt : Nat
+  fence : Nat
+  worktreeLease : Nat
+  candidate : Nat
+  base : Nat
+  deriving DecidableEq, Repr
+
+structure State where
+  version : Nat
+  source : Binding
+  phase : SavePhase
+  workSaved : Bool
+  accepted : Bool
+  effectCount : Nat
+  cleanupCommitted : Bool
+  graphSaveValid : Bool
+  dependencySatisfied : Bool
+  generation : Nat
+  deriving DecidableEq, Repr
+
+inductive Event where
+  | advance (source : Binding) (next : SavePhase) (verified : Bool)
+  | graphSave (source : Binding) (completeAgreeingBundle : Bool)
+  | retry (source : Binding)
+  | resumeSame (source : Binding) (exactContinuationProof : Bool)
+  | legacyDone
+  | incompatibleWire
+  deriving DecidableEq, Repr
+
+inductive Decision where
+  | applied | noop | rejected
+  deriving DecidableEq, Repr
+
+def initial (source : Binding) : State := {
+  version := wireVersion, source := source, phase := .absent,
+  workSaved := false, accepted := false, effectCount := 0,
+  cleanupCommitted := false, graphSaveValid := false,
+  dependencySatisfied := false, generation := source.generation }
+
+def legalEdge : SavePhase → SavePhase → Bool
+  | .absent, .prepared | .prepared, .quiescing | .quiescing, .workSaved
+  | .workSaved, .candidateSealed | .candidateSealed, .validated
+  | .validated, .awaitingAcceptance | .validated, .accepted
+  | .awaitingAcceptance, .accepted | .accepted, .dispositionRecorded
+  | .dispositionRecorded, .effectPrepared | .effectPrepared, .effectCommitted
+  | .effectCommitted, .cleanupPrepared | .cleanupPrepared, .cleanupCommitted => true
+  | _, .needsRepair | _, .upgradeBlocked | _, .needsReconciliation => true
+  | .prepared, .abortedPreserved | .quiescing, .abortedPreserved
+  | .workSaved, .abortedPreserved => true
+  | _, _ => false
+
+def reduce (s : State) (event : Event) : State × Decision :=
+  if s.version != wireVersion then (s, .rejected) else
+  match event with
+  | .incompatibleWire => ({ s with phase := .upgradeBlocked }, .applied)
+  | .legacyDone => ({ s with
+      phase := .needsReconciliation
+      graphSaveValid := false
+      dependencySatisfied := false }, .applied)
+  | .resumeSame source proof =>
+      if source != s.source || !proof then (s, .rejected) else (s, .noop)
+  | .retry source =>
+      if source != s.source || !s.workSaved then (s, .rejected)
+      else ({ initial { source with generation := source.generation + 1 } with
+        generation := source.generation + 1 }, .applied)
+  | .graphSave source complete =>
+      if source != s.source || s.phase != .cleanupCommitted || !complete then
+        (s, .rejected)
+      else ({ s with
+        phase := .graphSaved
+        graphSaveValid := true
+        dependencySatisfied := true }, .applied)
+  | .advance source next verified =>
+      if source != s.source || !verified then (s, .rejected)
+      else if !legalEdge s.phase next then
+        if next = s.phase then (s, .noop) else (s, .rejected)
+      else
+        let effectCount := if next = .effectCommitted then s.effectCount + 1 else s.effectCount
+        ({ s with
+          phase := next
+          workSaved := s.workSaved || next = .workSaved
+          accepted := s.accepted || next = .accepted
+          effectCount := effectCount
+          cleanupCommitted := s.cleanupCommitted || next = .cleanupCommitted }, .applied)
+
+def run : State → List Event → State
+  | s, [] => s
+  | s, event :: rest => run (reduce s event).1 rest
+
+def completeAgreeingGraphSave (s : State) : Prop :=
+  s.graphSaveValid = true ∧ s.workSaved = true ∧ s.accepted = true ∧
+    s.effectCount = 1 ∧ s.cleanupCommitted = true
+
+end WGLifecycle.V2
