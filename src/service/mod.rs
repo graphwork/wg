@@ -43,8 +43,8 @@ pub use planner::{
     PlannerRuleset, PlannerState, PlannerStep, PlannerStore, RedactionPolicy, ReplayReport,
     ScheduledAction as PlannerScheduledAction, TaskKey as PlannerTaskKey,
     TaskObservation as PlannerTaskObservation, ViolationCode as PlannerViolationCode,
-    WaitKind as PlannerWaitKind, plan as plan_daemon_step, plan_guarded, replay as replay_daemon,
-    replay_bytes,
+    WaitKind as PlannerWaitKind, WorktreeSpawnObservation as PlannerWorktreeSpawnObservation,
+    plan as plan_daemon_step, plan_guarded, replay as replay_daemon, replay_bytes,
 };
 pub use provider_health::{
     AgentExecutionOutcome, CompletionRefusalCode, ExecutionOutcome, ExecutorFailure,

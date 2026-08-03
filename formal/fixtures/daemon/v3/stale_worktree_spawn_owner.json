@@ -1,0 +1,96 @@
+{
+  "name": "stale_worktree_spawn_owner",
+  "expected_actions": ["reclaim_retain_worktree", "spawn_attempt"],
+  "trace": {
+    "trace_schema_version": 3,
+    "planner_schema_version": 3,
+    "redaction": "typed_identifiers_and_digests_only",
+    "ruleset": "corrected",
+    "initial_state": {
+      "schema_version": 3,
+      "graph_id": "graph-stale-worktree",
+      "logical_time": 0,
+      "last_sequence": null,
+      "seen_observations": {},
+      "tasks": {},
+      "effects": {},
+      "early_acknowledgements": {},
+      "repaired_incidents": [],
+      "fail_closed": false
+    },
+    "observations": [
+      {
+        "sequence": 1,
+        "logical_time": 1785780000,
+        "observation": {
+          "type": "worktree_spawn",
+          "stale_owner": {
+            "graph_id": "graph-stale-worktree",
+            "task_id": "fix-stale-owner",
+            "generation": 0,
+            "attempt_id": "attempt-0-1",
+            "fence": 1
+          },
+          "current_attempt": {
+            "graph_id": "graph-stale-worktree",
+            "task_id": "fix-stale-owner",
+            "generation": 1,
+            "attempt_id": "attempt-1-2",
+            "fence": 2
+          },
+          "progress_id": "stale-owner-requeue-1",
+          "worktree_id": "agent-1009",
+          "owner": {
+            "kind": "proven_dead",
+            "actor_id": "agent-1009",
+            "lease_id": "attempt-0-1"
+          },
+          "owner_token": {
+            "state": "present",
+            "evidence_id": "owner-token-digest"
+          },
+          "observer_state": {
+            "state": "present",
+            "evidence_id": "observer-state-digest"
+          }
+        }
+      },
+      {
+        "sequence": 2,
+        "logical_time": 1785780001,
+        "observation": {
+          "type": "worktree_spawn",
+          "stale_owner": {
+            "graph_id": "graph-stale-worktree",
+            "task_id": "fix-stale-owner",
+            "generation": 0,
+            "attempt_id": "attempt-0-1",
+            "fence": 1
+          },
+          "current_attempt": {
+            "graph_id": "graph-stale-worktree",
+            "task_id": "fix-stale-owner",
+            "generation": 1,
+            "attempt_id": "attempt-1-2",
+            "fence": 2
+          },
+          "progress_id": "stale-owner-requeue-1",
+          "worktree_id": "agent-1009",
+          "owner": {
+            "kind": "proven_dead",
+            "actor_id": "agent-1009",
+            "lease_id": "attempt-0-1"
+          },
+          "owner_token": {
+            "state": "present",
+            "evidence_id": "owner-token-digest"
+          },
+          "observer_state": {
+            "state": "present",
+            "evidence_id": "observer-state-digest"
+          }
+        }
+      }
+    ]
+  }
+}

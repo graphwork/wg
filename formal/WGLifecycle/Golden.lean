@@ -110,11 +110,10 @@ def deadPromotedCut : State := (reduce promotedCut (.ownerProvenDead cap true 10
 
 def observedCleaned : State := { s5 with ownerProvenDead := true }
 
-/-- Lean mirror of `formal/fixtures/daemon/v2`: exact incident classes,
-explicit evidence presence, and the finite one-shot budget select the same
-normalized disposition names as Rust replay. -/
-theorem failed_prerequisite_v2_fixtures :
-    plannerSchemaVersion = 2 ∧ traceSchemaVersion = 2 ∧
+/-- Lean mirror of the still-readable `formal/fixtures/daemon/v2` decisions
+under the v3 planner, plus the v3 stale-worktree fixture's ordered effects. -/
+theorem daemon_planner_v3_fixtures :
+    plannerSchemaVersion = 3 ∧ traceSchemaVersion = 3 ∧
     decideFailedPrerequisite .providerUnavailableAfterDurableCandidate
       ⟨true, true, true, true⟩ 0 1 = .replanFinish ∧
     decideFailedPrerequisite .sourceExecutionNoProgress
@@ -122,7 +121,9 @@ theorem failed_prerequisite_v2_fixtures :
     decideFailedPrerequisite .orphanBeforeSpawn
       ⟨false, false, false, false⟩ 0 1 = .retryFailedPrerequisite ∧
     decideFailedPrerequisite .semanticValidationRejected
-      ⟨true, true, true, true⟩ 0 1 = .semanticRepairWait := by
+      ⟨true, true, true, true⟩ 0 1 = .semanticRepairWait ∧
+    planWorktreeSpawn .provenDead true true =
+      [.reclaimRetainDeadOwner, .dispatchCurrentAttempt] := by
   native_decide
 
 /-- Exact runtime reducer wire semantics for every committed JSON crash cut. -/

@@ -168,8 +168,13 @@ to prove them.
 
 The daemon planner wire is independently versioned by
 `DAEMON_PLANNER_SCHEMA_VERSION` and `DAEMON_TRACE_SCHEMA_VERSION`. Version 2
-adds exact evidence slots and typed failed-prerequisite classification while
-retaining read/replay support for immutable v1 traces. Its function
+added exact evidence slots and typed failed-prerequisite classification.
+Version 3 adds the stale-worktree preparation observation: a proven-dead owner
+with retained owner-token and observer receipts deterministically emits one
+fenced reclaim/retain effect followed by one current-attempt dispatch effect;
+a proven-live or unproven owner emits neither. Both effects retain stable IDs
+across repeated observations and acknowledgements. The reader continues to
+replay immutable v1 and v2 traces without reinterpretation. Its function
 is:
 
 ```text

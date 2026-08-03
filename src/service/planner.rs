@@ -11,8 +11,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-pub const DAEMON_PLANNER_SCHEMA_VERSION: u16 = 2;
-pub const DAEMON_TRACE_SCHEMA_VERSION: u16 = 2;
+pub const DAEMON_PLANNER_SCHEMA_VERSION: u16 = 3;
+pub const DAEMON_TRACE_SCHEMA_VERSION: u16 = 3;
 const MIN_SUPPORTED_DAEMON_PLANNER_SCHEMA_VERSION: u16 = 1;
 const MIN_SUPPORTED_DAEMON_TRACE_SCHEMA_VERSION: u16 = 1;
 pub const MAX_TRACE_OBSERVATIONS: usize = 256;
@@ -140,6 +140,9 @@ pub enum ActionKind {
     /// Persist an operator-visible, evidence-bound reconciliation issue when
     /// an automatic retry is unsafe or its one-shot budget is exhausted.
     RecordNeedsReconciliation,
+    /// Fence the exact proven-dead owner while retaining its registered
+    /// worktree, owner token, observer state, and dirty bytes as evidence.
+    ReclaimRetainWorktree,
     FailClosedHold,
 }
 
@@ -275,6 +278,12 @@ pub enum AckOutcome {
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Observation {
     Task(Box<TaskObservation>),
+    /// A preparation-time ownership decision. Unlike a normal unfinished-task
+    /// projection, this can authorize two ordered, independently acknowledged
+    /// logical effects: retain/fence the dead owner's exact tuple, then dispatch
+    /// the already-selected current tuple. The adapter must not delete or edit
+    /// either evidence slot while executing the reclaim effect.
+    WorktreeSpawn(Box<WorktreeSpawnObservation>),
     EffectAcknowledged {
         effect_id: OpaqueId,
         outcome: AckOutcome,
@@ -288,6 +297,18 @@ pub struct ObservationEnvelope {
     pub sequence: u64,
     pub logical_time: u64,
     pub observation: Observation,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorktreeSpawnObservation {
+    pub stale_owner: TaskKey,
+    pub current_attempt: TaskKey,
+    pub progress_id: OpaqueId,
+    pub worktree_id: OpaqueId,
+    pub owner: OwnerEvidence,
+    pub owner_token: EvidenceSlot,
+    pub observer_state: EvidenceSlot,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -307,6 +328,7 @@ pub enum ViolationCode {
     ControlPlaneCandidateReplacement,
     DeadPiOwnerRetainingLeases,
     AbandonedDependencySatisfiedReadiness,
+    UnprovenWorktreeOwnership,
 }
 
 impl From<IncidentCode> for ViolationCode {
@@ -539,13 +561,15 @@ fn forward_count(task: &TaskObservation) -> usize {
         + usize::from(task.scheduled.is_some())
 }
 
-fn issue_effect(
+fn issue_bound_effect(
     state: &mut PlannerState,
-    task: &TaskObservation,
+    task: &TaskKey,
+    progress_id: &OpaqueId,
+    prerequisite: Option<TaskKey>,
     action: ActionKind,
 ) -> Option<PlannedEffect> {
     let issue_epoch = 1;
-    let id = effect_id(&task.key, &task.progress_id, action, issue_epoch);
+    let id = effect_id(task, progress_id, action, issue_epoch);
     if state.effects.contains_key(&id) {
         return None;
     }
@@ -556,17 +580,30 @@ fn issue_effect(
     let should_emit = status == EffectStatus::Issued;
     let effect = PlannedEffect {
         effect_id: id.clone(),
-        task: task.key.clone(),
-        prerequisite: task
-            .failed_prerequisite
-            .as_ref()
-            .map(|failure| failure.source.clone()),
+        task: task.clone(),
+        prerequisite,
         action,
         issue_epoch,
         status,
     };
     state.effects.insert(id, effect.clone());
     should_emit.then_some(effect)
+}
+
+fn issue_effect(
+    state: &mut PlannerState,
+    task: &TaskObservation,
+    action: ActionKind,
+) -> Option<PlannedEffect> {
+    issue_bound_effect(
+        state,
+        &task.key,
+        &task.progress_id,
+        task.failed_prerequisite
+            .as_ref()
+            .map(|failure| failure.source.clone()),
+        action,
+    )
 }
 
 /// Execute one pure planner transition. No external state is read or written.
@@ -634,6 +671,60 @@ pub fn plan(
 
     match &envelope.observation {
         Observation::Crash => {}
+        Observation::WorktreeSpawn(observed) => {
+            if next.fail_closed {
+                return PlannerStep {
+                    sequence: envelope.sequence,
+                    state: next,
+                    effects: emitted,
+                    violations,
+                };
+            }
+            let observed = observed.as_ref();
+            if observed.stale_owner.graph_id != next.graph_id
+                || observed.current_attempt.graph_id != next.graph_id
+            {
+                violations.insert(ViolationCode::CrossGraphIdentity);
+                next.fail_closed = true;
+            } else {
+                match &observed.owner {
+                    // Authenticated liveness is a wait owned by that exact
+                    // attempt. It is never converted into reclaim authority.
+                    OwnerEvidence::AuthenticatedLive { .. } => {}
+                    OwnerEvidence::ProvenDead { .. }
+                        if observed.owner_token.is_present()
+                            && observed.observer_state.is_present() =>
+                    {
+                        if let Some(effect) = issue_bound_effect(
+                            &mut next,
+                            &observed.stale_owner,
+                            &observed.progress_id,
+                            None,
+                            ActionKind::ReclaimRetainWorktree,
+                        ) {
+                            emitted.push(effect);
+                        }
+                        if let Some(effect) = issue_bound_effect(
+                            &mut next,
+                            &observed.current_attempt,
+                            &observed.progress_id,
+                            Some(observed.stale_owner.clone()),
+                            ActionKind::SpawnAttempt,
+                        ) {
+                            emitted.push(effect);
+                        }
+                    }
+                    // Missing/unauthenticated ownership or missing retained
+                    // evidence cannot be promoted into a destructive reclaim.
+                    OwnerEvidence::None
+                    | OwnerEvidence::Unauthenticated { .. }
+                    | OwnerEvidence::ProvenDead { .. } => {
+                        violations.insert(ViolationCode::UnprovenWorktreeOwnership);
+                        next.fail_closed = true;
+                    }
+                }
+            }
+        }
         Observation::EffectAcknowledged { effect_id, outcome } => {
             if let Some(effect) = next.effects.get_mut(effect_id) {
                 if *outcome == AckOutcome::Retryable {

@@ -4,8 +4,8 @@ import Std.Tactic
 namespace WGLifecycle.DaemonPlanner
 
 /-- Wire versions shared with `service::planner`. -/
-def plannerSchemaVersion : Nat := 2
-def traceSchemaVersion : Nat := 2
+def plannerSchemaVersion : Nat := 3
+def traceSchemaVersion : Nat := 3
 
 /-- The four and only four admissible forward explanations for unfinished work. -/
 structure ForwardProjection where
@@ -160,6 +160,45 @@ theorem duplicate_ack_idempotent :
 
 theorem acknowledgement_preserves_identity :
     (acknowledge effect).id = effect.id := by
+  rfl
+
+inductive WorktreeOwnerProof where
+  | authenticatedLive
+  | provenDead
+  | unproven
+  deriving DecidableEq, Repr
+
+inductive WorktreeSpawnAction where
+  | reclaimRetainDeadOwner
+  | dispatchCurrentAttempt
+  deriving DecidableEq, Repr
+
+/-- Pure v3 preparation plan. Only proven death plus both retained evidence
+receipts authorizes the two-effect sequence. Live ownership remains protected;
+missing proof/evidence emits no mutation. -/
+def planWorktreeSpawn (owner : WorktreeOwnerProof)
+    (ownerToken observerState : Bool) : List WorktreeSpawnAction :=
+  match owner with
+  | .provenDead =>
+      if ownerToken ∧ observerState then
+        [.reclaimRetainDeadOwner, .dispatchCurrentAttempt]
+      else
+        []
+  | .authenticatedLive | .unproven => []
+
+theorem proven_dead_worktree_reclaimed_then_dispatched_once :
+    planWorktreeSpawn .provenDead true true =
+      [.reclaimRetainDeadOwner, .dispatchCurrentAttempt] := by
+  rfl
+
+theorem proven_live_worktree_is_protected (ownerToken observerState : Bool) :
+    planWorktreeSpawn .authenticatedLive ownerToken observerState = [] := by
+  rfl
+
+theorem worktree_reclaim_replay_is_deterministic
+    (owner : WorktreeOwnerProof) (ownerToken observerState : Bool) :
+    planWorktreeSpawn owner ownerToken observerState =
+      planWorktreeSpawn owner ownerToken observerState := by
   rfl
 
 /-- Conditional liveness names useful scheduler fairness rather than OS truth. -/

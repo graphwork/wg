@@ -3,6 +3,8 @@
 
 use anyhow::{Context, Result};
 use chrono::Utc;
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -31,6 +33,122 @@ use super::{
 
 const OUTPUT_RESERVATION_FILE: &str = ".spawn-reservation";
 const LAUNCH_GATE_FILE: &str = ".launch-permit";
+const WORKTREE_RECLAIM_FILE: &str = "worktree-spawn-reclaims-v1.json";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct WorktreeSpawnReclaim {
+    action_id: String,
+    stale_agent_id: String,
+    task_id: String,
+    worktree_path: String,
+    owner_record_retained: bool,
+    observer_state_retained: bool,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct WorktreeSpawnReclaimLedger {
+    #[serde(default = "worktree_reclaim_schema")]
+    schema_version: u32,
+    #[serde(default)]
+    acknowledgements: BTreeMap<String, WorktreeSpawnReclaim>,
+}
+
+fn worktree_reclaim_schema() -> u32 {
+    1
+}
+
+fn worktree_reclaim_path(dir: &Path) -> PathBuf {
+    dir.join("service").join(WORKTREE_RECLAIM_FILE)
+}
+
+fn observer_state_retained(dir: &Path, task_id: &str) -> bool {
+    worksgood::attempt_runtime::list_component_dirs(dir, "worktree-observer", 256)
+        .into_iter()
+        .any(|observer| {
+            fs::read(observer.join("state.json"))
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+                .and_then(|value| {
+                    value
+                        .pointer("/projection/source/task_id")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string)
+                })
+                .as_deref()
+                == Some(task_id)
+        })
+}
+
+fn owner_record_retained(info: &worktree::WorktreeInfo) -> bool {
+    Command::new("git")
+        .args(["rev-parse", "--absolute-git-dir"])
+        .current_dir(&info.path)
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| {
+            PathBuf::from(String::from_utf8_lossy(&output.stdout).trim())
+                .join("wg-spawn-owner.json")
+                .is_file()
+        })
+        .unwrap_or(false)
+}
+
+/// Acknowledge the exact dead-owner reclaim without mutating any retained
+/// source, owner-token, or observer bytes. The registry lock held by the caller
+/// serializes this small ledger with competing preparation. Replaying the same
+/// dead owner is a byte-for-byte no-op.
+fn acknowledge_dead_worktree_owner(
+    dir: &Path,
+    info: &worktree::WorktreeInfo,
+    stale_agent: &worksgood::service::registry::AgentEntry,
+) -> Result<bool> {
+    let canonical = info
+        .path
+        .canonicalize()
+        .unwrap_or_else(|_| info.path.clone());
+    let material = format!(
+        "{}:{}:{}:{}",
+        stale_agent.id,
+        stale_agent.task_id,
+        stale_agent.started_at,
+        canonical.display()
+    );
+    let action_id = format!("reclaim:{}", blake3::hash(material.as_bytes()).to_hex());
+    let path = worktree_reclaim_path(dir);
+    let mut ledger = if path.exists() {
+        serde_json::from_slice::<WorktreeSpawnReclaimLedger>(&fs::read(&path)?)
+            .with_context(|| format!("failed to parse {}", path.display()))?
+    } else {
+        WorktreeSpawnReclaimLedger {
+            schema_version: worktree_reclaim_schema(),
+            ..Default::default()
+        }
+    };
+    if ledger.schema_version != worktree_reclaim_schema() {
+        anyhow::bail!(
+            "unsupported worktree spawn reclaim ledger schema {}",
+            ledger.schema_version
+        );
+    }
+    if ledger.acknowledgements.contains_key(&action_id) {
+        return Ok(false);
+    }
+    ledger.acknowledgements.insert(
+        action_id.clone(),
+        WorktreeSpawnReclaim {
+            action_id,
+            stale_agent_id: stale_agent.id.clone(),
+            task_id: stale_agent.task_id.clone(),
+            worktree_path: canonical.to_string_lossy().to_string(),
+            owner_record_retained: owner_record_retained(info),
+            observer_state_retained: observer_state_retained(dir, &stale_agent.task_id),
+        },
+    );
+    worksgood::atomic_file::write_atomic(&path, serde_json::to_vec_pretty(&ledger)?)
+        .with_context(|| format!("failed to persist {}", path.display()))?;
+    Ok(true)
+}
 
 #[cfg(test)]
 thread_local! {
@@ -215,6 +333,7 @@ fn output_reservation(dir: &Path, agent_id: &str) -> Result<(PathBuf, String)> {
 }
 
 fn reusable_worktree_is_available(
+    dir: &Path,
     registry: &LockedRegistry,
     info: &worktree::WorktreeInfo,
     task_id: &str,
@@ -228,19 +347,38 @@ fn reusable_worktree_is_available(
         if !claims_path {
             continue;
         }
-        let process_alive = worksgood::service::is_process_alive(agent.pid);
-        if agent.task_id != task_id || agent.is_alive() || process_alive {
+        if agent.task_id != task_id {
             anyhow::bail!(
-                "isolated worktree {} is owned by {} attempt {} for task '{}' (status {:?}); no process launched. Recover by terminating/reaping that attempt or archive the worktree explicitly after inspection",
+                "isolated worktree {} has conflicting registered owner {} for task '{}' while dispatching '{}'; bytes and metadata were preserved for explicit inspection",
                 info.path.display(),
-                if agent.is_alive() || process_alive {
-                    "live"
-                } else {
-                    "terminal"
-                },
+                agent.id,
+                agent.task_id,
+                task_id
+            );
+        }
+        if agent.is_live(crate::commands::service::worktree::HEARTBEAT_LIVENESS_TIMEOUT_SECS) {
+            anyhow::bail!(
+                "isolated worktree {} is protected by authenticated live attempt {} for task '{}' (status {:?}); no process launched",
+                info.path.display(),
                 agent.id,
                 agent.task_id,
                 agent.status
+            );
+        }
+        if worksgood::service::is_process_alive(agent.pid) {
+            anyhow::bail!(
+                "isolated worktree {} still has an ambiguous process owner {} for task '{}' (status {:?}); owner death is not yet proven and no process launched",
+                info.path.display(),
+                agent.id,
+                agent.task_id,
+                agent.status
+            );
+        }
+        if acknowledge_dead_worktree_owner(dir, info, agent)? {
+            eprintln!(
+                "[spawn] Fenced proven-dead worktree owner {} once; retaining owner token, observer state, and all bytes at {} before bounded retry dispatch",
+                agent.id,
+                info.path.display()
             );
         }
     }
@@ -266,7 +404,7 @@ fn prepare_spawn_workspace(
                 )
             })?;
         if let Some(ref info) = info {
-            reusable_worktree_is_available(registry, info, task_id)?;
+            reusable_worktree_is_available(dir, registry, info, task_id)?;
         }
         info
     } else {
@@ -6988,6 +7126,91 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
+    fn dead_spawn_owner_is_reclaimed_once_without_mutating_worktree_or_observer() {
+        let _global = GlobalConfigGuard::isolated();
+        let project = init_spawn_project(&["stale-owner"], true);
+        let dir = project.path().join(".wg");
+        let info =
+            worktree::create_worktree(project.path(), &dir, "agent-1", "stale-owner").unwrap();
+        fs::write(info.path.join("retained-wip.txt"), b"dirty evidence\n").unwrap();
+        let owner_admin = Command::new("git")
+            .args(["rev-parse", "--absolute-git-dir"])
+            .current_dir(&info.path)
+            .output()
+            .unwrap();
+        let owner_path = PathBuf::from(String::from_utf8_lossy(&owner_admin.stdout).trim())
+            .join("wg-spawn-owner.json");
+        let owner_before = fs::read(&owner_path).unwrap();
+
+        let old_key = worksgood::attempt_runtime::AttemptRuntimeKey::new(
+            "stale-owner",
+            0,
+            "attempt-0-1",
+            1,
+            1,
+        );
+        let observer =
+            worksgood::attempt_runtime::component_for_write(&dir, &old_key, "worktree-observer")
+                .unwrap();
+        fs::create_dir_all(&observer).unwrap();
+        let observer_path = observer.join("state.json");
+        let observer_before = serde_json::to_vec_pretty(&serde_json::json!({
+            "projection": {"source": {
+                "task_id": "stale-owner",
+                "generation": 0,
+                "attempt_id": "attempt-0-1",
+                "attempt_fence": 1,
+                "worktree_lease_epoch": 1
+            }},
+            "retained": "observer evidence"
+        }))
+        .unwrap();
+        fs::write(&observer_path, &observer_before).unwrap();
+
+        let mut exited = Command::new("sh").args(["-c", "exit 0"]).spawn().unwrap();
+        let dead_pid = exited.id();
+        exited.wait().unwrap();
+        assert!(!worksgood::service::is_process_alive(dead_pid));
+        let mut registry = AgentRegistry::new();
+        let prior =
+            registry.register_agent(dead_pid, "stale-owner", "shell", "/tmp/stale-owner-output");
+        registry.set_worktree_path(&prior, &info.path);
+        // Deliberately leave the stale registry projection as Working. OS
+        // process death is the proof; stale status alone must not wedge reuse.
+        registry.save(&dir).unwrap();
+
+        let mut locked = AgentRegistry::load_locked(&dir).unwrap();
+        let first = prepare_spawn_workspace(&dir, project.path(), "stale-owner", true, &mut locked)
+            .unwrap();
+        assert_eq!(first.agent_id, "agent-2");
+        assert_eq!(first.worktree_info.as_ref().unwrap().path, info.path);
+        drop(first);
+        let ledger_path = worktree_reclaim_path(&dir);
+        let ledger_once = fs::read(&ledger_path).unwrap();
+
+        let second =
+            prepare_spawn_workspace(&dir, project.path(), "stale-owner", true, &mut locked)
+                .unwrap();
+        assert_eq!(second.agent_id, "agent-2");
+        drop(second);
+        assert_eq!(fs::read(&ledger_path).unwrap(), ledger_once);
+        let ledger: WorktreeSpawnReclaimLedger = serde_json::from_slice(&ledger_once).unwrap();
+        assert_eq!(ledger.acknowledgements.len(), 1);
+        let ack = ledger.acknowledgements.values().next().unwrap();
+        assert!(ack.owner_record_retained);
+        assert!(ack.observer_state_retained);
+        assert_eq!(fs::read(&owner_path).unwrap(), owner_before);
+        assert_eq!(fs::read(&observer_path).unwrap(), observer_before);
+        assert_eq!(
+            fs::read(info.path.join("retained-wip.txt")).unwrap(),
+            b"dirty evidence\n"
+        );
+        drop(locked);
+        worktree::remove_worktree(project.path(), &info.path, &info.branch).unwrap();
+    }
+
+    #[test]
+    #[serial_test::serial]
     fn live_or_other_terminal_attempt_cannot_reuse_worktree_path() {
         let _global = GlobalConfigGuard::isolated();
         for live in [false, true] {
@@ -7016,7 +7239,11 @@ mod tests {
                 prepare_spawn_workspace(&dir, project.path(), "owner-task", true, &mut locked)
                     .unwrap_err();
             let message = format!("{error:#}");
-            assert!(message.contains("owned by"), "{message}");
+            assert!(
+                message.contains("protected by authenticated live attempt")
+                    || message.contains("conflicting registered owner"),
+                "{message}"
+            );
             assert!(info.path.exists());
             drop(locked);
             worktree::remove_worktree(project.path(), &info.path, &info.branch).unwrap();
