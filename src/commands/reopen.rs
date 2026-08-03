@@ -228,16 +228,17 @@ fn discard_old_worktree(dir: &Path, task_id: &str) -> Result<()> {
     let Some(project_root) = dir.parent() else {
         return Ok(());
     };
-    if let Some((path, branch)) =
+    if let Some((path, _branch)) =
         super::spawn::worktree::find_worktree_for_task(project_root, task_id)
     {
-        super::spawn::worktree::remove_worktree(project_root, &path, &branch)?;
-        if path.exists() {
-            anyhow::bail!(
-                "fresh reopen retained worktree {}; owner release stays held",
-                path.display()
-            );
-        }
+        // The legacy reopen adapter has no exact WorkSave/cleanup-plan handle.
+        // `--fresh` therefore cannot turn an age/path guess into authority to
+        // erase retained bytes.  The WorkSave adapter/synthesis may replace
+        // this hold only after it supplies the exact receipt to this call.
+        anyhow::bail!(
+            "fresh reopen retained worktree {}; capture an exact WorkSave and explicit discard receipt before retrying",
+            path.display()
+        );
     }
     Ok(())
 }

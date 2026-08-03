@@ -226,8 +226,8 @@ pub fn run(dir: &Path, seeds: &[String], opts: ResetOptions) -> Result<ResetRepo
                     task,
                     "reset",
                     false,
-                    true,
-                    "explicit reset",
+                    false,
+                    "explicit reset using retained work in a new attempt",
                     LifecycleActor::operator(user.clone()),
                     "explicit_reset",
                 ) {

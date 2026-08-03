@@ -298,7 +298,7 @@ pub fn is_eval_gate_pending(blocker_id: &str, graph: &WorkGraph) -> bool {
     }
     let eval_id = format!(".evaluate-{}", blocker_id);
     match graph.get_task(&eval_id) {
-        Some(eval_task) => eval_task.status != Status::Done,
+        Some(eval_task) => verify_dependency_graph_save(eval_task).is_err(),
         None => false,
     }
 }
@@ -347,6 +347,32 @@ pub enum DependencyDisposition {
     Blocked { reason: String },
 }
 
+/// Verify the only local success authority accepted by dependency readers.
+///
+/// `Status::Done`, a legacy disposition, and a non-empty receipt string are
+/// compatibility projections, not proof.  The lifecycle reducer stamps the
+/// exact v2 GraphSave CID into both the row and its audit event only after the
+/// complete bundle has passed `verify_graph_save_bundle`; this read-side guard
+/// requires that projection and returns a stable diagnostic for every other
+/// state.
+pub fn verify_dependency_graph_save(
+    task: &Task,
+) -> Result<crate::graph::CompletionDisposition, String> {
+    if task.status != Status::Done {
+        return Err(if task.status == Status::Abandoned {
+            format!("prerequisite {} was abandoned", task.id)
+        } else {
+            format!("dependency status is {}", task.status)
+        });
+    }
+    task.graph_save_completion_disposition().ok_or_else(|| {
+        format!(
+            "dependency {} is projected done without a verified v2 GraphSave receipt; reconciliation required",
+            task.id
+        )
+    })
+}
+
 impl DependencyDisposition {
     pub fn is_satisfied(&self) -> bool {
         matches!(self, Self::Satisfied | Self::EvalSystemBypass { .. })
@@ -374,21 +400,23 @@ pub fn dependency_disposition(
             };
         };
         let remote = crate::federation::resolve_remote_task_status(peer_name, remote_task_id, dir);
-        return if remote.status == Status::Done {
-            DependencyDisposition::Satisfied
-        } else {
-            DependencyDisposition::Blocked {
-                reason: format!("remote prerequisite status is {}", remote.status),
-            }
+        return DependencyDisposition::Blocked {
+            reason: if remote.status == Status::Done {
+                "remote prerequisite exposes only raw Done status; a signed verified GraphSave summary is required".to_string()
+            } else {
+                format!("remote prerequisite status is {}", remote.status)
+            },
         };
     }
 
     let Some(blocker) = graph.get_task(blocker_id) else {
         return match graph.get_archived_boundary(blocker_id) {
-            Some(boundary) if boundary.status == Status::Done => DependencyDisposition::Satisfied,
+            Some(boundary) if boundary.status == Status::Done => DependencyDisposition::Blocked {
+                reason: "archived prerequisite has no verified GraphSave boundary proof; reconciliation required".to_string(),
+            },
             Some(boundary) => DependencyDisposition::Blocked {
                 reason: format!(
-                    "archived prerequisite status is {} (only archived done satisfies)",
+                    "archived prerequisite status is {} (only a verified GraphSave boundary satisfies)",
                     boundary.status
                 ),
             },
@@ -421,17 +449,12 @@ pub fn dependency_disposition(
     let typed_input = graph
         .get_task(dependent_id)
         .is_some_and(|dependent| dependent.input_dependency_from(blocker_id));
-    if !blocker.status.is_dep_satisfied() {
-        let reason = if blocker.status == Status::Abandoned {
-            format!("prerequisite {blocker_id} was abandoned")
-        } else {
-            format!("dependency status is {}", blocker.status)
-        };
-        return DependencyDisposition::Blocked { reason };
-    }
-    let disposition = blocker.effective_completion_disposition();
+    let disposition = match verify_dependency_graph_save(blocker) {
+        Ok(disposition) => disposition,
+        Err(reason) => return DependencyDisposition::Blocked { reason },
+    };
     if typed_input {
-        if disposition != Some(crate::graph::CompletionDisposition::Delivered) {
+        if disposition != crate::graph::CompletionDisposition::Delivered {
             return DependencyDisposition::Blocked {
                 reason: format!(
                     "typed contribution input requires Completed(Delivered), observed {:?}",
@@ -440,7 +463,7 @@ pub fn dependency_disposition(
             };
         }
     } else if !dependent_id.starts_with('.')
-        && disposition != Some(crate::graph::CompletionDisposition::Landed)
+        && disposition != crate::graph::CompletionDisposition::Landed
     {
         return DependencyDisposition::Blocked {
             reason: format!(
@@ -473,27 +496,7 @@ pub fn is_blocker_satisfied(
     graph: &WorkGraph,
     workgraph_dir: Option<&Path>,
 ) -> bool {
-    if let Some((peer_name, remote_task_id)) = crate::federation::parse_remote_ref(blocker_id) {
-        // Cross-repo dependency
-        let Some(wg_dir) = workgraph_dir else {
-            return false; // Can't resolve without WG dir; treat as blocked
-        };
-        let remote =
-            crate::federation::resolve_remote_task_status(peer_name, remote_task_id, wg_dir);
-        remote.status.is_dep_satisfied()
-    } else {
-        // Local dependency — non-existent blocker blocks (prevents premature
-        // dispatch during burst graph construction).
-        graph
-            .get_task(blocker_id)
-            .map(|t| t.status.is_dep_satisfied())
-            .or_else(|| {
-                graph
-                    .get_archived_boundary(blocker_id)
-                    .map(|boundary| boundary.status == Status::Done)
-            })
-            .unwrap_or(false)
-    }
+    dependency_disposition(blocker_id, "", graph, workgraph_dir).is_satisfied()
 }
 
 /// Like `is_blocker_satisfied` but also applies the eval gate: even when the
@@ -782,7 +785,7 @@ pub fn after<'a>(graph: &'a WorkGraph, task_id: &str) -> Vec<&'a Task> {
     task.after
         .iter()
         .filter_map(|id| graph.get_task(id))
-        .filter(|t| !t.status.is_dep_satisfied())
+        .filter(|blocker| !dependency_disposition(&blocker.id, task_id, graph, None).is_satisfied())
         .collect()
 }
 
@@ -819,7 +822,52 @@ pub fn cost_of(graph: &WorkGraph, task_id: &str) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::{ArchivedBoundary, Estimate, Node};
+    use crate::graph::{ArchivedBoundary, CompletionDisposition, Estimate, Node};
+    use crate::lifecycle::{ActorKind, LifecycleEvent, LifecycleEventProjection};
+
+    fn mark_graph_saved(task: &mut Task) {
+        let receipt = format!("wgcid:v2:blake3:{:064}", 1);
+        task.status = Status::Done;
+        task.completion_disposition = Some(match task.completion_contract {
+            crate::graph::CompletionContract::Land => CompletionDisposition::Landed,
+            crate::graph::CompletionContract::Deliver => CompletionDisposition::Delivered,
+            crate::graph::CompletionContract::Report => CompletionDisposition::Reported,
+        });
+        task.completion_receipt = Some(receipt.clone());
+        task.lifecycle.audit.push(LifecycleEvent {
+            schema_version: 2,
+            event_id: format!("graph-save:{}", task.id),
+            idempotency_key: format!("graph-save:{}", task.id),
+            task_id: task.id.clone(),
+            task_revision: 1,
+            generation: 0,
+            event_kind: "graph-save-committed".into(),
+            old_state: Status::InProgress,
+            new_state: Status::Done,
+            actor_kind: ActorKind::Reconciler,
+            actor_id: "test".into(),
+            attempt_id: None,
+            fence: 0,
+            reason_code: "test-fixture".into(),
+            evidence_refs: vec![receipt],
+            occurred_at: "2024-01-01T00:00:00Z".into(),
+            committed_at: "2024-01-01T00:00:00Z".into(),
+            projection: LifecycleEventProjection {
+                status: Status::Done,
+                generation: 0,
+                revision: 1,
+                fence: 0,
+                attempt_sequence: 0,
+                current_attempt: None,
+                pi_process_epoch: 0,
+                pi_process_identity_digest: String::new(),
+                pi_continuation_epoch: 0,
+                pi_continuation: None,
+                pi_terminal_reservation: None,
+                reopen_intent: None,
+            },
+        });
+    }
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {
@@ -850,7 +898,7 @@ mod tests {
     fn test_ready_tasks_excludes_done() {
         let mut graph = WorkGraph::new();
         let mut task = make_task("t1", "Task 1");
-        task.status = Status::Done;
+        mark_graph_saved(&mut task);
         graph.add_node(Node::Task(task));
 
         let ready = ready_tasks(&graph);
@@ -878,7 +926,7 @@ mod tests {
         let mut graph = WorkGraph::new();
 
         let mut blocker = make_task("blocker", "Blocker");
-        blocker.status = Status::Done;
+        mark_graph_saved(&mut blocker);
 
         let mut blocked = make_task("blocked", "Blocked");
         blocked.after = vec!["blocker".to_string()];
@@ -892,12 +940,32 @@ mod tests {
     }
 
     #[test]
+    fn raw_done_without_graph_save_blocks_dependency() {
+        let mut graph = WorkGraph::new();
+        let mut blocker = make_task("legacy", "Legacy raw Done");
+        blocker.status = Status::Done;
+        let mut dependent = make_task("dependent", "Dependent");
+        dependent.after = vec![blocker.id.clone()];
+        graph.add_node(Node::Task(blocker));
+        graph.add_node(Node::Task(dependent));
+
+        let disposition = dependency_disposition("legacy", "dependent", &graph, None);
+        assert!(
+            matches!(disposition, DependencyDisposition::Blocked { ref reason } if reason.contains("reconciliation required"))
+        );
+        assert!(
+            !ready_tasks(&graph)
+                .iter()
+                .any(|task| task.id == "dependent")
+        );
+    }
+
+    #[test]
     fn delivered_success_satisfies_only_explicit_contribution_input_edges() {
         let mut graph = WorkGraph::new();
         let mut producer = make_task("producer", "Producer");
-        producer.status = Status::Done;
         producer.completion_contract = crate::graph::CompletionContract::Deliver;
-        producer.completion_disposition = Some(crate::graph::CompletionDisposition::Delivered);
+        mark_graph_saved(&mut producer);
 
         let mut ordinary = make_task("ordinary", "Ordinary");
         ordinary.after = vec!["producer".into()];
@@ -942,7 +1010,7 @@ mod tests {
         let mut graph = WorkGraph::new();
 
         let mut blocker = make_task("blocker", "Blocker");
-        blocker.status = Status::Done;
+        mark_graph_saved(&mut blocker);
 
         let mut blocked = make_task("blocked", "Blocked");
         blocked.after = vec!["blocker".to_string()];
@@ -1092,7 +1160,7 @@ mod tests {
 
         // Done task (should not count in totals)
         let mut t2 = make_task("t2", "Task 2");
-        t2.status = Status::Done;
+        mark_graph_saved(&mut t2);
         t2.estimate = Some(Estimate {
             hours: Some(5.0),
             cost: Some(500.0),
@@ -1204,7 +1272,7 @@ mod tests {
         let mut graph = WorkGraph::new();
 
         let mut done = make_task("done", "Done task");
-        done.status = Status::Done;
+        mark_graph_saved(&mut done);
         done.estimate = Some(Estimate {
             hours: Some(10.0),
             cost: Some(1000.0),
@@ -1367,7 +1435,7 @@ mod tests {
         let mut graph = WorkGraph::new();
 
         let mut d = make_task("d", "Level 0");
-        d.status = Status::Done;
+        mark_graph_saved(&mut d);
         let mut c = make_task("c", "Level 1");
         c.after = vec!["d".to_string()];
         let mut b = make_task("b", "Level 2");
@@ -1393,7 +1461,7 @@ mod tests {
         let mut graph = WorkGraph::new();
 
         let mut b1 = make_task("b1", "Blocker 1");
-        b1.status = Status::Done;
+        mark_graph_saved(&mut b1);
         let b2 = make_task("b2", "Blocker 2");
         let mut task = make_task("t", "Blocked task");
         task.after = vec!["b1".to_string(), "b2".to_string()];
@@ -1417,9 +1485,9 @@ mod tests {
         let mut graph = WorkGraph::new();
 
         let mut b1 = make_task("b1", "Blocker 1");
-        b1.status = Status::Done;
+        mark_graph_saved(&mut b1);
         let mut b2 = make_task("b2", "Blocker 2");
-        b2.status = Status::Done;
+        mark_graph_saved(&mut b2);
         let mut task = make_task("t", "Blocked task");
         task.after = vec!["b1".to_string(), "b2".to_string()];
 
@@ -1438,7 +1506,7 @@ mod tests {
         let mut graph = WorkGraph::new();
 
         let mut b_done = make_task("b-done", "Done blocker");
-        b_done.status = Status::Done;
+        mark_graph_saved(&mut b_done);
         let mut b_ip = make_task("b-ip", "InProgress blocker");
         b_ip.status = Status::InProgress;
         let mut b_failed = make_task("b-failed", "Failed blocker");
@@ -1517,7 +1585,7 @@ mod tests {
         let mut graph = WorkGraph::new();
 
         let mut upstream = make_task("upstream", "Done upstream");
-        upstream.status = Status::Done;
+        mark_graph_saved(&mut upstream);
 
         let mut downstream = make_task("downstream", "Downstream task");
         downstream.after = vec!["upstream".to_string()];
@@ -1556,8 +1624,8 @@ mod tests {
     }
 
     #[test]
-    fn archived_done_boundary_satisfies_but_archived_abandoned_blocks() {
-        for (status, expected_ready) in [(Status::Done, true), (Status::Abandoned, false)] {
+    fn archived_boundary_without_graph_save_proof_blocks() {
+        for (status, expected_ready) in [(Status::Done, false), (Status::Abandoned, false)] {
             let mut graph = WorkGraph::new();
             graph.add_node(Node::ArchivedBoundary(ArchivedBoundary {
                 id: "archived-upstream".to_string(),
@@ -2225,7 +2293,7 @@ mod tests {
     fn test_ready_tasks_excludes_done_status() {
         let mut graph = WorkGraph::new();
         let mut task = make_task("t", "Done task");
-        task.status = Status::Done;
+        mark_graph_saved(&mut task);
         graph.add_node(Node::Task(task));
 
         let ready = ready_tasks(&graph);
@@ -2285,7 +2353,7 @@ mod tests {
     fn is_blocker_satisfied_local_done() {
         let mut graph = WorkGraph::new();
         let mut t = make_task("blocker", "Blocker");
-        t.status = Status::Done;
+        mark_graph_saved(&mut t);
         graph.add_node(Node::Task(t));
 
         assert!(is_blocker_satisfied("blocker", &graph, None));
@@ -2475,7 +2543,7 @@ mod tests {
         b.cycle_config = Some(make_cycle_config(3));
 
         let mut c = make_task("c", "External Task C");
-        c.status = Status::Done;
+        mark_graph_saved(&mut c);
 
         graph.add_node(Node::Task(a));
         graph.add_node(Node::Task(b));
@@ -2579,7 +2647,7 @@ mod tests {
         let mut graph = WorkGraph::new();
 
         let mut ext = make_task("ext", "External trigger");
-        ext.status = Status::Done;
+        mark_graph_saved(&mut ext);
 
         let mut header = make_task("header", "Cycle header");
         header.after = vec!["ext".to_string(), "worker".to_string()];
@@ -2649,7 +2717,7 @@ mod tests {
         let mut graph = WorkGraph::new();
 
         let mut ext = make_task("ext", "External trigger");
-        ext.status = Status::Done;
+        mark_graph_saved(&mut ext);
 
         let mut header = make_task("header", "Cycle header");
         header.after = vec!["ext".to_string(), "w2".to_string()];
@@ -2683,7 +2751,7 @@ mod tests {
         let mut graph = WorkGraph::new();
 
         let mut ext = make_task("ext", "External trigger");
-        ext.status = Status::Done;
+        mark_graph_saved(&mut ext);
 
         let mut header = make_task("header", "Cycle header");
         header.after = vec!["ext".to_string(), "join".to_string()];

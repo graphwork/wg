@@ -207,17 +207,26 @@ fn run_orphaned_cleanup(args: OrphanedArgs) -> Result<()> {
         return Ok(());
     }
 
-    // Perform cleanup
+    // Metadata absence is not proof that the task's WorkSave/SaveTransaction
+    // reached GraphSaved.  This legacy scanner cannot bind an orphan name to an
+    // exact source tuple, cleanup plan, or immutable rescue ref, so execution
+    // must quarantine rather than recursively delete it.  The task-aware GC
+    // path performs the receipt-backed check when registry identity exists.
     let mut cleanup_errors = Vec::new();
     let mut cleanup_successes = 0;
 
     for (agent_id, worktree_path) in orphaned_worktrees {
-        println!("Cleaning up orphaned worktree: {}", agent_id);
+        println!(
+            "Retaining orphaned worktree for reconciliation: {}",
+            agent_id
+        );
 
-        // Try to determine the branch name
-        let branch = format!("wg/{}/task", agent_id);
+        let result: Result<()> = Err(anyhow!(
+            "retention barrier: '{}' has no exact source tuple / verified GraphSave cleanup proof",
+            worktree_path.display()
+        ));
 
-        match cleanup_orphaned_worktree(&project_root, &worktree_path, &branch) {
+        match result {
             Ok(()) => {
                 cleanup_successes += 1;
                 println!("✓ Successfully cleaned up orphaned worktree: {}", agent_id);
@@ -349,55 +358,13 @@ fn run_recovery_branches_cleanup(args: RecoveryBranchesArgs) -> Result<()> {
         return Ok(());
     }
 
-    // Perform cleanup
-    let mut cleanup_errors = Vec::new();
-    let mut cleanup_successes = 0;
-
-    for (branch, age_days) in old_branches {
-        println!(
-            "Deleting recovery branch: {} (age: {} days)",
-            branch, age_days
-        );
-
-        let output = Command::new("git")
-            .args(["branch", "-D", &branch])
-            .current_dir(&project_root)
-            .output()
-            .context("Failed to execute git branch delete command")?;
-
-        if output.status.success() {
-            cleanup_successes += 1;
-            println!("✓ Successfully deleted recovery branch: {}", branch);
-        } else {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let error_msg = format!(
-                "Failed to delete recovery branch {}: {}",
-                branch,
-                stderr.trim()
-            );
-            cleanup_errors.push(error_msg.clone());
-
-            if args.force {
-                eprintln!("⚠ {}", error_msg);
-                eprintln!("  Continuing due to --force flag...");
-            } else {
-                return Err(anyhow!(error_msg));
-            }
-        }
-    }
-
-    println!("\nCleanup complete:");
-    println!("  Successes: {}", cleanup_successes);
-    println!("  Errors: {}", cleanup_errors.len());
-
-    if !cleanup_errors.is_empty() && args.force {
-        println!("\nErrors encountered (ignored due to --force):");
-        for error in cleanup_errors {
-            println!("  - {}", error);
-        }
-    }
-
-    Ok(())
+    // A recovery ref is retained WorkSave evidence. Age is not an exact
+    // cleanup plan and `--force` is not authority to erase quarantined bytes.
+    // Keep reporting candidates, but refuse the destructive legacy adapter.
+    anyhow::bail!(
+        "retention barrier: {} recovery branch(es) lack exact GraphSave cleanup receipts; reconcile them explicitly",
+        old_branches.len()
+    )
 }
 
 /// Clean up a specific orphaned worktree with enhanced error handling
@@ -756,7 +723,6 @@ fn cleanup_tasks(
 
     let now = SystemTime::now();
     let max_abandoned_age = Duration::from_secs(args.max_abandoned_age_days as u64 * 24 * 3600);
-    let max_failed_age = Duration::from_secs(args.max_failed_age_days as u64 * 24 * 3600);
 
     let mut archive_candidates = Vec::new();
 
@@ -773,20 +739,13 @@ fn cleanup_tasks(
                     false
                 }
             }
-            Status::Failed => {
-                if let Some(created_at) = parse_timestamp_to_systemtime(&task.created_at) {
-                    if let Ok(age) = now.duration_since(created_at) {
-                        age > max_failed_age
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                }
-            }
+            Status::Failed => false,
             Status::Done => {
-                // Archive completed agency tasks immediately
-                is_agency_task(&task.id) || is_old_coordinator_task(&task.id)
+                // Raw Done and legacy agency rows are reconciliation inputs,
+                // not archivable success.  Only the GraphSave projection may
+                // cross the archive boundary.
+                task.graph_save_completion_disposition().is_some()
+                    && (is_agency_task(&task.id) || is_old_coordinator_task(&task.id))
             }
             _ => false,
         };

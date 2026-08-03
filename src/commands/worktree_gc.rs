@@ -79,9 +79,10 @@ impl Decision {
 ///   1. Not the currently running agent (`self_agent_id`).
 ///   2. Registry entry must either be missing (require `--force` at run-time)
 ///      or its agent must not be live by `AgentEntry::is_live`.
-///   3. Task (looked up from registry.task_id) must be terminal OR
-///      missing-from-graph.
-///   4. Worktree must not contain uncommitted changes (or `--force`).
+///   3. Task (looked up from registry.task_id) must have a receipt-backed v2
+///      GraphSave. Missing, failed, abandoned, and raw legacy Done rows retain.
+///   4. Worktree must not contain uncommitted changes. `--force` cannot bypass
+///      this evidence barrier.
 pub fn plan(
     workgraph_dir: &Path,
     self_agent_id: Option<&str>,
@@ -148,27 +149,28 @@ pub fn plan(
             continue;
         }
 
-        let (task_id, task_status) = match agent {
+        let (task_id, task_status, graph_saved) = match agent {
             Some(a) => {
-                let status = graph
-                    .as_ref()
-                    .and_then(|g| g.get_task(&a.task_id))
-                    .map(|t| t.status);
-                (Some(a.task_id.clone()), status)
+                let task = graph.as_ref().and_then(|g| g.get_task(&a.task_id));
+                (
+                    Some(a.task_id.clone()),
+                    task.map(|task| task.status),
+                    task.is_some_and(|task| task.graph_save_completion_disposition().is_some()),
+                )
             }
-            None => (None, None),
+            None => (None, None, false),
         };
 
-        if let Some(status) = task_status
-            && !status.is_terminal()
-        {
+        if agent.is_some() && !graph_saved {
             decisions.push(Decision::Skip {
                 agent_id: name,
                 path,
                 reason: format!(
-                    "task '{}' is non-terminal ({})",
+                    "task '{}' lacks a verified v2 GraphSave (status={}); retained evidence requires reconciliation",
                     task_id.as_deref().unwrap_or("?"),
-                    status
+                    task_status
+                        .map(|status| status.to_string())
+                        .unwrap_or_else(|| "missing".to_string())
                 ),
             });
             continue;
@@ -188,11 +190,13 @@ pub fn plan(
 
         // Gate 4: uncommitted changes.
         if super::worktree_cmd::has_uncommitted_changes(&path) {
-            decisions.push(Decision::Uncommitted {
+            decisions.push(Decision::Skip {
                 agent_id: name.clone(),
                 path,
-                task_id: task_id.clone(),
-                reason: "uncommitted changes present (use --force to discard)".to_string(),
+                reason: format!(
+                    "task '{}' has bytes newer than its GraphSave; quarantined for explicit reconciliation",
+                    task_id.as_deref().unwrap_or("?")
+                ),
             });
             continue;
         }
@@ -482,12 +486,53 @@ mod tests {
     }
 
     fn make_task(id: &str, status: Status) -> Task {
-        Task {
+        use worksgood::graph::CompletionDisposition;
+        use worksgood::lifecycle::{ActorKind, LifecycleEvent, LifecycleEventProjection};
+        let mut task = Task {
             id: id.to_string(),
             title: id.to_string(),
             status,
             ..Task::default()
+        };
+        if status == Status::Done {
+            let receipt = format!("wgcid:v2:blake3:{:064}", 1);
+            task.completion_disposition = Some(CompletionDisposition::Landed);
+            task.completion_receipt = Some(receipt.clone());
+            task.lifecycle.audit.push(LifecycleEvent {
+                schema_version: 2,
+                event_id: format!("graph-save:{id}"),
+                idempotency_key: format!("graph-save:{id}"),
+                task_id: id.into(),
+                task_revision: 1,
+                generation: 0,
+                event_kind: "graph-save-committed".into(),
+                old_state: Status::InProgress,
+                new_state: Status::Done,
+                actor_kind: ActorKind::Reconciler,
+                actor_id: "test".into(),
+                attempt_id: None,
+                fence: 0,
+                reason_code: "test-fixture".into(),
+                evidence_refs: vec![receipt],
+                occurred_at: "2024-01-01T00:00:00Z".into(),
+                committed_at: "2024-01-01T00:00:00Z".into(),
+                projection: LifecycleEventProjection {
+                    status: Status::Done,
+                    generation: 0,
+                    revision: 1,
+                    fence: 0,
+                    attempt_sequence: 0,
+                    current_attempt: None,
+                    pi_process_epoch: 0,
+                    pi_process_identity_digest: String::new(),
+                    pi_continuation_epoch: 0,
+                    pi_continuation: None,
+                    pi_terminal_reservation: None,
+                    reopen_intent: None,
+                },
+            });
         }
+        task
     }
 
     // ------------------------------------------------------------------

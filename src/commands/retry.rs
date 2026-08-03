@@ -138,7 +138,7 @@ pub fn run_with_current_profile(
 fn run_with_selection(
     dir: &Path,
     id: &str,
-    preserve_session: bool,
+    _preserve_session: bool,
     fresh: bool,
     reason: Option<&str>,
     profile_selection: Option<RetryProfileSelection>,
@@ -162,7 +162,7 @@ fn run_with_selection(
             dir,
             &path,
             id,
-            preserve_session,
+            false,
             fresh,
             reason,
             profile_selection.as_ref(),
@@ -263,8 +263,12 @@ fn run_with_selection(
             task,
             "retry",
             fresh,
-            preserve_session,
-            if fresh { "fresh retry" } else { "resume-in-place retry" },
+            false,
+            if fresh {
+                "fresh retry after WorkSave/discard"
+            } else {
+                "new attempt using retained work"
+            },
             LifecycleActor::operator(worksgood::current_user()),
             "explicit_retry",
         ) {
@@ -482,7 +486,7 @@ fn run_with_selection(
             if let Some((wt, _)) =
                 crate::commands::spawn::worktree::find_worktree_for_task(project_root, id)
             {
-                println!("  Next attempt will resume in-place at {:?}", wt);
+                println!("  New attempt will use retained work at {:?}", wt);
             }
         }
     }
@@ -501,7 +505,7 @@ fn retry_in_progress(
     dir: &Path,
     path: &Path,
     id: &str,
-    preserve_session: bool,
+    _preserve_session: bool,
     fresh: bool,
     reason: Option<&str>,
     profile_selection: Option<&RetryProfileSelection>,
@@ -563,11 +567,11 @@ fn retry_in_progress(
                 task,
                 "retry",
                 fresh,
-                preserve_session,
+                false,
                 if fresh {
-                    "fresh in-progress retry"
+                    "fresh in-progress retry after WorkSave/discard"
                 } else {
-                    "resume-in-place in-progress retry"
+                    "new attempt using retained work"
                 },
                 LifecycleActor::operator(worksgood::current_user()),
                 "retry_in_progress",
@@ -1292,7 +1296,7 @@ mod tests {
     }
 
     #[test]
-    fn test_retry_preserve_session_keeps_session_id() {
+    fn test_retry_preserve_session_is_lineage_not_continuation() {
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
         let mut task = make_task("t1", "Test task", Status::Failed);
@@ -1307,14 +1311,12 @@ mod tests {
         let graph = load_graph(&path).unwrap();
         let task = graph.get_task("t1").unwrap();
         assert_eq!(
-            task.session_id,
-            Some("keep-me-alive".to_string()),
-            "--preserve-session should keep session_id"
+            task.session_id, None,
+            "retry is a new attempt and must not claim exact-session continuation"
         );
         assert_eq!(
-            task.checkpoint,
-            Some("checkpoint content".to_string()),
-            "--preserve-session should keep checkpoint"
+            task.checkpoint, None,
+            "retained work may provide lineage, but ambient continuation selectors are fenced"
         );
     }
 

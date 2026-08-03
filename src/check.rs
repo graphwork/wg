@@ -13,6 +13,10 @@ pub struct CheckResult {
     /// pointed at an abandoned prerequisite. History is reported, never
     /// rewritten or reopened by this check.
     pub abandoned_dependency_violations: Vec<AbandonedDependencyViolation>,
+    /// Compatibility Done rows that do not carry a receipt-backed v2
+    /// GraphSave projection. They are retained for reconciliation and never
+    /// satisfy dependency/archive/cleanup readers.
+    pub unverified_done: Vec<UnverifiedDone>,
     pub ok: bool,
 }
 
@@ -46,6 +50,36 @@ pub struct AbandonedDependencyViolation {
     pub prerequisite_id: String,
     pub archived: bool,
     pub diagnostic: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct UnverifiedDone {
+    pub task_id: String,
+    pub diagnostic: String,
+}
+
+pub fn check_unverified_done(graph: &WorkGraph) -> Vec<UnverifiedDone> {
+    let mut findings: Vec<_> = graph
+        .tasks()
+        .filter(|task| task.status == crate::graph::Status::Done)
+        .filter(|task| task.graph_save_completion_disposition().is_none())
+        .map(|task| UnverifiedDone {
+            task_id: task.id.clone(),
+            diagnostic: "done-without-verified-v2-graphsave-reconciliation-required".into(),
+        })
+        .collect();
+    findings.extend(
+        graph
+            .archived_boundaries()
+            .filter(|boundary| boundary.status == crate::graph::Status::Done)
+            .map(|boundary| UnverifiedDone {
+                task_id: boundary.id.clone(),
+                diagnostic:
+                    "archived-done-boundary-without-graphsave-proof-reconciliation-required".into(),
+            }),
+    );
+    findings.sort_by(|left, right| left.task_id.cmp(&right.task_id));
+    findings
 }
 
 /// Check for cycles in task dependencies
@@ -284,6 +318,7 @@ pub fn check_all(graph: &WorkGraph) -> CheckResult {
     let stale_assignments = check_stale_assignments(graph);
     let stuck_blocked = check_stuck_blocked(graph);
     let abandoned_dependency_violations = check_abandoned_dependency_violations(graph);
+    let unverified_done = check_unverified_done(graph);
 
     // Cycles, stale assignments, and stuck blocked are warnings, not errors —
     // only orphan refs make the graph invalid
@@ -295,6 +330,7 @@ pub fn check_all(graph: &WorkGraph) -> CheckResult {
         stale_assignments,
         stuck_blocked,
         abandoned_dependency_violations,
+        unverified_done,
         ok,
     }
 }
@@ -339,6 +375,19 @@ mod tests {
             graph.get_task("running").unwrap().status,
             Status::InProgress
         );
+    }
+
+    #[test]
+    fn raw_done_is_reported_as_unverified() {
+        let mut graph = WorkGraph::new();
+        let mut task = make_task("legacy", "Legacy Done");
+        task.status = Status::Done;
+        graph.add_node(Node::Task(task));
+
+        let findings = check_unverified_done(&graph);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].task_id, "legacy");
+        assert!(findings[0].diagnostic.contains("reconciliation-required"));
     }
 
     #[test]

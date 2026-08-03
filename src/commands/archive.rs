@@ -231,10 +231,20 @@ pub fn parse_duration(s: &str) -> Result<Duration> {
     }
 }
 
+/// Check whether a task has authoritative terminal evidence for archival.
+///
+/// Abandonment is explicitly non-success terminal history.  A successful row
+/// is archivable only when its compatibility `Done` projection is backed by a
+/// v2 GraphSave lifecycle receipt; raw/legacy Done must stay active for the
+/// reconciliation adapter and must never be hidden behind an archive boundary.
+fn has_archivable_terminal_evidence(task: &Task) -> bool {
+    task.status == Status::Abandoned
+        || (task.status == Status::Done && task.graph_save_completion_disposition().is_some())
+}
+
 /// Check if a task should be archived based on the --older filter.
-/// Only Done and Abandoned tasks are archivable.
 fn should_archive(task: &Task, older_than: Option<&Duration>) -> bool {
-    if !matches!(task.status, Status::Done | Status::Abandoned) {
+    if !has_archivable_terminal_evidence(task) {
         return false;
     }
 
@@ -626,13 +636,11 @@ pub fn run(
         let mut tasks = Vec::new();
         for id in ids {
             if let Some(task) = graph.get_task(id) {
-                if !matches!(task.status, Status::Done | Status::Abandoned) {
+                if !has_archivable_terminal_evidence(task) {
                     anyhow::bail!(
-                        "Task '{}' has status '{}' — only done/abandoned tasks can be archived. \
-                         Use `wg done {}` first.",
+                        "Task '{}' is not archivable: status '{}' lacks a verified v2 GraphSave (or explicit abandonment); reconcile retained evidence first.",
                         id,
                         task.status,
-                        id
                     );
                 }
                 tasks.push(task.clone());
@@ -786,7 +794,7 @@ fn eligible_automatic_tasks(
 ) -> Vec<Task> {
     let mut tasks: Vec<Task> = graph
         .tasks()
-        .filter(|task| matches!(task.status, Status::Done | Status::Abandoned))
+        .filter(|task| has_archivable_terminal_evidence(task))
         .filter(|task| !task.id.starts_with('.'))
         .filter(|task| {
             task_timestamp(task).is_some_and(|timestamp| {
@@ -1279,17 +1287,61 @@ pub fn run_auto_control(dir: &Path, dry_run: bool, confirm: bool, json: bool) ->
 mod tests {
     use super::*;
     use tempfile::tempdir;
-    use worksgood::graph::WorkGraph;
+    use worksgood::graph::{CompletionDisposition, WorkGraph};
+    use worksgood::lifecycle::{ActorKind, LifecycleEvent, LifecycleEventProjection};
     use worksgood::parser::save_graph;
 
+    fn mark_graph_saved(task: &mut Task) {
+        let receipt = format!("wgcid:v2:blake3:{:064}", 1);
+        task.completion_disposition = Some(CompletionDisposition::Landed);
+        task.completion_receipt = Some(receipt.clone());
+        task.lifecycle.audit.push(LifecycleEvent {
+            schema_version: 2,
+            event_id: format!("graph-save:{}", task.id),
+            idempotency_key: format!("graph-save:{}", task.id),
+            task_id: task.id.clone(),
+            task_revision: 1,
+            generation: 0,
+            event_kind: "graph-save-committed".into(),
+            old_state: Status::InProgress,
+            new_state: Status::Done,
+            actor_kind: ActorKind::Reconciler,
+            actor_id: "test".into(),
+            attempt_id: None,
+            fence: 0,
+            reason_code: "test-fixture".into(),
+            evidence_refs: vec![receipt],
+            occurred_at: "2024-01-01T00:00:00Z".into(),
+            committed_at: "2024-01-01T00:00:00Z".into(),
+            projection: LifecycleEventProjection {
+                status: Status::Done,
+                generation: 0,
+                revision: 1,
+                fence: 0,
+                attempt_sequence: 0,
+                current_attempt: None,
+                pi_process_epoch: 0,
+                pi_process_identity_digest: String::new(),
+                pi_continuation_epoch: 0,
+                pi_continuation: None,
+                pi_terminal_reservation: None,
+                reopen_intent: None,
+            },
+        });
+    }
+
     fn make_task(id: &str, title: &str, status: Status, completed_at: Option<&str>) -> Task {
-        Task {
+        let mut task = Task {
             id: id.to_string(),
             title: title.to_string(),
             status,
             completed_at: completed_at.map(String::from),
             ..Task::default()
+        };
+        if status == Status::Done {
+            mark_graph_saved(&mut task);
         }
+        task
     }
 
     #[test]
@@ -1320,6 +1372,17 @@ mod tests {
     fn test_should_archive_done_task() {
         let task = make_task("t1", "Test", Status::Done, None);
         assert!(should_archive(&task, None));
+    }
+
+    #[test]
+    fn raw_done_without_graph_save_is_not_archivable() {
+        let task = Task {
+            id: "legacy".into(),
+            title: "Legacy raw done".into(),
+            status: Status::Done,
+            ..Task::default()
+        };
+        assert!(!should_archive(&task, None));
     }
 
     #[test]

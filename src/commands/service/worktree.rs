@@ -63,17 +63,11 @@ pub const HEARTBEAT_LIVENESS_TIMEOUT_SECS: u64 = 300;
 /// Determine whether a task's worktree is safe to reap under the retention policy.
 ///
 /// A worktree is **only** safe to reap when BOTH:
-/// 1. The source completion contract resolved — `task.status == Done` AND an
-///    explicit `.evaluate-<task_id>` execution task exists and is also `Done`.
-///    The satellite's `Done` means execution completed, not quality passed;
-///    hard-gate quality provenance lives on the source lifecycle.
-/// 2. The branch has been merged into `main` (or `master`) — i.e., the branch
-///    tip is reachable from the main branch, so all commits are permanently
-///    captured.
-///
-/// Either condition alone is insufficient: completed evaluation execution alone
-/// means the work has not landed in main; merge-only means the configured source
-/// completion contract may still be unresolved.
+/// 1. The source has a receipt-backed v2 GraphSave projection.  Raw Done,
+///    legacy disposition fallbacks, evaluator status, and registry status are
+///    never retention authority.
+/// 2. The branch has been merged into `main` (or `master`) — an independent
+///    final adapter check that the source bytes remain reachable.
 ///
 /// Returns `false` (do NOT reap) when any signal is missing — including unknown
 /// task IDs, missing graph entries, unfindable branches, or unreachable git.
@@ -97,16 +91,7 @@ pub fn is_safe_to_reap(
         Some(t) => t,
         None => return false,
     };
-    if task.status != worksgood::graph::Status::Done {
-        return false;
-    }
-    let eval_id = format!(".evaluate-{}", task_id);
-    let Some(eval) = graph.get_task(&eval_id) else {
-        // Missing evaluation execution evidence is not a resolved lifecycle.
-        // Retain the source until the graph contains a completed evaluator job.
-        return false;
-    };
-    if eval.status != worksgood::graph::Status::Done {
+    if task.graph_save_completion_disposition().is_none() {
         return false;
     }
     let branch = match branch {
@@ -1343,10 +1328,7 @@ fn task_state_key(
         .map(|task| format!("{:?}", task.status));
     let passed = graph
         .get_task(task_id)
-        .is_some_and(|task| task.status == worksgood::graph::Status::Done)
-        && graph
-            .get_task(&format!(".evaluate-{task_id}"))
-            .is_some_and(|task| task.status == worksgood::graph::Status::Done);
+        .is_some_and(|task| task.graph_save_completion_disposition().is_some());
     (task_status, eval_status, passed)
 }
 
@@ -2489,6 +2471,47 @@ mod tests {
             .unwrap();
     }
 
+    fn mark_graph_saved(task: &mut worksgood::graph::Task) {
+        use worksgood::graph::{CompletionDisposition, Status};
+        use worksgood::lifecycle::{ActorKind, LifecycleEvent, LifecycleEventProjection};
+        let receipt = format!("wgcid:v2:blake3:{:064}", 1);
+        task.completion_disposition = Some(CompletionDisposition::Landed);
+        task.completion_receipt = Some(receipt.clone());
+        task.lifecycle.audit.push(LifecycleEvent {
+            schema_version: 2,
+            event_id: format!("graph-save:{}", task.id),
+            idempotency_key: format!("graph-save:{}", task.id),
+            task_id: task.id.clone(),
+            task_revision: 1,
+            generation: 0,
+            event_kind: "graph-save-committed".into(),
+            old_state: Status::InProgress,
+            new_state: Status::Done,
+            actor_kind: ActorKind::Reconciler,
+            actor_id: "test".into(),
+            attempt_id: None,
+            fence: 0,
+            reason_code: "test-fixture".into(),
+            evidence_refs: vec![receipt],
+            occurred_at: "2024-01-01T00:00:00Z".into(),
+            committed_at: "2024-01-01T00:00:00Z".into(),
+            projection: LifecycleEventProjection {
+                status: Status::Done,
+                generation: 0,
+                revision: 1,
+                fence: 0,
+                attempt_sequence: 0,
+                current_attempt: None,
+                pi_process_epoch: 0,
+                pi_process_identity_digest: String::new(),
+                pi_continuation_epoch: 0,
+                pi_continuation: None,
+                pi_terminal_reservation: None,
+                reopen_intent: None,
+            },
+        });
+    }
+
     /// Write a graph file with one task at the given status. Used by sweep tests.
     fn write_graph_with_task_and_eval(
         wg_dir: &Path,
@@ -2498,12 +2521,16 @@ mod tests {
     ) {
         use worksgood::graph::{Node, Task, WorkGraph};
         let mut graph = WorkGraph::new();
-        graph.add_node(Node::Task(Task {
+        let mut source = Task {
             id: task_id.to_string(),
             title: "test".to_string(),
             status,
             ..Task::default()
-        }));
+        };
+        if status == worksgood::graph::Status::Done {
+            mark_graph_saved(&mut source);
+        }
+        graph.add_node(Node::Task(source));
         if let Some(es) = eval_status {
             graph.add_node(Node::Task(Task {
                 id: format!(".evaluate-{}", task_id),
@@ -3036,12 +3063,15 @@ mod tests {
     fn write_graph_with_task(wg_dir: &Path, task_id: &str, status: worksgood::graph::Status) {
         use worksgood::graph::{Node, Task, WorkGraph};
         let mut graph = WorkGraph::new();
-        let task = Task {
+        let mut task = Task {
             id: task_id.to_string(),
             title: "test".to_string(),
             status,
             ..Task::default()
         };
+        if status == worksgood::graph::Status::Done {
+            mark_graph_saved(&mut task);
+        }
         graph.add_node(Node::Task(task));
         let graph_path = wg_dir.join("graph.jsonl");
         worksgood::parser::save_graph(&graph, &graph_path).unwrap();

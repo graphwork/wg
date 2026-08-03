@@ -154,7 +154,9 @@ fn build_blocking_tree(
                     remote_task_id,
                     dir,
                 );
-                if remote.status != Status::Done {
+                if !worksgood::query::dependency_disposition(blocker_id, &task.id, graph, Some(dir))
+                    .is_satisfied()
+                {
                     let child = tree.nodes.len();
                     tree.nodes.push(BlockingNode {
                         id: blocker_id.clone(),
@@ -209,10 +211,10 @@ fn collect_root_blockers(graph: &WorkGraph, tree: &BlockingTree, roots: &mut Has
             roots.insert(node.id.clone());
         } else if graph
             .get_task(&node.id)
-            .is_some_and(|task| !task.status.is_dep_satisfied())
-            || graph
-                .get_archived_boundary(&node.id)
-                .is_some_and(|boundary| boundary.status != Status::Done)
+            .is_some_and(|task| worksgood::query::verify_dependency_graph_save(task).is_err())
+            || graph.get_archived_boundary(&node.id).is_some()
+            || (graph.get_task(&node.id).is_none()
+                && graph.get_archived_boundary(&node.id).is_none())
         {
             roots.insert(node.id.clone());
         }
@@ -669,7 +671,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_blocking_tree_excludes_done() {
+    fn test_build_blocking_tree_includes_raw_done_without_graph_save() {
         let mut graph = WorkGraph::new();
 
         let mut blocker = make_task("blocker", "Blocker");
@@ -686,7 +688,8 @@ mod tests {
         let tree = build_blocking_tree(&graph, "blocked", &mut visited, dir);
 
         assert_eq!(tree.nodes[tree.root].id, "blocked");
-        assert!(tree.nodes[tree.root].children.is_empty()); // Done blocker excluded
+        assert_eq!(tree.nodes[tree.root].children.len(), 1);
+        assert_eq!(tree.nodes[tree.nodes[tree.root].children[0]].id, "blocker");
     }
 
     #[test]
@@ -777,8 +780,8 @@ mod tests {
 
         let dir = Path::new("/tmp");
 
-        // blocked task is ready because blocker is done
-        assert!(is_task_ready(&graph, &blocked, dir));
+        // Raw Done is not completion authority without a GraphSave receipt.
+        assert!(!is_task_ready(&graph, &blocked, dir));
 
         // Now test with an open blocker
         let mut graph2 = WorkGraph::new();
