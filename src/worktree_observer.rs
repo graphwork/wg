@@ -361,6 +361,19 @@ struct ExcludedSignature {
     signature: String,
 }
 
+/// Stable candidate view handed to the WorkSave adapter after terminal
+/// reconciliation. It contains digests and paths, never file bytes; the Git
+/// private-index capture re-reads the exact paths while the writer is proven
+/// quiescent and confirms this manifest again before committing the receipt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkSaveManifest {
+    pub manifest_digest: String,
+    pub content_seq: u64,
+    pub policy_digest: String,
+    pub entries: Vec<ManifestEntry>,
+    pub excluded_paths: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct ManifestSnapshot {
     digest: String,
@@ -779,6 +792,98 @@ impl WorktreeObserver {
     }
     pub fn storage(&self) -> &Path {
         &self.storage
+    }
+
+    /// Reconcile the final writer-visible bytes, switch the observer into
+    /// preservation mode, and prove a second scan is unchanged. Callers must
+    /// already possess an exact process/group/pipe quiescence receipt; this
+    /// method deliberately proves only the filesystem/observer half.
+    pub fn prepare_work_save_at(
+        &mut self,
+        expected_manifest_digest: Option<&str>,
+        now: i64,
+    ) -> Result<WorkSaveManifest> {
+        match self.reconcile_at(ReconcileSource::Manual, now)? {
+            ReconcileOutcome::Held(reason) => bail!("work-save observer held: {reason}"),
+            ReconcileOutcome::LateMutation => {
+                bail!("work-save observer already observed a late mutation")
+            }
+            ReconcileOutcome::StaleCallback => {
+                unreachable!("direct reconciliation has no callback")
+            }
+            ReconcileOutcome::Unchanged | ReconcileOutcome::Advanced(_) => {}
+        }
+        if let Some(expected) = expected_manifest_digest
+            && expected != self.state.projection.manifest_digest
+        {
+            bail!(
+                "work-save observer manifest mismatch: quiescence cited {expected}, final scan found {}",
+                self.state.projection.manifest_digest
+            );
+        }
+        if self.state.projection.quarantine_required
+            || self.state.projection.classification_hold.is_some()
+        {
+            bail!("work-save observer is quarantined or classification-held");
+        }
+        self.enter_preservation_at(true, now)?;
+        match self.reconcile_at(ReconcileSource::Manual, now)? {
+            ReconcileOutcome::Unchanged => self.work_save_manifest(),
+            ReconcileOutcome::Held(reason) => bail!("work-save stability scan held: {reason}"),
+            ReconcileOutcome::LateMutation | ReconcileOutcome::Advanced(_) => {
+                bail!("work-save manifest changed after preservation began")
+            }
+            ReconcileOutcome::StaleCallback => {
+                unreachable!("direct reconciliation has no callback")
+            }
+        }
+    }
+
+    /// Confirm that capture itself did not race a late writer. A mismatch is
+    /// durably retained by the observer as quarantine evidence.
+    pub fn confirm_work_save_at(&mut self, expected: &WorkSaveManifest, now: i64) -> Result<()> {
+        match self.reconcile_at(ReconcileSource::Manual, now)? {
+            ReconcileOutcome::Unchanged
+                if self.state.projection.manifest_digest == expected.manifest_digest
+                    && self.state.projection.content_seq == expected.content_seq =>
+            {
+                Ok(())
+            }
+            ReconcileOutcome::Held(reason) => bail!("work-save confirmation held: {reason}"),
+            _ => bail!("late worktree mutation detected during WorkSave capture"),
+        }
+    }
+
+    fn work_save_manifest(&self) -> Result<WorkSaveManifest> {
+        if self.state.projection.quarantine_required
+            || self.state.projection.classification_hold.is_some()
+            || self.state.current_manifest.digest != self.state.projection.manifest_digest
+        {
+            bail!("observer cannot export an unstable or quarantined WorkSave manifest");
+        }
+        let mut entries = self
+            .state
+            .current_manifest
+            .entries
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        entries.sort_by(|a, b| a.path.as_bytes().cmp(b.path.as_bytes()));
+        let mut excluded_paths = self
+            .state
+            .current_manifest
+            .excluded
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        excluded_paths.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+        Ok(WorkSaveManifest {
+            manifest_digest: self.state.projection.manifest_digest.clone(),
+            content_seq: self.state.projection.content_seq,
+            policy_digest: self.state.projection.policy_digest.clone(),
+            entries,
+            excluded_paths,
+        })
     }
 
     pub fn rebind_process_epoch_from_watchdog_at(

@@ -502,6 +502,32 @@ fn stored_worker_response(
     }
 }
 
+fn replay_pending_completion(
+    dir: &Path,
+    request: &WorkerRequestEnvelope,
+) -> Result<Option<worksgood::save_transaction::SaveTransactionState>> {
+    if let Some(transaction) =
+        worksgood::worker_control::request_save_transaction(dir, &request.request_id)?
+    {
+        return Ok(Some(transaction));
+    }
+    if !matches!(request.operation, WorkerOperation::DoneHandoff { .. }) {
+        return Ok(None);
+    }
+
+    // Crash cut: request intent was durable but Prepared was not. The exact
+    // live capability and full operation CID have already replay-matched, so
+    // it is safe to finish only the missing write-ahead edge.
+    let binding = validate_worker_capability(dir, request)?;
+    worksgood::worker_control::prepare_done_transaction(
+        dir,
+        &binding,
+        &request.request_id,
+        &request.operation,
+    )
+    .map(Some)
+}
+
 fn audit_worker_request(
     dir: &Path,
     request: &WorkerRequestEnvelope,
@@ -567,8 +593,19 @@ fn validate_worker_capability(
         anyhow::bail!("worker_control.operation_not_allowed");
     }
     let current_graph_id = worksgood::worker_control::load_or_create_graph_identity(dir)?;
-    if binding.graph_id != current_graph_id {
+    if binding.graph_id != current_graph_id || binding.save_source.graph_id != current_graph_id {
         anyhow::bail!("worker_control.graph_identity_mismatch");
+    }
+    if binding.save_source.task_id != binding.task_id
+        || binding.save_source.generation != binding.generation
+        || binding.save_source.attempt_id != binding.attempt_id
+        || binding.save_source.attempt_fence != binding.fence
+        || binding.save_source.worktree_lease_epoch != binding.lease_epoch
+    {
+        anyhow::bail!("worker_control.capability_source_mismatch");
+    }
+    if matches!(request.operation, WorkerOperation::DoneHandoff { .. }) {
+        worksgood::worker_control::verify_bound_worktree(&binding)?;
     }
     let graph = load_graph(graph_path(dir))?;
     let task = graph
@@ -731,31 +768,8 @@ fn execute_worker_operation(
                 crate::commands::wait::run(dir, &binding.task_id, &until, checkpoint.as_deref())?;
                 Ok(serde_json::json!({"waiting": true}))
             }
-            WorkerOperation::DoneHandoff {
-                converged,
-                full_smoke,
-            } => {
-                let registry = AgentRegistry::load(dir)?;
-                let agent = registry
-                    .get_agent(&binding.agent_id)
-                    .ok_or_else(|| anyhow::anyhow!("worker_control.agent_registry_missing"))?;
-                if agent.task_id != binding.task_id {
-                    anyhow::bail!("worker_control.worktree_task_mismatch");
-                }
-                let worktree_path = agent
-                    .worktree_path
-                    .as_deref()
-                    .map(std::path::Path::new)
-                    .ok_or_else(|| anyhow::anyhow!("worker_control.worktree_missing"))?;
-                crate::commands::done::run_from_worker_control(
-                    dir,
-                    &binding.task_id,
-                    converged,
-                    full_smoke,
-                    worktree_path,
-                    &binding.agent_id,
-                )?;
-                Ok(serde_json::json!({"handoff": "done"}))
+            WorkerOperation::DoneHandoff { .. } => {
+                anyhow::bail!("worker_control.done_requires_save_transaction")
             }
             WorkerOperation::FailHandoff { reason, class } => {
                 let failure_class = class
@@ -883,7 +897,7 @@ fn handle_worker_request(
         dir,
         &request.request_id,
         &request.capability,
-        request.operation.kind(),
+        &request.operation,
     ) {
         Ok(Some(worksgood::worker_control::BeginRequest::Completed(response))) => {
             let task_id = worksgood::worker_control::lookup_capability(dir, &request.capability)
@@ -900,6 +914,20 @@ fn handle_worker_request(
             return worker_response_from_stored(response);
         }
         Ok(Some(worksgood::worker_control::BeginRequest::Pending)) => {
+            if let Ok(Some(transaction)) = replay_pending_completion(dir, &request) {
+                audit_worker_request(
+                    dir,
+                    &request,
+                    Some(&transaction.source.task_id),
+                    "replayed",
+                    "pending completion intent replayed from SaveTransaction",
+                    logger,
+                );
+                return IpcResponse::success(serde_json::json!({
+                    "handoff": "accepted",
+                    "save_transaction": transaction,
+                }));
+            }
             let reason = "worker_control.request_pending_reconciliation: mutation may already be durable; refusing duplicate execution";
             audit_worker_request(dir, &request, None, "held", reason, logger);
             return IpcResponse::error(reason);
@@ -923,7 +951,7 @@ fn handle_worker_request(
         dir,
         &request.request_id,
         &request.capability,
-        request.operation.kind(),
+        &request.operation,
     ) {
         Ok(begin) => begin,
         Err(error) => {
@@ -951,6 +979,20 @@ fn handle_worker_request(
             return worker_response_from_stored(response);
         }
         worksgood::worker_control::BeginRequest::Pending => {
+            if let Ok(Some(transaction)) = replay_pending_completion(dir, &request) {
+                audit_worker_request(
+                    dir,
+                    &request,
+                    Some(&binding.task_id),
+                    "replayed",
+                    "pending completion intent replayed from SaveTransaction",
+                    logger,
+                );
+                return IpcResponse::success(serde_json::json!({
+                    "handoff": "accepted",
+                    "save_transaction": transaction,
+                }));
+            }
             let reason = "worker_control.request_pending_reconciliation: mutation may already be durable; refusing duplicate execution";
             audit_worker_request(
                 dir,
@@ -964,9 +1006,65 @@ fn handle_worker_request(
         }
         worksgood::worker_control::BeginRequest::Fresh => {}
     }
-    let response = super::with_worker_control_operation(|| {
-        execute_worker_operation(dir, &binding, request.operation.clone())
-    });
+
+    // Completion intent is write-ahead: the broker durably prepares the exact
+    // source tuple and request bytes before invoking any legacy mechanics.
+    // A response loss from this point is replayed as the same transaction,
+    // never by re-running Done under a fresh request id.
+    let prepared = if matches!(request.operation, WorkerOperation::DoneHandoff { .. }) {
+        match worksgood::worker_control::prepare_done_transaction(
+            dir,
+            &binding,
+            &request.request_id,
+            &request.operation,
+        ) {
+            Ok(state) => Some(state),
+            Err(error) => {
+                let response = IpcResponse::error(&format!(
+                    "worker_control.save_intent_not_prepared: {error}"
+                ));
+                let _ = worksgood::worker_control::complete_request(
+                    dir,
+                    &request.request_id,
+                    stored_worker_response(&response),
+                );
+                audit_worker_request(
+                    dir,
+                    &request,
+                    Some(&binding.task_id),
+                    "rejected",
+                    response.error.as_deref().unwrap_or("save intent refused"),
+                    logger,
+                );
+                return response;
+            }
+        }
+    } else {
+        None
+    };
+    let mut response = if prepared.is_some() {
+        // The broker's authority ends at the durable intent. Convergence and
+        // the phase-specific adapters replay the transaction; calling legacy
+        // Done here would let daemon-thread ambient state bypass WorkSave and
+        // GraphSave and would reintroduce false dependency satisfaction.
+        IpcResponse::success(serde_json::json!({"handoff": "accepted"}))
+    } else {
+        super::with_worker_control_operation(|| {
+            execute_worker_operation(dir, &binding, request.operation.clone())
+        })
+    };
+    if let Some(transaction) = prepared {
+        let mut data = response
+            .data
+            .take()
+            .and_then(|value| value.as_object().cloned())
+            .unwrap_or_default();
+        data.insert(
+            "save_transaction".to_string(),
+            serde_json::to_value(transaction).unwrap_or(serde_json::Value::Null),
+        );
+        response.data = Some(serde_json::Value::Object(data));
+    }
     if let Err(error) = worksgood::worker_control::complete_request(
         dir,
         &request.request_id,
@@ -3078,6 +3176,192 @@ mod tests {
         assert_eq!(first.data, second.data);
         let audit = fs::read_to_string(worksgood::worker_control::audit_path(temp.path())).unwrap();
         assert!(audit.contains("\"outcome\":\"replayed\""));
+    }
+
+    #[test]
+    fn fresh_done_handoff_writes_ahead_without_calling_legacy_done() {
+        let project = TempDir::new().unwrap();
+        let dir = project.path().join(".wg");
+        write_owned_task(&dir, 1, 2);
+        let worktree = project.path().join(".wg-worktrees/agent-7");
+        fs::create_dir_all(&worktree).unwrap();
+        fs::write(worktree.join(".git"), "gitdir: test\n").unwrap();
+        let (token, _) = worksgood::worker_control::mint_attempt_capability(
+            &dir,
+            "task-a",
+            1,
+            "attempt-1-1",
+            2,
+            2,
+            "agent-7",
+        )
+        .unwrap();
+        let logger = DaemonLogger::open(&dir).unwrap();
+        let response = handle_worker_request(
+            &dir,
+            WorkerRequestEnvelope {
+                protocol: WORKER_CONTROL_PROTOCOL.to_string(),
+                request_id: "intent-fresh".to_string(),
+                capability: token,
+                operation: WorkerOperation::DoneHandoff {
+                    converged: false,
+                    full_smoke: false,
+                },
+            },
+            &logger,
+        );
+        assert!(response.ok, "{:?}", response.error);
+        assert_eq!(
+            response
+                .data
+                .as_ref()
+                .and_then(|data| data.pointer("/save_transaction/phase"))
+                .and_then(serde_json::Value::as_str),
+            Some("prepared")
+        );
+        let graph = load_graph(dir.join("graph.jsonl")).unwrap();
+        assert_eq!(graph.get_task("task-a").unwrap().status, Status::InProgress);
+    }
+
+    #[test]
+    fn pending_done_intent_finishes_missing_prepared_edge() {
+        let project = TempDir::new().unwrap();
+        let dir = project.path().join(".wg");
+        write_owned_task(&dir, 1, 2);
+        let worktree = project.path().join(".wg-worktrees/agent-7");
+        fs::create_dir_all(&worktree).unwrap();
+        fs::write(worktree.join(".git"), "gitdir: test\n").unwrap();
+        let (token, _) = worksgood::worker_control::mint_attempt_capability(
+            &dir,
+            "task-a",
+            1,
+            "attempt-1-1",
+            2,
+            2,
+            "agent-7",
+        )
+        .unwrap();
+        let operation = WorkerOperation::DoneHandoff {
+            converged: false,
+            full_smoke: false,
+        };
+        worksgood::worker_control::begin_request(&dir, "intent-before-prepare", &token, &operation)
+            .unwrap();
+        let logger = DaemonLogger::open(&dir).unwrap();
+        let response = handle_worker_request(
+            &dir,
+            WorkerRequestEnvelope {
+                protocol: WORKER_CONTROL_PROTOCOL.to_string(),
+                request_id: "intent-before-prepare".to_string(),
+                capability: token,
+                operation,
+            },
+            &logger,
+        );
+        assert!(response.ok, "{:?}", response.error);
+        assert_eq!(
+            response
+                .data
+                .as_ref()
+                .and_then(|data| data.pointer("/save_transaction/phase"))
+                .and_then(serde_json::Value::as_str),
+            Some("prepared")
+        );
+    }
+
+    #[test]
+    fn pending_done_response_replays_the_prepared_save_transaction() {
+        let project = TempDir::new().unwrap();
+        let dir = project.path().join(".wg");
+        write_owned_task(&dir, 1, 2);
+        let worktree = project.path().join(".wg-worktrees/agent-7");
+        fs::create_dir_all(&worktree).unwrap();
+        fs::write(worktree.join(".git"), "gitdir: test\n").unwrap();
+        let (token, binding) = worksgood::worker_control::mint_attempt_capability(
+            &dir,
+            "task-a",
+            1,
+            "attempt-1-1",
+            2,
+            2,
+            "agent-7",
+        )
+        .unwrap();
+        let operation = WorkerOperation::DoneHandoff {
+            converged: false,
+            full_smoke: false,
+        };
+        worksgood::worker_control::begin_request(&dir, "intent-stable", &token, &operation)
+            .unwrap();
+        let prepared = worksgood::worker_control::prepare_done_transaction(
+            &dir,
+            &binding,
+            "intent-stable",
+            &operation,
+        )
+        .unwrap();
+        assert_eq!(
+            prepared.phase,
+            worksgood::save_transaction::SavePhase::Prepared
+        );
+        // Simulate the crash cut after the authoritative transaction frame but
+        // before the request journal's rebuildable tx pointer was saved.
+        let registry_path = dir.join("service/worker-capabilities.json");
+        let mut registry: serde_json::Value =
+            serde_json::from_slice(&fs::read(&registry_path).unwrap()).unwrap();
+        registry
+            .pointer_mut("/requests/intent-stable")
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .remove("save_transaction_id");
+        fs::write(
+            &registry_path,
+            serde_json::to_vec_pretty(&registry).unwrap(),
+        )
+        .unwrap();
+
+        let logger = DaemonLogger::open(&dir).unwrap();
+        let replay = handle_worker_request(
+            &dir,
+            WorkerRequestEnvelope {
+                protocol: WORKER_CONTROL_PROTOCOL.to_string(),
+                request_id: "intent-stable".to_string(),
+                capability: token.clone(),
+                operation: operation.clone(),
+            },
+            &logger,
+        );
+        assert!(replay.ok, "{:?}", replay.error);
+        assert_eq!(
+            replay
+                .data
+                .as_ref()
+                .and_then(|data| data.pointer("/save_transaction/transaction_id"))
+                .and_then(serde_json::Value::as_str),
+            Some(prepared.transaction_id.as_str())
+        );
+
+        let conflict = handle_worker_request(
+            &dir,
+            WorkerRequestEnvelope {
+                protocol: WORKER_CONTROL_PROTOCOL.to_string(),
+                request_id: "intent-stable".to_string(),
+                capability: token,
+                operation: WorkerOperation::DoneHandoff {
+                    converged: true,
+                    full_smoke: false,
+                },
+            },
+            &logger,
+        );
+        assert!(!conflict.ok);
+        assert!(
+            conflict
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("request_id_conflict"))
+        );
     }
 
     #[test]
