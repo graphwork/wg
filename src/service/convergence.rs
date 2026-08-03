@@ -13,8 +13,11 @@ use std::path::{Path, PathBuf};
 
 use crate::config::ConvergenceConfig;
 use crate::finalization::{FinalizationPhase, FinalizationStore, FinalizationTransaction};
-use crate::graph::{Status, Task};
-use crate::parser::load_graph;
+use crate::graph::{FailureReason, LogEntry, Status, Task};
+use crate::lifecycle::{
+    ActorKind, LifecycleActor, TransitionKind, TransitionRequest, apply_transition,
+};
+use crate::parser::{load_graph, modify_graph};
 use crate::save_transaction::{SaveFact, SavePhase, SaveTransactionState, SaveTransitionRequest};
 use crate::service::{AgentStatus, ProviderHealth};
 
@@ -24,6 +27,8 @@ pub const CONVERGENCE_SCHEMA_VERSION: u32 = 1;
 /// transition meaning must be loud to model/replay consumers.
 pub const EXITED_WORKER_FINISH_REDUCER_VERSION: u32 = 1;
 pub const SAVE_TRANSACTION_REPLAY_VERSION: u32 = 1;
+pub const FAILED_PREREQUISITE_CONVERGENCE_VERSION: u32 = 1;
+const MAX_AUTOMATIC_FAILED_PREREQUISITE_RETRIES: u8 = 1;
 const STATE_FILE: &str = "convergence-state.json";
 const EXITED_WORKER_CONVERGENCE_DELAY_SECS: i64 = 5;
 
@@ -129,6 +134,20 @@ pub struct SaveReplayDecision {
     pub recovery_rank: usize,
     pub action: SaveReplayAction,
     pub deadline_unix: Option<i64>,
+}
+
+/// Production projection of the pure planner's failed-prerequisite effect.
+/// `evidence_ids` are the exact opaque WIP/session/candidate identities supplied
+/// to the reducer and then copied into the lifecycle audit event.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FailedPrerequisiteConvergence {
+    pub reducer_version: u32,
+    pub descendant_task_id: String,
+    pub prerequisite_task_id: String,
+    pub class: crate::service::planner::FailedPrerequisiteClass,
+    pub action: crate::service::planner::ActionKind,
+    pub deadline_unix: Option<i64>,
+    pub evidence_ids: Vec<String>,
 }
 
 /// Pure replay plan. The daemon never changes disposition or manufactures an
@@ -907,6 +926,388 @@ fn exact_save_transactions_by_task(
     values
 }
 
+fn planner_id(value: impl AsRef<[u8]>) -> crate::service::planner::OpaqueId {
+    let bytes = value.as_ref();
+    let candidate = String::from_utf8_lossy(bytes).to_string();
+    crate::service::planner::OpaqueId::new(candidate).unwrap_or_else(|_| {
+        crate::service::planner::OpaqueId::new(digest(bytes)).expect("digest is a planner id")
+    })
+}
+
+fn evidence_slot(value: Option<String>) -> crate::service::planner::EvidenceSlot {
+    value.map_or(crate::service::planner::EvidenceSlot::Absent, |value| {
+        crate::service::planner::EvidenceSlot::Present {
+            evidence_id: planner_id(value),
+        }
+    })
+}
+
+fn semantic_rejection(task: &Task, transaction: Option<&FinalizationTransaction>) -> bool {
+    task.lifecycle.audit.iter().any(|event| {
+        event.generation == task.lifecycle.generation && event.event_kind == "acceptance-rejected"
+    }) || transaction.is_some_and(|tx| {
+        tx.validation
+            .as_ref()
+            .is_some_and(|validation| !validation.passed)
+            || tx
+                .retained_reason
+                .as_deref()
+                .is_some_and(|reason| reason.starts_with("acceptance.rejected:"))
+    })
+}
+
+fn automatic_prerequisite_retries(task: &Task) -> u8 {
+    task.lifecycle
+        .audit
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.reason_code.as_str(),
+                "nonsemantic_failed_prerequisite_retry"
+                    | "nonsemantic_failed_prerequisite_finish_retry"
+            )
+        })
+        .count()
+        .min(u8::MAX as usize) as u8
+}
+
+/// Convert exact graph/finalization evidence to the pure v2 planner and apply
+/// at most one idempotent source retry or reconciliation issue per descendant.
+/// A semantic rejection is only recorded as an explicit repair wait. Durable
+/// candidate/session/worktree identities are copied into lifecycle evidence;
+/// no source bytes or arbitrary provider text enter the planner wire.
+pub fn converge_failed_prerequisites(
+    dir: &Path,
+    now: DateTime<Utc>,
+) -> Result<Vec<FailedPrerequisiteConvergence>> {
+    let graph_path = dir.join("graph.jsonl");
+    let graph = load_graph(&graph_path)?;
+    let graph_id = planner_id(crate::worker_control::load_or_create_graph_identity(dir)?);
+    let transactions = FinalizationStore::open(dir)
+        .and_then(|store| store.list())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|transaction| (transaction.task_id.clone(), transaction))
+        .collect::<BTreeMap<_, _>>();
+    let save_transactions = exact_save_transactions_by_task(dir, &graph);
+    let mut observations = Vec::new();
+
+    let mut descendants = graph
+        .tasks()
+        .filter(|task| {
+            matches!(
+                task.status,
+                Status::Open | Status::Blocked | Status::Incomplete
+            )
+        })
+        .collect::<Vec<_>>();
+    descendants.sort_by(|a, b| a.id.cmp(&b.id));
+    for descendant in descendants {
+        let mut failed = descendant
+            .after
+            .iter()
+            .filter_map(|id| graph.get_task(id))
+            .filter(|task| task.status == Status::Failed)
+            .collect::<Vec<_>>();
+        failed.sort_by(|a, b| a.id.cmp(&b.id));
+        let Some(source) = failed.first().copied() else {
+            continue;
+        };
+        let transaction = transactions.get(&source.id);
+        let save = save_transactions.get(&source.id);
+        let semantic = semantic_rejection(source, transaction);
+        let has_progress = source
+            .token_usage
+            .as_ref()
+            .is_some_and(|usage| usage.total_tokens() > 0);
+        let has_durable_candidate = transaction.and_then(|tx| tx.candidate.as_ref()).is_some();
+        let provider_failure = source.failure_signal.as_ref().is_some_and(|signal| {
+            matches!(
+                signal.reason,
+                FailureReason::ProviderUnavailable
+                    | FailureReason::ProviderOverloaded
+                    | FailureReason::Transient5xx
+                    | FailureReason::RateLimit
+            )
+        });
+        let class = if semantic {
+            crate::service::planner::FailedPrerequisiteClass::SemanticValidationRejected
+        } else if provider_failure && has_durable_candidate {
+            crate::service::planner::FailedPrerequisiteClass::ProviderUnavailableAfterDurableCandidate
+        } else if source.lifecycle.current_attempt.is_none() {
+            crate::service::planner::FailedPrerequisiteClass::OrphanBeforeSpawn
+        } else if has_progress {
+            crate::service::planner::FailedPrerequisiteClass::SourceExecutionWithProgress
+        } else {
+            crate::service::planner::FailedPrerequisiteClass::SourceExecutionNoProgress
+        };
+        let source_key = crate::service::planner::TaskKey {
+            graph_id: graph_id.clone(),
+            task_id: planner_id(&source.id),
+            generation: source.lifecycle.generation,
+            attempt_id: planner_id(
+                source
+                    .lifecycle
+                    .current_attempt
+                    .as_ref()
+                    .map(|attempt| attempt.id.as_str())
+                    .unwrap_or("attempt-absent"),
+            ),
+            fence: source.lifecycle.fence,
+        };
+        let evidence = crate::service::planner::FailedPrerequisiteEvidence {
+            work_save: evidence_slot(save.and_then(|state| {
+                state
+                    .evidence_cids
+                    .get(&SavePhase::WorkSaved)
+                    .cloned()
+                    .or_else(|| state.evidence_cids.values().next().cloned())
+            })),
+            candidate: evidence_slot(
+                transaction
+                    .and_then(|tx| tx.candidate.as_ref())
+                    .map(|candidate| candidate.candidate_id.clone()),
+            ),
+            session: evidence_slot(source.session_id.clone()),
+            worktree: evidence_slot(
+                transaction
+                    .and_then(|tx| tx.candidate.as_ref())
+                    .map(|candidate| candidate.worktree_id.clone())
+                    .or_else(|| source.assigned.clone()),
+            ),
+        };
+        let automatic_retries = automatic_prerequisite_retries(source);
+        let failed_prerequisite = crate::service::planner::FailedPrerequisite {
+            source: source_key,
+            class,
+            evidence,
+            automatic_retries,
+            max_automatic_retries: MAX_AUTOMATIC_FAILED_PREREQUISITE_RETRIES,
+        };
+        let progress = digest(
+            serde_json::to_vec(&failed_prerequisite).expect("typed prerequisite serializes"),
+        );
+        let observation = crate::service::planner::ObservationEnvelope {
+            sequence: 1,
+            logical_time: now.timestamp().max(0) as u64,
+            observation: crate::service::planner::Observation::Task(Box::new(
+                crate::service::planner::TaskObservation {
+                    key: crate::service::planner::TaskKey {
+                        graph_id: graph_id.clone(),
+                        task_id: planner_id(&descendant.id),
+                        generation: descendant.lifecycle.generation,
+                        attempt_id: planner_id("blocked-before-attempt"),
+                        fence: descendant.lifecycle.fence,
+                    },
+                    progress_id: planner_id(progress),
+                    unfinished: true,
+                    owner: crate::service::planner::OwnerEvidence::None,
+                    runnable: None,
+                    external_wait: None,
+                    scheduled: None,
+                    incidents: BTreeSet::new(),
+                    failed_prerequisite: Some(failed_prerequisite),
+                },
+            )),
+        };
+        let state = crate::service::planner::PlannerState::new(graph_id.clone());
+        let step = crate::service::planner::plan(
+            &state,
+            &observation,
+            crate::service::planner::PlannerRuleset::Corrected,
+        );
+        let task_projection = step.state.tasks.values().next().expect("task projected");
+        let action = step.effects.first().map_or(
+            crate::service::planner::ActionKind::RecordNeedsReconciliation,
+            |effect| effect.action,
+        );
+        let evidence_ids = task_projection
+            .failed_prerequisite
+            .as_ref()
+            .into_iter()
+            .flat_map(|failed| {
+                [
+                    &failed.evidence.work_save,
+                    &failed.evidence.candidate,
+                    &failed.evidence.session,
+                    &failed.evidence.worktree,
+                ]
+            })
+            .filter_map(|slot| match slot {
+                crate::service::planner::EvidenceSlot::Present { evidence_id } => {
+                    Some(evidence_id.to_string())
+                }
+                crate::service::planner::EvidenceSlot::Absent => None,
+            })
+            .collect::<Vec<_>>();
+        observations.push(FailedPrerequisiteConvergence {
+            reducer_version: FAILED_PREREQUISITE_CONVERGENCE_VERSION,
+            descendant_task_id: descendant.id.clone(),
+            prerequisite_task_id: source.id.clone(),
+            class,
+            action: if class
+                == crate::service::planner::FailedPrerequisiteClass::SemanticValidationRejected
+            {
+                // The production record names the operator action while the
+                // pure task projection remains an external semantic wait.
+                crate::service::planner::ActionKind::RecordNeedsReconciliation
+            } else {
+                action
+            },
+            deadline_unix: (!semantic).then_some(now.timestamp()),
+            evidence_ids,
+        });
+    }
+    drop(graph);
+
+    for decision in &observations {
+        let evidence = decision.evidence_ids.clone();
+        let prerequisite = decision.prerequisite_task_id.clone();
+        let descendant = decision.descendant_task_id.clone();
+        match decision.action {
+            crate::service::planner::ActionKind::RetryFailedPrerequisite => {
+                modify_graph(&graph_path, |graph| {
+                    let Some(task) = graph.get_task_mut(&prerequisite) else {
+                        return false;
+                    };
+                    if task.status != Status::Failed
+                        || automatic_prerequisite_retries(task)
+                            >= MAX_AUTOMATIC_FAILED_PREREQUISITE_RETRIES
+                    {
+                        return false;
+                    }
+                    let mut request = TransitionRequest::new(
+                        TransitionKind::GenerationCreated,
+                        LifecycleActor {
+                            kind: ActorKind::Reconciler,
+                            id: "failed-prerequisite-convergence".into(),
+                        },
+                        "nonsemantic_failed_prerequisite_retry",
+                        format!(
+                            "failed-prerequisite-retry:{}:{}",
+                            task.id, task.lifecycle.generation
+                        ),
+                    );
+                    for item in &evidence {
+                        request.evidence_refs.push(item.clone());
+                    }
+                    if apply_transition(task, request).is_err() {
+                        return false;
+                    }
+                    task.assigned = None;
+                    task.started_at = None;
+                    task.failure_reason = None;
+                    task.failure_class = None;
+                    task.failure_signal = None;
+                    task.log.push(LogEntry {
+                        timestamp: now.to_rfc3339(),
+                        actor: Some("failed-prerequisite-convergence".into()),
+                        user: Some(crate::current_user()),
+                        message: format!(
+                            "Scheduled one bounded non-semantic retry because unfinished descendant '{}' depends on this failed source; exact WIP/session evidence retained",
+                            descendant
+                        ),
+                    });
+                    true
+                })?;
+            }
+            crate::service::planner::ActionKind::RecordNeedsReconciliation => {
+                modify_graph(&graph_path, |graph| {
+                    let Some(task) = graph.get_task_mut(&descendant) else {
+                        return false;
+                    };
+                    let semantic = decision.class
+                        == crate::service::planner::FailedPrerequisiteClass::SemanticValidationRejected;
+                    let issue_id = format!(
+                        "failed-prerequisite:{}:{}:{}",
+                        prerequisite,
+                        task.lifecycle.generation,
+                        if semantic { "semantic" } else { "reconcile" }
+                    );
+                    let mut request = TransitionRequest::new(
+                        TransitionKind::ReconciliationIssue {
+                            issue_id: issue_id.clone(),
+                        },
+                        LifecycleActor {
+                            kind: ActorKind::Reconciler,
+                            id: "failed-prerequisite-convergence".into(),
+                        },
+                        if semantic {
+                            "semantic_failed_prerequisite_terminal"
+                        } else {
+                            "failed_prerequisite_needs_reconciliation"
+                        },
+                        issue_id,
+                    );
+                    request.evidence_refs.push(prerequisite.clone());
+                    request.evidence_refs.extend(evidence.clone());
+                    apply_transition(task, request).is_ok()
+                })?;
+                if decision.class
+                    != crate::service::planner::FailedPrerequisiteClass::SemanticValidationRejected
+                {
+                    modify_graph(&graph_path, |graph| {
+                        let Some(task) = graph.get_task_mut(&prerequisite) else {
+                            return false;
+                        };
+                        let issue_id = format!(
+                            "failed-prerequisite-source-hold:{}:{}",
+                            task.id, task.lifecycle.generation
+                        );
+                        let mut request = TransitionRequest::new(
+                            TransitionKind::ReconciliationIssue {
+                                issue_id: issue_id.clone(),
+                            },
+                            LifecycleActor {
+                                kind: ActorKind::Reconciler,
+                                id: "failed-prerequisite-convergence".into(),
+                            },
+                            "failed_prerequisite_needs_reconciliation",
+                            issue_id,
+                        );
+                        request.evidence_refs.extend(evidence.clone());
+                        apply_transition(task, request).is_ok()
+                    })?;
+                }
+            }
+            // Authorize exactly one existing transaction replay and record
+            // that finite budget before the coordinator invokes the finish
+            // adapter. The exact WIP/session/candidate IDs stay in the audit.
+            crate::service::planner::ActionKind::ReplanFinish => {
+                modify_graph(&graph_path, |graph| {
+                    let Some(task) = graph.get_task_mut(&prerequisite) else {
+                        return false;
+                    };
+                    if automatic_prerequisite_retries(task)
+                        >= MAX_AUTOMATIC_FAILED_PREREQUISITE_RETRIES
+                    {
+                        return false;
+                    }
+                    let issue_id = format!(
+                        "failed-prerequisite-finish-retry:{}:{}",
+                        task.id, task.lifecycle.generation
+                    );
+                    let mut request = TransitionRequest::new(
+                        TransitionKind::ReconciliationIssue {
+                            issue_id: issue_id.clone(),
+                        },
+                        LifecycleActor {
+                            kind: ActorKind::Reconciler,
+                            id: "failed-prerequisite-convergence".into(),
+                        },
+                        "nonsemantic_failed_prerequisite_finish_retry",
+                        issue_id,
+                    );
+                    request.evidence_refs.extend(evidence.clone());
+                    apply_transition(task, request).is_ok()
+                })?;
+            }
+            _ => {}
+        }
+    }
+    Ok(observations)
+}
+
 /// Refresh the durable read model from authoritative graph/finalization/route
 /// evidence. This performs no graph mutation.
 pub fn reconcile_dir(
@@ -1063,6 +1464,35 @@ fn classify_stage_full(
     save_transaction: Option<&SaveTransactionState>,
     dispatchable: bool,
 ) -> (ConvergenceStage, BlockerClass, Option<String>) {
+    if let Some(issue) = task.lifecycle.audit.iter().rev().find(|event| {
+        event.generation == task.lifecycle.generation
+            && matches!(
+                event.reason_code.as_str(),
+                "failed_prerequisite_needs_reconciliation"
+                    | "semantic_failed_prerequisite_terminal"
+            )
+    }) {
+        let prerequisite = issue
+            .evidence_refs
+            .first()
+            .map(String::as_str)
+            .unwrap_or("unknown");
+        return (
+            ConvergenceStage::NeedsHuman,
+            BlockerClass::NeedsHuman,
+            Some(
+                if issue.reason_code == "semantic_failed_prerequisite_terminal" {
+                    format!(
+                        "semantic rejection of prerequisite '{prerequisite}' is terminal; repair/waive it or create an explicit new generation"
+                    )
+                } else {
+                    format!(
+                        "prerequisite '{prerequisite}' exhausted bounded automatic convergence; inspect retained evidence and run `wg retry {prerequisite}` or abandon/reconstruct it"
+                    )
+                },
+            ),
+        );
+    }
     if let Some(save) = save_transaction {
         let (stage, blocker, needs_human) = match save.phase {
             SavePhase::Absent
@@ -1415,7 +1845,12 @@ fn parse_time(value: &str) -> Option<DateTime<Utc>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::{CompletionContract, Task};
+    use crate::graph::{CompletionContract, Node, Task, WorkGraph};
+    use crate::lifecycle::{
+        ActorKind as LifecycleActorKind, AttemptDisposition, AttemptRef, LifecycleEvent,
+        LifecycleEventProjection,
+    };
+    use crate::parser::save_graph;
     use tempfile::TempDir;
 
     fn policy() -> ConvergencePolicy {
@@ -1667,6 +2102,157 @@ mod tests {
             .unwrap()
             .clone();
         assert_eq!(task.status, Status::InProgress);
+    }
+
+    fn failed_source(id: &str) -> Task {
+        let mut source = task(id);
+        source.status = Status::Failed;
+        source.lifecycle.generation = 1;
+        source.lifecycle.fence = 2;
+        source.lifecycle.current_attempt = Some(AttemptRef {
+            id: "attempt-1-1".into(),
+            generation: 1,
+            fence: 2,
+            actor_id: "agent-1".into(),
+            disposition: Some(AttemptDisposition::Failed),
+        });
+        source.retry_count = 1;
+        source.session_id = Some("session-preserved".into());
+        source
+    }
+
+    fn semantic_rejection_event(task: &Task, now: DateTime<Utc>) -> LifecycleEvent {
+        LifecycleEvent {
+            schema_version: 1,
+            event_id: "semantic-reject-event".into(),
+            idempotency_key: "semantic-reject-event".into(),
+            task_id: task.id.clone(),
+            task_revision: 1,
+            generation: task.lifecycle.generation,
+            event_kind: "acceptance-rejected".into(),
+            old_state: Status::PendingEval,
+            new_state: Status::Failed,
+            actor_kind: LifecycleActorKind::AcceptanceController,
+            actor_id: "validation".into(),
+            attempt_id: task
+                .lifecycle
+                .current_attempt
+                .as_ref()
+                .map(|attempt| attempt.id.clone()),
+            fence: task.lifecycle.fence,
+            reason_code: "semantic_validation_rejected".into(),
+            evidence_refs: vec!["semantic-report-1".into()],
+            occurred_at: now.to_rfc3339(),
+            committed_at: now.to_rfc3339(),
+            projection: LifecycleEventProjection {
+                status: Status::Failed,
+                generation: task.lifecycle.generation,
+                revision: 1,
+                fence: task.lifecycle.fence,
+                attempt_sequence: 1,
+                current_attempt: task.lifecycle.current_attempt.clone(),
+                pi_process_epoch: 0,
+                pi_process_identity_digest: String::new(),
+                pi_continuation_epoch: 0,
+                pi_continuation: None,
+                pi_terminal_reservation: None,
+                reopen_intent: None,
+            },
+        }
+    }
+
+    #[test]
+    fn production_nonsemantic_failed_prerequisite_retries_once_and_preserves_session_evidence() {
+        let dir = TempDir::new().unwrap();
+        let now = DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let source = failed_source("source");
+        let mut descendant = task("descendant");
+        descendant.after = vec![source.id.clone()];
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(source));
+        graph.add_node(Node::Task(descendant));
+        save_graph(&graph, dir.path().join("graph.jsonl")).unwrap();
+
+        let decisions = converge_failed_prerequisites(dir.path(), now).unwrap();
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(
+            decisions[0].action,
+            crate::service::planner::ActionKind::RetryFailedPrerequisite
+        );
+        let graph = load_graph(dir.path().join("graph.jsonl")).unwrap();
+        let source = graph.get_task("source").unwrap();
+        assert_eq!(source.status, Status::Open);
+        assert_eq!(source.lifecycle.generation, 2);
+        assert_eq!(source.session_id.as_deref(), Some("session-preserved"));
+        assert!(source.lifecycle.audit.iter().any(|event| {
+            event.reason_code == "nonsemantic_failed_prerequisite_retry"
+                && event
+                    .evidence_refs
+                    .iter()
+                    .any(|id| id == "session-preserved")
+        }));
+        assert!(
+            converge_failed_prerequisites(dir.path(), now)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn production_semantic_rejection_never_retries_and_descendant_is_actionable() {
+        let dir = TempDir::new().unwrap();
+        let now = DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let mut source = failed_source("semantic-source");
+        let semantic_event = semantic_rejection_event(&source, now);
+        source.lifecycle.audit.push(semantic_event);
+        let mut descendant = task("descendant");
+        descendant.after = vec![source.id.clone()];
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(source));
+        graph.add_node(Node::Task(descendant));
+        save_graph(&graph, dir.path().join("graph.jsonl")).unwrap();
+
+        let decisions = converge_failed_prerequisites(dir.path(), now).unwrap();
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(
+            decisions[0].class,
+            crate::service::planner::FailedPrerequisiteClass::SemanticValidationRejected
+        );
+        let graph = load_graph(dir.path().join("graph.jsonl")).unwrap();
+        assert_eq!(
+            graph.get_task("semantic-source").unwrap().status,
+            Status::Failed
+        );
+        assert_eq!(
+            graph
+                .get_task("semantic-source")
+                .unwrap()
+                .lifecycle
+                .generation,
+            1
+        );
+        let descendant = graph.get_task("descendant").unwrap();
+        assert!(
+            descendant
+                .lifecycle
+                .audit
+                .iter()
+                .any(|event| { event.reason_code == "semantic_failed_prerequisite_terminal" })
+        );
+        let state = reconcile_dir(dir.path(), &policy(), now).unwrap();
+        let record = state.goals.get("descendant#0").unwrap();
+        assert_eq!(record.stage, ConvergenceStage::NeedsHuman);
+        assert!(
+            record
+                .needs_human
+                .as_deref()
+                .unwrap()
+                .contains("semantic rejection")
+        );
     }
 
     #[test]

@@ -96,6 +96,21 @@ fn cleanup_and_count_alive(
         ),
     }
 
+    // Classify failed prerequisites before finish replay. A durable-candidate
+    // provider failure receives one planner-authorized finish retry; on the
+    // next unchanged pass the finite budget becomes NeedsReconciliation and
+    // the finish adapter below observes that hold instead of looping forever.
+    match worksgood::service::converge_failed_prerequisites(dir, Utc::now()) {
+        Ok(actions) if !actions.is_empty() => eprintln!(
+            "[dispatcher] Failed-prerequisite convergence: {:?}",
+            actions
+        ),
+        Ok(_) => {}
+        Err(error) => {
+            eprintln!("[dispatcher] Failed-prerequisite convergence held fail-closed: {error:#}")
+        }
+    }
+
     // A dead Pi wrapper is not a generic lost attempt. Consume its durable
     // finish handoff before orphan sweeping: receipted transactions advance
     // exactly once; an absent transaction fences the dead tuple and reopens

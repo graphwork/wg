@@ -2985,3 +2985,10 @@ owners = [
 ]
 description = "Candidate-binary replay of a permanent daemon incident trace is byte-identical across repeated offline runs, emits the corrected idempotent action, keeps graph state unchanged, and contains only the typed redacted planner wire."
 timeout_seconds = 30
+
+[[scenario]]
+name = "failed_prerequisite_convergence"
+script = "scenarios/failed_prerequisite_convergence.sh"
+owners = ["fix-nonsemantic-failed-dependency-convergence"]
+description = "Candidate-binary credential-free real-daemon regression for the live atomic-save rollout halt: with all owners exited, an unfinished descendant whose only prerequisite is a typed zero-progress source failure cannot remain silently blocked. The daemon emits exactly one bounded source retry, preserves the exact session evidence in the lifecycle ledger, creates a durable convergence state/deadline, and makes the source runnable without retrying semantic rejection."
+timeout_seconds = 120

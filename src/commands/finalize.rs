@@ -1311,6 +1311,16 @@ pub(crate) fn converge_exited_worker_finishes(dir: &Path) -> Result<Vec<String>>
         let Some(task) = graph.get_task(&original.task_id) else {
             continue;
         };
+        if task.lifecycle.audit.iter().any(|event| {
+            event.generation == task.lifecycle.generation
+                && event.reason_code == "failed_prerequisite_needs_reconciliation"
+        }) {
+            // The typed failed-prerequisite planner exhausted its finite
+            // automatic finish budget. Retain the exact transaction and wait
+            // for the actionable operator reconciliation path; polling must
+            // not bypass the planner and loop the finish adapter forever.
+            continue;
+        }
         let owner_id = original
             .candidate
             .as_ref()

@@ -11,8 +11,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-pub const DAEMON_PLANNER_SCHEMA_VERSION: u16 = 1;
-pub const DAEMON_TRACE_SCHEMA_VERSION: u16 = 1;
+pub const DAEMON_PLANNER_SCHEMA_VERSION: u16 = 2;
+pub const DAEMON_TRACE_SCHEMA_VERSION: u16 = 2;
+const MIN_SUPPORTED_DAEMON_PLANNER_SCHEMA_VERSION: u16 = 1;
+const MIN_SUPPORTED_DAEMON_TRACE_SCHEMA_VERSION: u16 = 1;
 pub const MAX_TRACE_OBSERVATIONS: usize = 256;
 pub const MAX_REPLAY_BUNDLES: usize = 32;
 const TRACE_FILE: &str = "decision-trace-v1.json";
@@ -131,6 +133,13 @@ pub enum ActionKind {
     MigrateServiceState,
     ProbeRoute,
     ArchiveBatch,
+    /// Reopen the exact failed prerequisite as one new generation. The
+    /// prerequisite binding on the effect makes this distinct from spawning
+    /// the blocked descendant.
+    RetryFailedPrerequisite,
+    /// Persist an operator-visible, evidence-bound reconciliation issue when
+    /// an automatic retry is unsafe or its one-shot budget is exhausted.
+    RecordNeedsReconciliation,
     FailClosedHold,
 }
 
@@ -142,6 +151,9 @@ pub enum WaitKind {
     HumanInput,
     ArchiveConfirmation,
     ProviderRecovery,
+    /// A semantic rejection is terminal. Its descendant waits for an explicit
+    /// repair/waiver/new generation and can never turn this wait into a retry.
+    SemanticPrerequisiteRepair,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -156,6 +168,59 @@ pub struct ExternalWait {
 pub struct ScheduledAction {
     pub action: ActionKind,
     pub deadline: u64,
+}
+
+/// Typed source of a failed dependency. These are deliberately semantic
+/// categories rather than strings parsed from provider output.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FailedPrerequisiteClass {
+    ProviderUnavailableAfterDurableCandidate,
+    SourceExecutionNoProgress,
+    SourceExecutionWithProgress,
+    OrphanBeforeSpawn,
+    SemanticValidationRejected,
+}
+
+/// Exact evidence presence on the replay wire. `Absent` is an observed fact,
+/// not a missing optional field, which is important for the before-spawn and
+/// zero-progress incidents.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum EvidenceSlot {
+    Absent,
+    Present { evidence_id: OpaqueId },
+}
+
+impl EvidenceSlot {
+    fn is_present(&self) -> bool {
+        matches!(self, Self::Present { .. })
+    }
+}
+
+/// Evidence retained from the failed source tuple. IDs are opaque digests or
+/// bounded stable identities; paths, logs and provider prose remain outside
+/// the pure planner.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FailedPrerequisiteEvidence {
+    pub work_save: EvidenceSlot,
+    pub candidate: EvidenceSlot,
+    pub session: EvidenceSlot,
+    pub worktree: EvidenceSlot,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FailedPrerequisite {
+    pub source: TaskKey,
+    pub class: FailedPrerequisiteClass,
+    pub evidence: FailedPrerequisiteEvidence,
+    /// Number of already-issued automatic retries for this exact source
+    /// lineage, separate from user retries and provider attempts.
+    pub automatic_retries: u8,
+    /// Persisted finite budget. Zero means reconcile immediately.
+    pub max_automatic_retries: u8,
 }
 
 /// Actual incidents are represented as bounded codes, never copied logs or
@@ -192,6 +257,10 @@ pub struct TaskObservation {
     pub scheduled: Option<ScheduledAction>,
     #[serde(default)]
     pub incidents: BTreeSet<IncidentCode>,
+    /// Present only when this unfinished task is blocked by an exact failed
+    /// prerequisite. Version-1 observations deserialize to `None` unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed_prerequisite: Option<FailedPrerequisite>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -274,6 +343,10 @@ pub enum EffectStatus {
 pub struct PlannedEffect {
     pub effect_id: OpaqueId,
     pub task: TaskKey,
+    /// Exact failed source acted on by prerequisite convergence. Absent for
+    /// ordinary task-local planner effects and every v1 fixture.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prerequisite: Option<TaskKey>,
     pub action: ActionKind,
     pub issue_epoch: u64,
     pub status: EffectStatus,
@@ -410,6 +483,55 @@ fn corrected_incident_projection(task: &mut TaskObservation, now: u64) {
     }
 }
 
+fn corrected_failed_prerequisite_projection(task: &mut TaskObservation, now: u64) {
+    let Some(failure) = task.failed_prerequisite.as_ref() else {
+        return;
+    };
+    task.owner = OwnerEvidence::None;
+    task.runnable = None;
+    task.external_wait = None;
+    task.scheduled = None;
+
+    if failure.class == FailedPrerequisiteClass::SemanticValidationRejected {
+        task.external_wait = Some(ExternalWait {
+            wait_id: OpaqueId::new(format!(
+                "semantic-repair:{}:{}",
+                failure.source.task_id, failure.source.generation
+            ))
+            .expect("typed source produces a safe wait id"),
+            kind: WaitKind::SemanticPrerequisiteRepair,
+        });
+        return;
+    }
+
+    let retry_available = failure.automatic_retries < failure.max_automatic_retries;
+    let action = if !retry_available {
+        ActionKind::RecordNeedsReconciliation
+    } else {
+        match failure.class {
+            FailedPrerequisiteClass::ProviderUnavailableAfterDurableCandidate
+                if failure.evidence.work_save.is_present()
+                    && failure.evidence.candidate.is_present() =>
+            {
+                ActionKind::ReplanFinish
+            }
+            FailedPrerequisiteClass::SourceExecutionNoProgress
+            | FailedPrerequisiteClass::SourceExecutionWithProgress
+            | FailedPrerequisiteClass::OrphanBeforeSpawn => ActionKind::RetryFailedPrerequisite,
+            // Provider failures without the durable candidate asserted by the
+            // typed class are contradictory evidence and must not discard WIP.
+            FailedPrerequisiteClass::ProviderUnavailableAfterDurableCandidate
+            | FailedPrerequisiteClass::SemanticValidationRejected => {
+                ActionKind::RecordNeedsReconciliation
+            }
+        }
+    };
+    task.scheduled = Some(ScheduledAction {
+        action,
+        deadline: now,
+    });
+}
+
 fn forward_count(task: &TaskObservation) -> usize {
     usize::from(task.runnable.is_some())
         + usize::from(task.owner.is_authenticated_live())
@@ -435,6 +557,10 @@ fn issue_effect(
     let effect = PlannedEffect {
         effect_id: id.clone(),
         task: task.key.clone(),
+        prerequisite: task
+            .failed_prerequisite
+            .as_ref()
+            .map(|failure| failure.source.clone()),
         action,
         issue_epoch,
         status,
@@ -455,7 +581,9 @@ pub fn plan(
     let mut violations = BTreeSet::new();
     let observation_id = observation_id(envelope);
 
-    if next.schema_version != DAEMON_PLANNER_SCHEMA_VERSION {
+    if !(MIN_SUPPORTED_DAEMON_PLANNER_SCHEMA_VERSION..=DAEMON_PLANNER_SCHEMA_VERSION)
+        .contains(&next.schema_version)
+    {
         violations.insert(ViolationCode::SequenceConflict);
         next.fail_closed = true;
         return PlannerStep {
@@ -554,6 +682,7 @@ pub fn plan(
                 next.repaired_incidents
                     .extend(task.incidents.iter().copied());
                 corrected_incident_projection(&mut task, envelope.logical_time);
+                corrected_failed_prerequisite_projection(&mut task, envelope.logical_time);
             }
 
             if task.unfinished {
@@ -628,16 +757,22 @@ pub struct DecisionTrace {
 
 impl DecisionTrace {
     pub fn validate(&self) -> Result<()> {
-        if self.trace_schema_version != DAEMON_TRACE_SCHEMA_VERSION {
+        if !(MIN_SUPPORTED_DAEMON_TRACE_SCHEMA_VERSION..=DAEMON_TRACE_SCHEMA_VERSION)
+            .contains(&self.trace_schema_version)
+        {
             bail!(
                 "unsupported daemon trace schema {}",
                 self.trace_schema_version
             );
         }
-        if self.planner_schema_version != DAEMON_PLANNER_SCHEMA_VERSION
-            || self.initial_state.schema_version != DAEMON_PLANNER_SCHEMA_VERSION
+        if self.planner_schema_version != self.initial_state.schema_version
+            || !(MIN_SUPPORTED_DAEMON_PLANNER_SCHEMA_VERSION..=DAEMON_PLANNER_SCHEMA_VERSION)
+                .contains(&self.planner_schema_version)
         {
-            bail!("unsupported daemon planner schema");
+            bail!("unsupported or mismatched daemon planner schema");
+        }
+        if self.trace_schema_version != self.planner_schema_version {
+            bail!("daemon trace/planner schema mismatch");
         }
         if self.observations.len() > MAX_TRACE_OBSERVATIONS {
             bail!("daemon replay trace exceeds bounded observation limit");
@@ -838,6 +973,7 @@ mod tests {
                 external_wait: None,
                 scheduled: None,
                 incidents: BTreeSet::new(),
+                failed_prerequisite: None,
             })),
         }
     }
@@ -933,6 +1069,7 @@ mod tests {
                                         deadline: 11,
                                     }),
                                     incidents: BTreeSet::new(),
+                                    failed_prerequisite: None,
                                 })),
                             };
                             state = plan(&state, &envelope, PlannerRuleset::Corrected).state;
@@ -1097,6 +1234,7 @@ mod tests {
                 external_wait: None,
                 scheduled: None,
                 incidents: BTreeSet::new(),
+                failed_prerequisite: None,
             })),
         };
         let (step, bundle) = plan_guarded(temp.path(), &state, &observation).unwrap();

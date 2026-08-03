@@ -1,9 +1,11 @@
 import WGLifecycle.Incident
+import WGLifecycle.DaemonPlanner
 
 namespace WGLifecycle.Golden
 
 open WGLifecycle
 open WGLifecycle.Incident
+open WGLifecycle.DaemonPlanner
 
 /-- The committed JSON golden names and this module are a versioned pair. -/
 def happy (d : Disposition) : State :=
@@ -107,6 +109,21 @@ def deadTxCut : State := (reduce txCut (.ownerProvenDead cap true 101)).1
 def deadPromotedCut : State := (reduce promotedCut (.ownerProvenDead cap true 101)).1
 
 def observedCleaned : State := { s5 with ownerProvenDead := true }
+
+/-- Lean mirror of `formal/fixtures/daemon/v2`: exact incident classes,
+explicit evidence presence, and the finite one-shot budget select the same
+normalized disposition names as Rust replay. -/
+theorem failed_prerequisite_v2_fixtures :
+    plannerSchemaVersion = 2 ∧ traceSchemaVersion = 2 ∧
+    decideFailedPrerequisite .providerUnavailableAfterDurableCandidate
+      ⟨true, true, true, true⟩ 0 1 = .replanFinish ∧
+    decideFailedPrerequisite .sourceExecutionNoProgress
+      ⟨false, false, true, true⟩ 0 1 = .retryFailedPrerequisite ∧
+    decideFailedPrerequisite .orphanBeforeSpawn
+      ⟨false, false, false, false⟩ 0 1 = .retryFailedPrerequisite ∧
+    decideFailedPrerequisite .semanticValidationRejected
+      ⟨true, true, true, true⟩ 0 1 = .semanticRepairWait := by
+  native_decide
 
 /-- Exact runtime reducer wire semantics for every committed JSON crash cut. -/
 theorem exited_worker_runtime_wire_incident :

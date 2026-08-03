@@ -3970,6 +3970,7 @@ pub fn run_daemon(
                                             external_wait: None,
                                             scheduled: None,
                                             incidents: BTreeSet::new(),
+                                            failed_prerequisite: None,
                                         },
                                     )),
                                 };

@@ -2,8 +2,9 @@ use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
 use worksgood::service::{
-    DecisionTrace, PlannedEffect, PlannerActionKind, PlannerIncidentCode, PlannerRuleset,
-    PlannerViolationCode, PlannerWaitKind, ReplayReport, replay_bytes, replay_daemon,
+    DecisionTrace, PlannedEffect, PlannerActionKind, PlannerFailedPrerequisiteClass,
+    PlannerIncidentCode, PlannerRuleset, PlannerViolationCode, PlannerWaitKind, ReplayReport,
+    replay_bytes, replay_daemon,
 };
 
 #[derive(Debug, Deserialize)]
@@ -25,6 +26,29 @@ fn fixtures_dir() -> PathBuf {
 
 fn load_fixtures() -> Vec<IncidentFixture> {
     let mut paths = fs::read_dir(fixtures_dir())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths
+        .into_iter()
+        .map(|path| serde_json::from_slice(&fs::read(path).unwrap()).unwrap())
+        .collect()
+}
+
+#[derive(Debug, Deserialize)]
+struct FailedPrerequisiteFixture {
+    name: String,
+    expected_action: Option<PlannerActionKind>,
+    expected_wait: Option<PlannerWaitKind>,
+    expected_class: PlannerFailedPrerequisiteClass,
+    trace: DecisionTrace,
+}
+
+fn failed_prerequisite_fixtures() -> Vec<FailedPrerequisiteFixture> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("formal/fixtures/daemon/v2");
+    let mut paths = fs::read_dir(root)
         .unwrap()
         .map(|entry| entry.unwrap().path())
         .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
@@ -187,6 +211,98 @@ fn two_tasks_two_attempts_stale_and_current_effects_never_alias() {
     assert_eq!(effects.len(), 2);
     assert_ne!(effects[0].effect_id, effects[1].effect_id);
     assert_ne!(effects[0].task, effects[1].task);
+}
+
+#[test]
+fn failed_prerequisite_replays_are_byte_identical_and_forward_exhaustive() {
+    let fixtures = failed_prerequisite_fixtures();
+    assert_eq!(fixtures.len(), 4);
+    for fixture in fixtures {
+        let first = replay_bytes(&fixture.trace).unwrap();
+        let second = replay_bytes(&fixture.trace).unwrap();
+        assert_eq!(first, second, "{} replay bytes drifted", fixture.name);
+        let report: ReplayReport = serde_json::from_slice(&first).unwrap();
+        assert!(report.steps[0].violations.is_empty(), "{}", fixture.name);
+        let task = report.final_state.tasks.values().next().unwrap();
+        let failed = task.failed_prerequisite.as_ref().unwrap();
+        assert_eq!(failed.class, fixture.expected_class);
+        assert_eq!(
+            report.steps[0].effects.first().map(|effect| effect.action),
+            fixture.expected_action,
+            "{} action drifted",
+            fixture.name
+        );
+        assert_eq!(
+            task.external_wait.as_ref().map(|wait| wait.kind),
+            fixture.expected_wait,
+            "{} wait drifted",
+            fixture.name
+        );
+        assert_eq!(
+            report.steps[0]
+                .effects
+                .first()
+                .and_then(|effect| effect.prerequisite.as_ref()),
+            fixture.expected_action.as_ref().map(|_| &failed.source),
+            "{} lost exact prerequisite binding",
+            fixture.name
+        );
+    }
+}
+
+#[test]
+fn nonsemantic_budget_property_emits_exactly_one_retry_or_reconciliation_while_semantic_never_retries()
+ {
+    for mut fixture in failed_prerequisite_fixtures() {
+        for automatic_retries in 0..=3 {
+            for max_automatic_retries in 0..=3 {
+                let task = fixture
+                    .trace
+                    .observations
+                    .iter_mut()
+                    .find_map(|entry| match &mut entry.observation {
+                        worksgood::service::Observation::Task(task) => Some(task),
+                        _ => None,
+                    })
+                    .unwrap();
+                let class = {
+                    let failed = task.failed_prerequisite.as_mut().unwrap();
+                    failed.automatic_retries = automatic_retries;
+                    failed.max_automatic_retries = max_automatic_retries;
+                    failed.class
+                };
+                let report = replay_daemon(&fixture.trace).unwrap();
+                let effects = &report.steps[0].effects;
+                if class == PlannerFailedPrerequisiteClass::SemanticValidationRejected {
+                    assert!(effects.is_empty(), "semantic rejection retried");
+                    assert!(
+                        report
+                            .final_state
+                            .tasks
+                            .values()
+                            .next()
+                            .unwrap()
+                            .external_wait
+                            .is_some()
+                    );
+                } else {
+                    assert_eq!(effects.len(), 1);
+                    let expected = if automatic_retries < max_automatic_retries {
+                        match class {
+                            PlannerFailedPrerequisiteClass::ProviderUnavailableAfterDurableCandidate => PlannerActionKind::ReplanFinish,
+                            PlannerFailedPrerequisiteClass::SourceExecutionNoProgress
+                            | PlannerFailedPrerequisiteClass::SourceExecutionWithProgress
+                            | PlannerFailedPrerequisiteClass::OrphanBeforeSpawn => PlannerActionKind::RetryFailedPrerequisite,
+                            PlannerFailedPrerequisiteClass::SemanticValidationRejected => unreachable!(),
+                        }
+                    } else {
+                        PlannerActionKind::RecordNeedsReconciliation
+                    };
+                    assert_eq!(effects[0].action, expected);
+                }
+            }
+        }
+    }
 }
 
 #[test]

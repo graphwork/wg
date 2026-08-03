@@ -76,7 +76,8 @@ death produces `pending + deadline`. Recovery rank is:
   fail-closed normalization, incident repair coverage, logical-effect
   acknowledgement idempotence, and conditional useful-scheduling liveness.
   The matching executable Rust planner is `src/service/planner.rs`; permanent
-  incident traces live under `formal/fixtures/daemon/v1/`.
+  historical incident traces live under `formal/fixtures/daemon/v1/`; typed
+  failed-prerequisite convergence traces live under `formal/fixtures/daemon/v2/`.
 
 There are no proof placeholders or correctness axioms. Deliberately weakening
 stale-capability checks, allowing a second promotion, or allowing terminal
@@ -140,7 +141,9 @@ to prove them.
 ## Daemon planner/replay boundary
 
 The daemon planner wire is independently versioned by
-`DAEMON_PLANNER_SCHEMA_VERSION` and `DAEMON_TRACE_SCHEMA_VERSION`. Its function
+`DAEMON_PLANNER_SCHEMA_VERSION` and `DAEMON_TRACE_SCHEMA_VERSION`. Version 2
+adds exact evidence slots and typed failed-prerequisite classification while
+retaining read/replay support for immutable v1 traces. Its function
 is:
 
 ```text

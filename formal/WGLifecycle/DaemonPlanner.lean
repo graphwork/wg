@@ -4,8 +4,8 @@ import Std.Tactic
 namespace WGLifecycle.DaemonPlanner
 
 /-- Wire versions shared with `service::planner`. -/
-def plannerSchemaVersion : Nat := 1
-def traceSchemaVersion : Nat := 1
+def plannerSchemaVersion : Nat := 2
+def traceSchemaVersion : Nat := 2
 
 /-- The four and only four admissible forward explanations for unfinished work. -/
 structure ForwardProjection where
@@ -62,6 +62,73 @@ theorem every_incident_corrected_exhaustive (incident : Incident) :
     ForwardExhaustive (projectionOf (correctedDisposition incident)) := by
   cases incident <;>
     simp [ForwardExhaustive, projectionOf, correctedDisposition, forwardCount]
+
+inductive FailedPrerequisiteClass where
+  | providerUnavailableAfterDurableCandidate
+  | sourceExecutionNoProgress
+  | sourceExecutionWithProgress
+  | orphanBeforeSpawn
+  | semanticValidationRejected
+  deriving DecidableEq, Repr
+
+structure FailedPrerequisiteEvidence where
+  workSave : Bool
+  candidate : Bool
+  session : Bool
+  worktree : Bool
+  deriving DecidableEq, Repr
+
+inductive FailedPrerequisiteDecision where
+  | replanFinish
+  | retryFailedPrerequisite
+  | recordNeedsReconciliation
+  | semanticRepairWait
+  deriving DecidableEq, Repr
+
+/-- Pure counterpart of the Rust v2 failed-prerequisite projection. A finite
+retry budget is an input fact; malformed provider evidence fails closed. -/
+def decideFailedPrerequisite (failureClass : FailedPrerequisiteClass)
+    (evidence : FailedPrerequisiteEvidence) (automaticRetries maxAutomaticRetries : Nat) :
+    FailedPrerequisiteDecision :=
+  match failureClass with
+  | .semanticValidationRejected => .semanticRepairWait
+  | .providerUnavailableAfterDurableCandidate =>
+      if automaticRetries < maxAutomaticRetries ∧ evidence.workSave ∧ evidence.candidate then
+        .replanFinish
+      else
+        .recordNeedsReconciliation
+  | .sourceExecutionNoProgress | .sourceExecutionWithProgress | .orphanBeforeSpawn =>
+      if automaticRetries < maxAutomaticRetries then
+        .retryFailedPrerequisite
+      else
+        .recordNeedsReconciliation
+
+def failedPrerequisiteProjection : FailedPrerequisiteDecision → ForwardProjection
+  | .semanticRepairWait => projectionOf .externalWait
+  | .replanFinish | .retryFailedPrerequisite | .recordNeedsReconciliation =>
+      projectionOf .scheduledConvergence
+
+/-- Descendant exhaustiveness under typed failure classification assumptions:
+every unfinished descendant blocked on one classified failed prerequisite has
+exactly one owner/action/wait/deadline class. -/
+theorem failed_prerequisite_descendant_exhaustive
+    (failureClass : FailedPrerequisiteClass) (evidence : FailedPrerequisiteEvidence)
+    (automaticRetries maxAutomaticRetries : Nat) :
+    ForwardExhaustive
+      (failedPrerequisiteProjection
+        (decideFailedPrerequisite failureClass evidence automaticRetries maxAutomaticRetries)) := by
+  cases failureClass <;>
+    simp [decideFailedPrerequisite, failedPrerequisiteProjection, ForwardExhaustive,
+      projectionOf, forwardCount]
+  all_goals split <;> simp_all [failedPrerequisiteProjection, projectionOf, forwardCount]
+
+/-- Semantic rejection is terminal and can only project an explicit repair
+wait; it never selects either automatic retry action. -/
+theorem semantic_rejection_never_retries
+    (evidence : FailedPrerequisiteEvidence) (automaticRetries maxAutomaticRetries : Nat) :
+    decideFailedPrerequisite .semanticValidationRejected evidence automaticRetries
+      maxAutomaticRetries = .semanticRepairWait := by
+  rfl
 
 /-- Fail-closed repair for arbitrary malformed projections. -/
 def normalizeForward (unfinished : Bool) (p : ForwardProjection) : ForwardProjection :=

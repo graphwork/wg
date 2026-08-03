@@ -19,10 +19,11 @@ pub mod registry;
 
 pub use convergence::{
     Admission as ConvergenceAdmission, ConvergencePolicy, ConvergenceStage, ConvergenceState,
-    FinishConvergenceAction, FinishConvergenceDecision, FinishConvergenceRank,
-    FinishConvergenceSnapshot, RouteAdmission, RouteBreaker, RouteBreakerState,
-    WrapperChildCapability, admit_goal_action, admit_route_action, earliest_wake,
-    reconcile_after_service_pass, reconcile_dir, reduce_exited_worker_finish,
+    FailedPrerequisiteConvergence, FinishConvergenceAction, FinishConvergenceDecision,
+    FinishConvergenceRank, FinishConvergenceSnapshot, RouteAdmission, RouteBreaker,
+    RouteBreakerState, WrapperChildCapability, admit_goal_action, admit_route_action,
+    converge_failed_prerequisites, earliest_wake, reconcile_after_service_pass, reconcile_dir,
+    reduce_exited_worker_finish,
 };
 pub use dispatch_boot::{
     ChatSupervisorBootSpec, enumerate_chat_supervisors_for_boot,
@@ -33,10 +34,14 @@ pub use executor::{
 };
 pub use planner::{
     AckOutcome as PlannerAckOutcome, ActionKind as PlannerActionKind, DecisionTrace,
-    ExternalWait as PlannerExternalWait, IncidentCode as PlannerIncidentCode, Observation,
-    ObservationEnvelope, OpaqueId as PlannerOpaqueId, OwnerEvidence as PlannerOwnerEvidence,
-    PlannedEffect, PlannerRuleset, PlannerState, PlannerStep, PlannerStore, RedactionPolicy,
-    ReplayReport, ScheduledAction as PlannerScheduledAction, TaskKey as PlannerTaskKey,
+    EvidenceSlot as PlannerEvidenceSlot, ExternalWait as PlannerExternalWait,
+    FailedPrerequisite as PlannerFailedPrerequisite,
+    FailedPrerequisiteClass as PlannerFailedPrerequisiteClass,
+    FailedPrerequisiteEvidence as PlannerFailedPrerequisiteEvidence,
+    IncidentCode as PlannerIncidentCode, Observation, ObservationEnvelope,
+    OpaqueId as PlannerOpaqueId, OwnerEvidence as PlannerOwnerEvidence, PlannedEffect,
+    PlannerRuleset, PlannerState, PlannerStep, PlannerStore, RedactionPolicy, ReplayReport,
+    ScheduledAction as PlannerScheduledAction, TaskKey as PlannerTaskKey,
     TaskObservation as PlannerTaskObservation, ViolationCode as PlannerViolationCode,
     WaitKind as PlannerWaitKind, plan as plan_daemon_step, plan_guarded, replay as replay_daemon,
     replay_bytes,

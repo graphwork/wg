@@ -1,0 +1,48 @@
+{
+  "name": "provider_failure_after_durable_candidate",
+  "expected_action": "replan_finish",
+  "expected_wait": null,
+  "expected_class": "provider_unavailable_after_durable_candidate",
+  "trace": {
+    "trace_schema_version": 2,
+    "planner_schema_version": 2,
+    "redaction": "typed_identifiers_and_digests_only",
+    "ruleset": "corrected",
+    "initial_state": {
+      "schema_version": 2,
+      "graph_id": "graph-live-rollout",
+      "logical_time": 0,
+      "last_sequence": null,
+      "seen_observations": {},
+      "tasks": {},
+      "effects": {},
+      "early_acknowledgements": {},
+      "repaired_incidents": [],
+      "fail_closed": false
+    },
+    "observations": [{
+      "sequence": 1,
+      "logical_time": 1785777940,
+      "observation": {
+        "type": "task",
+        "key": {"graph_id":"graph-live-rollout","task_id":"atomic-save-synthesis-canary","generation":0,"attempt_id":"blocked-before-attempt","fence":0},
+        "progress_id": "b3:three-commit-candidate-finish-lease-conflict",
+        "unfinished": true,
+        "owner": {"kind":"none"},
+        "incidents": [],
+        "failed_prerequisite": {
+          "source": {"graph_id":"graph-live-rollout","task_id":"atomic-save-daemon-convergence","generation":1,"attempt_id":"attempt-1-2","fence":3},
+          "class": "provider_unavailable_after_durable_candidate",
+          "evidence": {
+            "work_save": {"state":"present","evidence_id":"wgcid:v1:blake3:0bb791277fe0f6728a02589df8a6abfe14144e4d47137489312ccc949de65fc2"},
+            "candidate": {"state":"present","evidence_id":"candidate:three-commit-e2f000a0"},
+            "session": {"state":"present","evidence_id":"session:019fc8ef-be8e-7282-aad1-6609826f4051"},
+            "worktree": {"state":"present","evidence_id":"worktree:agent-999"}
+          },
+          "automatic_retries": 0,
+          "max_automatic_retries": 1
+        }
+      }
+    }]
+  }
+}

@@ -573,6 +573,7 @@ pub fn reconcile_orphaned_tasks(dir: &Path, graph_path: &Path) -> Result<usize> 
             if let Some(task) = graph.get_task_mut(task_id) {
                 let was_open = *prev_status == Status::Open;
                 let generation = task.lifecycle.generation;
+                let orphan_before_spawn = !was_open && task.lifecycle.current_attempt.is_none();
                 let mut request = if was_open {
                     TransitionRequest::new(
                         TransitionKind::ReconciliationIssue {
@@ -585,6 +586,22 @@ pub fn reconcile_orphaned_tasks(dir: &Path, graph_path: &Path) -> Result<usize> 
                         "stale_open_claim",
                         format!("reconcile-claim:{task_id}:{generation}"),
                     )
+                } else if orphan_before_spawn {
+                    // Split-save/orphan reconciliation can observe a legacy
+                    // InProgress projection before reservation created an
+                    // attempt, session, or worktree. AttemptLost correctly
+                    // rejects that shape. It is exact zero-WIP evidence, so
+                    // create one fenced generation and make it dispatchable
+                    // rather than silently leaving InProgress forever.
+                    TransitionRequest::new(
+                        TransitionKind::GenerationCreated,
+                        LifecycleActor {
+                            kind: ActorKind::Reconciler,
+                            id: "coordinator".to_string(),
+                        },
+                        "orphan_before_spawn_retry",
+                        format!("reconcile-before-spawn:{task_id}:{generation}"),
+                    )
                 } else {
                     TransitionRequest::new(
                         TransitionKind::AttemptLost,
@@ -596,7 +613,7 @@ pub fn reconcile_orphaned_tasks(dir: &Path, graph_path: &Path) -> Result<usize> 
                         format!("reconcile-lost:{task_id}:{generation}"),
                     )
                 };
-                if !was_open && task.lifecycle.current_attempt.is_some() {
+                if !was_open && !orphan_before_spawn {
                     request.expected = FenceExpectation::current(task);
                 }
                 if apply_transition(task, request).is_err() {
@@ -844,10 +861,20 @@ mod tests {
 
         assert!(count >= 1, "Should reconcile at least one task");
 
-        // Reconciliation records one lost attempt; explicit retry is separate.
+        // This legacy split-save shape has no attempt/session/worktree to lose.
+        // It converges through one explicit before-spawn generation instead of
+        // calling AttemptLost (which correctly requires an attempt) and
+        // silently leaving the row InProgress.
         let graph = load_graph(&gpath).unwrap();
         let task = graph.get_task("stuck-task").unwrap();
-        assert_eq!(task.status, Status::Failed);
+        assert_eq!(task.status, Status::Open);
+        assert_eq!(task.lifecycle.generation, 1);
+        assert!(
+            task.lifecycle
+                .audit
+                .iter()
+                .any(|event| { event.reason_code == "orphan_before_spawn_retry" })
+        );
         assert!(task.assigned.is_none());
         assert!(task.log.last().unwrap().message.contains("Reconciliation"));
     }
@@ -1138,8 +1165,8 @@ mod tests {
         );
         assert_eq!(
             g2.get_task("plain-stuck").unwrap().status,
-            Status::Failed,
-            "untagged plain orphan should become one lost attempt, not an implicit retry"
+            Status::Open,
+            "untagged before-spawn orphan should receive one explicit generation, not remain silent"
         );
     }
 
