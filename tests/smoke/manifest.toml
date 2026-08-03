@@ -2985,3 +2985,38 @@ owners = [
 ]
 description = "Candidate-binary replay of a permanent daemon incident trace is byte-identical across repeated offline runs, emits the corrected idempotent action, keeps graph state unchanged, and contains only the typed redacted planner wire."
 timeout_seconds = 30
+
+[[scenario]]
+name = "atomic_save_false_done_dependency"
+script = "scenarios/atomic_save_false_done_dependency.sh"
+owners = ["atomic-save-adversarial-smokes", "atomic-save-synthesis-canary"]
+description = "Candidate-binary and exact-adapter incident regression: plants a raw legacy Done with no completion receipt/GraphSave, preserves its original bytes, classifies it as NeedsReconciliation with transitive impact, and proves production readiness never admits the dependent after quarantine."
+timeout_seconds = 120
+
+[[scenario]]
+name = "atomic_save_broker_handoff"
+script = "scenarios/atomic_save_broker_handoff.sh"
+owners = ["atomic-save-adversarial-smokes", "atomic-save-synthesis-canary"]
+description = "Candidate-binary broker handoff regression: a capability worker with no graph environment completes from its authenticated retained worktree; exact lost-response replay is idempotent; real Git WorkSave captures dirty uncommitted WIP while a mismatched registry/root identity is refused."
+timeout_seconds = 240
+
+[[scenario]]
+name = "atomic_save_crash_replay"
+script = "scenarios/atomic_save_crash_replay.sh"
+owners = ["atomic-save-adversarial-smokes", "atomic-save-synthesis-canary"]
+description = "Candidate-binary terminal fault injection after every durable SaveTransaction boundary: no cut falsely satisfies the task, every restart reuses the durable transaction and commits exactly one GraphSave with stable Git, while table-driven target-move, version-skew, cleanup-loss, and duplicate-request faults fail closed."
+timeout_seconds = 240
+
+[[scenario]]
+name = "atomic_save_dead_worker"
+script = "scenarios/atomic_save_dead_worker.sh"
+owners = ["atomic-save-adversarial-smokes", "atomic-save-synthesis-canary"]
+description = "Candidate real-daemon/Fake-Pi OS fault: SIGKILLs clean and dirty native children, requires bounded convergence to an authorized exact-worktree replacement or non-running hold without false Done, preserves dirty WIP, and checks the exact dead-owner reducer schedules resume or a durable hold."
+timeout_seconds = 120
+
+[[scenario]]
+name = "atomic_save_reset_migration"
+script = "scenarios/atomic_save_reset_migration.sh"
+owners = ["atomic-save-adversarial-smokes", "atomic-save-synthesis-canary"]
+description = "Candidate retry/reset retention and legacy migration regression: dirty leased WIP survives ordinary retry into an explicitly new attempt, WorkSaved precedes AbortedPreserved/generation advance, stale authority is inert, and receipt-less legacy Done evidence is preserved and quarantined idempotently."
+timeout_seconds = 180
