@@ -278,6 +278,12 @@ pub enum TransitionKind {
     DurableSuccessProjected {
         acceptance_ref: String,
     },
+    /// The v2 completion authority. The self-contained bundle is verified by
+    /// the pure kernel before `Done` is projected; adapters may materialize it
+    /// from separately stored immutable objects.
+    GraphSaveCommitted {
+        bundle: Box<crate::completion_evidence::GraphSaveBundle>,
+    },
     AttemptLost,
     AttemptParked,
     WaitSatisfied {
@@ -373,6 +379,7 @@ impl TransitionKind {
             Self::AttemptSucceeded { .. } => "attempt-succeeded",
             Self::AttemptFailed { .. } => "attempt-failed",
             Self::DurableSuccessProjected { .. } => "durable-success-projected",
+            Self::GraphSaveCommitted { .. } => "graph-save-committed",
             Self::AttemptLost => "attempt-lost",
             Self::AttemptParked => "attempt-parked",
             Self::WaitSatisfied { .. } => "wait-satisfied",
@@ -504,6 +511,24 @@ impl LifecycleEvent {
         task.lifecycle.pi_continuation = self.projection.pi_continuation.clone();
         task.lifecycle.pi_terminal_reservation = self.projection.pi_terminal_reservation.clone();
         task.lifecycle.reopen_intent = self.projection.reopen_intent.clone();
+        if self.event_kind == "graph-save-committed" {
+            task.completion_disposition = match task.completion_contract {
+                crate::graph::CompletionContract::Land => {
+                    Some(crate::graph::CompletionDisposition::Landed)
+                }
+                crate::graph::CompletionContract::Deliver => {
+                    Some(crate::graph::CompletionDisposition::Delivered)
+                }
+                crate::graph::CompletionContract::Report => {
+                    Some(crate::graph::CompletionDisposition::Reported)
+                }
+            };
+            task.completion_receipt = self
+                .evidence_refs
+                .iter()
+                .find(|value| value.starts_with("wgcid:v2:blake3:"))
+                .cloned();
+        }
         task.lifecycle.ledger_head = Some(self.event_id.clone());
         if !task
             .lifecycle
@@ -591,6 +616,7 @@ impl LifecycleKernel {
         let old_state = task.status;
         let mut new_state = old_state;
         let mut projection = task.lifecycle.clone();
+        let mut completion_receipt = None;
         let kind = &request.kind;
 
         match kind {
@@ -715,6 +741,51 @@ impl LifecycleKernel {
                     ));
                 }
                 attempt.disposition = Some(AttemptDisposition::Succeeded);
+                new_state = Status::Done;
+            }
+            TransitionKind::GraphSaveCommitted { bundle } => {
+                Self::require_actor(&request, &[ActorKind::Finalizer, ActorKind::Reconciler])?;
+                let verified = crate::completion_evidence::verify_graph_save_bundle(bundle)
+                    .map_err(|error| TransitionRejection::new(error.code, error.message))?;
+                let attempt = projection.current_attempt.as_mut().ok_or_else(|| {
+                    TransitionRejection::new(
+                        "attempt_missing",
+                        "GraphSave requires the exact current attempt",
+                    )
+                })?;
+                if verified.binding.source.task_id != task.id
+                    || verified.binding.source.generation != projection.generation
+                    || verified.binding.source.attempt_id != attempt.id
+                    || verified.binding.source.attempt_fence != projection.fence
+                    || bundle.receipt.graph_revision_before_commit != projection.revision
+                    || bundle.receipt.lifecycle_event_id != request.event_id
+                    || verified.contract != task.completion_contract
+                {
+                    return Err(TransitionRejection::new(
+                        "graph_save_binding_mismatch",
+                        "GraphSave does not bind the exact task generation, attempt, fence, revision, event, and contract",
+                    ));
+                }
+                if !matches!(
+                    old_state,
+                    Status::InProgress
+                        | Status::PendingEval
+                        | Status::PendingValidation
+                        | Status::Failed
+                ) {
+                    return Err(Self::state_rejection(old_state));
+                }
+                if !matches!(
+                    attempt.disposition,
+                    None | Some(AttemptDisposition::Failed) | Some(AttemptDisposition::Lost)
+                ) {
+                    return Err(TransitionRejection::new(
+                        "attempt_already_terminal",
+                        "a different terminal disposition already won",
+                    ));
+                }
+                attempt.disposition = Some(AttemptDisposition::Succeeded);
+                completion_receipt = Some(verified.graph_save_cid);
                 new_state = Status::Done;
             }
             TransitionKind::AttemptLost => {
@@ -1209,6 +1280,7 @@ impl LifecycleKernel {
                 TransitionKind::GenerationCreated
                     | TransitionKind::ReopenOwnerReleased { .. }
                     | TransitionKind::DurableSuccessProjected { .. }
+                    | TransitionKind::GraphSaveCommitted { .. }
             )
         {
             return Err(TransitionRejection::new(
@@ -1237,7 +1309,13 @@ impl LifecycleKernel {
             attempt_id,
             fence: projection.fence,
             reason_code: request.reason_code,
-            evidence_refs: request.evidence_refs,
+            evidence_refs: {
+                let mut refs = request.evidence_refs;
+                if let Some(receipt) = completion_receipt {
+                    refs.push(receipt);
+                }
+                refs
+            },
             occurred_at: request.occurred_at,
             committed_at: Utc::now().to_rfc3339(),
             projection: LifecycleEventProjection {

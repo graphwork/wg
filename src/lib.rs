@@ -28,6 +28,7 @@ pub mod chat_id;
 pub mod chat_runtime;
 pub mod chat_sessions;
 pub mod check;
+pub mod completion_evidence;
 pub mod concierge;
 pub mod config;
 pub mod config_defaults;
@@ -91,6 +92,7 @@ pub mod registry {
 }
 pub mod review;
 pub mod runs;
+pub mod save_transaction;
 pub mod scope_guard;
 pub mod secret;
 pub mod self_exe;

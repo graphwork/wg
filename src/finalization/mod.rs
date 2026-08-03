@@ -65,6 +65,36 @@ pub struct FinalizationContext {
     pub quiescence: QuiescenceProof,
 }
 
+impl FinalizationContext {
+    /// Bridge the landed finalization planner schema into the v2 save kernel.
+    /// The caller supplies graph/wrapper/session identity because this module
+    /// neither owns nor infers those lifecycle facts.
+    pub fn attempt_save_key(
+        &self,
+        graph_id: impl Into<String>,
+        wrapper_epoch: u32,
+        session_proof_digest: impl Into<String>,
+    ) -> crate::completion_evidence::AttemptSaveKey {
+        crate::completion_evidence::AttemptSaveKey {
+            graph_id: graph_id.into(),
+            task_id: self.task_id.clone(),
+            generation: self.generation,
+            attempt_id: self.attempt_id.clone(),
+            attempt_fence: self.attempt_fence,
+            worktree_lease_epoch: self.worktree_lease_epoch,
+            process_epoch: self.process_epoch,
+            wrapper_epoch,
+            route_snapshot_cid: self.route_snapshot_cid.clone(),
+            session_proof_digest: session_proof_digest.into(),
+            worktree_identity_digest: blake3::hash(
+                format!("{}\0{}", self.worktree_id, self.worktree_path.display()).as_bytes(),
+            )
+            .to_hex()
+            .to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ManifestEntry {
     pub path: String,

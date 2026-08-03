@@ -1143,11 +1143,32 @@ impl Default for Task {
 impl Task {
     /// Receipt-backed successful result, with a narrow compatibility bridge
     /// for historical `Done` source rows written before typed completion.
+    /// Receipt-backed v2 completion projection. Unlike
+    /// `effective_completion_disposition`, this never grants legacy authority:
+    /// it is present only when the lifecycle ledger committed a GraphSave and
+    /// the compatibility row carries that exact v2 receipt CID.
+    pub fn graph_save_completion_disposition(&self) -> Option<CompletionDisposition> {
+        let receipt = self.completion_receipt.as_deref()?;
+        if !receipt.starts_with("wgcid:v2:blake3:")
+            || !self.lifecycle.audit.iter().any(|event| {
+                event.event_kind == "graph-save-committed"
+                    && event.evidence_refs.iter().any(|value| value == receipt)
+            })
+        {
+            return None;
+        }
+        self.completion_disposition
+            .filter(|disposition| disposition.satisfies(self.completion_contract))
+    }
+
     pub fn effective_completion_disposition(&self) -> Option<CompletionDisposition> {
-        self.completion_disposition.or_else(|| {
-            (self.status == Status::Done && self.completion_contract == CompletionContract::Land)
-                .then_some(CompletionDisposition::Landed)
-        })
+        self.graph_save_completion_disposition()
+            .or(self.completion_disposition)
+            .or_else(|| {
+                (self.status == Status::Done
+                    && self.completion_contract == CompletionContract::Land)
+                    .then_some(CompletionDisposition::Landed)
+            })
     }
 
     pub fn input_dependency_from(&self, task_id: &str) -> bool {
