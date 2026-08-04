@@ -3090,6 +3090,28 @@ pub fn run_daemon(
             "Convergence state unavailable at startup; dispatch will fail closed: {error:#}"
         )),
     }
+    // Step-1 kernel cutover only: materialize/migrate the production planner
+    // after the legacy scheduler has restored its exact persisted deadlines.
+    // No domain observation is submitted and no planner effect is executed, so
+    // this cannot create dual scheduling authority.
+    match worksgood::worker_control::load_or_create_graph_identity(&dir)
+        .and_then(worksgood::service::PlannerOpaqueId::new)
+        .and_then(|graph_id| worksgood::service::PlannerStore::open(&dir, graph_id))
+    {
+        Ok(store) => {
+            let status = store.status_projection();
+            logger.info(&format!(
+                "Planner runtime kernel ready (schema={}, sequence={:?}, effects={}, earliest_deadline={})",
+                status.schema_version,
+                status.last_sequence,
+                status.effects.len(),
+                status.earliest_deadline.as_deref().unwrap_or("none")
+            ));
+        }
+        Err(error) => logger.warn(&format!(
+            "Planner runtime kernel unavailable; no planner effect will execute: {error:#}"
+        )),
+    }
 
     // Auto-bootstrap agency when auto_evolve is enabled and agency isn't initialized.
     if config.agency.auto_evolve {
@@ -4666,6 +4688,9 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
     let recent_errors = tail_log_since(dir, 5, Some("ERROR"), started_at);
     let recent_fatals = tail_log_since(dir, 5, Some("FATAL"), started_at);
     let worker_filesystem_isolation = worksgood::worker_control::filesystem_isolation_status();
+    // This path is deliberately read-only: status never runs schema migration,
+    // imports convergence, allocates a sequence, or acknowledges an effect.
+    let planner_runtime = worksgood::service::PlannerStore::read_status(dir)?;
 
     if json {
         let mut output = serde_json::json!({
@@ -4715,6 +4740,7 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
             "worktree_observers": worktree_observers,
             "worktree_activity_clocks": worktree_activity_clocks,
             "automatic_archival": automatic_archival,
+            "planner_runtime": planner_runtime,
             "worktree_observer_policy": {
                 "meaningful_silence_secs": worksgood::worktree_observer::DEFAULT_MEANINGFUL_SILENCE_SECS,
                 "observed_activity_grace_secs": worksgood::worktree_observer::DEFAULT_OBSERVED_ACTIVITY_GRACE_SECS,
@@ -4754,6 +4780,15 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
         println!("Service: running (PID {})", state.pid);
         println!("Socket: {}", state.socket_path);
         println!("Uptime: {}", uptime);
+        if let Some(planner) = planner_runtime.as_ref() {
+            println!(
+                "Planner runtime: schema {}, sequence {:?}, {} effect(s), earliest deadline {}",
+                planner.schema_version,
+                planner.last_sequence,
+                planner.effects.len(),
+                planner.earliest_deadline.as_deref().unwrap_or("none")
+            );
+        }
         println!(
             "Worker control: capability broker enforced; filesystem isolation: {} ({})",
             if worker_filesystem_isolation.enforced {

@@ -6,19 +6,28 @@
 //! idempotent requests that adapters execute and acknowledge separately.
 
 use anyhow::{Context, Result, bail};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
-pub const DAEMON_PLANNER_SCHEMA_VERSION: u16 = 3;
-pub const DAEMON_TRACE_SCHEMA_VERSION: u16 = 3;
+pub const DAEMON_PLANNER_SCHEMA_VERSION: u16 = 4;
+pub const DAEMON_TRACE_SCHEMA_VERSION: u16 = 4;
 const MIN_SUPPORTED_DAEMON_PLANNER_SCHEMA_VERSION: u16 = 1;
 const MIN_SUPPORTED_DAEMON_TRACE_SCHEMA_VERSION: u16 = 1;
 pub const MAX_TRACE_OBSERVATIONS: usize = 256;
 pub const MAX_REPLAY_BUNDLES: usize = 32;
 const TRACE_FILE: &str = "decision-trace-v1.json";
 const STATE_FILE: &str = "planner-state-v1.json";
+const EFFECT_JOURNAL_FILE: &str = "planner-effects-v1.json";
+const LOCK_FILE: &str = ".planner.lock";
+const EFFECT_JOURNAL_SCHEMA_VERSION: u16 = 1;
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
 
 /// Identifier allowed on the replay wire. Free-form text, paths, endpoints,
 /// credentials, prompts and provider output have no representable type here.
@@ -32,7 +41,7 @@ impl OpaqueId {
             || value.len() > 96
             || !value
                 .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || b"._:-".contains(&byte))
+                .all(|byte| byte.is_ascii_alphanumeric() || b"._:-|".contains(&byte))
         {
             bail!("planner identifier must be 1..=96 safe identifier bytes");
         }
@@ -41,6 +50,17 @@ impl OpaqueId {
 
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// Normalize an external stable identity without admitting its raw bytes
+    /// to the planner wire when they are not in the bounded identifier alphabet.
+    pub fn normalized(value: impl AsRef<[u8]>) -> Self {
+        let bytes = value.as_ref();
+        let candidate = String::from_utf8_lossy(bytes).to_string();
+        Self::new(candidate).unwrap_or_else(|_| {
+            let digest = blake3::hash(bytes).to_hex();
+            Self::new(format!("id:{digest}")).expect("digest is a safe planner identifier")
+        })
     }
 }
 
@@ -171,6 +191,231 @@ pub struct ExternalWait {
 pub struct ScheduledAction {
     pub action: ActionKind,
     pub deadline: u64,
+}
+
+/// RFC3339 timestamp retained byte-for-byte from a migrated durable scheduler.
+/// Arbitrary strings are not representable in a planner trace.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PlannerTimestamp(String);
+
+impl PlannerTimestamp {
+    pub fn new(value: impl Into<String>) -> Result<Self> {
+        let value = value.into();
+        if value.len() > 64 || DateTime::parse_from_rfc3339(&value).is_err() {
+            bail!("planner timestamp must be a bounded RFC3339 value");
+        }
+        Ok(Self(value))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    fn datetime(&self) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(&self.0)
+            .expect("PlannerTimestamp validates on construction")
+            .with_timezone(&Utc)
+    }
+}
+
+impl Serialize for PlannerTimestamp {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for PlannerTimestamp {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::new(value).map_err(de::Error::custom)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImportedBackoff {
+    pub class: super::convergence::BlockerClass,
+    pub failures_without_progress: u32,
+    pub base_seconds: u64,
+    pub cap_seconds: u64,
+    pub jitter_seed: OpaqueId,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImportedActionLease {
+    pub action_id: OpaqueId,
+    pub task_id: OpaqueId,
+    pub generation: u64,
+    pub attempt_id: Option<OpaqueId>,
+    pub fence: u64,
+    pub revision: u64,
+    pub stage: super::convergence::ConvergenceStage,
+    pub progress_id: OpaqueId,
+    pub lease_epoch: u64,
+    pub expires_at: PlannerTimestamp,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImportedGoalSchedule {
+    pub task_id: OpaqueId,
+    pub generation: u64,
+    pub priority: u32,
+    pub stage: super::convergence::ConvergenceStage,
+    pub blocker: super::convergence::BlockerClass,
+    pub next_wake_at: PlannerTimestamp,
+    pub backoff: ImportedBackoff,
+    pub progress_id: OpaqueId,
+    pub pending_action: Option<ImportedActionLease>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImportedRouteProbeLease {
+    pub action_id: OpaqueId,
+    pub task_id: OpaqueId,
+    pub epoch: u64,
+    pub expires_at: PlannerTimestamp,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImportedRouteSchedule {
+    pub route_id: OpaqueId,
+    pub epoch: u64,
+    pub state: super::convergence::RouteBreakerState,
+    pub consecutive_outages: u32,
+    pub next_probe_at: PlannerTimestamp,
+    pub probe_lease: Option<ImportedRouteProbeLease>,
+    pub last_failure_marker: Option<OpaqueId>,
+    pub recovered_at: Option<PlannerTimestamp>,
+}
+
+/// Typed, redacted one-time import. It contains every legacy scheduling value
+/// needed for later domain cutovers, but no free-form reason, provider output,
+/// path, endpoint, prompt, or credential can enter the replay wire.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LegacyConvergenceImport {
+    pub source_schema_version: u32,
+    pub goals: BTreeMap<OpaqueId, ImportedGoalSchedule>,
+    pub routes: BTreeMap<OpaqueId, ImportedRouteSchedule>,
+    pub last_reconciled_at: Option<PlannerTimestamp>,
+}
+
+impl LegacyConvergenceImport {
+    fn from_legacy(value: &super::convergence::ConvergenceState) -> Result<Self> {
+        let mut goals = BTreeMap::new();
+        for record in value.goals.values() {
+            let task_id = OpaqueId::normalized(&record.goal.task_id);
+            let key = OpaqueId::normalized(format!("{}:{}", task_id, record.goal.generation));
+            let pending_action = record
+                .pending_action
+                .as_ref()
+                .map(|lease| {
+                    Ok::<_, anyhow::Error>(ImportedActionLease {
+                        action_id: OpaqueId::normalized(&lease.action_id),
+                        task_id: OpaqueId::normalized(&lease.task_id),
+                        generation: lease.generation,
+                        attempt_id: lease.attempt_id.as_deref().map(OpaqueId::normalized),
+                        fence: lease.fence,
+                        revision: lease.revision,
+                        stage: lease.stage,
+                        progress_id: OpaqueId::normalized(&lease.progress_digest),
+                        lease_epoch: lease.lease_epoch,
+                        expires_at: PlannerTimestamp::new(lease.expires_at.clone())?,
+                    })
+                })
+                .transpose()?;
+            goals.insert(
+                key,
+                ImportedGoalSchedule {
+                    task_id,
+                    generation: record.goal.generation,
+                    priority: record.priority,
+                    stage: record.stage,
+                    blocker: record.blocker,
+                    next_wake_at: PlannerTimestamp::new(record.next_wake_at.clone())?,
+                    backoff: ImportedBackoff {
+                        class: record.backoff.class,
+                        failures_without_progress: record.backoff.failures_without_progress,
+                        base_seconds: record.backoff.base_seconds,
+                        cap_seconds: record.backoff.cap_seconds,
+                        jitter_seed: OpaqueId::normalized(&record.backoff.jitter_seed),
+                    },
+                    progress_id: OpaqueId::normalized(&record.last_authoritative_progress.digest),
+                    pending_action,
+                },
+            );
+        }
+        let mut routes = BTreeMap::new();
+        for breaker in value.route_breakers.values() {
+            let route_id = OpaqueId::normalized(&breaker.route_id);
+            let probe_lease = breaker
+                .probe_lease
+                .as_ref()
+                .map(|lease| {
+                    Ok::<_, anyhow::Error>(ImportedRouteProbeLease {
+                        action_id: OpaqueId::normalized(&lease.action_id),
+                        task_id: OpaqueId::normalized(&lease.task_id),
+                        epoch: lease.epoch,
+                        expires_at: PlannerTimestamp::new(lease.expires_at.clone())?,
+                    })
+                })
+                .transpose()?;
+            routes.insert(
+                route_id.clone(),
+                ImportedRouteSchedule {
+                    route_id,
+                    epoch: breaker.epoch,
+                    state: breaker.state,
+                    consecutive_outages: breaker.consecutive_outages,
+                    next_probe_at: PlannerTimestamp::new(breaker.next_probe_at.clone())?,
+                    probe_lease,
+                    last_failure_marker: breaker
+                        .last_failure_marker
+                        .as_deref()
+                        .map(OpaqueId::normalized),
+                    recovered_at: breaker
+                        .recovered_at
+                        .as_ref()
+                        .map(|value| PlannerTimestamp::new(value.clone()))
+                        .transpose()?,
+                },
+            );
+        }
+        Ok(Self {
+            source_schema_version: value.schema_version,
+            goals,
+            routes,
+            last_reconciled_at: value
+                .last_reconciled_at
+                .as_ref()
+                .map(|value| PlannerTimestamp::new(value.clone()))
+                .transpose()?,
+        })
+    }
+
+    fn earliest_wake(&self) -> Option<DateTime<Utc>> {
+        self.goals
+            .values()
+            .filter(|record| {
+                !matches!(
+                    record.stage,
+                    super::convergence::ConvergenceStage::ObserveOwner
+                        | super::convergence::ConvergenceStage::AwaitDependency
+                )
+            })
+            .map(|record| record.next_wake_at.datetime())
+            .min()
+    }
 }
 
 /// Typed source of a failed dependency. These are deliberately semantic
@@ -393,6 +638,15 @@ pub struct PlannerState {
     pub repaired_incidents: BTreeSet<IncidentCode>,
     #[serde(default)]
     pub fail_closed: bool,
+    /// Exact one-time import of the legacy convergence scheduler. It is
+    /// migration evidence/read-model data only: the pure reducer never mutates
+    /// it or issues an effect from it. Later authority cutovers consume the
+    /// typed deadlines one domain at a time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub legacy_convergence: Option<Box<LegacyConvergenceImport>>,
+    /// `false` remains omitted so v1-v3 offline replay bytes do not drift.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub convergence_import_complete: bool,
 }
 
 impl PlannerState {
@@ -408,6 +662,8 @@ impl PlannerState {
             early_acknowledgements: BTreeMap::new(),
             repaired_incidents: BTreeSet::new(),
             fail_closed: false,
+            legacy_convergence: None,
+            convergence_import_complete: false,
         }
     }
 }
@@ -902,22 +1158,184 @@ pub fn replay_bytes(trace: &DecisionTrace) -> Result<Vec<u8>> {
     Ok(serde_json::to_vec_pretty(&replay(trace)?)?)
 }
 
-/// Durable adapter boundary. The trace is scheduling authority; the state file
-/// is a rebuildable normalized cache. Each observation is persisted in the
-/// trace before the new cache/effects are returned to an adapter.
+/// Production adapters submit this type instead of constructing sequence
+/// numbers. The store turns the adapter's observed wall/logical timestamp into
+/// a strictly increasing durable logical clock and allocates the next sequence.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TypedObservation {
+    pub observed_at: u64,
+    pub observation: Observation,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "phase", rename_all = "snake_case", deny_unknown_fields)]
+pub enum EffectExecutionPhase {
+    Issued,
+    Executing,
+    Executed { outcome: AckOutcome },
+    Acknowledged { outcome: AckOutcome },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EffectExecutionRecord {
+    pub effect: PlannedEffect,
+    pub phase: EffectExecutionPhase,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EffectExecutionJournal {
+    schema_version: u16,
+    #[serde(default)]
+    records: BTreeMap<OpaqueId, EffectExecutionRecord>,
+}
+
+impl Default for EffectExecutionJournal {
+    fn default() -> Self {
+        Self {
+            schema_version: EFFECT_JOURNAL_SCHEMA_VERSION,
+            records: BTreeMap::new(),
+        }
+    }
+}
+
+/// Recovery work is ordered: an already-recorded execution is acknowledged
+/// without running the physical operation again; issued/executing effects are
+/// retried with the same stable effect ID.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EffectReplay {
+    Execute(PlannedEffect),
+    Acknowledge {
+        effect: PlannedEffect,
+        outcome: AckOutcome,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct PlannerStatusProjection {
+    pub schema_version: u16,
+    pub graph_id: OpaqueId,
+    pub logical_time: u64,
+    pub last_sequence: Option<u64>,
+    pub next_sequence: Option<u64>,
+    pub earliest_deadline: Option<String>,
+    pub normalized_tasks: BTreeMap<OpaqueId, TaskObservation>,
+    pub effects: BTreeMap<OpaqueId, EffectExecutionRecord>,
+    pub legacy_convergence: Option<Box<LegacyConvergenceImport>>,
+    pub fail_closed: bool,
+}
+
+struct PlannerMutationLock {
+    file: File,
+}
+
+impl PlannerMutationLock {
+    fn acquire(dir: &Path) -> Result<Self> {
+        let root = dir.join("service");
+        std::fs::create_dir_all(&root)?;
+        let path = root.join(LOCK_FILE);
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .with_context(|| format!("failed to open {}", path.display()))?;
+        #[cfg(unix)]
+        loop {
+            use std::os::fd::AsRawFd;
+            let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+            if result == 0 {
+                break;
+            }
+            let error = std::io::Error::last_os_error();
+            if error.kind() != std::io::ErrorKind::Interrupted {
+                return Err(error).with_context(|| format!("failed to lock {}", path.display()));
+            }
+        }
+        Ok(Self { file })
+    }
+
+    fn acquire_shared_existing(dir: &Path) -> Result<Option<Self>> {
+        let path = dir.join("service").join(LOCK_FILE);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let file = OpenOptions::new()
+            .read(true)
+            .open(&path)
+            .with_context(|| format!("failed to open {}", path.display()))?;
+        #[cfg(unix)]
+        loop {
+            use std::os::fd::AsRawFd;
+            let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH) };
+            if result == 0 {
+                break;
+            }
+            let error = std::io::Error::last_os_error();
+            if error.kind() != std::io::ErrorKind::Interrupted {
+                return Err(error).with_context(|| format!("failed to lock {}", path.display()));
+            }
+        }
+        Ok(Some(Self { file }))
+    }
+}
+
+impl Drop for PlannerMutationLock {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            let _ = unsafe { libc::flock(self.file.as_raw_fd(), libc::LOCK_UN) };
+        }
+    }
+}
+
+/// Durable production boundary. The decision trace is scheduling authority,
+/// the effect journal is execution/acknowledgement authority, and the state
+/// file is only a rebuildable normalized cache. Every issued effect is present
+/// in both durable authorities before it can be returned to an adapter.
 pub struct PlannerStore {
     dir: PathBuf,
     trace: DecisionTrace,
     state: PlannerState,
+    effect_journal: EffectExecutionJournal,
 }
 
 impl PlannerStore {
     pub fn open(dir: &Path, graph_id: OpaqueId) -> Result<Self> {
+        let _lock = PlannerMutationLock::acquire(dir)?;
+        Self::load_locked(dir, graph_id)
+    }
+
+    fn load_locked(dir: &Path, graph_id: OpaqueId) -> Result<Self> {
         let root = dir.join("service");
         let trace_path = root.join(TRACE_FILE);
-        let trace = if trace_path.exists() {
+        let state_path = root.join(STATE_FILE);
+        let trace_existed = trace_path.exists();
+        let state_existed = state_path.exists();
+        let mut migrated = false;
+        let mut trace = if trace_existed {
             serde_json::from_slice::<DecisionTrace>(&std::fs::read(&trace_path)?)
                 .with_context(|| format!("failed to parse {}", trace_path.display()))?
+        } else if state_existed {
+            let state = serde_json::from_slice::<PlannerState>(&std::fs::read(&state_path)?)
+                .with_context(|| format!("failed to parse {}", state_path.display()))?;
+            if !(MIN_SUPPORTED_DAEMON_PLANNER_SCHEMA_VERSION..=DAEMON_PLANNER_SCHEMA_VERSION)
+                .contains(&state.schema_version)
+            {
+                bail!("unsupported daemon planner schema {}", state.schema_version);
+            }
+            migrated = true;
+            DecisionTrace {
+                trace_schema_version: state.schema_version,
+                planner_schema_version: state.schema_version,
+                redaction: RedactionPolicy::TypedIdentifiersAndDigestsOnly,
+                ruleset: PlannerRuleset::Corrected,
+                initial_state: state,
+                observations: Vec::new(),
+            }
         } else {
             DecisionTrace {
                 trace_schema_version: DAEMON_TRACE_SCHEMA_VERSION,
@@ -932,12 +1350,89 @@ impl PlannerStore {
         if trace.initial_state.graph_id != graph_id {
             bail!("daemon planner graph identity mismatch");
         }
+
+        if trace.trace_schema_version != DAEMON_TRACE_SCHEMA_VERSION
+            || trace.planner_schema_version != DAEMON_PLANNER_SCHEMA_VERSION
+            || trace.initial_state.schema_version != DAEMON_PLANNER_SCHEMA_VERSION
+        {
+            trace.trace_schema_version = DAEMON_TRACE_SCHEMA_VERSION;
+            trace.planner_schema_version = DAEMON_PLANNER_SCHEMA_VERSION;
+            trace.initial_state.schema_version = DAEMON_PLANNER_SCHEMA_VERSION;
+            migrated = true;
+        }
+        if !trace.initial_state.convergence_import_complete {
+            let convergence_path = super::convergence::ConvergenceState::path(dir);
+            if convergence_path.exists() {
+                // Load the typed legacy schema and copy it exactly. No `now`,
+                // policy, jitter, route-health read, or reconciliation occurs
+                // here, so existing deadlines and backoff cannot reset.
+                let convergence = super::convergence::ConvergenceState::load(dir)?;
+                trace.initial_state.legacy_convergence = Some(Box::new(
+                    LegacyConvergenceImport::from_legacy(&convergence)?,
+                ));
+                trace.initial_state.convergence_import_complete = true;
+                migrated = true;
+            }
+        }
+
         let state = replay(&trace)?.final_state;
-        Ok(Self {
+        let state_cache_changed = match std::fs::read(&state_path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<PlannerState>(&bytes).ok())
+        {
+            Some(cached) => cached != state,
+            None => trace_existed || state_existed || migrated,
+        };
+        let journal_path = root.join(EFFECT_JOURNAL_FILE);
+        let journal_existed = journal_path.exists();
+        let mut effect_journal = if journal_existed {
+            let journal =
+                serde_json::from_slice::<EffectExecutionJournal>(&std::fs::read(&journal_path)?)
+                    .with_context(|| format!("failed to parse {}", journal_path.display()))?;
+            if journal.schema_version != EFFECT_JOURNAL_SCHEMA_VERSION {
+                bail!(
+                    "unsupported planner effect journal schema {}",
+                    journal.schema_version
+                );
+            }
+            journal
+        } else {
+            EffectExecutionJournal::default()
+        };
+        let journal_changed = sync_effect_journal(&state, &mut effect_journal)?
+            || (!journal_existed && (trace_existed || state_existed || migrated));
+        let store = Self {
             dir: dir.to_path_buf(),
             trace,
             state,
-        })
+            effect_journal,
+        };
+        if migrated || journal_changed || state_cache_changed {
+            store.persist_all()?;
+        }
+        Ok(store)
+    }
+
+    fn refresh_locked(&mut self) -> Result<()> {
+        let graph_id = self.state.graph_id.clone();
+        *self = Self::load_locked(&self.dir, graph_id)?;
+        Ok(())
+    }
+
+    fn persist_all(&self) -> Result<()> {
+        let trace_path = self.trace_path();
+        crate::atomic_file::write_atomic(&trace_path, serde_json::to_vec_pretty(&self.trace)?)
+            .with_context(|| format!("failed to persist {}", trace_path.display()))?;
+        crate::atomic_file::write_atomic(
+            &self.effect_journal_path(),
+            serde_json::to_vec_pretty(&self.effect_journal)?,
+        )
+        .with_context(|| format!("failed to persist {}", self.effect_journal_path().display()))?;
+        crate::atomic_file::write_atomic(
+            &self.state_path(),
+            serde_json::to_vec_pretty(&self.state)?,
+        )
+        .with_context(|| format!("failed to persist {}", self.state_path().display()))
     }
 
     pub fn state(&self) -> &PlannerState {
@@ -952,36 +1447,361 @@ impl PlannerStore {
         self.dir.join("service").join(STATE_FILE)
     }
 
-    /// Persist one observation and return newly issued/retried physical effects.
-    /// On an invariant failure, the minimal replay bundle is written first.
+    pub fn effect_journal_path(&self) -> PathBuf {
+        self.dir.join("service").join(EFFECT_JOURNAL_FILE)
+    }
+
+    fn next_envelope(&self, input: TypedObservation) -> Result<ObservationEnvelope> {
+        let sequence = match self.state.last_sequence {
+            Some(last) => last.checked_add(1).context("planner sequence exhausted")?,
+            None => 1,
+        };
+        let logical_floor = self
+            .state
+            .logical_time
+            .checked_add(1)
+            .context("planner logical time exhausted")?;
+        Ok(ObservationEnvelope {
+            sequence,
+            logical_time: input.observed_at.max(logical_floor),
+            observation: input.observation,
+        })
+    }
+
+    /// Normalize a typed production observation using the current durable
+    /// allocator without persisting it. `observe` repeats this under the writer
+    /// lock and is the authoritative allocation path.
+    pub fn normalize_observation(&self, input: TypedObservation) -> Result<ObservationEnvelope> {
+        self.next_envelope(input)
+    }
+
+    /// Allocate sequence/logical time and durably reduce one typed production
+    /// observation. Callers cannot reset either counter after restart.
+    pub fn observe(&mut self, input: TypedObservation) -> Result<PlannerStep> {
+        let _lock = PlannerMutationLock::acquire(&self.dir)?;
+        self.refresh_locked()?;
+        let envelope = self.next_envelope(input)?;
+        self.apply_locked(envelope)
+    }
+
+    /// Low-level replay/test path for an already-normalized envelope. Production
+    /// adapters should use `observe` so allocation is store-owned.
     pub fn apply(&mut self, observation: ObservationEnvelope) -> Result<PlannerStep> {
+        let _lock = PlannerMutationLock::acquire(&self.dir)?;
+        self.refresh_locked()?;
+        self.apply_locked(observation)
+    }
+
+    fn apply_locked(&mut self, observation: ObservationEnvelope) -> Result<PlannerStep> {
         let (step, _) = plan_guarded(&self.dir, &self.state, &observation)?;
-        self.trace.observations.push(observation);
-        if self.trace.observations.len() > MAX_TRACE_OBSERVATIONS {
-            let split = self.trace.observations.len() - MAX_TRACE_OBSERVATIONS;
+        let mut trace = self.trace.clone();
+        trace.observations.push(observation.clone());
+        if trace.observations.len() > MAX_TRACE_OBSERVATIONS {
+            let split = trace.observations.len() - MAX_TRACE_OBSERVATIONS;
             let prefix = DecisionTrace {
-                observations: self.trace.observations[..split].to_vec(),
-                ..self.trace.clone()
+                observations: trace.observations[..split].to_vec(),
+                ..trace.clone()
             };
-            self.trace.initial_state = replay(&prefix)?.final_state;
-            self.trace.initial_state.seen_observations.clear();
-            self.trace.observations = self.trace.observations[split..].to_vec();
+            trace.initial_state = replay(&prefix)?.final_state;
+            trace.initial_state.seen_observations.clear();
+            trace.observations = trace.observations[split..].to_vec();
         }
-        let trace_path = self.trace_path();
-        if let Some(parent) = trace_path.parent() {
-            std::fs::create_dir_all(parent)?;
+        let mut journal = self.effect_journal.clone();
+        sync_effect_journal(&step.state, &mut journal)?;
+        if let Observation::EffectAcknowledged { effect_id, outcome } = &observation.observation
+            && *outcome == AckOutcome::Retryable
+            && let Some(record) = journal.records.get_mut(effect_id)
+        {
+            record.phase = EffectExecutionPhase::Issued;
         }
-        crate::atomic_file::write_atomic(&trace_path, serde_json::to_vec_pretty(&self.trace)?)
-            .with_context(|| format!("failed to persist {}", trace_path.display()))?;
-        // The trace above is authoritative after a crash. Only now publish the
-        // cache and return effects for execution.
+
+        // Trace first: a crash here reconstructs the issued journal record on
+        // open. Journal second: no effect is returned before its execution
+        // state is durable. The normalized state cache remains rebuildable.
+        crate::atomic_file::write_atomic(&self.trace_path(), serde_json::to_vec_pretty(&trace)?)
+            .with_context(|| format!("failed to persist {}", self.trace_path().display()))?;
+        crate::atomic_file::write_atomic(
+            &self.effect_journal_path(),
+            serde_json::to_vec_pretty(&journal)?,
+        )
+        .with_context(|| format!("failed to persist {}", self.effect_journal_path().display()))?;
         crate::atomic_file::write_atomic(
             &self.state_path(),
             serde_json::to_vec_pretty(&step.state)?,
         )
         .with_context(|| format!("failed to persist {}", self.state_path().display()))?;
+        self.trace = trace;
+        self.effect_journal = journal;
         self.state = step.state.clone();
         Ok(step)
+    }
+
+    /// Ordered restart work. `Execute` always carries the original stable ID;
+    /// `Acknowledge` proves execution was already recorded and must not rerun.
+    pub fn replayable_effects(&self) -> Vec<EffectReplay> {
+        self.effect_journal
+            .records
+            .values()
+            .filter_map(|record| match record.phase {
+                EffectExecutionPhase::Issued | EffectExecutionPhase::Executing => {
+                    Some(EffectReplay::Execute(record.effect.clone()))
+                }
+                EffectExecutionPhase::Executed { outcome } => Some(EffectReplay::Acknowledge {
+                    effect: record.effect.clone(),
+                    outcome,
+                }),
+                EffectExecutionPhase::Acknowledged { .. } => None,
+            })
+            .collect()
+    }
+
+    /// Persist the execution boundary before invoking an adapter. Repeating
+    /// this call after a crash is inert and returns the same effect.
+    pub fn mark_effect_execution_started(&mut self, effect_id: &OpaqueId) -> Result<PlannedEffect> {
+        let _lock = PlannerMutationLock::acquire(&self.dir)?;
+        self.refresh_locked()?;
+        let (effect, changed) = {
+            let record = self
+                .effect_journal
+                .records
+                .get_mut(effect_id)
+                .with_context(|| format!("unknown planner effect {effect_id}"))?;
+            let changed = match record.phase {
+                EffectExecutionPhase::Issued => {
+                    record.phase = EffectExecutionPhase::Executing;
+                    true
+                }
+                EffectExecutionPhase::Executing => false,
+                EffectExecutionPhase::Executed { .. } => {
+                    bail!("planner effect {effect_id} already executed; acknowledge it")
+                }
+                EffectExecutionPhase::Acknowledged { .. } => {
+                    bail!("planner effect {effect_id} is already acknowledged")
+                }
+            };
+            (record.effect.clone(), changed)
+        };
+        if changed {
+            crate::atomic_file::write_atomic(
+                &self.effect_journal_path(),
+                serde_json::to_vec_pretty(&self.effect_journal)?,
+            )?;
+        }
+        Ok(effect)
+    }
+
+    /// Persist the physical result before acknowledgement. A duplicate result
+    /// with the same outcome is inert; a conflicting result fails closed.
+    pub fn record_effect_execution(
+        &mut self,
+        effect_id: &OpaqueId,
+        outcome: AckOutcome,
+    ) -> Result<()> {
+        let _lock = PlannerMutationLock::acquire(&self.dir)?;
+        self.refresh_locked()?;
+        let record = self
+            .effect_journal
+            .records
+            .get_mut(effect_id)
+            .with_context(|| format!("unknown planner effect {effect_id}"))?;
+        match record.phase {
+            EffectExecutionPhase::Issued | EffectExecutionPhase::Executing => {
+                record.phase = EffectExecutionPhase::Executed { outcome };
+                crate::atomic_file::write_atomic(
+                    &self.effect_journal_path(),
+                    serde_json::to_vec_pretty(&self.effect_journal)?,
+                )?;
+            }
+            EffectExecutionPhase::Executed { outcome: existing }
+            | EffectExecutionPhase::Acknowledged { outcome: existing }
+                if existing == outcome => {}
+            EffectExecutionPhase::Executed { outcome: existing }
+            | EffectExecutionPhase::Acknowledged { outcome: existing } => {
+                bail!(
+                    "conflicting execution outcome for {effect_id}: {existing:?} versus {outcome:?}"
+                )
+            }
+        }
+        Ok(())
+    }
+
+    /// Acknowledge a recorded execution through the same durable observation
+    /// allocator. Trace acknowledgement is persisted before the journal is
+    /// marked complete, so either crash ordering repairs deterministically.
+    pub fn acknowledge_recorded_effect(
+        &mut self,
+        effect_id: &OpaqueId,
+        observed_at: u64,
+    ) -> Result<PlannerStep> {
+        let _lock = PlannerMutationLock::acquire(&self.dir)?;
+        self.refresh_locked()?;
+        let outcome = match self.effect_journal.records.get(effect_id).map(|r| &r.phase) {
+            Some(EffectExecutionPhase::Executed { outcome }) => *outcome,
+            Some(EffectExecutionPhase::Acknowledged { .. }) => {
+                return Ok(PlannerStep {
+                    sequence: self.state.last_sequence.unwrap_or(0),
+                    state: self.state.clone(),
+                    effects: Vec::new(),
+                    violations: BTreeSet::new(),
+                });
+            }
+            Some(EffectExecutionPhase::Issued | EffectExecutionPhase::Executing) => {
+                bail!("planner effect {effect_id} has no recorded execution")
+            }
+            None => bail!("unknown planner effect {effect_id}"),
+        };
+        let envelope = self.next_envelope(TypedObservation {
+            observed_at,
+            observation: Observation::EffectAcknowledged {
+                effect_id: effect_id.clone(),
+                outcome,
+            },
+        })?;
+        self.apply_locked(envelope)
+    }
+
+    pub fn earliest_deadline(&self) -> Option<DateTime<Utc>> {
+        earliest_deadline(&self.state, &self.effect_journal)
+    }
+
+    pub fn status_projection(&self) -> PlannerStatusProjection {
+        status_projection(&self.state, &self.effect_journal)
+    }
+
+    /// Read status without creating a lock, running a migration, importing
+    /// convergence, or rewriting a cache. Atomic writer renames ensure each
+    /// individual source is complete; the trace remains authoritative.
+    pub fn read_status(dir: &Path) -> Result<Option<PlannerStatusProjection>> {
+        let _lock = PlannerMutationLock::acquire_shared_existing(dir)?;
+        let root = dir.join("service");
+        let trace_path = root.join(TRACE_FILE);
+        let state_path = root.join(STATE_FILE);
+        let state = if trace_path.exists() {
+            let trace: DecisionTrace = serde_json::from_slice(&std::fs::read(&trace_path)?)
+                .with_context(|| format!("failed to parse {}", trace_path.display()))?;
+            replay(&trace)?.final_state
+        } else if state_path.exists() {
+            serde_json::from_slice(&std::fs::read(&state_path)?)
+                .with_context(|| format!("failed to parse {}", state_path.display()))?
+        } else {
+            return Ok(None);
+        };
+        let journal_path = root.join(EFFECT_JOURNAL_FILE);
+        let mut journal = if journal_path.exists() {
+            serde_json::from_slice(&std::fs::read(&journal_path)?)
+                .with_context(|| format!("failed to parse {}", journal_path.display()))?
+        } else {
+            EffectExecutionJournal::default()
+        };
+        sync_effect_journal(&state, &mut journal)?;
+        Ok(Some(status_projection(&state, &journal)))
+    }
+}
+
+fn canonical_issued_effect(effect: &PlannedEffect) -> PlannedEffect {
+    let mut effect = effect.clone();
+    effect.status = EffectStatus::Issued;
+    effect
+}
+
+fn sync_effect_journal(state: &PlannerState, journal: &mut EffectExecutionJournal) -> Result<bool> {
+    if journal.schema_version != EFFECT_JOURNAL_SCHEMA_VERSION {
+        bail!(
+            "unsupported planner effect journal schema {}",
+            journal.schema_version
+        );
+    }
+    let before = journal.clone();
+    for (effect_id, record) in &journal.records {
+        if effect_id != &record.effect.effect_id {
+            bail!("planner effect journal key/id mismatch for {effect_id}");
+        }
+        if !state.effects.contains_key(effect_id) {
+            bail!("planner effect journal contains unknown effect {effect_id}");
+        }
+    }
+    for (effect_id, effect) in &state.effects {
+        let canonical = canonical_issued_effect(effect);
+        let record =
+            journal
+                .records
+                .entry(effect_id.clone())
+                .or_insert_with(|| EffectExecutionRecord {
+                    effect: canonical.clone(),
+                    phase: match effect.status {
+                        EffectStatus::Issued => EffectExecutionPhase::Issued,
+                        EffectStatus::Acknowledged(outcome) => {
+                            EffectExecutionPhase::Acknowledged { outcome }
+                        }
+                    },
+                });
+        if record.effect != canonical {
+            bail!("planner effect journal payload mismatch for {effect_id}");
+        }
+        if let EffectStatus::Acknowledged(outcome) = effect.status {
+            record.phase = EffectExecutionPhase::Acknowledged { outcome };
+        }
+    }
+    Ok(*journal != before)
+}
+
+fn logical_datetime(value: u64) -> Option<DateTime<Utc>> {
+    i64::try_from(value)
+        .ok()
+        .and_then(|seconds| DateTime::from_timestamp(seconds, 0))
+}
+
+fn earliest_deadline(
+    state: &PlannerState,
+    journal: &EffectExecutionJournal,
+) -> Option<DateTime<Utc>> {
+    let mut deadlines = Vec::new();
+    if journal
+        .records
+        .values()
+        .any(|record| !matches!(record.phase, EffectExecutionPhase::Acknowledged { .. }))
+        && let Some(now) = logical_datetime(state.logical_time)
+    {
+        deadlines.push(now);
+    }
+    for task in state.tasks.values().filter(|task| task.unfinished) {
+        let Some(scheduled) = task.scheduled.as_ref() else {
+            continue;
+        };
+        let settled = state.effects.values().any(|effect| {
+            effect.task == task.key
+                && effect.action == scheduled.action
+                && matches!(effect.status, EffectStatus::Acknowledged(_))
+        });
+        if !settled && let Some(deadline) = logical_datetime(scheduled.deadline) {
+            deadlines.push(deadline);
+        }
+    }
+    if let Some(legacy) = state.legacy_convergence.as_ref()
+        && let Some(deadline) = legacy.earliest_wake()
+    {
+        deadlines.push(deadline);
+    }
+    deadlines.into_iter().min()
+}
+
+fn status_projection(
+    state: &PlannerState,
+    journal: &EffectExecutionJournal,
+) -> PlannerStatusProjection {
+    PlannerStatusProjection {
+        schema_version: state.schema_version,
+        graph_id: state.graph_id.clone(),
+        logical_time: state.logical_time,
+        last_sequence: state.last_sequence,
+        next_sequence: state
+            .last_sequence
+            .map_or(Some(1), |last| last.checked_add(1)),
+        earliest_deadline: earliest_deadline(state, journal).map(|value| value.to_rfc3339()),
+        normalized_tasks: state.tasks.clone(),
+        effects: journal.records.clone(),
+        legacy_convergence: state.legacy_convergence.clone(),
+        fail_closed: state.fail_closed,
     }
 }
 
@@ -1286,6 +2106,27 @@ mod tests {
     }
 
     #[test]
+    fn authoritative_trace_rebuilds_missing_empty_journal_and_state_cache() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut store = PlannerStore::open(temp.path(), id("graph-a")).unwrap();
+        store
+            .observe(TypedObservation {
+                observed_at: 50,
+                observation: Observation::Crash,
+            })
+            .unwrap();
+        let expected = store.state().clone();
+        std::fs::remove_file(store.state_path()).unwrap();
+        std::fs::remove_file(store.effect_journal_path()).unwrap();
+        drop(store);
+
+        let reopened = PlannerStore::open(temp.path(), id("graph-a")).unwrap();
+        assert_eq!(reopened.state(), &expected);
+        assert!(reopened.state_path().exists());
+        assert!(reopened.effect_journal_path().exists());
+    }
+
+    #[test]
     fn durable_trace_compacts_to_bounded_checkpoint_and_replays_identically() {
         let temp = tempfile::tempdir().unwrap();
         let mut store = PlannerStore::open(temp.path(), id("graph-a")).unwrap();
@@ -1307,6 +2148,284 @@ mod tests {
         assert!(serde_json::from_str::<DecisionTrace>(raw).is_err());
         let unknown = r#"{"trace_schema_version":1,"planner_schema_version":1,"redaction":"typed_identifiers_and_digests_only","ruleset":"corrected","initial_state":{"schema_version":1,"graph_id":"graph-a","logical_time":0,"last_sequence":null,"seen_observations":{},"tasks":{},"effects":{},"early_acknowledgements":{},"repaired_incidents":[],"fail_closed":false},"observations":[],"secret":"must-not-be-representable"}"#;
         assert!(serde_json::from_str::<DecisionTrace>(unknown).is_err());
+    }
+
+    #[test]
+    fn schema_v1_state_and_convergence_fixture_migrate_without_reset_and_restart_byte_stable() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = temp.path().join("service");
+        std::fs::create_dir_all(&service).unwrap();
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/planner_runtime");
+        let convergence_bytes = std::fs::read(fixtures.join("convergence-state-v1.json")).unwrap();
+        std::fs::write(service.join("convergence-state.json"), &convergence_bytes).unwrap();
+        std::fs::copy(
+            fixtures.join("planner-state-v1.json"),
+            service.join(STATE_FILE),
+        )
+        .unwrap();
+
+        let expected_convergence: super::super::convergence::ConvergenceState =
+            serde_json::from_slice(&convergence_bytes).unwrap();
+        let expected_import = LegacyConvergenceImport::from_legacy(&expected_convergence).unwrap();
+        let store = PlannerStore::open(temp.path(), id("graph-a")).unwrap();
+        assert_eq!(store.state().schema_version, DAEMON_PLANNER_SCHEMA_VERSION);
+        assert_eq!(store.state().last_sequence, Some(7));
+        assert_eq!(store.state().logical_time, 1_700_000_000);
+        assert_eq!(
+            store.state().legacy_convergence.as_deref(),
+            Some(&expected_import)
+        );
+        assert_eq!(
+            store.status_projection().earliest_deadline.as_deref(),
+            Some("2031-02-03T04:05:06.123456789+00:00")
+        );
+        assert!(matches!(
+            store
+                .status_projection()
+                .effects
+                .values()
+                .next()
+                .unwrap()
+                .phase,
+            EffectExecutionPhase::Acknowledged {
+                outcome: AckOutcome::Succeeded
+            }
+        ));
+        assert_eq!(
+            store
+                .normalize_observation(TypedObservation {
+                    observed_at: 1,
+                    observation: Observation::Crash,
+                })
+                .unwrap(),
+            ObservationEnvelope {
+                sequence: 8,
+                logical_time: 1_700_000_001,
+                observation: Observation::Crash,
+            }
+        );
+
+        let paths = [
+            store.trace_path(),
+            store.state_path(),
+            store.effect_journal_path(),
+            service.join("convergence-state.json"),
+        ];
+        let before = paths
+            .iter()
+            .map(|path| std::fs::read(path).unwrap())
+            .collect::<Vec<_>>();
+        drop(store);
+        let reopened = PlannerStore::open(temp.path(), id("graph-a")).unwrap();
+        let after = paths
+            .iter()
+            .map(|path| std::fs::read(path).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(before, after);
+        assert_eq!(
+            reopened.state().legacy_convergence.as_deref(),
+            Some(&expected_import)
+        );
+    }
+
+    #[test]
+    fn concurrent_store_handles_refresh_monotonic_allocator_under_lock() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut first = PlannerStore::open(temp.path(), id("graph-a")).unwrap();
+        let mut stale = PlannerStore::open(temp.path(), id("graph-a")).unwrap();
+        first
+            .observe(TypedObservation {
+                observed_at: 500,
+                observation: Observation::Crash,
+            })
+            .unwrap();
+        stale
+            .observe(TypedObservation {
+                observed_at: 1,
+                observation: Observation::Crash,
+            })
+            .unwrap();
+        assert_eq!(stale.state().last_sequence, Some(2));
+        assert_eq!(stale.state().logical_time, 501);
+        let reopened = PlannerStore::open(temp.path(), id("graph-a")).unwrap();
+        assert_eq!(reopened.state().last_sequence, Some(2));
+        assert_eq!(reopened.state().logical_time, 501);
+    }
+
+    #[test]
+    fn issue_execute_ack_fault_boundaries_replay_one_stable_effect_id() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut store = PlannerStore::open(temp.path(), id("graph-a")).unwrap();
+        assert!(store.replayable_effects().is_empty()); // before issue persistence
+
+        let observation = match runnable(1, "task-a", "attempt-a").observation {
+            Observation::Task(task) => Observation::Task(task),
+            _ => unreachable!(),
+        };
+        let issued = store
+            .observe(TypedObservation {
+                observed_at: 100,
+                observation,
+            })
+            .unwrap();
+        let effect_id = issued.effects[0].effect_id.clone();
+        assert!(store.trace_path().exists());
+        assert!(store.effect_journal_path().exists());
+        drop(store); // after issue, before execution
+
+        let mut store = PlannerStore::open(temp.path(), id("graph-a")).unwrap();
+        let EffectReplay::Execute(effect) = &store.replayable_effects()[0] else {
+            panic!("issued effect must replay for execution")
+        };
+        assert_eq!(effect.effect_id, effect_id);
+        assert_eq!(
+            store
+                .mark_effect_execution_started(&effect_id)
+                .unwrap()
+                .effect_id,
+            effect_id
+        );
+
+        // The adapter's physical consequence is idempotent by effect ID. A
+        // crash after execution but before recording may call it again, but
+        // cannot produce a second logical/physical consequence.
+        let mut physical_consequences = BTreeSet::new();
+        assert!(physical_consequences.insert(effect_id.clone()));
+        drop(store);
+        let mut store = PlannerStore::open(temp.path(), id("graph-a")).unwrap();
+        let EffectReplay::Execute(replayed) = &store.replayable_effects()[0] else {
+            panic!("unrecorded execution must replay")
+        };
+        assert_eq!(replayed.effect_id, effect_id);
+        assert!(!physical_consequences.insert(effect_id.clone()));
+        store
+            .record_effect_execution(&effect_id, AckOutcome::Succeeded)
+            .unwrap();
+        drop(store); // after execution record, before acknowledgement
+
+        let mut store = PlannerStore::open(temp.path(), id("graph-a")).unwrap();
+        assert!(matches!(
+            &store.replayable_effects()[0],
+            EffectReplay::Acknowledge { effect, outcome }
+                if effect.effect_id == effect_id && *outcome == AckOutcome::Succeeded
+        ));
+        store.acknowledge_recorded_effect(&effect_id, 101).unwrap();
+        assert!(store.replayable_effects().is_empty());
+        let acknowledged_sequence = store.state().last_sequence;
+        let duplicate = store.acknowledge_recorded_effect(&effect_id, 999).unwrap();
+        assert!(duplicate.effects.is_empty());
+        assert_eq!(duplicate.state.last_sequence, acknowledged_sequence);
+        let bytes_before = [
+            std::fs::read(store.trace_path()).unwrap(),
+            std::fs::read(store.state_path()).unwrap(),
+            std::fs::read(store.effect_journal_path()).unwrap(),
+        ];
+        drop(store); // after acknowledgement
+
+        let store = PlannerStore::open(temp.path(), id("graph-a")).unwrap();
+        let bytes_after = [
+            std::fs::read(store.trace_path()).unwrap(),
+            std::fs::read(store.state_path()).unwrap(),
+            std::fs::read(store.effect_journal_path()).unwrap(),
+        ];
+        assert_eq!(bytes_before, bytes_after);
+        assert!(store.replayable_effects().is_empty());
+        assert_eq!(store.state().effects.len(), 1);
+        assert_eq!(
+            store.state().effects[&effect_id].status,
+            EffectStatus::Acknowledged(AckOutcome::Succeeded)
+        );
+        assert_eq!(physical_consequences.len(), 1);
+    }
+
+    #[test]
+    fn all_existing_trace_schema_fixtures_migrate_with_stable_effect_ids() {
+        let fixtures = [
+            "formal/fixtures/daemon/v1/target_moved_during_finish.json",
+            "formal/fixtures/daemon/v2/zero_progress_source_failure.json",
+            "formal/fixtures/daemon/v3/stale_worktree_spawn_owner.json",
+        ];
+        let convergence_fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/planner_runtime/convergence-state-v1.json");
+        for fixture in fixtures {
+            let wrapper: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join(fixture)).unwrap(),
+            )
+            .unwrap();
+            let mut trace: DecisionTrace =
+                serde_json::from_value(wrapper.get("trace").unwrap().clone()).unwrap();
+            trace.ruleset = PlannerRuleset::Corrected;
+            let graph_id = trace.initial_state.graph_id.clone();
+            let expected = replay(&trace)
+                .unwrap()
+                .final_state
+                .effects
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>();
+            let temp = tempfile::tempdir().unwrap();
+            let service = temp.path().join("service");
+            std::fs::create_dir_all(&service).unwrap();
+            std::fs::write(
+                service.join(TRACE_FILE),
+                serde_json::to_vec_pretty(&trace).unwrap(),
+            )
+            .unwrap();
+            std::fs::copy(&convergence_fixture, service.join("convergence-state.json")).unwrap();
+            let store = PlannerStore::open(temp.path(), graph_id).unwrap();
+            assert_eq!(
+                store.state().effects.keys().cloned().collect::<Vec<_>>(),
+                expected,
+                "effect identity drifted while migrating {fixture}"
+            );
+            assert_eq!(
+                store.state().legacy_convergence.as_ref().unwrap().goals[&id("legacy-goal:3")]
+                    .next_wake_at
+                    .as_str(),
+                "2031-02-03T04:05:06.123456789+00:00"
+            );
+            let migrated: DecisionTrace =
+                serde_json::from_slice(&std::fs::read(store.trace_path()).unwrap()).unwrap();
+            assert_eq!(migrated.trace_schema_version, DAEMON_TRACE_SCHEMA_VERSION);
+            assert_eq!(
+                migrated.planner_schema_version,
+                DAEMON_PLANNER_SCHEMA_VERSION
+            );
+        }
+    }
+
+    #[test]
+    fn read_only_status_projection_does_not_create_or_rewrite_runtime_files() {
+        let temp = tempfile::tempdir().unwrap();
+        assert!(PlannerStore::read_status(temp.path()).unwrap().is_none());
+        assert!(!temp.path().join("service").exists());
+
+        let mut store = PlannerStore::open(temp.path(), id("graph-a")).unwrap();
+        store
+            .observe(TypedObservation {
+                observed_at: 42,
+                observation: runnable(1, "task-a", "attempt-a").observation,
+            })
+            .unwrap();
+        let paths = [
+            store.trace_path(),
+            store.state_path(),
+            store.effect_journal_path(),
+        ];
+        let before = paths
+            .iter()
+            .map(|path| std::fs::read(path).unwrap())
+            .collect::<Vec<_>>();
+        drop(store);
+        let status = PlannerStore::read_status(temp.path()).unwrap().unwrap();
+        assert_eq!(status.last_sequence, Some(1));
+        assert_eq!(status.next_sequence, Some(2));
+        assert_eq!(status.effects.len(), 1);
+        let after = paths
+            .iter()
+            .map(|path| std::fs::read(path).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(before, after);
     }
 
     #[test]

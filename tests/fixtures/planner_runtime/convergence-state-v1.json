@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "goals": {
+    "legacy-goal#3": {
+      "goal": {
+        "task_id": "legacy-goal",
+        "generation": 3,
+        "goal_digest": "b3:legacy-goal",
+        "completion_contract": "land"
+      },
+      "priority": 77,
+      "stage": "await-dispatch",
+      "blocker": "dispatch",
+      "next_wake_at": "2031-02-03T04:05:06.123456789+00:00",
+      "backoff": {
+        "class": "dispatch",
+        "failures_without_progress": 5,
+        "base_seconds": 10,
+        "cap_seconds": 640,
+        "jitter_seed": "b3:legacy-jitter"
+      },
+      "last_authoritative_progress": {
+        "digest": "b3:legacy-progress"
+      },
+      "pending_action": {
+        "action_id": "b3:legacy-action",
+        "task_id": "legacy-goal",
+        "generation": 3,
+        "attempt_id": "attempt-3-4",
+        "fence": 9,
+        "revision": 12,
+        "stage": "await-dispatch",
+        "progress_digest": "b3:legacy-progress",
+        "lease_epoch": 6,
+        "expires_at": "2031-02-03T04:05:16.987654321+00:00"
+      }
+    }
+  },
+  "route_breakers": {
+    "pi|openrouter|b3:endpoint": {
+      "route_id": "pi|openrouter|b3:endpoint",
+      "epoch": 11,
+      "state": "unavailable",
+      "consecutive_outages": 4,
+      "next_probe_at": "2031-02-03T04:07:06.222333444+00:00",
+      "probe_lease": {
+        "action_id": "b3:route-probe",
+        "task_id": "legacy-goal",
+        "epoch": 11,
+        "expires_at": "2031-02-03T04:07:16.222333444+00:00"
+      },
+      "last_failure_marker": "2031-02-03T03:59:59+00:00"
+    }
+  },
+  "last_reconciled_at": "2031-02-03T04:00:00.999999999+00:00"
+}
