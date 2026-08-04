@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "graph_id": "graph-a",
+  "logical_time": 1700000000,
+  "last_sequence": 7,
+  "seen_observations": {
+    "7": "obs:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "tasks": {
+    "task:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": {
+      "key": {
+        "graph_id": "graph-a",
+        "task_id": "scheduled-task",
+        "generation": 2,
+        "attempt_id": "attempt-2-8",
+        "fence": 8
+      },
+      "progress_id": "progress-scheduled",
+      "unfinished": true,
+      "owner": {
+        "kind": "none"
+      },
+      "scheduled": {
+        "action": "cleanup_finish",
+        "deadline": 2200000000
+      },
+      "incidents": []
+    },
+    "task:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc": {
+      "key": {
+        "graph_id": "graph-a",
+        "task_id": "settled-task",
+        "generation": 1,
+        "attempt_id": "attempt-1-1",
+        "fence": 1
+      },
+      "progress_id": "progress-settled",
+      "unfinished": true,
+      "owner": {
+        "kind": "none"
+      },
+      "scheduled": {
+        "action": "probe_route",
+        "deadline": 1800000000
+      },
+      "incidents": []
+    }
+  },
+  "effects": {
+    "effect:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd": {
+      "effect_id": "effect:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "task": {
+        "graph_id": "graph-a",
+        "task_id": "settled-task",
+        "generation": 1,
+        "attempt_id": "attempt-1-1",
+        "fence": 1
+      },
+      "action": "probe_route",
+      "issue_epoch": 1,
+      "status": {
+        "acknowledged": "succeeded"
+      }
+    }
+  },
+  "early_acknowledgements": {},
+  "repaired_incidents": [],
+  "fail_closed": false
+}

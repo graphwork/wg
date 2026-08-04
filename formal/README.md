@@ -172,10 +172,14 @@ added exact evidence slots and typed failed-prerequisite classification.
 Version 3 adds the stale-worktree preparation observation: a proven-dead owner
 with retained owner-token and observer receipts deterministically emits one
 fenced reclaim/retain effect followed by one current-attempt dispatch effect;
-a proven-live or unproven owner emits neither. Both effects retain stable IDs
-across repeated observations and acknowledgements. The reader continues to
-replay immutable v1 and v2 traces without reinterpretation. Its function
-is:
+a proven-live or unproven owner emits neither. Version 4 is the production
+runtime kernel: store-owned monotonic sequence/logical-time allocation, a
+separate issue/execution/ack journal, read-only status/earliest-deadline
+projection, and a one-time typed/redacted import of legacy convergence
+backoff/deadline/route state. It does not cut over a domain or change the pure
+v1-v3 reduction semantics. Effects retain stable IDs across repeated
+observations and acknowledgements. The reader continues to replay immutable
+v1-v3 traces without reinterpretation. Its function is:
 
 ```text
 normalized control state + ordered typed observation/ack + logical time

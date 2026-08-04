@@ -2987,6 +2987,13 @@ description = "Candidate-binary replay of a permanent daemon incident trace is b
 timeout_seconds = 30
 
 [[scenario]]
+name = "planner_runtime_kernel"
+script = "scenarios/planner_runtime_kernel.sh"
+owners = ["convergence-cutover-runtime-kernel"]
+description = "Candidate-binary credential-free real-daemon step-1 kernel proof: bootstrap a legacy convergence goal, seed exact future deadline/backoff/jitter and route-breaker state, remove prior planner cache, then start the candidate. Startup migrates the typed legacy state once into schema-v4 PlannerStore without resetting any scheduling value; `service status --json` exposes the read-only planner projection and one earliest deadline; a second daemon restart and repeated status read leave decision trace, normalized cache, effect journal, and planner projection byte-identical. No planner domain effect is executed and legacy dispatch authority remains untouched for the ordered step-2 cutover."
+timeout_seconds = 120
+
+[[scenario]]
 name = "failed_prerequisite_convergence"
 script = "scenarios/failed_prerequisite_convergence.sh"
 owners = ["fix-nonsemantic-failed-dependency-convergence"]
