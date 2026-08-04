@@ -983,7 +983,12 @@ pub fn plan(
         }
         Observation::EffectAcknowledged { effect_id, outcome } => {
             if let Some(effect) = next.effects.get_mut(effect_id) {
-                if *outcome == AckOutcome::Retryable {
+                // The first terminal acknowledgement is immutable. Delayed,
+                // duplicated, or conflicting acknowledgements from an older
+                // adapter execution cannot reopen or rewrite a settled effect.
+                if matches!(effect.status, EffectStatus::Acknowledged(_)) {
+                    // Inert by design.
+                } else if *outcome == AckOutcome::Retryable {
                     // A physical retry reuses the same logical effect ID. The
                     // effect map remains cardinality-one while the adapter is
                     // explicitly asked to retry its idempotent operation.
@@ -1939,6 +1944,44 @@ mod tests {
                 },
             };
             state = plan(&state, &ack, PlannerRuleset::Corrected).state;
+        }
+        assert_eq!(state.effects.len(), 1);
+        assert_eq!(
+            state.effects[&effect_id].status,
+            EffectStatus::Acknowledged(AckOutcome::Succeeded)
+        );
+    }
+
+    #[test]
+    fn terminal_acknowledgement_is_immutable_under_reordered_conflicting_acks() {
+        let issued = plan(
+            &PlannerState::new(id("graph-a")),
+            &runnable(1, "task-a", "attempt-a"),
+            PlannerRuleset::Corrected,
+        );
+        let effect_id = issued.effects[0].effect_id.clone();
+        let mut state = issued.state;
+        for (sequence, outcome) in [
+            (2, AckOutcome::Succeeded),
+            (3, AckOutcome::Retryable),
+            (4, AckOutcome::RejectedStale),
+        ] {
+            let step = plan(
+                &state,
+                &ObservationEnvelope {
+                    sequence,
+                    logical_time: sequence,
+                    observation: Observation::EffectAcknowledged {
+                        effect_id: effect_id.clone(),
+                        outcome,
+                    },
+                },
+                PlannerRuleset::Corrected,
+            );
+            if sequence > 2 {
+                assert!(step.effects.is_empty());
+            }
+            state = step.state;
         }
         assert_eq!(state.effects.len(), 1);
         assert_eq!(
