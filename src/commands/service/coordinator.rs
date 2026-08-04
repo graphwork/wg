@@ -4723,6 +4723,16 @@ fn spawn_agents_for_ready_tasks(
                 );
             }
             Ok(worksgood::service::RouteAdmission::Deferred { until, reason }) => {
+                // Route breaker/probe admission has a durable deadline and is
+                // therefore an explicit forward disposition. Report it to the
+                // daemon monitor exactly like goal-action backoff; otherwise a
+                // healthy cooldown is misdiagnosed as a dispatcher wedge and
+                // the daemon pauses before the deadline can ever fire.
+                summary.admission_deferred_tasks =
+                    summary.admission_deferred_tasks.saturating_add(1);
+                summary
+                    .admission_deferred_reason
+                    .get_or_insert_with(|| format!("{reason} (route {route_id} wake {until})"));
                 eprintln!(
                     "[reconciler] Deferring '{}' on exact route {}: {} (next wake {})",
                     task.id, route_id, reason, until

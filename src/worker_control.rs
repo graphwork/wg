@@ -123,8 +123,17 @@ impl WorkerOperationKind {
             Self::Context,
             Self::MessageRead,
             Self::MessagePoll,
+            Self::Log,
             Self::ArtifactList,
             Self::DependencyArtifactRead,
+            // DoneHandoff is a one-way semantic reservation, but the exact
+            // fenced owner must retain authority to drive the already-durable
+            // transaction through settle/cleanup. Revoking FinishHandoff here
+            // stranded every Prepared transaction in Quiescing and caused the
+            // dispatcher to respawn the same completed worker indefinitely.
+            Self::FinishHandoff,
+            Self::PiWatchdog,
+            Self::Telemetry,
             Self::Heartbeat,
         ]
     }
@@ -1234,6 +1243,32 @@ mod tests {
         };
         begin_request(&dir, "intent-1", &token, &operation).unwrap();
         let prepared = prepare_done_transaction(&dir, &binding, "intent-1", &operation).unwrap();
+        let reserved = lookup_capability(&dir, &token).unwrap();
+        assert!(
+            !reserved
+                .allowed_operations
+                .contains(&WorkerOperationKind::DoneHandoff)
+        );
+        assert!(
+            !reserved
+                .allowed_operations
+                .contains(&WorkerOperationKind::FailHandoff)
+        );
+        assert!(
+            reserved
+                .allowed_operations
+                .contains(&WorkerOperationKind::FinishHandoff)
+        );
+        assert!(
+            reserved
+                .allowed_operations
+                .contains(&WorkerOperationKind::PiWatchdog)
+        );
+        assert!(
+            reserved
+                .allowed_operations
+                .contains(&WorkerOperationKind::Telemetry)
+        );
         let head = transaction_head_path(&dir, &prepared.transaction_id);
         fs::remove_file(&head).unwrap();
         assert_eq!(
