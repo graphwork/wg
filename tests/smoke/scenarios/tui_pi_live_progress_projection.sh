@@ -43,6 +43,11 @@ with open(p,"w") as f:
     f.write(json.dumps({"type":"tool_execution_start","toolCallId":"build-1","toolName":"bash","args":{"command":"cargo test --workspace"}})+"\n")
     for i in range(260):
         f.write(json.dumps({"type":"tool_execution_update","toolCallId":"build-1","toolName":"bash","args":{"command":"cargo test --workspace"},"partialResult":{"content":[{"type":"text","text":f"tests completed {i}/260\nPI_LATEST_PROGRESS_{i}"}]}})+"\n")
+    # Keep the transcript fixture inside the bounded reverse-tail window.
+    f.write(json.dumps({"type":"turn_end","message":{"content":[
+        {"type":"thinking","thinking":"PI_CHAT_STYLE_THINKING"},
+        {"type":"text","text":"## PI_CHAT_STYLE_HEADING\n\n- **PI_MARKDOWN_BOLD**\n- `PI_MARKDOWN_CODE`"}
+    ]}})+"\n")
 PY
 
 session="wgsmoke-pi-progress-$$"
@@ -72,13 +77,14 @@ assert_clean_projection() {
     loud_fail "$mode leaked native JSON: $(cat "$scratch/dump.txt")"
 }
 
-assert_clean_projection Events
-tmux send-keys -t "$session" 4
-wait_dump 'view=\[HighLevel\]' 'did not enter HighLevel'
-assert_clean_projection HighLevel
-tmux send-keys -t "$session" 4
-wait_dump 'view=\[Pretty\]' 'did not enter Pretty'
+# Pi Logs must open on the chat-style cleaned transcript, not on the optional
+# Events/HighLevel projections. Markdown, thinking, and tools share that view.
+wait_dump 'view=\[Pretty\]' 'Pi Log did not default to the chat-style Pretty transcript'
 assert_clean_projection Pretty
+for transcript_text in PI_CHAT_STYLE_THINKING PI_CHAT_STYLE_HEADING PI_MARKDOWN_BOLD PI_MARKDOWN_CODE; do
+  grep -q "$transcript_text" "$scratch/dump.txt" || \
+    loud_fail "Pretty omitted Pi chat transcript content $transcript_text: $(cat "$scratch/dump.txt")"
+done
 
 # Incremental cumulative replacement must update the same visible slot.
 python3 - "$G/agents/agent-pi-live/raw_stream.jsonl" <<'PY'
@@ -99,4 +105,11 @@ wait_dump 'PI_FINAL_RESULT' 'Pi end did not replace running projection with fina
 ! grep -q 'PI_LIVE_APPEND_FINAL' "$scratch/dump.txt" || loud_fail "running progress survived finalized replacement"
 [[ $(grep -o 'PI_FINAL_RESULT' "$scratch/dump.txt" | wc -l) -eq 1 ]] || loud_fail "final result rendered more than once"
 
-echo 'PASS: Pi cumulative updates stay live and coalesced across Events/HighLevel/Pretty, append, and end'
+# Raw remains an explicit, byte-faithful diagnostic mode. Pretty -> Raw is one
+# view cycle, and native JSON must reappear there unchanged.
+tmux send-keys -t "$session" 4
+wait_dump 'view=\[Raw\]' 'did not enter explicit Raw diagnostic mode'
+wait_dump '"toolCallId": "build-1"' 'Raw did not preserve native Pi JSON bytes'
+grep -q '"type": "tool_execution_end"' "$scratch/dump.txt" || loud_fail "Raw omitted Pi end record"
+
+echo 'PASS: Pi Log defaults to chat-style markdown/thinking/tools with live in-place updates; Raw stays exact'
