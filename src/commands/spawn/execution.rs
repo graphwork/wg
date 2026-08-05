@@ -3,6 +3,8 @@
 
 use anyhow::{Context, Result};
 use chrono::Utc;
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -31,6 +33,122 @@ use super::{
 
 const OUTPUT_RESERVATION_FILE: &str = ".spawn-reservation";
 const LAUNCH_GATE_FILE: &str = ".launch-permit";
+const WORKTREE_RECLAIM_FILE: &str = "worktree-spawn-reclaims-v1.json";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct WorktreeSpawnReclaim {
+    action_id: String,
+    stale_agent_id: String,
+    task_id: String,
+    worktree_path: String,
+    owner_record_retained: bool,
+    observer_state_retained: bool,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct WorktreeSpawnReclaimLedger {
+    #[serde(default = "worktree_reclaim_schema")]
+    schema_version: u32,
+    #[serde(default)]
+    acknowledgements: BTreeMap<String, WorktreeSpawnReclaim>,
+}
+
+fn worktree_reclaim_schema() -> u32 {
+    1
+}
+
+fn worktree_reclaim_path(dir: &Path) -> PathBuf {
+    dir.join("service").join(WORKTREE_RECLAIM_FILE)
+}
+
+fn observer_state_retained(dir: &Path, task_id: &str) -> bool {
+    worksgood::attempt_runtime::list_component_dirs(dir, "worktree-observer", 256)
+        .into_iter()
+        .any(|observer| {
+            fs::read(observer.join("state.json"))
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+                .and_then(|value| {
+                    value
+                        .pointer("/projection/source/task_id")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string)
+                })
+                .as_deref()
+                == Some(task_id)
+        })
+}
+
+fn owner_record_retained(info: &worktree::WorktreeInfo) -> bool {
+    Command::new("git")
+        .args(["rev-parse", "--absolute-git-dir"])
+        .current_dir(&info.path)
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| {
+            PathBuf::from(String::from_utf8_lossy(&output.stdout).trim())
+                .join("wg-spawn-owner.json")
+                .is_file()
+        })
+        .unwrap_or(false)
+}
+
+/// Acknowledge the exact dead-owner reclaim without mutating any retained
+/// source, owner-token, or observer bytes. The registry lock held by the caller
+/// serializes this small ledger with competing preparation. Replaying the same
+/// dead owner is a byte-for-byte no-op.
+fn acknowledge_dead_worktree_owner(
+    dir: &Path,
+    info: &worktree::WorktreeInfo,
+    stale_agent: &worksgood::service::registry::AgentEntry,
+) -> Result<bool> {
+    let canonical = info
+        .path
+        .canonicalize()
+        .unwrap_or_else(|_| info.path.clone());
+    let material = format!(
+        "{}:{}:{}:{}",
+        stale_agent.id,
+        stale_agent.task_id,
+        stale_agent.started_at,
+        canonical.display()
+    );
+    let action_id = format!("reclaim:{}", blake3::hash(material.as_bytes()).to_hex());
+    let path = worktree_reclaim_path(dir);
+    let mut ledger = if path.exists() {
+        serde_json::from_slice::<WorktreeSpawnReclaimLedger>(&fs::read(&path)?)
+            .with_context(|| format!("failed to parse {}", path.display()))?
+    } else {
+        WorktreeSpawnReclaimLedger {
+            schema_version: worktree_reclaim_schema(),
+            ..Default::default()
+        }
+    };
+    if ledger.schema_version != worktree_reclaim_schema() {
+        anyhow::bail!(
+            "unsupported worktree spawn reclaim ledger schema {}",
+            ledger.schema_version
+        );
+    }
+    if ledger.acknowledgements.contains_key(&action_id) {
+        return Ok(false);
+    }
+    ledger.acknowledgements.insert(
+        action_id.clone(),
+        WorktreeSpawnReclaim {
+            action_id,
+            stale_agent_id: stale_agent.id.clone(),
+            task_id: stale_agent.task_id.clone(),
+            worktree_path: canonical.to_string_lossy().to_string(),
+            owner_record_retained: owner_record_retained(info),
+            observer_state_retained: observer_state_retained(dir, &stale_agent.task_id),
+        },
+    );
+    worksgood::atomic_file::write_atomic(&path, serde_json::to_vec_pretty(&ledger)?)
+        .with_context(|| format!("failed to persist {}", path.display()))?;
+    Ok(true)
+}
 
 #[cfg(test)]
 thread_local! {
@@ -215,6 +333,7 @@ fn output_reservation(dir: &Path, agent_id: &str) -> Result<(PathBuf, String)> {
 }
 
 fn reusable_worktree_is_available(
+    dir: &Path,
     registry: &LockedRegistry,
     info: &worktree::WorktreeInfo,
     task_id: &str,
@@ -228,19 +347,38 @@ fn reusable_worktree_is_available(
         if !claims_path {
             continue;
         }
-        let process_alive = worksgood::service::is_process_alive(agent.pid);
-        if agent.task_id != task_id || agent.is_alive() || process_alive {
+        if agent.task_id != task_id {
             anyhow::bail!(
-                "isolated worktree {} is owned by {} attempt {} for task '{}' (status {:?}); no process launched. Recover by terminating/reaping that attempt or archive the worktree explicitly after inspection",
+                "isolated worktree {} has conflicting registered owner {} for task '{}' while dispatching '{}'; bytes and metadata were preserved for explicit inspection",
                 info.path.display(),
-                if agent.is_alive() || process_alive {
-                    "live"
-                } else {
-                    "terminal"
-                },
+                agent.id,
+                agent.task_id,
+                task_id
+            );
+        }
+        if agent.is_live(crate::commands::service::worktree::HEARTBEAT_LIVENESS_TIMEOUT_SECS) {
+            anyhow::bail!(
+                "isolated worktree {} is protected by authenticated live attempt {} for task '{}' (status {:?}); no process launched",
+                info.path.display(),
                 agent.id,
                 agent.task_id,
                 agent.status
+            );
+        }
+        if worksgood::service::is_process_alive(agent.pid) {
+            anyhow::bail!(
+                "isolated worktree {} still has an ambiguous process owner {} for task '{}' (status {:?}); owner death is not yet proven and no process launched",
+                info.path.display(),
+                agent.id,
+                agent.task_id,
+                agent.status
+            );
+        }
+        if acknowledge_dead_worktree_owner(dir, info, agent)? {
+            eprintln!(
+                "[spawn] Fenced proven-dead worktree owner {} once; retaining owner token, observer state, and all bytes at {} before bounded retry dispatch",
+                agent.id,
+                info.path.display()
             );
         }
     }
@@ -266,7 +404,7 @@ fn prepare_spawn_workspace(
                 )
             })?;
         if let Some(ref info) = info {
-            reusable_worktree_is_available(registry, info, task_id)?;
+            reusable_worktree_is_available(dir, registry, info, task_id)?;
         }
         info
     } else {
@@ -731,6 +869,30 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
     reasoning: Option<&str>,
     spawned_by: &str,
 ) -> Result<SpawnResult> {
+    spawn_agent_inner_authorized(
+        dir,
+        task_id,
+        executor_name,
+        timeout,
+        model,
+        reasoning,
+        spawned_by,
+        None,
+    )
+}
+
+/// Recompute the canonical plan immediately before the first spawn mutation
+/// and require it to match the dispatcher's exact route/model binding.
+pub(crate) fn spawn_agent_inner_authorized(
+    dir: &Path,
+    task_id: &str,
+    executor_name: &str,
+    timeout: Option<&str>,
+    model: Option<&str>,
+    reasoning: Option<&str>,
+    spawned_by: &str,
+    expected_binding: Option<(&str, &str)>,
+) -> Result<SpawnResult> {
     let graph_path = graph_path(dir);
 
     if !graph_path.exists() {
@@ -757,9 +919,23 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
     // registry writes, or the atomic claim. Shell tasks remain graph-only.
     #[cfg(not(test))]
     if executor_name != "shell" && resolve_task_exec_mode(task, dir) != "shell" {
-        let explicit = model
-            .map(|m| (m, false))
-            .or_else(|| task.model.as_deref().map(|m| (m, true)));
+        let route_handler = execution_route_handler(executor_name);
+        // Dispatcher bindings carry `(handler, handler-native model id)` as
+        // separate fields. Selection validation requires the original
+        // handler-first route, so reconstruct it exactly when the model field
+        // is not already handler-qualified. This is not fallback: the chosen
+        // executor is part of the dispatcher's attested binding.
+        let reconstructed;
+        let explicit = if let Some(model) = model {
+            if worksgood::execution_selection::handler_qualified_explicit_route(model).is_some() {
+                Some((model, false))
+            } else {
+                reconstructed = format!("{route_handler}:{model}");
+                Some((reconstructed.as_str(), false))
+            }
+        } else {
+            task.model.as_deref().map(|model| (model, true))
+        };
         worksgood::execution_selection::require(dir, explicit, "wg spawn")?;
     }
 
@@ -794,6 +970,10 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
     // native-executor argv flags below; there is no fallback ad-hoc lookup.
     let config = Config::load_merged(dir)
         .context("Cannot spawn while the project profile selection is invalid")?;
+    // Match the coordinator's per-task profile projection. Without this, the
+    // outer effect could bind a profile endpoint while the inner spawn silently
+    // re-resolved the active/global endpoint.
+    let config = worksgood::dispatch::effective_config_owned(task.profile.as_deref(), config);
     if executor_name != "shell" && resolve_task_exec_mode(task, dir) != "shell" {
         config.validate_execution_model_plane().context(
             "spawn refused: every worker role must have an explicit Pi/Claude/Codex route and effective reasoning",
@@ -809,8 +989,10 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
     });
     let plan_default_model = task_model.as_deref().or(model);
     if executor_name != "shell" && resolve_task_exec_mode(task, dir) != "shell" {
+        let route_handler = execution_route_handler(executor_name);
         let selected_route = match plan_default_model {
-            Some(route) => route.to_string(),
+            Some(route) => worksgood::execution_selection::handler_qualified_explicit_route(route)
+                .unwrap_or_else(|| format!("{route_handler}:{route}")),
             None => {
                 config
                     .resolve_execution_route_for_role(worksgood::config::DispatchRole::TaskAgent)?
@@ -828,6 +1010,20 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
         .transpose()
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     let plan = plan_spawn(task, &config, Some(executor_name), plan_default_model)?;
+    if let Some((expected_route_id, expected_plan_id)) = expected_binding {
+        let actual_route_id = worksgood::service::HealthRouteKey::from_spawn_plan(&plan).id();
+        let actual_route_binding = worksgood::dispatch::spawn_route_binding_id(&actual_route_id);
+        let actual_plan_id = worksgood::dispatch::spawn_plan_binding_id(&plan, &actual_route_id);
+        if actual_route_binding != expected_route_id || actual_plan_id != expected_plan_id {
+            anyhow::bail!(
+                "exact spawn binding changed before execution (expected route={} plan={}, observed route={} plan={}); no fallback was attempted",
+                expected_route_id,
+                expected_plan_id,
+                actual_route_id,
+                actual_plan_id
+            );
+        }
+    }
     eprintln!(
         "[{}] {}: {}",
         spawned_by,
@@ -1172,11 +1368,12 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
     let project_root = dir
         .parent()
         .ok_or_else(|| anyhow::anyhow!("Cannot determine project root from {:?}", dir))?;
-    let needs_worktree = should_create_worktree(
-        config.coordinator.worktree_isolation,
-        task_id,
-        resolved_exec_mode.as_str(),
-    );
+    let needs_worktree = contract_needs_worktree(task.completion_contract)
+        && should_create_worktree(
+            config.coordinator.worktree_isolation,
+            task_id,
+            resolved_exec_mode.as_str(),
+        );
     let mut workspace = prepare_spawn_workspace(
         dir,
         project_root,
@@ -1202,6 +1399,23 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
 
     let output_file = output_dir.join("output.log");
     let output_file_str = output_file.to_string_lossy().to_string();
+    let nongit_workspace = if worktree_info.is_none()
+        && executor_name != "shell"
+        && matches!(
+            task.completion_contract,
+            worksgood::graph::CompletionContract::Report
+                | worksgood::graph::CompletionContract::Explore
+        ) {
+        let graph_key = blake3::hash(dir.to_string_lossy().as_bytes()).to_hex();
+        let workspace = std::env::temp_dir()
+            .join("worksgood-attempt-workspaces")
+            .join(graph_key.as_str())
+            .join(&temp_agent_id);
+        fs::create_dir_all(&workspace)?;
+        Some(workspace)
+    } else {
+        None
+    };
     vars.in_worktree = worktree_info.is_some();
 
     let owned_target_path = if build_class.is_build_capable() {
@@ -1317,6 +1531,7 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
     let effective_working_dir = worktree_info
         .as_ref()
         .map(|wt| wt.path.as_path())
+        .or_else(|| nongit_workspace.as_deref())
         .or_else(|| settings.working_dir.as_deref().map(Path::new));
     preflight_executor_command(&settings, resolved_executor_name, effective_working_dir)?;
 
@@ -1453,8 +1668,10 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
         cmd.env(key, value);
     }
 
-    // Add task ID and agent ID to environment
-    cmd.env("WG_DIR", dir);
+    // Add task identity, but never expose the raw graph path. The opaque
+    // attempt capability and exact daemon endpoint are injected only after the
+    // lifecycle claim succeeds below.
+    cmd.env_remove("WG_DIR");
     cmd.env("WG_TASK_ID", task_id);
     if let Some(chat_id) = worksgood::chat_id::parse_chat_task_id(task_id) {
         cmd.env("WG_CHAT_ID", task_id);
@@ -1535,7 +1752,16 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
         // Signal to Claude Code (and other tools) that this session is already
         // inside a managed worktree — do not create a competing one.
         cmd.env("WG_WORKTREE_ACTIVE", "1");
+    } else if let Some(workspace) = nongit_workspace.as_ref() {
+        // Report/Explore deliberately have no Git worktree. Give them an
+        // owned attempt workspace rather than the mutable project checkout;
+        // completion-object paths and the capability binding use this same
+        // root.
+        cmd.current_dir(workspace);
+        cmd.env("WG_ATTEMPT_WORKSPACE", workspace);
     } else if let Some(ref wd) = settings.working_dir {
+        // Preserve the configured cwd for non-agent shell and compatibility
+        // executions; they do not participate in the worker completion valve.
         cmd.current_dir(wd);
     }
     if let Some(path) = owned_target_path.as_ref() {
@@ -1591,6 +1817,7 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
     );
     let mut attempt_runtime_dir: Option<PathBuf> = None;
     let mut observer_state_dir: Option<PathBuf> = None;
+    let mut worker_capability_digest: Option<String> = None;
 
     // The wrapper is spawned behind an unpublished launch gate. It cannot
     // start the handler until every durable transaction boundary succeeds.
@@ -1601,6 +1828,71 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
         spawn_fault("claim")?;
         let runtime_dir = worksgood::attempt_runtime::ensure_namespace(dir, &runtime_key)?;
         attempt_runtime_dir = Some(runtime_dir);
+
+        let endpoint = match crate::commands::service::ServiceState::load(dir)? {
+            Some(service_state) => PathBuf::from(service_state.socket_path),
+            #[cfg(test)]
+            None => {
+                // Unit spawn tests terminate the wrapper before it calls WG.
+                // Production remains daemon-only.
+                let endpoint = dir.join("service/test-worker-control.sock");
+                if let Some(parent) = endpoint.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::write(&endpoint, b"test-only-not-a-socket")?;
+                endpoint
+            }
+            #[cfg(not(test))]
+            None => anyhow::bail!(
+                "worker_control.daemon_required: task workers launch only through a live daemon capability channel"
+            ),
+        };
+        if !endpoint.exists() {
+            anyhow::bail!("worker_control.endpoint_missing: {}", endpoint.display());
+        }
+        let (worker_token, worker_binding) =
+            worksgood::worker_control::mint_attempt_capability_for_worktree(
+                dir,
+                task_id,
+                claim_snapshot.generation,
+                &claim_snapshot.attempt_id,
+                claim_snapshot.attempt_fence,
+                claim_snapshot.attempt_fence,
+                &temp_agent_id,
+                worktree_info
+                    .as_ref()
+                    .map(|worktree| worktree.path.as_path())
+                    .or_else(|| nongit_workspace.as_deref()),
+            )?;
+        worker_capability_digest = Some(worker_binding.token_sha256.clone());
+        cmd.env("WG_WORKER_IPC", &endpoint);
+        cmd.env("WG_WORKER_CAPABILITY", &worker_token);
+        cmd.env(
+            "WG_WORKER_CONTROL_PROTOCOL",
+            worksgood::worker_control::WORKER_CONTROL_PROTOCOL,
+        );
+        cmd.env("WG_GRAPH_ID", &worker_binding.graph_id);
+        let isolation = worksgood::worker_control::filesystem_isolation_status();
+        cmd.env(
+            "WG_WORKER_FILESYSTEM_ISOLATION",
+            if isolation.enforced {
+                "enforced"
+            } else {
+                "degraded"
+            },
+        );
+        if !isolation.enforced {
+            eprintln!(
+                "WARNING: worker {} filesystem isolation is DEGRADED: {}",
+                temp_agent_id, isolation.reason
+            );
+            if std::env::var_os("WG_REQUIRE_HARD_WORKER_ISOLATION").is_some() {
+                anyhow::bail!(
+                    "worker_control.hard_isolation_required: {}",
+                    isolation.reason
+                );
+            }
+        }
         workspace.prepare_launch()?;
         if needs_worktree {
             let info = worktree_info.as_ref().ok_or_else(|| {
@@ -1841,6 +2133,11 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
             {
                 rollback_errors.push(format!("worktree observer preparation: {rollback}"));
             }
+            if let Some(digest) = worker_capability_digest.as_deref()
+                && let Err(rollback) = worksgood::worker_control::revoke_capability(dir, digest)
+            {
+                rollback_errors.push(format!("worker capability: {rollback:#}"));
+            }
             return Err(error).with_context(|| {
                 format!(
                     "spawn transaction for {} rolled back (task remains dispatchable; rollback diagnostics: {})",
@@ -1980,6 +2277,13 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
 ///   cannot write to the source tree.
 ///
 /// Code-touching tasks (`full`, `shell`) still get isolated worktrees.
+pub(crate) fn contract_needs_worktree(contract: worksgood::graph::CompletionContract) -> bool {
+    matches!(
+        contract,
+        worksgood::graph::CompletionContract::Land | worksgood::graph::CompletionContract::Deliver
+    )
+}
+
 pub(crate) fn should_create_worktree(
     worktree_isolation_enabled: bool,
     task_id: &str,
@@ -2348,8 +2652,32 @@ fn attest_selected_prior_pi_leaf(
             continue;
         }
         found_session_proof = true;
-        if proof.session_file == selected_file && proof.branch_leaf == selected_leaf {
+        if proof.session_file != selected_file {
+            continue;
+        }
+        if proof.branch_leaf == selected_leaf {
             return Ok(());
+        }
+        // The watchdog may have persisted a truthful prefix before the native
+        // Pi child appended its final journal records and exited. Exact-session
+        // continuation must accept that append-only extension rather than
+        // demanding that the last watchdog poll observed the final byte. The
+        // selected journal has already passed canonical journal selection; now
+        // bind its prefix to the durable watchdog proof so replacement or
+        // mutation of any attested byte still fails closed.
+        let bytes = fs::read(selected_file).with_context(|| {
+            format!(
+                "failed to read selected Pi journal {}",
+                selected_file.display()
+            )
+        })?;
+        let prefix_len = usize::try_from(proof.append_prefix_len)
+            .context("attested Pi journal prefix length does not fit this platform")?;
+        if prefix_len <= bytes.len() {
+            let prefix_leaf = format!("b3:{}", blake3::hash(&bytes[..prefix_len]).to_hex());
+            if prefix_leaf == proof.append_prefix_digest {
+                return Ok(());
+            }
         }
     }
     if found_session_proof {
@@ -2588,6 +2916,13 @@ fn preflight_executor_command(
         executor_name,
         executor_setup_hint(executor_name),
     );
+}
+
+fn execution_route_handler(executor_name: &str) -> &str {
+    match executor_name {
+        "native" => "nex",
+        other => other,
+    }
 }
 
 fn executor_setup_hint(executor_name: &str) -> &'static str {
@@ -3163,20 +3498,23 @@ fi
             (cmd, None, String::new(), String::new())
         }
         "pi" => {
-            // Pi (`pi --mode json`) emits NDJSON on stdout. Capture it to
-            // raw_stream.jsonl (so the TUI events pane can render per-step
-            // events live, like claude/codex) and tee to output.log; stderr
-            // -> output.log. After pi exits, `wg pi-stream-bridge` reads that
+            // Pi (`pi --mode json`) emits NDJSON on stdout. Retain those
+            // authoritative bytes exactly once in raw_stream.jsonl; unlike
+            // claude/codex, do not duplicate the cumulative update stream in
+            // output.log. Stderr and wrapper diagnostics remain in output.log.
+            // After pi exits, `wg pi-stream-bridge` reads that
             // NDJSON and writes the canonical stream.jsonl with REAL summed
             // token/cost usage (replacing the old 0/0 bookend) + a session
             // summary. No bash-emitted bookend — the bridge owns stream.jsonl.
             let raw_stream_file = output_dir.join("raw_stream.jsonl");
             let raw_str = raw_stream_file.to_string_lossy().to_string();
+            let bootstrap_gate = output_dir.join("pi-bootstrap.gate");
             let cmd = format!(
-                "{{ {timed_command} > >(tee -a {raw} >> \"$OUTPUT_FILE\") 2>> \"$OUTPUT_FILE\" & WG_PI_CHILD_PID=$!; if ! wg pi-watchdog bootstrap \"$TASK_ID\" --agent-dir {dir} --pid $WG_PI_CHILD_PID 2>> \"$OUTPUT_FILE\"; then kill $WG_PI_CHILD_PID 2>/dev/null || true; wait $WG_PI_CHILD_PID 2>/dev/null || true; (exit 125); else wg pi-stream-observe --agent-dir {dir} --follow-pid $WG_PI_CHILD_PID 2>> \"$OUTPUT_FILE\" & WG_PI_OBSERVER_PID=$!; wait $WG_PI_CHILD_PID; WG_PI_EXIT_CODE=$?; wait $WG_PI_OBSERVER_PID || echo \"[wrapper] WARNING: Pi native observer held; exact continuation will fail closed\" >> \"$OUTPUT_FILE\"; (exit $WG_PI_EXIT_CODE); fi; }}",
+                "{{ WG_PI_BOOTSTRAP_GATE={gate}; rm -f \"$WG_PI_BOOTSTRAP_GATE\"; {{ WG_PI_WRAPPER_PID=$$; while [ ! -f \"$WG_PI_BOOTSTRAP_GATE\" ]; do kill -0 $WG_PI_WRAPPER_PID 2>/dev/null || exit 125; sleep 0.01; done; exec {timed_command}; }} >> {raw} 2>> \"$OUTPUT_FILE\" & WG_PI_CHILD_PID=$!; if ! wg pi-watchdog bootstrap \"$TASK_ID\" --agent-dir {dir} --pid $WG_PI_CHILD_PID --wrapper-pid $$ 2>> \"$OUTPUT_FILE\"; then kill $WG_PI_CHILD_PID 2>/dev/null || true; wait $WG_PI_CHILD_PID 2>/dev/null || true; rm -f \"$WG_PI_BOOTSTRAP_GATE\"; (exit 125); else : > \"$WG_PI_BOOTSTRAP_GATE\"; wg pi-stream-observe --agent-dir {dir} --follow-pid $WG_PI_CHILD_PID 2>> \"$OUTPUT_FILE\" & WG_PI_OBSERVER_PID=$!; wait $WG_PI_CHILD_PID; WG_PI_EXIT_CODE=$?; wait $WG_PI_OBSERVER_PID || echo \"[wrapper] WARNING: Pi native observer held; exact continuation will fail closed\" >> \"$OUTPUT_FILE\"; rm -f \"$WG_PI_BOOTSTRAP_GATE\"; (exit $WG_PI_EXIT_CODE); fi; }}",
                 timed_command = timed_command,
                 raw = shell_escape(&raw_str),
                 dir = shell_escape(&output_dir.to_string_lossy()),
+                gate = shell_escape(&bootstrap_gate.to_string_lossy()),
             );
             let bridge = format!(
                 "wg pi-stream-bridge --agent-dir {dir} --exit-code $EXIT_CODE --follow-pid \"$WG_PI_CHILD_PID\" 2>> \"$OUTPUT_FILE\" \
@@ -3258,7 +3596,7 @@ fi
     };
 
     let pi_exit_reconcile = if executor_type == "pi" {
-        "wg pi-watchdog process-exit \"$TASK_ID\" --exit-code \"$EXIT_CODE\" --pid \"$WG_PI_CHILD_PID\" 2>> \"$OUTPUT_FILE\" || wg fail \"$TASK_ID\" --class agent-exit-nonzero --reason \"Pi exited without a policy-valid continuation authorization\" 2>> \"$OUTPUT_FILE\" || true"
+        "if [ \"$TASK_STATUS\" = \"in-progress\" ]; then wg pi-watchdog process-exit \"$TASK_ID\" --exit-code \"$EXIT_CODE\" --pid \"$WG_PI_CHILD_PID\" 2>> \"$OUTPUT_FILE\" || wg fail \"$TASK_ID\" --class agent-exit-nonzero --reason \"Pi exited without a policy-valid continuation authorization\" 2>> \"$OUTPUT_FILE\" || true; fi"
     } else {
         ""
     };
@@ -3309,11 +3647,12 @@ unset CLAUDE_CODE_SDK_HAS_OAUTH_REFRESH
 # launch permit. Native events only wake content reconciliation.
 if [ -n "${{WG_WORKTREE_OBSERVER_STATE_DIR:-}}" ]; then
     if command -v setsid >/dev/null 2>&1; then
-        setsid wg worktree-observer-run --state-dir "$WG_WORKTREE_OBSERVER_STATE_DIR" --parent-pid "$$" >/dev/null 2>&1 &
+        setsid env -u WG_WORKER_CAPABILITY -u WG_WORKER_IPC -u WG_TASK_ID wg worktree-observer-run --state-dir "$WG_WORKTREE_OBSERVER_STATE_DIR" --parent-pid "$$" >/dev/null 2>&1 &
     else
-        nohup wg worktree-observer-run --state-dir "$WG_WORKTREE_OBSERVER_STATE_DIR" --parent-pid "$$" </dev/null >/dev/null 2>&1 &
+        nohup env -u WG_WORKER_CAPABILITY -u WG_WORKER_IPC -u WG_TASK_ID wg worktree-observer-run --state-dir "$WG_WORKTREE_OBSERVER_STATE_DIR" --parent-pid "$$" </dev/null >/dev/null 2>&1 &
     fi
     WG_WORKTREE_OBSERVER_PID=$!
+    unset WG_WORKTREE_OBSERVER_STATE_DIR
 fi
 # Guarded heartbeat watcher — keeps registry heartbeat fresh while this wrapper
 # owns the anonymous pipe's write descriptor. The executor runs with that
@@ -3353,16 +3692,23 @@ if [ "$EXIT_CODE" -ne 0 ]; then
         wg record-telemetry --task "$TASK_ID" --exit-code "$EXIT_CODE" --executor "{executor_type}" --route "${{WG_MODEL:-}}" 2>> "$OUTPUT_FILE" || true
     fi
 fi
-{pi_exit_reconcile}
-# Pi terminal tools reserve intent while the handler can still write. Only
-# this post-wait adapter may checkpoint/merge or commit failure preservation.
-if [ "{executor_type}" = "pi" ]; then
-    WG_HANDLER_QUIESCENT=1 wg finalize settle "$TASK_ID" 2>> "$OUTPUT_FILE" || \
-      echo "[wrapper] WARNING: finalization settle held; inspect with: wg finalize status $TASK_ID" >> "$OUTPUT_FILE"
-fi
 
-# Check if task is still in progress (agent didn't mark it done/failed)
+# Check terminal state before any process-exit observer runs. Once reviewed
+# completion clears attempt ownership, its capability is intentionally stale
+# and process telemetry has no authority to reopen or overwrite Done.
 TASK_STATUS=$(wg show "$TASK_ID" --json 2>/dev/null | grep -o '"status": *"[^"]*"' | head -1 | sed 's/.*"status": *"//;s/"//' || echo "unknown")
+{pi_exit_reconcile}
+
+# A still-in-progress process exit becomes one visible failed attempt; it is
+# never a finalizer signal and never authorizes automatic source replacement.
+if [ "$TASK_STATUS" = "in-progress" ] && [ "{executor_type}" = "pi" ]; then
+    if [ $EXIT_CODE -eq 0 ]; then
+        wg fail "$TASK_ID" --reason "Pi worker exited without reviewed publication-derived completion" 2>> "$OUTPUT_FILE" || true
+    else
+        FAIL_CLASS=$(wg classify-failure --raw-stream "$RAW_STREAM" --exit-code $EXIT_CODE --executor "{executor_type}" --route "${{WG_MODEL:-}}" 2>/dev/null || echo "agent-exit-nonzero")
+        wg fail "$TASK_ID" --class "$FAIL_CLASS" --reason "Pi worker exited with code $EXIT_CODE before reviewed completion" 2>> "$OUTPUT_FILE" || true
+    fi
+fi
 
 if [ "$TASK_STATUS" = "in-progress" ] && [ "{executor_type}" != "pi" ]; then
     if [ $EXIT_CODE -eq 124 ]; then
@@ -3432,28 +3778,9 @@ if [ "$TASK_STATUS" = "in-progress" ] && [ "{executor_type}" != "pi" ]; then
     fi
 fi
 
-# --- Task-owned transactional cleanup ---
-# Promotion/delivery/report is durable before this point. The wrapper is the
-# final part of the same task transaction: leave the cwd, remove owned scratch
-# state synchronously, write a cleanup receipt, and only then expose Done.
-if [ -n "$WG_WORKTREE_PATH" ] && [ -n "$WG_BRANCH" ] && [ -n "$WG_PROJECT_ROOT" ]; then
-    CURRENT_DIR_REAL=$(pwd -P 2>/dev/null || pwd)
-    WORKTREE_PATH_REAL=$(cd "$WG_WORKTREE_PATH" 2>/dev/null && pwd -P || printf '%s' "$WG_WORKTREE_PATH")
-    if [ "$CURRENT_DIR_REAL" != "$WORKTREE_PATH_REAL" ]; then
-        echo "[wrapper] WARNING: Skipping task-owned cleanup because cwd '$CURRENT_DIR_REAL' does not match '$WORKTREE_PATH_REAL'" >> "$OUTPUT_FILE"
-    else
-        cd "$WG_PROJECT_ROOT" || exit 1
-        if wg finish cleanup "$TASK_ID" >> "$OUTPUT_FILE" 2>&1; then
-            echo "[wrapper] Task-owned finish cleanup completed synchronously" >> "$OUTPUT_FILE"
-        else
-            # Crash/retry fallback only. The durable promotion/output receipt
-            # ensures restart reconciliation can perform cleanup and nothing else.
-            touch "$WG_WORKTREE_PATH/.wg-cleanup-pending" 2>/dev/null || true
-            echo "[wrapper] WARNING: finish cleanup deferred from durable receipt; no source/evaluation rerun authorized" >> "$OUTPUT_FILE"
-        fi
-    fi
-fi
-
+# Worktree/scratch cleanup is deliberately outside completion authority. Keep
+# the retained attempt workspace as inspectable evidence; explicit maintenance
+# may remove it later without changing reviewed publication or Done.
 exit $EXIT_CODE
 "#,
         escaped_task_id = shell_escape(task_id),
@@ -4291,6 +4618,15 @@ mod tests {
     }
 
     // --- should_create_worktree tests ---
+
+    #[test]
+    fn completion_contract_controls_git_worktree_creation() {
+        use worksgood::graph::CompletionContract;
+        assert!(contract_needs_worktree(CompletionContract::Land));
+        assert!(contract_needs_worktree(CompletionContract::Deliver));
+        assert!(!contract_needs_worktree(CompletionContract::Report));
+        assert!(!contract_needs_worktree(CompletionContract::Explore));
+    }
 
     #[test]
     fn test_worktree_gate_disabled_globally() {
@@ -6300,6 +6636,42 @@ mod tests {
     }
 
     #[test]
+    fn pi_wrapper_binds_parent_and_native_child_as_distinct_terminal_authorities() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let wrapper_path = write_wrapper_script(
+            temp_dir.path(),
+            "pi-topology",
+            "/tmp/output.log",
+            "pi --mode json",
+            None,
+            "pi",
+            None,
+        )
+        .unwrap();
+        let script = std::fs::read_to_string(wrapper_path).unwrap();
+        assert!(script.contains("WG_PI_CHILD_PID=$!"));
+        assert!(script.contains("pi-bootstrap.gate"));
+        assert!(script.contains("--pid $WG_PI_CHILD_PID --wrapper-pid $$"));
+        assert!(script.contains(": > \"$WG_PI_BOOTSTRAP_GATE\""));
+        assert!(script.contains("wait $WG_PI_CHILD_PID"));
+        assert!(
+            script.contains(">> '") && script.contains("raw_stream.jsonl' 2>> \"$OUTPUT_FILE\""),
+            "Pi stdout must have one authoritative raw-stream sink"
+        );
+        assert!(
+            !script.contains("tee -a") && !script.contains("raw_stream.jsonl' >> \"$OUTPUT_FILE\""),
+            "Pi cumulative stdout must not be duplicated into output.log"
+        );
+        let bind = script.find("--wrapper-pid $$").unwrap();
+        let release = script.find(": > \"$WG_PI_BOOTSTRAP_GATE\"").unwrap();
+        let post_release_wait = release + script[release..].find("wait $WG_PI_CHILD_PID").unwrap();
+        assert!(
+            bind < release && release < post_release_wait,
+            "wrapper/native topology must be durably bound before the child is released to exec"
+        );
+    }
+
+    #[test]
     fn test_wrapper_script_no_fallback_when_none() {
         let temp_dir = tempfile::TempDir::new().unwrap();
         let output_dir = temp_dir.path();
@@ -6865,6 +7237,91 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
+    fn dead_spawn_owner_is_reclaimed_once_without_mutating_worktree_or_observer() {
+        let _global = GlobalConfigGuard::isolated();
+        let project = init_spawn_project(&["stale-owner"], true);
+        let dir = project.path().join(".wg");
+        let info =
+            worktree::create_worktree(project.path(), &dir, "agent-1", "stale-owner").unwrap();
+        fs::write(info.path.join("retained-wip.txt"), b"dirty evidence\n").unwrap();
+        let owner_admin = Command::new("git")
+            .args(["rev-parse", "--absolute-git-dir"])
+            .current_dir(&info.path)
+            .output()
+            .unwrap();
+        let owner_path = PathBuf::from(String::from_utf8_lossy(&owner_admin.stdout).trim())
+            .join("wg-spawn-owner.json");
+        let owner_before = fs::read(&owner_path).unwrap();
+
+        let old_key = worksgood::attempt_runtime::AttemptRuntimeKey::new(
+            "stale-owner",
+            0,
+            "attempt-0-1",
+            1,
+            1,
+        );
+        let observer =
+            worksgood::attempt_runtime::component_for_write(&dir, &old_key, "worktree-observer")
+                .unwrap();
+        fs::create_dir_all(&observer).unwrap();
+        let observer_path = observer.join("state.json");
+        let observer_before = serde_json::to_vec_pretty(&serde_json::json!({
+            "projection": {"source": {
+                "task_id": "stale-owner",
+                "generation": 0,
+                "attempt_id": "attempt-0-1",
+                "attempt_fence": 1,
+                "worktree_lease_epoch": 1
+            }},
+            "retained": "observer evidence"
+        }))
+        .unwrap();
+        fs::write(&observer_path, &observer_before).unwrap();
+
+        let mut exited = Command::new("sh").args(["-c", "exit 0"]).spawn().unwrap();
+        let dead_pid = exited.id();
+        exited.wait().unwrap();
+        assert!(!worksgood::service::is_process_alive(dead_pid));
+        let mut registry = AgentRegistry::new();
+        let prior =
+            registry.register_agent(dead_pid, "stale-owner", "shell", "/tmp/stale-owner-output");
+        registry.set_worktree_path(&prior, &info.path);
+        // Deliberately leave the stale registry projection as Working. OS
+        // process death is the proof; stale status alone must not wedge reuse.
+        registry.save(&dir).unwrap();
+
+        let mut locked = AgentRegistry::load_locked(&dir).unwrap();
+        let first = prepare_spawn_workspace(&dir, project.path(), "stale-owner", true, &mut locked)
+            .unwrap();
+        assert_eq!(first.agent_id, "agent-2");
+        assert_eq!(first.worktree_info.as_ref().unwrap().path, info.path);
+        drop(first);
+        let ledger_path = worktree_reclaim_path(&dir);
+        let ledger_once = fs::read(&ledger_path).unwrap();
+
+        let second =
+            prepare_spawn_workspace(&dir, project.path(), "stale-owner", true, &mut locked)
+                .unwrap();
+        assert_eq!(second.agent_id, "agent-2");
+        drop(second);
+        assert_eq!(fs::read(&ledger_path).unwrap(), ledger_once);
+        let ledger: WorktreeSpawnReclaimLedger = serde_json::from_slice(&ledger_once).unwrap();
+        assert_eq!(ledger.acknowledgements.len(), 1);
+        let ack = ledger.acknowledgements.values().next().unwrap();
+        assert!(ack.owner_record_retained);
+        assert!(ack.observer_state_retained);
+        assert_eq!(fs::read(&owner_path).unwrap(), owner_before);
+        assert_eq!(fs::read(&observer_path).unwrap(), observer_before);
+        assert_eq!(
+            fs::read(info.path.join("retained-wip.txt")).unwrap(),
+            b"dirty evidence\n"
+        );
+        drop(locked);
+        worktree::remove_worktree(project.path(), &info.path, &info.branch).unwrap();
+    }
+
+    #[test]
+    #[serial_test::serial]
     fn live_or_other_terminal_attempt_cannot_reuse_worktree_path() {
         let _global = GlobalConfigGuard::isolated();
         for live in [false, true] {
@@ -6893,7 +7350,11 @@ mod tests {
                 prepare_spawn_workspace(&dir, project.path(), "owner-task", true, &mut locked)
                     .unwrap_err();
             let message = format!("{error:#}");
-            assert!(message.contains("owned by"), "{message}");
+            assert!(
+                message.contains("protected by authenticated live attempt")
+                    || message.contains("conflicting registered owner"),
+                "{message}"
+            );
             assert!(info.path.exists());
             drop(locked);
             worktree::remove_worktree(project.path(), &info.path, &info.branch).unwrap();

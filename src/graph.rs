@@ -322,16 +322,20 @@ pub struct FailureSignal {
 pub enum CompletionContract {
     #[default]
     Land,
+    /// Historical contribution contract retained only so evidence-bearing
+    /// graphs remain readable. New work must use Land, Report, or Explore.
     Deliver,
     Report,
+    Explore,
 }
 
 impl std::fmt::Display for CompletionContract {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::Land => "land",
-            Self::Deliver => "deliver",
+            Self::Deliver => "legacy-deliver",
             Self::Report => "report",
+            Self::Explore => "explore",
         })
     }
 }
@@ -343,6 +347,7 @@ pub enum CompletionDisposition {
     Landed,
     Delivered,
     Reported,
+    Explored,
 }
 
 impl CompletionDisposition {
@@ -352,6 +357,7 @@ impl CompletionDisposition {
             (Self::Landed, CompletionContract::Land)
                 | (Self::Delivered, CompletionContract::Deliver)
                 | (Self::Reported, CompletionContract::Report)
+                | (Self::Explored, CompletionContract::Explore)
         )
     }
 }
@@ -722,6 +728,12 @@ pub struct Task {
     /// Typed completion promise. Historical/omitted rows default to `land`.
     #[serde(default, skip_serializing_if = "is_land_contract")]
     pub completion_contract: CompletionContract,
+    /// Immutable candidate and review references for the worker-owned
+    /// completion protocol. These are compact graph projections, not a second
+    /// scheduler or transaction state machine. Replacing the manifest clears
+    /// both review references.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion_candidate: Option<crate::completion_task::CompletionCandidateRefs>,
     /// Receipt-backed terminal result. Historical Done land tasks omit this
     /// and are treated as legacy Landed by dependency compatibility logic.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1051,6 +1063,7 @@ impl Default for Task {
             input_dependencies: vec![],
             requires: vec![],
             completion_contract: CompletionContract::Land,
+            completion_candidate: None,
             completion_disposition: None,
             completion_receipt: None,
             tags: vec![],
@@ -1143,11 +1156,32 @@ impl Default for Task {
 impl Task {
     /// Receipt-backed successful result, with a narrow compatibility bridge
     /// for historical `Done` source rows written before typed completion.
+    /// Receipt-backed v2 completion projection. Unlike
+    /// `effective_completion_disposition`, this never grants legacy authority:
+    /// it is present only when the lifecycle ledger committed a GraphSave and
+    /// the compatibility row carries that exact v2 receipt CID.
+    pub fn graph_save_completion_disposition(&self) -> Option<CompletionDisposition> {
+        let receipt = self.completion_receipt.as_deref()?;
+        if !receipt.starts_with("wgcid:v2:blake3:")
+            || !self.lifecycle.audit.iter().any(|event| {
+                event.event_kind == "graph-save-committed"
+                    && event.evidence_refs.iter().any(|value| value == receipt)
+            })
+        {
+            return None;
+        }
+        self.completion_disposition
+            .filter(|disposition| disposition.satisfies(self.completion_contract))
+    }
+
     pub fn effective_completion_disposition(&self) -> Option<CompletionDisposition> {
-        self.completion_disposition.or_else(|| {
-            (self.status == Status::Done && self.completion_contract == CompletionContract::Land)
-                .then_some(CompletionDisposition::Landed)
-        })
+        self.graph_save_completion_disposition()
+            .or(self.completion_disposition)
+            .or_else(|| {
+                (self.status == Status::Done
+                    && self.completion_contract == CompletionContract::Land)
+                    .then_some(CompletionDisposition::Landed)
+            })
     }
 
     pub fn input_dependency_from(&self, task_id: &str) -> bool {
@@ -1486,6 +1520,16 @@ pub fn parse_token_usage(output_log_path: &std::path::Path) -> Option<TokenUsage
         extract_pi_token_usage(&content, model_spec.as_deref(), model_pricing.as_ref())
     {
         return Some(usage);
+    }
+
+    // Pi stdout is authoritative in raw_stream.jsonl and intentionally is not
+    // duplicated into output.log. Keep the long-standing output.log API while
+    // resolving that sibling exactly once for Pi accounting.
+    let raw_stream_path = output_log_path.with_file_name("raw_stream.jsonl");
+    if raw_stream_path != output_log_path
+        && let Ok(raw_stream) = std::fs::read_to_string(raw_stream_path)
+    {
+        return extract_pi_token_usage(&raw_stream, model_spec.as_deref(), model_pricing.as_ref());
     }
 
     None
@@ -1837,13 +1881,18 @@ pub fn parse_token_usage_live(output_log_path: &std::path::Path) -> Option<Token
 }
 
 /// Process-wide cache for `parse_token_usage_live`, keyed by output-log path
-/// + mtime. The TUI's `live_token_usage` and `agency_token_usage` maps
+/// plus output/raw-stream mtimes. The TUI's `live_token_usage` and
+/// `agency_token_usage` maps
 /// previously walked + parsed every active agent's `output.log` (and every
 /// archived `log/agents/<task>/<run>/output.txt`) on every fs-change tick.
 /// `output.log` is appended to many times per second by streaming agents,
 /// but the parse result only changes when the file mtime advances — so
 /// memoizing on (path, mtime) is exact, not approximate.
-type TokenUsageCacheKey = (std::path::PathBuf, Option<std::time::SystemTime>);
+type TokenUsageCacheKey = (
+    std::path::PathBuf,
+    Option<std::time::SystemTime>,
+    Option<std::time::SystemTime>,
+);
 
 fn token_usage_cache()
 -> &'static std::sync::Mutex<std::collections::HashMap<TokenUsageCacheKey, Option<TokenUsage>>> {
@@ -1854,7 +1903,8 @@ fn token_usage_cache()
 }
 
 /// Cached counterpart of `parse_token_usage_live`. Returns the memoized value
-/// when the file mtime is unchanged; otherwise reparses and updates the cache.
+/// when both diagnostic output and authoritative raw-stream mtimes are
+/// unchanged; otherwise reparses and updates the cache.
 ///
 /// Used by the TUI render path (live + agency token usage maps) where the
 /// same output logs are scanned 5-50 times per second under active load.
@@ -1867,7 +1917,12 @@ pub fn parse_token_usage_live_cached(output_log_path: &std::path::Path) -> Optio
         // intentionally don't cache absent files (they may appear later).
         return None;
     }
-    let key: TokenUsageCacheKey = (output_log_path.to_path_buf(), mtime);
+    // Pi's authoritative usage grows in the sibling raw stream while stderr
+    // output.log may remain unchanged, so both mtimes own the cache identity.
+    let raw_stream_mtime = std::fs::metadata(output_log_path.with_file_name("raw_stream.jsonl"))
+        .and_then(|metadata| metadata.modified())
+        .ok();
+    let key: TokenUsageCacheKey = (output_log_path.to_path_buf(), mtime, raw_stream_mtime);
 
     if let Ok(cache) = token_usage_cache().lock()
         && let Some(hit) = cache.get(&key)
@@ -2147,6 +2202,8 @@ struct TaskHelper {
     #[serde(default)]
     completion_contract: CompletionContract,
     #[serde(default)]
+    completion_candidate: Option<crate::completion_task::CompletionCandidateRefs>,
+    #[serde(default)]
     completion_disposition: Option<CompletionDisposition>,
     #[serde(default)]
     completion_receipt: Option<String>,
@@ -2362,6 +2419,7 @@ impl<'de> Deserialize<'de> for Task {
             input_dependencies: helper.input_dependencies,
             requires: helper.requires,
             completion_contract: helper.completion_contract,
+            completion_candidate: helper.completion_candidate,
             completion_disposition: helper.completion_disposition,
             completion_receipt: helper.completion_receipt,
             tags: helper.tags,
@@ -4357,6 +4415,46 @@ mod tests {
             usage.input_tokens + usage.output_tokens + usage.cache_read_input_tokens,
             260 + 272
         );
+    }
+
+    #[test]
+    fn test_pi_usage_reads_single_authoritative_raw_stream_and_live_cache_tracks_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let output_log = dir.path().join("output.log");
+        let raw_stream = dir.path().join("raw_stream.jsonl");
+        std::fs::write(&output_log, "pi stderr remains diagnosable\n").unwrap();
+        std::fs::write(
+            &raw_stream,
+            r#"{"type":"turn_end","message":{"usage":{"input":10,"output":2,"cacheRead":3,"cacheWrite":1,"cost":{"total":0.25}}}}
+"#,
+        )
+        .unwrap();
+
+        let initial = parse_token_usage_live_cached(&output_log).unwrap();
+        assert_eq!(initial.input_tokens, 10);
+        assert_eq!(initial.output_tokens, 2);
+        assert_eq!(initial.cache_read_input_tokens, 3);
+        assert_eq!(initial.cache_creation_input_tokens, 1);
+        assert!((initial.cost_usd - 0.25).abs() < 1e-9);
+        assert_eq!(
+            std::fs::read_to_string(&output_log).unwrap(),
+            "pi stderr remains diagnosable\n",
+            "accounting must not require a second stdout copy in output.log"
+        );
+
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let mut raw = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&raw_stream)
+            .unwrap();
+        use std::io::Write;
+        writeln!(raw, "{{\"type\":\"turn_end\",\"message\":{{\"usage\":{{\"input\":20,\"output\":4,\"cacheRead\":6,\"cacheWrite\":2,\"cost\":{{\"total\":0.5}}}}}}}}").unwrap();
+        drop(raw);
+
+        let updated = parse_token_usage_live_cached(&output_log).unwrap();
+        assert_eq!(updated.input_tokens, 30);
+        assert_eq!(updated.output_tokens, 6);
+        assert!((updated.cost_usd - 0.75).abs() < 1e-9);
     }
 
     #[test]

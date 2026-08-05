@@ -21,11 +21,34 @@ pub(crate) mod coordinator;
 pub(crate) mod coordinator_agent;
 pub(crate) mod human_dispatch;
 pub mod ipc;
+pub(crate) mod replay;
 pub(crate) mod signals;
 pub(crate) mod supervisor;
 mod triage;
 pub(crate) mod worktree;
 pub(crate) mod zero_output;
+
+thread_local! {
+    static IN_WORKER_CONTROL_OPERATION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+pub(crate) fn in_worker_control_operation() -> bool {
+    IN_WORKER_CONTROL_OPERATION.with(std::cell::Cell::get)
+}
+
+pub(crate) fn with_worker_control_operation<T>(f: impl FnOnce() -> T) -> T {
+    IN_WORKER_CONTROL_OPERATION.with(|active| {
+        let prior = active.replace(true);
+        struct Reset<'a>(&'a std::cell::Cell<bool>, bool);
+        impl Drop for Reset<'_> {
+            fn drop(&mut self) {
+                self.0.set(self.1);
+            }
+        }
+        let _reset = Reset(active, prior);
+        f()
+    })
+}
 
 pub use ipc::{IpcRequest, IpcResponse};
 
@@ -2895,51 +2918,6 @@ pub fn run_daemon(
         );
     }
 
-    // Replay durable candidate-finalization outbox boundaries before
-    // readiness. Reconciliation is content-addressed/idempotent; ambiguity is
-    // retained and surfaced rather than inferred from current main.
-    match worksgood::finalization::FinalizationStore::open(&dir).and_then(|store| {
-        let transactions = store.list()?;
-        let mut replayed = 0usize;
-        let registry = AgentRegistry::load(&dir).ok();
-        for tx in transactions {
-            if matches!(
-                tx.phase,
-                worksgood::finalization::FinalizationPhase::Validating
-                    | worksgood::finalization::FinalizationPhase::CandidateCheckpointed
-                    | worksgood::finalization::FinalizationPhase::MergePending
-            ) {
-                let _ = worksgood::finalization::reconcile(&store, &tx.task_id)?;
-                replayed += 1;
-            }
-            if matches!(
-                tx.phase,
-                worksgood::finalization::FinalizationPhase::Promoted
-                    | worksgood::finalization::FinalizationPhase::Delivered
-                    | worksgood::finalization::FinalizationPhase::Reported
-            ) && registry
-                .as_ref()
-                .and_then(|value| value.get_agent_by_task(&tx.task_id))
-                .is_none_or(|agent| !agent.is_live(worktree::HEARTBEAT_LIVENESS_TIMEOUT_SECS))
-            {
-                // Crash after durable disposition authorizes cleanup only.
-                // The source/evaluation path is never replayed here.
-                crate::commands::finalize::cleanup_finish(&dir, &store, &tx.task_id, false)?;
-                replayed += 1;
-            }
-        }
-        Ok(replayed)
-    }) {
-        Ok(0) => {}
-        Ok(count) => logger.info(&format!(
-            "Replayed {} candidate-finalization transaction(s) before readiness",
-            count
-        )),
-        Err(error) => logger.warn(&format!(
-            "Candidate finalization replay held fail-closed; source refs retained: {error:#}"
-        )),
-    }
-
     match worksgood::worktree_observer::restart_current_observers(&dir) {
         Ok(0) => {}
         Ok(count) => logger.info(&format!(
@@ -3052,21 +3030,10 @@ pub fn run_daemon(
     // Clean up legacy daemon-managed graph tasks from older coordinator models.
     cleanup_legacy_daemon_tasks(&dir, &logger);
 
-    // One service-owned convergence read model. Startup derives it from the
-    // authoritative graph/finalization/provider stores without advancing a
-    // deadline, so restart cannot redraw jitter or reset an exponent.
-    let convergence_policy =
-        worksgood::service::ConvergencePolicy::from(&config.coordinator.convergence);
-    match worksgood::service::reconcile_dir(&dir, &convergence_policy, chrono::Utc::now()) {
-        Ok(state) => logger.info(&format!(
-            "Convergence reconciler restored {} goal(s), {} route breaker(s)",
-            state.goals.len(),
-            state.route_breakers.len()
-        )),
-        Err(error) => logger.warn(&format!(
-            "Convergence state unavailable at startup; dispatch will fail closed: {error:#}"
-        )),
-    }
+    // Dispatch is derived directly from graph readiness, live capacity and one
+    // canonical exact-route SpawnPlan. Historical planner files are retained
+    // as evidence but are not opened or migrated by the production service.
+    logger.info("Direct fail-stop dispatch enabled; PlannerStore is not an authority");
 
     // Auto-bootstrap agency when auto_evolve is enabled and agency isn't initialized.
     if config.agency.auto_evolve {
@@ -3205,14 +3172,9 @@ pub fn run_daemon(
     // Track last coordinator tick time - run immediately on start
     let mut last_coordinator_tick = Instant::now() - daemon_cfg.poll_interval;
 
-    // Dispatch watchdog (fix-wedge): count consecutive ticks that found ready
-    // tasks but spawned nothing AND have zero live agents. That combination is
-    // the signature of a starved/wedged dispatcher (e.g. a stuck coordinator
-    // sub-loop) — normal "at capacity" ticks have live agents, and normal idle
-    // ticks have no ready tasks. After WATCHDOG_STALL_TICKS we log LOUDLY so the
-    // wedge is diagnosable instead of silently looping until a manual restart.
-    const WATCHDOG_STALL_TICKS: u32 = 5;
-    let mut no_dispatch_progress_ticks: u32 = 0;
+    // Dispatch forward-progress exhaustiveness is checked after every tick.
+    // Unlike the former five-tick warning counter, a state with ready work and
+    // no action/owner/wait/deadline captures replay evidence and holds now.
 
     // Settling deadline: when a GraphChanged event arrives, we schedule a tick
     // after a settling delay. Each subsequent GraphChanged resets the deadline,
@@ -3379,14 +3341,6 @@ pub fn run_daemon(
                 .saturating_sub(last_coordinator_tick.elapsed());
             poll_timeout_ms =
                 poll_timeout_ms.min(until_tick.as_millis().min(i32::MAX as u128) as i32);
-            if let Ok(Some(deadline)) = worksgood::service::earliest_wake(&dir) {
-                let until = deadline
-                    .signed_duration_since(chrono::Utc::now())
-                    .to_std()
-                    .unwrap_or_default();
-                poll_timeout_ms =
-                    poll_timeout_ms.min(until.as_millis().min(i32::MAX as u128) as i32);
-            }
         }
         // Floor: don't spin faster than 50ms even with a deadline in the past.
         poll_timeout_ms = poll_timeout_ms.max(50);
@@ -3785,16 +3739,6 @@ pub fn run_daemon(
             if last_coordinator_tick.elapsed() >= daemon_cfg.poll_interval {
                 should_tick = true;
             }
-            // The earliest persisted convergence deadline shares the same
-            // event loop. Restart loads this exact timestamp; it never resets
-            // the exponent or redraws deterministic jitter.
-            if worksgood::service::earliest_wake(&dir)
-                .ok()
-                .flatten()
-                .is_some_and(|deadline| deadline <= chrono::Utc::now())
-            {
-                should_tick = true;
-            }
         }
         // Short-circuit the tick phase if Shutdown was just processed.
         // Without this, an IPC Shutdown that arrives while should_tick is
@@ -3883,45 +3827,17 @@ pub fn run_daemon(
                         result.spawn_breaker_tripped_tasks
                     ));
 
-                    // Dispatch watchdog (fix-wedge): detect a starved dispatcher —
-                    // ready tasks present, yet nothing spawned and no live agents.
                     if result.tasks_ready > 0
                         && result.agents_spawned == 0
                         && result.agents_alive == 0
                         && result.admission_deferred_tasks == 0
                     {
-                        // A per-task spawn circuit breaker tripping explains a
-                        // "spawned=0" tick without a wedge: the breaker skips
-                        // ONLY the affected task (and self-heals). Don't ramp
-                        // the wedge counter on account of it; surface it instead.
-                        if result.spawn_breaker_tripped_tasks > 0 {
-                            logger.info(&format!(
-                                "Spawn circuit breaker tripped on {} task(s) this tick — they are skipped (per-task) and self-heal via cooldown / `wg retry` / clear-on-success. Other tasks dispatch normally.",
-                                result.spawn_breaker_tripped_tasks
-                            ));
-                            no_dispatch_progress_ticks = 0;
-                        } else {
-                            no_dispatch_progress_ticks =
-                                no_dispatch_progress_ticks.saturating_add(1);
-                            if no_dispatch_progress_ticks == WATCHDOG_STALL_TICKS
-                                || (no_dispatch_progress_ticks > WATCHDOG_STALL_TICKS
-                                    && no_dispatch_progress_ticks
-                                        .is_multiple_of(WATCHDOG_STALL_TICKS))
-                            {
-                                logger.warn(&format!(
-                                "DISPATCH WATCHDOG: {} consecutive ticks with {} ready task(s) but \
-                                 0 spawned and 0 live agents — dispatcher appears wedged. Check for a \
-                                 stuck coordinator sub-loop / stale session sentinels; `wg service \
-                                 restart` clears it if this persists.",
-                                no_dispatch_progress_ticks, result.tasks_ready
-                            ));
-                            }
-                        }
-                    } else {
-                        // Intentional opt-in admission deferral is progress in
-                        // the dispatch decision, not a stuck dispatcher. Reset
-                        // the wedge counter so status/logs never conflate them.
-                        no_dispatch_progress_ticks = 0;
+                        // Never turn a diagnostic mismatch into a global pause.
+                        // Exact-route launch failures have already failed their
+                        // individual tasks; the next tick reloads graph truth.
+                        logger.warn(
+                            "Ready work produced no launch or explicit admission deferral; no planner recovery, hidden retry, or global pause was created",
+                        );
                     }
 
                     // Dispatch notifications for task state changes (failures, blocks)
@@ -3961,22 +3877,6 @@ pub fn run_daemon(
                     logger.error(&format!("Coordinator tick error: {}", e));
                     self_write_quiet_until = Some(Instant::now() + self_write_quiet_window);
                 }
-            }
-
-            // Every event/deadline/safety pass returns through the same durable
-            // reconciliation entry point. It observes authoritative receipts
-            // and advances at most one due unchanged goal; domain modules above
-            // remain the only mutation owners.
-            match worksgood::service::reconcile_after_service_pass(
-                &dir,
-                &convergence_policy,
-                chrono::Utc::now(),
-            ) {
-                Ok(Some(goal)) => logger.info(&format!(
-                    "Convergence pass advanced one unchanged wake: {goal}"
-                )),
-                Ok(None) => {}
-                Err(error) => logger.warn(&format!("Convergence pass held fail-closed: {error:#}")),
             }
 
             // --- Binary self-restart check ---
@@ -4585,6 +4485,8 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
     let log_exists = log_path.exists();
     let recent_errors = tail_log_since(dir, 5, Some("ERROR"), started_at);
     let recent_fatals = tail_log_since(dir, 5, Some("FATAL"), started_at);
+    let worker_filesystem_isolation = worksgood::worker_control::filesystem_isolation_status();
+    let historical_planner_evidence_present = dir.join("service/planner").exists();
 
     if json {
         let mut output = serde_json::json!({
@@ -4594,6 +4496,11 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
             "started_at": state.started_at,
             "pid_start_identity": state.pid_start_identity,
             "identity": state.identity,
+            "worker_control": {
+                "protocol": worksgood::worker_control::WORKER_CONTROL_PROTOCOL,
+                "capability_broker": "enforced",
+                "filesystem_isolation": &worker_filesystem_isolation,
+            },
             "uptime": uptime,
             "agents": {
                 "alive": alive_count,
@@ -4629,6 +4536,8 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
             "worktree_observers": worktree_observers,
             "worktree_activity_clocks": worktree_activity_clocks,
             "automatic_archival": automatic_archival,
+            "dispatch_authority": "direct-fail-stop",
+            "historical_planner_evidence_present": historical_planner_evidence_present,
             "worktree_observer_policy": {
                 "meaningful_silence_secs": worksgood::worktree_observer::DEFAULT_MEANINGFUL_SILENCE_SECS,
                 "observed_activity_grace_secs": worksgood::worktree_observer::DEFAULT_OBSERVED_ACTIVITY_GRACE_SECS,
@@ -4668,6 +4577,19 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
         println!("Service: running (PID {})", state.pid);
         println!("Socket: {}", state.socket_path);
         println!("Uptime: {}", uptime);
+        println!("Dispatch authority: direct fail-stop (no PlannerStore)");
+        if historical_planner_evidence_present {
+            println!("Historical planner evidence: retained, non-authoritative");
+        }
+        println!(
+            "Worker control: capability broker enforced; filesystem isolation: {} ({})",
+            if worker_filesystem_isolation.enforced {
+                "ENFORCED"
+            } else {
+                "DEGRADED"
+            },
+            worker_filesystem_isolation.reason
+        );
         if let Some(identity) = state.identity.as_ref() {
             println!("Graph identity: {}", identity.graph_digest);
             println!(
@@ -5985,6 +5907,38 @@ pub fn send_request(dir: &Path, request: &IpcRequest) -> Result<IpcResponse> {
     }
 }
 
+/// Send a capability-authenticated worker request to the exact endpoint passed
+/// by the daemon. This path deliberately does not resolve or open a graph
+/// directory/state file in the worker process.
+pub fn send_worker_request_endpoint(
+    endpoint: &Path,
+    request: &worksgood::worker_control::WorkerRequestEnvelope,
+) -> Result<IpcResponse> {
+    const IPC_REQUEST_DEADLINE: Duration = Duration::from_secs(30);
+    let endpoint = endpoint.to_path_buf();
+    let ipc_request = IpcRequest::Worker {
+        request: request.clone(),
+    };
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let _ = tx.send(send_request_to_socket_with_timeout(
+            &endpoint,
+            &ipc_request,
+            IPC_REQUEST_DEADLINE,
+        ));
+    });
+    match rx.recv_timeout(IPC_REQUEST_DEADLINE) {
+        Ok(result) => result,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => anyhow::bail!(
+            "Worker control IPC timed out after {}s; retry with the same request id",
+            IPC_REQUEST_DEADLINE.as_secs()
+        ),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            anyhow::bail!("Worker control IPC exited without a response")
+        }
+    }
+}
+
 fn send_request_inner(dir: &Path, request: &IpcRequest) -> Result<IpcResponse> {
     let state = ServiceState::load(dir)?.ok_or_else(|| {
         anyhow::anyhow!("Service not running (no state file). Start it with 'wg service start'.")
@@ -6009,6 +5963,18 @@ fn send_request_inner(dir: &Path, request: &IpcRequest) -> Result<IpcResponse> {
         );
     }
 
+    send_request_to_socket(&socket, request)
+}
+
+fn send_request_to_socket(socket: &Path, request: &IpcRequest) -> Result<IpcResponse> {
+    send_request_to_socket_with_timeout(socket, request, Duration::from_secs(2))
+}
+
+fn send_request_to_socket_with_timeout(
+    socket: &Path,
+    request: &IpcRequest,
+    client_timeout: Duration,
+) -> Result<IpcResponse> {
     // Retry transient connection failures with short backoff.
     const MAX_RETRIES: u32 = 2;
     const BASE_BACKOFF_MS: u64 = 50;
@@ -6021,21 +5987,20 @@ fn send_request_inner(dir: &Path, request: &IpcRequest) -> Result<IpcResponse> {
             ));
         }
 
-        match connect_to_socket(&socket) {
+        match connect_to_socket(socket) {
             Ok(mut stream) => {
                 // A live PID and socket do not guarantee a responsive daemon:
                 // the coordinator thread may be wedged before it accepts or
                 // answers this connection. Bound both halves so user-facing
                 // commands such as `wg chat create` and `wg chat resume` fail
                 // with an actionable error instead of hanging forever.
-                const IPC_CLIENT_TIMEOUT: Duration = Duration::from_secs(2);
                 #[cfg(unix)]
                 {
                     stream
-                        .set_recv_timeout(Some(IPC_CLIENT_TIMEOUT))
+                        .set_recv_timeout(Some(client_timeout))
                         .context("Failed to set service IPC receive timeout")?;
                     stream
-                        .set_send_timeout(Some(IPC_CLIENT_TIMEOUT))
+                        .set_send_timeout(Some(client_timeout))
                         .context("Failed to set service IPC send timeout")?;
                 }
 
@@ -6048,7 +6013,7 @@ fn send_request_inner(dir: &Path, request: &IpcRequest) -> Result<IpcResponse> {
                     let line = line.with_context(|| {
                         format!(
                             "Service IPC response timed out after {}s; the daemon is alive but unresponsive — restart with 'wg service start --force'",
-                            IPC_CLIENT_TIMEOUT.as_secs()
+                            client_timeout.as_secs()
                         )
                     })?;
                     if !line.is_empty() {
@@ -6076,10 +6041,9 @@ fn send_request_inner(dir: &Path, request: &IpcRequest) -> Result<IpcResponse> {
 
     let err = last_err.unwrap();
     anyhow::bail!(
-        "Could not connect to service at {:?} (PID {}, {} retries exhausted): {}. \
-         The daemon may be overloaded — try again, or restart with 'wg service start --force'.",
+        "Could not connect to service at {:?} ({} retries exhausted): {}. \
+         The daemon may be overloaded — try again with the same request id",
         socket,
-        state.pid,
         MAX_RETRIES,
         err
     )

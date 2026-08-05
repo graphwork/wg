@@ -1,0 +1,49 @@
+{
+  "name": "abandoned_dependency_satisfied_readiness",
+  "expected_historical_violation": "abandoned_dependency_satisfied_readiness",
+  "expected_corrected_action": null,
+  "expected_corrected_wait": "dependency_success",
+  "trace": {
+    "trace_schema_version": 1,
+    "planner_schema_version": 1,
+    "redaction": "typed_identifiers_and_digests_only",
+    "ruleset": "historical",
+    "initial_state": {
+      "schema_version": 1,
+      "graph_id": "graph-fixture",
+      "logical_time": 0,
+      "last_sequence": null,
+      "seen_observations": {},
+      "tasks": {},
+      "effects": {},
+      "early_acknowledgements": {},
+      "repaired_incidents": [],
+      "fail_closed": false
+    },
+    "observations": [
+      {
+        "sequence": 1,
+        "logical_time": 100,
+        "observation": {
+          "type": "task",
+          "key": {
+            "graph_id": "graph-fixture",
+            "task_id": "task-9",
+            "generation": 1,
+            "attempt_id": "attempt-9-1",
+            "fence": 9
+          },
+          "progress_id": "progress-incident",
+          "unfinished": true,
+          "owner": {
+            "kind": "none"
+          },
+          "incidents": [
+            "abandoned_dependency_satisfied_readiness"
+          ],
+          "runnable": "spawn_attempt"
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,215 @@
+{
+  "wire_version": 1,
+  "name": "cas_target_movement",
+  "initial": {
+    "wire_version": 1,
+    "phase": "running",
+    "owner": {
+      "task_id": "fix-candidate-wg-control-plane-destruction",
+      "generation": 0,
+      "attempt_id": "attempt-0-1",
+      "fence": 1,
+      "wrapper_epoch": 1,
+      "child_epoch": 1,
+      "wrapper_identity_digest": "b3:wrapper-attempt-0-1",
+      "child_identity_digest": "b3:native-pi-attempt-0-1",
+      "owned_child": true
+    },
+    "worktree_lease": {
+      "task_id": "fix-candidate-wg-control-plane-destruction",
+      "generation": 0,
+      "attempt_id": "attempt-0-1",
+      "fence": 1,
+      "wrapper_epoch": 1,
+      "child_epoch": 1,
+      "wrapper_identity_digest": "b3:wrapper-attempt-0-1",
+      "child_identity_digest": "b3:native-pi-attempt-0-1",
+      "owned_child": true
+    },
+    "session_lease": {
+      "task_id": "fix-candidate-wg-control-plane-destruction",
+      "generation": 0,
+      "attempt_id": "attempt-0-1",
+      "fence": 1,
+      "wrapper_epoch": 1,
+      "child_epoch": 1,
+      "wrapper_identity_digest": "b3:wrapper-attempt-0-1",
+      "child_identity_digest": "b3:native-pi-attempt-0-1",
+      "owned_child": true
+    },
+    "finish_lease": null,
+    "settled": false,
+    "owner_proven_dead": false,
+    "pending_action": null,
+    "action_deadline": null,
+    "candidate": null,
+    "accepted_candidate": null,
+    "finish_tx": null,
+    "promotion_count": 0,
+    "breaker_charges": 0,
+    "inert_messages": 0
+  },
+  "events": [
+    {
+      "type": "candidate_validated",
+      "caller": {
+        "task_id": "fix-candidate-wg-control-plane-destruction",
+        "generation": 0,
+        "attempt_id": "attempt-0-1",
+        "fence": 1,
+        "wrapper_epoch": 1,
+        "child_epoch": 1,
+        "wrapper_identity_digest": "b3:wrapper-attempt-0-1",
+        "child_identity_digest": "b3:native-pi-attempt-0-1",
+        "owned_child": true
+      },
+      "candidate": {
+        "id": "candidate:b3:wip-exact",
+        "base_cas": "base:b3:main-0",
+        "protected_free": true
+      }
+    },
+    {
+      "type": "child_settled",
+      "caller": {
+        "task_id": "fix-candidate-wg-control-plane-destruction",
+        "generation": 0,
+        "attempt_id": "attempt-0-1",
+        "fence": 1,
+        "wrapper_epoch": 1,
+        "child_epoch": 1,
+        "wrapper_identity_digest": "b3:wrapper-attempt-0-1",
+        "child_identity_digest": "b3:native-pi-attempt-0-1",
+        "owned_child": true
+      },
+      "candidate": {
+        "id": "candidate:b3:wip-exact",
+        "base_cas": "base:b3:main-0",
+        "protected_free": true
+      },
+      "deadline": 100
+    },
+    {
+      "type": "begin_finish",
+      "caller": {
+        "task_id": "fix-candidate-wg-control-plane-destruction",
+        "generation": 0,
+        "attempt_id": "attempt-0-1",
+        "fence": 1,
+        "wrapper_epoch": 1,
+        "child_epoch": 1,
+        "wrapper_identity_digest": "b3:wrapper-attempt-0-1",
+        "child_identity_digest": "b3:native-pi-attempt-0-1",
+        "owned_child": true
+      },
+      "disposition": "land"
+    },
+    {
+      "type": "promote",
+      "caller": {
+        "task_id": "fix-candidate-wg-control-plane-destruction",
+        "generation": 0,
+        "attempt_id": "attempt-0-1",
+        "fence": 1,
+        "wrapper_epoch": 1,
+        "child_epoch": 1,
+        "wrapper_identity_digest": "b3:wrapper-attempt-0-1",
+        "child_identity_digest": "b3:native-pi-attempt-0-1",
+        "owned_child": true
+      },
+      "candidate_id": "candidate:b3:wip-exact",
+      "base_cas": "base:b3:main-0",
+      "current_base_cas": "base:b3:moved"
+    }
+  ],
+  "expected_decisions": [
+    {
+      "status": "applied"
+    },
+    {
+      "status": "applied"
+    },
+    {
+      "status": "applied"
+    },
+    {
+      "status": "rejected",
+      "reason": "cas_moved"
+    }
+  ],
+  "expected_final": {
+    "wire_version": 1,
+    "phase": "running",
+    "owner": {
+      "task_id": "fix-candidate-wg-control-plane-destruction",
+      "generation": 0,
+      "attempt_id": "attempt-0-1",
+      "fence": 1,
+      "wrapper_epoch": 1,
+      "child_epoch": 1,
+      "wrapper_identity_digest": "b3:wrapper-attempt-0-1",
+      "child_identity_digest": "b3:native-pi-attempt-0-1",
+      "owned_child": true
+    },
+    "worktree_lease": {
+      "task_id": "fix-candidate-wg-control-plane-destruction",
+      "generation": 0,
+      "attempt_id": "attempt-0-1",
+      "fence": 1,
+      "wrapper_epoch": 1,
+      "child_epoch": 1,
+      "wrapper_identity_digest": "b3:wrapper-attempt-0-1",
+      "child_identity_digest": "b3:native-pi-attempt-0-1",
+      "owned_child": true
+    },
+    "session_lease": {
+      "task_id": "fix-candidate-wg-control-plane-destruction",
+      "generation": 0,
+      "attempt_id": "attempt-0-1",
+      "fence": 1,
+      "wrapper_epoch": 1,
+      "child_epoch": 1,
+      "wrapper_identity_digest": "b3:wrapper-attempt-0-1",
+      "child_identity_digest": "b3:native-pi-attempt-0-1",
+      "owned_child": true
+    },
+    "finish_lease": {
+      "task_id": "fix-candidate-wg-control-plane-destruction",
+      "generation": 0,
+      "attempt_id": "attempt-0-1",
+      "fence": 1,
+      "wrapper_epoch": 1,
+      "child_epoch": 1,
+      "wrapper_identity_digest": "b3:wrapper-attempt-0-1",
+      "child_identity_digest": "b3:native-pi-attempt-0-1",
+      "owned_child": true
+    },
+    "pending_action": "promote",
+    "action_deadline": 100,
+    "candidate": {
+      "id": "candidate:b3:wip-exact",
+      "base_cas": "base:b3:main-0",
+      "protected_free": true
+    },
+    "accepted_candidate": {
+      "id": "candidate:b3:wip-exact",
+      "base_cas": "base:b3:main-0",
+      "protected_free": true
+    },
+    "finish_tx": {
+      "candidate": {
+        "id": "candidate:b3:wip-exact",
+        "base_cas": "base:b3:main-0",
+        "protected_free": true
+      },
+      "disposition": "land",
+      "promotion_receipt": false,
+      "cleanup_committed": false
+    },
+    "promotion_count": 0,
+    "breaker_charges": 0,
+    "dependency_satisfied": false,
+    "recovery_rank": 2,
+    "inert_messages": 0
+  }
+}

@@ -143,7 +143,11 @@ pub fn run(
             original_id: t.id.clone(),
             title: t.title.clone(),
             description: t.description.clone(),
-            status: "Done".to_string(),
+            // Imported history has no local exact-attempt GraphSave. Keep the
+            // source status for audit, but never mint local completion authority.
+            status: "needs-reconciliation".to_string(),
+            source_status: format!("{:?}", t.status),
+            completion_reason: "imported-without-verified-local-graph-save".to_string(),
             visibility: "internal".to_string(),
             skills: t.skills.clone(),
             tags: {
@@ -262,6 +266,10 @@ struct ImportedTask {
     #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<String>,
     status: String,
+    /// Historical status asserted by the exporting graph. Informational only.
+    source_status: String,
+    /// Named repair action/reason; imported rows are never silently blessed.
+    completion_reason: String,
     visibility: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     skills: Vec<String>,
@@ -382,7 +390,9 @@ mod tests {
             original_id: "t1".to_string(),
             title: "Test task".to_string(),
             description: Some("A description".to_string()),
-            status: "Done".to_string(),
+            status: "needs-reconciliation".to_string(),
+            source_status: "Done".to_string(),
+            completion_reason: "imported-without-verified-local-graph-save".to_string(),
             visibility: "internal".to_string(),
             skills: vec!["rust".to_string()],
             tags: vec!["imported".to_string(), "source:src".to_string()],
@@ -398,6 +408,12 @@ mod tests {
         assert_eq!(parsed.id, "imported/src/t1");
         assert_eq!(parsed.original_id, "t1");
         assert_eq!(parsed.source, "src");
+        assert_eq!(parsed.status, "needs-reconciliation");
+        assert_eq!(parsed.source_status, "Done");
+        assert_eq!(
+            parsed.completion_reason,
+            "imported-without-verified-local-graph-save"
+        );
         assert_eq!(parsed.tags, vec!["imported", "source:src"]);
     }
 

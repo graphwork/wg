@@ -24,6 +24,21 @@ pub enum ParseError {
     },
     #[error("Lock error: {0}")]
     Lock(String),
+    #[error("completion evidence error: {0}")]
+    CompletionEvidence(String),
+}
+
+/// Decode and verify a self-contained GraphSave bundle without consulting
+/// ambient graph, Git, filesystem, or process state. Runtime adapters use this
+/// at durable-object read boundaries before asking the lifecycle reducer to
+/// project completion.
+pub fn parse_graph_save_bundle(
+    bytes: &[u8],
+) -> Result<crate::completion_evidence::VerifiedGraphSave, ParseError> {
+    let bundle: crate::completion_evidence::GraphSaveBundle =
+        serde_json::from_slice(bytes).map_err(|source| ParseError::Json { line: 1, source })?;
+    crate::completion_evidence::verify_graph_save_bundle(&bundle)
+        .map_err(|error| ParseError::CompletionEvidence(error.to_string()))
 }
 
 fn errno_name(error: &std::io::Error) -> String {

@@ -188,12 +188,28 @@ pub fn run(
         return Ok(());
     }
 
+    let exact_route = handler_spec_route(&spec);
     worksgood::execution_selection::require(
         workgraph_dir,
-        task.model.as_deref().map(|m| (m, true)),
+        exact_route.as_deref().map(|route| (route, true)),
         "wg spawn-task",
     )?;
     dispatch(&spec, workgraph_dir)
+}
+
+fn handler_spec_route(spec: &HandlerSpec) -> Option<String> {
+    let (handler, model) = match spec {
+        HandlerSpec::Pi { model, .. } => ("pi", model.as_deref()),
+        HandlerSpec::Claude { model, .. } => ("claude", model.as_deref()),
+        HandlerSpec::Codex { model, .. } => ("codex", model.as_deref()),
+        HandlerSpec::OpenCode { model, .. } => ("opencode", model.as_deref()),
+        HandlerSpec::Native { model, .. } => ("nex", model.as_deref()),
+        HandlerSpec::Gemini { .. } => return None,
+    };
+    model.map(|model| {
+        worksgood::execution_selection::handler_qualified_explicit_route(model)
+            .unwrap_or_else(|| format!("{handler}:{model}"))
+    })
 }
 
 /// Figure out what kind of handler to spawn for this task, given

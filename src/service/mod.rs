@@ -13,13 +13,16 @@ pub mod dispatch_boot;
 pub mod executor;
 pub mod graph_watcher;
 pub mod llm;
+pub mod planner;
 pub mod provider_health;
 pub mod registry;
 
 pub use convergence::{
     Admission as ConvergenceAdmission, ConvergencePolicy, ConvergenceStage, ConvergenceState,
-    RouteAdmission, RouteBreaker, RouteBreakerState, admit_goal_action, admit_route_action,
-    earliest_wake, reconcile_after_service_pass, reconcile_dir,
+    FailedPrerequisiteConvergence, FinishConvergenceAction, FinishConvergenceDecision,
+    FinishConvergenceRank, FinishConvergenceSnapshot, RouteAdmission, RouteBreaker,
+    RouteBreakerState, WrapperChildCapability, converge_failed_prerequisites,
+    reduce_exited_worker_finish,
 };
 pub use dispatch_boot::{
     ChatSupervisorBootSpec, enumerate_chat_supervisors_for_boot,
@@ -27,6 +30,35 @@ pub use dispatch_boot::{
 };
 pub use executor::{
     ExecutorConfig, ExecutorRegistry, ExecutorSettings, PromptTemplate, TemplateVars,
+};
+pub use planner::{
+    AckOutcome as PlannerAckOutcome, ActionKind as PlannerActionKind, DecisionTrace,
+    DispatchAdmission as PlannerDispatchAdmission,
+    DispatchEffectBinding as PlannerDispatchEffectBinding,
+    DispatchObservation as PlannerDispatchObservation, DispatchPolicy as PlannerDispatchPolicy,
+    DispatchReadiness as PlannerDispatchReadiness,
+    DispatchRouteObservation as PlannerDispatchRouteObservation,
+    EffectBinding as PlannerEffectBinding, EffectExecutionPhase as PlannerEffectExecutionPhase,
+    EffectExecutionRecord as PlannerEffectExecutionRecord, EffectReplay as PlannerEffectReplay,
+    EvidenceSlot as PlannerEvidenceSlot, ExternalWait as PlannerExternalWait,
+    FailedPrerequisite as PlannerFailedPrerequisite,
+    FailedPrerequisiteClass as PlannerFailedPrerequisiteClass,
+    FailedPrerequisiteEvidence as PlannerFailedPrerequisiteEvidence,
+    ImportedActionLease as PlannerImportedActionLease, ImportedBackoff as PlannerImportedBackoff,
+    ImportedGoalSchedule as PlannerImportedGoalSchedule,
+    ImportedRouteProbeLease as PlannerImportedRouteProbeLease,
+    ImportedRouteSchedule as PlannerImportedRouteSchedule, IncidentCode as PlannerIncidentCode,
+    LegacyConvergenceImport as PlannerLegacyConvergenceImport, Observation, ObservationEnvelope,
+    OpaqueId as PlannerOpaqueId, OwnerEvidence as PlannerOwnerEvidence, PlannedEffect,
+    PlannerRouteProbeLease, PlannerRouteProjection, PlannerRouteState, PlannerRuleset,
+    PlannerState, PlannerStatusProjection, PlannerStep, PlannerStore, PlannerTimestamp,
+    RedactionPolicy, ReplayReport, ResourceEvidence as PlannerResourceEvidence,
+    RouteHealthEvidence as PlannerRouteHealthEvidence, ScheduledAction as PlannerScheduledAction,
+    TaskKey as PlannerTaskKey, TaskObservation as PlannerTaskObservation,
+    TypedObservation as PlannerTypedObservation, ViolationCode as PlannerViolationCode,
+    WaitKind as PlannerWaitKind, WorktreeSpawnObservation as PlannerWorktreeSpawnObservation,
+    ZeroOutputObservation as PlannerZeroOutputObservation, plan as plan_daemon_step, plan_guarded,
+    replay as replay_daemon, replay_bytes,
 };
 pub use provider_health::{
     AgentExecutionOutcome, CompletionRefusalCode, ExecutionOutcome, ExecutorFailure,

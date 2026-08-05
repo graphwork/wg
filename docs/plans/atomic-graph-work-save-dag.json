@@ -1,0 +1,301 @@
+{
+  "schema_version": 1,
+  "plan_id": "atomic-graph-work-save-v1",
+  "design_document": "docs/design-atomic-graph-work-save.md",
+  "status": "proposed-not-dispatched",
+  "shared_kernel_gate": "atomic-save-kernel-schema",
+  "final_synthesis_gate": "atomic-save-synthesis-canary",
+  "constraints": [
+    "Do not create or dispatch these tasks until operator approval.",
+    "The shared kernel/schema gate must land before any runtime adapter starts.",
+    "Tasks that may run in parallel own disjoint correctness-critical files.",
+    "Lean proves only the pure reducer under stated environmental assumptions; adapter correctness comes from Rust and fault-injection tests.",
+    "No provider redesign, filesystem/XDG sandbox project, broad TUI redesign, historical worktree cleanup, or rewrite of the completed Lean v1 program."
+  ],
+  "tasks": [
+    {
+      "id": "atomic-save-kernel-schema",
+      "title": "Land the atomic save evidence schema and pure kernel",
+      "phase": "shared-kernel-gate",
+      "depends_on": [],
+      "owned_files_modules": [
+        "src/completion_evidence.rs (new)",
+        "src/save_transaction.rs (new)",
+        "src/graph.rs",
+        "src/lifecycle.rs",
+        "src/finalization/mod.rs",
+        "src/parser.rs",
+        "src/lib.rs"
+      ],
+      "non_goals": [
+        "No CLI or daemon adapter conversion.",
+        "No Git/worktree effect execution.",
+        "No claim that the pure kernel proves storage or OS behavior."
+      ],
+      "validation_commands": [
+        "cargo test save_transaction",
+        "cargo test lifecycle",
+        "cargo fmt --check",
+        "cargo clippy"
+      ]
+    },
+    {
+      "id": "atomic-save-worksave-capture",
+      "title": "Implement quiescent, immutable WorkSave capture",
+      "phase": "parallel-runtime-adapter",
+      "depends_on": [
+        "atomic-save-kernel-schema"
+      ],
+      "owned_files_modules": [
+        "src/work_save.rs (new)",
+        "src/commands/work_save.rs (new)",
+        "src/worktree_observer.rs",
+        "src/commands/worktree_observer.rs",
+        "src/commands/spawn/worktree.rs",
+        "src/commands/checkpoint.rs"
+      ],
+      "non_goals": [
+        "No task Done projection.",
+        "No promotion or dependency-readiness changes.",
+        "No cleanup of historical worktrees."
+      ],
+      "validation_commands": [
+        "cargo test work_save",
+        "cargo test worktree_observer",
+        "cargo test --test atomic_save_faults worksave",
+        "cargo fmt --check"
+      ]
+    },
+    {
+      "id": "atomic-save-terminal-adapters",
+      "title": "Route every terminal command through SaveTransaction",
+      "phase": "parallel-runtime-adapter",
+      "depends_on": [
+        "atomic-save-kernel-schema"
+      ],
+      "owned_files_modules": [
+        "src/commands/done.rs",
+        "src/commands/finalize.rs",
+        "src/commands/fail.rs",
+        "src/commands/incomplete.rs",
+        "src/commands/approve.rs",
+        "src/commands/reject.rs",
+        "src/commands/abandon.rs",
+        "src/commands/exec.rs",
+        "src/commands/agent.rs",
+        "src/matrix_commands.rs",
+        "src/commands/service/human_dispatch.rs"
+      ],
+      "non_goals": [
+        "No daemon liveness planner.",
+        "No archive or reset implementation.",
+        "No provider-plane redesign."
+      ],
+      "validation_commands": [
+        "cargo test commands::done",
+        "cargo test commands::finalize",
+        "cargo test matrix_commands",
+        "cargo test --test atomic_save_faults terminal_adapter",
+        "cargo fmt --check"
+      ]
+    },
+    {
+      "id": "atomic-save-daemon-convergence",
+      "title": "Make broker and dead-worker convergence replay SaveTransaction",
+      "phase": "parallel-runtime-adapter",
+      "depends_on": [
+        "atomic-save-kernel-schema"
+      ],
+      "owned_files_modules": [
+        "src/worker_control.rs",
+        "src/worker_cli.rs",
+        "src/service/convergence.rs",
+        "src/commands/service/ipc.rs",
+        "src/commands/service/mod.rs",
+        "src/commands/service/coordinator.rs",
+        "src/commands/service/triage.rs",
+        "src/commands/sweep.rs"
+      ],
+      "non_goals": [
+        "No semantic verdict invention by the daemon.",
+        "No provider planner formalization.",
+        "No broad TUI work."
+      ],
+      "validation_commands": [
+        "cargo test service::convergence",
+        "cargo test commands::service::ipc",
+        "cargo test commands::service::triage",
+        "cargo test --test atomic_save_faults dead_worker",
+        "cargo fmt --check"
+      ]
+    },
+    {
+      "id": "atomic-save-dependency-archive-reset",
+      "title": "Convert dependency, archive, reset, retry, and cleanup readers",
+      "phase": "parallel-runtime-adapter",
+      "depends_on": [
+        "atomic-save-kernel-schema"
+      ],
+      "owned_files_modules": [
+        "src/query.rs",
+        "src/check.rs",
+        "src/commands/ready.rs",
+        "src/commands/claim.rs",
+        "src/commands/why_blocked.rs",
+        "src/commands/archive.rs",
+        "src/commands/reset.rs",
+        "src/commands/retry.rs",
+        "src/commands/reopen.rs",
+        "src/commands/recover.rs",
+        "src/commands/cleanup.rs",
+        "src/commands/worktree_gc.rs",
+        "src/commands/service/worktree.rs",
+        "src/commands/spawn/execution.rs"
+      ],
+      "non_goals": [
+        "No provider implementation changes.",
+        "No automatic deletion of quarantined legacy evidence.",
+        "No change to graph visualization design."
+      ],
+      "validation_commands": [
+        "cargo test query",
+        "cargo test commands::archive",
+        "cargo test commands::reset",
+        "cargo test commands::retry",
+        "cargo test --test atomic_save_faults reset_retry",
+        "cargo fmt --check"
+      ]
+    },
+    {
+      "id": "atomic-save-legacy-migration",
+      "title": "Quarantine and reconcile legacy Done/import records",
+      "phase": "parallel-runtime-adapter",
+      "depends_on": [
+        "atomic-save-kernel-schema"
+      ],
+      "owned_files_modules": [
+        "src/commands/completion_repair.rs (new)",
+        "src/commands/migrate.rs",
+        "src/commands/trace_import.rs",
+        "src/function_memory.rs",
+        "src/commands/func_apply.rs",
+        "src/commands/evolve/fanout.rs",
+        "src/commands/service/assignment.rs"
+      ],
+      "non_goals": [
+        "No silent blessing of legacy Done.",
+        "No erasure of historical graph/archive records.",
+        "No cleanup of historical worktrees."
+      ],
+      "validation_commands": [
+        "cargo test completion_repair",
+        "cargo test commands::migrate",
+        "cargo test --test atomic_save_faults legacy_done",
+        "cargo fmt --check"
+      ]
+    },
+    {
+      "id": "atomic-save-formal-rust-traces",
+      "title": "Extend the formal abstraction and Rust conformance traces",
+      "phase": "parallel-verification",
+      "depends_on": [
+        "atomic-save-kernel-schema"
+      ],
+      "owned_files_modules": [
+        "src/lifecycle_protocol.rs",
+        "formal/WGLifecycle/Model.lean",
+        "formal/WGLifecycle/Safety.lean",
+        "formal/WGLifecycle/Convergence.lean",
+        "formal/WGLifecycle/Golden.lean",
+        "formal/WGLifecycle/Incident.lean",
+        "formal/fixtures/v2/** (new)",
+        "formal/README.md",
+        "tests/lifecycle_protocol_conformance.rs",
+        "tests/save_transaction_conformance.rs (new)"
+      ],
+      "non_goals": [
+        "Do not rewrite or reinterpret the completed v1 Lean program or fixtures.",
+        "Do not claim Lean verifies Git, fsync, process identity, sockets, or filesystems.",
+        "No runtime adapter effects."
+      ],
+      "validation_commands": [
+        "(cd formal && lake build)",
+        "cargo test --test lifecycle_protocol_conformance",
+        "cargo test --test save_transaction_conformance",
+        "! rg -n '\\b(sorry|admit|unsafe|axiom)\\b' formal/WGLifecycle --glob '*.lean'",
+        "cargo fmt --check"
+      ]
+    },
+    {
+      "id": "atomic-save-adversarial-smokes",
+      "title": "Add candidate-binary crash and incident smokes",
+      "phase": "parallel-verification",
+      "depends_on": [
+        "atomic-save-kernel-schema"
+      ],
+      "owned_files_modules": [
+        "tests/smoke/scenarios/atomic_save_false_done_dependency.sh (new)",
+        "tests/smoke/scenarios/atomic_save_broker_handoff.sh (new)",
+        "tests/smoke/scenarios/atomic_save_crash_replay.sh (new)",
+        "tests/smoke/scenarios/atomic_save_dead_worker.sh (new)",
+        "tests/smoke/scenarios/atomic_save_reset_migration.sh (new)",
+        "tests/smoke/manifest.toml",
+        "tests/atomic_save_faults.rs (new)"
+      ],
+      "non_goals": [
+        "No mock-only proof for OS/Git durability.",
+        "No production Rust changes.",
+        "No provider or broad TUI scenario."
+      ],
+      "validation_commands": [
+        "cargo test --test atomic_save_faults",
+        "bash tests/smoke/scenarios/atomic_save_false_done_dependency.sh",
+        "bash tests/smoke/scenarios/atomic_save_broker_handoff.sh",
+        "bash tests/smoke/scenarios/atomic_save_crash_replay.sh",
+        "bash tests/smoke/scenarios/atomic_save_dead_worker.sh",
+        "bash tests/smoke/scenarios/atomic_save_reset_migration.sh"
+      ]
+    },
+    {
+      "id": "atomic-save-synthesis-canary",
+      "title": "Integrate atomic save adapters and run staged canary",
+      "phase": "final-synthesis-canary-gate",
+      "depends_on": [
+        "atomic-save-worksave-capture",
+        "atomic-save-terminal-adapters",
+        "atomic-save-daemon-convergence",
+        "atomic-save-dependency-archive-reset",
+        "atomic-save-legacy-migration",
+        "atomic-save-formal-rust-traces",
+        "atomic-save-adversarial-smokes"
+      ],
+      "owned_files_modules": [
+        "src/cli.rs",
+        "src/main.rs",
+        "src/commands/mod.rs",
+        "docs/ops/runbook.md",
+        "docs/design-atomic-graph-work-save.md (implementation conformance notes only)"
+      ],
+      "non_goals": [
+        "No weakening of fail-closed guards to make the canary pass.",
+        "No automatic legacy blessing or cleanup.",
+        "No provider, XDG sandbox, or broad TUI expansion."
+      ],
+      "validation_commands": [
+        "python3 -m json.tool docs/plans/atomic-graph-work-save-dag.json >/dev/null",
+        "cargo fmt --check",
+        "cargo check",
+        "cargo clippy",
+        "cargo test",
+        "(cd formal && lake build)",
+        "cargo test --test lifecycle_protocol_conformance --test save_transaction_conformance",
+        "cargo test --test atomic_save_faults",
+        "bash tests/smoke/scenarios/atomic_save_false_done_dependency.sh",
+        "bash tests/smoke/scenarios/atomic_save_broker_handoff.sh",
+        "bash tests/smoke/scenarios/atomic_save_crash_replay.sh",
+        "bash tests/smoke/scenarios/atomic_save_dead_worker.sh",
+        "bash tests/smoke/scenarios/atomic_save_reset_migration.sh"
+      ]
+    }
+  ]
+}

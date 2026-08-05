@@ -296,12 +296,25 @@ fn call_dispatch_route(
         ExecutorKind::Codex => {
             call_codex_cli(&dispatch.model_id, dispatch.reasoning, prompt, timeout_secs)
         }
+        ExecutorKind::Claude => call_claude_cli(&dispatch.model_id, prompt, timeout_secs),
         other => anyhow::bail!(
             "error[WG-PI-ROUTE-REQUIRED]: handler {} is unsupported for lightweight role route {:?}; no fallback was attempted",
             other.as_str(),
             dispatch.raw_spec
         ),
     }
+}
+
+/// Invoke one already-resolved agency route exactly once. This primitive is
+/// used by manifest-bound completion review, where a route failure must become
+/// `Unavailable`; configured fallback routes are deliberately ignored.
+pub fn run_exact_agency_dispatch_call(
+    config: &Config,
+    dispatch: &AgencyDispatch,
+    prompt: &str,
+    timeout_secs: u64,
+) -> Result<LlmCallResult> {
+    call_dispatch_route(config, dispatch, None, prompt, timeout_secs)
 }
 
 fn run_dispatch_with_same_system_fallback<F>(

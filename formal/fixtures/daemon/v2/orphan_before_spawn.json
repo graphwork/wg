@@ -1,0 +1,37 @@
+{
+  "name": "orphan_before_spawn",
+  "expected_action": "retry_failed_prerequisite",
+  "expected_wait": null,
+  "expected_class": "orphan_before_spawn",
+  "trace": {
+    "trace_schema_version": 2,
+    "planner_schema_version": 2,
+    "redaction": "typed_identifiers_and_digests_only",
+    "ruleset": "corrected",
+    "initial_state": {"schema_version":2,"graph_id":"graph-live-rollout","logical_time":0,"last_sequence":null,"seen_observations":{},"tasks":{},"effects":{},"early_acknowledgements":{},"repaired_incidents":[],"fail_closed":false},
+    "observations": [{
+      "sequence":1,
+      "logical_time":1785777980,
+      "observation":{
+        "type":"task",
+        "key":{"graph_id":"graph-live-rollout","task_id":"atomic-save-synthesis-canary","generation":0,"attempt_id":"blocked-before-attempt","fence":0},
+        "progress_id":"orphan-reconciled-before-spawn",
+        "unfinished":true,
+        "owner":{"kind":"none"},
+        "incidents":[],
+        "failed_prerequisite":{
+          "source":{"graph_id":"graph-live-rollout","task_id":"atomic-save-adversarial-smokes","generation":0,"attempt_id":"attempt-not-reserved","fence":0},
+          "class":"orphan_before_spawn",
+          "evidence":{
+            "work_save":{"state":"absent"},
+            "candidate":{"state":"absent"},
+            "session":{"state":"absent"},
+            "worktree":{"state":"absent"}
+          },
+          "automatic_retries":0,
+          "max_automatic_retries":1
+        }
+      }
+    }]
+  }
+}

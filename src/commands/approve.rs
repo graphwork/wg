@@ -2,12 +2,12 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
 use worksgood::graph::{LogEntry, Status};
-use worksgood::parser::modify_graph;
+use worksgood::parser::{load_graph, modify_graph};
 
 #[cfg(test)]
 use super::graph_path;
 #[cfg(test)]
-use worksgood::parser::{load_graph, save_graph};
+use worksgood::parser::save_graph;
 
 /// Approve a task that is pending validation, transitioning it to Done.
 pub fn run(dir: &Path, id: &str) -> Result<()> {
@@ -16,48 +16,42 @@ pub fn run(dir: &Path, id: &str) -> Result<()> {
         anyhow::bail!("WG not initialized. Run 'wg init' first.");
     }
 
-    let mut error: Option<anyhow::Error> = None;
-
-    let _graph = modify_graph(&path, |graph| {
-        let task = match graph.get_task_mut(id) {
-            Some(t) => t,
-            None => {
-                error = Some(anyhow::anyhow!("Task '{}' not found", id));
-                return false;
-            }
+    let graph = load_graph(&path).context("Failed to load graph")?;
+    let task = graph
+        .get_task(id)
+        .ok_or_else(|| anyhow::anyhow!("Task '{}' not found", id))?;
+    if task.status == Status::PendingEval {
+        anyhow::bail!(
+            "Task '{}' is under a required evaluation gate. `wg approve` cannot bypass exact attempt-bound verdict thresholds; wait for reconciliation or use `wg retry`.",
+            id
+        );
+    }
+    if task.status != Status::PendingValidation {
+        anyhow::bail!(
+            "Task '{}' is not awaiting approval (status: {:?}). Only pending-validation tasks can be approved.",
+            id,
+            task.status
+        );
+    }
+    drop(graph);
+    super::finalize::commit_terminal_success(
+        dir,
+        id,
+        std::env::var("WG_AGENT_ID").ok().as_deref(),
+        "validator_approved_graphsave",
+    )?;
+    modify_graph(&path, |graph| {
+        let Some(task) = graph.get_task_mut(id) else {
+            return false;
         };
-
-        if task.status == Status::PendingEval {
-            error = Some(anyhow::anyhow!(
-                "Task '{}' is under a required evaluation gate. `wg approve` cannot bypass exact attempt-bound verdict thresholds; wait for reconciliation or use `wg retry`.",
-                id
-            ));
-            return false;
-        }
-        if task.status != Status::PendingValidation {
-            error = Some(anyhow::anyhow!(
-                "Task '{}' is not awaiting approval (status: {:?}). Only pending-validation tasks can be approved.",
-                id,
-                task.status
-            ));
-            return false;
-        }
-
-        task.status = Status::Done;
         task.log.push(LogEntry {
             timestamp: Utc::now().to_rfc3339(),
             actor: std::env::var("WG_AGENT_ID").ok(),
             user: Some(worksgood::current_user()),
-            message: "Task approved by validator".to_string(),
+            message: "Task approved by validator".into(),
         });
-
         true
-    })
-    .context("Failed to save graph")?;
-
-    if let Some(e) = error {
-        return Err(e);
-    }
+    })?;
 
     super::notify_graph_changed(dir);
 

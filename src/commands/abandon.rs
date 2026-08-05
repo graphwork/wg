@@ -5,18 +5,29 @@ use worksgood::graph::{LogEntry, Status};
 use worksgood::lifecycle::{
     FenceExpectation, LifecycleActor, TransitionKind, TransitionRequest, apply_transition,
 };
-use worksgood::parser::modify_graph;
+use worksgood::parser::{load_graph, modify_graph};
 
 #[cfg(test)]
 use super::graph_path;
-#[cfg(test)]
-use worksgood::parser::load_graph;
 
 pub fn run(dir: &Path, id: &str, reason: Option<&str>, superseded_by: &[String]) -> Result<()> {
     let path = super::graph_path(dir);
     if !path.exists() {
         anyhow::bail!("WG not initialized. Run 'wg init' first.");
     }
+
+    let preflight = load_graph(&path).context("Failed to load graph")?;
+    let preflight_task = preflight
+        .get_task(id)
+        .ok_or_else(|| anyhow::anyhow!("Task '{}' not found", id))?;
+    if !matches!(preflight_task.status, Status::Done | Status::Abandoned) {
+        super::finalize::record_terminal_abort(
+            dir,
+            id,
+            reason.unwrap_or("operator abandoned task; retained evidence"),
+        )?;
+    }
+    drop(preflight);
 
     let mut error: Option<anyhow::Error> = None;
     let mut already_abandoned = false;

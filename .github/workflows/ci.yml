@@ -70,11 +70,59 @@ jobs:
 
       - name: cargo test (unit tests + worksgood target)
         run: |
-          cargo test --lib
-          cargo test --bin worksgood
+          # A small set of legacy config/profile tests temporarily mutate
+          # process-global HOME/XDG variables; serialize the unit harness so
+          # clean-room CI is deterministic rather than cross-test order based.
+          cargo test --lib -- --test-threads=1
+          cargo test --bin worksgood -- --test-threads=1
 
       - name: cargo test (doc tests)
         run: cargo test --doc
+
+  lifecycle-formal:
+    name: Lean lifecycle proofs & Rust conformance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned Lean toolchain
+        uses: leanprover/lean-action@v1
+        with:
+          auto-config: false
+          use-github-cache: true
+          lake-package-directory: formal
+
+      - name: Reject Lean proof escapes
+        run: |
+          if grep -RInE --include='*.lean' \
+            '(^|[^[:alnum:]_])(sorry|admit)([^[:alnum:]_]|$)|^[[:space:]]*(unsafe|axiom)[[:space:]]' \
+            formal; then
+            echo '::error::Lean proof placeholder, unsafe declaration, or unscoped axiom found'
+            exit 1
+          fi
+
+      - name: lake build (pinned lifecycle proofs + executable oracle)
+        working-directory: formal
+        run: |
+          lake build
+          lake build simple-land-oracle
+
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust/Lean lifecycle reducer conformance
+        run: >-
+          cargo test --locked
+          --test lifecycle_protocol_conformance
+          --test simple_land_conformance
+          --test simple_land_lean_oracle
+          --test completion_manifest_resolver
+          --test completion_review_valve
+          --test completion_task_projection
+          --test legacy_completion_authority_retired
+
+      - name: Hermetic worker-owned completion canary
+        run: cargo test --locked --bin wg commands::completion_canary_tests
 
   integration:
     name: Integration Tests (stable)

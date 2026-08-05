@@ -443,6 +443,16 @@ pub struct PiWatchdogState {
     pub route: RouteSnapshot,
     pub session: SessionProof,
     pub process: ProcessIdentity,
+    /// The attempt-owning wrapper is the parent/supervisor of `process`, not
+    /// its descendant.  Terminal adapters executed after the native child is
+    /// reaped are authenticated against this exact PID/birth identity.
+    #[serde(default)]
+    pub terminal_wrapper: Option<ProcessIdentity>,
+    /// Durable semantic-neutral handoff emitted by `agent_settled`.  It proves
+    /// only that this exact process/session stopped autonomous work; it never
+    /// claims success.
+    #[serde(default)]
+    pub completion_handoff: Option<CompletionHandoff>,
     pub process_epoch: u32,
     pub continuation_epoch: u32,
     pub classification: Classification,
@@ -479,6 +489,17 @@ pub struct PiWatchdogState {
     #[serde(default)]
     pub native_activity: NativeActivityProjection,
     pub domain_counters: DomainCounters,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompletionHandoff {
+    pub source: SourceTuple,
+    pub process_epoch: u32,
+    pub process_identity_digest: String,
+    pub terminal_wrapper_identity_digest: Option<String>,
+    pub session_id: String,
+    pub session_head: String,
+    pub observed_at: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -708,6 +729,8 @@ impl PiWatchdog {
                 route,
                 session,
                 process,
+                terminal_wrapper: None,
+                completion_handoff: None,
                 process_epoch: 1,
                 continuation_epoch: 0,
                 classification: Classification::Active,
@@ -770,6 +793,33 @@ impl PiWatchdog {
     }
     pub fn state(&self) -> &PiWatchdogState {
         &self.state
+    }
+
+    /// Bind the attempt-owning terminal wrapper once.  The native Pi child is
+    /// deliberately a child of this process, so ancestry in the opposite
+    /// direction is not a stale-writer signal.
+    pub fn bind_terminal_wrapper(
+        &mut self,
+        wrapper: ProcessIdentity,
+        now: i64,
+    ) -> Result<(), WatchdogError> {
+        if let Some(existing) = self.state.terminal_wrapper.as_ref() {
+            if existing != &wrapper {
+                return Err(WatchdogError::new(
+                    "stale_process_identity",
+                    "terminal wrapper identity is already bound",
+                ));
+            }
+            return Ok(());
+        }
+        if wrapper.pid == self.state.process.pid {
+            return Err(WatchdogError::new(
+                "invalid_process_topology",
+                "terminal wrapper and native child must be distinct processes",
+            ));
+        }
+        self.state.terminal_wrapper = Some(wrapper);
+        self.persist("terminal-wrapper-bound", now)
     }
 
     /// Return the durable cursor for a bounded capture identity.
@@ -1311,6 +1361,21 @@ impl PiWatchdog {
             }
             Observation::AgentSettled => {
                 self.state.phase = Phase::Settled;
+                if self.state.completion_handoff.is_none() {
+                    self.state.completion_handoff = Some(CompletionHandoff {
+                        source: self.state.source.clone(),
+                        process_epoch: self.state.process_epoch,
+                        process_identity_digest: self.state.process.digest(),
+                        terminal_wrapper_identity_digest: self
+                            .state
+                            .terminal_wrapper
+                            .as_ref()
+                            .map(ProcessIdentity::digest),
+                        session_id: self.state.session.session_id.clone(),
+                        session_head: self.state.session.branch_leaf.clone(),
+                        observed_at: now,
+                    });
+                }
                 actions = self.needs_finalization("needs_finalization_settled", now, true)?;
             }
             Observation::ProcessExited { status, reaped } => {

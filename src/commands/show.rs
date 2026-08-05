@@ -51,6 +51,8 @@ struct TaskDetails {
     #[serde(skip_serializing_if = "Option::is_none")]
     completion_receipt: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    completion_candidate: Option<worksgood::completion_task::CompletionCandidateRefs>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     finish_phase: Option<String>,
     /// Authoritative generation/attempt/fence projection plus accepted audit.
     lifecycle: worksgood::lifecycle::LifecycleProjection,
@@ -819,10 +821,11 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         completion_contract: task.completion_contract,
         completion_disposition: task.completion_disposition,
         completion_receipt: task.completion_receipt.clone(),
-        finish_phase: worksgood::finalization::FinalizationStore::open(dir)
-            .ok()
-            .and_then(|store| store.load_task(id).ok().flatten())
-            .map(|tx| format!("{:?}", tx.phase)),
+        completion_candidate: task.completion_candidate.clone(),
+        // Historical finalization transactions are evidence only. `show` is a
+        // read path and must not open (and thereby materialize) that retired
+        // mutable authority.
+        finish_phase: None,
         lifecycle: task.lifecycle.clone(),
         worktree_observer,
         activity_clocks,
@@ -931,6 +934,22 @@ fn print_human_readable(details: &TaskDetails) {
         println!("Status: {}", details.status);
     }
     println!("Completion contract: {}", details.completion_contract);
+    if let Some(candidate) = details.completion_candidate.as_ref() {
+        println!("Completion manifest: {}", candidate.manifest.content_digest);
+        println!(
+            "Completion review: FLIP={} eval={}",
+            candidate
+                .flip_receipt
+                .as_ref()
+                .map(|receipt| receipt.content_digest.as_str())
+                .unwrap_or("missing"),
+            candidate
+                .eval_receipt
+                .as_ref()
+                .map(|receipt| receipt.content_digest.as_str())
+                .unwrap_or("missing")
+        );
+    }
     if let Some(disposition) = details.completion_disposition {
         println!(
             "Completed disposition: {:?} receipt={}",
@@ -2261,6 +2280,7 @@ mod tests {
             completion_contract: CompletionContract::Land,
             completion_disposition: None,
             completion_receipt: None,
+            completion_candidate: None,
             finish_phase: None,
             lifecycle: worksgood::lifecycle::LifecycleProjection::default(),
             worktree_observer: None,

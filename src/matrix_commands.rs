@@ -363,7 +363,22 @@ pub fn execute_claim(workgraph_dir: &Path, task_id: &str, actor: Option<&str>) -
             }
         }
 
-        task.status = Status::InProgress;
+        if matches!(task.status, Status::Blocked | Status::Incomplete) {
+            task.status = Status::Open;
+        }
+        let request = crate::lifecycle::TransitionRequest::new(
+            crate::lifecycle::TransitionKind::AttemptReserved {
+                owner_id: actor_owned.clone(),
+            },
+            crate::lifecycle::LifecycleActor::operator(crate::current_user()),
+            "matrix_claim_reserved",
+            format!("matrix-claim:{}:{}", task_id, task.lifecycle.generation),
+        )
+        .expecting(crate::lifecycle::FenceExpectation::current(task));
+        if let Err(rejection) = crate::lifecycle::apply_transition(task, request) {
+            result_msg = Some(format!("Error: {rejection}"));
+            return false;
+        }
         task.started_at = Some(Utc::now().to_rfc3339());
         if let Some(ref actor_id) = actor_owned {
             task.assigned = Some(actor_id.clone());
@@ -385,92 +400,46 @@ pub fn execute_claim(workgraph_dir: &Path, task_id: &str, actor: Option<&str>) -
 
 /// Execute done command
 pub fn execute_done(workgraph_dir: &Path, task_id: &str) -> String {
-    let graph_path = workgraph_dir.join("graph.jsonl");
-
-    if !graph_path.exists() {
-        return "Error: WG not initialized".to_string();
-    }
-
-    let mut result_msg: Option<String> = None;
-    match modify_graph(&graph_path, |graph| {
-        let task = match graph.get_task_mut(task_id) {
-            Some(t) => t,
-            None => {
-                result_msg = Some(format!("Error: Task '{}' not found", task_id));
-                return false;
-            }
-        };
-
-        if task.status == Status::Done {
-            result_msg = Some(format!("Task '{}' is already done", task_id));
-            return false;
-        }
-
-        task.status = Status::Done;
-        task.completed_at = Some(Utc::now().to_rfc3339());
-        true
-    }) {
-        Ok(_) => {}
-        Err(e) => return format!("Error saving graph: {}", e),
-    }
-    if let Some(msg) = result_msg {
-        return msg;
-    }
-
-    format!("Marked '{}' as done", task_id)
+    execute_terminal_cli(workgraph_dir, "done", task_id, None)
 }
 
 /// Execute fail command
 pub fn execute_fail(workgraph_dir: &Path, task_id: &str, reason: Option<&str>) -> String {
-    let graph_path = workgraph_dir.join("graph.jsonl");
+    execute_terminal_cli(workgraph_dir, "fail", task_id, reason)
+}
 
-    if !graph_path.exists() {
+fn execute_terminal_cli(
+    workgraph_dir: &Path,
+    command: &str,
+    task_id: &str,
+    reason: Option<&str>,
+) -> String {
+    if !workgraph_dir.join("graph.jsonl").exists() {
         return "Error: WG not initialized".to_string();
     }
-
-    let mut result_msg: Option<String> = None;
-    let mut retry_count: u32 = 0;
-    let reason_owned = reason.map(String::from);
-    match modify_graph(&graph_path, |graph| {
-        let task = match graph.get_task_mut(task_id) {
-            Some(t) => t,
-            None => {
-                result_msg = Some(format!("Error: Task '{}' not found", task_id));
-                return false;
-            }
-        };
-
-        if task.status == Status::Done {
-            result_msg = Some(format!(
-                "Task '{}' is already done and cannot be marked as failed",
-                task_id
-            ));
-            return false;
-        }
-
-        if task.status == Status::Failed {
-            result_msg = Some(format!("Task '{}' is already failed", task_id));
-            return false;
-        }
-
-        task.status = Status::Failed;
-        task.retry_count += 1;
-        task.failure_reason = reason_owned.clone();
-        retry_count = task.retry_count;
-        true
-    }) {
-        Ok(_) => {}
-        Err(e) => return format!("Error saving graph: {}", e),
+    let binary = std::env::var_os("WG_BIN").unwrap_or_else(|| "wg".into());
+    let mut process = std::process::Command::new(binary);
+    process
+        .arg("--dir")
+        .arg(workgraph_dir)
+        .arg(command)
+        .arg(task_id);
+    if let Some(reason) = reason {
+        process.arg("--reason").arg(reason);
     }
-    if let Some(msg) = result_msg {
-        return msg;
+    // Matrix is an external terminal adapter, never a replay of the current
+    // worker capability inherited by the hosting daemon.
+    process
+        .env_remove("WG_AGENT_ID")
+        .env_remove("WG_TASK_ID")
+        .env_remove("WG_WORKTREE_PATH");
+    match process.output() {
+        Ok(output) if output.status.success() => {
+            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        }
+        Ok(output) => format!("Error: {}", String::from_utf8_lossy(&output.stderr).trim()),
+        Err(error) => format!("Error invoking terminal SaveTransaction adapter: {error}"),
     }
-
-    let reason_msg = reason.map(|r| format!(" ({})", r)).unwrap_or_default();
-    format!(
-        "Marked '{}' as failed{} (retry #{})",
-        task_id, reason_msg, retry_count
-    )
 }
 
 /// Execute input/log command

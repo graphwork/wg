@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "name": "happy_land",
+      "events": [
+        {"type":"submit_manifest","manifest":{"id":11,"requirements":22,"contract":"land","output_digest":33,"validation_digest":44,"integrated_main":55,"all_resolvable":true,"protected_free":true}},
+        {"type":"record_flip","manifest":11,"requirements":22,"verdict":"pass"},
+        {"type":"record_eval","manifest":11,"requirements":22,"verdict":"pass"},
+        {"type":"publish_observed","manifest":11,"observed_main":55,"succeeded":true,"outputs_match":true},
+        {"type":"complete","manifest":11,"outputs_still_resolve":true}
+      ],
+      "expected_decisions": ["applied","applied","applied","applied","applied"],
+      "expected": {"phase":"done","manifest":11,"flip":"pass","eval":"pass","publication":11,"publication_count":1,"failure_code":null}
+    },
+    {
+      "name": "flip_rejection_blocks_publication",
+      "events": [
+        {"type":"submit_manifest","manifest":{"id":11,"requirements":22,"contract":"land","output_digest":33,"validation_digest":44,"integrated_main":55,"all_resolvable":true,"protected_free":true}},
+        {"type":"record_flip","manifest":11,"requirements":22,"verdict":"reject"},
+        {"type":"publish_observed","manifest":11,"observed_main":55,"succeeded":true,"outputs_match":true}
+      ],
+      "expected_decisions": ["applied","applied","rejected"],
+      "expected": {"phase":"review_blocked","manifest":11,"flip":"reject","eval":"absent","publication":null,"publication_count":0,"failure_code":null}
+    },
+    {
+      "name": "eval_unavailable_is_not_semantic_failure",
+      "events": [
+        {"type":"submit_manifest","manifest":{"id":11,"requirements":22,"contract":"report","output_digest":33,"validation_digest":44,"integrated_main":0,"all_resolvable":true,"protected_free":true}},
+        {"type":"record_flip","manifest":11,"requirements":22,"verdict":"pass"},
+        {"type":"record_eval","manifest":11,"requirements":22,"verdict":"unavailable"}
+      ],
+      "expected_decisions": ["applied","applied","applied"],
+      "expected": {"phase":"review_unavailable","manifest":11,"flip":"pass","eval":"unavailable","publication":null,"publication_count":0,"failure_code":null}
+    },
+    {
+      "name": "changed_manifest_invalidates_reviews",
+      "events": [
+        {"type":"submit_manifest","manifest":{"id":11,"requirements":22,"contract":"report","output_digest":33,"validation_digest":44,"integrated_main":0,"all_resolvable":true,"protected_free":true}},
+        {"type":"record_flip","manifest":11,"requirements":22,"verdict":"pass"},
+        {"type":"record_eval","manifest":11,"requirements":22,"verdict":"pass"},
+        {"type":"submit_manifest","manifest":{"id":12,"requirements":22,"contract":"report","output_digest":34,"validation_digest":44,"integrated_main":0,"all_resolvable":true,"protected_free":true}}
+      ],
+      "expected_decisions": ["applied","applied","applied","applied"],
+      "expected": {"phase":"working","manifest":12,"flip":"absent","eval":"absent","publication":null,"publication_count":0,"failure_code":null}
+    },
+    {
+      "name": "moved_main_rejects_land",
+      "events": [
+        {"type":"submit_manifest","manifest":{"id":11,"requirements":22,"contract":"land","output_digest":33,"validation_digest":44,"integrated_main":55,"all_resolvable":true,"protected_free":true}},
+        {"type":"record_flip","manifest":11,"requirements":22,"verdict":"pass"},
+        {"type":"record_eval","manifest":11,"requirements":22,"verdict":"pass"},
+        {"type":"publish_observed","manifest":11,"observed_main":56,"succeeded":true,"outputs_match":true}
+      ],
+      "expected_decisions": ["applied","applied","applied","rejected"],
+      "expected": {"phase":"accepted","manifest":11,"flip":"pass","eval":"pass","publication":null,"publication_count":0,"failure_code":null}
+    },
+    {
+      "name": "explore_publishes_without_git_main",
+      "events": [
+        {"type":"submit_manifest","manifest":{"id":71,"requirements":72,"contract":"explore","output_digest":73,"validation_digest":74,"integrated_main":0,"all_resolvable":true,"protected_free":true}},
+        {"type":"record_flip","manifest":71,"requirements":72,"verdict":"pass"},
+        {"type":"record_eval","manifest":71,"requirements":72,"verdict":"pass"},
+        {"type":"publish_observed","manifest":71,"observed_main":999,"succeeded":true,"outputs_match":true},
+        {"type":"complete","manifest":71,"outputs_still_resolve":true}
+      ],
+      "expected_decisions": ["applied","applied","applied","applied","applied"],
+      "expected": {"phase":"done","manifest":71,"flip":"pass","eval":"pass","publication":71,"publication_count":1,"failure_code":null}
+    }
+  ]
+}

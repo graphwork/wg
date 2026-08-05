@@ -441,7 +441,19 @@ fn claim_task(dir: &Path, task_id: &str, actor_id: &str) -> Result<()> {
     let mut error: Option<anyhow::Error> = None;
     modify_graph(&path, |graph| match graph.get_task_mut(task_id) {
         Some(task) => {
-            task.status = Status::InProgress;
+            let request = worksgood::lifecycle::TransitionRequest::new(
+                worksgood::lifecycle::TransitionKind::AttemptReserved {
+                    owner_id: Some(actor_id.to_string()),
+                },
+                worksgood::lifecycle::LifecycleActor::operator(worksgood::current_user()),
+                "autonomous_agent_claim",
+                format!("agent-claim:{}:{}", task_id, task.lifecycle.generation),
+            )
+            .expecting(worksgood::lifecycle::FenceExpectation::current(task));
+            if let Err(rejection) = worksgood::lifecycle::apply_transition(task, request) {
+                error = Some(anyhow::anyhow!(rejection));
+                return false;
+            }
             task.assigned = Some(actor_id.to_string());
             task.started_at = Some(Utc::now().to_rfc3339());
             task.log.push(LogEntry {
@@ -467,35 +479,19 @@ fn claim_task(dir: &Path, task_id: &str, actor_id: &str) -> Result<()> {
 
 /// Mark task as completed
 fn complete_task(dir: &Path, task_id: &str, actor_id: &str) -> Result<()> {
-    let path = graph_path(dir);
-    let mut error: Option<anyhow::Error> = None;
-    modify_graph(&path, |graph| match graph.get_task_mut(task_id) {
-        Some(task) => {
-            task.status = Status::Done;
-            task.completed_at = Some(Utc::now().to_rfc3339());
-            task.log.push(LogEntry {
-                timestamp: Utc::now().to_rfc3339(),
-                actor: Some(actor_id.to_string()),
-                user: Some(worksgood::current_user()),
-                message: "Completed by autonomous agent".to_string(),
-            });
-            true
-        }
-        None => {
-            error = Some(anyhow::anyhow!("Task '{}' not found", task_id));
-            false
-        }
-    })
-    .context("Failed to modify graph")?;
-    if let Some(e) = error {
-        return Err(e);
-    }
+    super::finalize::commit_terminal_success(
+        dir,
+        task_id,
+        Some(actor_id),
+        "autonomous_agent_graphsave",
+    )?;
     super::notify_graph_changed(dir);
     Ok(())
 }
 
 /// Mark task as failed
 fn fail_task(dir: &Path, task_id: &str, actor_id: &str, reason: &str) -> Result<()> {
+    super::finalize::record_terminal_abort(dir, task_id, reason)?;
     let path = graph_path(dir);
     let mut error: Option<anyhow::Error> = None;
     modify_graph(&path, |graph| match graph.get_task_mut(task_id) {

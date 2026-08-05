@@ -15,6 +15,98 @@ use worksgood::parser::modify_graph;
 
 use super::graph_path;
 
+// Kept nested until the synthesis task wires the public `wg completion ...`
+// command surface. This still compiles and tests the owned adapter now.
+#[path = "completion_repair.rs"]
+pub mod completion_repair;
+
+/// Classify and quarantine legacy active/archive `Done` records.
+///
+/// Exact pre-migration bytes and content-addressed classification records are
+/// persisted before the active compatibility projection changes. The archive
+/// itself is read-only. Re-running after a successful migration is a no-op.
+pub fn run_completion_repair(dir: &Path, dry_run: bool, json: bool) -> Result<()> {
+    let graph_file = graph_path(dir);
+    let archive_file = dir.join("archive.jsonl");
+    let graph_bytes = std::fs::read(&graph_file)
+        .map_err(|error| anyhow::anyhow!("failed to read {}: {error}", graph_file.display()))?;
+    let archive_bytes = match std::fs::read(&archive_file) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(anyhow::anyhow!(
+                "failed to read {}: {error}",
+                archive_file.display()
+            ));
+        }
+    };
+    let graph = worksgood::parser::load_graph(&graph_file)?;
+    let archived = archive_bytes
+        .as_deref()
+        .map(completion_repair::parse_archived_tasks)
+        .transpose()?
+        .unwrap_or_default();
+    let report = completion_repair::classify_legacy_completions(
+        &graph,
+        &archived,
+        &graph_bytes,
+        archive_bytes.as_deref(),
+    )?;
+
+    if !dry_run && !report.is_noop() {
+        // The immutable snapshots/records must win the crash race. A crash
+        // here leaves extra inert evidence; replay applies the same projection.
+        completion_repair::persist_migration_evidence(
+            dir,
+            &graph_bytes,
+            archive_bytes.as_deref(),
+            &report,
+        )?;
+        let mut apply_error = None;
+        modify_graph(
+            &graph_file,
+            |current| match completion_repair::apply_quarantine_plan(current, &report) {
+                Ok(()) => true,
+                Err(error) => {
+                    apply_error = Some(error);
+                    false
+                }
+            },
+        )?;
+        if let Some(error) = apply_error {
+            return Err(error);
+        }
+    }
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else if report.is_noop() {
+        println!("No unverified legacy Done records found.");
+    } else {
+        let prefix = if dry_run {
+            "Dry run: would quarantine"
+        } else {
+            "Quarantined"
+        };
+        println!(
+            "{prefix} {} legacy Done record(s):",
+            report.quarantined_count()
+        );
+        for record in report.records.iter().filter(|record| {
+            record.classification == completion_repair::LegacyClassification::NeedsReconciliation
+        }) {
+            println!(
+                "  {} ({:?}); blocks {} downstream task(s)",
+                record.task_id,
+                record.location,
+                record.blocked_downstream.len()
+            );
+        }
+        println!("No record was blessed, deleted, or removed from archive history.");
+    }
+    Ok(())
+}
+
 /// Result of a chat-rename migration.
 #[derive(Debug, Default, Clone)]
 pub struct ChatRenameMigrationResult {
@@ -449,6 +541,70 @@ mod tests {
             graph.get_task(".compact-0").unwrap().status,
             Status::Abandoned
         );
+    }
+
+    #[test]
+    fn completion_repair_preserves_archive_and_second_run_is_noop() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let active = Task {
+            id: "legacy-active".to_string(),
+            title: "Legacy active".to_string(),
+            status: Status::Done,
+            ..Default::default()
+        };
+        let dependent = Task {
+            id: "dependent".to_string(),
+            title: "Dependent".to_string(),
+            status: Status::Open,
+            after: vec!["legacy-active".to_string(), "legacy-archived".to_string()],
+            ..Default::default()
+        };
+        write_graph(dir, vec![active, dependent]);
+        let wg_dir = dir.join(".wg");
+        let archived = Task {
+            id: "legacy-archived".to_string(),
+            title: "Legacy archived".to_string(),
+            status: Status::Done,
+            ..Default::default()
+        };
+        let archive_bytes = format!(
+            "{}\n",
+            serde_json::to_string(&worksgood::graph::Node::Task(archived)).unwrap()
+        );
+        std::fs::write(wg_dir.join("archive.jsonl"), &archive_bytes).unwrap();
+
+        run_completion_repair(&wg_dir, false, true).unwrap();
+        let migrated = worksgood::parser::load_graph(wg_dir.join("graph.jsonl")).unwrap();
+        assert_eq!(
+            migrated.get_task("legacy-active").unwrap().status,
+            Status::Incomplete
+        );
+        assert_eq!(
+            migrated
+                .get_archived_boundary("legacy-archived")
+                .unwrap()
+                .status,
+            Status::Incomplete
+        );
+        assert_eq!(
+            std::fs::read_to_string(wg_dir.join("archive.jsonl")).unwrap(),
+            archive_bytes,
+            "archive history must remain byte-for-byte unchanged"
+        );
+        assert!(
+            wg_dir
+                .join("completion/v2/legacy/migration-report.json")
+                .exists()
+        );
+        let ledger = std::fs::read_to_string(wg_dir.join("lifecycle/events.jsonl")).unwrap();
+        assert!(ledger.contains("\"event_kind\":\"reconciliation-issue\""));
+        assert!(ledger.contains("\"new_state\":\"incomplete\""));
+
+        let after_first_bytes = std::fs::read(wg_dir.join("graph.jsonl")).unwrap();
+        run_completion_repair(&wg_dir, false, true).unwrap();
+        let after_second_bytes = std::fs::read(wg_dir.join("graph.jsonl")).unwrap();
+        assert_eq!(after_first_bytes, after_second_bytes);
     }
 
     #[test]

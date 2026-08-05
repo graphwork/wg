@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
+use std::process::Command;
 use worksgood::agency::capture_task_output;
 use worksgood::config::{Config, CoordinatorConfig};
 use worksgood::graph::{
@@ -305,11 +306,66 @@ fn one_line_error(stderr: &[u8]) -> String {
         .to_string()
 }
 
+#[derive(Clone, Debug)]
 struct WorktreeInfo {
     worktree_path: String,
     branch: String,
     project_root: String,
     agent_id: Option<String>,
+    task_id: Option<String>,
+}
+
+thread_local! {
+    /// The daemon executes capability-brokered worker operations on its own
+    /// thread, where process-wide worker environment variables are
+    /// intentionally absent. Preserve the exact authenticated worktree
+    /// context thread-locally so `wg done` cannot silently fall back to the
+    /// graph-root/human completion path.
+    static BROKERED_WORKTREE: std::cell::RefCell<Option<WorktreeInfo>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
+pub(crate) fn run_from_worker_control(
+    dir: &Path,
+    id: &str,
+    converged: bool,
+    full_smoke: bool,
+    worktree_path: &Path,
+    agent_id: &str,
+) -> Result<()> {
+    let branch_output = std::process::Command::new("git")
+        .args([
+            "-C",
+            &worktree_path.to_string_lossy(),
+            "branch",
+            "--show-current",
+        ])
+        .output()
+        .context("failed to inspect brokered worker branch")?;
+    if !branch_output.status.success() {
+        anyhow::bail!("failed to inspect brokered worker branch");
+    }
+    let branch =
+        String::from_utf8(branch_output.stdout).context("brokered worker branch is not UTF-8")?;
+    let project_root = dir
+        .parent()
+        .context("worker control graph directory has no project root")?
+        .to_string_lossy()
+        .to_string();
+    let context = WorktreeInfo {
+        worktree_path: worktree_path.to_string_lossy().to_string(),
+        branch: branch.trim().to_string(),
+        project_root,
+        agent_id: Some(agent_id.to_string()),
+        task_id: Some(id.to_string()),
+    };
+    BROKERED_WORKTREE.with(|slot| {
+        let previous = slot.replace(Some(context));
+        let result = run_inner(dir, id, converged, false, false, true, full_smoke, false);
+        slot.replace(previous);
+        result
+    })
 }
 
 /// Detect git's "no changes staged" messages from a failed `git commit`.
@@ -333,43 +389,154 @@ fn is_no_changes_to_commit(stdout: &str, stderr: &str) -> bool {
         .any(|n| stdout.contains(n) || stderr.contains(n))
 }
 
-/// Detect whether we're running inside a WG-managed agent worktree
-/// for the project rooted at `wg_dir`'s parent.
+/// Detect and authenticate a task-owned completion worktree.
 ///
-/// Reads `WG_WORKTREE_PATH` / `WG_BRANCH` / `WG_PROJECT_ROOT` from the
-/// environment. Returns `None` (silently — env vars unset is the common
-/// case for a human running `wg done`) when any are missing OR when
-/// `WG_PROJECT_ROOT` does not match `wg_dir`'s parent. The mismatch case
-/// catches stale/leaked env vars: e.g. a user running `wg done --dir
-/// /other/project` from inside an agent shell, or a test harness running
-/// `wg done` against a temp `--dir` while the parent shell still has the
-/// agent's `WG_WORKTREE_PATH` exported. Acting on a worktree that doesn't
-/// belong to the project we're managing would mutate the wrong git tree.
-fn detect_worktree(wg_dir: &Path) -> Option<WorktreeInfo> {
-    let wt_path = std::env::var("WG_WORKTREE_PATH").ok()?;
-    let branch = std::env::var("WG_BRANCH").ok()?;
-    let project_root = std::env::var("WG_PROJECT_ROOT").ok()?;
-    let agent_id = std::env::var("WG_AGENT_ID").ok();
-
-    // Sanity-check: WG_PROJECT_ROOT must match the parent of the
-    // WG dir we're operating on. Use canonicalized paths so
-    // symlinks and `.`/`..` segments don't cause false negatives.
-    let expected_root = wg_dir.parent()?;
-    let env_root = Path::new(&project_root);
-    let same = match (env_root.canonicalize(), expected_root.canonicalize()) {
-        (Ok(a), Ok(b)) => a == b,
-        _ => env_root == expected_root,
+/// A complete absence of task-owned worktree context is the ordinary
+/// human/root path and resolves deliverables against the graph project root.
+/// Once brokered context (or environment context naming this exact task) is
+/// active, every supplied project/task/agent/git binding must agree.
+/// Inconsistent or partial active context is an error, never permission to fall
+/// back to the graph root (where stale deliverables may exist).
+fn detect_worktree(
+    wg_dir: &Path,
+    task_id: &str,
+    assigned_agent: Option<&str>,
+) -> Result<Option<WorktreeInfo>> {
+    let brokered = BROKERED_WORKTREE.with(|slot| slot.borrow().clone());
+    let context = if let Some(context) = brokered {
+        context
+    } else {
+        let agent_id = std::env::var("WG_AGENT_ID").ok();
+        let context_task_id = std::env::var("WG_TASK_ID").ok();
+        // Worker variables inherited by a human/test subcommand for another
+        // task are not active completion authority. This preserves the
+        // ordinary root path. Once WG_TASK_ID names this exact task, the
+        // context is active and must validate completely below.
+        let task_owned_active = context_task_id.as_deref() == Some(task_id);
+        if !task_owned_active {
+            return Ok(None);
+        }
+        let wt_path = std::env::var("WG_WORKTREE_PATH").ok();
+        let branch = std::env::var("WG_BRANCH").ok();
+        let project_root = std::env::var("WG_PROJECT_ROOT").ok();
+        let (Some(wt_path), Some(branch), Some(project_root)) = (wt_path, branch, project_root)
+        else {
+            anyhow::bail!(
+                "done.worktree_context_incomplete: WG_WORKTREE_PATH, WG_BRANCH, and WG_PROJECT_ROOT must be supplied together"
+            );
+        };
+        WorktreeInfo {
+            worktree_path: wt_path,
+            branch,
+            project_root,
+            agent_id,
+            task_id: context_task_id,
+        }
     };
-    if !same {
-        return None;
+
+    validate_worktree_context(wg_dir, task_id, assigned_agent, &context)?;
+    Ok(Some(context))
+}
+
+fn validate_worktree_context(
+    wg_dir: &Path,
+    task_id: &str,
+    assigned_agent: Option<&str>,
+    context: &WorktreeInfo,
+) -> Result<()> {
+    let expected_root = wg_dir
+        .parent()
+        .context("done.worktree_context_mismatch: graph directory has no project root")?;
+    let canonical_expected = expected_root
+        .canonicalize()
+        .context("done.worktree_context_mismatch: graph project root is unavailable")?;
+    let canonical_declared = Path::new(&context.project_root)
+        .canonicalize()
+        .context("done.worktree_context_mismatch: declared project root is unavailable")?;
+    if canonical_declared != canonical_expected {
+        anyhow::bail!(
+            "done.worktree_context_mismatch: declared project root does not own this graph"
+        );
+    }
+    if let Some(context_task) = context.task_id.as_deref()
+        && context_task != task_id
+    {
+        anyhow::bail!(
+            "done.worktree_context_mismatch: worktree task '{}' does not match completion task '{}'",
+            context_task,
+            task_id
+        );
+    }
+    if let Some(context_agent) = context.agent_id.as_deref()
+        && assigned_agent != Some(context_agent)
+    {
+        anyhow::bail!(
+            "done.worktree_context_mismatch: worktree agent '{}' is not the assigned owner of '{}'",
+            context_agent,
+            task_id
+        );
     }
 
-    Some(WorktreeInfo {
-        worktree_path: wt_path,
-        branch,
-        project_root,
-        agent_id,
-    })
+    let worktree = Path::new(&context.worktree_path);
+    let canonical_worktree = worktree
+        .canonicalize()
+        .context("done.worktree_context_mismatch: retained worktree is unavailable")?;
+    let top = git_output(worktree, &["rev-parse", "--show-toplevel"])
+        .context("done.worktree_context_mismatch: retained path is not a git worktree")?;
+    let canonical_top = Path::new(&top)
+        .canonicalize()
+        .context("done.worktree_context_mismatch: retained git root is unavailable")?;
+    if canonical_top != canonical_worktree {
+        anyhow::bail!(
+            "done.worktree_context_mismatch: retained path is not the exact git worktree root"
+        );
+    }
+    let actual_branch = git_output(worktree, &["branch", "--show-current"])
+        .context("done.worktree_context_mismatch: cannot inspect retained branch")?;
+    if actual_branch != context.branch {
+        anyhow::bail!(
+            "done.worktree_context_mismatch: retained branch '{}' does not match authenticated branch '{}'",
+            actual_branch,
+            context.branch
+        );
+    }
+    let worktree_common = git_output(
+        worktree,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )?;
+    let project_common = git_output(
+        &canonical_expected,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )?;
+    let canonical_worktree_common = Path::new(&worktree_common)
+        .canonicalize()
+        .context("done.worktree_context_mismatch: retained git common directory is unavailable")?;
+    let canonical_project_common = Path::new(&project_common)
+        .canonicalize()
+        .context("done.worktree_context_mismatch: project git common directory is unavailable")?;
+    if canonical_worktree_common != canonical_project_common {
+        anyhow::bail!(
+            "done.worktree_context_mismatch: retained worktree belongs to a different project"
+        );
+    }
+    Ok(())
+}
+
+fn git_output(root: &Path, args: &[&str]) -> Result<String> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(root)
+        .output()
+        .with_context(|| format!("failed to run git {:?} in {}", args, root.display()))?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "git {:?} failed in {}: {}",
+            args,
+            root.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8(output.stdout)?.trim().to_string())
 }
 
 #[cfg(test)]
@@ -1556,6 +1723,102 @@ fn pick_done_target_status(
     }
 }
 
+fn create_user_board_successor_after_done(dir: &Path, id: &str) {
+    let Ok(graph) = worksgood::parser::load_graph(super::graph_path(dir)) else {
+        return;
+    };
+    if graph
+        .get_task(id)
+        .is_none_or(|task| !task.tags.iter().any(|tag| tag == "user-board"))
+    {
+        return;
+    }
+    let Some(handle) = user_board_handle(id) else {
+        return;
+    };
+    let successor = create_user_board_task(handle, user_board_seq(id).unwrap_or(0) + 1);
+    let successor_id = successor.id.clone();
+    drop(graph);
+    if let Err(error) = modify_graph(super::graph_path(dir), |graph| {
+        let mut changed = false;
+        if let Some(task) = graph.get_task_mut(id)
+            && !task.tags.iter().any(|tag| tag == "archived")
+        {
+            task.tags.push("archived".into());
+            changed = true;
+        }
+        if graph.get_task(&successor_id).is_none() {
+            graph.add_node(Node::Task(successor.clone()));
+            changed = true;
+        }
+        changed
+    }) {
+        eprintln!("Warning: failed to create successor board: {error}");
+    } else {
+        println!("Created successor board '{successor_id}'");
+        super::notify_graph_changed(dir);
+    }
+}
+
+fn post_graphsave_done_compat(
+    dir: &Path,
+    id: &str,
+    actor: Option<&str>,
+    converged_requested: bool,
+    converged_accepted: bool,
+) -> Result<()> {
+    let path = super::graph_path(dir);
+    let message = if converged_accepted {
+        "Task marked as done (converged)"
+    } else if converged_requested {
+        "Task marked as done (--converged ignored, cycle is forced)"
+    } else {
+        "Task marked as done"
+    };
+    modify_graph(&path, |graph| {
+        let Some(task) = graph.get_task_mut(id) else {
+            return false;
+        };
+        if converged_accepted && !task.tags.iter().any(|tag| tag == "converged") {
+            task.tags.push("converged".into());
+        }
+        if matches!(
+            task.failure_class,
+            Some(FailureClass::DeliverableMissing) | Some(FailureClass::NoOperationalOutput)
+        ) {
+            task.failure_class = None;
+            task.failure_reason = None;
+        }
+        task.log.push(LogEntry {
+            timestamp: Utc::now().to_rfc3339(),
+            actor: actor.map(String::from),
+            user: Some(worksgood::current_user()),
+            message: message.into(),
+        });
+        true
+    })?;
+    if let Ok(mut locked_registry) = AgentRegistry::load_locked(dir) {
+        if let Some(agent) = locked_registry.get_agent_by_task_mut(id) {
+            agent.status = worksgood::service::registry::AgentStatus::Done;
+            if agent.completed_at.is_none() {
+                agent.completed_at = Some(Utc::now().to_rfc3339());
+            }
+        }
+        let _ = locked_registry.save_ref();
+    }
+    let config = worksgood::config::Config::load_or_default(dir);
+    let _ = worksgood::provenance::record(
+        dir,
+        "done",
+        Some(id),
+        actor,
+        serde_json::json!({ "completion": "graph-save" }),
+        config.log.rotation_threshold,
+    );
+    create_user_board_successor_after_done(dir, id);
+    Ok(())
+}
+
 pub fn run(
     dir: &Path,
     id: &str,
@@ -1621,6 +1884,12 @@ fn run_inner(
         );
         return Ok(());
     }
+
+    // Resolve task-owned completion context once and reuse that exact root for
+    // preflight and finalization. A context mismatch must fail before any gate
+    // can consult the graph root and accidentally accept stale bytes there.
+    let assigned_agent = task.assigned.clone();
+    let completion_worktree = detect_worktree(dir, id, assigned_agent.as_deref())?;
 
     // Check for unresolved blockers (cycle-aware: only exempt back-edge blockers,
     // not all same-cycle blockers).
@@ -1699,13 +1968,17 @@ fn run_inner(
     // class instead of promoting a no-deliverable run to Done. Tasks with no
     // parsed deliverables are unaffected (no regression for research/review).
     let project_root = dir.parent().unwrap_or(dir);
+    let deliverable_root = completion_worktree
+        .as_ref()
+        .map(|worktree| Path::new(&worktree.worktree_path))
+        .unwrap_or(project_root);
     let deliverables = graph
         .get_task(id)
         .and_then(|t| t.description.clone())
         .map(|d| super::deliverables::parse_deliverables(&d))
         .unwrap_or_default();
     if !deliverables.is_empty() {
-        let report = super::deliverables::preflight(&deliverables, project_root);
+        let report = super::deliverables::preflight(&deliverables, deliverable_root);
         // No environment override exists on purpose. An env var such as
         // `WG_DELIVERABLE_PREFLIGHT_OVERRIDE=1` would be inherited by every
         // spawned agent and become a copy-pasteable way to mark missing
@@ -2499,7 +2772,35 @@ fn run_inner(
     // leased integration, exact-candidate evaluation, protected promotion and
     // wrapper-owned cleanup. Graph-less/operator compatibility below remains
     // only for historical transactions without a managed source worktree.
-    if detect_worktree(dir).is_some() && crate::commands::finalize::task_owned_done(dir, id)? {
+    if let Some(worktree) = completion_worktree.as_ref()
+        && crate::commands::finalize::task_owned_done(
+            dir,
+            id,
+            Some(Path::new(&worktree.worktree_path)),
+        )?
+    {
+        return Ok(());
+    }
+
+    // A terminal command without a managed source worktree still needs an
+    // explicit clean/no-worktree WorkSave and GraphSave.  Never fall through
+    // to the historical raw AttemptSucceeded/Status::Done compatibility path.
+    if completion_worktree.is_none() {
+        crate::commands::finalize::commit_terminal_success(
+            dir,
+            id,
+            assigned_agent.as_deref(),
+            "wg_done_terminal_adapter",
+        )?;
+        post_graphsave_done_compat(
+            dir,
+            id,
+            assigned_agent.as_deref(),
+            converged,
+            converged_accepted,
+        )?;
+        super::notify_graph_changed(dir);
+        println!("Marked '{}' as done (GraphSave committed)", id);
         return Ok(());
     }
 
@@ -2512,7 +2813,7 @@ fn run_inner(
     let mut finalized_candidate: Option<(worksgood::finalization::CandidateDescriptor, String)> =
         None;
     let defer_candidate_merge_for_flip;
-    if let Some(wt) = detect_worktree(dir) {
+    if let Some(wt) = completion_worktree.as_ref() {
         let context = match crate::commands::finalize::context_from_current(
             dir,
             id,
@@ -2714,13 +3015,6 @@ fn run_inner(
             policy.applicability
                 == worksgood::eval_lifecycle::EvaluationGateApplicability::Advisory
         });
-        let waiting_required_flip = gate_policy.as_ref().is_some_and(|policy| {
-            policy.applicability
-                == worksgood::eval_lifecycle::EvaluationGateApplicability::Required
-                && policy.flip_policy
-                    == worksgood::eval_lifecycle::FlipVerdictPolicy::Required
-        });
-
         let task = match graph.get_task_mut(&id_owned) {
             Some(t) => t,
             None => return false,
@@ -2789,69 +3083,14 @@ fn run_inner(
             return false;
         }
 
-        let caller_agent = (std::env::var("WG_TASK_ID").as_deref() == Ok(id_owned.as_str()))
-            .then(|| std::env::var("WG_AGENT_ID").ok())
-            .flatten();
-        let actor = if task.lifecycle.current_attempt.is_some() {
-            caller_agent
-                .or_else(|| task.assigned.clone())
-                .map(LifecycleActor::worker)
-                .unwrap_or_else(|| LifecycleActor::operator(worksgood::current_user()))
-        } else {
-            task.assigned
-                .clone()
-                .map(LifecycleActor::worker)
-                .unwrap_or_else(|| LifecycleActor::operator(worksgood::current_user()))
-        };
-        let acceptance_ref = (target_status == Status::Done).then(|| {
-            finalization_evidence.last().cloned().unwrap_or_else(|| {
-                format!(
-                    "completion:{}:{}:{}",
-                    id_owned,
-                    task.lifecycle.generation,
-                    task.lifecycle
-                        .current_attempt
-                        .as_ref()
-                        .map(|attempt| attempt.id.as_str())
-                        .unwrap_or("legacy")
-                )
-            })
-        });
-        let mut request = TransitionRequest::new(
-            TransitionKind::AttemptSucceeded {
-                acceptance_ref: acceptance_ref.clone(),
-                manual_review: target_status == Status::PendingValidation,
-            },
-            actor,
-            if target_status == Status::Done {
-                "completion_accepted"
-            } else if waiting_required_flip {
-                "waiting_on_required_flip"
-            } else {
-                "source_succeeded_awaiting_acceptance"
-            },
-            format!(
-                "done:{}:{}:{}",
-                id_owned,
-                task.lifecycle.generation,
-                task.lifecycle
-                    .current_attempt
-                    .as_ref()
-                    .map(|attempt| attempt.id.as_str())
-                    .unwrap_or("legacy")
-            ),
-        );
-        request.evidence_refs.extend(finalization_evidence.clone());
-        if let Some(ref acceptance) = acceptance_ref
-            && !request.evidence_refs.contains(acceptance)
-        {
-            request.evidence_refs.push(acceptance.clone());
-        }
-        if task.lifecycle.current_attempt.is_some() {
-            request.expected = FenceExpectation::current(task);
-        }
-        if let Err(rejection) = apply_transition(task, request) {
-            gate_snapshot_error = Some(rejection.to_string());
+        // All supported terminal paths returned through task_owned_done or
+        // commit_terminal_success above.  Reaching this compatibility body
+        // must hold rather than resurrecting the raw AttemptSucceeded writer.
+        gate_snapshot_error = Some(format!(
+            "legacy terminal projection disabled for {}; replay through SaveTransaction",
+            id_owned
+        ));
+        if gate_snapshot_error.is_some() {
             return false;
         }
         task.completed_at = Some(Utc::now().to_rfc3339());
@@ -3001,32 +3240,8 @@ fn run_inner(
         println!("Marked '{}' as done", id);
     }
 
-    // User board auto-increment: if a user board is archived (done), create the successor.
-    if let Some(task) = graph.get_task(id)
-        && task.tags.iter().any(|t| t == "user-board")
-        && let Some(handle) = user_board_handle(id)
-    {
-        let current_seq = user_board_seq(id).unwrap_or(0);
-        let next_seq = current_seq + 1;
-        let successor = create_user_board_task(handle, next_seq);
-        let successor_id = successor.id.clone();
-        let graph_path = super::graph_path(dir);
-        if let Err(e) = modify_graph(&graph_path, |graph| {
-            // Also add 'archived' tag to the current board
-            if let Some(t) = graph.get_task_mut(id)
-                && !t.tags.contains(&"archived".to_string())
-            {
-                t.tags.push("archived".to_string());
-            }
-            graph.add_node(Node::Task(successor));
-            true
-        }) {
-            eprintln!("Warning: failed to create successor board: {}", e);
-        } else {
-            println!("Created successor board '{}'", successor_id);
-            super::notify_graph_changed(dir);
-        }
-    }
+    // User board auto-increment is shared with the GraphSave fast path.
+    create_user_board_successor_after_done(dir, id);
 
     for task_id in &cycle_reactivated {
         println!("  Cycle: re-activated '{}'", task_id);
@@ -4821,6 +5036,7 @@ mod tests {
             branch: branch.to_string(),
             project_root: project_path.to_str().unwrap().to_string(),
             agent_id: Some("agent-test".to_string()),
+            task_id: None,
         }
     }
 
@@ -5189,6 +5405,7 @@ mod tests {
             branch: "feature".to_string(),
             project_root: project_root.to_string_lossy().to_string(),
             agent_id: Some("test-agent".to_string()),
+            task_id: None,
         };
 
         let r1 = attempt_worktree_merge(&wt, "test-task").expect("first merge call must succeed");
@@ -5316,13 +5533,179 @@ mod tests {
     fn setup_with_project_root(project_root: &Path, tasks: Vec<worksgood::graph::Task>) -> PathBuf {
         let wg_dir = project_root.join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
-        setup_workgraph(&wg_dir, tasks)
+        setup_workgraph(&wg_dir, tasks);
+        wg_dir
     }
 
     fn task_with_desc(id: &str, desc: &str) -> worksgood::graph::Task {
         let mut t = make_task(id, id, Status::InProgress);
         t.description = Some(desc.to_string());
         t
+    }
+
+    fn setup_brokered_deliverable_case(
+        task_id: &str,
+        desc: &str,
+    ) -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let project = tempdir().unwrap();
+        let project_root = project.path().to_path_buf();
+        git(&project_root, &["init", "-b", "main"]);
+        git(
+            &project_root,
+            &["config", "user.email", "broker@test.invalid"],
+        );
+        git(&project_root, &["config", "user.name", "Broker Test"]);
+        std::fs::write(project_root.join("README.md"), b"root\n").unwrap();
+        git(&project_root, &["add", "README.md"]);
+        git(&project_root, &["commit", "-m", "root"]);
+
+        let worktrees = project_root.join(".wg-worktrees");
+        std::fs::create_dir_all(&worktrees).unwrap();
+        let worktree = worktrees.join("agent-1");
+        let branch = format!("wg/agent-1/{task_id}");
+        git(
+            &project_root,
+            &["worktree", "add", "-b", &branch, worktree.to_str().unwrap()],
+        );
+
+        let mut task = task_with_desc(task_id, desc);
+        task.assigned = Some("agent-1".to_string());
+        task.completion_contract = worksgood::graph::CompletionContract::Report;
+        task.lifecycle.fence = 1;
+        task.lifecycle.current_attempt = Some(worksgood::lifecycle::AttemptRef {
+            id: "attempt-0-1".to_string(),
+            generation: 0,
+            fence: 1,
+            actor_id: "agent-1".to_string(),
+            disposition: None,
+        });
+        let wg_dir = setup_with_project_root(&project_root, vec![task]);
+
+        let mut registry = AgentRegistry::new();
+        let agent = registry.register_agent(std::process::id(), task_id, "test", "/dev/null");
+        assert_eq!(agent, "agent-1");
+        assert!(registry.set_worktree_path(&agent, &worktree));
+        registry.save(&wg_dir).unwrap();
+
+        (project, wg_dir, worktree)
+    }
+
+    #[test]
+    fn brokered_done_preflights_retained_worktree_and_enters_task_owned_finish() {
+        let desc = "## Deliverables\n- docs/atomic-save.md\n";
+        let (_project, wg_dir, worktree) =
+            setup_brokered_deliverable_case("brokered-present", desc);
+        std::fs::create_dir_all(worktree.join("docs")).unwrap();
+        std::fs::write(worktree.join("docs/atomic-save.md"), b"design\n").unwrap();
+        git(&worktree, &["add", "docs/atomic-save.md"]);
+        git(&worktree, &["commit", "-m", "add brokered deliverable"]);
+
+        let result = run_from_worker_control(
+            &wg_dir,
+            "brokered-present",
+            false,
+            false,
+            &worktree,
+            "agent-1",
+        );
+        assert!(result.is_ok(), "got: {:#?}", result.err());
+        assert!(
+            !wg_dir
+                .parent()
+                .unwrap()
+                .join("docs/atomic-save.md")
+                .exists(),
+            "brokered completion must not copy the deliverable to graph root"
+        );
+        let tx = worksgood::finalization::FinalizationStore::open(&wg_dir)
+            .unwrap()
+            .load_task("brokered-present")
+            .unwrap()
+            .expect("task-owned finish transaction must be created");
+        assert_eq!(
+            tx.phase,
+            worksgood::finalization::FinalizationPhase::Reported,
+            "clean preflight must proceed through task-owned report finalization"
+        );
+    }
+
+    #[test]
+    fn brokered_done_refuses_missing_worktree_deliverable_despite_stale_root_copy() {
+        let desc = "## Deliverables\n- docs/atomic-save.md\n";
+        let (_project, wg_dir, worktree) =
+            setup_brokered_deliverable_case("brokered-missing", desc);
+        let root_file = wg_dir.parent().unwrap().join("docs/atomic-save.md");
+        std::fs::create_dir_all(root_file.parent().unwrap()).unwrap();
+        std::fs::write(&root_file, b"stale root copy\n").unwrap();
+
+        let error = run_from_worker_control(
+            &wg_dir,
+            "brokered-missing",
+            false,
+            false,
+            &worktree,
+            "agent-1",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("deliverable preflight refused"),
+            "got: {error}"
+        );
+        assert!(error.contains("docs/atomic-save.md"), "got: {error}");
+        assert!(
+            worksgood::finalization::FinalizationStore::open(&wg_dir)
+                .unwrap()
+                .load_task("brokered-missing")
+                .unwrap()
+                .is_none(),
+            "refused preflight must not enter task-owned finalization"
+        );
+    }
+
+    #[test]
+    fn human_done_keeps_graph_root_deliverable_behavior() {
+        let project = tempdir().unwrap();
+        let project_root = project.path();
+        let desc = "## Deliverables\n- docs/human.md\n";
+        let wg_dir =
+            setup_with_project_root(project_root, vec![task_with_desc("human-root", desc)]);
+        std::fs::create_dir_all(project_root.join("docs")).unwrap();
+        std::fs::write(project_root.join("docs/human.md"), b"human output\n").unwrap();
+
+        let result = run(&wg_dir, "human-root", false, false, false, false, false);
+        assert!(result.is_ok(), "got: {:#?}", result.err());
+        let graph = load_graph(&graph_path(&wg_dir)).unwrap();
+        assert_eq!(graph.get_task("human-root").unwrap().status, Status::Done);
+    }
+
+    #[test]
+    fn brokered_done_fails_closed_on_authenticated_task_agent_mismatch() {
+        let desc = "## Deliverables\n- docs/atomic-save.md\n";
+        let (_project, wg_dir, worktree) =
+            setup_brokered_deliverable_case("brokered-mismatch", desc);
+        std::fs::create_dir_all(worktree.join("docs")).unwrap();
+        std::fs::write(worktree.join("docs/atomic-save.md"), b"design\n").unwrap();
+
+        let error = run_from_worker_control(
+            &wg_dir,
+            "brokered-mismatch",
+            false,
+            false,
+            &worktree,
+            "agent-other",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("done.worktree_context_mismatch"),
+            "got: {error}"
+        );
+        let graph = load_graph(&graph_path(&wg_dir)).unwrap();
+        assert_eq!(
+            graph.get_task("brokered-mismatch").unwrap().status,
+            Status::InProgress
+        );
     }
 
     #[test]

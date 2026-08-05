@@ -1,0 +1,37 @@
+{
+  "name": "semantic_validation_rejection",
+  "expected_action": null,
+  "expected_wait": "semantic_prerequisite_repair",
+  "expected_class": "semantic_validation_rejected",
+  "trace": {
+    "trace_schema_version": 2,
+    "planner_schema_version": 2,
+    "redaction": "typed_identifiers_and_digests_only",
+    "ruleset": "corrected",
+    "initial_state": {"schema_version":2,"graph_id":"graph-live-rollout","logical_time":0,"last_sequence":null,"seen_observations":{},"tasks":{},"effects":{},"early_acknowledgements":{},"repaired_incidents":[],"fail_closed":false},
+    "observations": [{
+      "sequence":1,
+      "logical_time":1785778000,
+      "observation":{
+        "type":"task",
+        "key":{"graph_id":"graph-live-rollout","task_id":"atomic-save-synthesis-canary","generation":0,"attempt_id":"blocked-before-attempt","fence":0},
+        "progress_id":"semantic-rejection-report-1",
+        "unfinished":true,
+        "owner":{"kind":"none"},
+        "incidents":[],
+        "failed_prerequisite":{
+          "source":{"graph_id":"graph-live-rollout","task_id":"atomic-save-formal-rust-traces","generation":0,"attempt_id":"attempt-0-1","fence":1},
+          "class":"semantic_validation_rejected",
+          "evidence":{
+            "work_save":{"state":"present","evidence_id":"worksave:semantic-reject"},
+            "candidate":{"state":"present","evidence_id":"candidate:semantic-reject"},
+            "session":{"state":"present","evidence_id":"session:semantic-reject"},
+            "worktree":{"state":"present","evidence_id":"worktree:semantic-reject"}
+          },
+          "automatic_retries":0,
+          "max_automatic_retries":1
+        }
+      }
+    }]
+  }
+}

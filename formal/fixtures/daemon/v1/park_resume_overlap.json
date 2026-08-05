@@ -1,0 +1,53 @@
+{
+  "name": "park_resume_overlap",
+  "expected_historical_violation": "park_resume_overlap",
+  "expected_corrected_action": null,
+  "expected_corrected_wait": "correlated_message",
+  "trace": {
+    "trace_schema_version": 1,
+    "planner_schema_version": 1,
+    "redaction": "typed_identifiers_and_digests_only",
+    "ruleset": "historical",
+    "initial_state": {
+      "schema_version": 1,
+      "graph_id": "graph-fixture",
+      "logical_time": 0,
+      "last_sequence": null,
+      "seen_observations": {},
+      "tasks": {},
+      "effects": {},
+      "early_acknowledgements": {},
+      "repaired_incidents": [],
+      "fail_closed": false
+    },
+    "observations": [
+      {
+        "sequence": 1,
+        "logical_time": 100,
+        "observation": {
+          "type": "task",
+          "key": {
+            "graph_id": "graph-fixture",
+            "task_id": "task-3",
+            "generation": 1,
+            "attempt_id": "attempt-3-1",
+            "fence": 3
+          },
+          "progress_id": "progress-incident",
+          "unfinished": true,
+          "owner": {
+            "kind": "none"
+          },
+          "incidents": [
+            "park_resume_overlap"
+          ],
+          "runnable": "resume_same_session",
+          "external_wait": {
+            "wait_id": "wait-old",
+            "kind": "human_input"
+          }
+        }
+      }
+    ]
+  }
+}

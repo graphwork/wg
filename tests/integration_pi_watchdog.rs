@@ -280,6 +280,42 @@ fn settled_and_every_exit_need_finalization_not_terminal() {
 }
 
 #[test]
+fn settled_persists_wrapper_bound_completion_handoff_across_restart() {
+    let mut w = fixture(0);
+    let wrapper = ProcessIdentity {
+        pid: 122,
+        pgid: 122,
+        start_ticks: 400,
+        boot_id: "boot".into(),
+        nonce: "wrapper-nonce".into(),
+    };
+    w.bind_terminal_wrapper(wrapper.clone(), 1).unwrap();
+    w.observe(Observation::AgentSettled, 2).unwrap();
+    let handoff = w.state().completion_handoff.as_ref().unwrap();
+    assert_eq!(handoff.source, w.state().source);
+    assert_eq!(handoff.process_epoch, 1);
+    assert_eq!(handoff.process_identity_digest, w.state().process.digest());
+    assert_eq!(
+        handoff.terminal_wrapper_identity_digest.as_deref(),
+        Some(wrapper.digest().as_str())
+    );
+    assert_eq!(handoff.session_id, "session-1");
+    assert_eq!(handoff.session_head, "leaf-1");
+
+    let reopened = PiWatchdog::open(w.state_path()).unwrap();
+    assert_eq!(reopened.state().terminal_wrapper, Some(wrapper));
+    assert_eq!(
+        reopened
+            .state()
+            .completion_handoff
+            .as_ref()
+            .map(|receipt| receipt.observed_at),
+        Some(2)
+    );
+    assert!(!reopened.state().terminal, "settlement is not success");
+}
+
+#[test]
 fn unsafe_effect_unknown_phase_wait_and_long_tool_never_auto_kill() {
     let mut unknown = fixture(0);
     unknown.observe(Observation::PhaseUnknown, 0).unwrap();

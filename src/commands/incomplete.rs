@@ -24,6 +24,12 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>) -> Result<()> {
         }
     }
 
+    super::finalize::record_terminal_abort(
+        dir,
+        id,
+        reason.unwrap_or("task incomplete; work preserved for retry"),
+    )?;
+
     let path = super::graph_path(dir);
 
     let token_usage = AgentRegistry::load(dir).ok().and_then(|registry| {

@@ -4,5 +4,6 @@
 // sites keep working.
 pub use worksgood::markdown;
 pub use worksgood::syntect_convert;
+pub mod pi_transcript;
 pub mod pty_pane;
 pub mod viz_viewer;

@@ -22,6 +22,7 @@ mod cli;
 mod commands;
 mod terminal_host;
 mod tui;
+mod worker_cli;
 
 use cli::*;
 
@@ -730,6 +731,17 @@ fn main() -> Result<()> {
         Cli::parse_from(rewritten)
     };
 
+    // A worker capability is a hard authority boundary. Handle/refuse the
+    // command before graph discovery, canonicalization, or usage logging so a
+    // guessed `.wg` can never become a filesystem fallback.
+    if !cli.help
+        && !cli.help_all
+        && let Some(command) = cli.command.as_ref()
+        && worker_cli::maybe_run(command, cli.json)?.is_some()
+    {
+        return Ok(());
+    }
+
     let workgraph_dir = resolve_workgraph_dir(
         cli.dir.clone(),
         std::env::var_os("WG_DIR").map(PathBuf::from),
@@ -1253,23 +1265,90 @@ fn main() -> Result<()> {
             ignore_unmerged_worktree,
             full_smoke,
             skip_smoke,
-        } => commands::done::run(
+        } => {
+            if converged || skip_verify || ignore_unmerged_worktree || full_smoke || skip_smoke {
+                anyhow::bail!(
+                    "legacy wg done bypass/merge/cycle flags are not supported by publication-derived completion"
+                );
+            }
+            commands::completion_done::run(&workgraph_dir, &id, "refs/heads/main")
+        }
+        Commands::CompletionObject {
+            path,
+            media_type,
+            evidence_kind,
+        } => commands::completion_submit::put_object(
+            &workgraph_dir,
+            &path,
+            &media_type,
+            evidence_kind.as_deref(),
+        ),
+        Commands::CompletionManifest {
+            id,
+            summary,
+            output_refs,
+            evidence_refs,
+            git,
+            source_revision,
+        } => commands::completion_submit::build_manifest_command(
             &workgraph_dir,
             &id,
-            converged,
-            skip_verify,
-            ignore_unmerged_worktree,
-            full_smoke,
-            skip_smoke,
+            &summary,
+            &output_refs,
+            &evidence_refs,
+            git,
+            source_revision.as_deref(),
         ),
+        Commands::Submit {
+            id,
+            manifest,
+            summary,
+        } => commands::completion_submit::run(&workgraph_dir, &id, &manifest, &summary),
+        Commands::Land {
+            id,
+            integration_ref,
+        } => commands::completion_land::run(&workgraph_dir, &id, &integration_ref),
+        Commands::Contract { id, contract } => {
+            commands::finalize::set_contract(&workgraph_dir, &id, &contract)
+        }
         Commands::Finalize { command } => {
-            commands::finalize::run_finalize(&workgraph_dir, command, cli.json)
+            if matches!(
+                &command,
+                FinalizeCommands::Status { .. } | FinalizeCommands::Gc { dry_run: true }
+            ) {
+                commands::finalize::run_finalize(&workgraph_dir, command, cli.json)
+            } else {
+                anyhow::bail!(
+                    "legacy finalization mutation is retired; use `wg submit`, `wg land`, and `wg done`"
+                )
+            }
         }
         Commands::Candidate { command } => {
-            commands::finalize::run_candidate(&workgraph_dir, command, cli.json)
+            if matches!(
+                &command,
+                CandidateCommands::Show { .. }
+                    | CandidateCommands::Verify { .. }
+                    | CandidateCommands::Materialize { .. }
+                    | CandidateCommands::RecoverControlPlane { yes: false }
+            ) {
+                commands::finalize::run_candidate(&workgraph_dir, command, cli.json)
+            } else {
+                anyhow::bail!(
+                    "legacy candidate mutation is retired; immutable completion objects are read-only"
+                )
+            }
         }
         Commands::MergeResolution { command } => {
-            commands::merge_resolution::run(&workgraph_dir, command, cli.json)
+            if matches!(
+                &command,
+                MergeResolutionCommands::Status { .. } | MergeResolutionCommands::Inspect { .. }
+            ) {
+                commands::merge_resolution::run(&workgraph_dir, command, cli.json)
+            } else {
+                anyhow::bail!(
+                    "legacy merge-resolution mutation is retired; repair and resubmit from the same worker"
+                )
+            }
         }
         Commands::Fail {
             id,
@@ -1278,7 +1357,9 @@ fn main() -> Result<()> {
             eval_reject,
         } => {
             if eval_reject {
-                commands::fail::run_eval_reject(&workgraph_dir, &id, reason.as_deref())
+                anyhow::bail!(
+                    "legacy evaluation rejection is retired; manifest review findings return to the same worker"
+                )
             } else {
                 let failure_class = class.as_deref().and_then(parse_failure_class);
                 commands::fail::run(&workgraph_dir, &id, reason.as_deref(), failure_class)
@@ -2619,54 +2700,11 @@ fn main() -> Result<()> {
             cli.json,
         ),
         Commands::Evaluate { command } => match command {
-            EvaluateCommands::Run {
-                task,
-                evaluator_model,
-                dry_run,
-                flip,
-                bounded,
-            } => {
-                if flip {
-                    commands::evaluate::run_deep_readonly(
-                        &workgraph_dir,
-                        &task,
-                        evaluator_model.as_deref(),
-                        dry_run,
-                        cli.json,
-                    )
-                } else if bounded {
-                    commands::evaluate::run_bounded_canary(
-                        &workgraph_dir,
-                        &task,
-                        evaluator_model.as_deref(),
-                        dry_run,
-                        cli.json,
-                    )
-                } else {
-                    commands::evaluate::run(
-                        &workgraph_dir,
-                        &task,
-                        evaluator_model.as_deref(),
-                        dry_run,
-                        cli.json,
-                    )
-                }
+            EvaluateCommands::Run { .. } | EvaluateCommands::Record { .. } => {
+                anyhow::bail!(
+                    "legacy evaluation mutation is retired; `wg submit` runs exact manifest-bound FLIP then eval"
+                )
             }
-            EvaluateCommands::Record {
-                task,
-                score,
-                source,
-                notes,
-                dimensions,
-            } => commands::evaluate::run_record(
-                &workgraph_dir,
-                &task,
-                score,
-                &source,
-                notes.as_deref(),
-                &dimensions,
-                cli.json,
-            ),
             EvaluateCommands::Show {
                 task_detail,
                 task,
@@ -2683,30 +2721,12 @@ fn main() -> Result<()> {
                 task_detail.as_deref(),
             ),
             EvaluateCommands::Rollout { command } => match command {
-                EvaluationRolloutCommands::Start => {
-                    commands::evaluate::rollout_start(&workgraph_dir, cli.json)
-                }
                 EvaluationRolloutCommands::Status => {
                     commands::evaluate::rollout_status(&workgraph_dir, cli.json)
                 }
-                EvaluationRolloutCommands::Advance { stage, evidence } => {
-                    commands::evaluate::rollout_advance(
-                        &workgraph_dir,
-                        &stage,
-                        evidence.as_deref(),
-                        cli.json,
-                    )
-                }
-                EvaluationRolloutCommands::RecordObservation { evidence } => {
-                    commands::evaluate::rollout_record_observation(
-                        &workgraph_dir,
-                        &evidence,
-                        cli.json,
-                    )
-                }
-                EvaluationRolloutCommands::Rollback { reason } => {
-                    commands::evaluate::rollout_rollback(&workgraph_dir, &reason, cli.json)
-                }
+                _ => anyhow::bail!(
+                    "legacy evaluation rollout mutation is retired; completion review is universal"
+                ),
             },
         },
         Commands::Watch {
@@ -3532,6 +3552,9 @@ fn main() -> Result<()> {
             }
             ServiceCommands::Restart => commands::service::run_restart(&workgraph_dir, cli.json),
             ServiceCommands::Status => commands::service::run_status(&workgraph_dir, cli.json),
+            ServiceCommands::Replay { trace, output } => {
+                commands::service::replay::run(&trace, output.as_deref(), cli.json)
+            }
             ServiceCommands::Reload {
                 max_agents,
                 executor,

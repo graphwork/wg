@@ -6,6 +6,8 @@ model = "nex:qwen3-coder-30b"
 [dispatcher]
 model = "nex:qwen3-coder-30b"
 max_agents = 8
+# Automatic task archival is disabled by default (retention 0). Deliberately
+# opt in per project after reviewing the exact evidence-bearing batch.
 
 [tiers]
 fast = "nex:qwen3-coder-30b"

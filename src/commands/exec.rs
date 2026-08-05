@@ -64,7 +64,23 @@ pub fn run(dir: &Path, task_id: &str, actor: Option<&str>, dry_run: bool) -> Res
         // Claim the task if open
         if matches!(task.status, Status::Open | Status::Incomplete) {
             let task = graph.get_task_mut(task_id).expect("task verified above");
-            task.status = Status::InProgress;
+            if task.status == Status::Incomplete {
+                task.status = Status::Open;
+            }
+            let owner = actor.map(String::from);
+            let request = worksgood::lifecycle::TransitionRequest::new(
+                worksgood::lifecycle::TransitionKind::AttemptReserved {
+                    owner_id: owner.clone(),
+                },
+                worksgood::lifecycle::LifecycleActor::operator(worksgood::current_user()),
+                "exec_claim_reserved",
+                format!("exec-claim:{}:{}", task_id, task.lifecycle.generation),
+            )
+            .expecting(worksgood::lifecycle::FenceExpectation::current(task));
+            if let Err(rejection) = worksgood::lifecycle::apply_transition(task, request) {
+                error = Some(anyhow::anyhow!(rejection));
+                return false;
+            }
             task.started_at = Some(Utc::now().to_rfc3339());
             if let Some(actor_id) = actor {
                 task.assigned = Some(actor_id.to_string());
@@ -120,31 +136,32 @@ pub fn run(dir: &Path, task_id: &str, actor: Option<&str>, dry_run: bool) -> Res
         eprintln!("{}", stderr);
     }
 
-    // Update status atomically (task may have been modified by exec command)
+    // Route both terminal outcomes through the SaveTransaction adapter before
+    // changing the compatibility projection.
     let actor_clone = actor.map(String::from);
     let exit_code = output.status.code().unwrap_or(-1);
+    if success {
+        super::finalize::commit_terminal_success(dir, task_id, actor, "exec_exit_zero_graphsave")?;
+        super::notify_graph_changed(dir);
+        println!("Task '{}' completed", task_id);
+        return Ok(());
+    }
+    super::finalize::record_terminal_abort(
+        dir,
+        task_id,
+        &format!("exec exited with code {exit_code}"),
+    )?;
     modify_graph(&path, |graph| {
         if let Some(task) = graph.get_task_mut(task_id) {
-            if success {
-                task.status = Status::Done;
-                task.completed_at = Some(Utc::now().to_rfc3339());
-                task.log.push(LogEntry {
-                    timestamp: Utc::now().to_rfc3339(),
-                    actor: actor_clone.clone(),
-                    user: Some(worksgood::current_user()),
-                    message: "Execution completed successfully".to_string(),
-                });
-            } else {
-                task.status = Status::Failed;
-                task.retry_count += 1;
-                task.failure_reason = Some(format!("Command exited with code {}", exit_code));
-                task.log.push(LogEntry {
-                    timestamp: Utc::now().to_rfc3339(),
-                    actor: actor_clone.clone(),
-                    user: Some(worksgood::current_user()),
-                    message: format!("Execution failed with exit code {}", exit_code),
-                });
-            }
+            task.status = Status::Failed;
+            task.retry_count += 1;
+            task.failure_reason = Some(format!("Command exited with code {}", exit_code));
+            task.log.push(LogEntry {
+                timestamp: Utc::now().to_rfc3339(),
+                actor: actor_clone.clone(),
+                user: Some(worksgood::current_user()),
+                message: format!("Execution failed with exit code {}", exit_code),
+            });
             true
         } else {
             false
@@ -436,24 +453,14 @@ pub fn run_interactive(
 
         match choice.as_str() {
             "d" | "done" => {
-                modify_graph(&path, |graph| {
-                    if let Some(t) = graph.get_task_mut(task_id) {
-                        t.status = Status::Done;
-                        t.completed_at = Some(Utc::now().to_rfc3339());
-                        t.log.push(LogEntry {
-                            timestamp: Utc::now().to_rfc3339(),
-                            actor: actor.map(String::from),
-                            user: Some(worksgood::current_user()),
-                            message: "Marked done via interactive exec session".to_string(),
-                        });
-                        true
-                    } else {
-                        false
-                    }
-                })
-                .context("Failed to mark task done")?;
+                super::finalize::commit_terminal_success(
+                    dir,
+                    task_id,
+                    actor,
+                    "interactive_exec_graphsave",
+                )?;
                 super::notify_graph_changed(dir);
-                eprintln!("Task '{}' marked as done.", task_id);
+                eprintln!("Task '{}' marked as done (GraphSave committed).", task_id);
             }
             "f" | "failed" | "fail" => {
                 eprint!("Failure reason (optional): ");
@@ -467,6 +474,11 @@ pub fn run_interactive(
                     Some(reason)
                 };
 
+                super::finalize::record_terminal_abort(
+                    dir,
+                    task_id,
+                    reason_opt.as_deref().unwrap_or("interactive exec failed"),
+                )?;
                 modify_graph(&path, |graph| {
                     if let Some(t) = graph.get_task_mut(task_id) {
                         t.status = Status::Failed;

@@ -277,7 +277,7 @@ function Verify-Checksum {
     $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $ArchivePath).Hash.ToLowerInvariant()
 
     if ($actual -ne $expected) {
-        Fail "checksum verification failed for $ArchiveName: expected $expected, got $actual"
+        Fail "checksum verification failed for ${ArchiveName}: expected $expected, got $actual"
     }
 
     Write-Info "checksum: OK ($actual)"
@@ -365,7 +365,9 @@ function Get-ReceiptStringField {
     )
     foreach ($line in Get-Content -LiteralPath $Path) {
         if ($line -match ('^\s*' + [Regex]::Escape($Name) + '\s*=\s*"([^"]*)"')) {
-            return $Matches[1]
+            # Receipt strings are TOML basic strings. The writer escapes
+            # backslashes, which must be decoded before comparing Windows paths.
+            return $Matches[1].Replace("\\", "\").Replace('\"', '"')
         }
     }
     return ""

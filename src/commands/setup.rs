@@ -3127,6 +3127,10 @@ mod tests {
         assert_eq!(config.agent.model, "claude:opus");
         assert_eq!(config.coordinator.model, Some("claude:opus".to_string()));
         assert_eq!(config.coordinator.max_agents, 4);
+        assert_eq!(
+            config.coordinator.archive_retention_days, 0,
+            "setup must not opt a new graph into age-triggered task archival"
+        );
         assert!(config.agency.auto_assign);
         assert!(config.agency.auto_evaluate);
     }
@@ -3136,6 +3140,7 @@ mod tests {
         let mut base = Config::default();
         base.project.name = Some("my-project".to_string());
         base.agency.retention_heuristics = Some("keep good ones".to_string());
+        base.coordinator.archive_retention_days = 21;
         base.log.rotation_threshold = 5_000_000;
 
         let choices = SetupChoices {
@@ -3162,6 +3167,10 @@ mod tests {
             Some("keep good ones".to_string())
         );
         assert_eq!(config.log.rotation_threshold, 5_000_000);
+        assert_eq!(
+            config.coordinator.archive_retention_days, 21,
+            "setup must preserve an operator's explicit archival opt-in"
+        );
     }
 
     #[test]
@@ -3260,6 +3269,8 @@ mod tests {
         assert_eq!(reloaded.coordinator.executor, Some("claude".to_string()));
         assert_eq!(reloaded.agent.model, "claude:opus");
         assert_eq!(reloaded.coordinator.max_agents, 6);
+        assert_eq!(reloaded.coordinator.archive_retention_days, 0);
+        assert!(toml_str.contains("archive_retention_days = 0"));
         assert!(reloaded.agency.auto_assign);
         assert!(reloaded.agency.auto_evaluate);
     }

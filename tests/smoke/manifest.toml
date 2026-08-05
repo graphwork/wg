@@ -2536,6 +2536,13 @@ description = "Candidate-binary real tmux/SGR flow: selects an exact task, trave
 timeout_seconds = 240
 
 [[scenario]]
+name = "tui_pi_live_progress_projection"
+script = "scenarios/tui_pi_live_progress_projection.sh"
+owners = ["fix-pi-clean-live-log"]
+description = "Candidate-binary real tmux TUI flow with 260 cumulative Pi tool_execution_update records and the start outside the 200-record reverse tail: Events, HighLevel, and Pretty each show one current bash tool plus latest bounded progress without JSON/update spam; incremental append replaces it and tool end replaces it once with the final result."
+timeout_seconds = 180
+
+[[scenario]]
 name = "isolation_worktree_collision_transaction"
 script = "scenarios/isolation_worktree_collision_transaction.sh"
 owners = [
@@ -2917,8 +2924,11 @@ timeout_seconds = 180
 [[scenario]]
 name = "post_lifecycle_convergence_ux"
 script = "scenarios/post_lifecycle_convergence_ux.sh"
-owners = ["synthesize-post-lifecycle-convergence-ux"]
-description = "Credential-free real-daemon integration for the service-owned deterministic convergence cutover: restart preserves a seeded future deadline/exponent/jitter tuple; an overdue unchanged goal wakes before the 60s safety tick, falls off at its cap, and stays live; a seeded exact Pi/OpenRouter route outage admits at most one credential-bearing probe lease, leaves global service pause false, performs no fallback, and creates no controller/probe/merge/cleanup graph task."
+owners = [
+    "synthesize-post-lifecycle-convergence-ux",
+    "convergence-cutover-dispatch-route",
+]
+description = "Candidate-binary credential-free real-daemon integration for planner-authoritative dispatch: dependency/readiness deadlines survive restart as one explicit forward class; a seeded exact Pi/OpenRouter outage admits one planner-issued ordinary-task probe bound to the unchanged model; the receipt-bound lease outlives its pre-execution timeout without a storm, fallback, global pause, or controller/probe/merge/cleanup graph task."
 timeout_seconds = 120
 
 [[scenario]]
@@ -2941,3 +2951,78 @@ script = "scenarios/automatic_archival_restart_hold.sh"
 owners = ["fix-surprise-startup-archival"]
 description = "Candidate-binary credential-free real daemon + attended tmux/TUI regression for surprise backlog archival: a legacy service state and 38-day-old terminal graph with explicit 7d retention restart into an exact visible operator hold with zero archived records; service status/TUI expose dry-run+confirm; confirmation applies the exact IDs once; undo restores canonical task bytes/status/log/dependencies; an acknowledged restart processes only one newly-eligible incremental task without rescanning restored pre-watermark history; retention=0 remains non-destructive."
 timeout_seconds = 240
+
+[[scenario]]
+name = "automatic_archival_opt_in"
+script = "scenarios/automatic_archival_opt_in.sh"
+owners = ["make-automatic-archival-opt-in"]
+description = "Candidate-binary clean-room daemon/terminal proof with isolated HOME and explicit --dir: a missing/fresh retention key resolves to 0; old Done evidence survives start plus restart/upgrade simulation; service status and archive auto --dry-run report disabled; a live held batch is cancelled by retention=0 reload/restart with graph bytes and visible states preserved; deliberate short-retention opt-in archives only the exact digest-reviewed batch while a later eligible record stays visible and manually previewable. Credential-free."
+timeout_seconds = 180
+
+[[scenario]]
+name = "exited_worker_finish_convergence"
+script = "scenarios/exited_worker_finish_convergence.sh"
+owners = ["fix-exited-worker-finish-convergence-deadlock", "formalize-lifecycle-finish-lean4"]
+description = "Candidate-binary credential-free generated-wrapper/Fake-Pi regression for the production deadlock topology: the wrapper durably binds itself as parent of the native child, the first child writes 28KiB WIP and settles/exits with no finish transaction, and the live daemon fences the proven-dead owner exactly once then automatically resumes the exact session/worktree. The continuation lands and cleans once with monotonically fenced generation/attempt epochs, no competitor, WIP loss, duplicate promotion, spawn-breaker charge, or operator retry; restart is idempotent, and why-blocked exposes the concrete convergence action/deadline instead of saying unblocked."
+timeout_seconds = 180
+
+[[scenario]]
+name = "brokered_deliverable_worktree_preflight"
+script = "scenarios/brokered_deliverable_worktree_preflight.sh"
+owners = [
+    "fix-brokered-deliverable-preflight-worktree",
+    "convergence-cutover-dispatch-route",
+]
+description = "Candidate-binary credential-free real-daemon/Fake-Pi regression for the self-hosting completion incident: a capability-brokered worker commits its declared deliverable only in the authenticated retained worktree; real wg done durably prepares and advances the exact completion/v2 transaction to GraphSaved plus Done/Cleaned without source respawn; response loss replays idempotently; and the terminal receipt unlocks one dependent without copying bytes into the graph root."
+timeout_seconds = 180
+
+[[scenario]]
+name = "late_exit_durable_success_precedence"
+script = "scenarios/late_exit_durable_success_precedence.sh"
+owners = ["fix-late-exit-overwrites-durable-success"]
+description = "Candidate-binary credential-free generated-wrapper regression for first-terminal-result-wins: a shell worker commits and completes task-owned Land, then deliberately exits 73. The exact accepted promotion suppresses AttemptFailed/Lost while retaining the exit diagnostic; cleanup projects Done/Landed/Cleaned once, main promotion and lifecycle success occur once, and the dependent readiness edge appears exactly once across replayed reads."
+timeout_seconds = 180
+
+[[scenario]]
+name = "worker_owned_completion_canary"
+script = "scenarios/worker_owned_completion_canary.sh"
+owners = ["simple-worker-owned-convergence"]
+description = "Candidate-binary credential-free real-daemon exit canary: ten concurrent Pi workers complete Land/Report/Explore; two overlapping Land workers exercise compare/fast-forward and same-worker moved-main reintegration while non-Git workers use isolated attempt workspaces. All snapshot immutable outputs/evidence, build bound manifests through the broker, pass exact FLIP then eval without child tasks, derive Done from publication, create no SaveTransaction/finalization authority, and receive no replacement workers."
+timeout_seconds = 180
+
+[[scenario]]
+name = "worker_control_capability_broker"
+script = "scenarios/worker_control_capability_broker.sh"
+owners = ["isolate-worker-control-plane-filesystem"]
+description = "Candidate-binary credential-free real-daemon worker regression: a live Fake-Pi worker launches without WG_DIR or a candidate .wg entry, uses an opaque attempt capability for scoped show/log over typed IPC, is refused graph enumeration, persists no bearer token, commits ordinary candidate source, emits allow/reject audit evidence, and reports the filesystem guarantee as degraded rather than falsely equating environment omission/worktree separation with mount isolation."
+timeout_seconds = 180
+
+[[scenario]]
+name = "daemon_planner_replay"
+script = "scenarios/daemon_planner_replay.sh"
+owners = [
+    "formalize-daemon-planner-replay",
+]
+description = "Candidate-binary replay of a permanent daemon incident trace is byte-identical across repeated offline runs, emits the corrected idempotent action, keeps graph state unchanged, and contains only the typed redacted planner wire."
+timeout_seconds = 30
+
+[[scenario]]
+name = "planner_runtime_kernel"
+script = "scenarios/planner_runtime_kernel.sh"
+owners = ["convergence-cutover-runtime-kernel"]
+description = "Candidate-binary credential-free real-daemon runtime-kernel proof: bootstrap a legacy convergence goal, seed exact future deadline/backoff/jitter and route-breaker state, remove prior planner cache, then start the candidate. Startup migrates the typed legacy state once into schema-v5 PlannerStore without resetting any scheduling value; `service status --json` exposes the read-only planner projection and one earliest deadline; a second daemon restart and repeated status read leave decision trace, normalized cache, effect journal, and planner projection byte-identical."
+timeout_seconds = 120
+
+[[scenario]]
+name = "failed_prerequisite_convergence"
+script = "scenarios/failed_prerequisite_convergence.sh"
+owners = ["fix-nonsemantic-failed-dependency-convergence"]
+description = "Candidate-binary credential-free real-daemon regression for the live atomic-save rollout halt: with all owners exited, an unfinished descendant whose only prerequisite is a typed zero-progress source failure cannot remain silently blocked. The daemon emits exactly one bounded source retry, preserves the exact session evidence in the lifecycle ledger, creates a durable convergence state/deadline, and makes the source runnable without retrying semantic rejection."
+timeout_seconds = 120
+
+[[scenario]]
+name = "stale_worktree_spawn_owner_convergence"
+script = "scenarios/stale_worktree_spawn_owner_convergence.sh"
+owners = ["fix-stale-worktree-spawn-owner-convergence"]
+description = "Candidate-binary real-daemon regression seeded with a proven-dead registered spawn owner, private wg-spawn-owner token, dirty WIP, and exact observer state: preparation records one replay-safe reclaim/retain acknowledgement without editing evidence, dispatches one current attempt in the reused verified worktree, protects generation/fence and remains breaker/Dispatch-falloff neutral; the v3 pure trace replays byte-identically."
+timeout_seconds = 180

@@ -65,6 +65,36 @@ pub struct FinalizationContext {
     pub quiescence: QuiescenceProof,
 }
 
+impl FinalizationContext {
+    /// Bridge the landed finalization planner schema into the v2 save kernel.
+    /// The caller supplies graph/wrapper/session identity because this module
+    /// neither owns nor infers those lifecycle facts.
+    pub fn attempt_save_key(
+        &self,
+        graph_id: impl Into<String>,
+        wrapper_epoch: u32,
+        session_proof_digest: impl Into<String>,
+    ) -> crate::completion_evidence::AttemptSaveKey {
+        crate::completion_evidence::AttemptSaveKey {
+            graph_id: graph_id.into(),
+            task_id: self.task_id.clone(),
+            generation: self.generation,
+            attempt_id: self.attempt_id.clone(),
+            attempt_fence: self.attempt_fence,
+            worktree_lease_epoch: self.worktree_lease_epoch,
+            process_epoch: self.process_epoch,
+            wrapper_epoch,
+            route_snapshot_cid: self.route_snapshot_cid.clone(),
+            session_proof_digest: session_proof_digest.into(),
+            worktree_identity_digest: blake3::hash(
+                format!("{}\0{}", self.worktree_id, self.worktree_path.display()).as_bytes(),
+            )
+            .to_hex()
+            .to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ManifestEntry {
     pub path: String,
@@ -306,6 +336,125 @@ pub struct FinalizationTransaction {
     pub replay_action: Option<String>,
     pub safe_next_command: String,
     pub updated_at: String,
+}
+
+/// Exact terminal evidence carried by a task-owned finish transaction.  This
+/// is deliberately stricter than phase inspection: every source fence and
+/// immutable receipt binding must agree before process exit becomes
+/// observational-only evidence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DurableSuccessEvidence {
+    pub disposition: &'static str,
+    pub durable_receipt_id: String,
+    pub cleanup_receipt_id: Option<String>,
+}
+
+impl FinalizationTransaction {
+    pub fn exact_durable_success(
+        &self,
+        task_id: &str,
+        generation: u64,
+        attempt_id: Option<&str>,
+        attempt_fence: u64,
+    ) -> Option<DurableSuccessEvidence> {
+        let attempt_id = attempt_id?;
+        if self.task_id != task_id
+            || self.generation != generation
+            || self.attempt_id != attempt_id
+            || self.attempt_fence != attempt_fence
+            || self.worktree_lease_epoch != attempt_fence
+        {
+            return None;
+        }
+        let candidate = self.candidate.as_ref()?;
+        if candidate.task_id != task_id
+            || candidate.generation != generation
+            || candidate.attempt_id != attempt_id
+            || candidate.attempt_fence != attempt_fence
+            || candidate.worktree_lease_epoch != attempt_fence
+            || candidate.binding.candidate_id != candidate.candidate_id
+            || candidate.binding.commit_oid != candidate.candidate_commit_oid
+            || candidate.binding.tree_oid != candidate.candidate_tree_oid
+            || candidate.binding.manifest_cid != candidate.content_manifest_cid
+            || candidate.binding.delta_manifest_cid != candidate.delta_manifest_cid
+        {
+            return None;
+        }
+        let validation = self.validation.as_ref()?;
+        if !validation.passed || validation.binding != candidate.binding {
+            return None;
+        }
+
+        let (disposition, durable_receipt_id) =
+            match (self.merge_receipt.as_ref(), self.output_receipt.as_ref()) {
+                (Some(merge), None)
+                    if matches!(
+                        self.phase,
+                        FinalizationPhase::Promoted
+                            | FinalizationPhase::Cleaning
+                            | FinalizationPhase::Cleaned
+                    ) && merge.ref_cas
+                        && merge.binding == candidate.binding
+                        && self.evaluation_receipt.as_ref().is_some_and(|receipt| {
+                            receipt.outcome == EvaluationReceiptOutcome::Accepted
+                                && receipt.binding == candidate.binding
+                        }) =>
+                {
+                    ("landed", merge.receipt_id.clone())
+                }
+                (None, Some(output))
+                    if output.task_id == task_id
+                        && output.binding == candidate.binding
+                        && matches!(
+                            (output.disposition, self.phase),
+                            (
+                                OutputDisposition::Delivered,
+                                FinalizationPhase::Delivered
+                                    | FinalizationPhase::Cleaning
+                                    | FinalizationPhase::Cleaned
+                            ) | (
+                                OutputDisposition::Reported,
+                                FinalizationPhase::Reported
+                                    | FinalizationPhase::Cleaning
+                                    | FinalizationPhase::Cleaned
+                            )
+                        ) =>
+                {
+                    (
+                        match output.disposition {
+                            OutputDisposition::Delivered => "delivered",
+                            OutputDisposition::Reported => "reported",
+                        },
+                        output.receipt_id.clone(),
+                    )
+                }
+                _ => return None,
+            };
+
+        let cleanup_receipt_id = if self.phase == FinalizationPhase::Cleaned {
+            let cleanup = self.cleanup_receipt.as_ref()?;
+            if cleanup.task_id != task_id
+                || cleanup.disposition != disposition
+                || cleanup.durable_receipt_id != durable_receipt_id
+                || cleanup.worktree_id != candidate.worktree_id
+                || cleanup.worktree_path != self.worktree_path
+                || !cleanup.removed
+            {
+                return None;
+            }
+            Some(cleanup.receipt_id.clone())
+        } else {
+            if self.cleanup_receipt.is_some() {
+                return None;
+            }
+            None
+        };
+        Some(DurableSuccessEvidence {
+            disposition,
+            durable_receipt_id,
+            cleanup_receipt_id,
+        })
+    }
 }
 
 #[derive(Debug, Clone)]

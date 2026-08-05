@@ -37,9 +37,12 @@ pub fn run(dir: &Path, command: PiWatchdogCommands, json: bool) -> Result<()> {
             json,
         ),
         PiWatchdogCommands::Abort { id, reason } => abort(dir, &id, &reason, json),
-        PiWatchdogCommands::Bootstrap { id, agent_dir, pid } => {
-            bootstrap(dir, &id, &agent_dir, pid)
-        }
+        PiWatchdogCommands::Bootstrap {
+            id,
+            agent_dir,
+            pid,
+            wrapper_pid,
+        } => bootstrap(dir, &id, &agent_dir, pid, wrapper_pid),
         PiWatchdogCommands::ProcessExit { id, exit_code, pid } => {
             process_exit(dir, &id, exit_code, pid)
         }
@@ -312,7 +315,7 @@ fn status(dir: &Path, id: &str, json: bool) -> Result<()> {
             "silence_secs": silence,
             "soft_suspect_secs": watchdog.policy().meaningful_silence_secs,
             "hard_resume_after_secs": state.hard_resume_after_secs,
-            "next_safe_operator_action": next_action(state),
+            "next_safe_operator_action": next_action(dir, state),
         });
         println!("{}", serde_json::to_string_pretty(&value)?);
         return Ok(());
@@ -424,18 +427,46 @@ fn status(dir: &Path, id: &str, json: bool) -> Result<()> {
         state.pending_actions,
         state.exact_route_error
     );
-    println!("  next: {}", next_action(state));
+    println!("  next: {}", next_action(dir, state));
     Ok(())
 }
 
-fn next_action(state: &worksgood::pi_watchdog::PiWatchdogState) -> String {
+fn next_action(dir: &Path, state: &worksgood::pi_watchdog::PiWatchdogState) -> String {
     use worksgood::pi_watchdog::Classification::*;
     match state.classification {
         Active => "continued observation; total runtime is not a deadline".into(),
         Suspect => "read-only probe/observe; no signal before hard policy + grace + proof".into(),
         HardResumeEligible => "await hard grace and fresh unchanged proof CAS".into(),
         NeedsFinalization => {
-            "inspect same-session completion action; no completion is inferred".into()
+            let record = worksgood::service::ConvergenceState::load(dir)
+                .ok()
+                .and_then(|convergence| {
+                    convergence
+                        .goals
+                        .get(&format!(
+                            "{}#{}",
+                            state.source.task_id, state.source.generation
+                        ))
+                        .cloned()
+                });
+            let deadline = record
+                .as_ref()
+                .map(|record| record.next_wake_at.as_str())
+                .unwrap_or("next service pass");
+            let action = record
+                .as_ref()
+                .and_then(|record| record.pending_convergence_action)
+                .map(worksgood::service::FinishConvergenceAction::description)
+                .unwrap_or(
+                    "finish durable receipt or release exact dead owner and resume same session/worktree",
+                );
+            let rank = record
+                .as_ref()
+                .and_then(|record| record.finish_convergence_rank)
+                .and_then(|rank| serde_json::to_value(rank).ok())
+                .and_then(|value| value.as_str().map(str::to_owned))
+                .unwrap_or_else(|| "unprojected".into());
+            format!("{action}; rank={rank}; deadline={deadline}; silence never implies success")
         }
         StalledOperatorRequired => format!(
             "wg pi-watchdog resume {} --reason '<audited reason>'",
@@ -499,7 +530,13 @@ fn resume(
     Ok(())
 }
 
-fn bootstrap(dir: &Path, id: &str, agent_dir: &Path, pid: u32) -> Result<()> {
+fn bootstrap(
+    dir: &Path,
+    id: &str,
+    agent_dir: &Path,
+    pid: u32,
+    wrapper_pid: Option<u32>,
+) -> Result<()> {
     let graph_path = dir.join("graph.jsonl");
     let graph = load_graph(&graph_path)?;
     let task = graph.get_task_or_err(id)?;
@@ -616,7 +653,11 @@ fn bootstrap(dir: &Path, id: &str, agent_dir: &Path, pid: u32) -> Result<()> {
     };
     let process = capture_process(pid)?;
     let process_identity_digest = process.digest();
-    PiWatchdog::new_at(
+    let wrapper = wrapper_pid.map(capture_process).transpose()?;
+    if let Some(wrapper) = wrapper.as_ref() {
+        attest_native_child_of_wrapper(pid, wrapper.pid)?;
+    }
+    let mut watchdog = PiWatchdog::new_at(
         state_path,
         source.clone(),
         route.clone(),
@@ -626,6 +667,11 @@ fn bootstrap(dir: &Path, id: &str, agent_dir: &Path, pid: u32) -> Result<()> {
         Utc::now().timestamp(),
     )
     .map_err(anyhow::Error::new)?;
+    if let Some(wrapper) = wrapper {
+        watchdog
+            .bind_terminal_wrapper(wrapper, Utc::now().timestamp())
+            .map_err(anyhow::Error::new)?;
+    }
     let authorization = worksgood::lifecycle::PiContinuationAuthorization {
         authorization_id: format!("pi-auth:{}", attempt.id),
         task_id: id.into(),
@@ -672,6 +718,31 @@ fn bootstrap(dir: &Path, id: &str, agent_dir: &Path, pid: u32) -> Result<()> {
     })?;
     if let Some(error) = rejection {
         return Err(anyhow::Error::new(error));
+    }
+    Ok(())
+}
+
+fn attest_native_child_of_wrapper(child_pid: u32, wrapper_pid: u32) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        let stat = std::fs::read_to_string(format!("/proc/{child_pid}/stat"))?;
+        let close = stat.rfind(')').context("invalid proc stat")?;
+        let fields: Vec<&str> = stat[close + 2..].split_whitespace().collect();
+        let parent: u32 = fields.get(1).context("proc parent missing")?.parse()?;
+        if parent != wrapper_pid {
+            anyhow::bail!(
+                "invalid_process_topology: native Pi PID {child_pid} is not owned by wrapper PID {wrapper_pid}"
+            );
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let caller_parent = unsafe { libc::getppid() as u32 };
+        if caller_parent != wrapper_pid || child_pid == wrapper_pid {
+            anyhow::bail!(
+                "invalid_process_topology: bootstrap caller is not owned by wrapper PID {wrapper_pid} or child is not distinct"
+            );
+        }
     }
     Ok(())
 }
@@ -773,12 +844,19 @@ fn attest_worker_descends_from_current_process(watchdog: &PiWatchdog) -> Result<
     if std::env::var("WG_EXECUTOR_TYPE").as_deref() != Ok("pi") {
         return Ok(());
     }
-    let expected = watchdog.state().process.pid;
+    let native = &watchdog.state().process;
+    let wrapper = watchdog.state().terminal_wrapper.as_ref();
     #[cfg(target_os = "linux")]
     {
         let mut pid = std::process::id();
         for _ in 0..64 {
-            if pid == expected {
+            if pid == native.pid && process_identity_matches_kernel(native) {
+                return Ok(());
+            }
+            if let Some(wrapper) = wrapper
+                && pid == wrapper.pid
+                && process_identity_matches_kernel(wrapper)
+            {
                 return Ok(());
             }
             let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"))?;
@@ -791,23 +869,42 @@ fn attest_worker_descends_from_current_process(watchdog: &PiWatchdog) -> Result<
             pid = parent;
         }
         anyhow::bail!(
-            "stale_process_identity: terminal caller is not descended from current epoch {} PID {}",
+            "stale_process_identity: terminal caller belongs to neither current epoch {} native PID {} nor its bound wrapper {}",
             watchdog.state().process_epoch,
-            expected
+            native.pid,
+            wrapper.map_or_else(|| "none".into(), |value| value.pid.to_string())
         );
     }
     #[cfg(not(target_os = "linux"))]
     {
         let parent = unsafe { libc::getppid() as u32 };
-        if parent != expected {
+        if parent != native.pid && wrapper.is_none_or(|value| value.pid != parent) {
             anyhow::bail!(
-                "stale_process_identity: terminal caller parent is not current epoch {} PID {}",
-                watchdog.state().process_epoch,
-                expected
+                "stale_process_identity: terminal caller parent belongs to neither current epoch {} native nor wrapper",
+                watchdog.state().process_epoch
             );
         }
         Ok(())
     }
+}
+
+#[cfg(target_os = "linux")]
+fn process_identity_matches_kernel(process: &ProcessIdentity) -> bool {
+    let boot_matches = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
+        .ok()
+        .is_some_and(|value| value.trim() == process.boot_id);
+    let ticks_match = std::fs::read_to_string(format!("/proc/{}/stat", process.pid))
+        .ok()
+        .and_then(|stat| {
+            let close = stat.rfind(')')?;
+            stat[close + 2..]
+                .split_whitespace()
+                .nth(19)?
+                .parse::<u64>()
+                .ok()
+        })
+        == Some(process.start_ticks);
+    boot_matches && ticks_match
 }
 
 fn process_exit(dir: &Path, id: &str, exit_code: i32, attested_pid: Option<u32>) -> Result<()> {

@@ -554,7 +554,51 @@ pub enum Commands {
         skip_smoke: bool,
     },
 
-    /// Task-owned finish transaction (legacy spelling: `finalize`)
+    /// Snapshot a file into the immutable completion object store
+    CompletionObject {
+        path: PathBuf,
+        #[arg(long, default_value = "application/octet-stream")]
+        media_type: String,
+        #[arg(long)]
+        evidence_kind: Option<String>,
+    },
+
+    /// Build a task-bound completion manifest from immutable object references
+    CompletionManifest {
+        id: String,
+        #[arg(long)]
+        summary: PathBuf,
+        #[arg(long = "output-ref")]
+        output_refs: Vec<PathBuf>,
+        #[arg(long = "evidence-ref")]
+        evidence_refs: Vec<PathBuf>,
+        /// Build the exact Git output from the current worker HEAD versus main
+        #[arg(long)]
+        git: bool,
+        #[arg(long)]
+        source_revision: Option<String>,
+    },
+
+    /// Submit an immutable candidate and run exact FLIP then eval review
+    Submit {
+        id: String,
+        #[arg(long)]
+        manifest: PathBuf,
+        #[arg(long)]
+        summary: PathBuf,
+    },
+
+    /// Publish the exact reviewed Land commit with compare-and-fast-forward
+    Land {
+        id: String,
+        #[arg(long, default_value = "refs/heads/main")]
+        integration_ref: String,
+    },
+
+    /// Set the task's completion contract: land, report, or explore
+    Contract { id: String, contract: String },
+
+    /// Historical task-owned finish transaction (non-authoritative)
     #[command(alias = "finish")]
     Finalize {
         #[command(subcommand)]
@@ -2956,7 +3000,7 @@ pub enum FinalizeCommands {
     },
     /// Remove the owned worktree/branch, write cleanup receipt, then expose Done
     Cleanup { id: String },
-    /// Set the explicit land/deliver/report contract
+    /// Set the explicit land/report/explore contract
     Contract { id: String, contract: String },
     /// Add an explicitly typed immutable contribution input edge
     Input {
@@ -5519,6 +5563,9 @@ pub enum PiWatchdogCommands {
         agent_dir: PathBuf,
         #[arg(long)]
         pid: u32,
+        /// Exact attempt-owning wrapper PID (the native Pi child is its child).
+        #[arg(long)]
+        wrapper_pid: Option<u32>,
     },
     /// Internal exact process-exit reconciliation; preserves generic failure when unauthorized.
     #[command(name = "process-exit", hide = true)]
@@ -6668,6 +6715,15 @@ pub enum ServiceCommands {
     /// Show service status
     Status,
 
+    /// Replay a versioned daemon decision trace offline without external effects
+    Replay {
+        /// Redacted decision-trace JSON file
+        trace: PathBuf,
+        /// Optional path for the byte-stable normalized replay report
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+
     /// Reload daemon configuration without restarting
     ///
     /// With flags: applies the specified overrides to the running daemon.
@@ -7010,6 +7066,11 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Add { .. } => "add",
         Commands::Edit { .. } => "edit",
         Commands::Done { .. } => "done",
+        Commands::CompletionObject { .. } => "completion-object",
+        Commands::CompletionManifest { .. } => "completion-manifest",
+        Commands::Submit { .. } => "submit",
+        Commands::Land { .. } => "land",
+        Commands::Contract { .. } => "contract",
         Commands::Finalize { .. } => "finalize",
         Commands::Candidate { .. } => "candidate",
         Commands::MergeResolution { .. } => "merge-resolution",

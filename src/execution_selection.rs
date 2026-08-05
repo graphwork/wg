@@ -65,11 +65,27 @@ impl ExecutionSelection {
     }
 }
 
-fn canonical_explicit_route(raw: &str) -> Option<String> {
+pub fn canonical_explicit_route(raw: &str) -> Option<String> {
     let raw = raw.trim();
     parse_supported_execution_route(raw)
         .ok()
         .map(|_| raw.to_string())
+}
+
+/// Return a route only when its leading token names an execution handler.
+/// Provider-qualified Pi model dialects such as `openrouter:vendor/model`
+/// deliberately return `None`: a dispatcher binding must reconstruct those as
+/// `pi:openrouter:vendor/model`, never silently reinterpret them as nex.
+pub fn handler_qualified_explicit_route(raw: &str) -> Option<String> {
+    let prefix = raw.trim().split_once(':')?.0;
+    let handler = crate::dispatch::ExecutorKind::from_str(prefix)?;
+    if matches!(
+        handler,
+        crate::dispatch::ExecutorKind::Shell | crate::dispatch::ExecutorKind::RemoteRunner
+    ) {
+        return None;
+    }
+    canonical_explicit_route(raw)
 }
 
 pub fn system_key(route: &str) -> Option<ExecutionSystemKey> {
@@ -259,6 +275,22 @@ mod tests {
         let selected = resolve_config_sources(dir.path(), &config, &sources).unwrap();
         assert_eq!(selected.state, SelectionState::Selected);
         assert_eq!(selected.route.as_deref(), Some("pi:test:worker"));
+    }
+
+    #[test]
+    fn provider_dialect_is_not_mistaken_for_a_handler_qualified_route() {
+        assert_eq!(
+            handler_qualified_explicit_route("pi:openrouter:vendor/model").as_deref(),
+            Some("pi:openrouter:vendor/model")
+        );
+        assert_eq!(
+            handler_qualified_explicit_route("openrouter:vendor/model"),
+            None
+        );
+        assert_eq!(
+            handler_qualified_explicit_route("codex:gpt-5.5").as_deref(),
+            Some("codex:gpt-5.5")
+        );
     }
 
     #[test]

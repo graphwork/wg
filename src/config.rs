@@ -7370,11 +7370,40 @@ model = "claude:opus"
         assert_eq!(config.agent.executor, "pi");
         assert!(config.agent.model.is_empty());
         assert_eq!(config.agent.interval, 10);
+        assert_eq!(
+            config.coordinator.archive_retention_days, 0,
+            "task archival must remain opt-in on a fresh install"
+        );
         assert!(
             !config.coordinator.resource_management.disk_sentinel_enabled,
             "predictive build admission must be opt-in"
         );
         assert!(config.validate_pi_model_plane().is_err());
+    }
+
+    #[test]
+    fn task_archive_retention_defaults_disabled_and_explicit_value_survives_reload() {
+        let absent: Config = toml::from_str("").unwrap();
+        assert_eq!(absent.coordinator.archive_retention_days, 0);
+
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join("config.toml"),
+            "[dispatcher]\narchive_retention_days = 31\n",
+        )
+        .unwrap();
+        let loaded = Config::load(dir.path()).unwrap();
+        assert_eq!(loaded.coordinator.archive_retention_days, 31);
+
+        // Exercise the same full-config serialization/reload path used by
+        // setup and config writes. An operator's explicit non-zero policy is
+        // configuration authority; changing the compiled default must not
+        // replace it during an upgrade or daemon reload.
+        loaded.save(dir.path()).unwrap();
+        let reloaded = Config::load(dir.path()).unwrap();
+        assert_eq!(reloaded.coordinator.archive_retention_days, 31);
+        let serialized = fs::read_to_string(dir.path().join("config.toml")).unwrap();
+        assert!(serialized.contains("archive_retention_days = 31"));
     }
 
     #[test]

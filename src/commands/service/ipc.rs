@@ -13,6 +13,9 @@ use worksgood::dispatch::ExecutorKind;
 use worksgood::graph::{Node, PRIORITY_DEFAULT, PRIORITY_HIGH, Status, Task};
 use worksgood::parser::{load_graph, modify_graph};
 use worksgood::service::registry::AgentRegistry;
+use worksgood::worker_control::{
+    WORKER_CONTROL_PROTOCOL, WorkerAuditEvent, WorkerOperation, WorkerRequestEnvelope,
+};
 
 use super::{CoordinatorState, DaemonConfig, DaemonLogger, ServiceState};
 use crate::commands::graph_path;
@@ -239,6 +242,10 @@ pub enum IpcRequest {
         #[serde(default)]
         caller_chat_id: Option<u32>,
     },
+    /// Attempt-scoped worker operation. Unlike operator IPC, this request is
+    /// authenticated by an opaque capability and fenced against the current
+    /// task lifecycle tuple before any graph/control access.
+    Worker { request: WorkerRequestEnvelope },
 }
 
 /// IPC Response types
@@ -472,6 +479,645 @@ pub(crate) fn handle_chat_control_connection(
     }
     write_response_or_cancel(&stream, &response, logger)?;
     Ok(chat_id)
+}
+
+fn worker_response_from_stored(
+    response: worksgood::worker_control::StoredWorkerResponse,
+) -> IpcResponse {
+    IpcResponse {
+        ok: response.ok,
+        error: response.error,
+        data: response.data,
+    }
+}
+
+fn stored_worker_response(
+    response: &IpcResponse,
+) -> worksgood::worker_control::StoredWorkerResponse {
+    worksgood::worker_control::StoredWorkerResponse {
+        ok: response.ok,
+        error: response.error.clone(),
+        data: response.data.clone(),
+    }
+}
+
+fn replay_pending_completion(
+    dir: &Path,
+    request: &WorkerRequestEnvelope,
+) -> Result<Option<IpcResponse>> {
+    let WorkerOperation::DoneHandoff {
+        converged,
+        full_smoke,
+    } = &request.operation
+    else {
+        return Ok(None);
+    };
+    if *converged || *full_smoke {
+        anyhow::bail!("legacy Done handoff flags are not supported");
+    }
+    // A crash after the graph/Git publication check but before response
+    // journaling is recovered by rerunning the same derived predicate. No save
+    // transaction or finalizer phase is replayed.
+    let binding = worksgood::worker_control::lookup_capability(dir, &request.capability)?;
+    crate::commands::completion_done::run(dir, &binding.task_id, "refs/heads/main")?;
+    let response = IpcResponse::success(serde_json::json!({
+        "handoff": "done",
+        "derived": true,
+    }));
+    worksgood::worker_control::complete_request(
+        dir,
+        &request.request_id,
+        stored_worker_response(&response),
+    )?;
+    Ok(Some(response))
+}
+
+fn audit_worker_request(
+    dir: &Path,
+    request: &WorkerRequestEnvelope,
+    task_id: Option<&str>,
+    outcome: &str,
+    reason: &str,
+    logger: &DaemonLogger,
+) {
+    let event = WorkerAuditEvent {
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        request_id: request.request_id.clone(),
+        token_hint: worksgood::worker_control::token_hint(&request.capability),
+        operation: request.operation.kind(),
+        outcome: outcome.to_string(),
+        reason: reason.to_string(),
+        task_id: task_id.map(str::to_string),
+    };
+    if let Err(error) = worksgood::worker_control::append_audit(dir, &event) {
+        logger.error(&format!(
+            "failed to persist worker capability audit: {error}"
+        ));
+    }
+}
+
+fn resolve_worker_input_path(
+    dir: &Path,
+    binding: &worksgood::worker_control::AttemptCapabilityBinding,
+    path: &str,
+) -> Result<std::path::PathBuf> {
+    validate_worker_path(path)?;
+    let base = if binding.worktree_path.trim().is_empty() {
+        dir.parent()
+            .context("graph directory has no project root")?
+            .to_path_buf()
+    } else {
+        std::path::PathBuf::from(&binding.worktree_path)
+    };
+    let canonical_base = base.canonicalize()?;
+    let candidate = base.join(path).canonicalize()?;
+    if !candidate.starts_with(&canonical_base) {
+        anyhow::bail!("worker_control.path_out_of_scope");
+    }
+    Ok(candidate)
+}
+
+fn validate_worker_path(path: &str) -> Result<()> {
+    let path_value = std::path::Path::new(path);
+    if path.is_empty()
+        || path_value.is_absolute()
+        || path_value.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir | std::path::Component::RootDir
+            )
+        })
+        || worksgood::control_plane::is_protected_repo_path(path.as_bytes())
+        || path
+            .split(['/', '\\'])
+            .any(|part| part.eq_ignore_ascii_case(".git"))
+    {
+        anyhow::bail!("worker_control.path_out_of_scope");
+    }
+    Ok(())
+}
+
+fn validate_worker_capability(
+    dir: &Path,
+    request: &WorkerRequestEnvelope,
+) -> Result<worksgood::worker_control::AttemptCapabilityBinding> {
+    if request.protocol != WORKER_CONTROL_PROTOCOL {
+        anyhow::bail!("worker_control.protocol_mismatch");
+    }
+    let binding = worksgood::worker_control::lookup_capability(dir, &request.capability)?;
+    if binding.protocol != WORKER_CONTROL_PROTOCOL {
+        anyhow::bail!("worker_control.capability_protocol_mismatch");
+    }
+    if binding.revoked_at.is_some() {
+        anyhow::bail!("worker_control.capability_revoked");
+    }
+    if !binding
+        .allowed_operations
+        .contains(&request.operation.kind())
+    {
+        anyhow::bail!("worker_control.operation_not_allowed");
+    }
+    let current_graph_id = worksgood::worker_control::load_or_create_graph_identity(dir)?;
+    if binding.graph_id != current_graph_id || binding.save_source.graph_id != current_graph_id {
+        anyhow::bail!("worker_control.graph_identity_mismatch");
+    }
+    if binding.save_source.task_id != binding.task_id
+        || binding.save_source.generation != binding.generation
+        || binding.save_source.attempt_id != binding.attempt_id
+        || binding.save_source.attempt_fence != binding.fence
+        || binding.save_source.worktree_lease_epoch != binding.lease_epoch
+    {
+        anyhow::bail!("worker_control.capability_source_mismatch");
+    }
+    let graph = load_graph(graph_path(dir))?;
+    let task = graph
+        .get_task(&binding.task_id)
+        .ok_or_else(|| anyhow::anyhow!("worker_control.task_missing"))?;
+    let attempt = task
+        .lifecycle
+        .current_attempt
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("worker_control.owner_released"))?;
+    if !matches!(task.status, Status::InProgress)
+        || task.lifecycle.generation != binding.generation
+        || attempt.id != binding.attempt_id
+        || task.lifecycle.fence != binding.fence
+        || binding.lease_epoch != binding.fence
+        || task.assigned.as_deref() != Some(binding.agent_id.as_str())
+    {
+        anyhow::bail!(
+            "worker_control.stale_capability: expected task={} generation={} attempt={} fence={} lease={} owner={}",
+            binding.task_id,
+            binding.generation,
+            binding.attempt_id,
+            binding.fence,
+            binding.lease_epoch,
+            binding.agent_id
+        );
+    }
+    Ok(binding)
+}
+
+fn execute_worker_operation(
+    dir: &Path,
+    binding: &worksgood::worker_control::AttemptCapabilityBinding,
+    operation: WorkerOperation,
+) -> IpcResponse {
+    let result = (|| -> Result<serde_json::Value> {
+        match operation {
+            WorkerOperation::Show { .. } => {
+                let graph = load_graph(graph_path(dir))?;
+                let task = graph.get_task_or_err(&binding.task_id)?;
+                Ok(serde_json::to_value(task)?)
+            }
+            WorkerOperation::Context { .. } => {
+                let graph = load_graph(graph_path(dir))?;
+                let task = graph.get_task_or_err(&binding.task_id)?;
+                let dependencies: Vec<_> = task
+                    .after
+                    .iter()
+                    .filter_map(|id| graph.get_task(id))
+                    .map(|dependency| {
+                        serde_json::json!({
+                            "id": dependency.id,
+                            "title": dependency.title,
+                            "description": dependency.description,
+                            "status": dependency.status,
+                            "artifacts": dependency.artifacts,
+                            "completion_disposition": dependency.completion_disposition,
+                        })
+                    })
+                    .collect();
+                Ok(serde_json::json!({"task": task, "dependencies": dependencies}))
+            }
+            WorkerOperation::MessageRead { .. } => {
+                let messages =
+                    worksgood::messages::read_unread(dir, &binding.task_id, &binding.agent_id)?;
+                Ok(serde_json::to_value(messages)?)
+            }
+            WorkerOperation::MessagePoll { .. } => {
+                let messages =
+                    worksgood::messages::poll_messages(dir, &binding.task_id, &binding.agent_id)?;
+                Ok(serde_json::to_value(messages)?)
+            }
+            WorkerOperation::MessageSend { body, priority } => {
+                if body.trim().is_empty() || body.len() > 1024 * 1024 {
+                    anyhow::bail!("worker_control.message_invalid");
+                }
+                let id = worksgood::messages::send_message(
+                    dir,
+                    &binding.task_id,
+                    &body,
+                    &binding.task_id,
+                    &priority,
+                )?;
+                Ok(serde_json::json!({"message_id": id, "task_id": binding.task_id}))
+            }
+            WorkerOperation::Log { message } => {
+                if message.trim().is_empty() || message.len() > 1024 * 1024 {
+                    anyhow::bail!("worker_control.log_invalid");
+                }
+                crate::commands::log::run_add(
+                    dir,
+                    &binding.task_id,
+                    &message,
+                    None,
+                    Some(&binding.agent_id),
+                )?;
+                Ok(serde_json::json!({"logged": true}))
+            }
+            WorkerOperation::ArtifactList { .. } => {
+                let graph = load_graph(graph_path(dir))?;
+                let task = graph.get_task_or_err(&binding.task_id)?;
+                Ok(serde_json::to_value(&task.artifacts)?)
+            }
+            WorkerOperation::ArtifactAdd { path } => {
+                validate_worker_path(&path)?;
+                crate::commands::artifact::run_add(dir, &binding.task_id, &path)?;
+                Ok(serde_json::json!({"added": path}))
+            }
+            WorkerOperation::ArtifactRemove { path } => {
+                validate_worker_path(&path)?;
+                crate::commands::artifact::run_remove(dir, &binding.task_id, &path)?;
+                Ok(serde_json::json!({"removed": path}))
+            }
+            WorkerOperation::DependencyArtifactRead { dependency, path } => {
+                validate_worker_path(&path)?;
+                let graph = load_graph(graph_path(dir))?;
+                let task = graph.get_task_or_err(&binding.task_id)?;
+                if !task.after.contains(&dependency) {
+                    anyhow::bail!("worker_control.dependency_out_of_scope");
+                }
+                let dependency_task = graph.get_task_or_err(&dependency)?;
+                if !dependency_task.artifacts.contains(&path) {
+                    anyhow::bail!("worker_control.artifact_not_declared");
+                }
+                let project = dir
+                    .parent()
+                    .context("graph directory has no project root")?;
+                let canonical_project = project.canonicalize()?;
+                let candidate = project.join(&path).canonicalize()?;
+                if !candidate.starts_with(&canonical_project) {
+                    anyhow::bail!("worker_control.artifact_traversal_refused");
+                }
+                let bytes = std::fs::read(&candidate)?;
+                if bytes.len() > 1024 * 1024 {
+                    anyhow::bail!("worker_control.artifact_too_large");
+                }
+                let text = String::from_utf8(bytes).context("worker_control.artifact_not_utf8")?;
+                Ok(serde_json::json!({"dependency": dependency, "path": path, "content": text}))
+            }
+            WorkerOperation::Checkpoint { summary, files } => {
+                for path in &files {
+                    validate_worker_path(path)?;
+                }
+                crate::commands::checkpoint::run(
+                    dir,
+                    &binding.task_id,
+                    &summary,
+                    Some(&binding.agent_id),
+                    &files,
+                    None,
+                    None,
+                    None,
+                    None,
+                    crate::commands::checkpoint::CheckpointType::Explicit,
+                    true,
+                )?;
+                Ok(serde_json::json!({"checkpointed": true}))
+            }
+            WorkerOperation::Wait { until, checkpoint } => {
+                crate::commands::wait::run(dir, &binding.task_id, &until, checkpoint.as_deref())?;
+                Ok(serde_json::json!({"waiting": true}))
+            }
+            WorkerOperation::CompletionObject {
+                path,
+                media_type,
+                evidence_kind,
+            } => {
+                let path = resolve_worker_input_path(dir, binding, &path)?;
+                crate::commands::completion_submit::put_object_value(
+                    dir,
+                    &path,
+                    &media_type,
+                    evidence_kind.as_deref(),
+                )
+            }
+            WorkerOperation::CompletionManifest {
+                summary,
+                outputs,
+                evidence,
+                git,
+                source_revision,
+            } => {
+                let worktree = if binding.worktree_path.trim().is_empty() {
+                    None
+                } else {
+                    Some(std::path::Path::new(&binding.worktree_path))
+                };
+                let manifest = crate::commands::completion_submit::build_manifest(
+                    dir,
+                    &binding.task_id,
+                    summary.as_bytes(),
+                    outputs,
+                    evidence,
+                    git,
+                    source_revision.as_deref(),
+                    worktree,
+                )?;
+                Ok(serde_json::to_value(manifest)?)
+            }
+            WorkerOperation::SubmitCompletion { manifest, summary } => {
+                let manifest = resolve_worker_input_path(dir, binding, &manifest)?;
+                let summary = resolve_worker_input_path(dir, binding, &summary)?;
+                crate::commands::completion_submit::run(
+                    dir,
+                    &binding.task_id,
+                    &manifest,
+                    &summary,
+                )?;
+                Ok(serde_json::json!({"submission": "accepted"}))
+            }
+            WorkerOperation::Land { integration_ref } => {
+                let worktree = if binding.worktree_path.trim().is_empty() {
+                    None
+                } else {
+                    Some(std::path::Path::new(&binding.worktree_path))
+                };
+                crate::commands::completion_land::run_at(
+                    dir,
+                    &binding.task_id,
+                    &integration_ref,
+                    worktree,
+                )?;
+                Ok(serde_json::json!({"land": "published"}))
+            }
+            WorkerOperation::DoneHandoff {
+                converged,
+                full_smoke,
+            } => {
+                if converged || full_smoke {
+                    anyhow::bail!("legacy Done handoff flags are not supported");
+                }
+                crate::commands::completion_done::run(dir, &binding.task_id, "refs/heads/main")?;
+                Ok(serde_json::json!({"handoff": "done", "derived": true}))
+            }
+            WorkerOperation::FailHandoff { reason, class } => {
+                let failure_class = class
+                    .map(|value| serde_json::from_value(serde_json::Value::String(value)))
+                    .transpose()
+                    .context("worker_control.failure_class_invalid")?;
+                crate::commands::fail::run(dir, &binding.task_id, Some(&reason), failure_class)?;
+                Ok(serde_json::json!({"handoff": "fail"}))
+            }
+            WorkerOperation::FinishHandoff { action } => {
+                anyhow::bail!(
+                    "historical finish handoff {:?} is non-authoritative; use immutable submit, land when required, then wg done",
+                    action
+                )
+            }
+            WorkerOperation::PiWatchdogBootstrap {
+                agent_dir,
+                pid,
+                wrapper_pid,
+            } => {
+                let registry = AgentRegistry::load(dir)?;
+                let agent = registry
+                    .get_agent(&binding.agent_id)
+                    .ok_or_else(|| anyhow::anyhow!("worker_control.agent_registry_missing"))?;
+                let expected = std::path::Path::new(&agent.output_file)
+                    .parent()
+                    .context("worker_control.agent_output_parent_missing")?
+                    .canonicalize()?;
+                let supplied = std::path::Path::new(&agent_dir).canonicalize()?;
+                if supplied != expected {
+                    anyhow::bail!("worker_control.agent_runtime_out_of_scope");
+                }
+                crate::commands::pi_watchdog::run(
+                    dir,
+                    crate::cli::PiWatchdogCommands::Bootstrap {
+                        id: binding.task_id.clone(),
+                        agent_dir: supplied,
+                        pid,
+                        wrapper_pid,
+                    },
+                    true,
+                )?;
+                Ok(serde_json::json!({"watchdog": "bootstrapped"}))
+            }
+            WorkerOperation::PiWatchdogProcessExit { exit_code, pid } => {
+                crate::commands::pi_watchdog::run(
+                    dir,
+                    crate::cli::PiWatchdogCommands::ProcessExit {
+                        id: binding.task_id.clone(),
+                        exit_code,
+                        pid,
+                    },
+                    true,
+                )?;
+                Ok(serde_json::json!({"watchdog": "process_exit"}))
+            }
+            WorkerOperation::Heartbeat => {
+                let response = handle_heartbeat(dir, &binding.agent_id);
+                if !response.ok {
+                    anyhow::bail!(
+                        "{}",
+                        response
+                            .error
+                            .unwrap_or_else(|| "heartbeat refused".to_string())
+                    );
+                }
+                Ok(response.data.unwrap_or(serde_json::Value::Null))
+            }
+            WorkerOperation::RecordTelemetry {
+                raw_stream,
+                exit_code,
+                executor,
+                route,
+            } => {
+                if let Some(path) = raw_stream.as_ref().map(std::path::Path::new) {
+                    let registry = AgentRegistry::load(dir)?;
+                    let agent = registry
+                        .get_agent(&binding.agent_id)
+                        .ok_or_else(|| anyhow::anyhow!("worker_control.agent_registry_missing"))?;
+                    let expected = std::path::Path::new(&agent.output_file)
+                        .parent()
+                        .context("worker_control.agent_output_parent_missing")?
+                        .canonicalize()?;
+                    let supplied = path.canonicalize()?;
+                    if !supplied.starts_with(expected) {
+                        anyhow::bail!("worker_control.agent_runtime_out_of_scope");
+                    }
+                }
+                crate::commands::classify_failure::run_record(
+                    dir,
+                    &binding.task_id,
+                    raw_stream.as_deref(),
+                    exit_code,
+                    executor.as_deref(),
+                    route.as_deref(),
+                    true,
+                )?;
+                Ok(serde_json::json!({"telemetry": "recorded"}))
+            }
+        }
+    })();
+    match result {
+        Ok(data) => IpcResponse::success(data),
+        Err(error) => IpcResponse::error(&error.to_string()),
+    }
+}
+
+fn handle_worker_request(
+    dir: &Path,
+    request: WorkerRequestEnvelope,
+    logger: &DaemonLogger,
+) -> IpcResponse {
+    // Replay the exact durable response before checking whether the mutation
+    // released its attempt owner. This is safe because the journal binds the
+    // request id to the capability-token digest and operation; a different
+    // token or operation still fails closed. Fresh requests continue through
+    // full live-capability validation below.
+    match worksgood::worker_control::replay_request(
+        dir,
+        &request.request_id,
+        &request.capability,
+        &request.operation,
+    ) {
+        Ok(Some(worksgood::worker_control::BeginRequest::Completed(response))) => {
+            let task_id = worksgood::worker_control::lookup_capability(dir, &request.capability)
+                .ok()
+                .map(|binding| binding.task_id);
+            audit_worker_request(
+                dir,
+                &request,
+                task_id.as_deref(),
+                "replayed",
+                "completed response replayed",
+                logger,
+            );
+            return worker_response_from_stored(response);
+        }
+        Ok(Some(worksgood::worker_control::BeginRequest::Pending)) => {
+            if let Ok(Some(response)) = replay_pending_completion(dir, &request) {
+                audit_worker_request(
+                    dir,
+                    &request,
+                    None,
+                    "replayed",
+                    "pending Done request re-derived from immutable review and publication",
+                    logger,
+                );
+                return response;
+            }
+            let reason = "worker_control.request_pending_reconciliation: mutation may already be durable; refusing duplicate execution";
+            audit_worker_request(dir, &request, None, "held", reason, logger);
+            return IpcResponse::error(reason);
+        }
+        Ok(Some(worksgood::worker_control::BeginRequest::Fresh)) => unreachable!(),
+        Ok(None) => {}
+        Err(error) => {
+            audit_worker_request(dir, &request, None, "rejected", &error.to_string(), logger);
+            return IpcResponse::error(&error.to_string());
+        }
+    }
+
+    let binding = match validate_worker_capability(dir, &request) {
+        Ok(binding) => binding,
+        Err(error) => {
+            audit_worker_request(dir, &request, None, "rejected", &error.to_string(), logger);
+            return IpcResponse::error(&error.to_string());
+        }
+    };
+    let begin = match worksgood::worker_control::begin_request(
+        dir,
+        &request.request_id,
+        &request.capability,
+        &request.operation,
+    ) {
+        Ok(begin) => begin,
+        Err(error) => {
+            audit_worker_request(
+                dir,
+                &request,
+                Some(&binding.task_id),
+                "rejected",
+                &error.to_string(),
+                logger,
+            );
+            return IpcResponse::error(&error.to_string());
+        }
+    };
+    match begin {
+        worksgood::worker_control::BeginRequest::Completed(response) => {
+            audit_worker_request(
+                dir,
+                &request,
+                Some(&binding.task_id),
+                "replayed",
+                "completed response replayed",
+                logger,
+            );
+            return worker_response_from_stored(response);
+        }
+        worksgood::worker_control::BeginRequest::Pending => {
+            if let Ok(Some(response)) = replay_pending_completion(dir, &request) {
+                audit_worker_request(
+                    dir,
+                    &request,
+                    Some(&binding.task_id),
+                    "replayed",
+                    "pending Done request re-derived from immutable review and publication",
+                    logger,
+                );
+                return response;
+            }
+            let reason = "worker_control.request_pending_reconciliation: mutation may already be durable; refusing duplicate execution";
+            audit_worker_request(
+                dir,
+                &request,
+                Some(&binding.task_id),
+                "held",
+                reason,
+                logger,
+            );
+            return IpcResponse::error(reason);
+        }
+        worksgood::worker_control::BeginRequest::Fresh => {}
+    }
+
+    // The request journal provides transport idempotency only. Completion
+    // itself is derived synchronously from immutable receipts and publication;
+    // there is no prepared save transaction or finalizer replay.
+    let response = super::with_worker_control_operation(|| {
+        execute_worker_operation(dir, &binding, request.operation.clone())
+    });
+    if let Err(error) = worksgood::worker_control::complete_request(
+        dir,
+        &request.request_id,
+        stored_worker_response(&response),
+    ) {
+        audit_worker_request(
+            dir,
+            &request,
+            Some(&binding.task_id),
+            "held",
+            &format!("response journal failed: {error}"),
+            logger,
+        );
+        return IpcResponse::error(
+            "worker_control.response_not_journaled: mutation may be durable; retry same request id",
+        );
+    }
+    audit_worker_request(
+        dir,
+        &request,
+        Some(&binding.task_id),
+        if response.ok { "allowed" } else { "failed" },
+        response.error.as_deref().unwrap_or("ok"),
+        logger,
+    );
+    response
 }
 
 /// Handle an IPC request
@@ -798,6 +1444,28 @@ fn handle_request(
             logger.info("IPC ListChats");
             handle_list_coordinators(dir)
         }
+        IpcRequest::Worker { request } => {
+            let operation = request.operation.kind();
+            logger.info(&format!(
+                "Worker IPC: request_id={} operation={:?}",
+                request.request_id, operation
+            ));
+            let response = handle_worker_request(dir, request, logger);
+            if response.ok
+                && !matches!(
+                    operation,
+                    worksgood::worker_control::WorkerOperationKind::Show
+                        | worksgood::worker_control::WorkerOperationKind::Context
+                        | worksgood::worker_control::WorkerOperationKind::MessagePoll
+                        | worksgood::worker_control::WorkerOperationKind::ArtifactList
+                        | worksgood::worker_control::WorkerOperationKind::DependencyArtifactRead
+                        | worksgood::worker_control::WorkerOperationKind::Heartbeat
+                )
+            {
+                *wake_coordinator = true;
+            }
+            response
+        }
         IpcRequest::PurgeChats {
             include_active,
             caller_chat_id,
@@ -989,6 +1657,7 @@ fn handle_status(dir: &Path) -> IpcResponse {
 
     // Use persisted coordinator state (reflects effective config + runtime metrics)
     let coord = CoordinatorState::load_or_default(dir);
+    let worker_filesystem_isolation = worksgood::worker_control::filesystem_isolation_status();
 
     IpcResponse::success(serde_json::json!({
         "status": "running",
@@ -997,6 +1666,11 @@ fn handle_status(dir: &Path) -> IpcResponse {
         "started_at": state.started_at,
         "pid_start_identity": state.pid_start_identity,
         "identity": state.identity,
+        "worker_control": {
+            "protocol": WORKER_CONTROL_PROTOCOL,
+            "capability_broker": "enforced",
+            "filesystem_isolation": worker_filesystem_isolation,
+        },
         "agents": {
             "alive": alive_count,
             "idle": idle_count,
@@ -1484,6 +2158,7 @@ fn handle_add_task_with_reasoning(
         input_dependencies: vec![],
         requires: vec![],
         completion_contract: worksgood::graph::CompletionContract::Land,
+        completion_candidate: None,
         completion_disposition: None,
         completion_receipt: None,
         tags: tags.to_vec(),
@@ -2443,6 +3118,151 @@ mod tests {
             worksgood::profile::named::starter_template("pi").unwrap(),
         )
         .unwrap();
+    }
+
+    fn write_owned_task(dir: &Path, generation: u64, fence: u64) {
+        fs::create_dir_all(dir).unwrap();
+        let row = serde_json::json!({
+            "kind": "task",
+            "id": "task-a",
+            "title": "Task A",
+            "status": "in-progress",
+            "assigned": "agent-7",
+            "lifecycle": {
+                "generation": generation,
+                "fence": fence,
+                "attempt_sequence": 1,
+                "current_attempt": {
+                    "id": format!("attempt-{generation}-1"),
+                    "generation": generation,
+                    "fence": fence,
+                    "actor_id": "agent-7"
+                }
+            }
+        });
+        fs::write(dir.join("graph.jsonl"), format!("{row}\n")).unwrap();
+    }
+
+    #[test]
+    fn worker_capability_is_attempt_scoped_and_stale_replay_is_rejected() {
+        let temp = TempDir::new().unwrap();
+        write_owned_task(temp.path(), 3, 8);
+        let (token, _) = worksgood::worker_control::mint_attempt_capability(
+            temp.path(),
+            "task-a",
+            3,
+            "attempt-3-1",
+            8,
+            8,
+            "agent-7",
+        )
+        .unwrap();
+        let request = WorkerRequestEnvelope {
+            protocol: WORKER_CONTROL_PROTOCOL.to_string(),
+            request_id: "request-1".to_string(),
+            capability: token,
+            operation: WorkerOperation::Show { json: true },
+        };
+        let binding = validate_worker_capability(temp.path(), &request).unwrap();
+        assert_eq!(binding.task_id, "task-a");
+
+        write_owned_task(temp.path(), 4, 9);
+        let error = validate_worker_capability(temp.path(), &request)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("stale_capability"), "{error}");
+    }
+
+    #[test]
+    fn worker_request_id_replays_completed_response_without_reexecution() {
+        let temp = TempDir::new().unwrap();
+        write_owned_task(temp.path(), 1, 2);
+        let (token, _) = worksgood::worker_control::mint_attempt_capability(
+            temp.path(),
+            "task-a",
+            1,
+            "attempt-1-1",
+            2,
+            2,
+            "agent-7",
+        )
+        .unwrap();
+        let request = WorkerRequestEnvelope {
+            protocol: WORKER_CONTROL_PROTOCOL.to_string(),
+            request_id: "stable-request".to_string(),
+            capability: token,
+            operation: WorkerOperation::Show { json: true },
+        };
+        let logger = DaemonLogger::open(temp.path()).unwrap();
+        let first = handle_worker_request(temp.path(), request.clone(), &logger);
+        // Completion-like mutations release or replace their owner before a
+        // client that lost the response can retry. The exact request journal
+        // must win over the now-stale live capability check.
+        write_owned_task(temp.path(), 2, 3);
+        let second = handle_worker_request(temp.path(), request, &logger);
+        assert!(first.ok);
+        assert_eq!(first.data, second.data);
+        let audit = fs::read_to_string(worksgood::worker_control::audit_path(temp.path())).unwrap();
+        assert!(audit.contains("\"outcome\":\"replayed\""));
+    }
+
+    #[test]
+    fn done_handoff_requires_exact_review_and_creates_no_save_transaction() {
+        let project = TempDir::new().unwrap();
+        let dir = project.path().join(".wg");
+        write_owned_task(&dir, 1, 2);
+        let worktree = project.path().join(".wg-worktrees/agent-7");
+        fs::create_dir_all(&worktree).unwrap();
+        fs::write(worktree.join(".git"), "gitdir: test\n").unwrap();
+        let (token, _) = worksgood::worker_control::mint_attempt_capability(
+            &dir,
+            "task-a",
+            1,
+            "attempt-1-1",
+            2,
+            2,
+            "agent-7",
+        )
+        .unwrap();
+        let logger = DaemonLogger::open(&dir).unwrap();
+        let response = handle_worker_request(
+            &dir,
+            WorkerRequestEnvelope {
+                protocol: WORKER_CONTROL_PROTOCOL.to_string(),
+                request_id: "derived-done".to_string(),
+                capability: token,
+                operation: WorkerOperation::DoneHandoff {
+                    converged: false,
+                    full_smoke: false,
+                },
+            },
+            &logger,
+        );
+        assert!(!response.ok);
+        assert!(
+            response
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("missing completion candidate"))
+        );
+        assert!(!dir.join("completion/v2/transactions").exists());
+        let graph = load_graph(dir.join("graph.jsonl")).unwrap();
+        assert_eq!(graph.get_task("task-a").unwrap().status, Status::InProgress);
+    }
+
+    #[test]
+    fn worker_paths_reject_control_git_and_traversal_spellings() {
+        for path in [
+            ".wg/graph.jsonl",
+            ".WG/config.toml",
+            "nested\\.wg\\chat",
+            ".git/config",
+            "src/../.wg/graph.jsonl",
+            "/tmp/control",
+        ] {
+            assert!(validate_worker_path(path).is_err(), "accepted {path}");
+        }
+        validate_worker_path("src/lib.rs").unwrap();
     }
 
     #[test]

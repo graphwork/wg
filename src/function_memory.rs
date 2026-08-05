@@ -78,8 +78,9 @@ pub fn load_recent_summaries(
         if path.extension().and_then(|e| e.to_str()) == Some("json") {
             let contents = fs::read_to_string(&path)
                 .with_context(|| format!("Failed to read {}", path.display()))?;
-            let summary: RunSummary = serde_json::from_str(&contents)
+            let mut summary: RunSummary = serde_json::from_str(&contents)
                 .with_context(|| format!("Failed to parse {}", path.display()))?;
+            quarantine_legacy_done_outcomes(&mut summary);
             summaries.push(summary);
         }
     }
@@ -145,8 +146,14 @@ pub fn build_run_summary(
             None => continue,
         };
 
-        let status_str = format!("{:?}", task.status);
-        if status_str != "Done" {
+        let verified_done = task.status == crate::graph::Status::Done
+            && task.graph_save_completion_disposition().is_some();
+        let status_str = if task.status == crate::graph::Status::Done && !verified_done {
+            "NeedsReconciliation".to_string()
+        } else {
+            format!("{:?}", task.status)
+        };
+        if !verified_done {
             all_succeeded = false;
         }
 
@@ -387,6 +394,9 @@ pub fn load_run_summaries(
         .filter(|line| !line.trim().is_empty())
         .filter_map(|line| serde_json::from_str(line).ok())
         .collect();
+    for summary in &mut summaries {
+        quarantine_legacy_done_outcomes(summary);
+    }
 
     // Keep only the most recent N
     let max = config.max_runs as usize;
@@ -395,6 +405,22 @@ pub fn load_run_summaries(
     }
 
     summaries
+}
+
+/// Old function-memory rows stored only a string status and therefore cannot
+/// prove a v2 GraphSave. Preserve them, but prevent them from feeding a false
+/// successful prior into adaptive planning.
+fn quarantine_legacy_done_outcomes(summary: &mut RunSummary) {
+    let mut quarantined = false;
+    for outcome in &mut summary.task_outcomes {
+        if outcome.status == "Done" {
+            outcome.status = "NeedsReconciliation".to_string();
+            quarantined = true;
+        }
+    }
+    if quarantined {
+        summary.all_succeeded = false;
+    }
 }
 
 /// Return the path to the runs.jsonl file for a function.
@@ -631,7 +657,13 @@ mod tests {
         let summaries = load_run_summaries(tmp.path(), "test-func", &config);
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].prefix, "auth");
-        assert!(summaries[0].all_succeeded);
+        assert!(!summaries[0].all_succeeded);
+        assert!(
+            summaries[0]
+                .task_outcomes
+                .iter()
+                .all(|outcome| outcome.status == "NeedsReconciliation")
+        );
     }
 
     #[test]
@@ -738,6 +770,7 @@ mod tests {
         let loaded = load_run_summaries(tmp.path(), "my-func", &config);
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].prefix, "auth");
+        assert!(!loaded[0].all_succeeded);
     }
 
     // ===================================================================
@@ -830,7 +863,12 @@ mod tests {
         let s = &loaded[0];
         assert_eq!(s.applied_at, original.applied_at);
         assert_eq!(s.prefix, original.prefix);
-        assert_eq!(s.all_succeeded, original.all_succeeded);
+        assert!(!s.all_succeeded);
+        assert!(
+            s.task_outcomes
+                .iter()
+                .all(|outcome| outcome.status == "NeedsReconciliation")
+        );
         assert_eq!(s.avg_score, original.avg_score);
         assert_eq!(s.wall_clock_secs, original.wall_clock_secs);
         assert_eq!(s.task_outcomes.len(), original.task_outcomes.len());
@@ -889,7 +927,7 @@ mod tests {
 
         let build_outcome = &summary.task_outcomes[0];
         assert_eq!(build_outcome.template_id, "build");
-        assert_eq!(build_outcome.status, "Done");
+        assert_eq!(build_outcome.status, "NeedsReconciliation");
         assert_eq!(build_outcome.duration_secs, Some(120));
 
         let test_outcome = &summary.task_outcomes[1];
@@ -950,7 +988,8 @@ mod tests {
         )
         .unwrap();
 
-        assert!(summary.all_succeeded);
+        assert!(!summary.all_succeeded);
+        assert_eq!(summary.task_outcomes[0].status, "NeedsReconciliation");
         assert_eq!(summary.task_outcomes[0].score, Some(0.9));
         assert_eq!(summary.avg_score, Some(0.9));
     }

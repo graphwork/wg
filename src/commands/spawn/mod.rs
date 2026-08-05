@@ -269,15 +269,42 @@ pub fn spawn_agent(
     timeout: Option<&str>,
     model: Option<&str>,
 ) -> Result<(String, u32)> {
-    let result =
-        execution::spawn_agent_inner(dir, task_id, executor_name, timeout, model, "coordinator")
-            .map_err(|error| {
-                if worksgood::disk_sentinel::admission_deferral_reason(&error).is_some() {
-                    error
-                } else {
-                    anyhow::Error::new(SpawnPreparationFailure::new(format!("{error:#}")))
-                }
-            })?;
+    spawn_agent_with_binding(dir, task_id, executor_name, timeout, model, None)
+}
+
+/// Coordinator spawn adapter with an optional exact route/model binding.
+/// The canonical plan is recomputed and matched before claim/worktree/registry
+/// mutation, so a config/profile change cannot silently rewrite the route.
+pub fn spawn_agent_with_binding(
+    dir: &Path,
+    task_id: &str,
+    executor_name: &str,
+    timeout: Option<&str>,
+    model: Option<&str>,
+    expected_binding: Option<(&str, &str)>,
+) -> Result<(String, u32)> {
+    let result = match expected_binding {
+        Some(binding) => execution::spawn_agent_inner_authorized(
+            dir,
+            task_id,
+            executor_name,
+            timeout,
+            model,
+            None,
+            "coordinator",
+            Some(binding),
+        ),
+        None => {
+            execution::spawn_agent_inner(dir, task_id, executor_name, timeout, model, "coordinator")
+        }
+    }
+    .map_err(|error| {
+        if worksgood::disk_sentinel::admission_deferral_reason(&error).is_some() {
+            error
+        } else {
+            anyhow::Error::new(SpawnPreparationFailure::new(format!("{error:#}")))
+        }
+    })?;
     Ok((result.agent_id, result.pid))
 }
 
@@ -1084,7 +1111,7 @@ args = ["-lc", "true"]
     }
 
     #[test]
-    fn test_wrapper_script_contains_merge_back_section() {
+    fn test_wrapper_keeps_cleanup_outside_completion_authority() {
         let temp_dir = TempDir::new().unwrap();
         // Use a unique task ID to avoid branch collisions with parallel tests
         let unique_id = get_unique_id();
@@ -1100,16 +1127,12 @@ args = ["-lc", "true"]
         let wrapper_path = agent_output_dir(&workgraph_dir, "agent-1").join("run.sh");
         let script = fs::read_to_string(&wrapper_path).unwrap();
 
-        // Transactional cleanup is present and gated by the managed-worktree
-        // environment after promotion/output durability.
         assert!(
-            script.contains("# --- Task-owned transactional cleanup ---"),
-            "Wrapper should contain task-owned cleanup section header"
+            script.contains("cleanup is deliberately outside completion authority"),
+            "wrapper should state the retained-workspace policy"
         );
-        assert!(
-            script.contains(r#"if [ -n "$WG_WORKTREE_PATH" ] && [ -n "$WG_BRANCH" ] && [ -n "$WG_PROJECT_ROOT" ]"#),
-            "Worktree cleanup should be gated by worktree env vars"
-        );
+        assert!(!script.contains("wg finish"));
+        assert!(!script.contains("finalize settle"));
     }
 
     #[test]
@@ -1177,9 +1200,8 @@ args = ["-lc", "true"]
     }
 
     #[test]
-    fn test_wrapper_writes_cleanup_pending_marker() {
-        // The wrapper cleans synchronously after a durable receipt. The marker
-        // is only its receipt-only crash/restart fallback.
+    fn test_wrapper_writes_no_cleanup_transaction_or_pending_marker() {
+        // Cleanup is explicit maintenance and cannot gate or mutate Done.
         let temp_dir = TempDir::new().unwrap();
         let unique_id = get_unique_id();
         let task_id = format!("t{}", unique_id);
@@ -1193,22 +1215,9 @@ args = ["-lc", "true"]
         let wrapper_path = agent_output_dir(&workgraph_dir, "agent-1").join("run.sh");
         let script = fs::read_to_string(&wrapper_path).unwrap();
 
-        assert!(
-            script.contains(".wg-cleanup-pending"),
-            "Wrapper must write the cleanup-pending marker for explicit cleanup"
-        );
-        assert!(
-            script.contains("touch \"$WG_WORKTREE_PATH/.wg-cleanup-pending\""),
-            "Marker must be written inside the worktree, guarded by WG_WORKTREE_PATH"
-        );
-        assert!(
-            script.contains("CURRENT_DIR_REAL=$(pwd -P"),
-            "Wrapper must verify it is running inside WG_WORKTREE_PATH before cleanup"
-        );
-        assert!(
-            script.contains("Skipping task-owned cleanup"),
-            "Wrapper must skip cleanup when WG_WORKTREE_PATH was inherited from a parent agent"
-        );
+        assert!(!script.contains(".wg-cleanup-pending"));
+        assert!(!script.contains("Task-owned transactional cleanup"));
+        assert!(!script.contains("wg finish"));
     }
 
     #[test]

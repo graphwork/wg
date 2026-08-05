@@ -345,17 +345,17 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
 
     // Load config for triage settings (already loaded above as `config`)
 
-    // Unclaim their tasks (if still in progress - agent may have completed or failed them already)
+    // A dead current worker is a visible task failure. There is no automatic
+    // source retry and no transaction/finalizer replay authority.
     let mut graph = load_graph(graph_path).context("Failed to load graph")?;
     let mut tasks_modified = false;
     let mut resource_exhausted_tasks: Vec<String> = Vec::new();
 
-    for (agent_id, task_id, pid, output_file, reason) in &dead {
+    for (_agent_id, task_id, _pid, output_file, reason) in &dead {
         if let Some(task) = graph.get_task_mut(task_id) {
             // Process observation is evidence only. A conclusively dead
-            // current worker may request one fenced AttemptLost transition in
-            // the final locked transaction below; model triage never has
-            // completion or retry authority.
+            // current worker requests one fenced AttemptLost transition in
+            // the final locked transaction below; no observer can infer Done.
             let pi_watchdog_owns_exit =
                 task.lifecycle
                     .pi_continuation
@@ -602,7 +602,7 @@ fn track_provider_health(
     dir: &Path,
     dead: &[(String, String, u32, String, DeadReason)],
     locked_registry: &worksgood::service::LockedRegistry,
-    config: &Config,
+    _config: &Config,
 ) -> Result<()> {
     // Load current provider health state
     let mut provider_health = ProviderHealth::load(dir)?;
@@ -709,32 +709,16 @@ fn track_provider_health(
         }
     }
 
-    // Check if any providers should be paused and apply pause logic
-    let paused_providers = provider_health.check_and_apply_pauses(
-        config.coordinator.provider_failure_threshold,
-        &config.coordinator.on_provider_failure,
-    );
+    // Provider health is observation-only. Persist exact route counters and
+    // receipts; PlannerStore alone decides unavailable/probing/dispatch. The
+    // legacy pause/fallback knob is interpreted only by the dispatch
+    // normalizer and can never mutate global service state here.
+    provider_health.service_paused = false;
+    provider_health.pause_reason = None;
+    provider_health.paused_at = None;
+    provider_health.auto_resume_at = None;
 
-    // Log any providers that were paused
-    for provider_id in &paused_providers {
-        eprintln!(
-            "[provider-health] Provider '{}' paused due to consecutive failures",
-            provider_id
-        );
-    }
-
-    // If service was paused, log the reason
-    if provider_health.service_paused {
-        eprintln!(
-            "[provider-health] Service paused: {}",
-            provider_health
-                .pause_reason
-                .as_deref()
-                .unwrap_or("unknown reason")
-        );
-    }
-
-    // Save updated provider health state
+    // Save updated provider health evidence.
     provider_health.save(dir)?;
 
     Ok(())
@@ -1827,6 +1811,83 @@ mod tests {
     }
 
     #[test]
+    fn test_dead_agent_save_transaction_has_no_completion_or_retry_authority() {
+        let project = TempDir::new().unwrap();
+        let wg_dir = project.path().join(".wg");
+        fs::create_dir_all(&wg_dir).unwrap();
+        fs::write(
+            wg_dir.join("config.toml"),
+            "[agent]\nreaper_grace_seconds = 0\n",
+        )
+        .unwrap();
+        let worktree = project.path().join(".wg-worktrees/agent-1");
+        fs::create_dir_all(&worktree).unwrap();
+        fs::write(worktree.join(".git"), "gitdir: test\n").unwrap();
+        let row = serde_json::json!({
+            "kind": "task",
+            "id": "task-1",
+            "title": "Task with prepared completion",
+            "status": "in-progress",
+            "assigned": "agent-1",
+            "lifecycle": {
+                "generation": 1,
+                "fence": 2,
+                "attempt_sequence": 1,
+                "current_attempt": {
+                    "id": "attempt-1-1",
+                    "generation": 1,
+                    "fence": 2,
+                    "actor_id": "agent-1"
+                }
+            }
+        });
+        let gpath = wg_dir.join("graph.jsonl");
+        fs::write(&gpath, format!("{row}\n")).unwrap();
+        let (token, binding) = worksgood::worker_control::mint_attempt_capability(
+            &wg_dir,
+            "task-1",
+            1,
+            "attempt-1-1",
+            2,
+            2,
+            "agent-1",
+        )
+        .unwrap();
+        let operation = worksgood::worker_control::WorkerOperation::DoneHandoff {
+            converged: false,
+            full_smoke: false,
+        };
+        worksgood::worker_control::begin_request(&wg_dir, "intent-1", &token, &operation).unwrap();
+        worksgood::worker_control::prepare_done_transaction(
+            &wg_dir, &binding, "intent-1", &operation,
+        )
+        .unwrap();
+
+        let mut registry = AgentRegistry::new();
+        let agent_id = registry.register_agent(999_999_999, "task-1", "test", "/tmp/out.log");
+        assert_eq!(agent_id, "agent-1");
+        registry.save(&wg_dir).unwrap();
+        assert_eq!(
+            cleanup_dead_agents(&wg_dir, &gpath).unwrap(),
+            vec![agent_id]
+        );
+
+        let graph = worksgood::parser::load_graph(&gpath).unwrap();
+        let task = graph.get_task("task-1").unwrap();
+        assert_eq!(task.status, Status::Failed);
+        assert_eq!(task.assigned, None);
+        assert!(
+            task.log
+                .iter()
+                .any(|entry| { entry.message.contains("fenced lost attempt") })
+        );
+        assert!(task.log.iter().all(|entry| {
+            !entry.message.contains("SaveTransaction replay")
+                && !entry.message.contains("AttemptLost authority suppressed")
+        }));
+    }
+
+    #[test]
     fn test_dead_agent_disk_failure_skips_quality_triage_and_releases_lease() {
         let temp_dir = TempDir::new().unwrap();
         let wg_dir = temp_dir.path();
@@ -2121,7 +2182,10 @@ mod tests {
         let health = ProviderHealth::load(dir).unwrap();
         let provider = health.providers.get(&route_id).unwrap();
         assert_eq!(provider.consecutive_failures, 3);
-        assert!(provider.is_paused);
+        assert!(
+            !provider.is_paused,
+            "provider health emits counters only; PlannerStore decides route availability"
+        );
         assert!(
             !health.service_paused,
             "route failures remain visible without pausing unrelated routes"

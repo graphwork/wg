@@ -11,6 +11,8 @@ model = "codex:gpt-5.6-sol"
 [dispatcher]
 model = "codex:gpt-5.6-sol"
 max_agents = 8
+# Automatic task archival is disabled by default (retention 0). Deliberately
+# opt in per project after reviewing the exact evidence-bearing batch.
 
 [tiers]
 fast = "codex:gpt-5.6-luna"
