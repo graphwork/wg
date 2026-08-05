@@ -77,6 +77,54 @@ PR [#61](https://github.com/graphwork/wg/pull/61) merged at
 `2026-08-05T18:38:21Z` with successful hosted checks for stable/nightly Rust, lint,
 integration, Lean conformance, Windows installation, and the embedded Pi plugin.
 
+## Service restart and control-plane recovery
+
+The committed tree was installed with `cargo install --path . --locked`. The first
+repository-service start then failed closed before daemon launch because the durable
+control-plane identity recorded inode `3016162`, while the `.wg` path had been replaced
+by inode `4197807`. The replacement contained no graph or config, so blindly adopting it
+would have discarded the development graph.
+
+The latest external control-plane snapshot was therefore recovered from Git common-dir
+storage:
+
+```text
+wg-control-snapshot:v1:blake3:d7ac31604d04714af3d756c663a483fc97a424f79bbabb4c17dcbbf6487b75ee
+created: 2026-08-05T08:37:05.680208246+00:00
+reason: create-worktree:agent-1109:convergence-cutover-owner
+```
+
+All 451 receipt entries, including the 5,464,156-byte graph and config, were verified
+against their exact BLAKE3 digests before restore. The replaced directory was retained,
+not deleted, and an operator recovery receipt plus both identities were written under:
+
+```text
+.git/wg-control-plane/recovery/20260805T201259Z/
+```
+
+The restored snapshot predated the attended cutover and exposed the superseded planner
+cutover chain as open, including one ready source task. Those six legacy cutover tasks
+were explicitly Abandoned with a reason naming PR #61; abandonment remained non-success
+and did not satisfy their dependency edges. `fix-pi-clean-live-log`, whose equivalent
+commit `b2839707` is already in the merged cutover, was likewise retained as explicitly
+superseded rather than automatically respawned. No tasks remained ready.
+
+Because agency definitions were not among the snapshot's graph/config/chat/message
+payload, `wg agency init` recreated the standard five agent definitions and the service
+configuration was reloaded. The repository dispatcher then started with chat spawning
+disabled and reported:
+
+```text
+Dispatch authority: direct fail-stop (no PlannerStore)
+Dispatcher: enabled, max_agents=4
+No tasks ready
+No agents registered
+```
+
+The installed executable SHA-256 is
+`5ae7100ab14a9f68e8985cadee05c779ffc8b5dfef8a497a54e1a4e21ea8ca0d`.
+The service retained all restored graph history while spawning no obsolete source work.
+
 ## Evidence identity
 
 The local full gate transcript was retained at
