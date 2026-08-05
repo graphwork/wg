@@ -6991,6 +6991,17 @@ pub enum EventDetails {
         content: String,
         is_error: bool,
     },
+    /// One correlated Pi tool lifecycle projection. Pi update records contain
+    /// cumulative output, so the log loader replaces this event by
+    /// `tool_call_id` instead of appending update spam.
+    PiTool {
+        tool_call_id: String,
+        name: String,
+        input: serde_json::Value,
+        progress: Option<String>,
+        result: Option<String>,
+        is_error: Option<bool>,
+    },
     Thinking {
         text: String,
     },
@@ -7535,99 +7546,19 @@ pub fn parse_raw_stream_line(line: &str, default_agent_id: &str) -> Option<Agent
             })
         }
         // ── Pi CLI stream events (`pi --mode json`) ─────────────────────────
-        // Pi emits NDJSON with its own shape. We render the finalized
-        // boundaries — `tool_execution_start`/`tool_execution_end` (tool calls
-        // + results) and `turn_end` (assistant text/thinking) — and swallow
-        // the high-frequency streaming deltas (`message_update`,
-        // `*_delta`, `toolcall_*`) and bookkeeping events so they don't flood
-        // the pane (mirrors codex's started/updated suppression).
-        "session"
-        | "agent_start"
-        | "agent_end"
-        | "turn_start"
-        | "message_start"
-        | "message_end"
-        | "tool_execution_update" => None,
+        // Pi emits NDJSON with its own shape. Tool start/update/end records
+        // carry a stable toolCallId; the bounded loader coalesces their
+        // cumulative snapshots by that ID, so live progress remains visible
+        // without update spam. Assistant streaming deltas and bookkeeping are
+        // still swallowed in favor of finalized turn content.
+        "session" | "agent_start" | "agent_end" | "turn_start" | "message_start"
+        | "message_end" => None,
         "message_update" | "toolcall_start" | "toolcall_delta" | "toolcall_end"
         | "thinking_start" | "thinking_delta" | "thinking_end" | "text_start" | "text_delta" => {
             None
         }
-        "tool_execution_start" => {
-            let name = val
-                .get("toolName")
-                .and_then(|v| v.as_str())
-                .unwrap_or("tool");
-            let args = val.get("args").cloned().unwrap_or(serde_json::Value::Null);
-            let detail = match name {
-                "bash" | "Bash" => args.get("command").and_then(|v| v.as_str()).map(|c| {
-                    let c = c.trim();
-                    if c.len() > 120 {
-                        format!("{}…", &c[..c.floor_char_boundary(120)])
-                    } else {
-                        c.to_string()
-                    }
-                }),
-                "read" | "write" | "edit" | "Read" | "Write" | "Edit" => args
-                    .get("file_path")
-                    .or_else(|| args.get("path"))
-                    .and_then(|v| v.as_str())
-                    .map(|p| p.to_string()),
-                _ => None,
-            };
-            let summary = match detail {
-                Some(d) => format!("⌁ {} → {}", name, d),
-                None => format!("⌁ {}", name),
-            };
-            Some(AgentStreamEvent {
-                kind: AgentStreamEventKind::ToolCall,
-                agent_id: default_agent_id.to_string(),
-                summary,
-                details: Some(EventDetails::ToolCall {
-                    name: name.to_string(),
-                    input: args,
-                }),
-            })
-        }
-        "tool_execution_end" => {
-            let is_error = val
-                .get("isError")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            let content = val
-                .get("result")
-                .and_then(|r| r.get("content"))
-                .and_then(|c| c.as_array())
-                .and_then(|blocks| {
-                    blocks
-                        .iter()
-                        .find_map(|b| b.get("text").and_then(|v| v.as_str()))
-                })
-                .unwrap_or("");
-            let content = content.trim();
-            let truncated = if content.len() > 200 {
-                format!("{}…", &content[..content.floor_char_boundary(200)])
-            } else {
-                content.to_string()
-            };
-            let prefix = if is_error { "✗" } else { "✓" };
-            let summary = if truncated.is_empty() {
-                format!("{} (no output)", prefix)
-            } else {
-                format!("{} {}", prefix, truncated)
-            };
-            Some(AgentStreamEvent {
-                kind: if is_error {
-                    AgentStreamEventKind::Error
-                } else {
-                    AgentStreamEventKind::ToolResult
-                },
-                agent_id: default_agent_id.to_string(),
-                summary,
-                details: Some(EventDetails::ToolResult {
-                    content: content.to_string(),
-                    is_error,
-                }),
-            })
+        "tool_execution_start" | "tool_execution_update" | "tool_execution_end" => {
+            parse_pi_tool_projection(&val, default_agent_id)
         }
         "turn_end" => {
             // Surface assistant text + thinking from the turn's message
@@ -7695,6 +7626,206 @@ pub fn parse_raw_stream_line(line: &str, default_agent_id: &str) -> Option<Agent
         }
         _ => None,
     }
+}
+
+const PI_LIVE_PROGRESS_MAX_BYTES: usize = 4096;
+
+fn bounded_pi_text(text: &str, max_bytes: usize) -> String {
+    let text = text.trim();
+    if text.len() <= max_bytes {
+        return text.to_string();
+    }
+    let tail_start = text.ceil_char_boundary(text.len() - max_bytes);
+    format!("…{}", &text[tail_start..])
+}
+
+fn pi_content_text(value: Option<&serde_json::Value>) -> String {
+    value
+        .and_then(|value| value.get("content"))
+        .and_then(|content| content.as_array())
+        .map(|blocks| {
+            blocks
+                .iter()
+                .filter_map(|block| block.get("text").and_then(|text| text.as_str()))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default()
+}
+
+fn pi_tool_detail(name: &str, input: &serde_json::Value) -> Option<String> {
+    match name {
+        "bash" | "Bash" => input.get("command").and_then(|value| value.as_str()),
+        "read" | "write" | "edit" | "Read" | "Write" | "Edit" => input
+            .get("file_path")
+            .or_else(|| input.get("path"))
+            .and_then(|value| value.as_str()),
+        _ => None,
+    }
+    .map(|detail| bounded_pi_text(detail, 120))
+}
+
+fn pi_progress_text(value: &serde_json::Value) -> String {
+    let content = pi_content_text(value.get("partialResult"));
+    if !content.trim().is_empty() {
+        return bounded_pi_text(&content, PI_LIVE_PROGRESS_MAX_BYTES);
+    }
+    let state = value
+        .get("childState")
+        .and_then(|state| state.as_str())
+        .unwrap_or("running");
+    match value
+        .get("progress")
+        .or_else(|| value.get("progressCount"))
+        .and_then(|progress| progress.as_u64())
+    {
+        Some(progress) => format!("{state} (progress {progress})"),
+        None => state.to_string(),
+    }
+}
+
+fn pi_summary_preview(text: &str) -> String {
+    let one_line = text.lines().last().unwrap_or(text).trim();
+    bounded_pi_text(one_line, 200)
+}
+
+fn parse_pi_tool_projection(
+    value: &serde_json::Value,
+    default_agent_id: &str,
+) -> Option<AgentStreamEvent> {
+    let event_type = value.get("type")?.as_str()?;
+    let tool_call_id = value
+        .get("toolCallId")
+        .and_then(|id| id.as_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("legacy:{}", blake3::hash(value.to_string().as_bytes())));
+    let name = value
+        .get("toolName")
+        .and_then(|name| name.as_str())
+        .unwrap_or("tool")
+        .to_string();
+    let input = value
+        .get("args")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let call = pi_tool_detail(&name, &input)
+        .map(|detail| format!("⌁ {name} → {detail}"))
+        .unwrap_or_else(|| format!("⌁ {name}"));
+
+    let (kind, summary, progress, result, is_error) = match event_type {
+        "tool_execution_start" => (AgentStreamEventKind::ToolCall, call, None, None, None),
+        "tool_execution_update" => {
+            let progress = pi_progress_text(value);
+            let preview = pi_summary_preview(&progress);
+            (
+                AgentStreamEventKind::ToolCall,
+                format!("{call}\n  … {preview}"),
+                Some(progress),
+                None,
+                None,
+            )
+        }
+        "tool_execution_end" => {
+            let is_error = value
+                .get("isError")
+                .and_then(|is_error| is_error.as_bool())
+                .unwrap_or(false);
+            let result = bounded_pi_text(
+                &pi_content_text(value.get("result")),
+                PI_LIVE_PROGRESS_MAX_BYTES,
+            );
+            let marker = if is_error { "✗" } else { "✓" };
+            let preview = if result.is_empty() {
+                "(no output)".to_string()
+            } else {
+                pi_summary_preview(&result)
+            };
+            (
+                if is_error {
+                    AgentStreamEventKind::Error
+                } else {
+                    AgentStreamEventKind::ToolResult
+                },
+                format!("{marker} {name} — {preview}"),
+                None,
+                Some(result),
+                Some(is_error),
+            )
+        }
+        _ => return None,
+    };
+
+    Some(AgentStreamEvent {
+        kind,
+        agent_id: default_agent_id.to_string(),
+        summary,
+        details: Some(EventDetails::PiTool {
+            tool_call_id,
+            name,
+            input,
+            progress,
+            result,
+            is_error,
+        }),
+    })
+}
+
+fn pi_projection_key(event: &AgentStreamEvent) -> Option<&str> {
+    match event.details.as_ref()? {
+        EventDetails::PiTool { tool_call_id, .. } => Some(tool_call_id),
+        _ => None,
+    }
+}
+
+/// Parse one bounded native window and retain only the latest cumulative Pi
+/// lifecycle record per tool call. Non-Pi and unrelated events retain order.
+fn coalesced_stream_events(text: &str, agent_id: &str) -> Vec<AgentStreamEvent> {
+    let mut events = Vec::new();
+    merge_coalesced_stream_events(&mut events, text, agent_id);
+    events
+}
+
+fn merge_coalesced_stream_events(
+    events: &mut Vec<AgentStreamEvent>,
+    text: &str,
+    agent_id: &str,
+) -> bool {
+    let mut changed = false;
+    for line in text.lines() {
+        let Some(event) = parse_raw_stream_line(line, agent_id) else {
+            continue;
+        };
+        if let Some(key) = pi_projection_key(&event)
+            && let Some(index) = events
+                .iter()
+                .position(|existing| pi_projection_key(existing) == Some(key))
+        {
+            events[index] = event;
+        } else {
+            events.push(event);
+        }
+        changed = true;
+    }
+    changed
+}
+
+fn prepend_coalesced_stream_events(
+    current: &mut Vec<AgentStreamEvent>,
+    text: &str,
+    agent_id: &str,
+) -> usize {
+    let mut older = coalesced_stream_events(text, agent_id);
+    older.retain(|event| {
+        pi_projection_key(event).is_none_or(|key| {
+            !current
+                .iter()
+                .any(|existing| pi_projection_key(existing) == Some(key))
+        })
+    });
+    let added = older.len();
+    older.append(current);
+    *current = older;
+    added
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -18285,12 +18416,13 @@ impl VizApp {
                 self.log_pane.tail_jump_pending = true;
                 return;
             }
-            let mut older: Vec<_> = page
-                .text
-                .lines()
-                .filter_map(|line| parse_raw_stream_line(line, &agent_id))
-                .collect();
-            if page.skipped_oversized_record && older.is_empty() {
+            let added = prepend_coalesced_stream_events(
+                &mut self.log_pane.stream_events,
+                &page.text,
+                &agent_id,
+            );
+            let mut older = Vec::new();
+            if page.skipped_oversized_record && added == 0 {
                 older.push(AgentStreamEvent {
                     kind: AgentStreamEventKind::SystemEvent,
                     agent_id: agent_id.clone(),
@@ -18304,12 +18436,13 @@ impl VizApp {
                     }),
                 });
             }
-            let added = older.len();
-            older.append(&mut self.log_pane.stream_events);
-            if older.len() > MAX_STREAM_EVENTS {
-                older.truncate(MAX_STREAM_EVENTS);
+            if !older.is_empty() {
+                older.append(&mut self.log_pane.stream_events);
+                self.log_pane.stream_events = older;
             }
-            self.log_pane.stream_events = older;
+            if self.log_pane.stream_events.len() > MAX_STREAM_EVENTS {
+                self.log_pane.stream_events.truncate(MAX_STREAM_EVENTS);
+            }
             self.log_pane.stream_window_start = page.window_start;
             // Keep the previously-visible first event approximately anchored;
             // render will clamp using exact wrapped-line geometry.
@@ -18334,11 +18467,7 @@ impl VizApp {
             let Ok(page) = read_bounded_jsonl_tail(&stream_path) else {
                 return;
             };
-            let mut events: Vec<_> = page
-                .text
-                .lines()
-                .filter_map(|line| parse_raw_stream_line(line, &agent_id))
-                .collect();
+            let mut events = coalesced_stream_events(&page.text, &agent_id);
             if page.skipped_oversized_record && events.is_empty() {
                 events.push(AgentStreamEvent {
                     kind: AgentStreamEventKind::SystemEvent,
@@ -18375,13 +18504,8 @@ impl VizApp {
             return;
         }
         self.log_pane.raw_stream_offset = page.next_offset;
-        let mut had_new = false;
-        for line in new_data.lines() {
-            if let Some(event) = parse_raw_stream_line(line, &agent_id) {
-                self.log_pane.stream_events.push(event);
-                had_new = true;
-            }
-        }
+        let mut had_new =
+            merge_coalesced_stream_events(&mut self.log_pane.stream_events, &new_data, &agent_id);
         if page.skipped_oversized_record {
             self.log_pane.stream_events.push(AgentStreamEvent {
                 kind: AgentStreamEventKind::SystemEvent,
@@ -39017,6 +39141,215 @@ mod retry_log_pane_tests {
             app.log_pane.raw_stream_offset,
             std::fs::metadata(&live_path).unwrap().len()
         );
+    }
+
+    #[test]
+    fn pi_tail_with_start_outside_window_coalesces_latest_progress_in_all_clean_views() {
+        use super::super::log_render::{
+            render_events_view, render_high_level_view, render_raw_pretty_view,
+        };
+        use std::io::Write;
+
+        fn rendered_text(lines: &[ratatui::text::Line<'_>]) -> String {
+            lines
+                .iter()
+                .map(|line| {
+                    line.spans
+                        .iter()
+                        .map(|span| span.content.as_ref())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        let (viz, tmp) = build_retried_task_graph();
+        let live_dir = tmp.path().join("agents/agent-280");
+        std::fs::create_dir_all(&live_dir).unwrap();
+        std::fs::write(live_dir.join("output.log"), b"stderr stays separate\n").unwrap();
+        let stream = live_dir.join("raw_stream.jsonl");
+        let mut file = std::fs::File::create(&stream).unwrap();
+        writeln!(file, "{{\"type\":\"tool_execution_start\",\"toolCallId\":\"long-1\",\"toolName\":\"bash\",\"args\":{{\"command\":\"cargo test --workspace\"}}}}").unwrap();
+        // More records than the reverse-tail record cap. Every update is an
+        // accumulated replacement snapshot, not a delta.
+        for index in 0..260 {
+            if index == 100 {
+                writeln!(file, "{{\"type\":\"turn_end\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"UNRELATED_EVENT\"}}]}}}}").unwrap();
+            }
+            let progress = if index == 259 {
+                format!("{}LATEST_PROGRESS_{index}", "x".repeat(5000))
+            } else {
+                format!("tests completed {index}/260\nLATEST_PROGRESS_{index}")
+            };
+            writeln!(
+                file,
+                "{}",
+                serde_json::json!({
+                    "type": "tool_execution_update",
+                    "toolCallId": "long-1",
+                    "toolName": "bash",
+                    "args": { "command": "cargo test --workspace" },
+                    "partialResult": { "content": [{ "type": "text", "text": progress }] }
+                })
+            )
+            .unwrap();
+        }
+        drop(file);
+
+        let mut app = build_app(&viz, "retry-task", tmp.path());
+        app.load_log_pane();
+        app.update_log_stream_events();
+
+        assert_eq!(
+            app.log_pane
+                .stream_events
+                .iter()
+                .filter(|event| pi_projection_key(event) == Some("long-1"))
+                .count(),
+            1,
+            "260 cumulative updates must occupy one live projection slot"
+        );
+        assert!(
+            app.log_pane
+                .stream_events
+                .iter()
+                .any(|event| event.summary.contains("UNRELATED_EVENT")),
+            "coalescing one tool must not reset unrelated retained events"
+        );
+        let projected_progress = app
+            .log_pane
+            .stream_events
+            .iter()
+            .find_map(|event| match event.details.as_ref() {
+                Some(EventDetails::PiTool {
+                    progress: Some(progress),
+                    ..
+                }) => Some(progress),
+                _ => None,
+            })
+            .unwrap();
+        assert!(
+            projected_progress.len() <= PI_LIVE_PROGRESS_MAX_BYTES + '…'.len_utf8(),
+            "live cumulative progress must remain bounded"
+        );
+
+        for (name, text) in [
+            (
+                "Events",
+                rendered_text(&render_events_view(&app.log_pane.stream_events)),
+            ),
+            (
+                "HighLevel",
+                rendered_text(&render_high_level_view(&app.log_pane.stream_events)),
+            ),
+            (
+                "Pretty",
+                rendered_text(&render_raw_pretty_view(&app.log_pane.stream_events, false)),
+            ),
+        ] {
+            assert!(
+                text.to_ascii_lowercase().contains("bash"),
+                "{name} omitted current tool: {text}"
+            );
+            assert!(
+                text.contains("LATEST_PROGRESS_259"),
+                "{name} omitted latest cumulative progress: {text}"
+            );
+            assert!(
+                !text.contains("partialResult") && !text.contains("toolCallId"),
+                "{name} leaked native JSON: {text}"
+            );
+        }
+
+        // Reverse history sees the dropped start/older updates but must keep
+        // the newer cumulative slot and unrelated retained event exactly once.
+        app.log_pane.scroll_to_top();
+        app.update_log_stream_events();
+        assert_eq!(
+            app.log_pane
+                .stream_events
+                .iter()
+                .filter(|event| pi_projection_key(event) == Some("long-1"))
+                .count(),
+            1
+        );
+        assert!(
+            app.log_pane
+                .stream_events
+                .iter()
+                .find(|event| pi_projection_key(event) == Some("long-1"))
+                .unwrap()
+                .summary
+                .contains("LATEST_PROGRESS_259")
+        );
+        assert_eq!(
+            app.log_pane
+                .stream_events
+                .iter()
+                .filter(|event| event.summary.contains("UNRELATED_EVENT"))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn pi_incremental_update_and_end_replace_one_projection_without_scroll_reset() {
+        use std::io::Write;
+
+        let (viz, tmp) = build_retried_task_graph();
+        let live_dir = tmp.path().join("agents/agent-280");
+        std::fs::create_dir_all(&live_dir).unwrap();
+        std::fs::write(live_dir.join("output.log"), b"").unwrap();
+        let stream = live_dir.join("raw_stream.jsonl");
+        std::fs::write(
+            &stream,
+            concat!(
+                "{\"type\":\"turn_end\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"ANCHOR\"}]}}\n",
+                "{\"type\":\"tool_execution_start\",\"toolCallId\":\"live-1\",\"toolName\":\"bash\",\"args\":{\"command\":\"cargo test\"}}\n"
+            ),
+        )
+        .unwrap();
+        let mut app = build_app(&viz, "retry-task", tmp.path());
+        app.load_log_pane();
+        app.update_log_stream_events();
+        assert_eq!(app.log_pane.stream_events.len(), 2);
+
+        let mut append = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&stream)
+            .unwrap();
+        for index in 0..3 {
+            writeln!(append, "{{\"type\":\"tool_execution_update\",\"toolCallId\":\"live-1\",\"toolName\":\"bash\",\"args\":{{\"command\":\"cargo test\"}},\"partialResult\":{{\"content\":[{{\"type\":\"text\",\"text\":\"LIVE_{index}\"}}]}}}}").unwrap();
+        }
+        drop(append);
+        app.update_log_stream_events();
+        app.update_log_stream_events();
+        assert_eq!(app.log_pane.stream_events.len(), 2);
+        assert!(app.log_pane.stream_events[0].summary.contains("ANCHOR"));
+        assert!(app.log_pane.stream_events[1].summary.contains("LIVE_2"));
+
+        let mut append = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&stream)
+            .unwrap();
+        writeln!(append, "{{\"type\":\"tool_execution_end\",\"toolCallId\":\"live-1\",\"toolName\":\"bash\",\"result\":{{\"content\":[{{\"type\":\"text\",\"text\":\"3 tests passed\"}}]}},\"isError\":false}}").unwrap();
+        drop(append);
+        app.update_log_stream_events();
+        assert_eq!(app.log_pane.stream_events.len(), 2);
+        assert!(app.log_pane.stream_events[0].summary.contains("ANCHOR"));
+        assert!(
+            app.log_pane.stream_events[1]
+                .summary
+                .contains("3 tests passed")
+        );
+        assert!(matches!(
+            app.log_pane.stream_events[1].details,
+            Some(EventDetails::PiTool {
+                progress: None,
+                result: Some(_),
+                ..
+            })
+        ));
     }
 
     #[test]
