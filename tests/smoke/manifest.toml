@@ -2536,6 +2536,13 @@ description = "Candidate-binary real tmux/SGR flow: selects an exact task, trave
 timeout_seconds = 240
 
 [[scenario]]
+name = "tui_pi_live_progress_projection"
+script = "scenarios/tui_pi_live_progress_projection.sh"
+owners = ["fix-pi-clean-live-log"]
+description = "Candidate-binary real tmux TUI flow with 260 cumulative Pi tool_execution_update records and the start outside the 200-record reverse tail: Events, HighLevel, and Pretty each show one current bash tool plus latest bounded progress without JSON/update spam; incremental append replaces it and tool end replaces it once with the final result."
+timeout_seconds = 180
+
+[[scenario]]
 name = "isolation_worktree_collision_transaction"
 script = "scenarios/isolation_worktree_collision_transaction.sh"
 owners = [

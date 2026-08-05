@@ -3440,10 +3440,11 @@ fi
             (cmd, None, String::new(), String::new())
         }
         "pi" => {
-            // Pi (`pi --mode json`) emits NDJSON on stdout. Capture it to
-            // raw_stream.jsonl (so the TUI events pane can render per-step
-            // events live, like claude/codex) and tee to output.log; stderr
-            // -> output.log. After pi exits, `wg pi-stream-bridge` reads that
+            // Pi (`pi --mode json`) emits NDJSON on stdout. Retain those
+            // authoritative bytes exactly once in raw_stream.jsonl; unlike
+            // claude/codex, do not duplicate the cumulative update stream in
+            // output.log. Stderr and wrapper diagnostics remain in output.log.
+            // After pi exits, `wg pi-stream-bridge` reads that
             // NDJSON and writes the canonical stream.jsonl with REAL summed
             // token/cost usage (replacing the old 0/0 bookend) + a session
             // summary. No bash-emitted bookend — the bridge owns stream.jsonl.
@@ -3451,7 +3452,7 @@ fi
             let raw_str = raw_stream_file.to_string_lossy().to_string();
             let bootstrap_gate = output_dir.join("pi-bootstrap.gate");
             let cmd = format!(
-                "{{ WG_PI_BOOTSTRAP_GATE={gate}; rm -f \"$WG_PI_BOOTSTRAP_GATE\"; {{ WG_PI_WRAPPER_PID=$$; while [ ! -f \"$WG_PI_BOOTSTRAP_GATE\" ]; do kill -0 $WG_PI_WRAPPER_PID 2>/dev/null || exit 125; sleep 0.01; done; exec {timed_command}; }} > >(tee -a {raw} >> \"$OUTPUT_FILE\") 2>> \"$OUTPUT_FILE\" & WG_PI_CHILD_PID=$!; if ! wg pi-watchdog bootstrap \"$TASK_ID\" --agent-dir {dir} --pid $WG_PI_CHILD_PID --wrapper-pid $$ 2>> \"$OUTPUT_FILE\"; then kill $WG_PI_CHILD_PID 2>/dev/null || true; wait $WG_PI_CHILD_PID 2>/dev/null || true; rm -f \"$WG_PI_BOOTSTRAP_GATE\"; (exit 125); else : > \"$WG_PI_BOOTSTRAP_GATE\"; wg pi-stream-observe --agent-dir {dir} --follow-pid $WG_PI_CHILD_PID 2>> \"$OUTPUT_FILE\" & WG_PI_OBSERVER_PID=$!; wait $WG_PI_CHILD_PID; WG_PI_EXIT_CODE=$?; wait $WG_PI_OBSERVER_PID || echo \"[wrapper] WARNING: Pi native observer held; exact continuation will fail closed\" >> \"$OUTPUT_FILE\"; rm -f \"$WG_PI_BOOTSTRAP_GATE\"; (exit $WG_PI_EXIT_CODE); fi; }}",
+                "{{ WG_PI_BOOTSTRAP_GATE={gate}; rm -f \"$WG_PI_BOOTSTRAP_GATE\"; {{ WG_PI_WRAPPER_PID=$$; while [ ! -f \"$WG_PI_BOOTSTRAP_GATE\" ]; do kill -0 $WG_PI_WRAPPER_PID 2>/dev/null || exit 125; sleep 0.01; done; exec {timed_command}; }} >> {raw} 2>> \"$OUTPUT_FILE\" & WG_PI_CHILD_PID=$!; if ! wg pi-watchdog bootstrap \"$TASK_ID\" --agent-dir {dir} --pid $WG_PI_CHILD_PID --wrapper-pid $$ 2>> \"$OUTPUT_FILE\"; then kill $WG_PI_CHILD_PID 2>/dev/null || true; wait $WG_PI_CHILD_PID 2>/dev/null || true; rm -f \"$WG_PI_BOOTSTRAP_GATE\"; (exit 125); else : > \"$WG_PI_BOOTSTRAP_GATE\"; wg pi-stream-observe --agent-dir {dir} --follow-pid $WG_PI_CHILD_PID 2>> \"$OUTPUT_FILE\" & WG_PI_OBSERVER_PID=$!; wait $WG_PI_CHILD_PID; WG_PI_EXIT_CODE=$?; wait $WG_PI_OBSERVER_PID || echo \"[wrapper] WARNING: Pi native observer held; exact continuation will fail closed\" >> \"$OUTPUT_FILE\"; rm -f \"$WG_PI_BOOTSTRAP_GATE\"; (exit $WG_PI_EXIT_CODE); fi; }}",
                 timed_command = timed_command,
                 raw = shell_escape(&raw_str),
                 dir = shell_escape(&output_dir.to_string_lossy()),
@@ -6598,6 +6599,14 @@ mod tests {
         assert!(script.contains("--pid $WG_PI_CHILD_PID --wrapper-pid $$"));
         assert!(script.contains(": > \"$WG_PI_BOOTSTRAP_GATE\""));
         assert!(script.contains("wait $WG_PI_CHILD_PID"));
+        assert!(
+            script.contains(">> '") && script.contains("raw_stream.jsonl' 2>> \"$OUTPUT_FILE\""),
+            "Pi stdout must have one authoritative raw-stream sink"
+        );
+        assert!(
+            !script.contains("tee -a") && !script.contains("raw_stream.jsonl' >> \"$OUTPUT_FILE\""),
+            "Pi cumulative stdout must not be duplicated into output.log"
+        );
         let bind = script.find("--wrapper-pid $$").unwrap();
         let release = script.find(": > \"$WG_PI_BOOTSTRAP_GATE\"").unwrap();
         let post_release_wait = release + script[release..].find("wait $WG_PI_CHILD_PID").unwrap();

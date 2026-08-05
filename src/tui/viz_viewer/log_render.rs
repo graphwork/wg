@@ -250,7 +250,16 @@ fn emit_tool_call_line(
 /// tool results — implicit follow-ons of their tool call).
 fn high_level_label(event: &AgentStreamEvent) -> Option<String> {
     match (&event.kind, event.details.as_ref()) {
-        (AgentStreamEventKind::ToolCall, Some(EventDetails::ToolCall { name, input })) => {
+        (AgentStreamEventKind::ToolCall, Some(EventDetails::ToolCall { name, input }))
+        | (
+            AgentStreamEventKind::ToolCall,
+            Some(EventDetails::PiTool {
+                name,
+                input,
+                progress: None,
+                ..
+            }),
+        ) => {
             let target = match name.as_str() {
                 "Bash" | "bash" => input.get("command").and_then(|v| v.as_str()).map(|c| {
                     let first = c.split_whitespace().next().unwrap_or("");
@@ -280,6 +289,40 @@ fn high_level_label(event: &AgentStreamEvent) -> Option<String> {
             };
             Some(target.unwrap_or_else(|| format!("Using {}", name)))
         }
+        (
+            AgentStreamEventKind::ToolCall,
+            Some(EventDetails::PiTool {
+                name,
+                input,
+                progress: Some(progress),
+                ..
+            }),
+        ) => {
+            let activity = match name.as_str() {
+                "Bash" | "bash" => input
+                    .get("command")
+                    .and_then(|value| value.as_str())
+                    .and_then(|command| command.split_whitespace().next())
+                    .filter(|command| !command.is_empty())
+                    .map(|command| format!("Running {command} ({name})")),
+                other => Some(format!("Using {other}")),
+            }
+            .unwrap_or_else(|| format!("Using {name}"));
+            let latest = progress.lines().last().unwrap_or(progress).trim();
+            Some(format!("{activity} — {latest}"))
+        }
+        (
+            AgentStreamEventKind::ToolResult | AgentStreamEventKind::Error,
+            Some(EventDetails::PiTool {
+                name,
+                is_error: Some(is_error),
+                ..
+            }),
+        ) => Some(if *is_error {
+            format!("{name} failed")
+        } else {
+            format!("Completed {name}")
+        }),
         // Hide tool results in the high-level view — the activity is the
         // tool call itself, the result is implicit follow-up.
         (AgentStreamEventKind::ToolResult, _) => None,
@@ -526,6 +569,44 @@ fn emit_event(out: &mut Vec<Line<'static>>, event: &AgentStreamEvent, summary_mo
                 content.as_str()
             };
             push_marker_block(out, marker, body, marker_color, body_color, summary_mode);
+        }
+        EventDetails::PiTool {
+            name,
+            input,
+            progress,
+            result,
+            is_error,
+            ..
+        } => {
+            let label = format_tool_call_label(name, input);
+            out.push(Line::from(Span::styled(
+                format!("⌁ {}", label),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )));
+            let body = format_tool_call_body(name, input);
+            if !body.is_empty() {
+                push_indented(out, &body, Color::Cyan, summary_mode);
+            }
+            if let Some(progress) = progress {
+                push_marker_block(out, "…", progress, Color::Yellow, None, summary_mode);
+            }
+            if let Some(result) = result {
+                let is_error = is_error.unwrap_or(false);
+                push_marker_block(
+                    out,
+                    if is_error { "✗" } else { "✓" },
+                    if result.is_empty() {
+                        "(empty result)"
+                    } else {
+                        result
+                    },
+                    if is_error { Color::Red } else { Color::Green },
+                    is_error.then_some(Color::Red),
+                    summary_mode,
+                );
+            }
         }
         EventDetails::SystemEvent { subtype, text } => {
             out.push(Line::from(Span::styled(
