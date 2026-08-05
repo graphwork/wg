@@ -1289,6 +1289,10 @@ fn main() -> Result<()> {
             manifest,
             summary,
         } => commands::completion_submit::run(&workgraph_dir, &id, &manifest, &summary),
+        Commands::Land {
+            id,
+            integration_ref,
+        } => commands::completion_land::run(&workgraph_dir, &id, &integration_ref),
         Commands::Contract { id, contract } => {
             commands::finalize::set_contract(&workgraph_dir, &id, &contract)
         }

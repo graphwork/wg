@@ -203,7 +203,7 @@ pub fn run_with_reviewers(
     Ok(outcome)
 }
 
-fn require_source_owner(task: &Task, id: &str) -> Result<()> {
+pub(crate) fn require_source_owner(task: &Task, id: &str) -> Result<()> {
     if task.status != Status::InProgress {
         bail!("task '{id}' must be in progress to submit a completion manifest");
     }
@@ -337,7 +337,7 @@ fn record_review_outcome(
     Ok(())
 }
 
-fn collect_dependency_outputs(
+pub(crate) fn collect_dependency_outputs(
     store: &CompletionArtifactStore,
     graph: &WorkGraph,
     task: &Task,

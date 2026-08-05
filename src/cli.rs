@@ -572,6 +572,13 @@ pub enum Commands {
         summary: PathBuf,
     },
 
+    /// Publish the exact reviewed Land commit with compare-and-fast-forward
+    Land {
+        id: String,
+        #[arg(long, default_value = "refs/heads/main")]
+        integration_ref: String,
+    },
+
     /// Set the task's completion contract: land, report, or explore
     Contract { id: String, contract: String },
 
@@ -7045,6 +7052,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Done { .. } => "done",
         Commands::CompletionObject { .. } => "completion-object",
         Commands::Submit { .. } => "submit",
+        Commands::Land { .. } => "land",
         Commands::Contract { .. } => "contract",
         Commands::Finalize { .. } => "finalize",
         Commands::Candidate { .. } => "candidate",
