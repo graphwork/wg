@@ -29,6 +29,7 @@ pub mod chat_runtime;
 pub mod chat_sessions;
 pub mod check;
 pub mod completion_evidence;
+pub mod completion_manifest;
 pub mod concierge;
 pub mod config;
 pub mod config_defaults;
