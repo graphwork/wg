@@ -99,6 +99,7 @@ pub mod self_exe;
 pub mod service;
 pub mod service_identity;
 pub mod session_lock;
+pub mod simple_land;
 pub mod smoke;
 pub mod stream_event;
 pub mod syntect_convert;
