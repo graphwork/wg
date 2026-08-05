@@ -32,33 +32,6 @@ a bug. Update both together.
 
 ---
 
-## TEMPORARY RECOVERY MODE — single attended implementation authority
-
-The repository's dispatcher/completion path is currently the subsystem under repair.
-Until the clean-room exit canary in
-`docs/design-worker-owned-universal-review.md` passes, this section overrides the normal
-"Use WG for task management" instructions below:
-
-- Keep `wg service` stopped for this repository.
-- Do not dispatch implementation, review, or validation agents through this graph.
-- Implement the recovery design from one attended coding session directly in the main
-  repository, using small reviewable commits.
-- Follow `docs/design-worker-owned-universal-review.md` as the normative protocol and
-  `docs/plans/simple-worker-owned-lean-convergence.md` as its cutover plan.
-- Run candidate binaries only against isolated temporary graphs and isolated `HOME`.
-- Do not globally install a worktree candidate or restart the repository daemon.
-- Preserve `recovery/overengineered-cutover-20260805` and historical worktrees as
-  evidence. Build caches may be removed; source evidence may not.
-- Do not add new PlannerStore/SaveTransaction/ConvergenceState authority. Replacement
-  changes must remove the legacy production branch they supersede.
-- FLIP and eval are mandatory for every Land, Report, and Explore completion manifest;
-  neither may be bypassed or downgraded to optional review.
-- The attended recovery implementation is the one bootstrap exception because the new
-  valve does not yet exist. Its exit canary must dogfood the new manifest, FLIP, eval,
-  publication, and Done path before service restart; no later production task is exempt.
-
-Remove this section only after the documented isolated 8–10-worker canary passes.
-
 ## Use WG for task management
 
 **At the start of each session, run `wg quickstart` in your terminal to orient yourself.**

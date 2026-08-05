@@ -1,6 +1,8 @@
 # Worker-owned completion with a universal FLIP/eval valve
 
-**Status:** normative target design for recovery implementation.
+**Status:** implemented normative protocol. The isolated ten-worker recovery exit canary
+passed on 2026-08-05; see
+`docs/reports/worker-owned-completion-exit-canary-2026-08-05.md`.
 
 **Implementation plan:** `docs/plans/simple-worker-owned-lean-convergence.md`
 
@@ -313,7 +315,8 @@ historical models but MUST NOT retain production authority.
 
 ## 11. Implementation recovery mode
 
-Until the clean-room canary passes:
+Recovery mode exited after the clean-room canary passed on 2026-08-05. The bootstrap
+rules below are retained as the historical implementation protocol:
 
 - WG service remains stopped on this repository.
 - Implementation proceeds from one attended agent session directly in the repository.
@@ -332,7 +335,9 @@ publication, and Done checks in the exit canary. No later production task is exe
 
 ## 12. Exit from recovery mode
 
-The service may resume only after an isolated 8–10-worker canary proves:
+The isolated ten-worker canary passed on 2026-08-05; the evidence and exit decision are
+recorded in `docs/reports/worker-owned-completion-exit-canary-2026-08-05.md`. The service
+was permitted to resume after the canary proved:
 
 - every task submits a resolvable immutable manifest;
 - every Done task has exact FLIP and eval pass receipts;

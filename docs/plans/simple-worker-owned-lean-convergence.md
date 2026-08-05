@@ -1,9 +1,11 @@
 # Boring convergence: worker-owned landing with a Lean 4 kernel
 
-**Status:** proposed recovery plan implementing the normative design in
-`docs/design-worker-owned-universal-review.md`. This replaces the production authority
-cutover in `docs/plans/deterministic-convergence-final-cutover.md`; it does not delete the
-existing proofs or incident corpus.
+**Status:** completed recovery plan implementing the normative design in
+`docs/design-worker-owned-universal-review.md`. The isolated ten-worker exit canary passed
+on 2026-08-05; see
+`docs/reports/worker-owned-completion-exit-canary-2026-08-05.md`. This replaces the
+production authority cutover in `docs/plans/deterministic-convergence-final-cutover.md`;
+it does not delete the existing proofs or incident corpus.
 
 ## Goal
 
@@ -406,7 +408,9 @@ The worker branch/worktree remains the recovery artifact for every pre-land cras
 
 ## Production cutover
 
-The service is currently stopped. Cut over in changes that never permit dual authority.
+The service remained stopped throughout Changes A–F. The cutover completed without
+permitting dual authority, and service restart was authorized only after the recorded
+exit canary passed.
 
 ### Change A — formal/simple kernel only
 
@@ -466,8 +470,9 @@ non-overlapping files. Assert:
 - daemon restart after Git land/before graph Done converges by ancestry;
 - service has no `wait until None`, planner effect journal, or hidden retry timer.
 
-Only after this canary should autonomous service operation resume on the development
-graph.
+The canary passed on 2026-08-05 and autonomous service operation was authorized to resume
+on the development graph. See
+`docs/reports/worker-owned-completion-exit-canary-2026-08-05.md`.
 
 ## Rollback
 
