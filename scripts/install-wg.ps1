@@ -365,7 +365,9 @@ function Get-ReceiptStringField {
     )
     foreach ($line in Get-Content -LiteralPath $Path) {
         if ($line -match ('^\s*' + [Regex]::Escape($Name) + '\s*=\s*"([^"]*)"')) {
-            return $Matches[1]
+            # Receipt strings are TOML basic strings. The writer escapes
+            # backslashes, which must be decoded before comparing Windows paths.
+            return $Matches[1].Replace("\\", "\").Replace('\"', '"')
         }
     }
     return ""
