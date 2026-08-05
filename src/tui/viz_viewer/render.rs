@@ -6882,11 +6882,12 @@ fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     app.log_pane.viewport_height = body_area.height as usize;
 
     use super::log_render::{
-        render_events_view, render_high_level_view, render_raw_pretty_view, render_raw_view,
-        render_wg_log_view,
+        render_events_view, render_high_level_view, render_raw_pretty_view_at_width,
+        render_raw_view, render_wg_log_view,
     };
     use super::state::LogViewMode;
 
+    let body_width = body_area.width as usize;
     // Collect display lines for whichever view is active. True Raw is a
     // separate byte lane and can never fall through to translated events.
     let raw_lines: Vec<Line> = if app.log_pane.view_mode == LogViewMode::WgLog {
@@ -6904,9 +6905,11 @@ fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         match app.log_pane.view_mode {
             LogViewMode::Events => render_events_view(&app.log_pane.stream_events),
             LogViewMode::HighLevel => render_high_level_view(&app.log_pane.stream_events),
-            LogViewMode::Pretty => {
-                render_raw_pretty_view(&app.log_pane.stream_events, app.log_pane.summary_mode)
-            }
+            LogViewMode::Pretty => render_raw_pretty_view_at_width(
+                &app.log_pane.stream_events,
+                app.log_pane.summary_mode,
+                body_width,
+            ),
             LogViewMode::Raw | LogViewMode::WgLog => unreachable!("handled above"),
         }
     } else {
@@ -6928,7 +6931,6 @@ fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     // this, long agent responses that wrap to many visual lines push the
     // tail off-screen below the viewport — the user sees "missing text"
     // because logical line count under-counts visible lines after wrap.
-    let body_width = body_area.width as usize;
     let lines: Vec<Line> = wrap_line_spans(&raw_lines, body_width);
     app.log_pane.total_wrapped_lines = lines.len();
 

@@ -29,6 +29,8 @@ use std::fmt::Write as _;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
+use crate::tui::pi_transcript::{PiToolPhase, PiTranscriptBlock};
+
 use super::chat_palette;
 use super::state::{AgentStreamEvent, AgentStreamEventKind, EventDetails};
 
@@ -250,16 +252,7 @@ fn emit_tool_call_line(
 /// tool results — implicit follow-ons of their tool call).
 fn high_level_label(event: &AgentStreamEvent) -> Option<String> {
     match (&event.kind, event.details.as_ref()) {
-        (AgentStreamEventKind::ToolCall, Some(EventDetails::ToolCall { name, input }))
-        | (
-            AgentStreamEventKind::ToolCall,
-            Some(EventDetails::PiTool {
-                name,
-                input,
-                progress: None,
-                ..
-            }),
-        ) => {
+        (AgentStreamEventKind::ToolCall, Some(EventDetails::ToolCall { name, input })) => {
             let target = match name.as_str() {
                 "Bash" | "bash" => input.get("command").and_then(|v| v.as_str()).map(|c| {
                     let first = c.split_whitespace().next().unwrap_or("");
@@ -289,40 +282,53 @@ fn high_level_label(event: &AgentStreamEvent) -> Option<String> {
             };
             Some(target.unwrap_or_else(|| format!("Using {}", name)))
         }
-        (
-            AgentStreamEventKind::ToolCall,
-            Some(EventDetails::PiTool {
-                name,
-                input,
-                progress: Some(progress),
-                ..
-            }),
-        ) => {
-            let activity = match name.as_str() {
-                "Bash" | "bash" => input
+        (AgentStreamEventKind::ToolCall, Some(EventDetails::PiTool(tool))) => {
+            let activity = match tool.name.as_str() {
+                "Bash" | "bash" => tool
+                    .input
                     .get("command")
                     .and_then(|value| value.as_str())
                     .and_then(|command| command.split_whitespace().next())
                     .filter(|command| !command.is_empty())
-                    .map(|command| format!("Running {command} ({name})")),
+                    .map(|command| format!("Running {command} ({})", tool.name)),
                 other => Some(format!("Using {other}")),
             }
-            .unwrap_or_else(|| format!("Using {name}"));
-            let latest = progress.lines().last().unwrap_or(progress).trim();
-            Some(format!("{activity} — {latest}"))
+            .unwrap_or_else(|| format!("Using {}", tool.name));
+            match &tool.phase {
+                PiToolPhase::Running {
+                    progress: Some(progress),
+                } => {
+                    let latest = progress.lines().last().unwrap_or(progress).trim();
+                    Some(format!("{activity} — {latest}"))
+                }
+                PiToolPhase::Running { progress: None } => Some(activity),
+                PiToolPhase::Completed { .. } => Some(activity),
+            }
         }
         (
             AgentStreamEventKind::ToolResult | AgentStreamEventKind::Error,
-            Some(EventDetails::PiTool {
-                name,
-                is_error: Some(is_error),
-                ..
+            Some(EventDetails::PiTool(tool)),
+        ) => match &tool.phase {
+            PiToolPhase::Completed { is_error, .. } => Some(if *is_error {
+                format!("{} failed", tool.name)
+            } else {
+                format!("Completed {}", tool.name)
             }),
-        ) => Some(if *is_error {
-            format!("{name} failed")
-        } else {
-            format!("Completed {name}")
-        }),
+            PiToolPhase::Running { .. } => Some(format!("Using {}", tool.name)),
+        },
+        (_, Some(EventDetails::PiTurn { blocks })) => {
+            let thinking = blocks
+                .iter()
+                .any(|block| matches!(block, PiTranscriptBlock::Thinking(_)));
+            let speaking = blocks
+                .iter()
+                .any(|block| matches!(block, PiTranscriptBlock::AssistantMarkdown(_)));
+            Some(match (thinking, speaking) {
+                (true, true) => "Thinking… / Speaking".to_string(),
+                (true, false) => "Thinking…".to_string(),
+                _ => "Speaking".to_string(),
+            })
+        }
         // Hide tool results in the high-level view — the activity is the
         // tool call itself, the result is implicit follow-up.
         (AgentStreamEventKind::ToolResult, _) => None,
@@ -413,6 +419,17 @@ pub fn render_raw_pretty_view(
     events: &[AgentStreamEvent],
     summary_mode: bool,
 ) -> Vec<Line<'static>> {
+    render_raw_pretty_view_at_width(events, summary_mode, 80)
+}
+
+/// Width-aware Pi/chat transcript presentation. The live Log pane passes its
+/// actual body width so assistant markdown uses the same shared markdown
+/// contract as chat/output rather than a plain-text approximation.
+pub fn render_raw_pretty_view_at_width(
+    events: &[AgentStreamEvent],
+    summary_mode: bool,
+    width: usize,
+) -> Vec<Line<'static>> {
     let mut out: Vec<Line<'static>> = Vec::new();
     let mut prev_category: Option<EventCategory> = None;
 
@@ -423,7 +440,7 @@ pub fn render_raw_pretty_view(
         {
             push_blank(&mut out);
         }
-        emit_event(&mut out, event, summary_mode);
+        emit_event(&mut out, event, summary_mode, width);
         prev_category = Some(curr);
     }
 
@@ -512,7 +529,12 @@ pub fn render_wg_log_view(rendered_lines: &[String]) -> Vec<Line<'static>> {
         .collect()
 }
 
-fn emit_event(out: &mut Vec<Line<'static>>, event: &AgentStreamEvent, summary_mode: bool) {
+fn emit_event(
+    out: &mut Vec<Line<'static>>,
+    event: &AgentStreamEvent,
+    summary_mode: bool,
+    width: usize,
+) {
     let details = match &event.details {
         Some(d) => d,
         None => {
@@ -570,43 +592,14 @@ fn emit_event(out: &mut Vec<Line<'static>>, event: &AgentStreamEvent, summary_mo
             };
             push_marker_block(out, marker, body, marker_color, body_color, summary_mode);
         }
-        EventDetails::PiTool {
-            name,
-            input,
-            progress,
-            result,
-            is_error,
-            ..
-        } => {
-            let label = format_tool_call_label(name, input);
-            out.push(Line::from(Span::styled(
-                format!("⌁ {}", label),
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            )));
-            let body = format_tool_call_body(name, input);
-            if !body.is_empty() {
-                push_indented(out, &body, Color::Cyan, summary_mode);
-            }
-            if let Some(progress) = progress {
-                push_marker_block(out, "…", progress, Color::Yellow, None, summary_mode);
-            }
-            if let Some(result) = result {
-                let is_error = is_error.unwrap_or(false);
-                push_marker_block(
-                    out,
-                    if is_error { "✗" } else { "✓" },
-                    if result.is_empty() {
-                        "(empty result)"
-                    } else {
-                        result
-                    },
-                    if is_error { Color::Red } else { Color::Green },
-                    is_error.then_some(Color::Red),
-                    summary_mode,
-                );
-            }
+        EventDetails::PiTool(tool) => render_pi_transcript_blocks(
+            out,
+            std::slice::from_ref(&PiTranscriptBlock::Tool(tool.clone())),
+            summary_mode,
+            width,
+        ),
+        EventDetails::PiTurn { blocks } => {
+            render_pi_transcript_blocks(out, blocks, summary_mode, width)
         }
         EventDetails::SystemEvent { subtype, text } => {
             out.push(Line::from(Span::styled(
@@ -616,6 +609,72 @@ fn emit_event(out: &mut Vec<Line<'static>>, event: &AgentStreamEvent, summary_mo
                     .add_modifier(Modifier::BOLD),
             )));
             push_indented(out, text, Color::DarkGray, summary_mode);
+        }
+    }
+}
+
+/// Render the shared Pi transcript presentation used as the cleaned Log
+/// contract and by parity tests against the embedded Pi chat transcript.
+pub fn render_pi_chat_transcript(blocks: &[PiTranscriptBlock], width: usize) -> Vec<Line<'static>> {
+    let mut out = Vec::new();
+    render_pi_transcript_blocks(&mut out, blocks, false, width);
+    out
+}
+
+fn render_pi_transcript_blocks(
+    out: &mut Vec<Line<'static>>,
+    blocks: &[PiTranscriptBlock],
+    summary_mode: bool,
+    width: usize,
+) {
+    for block in blocks {
+        match block {
+            PiTranscriptBlock::AssistantMarkdown(markdown) => {
+                out.extend(crate::tui::pi_transcript::render_assistant_markdown(
+                    markdown, width,
+                ));
+            }
+            PiTranscriptBlock::Thinking(text) => {
+                push_header(out, &AgentStreamEventKind::Thinking, "<thinking>");
+                push_indented(out, text, Color::Magenta, summary_mode);
+                out.push(Line::from(Span::styled(
+                    "</thinking>".to_string(),
+                    Style::default()
+                        .fg(Color::Magenta)
+                        .add_modifier(Modifier::DIM),
+                )));
+            }
+            PiTranscriptBlock::Tool(tool) => {
+                let label = format_tool_call_label(&tool.name, &tool.input);
+                out.push(Line::from(Span::styled(
+                    format!("⌁ {label}"),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                )));
+                let body = format_tool_call_body(&tool.name, &tool.input);
+                if !body.is_empty() {
+                    push_indented(out, &body, Color::Cyan, summary_mode);
+                }
+                match &tool.phase {
+                    PiToolPhase::Running {
+                        progress: Some(progress),
+                    } => push_marker_block(out, "…", progress, Color::Yellow, None, summary_mode),
+                    PiToolPhase::Running { progress: None } => {}
+                    PiToolPhase::Completed { result, is_error } => push_marker_block(
+                        out,
+                        if *is_error { "✗" } else { "✓" },
+                        if result.is_empty() {
+                            "(empty result)"
+                        } else {
+                            result
+                        },
+                        if *is_error { Color::Red } else { Color::Green },
+                        is_error.then_some(Color::Red),
+                        summary_mode,
+                    ),
+                }
+            }
         }
     }
 }
@@ -854,6 +913,68 @@ fn preview_block(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pi_clean_log_matches_chat_transcript_for_markdown_thinking_tools_and_updates() {
+        use crate::tui::pi_transcript::{PiToolTranscript, PiTranscriptBlock};
+
+        let turn_blocks = vec![
+            PiTranscriptBlock::Thinking("check the **edge** first".to_string()),
+            PiTranscriptBlock::AssistantMarkdown(
+                "## Result\n\n- **bold** item\n- `code` item".to_string(),
+            ),
+        ];
+        let turn_event = AgentStreamEvent {
+            kind: AgentStreamEventKind::TextOutput,
+            agent_id: "pi-agent".to_string(),
+            summary: "Result".to_string(),
+            details: Some(EventDetails::PiTurn {
+                blocks: turn_blocks.clone(),
+            }),
+        };
+        assert_eq!(
+            render_raw_pretty_view_at_width(&[turn_event], false, 72),
+            render_pi_chat_transcript(&turn_blocks, 72),
+            "assistant markdown and thinking must use the chat transcript presentation"
+        );
+
+        for tool in [
+            PiToolTranscript {
+                tool_call_id: "call-1".to_string(),
+                name: "bash".to_string(),
+                input: serde_json::json!({"command": "cargo test"}),
+                phase: PiToolPhase::Running {
+                    progress: Some("running 41/100".to_string()),
+                },
+            },
+            PiToolTranscript {
+                tool_call_id: "call-1".to_string(),
+                name: "bash".to_string(),
+                input: serde_json::json!({"command": "cargo test"}),
+                phase: PiToolPhase::Completed {
+                    result: "100 tests passed".to_string(),
+                    is_error: false,
+                },
+            },
+        ] {
+            let blocks = vec![PiTranscriptBlock::Tool(tool.clone())];
+            let kind = match &tool.phase {
+                PiToolPhase::Running { .. } => AgentStreamEventKind::ToolCall,
+                PiToolPhase::Completed { .. } => AgentStreamEventKind::ToolResult,
+            };
+            let event = AgentStreamEvent {
+                kind,
+                agent_id: "pi-agent".to_string(),
+                summary: tool.name.clone(),
+                details: Some(EventDetails::PiTool(tool)),
+            };
+            assert_eq!(
+                render_raw_pretty_view_at_width(&[event], false, 72),
+                render_pi_chat_transcript(&blocks, 72),
+                "running/final tool projection must be visually identical to chat"
+            );
+        }
+    }
 
     fn user_event(text: &str) -> AgentStreamEvent {
         AgentStreamEvent {

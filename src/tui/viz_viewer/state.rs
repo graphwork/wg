@@ -6994,13 +6994,11 @@ pub enum EventDetails {
     /// One correlated Pi tool lifecycle projection. Pi update records contain
     /// cumulative output, so the log loader replaces this event by
     /// `tool_call_id` instead of appending update spam.
-    PiTool {
-        tool_call_id: String,
-        name: String,
-        input: serde_json::Value,
-        progress: Option<String>,
-        result: Option<String>,
-        is_error: Option<bool>,
+    PiTool(crate::tui::pi_transcript::PiToolTranscript),
+    /// One finalized Pi turn preserving assistant markdown and thinking as
+    /// distinct blocks for chat-parity rendering.
+    PiTurn {
+        blocks: Vec<crate::tui::pi_transcript::PiTranscriptBlock>,
     },
     Thinking {
         text: String,
@@ -7561,96 +7559,40 @@ pub fn parse_raw_stream_line(line: &str, default_agent_id: &str) -> Option<Agent
             parse_pi_tool_projection(&val, default_agent_id)
         }
         "turn_end" => {
-            // Surface assistant text + thinking from the turn's message
-            // content. Tool calls are skipped — `tool_execution_*` covers them.
-            let content_arr = val
-                .get("message")
-                .and_then(|m| m.get("content"))
-                .and_then(|c| c.as_array())?;
-            let mut events = Vec::new();
-            for block in content_arr {
-                match block.get("type").and_then(|v| v.as_str()).unwrap_or("") {
-                    "text" => {
-                        let text = block.get("text").and_then(|v| v.as_str()).unwrap_or("");
-                        let text = text.trim();
-                        if !text.is_empty() {
-                            events.push(AgentStreamEvent {
-                                kind: AgentStreamEventKind::TextOutput,
-                                agent_id: default_agent_id.to_string(),
-                                summary: text.to_string(),
-                                details: Some(EventDetails::TextOutput {
-                                    text: text.to_string(),
-                                }),
-                            });
-                        }
-                    }
-                    "thinking" => {
-                        let text = block.get("thinking").and_then(|v| v.as_str()).unwrap_or("");
-                        let text = text.trim();
-                        if !text.is_empty() {
-                            let truncated = if text.len() > 200 {
-                                format!("{}…", &text[..text.floor_char_boundary(200)])
-                            } else {
-                                text.to_string()
-                            };
-                            events.push(AgentStreamEvent {
-                                kind: AgentStreamEventKind::Thinking,
-                                agent_id: default_agent_id.to_string(),
-                                summary: format!("💭 {}", truncated),
-                                details: Some(EventDetails::Thinking {
-                                    text: text.to_string(),
-                                }),
-                            });
-                        }
-                    }
-                    _ => {}
-                }
+            use crate::tui::pi_transcript::PiTranscriptBlock;
+            let blocks = crate::tui::pi_transcript::parse_turn(&val);
+            if blocks.is_empty() {
+                return None;
             }
-            if events.len() == 1 {
-                events.into_iter().next()
-            } else if events.len() > 1 {
-                let combined = events
-                    .iter()
-                    .map(|e| e.summary.as_str())
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                Some(AgentStreamEvent {
-                    kind: events[0].kind.clone(),
-                    agent_id: default_agent_id.to_string(),
-                    summary: combined,
-                    details: None,
+            let summary = blocks
+                .iter()
+                .map(|block| match block {
+                    PiTranscriptBlock::AssistantMarkdown(markdown) => markdown.clone(),
+                    PiTranscriptBlock::Thinking(text) => {
+                        format!("💭 {}", crate::tui::pi_transcript::bounded_text(text, 200))
+                    }
+                    PiTranscriptBlock::Tool(_) => String::new(),
                 })
+                .filter(|text| !text.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n");
+            let kind = if blocks
+                .iter()
+                .any(|block| matches!(block, PiTranscriptBlock::AssistantMarkdown(_)))
+            {
+                AgentStreamEventKind::TextOutput
             } else {
-                None
-            }
+                AgentStreamEventKind::Thinking
+            };
+            Some(AgentStreamEvent {
+                kind,
+                agent_id: default_agent_id.to_string(),
+                summary,
+                details: Some(EventDetails::PiTurn { blocks }),
+            })
         }
         _ => None,
     }
-}
-
-const PI_LIVE_PROGRESS_MAX_BYTES: usize = 4096;
-
-fn bounded_pi_text(text: &str, max_bytes: usize) -> String {
-    let text = text.trim();
-    if text.len() <= max_bytes {
-        return text.to_string();
-    }
-    let tail_start = text.ceil_char_boundary(text.len() - max_bytes);
-    format!("…{}", &text[tail_start..])
-}
-
-fn pi_content_text(value: Option<&serde_json::Value>) -> String {
-    value
-        .and_then(|value| value.get("content"))
-        .and_then(|content| content.as_array())
-        .map(|blocks| {
-            blocks
-                .iter()
-                .filter_map(|block| block.get("text").and_then(|text| text.as_str()))
-                .collect::<Vec<_>>()
-                .join("\n")
-        })
-        .unwrap_or_default()
 }
 
 fn pi_tool_detail(name: &str, input: &serde_json::Value) -> Option<String> {
@@ -7662,119 +7604,93 @@ fn pi_tool_detail(name: &str, input: &serde_json::Value) -> Option<String> {
             .and_then(|value| value.as_str()),
         _ => None,
     }
-    .map(|detail| bounded_pi_text(detail, 120))
-}
-
-fn pi_progress_text(value: &serde_json::Value) -> String {
-    let content = pi_content_text(value.get("partialResult"));
-    if !content.trim().is_empty() {
-        return bounded_pi_text(&content, PI_LIVE_PROGRESS_MAX_BYTES);
-    }
-    let state = value
-        .get("childState")
-        .and_then(|state| state.as_str())
-        .unwrap_or("running");
-    match value
-        .get("progress")
-        .or_else(|| value.get("progressCount"))
-        .and_then(|progress| progress.as_u64())
-    {
-        Some(progress) => format!("{state} (progress {progress})"),
-        None => state.to_string(),
-    }
+    .map(|detail| crate::tui::pi_transcript::bounded_text(detail, 120))
 }
 
 fn pi_summary_preview(text: &str) -> String {
     let one_line = text.lines().last().unwrap_or(text).trim();
-    bounded_pi_text(one_line, 200)
+    crate::tui::pi_transcript::bounded_text(one_line, 200)
 }
 
 fn parse_pi_tool_projection(
     value: &serde_json::Value,
     default_agent_id: &str,
 ) -> Option<AgentStreamEvent> {
-    let event_type = value.get("type")?.as_str()?;
-    let tool_call_id = value
-        .get("toolCallId")
-        .and_then(|id| id.as_str())
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("legacy:{}", blake3::hash(value.to_string().as_bytes())));
-    let name = value
-        .get("toolName")
-        .and_then(|name| name.as_str())
-        .unwrap_or("tool")
-        .to_string();
-    let input = value
-        .get("args")
-        .cloned()
-        .unwrap_or(serde_json::Value::Null);
-    let call = pi_tool_detail(&name, &input)
-        .map(|detail| format!("⌁ {name} → {detail}"))
-        .unwrap_or_else(|| format!("⌁ {name}"));
+    use crate::tui::pi_transcript::PiToolPhase;
 
-    let (kind, summary, progress, result, is_error) = match event_type {
-        "tool_execution_start" => (AgentStreamEventKind::ToolCall, call, None, None, None),
-        "tool_execution_update" => {
-            let progress = pi_progress_text(value);
-            let preview = pi_summary_preview(&progress);
-            (
-                AgentStreamEventKind::ToolCall,
-                format!("{call}\n  … {preview}"),
-                Some(progress),
-                None,
-                None,
-            )
-        }
-        "tool_execution_end" => {
-            let is_error = value
-                .get("isError")
-                .and_then(|is_error| is_error.as_bool())
-                .unwrap_or(false);
-            let result = bounded_pi_text(
-                &pi_content_text(value.get("result")),
-                PI_LIVE_PROGRESS_MAX_BYTES,
-            );
-            let marker = if is_error { "✗" } else { "✓" };
+    let tool = crate::tui::pi_transcript::parse_tool(value)?;
+    let call = pi_tool_detail(&tool.name, &tool.input)
+        .map(|detail| format!("⌁ {} → {detail}", tool.name))
+        .unwrap_or_else(|| format!("⌁ {}", tool.name));
+    let (kind, summary) = match &tool.phase {
+        PiToolPhase::Running { progress: None } => (AgentStreamEventKind::ToolCall, call),
+        PiToolPhase::Running {
+            progress: Some(progress),
+        } => (
+            AgentStreamEventKind::ToolCall,
+            format!("{call}\n  … {}", pi_summary_preview(progress)),
+        ),
+        PiToolPhase::Completed { result, is_error } => {
+            let marker = if *is_error { "✗" } else { "✓" };
             let preview = if result.is_empty() {
                 "(no output)".to_string()
             } else {
-                pi_summary_preview(&result)
+                pi_summary_preview(result)
             };
             (
-                if is_error {
+                if *is_error {
                     AgentStreamEventKind::Error
                 } else {
                     AgentStreamEventKind::ToolResult
                 },
-                format!("{marker} {name} — {preview}"),
-                None,
-                Some(result),
-                Some(is_error),
+                format!("{marker} {} — {preview}", tool.name),
             )
         }
-        _ => return None,
     };
-
     Some(AgentStreamEvent {
         kind,
         agent_id: default_agent_id.to_string(),
         summary,
-        details: Some(EventDetails::PiTool {
-            tool_call_id,
-            name,
-            input,
-            progress,
-            result,
-            is_error,
-        }),
+        details: Some(EventDetails::PiTool(tool)),
     })
 }
 
 fn pi_projection_key(event: &AgentStreamEvent) -> Option<&str> {
     match event.details.as_ref()? {
-        EventDetails::PiTool { tool_call_id, .. } => Some(tool_call_id),
+        EventDetails::PiTool(tool) => Some(&tool.tool_call_id),
         _ => None,
     }
+}
+
+fn merge_pi_projection(
+    existing: &AgentStreamEvent,
+    mut incoming: AgentStreamEvent,
+) -> AgentStreamEvent {
+    use crate::tui::pi_transcript::PiToolPhase;
+
+    let (Some(EventDetails::PiTool(previous)), Some(EventDetails::PiTool(next))) =
+        (existing.details.as_ref(), incoming.details.as_mut())
+    else {
+        return incoming;
+    };
+    // Completion is terminal for one call id. This makes a malformed or
+    // replayed late start/update unable to regress a finished tool back to a
+    // spinner, while normal cumulative updates still replace one another.
+    if matches!(previous.phase, PiToolPhase::Completed { .. })
+        && matches!(next.phase, PiToolPhase::Running { .. })
+    {
+        return existing.clone();
+    }
+    // Pi's end records need not repeat args (and some integrations omit the
+    // name). Preserve the call presentation learned at start/update so the
+    // final replacement remains visually identical to chat.
+    if next.input.is_null() {
+        next.input = previous.input.clone();
+    }
+    if next.name == "tool" && previous.name != "tool" {
+        next.name = previous.name.clone();
+    }
+    incoming
 }
 
 /// Parse one bounded native window and retain only the latest cumulative Pi
@@ -7800,7 +7716,7 @@ fn merge_coalesced_stream_events(
                 .iter()
                 .position(|existing| pi_projection_key(existing) == Some(key))
         {
-            events[index] = event;
+            events[index] = merge_pi_projection(&events[index], event);
         } else {
             events.push(event);
         }
@@ -7910,6 +7826,9 @@ pub struct LogPaneState {
     output_source_identity: Option<LogFileIdentity>,
     stream_initialized: bool,
     output_initialized: bool,
+    /// Whether this source already had its one-time Pi transcript default
+    /// applied. After that, explicit user view-mode choices always win.
+    pi_pretty_default_applied: bool,
     /// Set on a source change or when the user re-enables tail. The worker
     /// satisfies it with one reverse-tail snapshot, not a prefix scan.
     tail_jump_pending: bool,
@@ -7950,6 +7869,7 @@ impl Default for LogPaneState {
             output_source_identity: None,
             stream_initialized: false,
             output_initialized: false,
+            pi_pretty_default_applied: false,
             tail_jump_pending: true,
             output_tail_jump_pending: true,
             history_page_pending: false,
@@ -7972,6 +7892,7 @@ impl LogPaneState {
         self.source_liveness = None;
         self.stream_initialized = false;
         self.output_initialized = false;
+        self.pi_pretty_default_applied = false;
         self.tail_jump_pending = true;
         self.output_tail_jump_pending = true;
         self.history_page_pending = false;
@@ -18482,7 +18403,22 @@ impl VizApp {
                     }),
                 });
             }
+            let is_pi_transcript = events.iter().any(|event| {
+                matches!(
+                    event.details,
+                    Some(EventDetails::PiTool(_) | EventDetails::PiTurn { .. })
+                )
+            });
             self.log_pane.stream_events = events;
+            if is_pi_transcript && !self.log_pane.pi_pretty_default_applied {
+                // The cleaned Pi Log is a transcript surface first. Events /
+                // HighLevel remain optional projections and Raw remains an
+                // explicit diagnostic mode.
+                if self.log_pane.view_mode == LogViewMode::Events {
+                    self.log_pane.view_mode = LogViewMode::Pretty;
+                }
+                self.log_pane.pi_pretty_default_applied = true;
+            }
             self.log_pane.raw_stream_offset = page.next_offset;
             self.log_pane.stream_window_start = page.window_start;
             self.log_pane.stream_source_identity = Some(page.source_identity);
@@ -23337,7 +23273,18 @@ impl VizApp {
         panel.scroll = self.log_pane.scroll;
         panel.auto_tail = self.log_pane.auto_tail;
         panel.json_mode = self.log_pane.json_mode;
-        panel.view_mode = request.mode;
+        let applied_mode = if request.mode == LogViewMode::Events
+            && panel.view_mode == LogViewMode::Pretty
+            && panel.pi_pretty_default_applied
+        {
+            // The auxiliary loader recognized Pi's native transcript. Permit
+            // this single fenced Events→Pretty default transition; all later
+            // user mode changes remain authoritative.
+            LogViewMode::Pretty
+        } else {
+            request.mode
+        };
+        panel.view_mode = applied_mode;
         panel.summary_mode = self.log_pane.summary_mode;
         panel.has_new_content |= self.log_pane.has_new_content;
         panel.generation = self.log_pane.generation;
@@ -39201,6 +39148,11 @@ mod retry_log_pane_tests {
         app.update_log_stream_events();
 
         assert_eq!(
+            app.log_pane.view_mode,
+            LogViewMode::Pretty,
+            "Pi tasks must open on the cleaned chat-style transcript, not Events"
+        );
+        assert_eq!(
             app.log_pane
                 .stream_events
                 .iter()
@@ -39221,15 +39173,19 @@ mod retry_log_pane_tests {
             .stream_events
             .iter()
             .find_map(|event| match event.details.as_ref() {
-                Some(EventDetails::PiTool {
-                    progress: Some(progress),
+                Some(EventDetails::PiTool(crate::tui::pi_transcript::PiToolTranscript {
+                    phase:
+                        crate::tui::pi_transcript::PiToolPhase::Running {
+                            progress: Some(progress),
+                        },
                     ..
-                }) => Some(progress),
+                })) => Some(progress),
                 _ => None,
             })
             .unwrap();
         assert!(
-            projected_progress.len() <= PI_LIVE_PROGRESS_MAX_BYTES + '…'.len_utf8(),
+            projected_progress.len()
+                <= crate::tui::pi_transcript::LIVE_PROGRESS_MAX_BYTES + '…'.len_utf8(),
             "live cumulative progress must remain bounded"
         );
 
@@ -39344,11 +39300,13 @@ mod retry_log_pane_tests {
         );
         assert!(matches!(
             app.log_pane.stream_events[1].details,
-            Some(EventDetails::PiTool {
-                progress: None,
-                result: Some(_),
-                ..
-            })
+            Some(EventDetails::PiTool(
+                crate::tui::pi_transcript::PiToolTranscript {
+                    ref input,
+                    phase: crate::tui::pi_transcript::PiToolPhase::Completed { .. },
+                    ..
+                }
+            )) if input.get("command").and_then(serde_json::Value::as_str) == Some("cargo test")
         ));
     }
 
