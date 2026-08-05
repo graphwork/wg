@@ -267,46 +267,6 @@ fn detect_dead_reason(
     None
 }
 
-fn replayable_save_transaction_for_dead_agent(dir: &Path, task: &Task) -> bool {
-    worksgood::worker_control::save_transaction_for_task(dir, task)
-        .ok()
-        .flatten()
-        .is_some()
-}
-
-fn exact_durable_success_for_dead_agent(
-    store: &worksgood::finalization::FinalizationStore,
-    task: &Task,
-    agent_id: &str,
-) -> bool {
-    store
-        .load_task(&task.id)
-        .ok()
-        .flatten()
-        .filter(|tx| {
-            tx.candidate
-                .as_ref()
-                .is_some_and(|candidate| candidate.worktree_id == agent_id)
-                && task
-                    .lifecycle
-                    .current_attempt
-                    .as_ref()
-                    .is_some_and(|attempt| attempt.actor_id == agent_id)
-        })
-        .and_then(|tx| {
-            tx.exact_durable_success(
-                &task.id,
-                task.lifecycle.generation,
-                task.lifecycle
-                    .current_attempt
-                    .as_ref()
-                    .map(|attempt| attempt.id.as_str()),
-                task.lifecycle.fence,
-            )
-        })
-        .is_some()
-}
-
 /// Clean up dead agents (process exited)
 /// Returns list of cleaned up agent IDs
 pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<String>> {
@@ -385,18 +345,17 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
 
     // Load config for triage settings (already loaded above as `config`)
 
-    // Unclaim their tasks (if still in progress - agent may have completed or failed them already)
-    let finalization_store = worksgood::finalization::FinalizationStore::open(dir)?;
+    // A dead current worker is a visible task failure. There is no automatic
+    // source retry and no transaction/finalizer replay authority.
     let mut graph = load_graph(graph_path).context("Failed to load graph")?;
     let mut tasks_modified = false;
     let mut resource_exhausted_tasks: Vec<String> = Vec::new();
 
-    for (agent_id, task_id, _pid, output_file, reason) in &dead {
+    for (_agent_id, task_id, _pid, output_file, reason) in &dead {
         if let Some(task) = graph.get_task_mut(task_id) {
             // Process observation is evidence only. A conclusively dead
-            // current worker may request one fenced AttemptLost transition in
-            // the final locked transaction below; model triage never has
-            // completion or retry authority.
+            // current worker requests one fenced AttemptLost transition in
+            // the final locked transaction below; no observer can infer Done.
             let pi_watchdog_owns_exit =
                 task.lifecycle
                     .pi_continuation
@@ -410,38 +369,22 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
                         )
                     });
             if task.status == Status::InProgress && !pi_watchdog_owns_exit {
-                if replayable_save_transaction_for_dead_agent(dir, task) {
-                    // The exact terminal intent is already write-ahead. The
-                    // SaveTransaction convergence lane owns quiescence,
-                    // capture, effect and cleanup replay; generic triage must
-                    // neither invent success nor destroy that authority with
-                    // AttemptLost.
-                    tasks_modified = true;
-                } else if exact_durable_success_for_dead_agent(&finalization_store, task, agent_id)
-                {
-                    // The exact task-owned completion crossed its durable
-                    // promotion/output boundary before this process exit.
-                    // Preserve the exit below as evidence, but never emit
-                    // AttemptLost or populate lifecycle-authoritative failure.
-                    tasks_modified = true;
+                if dead_attempt_exhausted_disk(dir, output_file) {
+                    task.failure_class = Some(FailureClass::ResourceExhaustedDisk);
+                    task.failure_reason =
+                        Some("Disk resource exhausted during the running attempt".to_string());
+                    resource_exhausted_tasks.push(task_id.clone());
                 } else {
-                    if dead_attempt_exhausted_disk(dir, output_file) {
-                        task.failure_class = Some(FailureClass::ResourceExhaustedDisk);
-                        task.failure_reason =
-                            Some("Disk resource exhausted during the running attempt".to_string());
-                        resource_exhausted_tasks.push(task_id.clone());
-                    } else {
-                        task.failure_class = Some(FailureClass::AgentExitNonzero);
-                        task.failure_reason = Some(match reason {
-                            DeadReason::ProcessExited => "worker process exited".to_string(),
-                            DeadReason::PidReused => "worker PID identity was reused".to_string(),
-                            DeadReason::HeartbeatTimeout => {
-                                "worker heartbeat timed out after process verification".to_string()
-                            }
-                        });
-                    }
-                    tasks_modified = true;
+                    task.failure_class = Some(FailureClass::AgentExitNonzero);
+                    task.failure_reason = Some(match reason {
+                        DeadReason::ProcessExited => "worker process exited".to_string(),
+                        DeadReason::PidReused => "worker PID identity was reused".to_string(),
+                        DeadReason::HeartbeatTimeout => {
+                            "worker heartbeat timed out after process verification".to_string()
+                        }
+                    });
                 }
+                tasks_modified = true;
             }
         }
     }
@@ -509,48 +452,7 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
                 let pi_watchdog_owns_exit = fresh.lifecycle.pi_continuation.as_ref().is_some_and(|authorization| {
                     matches!(authorization.state, worksgood::lifecycle::PiAuthorizationState::Active | worksgood::lifecycle::PiAuthorizationState::HeldOperatorRequired | worksgood::lifecycle::PiAuthorizationState::Consumed)
                 });
-                let save_replay = replayable_save_transaction_for_dead_agent(dir, fresh);
-                let durable_success = exact_durable_success_for_dead_agent(
-                    &finalization_store,
-                    fresh,
-                    agent_id,
-                );
-                if fresh.status == Status::InProgress
-                    && !pi_watchdog_owns_exit
-                    && (save_replay || durable_success)
-                {
-                    let marker = format!(
-                        "late-process-diagnostic:{}:{}:{}",
-                        fresh.lifecycle.generation,
-                        fresh
-                            .lifecycle
-                            .current_attempt
-                            .as_ref()
-                            .map(|attempt| attempt.id.as_str())
-                            .unwrap_or("missing"),
-                        fresh.lifecycle.fence
-                    );
-                    if !fresh.log.iter().any(|entry| {
-                        entry.actor.as_deref() == Some("late-process-diagnostic")
-                            && entry.message.contains(&marker)
-                    }) {
-                        fresh.log.push(LogEntry {
-                            timestamp: Utc::now().to_rfc3339(),
-                            actor: Some("late-process-diagnostic".into()),
-                            user: Some(worksgood::current_user()),
-                            message: if save_replay {
-                                format!(
-                                    "{marker} dead-agent observation retained for exact SaveTransaction replay; AttemptLost authority suppressed"
-                                )
-                            } else {
-                                format!(
-                                    "{marker} dead-agent observation retained after exact durable task-owned success; AttemptLost authority suppressed"
-                                )
-                            },
-                        });
-                        modified = true;
-                    }
-                } else if fresh.status == Status::InProgress && !pi_watchdog_owns_exit {
+                if fresh.status == Status::InProgress && !pi_watchdog_owns_exit {
                     let generation = fresh.lifecycle.generation;
                     let mut request = TransitionRequest::new(
                         TransitionKind::AttemptLost,
@@ -1909,7 +1811,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dead_agent_with_terminal_intent_is_left_for_save_replay() {
+    fn test_dead_agent_save_transaction_has_no_completion_or_retry_authority() {
         let project = TempDir::new().unwrap();
         let wg_dir = project.path().join(".wg");
         fs::create_dir_all(&wg_dir).unwrap();
@@ -1972,11 +1874,16 @@ mod tests {
 
         let graph = worksgood::parser::load_graph(&gpath).unwrap();
         let task = graph.get_task("task-1").unwrap();
-        assert_eq!(task.status, Status::InProgress);
-        assert_eq!(task.assigned.as_deref(), Some("agent-1"));
-        assert!(task.log.iter().any(|entry| {
-            entry.message.contains("SaveTransaction replay")
-                && entry.message.contains("AttemptLost authority suppressed")
+        assert_eq!(task.status, Status::Failed);
+        assert_eq!(task.assigned, None);
+        assert!(
+            task.log
+                .iter()
+                .any(|entry| { entry.message.contains("fenced lost attempt") })
+        );
+        assert!(task.log.iter().all(|entry| {
+            !entry.message.contains("SaveTransaction replay")
+                && !entry.message.contains("AttemptLost authority suppressed")
         }));
     }
 

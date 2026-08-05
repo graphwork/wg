@@ -82,50 +82,6 @@ fn cleanup_and_count_alive(
         );
     }
 
-    // A brokered terminal intent is already durable authority. Re-read its
-    // SaveTransaction after triage has established exact owner death and
-    // replay only reducer-authorized mechanics before any generic orphan lane.
-    match worksgood::service::convergence::replay_dead_owner_save_transactions(dir) {
-        Ok(actions) if !actions.is_empty() => eprintln!(
-            "[dispatcher] Dead-owner SaveTransaction convergence: {:?}",
-            actions
-        ),
-        Ok(_) => {}
-        Err(error) => eprintln!(
-            "[dispatcher] Dead-owner SaveTransaction convergence held fail-closed: {error:#}"
-        ),
-    }
-
-    // Classify failed prerequisites before finish replay. A durable-candidate
-    // provider failure receives one planner-authorized finish retry; on the
-    // next unchanged pass the finite budget becomes NeedsReconciliation and
-    // the finish adapter below observes that hold instead of looping forever.
-    match worksgood::service::converge_failed_prerequisites(dir, Utc::now()) {
-        Ok(actions) if !actions.is_empty() => eprintln!(
-            "[dispatcher] Failed-prerequisite convergence: {:?}",
-            actions
-        ),
-        Ok(_) => {}
-        Err(error) => {
-            eprintln!("[dispatcher] Failed-prerequisite convergence held fail-closed: {error:#}")
-        }
-    }
-
-    // A dead Pi wrapper is not a generic lost attempt. Consume its durable
-    // finish handoff before orphan sweeping: receipted transactions advance
-    // exactly once; an absent transaction fences the dead tuple and reopens
-    // the same session/worktree without charging a breaker or discarding WIP.
-    match crate::commands::finalize::converge_exited_worker_finishes(dir) {
-        Ok(actions) if !actions.is_empty() => eprintln!(
-            "[dispatcher] Exited-worker finish convergence: {:?}",
-            actions
-        ),
-        Ok(_) => {}
-        Err(error) => {
-            eprintln!("[dispatcher] Exited-worker finish convergence held fail-closed: {error:#}")
-        }
-    }
-
     // Reconciliation safety net: catch orphaned InProgress tasks whose agents
     // are Dead in registry but weren't unclaimed (split-save race condition).
     match crate::commands::sweep::reconcile_orphaned_tasks(dir, graph_path) {

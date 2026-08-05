@@ -19,7 +19,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
 
-use worksgood::graph::{LogEntry, Status, Task};
+use worksgood::graph::{LogEntry, Status};
 use worksgood::lifecycle::{
     ActorKind, FenceExpectation, LifecycleActor, TransitionKind, TransitionRequest,
     apply_transition,
@@ -28,39 +28,6 @@ use worksgood::parser::{load_graph, modify_graph};
 use worksgood::service::registry::{AgentRegistry, AgentStatus};
 
 use super::{graph_path, is_process_alive};
-
-fn has_replayable_save_transaction(dir: &Path, task: &Task) -> bool {
-    worksgood::worker_control::save_transaction_for_task(dir, task)
-        .ok()
-        .flatten()
-        .is_some()
-}
-
-fn has_exact_durable_success(dir: &Path, task: &Task) -> bool {
-    worksgood::finalization::FinalizationStore::open(dir)
-        .and_then(|store| store.load_task(&task.id))
-        .ok()
-        .flatten()
-        .filter(|tx| {
-            task.assigned.as_deref().is_some_and(|owner| {
-                tx.candidate
-                    .as_ref()
-                    .is_some_and(|candidate| candidate.worktree_id == owner)
-            })
-        })
-        .and_then(|tx| {
-            tx.exact_durable_success(
-                &task.id,
-                task.lifecycle.generation,
-                task.lifecycle
-                    .current_attempt
-                    .as_ref()
-                    .map(|attempt| attempt.id.as_str()),
-                task.lifecycle.fence,
-            )
-        })
-        .is_some()
-}
 
 /// Information about an orphaned task found by sweep
 #[derive(Debug, Clone)]
@@ -99,14 +66,6 @@ pub fn find_orphaned_tasks(dir: &Path) -> Result<Vec<OrphanedTask>> {
     let mut orphaned = Vec::new();
 
     for task in graph.tasks() {
-        // A durable exact-attempt promotion/output is already terminal
-        // success. Sweep may report neither a failure nor a replacement owner;
-        // task-owned cleanup/convergence owns the remaining projection.
-        if task.status == Status::InProgress
-            && (has_replayable_save_transaction(dir, task) || has_exact_durable_success(dir, task))
-        {
-            continue;
-        }
         // A policy-valid Pi continuation authorization is the lifecycle
         // kernel's narrow pre-terminal hold. Generic dead-owner cleanup must
         // not create another attempt/owner while that exact source is being
@@ -291,11 +250,10 @@ pub fn run(dir: &Path, dry_run: bool, reap_targets: bool, json: bool) -> Result<
         });
     }
 
-    // Archive each orphaned agent's output BEFORE unclaiming the task, so
-    // the attempt is preserved in `.wg/log/agents/<task-id>/<timestamp>/`
-    // and visible in the TUI iteration switcher. Without this, an in-progress
-    // task that gets respawned via sweep loses prior attempts from the
-    // iteration history. Best-effort — failures are non-fatal. Skip the
+    // Archive each orphaned agent's output BEFORE recording the loss, so
+    // the attempt remains visible in the TUI iteration switcher. This is
+    // best-effort evidence capture only; it neither retries nor completes the
+    // task. Skip the
     // sentinel "(none)" placeholder used when assigned is None.
     for o in &orphaned {
         if o.assigned_agent == "(none)" {
@@ -429,7 +387,10 @@ pub fn run(dir: &Path, dry_run: bool, reap_targets: bool, json: bool) -> Result<
         }
         if !fixed.is_empty() {
             println!();
-            println!("Fixed {} task(s) (reset to Open):", fixed.len());
+            println!(
+                "Reconciled {} task(s) without automatic retry:",
+                fixed.len()
+            );
             for id in &fixed {
                 println!("  {}", id);
             }
@@ -457,10 +418,11 @@ pub fn run(dir: &Path, dry_run: bool, reap_targets: bool, json: bool) -> Result<
 
 /// Reconciliation function for use inside the coordinator tick.
 /// Scans for tasks in `InProgress` OR `Open` whose assigned agent is Dead
-/// (or unreachable, or absent from the registry) and clears the stale
-/// claim. `InProgress` tasks transition to Open; `Open` tasks just have
-/// their claim wiped — both end up dispatchable on the next tick.
-/// Returns the number of tasks recovered.
+/// (or unreachable, or absent from the registry) and clears the stale claim.
+/// A real lost attempt becomes `Failed`; a legacy pre-attempt projection stays
+/// visibly `InProgress` with reconciliation evidence. Neither is silently
+/// made dispatchable. `Open` tasks only lose an impossible stale claim.
+/// Returns the number of tasks reconciled.
 ///
 /// This is the safety net the eager paths (`wg reset`, `wg retry`) cannot
 /// cover: kill -9, OOM, panic-before-cleanup, host reboot. The eager
@@ -483,15 +445,6 @@ pub fn reconcile_orphaned_tasks(dir: &Path, graph_path: &Path) -> Result<usize> 
             .tasks()
             .filter(|task| matches!(task.status, Status::InProgress | Status::Open))
             .filter_map(|task| {
-                // A task-owned accepted promotion/output is stronger than a
-                // dead-process observation. Exact cleanup/convergence retains
-                // authority and the orphan sweep must stay observational.
-                if task.status == Status::InProgress
-                    && (has_replayable_save_transaction(dir, task)
-                        || has_exact_durable_success(dir, task))
-                {
-                    return None;
-                }
                 // Pi's exact process-exit/finalization lane remains authority
                 // after the wrapper dies, including after a terminal intent
                 // consumes continuation budget. Generic orphan recovery must
@@ -587,19 +540,18 @@ pub fn reconcile_orphaned_tasks(dir: &Path, graph_path: &Path) -> Result<usize> 
                         format!("reconcile-claim:{task_id}:{generation}"),
                     )
                 } else if orphan_before_spawn {
-                    // Split-save/orphan reconciliation can observe a legacy
-                    // InProgress projection before reservation created an
-                    // attempt, session, or worktree. AttemptLost correctly
-                    // rejects that shape. It is exact zero-WIP evidence, so
-                    // create one fenced generation and make it dispatchable
-                    // rather than silently leaving InProgress forever.
+                    // This is a legacy split-save shape with no exact attempt
+                    // to fail. Record the inconsistency and leave it visibly
+                    // blocked; an operator must repair it explicitly.
                     TransitionRequest::new(
-                        TransitionKind::GenerationCreated,
+                        TransitionKind::ReconciliationIssue {
+                            issue_id: format!("orphan-before-spawn:{task_id}:{generation}"),
+                        },
                         LifecycleActor {
                             kind: ActorKind::Reconciler,
                             id: "coordinator".to_string(),
                         },
-                        "orphan_before_spawn_retry",
+                        "orphan_before_spawn",
                         format!("reconcile-before-spawn:{task_id}:{generation}"),
                     )
                 } else {
@@ -628,8 +580,10 @@ pub fn reconcile_orphaned_tasks(dir: &Path, graph_path: &Path) -> Result<usize> 
                 task.started_at = None;
                 let kind = if was_open {
                     "stale-claim cleared"
+                } else if orphan_before_spawn {
+                    "pre-attempt orphan held for explicit repair"
                 } else {
-                    "task recovered from orphaned state"
+                    "lost attempt recorded as failed"
                 };
                 task.log.push(LogEntry {
                     timestamp: Utc::now().to_rfc3339(),
@@ -861,19 +815,18 @@ mod tests {
 
         assert!(count >= 1, "Should reconcile at least one task");
 
-        // This legacy split-save shape has no attempt/session/worktree to lose.
-        // It converges through one explicit before-spawn generation instead of
-        // calling AttemptLost (which correctly requires an attempt) and
-        // silently leaving the row InProgress.
+        // This legacy split-save shape has no exact attempt to fail. It stays
+        // visibly blocked and records a reconciliation issue rather than
+        // manufacturing a new dispatchable generation.
         let graph = load_graph(&gpath).unwrap();
         let task = graph.get_task("stuck-task").unwrap();
-        assert_eq!(task.status, Status::Open);
-        assert_eq!(task.lifecycle.generation, 1);
+        assert_eq!(task.status, Status::InProgress);
+        assert_eq!(task.lifecycle.generation, 0);
         assert!(
             task.lifecycle
                 .audit
                 .iter()
-                .any(|event| { event.reason_code == "orphan_before_spawn_retry" })
+                .any(|event| { event.reason_code == "orphan_before_spawn" })
         );
         assert!(task.assigned.is_none());
         assert!(task.log.last().unwrap().message.contains("Reconciliation"));
@@ -1163,10 +1116,18 @@ mod tests {
             Status::InProgress,
             "compact-loop task must remain InProgress"
         );
+        let plain = g2.get_task("plain-stuck").unwrap();
         assert_eq!(
-            g2.get_task("plain-stuck").unwrap().status,
-            Status::Open,
-            "untagged before-spawn orphan should receive one explicit generation, not remain silent"
+            plain.status,
+            Status::InProgress,
+            "untagged before-spawn orphan must remain visibly blocked"
+        );
+        assert!(
+            plain
+                .lifecycle
+                .audit
+                .iter()
+                .any(|event| { event.reason_code == "orphan_before_spawn" })
         );
     }
 
