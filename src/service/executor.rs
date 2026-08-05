@@ -1948,6 +1948,7 @@ mod tests {
             input_dependencies: vec![],
             requires: vec![],
             completion_contract: crate::graph::CompletionContract::Land,
+            completion_candidate: None,
             completion_disposition: None,
             completion_receipt: None,
             tags: vec![],

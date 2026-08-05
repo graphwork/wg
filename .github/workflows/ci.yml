@@ -115,6 +115,7 @@ jobs:
           --test simple_land_lean_oracle
           --test completion_manifest_resolver
           --test completion_review_valve
+          --test completion_task_projection
 
   integration:
     name: Integration Tests (stable)

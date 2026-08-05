@@ -728,6 +728,12 @@ pub struct Task {
     /// Typed completion promise. Historical/omitted rows default to `land`.
     #[serde(default, skip_serializing_if = "is_land_contract")]
     pub completion_contract: CompletionContract,
+    /// Immutable candidate and review references for the worker-owned
+    /// completion protocol. These are compact graph projections, not a second
+    /// scheduler or transaction state machine. Replacing the manifest clears
+    /// both review references.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion_candidate: Option<crate::completion_task::CompletionCandidateRefs>,
     /// Receipt-backed terminal result. Historical Done land tasks omit this
     /// and are treated as legacy Landed by dependency compatibility logic.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1057,6 +1063,7 @@ impl Default for Task {
             input_dependencies: vec![],
             requires: vec![],
             completion_contract: CompletionContract::Land,
+            completion_candidate: None,
             completion_disposition: None,
             completion_receipt: None,
             tags: vec![],
@@ -2195,6 +2202,8 @@ struct TaskHelper {
     #[serde(default)]
     completion_contract: CompletionContract,
     #[serde(default)]
+    completion_candidate: Option<crate::completion_task::CompletionCandidateRefs>,
+    #[serde(default)]
     completion_disposition: Option<CompletionDisposition>,
     #[serde(default)]
     completion_receipt: Option<String>,
@@ -2410,6 +2419,7 @@ impl<'de> Deserialize<'de> for Task {
             input_dependencies: helper.input_dependencies,
             requires: helper.requires,
             completion_contract: helper.completion_contract,
+            completion_candidate: helper.completion_candidate,
             completion_disposition: helper.completion_disposition,
             completion_receipt: helper.completion_receipt,
             tags: helper.tags,

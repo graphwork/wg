@@ -547,6 +547,64 @@ impl CompletionArtifactStore {
         })
     }
 
+    /// Read and re-hash one immutable artifact through a single descriptor.
+    /// Callers use this for requirements, summaries and review receipts; it
+    /// never reopens a mutable source path.
+    pub fn read_artifact(
+        &self,
+        artifact: &ArtifactOutput,
+        max_bytes: u64,
+    ) -> Result<Vec<u8>, ArtifactStoreError> {
+        if artifact.immutable_locator.digest() != &artifact.content_digest {
+            return Err(ArtifactStoreError::InvalidObject(
+                "artifact locator does not match its declared digest".to_string(),
+            ));
+        }
+        if artifact.size > max_bytes {
+            return Err(ArtifactStoreError::InvalidObject(format!(
+                "artifact size {} exceeds read limit {}",
+                artifact.size, max_bytes
+            )));
+        }
+        verify_and_read_object(
+            &self.object_path(&artifact.content_digest),
+            &artifact.content_digest,
+            artifact.size,
+            "completion artifact",
+            true,
+        )
+        .map_err(|error| ArtifactStoreError::InvalidObject(error.to_string()))?
+        .ok_or_else(|| ArtifactStoreError::InvalidObject("artifact bytes unavailable".to_string()))
+    }
+
+    pub fn read_manifest(
+        &self,
+        manifest_ref: &CompletionManifestRef,
+        max_bytes: u64,
+    ) -> Result<CompletionManifest, ArtifactStoreError> {
+        let artifact = ArtifactOutput {
+            content_digest: manifest_ref.content_digest.clone(),
+            immutable_locator: manifest_ref.immutable_locator.clone(),
+            media_type: "application/vnd.worksgood.completion+json".to_string(),
+            size: manifest_ref.size,
+            review_projection: None,
+        };
+        let bytes = self.read_artifact(&artifact, max_bytes)?;
+        let manifest: CompletionManifest = serde_json::from_slice(&bytes)
+            .map_err(|error| ArtifactStoreError::InvalidObject(error.to_string()))?;
+        let canonical = manifest
+            .canonical_bytes()
+            .map_err(|error| ArtifactStoreError::InvalidObject(error.to_string()))?;
+        if canonical != bytes
+            || manifest.digest().ok().as_ref() != Some(&manifest_ref.content_digest)
+        {
+            return Err(ArtifactStoreError::InvalidObject(
+                "stored manifest is not the canonical manifest named by its reference".to_string(),
+            ));
+        }
+        Ok(manifest)
+    }
+
     pub fn evidence_from_bytes(
         &self,
         bytes: &[u8],
@@ -581,6 +639,8 @@ pub enum ArtifactStoreError {
     Symlink(PathBuf),
     #[error("existing immutable object is invalid: {0}")]
     ExistingObject(String),
+    #[error("immutable object reference is invalid: {0}")]
+    InvalidObject(String),
     #[error("media type must not be empty")]
     InvalidMediaType,
     #[error("evidence kind must not be empty")]
