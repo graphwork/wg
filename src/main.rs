@@ -1296,13 +1296,43 @@ fn main() -> Result<()> {
             commands::finalize::set_contract(&workgraph_dir, &id, &contract)
         }
         Commands::Finalize { command } => {
-            commands::finalize::run_finalize(&workgraph_dir, command, cli.json)
+            if matches!(
+                &command,
+                FinalizeCommands::Status { .. } | FinalizeCommands::Gc { dry_run: true }
+            ) {
+                commands::finalize::run_finalize(&workgraph_dir, command, cli.json)
+            } else {
+                anyhow::bail!(
+                    "legacy finalization mutation is retired; use `wg submit`, `wg land`, and `wg done`"
+                )
+            }
         }
         Commands::Candidate { command } => {
-            commands::finalize::run_candidate(&workgraph_dir, command, cli.json)
+            if matches!(
+                &command,
+                CandidateCommands::Show { .. }
+                    | CandidateCommands::Verify { .. }
+                    | CandidateCommands::Materialize { .. }
+                    | CandidateCommands::RecoverControlPlane { yes: false }
+            ) {
+                commands::finalize::run_candidate(&workgraph_dir, command, cli.json)
+            } else {
+                anyhow::bail!(
+                    "legacy candidate mutation is retired; immutable completion objects are read-only"
+                )
+            }
         }
         Commands::MergeResolution { command } => {
-            commands::merge_resolution::run(&workgraph_dir, command, cli.json)
+            if matches!(
+                &command,
+                MergeResolutionCommands::Status { .. } | MergeResolutionCommands::Inspect { .. }
+            ) {
+                commands::merge_resolution::run(&workgraph_dir, command, cli.json)
+            } else {
+                anyhow::bail!(
+                    "legacy merge-resolution mutation is retired; repair and resubmit from the same worker"
+                )
+            }
         }
         Commands::Fail {
             id,
@@ -1311,7 +1341,9 @@ fn main() -> Result<()> {
             eval_reject,
         } => {
             if eval_reject {
-                commands::fail::run_eval_reject(&workgraph_dir, &id, reason.as_deref())
+                anyhow::bail!(
+                    "legacy evaluation rejection is retired; manifest review findings return to the same worker"
+                )
             } else {
                 let failure_class = class.as_deref().and_then(parse_failure_class);
                 commands::fail::run(&workgraph_dir, &id, reason.as_deref(), failure_class)
@@ -2652,54 +2684,11 @@ fn main() -> Result<()> {
             cli.json,
         ),
         Commands::Evaluate { command } => match command {
-            EvaluateCommands::Run {
-                task,
-                evaluator_model,
-                dry_run,
-                flip,
-                bounded,
-            } => {
-                if flip {
-                    commands::evaluate::run_deep_readonly(
-                        &workgraph_dir,
-                        &task,
-                        evaluator_model.as_deref(),
-                        dry_run,
-                        cli.json,
-                    )
-                } else if bounded {
-                    commands::evaluate::run_bounded_canary(
-                        &workgraph_dir,
-                        &task,
-                        evaluator_model.as_deref(),
-                        dry_run,
-                        cli.json,
-                    )
-                } else {
-                    commands::evaluate::run(
-                        &workgraph_dir,
-                        &task,
-                        evaluator_model.as_deref(),
-                        dry_run,
-                        cli.json,
-                    )
-                }
+            EvaluateCommands::Run { .. } | EvaluateCommands::Record { .. } => {
+                anyhow::bail!(
+                    "legacy evaluation mutation is retired; `wg submit` runs exact manifest-bound FLIP then eval"
+                )
             }
-            EvaluateCommands::Record {
-                task,
-                score,
-                source,
-                notes,
-                dimensions,
-            } => commands::evaluate::run_record(
-                &workgraph_dir,
-                &task,
-                score,
-                &source,
-                notes.as_deref(),
-                &dimensions,
-                cli.json,
-            ),
             EvaluateCommands::Show {
                 task_detail,
                 task,
@@ -2716,30 +2705,12 @@ fn main() -> Result<()> {
                 task_detail.as_deref(),
             ),
             EvaluateCommands::Rollout { command } => match command {
-                EvaluationRolloutCommands::Start => {
-                    commands::evaluate::rollout_start(&workgraph_dir, cli.json)
-                }
                 EvaluationRolloutCommands::Status => {
                     commands::evaluate::rollout_status(&workgraph_dir, cli.json)
                 }
-                EvaluationRolloutCommands::Advance { stage, evidence } => {
-                    commands::evaluate::rollout_advance(
-                        &workgraph_dir,
-                        &stage,
-                        evidence.as_deref(),
-                        cli.json,
-                    )
-                }
-                EvaluationRolloutCommands::RecordObservation { evidence } => {
-                    commands::evaluate::rollout_record_observation(
-                        &workgraph_dir,
-                        &evidence,
-                        cli.json,
-                    )
-                }
-                EvaluationRolloutCommands::Rollback { reason } => {
-                    commands::evaluate::rollout_rollback(&workgraph_dir, &reason, cli.json)
-                }
+                _ => anyhow::bail!(
+                    "legacy evaluation rollout mutation is retired; completion review is universal"
+                ),
             },
         },
         Commands::Watch {

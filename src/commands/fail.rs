@@ -68,19 +68,6 @@ fn run_inner(
     class: Option<FailureClass>,
     eval_reject: bool,
 ) -> Result<()> {
-    // A task-owned `wg done` returns only after an accepted promotion/output
-    // receipt is durable. From that boundary onward wrapper/provider exit is
-    // diagnostic evidence, not a competing terminal writer. This check is
-    // exact-source fenced and intentionally does not cover legacy status-only
-    // Done rows or semantic evaluation rejection.
-    if !eval_reject && contain_late_failure_after_durable_success(dir, id, reason, class)? {
-        println!(
-            "Task '{}' already has exact durable successful finalization; retained late process failure as diagnostic only",
-            id
-        );
-        return Ok(());
-    }
-
     // Pre-check with a non-atomic read (gate only — not used for mutation).
     {
         let (graph, _path) = super::load_workgraph_mut(dir)?;
@@ -109,65 +96,6 @@ fn run_inner(
         // this state is the primary path. External `wg fail` is also allowed
         // (no special-case needed — the generic "anything non-terminal can be
         // failed" branch below covers it).
-    }
-
-    // Pi terminal tools reserve intent while the source handler can still
-    // write. The post-wait wrapper calls `wg finalize settle`, which re-enters
-    // here with WG_HANDLER_QUIESCENT=1 and rescue-checkpoints before failure.
-    let in_isolated_worktree = std::env::var_os("WG_WORKTREE_PATH").is_some()
-        && std::env::var("WG_TASK_ID").as_deref() == Ok(id);
-    let handler_quiescent = std::env::var("WG_HANDLER_QUIESCENT").as_deref() == Ok("1");
-    if !eval_reject
-        && in_isolated_worktree
-        && !handler_quiescent
-        && std::env::var("WG_EXECUTOR_TYPE").as_deref() == Ok("pi")
-    {
-        let tool_call = format!(
-            "wg-fail:{}",
-            std::env::var("WG_SPAWN_RUN_ID").unwrap_or_else(|_| id.to_string())
-        );
-        super::pi_watchdog::reserve_worker_terminal(
-            dir,
-            id,
-            worksgood::pi_watchdog::TerminalDisposition::Failure,
-            &tool_call,
-        )?;
-        println!(
-            "Failure intent reserved for '{}'; exact writer will be fenced and WIP rescued after exit",
-            id
-        );
-        return Ok(());
-    }
-
-    let mut finalization_rescue_id: Option<String> = None;
-    if !eval_reject && in_isolated_worktree && handler_quiescent {
-        let context = super::finalize::context_from_current(dir, id, None, None, false)?;
-        let store = worksgood::finalization::FinalizationStore::open(dir)?;
-        let retained = worksgood::finalization::checkpoint_rescue(&store, &context, false)?;
-        finalization_rescue_id = retained.rescue.as_ref().map(|r| r.rescue_id.clone());
-        eprintln!(
-            "[finalize] failure rescue={} commit={} tree={} manifest={} retained (no candidate correctness claim)",
-            retained
-                .rescue
-                .as_ref()
-                .map(|r| r.rescue_id.as_str())
-                .unwrap_or("none"),
-            retained
-                .rescue
-                .as_ref()
-                .map(|r| r.rescue_commit_oid.as_str())
-                .unwrap_or("none"),
-            retained
-                .rescue
-                .as_ref()
-                .map(|r| r.rescue_tree_oid.as_str())
-                .unwrap_or("none"),
-            retained
-                .rescue
-                .as_ref()
-                .map(|r| r.manifest_cid.as_str())
-                .unwrap_or("none"),
-        );
     }
 
     let path = super::graph_path(dir);
@@ -316,9 +244,6 @@ fn run_inner(
         );
         if task.lifecycle.current_attempt.is_some() {
             request.expected = FenceExpectation::current(task);
-        }
-        if let Some(ref rescue_id) = finalization_rescue_id {
-            request.evidence_refs.push(rescue_id.clone());
         }
         if let Err(rejection) = apply_transition(task, request) {
             transition_rejection = Some(rejection.to_string());
@@ -479,6 +404,7 @@ fn run_inner(
     Ok(())
 }
 
+#[cfg(test)]
 fn contain_late_failure_after_durable_success(
     dir: &Path,
     id: &str,
@@ -733,7 +659,7 @@ mod tests {
     }
 
     #[test]
-    fn formal_incident_durable_land_then_provider_timeout_stays_successful() {
+    fn legacy_finalization_receipt_cannot_suppress_current_failure() {
         let dir = tempdir().unwrap();
         let task = running_task("formalize-lifecycle-finish-lean4", "agent-formal");
         let tx = incident_transaction(&task, true, false);
@@ -750,20 +676,19 @@ mod tests {
 
         let graph = load_graph(graph_path(dir.path())).unwrap();
         let task = graph.get_task("formalize-lifecycle-finish-lean4").unwrap();
-        assert_eq!(task.status, Status::InProgress);
-        assert_eq!(task.retry_count, 0);
+        assert_eq!(task.status, Status::Failed);
+        assert_eq!(task.retry_count, 1);
         assert!(
-            !task
-                .lifecycle
+            task.lifecycle
                 .audit
                 .iter()
                 .any(|event| event.event_kind == "attempt-failed")
         );
-        assert!(task.log.iter().any(|entry| {
-            entry.actor.as_deref() == Some("late-process-diagnostic")
-                && entry.message.contains("provider timeout")
-                && entry.message.contains("347a1696")
-        }));
+        assert!(
+            task.log
+                .iter()
+                .all(|entry| { entry.actor.as_deref() != Some("late-process-diagnostic") })
+        );
     }
 
     #[test]

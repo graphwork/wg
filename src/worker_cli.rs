@@ -4,14 +4,12 @@
 //! either translated to a typed worker operation or refused. There is no
 //! filesystem graph fallback, even when cwd happens to contain a guessed `.wg`.
 
-use crate::cli::{Commands, FinalizeCommands, MsgCommands, PiWatchdogCommands};
+use crate::cli::{Commands, MsgCommands, PiWatchdogCommands};
 use crate::commands;
 use anyhow::{Context, Result};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use worksgood::worker_control::{
-    FinishHandoffAction, WORKER_CONTROL_PROTOCOL, WorkerOperation, WorkerRequestEnvelope,
-};
+use worksgood::worker_control::{WORKER_CONTROL_PROTOCOL, WorkerOperation, WorkerRequestEnvelope};
 
 fn task_matches(task: &str) -> Result<()> {
     let own = std::env::var("WG_TASK_ID").context("worker capability missing WG_TASK_ID")?;
@@ -339,21 +337,9 @@ pub fn maybe_run(command: &Commands, json: bool) -> Result<Option<()>> {
                 class: class.clone(),
             })
         }
-        Commands::Finalize { command } => match command {
-            FinalizeCommands::Settle { id } => {
-                task_matches(id)?;
-                Some(WorkerOperation::FinishHandoff {
-                    action: FinishHandoffAction::Settle,
-                })
-            }
-            FinalizeCommands::Cleanup { id } => {
-                task_matches(id)?;
-                Some(WorkerOperation::FinishHandoff {
-                    action: FinishHandoffAction::Cleanup,
-                })
-            }
-            _ => anyhow::bail!("worker_control.direct_finalization_refused"),
-        },
+        Commands::Finalize { .. } => {
+            anyhow::bail!("worker_control.legacy_finalization_retired")
+        }
         Commands::PiWatchdog { command } => match command {
             PiWatchdogCommands::Bootstrap {
                 id,

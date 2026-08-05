@@ -116,7 +116,6 @@ impl WorkerOperationKind {
             Self::Land,
             Self::DoneHandoff,
             Self::FailHandoff,
-            Self::FinishHandoff,
             Self::PiWatchdog,
             Self::Telemetry,
             Self::Heartbeat,
@@ -132,12 +131,6 @@ impl WorkerOperationKind {
             Self::Log,
             Self::ArtifactList,
             Self::DependencyArtifactRead,
-            // DoneHandoff is a one-way semantic reservation, but the exact
-            // fenced owner must retain authority to drive the already-durable
-            // transaction through settle/cleanup. Revoking FinishHandoff here
-            // stranded every Prepared transaction in Quiescing and caused the
-            // dispatcher to respawn the same completed worker indefinitely.
-            Self::FinishHandoff,
             Self::PiWatchdog,
             Self::Telemetry,
             Self::Heartbeat,
@@ -1294,7 +1287,7 @@ mod tests {
                 .contains(&WorkerOperationKind::FailHandoff)
         );
         assert!(
-            reserved
+            !reserved
                 .allowed_operations
                 .contains(&WorkerOperationKind::FinishHandoff)
         );
