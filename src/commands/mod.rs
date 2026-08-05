@@ -35,6 +35,8 @@ pub mod claude_handler;
 pub mod cleanup;
 pub mod codex_handler;
 pub mod codex_oai_compat;
+#[cfg(test)]
+mod completion_canary_tests;
 pub mod completion_done;
 pub mod completion_land;
 pub mod completion_submit;

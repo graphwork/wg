@@ -116,6 +116,10 @@ jobs:
           --test completion_manifest_resolver
           --test completion_review_valve
           --test completion_task_projection
+          --test legacy_completion_authority_retired
+
+      - name: Hermetic worker-owned completion canary
+        run: cargo test --locked --bin wg commands::completion_canary_tests
 
   integration:
     name: Integration Tests (stable)
