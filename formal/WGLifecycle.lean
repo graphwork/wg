@@ -4,3 +4,4 @@ import WGLifecycle.Convergence
 import WGLifecycle.Incident
 import WGLifecycle.Golden
 import WGLifecycle.DaemonPlanner
+import WGLifecycle.SimpleLand
