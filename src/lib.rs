@@ -31,6 +31,7 @@ pub mod check;
 pub mod completion_evidence;
 pub mod completion_manifest;
 pub mod completion_review;
+pub mod completion_review_model;
 pub mod concierge;
 pub mod config;
 pub mod config_defaults;
