@@ -29,6 +29,9 @@ cat >"$project/worker.sh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 [[ ! -e .wg ]] || { echo 'worker unexpectedly sees graph control plane' >&2; exit 81; }
+launches=0
+[[ -f "$EVIDENCE_DIR/launch-count" ]] && launches=$(cat "$EVIDENCE_DIR/launch-count")
+printf '%s\n' "$((launches + 1))" >"$EVIDENCE_DIR/launch-count"
 mkdir -p docs
 printf 'atomic graph/work save design\n' > docs/atomic-save.md
 git add docs/atomic-save.md
@@ -52,27 +55,48 @@ wgrun() {
 }
 wgrun add "brokered deliverable preflight" --id brokered-deliverable-preflight \
   -d $'Commit the design only in the retained worker worktree.\n\n## Deliverables\n- docs/atomic-save.md\n' >/dev/null
-wgrun finalize contract brokered-deliverable-preflight report >/dev/null
+wgrun finalize contract brokered-deliverable-preflight deliver >/dev/null
+wgrun add "brokered completion dependent" --id brokered-completion-dependent \
+  --after brokered-deliverable-preflight \
+  -d $'The exact completion/v2 GraphSave must satisfy this typed contribution dependency.\n\n## Validation\n- source is Done and Cleaned before readiness\n' >/dev/null
+wgrun finalize input brokered-completion-dependent --from brokered-deliverable-preflight >/dev/null
 wgrun publish brokered-deliverable-preflight --only >/dev/null
 start_wg_daemon "$project" --max-agents 1 --no-coordinator-agent --no-supervise
 
+status=''
+finish_phase=''
 for _ in $(seq 1 360); do
-  [[ -s "$evidence/worker-finished" ]] && break
-  status=$(wgrun show brokered-deliverable-preflight --json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status",""))' 2>/dev/null || true)
+  read -r status finish_phase < <(wgrun show brokered-deliverable-preflight --json 2>/dev/null | python3 -c 'import json,sys; j=json.load(sys.stdin); print(j.get("status",""), j.get("finish_phase",""))' 2>/dev/null || true)
   [[ $status == failed || $status == abandoned ]] && loud_fail "brokered worker terminal status: $status"
+  [[ $status == done && $finish_phase == Cleaned && -s "$evidence/worker-finished" ]] && break
   sleep 0.25
 done
-if [[ ! -s "$evidence/worker-finished" ]]; then
+if [[ $status != done || $finish_phase != Cleaned || ! -s "$evidence/worker-finished" ]]; then
   diagnostics=$(find "$project/.wg/agents" -type f -maxdepth 3 -print -exec tail -30 {} \; 2>/dev/null || true)
-  loud_fail "brokered worker did not complete; wrapper=$(tail -30 "$project/daemon.log" 2>/dev/null || true); daemon=$(tail -60 "$project/.wg/service/daemon.log" 2>/dev/null || true); agents=$diagnostics"
+  loud_fail "brokered worker did not reach Done/Cleaned; status=$status finish=$finish_phase wrapper=$(tail -30 "$project/daemon.log" 2>/dev/null || true); daemon=$(tail -60 "$project/.wg/service/daemon.log" 2>/dev/null || true); agents=$diagnostics"
 fi
 [[ ! -e "$project/docs/atomic-save.md" ]] || loud_fail "deliverable was copied into graph root"
 oid=$(cat "$evidence/commit")
 git -C "$project" show "$oid:docs/atomic-save.md" | grep -qx 'atomic graph/work save design' \
   || loud_fail "committed worktree-only deliverable is missing"
-grep -q '"handoff":"done"' "$evidence/first" || loud_fail "first brokered done was not accepted"
+grep -q '"handoff":"accepted"' "$evidence/first" || loud_fail "first brokered done was not accepted"
 cmp -s "$evidence/first" "$evidence/replay" || loud_fail "stable broker request did not replay idempotently"
 grep -q '"outcome":"replayed"' "$project/.wg/service/worker-capability-audit.jsonl" \
   || loud_fail "broker replay audit evidence missing"
+[[ $(cat "$evidence/launch-count") == 1 ]] || loud_fail "Prepared completion respawned its source: $(cat "$evidence/launch-count") launches"
+python3 - "$project/.wg/completion/v2/transactions" <<'PY' \
+  || loud_fail "exact completion/v2 transaction did not reach GraphSaved"
+import json, pathlib, sys
+heads=list(pathlib.Path(sys.argv[1]).glob('*/head.json'))
+rows=[json.loads(p.read_text()) for p in heads]
+rows=[r for r in rows if r.get('source',{}).get('task_id')=='brokered-deliverable-preflight']
+assert len(rows)==1, rows
+assert rows[0]['phase']=='graph-saved', rows[0]
+PY
+wgrun service stop >/dev/null 2>&1 || true
+wgrun publish brokered-completion-dependent --only >/dev/null
+ready=$(wgrun ready)
+[[ $(grep -c 'brokered-completion-dependent' <<<"$ready" || true) == 1 ]] \
+  || loud_fail "Done/Cleaned source did not unlock its dependent exactly once: $ready"
 
-echo "PASS: committed deliverable present only in the authenticated retained worktree passed brokered preflight, task-owned completion ran without copying to root, and the exact lost-response retry replayed idempotently"
+echo "PASS: real brokered wg done advanced its exact Prepared completion/v2 intent to GraphSaved + Done/Cleaned without respawn, preserved the authenticated worktree deliverable, replayed response loss idempotently, and unlocked its dependent exactly once"

@@ -2962,8 +2962,11 @@ timeout_seconds = 180
 [[scenario]]
 name = "brokered_deliverable_worktree_preflight"
 script = "scenarios/brokered_deliverable_worktree_preflight.sh"
-owners = ["fix-brokered-deliverable-preflight-worktree"]
-description = "Candidate-binary credential-free real-daemon/Fake-Pi regression for the self-hosting completion incident: a capability-brokered worker commits its declared deliverable only in the authenticated retained worktree, brokered done preflights those exact bytes and enters task-owned finalization without copying into graph root, and an exact lost-response request replay returns idempotently."
+owners = [
+    "fix-brokered-deliverable-preflight-worktree",
+    "convergence-cutover-dispatch-route",
+]
+description = "Candidate-binary credential-free real-daemon/Fake-Pi regression for the self-hosting completion incident: a capability-brokered worker commits its declared deliverable only in the authenticated retained worktree; real wg done durably prepares and advances the exact completion/v2 transaction to GraphSaved plus Done/Cleaned without source respawn; response loss replays idempotently; and the terminal receipt unlocks one dependent without copying bytes into the graph root."
 timeout_seconds = 180
 
 [[scenario]]

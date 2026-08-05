@@ -568,7 +568,7 @@ pub fn lookup_capability(dir: &Path, token: &str) -> Result<AttemptCapabilityBin
     // graph tuple must still name this exact owner, the locked spawn registry
     // must name one existing alternate path, and no save transaction may have
     // begun under the old identity. No source/owner/observer bytes are edited.
-    if !Path::new(&binding.worktree_path).exists() {
+    if !Path::new(&binding.worktree_path).exists() && dir.join("graph.jsonl").exists() {
         let graph = crate::parser::load_graph(dir.join("graph.jsonl"))?;
         let exact_owner = graph.get_task(&binding.task_id).is_some_and(|task| {
             task.lifecycle.generation == binding.generation

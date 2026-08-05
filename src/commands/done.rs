@@ -1723,6 +1723,43 @@ fn pick_done_target_status(
     }
 }
 
+fn create_user_board_successor_after_done(dir: &Path, id: &str) {
+    let Ok(graph) = worksgood::parser::load_graph(super::graph_path(dir)) else {
+        return;
+    };
+    if graph
+        .get_task(id)
+        .is_none_or(|task| !task.tags.iter().any(|tag| tag == "user-board"))
+    {
+        return;
+    }
+    let Some(handle) = user_board_handle(id) else {
+        return;
+    };
+    let successor = create_user_board_task(handle, user_board_seq(id).unwrap_or(0) + 1);
+    let successor_id = successor.id.clone();
+    drop(graph);
+    if let Err(error) = modify_graph(super::graph_path(dir), |graph| {
+        let mut changed = false;
+        if let Some(task) = graph.get_task_mut(id)
+            && !task.tags.iter().any(|tag| tag == "archived")
+        {
+            task.tags.push("archived".into());
+            changed = true;
+        }
+        if graph.get_task(&successor_id).is_none() {
+            graph.add_node(Node::Task(successor.clone()));
+            changed = true;
+        }
+        changed
+    }) {
+        eprintln!("Warning: failed to create successor board: {error}");
+    } else {
+        println!("Created successor board '{successor_id}'");
+        super::notify_graph_changed(dir);
+    }
+}
+
 fn post_graphsave_done_compat(
     dir: &Path,
     id: &str,
@@ -1769,6 +1806,16 @@ fn post_graphsave_done_compat(
         }
         let _ = locked_registry.save_ref();
     }
+    let config = worksgood::config::Config::load_or_default(dir);
+    let _ = worksgood::provenance::record(
+        dir,
+        "done",
+        Some(id),
+        actor,
+        serde_json::json!({ "completion": "graph-save" }),
+        config.log.rotation_threshold,
+    );
+    create_user_board_successor_after_done(dir, id);
     Ok(())
 }
 
@@ -3193,32 +3240,8 @@ fn run_inner(
         println!("Marked '{}' as done", id);
     }
 
-    // User board auto-increment: if a user board is archived (done), create the successor.
-    if let Some(task) = graph.get_task(id)
-        && task.tags.iter().any(|t| t == "user-board")
-        && let Some(handle) = user_board_handle(id)
-    {
-        let current_seq = user_board_seq(id).unwrap_or(0);
-        let next_seq = current_seq + 1;
-        let successor = create_user_board_task(handle, next_seq);
-        let successor_id = successor.id.clone();
-        let graph_path = super::graph_path(dir);
-        if let Err(e) = modify_graph(&graph_path, |graph| {
-            // Also add 'archived' tag to the current board
-            if let Some(t) = graph.get_task_mut(id)
-                && !t.tags.contains(&"archived".to_string())
-            {
-                t.tags.push("archived".to_string());
-            }
-            graph.add_node(Node::Task(successor));
-            true
-        }) {
-            eprintln!("Warning: failed to create successor board: {}", e);
-        } else {
-            println!("Created successor board '{}'", successor_id);
-            super::notify_graph_changed(dir);
-        }
-    }
+    // User board auto-increment is shared with the GraphSave fast path.
+    create_user_board_successor_after_done(dir, id);
 
     for task_id in &cycle_reactivated {
         println!("  Cycle: re-activated '{}'", task_id);

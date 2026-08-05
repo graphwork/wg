@@ -270,7 +270,7 @@ fn prepare_graph_save(
     reason_code: &str,
 ) -> Result<(GraphSaveBundle, SaveTransactionState)> {
     let source = source_key(dir, task)?;
-    prepare_graph_save_for_source(dir, task, reason_code, source, None)
+    prepare_graph_save_for_source(dir, task, reason_code, source, None, true)
 }
 
 fn prepare_graph_save_for_source(
@@ -279,6 +279,7 @@ fn prepare_graph_save_for_source(
     reason_code: &str,
     source: AttemptSaveKey,
     legacy: Option<&worksgood::finalization::FinalizationTransaction>,
+    advance_transaction: bool,
 ) -> Result<(GraphSaveBundle, SaveTransactionState)> {
     if task.status == worksgood::graph::Status::Done && legacy.is_none() {
         bail!("terminal task '{}' is already done", task.id);
@@ -317,13 +318,19 @@ fn prepare_graph_save_for_source(
         CompletionContract::Deliver => CompletionDisposition::Delivered,
         CompletionContract::Report => CompletionDisposition::Reported,
     };
+    let legacy_validation = legacy.and_then(|transaction| transaction.validation.as_ref());
     let intent = CompletionIntentReceipt {
         header: header(),
         source: source.clone(),
         contract,
         terminal_reservation_cid: format!("terminal:{}:{}", task.id, source.attempt_id),
         capture_policy_cid: "policy:terminal-adapter-capture-v2".into(),
-        validation_policy_cid: "policy:terminal-adapter-validation-v2".into(),
+        // The bridge may only project the exact validation mechanics that
+        // already ran. Bind the v2 intent to that durable legacy policy rather
+        // than inventing a second policy identifier after the fact.
+        validation_policy_cid: legacy_validation
+            .map(|receipt| receipt.policy_cid.clone())
+            .unwrap_or_else(|| "policy:terminal-adapter-validation-v2".into()),
         flip_policy_cid: if reason_code.contains("waiver") {
             format!("policy:operator-waiver:{reason_code}")
         } else {
@@ -395,7 +402,6 @@ fn prepare_graph_save_for_source(
         immutable_ref: work_save.immutable_ref.clone(),
     };
     let candidate_cid = content_cid(&candidate).map_err(anyhow::Error::msg)?;
-    let legacy_validation = legacy.and_then(|transaction| transaction.validation.as_ref());
     if legacy.is_some() && legacy_validation.is_none_or(|receipt| !receipt.passed) {
         bail!("completion.bridge_validation_evidence_missing");
     }
@@ -557,6 +563,12 @@ fn prepare_graph_save_for_source(
     };
 
     let mut state = SaveTransactionState::new(source).map_err(anyhow::Error::msg)?;
+    if !advance_transaction {
+        // The brokered bridge already owns a Prepared transaction for this
+        // exact source. It needs only the evidence bundle; writing another
+        // head here would create a second authority slot for the same CID.
+        return Ok((bundle, state));
+    }
     let phases = [
         (
             SavePhase::Prepared,
@@ -1836,6 +1848,44 @@ pub(crate) fn cleanup_finish(
     Ok(())
 }
 
+fn load_persisted_graph_save(dir: &Path, state: &SaveTransactionState) -> Result<GraphSaveBundle> {
+    let graph_save_cid = state
+        .graph_save_cid
+        .as_deref()
+        .context("completion.bridge_graph_save_cid_missing")?;
+    let projected = completion_root(dir)
+        .join("graph-saves")
+        .join(&state.source.task_id)
+        .join(format!("{}.json", state.source.generation));
+    let mut candidates = vec![projected];
+    let objects = completion_root(dir).join("objects");
+    if objects.exists() {
+        for entry in std::fs::read_dir(&objects)? {
+            candidates.push(entry?.path());
+        }
+    }
+    for path in candidates {
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
+        };
+        let Ok(bundle) = serde_json::from_slice::<GraphSaveBundle>(&bytes) else {
+            continue;
+        };
+        if content_cid(&bundle.receipt).map_err(anyhow::Error::msg)? != graph_save_cid {
+            continue;
+        }
+        let verified = worksgood::completion_evidence::verify_graph_save_bundle(&bundle)
+            .map_err(anyhow::Error::msg)?;
+        if verified.binding.source != state.source {
+            bail!("completion.bridge_graph_save_source_mismatch");
+        }
+        return Ok(bundle);
+    }
+    bail!(
+        "completion.bridge_graph_save_bundle_missing: no immutable bundle for receipt {graph_save_cid}"
+    )
+}
+
 fn commit_brokered_cleaned_success(
     dir: &Path,
     task: &Task,
@@ -1845,11 +1895,7 @@ fn commit_brokered_cleaned_success(
     let mut state = worksgood::worker_control::load_save_transaction(dir, &initial.transaction_id)?
         .context("completion.bridge_transaction_missing")?;
     let bundle = if state.phase == SavePhase::GraphSaved {
-        let cid = state
-            .graph_save_cid
-            .as_deref()
-            .context("completion.bridge_graph_save_cid_missing")?;
-        worksgood::worker_control::load_completion_object(dir, cid)?
+        load_persisted_graph_save(dir, &state)?
     } else {
         prepare_graph_save_for_source(
             dir,
@@ -1857,6 +1903,7 @@ fn commit_brokered_cleaned_success(
             "brokered_done_exact_receipts",
             initial.source.clone(),
             Some(legacy),
+            false,
         )?
         .0
     };
@@ -1947,7 +1994,12 @@ fn commit_brokered_cleaned_success(
         )?;
     }
     if state.phase != SavePhase::GraphSaved {
-        let bundle_cid = worksgood::worker_control::store_completion_object(dir, &bundle)?;
+        // Persist the immutable bundle before the GraphSaved journal edge. A
+        // crash after the kernel commit must be able to replay projection from
+        // the exact receipt without rebuilding ambient Git/evaluation state.
+        worksgood::worker_control::store_completion_object(dir, &bundle)?;
+        persist_graph_save(dir, &task.id, task.lifecycle.generation, &bundle)?;
+        let expected_graph_save_cid = content_cid(&bundle.receipt).map_err(anyhow::Error::msg)?;
         state = worksgood::worker_control::commit_save_transition(
             dir,
             SaveTransitionRequest {
@@ -1962,14 +2014,16 @@ fn commit_brokered_cleaned_success(
                 },
             },
         )?;
-        if state.graph_save_cid.as_deref() != Some(bundle_cid.as_str()) {
-            bail!("completion.bridge_graph_save_object_mismatch");
+        if state.graph_save_cid.as_deref() != Some(expected_graph_save_cid.as_str()) {
+            bail!("completion.bridge_graph_save_receipt_mismatch");
         }
     }
     let graph_save_cid = state
         .graph_save_cid
         .clone()
         .context("completion.bridge_graph_save_cid_missing")?;
+    // Idempotently repair the rebuildable graph-save projection for older
+    // crash cuts that journaled GraphSaved before this ordering was installed.
     persist_graph_save(dir, &task.id, task.lifecycle.generation, &bundle)?;
     let mut rejection = None;
     modify_graph(dir.join("graph.jsonl"), |graph| {
@@ -2333,8 +2387,12 @@ pub fn task_owned_done(dir: &Path, id: &str, worktree_override: Option<&Path>) -
         return Ok(false);
     }
     let contract = task.completion_contract;
+    let brokered_prepare = crate::commands::service::in_worker_control_operation()
+        && worksgood::worker_control::save_transaction_for_task(dir, task)?.is_some();
     drop(graph);
-    record_terminal_prepare(dir, id, "task-owned-done")?;
+    if !brokered_prepare {
+        record_terminal_prepare(dir, id, "task-owned-done")?;
+    }
     checkpoint_uncommitted_source_work(dir, id, worktree_override)?;
     let store = FinalizationStore::open(dir)?;
     let lease = if contract == worksgood::graph::CompletionContract::Land {
