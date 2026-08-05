@@ -1265,15 +1265,14 @@ fn main() -> Result<()> {
             ignore_unmerged_worktree,
             full_smoke,
             skip_smoke,
-        } => commands::done::run(
-            &workgraph_dir,
-            &id,
-            converged,
-            skip_verify,
-            ignore_unmerged_worktree,
-            full_smoke,
-            skip_smoke,
-        ),
+        } => {
+            if converged || skip_verify || ignore_unmerged_worktree || full_smoke || skip_smoke {
+                anyhow::bail!(
+                    "legacy wg done bypass/merge/cycle flags are not supported by publication-derived completion"
+                );
+            }
+            commands::completion_done::run(&workgraph_dir, &id, "refs/heads/main")
+        }
         Commands::CompletionObject {
             path,
             media_type,

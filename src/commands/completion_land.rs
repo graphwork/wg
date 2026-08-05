@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use worksgood::completion_manifest::{GitOutput, OutputRef, ReviewResolver};
 use worksgood::completion_task::{load_exact_review_pair, load_submission_bytes};
-use worksgood::graph::{CompletionContract, CompletionDisposition, LogEntry, Status};
+use worksgood::graph::{CompletionContract, CompletionDisposition, LogEntry};
 use worksgood::identity::canonical_json;
 use worksgood::parser::{load_graph, modify_graph};
 
@@ -375,7 +375,7 @@ mod tests {
         ManifestReviewer, ReviewFinding, ReviewerKind, ReviewerUnavailable, SemanticReview,
         SemanticVerdict,
     };
-    use worksgood::graph::{Node, Task, WorkGraph};
+    use worksgood::graph::{Node, Status, Task, WorkGraph};
     use worksgood::parser::save_graph;
 
     struct PassReviewer {
@@ -566,6 +566,19 @@ mod tests {
         );
         assert!(task.completion_receipt.is_some());
         assert_eq!(task.status, Status::InProgress);
+
+        // Simulate a crash after the Git CAS but before a durable landing
+        // projection. Done is recovered from ancestry plus exact reviews.
+        modify_graph(fixture.dir.join("graph.jsonl"), |graph| {
+            let task = graph.get_task_mut("land-task").unwrap();
+            task.completion_disposition = None;
+            task.completion_receipt = None;
+            true
+        })
+        .unwrap();
+        super::super::completion_done::run(&fixture.dir, "land-task", "refs/heads/main").unwrap();
+        let graph = load_graph(fixture.dir.join("graph.jsonl")).unwrap();
+        assert_eq!(graph.get_task("land-task").unwrap().status, Status::Done);
     }
 
     #[test]

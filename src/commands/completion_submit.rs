@@ -31,6 +31,17 @@ pub fn put_object(
     media_type: &str,
     evidence_kind: Option<&str>,
 ) -> Result<()> {
+    let value = put_object_value(dir, path, media_type, evidence_kind)?;
+    println!("{}", serde_json::to_string_pretty(&value)?);
+    Ok(())
+}
+
+pub(crate) fn put_object_value(
+    dir: &Path,
+    path: &Path,
+    media_type: &str,
+    evidence_kind: Option<&str>,
+) -> Result<serde_json::Value> {
     reject_control_plane_source(dir, path, "completion object")?;
     let store = store(dir)?;
     let artifact = store.put_file(path, media_type)?;
@@ -38,19 +49,17 @@ pub fn put_object(
         if kind.trim().is_empty() {
             bail!("evidence kind must not be empty");
         }
-        let evidence = EvidenceRef {
+        Ok(serde_json::to_value(EvidenceRef {
             content_digest: artifact.content_digest,
             immutable_locator: artifact.immutable_locator,
             evidence_kind: kind.to_string(),
             media_type: artifact.media_type,
             size: artifact.size,
             review_projection: artifact.review_projection,
-        };
-        println!("{}", serde_json::to_string_pretty(&evidence)?);
+        })?)
     } else {
-        println!("{}", serde_json::to_string_pretty(&artifact)?);
+        Ok(serde_json::to_value(artifact)?)
     }
-    Ok(())
 }
 
 pub fn run(dir: &Path, id: &str, manifest_path: &Path, summary_path: &Path) -> Result<()> {
@@ -554,6 +563,14 @@ mod tests {
             .resolve_submission(&submission.manifest_ref, &requirements, &summary, &[])
             .unwrap();
         load_exact_review_pair(&completion_store, &submission, &manifest, &resolved).unwrap();
+
+        super::super::completion_done::run(&fixture.dir, "report", "refs/heads/main").unwrap();
+        let graph_path = fixture.dir.join("graph.jsonl");
+        let graph = load_graph(&graph_path).unwrap();
+        assert_eq!(graph.get_task("report").unwrap().status, Status::Done);
+        let first_done_bytes = std::fs::read(&graph_path).unwrap();
+        super::super::completion_done::run(&fixture.dir, "report", "refs/heads/main").unwrap();
+        assert_eq!(std::fs::read(&graph_path).unwrap(), first_done_bytes);
     }
 
     #[test]

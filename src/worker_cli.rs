@@ -276,6 +276,35 @@ pub fn maybe_run(command: &Commands, json: bool) -> Result<Option<()>> {
                 checkpoint: checkpoint.clone(),
             })
         }
+        Commands::CompletionObject {
+            path,
+            media_type,
+            evidence_kind,
+        } => Some(WorkerOperation::CompletionObject {
+            path: path.to_string_lossy().into_owned(),
+            media_type: media_type.clone(),
+            evidence_kind: evidence_kind.clone(),
+        }),
+        Commands::Submit {
+            id,
+            manifest,
+            summary,
+        } => {
+            task_matches(id)?;
+            Some(WorkerOperation::SubmitCompletion {
+                manifest: manifest.to_string_lossy().into_owned(),
+                summary: summary.to_string_lossy().into_owned(),
+            })
+        }
+        Commands::Land {
+            id,
+            integration_ref,
+        } => {
+            task_matches(id)?;
+            Some(WorkerOperation::Land {
+                integration_ref: integration_ref.clone(),
+            })
+        }
         Commands::Done {
             id,
             converged,
