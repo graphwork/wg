@@ -14098,6 +14098,111 @@ impl VizApp {
         }
         lines.push(String::new());
 
+        // ── Worker-owned completion ──
+        lines.push("── Completion ──".to_string());
+        lines.push(format!("  Contract: {}", task.completion_contract));
+        lines.push(format!(
+            "  Worker:   {}",
+            task.assigned.as_deref().unwrap_or("unassigned")
+        ));
+        let mut unsatisfied = Vec::new();
+        if let Some(candidate) = task.completion_candidate.as_ref() {
+            lines.push(format!("  Manifest: {}", candidate.manifest.content_digest));
+            if let Ok(store) = crate::commands::completion_submit::store(&self.workgraph_dir)
+                && let Ok(manifest) = store.read_manifest(
+                    &candidate.manifest,
+                    worksgood::completion_task::MAX_COMPLETION_METADATA_BYTES,
+                )
+            {
+                lines.push(format!("  Source:   {}", manifest.source_revision));
+                for output in &manifest.outputs {
+                    let locator = match output {
+                        worksgood::completion_manifest::OutputRef::Git(git) => {
+                            format!("git commit {} tree {}", git.commit_oid, git.tree_oid)
+                        }
+                        worksgood::completion_manifest::OutputRef::Artifact(artifact) => {
+                            format!("artifact {}", artifact.content_digest)
+                        }
+                        worksgood::completion_manifest::OutputRef::External(external) => {
+                            format!("external {}", external.after_digest)
+                        }
+                    };
+                    lines.push(format!("  Output:   {locator}"));
+                }
+                let receipt_status = |artifact: &worksgood::completion_manifest::ArtifactOutput| {
+                    store
+                        .read_artifact(
+                            artifact,
+                            worksgood::completion_task::MAX_COMPLETION_METADATA_BYTES,
+                        )
+                        .ok()
+                        .and_then(|bytes| {
+                            serde_json::from_slice::<worksgood::completion_review::ReviewReceipt>(
+                                &bytes,
+                            )
+                            .ok()
+                        })
+                        .map(|receipt| {
+                            let passed =
+                                receipt.verdict == worksgood::simple_land::ReviewVerdict::Pass;
+                            (
+                                format!(
+                                    "{:?} route={} findings={}",
+                                    receipt.verdict,
+                                    receipt.model_route.as_deref().unwrap_or("unrecorded"),
+                                    receipt.findings_digest
+                                ),
+                                passed,
+                            )
+                        })
+                        .unwrap_or_else(|| ("invalid or inaccessible receipt".to_string(), false))
+                };
+                if let Some(receipt) = candidate.flip_receipt.as_ref() {
+                    let (status, passed) = receipt_status(receipt);
+                    lines.push(format!("  FLIP:     {status}"));
+                    if !passed {
+                        unsatisfied.push("FLIP exact pass receipt");
+                    }
+                } else {
+                    lines.push("  FLIP:     missing".to_string());
+                    unsatisfied.push("FLIP exact pass receipt");
+                }
+                if let Some(receipt) = candidate.eval_receipt.as_ref() {
+                    let (status, passed) = receipt_status(receipt);
+                    lines.push(format!("  Eval:     {status}"));
+                    if !passed {
+                        unsatisfied.push("eval exact pass receipt");
+                    }
+                } else {
+                    lines.push("  Eval:     missing".to_string());
+                    unsatisfied.push("eval exact pass receipt");
+                }
+            } else {
+                lines.push("  Manifest bytes: inaccessible".to_string());
+                unsatisfied.push("immutable manifest resolution");
+            }
+        } else {
+            lines.push("  Manifest: missing".to_string());
+            unsatisfied.push("immutable completion manifest");
+            unsatisfied.push("FLIP exact pass receipt");
+            unsatisfied.push("eval exact pass receipt");
+        }
+        if let Some(receipt) = task.completion_receipt.as_ref() {
+            lines.push(format!("  Publication/Done receipt: {receipt}"));
+        } else {
+            lines.push("  Publication/Done receipt: missing".to_string());
+            unsatisfied.push("contract publication and derived Done");
+        }
+        lines.push(format!(
+            "  Unsatisfied: {}",
+            if unsatisfied.is_empty() {
+                "none".to_string()
+            } else {
+                unsatisfied.join(", ")
+            }
+        ));
+        lines.push(String::new());
+
         // ── Runtime ──
         // For coordinator tasks, resolve model/executor from CoordinatorState
         // (coordinators don't use the agent registry).

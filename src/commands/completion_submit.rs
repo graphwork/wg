@@ -1,9 +1,11 @@
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use worksgood::completion_manifest::{
-    CompletionArtifactStore, CompletionManifest, EvidenceRef, OutputRef, ReviewResolver,
+    COMPLETION_MANIFEST_VERSION, CompletionArtifactStore, CompletionManifest, ContentDigest,
+    EvidenceRef, GitOutput, OutputRef, ReviewResolver,
 };
 use worksgood::completion_review::{
     ManifestReviewer, ReviewValveOutcome, ReviewValveStatus, ReviewerKind, ReviewerUnavailable,
@@ -36,6 +38,147 @@ pub fn put_object(
     Ok(())
 }
 
+pub fn build_manifest_command(
+    dir: &Path,
+    id: &str,
+    summary_path: &Path,
+    output_ref_paths: &[PathBuf],
+    evidence_ref_paths: &[PathBuf],
+    git_output: bool,
+    source_revision: Option<&str>,
+) -> Result<()> {
+    reject_control_plane_source(dir, summary_path, "worker summary")?;
+    let summary = read_regular_file(summary_path, "worker summary")?;
+    let mut outputs = Vec::with_capacity(output_ref_paths.len());
+    for path in output_ref_paths {
+        reject_control_plane_source(dir, path, "output reference")?;
+        outputs.push(
+            serde_json::from_slice::<OutputRef>(&read_regular_file(path, "output reference")?)
+                .with_context(|| {
+                    format!("invalid immutable output reference {}", path.display())
+                })?,
+        );
+    }
+    let mut evidence = Vec::with_capacity(evidence_ref_paths.len());
+    for path in evidence_ref_paths {
+        reject_control_plane_source(dir, path, "evidence reference")?;
+        evidence.push(
+            serde_json::from_slice::<EvidenceRef>(&read_regular_file(path, "evidence reference")?)
+                .with_context(|| {
+                    format!("invalid immutable evidence reference {}", path.display())
+                })?,
+        );
+    }
+    let cwd = std::env::current_dir()?;
+    let manifest = build_manifest(
+        dir,
+        id,
+        &summary,
+        outputs,
+        evidence,
+        git_output,
+        source_revision,
+        Some(&cwd),
+    )?;
+    println!("{}", serde_json::to_string_pretty(&manifest)?);
+    Ok(())
+}
+
+pub(crate) fn build_manifest(
+    dir: &Path,
+    id: &str,
+    summary: &[u8],
+    mut outputs: Vec<OutputRef>,
+    evidence: Vec<EvidenceRef>,
+    git_output: bool,
+    source_revision: Option<&str>,
+    worker_worktree: Option<&Path>,
+) -> Result<CompletionManifest> {
+    let graph = load_graph(dir.join("graph.jsonl"))?;
+    let task = graph
+        .get_task(id)
+        .with_context(|| format!("task '{id}' not found"))?;
+    require_source_owner(task, id)?;
+    let contract = completion_contract(task)?;
+    if git_output {
+        if contract != worksgood::simple_land::CompletionContract::Land {
+            bail!("--git is valid only for Land tasks");
+        }
+        if !outputs.is_empty() {
+            bail!("Land manifests use one auto-built Git output, not --output-ref");
+        }
+        let worker = worker_worktree.context("--git requires the retained worker worktree")?;
+        let project = dir
+            .parent()
+            .context("workgraph directory has no project root")?;
+        let integrated = git(project, &["rev-parse", "refs/heads/main"])?;
+        let commit = git(worker, &["rev-parse", "HEAD"])?;
+        let tree = git(worker, &["rev-parse", "HEAD^{tree}"])?;
+        let ancestor = Command::new("git")
+            .args(["merge-base", "--is-ancestor", &integrated, &commit])
+            .current_dir(worker)
+            .status()?;
+        if !ancestor.success() {
+            bail!("worker HEAD does not integrate current main; merge main, revalidate, and retry");
+        }
+        worksgood::control_plane::assert_tree_has_no_control_plane(project, &commit)?;
+        let diff = Command::new("git")
+            .args([
+                "diff",
+                "--binary",
+                "--full-index",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--no-renames",
+                &integrated,
+                &commit,
+                "--",
+            ])
+            .current_dir(worker)
+            .output()?;
+        if !diff.status.success() {
+            bail!("failed to construct exact Git diff bundle");
+        }
+        outputs.push(OutputRef::Git(GitOutput {
+            commit_oid: commit.clone(),
+            integrated_main_oid: integrated,
+            tree_oid: tree,
+            diff_bundle_digest: ContentDigest::of_bytes(&diff.stdout),
+        }));
+    }
+    let revision = source_revision
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| worker_worktree.and_then(|worker| git(worker, &["rev-parse", "HEAD"]).ok()))
+        .unwrap_or_else(|| format!("worker-session:{}", task.assigned.as_deref().unwrap_or(id)));
+    let manifest = CompletionManifest {
+        manifest_version: COMPLETION_MANIFEST_VERSION,
+        task_id: id.to_string(),
+        generation: task.lifecycle.generation,
+        completion_contract: contract,
+        requirements_digest: requirements_digest(task)?,
+        source_revision: revision,
+        outputs,
+        validation_evidence: evidence,
+        worker_summary_digest: ContentDigest::of_bytes(summary),
+    };
+    manifest.validate().map_err(anyhow::Error::msg)?;
+    Ok(manifest)
+}
+
+fn git(cwd: &Path, args: &[&str]) -> Result<String> {
+    let output = Command::new("git").args(args).current_dir(cwd).output()?;
+    if !output.status.success() {
+        bail!(
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8(output.stdout)?.trim().to_string())
+}
+
 pub(crate) fn put_object_value(
     dir: &Path,
     path: &Path,
@@ -58,7 +201,7 @@ pub(crate) fn put_object_value(
             review_projection: artifact.review_projection,
         })?)
     } else {
-        Ok(serde_json::to_value(artifact)?)
+        Ok(serde_json::to_value(OutputRef::Artifact(artifact))?)
     }
 }
 
@@ -523,6 +666,51 @@ mod tests {
             manifest_path,
             summary_path,
         }
+    }
+
+    #[test]
+    fn manifest_builder_supplies_task_bound_fields_from_immutable_refs() {
+        let root = tempdir().unwrap();
+        let dir = root.path().join(".wg");
+        std::fs::create_dir_all(&dir).unwrap();
+        let task = Task {
+            id: "build-report".to_string(),
+            title: "Build report manifest".to_string(),
+            description: Some("Exact report.\n\n## Validation\nCheck bytes.".to_string()),
+            status: Status::InProgress,
+            completion_contract: CompletionContract::Report,
+            ..Task::default()
+        };
+        let expected_requirements = requirements_digest(&task).unwrap();
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(task));
+        save_graph(&graph, dir.join("graph.jsonl")).unwrap();
+        let completion_store = store(&dir).unwrap();
+        let output = completion_store
+            .put_bytes(b"report\n", "text/plain")
+            .unwrap();
+        let evidence = completion_store
+            .evidence_from_bytes(b"ok\n", "validation", "text/plain")
+            .unwrap();
+        let manifest = build_manifest(
+            &dir,
+            "build-report",
+            b"summary\n",
+            vec![OutputRef::Artifact(output)],
+            vec![evidence],
+            false,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(manifest.task_id, "build-report");
+        assert_eq!(manifest.requirements_digest, expected_requirements);
+        assert_eq!(
+            manifest.worker_summary_digest,
+            ContentDigest::of_bytes(b"summary\n")
+        );
+        assert_eq!(manifest.source_revision, "worker-session:build-report");
+        manifest.validate().unwrap();
     }
 
     #[test]

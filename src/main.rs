@@ -1283,6 +1283,22 @@ fn main() -> Result<()> {
             &media_type,
             evidence_kind.as_deref(),
         ),
+        Commands::CompletionManifest {
+            id,
+            summary,
+            output_refs,
+            evidence_refs,
+            git,
+            source_revision,
+        } => commands::completion_submit::build_manifest_command(
+            &workgraph_dir,
+            &id,
+            &summary,
+            &output_refs,
+            &evidence_refs,
+            git,
+            source_revision.as_deref(),
+        ),
         Commands::Submit {
             id,
             manifest,

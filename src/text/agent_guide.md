@@ -210,107 +210,92 @@ unit test "because it exercises the same code", stop. The
 CLI path was already correct and the TUI caller was the broken one.
 Add the human-flow simulation.
 
-## Cycles (The WG Task Graph Is Not a DAG)
+## Cycles
 
-The WG task graph is a directed graph that supports cycles. For repeating
-workflows (cleanup → commit → verify, write → review → revise, etc.)
-create ONE cycle with `--max-iterations` instead of duplicating tasks
-for each pass. Use `wg done --converged` to stop the cycle when the
-work has stabilized.
+Historical graphs may contain cycle metadata, but completion has no
+`--converged` bypass and failure never authorizes an automatic restart. Model
+each new pass as explicit operator-created work. Every pass that becomes Done
+must independently satisfy the universal manifest, FLIP, eval, and publication
+protocol below.
 
-If a cycle iteration's verification fails and you cannot fix it, use
-`wg fail` so the cycle can restart with the next iteration.
+## Universal Completion Valve
 
-Advanced cycle flags:
+`wg done` never infers success from process exit, cleanup, or an editable
+worktree. Every Land, Report, and Explore task must first publish an immutable
+completion manifest and receive exact FLIP then eval pass receipts for that
+same manifest and requirements digest.
 
-- `--no-converge` — force every iteration to run; agents cannot signal
-  early stop with `--converged`.
-- `--no-restart-on-failure` — disable automatic cycle restart when a
-  member fails. Restart is on by default.
-- `--max-failure-restarts <N>` — cap failure-triggered cycle restarts
-  (default 3).
+### Smoke Gate
 
-## Smoke Gate (Hard Gate on `wg done`)
+If `tests/smoke/manifest.toml` owns scenarios for the task, those live scenarios
+are mandatory validation. Run them against the candidate binary before review,
+capture their exact output as immutable validation evidence, and repair every
+failure. Exit 77 is a loud environmental skip, not a semantic pass. Never
+substitute a unit test merely because it exercises similar code, and never omit
+the owned smoke evidence from the manifest.
 
-`wg done` runs every scenario in `tests/smoke/manifest.toml` whose
-`owners = [...]` list contains the task id. Any FAIL blocks `wg done`
-with the broken scenario name. Exit 77 from a scenario script = loud
-SKIP (e.g. endpoint unreachable) and does not block.
+A worker agent assigned to `<task-id>` follows this sequence:
 
-- Agents CANNOT bypass the gate. `--skip-smoke` is refused when
-  `WG_AGENT_ID` is set unless a human exports
-  `WG_SMOKE_AGENT_OVERRIDE=1`.
-- Use `wg done <id> --full-smoke` locally to run every scenario, not
-  just owned.
-- The manifest is **grow-only**: when you fix a regression that smoke
-  should have caught, add a permanent scenario under
-  `tests/smoke/scenarios/` and list your task id in `owners`.
-- Scenarios MUST run live against real binaries / endpoints. Do not
-  stub.
-
-This gate exists in any project that ships a `tests/smoke/manifest.toml`.
-A project without that file simply has no scenarios to run, and the
-gate is a no-op.
-
-## Worker Agent Workflow
-
-A worker agent assigned to task `<task-id>` follows this sequence:
-
-1. **Check messages and reply**:
+1. **Check messages and log progress**:
    ```
    wg msg read <task-id> --agent $WG_AGENT_ID
-   ```
-   For each unread message, reply with what you'll do about it.
-   Unreplied messages = incomplete task.
-
-2. **Log progress** as you work:
-   ```
    wg log <task-id> "Starting implementation..."
-   wg log <task-id> "Completed X, now working on Y"
    ```
 
-3. **Record artifacts** if you create / modify files:
+2. **Work and validate.** Run the declared tests/checks. Save their output as a
+   validation log. Stage only your files; never use `git add -A` or `git add .`.
+   A Land task must commit its candidate. Do not push or merge the root checkout
+   yourself.
+
+3. **Snapshot outputs and evidence.** Report/Explore outputs become immutable
+   object references. Validation evidence is mandatory for every contract:
    ```
-   wg artifact <task-id> path/to/file
-   ```
-
-4. **Validate** before marking done. For code tasks, run the project's
-   build and test commands and fix failures. For research / docs tasks,
-   re-read the description and verify your output addresses every
-   requirement.
-
-5. **Commit and push** if you modified files. Stage ONLY your files
-   (never `git add -A` or `git add .`) and commit with a descriptive
-   message that includes the task id.
-
-6. **Check messages AGAIN** before marking done. Reply to any new
-   messages.
-
-7. **Complete**:
-   ```
-   wg done <task-id>                  # normal completion
-   wg done <task-id> --converged      # cycle work has stabilized
-   wg done <task-id> --ignore-unmerged-worktree  # defer worktree merge → creates .merge-<id> task
-   wg incomplete <task-id> --reason "..."   # work landed but needs another pass; auto-retries (default 3)
-   wg fail <task-id> --reason "..."   # genuine blocker, after attempt
-   wg retry <task-id>                 # reset failed/incomplete/hung task to open (retry-in-place)
-   wg retry <task-id> --fresh         # discard prior worktree, start over from main
-   wg retry <task-id> --preserve-session  # keep stored Claude session ID across retry
-   wg wait <task-id> --until <cond>   # park task; dispatcher resumes when condition is met
-                                      #   conditions: task:X=done | timer:5m | message | human-input | file:path
+   wg completion-object report.md --media-type text/markdown > output-ref.json
+   wg completion-object validation.log --media-type text/plain \
+       --evidence-kind validation > evidence-ref.json
+   printf '%s\n' 'Implemented and validated the requested result.' > summary.txt
    ```
 
-   **failed-pending-eval state** — when an LLM agent exits without `wg done`
-   and `auto_evaluate=true` is configured, the task transitions to
-   `failed-pending-eval` instead of immediately Failed. The evaluator can
-   rescue the task (transition to Done) or confirm Failed. `wg fail` on a
-   `failed-pending-eval` task forces terminal Failed.
+4. **Build the exact task-bound manifest.** For Report/Explore:
+   ```
+   wg completion-manifest <task-id> --summary summary.txt \
+       --output-ref output-ref.json --evidence-ref evidence-ref.json > manifest.json
+   ```
+   For Land, first merge current local `main` into the worker branch, resolve
+   conflicts in this same worktree, rerun validation, and commit. Then use:
+   ```
+   wg completion-manifest <task-id> --summary summary.txt --git \
+       --evidence-ref evidence-ref.json > manifest.json
+   ```
+   The command supplies the exact task, generation, contract, requirements
+   digest, Git tree/diff identity, and summary digest. Do not hand-invent them.
 
-   This rescue path applies to LLM agent tasks only (`full` / `light` /
-   `bare` exec modes). Shell tasks (`--exec-mode shell` / `--exec '<cmd>'`)
-   are exempt from the agency pipeline entirely: no `.assign-*`, `.flip-*`,
-   or `.evaluate-*` tasks are scaffolded for them, and failure semantics
-   are 'exit 0 = done, non-zero = failed (terminal)'.
+5. **Submit for mandatory review**:
+   ```
+   wg submit <task-id> --manifest manifest.json --summary summary.txt
+   ```
+   FLIP always runs before eval. A rejection returns findings to this worker;
+   repair, revalidate, rebuild the manifest, and resubmit. Missing evidence is
+   `IncompleteEvidence`; reviewer/provider failure is `Unavailable`. Neither
+   creates a replacement source worker or authorizes fallback.
+
+6. **Publish and derive Done.** After exact review passes:
+   ```
+   wg land <task-id>   # Land only: short-lock compare-and-fast-forward
+   wg done <task-id>   # every contract: re-verifies review + publication
+   ```
+   If `wg land` reports moved main or a conflict, integrate current main in this
+   same worker, revalidate, rebuild, and resubmit. Report/Explore skip `wg land`
+   but never skip review. Check messages once more before `wg done`.
+
+7. **Visible non-success outcomes**:
+   ```
+   wg fail <task-id> --reason "genuine blocker after attempting the work"
+   wg wait <task-id> --until <condition>
+   ```
+   A failed or dead attempt remains visibly failed and blocks dependents until
+   an operator explicitly retries it. There is no hidden retry, source
+   replacement, legacy finalizer, evaluation child task, or cleanup-gated Done.
 
 ### Anti-pattern: Explain-and-Bail
 

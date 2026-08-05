@@ -803,6 +803,30 @@ fn execute_worker_operation(
                     evidence_kind.as_deref(),
                 )
             }
+            WorkerOperation::CompletionManifest {
+                summary,
+                outputs,
+                evidence,
+                git,
+                source_revision,
+            } => {
+                let worktree = if binding.worktree_path.trim().is_empty() {
+                    None
+                } else {
+                    Some(std::path::Path::new(&binding.worktree_path))
+                };
+                let manifest = crate::commands::completion_submit::build_manifest(
+                    dir,
+                    &binding.task_id,
+                    summary.as_bytes(),
+                    outputs,
+                    evidence,
+                    git,
+                    source_revision.as_deref(),
+                    worktree,
+                )?;
+                Ok(serde_json::to_value(manifest)?)
+            }
             WorkerOperation::SubmitCompletion { manifest, summary } => {
                 let manifest = resolve_worker_input_path(dir, binding, &manifest)?;
                 let summary = resolve_worker_input_path(dir, binding, &summary)?;

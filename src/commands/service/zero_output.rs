@@ -1,7 +1,7 @@
 //! Zero-output observation adapter.
 //!
 //! Detects agents whose API call has produced no stream bytes for an extended
-//! period and submits typed evidence to PlannerStore. It has no process, graph,
+//! period and reports typed diagnostics. It has no persistence, process, graph,
 //! retry, route, breaker, or global-pause authority.
 
 #![allow(dead_code)]
@@ -12,13 +12,12 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 
-use worksgood::parser::load_graph;
 #[cfg(test)]
 use worksgood::service::registry::AgentStatus;
 use worksgood::service::registry::{AgentEntry, AgentRegistry};
 use worksgood::stream_event;
 
-use crate::commands::{graph_path, is_process_alive};
+use crate::commands::is_process_alive;
 
 /// Threshold after which a zero-output agent is considered a zombie and killed.
 const ZERO_OUTPUT_KILL_THRESHOLD: Duration = Duration::from_secs(5 * 60);
@@ -213,78 +212,17 @@ pub fn sweep_zero_output_agents(dir: &Path) -> ZeroOutputSweepResult {
         return result;
     }
 
-    let graph = match load_graph(graph_path(dir)) {
-        Ok(graph) => graph,
-        Err(error) => {
-            eprintln!("[zero-output] Failed to load graph evidence: {error:#}");
-            return result;
-        }
-    };
-    let graph_id = match worksgood::worker_control::load_or_create_graph_identity(dir)
-        .map(worksgood::service::PlannerOpaqueId::normalized)
-    {
-        Ok(graph_id) => graph_id,
-        Err(error) => {
-            eprintln!("[zero-output] Failed to load graph identity: {error:#}");
-            return result;
-        }
-    };
-    let mut planner = match worksgood::service::PlannerStore::open(dir, graph_id.clone()) {
-        Ok(planner) => planner,
-        Err(error) => {
-            eprintln!("[zero-output] Planner unavailable; evidence not acted on: {error:#}");
-            return result;
-        }
-    };
-
     for (agent, age_secs) in zero_output_agents {
-        let Some(task) = graph.get_task(&agent.task_id) else {
-            continue;
-        };
-        let observation = worksgood::service::PlannerZeroOutputObservation {
-            task: worksgood::service::PlannerTaskKey {
-                graph_id: graph_id.clone(),
-                task_id: worksgood::service::PlannerOpaqueId::normalized(&task.id),
-                generation: task.lifecycle.generation,
-                attempt_id: worksgood::service::PlannerOpaqueId::normalized(
-                    task.lifecycle
-                        .current_attempt
-                        .as_ref()
-                        .map(|attempt| attempt.id.as_str())
-                        .unwrap_or("attempt-absent"),
-                ),
-                fence: task.lifecycle.fence,
-            },
-            owner_id: worksgood::service::PlannerOpaqueId::normalized(&agent.id),
-            evidence_id: worksgood::service::PlannerOpaqueId::normalized(format!(
-                "{}:{}:{}",
-                agent.id, agent.started_at, age_secs
-            )),
-            age_bucket: (age_secs / 60).min(u32::MAX as u64) as u32,
-            route_id: None,
-        };
-        match planner.observe(worksgood::service::PlannerTypedObservation {
-            observed_at: Utc::now().timestamp().max(0) as u64,
-            observation: worksgood::service::Observation::ZeroOutput(Box::new(observation)),
-        }) {
-            Ok(step) if step.effects.is_empty() => {
-                result.observed.push(ZeroOutputEvidence {
-                    agent_id: agent.id.clone(),
-                    task_id: agent.task_id.clone(),
-                    pid: agent.pid,
-                    age_secs,
-                });
-                eprintln!(
-                    "[zero-output] observed agent {} on task {} after {}s; planner issued no ownership action",
-                    agent.id, agent.task_id, age_secs
-                );
-            }
-            Ok(step) => eprintln!(
-                "[zero-output] invariant violation: evidence unexpectedly emitted effects: {:?}",
-                step.effects
-            ),
-            Err(error) => eprintln!("[zero-output] Failed to persist observation: {error:#}"),
-        }
+        result.observed.push(ZeroOutputEvidence {
+            agent_id: agent.id.clone(),
+            task_id: agent.task_id.clone(),
+            pid: agent.pid,
+            age_secs,
+        });
+        eprintln!(
+            "[zero-output] observed agent {} on task {} after {}s; diagnostic has no ownership action",
+            agent.id, agent.task_id, age_secs
+        );
     }
 
     // Do not save legacy counter/backoff state. It remains readable only for

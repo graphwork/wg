@@ -2984,6 +2984,13 @@ description = "Candidate-binary credential-free generated-wrapper regression for
 timeout_seconds = 180
 
 [[scenario]]
+name = "worker_owned_completion_canary"
+script = "scenarios/worker_owned_completion_canary.sh"
+owners = ["simple-worker-owned-convergence"]
+description = "Candidate-binary credential-free real-daemon exit canary: ten concurrent Pi workers complete Land/Report/Explore; two overlapping Land workers exercise compare/fast-forward and same-worker moved-main reintegration while non-Git workers use isolated attempt workspaces. All snapshot immutable outputs/evidence, build bound manifests through the broker, pass exact FLIP then eval without child tasks, derive Done from publication, create no SaveTransaction/finalization authority, and receive no replacement workers."
+timeout_seconds = 180
+
+[[scenario]]
 name = "worker_control_capability_broker"
 script = "scenarios/worker_control_capability_broker.sh"
 owners = ["isolate-worker-control-plane-filesystem"]

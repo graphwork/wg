@@ -563,6 +563,22 @@ pub enum Commands {
         evidence_kind: Option<String>,
     },
 
+    /// Build a task-bound completion manifest from immutable object references
+    CompletionManifest {
+        id: String,
+        #[arg(long)]
+        summary: PathBuf,
+        #[arg(long = "output-ref")]
+        output_refs: Vec<PathBuf>,
+        #[arg(long = "evidence-ref")]
+        evidence_refs: Vec<PathBuf>,
+        /// Build the exact Git output from the current worker HEAD versus main
+        #[arg(long)]
+        git: bool,
+        #[arg(long)]
+        source_revision: Option<String>,
+    },
+
     /// Submit an immutable candidate and run exact FLIP then eval review
     Submit {
         id: String,
@@ -7051,6 +7067,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Edit { .. } => "edit",
         Commands::Done { .. } => "done",
         Commands::CompletionObject { .. } => "completion-object",
+        Commands::CompletionManifest { .. } => "completion-manifest",
         Commands::Submit { .. } => "submit",
         Commands::Land { .. } => "land",
         Commands::Contract { .. } => "contract",

@@ -919,9 +919,23 @@ pub(crate) fn spawn_agent_inner_authorized(
     // registry writes, or the atomic claim. Shell tasks remain graph-only.
     #[cfg(not(test))]
     if executor_name != "shell" && resolve_task_exec_mode(task, dir) != "shell" {
-        let explicit = model
-            .map(|m| (m, false))
-            .or_else(|| task.model.as_deref().map(|m| (m, true)));
+        let route_handler = execution_route_handler(executor_name);
+        // Dispatcher bindings carry `(handler, handler-native model id)` as
+        // separate fields. Selection validation requires the original
+        // handler-first route, so reconstruct it exactly when the model field
+        // is not already handler-qualified. This is not fallback: the chosen
+        // executor is part of the dispatcher's attested binding.
+        let reconstructed;
+        let explicit = if let Some(model) = model {
+            if worksgood::execution_selection::handler_qualified_explicit_route(model).is_some() {
+                Some((model, false))
+            } else {
+                reconstructed = format!("{route_handler}:{model}");
+                Some((reconstructed.as_str(), false))
+            }
+        } else {
+            task.model.as_deref().map(|model| (model, true))
+        };
         worksgood::execution_selection::require(dir, explicit, "wg spawn")?;
     }
 
@@ -975,8 +989,10 @@ pub(crate) fn spawn_agent_inner_authorized(
     });
     let plan_default_model = task_model.as_deref().or(model);
     if executor_name != "shell" && resolve_task_exec_mode(task, dir) != "shell" {
+        let route_handler = execution_route_handler(executor_name);
         let selected_route = match plan_default_model {
-            Some(route) => route.to_string(),
+            Some(route) => worksgood::execution_selection::handler_qualified_explicit_route(route)
+                .unwrap_or_else(|| format!("{route_handler}:{route}")),
             None => {
                 config
                     .resolve_execution_route_for_role(worksgood::config::DispatchRole::TaskAgent)?
@@ -1383,6 +1399,23 @@ pub(crate) fn spawn_agent_inner_authorized(
 
     let output_file = output_dir.join("output.log");
     let output_file_str = output_file.to_string_lossy().to_string();
+    let nongit_workspace = if worktree_info.is_none()
+        && executor_name != "shell"
+        && matches!(
+            task.completion_contract,
+            worksgood::graph::CompletionContract::Report
+                | worksgood::graph::CompletionContract::Explore
+        ) {
+        let graph_key = blake3::hash(dir.to_string_lossy().as_bytes()).to_hex();
+        let workspace = std::env::temp_dir()
+            .join("worksgood-attempt-workspaces")
+            .join(graph_key.as_str())
+            .join(&temp_agent_id);
+        fs::create_dir_all(&workspace)?;
+        Some(workspace)
+    } else {
+        None
+    };
     vars.in_worktree = worktree_info.is_some();
 
     let owned_target_path = if build_class.is_build_capable() {
@@ -1498,6 +1531,7 @@ pub(crate) fn spawn_agent_inner_authorized(
     let effective_working_dir = worktree_info
         .as_ref()
         .map(|wt| wt.path.as_path())
+        .or_else(|| nongit_workspace.as_deref())
         .or_else(|| settings.working_dir.as_deref().map(Path::new));
     preflight_executor_command(&settings, resolved_executor_name, effective_working_dir)?;
 
@@ -1718,7 +1752,16 @@ pub(crate) fn spawn_agent_inner_authorized(
         // Signal to Claude Code (and other tools) that this session is already
         // inside a managed worktree — do not create a competing one.
         cmd.env("WG_WORKTREE_ACTIVE", "1");
+    } else if let Some(workspace) = nongit_workspace.as_ref() {
+        // Report/Explore deliberately have no Git worktree. Give them an
+        // owned attempt workspace rather than the mutable project checkout;
+        // completion-object paths and the capability binding use this same
+        // root.
+        cmd.current_dir(workspace);
+        cmd.env("WG_ATTEMPT_WORKSPACE", workspace);
     } else if let Some(ref wd) = settings.working_dir {
+        // Preserve the configured cwd for non-agent shell and compatibility
+        // executions; they do not participate in the worker completion valve.
         cmd.current_dir(wd);
     }
     if let Some(path) = owned_target_path.as_ref() {
@@ -1818,7 +1861,8 @@ pub(crate) fn spawn_agent_inner_authorized(
                 &temp_agent_id,
                 worktree_info
                     .as_ref()
-                    .map(|worktree| worktree.path.as_path()),
+                    .map(|worktree| worktree.path.as_path())
+                    .or_else(|| nongit_workspace.as_deref()),
             )?;
         worker_capability_digest = Some(worker_binding.token_sha256.clone());
         cmd.env("WG_WORKER_IPC", &endpoint);
@@ -2874,6 +2918,13 @@ fn preflight_executor_command(
     );
 }
 
+fn execution_route_handler(executor_name: &str) -> &str {
+    match executor_name {
+        "native" => "nex",
+        other => other,
+    }
+}
+
 fn executor_setup_hint(executor_name: &str) -> &'static str {
     match executor_name {
         "amplifier" => {
@@ -3545,7 +3596,7 @@ fi
     };
 
     let pi_exit_reconcile = if executor_type == "pi" {
-        "wg pi-watchdog process-exit \"$TASK_ID\" --exit-code \"$EXIT_CODE\" --pid \"$WG_PI_CHILD_PID\" 2>> \"$OUTPUT_FILE\" || wg fail \"$TASK_ID\" --class agent-exit-nonzero --reason \"Pi exited without a policy-valid continuation authorization\" 2>> \"$OUTPUT_FILE\" || true"
+        "if [ \"$TASK_STATUS\" = \"in-progress\" ]; then wg pi-watchdog process-exit \"$TASK_ID\" --exit-code \"$EXIT_CODE\" --pid \"$WG_PI_CHILD_PID\" 2>> \"$OUTPUT_FILE\" || wg fail \"$TASK_ID\" --class agent-exit-nonzero --reason \"Pi exited without a policy-valid continuation authorization\" 2>> \"$OUTPUT_FILE\" || true; fi"
     } else {
         ""
     };
@@ -3641,16 +3692,23 @@ if [ "$EXIT_CODE" -ne 0 ]; then
         wg record-telemetry --task "$TASK_ID" --exit-code "$EXIT_CODE" --executor "{executor_type}" --route "${{WG_MODEL:-}}" 2>> "$OUTPUT_FILE" || true
     fi
 fi
-{pi_exit_reconcile}
-# Pi terminal tools reserve intent while the handler can still write. Only
-# this post-wait adapter may checkpoint/merge or commit failure preservation.
-if [ "{executor_type}" = "pi" ]; then
-    WG_HANDLER_QUIESCENT=1 wg finalize settle "$TASK_ID" 2>> "$OUTPUT_FILE" || \
-      echo "[wrapper] WARNING: finalization settle held; inspect with: wg finalize status $TASK_ID" >> "$OUTPUT_FILE"
-fi
 
-# Check if task is still in progress (agent didn't mark it done/failed)
+# Check terminal state before any process-exit observer runs. Once reviewed
+# completion clears attempt ownership, its capability is intentionally stale
+# and process telemetry has no authority to reopen or overwrite Done.
 TASK_STATUS=$(wg show "$TASK_ID" --json 2>/dev/null | grep -o '"status": *"[^"]*"' | head -1 | sed 's/.*"status": *"//;s/"//' || echo "unknown")
+{pi_exit_reconcile}
+
+# A still-in-progress process exit becomes one visible failed attempt; it is
+# never a finalizer signal and never authorizes automatic source replacement.
+if [ "$TASK_STATUS" = "in-progress" ] && [ "{executor_type}" = "pi" ]; then
+    if [ $EXIT_CODE -eq 0 ]; then
+        wg fail "$TASK_ID" --reason "Pi worker exited without reviewed publication-derived completion" 2>> "$OUTPUT_FILE" || true
+    else
+        FAIL_CLASS=$(wg classify-failure --raw-stream "$RAW_STREAM" --exit-code $EXIT_CODE --executor "{executor_type}" --route "${{WG_MODEL:-}}" 2>/dev/null || echo "agent-exit-nonzero")
+        wg fail "$TASK_ID" --class "$FAIL_CLASS" --reason "Pi worker exited with code $EXIT_CODE before reviewed completion" 2>> "$OUTPUT_FILE" || true
+    fi
+fi
 
 if [ "$TASK_STATUS" = "in-progress" ] && [ "{executor_type}" != "pi" ]; then
     if [ $EXIT_CODE -eq 124 ]; then
@@ -3720,28 +3778,9 @@ if [ "$TASK_STATUS" = "in-progress" ] && [ "{executor_type}" != "pi" ]; then
     fi
 fi
 
-# --- Task-owned transactional cleanup ---
-# Promotion/delivery/report is durable before this point. The wrapper is the
-# final part of the same task transaction: leave the cwd, remove owned scratch
-# state synchronously, write a cleanup receipt, and only then expose Done.
-if [ -n "$WG_WORKTREE_PATH" ] && [ -n "$WG_BRANCH" ] && [ -n "$WG_PROJECT_ROOT" ]; then
-    CURRENT_DIR_REAL=$(pwd -P 2>/dev/null || pwd)
-    WORKTREE_PATH_REAL=$(cd "$WG_WORKTREE_PATH" 2>/dev/null && pwd -P || printf '%s' "$WG_WORKTREE_PATH")
-    if [ "$CURRENT_DIR_REAL" != "$WORKTREE_PATH_REAL" ]; then
-        echo "[wrapper] WARNING: Skipping task-owned cleanup because cwd '$CURRENT_DIR_REAL' does not match '$WORKTREE_PATH_REAL'" >> "$OUTPUT_FILE"
-    else
-        cd "$WG_PROJECT_ROOT" || exit 1
-        if wg finish cleanup "$TASK_ID" >> "$OUTPUT_FILE" 2>&1; then
-            echo "[wrapper] Task-owned finish cleanup completed synchronously" >> "$OUTPUT_FILE"
-        else
-            # Crash/retry fallback only. The durable promotion/output receipt
-            # ensures restart reconciliation can perform cleanup and nothing else.
-            touch "$WG_WORKTREE_PATH/.wg-cleanup-pending" 2>/dev/null || true
-            echo "[wrapper] WARNING: finish cleanup deferred from durable receipt; no source/evaluation rerun authorized" >> "$OUTPUT_FILE"
-        fi
-    fi
-fi
-
+# Worktree/scratch cleanup is deliberately outside completion authority. Keep
+# the retained attempt workspace as inspectable evidence; explicit maintenance
+# may remove it later without changing reviewed publication or Done.
 exit $EXIT_CODE
 "#,
         escaped_task_id = shell_escape(task_id),

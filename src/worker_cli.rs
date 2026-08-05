@@ -283,6 +283,45 @@ pub fn maybe_run(command: &Commands, json: bool) -> Result<Option<()>> {
             media_type: media_type.clone(),
             evidence_kind: evidence_kind.clone(),
         }),
+        Commands::CompletionManifest {
+            id,
+            summary,
+            output_refs,
+            evidence_refs,
+            git,
+            source_revision,
+        } => {
+            task_matches(id)?;
+            let summary = std::fs::read_to_string(summary)
+                .with_context(|| format!("read worker summary {}", summary.display()))?;
+            let outputs = output_refs
+                .iter()
+                .map(|path| {
+                    serde_json::from_slice(
+                        &std::fs::read(path)
+                            .with_context(|| format!("read output reference {}", path.display()))?,
+                    )
+                    .with_context(|| format!("parse output reference {}", path.display()))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let evidence =
+                evidence_refs
+                    .iter()
+                    .map(|path| {
+                        serde_json::from_slice(&std::fs::read(path).with_context(|| {
+                            format!("read evidence reference {}", path.display())
+                        })?)
+                        .with_context(|| format!("parse evidence reference {}", path.display()))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+            Some(WorkerOperation::CompletionManifest {
+                summary,
+                outputs,
+                evidence,
+                git: *git,
+                source_revision: source_revision.clone(),
+            })
+        }
         Commands::Submit {
             id,
             manifest,
