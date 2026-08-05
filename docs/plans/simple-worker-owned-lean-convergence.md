@@ -1,8 +1,9 @@
 # Boring convergence: worker-owned landing with a Lean 4 kernel
 
-**Status:** proposed recovery plan. This replaces the production authority cutover in
-`docs/plans/deterministic-convergence-final-cutover.md`; it does not delete the existing
-proofs or incident corpus.
+**Status:** proposed recovery plan implementing the normative design in
+`docs/design-worker-owned-universal-review.md`. This replaces the production authority
+cutover in `docs/plans/deterministic-convergence-final-cutover.md`; it does not delete the
+existing proofs or incident corpus.
 
 ## Goal
 
