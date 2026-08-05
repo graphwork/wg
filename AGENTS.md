@@ -53,6 +53,9 @@ Until the clean-room exit canary in
   changes must remove the legacy production branch they supersede.
 - FLIP and eval are mandatory for every Land, Report, and Explore completion manifest;
   neither may be bypassed or downgraded to optional review.
+- The attended recovery implementation is the one bootstrap exception because the new
+  valve does not yet exist. Its exit canary must dogfood the new manifest, FLIP, eval,
+  publication, and Done path before service restart; no later production task is exempt.
 
 Remove this section only after the documented isolated 8–10-worker canary passes.
 

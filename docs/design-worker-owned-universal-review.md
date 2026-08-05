@@ -325,6 +325,11 @@ Until the clean-room canary passes:
 - Make small reviewable commits; each commit removes any legacy authority it replaces.
 - Do not add a compatibility mode that leaves old and new production authorities live.
 
+This attended recovery implementation is a bootstrap exception because the universal
+valve does not yet exist and the current graph review path is unavailable. Before the
+service can resume, the new candidate MUST dogfood its own manifest resolver, FLIP, eval,
+publication, and Done checks in the exit canary. No later production task is exempt.
+
 ## 12. Exit from recovery mode
 
 The service may resume only after an isolated 8–10-worker canary proves:
