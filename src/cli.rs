@@ -554,6 +554,24 @@ pub enum Commands {
         skip_smoke: bool,
     },
 
+    /// Snapshot a file into the immutable completion object store
+    CompletionObject {
+        path: PathBuf,
+        #[arg(long, default_value = "application/octet-stream")]
+        media_type: String,
+        #[arg(long)]
+        evidence_kind: Option<String>,
+    },
+
+    /// Submit an immutable candidate and run exact FLIP then eval review
+    Submit {
+        id: String,
+        #[arg(long)]
+        manifest: PathBuf,
+        #[arg(long)]
+        summary: PathBuf,
+    },
+
     /// Set the task's completion contract: land, report, or explore
     Contract { id: String, contract: String },
 
@@ -7025,6 +7043,8 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Add { .. } => "add",
         Commands::Edit { .. } => "edit",
         Commands::Done { .. } => "done",
+        Commands::CompletionObject { .. } => "completion-object",
+        Commands::Submit { .. } => "submit",
         Commands::Contract { .. } => "contract",
         Commands::Finalize { .. } => "finalize",
         Commands::Candidate { .. } => "candidate",

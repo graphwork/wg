@@ -1274,6 +1274,21 @@ fn main() -> Result<()> {
             full_smoke,
             skip_smoke,
         ),
+        Commands::CompletionObject {
+            path,
+            media_type,
+            evidence_kind,
+        } => commands::completion_submit::put_object(
+            &workgraph_dir,
+            &path,
+            &media_type,
+            evidence_kind.as_deref(),
+        ),
+        Commands::Submit {
+            id,
+            manifest,
+            summary,
+        } => commands::completion_submit::run(&workgraph_dir, &id, &manifest, &summary),
         Commands::Contract { id, contract } => {
             commands::finalize::set_contract(&workgraph_dir, &id, &contract)
         }
