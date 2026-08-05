@@ -67,12 +67,14 @@ try {
     New-TestRelease $releaseOne "0.99.0" "stable" "first"
     New-TestRelease $releaseTwo "1.2.3" "nightly" "second"
 
-    $home = Join-Path $Tmp "home"
-    $install = Join-Path $home "bin"
-    $result = Invoke-Installer $home @("-BaseUrl", $releaseOne, "-InstallDir", $install, "-Target", $Target, "-Channel", "stable")
+    # PowerShell variable names are case-insensitive, so `$home` aliases the
+    # read-only automatic `$HOME` variable. Use a distinct name on every host.
+    $testHome = Join-Path $Tmp "home"
+    $install = Join-Path $testHome "bin"
+    $result = Invoke-Installer $testHome @("-BaseUrl", $releaseOne, "-InstallDir", $install, "-Target", $Target, "-Channel", "stable")
     foreach ($name in @("worksgood.exe", "wg.exe", "nex.exe")) { Assert-File (Join-Path $install $name) }
-    Assert-File (Join-Path $home ".wg/install-receipt.toml")
-    if ((Get-Content -LiteralPath (Join-Path $home ".wg/install-receipt.toml") -Raw) -notmatch 'binaries = \["worksgood", "wg", "nex"\]') { Fail "receipt missing exact binary set" }
+    Assert-File (Join-Path $testHome ".wg/install-receipt.toml")
+    if ((Get-Content -LiteralPath (Join-Path $testHome ".wg/install-receipt.toml") -Raw) -notmatch 'binaries = \["worksgood", "wg", "nex"\]') { Fail "receipt missing exact binary set" }
 
     $dryHome = Join-Path $Tmp "dry-home"
     $dryInstall = Join-Path $dryHome "bin"
@@ -80,7 +82,7 @@ try {
     foreach ($name in @("worksgood.exe", "wg.exe", "nex.exe")) { Assert-NoFile (Join-Path $dryInstall $name) }
     if ($dry.Output -notmatch 'would install worksgood\.exe, wg\.exe, and nex\.exe') { Fail "dry-run omitted exact binary set: $($dry.Output)" }
 
-    Invoke-Installer $home @("-BaseUrl", $releaseTwo, "-InstallDir", $install, "-Target", $Target, "-Channel", "nightly") | Out-Null
+    Invoke-Installer $testHome @("-BaseUrl", $releaseTwo, "-InstallDir", $install, "-Target", $Target, "-Channel", "nightly") | Out-Null
     if ((Get-Content -LiteralPath (Join-Path $install "worksgood.exe") -Raw) -ne "worksgood.exe second") { Fail "upgrade did not replace worksgood.exe" }
 
     $foreignHome = Join-Path $Tmp "foreign-home"
@@ -91,12 +93,12 @@ try {
     if ($foreign.Output -notmatch 'refusing to overwrite') { Fail "foreign collision was not explicit" }
     if ((Get-Content -LiteralPath (Join-Path $foreignInstall "worksgood.exe") -Raw) -ne "foreign") { Fail "foreign command changed" }
 
-    $uninstallDry = Invoke-Installer $home @("-InstallDir", $install, "-Target", $Target, "-Uninstall", "-DryRun")
+    $uninstallDry = Invoke-Installer $testHome @("-InstallDir", $install, "-Target", $Target, "-Uninstall", "-DryRun")
     foreach ($name in @("worksgood.exe", "wg.exe", "nex.exe")) {
         Assert-File (Join-Path $install $name)
         if ($uninstallDry.Output -notmatch [Regex]::Escape("would remove " + (Join-Path $install $name))) { Fail "uninstall dry-run omitted $name" }
     }
-    Invoke-Installer $home @("-InstallDir", $install, "-Target", $Target, "-Uninstall") | Out-Null
+    Invoke-Installer $testHome @("-InstallDir", $install, "-Target", $Target, "-Uninstall") | Out-Null
     foreach ($name in @("worksgood.exe", "wg.exe", "nex.exe")) { Assert-NoFile (Join-Path $install $name) }
 
     Write-Host "PASS: Windows PowerShell installer installs, dry-runs, upgrades, collision-refuses, receipts, and uninstalls exact worksgood/wg/nex set"

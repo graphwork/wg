@@ -277,7 +277,7 @@ function Verify-Checksum {
     $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $ArchivePath).Hash.ToLowerInvariant()
 
     if ($actual -ne $expected) {
-        Fail "checksum verification failed for $ArchiveName: expected $expected, got $actual"
+        Fail "checksum verification failed for ${ArchiveName}: expected $expected, got $actual"
     }
 
     Write-Info "checksum: OK ($actual)"
