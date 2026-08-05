@@ -4,3 +4,7 @@ defaultTargets = ["WGLifecycle"]
 
 [[lean_lib]]
 name = "WGLifecycle"
+
+[[lean_exe]]
+name = "simple-land-oracle"
+root = "SimpleLandOracle"

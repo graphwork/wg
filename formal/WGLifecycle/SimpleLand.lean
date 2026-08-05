@@ -1,4 +1,7 @@
 import Std.Tactic
+import Lean.Data.Json.FromToJson
+
+open Lean
 
 namespace WGLifecycle.SimpleLand
 
@@ -7,15 +10,15 @@ def wireVersion : Nat := 1
 
 inductive Contract where
   | land | report | explore
-  deriving DecidableEq, Repr
+  deriving DecidableEq, Repr, ToJson, FromJson
 
 inductive Phase where
   | working | reviewBlocked | reviewUnavailable | accepted | published | done | failed
-  deriving DecidableEq, Repr
+  deriving DecidableEq, Repr, ToJson, FromJson
 
 inductive ReviewVerdict where
   | absent | pass | reject | unavailable | incompleteEvidence
-  deriving DecidableEq, Repr
+  deriving DecidableEq, Repr, ToJson, FromJson
 
 /-- Finite symbolic digests/OIDs. Rust adapters own byte-level verification. -/
 structure Manifest where
@@ -27,18 +30,18 @@ structure Manifest where
   integratedMain : Nat
   allResolvable : Bool
   protectedFree : Bool
-  deriving DecidableEq, Repr
+  deriving DecidableEq, Repr, ToJson, FromJson
 
 structure ReviewReceipt where
   manifest : Nat
   requirements : Nat
   verdict : ReviewVerdict
-  deriving DecidableEq, Repr
+  deriving DecidableEq, Repr, ToJson, FromJson
 
 structure PublicationReceipt where
   manifest : Nat
   outputDigest : Nat
-  deriving DecidableEq, Repr
+  deriving DecidableEq, Repr, ToJson, FromJson
 
 structure State where
   phase : Phase
@@ -48,11 +51,11 @@ structure State where
   publication : Option PublicationReceipt
   publicationCount : Nat
   failureCode : Option Nat
-  deriving DecidableEq, Repr
+  deriving DecidableEq, Repr, ToJson, FromJson
 
 inductive Decision where
   | applied | noop | rejected
-  deriving DecidableEq, Repr
+  deriving DecidableEq, Repr, ToJson, FromJson
 
 inductive Event where
   | submitManifest (manifest : Manifest)
@@ -64,7 +67,7 @@ inductive Event where
   | complete (manifest : Nat) (outputsStillResolve : Bool)
   | fail (code : Nat)
   | retry
-  deriving DecidableEq, Repr
+  deriving DecidableEq, Repr, ToJson, FromJson
 
 private def absentReceipt : ReviewReceipt :=
   { manifest := 0, requirements := 0, verdict := .absent }

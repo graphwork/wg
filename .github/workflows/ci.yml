@@ -98,15 +98,21 @@ jobs:
             exit 1
           fi
 
-      - name: lake build (pinned lifecycle proofs)
+      - name: lake build (pinned lifecycle proofs + executable oracle)
         working-directory: formal
-        run: lake build
+        run: |
+          lake build
+          lake build simple-land-oracle
 
       - name: Install stable Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Rust/JSON lifecycle reducer conformance
-        run: cargo test --locked --test lifecycle_protocol_conformance
+      - name: Rust/Lean lifecycle reducer conformance
+        run: >-
+          cargo test --locked
+          --test lifecycle_protocol_conformance
+          --test simple_land_conformance
+          --test simple_land_lean_oracle
 
   integration:
     name: Integration Tests (stable)
