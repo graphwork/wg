@@ -6,18 +6,22 @@ proofs or incident corpus.
 
 ## Goal
 
-Restore the workflow that supported autonomous long-running work:
+Restore autonomous long-running work around one universal review valve:
 
 ```text
-spawn one model in one worktree
-→ model works and commits
-→ model integrates current main and validates
-→ read-only FLIP/eval reviews the immutable commit
-→ model lands its own accepted commit
-→ wg done verifies that main contains it
+spawn one model under the task's explicit completion contract
+→ model produces declared outputs
+→ model submits an immutable, resolvable completion manifest
+→ FLIP inspects the exact manifest and outputs
+→ eval independently inspects the same exact manifest and outputs
+→ both pass: the valve opens
+→ Land publishes to main; Report/Explore publishes immutable output
+→ wg done verifies review plus publication
 ```
 
-The Lean reducer proves the small acceptance/landing protocol. It does not schedule
+**Every task passes through FLIP and eval.** They are the platform's primary mechanism
+for determining whether work is correctly completed, not an optional add-on. The Lean
+reducer proves the universal submit/review/accept/publish protocol. It does not schedule
 models, supervise PIDs, parse streams, clean worktrees, archive tasks, choose routes, or
 create recovery work. Those are ordinary adapters and UI operations.
 
@@ -29,6 +33,8 @@ create recovery work. Those are ordinary adapters and UI operations.
 - No worktree for a report, read-only analysis, or exploration task unless the task
   explicitly requests a separate repository checkout.
 - No cleanup requirement for task success.
+- No task may bypass FLIP or eval; reviewer infrastructure unavailability blocks the
+  valve visibly without becoming semantic rejection.
 - No hidden fallback between model, executor, route, graph, session, or candidate.
 
 ## One authority per concern
@@ -37,11 +43,11 @@ create recovery work. Those are ordinary adapters and UI operations.
 |---|---|
 | Task readiness | Graph status plus ordinary successful `after` dependencies |
 | Source work | Exact assigned worker and its branch/worktree |
-| Candidate identity | Git commit OID |
-| Review | FLIP/eval receipts bound to that exact commit OID |
+| Submission identity | Content digest of the universal completion manifest |
+| Review | Required FLIP and eval receipts bound to that exact manifest digest |
 | Landing | Git fast-forward under one short repository landing lock |
-| Code-task completion | `main` contains the reviewed candidate commit |
-| Report completion | Declared immutable output exists and matches its digest |
+| Code-task completion | `main` contains the manifest's reviewed candidate commit |
+| Report/Explore completion | Every reviewed output locator resolves and matches its digest |
 | Failure | Explicit task failure/block record; never an automatic replacement |
 | Cleanup | Best-effort asynchronous maintenance; never completion authority |
 | Formal truth | Pure Lean reducer plus Rust trace conformance |
@@ -53,23 +59,67 @@ stream observers, and wrappers must not share any of the authorities above.
 
 ### Land
 
-Use a Git worktree. Completion requires an accepted candidate commit reachable from the
-configured integration branch (normally `main`). The implementing worker owns conflict
-repair, validation, review feedback, and landing.
+Use a Git worktree. The manifest points to a Git commit/tree/diff plus validation
+evidence. Completion requires FLIP and eval acceptance of that manifest and the accepted
+commit reachable from the configured integration branch (normally `main`). The
+implementing worker owns conflict repair, validation, review feedback, and landing.
 
 ### Report
 
-Do not create a Git worktree. Write the declared output to the graph output store or an
-explicit task path. Completion requires the output digest. A report may have FLIP/eval,
-but never a fake Git promotion.
+Do not create a Git worktree. Write declared outputs to the graph artifact store or an
+explicit task path, then content-address them in the manifest. FLIP and eval must resolve
+and inspect those exact outputs. Completion requires both reviews plus matching published
+output digests; there is no fake Git promotion.
 
 ### Explore
 
-Default to read-only access to the project plus a task-scoped scratch/output directory.
-No Git worktree and no merge expectation. If an exploration genuinely modifies another
-repository, that repository and its delivery contract must be explicit.
+Default to read-only project access plus a task-scoped scratch/output directory. The
+manifest identifies the resulting analysis, evidence, datasets, or report artifacts for
+FLIP and eval. No Git worktree or merge expectation exists unless another repository and
+its delivery contract are explicit.
 
-## Code-task protocol
+## Universal completion manifest
+
+Before any task can request review, it writes one immutable manifest:
+
+```text
+CompletionManifest {
+  task_id,
+  generation,
+  contract,                 // Land, Report, Explore
+  requirements_digest,      // exact task specification reviewed
+  source_revision,
+  outputs : List OutputRef,
+  validation : List EvidenceRef,
+  worker_summary_digest
+}
+
+OutputRef :=
+  | git(commit_oid, integrated_main_oid, tree_oid, diff_bundle_digest)
+  | artifact(content_digest, media_type, size, immutable_locator)
+  | external(adapter_kind, resource_id, before_digest, after_digest, receipt_digest)
+
+EvidenceRef := content_digest + immutable_locator + evidence_kind
+```
+
+The manifest digest is the universal candidate identity. A locator is valid only when a
+reviewer can resolve it read-only and verify its digest. A human-readable path may be
+shown in the UI, but identity comes from content, not a mutable pathname.
+
+The review bundle presented to both reviewers contains:
+
+- the exact task requirements and completion contract;
+- dependency outputs named by digest;
+- the completion manifest;
+- every resolved output and validation item;
+- for Land, the immutable Git tree/diff without `.wg`;
+- for external actions, the typed receipt plus a read-only verification probe.
+
+Missing, mutable, inaccessible, or digest-mismatched output is `incomplete evidence` and
+returns to the same worker. It is never silently accepted and is not mislabelled as a
+semantic rejection.
+
+## Universal task protocol
 
 ### 1. Spawn
 
@@ -108,32 +158,44 @@ Candidate {
 
 Candidate identity is the Git commit OID; no parallel candidate ID is necessary.
 
-### 3. FLIP/eval gate
+### 3. Universal FLIP/eval valve
 
-FLIP and eval are read-only model calls over the exact candidate commit/tree. They are
-not graph tasks and receive no worktree. Their durable receipts live under one review
-record keyed by candidate OID:
+FLIP and eval are required read-only model calls over the exact completion manifest and
+resolved review bundle for **every** task contract. They receive no mutable worker
+worktree. Their durable receipts are keyed by manifest digest:
 
 ```text
 ReviewReceipt {
-  candidate_oid,
+  manifest_digest,
+  requirements_digest,
   reviewer_kind,       // flip or eval
-  verdict,             // pass, reject, unavailable
+  verdict,             // pass, reject, unavailable, incomplete_evidence
   findings_digest,
+  inspected_output_digests,
   model_route,
   created_at
 }
 ```
 
+FLIP runs first as the deep adversarial completion check. Eval then independently checks
+requirements, tests/evidence, and output quality against the same immutable submission.
+Both are mandatory.
+
 Rules:
 
-- `pass`: satisfies that review slot for only that candidate OID.
-- `reject`: returns findings to the same worker/session/worktree. Landing is blocked.
-- `unavailable`: reports infrastructure failure. Landing is blocked, but the candidate
-  is not semantically rejected and source work is not respawned.
-- Any new commit invalidates all old review receipts by identity.
-- Review records are visible in the TUI, but do not participate in graph readiness as
-  synthetic `.flip-*`/`.evaluate-*` dependencies.
+- `pass`: satisfies that review slot only for that manifest and requirements digest.
+- `reject`: returns bounded actionable findings to the same worker/session/work context.
+  The valve stays closed.
+- `incomplete_evidence`: names unresolved/mismatched outputs and returns them for repair;
+  it is not a semantic verdict.
+- `unavailable`: reports reviewer infrastructure failure. The valve stays closed, but
+  the submission is preserved and source work is not respawned.
+- Any changed output, evidence item, task requirement, commit, or manifest creates a new
+  digest and invalidates both old receipts automatically.
+- Review stages and findings are first-class in the parent task/TUI, but are not
+  schedulable child graph tasks with independent worktrees, retries, dependencies, or
+  finalizers.
+- The valve opens only for `(flip = pass) ∧ (eval = pass)` on the same manifest.
 
 ### 4. Worker-owned landing
 
@@ -160,16 +222,25 @@ and the compare/fast-forward critical section.
 
 ### 5. Done
 
-`wg done <task>` is deliberately boring. For a Land task it checks:
+`wg done <task>` is deliberately boring. For every task it first checks:
 
 ```text
-review receipts pass for candidate OID
-AND candidate OID is an ancestor of integration branch
+FLIP passed exact manifest
+AND eval passed exact manifest
+AND every output locator still resolves to its reviewed digest
+```
+
+It then checks the contract-specific publication:
+
+```text
+Land: accepted commit is an ancestor of the integration branch
+Report/Explore: accepted artifact/output digests are durably published
 ```
 
 If true, the graph transitions to Done. If false, `wg done` refuses with the exact
-missing condition: uncommitted work, main not integrated, review rejected/unavailable,
-main moved, or candidate not landed.
+missing condition: absent/incomplete manifest, unresolved output, stale review, FLIP or
+eval rejection/unavailability, uncommitted work, main not integrated, main moved,
+candidate not landed, or output not published.
 
 A later wrapper error, observer error, provider report, cleanup error, or process exit
 cannot undo Done. Cleanup is queued as best effort and is not a dependency truth.
@@ -213,21 +284,27 @@ formal/WGLifecycle/SimpleLand.lean
 ```text
 Contract := land | report | explore
 Phase := working | reviewBlocked | reviewUnavailable | accepted | done | failed
-ReviewVerdict := absent | pass | reject | unavailable
+ReviewVerdict := absent | pass | reject | unavailable | incompleteEvidence
 
-Candidate := {
-  commit : Oid,
-  integratedMain : Oid,
-  validation : Digest,
+OutputRef := git | artifact | external
+Manifest := {
+  id : Digest,
+  requirements : Digest,
+  contract : Contract,
+  outputs : List OutputRef,
+  evidence : List Digest,
+  allResolvable : Bool,
   protectedFree : Bool
 }
 
 State := {
   phase : Phase,
-  candidate : Option Candidate,
+  manifest : Option Manifest,
+  flipManifest : Option Digest,
   flip : ReviewVerdict,
+  evalManifest : Option Digest,
   eval : ReviewVerdict,
-  landed : Option Oid,
+  published : Option Digest,
   failure : Option FailureCode
 }
 ```
@@ -238,47 +315,54 @@ does. Git truth is supplied as a verified adapter observation, not proved by Lea
 ### Events
 
 ```text
-prepareCandidate(candidate)
-recordFlip(candidateOid, verdict)
-recordEval(candidateOid, verdict)
+submitManifest(manifest)
+recordFlip(manifestDigest, requirementsDigest, verdict)
+recordEval(manifestDigest, requirementsDigest, verdict)
 mainMoved(observedMain)
-landObserved(candidateOid, expectedMain, observedMain, casSucceeded)
-complete(mainContainsCandidate)
+publishObserved(manifestDigest, publicationReceipt)
+complete(manifestDigest, outputsStillResolve)
 fail(code)
 retry
 ```
 
-A changed candidate resets both review slots. `landObserved` succeeds only when:
+A changed manifest or requirements digest resets both review slots. Review pass is
+recordable only when every declared output resolves, its digest agrees, and protected
+control-plane content is absent. `publishObserved` succeeds only when:
 
-- candidate is protected-control-plane-free;
-- validation is present;
-- both required reviews pass for that exact candidate;
-- `observedMain = candidate.integratedMain`;
-- the adapter reports successful Git CAS/fast-forward.
+- FLIP and eval both pass the same manifest and requirements digest;
+- every output and validation reference resolved during review;
+- for Land, observed main equals the Git output's integrated main and the adapter reports
+  successful Git CAS/fast-forward;
+- for Report/Explore, the adapter reports durable publication of the reviewed digests.
 
-`complete` succeeds only when the verified adapter observation says the integration
-branch contains the accepted/landed candidate.
+`complete` succeeds only when the adapter verifies that the contract-specific published
+outputs still match the accepted manifest.
 
 ### Theorems
 
 Prove without `sorry`, `admit`, unsafe declarations, or hidden axioms:
 
-1. **Done implies landed:** every reachable Done Land task has a landed candidate.
-2. **Done implies exact review:** FLIP/eval pass receipts name that candidate OID.
-3. **Rejected review cannot land.**
-4. **Unavailable review cannot become semantic rejection or Done.**
-5. **Candidate change invalidates review.**
-6. **Stale main cannot land:** observed main unequal to integrated main leaves the task
+1. **Universal review gate:** every reachable Done task has FLIP and eval pass receipts
+   for the same exact manifest and requirements digest.
+2. **Done implies resolved reviewed output:** every published output belongs to that
+   manifest and was digest-verified.
+3. **Done implies contract publication:** Land is in main; Report/Explore artifacts are
+   durably published.
+4. **Rejected review cannot publish or complete.**
+5. **Unavailable/incomplete review cannot become semantic rejection or Done.**
+6. **Manifest/output/requirements change invalidates both reviews.**
+7. **Stale main cannot land:** observed main unequal to integrated main leaves the task
    nonterminal and requests no automatic spawn.
-7. **At-most-one accepted landing per task generation.**
-8. **Terminal is inert:** later process/wrapper/cleanup observations cannot revoke Done.
-9. **Failure never satisfies dependencies.**
-10. **Report/Explore completion does not require a Git worktree.**
-11. **No automatic source retry exists:** the event/action type contains no spawn or
+8. **At-most-one accepted publication per task generation.**
+9. **Terminal is inert:** later process/wrapper/cleanup observations cannot revoke Done.
+10. **Failure never satisfies dependencies.**
+11. **Report/Explore completion does not require a Git worktree, but does require both
+    reviews over resolvable immutable output.**
+12. **No automatic source retry exists:** the event/action type contains no spawn or
     replacement-worker constructor.
-12. **Conditional collision progress:** under explicit assumptions of fair lock access,
-    truthful Git observations, successful model repair/review, and eventually stable
-    main, the worker can reach Done.
+13. **Conditional collision progress:** under explicit assumptions of fair lock access,
+    truthful Git/output observations, successful model repair/review, and eventually
+    stable publication targets, the worker can reach Done.
 
 The last theorem is conditional. Lean must not claim that models, reviewers, Git, or the
 OS eventually cooperate.
@@ -337,12 +421,14 @@ The service is currently stopped. Cut over in changes that never permit dual aut
 - Add explicit Land/Report/Explore execution behavior.
 - Keep exact route selection and visible failures.
 
-### Change C — synchronous candidate review
+### Change C — universal manifest review valve
 
-- Replace `.flip-*`/`.evaluate-*` scheduling prerequisites with read-only candidate-bound
-  review calls and receipts.
-- Return reject/unavailable results to the same worker.
-- Add TUI review status and findings.
+- Require every Land/Report/Explore attempt to submit a resolvable completion manifest.
+- Replace `.flip-*`/`.evaluate-*` scheduling prerequisites with required read-only
+  manifest-bound FLIP then eval calls and receipts.
+- Make both passes mandatory for every contract; no bypass or optional policy path.
+- Return reject/unavailable/incomplete-evidence results to the same worker context.
+- Add first-class TUI manifest, output-locator, FLIP, eval, and findings status.
 
 ### Change D — worker-owned land/done
 
@@ -363,14 +449,19 @@ The service is currently stopped. Cut over in changes that never permit dual aut
 In an isolated HOME and fresh graph, run 8–10 concurrent agents that edit overlapping and
 non-overlapping files. Assert:
 
+- every task submits an immutable manifest whose output locators resolve read-only;
+- every Done task has FLIP and eval passes for the same manifest and requirements digest;
 - every successful code task is in main;
+- every successful Report/Explore task has reviewed, digest-matching published output;
 - conflicts return to the same worker;
 - stale candidates cannot land;
-- FLIP/eval failures visibly block landing;
-- reviewer outage creates ReviewUnavailable without source respawn;
+- FLIP/eval failures visibly block the universal valve;
+- reviewer outage or incomplete evidence blocks without semantic rejection or source
+  respawn;
+- changing any output invalidates both review receipts;
 - no successful work is stranded only in a worktree;
-- no task is respawned after its candidate reaches main;
-- Report/Explore tasks complete without worktrees;
+- no task is respawned after its reviewed output is published;
+- Report/Explore tasks complete without worktrees but never without review;
 - daemon restart after Git land/before graph Done converges by ancestry;
 - service has no `wait until None`, planner effect journal, or hidden retry timer.
 
