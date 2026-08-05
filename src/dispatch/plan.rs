@@ -341,10 +341,26 @@ pub struct SpawnPlan {
     pub provenance: SpawnProvenance,
 }
 
-/// Stable, redacted identity of the exact route/model plan authorized by the
-/// daemon planner. Endpoint identity is already captured by `route_id`; the
+/// Bounded, redacted identity of an exact route. This is independent of any
+/// scheduler or persistence mechanism and may be passed directly from route
+/// selection to the spawn adapter.
+pub fn spawn_route_binding_id(route_id: &str) -> String {
+    let safe = !route_id.is_empty()
+        && route_id.len() <= 96
+        && route_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._:-|".contains(&byte));
+    if safe {
+        route_id.to_string()
+    } else {
+        format!("id:{}", blake3::hash(route_id.as_bytes()).to_hex())
+    }
+}
+
+/// Stable, redacted identity of the exact route/model plan selected by the
+/// dispatcher. Endpoint identity is already captured by `route_id`; the
 /// remaining fields prevent a handler, model, reasoning, or placement rewrite
-/// between effect issuance and execution.
+/// between selection and execution.
 pub fn spawn_plan_binding_id(plan: &SpawnPlan, route_id: &str) -> String {
     let placement = match &plan.placement {
         Placement::Local => "local".to_string(),
@@ -1988,7 +2004,7 @@ mod tests {
     /// pins the dispatcher-side half of Erik's PR #56 rd3 hole, motivating the
     /// scope_guard refusal.
     #[test]
-    fn planner_binding_changes_for_route_model_reasoning_or_placement() {
+    fn exact_binding_changes_for_route_model_reasoning_or_placement() {
         let config = Config::default();
         let mut task = base_task("binding");
         let base = plan_spawn(&task, &config, None, Some("claude:opus")).unwrap();
@@ -2006,6 +2022,12 @@ mod tests {
         let mut placement = base.clone();
         placement.placement = Placement::Provider("wgid:zBox".to_string());
         assert_ne!(id, spawn_plan_binding_id(&placement, "route-a"));
+
+        assert_eq!(spawn_route_binding_id("route-a"), "route-a");
+        let unsafe_route = "openrouter/provider/model/with/slashes";
+        let redacted = spawn_route_binding_id(unsafe_route);
+        assert!(redacted.starts_with("id:"));
+        assert_eq!(redacted, spawn_route_binding_id(unsafe_route));
     }
 
     #[test]

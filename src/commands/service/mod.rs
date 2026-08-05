@@ -3075,27 +3075,10 @@ pub fn run_daemon(
     // Clean up legacy daemon-managed graph tasks from older coordinator models.
     cleanup_legacy_daemon_tasks(&dir, &logger);
 
-    // Materialize/migrate the production planner before any dispatch adapter
-    // runs. Legacy convergence bytes are imported exactly once; dispatch and
-    // route authority are never refreshed or mutated through the old reducer.
-    match worksgood::worker_control::load_or_create_graph_identity(&dir)
-        .and_then(worksgood::service::PlannerOpaqueId::new)
-        .and_then(|graph_id| worksgood::service::PlannerStore::open(&dir, graph_id))
-    {
-        Ok(store) => {
-            let status = store.status_projection();
-            logger.info(&format!(
-                "Planner runtime kernel ready (schema={}, sequence={:?}, effects={}, earliest_deadline={})",
-                status.schema_version,
-                status.last_sequence,
-                status.effects.len(),
-                status.earliest_deadline.as_deref().unwrap_or("none")
-            ));
-        }
-        Err(error) => logger.warn(&format!(
-            "Planner runtime kernel unavailable; no planner effect will execute: {error:#}"
-        )),
-    }
+    // Dispatch is derived directly from graph readiness, live capacity and one
+    // canonical exact-route SpawnPlan. Historical planner files are retained
+    // as evidence but are not opened or migrated by the production service.
+    logger.info("Direct fail-stop dispatch enabled; PlannerStore is not an authority");
 
     // Auto-bootstrap agency when auto_evolve is enabled and agency isn't initialized.
     if config.agency.auto_evolve {
@@ -3403,16 +3386,6 @@ pub fn run_daemon(
                 .saturating_sub(last_coordinator_tick.elapsed());
             poll_timeout_ms =
                 poll_timeout_ms.min(until_tick.as_millis().min(i32::MAX as u128) as i32);
-            if let Ok(Some(deadline)) =
-                worksgood::service::PlannerStore::read_earliest_deadline(&dir)
-            {
-                let until = deadline
-                    .signed_duration_since(chrono::Utc::now())
-                    .to_std()
-                    .unwrap_or_default();
-                poll_timeout_ms =
-                    poll_timeout_ms.min(until.as_millis().min(i32::MAX as u128) as i32);
-            }
         }
         // Floor: don't spin faster than 50ms even with a deadline in the past.
         poll_timeout_ms = poll_timeout_ms.max(50);
@@ -3811,16 +3784,6 @@ pub fn run_daemon(
             if last_coordinator_tick.elapsed() >= daemon_cfg.poll_interval {
                 should_tick = true;
             }
-            // The earliest persisted convergence deadline shares the same
-            // event loop. Restart loads this exact timestamp; it never resets
-            // the exponent or redraws deterministic jitter.
-            if worksgood::service::PlannerStore::read_earliest_deadline(&dir)
-                .ok()
-                .flatten()
-                .is_some_and(|deadline| deadline <= chrono::Utc::now())
-            {
-                should_tick = true;
-            }
         }
         // Short-circuit the tick phase if Shutdown was just processed.
         // Without this, an IPC Shutdown that arrives while should_tick is
@@ -3909,109 +3872,17 @@ pub fn run_daemon(
                         result.spawn_breaker_tripped_tasks
                     ));
 
-                    // Planner invariant monitor: detect a starved dispatcher —
-                    // ready tasks present, yet nothing spawned and no live agents.
                     if result.tasks_ready > 0
                         && result.agents_spawned == 0
                         && result.agents_alive == 0
                         && result.admission_deferred_tasks == 0
                     {
-                        // A per-task spawn circuit breaker tripping explains a
-                        // "spawned=0" tick without a wedge: the breaker skips
-                        // ONLY the affected task (and self-heals). It is an
-                        // explicit wait/deadline class, so surface it without a hold.
-                        if result.spawn_breaker_tripped_tasks > 0 {
-                            logger.info(&format!(
-                                "Spawn circuit breaker tripped on {} task(s) this tick — they are skipped (per-task) and self-heal via cooldown / `wg retry` / clear-on-success. Other tasks dispatch normally.",
-                                result.spawn_breaker_tripped_tasks
-                            ));
-                        } else if let Ok(Some(deadline)) =
-                            worksgood::service::PlannerStore::read_earliest_deadline(&dir)
-                            && deadline > chrono::Utc::now()
-                        {
-                            // The durable convergence scheduler already owns
-                            // the next forward action. A future wake is not a
-                            // planner wedge and must never pause the daemon.
-                            logger.info(&format!(
-                                "Dispatch deferred by durable convergence wake at {deadline}"
-                            ));
-                        } else {
-                            // "No blockers" with no runnable action, live owner,
-                            // explicit wait, or convergence deadline is a planner
-                            // invariant violation, not a condition to count for
-                            // five more mutating ticks. Persist the minimal replay
-                            // input before placing the daemon in a fail-closed hold.
-                            let capture = (|| -> Result<()> {
-                                let graph_id = worksgood::service::PlannerOpaqueId::new(
-                                    worksgood::worker_control::load_or_create_graph_identity(&dir)?,
-                                )?;
-                                // The monitor and replay planner must reduce
-                                // the exact same typed observation from the
-                                // exact same initial state. Reusing the
-                                // long-lived PlannerStore here can be absorbing
-                                // fail-closed state from an older incident and
-                                // made the monitor disagree with its own replay.
-                                let planner_state =
-                                    worksgood::service::PlannerState::new(graph_id.clone());
-                                let observation = worksgood::service::ObservationEnvelope {
-                                    sequence: 1,
-                                    logical_time: coord_state.ticks,
-                                    observation: worksgood::service::Observation::Task(Box::new(
-                                        worksgood::service::PlannerTaskObservation {
-                                            key: worksgood::service::PlannerTaskKey {
-                                                graph_id,
-                                                task_id: worksgood::service::PlannerOpaqueId::new(
-                                                    "dispatch-exhaustiveness",
-                                                )?,
-                                                generation: coord_state.ticks,
-                                                attempt_id:
-                                                    worksgood::service::PlannerOpaqueId::new(
-                                                        "daemon-dispatch",
-                                                    )?,
-                                                fence: coord_state.route_generation,
-                                            },
-                                            progress_id: worksgood::service::PlannerOpaqueId::new(
-                                                format!("tick-{}", coord_state.ticks),
-                                            )?,
-                                            unfinished: true,
-                                            owner: worksgood::service::PlannerOwnerEvidence::None,
-                                            runnable: None,
-                                            external_wait: None,
-                                            scheduled: None,
-                                            effect_binding: None,
-                                            incidents: BTreeSet::new(),
-                                            failed_prerequisite: None,
-                                        },
-                                    )),
-                                };
-                                let (step, replay_path) = worksgood::service::plan_guarded(
-                                    &dir,
-                                    &planner_state,
-                                    &observation,
-                                )?;
-                                if !step.violations.contains(
-                                    &worksgood::service::PlannerViolationCode::NoForwardDisposition,
-                                ) || replay_path.is_none()
-                                {
-                                    anyhow::bail!(
-                                        "dispatch exhaustiveness monitor and replay planner disagreed"
-                                    );
-                                }
-                                Ok(())
-                            })();
-                            daemon_cfg.paused = true;
-                            coord_state.paused = true;
-                            coord_state.save(&dir);
-                            match capture {
-                                Ok(()) => logger.error(
-                                    "DISPATCH PLANNER INVARIANT: ready unfinished work had no action, authenticated live owner, external wait, or convergence deadline. Minimal replay was persisted under service/replay before the daemon entered fail-closed hold; run `wg service replay <bundle>`.",
-                                ),
-                                Err(error) => logger.error(&format!(
-                                    "DISPATCH PLANNER INVARIANT: replay capture failed ({error:#}); daemon still entered fail-closed hold and will perform no further coordinator mutation"
-                                )),
-                            }
-                            continue;
-                        }
+                        // Never turn a diagnostic mismatch into a global pause.
+                        // Exact-route launch failures have already failed their
+                        // individual tasks; the next tick reloads graph truth.
+                        logger.warn(
+                            "Ready work produced no launch or explicit admission deferral; no planner recovery, hidden retry, or global pause was created",
+                        );
                     }
 
                     // Dispatch notifications for task state changes (failures, blocks)
@@ -4660,9 +4531,7 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
     let recent_errors = tail_log_since(dir, 5, Some("ERROR"), started_at);
     let recent_fatals = tail_log_since(dir, 5, Some("FATAL"), started_at);
     let worker_filesystem_isolation = worksgood::worker_control::filesystem_isolation_status();
-    // This path is deliberately read-only: status never runs schema migration,
-    // imports convergence, allocates a sequence, or acknowledges an effect.
-    let planner_runtime = worksgood::service::PlannerStore::read_status(dir)?;
+    let historical_planner_evidence_present = dir.join("service/planner").exists();
 
     if json {
         let mut output = serde_json::json!({
@@ -4712,7 +4581,8 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
             "worktree_observers": worktree_observers,
             "worktree_activity_clocks": worktree_activity_clocks,
             "automatic_archival": automatic_archival,
-            "planner_runtime": planner_runtime,
+            "dispatch_authority": "direct-fail-stop",
+            "historical_planner_evidence_present": historical_planner_evidence_present,
             "worktree_observer_policy": {
                 "meaningful_silence_secs": worksgood::worktree_observer::DEFAULT_MEANINGFUL_SILENCE_SECS,
                 "observed_activity_grace_secs": worksgood::worktree_observer::DEFAULT_OBSERVED_ACTIVITY_GRACE_SECS,
@@ -4752,14 +4622,9 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
         println!("Service: running (PID {})", state.pid);
         println!("Socket: {}", state.socket_path);
         println!("Uptime: {}", uptime);
-        if let Some(planner) = planner_runtime.as_ref() {
-            println!(
-                "Planner runtime: schema {}, sequence {:?}, {} effect(s), earliest deadline {}",
-                planner.schema_version,
-                planner.last_sequence,
-                planner.effects.len(),
-                planner.earliest_deadline.as_deref().unwrap_or("none")
-            );
+        println!("Dispatch authority: direct fail-stop (no PlannerStore)");
+        if historical_planner_evidence_present {
+            println!("Historical planner evidence: retained, non-authoritative");
         }
         println!(
             "Worker control: capability broker enforced; filesystem isolation: {} ({})",

@@ -882,7 +882,7 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
 }
 
 /// Recompute the canonical plan immediately before the first spawn mutation
-/// and require it to match the planner-issued route/model binding.
+/// and require it to match the dispatcher's exact route/model binding.
 pub(crate) fn spawn_agent_inner_authorized(
     dir: &Path,
     task_id: &str,
@@ -996,12 +996,11 @@ pub(crate) fn spawn_agent_inner_authorized(
     let plan = plan_spawn(task, &config, Some(executor_name), plan_default_model)?;
     if let Some((expected_route_id, expected_plan_id)) = expected_binding {
         let actual_route_id = worksgood::service::HealthRouteKey::from_spawn_plan(&plan).id();
-        let actual_route_binding =
-            worksgood::service::PlannerOpaqueId::normalized(&actual_route_id).to_string();
+        let actual_route_binding = worksgood::dispatch::spawn_route_binding_id(&actual_route_id);
         let actual_plan_id = worksgood::dispatch::spawn_plan_binding_id(&plan, &actual_route_id);
         if actual_route_binding != expected_route_id || actual_plan_id != expected_plan_id {
             anyhow::bail!(
-                "planner spawn binding changed before execution (expected route={} plan={}, observed route={} plan={}); no fallback was attempted",
+                "exact spawn binding changed before execution (expected route={} plan={}, observed route={} plan={}); no fallback was attempted",
                 expected_route_id,
                 expected_plan_id,
                 actual_route_id,

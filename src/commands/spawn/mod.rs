@@ -272,7 +272,7 @@ pub fn spawn_agent(
     spawn_agent_with_binding(dir, task_id, executor_name, timeout, model, None)
 }
 
-/// Coordinator spawn adapter with an optional exact PlannerStore binding.
+/// Coordinator spawn adapter with an optional exact route/model binding.
 /// The canonical plan is recomputed and matched before claim/worktree/registry
 /// mutation, so a config/profile change cannot silently rewrite the route.
 pub fn spawn_agent_with_binding(
