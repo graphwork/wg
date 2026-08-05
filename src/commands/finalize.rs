@@ -317,6 +317,7 @@ fn prepare_graph_save_for_source(
         CompletionContract::Land => CompletionDisposition::Landed,
         CompletionContract::Deliver => CompletionDisposition::Delivered,
         CompletionContract::Report => CompletionDisposition::Reported,
+        CompletionContract::Explore => CompletionDisposition::Explored,
     };
     let legacy_validation = legacy.and_then(|transaction| transaction.validation.as_ref());
     let intent = CompletionIntentReceipt {
@@ -486,7 +487,9 @@ fn prepare_graph_save_for_source(
                 ref_cas_succeeded: legacy_receipt.is_none_or(|receipt| receipt.ref_cas),
             })
         }
-        CompletionDisposition::Delivered | CompletionDisposition::Reported => {
+        CompletionDisposition::Delivered
+        | CompletionDisposition::Reported
+        | CompletionDisposition::Explored => {
             let legacy_receipt = legacy.and_then(|transaction| transaction.output_receipt.as_ref());
             if legacy.is_some() && legacy_receipt.is_none() {
                 bail!("completion.bridge_output_receipt_missing");
@@ -1277,6 +1280,11 @@ fn submit_finish(
                 }
                 worksgood::graph::CompletionContract::Report => {
                     worksgood::finalization::OutputDisposition::Reported
+                }
+                worksgood::graph::CompletionContract::Explore => {
+                    bail!(
+                        "legacy finalization does not support Explore; use the immutable manifest review/publication protocol"
+                    )
                 }
                 worksgood::graph::CompletionContract::Land => unreachable!(),
             },
@@ -2277,23 +2285,34 @@ fn project_cleaned_success(
     Ok(())
 }
 
-fn set_contract(dir: &Path, id: &str, value: &str) -> Result<()> {
+pub fn set_contract(dir: &Path, id: &str, value: &str) -> Result<()> {
     let contract = match value {
         "land" => worksgood::graph::CompletionContract::Land,
-        "deliver" => worksgood::graph::CompletionContract::Deliver,
         "report" => worksgood::graph::CompletionContract::Report,
-        _ => bail!("completion contract must be land, deliver, or report"),
+        "explore" => worksgood::graph::CompletionContract::Explore,
+        "deliver" => bail!(
+            "the deliver contract is historical-only; new work must use land, report, or explore"
+        ),
+        _ => bail!("completion contract must be land, report, or explore"),
     };
+    let mut refusal = None;
     worksgood::parser::modify_graph(dir.join("graph.jsonl"), |graph| {
         let Some(task) = graph.get_task_mut(id) else {
+            refusal = Some(format!("task '{id}' not found"));
             return false;
         };
         if task.status != worksgood::graph::Status::Open || task.assigned.is_some() {
+            refusal = Some(format!(
+                "task '{id}' must be open and unassigned before changing its completion contract"
+            ));
             return false;
         }
         task.completion_contract = contract;
         true
     })?;
+    if let Some(refusal) = refusal {
+        bail!(refusal);
+    }
     println!("Completion contract for {id}: {contract}");
     Ok(())
 }
@@ -2815,6 +2834,29 @@ mod atomic_terminal_tests {
         }));
         save_graph(&graph, dir.join("graph.jsonl")).unwrap();
         (root, dir)
+    }
+
+    #[test]
+    fn explicit_contracts_are_land_report_or_explore() {
+        let (_root, dir) = setup(Status::Open);
+        set_contract(&dir, "terminal", "explore").unwrap();
+        let graph = load_graph(dir.join("graph.jsonl")).unwrap();
+        assert_eq!(
+            graph.get_task("terminal").unwrap().completion_contract,
+            CompletionContract::Explore
+        );
+    }
+
+    #[test]
+    fn new_legacy_deliver_contract_is_refused() {
+        let (_root, dir) = setup(Status::Open);
+        let error = set_contract(&dir, "terminal", "deliver").unwrap_err();
+        assert!(error.to_string().contains("historical-only"));
+        let graph = load_graph(dir.join("graph.jsonl")).unwrap();
+        assert_eq!(
+            graph.get_task("terminal").unwrap().completion_contract,
+            CompletionContract::Land
+        );
     }
 
     #[test]

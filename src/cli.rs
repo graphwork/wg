@@ -554,7 +554,10 @@ pub enum Commands {
         skip_smoke: bool,
     },
 
-    /// Task-owned finish transaction (legacy spelling: `finalize`)
+    /// Set the task's completion contract: land, report, or explore
+    Contract { id: String, contract: String },
+
+    /// Historical task-owned finish transaction (non-authoritative)
     #[command(alias = "finish")]
     Finalize {
         #[command(subcommand)]
@@ -2956,7 +2959,7 @@ pub enum FinalizeCommands {
     },
     /// Remove the owned worktree/branch, write cleanup receipt, then expose Done
     Cleanup { id: String },
-    /// Set the explicit land/deliver/report contract
+    /// Set the explicit land/report/explore contract
     Contract { id: String, contract: String },
     /// Add an explicitly typed immutable contribution input edge
     Input {
@@ -7022,6 +7025,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Add { .. } => "add",
         Commands::Edit { .. } => "edit",
         Commands::Done { .. } => "done",
+        Commands::Contract { .. } => "contract",
         Commands::Finalize { .. } => "finalize",
         Commands::Candidate { .. } => "candidate",
         Commands::MergeResolution { .. } => "merge-resolution",

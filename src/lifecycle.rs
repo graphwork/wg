@@ -522,6 +522,9 @@ impl LifecycleEvent {
                 crate::graph::CompletionContract::Report => {
                     Some(crate::graph::CompletionDisposition::Reported)
                 }
+                crate::graph::CompletionContract::Explore => {
+                    Some(crate::graph::CompletionDisposition::Explored)
+                }
             };
             task.completion_receipt = self
                 .evidence_refs

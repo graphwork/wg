@@ -322,16 +322,20 @@ pub struct FailureSignal {
 pub enum CompletionContract {
     #[default]
     Land,
+    /// Historical contribution contract retained only so evidence-bearing
+    /// graphs remain readable. New work must use Land, Report, or Explore.
     Deliver,
     Report,
+    Explore,
 }
 
 impl std::fmt::Display for CompletionContract {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::Land => "land",
-            Self::Deliver => "deliver",
+            Self::Deliver => "legacy-deliver",
             Self::Report => "report",
+            Self::Explore => "explore",
         })
     }
 }
@@ -343,6 +347,7 @@ pub enum CompletionDisposition {
     Landed,
     Delivered,
     Reported,
+    Explored,
 }
 
 impl CompletionDisposition {
@@ -352,6 +357,7 @@ impl CompletionDisposition {
             (Self::Landed, CompletionContract::Land)
                 | (Self::Delivered, CompletionContract::Deliver)
                 | (Self::Reported, CompletionContract::Report)
+                | (Self::Explored, CompletionContract::Explore)
         )
     }
 }

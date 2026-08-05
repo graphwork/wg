@@ -1352,11 +1352,12 @@ pub(crate) fn spawn_agent_inner_authorized(
     let project_root = dir
         .parent()
         .ok_or_else(|| anyhow::anyhow!("Cannot determine project root from {:?}", dir))?;
-    let needs_worktree = should_create_worktree(
-        config.coordinator.worktree_isolation,
-        task_id,
-        resolved_exec_mode.as_str(),
-    );
+    let needs_worktree = contract_needs_worktree(task.completion_contract)
+        && should_create_worktree(
+            config.coordinator.worktree_isolation,
+            task_id,
+            resolved_exec_mode.as_str(),
+        );
     let mut workspace = prepare_spawn_workspace(
         dir,
         project_root,
@@ -2232,6 +2233,13 @@ pub(crate) fn spawn_agent_inner_authorized(
 ///   cannot write to the source tree.
 ///
 /// Code-touching tasks (`full`, `shell`) still get isolated worktrees.
+pub(crate) fn contract_needs_worktree(contract: worksgood::graph::CompletionContract) -> bool {
+    matches!(
+        contract,
+        worksgood::graph::CompletionContract::Land | worksgood::graph::CompletionContract::Deliver
+    )
+}
+
 pub(crate) fn should_create_worktree(
     worktree_isolation_enabled: bool,
     task_id: &str,
@@ -4571,6 +4579,15 @@ mod tests {
     }
 
     // --- should_create_worktree tests ---
+
+    #[test]
+    fn completion_contract_controls_git_worktree_creation() {
+        use worksgood::graph::CompletionContract;
+        assert!(contract_needs_worktree(CompletionContract::Land));
+        assert!(contract_needs_worktree(CompletionContract::Deliver));
+        assert!(!contract_needs_worktree(CompletionContract::Report));
+        assert!(!contract_needs_worktree(CompletionContract::Explore));
+    }
 
     #[test]
     fn test_worktree_gate_disabled_globally() {

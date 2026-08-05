@@ -1274,6 +1274,9 @@ fn main() -> Result<()> {
             full_smoke,
             skip_smoke,
         ),
+        Commands::Contract { id, contract } => {
+            commands::finalize::set_contract(&workgraph_dir, &id, &contract)
+        }
         Commands::Finalize { command } => {
             commands::finalize::run_finalize(&workgraph_dir, command, cli.json)
         }
