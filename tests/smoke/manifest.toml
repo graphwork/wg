@@ -2917,8 +2917,11 @@ timeout_seconds = 180
 [[scenario]]
 name = "post_lifecycle_convergence_ux"
 script = "scenarios/post_lifecycle_convergence_ux.sh"
-owners = ["synthesize-post-lifecycle-convergence-ux"]
-description = "Credential-free real-daemon integration for the service-owned deterministic convergence cutover: restart preserves a seeded future deadline/exponent/jitter tuple; an overdue unchanged goal wakes before the 60s safety tick, falls off at its cap, and stays live; a seeded exact Pi/OpenRouter route outage admits at most one credential-bearing probe lease, leaves global service pause false, performs no fallback, and creates no controller/probe/merge/cleanup graph task."
+owners = [
+    "synthesize-post-lifecycle-convergence-ux",
+    "convergence-cutover-dispatch-route",
+]
+description = "Candidate-binary credential-free real-daemon integration for planner-authoritative dispatch: dependency/readiness deadlines survive restart as one explicit forward class; a seeded exact Pi/OpenRouter outage admits one planner-issued ordinary-task probe bound to the unchanged model; the receipt-bound lease outlives its pre-execution timeout without a storm, fallback, global pause, or controller/probe/merge/cleanup graph task."
 timeout_seconds = 120
 
 [[scenario]]
@@ -2990,7 +2993,7 @@ timeout_seconds = 30
 name = "planner_runtime_kernel"
 script = "scenarios/planner_runtime_kernel.sh"
 owners = ["convergence-cutover-runtime-kernel"]
-description = "Candidate-binary credential-free real-daemon step-1 kernel proof: bootstrap a legacy convergence goal, seed exact future deadline/backoff/jitter and route-breaker state, remove prior planner cache, then start the candidate. Startup migrates the typed legacy state once into schema-v4 PlannerStore without resetting any scheduling value; `service status --json` exposes the read-only planner projection and one earliest deadline; a second daemon restart and repeated status read leave decision trace, normalized cache, effect journal, and planner projection byte-identical. No planner domain effect is executed and legacy dispatch authority remains untouched for the ordered step-2 cutover."
+description = "Candidate-binary credential-free real-daemon runtime-kernel proof: bootstrap a legacy convergence goal, seed exact future deadline/backoff/jitter and route-breaker state, remove prior planner cache, then start the candidate. Startup migrates the typed legacy state once into schema-v5 PlannerStore without resetting any scheduling value; `service status --json` exposes the read-only planner projection and one earliest deadline; a second daemon restart and repeated status read leave decision trace, normalized cache, effect journal, and planner projection byte-identical."
 timeout_seconds = 120
 
 [[scenario]]

@@ -700,7 +700,7 @@ fn track_provider_health(
     dir: &Path,
     dead: &[(String, String, u32, String, DeadReason)],
     locked_registry: &worksgood::service::LockedRegistry,
-    config: &Config,
+    _config: &Config,
 ) -> Result<()> {
     // Load current provider health state
     let mut provider_health = ProviderHealth::load(dir)?;
@@ -807,32 +807,16 @@ fn track_provider_health(
         }
     }
 
-    // Check if any providers should be paused and apply pause logic
-    let paused_providers = provider_health.check_and_apply_pauses(
-        config.coordinator.provider_failure_threshold,
-        &config.coordinator.on_provider_failure,
-    );
+    // Provider health is observation-only. Persist exact route counters and
+    // receipts; PlannerStore alone decides unavailable/probing/dispatch. The
+    // legacy pause/fallback knob is interpreted only by the dispatch
+    // normalizer and can never mutate global service state here.
+    provider_health.service_paused = false;
+    provider_health.pause_reason = None;
+    provider_health.paused_at = None;
+    provider_health.auto_resume_at = None;
 
-    // Log any providers that were paused
-    for provider_id in &paused_providers {
-        eprintln!(
-            "[provider-health] Provider '{}' paused due to consecutive failures",
-            provider_id
-        );
-    }
-
-    // If service was paused, log the reason
-    if provider_health.service_paused {
-        eprintln!(
-            "[provider-health] Service paused: {}",
-            provider_health
-                .pause_reason
-                .as_deref()
-                .unwrap_or("unknown reason")
-        );
-    }
-
-    // Save updated provider health state
+    // Save updated provider health evidence.
     provider_health.save(dir)?;
 
     Ok(())
@@ -2291,7 +2275,10 @@ mod tests {
         let health = ProviderHealth::load(dir).unwrap();
         let provider = health.providers.get(&route_id).unwrap();
         assert_eq!(provider.consecutive_failures, 3);
-        assert!(provider.is_paused);
+        assert!(
+            !provider.is_paused,
+            "provider health emits counters only; PlannerStore decides route availability"
+        );
         assert!(
             !health.service_paused,
             "route failures remain visible without pausing unrelated routes"

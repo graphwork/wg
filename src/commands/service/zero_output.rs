@@ -1,9 +1,8 @@
-//! Zero-output agent detection and circuit-breaking respawn.
+//! Zero-output observation adapter.
 //!
-//! Detects agents whose API call never returns (0 bytes written to stream files
-//! for extended periods), kills them, and preserves per-task evidence. Global
-//! API-down scheduling is retired: exact route breakers and probe leases live in
-//! the service convergence scheduler.
+//! Detects agents whose API call has produced no stream bytes for an extended
+//! period and submits typed evidence to PlannerStore. It has no process, graph,
+//! retry, route, breaker, or global-pause authority.
 
 #![allow(dead_code)]
 
@@ -13,21 +12,16 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 
-use worksgood::graph::{LogEntry, Status};
-use worksgood::parser::{load_graph, modify_graph};
-use worksgood::service::registry::{AgentEntry, AgentRegistry, AgentStatus};
+use worksgood::parser::load_graph;
+#[cfg(test)]
+use worksgood::service::registry::AgentStatus;
+use worksgood::service::registry::{AgentEntry, AgentRegistry};
 use worksgood::stream_event;
 
 use crate::commands::{graph_path, is_process_alive};
 
 /// Threshold after which a zero-output agent is considered a zombie and killed.
 const ZERO_OUTPUT_KILL_THRESHOLD: Duration = Duration::from_secs(5 * 60);
-
-/// Maximum consecutive zero-output respawns per task before circuit-breaking.
-const MAX_ZERO_OUTPUT_RESPAWNS: u32 = 2;
-
-/// Tag applied to tasks that are circuit-broken due to repeated zero-output failures.
-const CIRCUIT_BROKEN_TAG: &str = "zero-output-circuit-broken";
 
 /// Fraction of alive agents with zero output that triggers global API-down detection.
 const GLOBAL_OUTAGE_RATIO: f64 = 0.5;
@@ -38,31 +32,29 @@ const GLOBAL_OUTAGE_MIN_AGENTS: usize = 2;
 /// Result of a zero-output detection sweep.
 #[derive(Debug, Default)]
 pub struct ZeroOutputSweepResult {
-    /// Agents detected as zero-output zombies and killed.
-    pub killed: Vec<ZeroOutputKill>,
-    /// Tasks that hit the per-task circuit breaker.
-    pub circuit_broken_tasks: Vec<String>,
-    /// Whether global API-down was detected.
+    /// Agents whose typed observation was durably accepted by PlannerStore.
+    pub observed: Vec<ZeroOutputEvidence>,
+    /// Aggregate diagnostic only; it has no pause/routing authority.
     pub global_outage_detected: bool,
 }
 
-/// Details of a killed zero-output agent.
+/// Details of one persisted zero-output observation.
 #[derive(Debug)]
-pub struct ZeroOutputKill {
+pub struct ZeroOutputEvidence {
     pub agent_id: String,
     pub task_id: String,
     pub pid: u32,
     pub age_secs: u64,
 }
 
-/// Tracks per-task zero-output respawn counts.
+/// Migration-only legacy zero-output controller bytes.
 ///
-/// Persisted as a JSON file in the service directory so state survives daemon restarts.
+/// New observations never read or mutate these counters/timers.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ZeroOutputState {
-    /// Consecutive zero-output spawn count per task ID.
+    /// Retired consecutive respawn counters, retained only for deserialization.
     pub task_respawn_counts: HashMap<String, u32>,
-    /// Global backoff state.
+    /// Retired global backoff state.
     #[serde(default)]
     pub global_backoff: Option<GlobalBackoffState>,
 }
@@ -102,30 +94,6 @@ impl ZeroOutputState {
         if let Ok(content) = serde_json::to_string_pretty(self) {
             let _ = std::fs::write(&path, content);
         }
-    }
-
-    /// Record a zero-output kill for a task. Returns true if the task is now
-    /// circuit-broken (exceeded max respawns).
-    pub fn record_zero_output_kill(&mut self, task_id: &str) -> bool {
-        let count = self
-            .task_respawn_counts
-            .entry(task_id.to_string())
-            .or_insert(0);
-        *count += 1;
-        *count > MAX_ZERO_OUTPUT_RESPAWNS
-    }
-
-    /// Reset the respawn counter for a task (e.g., when it produces output successfully).
-    pub fn reset_task(&mut self, task_id: &str) {
-        self.task_respawn_counts.remove(task_id);
-    }
-
-    /// Check if a task is circuit-broken.
-    pub fn is_circuit_broken(&self, task_id: &str) -> bool {
-        self.task_respawn_counts
-            .get(task_id)
-            .map(|c| *c > MAX_ZERO_OUTPUT_RESPAWNS)
-            .unwrap_or(false)
     }
 
     /// Discard the migration-only global timer. Exact route breakers own all
@@ -192,12 +160,11 @@ fn file_has_content(path: &Path) -> bool {
 /// This should be called from the coordinator tick, after the liveness cleanup.
 /// It:
 /// 1. Identifies agents with zero output past the threshold
-/// 2. Kills them and updates registry + graph
-/// 3. Tracks per-task circuit breaker state
-/// 4. Detects global API-down conditions
+/// 2. Emits typed, persisted planner observations only
+/// 3. Leaves ownership, graph state, routing, and retry scheduling untouched
+/// 4. Reports aggregate evidence for diagnostics only
 pub fn sweep_zero_output_agents(dir: &Path) -> ZeroOutputSweepResult {
     let mut result = ZeroOutputSweepResult::default();
-    let mut state = ZeroOutputState::load(dir);
 
     // Load registry to find alive agents
     let registry = match AgentRegistry::load(dir) {
@@ -215,11 +182,6 @@ pub fn sweep_zero_output_agents(dir: &Path) -> ZeroOutputSweepResult {
         .collect();
 
     if alive_agents.is_empty() {
-        // No alive agents — clear any global backoff since there's nothing to measure
-        if state.global_backoff.is_some() {
-            state.clear_global_backoff();
-            state.save(dir);
-        }
         return result;
     }
 
@@ -247,191 +209,87 @@ pub fn sweep_zero_output_agents(dir: &Path) -> ZeroOutputSweepResult {
             );
         }
     }
-    // One-release migration: discard the former independent global timer.
-    state.clear_global_backoff();
-
-    // If no agents are zero-output zombies past threshold, we're done.
     if zero_output_agents.is_empty() {
-        state.save(dir);
         return result;
     }
 
-    // Kill zero-output agents and update state
-    let graph_path = graph_path(dir);
-
-    // Collect kill targets before modifying registry
-    let kill_targets: Vec<(String, String, u32, u64)> = zero_output_agents
-        .iter()
-        .map(|(a, age)| (a.id.clone(), a.task_id.clone(), a.pid, *age))
-        .collect();
-
-    // Kill processes
-    for (agent_id, task_id, pid, age_secs) in &kill_targets {
-        eprintln!(
-            "[zero-output] Killing zero-output agent {} (task {}, PID {}, alive {}s)",
-            agent_id, task_id, pid, age_secs
-        );
-        if let Err(e) = worksgood::service::kill_process_force(*pid) {
-            eprintln!(
-                "[zero-output] Failed to kill PID {} (agent {}): {}",
-                pid, agent_id, e
-            );
+    let graph = match load_graph(graph_path(dir)) {
+        Ok(graph) => graph,
+        Err(error) => {
+            eprintln!("[zero-output] Failed to load graph evidence: {error:#}");
+            return result;
         }
-        // Archive the killed agent's output BEFORE the task is reset, so the
-        // attempt is preserved in `.wg/log/agents/<task-id>/<timestamp>/`
-        // and visible in the TUI iteration switcher. Without this, in-progress
-        // tasks that get respawned after a stream-hang lose the killed
-        // attempt's logs from iteration history. Best-effort — non-fatal.
-        if let Err(e) = crate::commands::log::archive_agent(dir, task_id, agent_id) {
-            eprintln!(
-                "[zero-output] Warning: failed to archive killed agent '{}' for task '{}': {}",
-                agent_id, task_id, e
-            );
+    };
+    let graph_id = match worksgood::worker_control::load_or_create_graph_identity(dir)
+        .map(worksgood::service::PlannerOpaqueId::normalized)
+    {
+        Ok(graph_id) => graph_id,
+        Err(error) => {
+            eprintln!("[zero-output] Failed to load graph identity: {error:#}");
+            return result;
         }
-    }
+    };
+    let mut planner = match worksgood::service::PlannerStore::open(dir, graph_id.clone()) {
+        Ok(planner) => planner,
+        Err(error) => {
+            eprintln!("[zero-output] Planner unavailable; evidence not acted on: {error:#}");
+            return result;
+        }
+    };
 
-    // Update registry: mark killed agents as Dead
-    if let Ok(mut locked_registry) = AgentRegistry::load_locked(dir) {
-        let now = Utc::now().to_rfc3339();
-        for (agent_id, _, _, _) in &kill_targets {
-            if let Some(agent) = locked_registry.get_agent_mut(agent_id) {
-                agent.status = AgentStatus::Dead;
-                if agent.completed_at.is_none() {
-                    agent.completed_at = Some(now.clone());
-                }
+    for (agent, age_secs) in zero_output_agents {
+        let Some(task) = graph.get_task(&agent.task_id) else {
+            continue;
+        };
+        let observation = worksgood::service::PlannerZeroOutputObservation {
+            task: worksgood::service::PlannerTaskKey {
+                graph_id: graph_id.clone(),
+                task_id: worksgood::service::PlannerOpaqueId::normalized(&task.id),
+                generation: task.lifecycle.generation,
+                attempt_id: worksgood::service::PlannerOpaqueId::normalized(
+                    task.lifecycle
+                        .current_attempt
+                        .as_ref()
+                        .map(|attempt| attempt.id.as_str())
+                        .unwrap_or("attempt-absent"),
+                ),
+                fence: task.lifecycle.fence,
+            },
+            owner_id: worksgood::service::PlannerOpaqueId::normalized(&agent.id),
+            evidence_id: worksgood::service::PlannerOpaqueId::normalized(format!(
+                "{}:{}:{}",
+                agent.id, agent.started_at, age_secs
+            )),
+            age_bucket: (age_secs / 60).min(u32::MAX as u64) as u32,
+            route_id: None,
+        };
+        match planner.observe(worksgood::service::PlannerTypedObservation {
+            observed_at: Utc::now().timestamp().max(0) as u64,
+            observation: worksgood::service::Observation::ZeroOutput(Box::new(observation)),
+        }) {
+            Ok(step) if step.effects.is_empty() => {
+                result.observed.push(ZeroOutputEvidence {
+                    agent_id: agent.id.clone(),
+                    task_id: agent.task_id.clone(),
+                    pid: agent.pid,
+                    age_secs,
+                });
+                eprintln!(
+                    "[zero-output] observed agent {} on task {} after {}s; planner issued no ownership action",
+                    agent.id, agent.task_id, age_secs
+                );
             }
-        }
-        if let Err(e) = locked_registry.save_ref() {
-            eprintln!("[zero-output] Failed to save registry: {}", e);
-        }
-    }
-
-    // Update graph: handle per-task circuit breaking and task reset
-    if let Ok(mut graph) = load_graph(&graph_path) {
-        let mut graph_modified = false;
-
-        for (agent_id, task_id, pid, age_secs) in &kill_targets {
-            let is_circuit_broken = state.record_zero_output_kill(task_id);
-
-            if let Some(task) = graph.get_task_mut(task_id) {
-                if task.status != Status::InProgress {
-                    continue;
-                }
-
-                if is_circuit_broken {
-                    // Circuit-broken: mark incomplete for evaluator review (not auto-fail)
-                    task.status = Status::Incomplete;
-                    task.assigned = None;
-                    task.retry_count = task.retry_count.saturating_add(1);
-                    if !task.tags.contains(&CIRCUIT_BROKEN_TAG.to_string()) {
-                        task.tags.push(CIRCUIT_BROKEN_TAG.to_string());
-                    }
-                    task.log.push(LogEntry {
-                        timestamp: Utc::now().to_rfc3339(),
-                        actor: Some("zero-output-detector".to_string()),
-                        user: Some(worksgood::current_user()),
-                        message: format!(
-                            "Circuit breaker tripped: agent '{}' (PID {}) killed after {}s \
-                             with zero output. Max respawns ({}) exceeded — marked incomplete for evaluator review.",
-                            agent_id, pid, age_secs, MAX_ZERO_OUTPUT_RESPAWNS
-                        ),
-                    });
-                    result.circuit_broken_tasks.push(task_id.clone());
-                    eprintln!(
-                        "[zero-output] CIRCUIT BREAKER: Task '{}' marked incomplete after {} zero-output spawns",
-                        task_id,
-                        state
-                            .task_respawn_counts
-                            .get(task_id.as_str())
-                            .unwrap_or(&0)
-                    );
-                } else {
-                    // Not yet circuit-broken: reset task for respawn
-                    task.status = Status::Open;
-                    task.assigned = None;
-                    task.retry_count += 1;
-                    task.log.push(LogEntry {
-                        timestamp: Utc::now().to_rfc3339(),
-                        actor: Some("zero-output-detector".to_string()),
-                        user: Some(worksgood::current_user()),
-                        message: format!(
-                            "Zero-output agent '{}' (PID {}) killed after {}s. \
-                             Task reset for respawn (attempt {}/{}).",
-                            agent_id,
-                            pid,
-                            age_secs,
-                            state
-                                .task_respawn_counts
-                                .get(task_id.as_str())
-                                .unwrap_or(&1),
-                            MAX_ZERO_OUTPUT_RESPAWNS
-                        ),
-                    });
-                }
-                graph_modified = true;
-            }
-
-            result.killed.push(ZeroOutputKill {
-                agent_id: agent_id.clone(),
-                task_id: task_id.clone(),
-                pid: *pid,
-                age_secs: *age_secs,
-            });
-        }
-
-        if graph_modified
-            && let Err(e) = modify_graph(&graph_path, |fresh_graph| {
-                // Replay mutations from our local graph
-                for kill in &result.killed {
-                    if let Some(local) = graph.get_task(&kill.task_id)
-                        && let Some(fresh) = fresh_graph.get_task_mut(&kill.task_id)
-                    {
-                        fresh.status = local.status;
-                        fresh.assigned = local.assigned.clone();
-                        fresh.started_at = None;
-                        fresh.retry_count = local.retry_count;
-                        fresh.failure_reason = local.failure_reason.clone();
-                        fresh.log = local.log.clone();
-                    }
-                }
-                for kill in &result.killed {
-                    if graph.get_task(&kill.task_id).is_some_and(|task| {
-                        matches!(task.status, Status::Open | Status::Incomplete)
-                    }) {
-                        worksgood::eval_lifecycle::begin_source_attempt(
-                            fresh_graph,
-                            &kill.task_id,
-                            "zero-output coordinator retry",
-                        );
-                    }
-                }
-                true
-            })
-        {
-            eprintln!("[zero-output] Failed to save graph: {}", e);
+            Ok(step) => eprintln!(
+                "[zero-output] invariant violation: evidence unexpectedly emitted effects: {:?}",
+                step.effects
+            ),
+            Err(error) => eprintln!("[zero-output] Failed to persist observation: {error:#}"),
         }
     }
 
-    state.save(dir);
+    // Do not save legacy counter/backoff state. It remains readable only for
+    // one-release migration and has no decision authority.
     result
-}
-
-/// The legacy global zero-output pause is no longer scheduling authority.
-/// Exact-route admission is enforced by `service::convergence`.
-pub fn should_pause_spawning(_dir: &Path) -> bool {
-    false
-}
-
-/// Reset the zero-output counter for a task that has produced output.
-///
-/// Should be called when an agent successfully starts producing output,
-/// so that the circuit breaker resets.
-pub fn reset_task_counter(dir: &Path, task_id: &str) {
-    let mut state = ZeroOutputState::load(dir);
-    if state.task_respawn_counts.contains_key(task_id) {
-        state.reset_task(task_id);
-        state.save(dir);
-    }
 }
 
 #[cfg(test)]
@@ -451,48 +309,6 @@ mod tests {
 
         let loaded = ZeroOutputState::load(dir);
         assert_eq!(loaded.task_respawn_counts.get("task-1"), Some(&1));
-    }
-
-    #[test]
-    fn test_circuit_breaker_trip() {
-        let mut state = ZeroOutputState::default();
-
-        // First kill — not tripped
-        assert!(!state.record_zero_output_kill("task-1"));
-        assert_eq!(state.task_respawn_counts["task-1"], 1);
-
-        // Second kill — not tripped
-        assert!(!state.record_zero_output_kill("task-1"));
-        assert_eq!(state.task_respawn_counts["task-1"], 2);
-
-        // Third kill — tripped (count > MAX_ZERO_OUTPUT_RESPAWNS which is 2)
-        assert!(state.record_zero_output_kill("task-1"));
-        assert_eq!(state.task_respawn_counts["task-1"], 3);
-    }
-
-    #[test]
-    fn test_circuit_breaker_independent_tasks() {
-        let mut state = ZeroOutputState::default();
-
-        assert!(!state.record_zero_output_kill("task-a"));
-        assert!(!state.record_zero_output_kill("task-a"));
-        assert!(state.record_zero_output_kill("task-a")); // tripped
-
-        // task-b is independent
-        assert!(!state.record_zero_output_kill("task-b"));
-        assert!(!state.is_circuit_broken("task-b"));
-        assert!(state.is_circuit_broken("task-a"));
-    }
-
-    #[test]
-    fn test_reset_task() {
-        let mut state = ZeroOutputState::default();
-        state.record_zero_output_kill("task-1");
-        assert!(!state.is_circuit_broken("task-1"));
-
-        state.reset_task("task-1");
-        assert!(!state.is_circuit_broken("task-1"));
-        assert!(!state.task_respawn_counts.contains_key("task-1"));
     }
 
     #[test]
@@ -644,8 +460,7 @@ mod tests {
         registry.save(dir).unwrap();
 
         let result = sweep_zero_output_agents(dir);
-        assert!(result.killed.is_empty());
-        assert!(result.circuit_broken_tasks.is_empty());
+        assert!(result.observed.is_empty());
         assert!(!result.global_outage_detected);
     }
 
@@ -656,7 +471,7 @@ mod tests {
         std::fs::create_dir_all(dir.join("service")).unwrap();
 
         let mut state = ZeroOutputState::default();
-        state.record_zero_output_kill("task-a");
+        state.task_respawn_counts.insert("task-a".into(), 1);
         state.global_backoff = Some(GlobalBackoffState {
             resume_after: (Utc::now() + chrono::Duration::hours(1)).to_rfc3339(),
             backoff_secs: 60,
@@ -670,45 +485,5 @@ mod tests {
             loaded.global_backoff.is_some(),
             "legacy bytes still deserialize"
         );
-    }
-
-    #[test]
-    fn test_should_pause_spawning() {
-        let temp = TempDir::new().unwrap();
-        let dir = temp.path();
-        std::fs::create_dir_all(dir.join("service")).unwrap();
-
-        // Initially not paused
-        assert!(!should_pause_spawning(dir));
-
-        // Even a historical future backoff is ignored after the authority
-        // cutover; route-key convergence is the only admission gate.
-        let state = ZeroOutputState {
-            global_backoff: Some(GlobalBackoffState {
-                resume_after: (Utc::now() + chrono::Duration::hours(1)).to_rfc3339(),
-                backoff_secs: 900,
-                probe_dispatched: true,
-            }),
-            ..ZeroOutputState::default()
-        };
-        state.save(dir);
-
-        assert!(!should_pause_spawning(dir));
-    }
-
-    #[test]
-    fn test_reset_task_counter_fn() {
-        let temp = TempDir::new().unwrap();
-        let dir = temp.path();
-        std::fs::create_dir_all(dir.join("service")).unwrap();
-
-        let mut state = ZeroOutputState::default();
-        state.record_zero_output_kill("task-x");
-        state.save(dir);
-
-        reset_task_counter(dir, "task-x");
-
-        let loaded = ZeroOutputState::load(dir);
-        assert!(!loaded.task_respawn_counts.contains_key("task-x"));
     }
 }

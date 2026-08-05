@@ -3075,25 +3075,9 @@ pub fn run_daemon(
     // Clean up legacy daemon-managed graph tasks from older coordinator models.
     cleanup_legacy_daemon_tasks(&dir, &logger);
 
-    // One service-owned convergence read model. Startup derives it from the
-    // authoritative graph/finalization/provider stores without advancing a
-    // deadline, so restart cannot redraw jitter or reset an exponent.
-    let convergence_policy =
-        worksgood::service::ConvergencePolicy::from(&config.coordinator.convergence);
-    match worksgood::service::reconcile_dir(&dir, &convergence_policy, chrono::Utc::now()) {
-        Ok(state) => logger.info(&format!(
-            "Convergence reconciler restored {} goal(s), {} route breaker(s)",
-            state.goals.len(),
-            state.route_breakers.len()
-        )),
-        Err(error) => logger.warn(&format!(
-            "Convergence state unavailable at startup; dispatch will fail closed: {error:#}"
-        )),
-    }
-    // Step-1 kernel cutover only: materialize/migrate the production planner
-    // after the legacy scheduler has restored its exact persisted deadlines.
-    // No domain observation is submitted and no planner effect is executed, so
-    // this cannot create dual scheduling authority.
+    // Materialize/migrate the production planner before any dispatch adapter
+    // runs. Legacy convergence bytes are imported exactly once; dispatch and
+    // route authority are never refreshed or mutated through the old reducer.
     match worksgood::worker_control::load_or_create_graph_identity(&dir)
         .and_then(worksgood::service::PlannerOpaqueId::new)
         .and_then(|graph_id| worksgood::service::PlannerStore::open(&dir, graph_id))
@@ -3419,7 +3403,9 @@ pub fn run_daemon(
                 .saturating_sub(last_coordinator_tick.elapsed());
             poll_timeout_ms =
                 poll_timeout_ms.min(until_tick.as_millis().min(i32::MAX as u128) as i32);
-            if let Ok(Some(deadline)) = worksgood::service::earliest_wake(&dir) {
+            if let Ok(Some(deadline)) =
+                worksgood::service::PlannerStore::read_earliest_deadline(&dir)
+            {
                 let until = deadline
                     .signed_duration_since(chrono::Utc::now())
                     .to_std()
@@ -3828,7 +3814,7 @@ pub fn run_daemon(
             // The earliest persisted convergence deadline shares the same
             // event loop. Restart loads this exact timestamp; it never resets
             // the exponent or redraws deterministic jitter.
-            if worksgood::service::earliest_wake(&dir)
+            if worksgood::service::PlannerStore::read_earliest_deadline(&dir)
                 .ok()
                 .flatten()
                 .is_some_and(|deadline| deadline <= chrono::Utc::now())
@@ -3939,7 +3925,8 @@ pub fn run_daemon(
                                 "Spawn circuit breaker tripped on {} task(s) this tick — they are skipped (per-task) and self-heal via cooldown / `wg retry` / clear-on-success. Other tasks dispatch normally.",
                                 result.spawn_breaker_tripped_tasks
                             ));
-                        } else if let Ok(Some(deadline)) = worksgood::service::earliest_wake(&dir)
+                        } else if let Ok(Some(deadline)) =
+                            worksgood::service::PlannerStore::read_earliest_deadline(&dir)
                             && deadline > chrono::Utc::now()
                         {
                             // The durable convergence scheduler already owns
@@ -3991,6 +3978,7 @@ pub fn run_daemon(
                                             runnable: None,
                                             external_wait: None,
                                             scheduled: None,
+                                            effect_binding: None,
                                             incidents: BTreeSet::new(),
                                             failed_prerequisite: None,
                                         },
@@ -4063,22 +4051,6 @@ pub fn run_daemon(
                     logger.error(&format!("Coordinator tick error: {}", e));
                     self_write_quiet_until = Some(Instant::now() + self_write_quiet_window);
                 }
-            }
-
-            // Every event/deadline/safety pass returns through the same durable
-            // reconciliation entry point. It observes authoritative receipts
-            // and advances at most one due unchanged goal; domain modules above
-            // remain the only mutation owners.
-            match worksgood::service::reconcile_after_service_pass(
-                &dir,
-                &convergence_policy,
-                chrono::Utc::now(),
-            ) {
-                Ok(Some(goal)) => logger.info(&format!(
-                    "Convergence pass advanced one unchanged wake: {goal}"
-                )),
-                Ok(None) => {}
-                Err(error) => logger.warn(&format!("Convergence pass held fail-closed: {error:#}")),
             }
 
             // --- Binary self-restart check ---

@@ -780,16 +780,24 @@ fn execute_worker_operation(
                 Ok(serde_json::json!({"handoff": "fail"}))
             }
             WorkerOperation::FinishHandoff { action } => {
-                let command = match action {
-                    FinishHandoffAction::Settle => crate::cli::FinalizeCommands::Settle {
-                        id: binding.task_id.clone(),
-                    },
-                    FinishHandoffAction::Cleanup => crate::cli::FinalizeCommands::Cleanup {
-                        id: binding.task_id.clone(),
-                    },
+                let brokered = match action {
+                    FinishHandoffAction::Settle => {
+                        crate::commands::finalize::settle_prepared_worker_done(dir, binding)?
+                    }
+                    FinishHandoffAction::Cleanup => false,
                 };
-                crate::commands::finalize::run_finalize(dir, command, true)?;
-                Ok(serde_json::json!({"handoff": "finish"}))
+                if !brokered {
+                    let command = match action {
+                        FinishHandoffAction::Settle => crate::cli::FinalizeCommands::Settle {
+                            id: binding.task_id.clone(),
+                        },
+                        FinishHandoffAction::Cleanup => crate::cli::FinalizeCommands::Cleanup {
+                            id: binding.task_id.clone(),
+                        },
+                    };
+                    crate::commands::finalize::run_finalize(dir, command, true)?;
+                }
+                Ok(serde_json::json!({"handoff": "finish", "brokered": brokered}))
             }
             WorkerOperation::PiWatchdogBootstrap {
                 agent_dir,

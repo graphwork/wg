@@ -206,6 +206,28 @@ fn cleanup_and_count_alive(
             "[dispatcher] Max agents ({}) running, waiting...",
             max_agents
         );
+        if let Ok(graph) = load_graph(graph_path) {
+            observe_non_runnable_dispatch_tasks(dir, &graph, &Config::load_or_default(dir));
+            if let Ok(graph_id) =
+                worksgood::worker_control::load_or_create_graph_identity(dir).map(planner_id)
+                && let Ok(mut planner) = worksgood::service::PlannerStore::open(dir, graph_id)
+            {
+                let cycle_analysis = graph.compute_cycle_analysis();
+                for task in ready_tasks_with_peers_cycle_aware(&graph, dir, &cycle_analysis) {
+                    let _ = observe_dispatch_gate(
+                        &mut planner,
+                        task,
+                        worksgood::service::PlannerDispatchReadiness::Ready,
+                        worksgood::service::PlannerDispatchAdmission::Admitted,
+                        worksgood::service::PlannerResourceEvidence::Deferred {
+                            wait_id: planner_id("agent-slot-capacity"),
+                            deadline: None,
+                        },
+                        &Config::load_or_default(dir),
+                    );
+                }
+            }
+        }
         return Ok(Err(TickResult {
             agents_alive: alive_count,
             tasks_ready: 0,
@@ -4341,6 +4363,310 @@ fn note_admission_deferral(
     }
 }
 
+fn planner_id(value: impl AsRef<[u8]>) -> worksgood::service::PlannerOpaqueId {
+    worksgood::service::PlannerOpaqueId::normalized(value)
+}
+
+fn planner_task_key(
+    graph_id: &worksgood::service::PlannerOpaqueId,
+    task: &Task,
+) -> worksgood::service::PlannerTaskKey {
+    worksgood::service::PlannerTaskKey {
+        graph_id: graph_id.clone(),
+        task_id: planner_id(&task.id),
+        generation: task.lifecycle.generation,
+        attempt_id: planner_id(
+            task.lifecycle
+                .current_attempt
+                .as_ref()
+                .map(|attempt| attempt.id.as_str())
+                .unwrap_or("dispatch-ready"),
+        ),
+        fence: task.lifecycle.fence,
+    }
+}
+
+fn planner_dispatch_progress_id(task: &Task) -> worksgood::service::PlannerOpaqueId {
+    planner_id(format!(
+        "{}:{}:{}:{:?}:{}",
+        task.id, task.lifecycle.generation, task.lifecycle.fence, task.status, task.spawn_failures
+    ))
+}
+
+fn planner_dispatch_policy(config: &Config) -> worksgood::service::PlannerDispatchPolicy {
+    let policy = worksgood::service::ConvergencePolicy::from(&config.coordinator.convergence);
+    worksgood::service::PlannerDispatchPolicy {
+        retry_base_seconds: policy.base_seconds,
+        retry_cap_seconds: policy.cap_seconds,
+        route_probe_base_seconds: policy.route_probe_base_seconds,
+        route_probe_cap_seconds: policy.route_probe_cap_seconds,
+        action_lease_seconds: policy.action_lease_seconds,
+        jitter_divisor: policy.jitter_divisor,
+    }
+}
+
+fn spawn_plan_id(
+    plan: &worksgood::dispatch::SpawnPlan,
+    route_id: &str,
+) -> worksgood::service::PlannerOpaqueId {
+    planner_id(worksgood::dispatch::spawn_plan_binding_id(plan, route_id))
+}
+
+fn observe_dispatch_gate(
+    planner: &mut worksgood::service::PlannerStore,
+    task: &Task,
+    readiness: worksgood::service::PlannerDispatchReadiness,
+    admission: worksgood::service::PlannerDispatchAdmission,
+    resource: worksgood::service::PlannerResourceEvidence,
+    config: &Config,
+) -> Result<()> {
+    let key = planner_task_key(&planner.state().graph_id, task);
+    let progress_id = planner_dispatch_progress_id(task);
+    let step = planner.observe(worksgood::service::PlannerTypedObservation {
+        observed_at: Utc::now().timestamp().max(0) as u64,
+        observation: worksgood::service::Observation::Dispatch(Box::new(
+            worksgood::service::PlannerDispatchObservation {
+                key,
+                progress_id,
+                readiness,
+                admission,
+                resource,
+                route: None,
+                policy: planner_dispatch_policy(config),
+            },
+        )),
+    })?;
+    if !step.effects.is_empty() || !step.violations.is_empty() {
+        anyhow::bail!("planner rejected a non-runnable dispatch gate observation");
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+enum PlannerDispatchDecision {
+    Execute(worksgood::service::PlannedEffect),
+    Deferred { deadline: Option<u64> },
+}
+
+fn authorize_planned_dispatch(
+    planner: &mut worksgood::service::PlannerStore,
+    dir: &Path,
+    task: &Task,
+    plan: &worksgood::dispatch::SpawnPlan,
+    config: &Config,
+) -> Result<PlannerDispatchDecision> {
+    let route_id = worksgood::service::HealthRouteKey::from_spawn_plan(plan).id();
+    let plan_id = spawn_plan_id(plan, &route_id);
+    let health = worksgood::service::ProviderHealth::load(dir)
+        .context("provider health evidence unavailable; dispatch held fail-closed")?;
+    let route_health = health.providers.get(&route_id);
+    let unavailable = route_health.is_some_and(|status| {
+        status.is_paused
+            || (config.coordinator.on_provider_failure != "continue"
+                && status.consecutive_failures >= config.coordinator.provider_failure_threshold)
+    });
+    let failure_marker = route_health.map_or_else(
+        || "route-unavailable".to_string(),
+        |status| {
+            format!(
+                "{}:{}",
+                status
+                    .last_failure_at
+                    .as_deref()
+                    .unwrap_or("failure-without-timestamp"),
+                status.consecutive_failures
+            )
+        },
+    );
+    let health_evidence = if unavailable {
+        worksgood::service::PlannerRouteHealthEvidence::Unavailable {
+            failure_id: planner_id(failure_marker),
+        }
+    } else {
+        worksgood::service::PlannerRouteHealthEvidence::Healthy
+    };
+    let key = planner_task_key(&planner.state().graph_id, task);
+    let progress_id = planner_dispatch_progress_id(task);
+    let step = planner.observe(worksgood::service::PlannerTypedObservation {
+        observed_at: Utc::now().timestamp().max(0) as u64,
+        observation: worksgood::service::Observation::Dispatch(Box::new(
+            worksgood::service::PlannerDispatchObservation {
+                key: key.clone(),
+                progress_id,
+                readiness: worksgood::service::PlannerDispatchReadiness::Ready,
+                admission: worksgood::service::PlannerDispatchAdmission::Admitted,
+                resource: worksgood::service::PlannerResourceEvidence::Available,
+                route: Some(worksgood::service::PlannerDispatchRouteObservation {
+                    route_id: planner_id(&route_id),
+                    plan_id: plan_id.clone(),
+                    health: health_evidence,
+                }),
+                policy: planner_dispatch_policy(config),
+            },
+        )),
+    })?;
+    if !step.violations.is_empty() {
+        anyhow::bail!(
+            "planner dispatch invariant violation: {:?}",
+            step.violations
+        );
+    }
+    let binding_matches = |effect: &worksgood::service::PlannedEffect| {
+        effect.task == key
+            && matches!(
+                effect.action,
+                worksgood::service::PlannerActionKind::SpawnAttempt
+                    | worksgood::service::PlannerActionKind::ProbeRoute
+            )
+            && matches!(
+                effect.binding.as_ref(),
+                Some(worksgood::service::PlannerEffectBinding::Dispatch(binding))
+                    if binding.route_id == planner_id(&route_id) && binding.plan_id == plan_id
+            )
+    };
+    if let Some(effect) = step.effects.into_iter().find(binding_matches) {
+        planner.mark_effect_execution_started(&effect.effect_id)?;
+        return Ok(PlannerDispatchDecision::Execute(effect));
+    }
+    for replay in planner.replayable_effects() {
+        match replay {
+            worksgood::service::PlannerEffectReplay::Execute(effect)
+                if binding_matches(&effect) =>
+            {
+                planner.mark_effect_execution_started(&effect.effect_id)?;
+                return Ok(PlannerDispatchDecision::Execute(effect));
+            }
+            worksgood::service::PlannerEffectReplay::Acknowledge { effect, .. }
+                if binding_matches(&effect) =>
+            {
+                planner.acknowledge_recorded_effect(
+                    &effect.effect_id,
+                    Utc::now().timestamp().max(0) as u64,
+                )?;
+                return Ok(PlannerDispatchDecision::Deferred { deadline: None });
+            }
+            _ => {}
+        }
+    }
+    let deadline = planner
+        .state()
+        .tasks
+        .values()
+        .find(|projection| projection.key == key)
+        .and_then(|projection| projection.external_wait.as_ref())
+        .and_then(|wait| wait.deadline);
+    Ok(PlannerDispatchDecision::Deferred { deadline })
+}
+
+fn settle_planned_dispatch(
+    planner: &mut worksgood::service::PlannerStore,
+    effect: &worksgood::service::PlannedEffect,
+    outcome: worksgood::service::PlannerAckOutcome,
+) {
+    let result = planner
+        .record_effect_execution(&effect.effect_id, outcome)
+        .and_then(|()| {
+            planner
+                .acknowledge_recorded_effect(
+                    &effect.effect_id,
+                    Utc::now().timestamp().max(0) as u64,
+                )
+                .map(|_| ())
+        });
+    if let Err(error) = result {
+        eprintln!(
+            "[dispatcher] Failed to settle planner effect {}: {error:#}",
+            effect.effect_id
+        );
+    }
+}
+
+fn observe_non_runnable_dispatch_tasks(
+    dir: &Path,
+    graph: &worksgood::graph::WorkGraph,
+    config: &Config,
+) {
+    let graph_id =
+        match worksgood::worker_control::load_or_create_graph_identity(dir).map(planner_id) {
+            Ok(graph_id) => graph_id,
+            Err(error) => {
+                eprintln!("[planner] readiness identity unavailable: {error:#}");
+                return;
+            }
+        };
+    let mut planner = match worksgood::service::PlannerStore::open(dir, graph_id) {
+        Ok(planner) => planner,
+        Err(error) => {
+            eprintln!("[planner] readiness store unavailable: {error:#}");
+            return;
+        }
+    };
+    let cycle_analysis = graph.compute_cycle_analysis();
+    let ready = ready_tasks_with_peers_cycle_aware(graph, dir, &cycle_analysis)
+        .into_iter()
+        .map(|task| task.id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    for task in graph.tasks().filter(|task| {
+        !task.status.is_terminal()
+            && task.status != Status::InProgress
+            && !ready.contains(task.id.as_str())
+            && !is_daemon_managed(task)
+    }) {
+        let time_deadline = task
+            .not_before
+            .as_deref()
+            .into_iter()
+            .chain(task.ready_after.as_deref())
+            .filter_map(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+            .map(|value| value.timestamp().max(0) as u64)
+            .filter(|deadline| *deadline > Utc::now().timestamp().max(0) as u64)
+            .min();
+        let (kind, deadline) = match task.status {
+            Status::Blocked | Status::Incomplete => {
+                let imported_deadline = planner
+                    .state()
+                    .legacy_convergence
+                    .as_ref()
+                    .and_then(|legacy| {
+                        legacy.goals.values().find(|goal| {
+                            goal.task_id == planner_id(&task.id)
+                                && goal.generation == task.lifecycle.generation
+                        })
+                    })
+                    .and_then(|goal| {
+                        chrono::DateTime::parse_from_rfc3339(goal.next_wake_at.as_str())
+                            .ok()
+                            .map(|value| value.timestamp().max(0) as u64)
+                    });
+                (
+                    worksgood::service::PlannerWaitKind::SourceRepair,
+                    imported_deadline.or(time_deadline),
+                )
+            }
+            Status::Waiting => (
+                worksgood::service::PlannerWaitKind::CorrelatedMessage,
+                time_deadline,
+            ),
+            _ => (
+                worksgood::service::PlannerWaitKind::DependencyChange,
+                time_deadline,
+            ),
+        };
+        let _ = observe_dispatch_gate(
+            &mut planner,
+            task,
+            worksgood::service::PlannerDispatchReadiness::Waiting {
+                wait_id: planner_id(format!("readiness:{}:{kind:?}", task.id)),
+                kind,
+                deadline,
+            },
+            worksgood::service::PlannerDispatchAdmission::Admitted,
+            worksgood::service::PlannerResourceEvidence::Available,
+            config,
+        );
+    }
+}
+
 fn spawn_agents_for_ready_tasks(
     dir: &Path,
     graph: &worksgood::graph::WorkGraph,
@@ -4370,15 +4696,45 @@ fn spawn_agents_for_ready_tasks(
     // Memoize loaded WCC-profile configs by name for this tick so a component
     // of N profiled tasks loads each profile file at most once.
     let mut profile_cache = worksgood::dispatch::ProfileCache::new();
-    let convergence_policy =
-        worksgood::service::ConvergencePolicy::from(&config.coordinator.convergence);
+    let graph_id =
+        match worksgood::worker_control::load_or_create_graph_identity(dir).map(planner_id) {
+            Ok(graph_id) => graph_id,
+            Err(error) => {
+                summary.admission_deferred_tasks = ready_tasks_raw.len();
+                summary.admission_deferred_reason =
+                    Some(format!("planner graph identity unavailable: {error:#}"));
+                return summary;
+            }
+        };
+    let mut planner = match worksgood::service::PlannerStore::open(dir, graph_id) {
+        Ok(planner) => planner,
+        Err(error) => {
+            summary.admission_deferred_tasks = ready_tasks_raw.len();
+            summary.admission_deferred_reason =
+                Some(format!("planner runtime unavailable: {error:#}"));
+            return summary;
+        }
+    };
 
     // Sort ready tasks by priority with starvation prevention and priority inheritance
     let final_ready = sort_tasks_by_priority_with_features(graph, ready_tasks_raw, config);
 
     for task in final_ready.iter() {
         if summary.spawned >= slots_available {
-            break;
+            let reason = "agent slot capacity is full";
+            let _ = observe_dispatch_gate(
+                &mut planner,
+                task,
+                worksgood::service::PlannerDispatchReadiness::Ready,
+                worksgood::service::PlannerDispatchAdmission::Admitted,
+                worksgood::service::PlannerResourceEvidence::Deferred {
+                    wait_id: planner_id("agent-slot-capacity"),
+                    deadline: None,
+                },
+                config,
+            );
+            note_admission_deferral(&mut summary, &gp, &task.id, reason);
+            continue;
         }
         // Skip if already claimed
         if task.assigned.is_some() {
@@ -4409,14 +4765,32 @@ fn spawn_agents_for_ready_tasks(
                 eprintln!("[dispatcher] Skipping '{}': {}", task.id, reason);
                 summary.spawn_breaker_tripped_tasks =
                     summary.spawn_breaker_tripped_tasks.saturating_add(1);
+                let deadline = task
+                    .last_spawn_failure_at
+                    .as_deref()
+                    .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+                    .zip(breaker_cooldown)
+                    .map(|(failed_at, cooldown)| {
+                        failed_at.timestamp().max(0) as u64 + cooldown.as_secs()
+                    });
+                let _ = observe_dispatch_gate(
+                    &mut planner,
+                    task,
+                    worksgood::service::PlannerDispatchReadiness::Ready,
+                    worksgood::service::PlannerDispatchAdmission::Deferred {
+                        wait_id: planner_id("spawn-admission-cooldown"),
+                        deadline,
+                    },
+                    worksgood::service::PlannerResourceEvidence::Available,
+                    config,
+                );
                 continue;
             }
             SpawnBreakerState::Decayable => {
                 eprintln!(
-                    "[dispatcher] Spawn circuit breaker for '{}' decayed after cooldown — resetting spawn_failures and dispatching",
+                    "[dispatcher] Spawn circuit breaker for '{}' cooldown elapsed — planner may authorize the exact unchanged route",
                     task.id
                 );
-                reset_spawn_failures(&gp, &task.id, "cooldown decay");
             }
         }
 
@@ -4464,40 +4838,22 @@ fn spawn_agents_for_ready_tasks(
             config.coordinator.resource_management.max_build_agents,
             disk_reason,
         ) {
+            let _ = observe_dispatch_gate(
+                &mut planner,
+                task,
+                worksgood::service::PlannerDispatchReadiness::Ready,
+                worksgood::service::PlannerDispatchAdmission::Admitted,
+                worksgood::service::PlannerResourceEvidence::Deferred {
+                    wait_id: planner_id(format!(
+                        "resource:{}",
+                        blake3::hash(reason.as_bytes()).to_hex()
+                    )),
+                    deadline: None,
+                },
+                config,
+            );
             note_admission_deferral(&mut summary, &gp, &task.id, &reason);
             continue;
-        }
-
-        // One durable, fenced action lease per goal. Local resource admission
-        // above is neutral: backpressure is not an attempted goal action and
-        // must remain visible on every tick. Identical actual retries use
-        // restart-stable exponential waking.
-        match worksgood::service::admit_goal_action(dir, task, &convergence_policy, Utc::now()) {
-            Ok(worksgood::service::ConvergenceAdmission::Allowed { .. }) => {}
-            Ok(worksgood::service::ConvergenceAdmission::Deferred { until, reason }) => {
-                // A durable future wake is a forward disposition, not an
-                // unexplained zero-spawn tick. Keep this out of the graph
-                // admission ledger (which would look like authoritative
-                // progress and reset falloff), but report it to the daemon's
-                // exhaustiveness monitor.
-                summary.admission_deferred_tasks =
-                    summary.admission_deferred_tasks.saturating_add(1);
-                summary
-                    .admission_deferred_reason
-                    .get_or_insert_with(|| format!("{reason} (durable convergence wake {until})"));
-                eprintln!(
-                    "[reconciler] Deferring '{}': {} (next wake {})",
-                    task.id, reason, until
-                );
-                continue;
-            }
-            Err(error) => {
-                eprintln!(
-                    "[reconciler] Fail-closed for '{}': durable convergence state unavailable: {error:#}",
-                    task.id
-                );
-                continue;
-            }
         }
 
         // Shell-mode tasks run inline: fork `wg exec --shell` directly instead
@@ -4508,12 +4864,41 @@ fn spawn_agents_for_ready_tasks(
         if is_shell_task {
             let task_id = task.id.clone();
             let title = task.title.clone();
+            let shell_plan =
+                match worksgood::dispatch::plan_spawn(task, config, None, default_model) {
+                    Ok(plan) => plan,
+                    Err(error) => {
+                        eprintln!("[dispatcher] shell plan failed for {task_id}: {error:#}");
+                        continue;
+                    }
+                };
+            let planner_effect =
+                match authorize_planned_dispatch(&mut planner, dir, task, &shell_plan, config) {
+                    Ok(PlannerDispatchDecision::Execute(effect)) => effect,
+                    Ok(PlannerDispatchDecision::Deferred { deadline }) => {
+                        summary.admission_deferred_tasks =
+                            summary.admission_deferred_tasks.saturating_add(1);
+                        summary.admission_deferred_reason.get_or_insert_with(|| {
+                            format!("planner shell dispatch wait until {deadline:?}")
+                        });
+                        continue;
+                    }
+                    Err(error) => {
+                        eprintln!("[dispatcher] planner held shell {task_id}: {error:#}");
+                        continue;
+                    }
+                };
             eprintln!(
                 "[dispatcher] Spawning shell task inline for: {} - {}",
                 task_id, title,
             );
             match spawn_shell_inline(dir, &task_id) {
                 Ok((agent_id, pid)) => {
+                    settle_planned_dispatch(
+                        &mut planner,
+                        &planner_effect,
+                        worksgood::service::PlannerAckOutcome::Succeeded,
+                    );
                     eprintln!("[dispatcher] Spawned shell {} (PID {})", agent_id, pid);
                     summary.spawned += 1;
                     if build_class.is_heavy() {
@@ -4521,6 +4906,11 @@ fn spawn_agents_for_ready_tasks(
                     }
                 }
                 Err(e) => {
+                    settle_planned_dispatch(
+                        &mut planner,
+                        &planner_effect,
+                        worksgood::service::PlannerAckOutcome::Retryable,
+                    );
                     if let Some(reason) = worksgood::disk_sentinel::admission_deferral_reason(&e) {
                         note_admission_deferral(&mut summary, &gp, &task_id, reason);
                     } else {
@@ -4545,6 +4935,18 @@ fn spawn_agents_for_ready_tasks(
         // but this gate catches edge cases (e.g., pre-migration tasks without
         // the `.assign-*` blocking edge).
         if auto_assign && !worksgood::graph::is_system_task(&task.id) && task.agent.is_none() {
+            let _ = observe_dispatch_gate(
+                &mut planner,
+                task,
+                worksgood::service::PlannerDispatchReadiness::Waiting {
+                    wait_id: planner_id("assignment-required"),
+                    kind: worksgood::service::PlannerWaitKind::DependencyChange,
+                    deadline: None,
+                },
+                worksgood::service::PlannerDispatchAdmission::Admitted,
+                worksgood::service::PlannerResourceEvidence::Available,
+                config,
+            );
             continue;
         }
 
@@ -4560,6 +4962,52 @@ fn spawn_agents_for_ready_tasks(
             let eval_model = task.model.as_deref();
             let task_id = task.id.clone();
             let title = task.title.clone();
+            if !is_assignment
+                && let Err(reason) = check_evaluation_satellite_eligibility(graph, &task_id)
+            {
+                eprintln!("[dispatcher] {reason}");
+                let _ = observe_dispatch_gate(
+                    &mut planner,
+                    task,
+                    worksgood::service::PlannerDispatchReadiness::Waiting {
+                        wait_id: planner_id("evaluation-source-eligibility"),
+                        kind: worksgood::service::PlannerWaitKind::DependencyChange,
+                        deadline: None,
+                    },
+                    worksgood::service::PlannerDispatchAdmission::Admitted,
+                    worksgood::service::PlannerResourceEvidence::Available,
+                    config,
+                );
+                continue;
+            }
+            let inline_plan = match worksgood::dispatch::plan_spawn(
+                task,
+                config,
+                None,
+                eval_model.or(default_model),
+            ) {
+                Ok(plan) => plan,
+                Err(error) => {
+                    eprintln!("[dispatcher] inline plan failed for {task_id}: {error:#}");
+                    continue;
+                }
+            };
+            let planner_effect =
+                match authorize_planned_dispatch(&mut planner, dir, task, &inline_plan, config) {
+                    Ok(PlannerDispatchDecision::Execute(effect)) => effect,
+                    Ok(PlannerDispatchDecision::Deferred { deadline }) => {
+                        summary.admission_deferred_tasks =
+                            summary.admission_deferred_tasks.saturating_add(1);
+                        summary.admission_deferred_reason.get_or_insert_with(|| {
+                            format!("planner inline dispatch wait until {deadline:?}")
+                        });
+                        continue;
+                    }
+                    Err(error) => {
+                        eprintln!("[dispatcher] planner held inline {task_id}: {error:#}");
+                        continue;
+                    }
+                };
 
             if is_assignment {
                 eprintln!(
@@ -4568,11 +5016,21 @@ fn spawn_agents_for_ready_tasks(
                 );
                 match spawn_assign_inline(dir, &task_id) {
                     Ok((agent_id, pid)) => {
+                        settle_planned_dispatch(
+                            &mut planner,
+                            &planner_effect,
+                            worksgood::service::PlannerAckOutcome::Succeeded,
+                        );
                         eprintln!("[dispatcher] Spawned assignment {} (PID {})", agent_id, pid);
                         record_dispatch(&gp, &task_id);
                         summary.spawned += 1;
                     }
                     Err(e) => {
+                        settle_planned_dispatch(
+                            &mut planner,
+                            &planner_effect,
+                            worksgood::service::PlannerAckOutcome::Retryable,
+                        );
                         eprintln!(
                             "[dispatcher] Failed to spawn assignment for {}: {}",
                             task_id, e
@@ -4599,10 +5057,6 @@ fn spawn_agents_for_ready_tasks(
                 // defer here is a silent no-op for this tick — NOT a charged
                 // failure — so it cannot inflate the satellite's or the
                 // source's spawn_failures.
-                if let Err(reason) = check_evaluation_satellite_eligibility(graph, &task_id) {
-                    eprintln!("[dispatcher] {reason}");
-                    continue;
-                }
                 eprintln!(
                     "[dispatcher] Spawning eval inline for: {} - {}{}",
                     task_id,
@@ -4613,11 +5067,21 @@ fn spawn_agents_for_ready_tasks(
                 );
                 match spawn_eval_inline(dir, &task_id, eval_model) {
                     Ok((agent_id, pid)) => {
+                        settle_planned_dispatch(
+                            &mut planner,
+                            &planner_effect,
+                            worksgood::service::PlannerAckOutcome::Succeeded,
+                        );
                         eprintln!("[dispatcher] Spawned eval {} (PID {})", agent_id, pid);
                         record_dispatch(&gp, &task_id);
                         summary.spawned += 1;
                     }
                     Err(e) => {
+                        settle_planned_dispatch(
+                            &mut planner,
+                            &planner_effect,
+                            worksgood::service::PlannerAckOutcome::Retryable,
+                        );
                         eprintln!("[dispatcher] Failed to spawn eval for {}: {}", task_id, e);
                         if !park_agency_execution_error(&gp, &task_id, &e) {
                             record_spawn_failure(
@@ -4704,49 +5168,24 @@ fn spawn_agents_for_ready_tasks(
         };
         let effective_executor = plan.executor.as_str().to_string();
 
-        // Exact handler+wire+endpoint breaker. One ordinary task may hold the
-        // credential-bearing probe lease; every other affected goal retains
-        // the same route and sleeps. There is no fallback route selection.
-        let route_id = worksgood::service::HealthRouteKey::from_spawn_plan(&plan).id();
-        match worksgood::service::admit_route_action(
-            dir,
-            &route_id,
-            &task.id,
-            &convergence_policy,
-            Utc::now(),
-        ) {
-            Ok(worksgood::service::RouteAdmission::Allowed) => {}
-            Ok(worksgood::service::RouteAdmission::Probe { action_id }) => {
-                eprintln!(
-                    "[reconciler] '{}' acquired route probe {} for {}",
-                    task.id, action_id, route_id
-                );
-            }
-            Ok(worksgood::service::RouteAdmission::Deferred { until, reason }) => {
-                // Route breaker/probe admission has a durable deadline and is
-                // therefore an explicit forward disposition. Report it to the
-                // daemon monitor exactly like goal-action backoff; otherwise a
-                // healthy cooldown is misdiagnosed as a dispatcher wedge and
-                // the daemon pauses before the deadline can ever fire.
-                summary.admission_deferred_tasks =
-                    summary.admission_deferred_tasks.saturating_add(1);
-                summary
-                    .admission_deferred_reason
-                    .get_or_insert_with(|| format!("{reason} (route {route_id} wake {until})"));
-                eprintln!(
-                    "[reconciler] Deferring '{}' on exact route {}: {} (next wake {})",
-                    task.id, route_id, reason, until
-                );
-                continue;
-            }
-            Err(error) => {
-                eprintln!(
-                    "[reconciler] Fail-closed for '{}' route {}: {error:#}",
-                    task.id, route_id
-                );
-                continue;
-            }
-        }
+        // PlannerStore is the sole spawn/probe authority. The effect binds
+        // this exact SpawnPlan digest and route; the adapter cannot fall back.
+        let planner_effect =
+            match authorize_planned_dispatch(&mut planner, dir, task, &plan, eff_config) {
+                Ok(PlannerDispatchDecision::Execute(effect)) => effect,
+                Ok(PlannerDispatchDecision::Deferred { deadline }) => {
+                    summary.admission_deferred_tasks =
+                        summary.admission_deferred_tasks.saturating_add(1);
+                    summary.admission_deferred_reason.get_or_insert_with(|| {
+                        format!("planner exact-route wait until {deadline:?}")
+                    });
+                    continue;
+                }
+                Err(error) => {
+                    eprintln!("[planner] Fail-closed for '{}': {error:#}", task.id);
+                    continue;
+                }
+            };
 
         // Provenance: every spawn emits one line tracing each decision back to
         // the config knob that produced it. Eliminates silent-routing bugs.
@@ -4759,14 +5198,25 @@ fn spawn_agents_for_ready_tasks(
             "[dispatcher] Spawning agent for: {} - {} (executor: {})",
             task.id, task.title, effective_executor
         );
-        match spawn::spawn_agent(
+        let exact_binding = planner_effect.binding.as_ref().map(
+            |worksgood::service::PlannerEffectBinding::Dispatch(binding)| {
+                (binding.route_id.as_str(), binding.plan_id.as_str())
+            },
+        );
+        match spawn::spawn_agent_with_binding(
             dir,
             &task.id,
             &effective_executor,
             task.timeout.as_deref(),
             task_model.as_deref(),
+            exact_binding,
         ) {
             Ok((agent_id, pid)) => {
+                settle_planned_dispatch(
+                    &mut planner,
+                    &planner_effect,
+                    worksgood::service::PlannerAckOutcome::Succeeded,
+                );
                 eprintln!("[dispatcher] Spawned {} (PID {})", agent_id, pid);
                 record_dispatch(&gp, &task.id);
                 summary.spawned += 1;
@@ -4775,10 +5225,20 @@ fn spawn_agents_for_ready_tasks(
                 }
             }
             Err(e) => {
+                settle_planned_dispatch(
+                    &mut planner,
+                    &planner_effect,
+                    worksgood::service::PlannerAckOutcome::Retryable,
+                );
                 if let Some(reason) = worksgood::disk_sentinel::admission_deferral_reason(&e) {
                     note_admission_deferral(&mut summary, &gp, &task.id, reason);
                 } else if let Some(diagnostic) = spawn::preparation_failure_reason(&e) {
                     note_spawn_preparation_deferral(&gp, &task.id, diagnostic);
+                    summary.admission_deferred_tasks =
+                        summary.admission_deferred_tasks.saturating_add(1);
+                    summary.admission_deferred_reason.get_or_insert_with(|| {
+                        "planner dispatch retry deadline after preparation failure".to_string()
+                    });
                     // A preparation failure commonly describes shared checkout,
                     // Git, registry, or observer substrate. Stop this tick so
                     // one bad baseline cannot charge/claim every ready task.
@@ -5025,6 +5485,23 @@ pub fn coordinator_tick(
 ) -> Result<TickResult> {
     let graph_path = graph_path(dir);
 
+    // Complete the non-physical half of any crash-boundary effect first.
+    // Executed records are acknowledged without repeating the spawn; issued
+    // records remain bound to the exact ready task/plan adapter below.
+    if let Ok(graph_id) =
+        worksgood::worker_control::load_or_create_graph_identity(dir).map(planner_id)
+        && let Ok(mut planner) = worksgood::service::PlannerStore::open(dir, graph_id)
+    {
+        for replay in planner.replayable_effects() {
+            if let worksgood::service::PlannerEffectReplay::Acknowledge { effect, .. } = replay {
+                let _ = planner.acknowledge_recorded_effect(
+                    &effect.effect_id,
+                    Utc::now().timestamp().max(0) as u64,
+                );
+            }
+        }
+    }
+
     // Load config for agency settings
     let config = Config::load_or_default(dir);
 
@@ -5100,21 +5577,16 @@ pub fn coordinator_tick(
     // for 5+ minutes with zero bytes in stream files (API call never returned).
     {
         let sweep = super::zero_output::sweep_zero_output_agents(dir);
-        if !sweep.killed.is_empty() {
+        if !sweep.observed.is_empty() {
             eprintln!(
-                "[dispatcher] Zero-output sweep: killed {} agent(s)",
-                sweep.killed.len()
-            );
-        }
-        if !sweep.circuit_broken_tasks.is_empty() {
-            eprintln!(
-                "[dispatcher] Zero-output circuit breaker: {} task(s) failed: {:?}",
-                sweep.circuit_broken_tasks.len(),
-                sweep.circuit_broken_tasks
+                "[dispatcher] Zero-output sweep persisted {} observation(s); no process or graph mutation was authorized",
+                sweep.observed.len()
             );
         }
         if sweep.global_outage_detected {
-            eprintln!("[dispatcher] Zero-output: global API outage detected, spawn paused");
+            eprintln!(
+                "[dispatcher] Zero-output aggregate evidence observed; planner retained exact routes and no global pause was applied"
+            );
         }
     }
 
@@ -5322,6 +5794,11 @@ pub fn coordinator_tick(
     for parked in &newly_parked_humans {
         human_dispatch::notify_parked_human(dir, parked);
     }
+
+    // Normalize every dependency/time/source-repair wait before readiness can
+    // early-return. These explicit planner projections prevent false
+    // exhaustiveness holds without authorizing a spawn.
+    observe_non_runnable_dispatch_tasks(dir, &graph, &config);
 
     // Phase 5: Check for ready tasks (after agency phases may have created new ones)
     if let Some(early_result) = check_ready_or_return(&graph, alive_count, dir) {

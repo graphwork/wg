@@ -115,7 +115,9 @@ fn every_seeded_incident_violates_historical_and_converges_corrected() {
                         worksgood::service::Observation::Task(task) => {
                             task.incidents.iter().next().copied()
                         }
-                        worksgood::service::Observation::WorktreeSpawn(_)
+                        worksgood::service::Observation::Dispatch(_)
+                        | worksgood::service::Observation::ZeroOutput(_)
+                        | worksgood::service::Observation::WorktreeSpawn(_)
                         | worksgood::service::Observation::EffectAcknowledged { .. }
                         | worksgood::service::Observation::Crash => None,
                     })
@@ -440,7 +442,9 @@ fn fixture_codes_cover_all_required_incidents() {
                 .into_iter()
                 .flat_map(|entry| match entry.observation {
                     worksgood::service::Observation::Task(task) => task.incidents,
-                    worksgood::service::Observation::WorktreeSpawn(_)
+                    worksgood::service::Observation::Dispatch(_)
+                    | worksgood::service::Observation::ZeroOutput(_)
+                    | worksgood::service::Observation::WorktreeSpawn(_)
                     | worksgood::service::Observation::EffectAcknowledged { .. }
                     | worksgood::service::Observation::Crash => Default::default(),
                 })

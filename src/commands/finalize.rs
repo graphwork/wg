@@ -270,18 +270,40 @@ fn prepare_graph_save(
     reason_code: &str,
 ) -> Result<(GraphSaveBundle, SaveTransactionState)> {
     let source = source_key(dir, task)?;
-    if task.status == worksgood::graph::Status::Done {
+    prepare_graph_save_for_source(dir, task, reason_code, source, None)
+}
+
+fn prepare_graph_save_for_source(
+    dir: &Path,
+    task: &Task,
+    reason_code: &str,
+    source: AttemptSaveKey,
+    legacy: Option<&worksgood::finalization::FinalizationTransaction>,
+) -> Result<(GraphSaveBundle, SaveTransactionState)> {
+    if task.status == worksgood::graph::Status::Done && legacy.is_none() {
         bail!("terminal task '{}' is already done", task.id);
     }
     let project = dir.parent().unwrap_or(dir);
-    let head = git(project, &["rev-parse", "HEAD"]).unwrap_or_else(|_| "no-git-head".into());
-    let tree = git(project, &["rev-parse", "HEAD^{tree}"]).unwrap_or_else(|_| head.clone());
-    let candidate_id = content_cid(&serde_json::json!({
-        "source": source,
-        "tree": tree,
-        "reason": reason_code,
-    }))
-    .map_err(anyhow::Error::msg)?;
+    let legacy_candidate = legacy.and_then(|transaction| transaction.candidate.as_ref());
+    let head = legacy_candidate
+        .map(|candidate| candidate.base_commit_oid.clone())
+        .unwrap_or_else(|| {
+            git(project, &["rev-parse", "HEAD"]).unwrap_or_else(|_| "no-git-head".into())
+        });
+    let tree = legacy_candidate
+        .map(|candidate| candidate.candidate_tree_oid.clone())
+        .unwrap_or_else(|| {
+            git(project, &["rev-parse", "HEAD^{tree}"]).unwrap_or_else(|_| head.clone())
+        });
+    let candidate_id = match legacy_candidate {
+        Some(candidate) => candidate.candidate_id.clone(),
+        None => content_cid(&serde_json::json!({
+            "source": &source,
+            "tree": tree,
+            "reason": reason_code,
+        }))
+        .map_err(anyhow::Error::msg)?,
+    };
     let binding = EvidenceBinding {
         source: source.clone(),
         candidate_id: candidate_id.clone(),
@@ -318,22 +340,40 @@ fn prepare_graph_save(
         header: header(),
         binding: binding.clone(),
         completion_intent_cid: intent_cid.clone(),
-        quiescence_receipt_cid: format!("quiescent:{}", source.attempt_id),
+        quiescence_receipt_cid: legacy
+            .map(|transaction| transaction.quiescence.receipt_cid.clone())
+            .unwrap_or_else(|| format!("quiescent:{}", source.attempt_id)),
         worktree_root_identity: source.worktree_identity_digest.clone(),
         branch: None,
-        worker_head_oid: head.clone(),
+        worker_head_oid: legacy_candidate
+            .map(|candidate| candidate.worker_head_oid.clone())
+            .unwrap_or_else(|| head.clone()),
         prepared_base_commit_oid: head.clone(),
         clean: true,
-        rescue_commit_oid: head.clone(),
+        rescue_commit_oid: legacy
+            .and_then(|transaction| transaction.rescue.as_ref())
+            .map(|rescue| rescue.rescue_commit_oid.clone())
+            .unwrap_or_else(|| head.clone()),
         saved_tree_oid: tree.clone(),
-        full_manifest_cid: format!("manifest:{tree}"),
-        delta_manifest_cid: format!("delta:{tree}"),
-        immutable_ref: format!(
-            "refs/wg/work-saves/{}/{}/{}",
-            task.id, source.generation, candidate_id
-        ),
+        full_manifest_cid: legacy_candidate
+            .map(|candidate| candidate.content_manifest_cid.clone())
+            .unwrap_or_else(|| format!("manifest:{tree}")),
+        delta_manifest_cid: legacy_candidate
+            .map(|candidate| candidate.delta_manifest_cid.clone())
+            .unwrap_or_else(|| format!("delta:{tree}")),
+        immutable_ref: legacy_candidate
+            .map(|candidate| candidate.immutable_ref.clone())
+            .unwrap_or_else(|| {
+                format!(
+                    "refs/wg/work-saves/{}/{}/{}",
+                    task.id, source.generation, candidate_id
+                )
+            }),
         excluded_path_policy_cid: "policy:control-plane-excluded-v2".into(),
-        observer_manifest_digest: format!("observer:{tree}"),
+        observer_manifest_digest: legacy
+            .and_then(|transaction| transaction.rescue.as_ref())
+            .map(|rescue| rescue.manifest_cid.clone())
+            .unwrap_or_else(|| format!("observer:{tree}")),
         observer_sequence: 1,
         late_mutation_quarantine_cid: None,
     };
@@ -342,8 +382,12 @@ fn prepare_graph_save(
         header: header(),
         binding: binding.clone(),
         work_save_cid: work_save_cid.clone(),
-        candidate_version: 1,
-        candidate_commit_oid: head.clone(),
+        candidate_version: legacy_candidate
+            .map(|candidate| candidate.candidate_version)
+            .unwrap_or(1),
+        candidate_commit_oid: legacy_candidate
+            .map(|candidate| candidate.candidate_commit_oid.clone())
+            .unwrap_or_else(|| head.clone()),
         candidate_tree_oid: tree.clone(),
         full_manifest_cid: work_save.full_manifest_cid.clone(),
         delta_manifest_cid: work_save.delta_manifest_cid.clone(),
@@ -351,30 +395,48 @@ fn prepare_graph_save(
         immutable_ref: work_save.immutable_ref.clone(),
     };
     let candidate_cid = content_cid(&candidate).map_err(anyhow::Error::msg)?;
+    let legacy_validation = legacy.and_then(|transaction| transaction.validation.as_ref());
+    if legacy.is_some() && legacy_validation.is_none_or(|receipt| !receipt.passed) {
+        bail!("completion.bridge_validation_evidence_missing");
+    }
     let validation = ValidationReceipt {
         header: header(),
         binding: binding.clone(),
         candidate_cid: candidate_cid.clone(),
-        policy_cid: intent.validation_policy_cid.clone(),
+        policy_cid: legacy_validation
+            .map(|receipt| receipt.policy_cid.clone())
+            .unwrap_or_else(|| intent.validation_policy_cid.clone()),
         outcome: AcceptanceOutcome::Accepted,
-        validator_identity: "terminal-adapter:local-gates".into(),
+        validator_identity: legacy_validation
+            .map(|receipt| receipt.validator_identity.clone())
+            .unwrap_or_else(|| "terminal-adapter:local-gates".into()),
     };
+    let legacy_evaluation = legacy.and_then(|transaction| transaction.evaluation_receipt.as_ref());
+    if legacy_evaluation.is_some_and(|receipt| {
+        receipt.outcome != worksgood::finalization::EvaluationReceiptOutcome::Accepted
+    }) {
+        bail!("completion.bridge_acceptance_evidence_rejected");
+    }
     let flip = FlipReceipt {
         header: header(),
         binding: binding.clone(),
         candidate_cid: candidate_cid.clone(),
         policy_cid: intent.flip_policy_cid.clone(),
         route_snapshot_cid: source.route_snapshot_cid.clone(),
-        outcome: if reason_code.contains("waiver") {
+        outcome: if legacy_evaluation.is_some() || reason_code.contains("waiver") {
             AcceptanceOutcome::Accepted
         } else {
             AcceptanceOutcome::NotRequired
         },
-        evaluator_identity: if reason_code.contains("waiver") {
-            "operator:audited-waiver".into()
-        } else {
-            "policy:not-required".into()
-        },
+        evaluator_identity: legacy_evaluation
+            .map(|receipt| receipt.evaluator_identity.clone())
+            .unwrap_or_else(|| {
+                if reason_code.contains("waiver") {
+                    "operator:audited-waiver".into()
+                } else {
+                    "policy:not-required".into()
+                }
+            }),
     };
     let disposition_receipt = DispositionReceipt {
         header: header(),
@@ -387,40 +449,76 @@ fn prepare_graph_save(
     let disposition_cid = content_cid(&disposition_receipt).map_err(anyhow::Error::msg)?;
     let action_key = format!("effect:{}:{}", task.id, candidate_id);
     let effect = match disposition {
-        CompletionDisposition::Landed => EffectReceipt::Promotion(PromotionReceipt {
-            header: header(),
-            binding: binding.clone(),
-            disposition_cid,
-            action_key,
-            target_ref: "HEAD".into(),
-            expected_old_commit_oid: head.clone(),
-            observed_old_commit_oid: head.clone(),
-            integration_commit_oid: head.clone(),
-            result_tree_oid: tree.clone(),
-            result_manifest_cid: format!("manifest:{tree}"),
-            ref_cas_succeeded: true,
-        }),
+        CompletionDisposition::Landed => {
+            let legacy_receipt = legacy.and_then(|transaction| transaction.merge_receipt.as_ref());
+            if legacy.is_some() && legacy_receipt.is_none_or(|receipt| !receipt.ref_cas) {
+                bail!("completion.bridge_promotion_receipt_missing");
+            }
+            EffectReceipt::Promotion(PromotionReceipt {
+                header: header(),
+                binding: binding.clone(),
+                disposition_cid,
+                action_key,
+                target_ref: legacy_receipt
+                    .map(|receipt| receipt.target_ref.clone())
+                    .unwrap_or_else(|| "HEAD".into()),
+                expected_old_commit_oid: legacy_receipt
+                    .map(|receipt| receipt.expected_target_commit_oid.clone())
+                    .unwrap_or_else(|| head.clone()),
+                observed_old_commit_oid: legacy_receipt
+                    .map(|receipt| receipt.expected_target_commit_oid.clone())
+                    .unwrap_or_else(|| head.clone()),
+                integration_commit_oid: legacy_receipt
+                    .map(|receipt| receipt.integration_commit_oid.clone())
+                    .unwrap_or_else(|| head.clone()),
+                result_tree_oid: legacy_receipt
+                    .map(|receipt| receipt.result_tree_oid.clone())
+                    .unwrap_or_else(|| tree.clone()),
+                result_manifest_cid: legacy_receipt
+                    .map(|receipt| receipt.result_manifest_cid.clone())
+                    .unwrap_or_else(|| format!("manifest:{tree}")),
+                ref_cas_succeeded: legacy_receipt.is_none_or(|receipt| receipt.ref_cas),
+            })
+        }
         CompletionDisposition::Delivered | CompletionDisposition::Reported => {
+            let legacy_receipt = legacy.and_then(|transaction| transaction.output_receipt.as_ref());
+            if legacy.is_some() && legacy_receipt.is_none() {
+                bail!("completion.bridge_output_receipt_missing");
+            }
             EffectReceipt::Output(OutputReceipt {
                 header: header(),
                 binding: binding.clone(),
                 disposition_cid,
                 action_key,
-                immutable_output_ref: format!("refs/wg/outputs/{}/{}", task.id, candidate_id),
-                output_manifest_cid: format!("manifest:{tree}"),
+                immutable_output_ref: legacy_receipt
+                    .map(|receipt| receipt.immutable_ref.clone())
+                    .unwrap_or_else(|| format!("refs/wg/outputs/{}/{}", task.id, candidate_id)),
+                output_manifest_cid: legacy_candidate
+                    .map(|candidate| candidate.content_manifest_cid.clone())
+                    .unwrap_or_else(|| format!("manifest:{tree}")),
             })
         }
     };
     let effect_cid = content_cid(&effect).map_err(anyhow::Error::msg)?;
+    let legacy_cleanup = legacy.and_then(|transaction| transaction.cleanup_receipt.as_ref());
+    if legacy.is_some() && legacy_cleanup.is_none_or(|receipt| !receipt.removed) {
+        bail!("completion.bridge_cleanup_receipt_missing");
+    }
     let cleanup = CleanupCommit {
         header: header(),
         binding: binding.clone(),
         work_save_cid,
         effect_receipt_cid: effect_cid,
-        cleanup_plan_cid: format!("cleanup-plan:{candidate_id}"),
+        cleanup_plan_cid: legacy_cleanup
+            .map(|receipt| receipt.receipt_id.clone())
+            .unwrap_or_else(|| format!("cleanup-plan:{candidate_id}")),
         worktree_root_identity: source.worktree_identity_digest.clone(),
         worktree_lease_epoch: source.worktree_lease_epoch,
-        result: CleanupResult::NotApplicable,
+        result: if legacy_cleanup.is_some() {
+            CleanupResult::Removed
+        } else {
+            CleanupResult::NotApplicable
+        },
     };
     let evidence = EvidenceCidSet {
         completion_intent: content_cid(&intent).map_err(anyhow::Error::msg)?,
@@ -1445,6 +1543,16 @@ pub(crate) fn converge_exited_worker_finishes(dir: &Path) -> Result<Vec<String>>
         .filter(|task| task.status == worksgood::graph::Status::InProgress)
         .filter(|task| task.lifecycle.pi_continuation.is_some())
         .filter(|task| store.load_task(&task.id).ok().flatten().is_none())
+        // A brokered completion/v2 terminal intent is already durable
+        // authority. Even before its legacy mechanics produce a candidate,
+        // process exit must not be reinterpreted as permission to respawn the
+        // source and race the exact SaveTransaction.
+        .filter(|task| {
+            worksgood::worker_control::save_transaction_for_task(dir, task)
+                .ok()
+                .flatten()
+                .is_none()
+        })
         .filter_map(|task| {
             let attempt = task.lifecycle.current_attempt.as_ref()?;
             let key = worksgood::attempt_runtime::AttemptRuntimeKey::for_attempt(task, attempt);
@@ -1728,11 +1836,202 @@ pub(crate) fn cleanup_finish(
     Ok(())
 }
 
+fn commit_brokered_cleaned_success(
+    dir: &Path,
+    task: &Task,
+    legacy: &worksgood::finalization::FinalizationTransaction,
+    initial: SaveTransactionState,
+) -> Result<String> {
+    let mut state = worksgood::worker_control::load_save_transaction(dir, &initial.transaction_id)?
+        .context("completion.bridge_transaction_missing")?;
+    let bundle = if state.phase == SavePhase::GraphSaved {
+        let cid = state
+            .graph_save_cid
+            .as_deref()
+            .context("completion.bridge_graph_save_cid_missing")?;
+        worksgood::worker_control::load_completion_object(dir, cid)?
+    } else {
+        prepare_graph_save_for_source(
+            dir,
+            task,
+            "brokered_done_exact_receipts",
+            initial.source.clone(),
+            Some(legacy),
+        )?
+        .0
+    };
+    for cid in [
+        worksgood::worker_control::store_completion_object(dir, &bundle.work_save)?,
+        worksgood::worker_control::store_completion_object(dir, &bundle.candidate)?,
+        worksgood::worker_control::store_completion_object(dir, &bundle.validation)?,
+        worksgood::worker_control::store_completion_object(dir, &bundle.flip)?,
+        worksgood::worker_control::store_completion_object(dir, &bundle.disposition)?,
+        worksgood::worker_control::store_completion_object(dir, &bundle.effect)?,
+        worksgood::worker_control::store_completion_object(dir, &bundle.cleanup)?,
+    ] {
+        if cid.trim().is_empty() {
+            bail!("completion.bridge_object_cid_missing");
+        }
+    }
+    let binding = bundle.receipt.binding.clone();
+    let phases = [
+        (
+            SavePhase::Quiescing,
+            bundle.work_save.quiescence_receipt_cid.clone(),
+            false,
+        ),
+        (
+            SavePhase::WorkSaved,
+            bundle.receipt.evidence.work_save.clone(),
+            true,
+        ),
+        (
+            SavePhase::CandidateSealed,
+            bundle.receipt.evidence.candidate.clone(),
+            true,
+        ),
+        (
+            SavePhase::Validated,
+            bundle.receipt.evidence.validation.clone(),
+            true,
+        ),
+        (
+            SavePhase::Accepted,
+            bundle.receipt.evidence.flip.clone(),
+            true,
+        ),
+        (
+            SavePhase::DispositionRecorded,
+            bundle.receipt.evidence.disposition.clone(),
+            true,
+        ),
+        (
+            SavePhase::EffectPrepared,
+            format!("effect-plan:{}", binding.candidate_id),
+            true,
+        ),
+        (
+            SavePhase::EffectCommitted,
+            bundle.receipt.evidence.effect.clone(),
+            true,
+        ),
+        (
+            SavePhase::CleanupPrepared,
+            bundle.cleanup.cleanup_plan_cid.clone(),
+            true,
+        ),
+        (
+            SavePhase::CleanupCommitted,
+            bundle.receipt.evidence.cleanup.clone(),
+            true,
+        ),
+    ];
+    for (phase, cid, bound) in phases {
+        if state.phase >= phase {
+            continue;
+        }
+        state = worksgood::worker_control::commit_save_transition(
+            dir,
+            SaveTransitionRequest {
+                source: state.source.clone(),
+                expected_revision: state.revision,
+                expected_phase: state.phase,
+                next_phase: phase,
+                idempotency_key: format!("bridge:{}:{phase:?}", state.transaction_id),
+                action_key: format!("bridge-action:{}:{phase:?}", state.transaction_id),
+                fact: SaveFact::Evidence {
+                    cid,
+                    binding: bound.then(|| binding.clone()),
+                },
+            },
+        )?;
+    }
+    if state.phase != SavePhase::GraphSaved {
+        let bundle_cid = worksgood::worker_control::store_completion_object(dir, &bundle)?;
+        state = worksgood::worker_control::commit_save_transition(
+            dir,
+            SaveTransitionRequest {
+                source: state.source.clone(),
+                expected_revision: state.revision,
+                expected_phase: state.phase,
+                next_phase: SavePhase::GraphSaved,
+                idempotency_key: format!("bridge:{}:graph-save", state.transaction_id),
+                action_key: format!("bridge-action:{}:graph-save", state.transaction_id),
+                fact: SaveFact::GraphSave {
+                    bundle: Box::new(bundle.clone()),
+                },
+            },
+        )?;
+        if state.graph_save_cid.as_deref() != Some(bundle_cid.as_str()) {
+            bail!("completion.bridge_graph_save_object_mismatch");
+        }
+    }
+    let graph_save_cid = state
+        .graph_save_cid
+        .clone()
+        .context("completion.bridge_graph_save_cid_missing")?;
+    persist_graph_save(dir, &task.id, task.lifecycle.generation, &bundle)?;
+    let mut rejection = None;
+    modify_graph(dir.join("graph.jsonl"), |graph| {
+        let Some(task) = graph.get_task_mut(&legacy.task_id) else {
+            rejection = Some("terminal task disappeared".to_string());
+            return false;
+        };
+        if task.status == worksgood::graph::Status::Done {
+            return false;
+        }
+        let request = TransitionRequest {
+            event_id: bundle.receipt.lifecycle_event_id.clone(),
+            idempotency_key: format!("graphsave:{}", state.transaction_id),
+            actor: LifecycleActor {
+                kind: worksgood::lifecycle::ActorKind::Finalizer,
+                id: "brokered-completion-bridge".to_string(),
+            },
+            reason_code: "brokered_done_exact_receipts".to_string(),
+            kind: TransitionKind::GraphSaveCommitted {
+                bundle: Box::new(bundle.clone()),
+            },
+            expected: FenceExpectation::current(task),
+            evidence_refs: vec![graph_save_cid.clone()],
+            occurred_at: chrono::Utc::now().to_rfc3339(),
+        };
+        if let Err(error) = apply_transition(task, request) {
+            rejection = Some(error.to_string());
+            return false;
+        }
+        task.completed_at = Some(chrono::Utc::now().to_rfc3339());
+        task.assigned = None;
+        true
+    })?;
+    if let Some(error) = rejection {
+        bail!("completion.bridge_graph_save_refused: {error}");
+    }
+    Ok(graph_save_cid)
+}
+
 fn project_cleaned_success(
     dir: &Path,
     tx: &worksgood::finalization::FinalizationTransaction,
 ) -> Result<()> {
     let current = load_graph(dir.join("graph.jsonl"))?;
+    if let Some(task) = current.get_task(&tx.task_id)
+        && let Some(brokered) = worksgood::worker_control::save_transaction_for_task(dir, task)?
+        && brokered.phase != SavePhase::GraphSaved
+    {
+        tx.exact_durable_success(
+            &task.id,
+            task.lifecycle.generation,
+            task.lifecycle
+                .current_attempt
+                .as_ref()
+                .map(|attempt| attempt.id.as_str()),
+            task.lifecycle.fence,
+        )
+        .filter(|evidence| evidence.cleanup_receipt_id.is_some())
+        .context("brokered completion lacks exact cleaned legacy receipts")?;
+        commit_brokered_cleaned_success(dir, task, tx, brokered)?;
+        return Ok(());
+    }
     if let Some(task) = current
         .get_task(&tx.task_id)
         .filter(|task| task.status != worksgood::graph::Status::Done)
@@ -1768,12 +2067,16 @@ fn project_cleaned_success(
                 .clone()
                 .unwrap_or_else(|| "late worker/process exit".into())
         });
-        commit_terminal_success(
-            dir,
-            &tx.task_id,
-            None,
-            "completion_cleanup_graphsave_committed",
-        )?;
+        if let Some(brokered) = worksgood::worker_control::save_transaction_for_task(dir, task)? {
+            commit_brokered_cleaned_success(dir, task, tx, brokered)?;
+        } else {
+            commit_terminal_success(
+                dir,
+                &tx.task_id,
+                None,
+                "completion_cleanup_graphsave_committed",
+            )?;
+        }
         if let Some(diagnostic) = late_failure {
             modify_graph(dir.join("graph.jsonl"), |graph| {
                 let Some(task) = graph.get_task_mut(&tx.task_id) else {
@@ -2167,6 +2470,50 @@ pub fn context_from_current(
             observed_manifest_digest: None,
         },
     })
+}
+
+/// Consume the exact brokered DoneHandoff after the wrapper has become
+/// quiescent. The original operation bytes select the same validation/smoke
+/// strength the worker requested; no ambient fallback or synthetic waiver is
+/// admitted. Durable candidate mechanics remain in the existing task-owned
+/// finalization adapter, whose receipts are bridged into completion/v2 after
+/// cleanup.
+pub(crate) fn settle_prepared_worker_done(
+    dir: &Path,
+    binding: &worksgood::worker_control::AttemptCapabilityBinding,
+) -> Result<bool> {
+    let id = &binding.task_id;
+    let graph = load_graph(dir.join("graph.jsonl"))?;
+    let task = graph.get_task_or_err(id)?;
+    let Some(state) = worksgood::worker_control::save_transaction_for_task(dir, task)? else {
+        return Ok(false);
+    };
+    if state.phase == SavePhase::GraphSaved {
+        return Ok(true);
+    }
+    let prepared_cid = state
+        .evidence_cids
+        .get(&SavePhase::Prepared)
+        .context("worker_control.prepared_done_evidence_missing")?;
+    let operation: worksgood::worker_control::WorkerOperation =
+        worksgood::worker_control::load_completion_object(dir, prepared_cid)?;
+    let worksgood::worker_control::WorkerOperation::DoneHandoff {
+        converged,
+        full_smoke,
+    } = operation
+    else {
+        bail!("worker_control.prepared_done_operation_mismatch");
+    };
+    drop(graph);
+    super::done::run_from_worker_control(
+        dir,
+        id,
+        converged,
+        full_smoke,
+        Path::new(&binding.worktree_path),
+        &binding.agent_id,
+    )?;
+    Ok(true)
 }
 
 fn settle(dir: &Path, id: &str) -> Result<()> {

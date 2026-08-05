@@ -869,6 +869,30 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
     reasoning: Option<&str>,
     spawned_by: &str,
 ) -> Result<SpawnResult> {
+    spawn_agent_inner_authorized(
+        dir,
+        task_id,
+        executor_name,
+        timeout,
+        model,
+        reasoning,
+        spawned_by,
+        None,
+    )
+}
+
+/// Recompute the canonical plan immediately before the first spawn mutation
+/// and require it to match the planner-issued route/model binding.
+pub(crate) fn spawn_agent_inner_authorized(
+    dir: &Path,
+    task_id: &str,
+    executor_name: &str,
+    timeout: Option<&str>,
+    model: Option<&str>,
+    reasoning: Option<&str>,
+    spawned_by: &str,
+    expected_binding: Option<(&str, &str)>,
+) -> Result<SpawnResult> {
     let graph_path = graph_path(dir);
 
     if !graph_path.exists() {
@@ -932,6 +956,10 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
     // native-executor argv flags below; there is no fallback ad-hoc lookup.
     let config = Config::load_merged(dir)
         .context("Cannot spawn while the project profile selection is invalid")?;
+    // Match the coordinator's per-task profile projection. Without this, the
+    // outer effect could bind a profile endpoint while the inner spawn silently
+    // re-resolved the active/global endpoint.
+    let config = worksgood::dispatch::effective_config_owned(task.profile.as_deref(), config);
     if executor_name != "shell" && resolve_task_exec_mode(task, dir) != "shell" {
         config.validate_execution_model_plane().context(
             "spawn refused: every worker role must have an explicit Pi/Claude/Codex route and effective reasoning",
@@ -966,6 +994,21 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
         .transpose()
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     let plan = plan_spawn(task, &config, Some(executor_name), plan_default_model)?;
+    if let Some((expected_route_id, expected_plan_id)) = expected_binding {
+        let actual_route_id = worksgood::service::HealthRouteKey::from_spawn_plan(&plan).id();
+        let actual_route_binding =
+            worksgood::service::PlannerOpaqueId::normalized(&actual_route_id).to_string();
+        let actual_plan_id = worksgood::dispatch::spawn_plan_binding_id(&plan, &actual_route_id);
+        if actual_route_binding != expected_route_id || actual_plan_id != expected_plan_id {
+            anyhow::bail!(
+                "planner spawn binding changed before execution (expected route={} plan={}, observed route={} plan={}); no fallback was attempted",
+                expected_route_id,
+                expected_plan_id,
+                actual_route_id,
+                actual_plan_id
+            );
+        }
+    }
     eprintln!(
         "[{}] {}: {}",
         spawned_by,

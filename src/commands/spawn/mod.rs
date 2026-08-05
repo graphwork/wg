@@ -269,15 +269,42 @@ pub fn spawn_agent(
     timeout: Option<&str>,
     model: Option<&str>,
 ) -> Result<(String, u32)> {
-    let result =
-        execution::spawn_agent_inner(dir, task_id, executor_name, timeout, model, "coordinator")
-            .map_err(|error| {
-                if worksgood::disk_sentinel::admission_deferral_reason(&error).is_some() {
-                    error
-                } else {
-                    anyhow::Error::new(SpawnPreparationFailure::new(format!("{error:#}")))
-                }
-            })?;
+    spawn_agent_with_binding(dir, task_id, executor_name, timeout, model, None)
+}
+
+/// Coordinator spawn adapter with an optional exact PlannerStore binding.
+/// The canonical plan is recomputed and matched before claim/worktree/registry
+/// mutation, so a config/profile change cannot silently rewrite the route.
+pub fn spawn_agent_with_binding(
+    dir: &Path,
+    task_id: &str,
+    executor_name: &str,
+    timeout: Option<&str>,
+    model: Option<&str>,
+    expected_binding: Option<(&str, &str)>,
+) -> Result<(String, u32)> {
+    let result = match expected_binding {
+        Some(binding) => execution::spawn_agent_inner_authorized(
+            dir,
+            task_id,
+            executor_name,
+            timeout,
+            model,
+            None,
+            "coordinator",
+            Some(binding),
+        ),
+        None => {
+            execution::spawn_agent_inner(dir, task_id, executor_name, timeout, model, "coordinator")
+        }
+    }
+    .map_err(|error| {
+        if worksgood::disk_sentinel::admission_deferral_reason(&error).is_some() {
+            error
+        } else {
+            anyhow::Error::new(SpawnPreparationFailure::new(format!("{error:#}")))
+        }
+    })?;
     Ok((result.agent_id, result.pid))
 }
 

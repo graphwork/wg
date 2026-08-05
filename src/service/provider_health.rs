@@ -1,8 +1,8 @@
 //! Provider health evidence and route-key circuit breaking.
 //!
-//! Failure classification remains here; durable wake/probe scheduling lives in
-//! `service::convergence`. A broken route never pauses unrelated routes and is
-//! never escaped through implicit model/provider fallback.
+//! Failure classification remains here as typed evidence; durable wake/probe
+//! scheduling lives exclusively in `service::planner`. A broken route never
+//! pauses unrelated routes and is never escaped through implicit fallback.
 
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -497,8 +497,8 @@ impl ProviderHealth {
         }
     }
 
-    /// Global provider pause authority was retired. Dispatch consults the
-    /// exact route key through `service::convergence::admit_route_action`.
+    /// Global provider pause authority was retired. Dispatch submits the
+    /// exact route observation to PlannerStore.
     pub fn should_pause_spawning(&self) -> bool {
         false
     }

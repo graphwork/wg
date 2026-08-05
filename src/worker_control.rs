@@ -722,6 +722,24 @@ pub fn store_completion_object<T: Serialize>(dir: &Path, value: &T) -> Result<St
     Ok(cid)
 }
 
+pub fn load_completion_object<T: serde::de::DeserializeOwned + Serialize>(
+    dir: &Path,
+    cid: &str,
+) -> Result<T> {
+    let path = completion_root(dir)
+        .join("objects")
+        .join(transaction_slot(cid));
+    let bytes =
+        fs::read(&path).with_context(|| format!("read completion object {}", path.display()))?;
+    let value = serde_json::from_slice(&bytes)
+        .with_context(|| format!("parse completion object {}", path.display()))?;
+    let observed = content_cid(&value).map_err(anyhow::Error::msg)?;
+    if observed != cid {
+        bail!("worker_control.completion_object_cid_mismatch");
+    }
+    Ok(value)
+}
+
 pub fn load_save_transaction(
     dir: &Path,
     transaction_id: &str,

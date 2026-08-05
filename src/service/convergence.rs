@@ -1,9 +1,8 @@
-//! Durable deterministic wake scheduling for the service daemon.
+//! Legacy convergence schema plus non-dispatch convergence reducers.
 //!
-//! This module is deliberately a scheduler, not another graph actor. It keeps
-//! restart-stable wake/backoff and route-probe leases while the lifecycle,
-//! triage, wait, evaluation, finalization, and cleanup modules retain their
-//! existing mutation authority. No graph task or LLM controller is created.
+//! `ConvergenceState` remains readable for one-time PlannerStore migration and
+//! test fixtures. Its dispatch/route claim reducer is no longer reachable in
+//! production; PlannerStore is the sole spawn/probe scheduling authority.
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
@@ -1105,6 +1104,7 @@ pub fn converge_failed_prerequisites(
                     runnable: None,
                     external_wait: None,
                     scheduled: None,
+                    effect_binding: None,
                     incidents: BTreeSet::new(),
                     failed_prerequisite: Some(failed_prerequisite),
                 },
@@ -1310,6 +1310,7 @@ pub fn converge_failed_prerequisites(
 
 /// Refresh the durable read model from authoritative graph/finalization/route
 /// evidence. This performs no graph mutation.
+#[cfg(test)]
 pub fn reconcile_dir(
     dir: &Path,
     policy: &ConvergencePolicy,
@@ -1344,68 +1345,6 @@ pub fn reconcile_dir(
     state.last_reconciled_at = Some(now.to_rfc3339());
     state.save(dir)?;
     Ok(state)
-}
-
-/// Observe one completed service pass and advance at most one due unchanged
-/// record. Domain owners may have produced authoritative evidence during the
-/// pass; `reconcile_dir` resets those records before this selection.
-pub fn reconcile_after_service_pass(
-    dir: &Path,
-    policy: &ConvergencePolicy,
-    now: DateTime<Utc>,
-) -> Result<Option<String>> {
-    let mut state = reconcile_dir(dir, policy, now)?;
-    let selected = state.advance_one_due_without_progress(policy, now);
-    state.save(dir)?;
-    Ok(selected)
-}
-
-/// Acquire one fenced action wake for an existing goal. Repeated attempts with
-/// unchanged authoritative progress fall off exponentially and never turn the
-/// task into generic Failed.
-pub fn admit_goal_action(
-    dir: &Path,
-    task: &Task,
-    policy: &ConvergencePolicy,
-    now: DateTime<Utc>,
-) -> Result<Admission> {
-    let mut state = ConvergenceState::load(dir)?;
-    if !state.goals.contains_key(&goal_key(task)) {
-        let transactions = BTreeMap::new();
-        state.reconcile_goals(
-            std::iter::once(task.clone()),
-            &transactions,
-            None,
-            None,
-            policy,
-            now,
-        );
-    }
-    let admission = state.claim_goal_action(task, policy, now);
-    state.save(dir)?;
-    Ok(admission)
-}
-
-/// Route-key admission with exactly one credential-bearing probe lease. The
-/// route is never rewritten or cross-fallen-back.
-pub fn admit_route_action(
-    dir: &Path,
-    route_id: &str,
-    task_id: &str,
-    policy: &ConvergencePolicy,
-    now: DateTime<Utc>,
-) -> Result<RouteAdmission> {
-    let mut state = ConvergenceState::load(dir)?;
-    if let Ok(health) = ProviderHealth::load(dir) {
-        state.sync_route_health(&health, policy, now);
-    }
-    let admission = state.admit_route(route_id, task_id, policy, now);
-    state.save(dir)?;
-    Ok(admission)
-}
-
-pub fn earliest_wake(dir: &Path) -> Result<Option<DateTime<Utc>>> {
-    Ok(ConvergenceState::load(dir)?.earliest_wake())
 }
 
 fn new_goal_record(

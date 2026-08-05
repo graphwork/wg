@@ -341,6 +341,26 @@ pub struct SpawnPlan {
     pub provenance: SpawnProvenance,
 }
 
+/// Stable, redacted identity of the exact route/model plan authorized by the
+/// daemon planner. Endpoint identity is already captured by `route_id`; the
+/// remaining fields prevent a handler, model, reasoning, or placement rewrite
+/// between effect issuance and execution.
+pub fn spawn_plan_binding_id(plan: &SpawnPlan, route_id: &str) -> String {
+    let placement = match &plan.placement {
+        Placement::Local => "local".to_string(),
+        Placement::Provider(provider) => format!("provider:{provider}"),
+    };
+    let material = format!(
+        "{}\n{}\n{:?}\n{}\n{}",
+        plan.executor.as_str(),
+        plan.model.raw,
+        plan.reasoning,
+        route_id,
+        placement
+    );
+    format!("id:{}", blake3::hash(material.as_bytes()).to_hex())
+}
+
 /// Build the canonical `SpawnPlan` for a task. **This is the only place
 /// that decides which executor / model / endpoint a spawn uses.**
 ///
@@ -1967,6 +1987,27 @@ mod tests {
     /// child would spawn UNSCOPED and could mint durable grandchildren. This
     /// pins the dispatcher-side half of Erik's PR #56 rd3 hole, motivating the
     /// scope_guard refusal.
+    #[test]
+    fn planner_binding_changes_for_route_model_reasoning_or_placement() {
+        let config = Config::default();
+        let mut task = base_task("binding");
+        let base = plan_spawn(&task, &config, None, Some("claude:opus")).unwrap();
+        let id = spawn_plan_binding_id(&base, "route-a");
+        assert_eq!(id, spawn_plan_binding_id(&base, "route-a"));
+        assert_ne!(id, spawn_plan_binding_id(&base, "route-b"));
+
+        let model = plan_spawn(&task, &config, None, Some("claude:sonnet")).unwrap();
+        assert_ne!(id, spawn_plan_binding_id(&model, "route-a"));
+
+        task.reasoning = Some(ReasoningLevel::Xhigh);
+        let reasoning = plan_spawn(&task, &config, None, Some("claude:opus")).unwrap();
+        assert_ne!(id, spawn_plan_binding_id(&reasoning, "route-a"));
+
+        let mut placement = base.clone();
+        placement.placement = Placement::Provider("wgid:zBox".to_string());
+        assert_ne!(id, spawn_plan_binding_id(&placement, "route-a"));
+    }
+
     #[test]
     fn plan_spawn_does_not_scope_a_bare_disposable_tag() {
         let config = Config::default();

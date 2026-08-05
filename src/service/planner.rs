@@ -13,8 +13,8 @@ use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
-pub const DAEMON_PLANNER_SCHEMA_VERSION: u16 = 4;
-pub const DAEMON_TRACE_SCHEMA_VERSION: u16 = 4;
+pub const DAEMON_PLANNER_SCHEMA_VERSION: u16 = 5;
+pub const DAEMON_TRACE_SCHEMA_VERSION: u16 = 5;
 const MIN_SUPPORTED_DAEMON_PLANNER_SCHEMA_VERSION: u16 = 1;
 const MIN_SUPPORTED_DAEMON_TRACE_SCHEMA_VERSION: u16 = 1;
 pub const MAX_TRACE_OBSERVATIONS: usize = 256;
@@ -174,6 +174,15 @@ pub enum WaitKind {
     HumanInput,
     ArchiveConfirmation,
     ProviderRecovery,
+    /// Dependency/readiness evidence must change before dispatch can proceed.
+    DependencyChange,
+    /// Capacity, disk, or another resource admission observation must change.
+    ResourceCapacity,
+    /// A per-task admission gate is waiting for its persisted cooldown.
+    Admission,
+    /// Source bytes/evidence require repair. A planner-owned deadline may be
+    /// attached without granting the dispatch adapter mutation authority.
+    SourceRepair,
     /// A semantic rejection is terminal. Its descendant waits for an explicit
     /// repair/waiver/new generation and can never turn this wait into a retry.
     SemanticPrerequisiteRepair,
@@ -184,6 +193,10 @@ pub enum WaitKind {
 pub struct ExternalWait {
     pub wait_id: OpaqueId,
     pub kind: WaitKind,
+    /// Optional planner-owned re-observation deadline. This remains one
+    /// external-wait forward class; reaching it never executes a stale action.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -191,6 +204,167 @@ pub struct ExternalWait {
 pub struct ScheduledAction {
     pub action: ActionKind,
     pub deadline: u64,
+}
+
+/// Exact, redacted binding carried by a dispatch effect. `plan_id` is a digest
+/// of the already-resolved SpawnPlan (including the exact model identity); the
+/// adapter must recompute and match it before execution. Route/model fallback
+/// is therefore not representable at the planner boundary.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DispatchEffectBinding {
+    pub route_id: OpaqueId,
+    pub plan_id: OpaqueId,
+    pub retry_base_seconds: u64,
+    pub retry_cap_seconds: u64,
+    pub jitter_divisor: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum EffectBinding {
+    Dispatch(DispatchEffectBinding),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DispatchReadiness {
+    Ready,
+    Waiting {
+        wait_id: OpaqueId,
+        kind: WaitKind,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        deadline: Option<u64>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DispatchAdmission {
+    Admitted,
+    Deferred {
+        wait_id: OpaqueId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        deadline: Option<u64>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ResourceEvidence {
+    Available,
+    Deferred {
+        wait_id: OpaqueId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        deadline: Option<u64>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RouteHealthEvidence {
+    Healthy,
+    Unavailable { failure_id: OpaqueId },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DispatchRouteObservation {
+    pub route_id: OpaqueId,
+    pub plan_id: OpaqueId,
+    pub health: RouteHealthEvidence,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DispatchPolicy {
+    pub retry_base_seconds: u64,
+    pub retry_cap_seconds: u64,
+    pub route_probe_base_seconds: u64,
+    pub route_probe_cap_seconds: u64,
+    pub action_lease_seconds: u64,
+    pub jitter_divisor: u64,
+}
+
+impl DispatchPolicy {
+    fn normalized(&self) -> Self {
+        Self {
+            retry_base_seconds: self.retry_base_seconds.max(1),
+            retry_cap_seconds: self.retry_cap_seconds.max(self.retry_base_seconds.max(1)),
+            route_probe_base_seconds: self.route_probe_base_seconds.max(1),
+            route_probe_cap_seconds: self
+                .route_probe_cap_seconds
+                .max(self.route_probe_base_seconds.max(1)),
+            action_lease_seconds: self.action_lease_seconds.max(1),
+            jitter_divisor: self.jitter_divisor.max(1),
+        }
+    }
+}
+
+/// One production dispatch normalization. Gate precedence is deterministic:
+/// readiness, admission, resource, then exact route health. Consequently every
+/// unfinished observation projects to exactly one forward class.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DispatchObservation {
+    pub key: TaskKey,
+    pub progress_id: OpaqueId,
+    pub readiness: DispatchReadiness,
+    pub admission: DispatchAdmission,
+    pub resource: ResourceEvidence,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route: Option<DispatchRouteObservation>,
+    pub policy: DispatchPolicy,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlannerRouteState {
+    Healthy,
+    Unavailable,
+    Probing,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlannerRouteProbeLease {
+    pub effect_id: OpaqueId,
+    pub task_id: OpaqueId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub spawned: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlannerRouteProjection {
+    pub route_id: OpaqueId,
+    pub epoch: u64,
+    pub state: PlannerRouteState,
+    pub consecutive_outages: u32,
+    pub next_probe_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub probe_lease: Option<PlannerRouteProbeLease>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_failure_id: Option<OpaqueId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovered_at: Option<u64>,
+    pub policy: DispatchPolicy,
+}
+
+/// Zero-output is evidence only during this cutover. It is persisted for the
+/// ownership planner; the detector cannot kill, reopen, fail, pause, reroute,
+/// or schedule a retry on its own.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ZeroOutputObservation {
+    pub task: TaskKey,
+    pub owner_id: OpaqueId,
+    pub evidence_id: OpaqueId,
+    pub age_bucket: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_id: Option<OpaqueId>,
 }
 
 /// RFC3339 timestamp retained byte-for-byte from a migrated durable scheduler.
@@ -411,6 +585,7 @@ impl LegacyConvergenceImport {
                     record.stage,
                     super::convergence::ConvergenceStage::ObserveOwner
                         | super::convergence::ConvergenceStage::AwaitDependency
+                        | super::convergence::ConvergenceStage::AwaitDispatch
                 )
             })
             .map(|record| record.next_wake_at.datetime())
@@ -503,6 +678,10 @@ pub struct TaskObservation {
     pub external_wait: Option<ExternalWait>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scheduled: Option<ScheduledAction>,
+    /// Exact adapter binding for runnable dispatch effects. Historical and
+    /// non-dispatch observations omit it byte-for-byte.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effect_binding: Option<EffectBinding>,
     #[serde(default)]
     pub incidents: BTreeSet<IncidentCode>,
     /// Present only when this unfinished task is blocked by an exact failed
@@ -523,6 +702,10 @@ pub enum AckOutcome {
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Observation {
     Task(Box<TaskObservation>),
+    /// Typed production dispatch gates and exact route evidence.
+    Dispatch(Box<DispatchObservation>),
+    /// Typed observation only; ownership actions are cut over separately.
+    ZeroOutput(Box<ZeroOutputObservation>),
     /// A preparation-time ownership decision. Unlike a normal unfinished-task
     /// projection, this can authorize two ordered, independently acknowledged
     /// logical effects: retain/fence the dead owner's exact tuple, then dispatch
@@ -610,6 +793,14 @@ pub enum EffectStatus {
 pub struct PlannedEffect {
     pub effect_id: OpaqueId,
     pub task: TaskKey,
+    /// Authoritative progress identity that produced this effect. Historical
+    /// effects omit it; new dispatch observations use it to reject a prior
+    /// issued effect when task evidence changes without changing the tuple.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress_id: Option<OpaqueId>,
+    /// Exact route/model binding for dispatch and route-probe execution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binding: Option<EffectBinding>,
     /// Exact failed source acted on by prerequisite convergence. Absent for
     /// ordinary task-local planner effects and every v1 fixture.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -630,8 +821,19 @@ pub struct PlannerState {
     pub seen_observations: BTreeMap<u64, OpaqueId>,
     #[serde(default)]
     pub tasks: BTreeMap<OpaqueId, TaskObservation>,
+    /// Planner-owned route breaker/probe state. Empty historical projections
+    /// remain omitted so old replay fixtures stay byte-identical.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub routes: BTreeMap<OpaqueId, PlannerRouteProjection>,
+    /// Latest typed zero-output observations, evidence only.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub zero_output: BTreeMap<OpaqueId, ZeroOutputObservation>,
     #[serde(default)]
     pub effects: BTreeMap<OpaqueId, PlannedEffect>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub effect_retry_deadlines: BTreeMap<OpaqueId, u64>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub effect_retry_attempts: BTreeMap<OpaqueId, u32>,
     #[serde(default)]
     pub early_acknowledgements: BTreeMap<OpaqueId, AckOutcome>,
     #[serde(default)]
@@ -658,7 +860,11 @@ impl PlannerState {
             last_sequence: None,
             seen_observations: BTreeMap::new(),
             tasks: BTreeMap::new(),
+            routes: BTreeMap::new(),
+            zero_output: BTreeMap::new(),
             effects: BTreeMap::new(),
+            effect_retry_deadlines: BTreeMap::new(),
+            effect_retry_attempts: BTreeMap::new(),
             early_acknowledgements: BTreeMap::new(),
             repaired_incidents: BTreeSet::new(),
             fail_closed: false,
@@ -690,11 +896,16 @@ fn task_state_id(task: &TaskKey) -> OpaqueId {
 fn effect_id(
     task: &TaskKey,
     progress_id: &OpaqueId,
+    binding: Option<&EffectBinding>,
     action: ActionKind,
     issue_epoch: u64,
 ) -> OpaqueId {
+    let binding_id = binding.map_or_else(String::new, |binding| {
+        let bytes = serde_json::to_vec(binding).expect("typed binding serializes");
+        format!(":binding:{}", blake3::hash(&bytes).to_hex())
+    });
     let material = format!(
-        "{}:{}:{action:?}:{issue_epoch}",
+        "{}:{}:{action:?}:{issue_epoch}{binding_id}",
         task.stable_key(),
         progress_id
     );
@@ -725,6 +936,7 @@ fn corrected_incident_projection(task: &mut TaskObservation, now: u64) {
                 task.external_wait = Some(ExternalWait {
                     wait_id: OpaqueId::new("correlated-wait").expect("constant id"),
                     kind: WaitKind::CorrelatedMessage,
+                    deadline: None,
                 });
             }
             IncidentCode::ObsoleteDaemonChatCreationLostResponse => {
@@ -743,6 +955,7 @@ fn corrected_incident_projection(task: &mut TaskObservation, now: u64) {
                 task.external_wait = Some(ExternalWait {
                     wait_id: OpaqueId::new("archive-confirmation").expect("constant id"),
                     kind: WaitKind::ArchiveConfirmation,
+                    deadline: None,
                 });
             }
             IncidentCode::ControlPlaneCandidateReplacement => {
@@ -755,6 +968,7 @@ fn corrected_incident_projection(task: &mut TaskObservation, now: u64) {
                 task.external_wait = Some(ExternalWait {
                     wait_id: OpaqueId::new("dependency-success").expect("constant id"),
                     kind: WaitKind::DependencySuccess,
+                    deadline: None,
                 });
             }
         }
@@ -778,6 +992,7 @@ fn corrected_failed_prerequisite_projection(task: &mut TaskObservation, now: u64
             ))
             .expect("typed source produces a safe wait id"),
             kind: WaitKind::SemanticPrerequisiteRepair,
+            deadline: None,
         });
         return;
     }
@@ -821,11 +1036,12 @@ fn issue_bound_effect(
     state: &mut PlannerState,
     task: &TaskKey,
     progress_id: &OpaqueId,
+    binding: Option<EffectBinding>,
     prerequisite: Option<TaskKey>,
     action: ActionKind,
 ) -> Option<PlannedEffect> {
     let issue_epoch = 1;
-    let id = effect_id(task, progress_id, action, issue_epoch);
+    let id = effect_id(task, progress_id, binding.as_ref(), action, issue_epoch);
     if state.effects.contains_key(&id) {
         return None;
     }
@@ -837,6 +1053,8 @@ fn issue_bound_effect(
     let effect = PlannedEffect {
         effect_id: id.clone(),
         task: task.clone(),
+        progress_id: Some(progress_id.clone()),
+        binding,
         prerequisite,
         action,
         issue_epoch,
@@ -855,11 +1073,391 @@ fn issue_effect(
         state,
         &task.key,
         &task.progress_id,
+        task.effect_binding.clone(),
         task.failed_prerequisite
             .as_ref()
             .map(|failure| failure.source.clone()),
         action,
     )
+}
+
+fn unix_timestamp(value: &PlannerTimestamp) -> u64 {
+    value.datetime().timestamp().max(0) as u64
+}
+
+fn stable_hash_u64(material: &str) -> u64 {
+    let hash = blake3::hash(material.as_bytes());
+    let mut bytes = [0u8; 8];
+    bytes.copy_from_slice(&hash.as_bytes()[..8]);
+    u64::from_le_bytes(bytes)
+}
+
+fn bounded_delay(base: u64, cap: u64, exponent: u32) -> u64 {
+    base.max(1)
+        .saturating_mul(1u64.checked_shl(exponent.min(63)).unwrap_or(u64::MAX))
+        .min(cap.max(base.max(1)))
+}
+
+fn route_deadline(
+    route_id: &OpaqueId,
+    outage_count: u32,
+    policy: &DispatchPolicy,
+    now: u64,
+) -> u64 {
+    let exponent = outage_count.saturating_sub(1);
+    let delay = bounded_delay(
+        policy.route_probe_base_seconds,
+        policy.route_probe_cap_seconds,
+        exponent,
+    );
+    let jitter_window = (delay / policy.jitter_divisor.max(1)).max(1);
+    let jitter = stable_hash_u64(&format!("{route_id}:{outage_count}")) % jitter_window;
+    now.saturating_add(delay).saturating_add(jitter)
+}
+
+fn route_from_legacy(
+    state: &PlannerState,
+    route_id: &OpaqueId,
+    policy: &DispatchPolicy,
+    now: u64,
+) -> Option<PlannerRouteProjection> {
+    let imported = state.legacy_convergence.as_ref()?.routes.get(route_id)?;
+    Some(PlannerRouteProjection {
+        route_id: route_id.clone(),
+        epoch: imported.epoch,
+        state: match imported.state {
+            super::convergence::RouteBreakerState::Healthy => PlannerRouteState::Healthy,
+            super::convergence::RouteBreakerState::Unavailable => PlannerRouteState::Unavailable,
+            super::convergence::RouteBreakerState::Probing => PlannerRouteState::Probing,
+        },
+        consecutive_outages: imported.consecutive_outages,
+        next_probe_at: unix_timestamp(&imported.next_probe_at),
+        probe_lease: imported
+            .probe_lease
+            .as_ref()
+            .map(|lease| PlannerRouteProbeLease {
+                effect_id: lease.action_id.clone(),
+                task_id: lease.task_id.clone(),
+                expires_at: Some(unix_timestamp(&lease.expires_at)),
+                spawned: false,
+            }),
+        last_failure_id: imported.last_failure_marker.clone(),
+        recovered_at: imported.recovered_at.as_ref().map(unix_timestamp),
+        policy: policy.clone(),
+    })
+    .or_else(|| {
+        Some(PlannerRouteProjection {
+            route_id: route_id.clone(),
+            epoch: 0,
+            state: PlannerRouteState::Healthy,
+            consecutive_outages: 0,
+            next_probe_at: now,
+            probe_lease: None,
+            last_failure_id: None,
+            recovered_at: None,
+            policy: policy.clone(),
+        })
+    })
+}
+
+fn dispatch_wait(
+    task: &mut TaskObservation,
+    wait_id: OpaqueId,
+    kind: WaitKind,
+    deadline: Option<u64>,
+) {
+    task.runnable = None;
+    task.scheduled = None;
+    task.external_wait = Some(ExternalWait {
+        wait_id,
+        kind,
+        deadline,
+    });
+}
+
+fn project_dispatch(
+    state: &mut PlannerState,
+    observed: &DispatchObservation,
+    now: u64,
+    emitted: &mut Vec<PlannedEffect>,
+    violations: &mut BTreeSet<ViolationCode>,
+) {
+    let policy = observed.policy.normalized();
+    let mut task = TaskObservation {
+        key: observed.key.clone(),
+        progress_id: observed.progress_id.clone(),
+        unfinished: true,
+        owner: OwnerEvidence::None,
+        runnable: None,
+        external_wait: None,
+        scheduled: None,
+        effect_binding: None,
+        incidents: BTreeSet::new(),
+        failed_prerequisite: None,
+    };
+
+    if task.key.graph_id != state.graph_id {
+        violations.insert(ViolationCode::CrossGraphIdentity);
+        state.fail_closed = true;
+        return;
+    }
+
+    match &observed.readiness {
+        DispatchReadiness::Ready => {}
+        DispatchReadiness::Waiting {
+            wait_id,
+            kind,
+            deadline,
+        } => {
+            dispatch_wait(&mut task, wait_id.clone(), *kind, *deadline);
+            state.tasks.insert(task_state_id(&task.key), task);
+            return;
+        }
+    }
+    match &observed.admission {
+        DispatchAdmission::Admitted => {}
+        DispatchAdmission::Deferred { wait_id, deadline } => {
+            dispatch_wait(&mut task, wait_id.clone(), WaitKind::Admission, *deadline);
+            state.tasks.insert(task_state_id(&task.key), task);
+            return;
+        }
+    }
+    match &observed.resource {
+        ResourceEvidence::Available => {}
+        ResourceEvidence::Deferred { wait_id, deadline } => {
+            dispatch_wait(
+                &mut task,
+                wait_id.clone(),
+                WaitKind::ResourceCapacity,
+                *deadline,
+            );
+            state.tasks.insert(task_state_id(&task.key), task);
+            return;
+        }
+    }
+
+    let Some(route_observation) = observed.route.as_ref() else {
+        violations.insert(ViolationCode::NoForwardDisposition);
+        task.scheduled = Some(ScheduledAction {
+            action: ActionKind::FailClosedHold,
+            deadline: now,
+        });
+        state.tasks.insert(task_state_id(&task.key), task);
+        state.fail_closed = true;
+        return;
+    };
+    let binding = EffectBinding::Dispatch(DispatchEffectBinding {
+        route_id: route_observation.route_id.clone(),
+        plan_id: route_observation.plan_id.clone(),
+        retry_base_seconds: policy.retry_base_seconds,
+        retry_cap_seconds: policy.retry_cap_seconds,
+        jitter_divisor: policy.jitter_divisor,
+    });
+    task.effect_binding = Some(binding);
+
+    let route_id = route_observation.route_id.clone();
+    let mut route = state
+        .routes
+        .get(&route_id)
+        .cloned()
+        .or_else(|| route_from_legacy(state, &route_id, &policy, now))
+        .unwrap_or(PlannerRouteProjection {
+            route_id: route_id.clone(),
+            epoch: 0,
+            state: PlannerRouteState::Healthy,
+            consecutive_outages: 0,
+            next_probe_at: now,
+            probe_lease: None,
+            last_failure_id: None,
+            recovered_at: None,
+            policy: policy.clone(),
+        });
+    route.policy = policy.clone();
+
+    match &route_observation.health {
+        RouteHealthEvidence::Healthy => {
+            if route.state != PlannerRouteState::Healthy {
+                route.epoch = route.epoch.saturating_add(1);
+                route.recovered_at = Some(now);
+            }
+            route.state = PlannerRouteState::Healthy;
+            route.consecutive_outages = 0;
+            route.next_probe_at = now;
+            route.probe_lease = None;
+            route.last_failure_id = None;
+            let release_at = route.recovered_at.map(|recovered_at| {
+                let spread = stable_hash_u64(&format!(
+                    "{}:{}:{}",
+                    route.route_id, route.epoch, task.key.task_id
+                )) % policy
+                    .route_probe_base_seconds
+                    .saturating_mul(1_000)
+                    .saturating_add(1);
+                recovered_at.saturating_add((spread + 999) / 1_000)
+            });
+            if release_at.is_some_and(|deadline| deadline > now) {
+                dispatch_wait(
+                    &mut task,
+                    OpaqueId::normalized(format!("route-stagger:{}", route.route_id)),
+                    WaitKind::ProviderRecovery,
+                    release_at,
+                );
+            } else {
+                task.runnable = Some(ActionKind::SpawnAttempt);
+            }
+        }
+        RouteHealthEvidence::Unavailable { failure_id } => {
+            if route.last_failure_id.as_ref() != Some(failure_id) {
+                route.epoch = route.epoch.saturating_add(1);
+                route.state = PlannerRouteState::Unavailable;
+                route.consecutive_outages = route.consecutive_outages.saturating_add(1).max(1);
+                route.next_probe_at =
+                    route_deadline(&route.route_id, route.consecutive_outages, &policy, now);
+                route.probe_lease = None;
+                route.last_failure_id = Some(failure_id.clone());
+                route.recovered_at = None;
+            }
+
+            if route.state == PlannerRouteState::Probing
+                && let Some(lease) = route.probe_lease.as_ref()
+            {
+                let pending_effect = state
+                    .effects
+                    .get(&lease.effect_id)
+                    .is_some_and(|effect| matches!(effect.status, EffectStatus::Issued));
+                if lease.spawned || pending_effect {
+                    let deadline = (!lease.spawned)
+                        .then(|| {
+                            state
+                                .effect_retry_deadlines
+                                .get(&lease.effect_id)
+                                .copied()
+                                .or(lease.expires_at)
+                        })
+                        .flatten();
+                    dispatch_wait(
+                        &mut task,
+                        OpaqueId::normalized(format!("route-probe:{}", route.route_id)),
+                        WaitKind::ProviderRecovery,
+                        deadline,
+                    );
+                } else if lease.expires_at.is_some_and(|deadline| deadline > now) {
+                    dispatch_wait(
+                        &mut task,
+                        OpaqueId::normalized(format!("route-probe:{}", route.route_id)),
+                        WaitKind::ProviderRecovery,
+                        lease.expires_at,
+                    );
+                } else {
+                    route.state = PlannerRouteState::Unavailable;
+                    route.probe_lease = None;
+                    route.consecutive_outages = route.consecutive_outages.saturating_add(1);
+                    route.next_probe_at =
+                        route_deadline(&route.route_id, route.consecutive_outages, &policy, now);
+                }
+            }
+
+            if task.external_wait.is_none() {
+                if route.next_probe_at > now {
+                    dispatch_wait(
+                        &mut task,
+                        OpaqueId::normalized(format!("route-unavailable:{}", route.route_id)),
+                        WaitKind::ProviderRecovery,
+                        Some(route.next_probe_at),
+                    );
+                } else {
+                    task.runnable = Some(ActionKind::ProbeRoute);
+                }
+            }
+        }
+    }
+
+    // Only the effect derived from the latest exact tuple, progress, binding,
+    // and action remains executable. This also retires a pending probe as soon
+    // as healthy route evidence arrives, preventing an orphaned journal record
+    // from keeping the event-loop deadline hot after recovery.
+    let expected_action = task.runnable;
+    let expected_effect_id = expected_action.map(|action| {
+        effect_id(
+            &task.key,
+            &task.progress_id,
+            task.effect_binding.as_ref(),
+            action,
+            1,
+        )
+    });
+    let active_probe_id = (route.state == PlannerRouteState::Probing)
+        .then(|| {
+            route
+                .probe_lease
+                .as_ref()
+                .map(|lease| lease.effect_id.clone())
+        })
+        .flatten();
+    for effect in state.effects.values_mut().filter(|effect| {
+        let same_task =
+            effect.task.graph_id == task.key.graph_id && effect.task.task_id == task.key.task_id;
+        let stale_route_probe = route.state != PlannerRouteState::Probing
+            && effect.action == ActionKind::ProbeRoute
+            && matches!(
+                effect.binding.as_ref(),
+                Some(EffectBinding::Dispatch(binding)) if binding.route_id == route_id
+            );
+        (same_task || stale_route_probe)
+            && matches!(
+                effect.action,
+                ActionKind::SpawnAttempt | ActionKind::ProbeRoute
+            )
+            && matches!(effect.status, EffectStatus::Issued)
+            && expected_effect_id.as_ref() != Some(&effect.effect_id)
+            && active_probe_id.as_ref() != Some(&effect.effect_id)
+    }) {
+        effect.status = EffectStatus::Acknowledged(AckOutcome::RejectedStale);
+        state.effect_retry_deadlines.remove(&effect.effect_id);
+        state.effect_retry_attempts.remove(&effect.effect_id);
+    }
+
+    if let Some(action) = expected_action {
+        if let Some(effect) = issue_effect(state, &task, action) {
+            if action == ActionKind::ProbeRoute {
+                route.state = PlannerRouteState::Probing;
+                route.probe_lease = Some(PlannerRouteProbeLease {
+                    effect_id: effect.effect_id.clone(),
+                    task_id: task.key.task_id.clone(),
+                    expires_at: Some(now.saturating_add(policy.action_lease_seconds)),
+                    spawned: false,
+                });
+            }
+            emitted.push(effect);
+        } else if action == ActionKind::ProbeRoute
+            && route.probe_lease.is_none()
+            && let Some(effect_id) = expected_effect_id.as_ref()
+            && state
+                .effects
+                .get(effect_id)
+                .is_some_and(|effect| matches!(effect.status, EffectStatus::Issued))
+        {
+            // Recover a missing projection lease from the durable logical
+            // effect without re-emitting it; the journal owns execution.
+            route.state = PlannerRouteState::Probing;
+            route.probe_lease = Some(PlannerRouteProbeLease {
+                effect_id: effect_id.clone(),
+                task_id: task.key.task_id.clone(),
+                expires_at: Some(now.saturating_add(policy.action_lease_seconds)),
+                spawned: false,
+            });
+        }
+    }
+    if forward_count(&task) != 1 {
+        violations.insert(if forward_count(&task) == 0 {
+            ViolationCode::NoForwardDisposition
+        } else {
+            ViolationCode::MultipleForwardDispositions
+        });
+        state.fail_closed = true;
+    }
+    state.routes.insert(route_id, route);
+    state.tasks.insert(task_state_id(&task.key), task);
 }
 
 /// Execute one pure planner transition. No external state is read or written.
@@ -927,6 +1525,27 @@ pub fn plan(
 
     match &envelope.observation {
         Observation::Crash => {}
+        Observation::Dispatch(observed) => {
+            if !next.fail_closed {
+                project_dispatch(
+                    &mut next,
+                    observed,
+                    envelope.logical_time,
+                    &mut emitted,
+                    &mut violations,
+                );
+            }
+        }
+        Observation::ZeroOutput(observed) => {
+            let observed = observed.as_ref();
+            if observed.task.graph_id != next.graph_id {
+                violations.insert(ViolationCode::CrossGraphIdentity);
+                next.fail_closed = true;
+            } else {
+                next.zero_output
+                    .insert(task_state_id(&observed.task), observed.clone());
+            }
+        }
         Observation::WorktreeSpawn(observed) => {
             if next.fail_closed {
                 return PlannerStep {
@@ -956,6 +1575,7 @@ pub fn plan(
                             &observed.stale_owner,
                             &observed.progress_id,
                             None,
+                            None,
                             ActionKind::ReclaimRetainWorktree,
                         ) {
                             emitted.push(effect);
@@ -964,6 +1584,7 @@ pub fn plan(
                             &mut next,
                             &observed.current_attempt,
                             &observed.progress_id,
+                            None,
                             Some(observed.stale_owner.clone()),
                             ActionKind::SpawnAttempt,
                         ) {
@@ -982,20 +1603,85 @@ pub fn plan(
             }
         }
         Observation::EffectAcknowledged { effect_id, outcome } => {
-            if let Some(effect) = next.effects.get_mut(effect_id) {
+            if let Some(existing) = next.effects.get(effect_id).cloned() {
                 // The first terminal acknowledgement is immutable. Delayed,
                 // duplicated, or conflicting acknowledgements from an older
                 // adapter execution cannot reopen or rewrite a settled effect.
-                if matches!(effect.status, EffectStatus::Acknowledged(_)) {
-                    // Inert by design.
-                } else if *outcome == AckOutcome::Retryable {
-                    // A physical retry reuses the same logical effect ID. The
-                    // effect map remains cardinality-one while the adapter is
-                    // explicitly asked to retry its idempotent operation.
-                    effect.status = EffectStatus::Issued;
-                    emitted.push(effect.clone());
-                } else {
-                    effect.status = EffectStatus::Acknowledged(*outcome);
+                if !matches!(existing.status, EffectStatus::Acknowledged(_)) {
+                    if *outcome == AckOutcome::Retryable {
+                        if let Some(EffectBinding::Dispatch(binding)) = existing.binding.as_ref() {
+                            let attempt = next
+                                .effect_retry_attempts
+                                .entry(effect_id.clone())
+                                .or_insert(0);
+                            let delay = bounded_delay(
+                                binding.retry_base_seconds,
+                                binding.retry_cap_seconds,
+                                *attempt,
+                            );
+                            let jitter_window = (delay / binding.jitter_divisor.max(1)).max(1);
+                            let jitter = stable_hash_u64(&format!("{}:{}", effect_id, *attempt))
+                                % jitter_window;
+                            *attempt = attempt.saturating_add(1);
+                            next.effect_retry_deadlines.insert(
+                                effect_id.clone(),
+                                envelope
+                                    .logical_time
+                                    .saturating_add(delay)
+                                    .saturating_add(jitter),
+                            );
+                            if let Some(effect) = next.effects.get_mut(effect_id) {
+                                effect.status = EffectStatus::Issued;
+                            }
+                        } else {
+                            if let Some(effect) = next.effects.get_mut(effect_id) {
+                                effect.status = EffectStatus::Issued;
+                                emitted.push(effect.clone());
+                            }
+                        }
+                    } else {
+                        if let Some(effect) = next.effects.get_mut(effect_id) {
+                            effect.status = EffectStatus::Acknowledged(*outcome);
+                        }
+                        next.effect_retry_deadlines.remove(effect_id);
+                        next.effect_retry_attempts.remove(effect_id);
+                    }
+
+                    if let Some(EffectBinding::Dispatch(binding)) = existing.binding.as_ref()
+                        && let Some(route) = next.routes.get_mut(&binding.route_id)
+                        && route
+                            .probe_lease
+                            .as_ref()
+                            .is_some_and(|lease| lease.effect_id == *effect_id)
+                    {
+                        match outcome {
+                            AckOutcome::Succeeded => {
+                                if let Some(lease) = route.probe_lease.as_mut() {
+                                    lease.spawned = true;
+                                    lease.expires_at = None;
+                                }
+                                route.state = PlannerRouteState::Probing;
+                            }
+                            AckOutcome::Retryable => {
+                                if let Some(lease) = route.probe_lease.as_mut() {
+                                    lease.expires_at =
+                                        next.effect_retry_deadlines.get(effect_id).copied();
+                                }
+                            }
+                            AckOutcome::RejectedStale => {
+                                route.state = PlannerRouteState::Unavailable;
+                                route.probe_lease = None;
+                                route.consecutive_outages =
+                                    route.consecutive_outages.saturating_add(1);
+                                route.next_probe_at = route_deadline(
+                                    &route.route_id,
+                                    route.consecutive_outages,
+                                    &route.policy,
+                                    envelope.logical_time,
+                                );
+                            }
+                        }
+                    }
                 }
             } else {
                 next.early_acknowledgements
@@ -1226,6 +1912,8 @@ pub struct PlannerStatusProjection {
     pub next_sequence: Option<u64>,
     pub earliest_deadline: Option<String>,
     pub normalized_tasks: BTreeMap<OpaqueId, TaskObservation>,
+    pub routes: BTreeMap<OpaqueId, PlannerRouteProjection>,
+    pub zero_output: BTreeMap<OpaqueId, ZeroOutputObservation>,
     pub effects: BTreeMap<OpaqueId, EffectExecutionRecord>,
     pub legacy_convergence: Option<Box<LegacyConvergenceImport>>,
     pub fail_closed: bool,
@@ -1547,6 +2235,12 @@ impl PlannerStore {
         self.effect_journal
             .records
             .values()
+            .filter(|record| {
+                self.state
+                    .effect_retry_deadlines
+                    .get(&record.effect.effect_id)
+                    .is_none_or(|deadline| *deadline <= self.state.logical_time)
+            })
             .filter_map(|record| match record.phase {
                 EffectExecutionPhase::Issued | EffectExecutionPhase::Executing => {
                     Some(EffectReplay::Execute(record.effect.clone()))
@@ -1701,6 +2395,14 @@ impl PlannerStore {
         sync_effect_journal(&state, &mut journal)?;
         Ok(Some(status_projection(&state, &journal)))
     }
+
+    /// The daemon event loop's sole logical deadline source.
+    pub fn read_earliest_deadline(dir: &Path) -> Result<Option<DateTime<Utc>>> {
+        Ok(Self::read_status(dir)?
+            .and_then(|status| status.earliest_deadline)
+            .and_then(|value| DateTime::parse_from_rfc3339(&value).ok())
+            .map(|value| value.with_timezone(&Utc)))
+    }
 }
 
 fn canonical_issued_effect(effect: &PlannedEffect) -> PlannedEffect {
@@ -1761,25 +2463,35 @@ fn earliest_deadline(
     journal: &EffectExecutionJournal,
 ) -> Option<DateTime<Utc>> {
     let mut deadlines = Vec::new();
-    if journal
+    for record in journal
         .records
         .values()
-        .any(|record| !matches!(record.phase, EffectExecutionPhase::Acknowledged { .. }))
-        && let Some(now) = logical_datetime(state.logical_time)
+        .filter(|record| !matches!(record.phase, EffectExecutionPhase::Acknowledged { .. }))
     {
-        deadlines.push(now);
+        let deadline = state
+            .effect_retry_deadlines
+            .get(&record.effect.effect_id)
+            .copied()
+            .unwrap_or(state.logical_time);
+        if let Some(deadline) = logical_datetime(deadline) {
+            deadlines.push(deadline);
+        }
     }
     for task in state.tasks.values().filter(|task| task.unfinished) {
-        let Some(scheduled) = task.scheduled.as_ref() else {
-            continue;
-        };
-        let settled = state.effects.values().any(|effect| {
-            effect.task == task.key
-                && effect.action == scheduled.action
-                && matches!(effect.status, EffectStatus::Acknowledged(_))
-        });
-        if !settled && let Some(deadline) = logical_datetime(scheduled.deadline) {
+        if let Some(wait) = task.external_wait.as_ref()
+            && let Some(deadline) = wait.deadline.and_then(logical_datetime)
+        {
             deadlines.push(deadline);
+        }
+        if let Some(scheduled) = task.scheduled.as_ref() {
+            let settled = state.effects.values().any(|effect| {
+                effect.task == task.key
+                    && effect.action == scheduled.action
+                    && matches!(effect.status, EffectStatus::Acknowledged(_))
+            });
+            if !settled && let Some(deadline) = logical_datetime(scheduled.deadline) {
+                deadlines.push(deadline);
+            }
         }
     }
     if let Some(legacy) = state.legacy_convergence.as_ref()
@@ -1804,6 +2516,8 @@ fn status_projection(
             .map_or(Some(1), |last| last.checked_add(1)),
         earliest_deadline: earliest_deadline(state, journal).map(|value| value.to_rfc3339()),
         normalized_tasks: state.tasks.clone(),
+        routes: state.routes.clone(),
+        zero_output: state.zero_output.clone(),
         effects: journal.records.clone(),
         legacy_convergence: state.legacy_convergence.clone(),
         fail_closed: state.fail_closed,
@@ -1888,6 +2602,7 @@ mod tests {
                 runnable: Some(ActionKind::SpawnAttempt),
                 external_wait: None,
                 scheduled: None,
+                effect_binding: None,
                 incidents: BTreeSet::new(),
                 failed_prerequisite: None,
             })),
@@ -2017,11 +2732,13 @@ mod tests {
                                     external_wait: waiting.then(|| ExternalWait {
                                         wait_id: id("wait"),
                                         kind: WaitKind::HumanInput,
+                                        deadline: None,
                                     }),
                                     scheduled: scheduled.then_some(ScheduledAction {
                                         action: ActionKind::CleanupFinish,
                                         deadline: 11,
                                     }),
+                                    effect_binding: None,
                                     incidents: BTreeSet::new(),
                                     failed_prerequisite: None,
                                 })),
@@ -2044,7 +2761,13 @@ mod tests {
             Observation::Task(task) => task,
             _ => unreachable!(),
         };
-        let expected_id = effect_id(&task.key, &task.progress_id, ActionKind::SpawnAttempt, 1);
+        let expected_id = effect_id(
+            &task.key,
+            &task.progress_id,
+            None,
+            ActionKind::SpawnAttempt,
+            1,
+        );
         state = plan(
             &state,
             &ObservationEnvelope {
@@ -2220,7 +2943,10 @@ mod tests {
         );
         assert_eq!(
             store.status_projection().earliest_deadline.as_deref(),
-            Some("2031-02-03T04:05:06.123456789+00:00")
+            // The schema-v5 dispatch cutover deliberately retires imported
+            // AwaitDispatch timing authority; the future SourceRepair deadline
+            // remains visible and prevents a false exhaustiveness hold.
+            Some("2039-09-18T23:06:40+00:00")
         );
         assert!(matches!(
             store
@@ -2471,6 +3197,392 @@ mod tests {
         assert_eq!(before, after);
     }
 
+    fn dispatch_observation(
+        task: &str,
+        plan: &str,
+        readiness: DispatchReadiness,
+        admission: DispatchAdmission,
+        resource: ResourceEvidence,
+        health: RouteHealthEvidence,
+    ) -> DispatchObservation {
+        DispatchObservation {
+            key: key(task, "dispatch-ready"),
+            progress_id: id(&format!("progress-{task}-{plan}")),
+            readiness,
+            admission,
+            resource,
+            route: Some(DispatchRouteObservation {
+                route_id: id("route-a"),
+                plan_id: id(plan),
+                health,
+            }),
+            policy: DispatchPolicy {
+                retry_base_seconds: 5,
+                retry_cap_seconds: 40,
+                route_probe_base_seconds: 10,
+                route_probe_cap_seconds: 80,
+                action_lease_seconds: 5,
+                jitter_divisor: 1_000_000,
+            },
+        }
+    }
+
+    #[test]
+    fn dispatch_readiness_admission_resource_and_ready_each_have_one_forward_class() {
+        let cases = [
+            dispatch_observation(
+                "dependency",
+                "plan-a",
+                DispatchReadiness::Waiting {
+                    wait_id: id("dependency-wait"),
+                    kind: WaitKind::DependencyChange,
+                    deadline: None,
+                },
+                DispatchAdmission::Admitted,
+                ResourceEvidence::Available,
+                RouteHealthEvidence::Healthy,
+            ),
+            dispatch_observation(
+                "admission",
+                "plan-a",
+                DispatchReadiness::Ready,
+                DispatchAdmission::Deferred {
+                    wait_id: id("admission-wait"),
+                    deadline: Some(120),
+                },
+                ResourceEvidence::Available,
+                RouteHealthEvidence::Healthy,
+            ),
+            dispatch_observation(
+                "resource",
+                "plan-a",
+                DispatchReadiness::Ready,
+                DispatchAdmission::Admitted,
+                ResourceEvidence::Deferred {
+                    wait_id: id("resource-wait"),
+                    deadline: None,
+                },
+                RouteHealthEvidence::Healthy,
+            ),
+            dispatch_observation(
+                "ready",
+                "plan-a",
+                DispatchReadiness::Ready,
+                DispatchAdmission::Admitted,
+                ResourceEvidence::Available,
+                RouteHealthEvidence::Healthy,
+            ),
+        ];
+
+        for (index, observation) in cases.into_iter().enumerate() {
+            let step = plan(
+                &PlannerState::new(id("graph-a")),
+                &ObservationEnvelope {
+                    sequence: 1,
+                    logical_time: 100,
+                    observation: Observation::Dispatch(Box::new(observation)),
+                },
+                PlannerRuleset::Corrected,
+            );
+            assert!(step.violations.is_empty(), "case {index}");
+            let task = step.state.tasks.values().next().unwrap();
+            assert_eq!(forward_count(task), 1, "case {index}");
+            assert_eq!(step.effects.len(), usize::from(index == 3));
+        }
+    }
+
+    #[test]
+    fn route_outage_issues_one_exact_probe_and_persists_lease_without_storm() {
+        let first = dispatch_observation(
+            "task-a",
+            "plan-exact",
+            DispatchReadiness::Ready,
+            DispatchAdmission::Admitted,
+            ResourceEvidence::Available,
+            RouteHealthEvidence::Unavailable {
+                failure_id: id("failure-1"),
+            },
+        );
+        let step1 = plan(
+            &PlannerState::new(id("graph-a")),
+            &ObservationEnvelope {
+                sequence: 1,
+                logical_time: 100,
+                observation: Observation::Dispatch(Box::new(first.clone())),
+            },
+            PlannerRuleset::Corrected,
+        );
+        assert!(step1.effects.is_empty());
+        let deadline = step1.state.routes[&id("route-a")].next_probe_at;
+        assert!(deadline > 100);
+
+        let step2 = plan(
+            &step1.state,
+            &ObservationEnvelope {
+                sequence: 2,
+                logical_time: deadline,
+                observation: Observation::Dispatch(Box::new(first)),
+            },
+            PlannerRuleset::Corrected,
+        );
+        assert_eq!(step2.effects.len(), 1);
+        let probe = step2.effects[0].clone();
+        assert_eq!(probe.action, ActionKind::ProbeRoute);
+        assert!(matches!(
+            probe.binding.as_ref(),
+            Some(EffectBinding::Dispatch(DispatchEffectBinding {
+                route_id,
+                plan_id,
+                ..
+            })) if route_id == &id("route-a") && plan_id == &id("plan-exact")
+        ));
+
+        let second = dispatch_observation(
+            "task-b",
+            "plan-exact",
+            DispatchReadiness::Ready,
+            DispatchAdmission::Admitted,
+            ResourceEvidence::Available,
+            RouteHealthEvidence::Unavailable {
+                failure_id: id("failure-1"),
+            },
+        );
+        let step3 = plan(
+            &step2.state,
+            &ObservationEnvelope {
+                sequence: 3,
+                logical_time: deadline,
+                observation: Observation::Dispatch(Box::new(second.clone())),
+            },
+            PlannerRuleset::Corrected,
+        );
+        assert!(step3.effects.is_empty());
+        assert!(
+            step3
+                .state
+                .tasks
+                .values()
+                .all(|task| forward_count(task) == 1)
+        );
+        assert_eq!(step3.state.routes.len(), 1);
+
+        let ack = plan(
+            &step3.state,
+            &ObservationEnvelope {
+                sequence: 4,
+                logical_time: deadline + 1,
+                observation: Observation::EffectAcknowledged {
+                    effect_id: probe.effect_id.clone(),
+                    outcome: AckOutcome::Succeeded,
+                },
+            },
+            PlannerRuleset::Corrected,
+        );
+        let lease = ack.state.routes[&id("route-a")]
+            .probe_lease
+            .as_ref()
+            .unwrap();
+        assert!(lease.spawned);
+        assert_eq!(lease.expires_at, None);
+
+        let restarted =
+            serde_json::from_slice::<PlannerState>(&serde_json::to_vec(&ack.state).unwrap())
+                .unwrap();
+        let after_restart = plan(
+            &restarted,
+            &ObservationEnvelope {
+                sequence: 5,
+                logical_time: deadline + 10_000,
+                observation: Observation::Dispatch(Box::new(second)),
+            },
+            PlannerRuleset::Corrected,
+        );
+        assert!(after_restart.effects.is_empty());
+        assert!(
+            after_restart.state.routes[&id("route-a")]
+                .probe_lease
+                .as_ref()
+                .unwrap()
+                .spawned
+        );
+    }
+
+    #[test]
+    fn healthy_route_rejects_pending_probe_and_changed_progress_rejects_old_spawn() {
+        let outage = dispatch_observation(
+            "task-a",
+            "plan-exact",
+            DispatchReadiness::Ready,
+            DispatchAdmission::Admitted,
+            ResourceEvidence::Available,
+            RouteHealthEvidence::Unavailable {
+                failure_id: id("failure-1"),
+            },
+        );
+        let first = plan(
+            &PlannerState::new(id("graph-a")),
+            &ObservationEnvelope {
+                sequence: 1,
+                logical_time: 100,
+                observation: Observation::Dispatch(Box::new(outage.clone())),
+            },
+            PlannerRuleset::Corrected,
+        );
+        let deadline = first.state.routes[&id("route-a")].next_probe_at;
+        let probe_step = plan(
+            &first.state,
+            &ObservationEnvelope {
+                sequence: 2,
+                logical_time: deadline,
+                observation: Observation::Dispatch(Box::new(outage)),
+            },
+            PlannerRuleset::Corrected,
+        );
+        let probe = probe_step.effects[0].clone();
+
+        let mut healthy = dispatch_observation(
+            "task-a",
+            "plan-exact",
+            DispatchReadiness::Ready,
+            DispatchAdmission::Admitted,
+            ResourceEvidence::Available,
+            RouteHealthEvidence::Healthy,
+        );
+        let recovered = plan(
+            &probe_step.state,
+            &ObservationEnvelope {
+                sequence: 3,
+                logical_time: deadline + 1,
+                observation: Observation::Dispatch(Box::new(healthy.clone())),
+            },
+            PlannerRuleset::Corrected,
+        );
+        assert_eq!(
+            recovered.state.effects[&probe.effect_id].status,
+            EffectStatus::Acknowledged(AckOutcome::RejectedStale)
+        );
+        let ready = plan(
+            &recovered.state,
+            &ObservationEnvelope {
+                sequence: 4,
+                logical_time: deadline + 100,
+                observation: Observation::Dispatch(Box::new(healthy.clone())),
+            },
+            PlannerRuleset::Corrected,
+        );
+        let first_spawn = ready.effects[0].clone();
+        assert_eq!(first_spawn.action, ActionKind::SpawnAttempt);
+
+        healthy.progress_id = id("new-authoritative-progress");
+        let changed = plan(
+            &ready.state,
+            &ObservationEnvelope {
+                sequence: 5,
+                logical_time: deadline + 101,
+                observation: Observation::Dispatch(Box::new(healthy)),
+            },
+            PlannerRuleset::Corrected,
+        );
+        assert_eq!(
+            changed.state.effects[&first_spawn.effect_id].status,
+            EffectStatus::Acknowledged(AckOutcome::RejectedStale)
+        );
+        assert_eq!(changed.effects.len(), 1);
+        assert_ne!(changed.effects[0].effect_id, first_spawn.effect_id);
+    }
+
+    #[test]
+    fn dispatch_retry_and_future_source_repair_deadlines_are_planner_owned() {
+        let observation = dispatch_observation(
+            "task-a",
+            "plan-exact",
+            DispatchReadiness::Ready,
+            DispatchAdmission::Admitted,
+            ResourceEvidence::Available,
+            RouteHealthEvidence::Healthy,
+        );
+        let issued = plan(
+            &PlannerState::new(id("graph-a")),
+            &ObservationEnvelope {
+                sequence: 1,
+                logical_time: 100,
+                observation: Observation::Dispatch(Box::new(observation)),
+            },
+            PlannerRuleset::Corrected,
+        );
+        let effect_id = issued.effects[0].effect_id.clone();
+        let retry = plan(
+            &issued.state,
+            &ObservationEnvelope {
+                sequence: 2,
+                logical_time: 101,
+                observation: Observation::EffectAcknowledged {
+                    effect_id: effect_id.clone(),
+                    outcome: AckOutcome::Retryable,
+                },
+            },
+            PlannerRuleset::Corrected,
+        );
+        assert!(retry.effects.is_empty());
+        let retry_deadline = retry.state.effect_retry_deadlines[&effect_id];
+        assert!(retry_deadline > 101);
+
+        let source_repair = TaskObservation {
+            key: key("repair", "attempt-a"),
+            progress_id: id("repair-progress"),
+            unfinished: true,
+            owner: OwnerEvidence::None,
+            runnable: None,
+            external_wait: Some(ExternalWait {
+                wait_id: id("source-repair"),
+                kind: WaitKind::SourceRepair,
+                deadline: Some(500),
+            }),
+            scheduled: None,
+            effect_binding: None,
+            incidents: BTreeSet::new(),
+            failed_prerequisite: None,
+        };
+        let with_repair = plan(
+            &retry.state,
+            &ObservationEnvelope {
+                sequence: 3,
+                logical_time: 102,
+                observation: Observation::Task(Box::new(source_repair)),
+            },
+            PlannerRuleset::Corrected,
+        );
+        let mut journal = EffectExecutionJournal::default();
+        sync_effect_journal(&with_repair.state, &mut journal).unwrap();
+        let projection = status_projection(&with_repair.state, &journal);
+        assert_eq!(
+            projection.earliest_deadline,
+            logical_datetime(retry_deadline).map(|value| value.to_rfc3339())
+        );
+    }
+
+    #[test]
+    fn zero_output_is_persisted_evidence_and_never_an_action() {
+        let state = PlannerState::new(id("graph-a"));
+        let step = plan(
+            &state,
+            &ObservationEnvelope {
+                sequence: 1,
+                logical_time: 100,
+                observation: Observation::ZeroOutput(Box::new(ZeroOutputObservation {
+                    task: key("task-a", "attempt-a"),
+                    owner_id: id("agent-a"),
+                    evidence_id: id("zero-output-evidence"),
+                    age_bucket: 5,
+                    route_id: Some(id("route-a")),
+                })),
+            },
+            PlannerRuleset::Corrected,
+        );
+        assert!(step.effects.is_empty());
+        assert_eq!(step.state.zero_output.len(), 1);
+    }
+
     #[test]
     fn monitor_persists_replay_before_returning_hold() {
         let temp = tempfile::tempdir().unwrap();
@@ -2486,6 +3598,7 @@ mod tests {
                 runnable: None,
                 external_wait: None,
                 scheduled: None,
+                effect_binding: None,
                 incidents: BTreeSet::new(),
                 failed_prerequisite: None,
             })),

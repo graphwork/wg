@@ -40,12 +40,10 @@ PY
 }
 trap cleanup EXIT
 
-# Bootstrap the legacy read model from the real graph, then stop before
-# replacing its scheduling fields with a deterministic pre-cutover fixture.
-run_wg --dir "$G" service start --max-agents 0 --no-chat-agent --no-supervise --interval 60 >/dev/null
-run_wg --dir "$G" service stop >/dev/null
+# Step 2 no longer creates or refreshes the retired convergence scheduler.
+# Seed a real pre-cutover schema fixture before PlannerStore's one-time import.
 legacy="$G/service/convergence-state.json"
-[[ -f "$legacy" ]] || loud_fail "legacy convergence state was not created"
+cp "$HERE/../../fixtures/planner_runtime/convergence-state-v1.json" "$legacy"
 python3 - "$legacy" <<'PY'
 import json,sys
 p=sys.argv[1]
@@ -77,7 +75,7 @@ wait_planner_status "$status1"
 python3 - "$status1" "$G" <<'PY' || loud_fail "planner status/import assertion failed"
 import json,sys,os
 s=json.load(open(sys.argv[1]))['planner_runtime']
-assert s['schema_version']==4, s
+assert s['schema_version']==5, s
 assert s['last_sequence'] is None and s['next_sequence']==1, s
 assert s['effects']=={}, s
 legacy=s['legacy_convergence']
@@ -89,7 +87,9 @@ assert g['backoff']['jitter_seed']=='b3:legacy-jitter', g
 route=legacy['routes']['pi|openrouter|b3:endpoint']
 assert route['epoch']==11 and route['consecutive_outages']==4, route
 assert route['next_probe_at']=='2031-02-03T04:07:06.222333444+00:00', route
-assert s['earliest_deadline']=='2031-02-03T04:05:06.123456789+00:00', s
+# Imported AwaitDispatch timing is migration evidence only after step 2;
+# planner-normalized dispatch observations own active deadlines.
+assert s['earliest_deadline'] is None, s
 for name in ('decision-trace-v1.json','planner-state-v1.json','planner-effects-v1.json'):
     assert os.path.isfile(os.path.join(sys.argv[2],'service',name)), name
 PY
