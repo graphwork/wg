@@ -70,8 +70,11 @@ jobs:
 
       - name: cargo test (unit tests + worksgood target)
         run: |
-          cargo test --lib
-          cargo test --bin worksgood
+          # A small set of legacy config/profile tests temporarily mutate
+          # process-global HOME/XDG variables; serialize the unit harness so
+          # clean-room CI is deterministic rather than cross-test order based.
+          cargo test --lib -- --test-threads=1
+          cargo test --bin worksgood -- --test-threads=1
 
       - name: cargo test (doc tests)
         run: cargo test --doc
