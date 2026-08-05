@@ -113,6 +113,8 @@ jobs:
           --test lifecycle_protocol_conformance
           --test simple_land_conformance
           --test simple_land_lean_oracle
+          --test completion_manifest_resolver
+          --test completion_review_valve
 
   integration:
     name: Integration Tests (stable)
