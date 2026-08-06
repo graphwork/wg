@@ -2148,6 +2148,26 @@ mod tests {
         assert_eq!(task.status, Status::InProgress);
         assert!(task.lifecycle.pi_kick_active_actions.contains("kick-a"));
 
+        // Fault-inject an owner/daemon crash with the effect lease open. The
+        // durable graph projection must reload the same one lease and still
+        // refuse terminalization; it cannot mint a replacement owner/action.
+        let encoded = serde_json::to_vec(&task).unwrap();
+        let mut restarted: Task = serde_json::from_slice(&encoded).unwrap();
+        let mut replayed_terminal = request(
+            TransitionKind::AttemptFailed { class: None },
+            ActorKind::Worker,
+            "fail-after-effect-crash",
+        );
+        replayed_terminal.expected = FenceExpectation::current(&restarted);
+        assert!(matches!(
+            apply(&mut restarted, replayed_terminal),
+            Err(ref code) if code == "effect_in_flight"
+        ));
+        assert_eq!(restarted.lifecycle.pi_kick_effect_leases.len(), 1);
+        assert_eq!(restarted.lifecycle.pi_kick_active_actions.len(), 1);
+        assert_eq!(restarted.lifecycle.attempt_sequence, 1);
+        task = restarted;
+
         // Model the separately receipt-tested exact effect close, then commit
         // the same first-terminal transition. It must atomically revoke the
         // action before exposing the accepted failure receipt.

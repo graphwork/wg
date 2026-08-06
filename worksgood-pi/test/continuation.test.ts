@@ -203,6 +203,35 @@ describe("authoritative threshold-compaction continuation", () => {
     expect(h.backend.compactionKickAck).toHaveBeenCalledTimes(1);
   });
 
+  it("does not duplicate a native send after process loss in the send-before-ack window", async () => {
+    const beforeCrash = harness();
+    await beforeCrash.emit("agent_start");
+    await beforeCrash.emit("agent_end");
+    await beforeCrash.emit("session_compact", compaction());
+    expect(beforeCrash.sent).toHaveLength(1);
+    expect(beforeCrash.backend.compactionKickAck).not.toHaveBeenCalled();
+
+    // A replacement extension instance has no in-memory deliveredActions.
+    // The durable broker permit is therefore the only safe replay authority:
+    // its non-fresh response must prevent a second native send.
+    const afterCrash = harness();
+    afterCrash.backend.compactionKickPermit.mockImplementationOnce(async (actionId: string) => ({
+      actionId,
+      state: "delivery_permitted",
+      freshDeliveryGrant: false,
+      prompt: null,
+      promptVersion: "WG_PI_COMPACTION_KICK_V1",
+      promptDigest: "b3:prompt",
+    }));
+    await afterCrash.emit("agent_start");
+    await afterCrash.emit("agent_end");
+    await afterCrash.emit("session_compact", compaction());
+    expect(afterCrash.backend.compactionKickAuthorize).toHaveBeenCalledTimes(1);
+    expect(afterCrash.backend.compactionKickPermit).toHaveBeenCalledTimes(1);
+    expect(afterCrash.sent).toHaveLength(0);
+    expect(beforeCrash.sent.length + afterCrash.sent.length).toBe(1);
+  });
+
   it("permits distinct descendant compactions but deduplicates each occurrence", async () => {
     const h = harness();
     await h.emit("agent_start");

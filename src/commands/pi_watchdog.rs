@@ -524,10 +524,21 @@ pub(crate) struct CompactionKickAuthorizeArgs {
     pub tool_clear: bool,
 }
 
-fn compaction_kick_enabled() -> bool {
-    std::env::var("WG_PI_COMPACTION_KICK")
-        .map(|value| value.trim() != "0")
-        .unwrap_or(true)
+fn ensure_compaction_kick_supported() -> Result<()> {
+    #[cfg(not(unix))]
+    anyhow::bail!(
+        "compaction_kick.unsupported_platform: cross-process transaction locking is unavailable"
+    );
+    #[cfg(unix)]
+    {
+        if std::env::var("WG_PI_COMPACTION_KICK")
+            .map(|value| value.trim() == "0")
+            .unwrap_or(false)
+        {
+            anyhow::bail!("compaction_kick.feature_disabled");
+        }
+        Ok(())
+    }
 }
 
 fn bounded_identity(value: &str, label: &str) -> Result<()> {
@@ -617,9 +628,7 @@ pub(crate) fn compaction_kick_authorize(
     binding: &worksgood::worker_control::AttemptCapabilityBinding,
     args: CompactionKickAuthorizeArgs,
 ) -> Result<serde_json::Value> {
-    if !compaction_kick_enabled() {
-        anyhow::bail!("compaction_kick.feature_disabled");
-    }
+    ensure_compaction_kick_supported()?;
     for (value, label) in [
         (&args.compaction_entry_id, "entry_id"),
         (&args.compaction_parent_id, "parent_id"),
@@ -796,9 +805,7 @@ pub(crate) fn compaction_kick_permit(
     action_id: &str,
     allow_fresh: bool,
 ) -> Result<serde_json::Value> {
-    if !compaction_kick_enabled() {
-        anyhow::bail!("compaction_kick.feature_disabled");
-    }
+    ensure_compaction_kick_supported()?;
     let mut watchdog = checked_open(dir, task_id)?;
     reconcile_native_capture_to_current_complete_line(&mut watchdog)?;
     let record = watchdog
@@ -939,6 +946,7 @@ pub(crate) fn compaction_kick_ack(
     prompt_version: &str,
     prompt_digest: &str,
 ) -> Result<serde_json::Value> {
+    ensure_compaction_kick_supported()?;
     let mut watchdog = checked_open(dir, task_id)?;
     let record = watchdog
         .compaction_kick(action_id)
@@ -1002,6 +1010,7 @@ pub(crate) fn compaction_kick_terminal_watch(
     action_id: &str,
     wait_ms: u64,
 ) -> Result<serde_json::Value> {
+    ensure_compaction_kick_supported()?;
     bounded_identity(action_id, "action_id")?;
     if wait_ms > 30_000 {
         anyhow::bail!("compaction_kick.terminal_watch_too_long");
@@ -1068,6 +1077,7 @@ pub(crate) fn compaction_kick_cancel(
     action_id: &str,
     reason: &str,
 ) -> Result<serde_json::Value> {
+    ensure_compaction_kick_supported()?;
     let mut watchdog = checked_open(dir, task_id)?;
     let record = watchdog
         .suppress_compaction_kick(action_id, reason, Utc::now().timestamp())
@@ -1080,6 +1090,7 @@ pub(crate) fn compaction_kick_settle(
     task_id: &str,
     action_id: &str,
 ) -> Result<serde_json::Value> {
+    ensure_compaction_kick_supported()?;
     let mut watchdog = checked_open(dir, task_id)?;
     let kick_state = watchdog
         .compaction_kick(action_id)
@@ -1135,6 +1146,7 @@ pub(crate) fn compaction_kick_abort_ack(
     task_id: &str,
     action_id: &str,
 ) -> Result<serde_json::Value> {
+    ensure_compaction_kick_supported()?;
     let mut watchdog = checked_open(dir, task_id)?;
     let graph_path = dir.join("graph.jsonl");
     let graph = load_graph(&graph_path)?;
@@ -1199,6 +1211,7 @@ pub(crate) fn compaction_kick_effect(
     tool_call_id: &str,
     begin: bool,
 ) -> Result<serde_json::Value> {
+    ensure_compaction_kick_supported()?;
     bounded_identity(action_id, "action_id")?;
     bounded_identity(tool_call_id, "tool_call_id")?;
     let watchdog = checked_open(dir, task_id)?;
