@@ -196,6 +196,7 @@ pub(crate) fn checked_open(dir: &Path, task_id: &str) -> Result<LockedWatchdog> 
         .reconcile_pending_same_process_prompt(Utc::now().timestamp())
         .map_err(anyhow::Error::new)?;
     reconcile_compaction_permit_outbox(dir, task_id, &mut watchdog)?;
+    reconcile_compaction_action_outbox(dir, task_id, &mut watchdog)?;
     sync_lifecycle_continuation_authority(dir, task_id, &watchdog)?;
     Ok(LockedWatchdog {
         watchdog,
@@ -253,6 +254,40 @@ fn reconcile_compaction_permit_outbox(
             Utc::now().timestamp(),
         )
         .map_err(anyhow::Error::new)?;
+    Ok(())
+}
+
+/// Reconcile lifecycle-first compaction terminal bookkeeping into the
+/// watchdog. Settlement deliberately commits the lifecycle removal before the
+/// diagnostic projection; a crash between those writes must be repaired on
+/// reopen rather than reported as a successful but split settlement.
+fn reconcile_compaction_action_outbox(
+    dir: &Path,
+    task_id: &str,
+    watchdog: &mut PiWatchdog,
+) -> Result<()> {
+    let graph = load_graph(dir.join("graph.jsonl"))?;
+    let task = graph.get_task_or_err(task_id)?;
+    let settled = watchdog
+        .state()
+        .compaction_kicks
+        .iter()
+        .filter(|record| {
+            matches!(
+                record.state,
+                worksgood::pi_watchdog::PiCompactionKickState::Acknowledged
+                    | worksgood::pi_watchdog::PiCompactionKickState::Running
+            ) && task.lifecycle.audit.iter().any(|event| {
+                event.idempotency_key == format!("pi-kick-settle:{}", record.action_id)
+            })
+        })
+        .map(|record| record.action_id.clone())
+        .collect::<Vec<_>>();
+    for action_id in settled {
+        watchdog
+            .settle_compaction_kick(&action_id, Utc::now().timestamp())
+            .map_err(anyhow::Error::new)?;
+    }
     Ok(())
 }
 
@@ -482,6 +517,33 @@ fn bounded_identity(value: &str, label: &str) -> Result<()> {
     Ok(())
 }
 
+fn lifecycle_unresolved_for_watchdog(task: &worksgood::graph::Task, watchdog: &PiWatchdog) -> bool {
+    let source = &watchdog.state().source;
+    task.status == worksgood::graph::Status::InProgress
+        && task
+            .lifecycle
+            .current_attempt
+            .as_ref()
+            .is_some_and(|attempt| {
+                attempt.id == source.attempt_id
+                    && attempt.generation == source.generation
+                    && attempt.fence == source.attempt_fence
+                    && attempt.disposition.is_none()
+            })
+        && task.lifecycle.pi_terminal_reservation.is_none()
+        && task.lifecycle.pi_kick_effect_leases.is_empty()
+        && task
+            .lifecycle
+            .pi_continuation
+            .as_ref()
+            .is_some_and(|authorization| {
+                authorization.state == worksgood::lifecycle::PiAuthorizationState::Active
+                    && authorization.attempt_id == source.attempt_id
+                    && authorization.attempt_fence == source.attempt_fence
+                    && authorization.worktree_lease_epoch == source.worktree_lease_epoch
+            })
+}
+
 /// Pull the native observer's bounded projection through the latest complete
 /// capture line before an authority decision. The file follower is a separate
 /// process and can lag the awaited Pi callback; without this reconciliation a
@@ -575,27 +637,7 @@ pub(crate) fn compaction_kick_authorize(
     }
     let graph = load_graph(dir.join("graph.jsonl"))?;
     let task = graph.get_task_or_err(&binding.task_id)?;
-    let lifecycle_attempt = task.lifecycle.current_attempt.as_ref();
-    let lifecycle_unresolved = task.status == worksgood::graph::Status::InProgress
-        && lifecycle_attempt.is_some_and(|attempt| {
-            attempt.id == binding.attempt_id
-                && attempt.generation == binding.generation
-                && attempt.fence == binding.fence
-                && attempt.disposition.is_none()
-        })
-        && task.lifecycle.pi_terminal_reservation.is_none()
-        && task.lifecycle.pi_kick_effect_leases.is_empty()
-        && task
-            .lifecycle
-            .pi_continuation
-            .as_ref()
-            .is_some_and(|authorization| {
-                authorization.state == worksgood::lifecycle::PiAuthorizationState::Active
-                    && authorization.attempt_id == binding.attempt_id
-                    && authorization.attempt_fence == binding.fence
-                    && authorization.worktree_lease_epoch == binding.lease_epoch
-            });
-    if !lifecycle_unresolved {
+    if !lifecycle_unresolved_for_watchdog(task, &watchdog) {
         anyhow::bail!("compaction_kick.lifecycle_resolved_or_held");
     }
 
@@ -748,6 +790,18 @@ pub(crate) fn compaction_kick_permit(
             )
             .map_err(anyhow::Error::new)?;
         return Ok(compaction_permit_json(permit));
+    }
+    let graph = load_graph(dir.join("graph.jsonl"))?;
+    let task = graph.get_task_or_err(task_id)?;
+    if !lifecycle_unresolved_for_watchdog(task, &watchdog) {
+        watchdog
+            .suppress_compaction_kick(
+                action_id,
+                "terminal_or_wait_before_permit",
+                Utc::now().timestamp(),
+            )
+            .map_err(anyhow::Error::new)?;
+        anyhow::bail!("compaction_kick.lifecycle_resolved_before_permit");
     }
     if !process_identity_matches_kernel(&watchdog.state().process) {
         anyhow::bail!("compaction_kick.process_exited");
@@ -931,31 +985,43 @@ pub(crate) fn compaction_kick_settle(
     action_id: &str,
 ) -> Result<serde_json::Value> {
     let mut watchdog = checked_open(dir, task_id)?;
-    let record = watchdog
-        .settle_compaction_kick(action_id, Utc::now().timestamp())
-        .map_err(anyhow::Error::new)?;
+    watchdog
+        .compaction_kick(action_id)
+        .context("compaction_kick.action_missing")?;
+    // Lifecycle is the effect/terminal authority, so remove the active action
+    // there first. Only after that exact CAS succeeds may the watchdog report a
+    // settled diagnostic state. A crash between the two durable writes is
+    // repaired by reconcile_compaction_action_outbox on the next checked open.
     let graph_path = dir.join("graph.jsonl");
-    let _ = modify_graph(&graph_path, |graph| {
+    let mut rejection = None;
+    modify_graph(&graph_path, |graph| {
         let Some(task) = graph.get_task_mut(task_id) else {
             return false;
         };
-        apply_transition(
-            task,
-            TransitionRequest::new(
-                TransitionKind::PiCompactionKickSettled {
-                    action_id: action_id.to_string(),
-                },
-                LifecycleActor {
-                    kind: ActorKind::ProcessObserver,
-                    id: "pi-compaction-kick".into(),
-                },
-                "compaction_kick_settled",
-                format!("pi-kick-settle:{action_id}"),
-            )
-            .expecting(FenceExpectation::current(task)),
+        let request = TransitionRequest::new(
+            TransitionKind::PiCompactionKickSettled {
+                action_id: action_id.to_string(),
+            },
+            LifecycleActor {
+                kind: ActorKind::ProcessObserver,
+                id: "pi-compaction-kick".into(),
+            },
+            "compaction_kick_settled",
+            format!("pi-kick-settle:{action_id}"),
         )
-        .is_ok()
-    });
+        .expecting(FenceExpectation::current(task));
+        if let Err(error) = apply_transition(task, request) {
+            rejection = Some(error);
+            return false;
+        }
+        true
+    })?;
+    if let Some(error) = rejection {
+        return Err(anyhow::Error::new(error));
+    }
+    let record = watchdog
+        .settle_compaction_kick(action_id, Utc::now().timestamp())
+        .map_err(anyhow::Error::new)?;
     Ok(serde_json::json!({"actionId": record.action_id, "state": record.state}))
 }
 

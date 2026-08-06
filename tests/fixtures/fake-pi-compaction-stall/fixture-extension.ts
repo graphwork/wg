@@ -13,6 +13,8 @@ import { Type } from "typebox";
 const PROVIDER = "fake-pi-compaction-stall";
 const MODEL = "fake-long-agentic-turn";
 const RECOVERY_MARKER = "FIXTURE_RECOVERY_TURN_EXECUTED";
+const SUMMARY_VISIBLE_MARKER = "FIXTURE_COMPACTED_SUMMARY_VISIBLE";
+const CONTRACT_VISIBLE_MARKER = "FIXTURE_DURABLE_TASK_CONTRACT_VISIBLE";
 
 function usage(totalTokens: number) {
 	return {
@@ -53,14 +55,19 @@ function textResponse(model: Model<Api>, text: string, totalTokens: number): Ass
 	return stream;
 }
 
-function toolResponse(model: Model<Api>): AssistantMessageEventStream {
+function toolResponse(
+	model: Model<Api>,
+	id = "fixture-progress-call",
+	name = "fixture_progress",
+	args: Record<string, unknown> = { step: "prepare-recovery-input" },
+): AssistantMessageEventStream {
 	const stream = createAssistantMessageEventStream();
 	const output = newMessage(model, 200);
 	const toolCall = {
 		type: "toolCall" as const,
-		id: "fixture-progress-call",
-		name: "fixture_progress",
-		arguments: { step: "prepare-recovery-input" },
+		id,
+		name,
+		arguments: args,
 	};
 	output.content.push(toolCall);
 	output.stopReason = "toolUse";
@@ -76,6 +83,35 @@ function toolResponse(model: Model<Api>): AssistantMessageEventStream {
 	stream.push({ type: "done", reason: "toolUse", message: output });
 	stream.end();
 	return stream;
+}
+
+function recoveryResponse(
+	model: Model<Api>,
+	context: Context,
+	marker: string,
+	totalTokens: number,
+): AssistantMessageEventStream {
+	const contextText = JSON.stringify(context.messages);
+	const taskId = process.env.WG_TASK_ID ?? "";
+	const summaryVisible = contextText.includes("UNFINISHED_WORK_STATE: true");
+	const contractVisible = Boolean(
+		taskId &&
+		contextText.includes(taskId) &&
+		contextText.includes("Validation") &&
+		contextText.includes("exactly"),
+	);
+	if (!summaryVisible || !contractVisible) {
+		return textResponse(
+			model,
+			`FIXTURE_RECOVERY_CONTEXT_MISSING summary=${summaryVisible} contract=${contractVisible}`,
+			200,
+		);
+	}
+	return textResponse(
+		model,
+		`${marker} ${SUMMARY_VISIBLE_MARKER} ${CONTRACT_VISIBLE_MARKER}`,
+		totalTokens,
+	);
 }
 
 function errorResponse(model: Model<Api>, errorMessage: string, totalTokens: number): AssistantMessageEventStream {
@@ -123,7 +159,7 @@ export default function fixture(pi: ExtensionAPI) {
 				maxTokens: 512,
 			},
 		],
-		streamSimple(model: Model<Api>, _context: Context, _options?: SimpleStreamOptions) {
+		streamSimple(model: Model<Api>, context: Context, _options?: SimpleStreamOptions) {
 			providerCalls += 1;
 
 			if (scenario === "threshold" || scenario === "threshold-twice") {
@@ -135,13 +171,29 @@ export default function fixture(pi: ExtensionAPI) {
 						1700,
 					);
 				}
-				if (scenario === "threshold-twice" && providerCalls === 3) {
-					return textResponse(model, "FIXTURE_RECOVERY_TURN_1_EXECUTED", 1700);
+				if (providerCalls === 3) {
+					return toolResponse(
+						model,
+						"fixture-contract-call-1",
+						"wg_show",
+						{ id: process.env.WG_TASK_ID },
+					);
+				}
+				if (scenario === "threshold-twice" && providerCalls === 4) {
+					return recoveryResponse(model, context, "FIXTURE_RECOVERY_TURN_1_EXECUTED", 1700);
+				}
+				if (scenario === "threshold-twice" && providerCalls === 5) {
+					return toolResponse(
+						model,
+						"fixture-contract-call-2",
+						"wg_show",
+						{ id: process.env.WG_TASK_ID },
+					);
 				}
 				if (scenario === "threshold-twice") {
-					return textResponse(model, "FIXTURE_RECOVERY_TURN_2_EXECUTED", 200);
+					return recoveryResponse(model, context, "FIXTURE_RECOVERY_TURN_2_EXECUTED", 200);
 				}
-				return textResponse(model, RECOVERY_MARKER, 200);
+				return recoveryResponse(model, context, RECOVERY_MARKER, 200);
 			}
 
 			if (scenario === "overflow") {

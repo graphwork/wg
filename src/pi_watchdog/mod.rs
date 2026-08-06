@@ -2002,11 +2002,32 @@ impl PiWatchdog {
                     ExitStatus::Signal(_) => "needs_finalization_exit",
                     ExitStatus::Unknown => "reap_unproven",
                 };
-                actions = self.needs_finalization(reason, now, reaped)?;
+                if self.state.compaction_kicks.is_empty() {
+                    actions = self.needs_finalization(reason, now, reaped)?;
+                } else {
+                    // Once the authoritative compaction protocol has an
+                    // occurrence, process exit converges through the existing
+                    // lifecycle/new-attempt path. A dead Pi process must never
+                    // reserve the legacy same-session prompt controller, which
+                    // would double-charge or redeliver outside the native API.
+                    self.state.classification = Classification::NeedsFinalization;
+                    self.state.reason_code = Some(reason.into());
+                    if !reaped {
+                        self.hold("reap_unproven");
+                    }
+                }
             }
             Observation::PipeEof { reaped } => {
                 self.state.phase = Phase::Exited;
-                actions = self.needs_finalization("pipe_eof_no_terminal", now, reaped)?;
+                if self.state.compaction_kicks.is_empty() {
+                    actions = self.needs_finalization("pipe_eof_no_terminal", now, reaped)?;
+                } else {
+                    self.state.classification = Classification::NeedsFinalization;
+                    self.state.reason_code = Some("pipe_eof_no_terminal".into());
+                    if !reaped {
+                        self.hold("reap_unproven");
+                    }
+                }
             }
             Observation::ToolIntent { contract } => {
                 self.state.phase = Phase::Tool;

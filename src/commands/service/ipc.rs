@@ -1142,8 +1142,16 @@ fn handle_worker_request(
         &request.operation,
     ) {
         Ok(Some(worksgood::worker_control::BeginRequest::Completed(response))) => {
-            if let Ok(Some(current)) = refresh_replayed_compaction_ack(dir, &request) {
-                return current;
+            match refresh_replayed_compaction_ack(dir, &request) {
+                Ok(Some(current)) => return current,
+                Ok(None) => {}
+                Err(error) => {
+                    let reason = format!(
+                        "worker_control.compaction_ack_replay_held: current terminal-race refresh failed: {error}"
+                    );
+                    audit_worker_request(dir, &request, None, "held", &reason, logger);
+                    return IpcResponse::error(&reason);
+                }
             }
             let task_id = worksgood::worker_control::lookup_capability(dir, &request.capability)
                 .ok()
@@ -1221,8 +1229,23 @@ fn handle_worker_request(
     };
     match begin {
         worksgood::worker_control::BeginRequest::Completed(response) => {
-            if let Ok(Some(current)) = refresh_replayed_compaction_ack(dir, &request) {
-                return current;
+            match refresh_replayed_compaction_ack(dir, &request) {
+                Ok(Some(current)) => return current,
+                Ok(None) => {}
+                Err(error) => {
+                    let reason = format!(
+                        "worker_control.compaction_ack_replay_held: current terminal-race refresh failed: {error}"
+                    );
+                    audit_worker_request(
+                        dir,
+                        &request,
+                        Some(&binding.task_id),
+                        "held",
+                        &reason,
+                        logger,
+                    );
+                    return IpcResponse::error(&reason);
+                }
             }
             audit_worker_request(
                 dir,
@@ -3389,6 +3412,68 @@ mod tests {
         assert_eq!(first.data, second.data);
         let audit = fs::read_to_string(worksgood::worker_control::audit_path(temp.path())).unwrap();
         assert!(audit.contains("\"outcome\":\"replayed\""));
+    }
+
+    #[test]
+    fn completed_compaction_ack_replay_fails_closed_when_current_truth_cannot_refresh() {
+        let temp = TempDir::new().unwrap();
+        write_owned_task(temp.path(), 1, 2);
+        let (token, _) = worksgood::worker_control::mint_attempt_capability(
+            temp.path(),
+            "task-a",
+            1,
+            "attempt-1-1",
+            2,
+            2,
+            "agent-7",
+        )
+        .unwrap();
+        let request = WorkerRequestEnvelope {
+            protocol: WORKER_CONTROL_PROTOCOL.to_string(),
+            request_id: "completed-ack".to_string(),
+            capability: token,
+            operation: WorkerOperation::PiCompactionKickAck {
+                action_id: "action-a".to_string(),
+                prompt_version: "WG_PI_COMPACTION_KICK_V1".to_string(),
+                prompt_digest: "b3:prompt".to_string(),
+            },
+        };
+        assert!(matches!(
+            worksgood::worker_control::begin_request(
+                temp.path(),
+                &request.request_id,
+                &request.capability,
+                &request.operation,
+            )
+            .unwrap(),
+            worksgood::worker_control::BeginRequest::Fresh
+        ));
+        worksgood::worker_control::complete_request(
+            temp.path(),
+            &request.request_id,
+            worksgood::worker_control::StoredWorkerResponse {
+                ok: true,
+                error: None,
+                data: Some(serde_json::json!({
+                    "actionId": "action-a",
+                    "state": "acknowledged",
+                    "abort": false
+                })),
+            },
+        )
+        .unwrap();
+
+        // No watchdog exists, so current terminal-race truth cannot be read.
+        // The completed abort=false response must not escape as stale truth.
+        let logger = DaemonLogger::open(temp.path()).unwrap();
+        let response = handle_worker_request(temp.path(), request, &logger);
+        assert!(!response.ok);
+        assert!(
+            response.error.as_deref().is_some_and(|error| {
+                error.contains("worker_control.compaction_ack_replay_held")
+            })
+        );
+        assert!(response.data.is_none());
     }
 
     #[test]

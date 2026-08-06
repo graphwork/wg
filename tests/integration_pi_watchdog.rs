@@ -221,6 +221,222 @@ fn compaction_kick_must_not_trigger_for_manual_overflow_queue_idle_tool_or_misma
 }
 
 #[test]
+fn accepted_done_fail_and_wait_receipts_suppress_compaction_authorization() {
+    for (index, disposition) in [
+        TerminalDisposition::SuccessIntent,
+        TerminalDisposition::Failure,
+        TerminalDisposition::Park,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut w = fixture(0);
+        let receipt = TerminalIntentReceipt::new(&w, 1, format!("terminal-{index}"), disposition);
+        w.observe(Observation::TerminalIntent(receipt), 1).unwrap();
+        let error = w
+            .authorize_compaction_kick(
+                verified_compaction(&w, &format!("terminal-entry-{index}"), "assistant"),
+                2,
+            )
+            .unwrap_err();
+        assert_eq!(error.code, "attempt_already_terminal");
+        assert!(w.state().compaction_kicks.is_empty());
+        assert_eq!(w.state().continuation_epoch, 0);
+    }
+}
+
+#[test]
+fn shared_epoch_and_elapsed_exhaustion_hold_without_a_kick_record() {
+    let mut epochs = fixture(0);
+    let epoch_limit = epochs.policy().max_continuation_epochs;
+    epochs.state_mut_for_test().epochs_used = epoch_limit;
+    let error = epochs
+        .authorize_compaction_kick(verified_compaction(&epochs, "epoch-limit", "assistant"), 1)
+        .unwrap_err();
+    assert_eq!(error.code, "continuation_budget_exhausted");
+    assert_eq!(
+        epochs.state().classification,
+        Classification::StalledOperatorRequired
+    );
+    assert!(epochs.state().compaction_kicks.is_empty());
+
+    let mut elapsed = fixture(0);
+    let elapsed_limit = elapsed.policy().max_continuation_elapsed_secs;
+    elapsed.state_mut_for_test().elapsed_reserved_secs = elapsed_limit;
+    let error = elapsed
+        .authorize_compaction_kick(
+            verified_compaction(&elapsed, "elapsed-limit", "assistant"),
+            1,
+        )
+        .unwrap_err();
+    assert_eq!(error.code, "continuation_budget_exhausted");
+    assert_eq!(
+        elapsed.state().classification,
+        Classification::StalledOperatorRequired
+    );
+    assert!(elapsed.state().compaction_kicks.is_empty());
+}
+
+#[test]
+fn compaction_crash_boundaries_reopen_without_duplicate_delivery_or_charge() {
+    let mut w = fixture(0);
+    let occurrence = verified_compaction(&w, "crash-entry", "assistant");
+
+    // Crash/restart after durable authorization: replay finds the same action,
+    // and the shared continuation budget is still untouched.
+    let authorized = w.authorize_compaction_kick(occurrence.clone(), 1).unwrap();
+    let path = w.state_path().to_path_buf();
+    drop(w);
+    let mut w = PiWatchdog::open(&path).unwrap();
+    let replayed = w.authorize_compaction_kick(occurrence, 2).unwrap();
+    assert_eq!(replayed.action_id, authorized.action_id);
+    assert_eq!(w.state().continuation_epoch, 0);
+
+    // Crash/restart after permit persistence/reply: the one durable grant is
+    // never fresh again. This also models a crash after the native send but
+    // before message_start acknowledgement; restart must not resend.
+    let first = w
+        .permit_compaction_kick(&authorized.action_id, 1, true, 3)
+        .unwrap();
+    assert!(first.fresh_delivery_grant);
+    drop(w);
+    let mut w = PiWatchdog::open(&path).unwrap();
+    for now in [4, 5] {
+        let replay = w
+            .permit_compaction_kick(&authorized.action_id, 1, true, now)
+            .unwrap();
+        assert!(!replay.fresh_delivery_grant);
+        assert!(replay.prompt.is_none());
+    }
+    assert_eq!(w.state().continuation_epoch, 1);
+    assert_eq!(w.state().epochs_used, 1);
+
+    // Crash/restart during acknowledgement is idempotent and preserves the
+    // selected action without creating another delivery opportunity.
+    w.acknowledge_compaction_kick(&authorized.action_id, false, 6)
+        .unwrap();
+    drop(w);
+    let mut w = PiWatchdog::open(&path).unwrap();
+    let ack = w
+        .acknowledge_compaction_kick(&authorized.action_id, false, 7)
+        .unwrap();
+    assert_eq!(ack.state, PiCompactionKickState::Acknowledged);
+    assert_eq!(w.state().epochs_used, 1);
+
+    // Settlement and wrapper-exit recovery preserve the same one action and
+    // one charge. Neither boundary derives a replacement kick.
+    w.settle_compaction_kick(&authorized.action_id, 8).unwrap();
+    drop(w);
+    let mut w = PiWatchdog::open(&path).unwrap();
+    w.settle_compaction_kick(&authorized.action_id, 9).unwrap();
+    w.observe(
+        Observation::ProcessExited {
+            status: ExitStatus::Code(0),
+            reaped: true,
+        },
+        10,
+    )
+    .unwrap();
+    assert_eq!(w.state().compaction_kicks.len(), 1);
+    assert_eq!(
+        w.compaction_kick(&authorized.action_id).unwrap().state,
+        PiCompactionKickState::SettledAfterKick
+    );
+    assert_eq!(w.state().continuation_epoch, 1);
+    assert_eq!(w.state().epochs_used, 1);
+    assert!(
+        !w.permit_compaction_kick(&authorized.action_id, 1, true, 11)
+            .unwrap()
+            .fresh_delivery_grant
+    );
+}
+
+#[test]
+fn process_exit_marks_prepermit_cancelled_and_unacked_send_uncertain() {
+    let mut authorized = fixture(0);
+    let action = authorized
+        .authorize_compaction_kick(
+            verified_compaction(&authorized, "exit-authorized", "assistant"),
+            1,
+        )
+        .unwrap();
+    authorized
+        .observe(
+            Observation::ProcessExited {
+                status: ExitStatus::Signal(9),
+                reaped: true,
+            },
+            2,
+        )
+        .unwrap();
+    assert_eq!(
+        authorized.compaction_kick(&action.action_id).unwrap().state,
+        PiCompactionKickState::CancelledProcessExit
+    );
+
+    let mut permitted = fixture(0);
+    let action = permitted
+        .authorize_compaction_kick(
+            verified_compaction(&permitted, "exit-permitted", "assistant"),
+            1,
+        )
+        .unwrap();
+    permitted
+        .permit_compaction_kick(&action.action_id, 1, true, 2)
+        .unwrap();
+    permitted
+        .observe(
+            Observation::ProcessExited {
+                status: ExitStatus::Code(1),
+                reaped: true,
+            },
+            3,
+        )
+        .unwrap();
+    assert_eq!(
+        permitted.compaction_kick(&action.action_id).unwrap().state,
+        PiCompactionKickState::Uncertain
+    );
+    assert!(
+        !permitted
+            .permit_compaction_kick(&action.action_id, 1, true, 4)
+            .unwrap()
+            .fresh_delivery_grant
+    );
+}
+
+#[test]
+fn failed_and_aborted_compaction_events_are_diagnostic_only() {
+    for event in [
+        serde_json::json!({
+            "type":"compaction_end",
+            "reason":"threshold",
+            "aborted":false,
+            "willRetry":false,
+            "errorMessage":"secret provider failure"
+        }),
+        serde_json::json!({
+            "type":"compaction_end",
+            "reason":"threshold",
+            "aborted":true,
+            "willRetry":false,
+            "result":null
+        }),
+    ] {
+        let mut w = fixture(0);
+        assert!(w.ingest_native_value(&event, 1).unwrap().is_empty());
+        assert_eq!(w.state().native_activity.compaction_succeeded, Some(false));
+        assert!(w.state().compaction_kicks.is_empty());
+        assert_eq!(w.state().continuation_epoch, 0);
+        assert!(
+            !serde_json::to_string(w.state())
+                .unwrap()
+                .contains("secret provider failure")
+        );
+    }
+}
+
+#[test]
 fn native_live_projection_is_numeric_deduplicated_and_text_free() {
     let mut w = fixture(0);
     let reasoning_canary = "RAW_REASONING_CANARY_7f3b";

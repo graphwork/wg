@@ -221,7 +221,29 @@ describe("authoritative threshold-compaction continuation", () => {
     expect(h.sent).toHaveLength(0);
   });
 
-  it("suppresses queued, post-settled, active-tool, and non-worker cases", async () => {
+  it.each([
+    { aborted: true },
+    { errorMessage: "Auto-compaction failed: fixture" },
+  ])("suppresses explicit failed/aborted host outcome $aborted$errorMessage", async (outcome) => {
+    const h = harness();
+    await h.emit("agent_start");
+    await h.emit("agent_end");
+    await h.emit("session_compact", { ...compaction(), ...outcome });
+    expect(h.backend.compactionKickAuthorize).not.toHaveBeenCalled();
+    expect(h.sent).toHaveLength(0);
+  });
+
+  it("normal final-answer settlement without session_compact creates no action", async () => {
+    const h = harness();
+    await h.emit("agent_start");
+    await h.emit("agent_end");
+    await h.emit("agent_settled");
+    expect(h.backend.compactionKickAuthorize).not.toHaveBeenCalled();
+    expect(h.backend.compactionKickPermit).not.toHaveBeenCalled();
+    expect(h.sent).toHaveLength(0);
+  });
+
+  it("suppresses queued, post-settled, active-tool, interactive, and non-worker cases", async () => {
     for (const setup of [
       async (h: ReturnType<typeof harness>) => { h.setPending(true); await h.emit("agent_start"); await h.emit("agent_end"); },
       async (h: ReturnType<typeof harness>) => { h.setIdle(true); await h.emit("agent_start"); await h.emit("agent_end"); },
@@ -232,11 +254,68 @@ describe("authoritative threshold-compaction continuation", () => {
       await h.emit("session_compact", compaction());
       expect(h.sent).toHaveLength(0);
     }
-    const unmanaged = harness({ WG_WORKER_CAPABILITY: undefined });
-    await unmanaged.emit("agent_start");
-    await unmanaged.emit("agent_end");
-    await unmanaged.emit("session_compact", compaction());
-    expect(unmanaged.backend.compactionKickAuthorize).not.toHaveBeenCalled();
+    const settled = harness();
+    await settled.emit("agent_start");
+    await settled.emit("agent_end");
+    await settled.emit("agent_settled");
+    await settled.emit("session_compact", compaction());
+    expect(settled.backend.compactionKickAuthorize).not.toHaveBeenCalled();
+
+    const interactive = harness();
+    interactive.ctx.mode = "interactive";
+    await interactive.emit("agent_start");
+    await interactive.emit("agent_end");
+    await interactive.emit("session_compact", compaction());
+    expect(interactive.backend.compactionKickAuthorize).not.toHaveBeenCalled();
+
+    for (const overrides of [
+      { WG_WORKER_CAPABILITY: undefined },
+      { WG_PI_TASK_WORKER: undefined },
+      { WG_TASK_ID: undefined },
+    ]) {
+      const unmanaged = harness(overrides);
+      await unmanaged.emit("agent_start");
+      await unmanaged.emit("agent_end");
+      await unmanaged.emit("session_compact", compaction());
+      expect(unmanaged.backend.compactionKickAuthorize).not.toHaveBeenCalled();
+    }
+  });
+
+  it.each(["wg_done", "wg_fail", "wg_wait"])(
+    "suppresses accepted %s before authorize and before permit",
+    async (terminal) => {
+      const beforeAuthorize = harness();
+      beforeAuthorize.backend.compactionKickAuthorize.mockRejectedValueOnce(
+        new Error(`compaction_kick.lifecycle_resolved_or_held:${terminal}`),
+      );
+      await beforeAuthorize.emit("agent_start");
+      await beforeAuthorize.emit("agent_end");
+      await beforeAuthorize.emit("session_compact", compaction());
+      expect(beforeAuthorize.backend.compactionKickPermit).not.toHaveBeenCalled();
+      expect(beforeAuthorize.sent).toHaveLength(0);
+
+      const beforePermit = harness();
+      beforePermit.backend.compactionKickPermit.mockRejectedValueOnce(
+        new Error(`attempt_already_terminal:${terminal}`),
+      );
+      await beforePermit.emit("agent_start");
+      await beforePermit.emit("agent_end");
+      await beforePermit.emit("session_compact", compaction());
+      expect(beforePermit.backend.compactionKickAuthorize).toHaveBeenCalledTimes(1);
+      expect(beforePermit.sent).toHaveLength(0);
+    },
+  );
+
+  it("suppresses loudly when the shared continuation budget is exhausted", async () => {
+    const h = harness();
+    h.backend.compactionKickAuthorize.mockRejectedValueOnce(
+      new Error("continuation_budget_exhausted"),
+    );
+    await h.emit("agent_start");
+    await h.emit("agent_end");
+    await h.emit("session_compact", compaction());
+    expect(h.backend.compactionKickPermit).not.toHaveBeenCalled();
+    expect(h.sent).toHaveLength(0);
   });
 
   it("gates and closes every non-terminal recovery effect", async () => {
@@ -261,6 +340,21 @@ describe("authoritative threshold-compaction continuation", () => {
     expect(h.backend.compactionKickEffectEnd).toHaveBeenCalledWith(
       "action-entry-1", "tool-1",
     );
+  });
+
+  it("aborts fail-closed when acknowledgement truth cannot be refreshed", async () => {
+    const h = harness();
+    await h.emit("agent_start");
+    await h.emit("agent_end");
+    await h.emit("session_compact", compaction());
+    h.backend.compactionKickAck.mockRejectedValueOnce(
+      new Error("worker_control.compaction_ack_replay_held"),
+    );
+    await h.emit("message_start", {
+      message: { role: "custom", ...h.sent[0].message },
+    });
+    expect(h.ctx.abort).toHaveBeenCalledTimes(1);
+    expect(h.backend.compactionKickEffectBegin).not.toHaveBeenCalled();
   });
 
   it("aborts when terminal won after permit but before acknowledgement", async () => {

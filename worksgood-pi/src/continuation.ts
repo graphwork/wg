@@ -111,6 +111,7 @@ export function installCompactionContinuation(
   if (!enabled(env, backend)) return;
 
   let sawAgentEnd = false;
+  let sawAgentSettled = false;
   let agentStartedAfterEnd = false;
   const openTools = new Set<string>();
   const sendAttempted = new Set<string>();
@@ -120,9 +121,14 @@ export function installCompactionContinuation(
   let activeActionId: string | undefined;
 
   const locallyQuiescent = (ctx: ExtensionContext) =>
-    sawAgentEnd && !agentStartedAfterEnd && openTools.size === 0 && !ctx.isIdle();
+    sawAgentEnd &&
+    !sawAgentSettled &&
+    !agentStartedAfterEnd &&
+    openTools.size === 0 &&
+    !ctx.isIdle();
 
   pi.on("agent_start", () => {
+    sawAgentSettled = false;
     if (sawAgentEnd) agentStartedAfterEnd = true;
     else agentStartedAfterEnd = false;
   });
@@ -144,6 +150,19 @@ export function installCompactionContinuation(
     if (event.reason !== "threshold") return;
     if (event.willRetry) {
       boundedError("suppressed host retry", new Error("will_retry"));
+      return;
+    }
+    // Pi 0.83 emits session_compact only after compaction succeeded and its
+    // CompactionEntry was appended. Failed/aborted attempts emit only the
+    // public compaction_end event and therefore never reach this handler.
+    // Also reject explicit failure fields defensively so a malformed or newer
+    // host cannot turn such an event into a claimed successful occurrence.
+    const outcome = event as SessionCompactEvent & {
+      aborted?: boolean;
+      errorMessage?: string;
+    };
+    if (outcome.aborted === true || typeof outcome.errorMessage === "string") {
+      boundedError("suppressed host outcome", new Error("compaction_not_successful"));
       return;
     }
     if (ctx.mode !== "json") {
@@ -311,8 +330,10 @@ export function installCompactionContinuation(
           .catch((error) => boundedError("abort ack held", error));
       }
     } catch (error) {
-      // Ack-only replay is safe on the next matching event; send is never
-      // retried because no replay can return a fresh delivery grant.
+      // Never let provider/effect execution begin from a stale stored ack when
+      // the broker cannot refresh current terminal-race truth. Ack-only replay
+      // may recover on a matching persisted event; send is never retried.
+      ctx.abort();
       boundedError("ack held", error);
     }
   });
@@ -366,6 +387,7 @@ export function installCompactionContinuation(
   });
 
   pi.on("agent_settled", async () => {
+    sawAgentSettled = true;
     if (!activeActionId) return;
     const actionId = activeActionId;
     activeActionId = undefined;

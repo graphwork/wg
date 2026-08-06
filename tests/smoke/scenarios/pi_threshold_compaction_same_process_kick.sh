@@ -134,7 +134,11 @@ c=idx(lambda e:e.get('type')=='compaction_end' and e.get('reason')=='threshold' 
 a=idx(lambda e:e.get('type')=='agent_start',c)
 t=idx(lambda e:e.get('type')=='turn_start',a)
 custom=idx(lambda e:e.get('type')=='message_start' and e.get('message',{}).get('role')=='custom' and e.get('message',{}).get('customType')=='wg-pi-compaction-kick',t)
-marker=idx(lambda e:e.get('type')=='message_end' and 'FIXTURE_RECOVERY_TURN_EXECUTED' in text(e),custom)
+show_start=idx(lambda e:e.get('type')=='tool_execution_start' and e.get('toolName')=='wg_show',custom)
+show_end=idx(lambda e:e.get('type')=='tool_execution_end' and e.get('toolName')=='wg_show',show_start)
+show_receipt=json.dumps(events[show_end],sort_keys=True)
+assert 'pi-kick-smoke' in show_receipt and 'Validation' in show_receipt and 'exactly one same-process WG kick' in show_receipt,show_receipt
+marker=idx(lambda e:e.get('type')=='message_end' and 'FIXTURE_RECOVERY_TURN_EXECUTED' in text(e) and 'FIXTURE_COMPACTED_SUMMARY_VISIBLE' in text(e) and 'FIXTURE_DURABLE_TASK_CONTRACT_VISIBLE' in text(e),show_end)
 te=idx(lambda e:e.get('type')=='turn_end',marker)
 ae=idx(lambda e:e.get('type')=='agent_end',te)
 settled=idx(lambda e:e.get('type')=='agent_settled',ae)
@@ -159,6 +163,7 @@ assert state['route']['reasoning']=='high'
 assert state['domain_counters']=={'admission':0,'source_retry':0,'spawn_breaker':0,'provider_breaker':0,'evaluation_jobs':0,'accounting_attempts':0}
 assert sum(1 for e in events if e.get('type')=='message_start' and e.get('message',{}).get('customType')=='wg-pi-compaction-kick')==1
 assert sum(1 for e in events if e.get('type')=='message_end' and 'FIXTURE_RECOVERY_TURN_EXECUTED' in text(e))==1
+assert sum(1 for e in events if e.get('type')=='tool_execution_start' and e.get('toolName')=='wg_show')==1
 assert events[custom]['message']['details']['actionId']==kick['action_id']
 
 entries=[]
@@ -284,11 +289,15 @@ def text(e):
 def indices(pred): return [i for i,e in enumerate(events) if pred(e)]
 comp=indices(lambda e:e.get('type')=='compaction_end' and e.get('reason')=='threshold' and not e.get('aborted') and not e.get('willRetry') and e.get('result'))
 custom=indices(lambda e:e.get('type')=='message_start' and e.get('message',{}).get('role')=='custom' and e.get('message',{}).get('customType')=='wg-pi-compaction-kick')
-mark1=indices(lambda e:e.get('type')=='message_end' and 'FIXTURE_RECOVERY_TURN_1_EXECUTED' in text(e))
-mark2=indices(lambda e:e.get('type')=='message_end' and 'FIXTURE_RECOVERY_TURN_2_EXECUTED' in text(e))
+mark1=indices(lambda e:e.get('type')=='message_end' and 'FIXTURE_RECOVERY_TURN_1_EXECUTED' in text(e) and 'FIXTURE_COMPACTED_SUMMARY_VISIBLE' in text(e) and 'FIXTURE_DURABLE_TASK_CONTRACT_VISIBLE' in text(e))
+mark2=indices(lambda e:e.get('type')=='message_end' and 'FIXTURE_RECOVERY_TURN_2_EXECUTED' in text(e) and 'FIXTURE_COMPACTED_SUMMARY_VISIBLE' in text(e) and 'FIXTURE_DURABLE_TASK_CONTRACT_VISIBLE' in text(e))
+shows=indices(lambda e:e.get('type')=='tool_execution_end' and e.get('toolName')=='wg_show')
 settled=indices(lambda e:e.get('type')=='agent_settled')
-assert len(comp)==2 and len(custom)==2 and len(mark1)==1 and len(mark2)==1,(comp,custom,mark1,mark2)
-assert comp[0] < custom[0] < mark1[0] < comp[1] < custom[1] < mark2[0] < settled[-1]
+assert len(comp)==2 and len(custom)==2 and len(mark1)==1 and len(mark2)==1 and len(shows)==2,(comp,custom,mark1,mark2,shows)
+assert comp[0] < custom[0] < shows[0] < mark1[0] < comp[1] < custom[1] < shows[1] < mark2[0] < settled[-1]
+for show in shows:
+    receipt=json.dumps(events[show],sort_keys=True)
+    assert 'pi-kick-smoke-two' in receipt and 'Validation' in receipt and 'exactly two distinct WG kicks' in receipt,receipt
 kicks=state.get('compaction_kicks',[])
 assert len(kicks)==2,kicks
 assert len({k['occurrence_id'] for k in kicks})==2
