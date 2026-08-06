@@ -1,3 +1,4 @@
+import { unlinkSync, writeFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 // @ts-expect-error — built ESM artifact has no co-located .d.ts on this path during dev
 import { installCompactionContinuation } from "../pi-worksgood/continuation.js";
@@ -7,6 +8,7 @@ type Handler = (event: any, ctx: any) => Promise<any> | any;
 function harness(
   overrides: Record<string, string | undefined> = {},
   hostVersion = "0.83.0",
+  sessionFile = "/tmp/session-a.jsonl",
 ) {
   const handlers = new Map<string, Handler[]>();
   const sent: any[] = [];
@@ -108,7 +110,7 @@ function harness(
     thinkingLevel: "high",
     sessionManager: {
       getSessionId: () => "session-a",
-      getSessionFile: () => "/tmp/session-a.jsonl",
+      getSessionFile: () => sessionFile,
       getLeafId: () => leaf,
       getLeafEntry: () => ({
         type: "compaction",
@@ -157,6 +159,35 @@ function compaction(id = "entry-1", parentId = "assistant-1") {
 }
 
 describe("authoritative threshold-compaction continuation", () => {
+  it("reads only a bounded journal tail while selecting the durable compaction leaf", async () => {
+    const sessionFile = `/tmp/wg-pi-bounded-session-${process.pid}-${Date.now()}.jsonl`;
+    const durableLeaf = {
+      type: "compaction",
+      id: "entry-tail",
+      parentId: "assistant-tail",
+      timestamp: "2026-08-06T00:00:00Z",
+      summary: "bounded tail",
+      firstKeptEntryId: "user-1",
+      tokensBefore: 1700,
+    };
+    writeFileSync(sessionFile, `${"x".repeat(2 * 1024 * 1024)}\n${JSON.stringify(durableLeaf)}\n`);
+    try {
+      const h = harness({}, "0.83.0", sessionFile);
+      await h.emit("agent_start");
+      await h.emit("agent_end");
+      await h.emit("session_compact", compaction("entry-tail", "assistant-tail"));
+      expect(h.backend.compactionKickAuthorize).toHaveBeenCalledWith(
+        expect.objectContaining({
+          compactionEntryId: "entry-tail",
+          compactionParentId: "assistant-tail",
+          sessionFile,
+        }),
+      );
+    } finally {
+      unlinkSync(sessionFile);
+    }
+  });
+
   it("RED: sends and acknowledges exactly one same-stack followUp for the qualifying empty-queue gap", async () => {
     const h = harness();
     await h.emit("agent_start");

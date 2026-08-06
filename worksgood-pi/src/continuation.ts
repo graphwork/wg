@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFileSync, realpathSync } from "node:fs";
+import { closeSync, fstatSync, openSync, readFileSync, readSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type {
   ExtensionAPI,
@@ -119,22 +119,58 @@ function modelIdentity(
   };
 }
 
+const MAX_SESSION_TAIL_BYTES = 256 * 1024;
+const MAX_SESSION_LEAF_BYTES = 128 * 1024;
+
+function readSessionLeafBounded(sessionFile: string): any | undefined {
+  let fd: number | undefined;
+  try {
+    fd = openSync(sessionFile, "r");
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size <= 0) return undefined;
+    const length = Math.min(stat.size, MAX_SESSION_TAIL_BYTES);
+    const start = stat.size - length;
+    const bytes = Buffer.allocUnsafe(length);
+    let offset = 0;
+    while (offset < length) {
+      const read = readSync(fd, bytes, offset, length - offset, start + offset);
+      if (read === 0) break;
+      offset += read;
+    }
+    let tail = bytes.subarray(0, offset).toString("utf8");
+    if (start > 0) {
+      const firstNewline = tail.indexOf("\n");
+      if (firstNewline < 0) return undefined;
+      tail = tail.slice(firstNewline + 1);
+    }
+    tail = tail.replace(/[\r\n]+$/, "");
+    const lastNewline = tail.lastIndexOf("\n");
+    const leaf = tail.slice(lastNewline + 1).replace(/\r$/, "");
+    if (!leaf || Buffer.byteLength(leaf, "utf8") > MAX_SESSION_LEAF_BYTES) return undefined;
+    return JSON.parse(leaf);
+  } catch {
+    return undefined;
+  } finally {
+    if (fd !== undefined) {
+      try { closeSync(fd); } catch { /* fail closed above */ }
+    }
+  }
+}
+
 function sessionIdentity(ctx: ExtensionContext) {
   const sessionId = ctx.sessionManager.getSessionId();
   const sessionFile = ctx.sessionManager.getSessionFile();
   if (!sessionId || !sessionFile) return null;
   // Pi 0.83's nested post-followUp compaction callback can expose the prior
   // callback object and not-yet-advanced in-memory getters even though the new
-  // compaction entry is already durably appended. Read only the append tail;
-  // Rust independently parses the entire selected journal and proves this is
-  // its unique current compaction leaf before granting any authority.
-  let sessionLeaf: any;
-  try {
-    const lines = readFileSync(sessionFile, "utf8").trimEnd().split(/\r?\n/);
-    sessionLeaf = JSON.parse(lines.at(-1) ?? "null");
-  } catch {
-    sessionLeaf = ctx.sessionManager.getEntries().at(-1);
-  }
+  // compaction entry is already durably appended. Read only a fixed append
+  // tail; Rust independently verifies the full selected journal and unique
+  // current compaction leaf before granting authority. A missing/oversized/
+  // malformed tail never falls back to an unbounded file read; Pi's bounded
+  // in-memory leaf may be proposed, but the broker must still prove it against
+  // the durable journal before granting authority.
+  const sessionLeaf = readSessionLeafBounded(sessionFile)
+    ?? ctx.sessionManager.getEntries().at(-1);
   const sessionLeafId = sessionLeaf?.id;
   if (!sessionLeafId || !sessionLeaf) return null;
   return { sessionId, sessionFile, sessionLeafId, sessionLeaf };
