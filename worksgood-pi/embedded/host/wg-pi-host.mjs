@@ -74,8 +74,8 @@ async function buildSession({ hermetic }) {
   if (typeof worksgoodPi !== "function") die("WorksGood Pi default export is not a function");
 
   const { core, ai } = await loadPi();
-  const { createAgentSession, DefaultResourceLoader, createEventBus, AuthStorage, ModelRegistry, SessionManager } = core;
-  const { registerFauxProvider } = ai;
+  const { createAgentSession, DefaultResourceLoader, createEventBus, SessionManager } = core;
+  const { createFauxCore } = ai;
 
   // Isolated, throwaway agent dir + cwd so no global ~/.pi or project .pi
   // extensions load and the plugin's `wg --dir` never touches a real project.
@@ -97,17 +97,13 @@ async function buildSession({ hermetic }) {
   });
   await resourceLoader.reload();
 
-  const authStorage = AuthStorage.inMemory();
-  const modelRegistry = ModelRegistry.inMemory(authStorage);
-  const faux = registerFauxProvider({ provider: "wg-selftest", models: [{ id: "selftest" }] });
+  const faux = createFauxCore({ provider: "wg-selftest", models: [{ id: "selftest" }] });
 
   const { session, extensionsResult } = await createAgentSession({
     cwd,
     agentDir,
     model: faux.getModel(),
     thinkingLevel: "off",
-    authStorage,
-    modelRegistry,
     resourceLoader,
     sessionManager: SessionManager.inMemory(cwd),
   });
