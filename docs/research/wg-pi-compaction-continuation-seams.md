@@ -33,34 +33,37 @@ sequenceDiagram
     participant C as convergence/finalizer
 
     D->>W: gated spawn + opaque attempt capability
-    Note over D,W: execution.rs:1630-1706, 1805-1880
+    Note over D,W: spawn setup/capability — src/commands/spawn/execution.rs:1630-1706,1805-1880
     W->>P: cat prompt.txt | pi --mode json --session-id/dir
-    Note over W,P: executor.rs:1729-1746; execution.rs:2741-2784, 2808-2818
+    Note over W,P: argv/stdin — src/service/executor.rs:1729-1746; src/commands/spawn/execution.rs:2741-2784,2808-2818
     W->>WD: bootstrap(child PID, wrapper PID, metadata, session plan)
     WD->>K: PiContinuationAuthorized(source/process/session/route)
-    Note over WD,K: pi_watchdog.rs:539-723
+    Note over WD,K: bootstrap — src/commands/pi_watchdog.rs:539-723
     W->>O: follow raw_stream.jsonl for exact child PID
+    Note over W,O: wrapper observer — src/commands/spawn/execution.rs:3500-3524
     P-->>O: JSON events
     opt extension was discoverable from ambient Pi settings
         P->>X: load tools/commands/model bridge
-        Note over P,X: index.ts:75-89; no worker -e in executor defaults
+        Note over P,X: wiring — worksgood-pi/src/index.ts:75-89; worker defaults — src/service/executor.rs:1729-1746
     end
     P-->>O: compaction_start/end, queue_update, summarization_retry_*
     O->>WD: ingest_native_line(...)
-    Note over O,WD: event names above are currently inert
+    Note over O,WD: exhaustive parser — src/pi_watchdog/mod.rs:988-1081; these names are inert
     P-->>O: agent_settled
     O->>WD: AgentSettled
     WD->>WD: completion_handoff + reserve epoch + append custom marker
     WD->>K: sync pi_continuation_epoch
+    Note over WD,K: settled/outbox — src/pi_watchdog/mod.rs:1338-1357,1676-1781; src/commands/pi_watchdog.rs:249-310
     WD-->>O: [Reserve, LaunchSameSession, AppendCompletionPrompt]
-    Note over WD,O: returned actions discarded; no Pi API call
+    Note over WD,O: discard — src/commands/pi_stream_bridge.rs:70-91; no Pi API call
     P-->>W: process exits
     W->>WD: finished replay + ProcessExited
-    Note over W,WD: returned actions discarded again
+    Note over W,WD: discard/reap — src/commands/pi_stream_bridge.rs:176-190; src/commands/pi_watchdog.rs:947-961
     W->>K: fail if task still InProgress
+    Note over W,K: wrapper terminal check — src/commands/spawn/execution.rs:3696-3711
     C->>K: after exact owner death, request reopen preserving session/worktree
     K->>D: new generation/new attempt dispatch
-    Note over C,D: finalize.rs:1549-1702; smoke proves 2 launches/attempt_sequence=2
+    Note over C,D: convergence — src/commands/finalize.rs:1549-1702; tests/smoke/scenarios/exited_worker_finish_convergence.sh:115-149
 ```
 
 ### Launch and extension loading
@@ -108,6 +111,37 @@ All production action-return sites discard the vector:
 4. Production has no caller of `PiWatchdog::tick`; repository callers are integration tests and the fixture CLI (`src/commands/pi_watchdog.rs:1229-1238`; `tests/integration_pi_watchdog.rs:163-188`).
 
 Tests currently assert the vectors and marker count, not an actual Pi turn: `settled_and_every_exit_need_finalization_not_terminal` expects the three actions and one prompt count without a Pi process (`tests/integration_pi_watchdog.rs:245-280`). This is positive evidence that the existing test boundary is state-machine output only.
+
+### Reproducible exhaustive searches for negative claims
+
+These repository-wide/source-scope searches were run at audit commit `302d31e3`:
+
+```text
+$ rg -n 'watchdog\.tick|PiWatchdog::tick|\.tick\(now' src --glob '*.rs'
+src/commands/pi_watchdog.rs:1233:    let actions = watchdog.tick(now).map_err(anyhow::Error::new)?;
+
+$ rg -n 'ensure_pi_plugin|WG_PI_PLUGIN_COMPAT_VERSION|\.arg\("-e"\)' \
+    src/commands/spawn/execution.rs src/service/executor.rs
+(no matches; exit 1)
+
+$ rg -n 'LaunchSameSession|AppendCompletionPrompt' src tests --glob '*.rs'
+tests/integration_pi_watchdog.rs:269-270: assertions
+src/pi_watchdog/mod.rs:557-558: enum declarations
+src/pi_watchdog/mod.rs:1714-1715: returned vector
+
+$ rg -n 'pi\.on\(' worksgood-pi/src --glob '*.ts'
+worksgood-pi/src/commands.ts:55: session_start
+worksgood-pi/src/index.ts:87: session_shutdown
+worksgood-pi/src/model-bridge.ts:135: model_select
+
+$ rg -n 'compaction_start|compaction_end|queue_update|summarization_retry|auto_retry|compaction_retry|agent_settled|agent_end' src/pi_watchdog/mod.rs
+src/pi_watchdog/mod.rs:1011: compaction_retry
+src/pi_watchdog/mod.rs:1076: agent_end when willRetry=true
+src/pi_watchdog/mod.rs:1079: agent_settled
+src/pi_watchdog/mod.rs:1126: bounded agent_end activity
+```
+
+The first result is the fixture command already cited at `src/commands/pi_watchdog.rs:1229-1238`; there is no production scheduler call. The empty second result is scoped to the two task-worker argv construction files, while positive hermetic `ensure_pi_plugin`/`-e` evidence is in the separate chat RPC path (`src/commands/pi_handler.rs:497-539,850-925`). The remaining searches independently reproduce the action-consumer, plugin-registration, and native-event match inventories.
 
 ## Authority available at each candidate seam
 
