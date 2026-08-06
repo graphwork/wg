@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use std::fs::{File, OpenOptions};
+use std::io::{Read, Seek, SeekFrom};
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use worksgood::lifecycle::{
@@ -621,29 +622,44 @@ fn lifecycle_unresolved_for_watchdog(task: &worksgood::graph::Task, watchdog: &P
 /// process and can lag the awaited Pi callback; without this reconciliation a
 /// completed tool-end can transiently look like an unsafe open effect and make
 /// an otherwise identical occurrence nondeterministically fail closed.
+const MAX_NATIVE_RECONCILE_BYTES: u64 = 8 * 1024 * 1024;
+
 fn reconcile_native_capture_to_current_complete_line(watchdog: &mut PiWatchdog) -> Result<()> {
     let Some(agent_dir) = watchdog.state().session.session_dir.parent() else {
         return Ok(());
     };
     let raw_path = agent_dir.join(worksgood::stream_event::RAW_STREAM_FILE_NAME);
-    let Ok(bytes) = std::fs::read(&raw_path) else {
+    let Ok(mut file) = File::open(&raw_path) else {
         return Ok(());
     };
     let stream_id = raw_path.to_string_lossy().into_owned();
     let mut offset = watchdog.native_stream_offset(&stream_id);
-    let start = usize::try_from(offset).context("Pi native stream offset does not fit")?;
-    if start > bytes.len() {
+    let file_len = file.metadata()?.len();
+    if offset > file_len {
         anyhow::bail!("compaction_kick.native_capture_shrank");
+    }
+    let unread = file_len - offset;
+    if unread > MAX_NATIVE_RECONCILE_BYTES {
+        anyhow::bail!("compaction_kick.native_capture_lag_exceeded");
+    }
+    if unread == 0 {
+        return Ok(());
+    }
+    file.seek(SeekFrom::Start(offset))?;
+    let mut bytes = Vec::with_capacity(usize::try_from(unread)?);
+    file.take(unread).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 != unread {
+        anyhow::bail!("compaction_kick.native_capture_changed");
     }
     let complete_end = bytes
         .iter()
         .rposition(|byte| *byte == b'\n')
         .map(|index| index + 1)
-        .unwrap_or(start);
-    if complete_end <= start {
+        .unwrap_or(0);
+    if complete_end == 0 {
         return Ok(());
     }
-    for line in bytes[start..complete_end].split_inclusive(|byte| *byte == b'\n') {
+    for line in bytes[..complete_end].split_inclusive(|byte| *byte == b'\n') {
         offset = offset.saturating_add(line.len() as u64);
         let line = std::str::from_utf8(line)?.trim_end_matches(['\r', '\n']);
         if line.is_empty() {
@@ -720,6 +736,31 @@ pub(crate) fn compaction_kick_authorize(
     {
         anyhow::bail!("compaction_kick.route_launch_proof_mismatch");
     }
+
+    // Pi 0.83 emits compaction_start before awaiting session_compact handlers
+    // and emits compaction_end only after those handlers return. Therefore the
+    // authoritative same-stack window is a *current pending threshold start*,
+    // not a capability-supplied claim of a completed event. The durable leaf
+    // proof below establishes that compaction succeeded and reached the
+    // session_compact callback; the fixed host contract makes threshold imply
+    // willRetry=false. A public compaction_end is deliberately too late: this
+    // contract never authorizes a post-settled continuation.
+    let native = &watchdog.state().native_activity;
+    let pending_threshold_start = native.compaction_reason.as_deref() == Some("threshold")
+        && native.compaction_succeeded.is_none()
+        && native.compaction_aborted.is_none()
+        && native.compaction_will_retry.is_none();
+    if native.compaction_event_seq == 0
+        || native.event_seq != native.compaction_event_seq
+        || !pending_threshold_start
+        || native.steering_queue_count != 0
+        || native.follow_up_queue_count != 0
+        || native.current_tool_label.is_some()
+        || native.current_tool_class.is_some()
+    {
+        anyhow::bail!("compaction_kick.native_compaction_proof_mismatch");
+    }
+    let native_compaction_event_seq = native.compaction_event_seq;
 
     let supplied_session_file = PathBuf::from(&args.session_file)
         .canonicalize()
@@ -813,6 +854,7 @@ pub(crate) fn compaction_kick_authorize(
                 session_id: args.session_id,
                 session_file_digest,
                 session_leaf_id: args.session_leaf_id,
+                native_compaction_event_seq,
                 // The watchdog's exact launch authority is the generated
                 // wrapper's gated Pi command process; with GNU timeout/stdin
                 // plumbing the live Pi isolate is a verified descendant.

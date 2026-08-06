@@ -3917,6 +3917,15 @@ mod tests {
         let entry = "{\"type\":\"compaction\",\"id\":\"compact-broker\",\"parentId\":\"assistant-before\",\"summary\":\"bounded\"}\n";
         let session_bytes = format!("{header}{entry}");
         fs::write(&session_file, &session_bytes).unwrap();
+        let raw_stream = worktree.join(worksgood::stream_event::RAW_STREAM_FILE_NAME);
+        fs::write(
+            &raw_stream,
+            concat!(
+                "{\"type\":\"compaction_start\",\"reason\":\"threshold\"}\n",
+                "{\"type\":\"compaction_end\",\"reason\":\"threshold\",\"result\":null,\"aborted\":false,\"willRetry\":false,\"errorMessage\":\"fixture failure\"}\n"
+            ),
+        )
+        .unwrap();
         let selected =
             worksgood::pi_watchdog::select_canonical_session_journal(&sessions, "session-broker")
                 .unwrap();
@@ -4109,6 +4118,59 @@ mod tests {
                 .compaction_kicks
                 .is_empty()
         );
+
+        // Capability-supplied threshold/success booleans cannot turn an
+        // observer-proven failed or manual compaction into authority.
+        let failed_spoof = handle_worker_request(
+            &dir,
+            WorkerRequestEnvelope {
+                protocol: WORKER_CONTROL_PROTOCOL.into(),
+                request_id: "authorize-failed-spoof".into(),
+                capability: capability.clone(),
+                operation: authorize_operation(endpoint_proof.clone()),
+            },
+            &logger,
+        );
+        assert!(!failed_spoof.ok);
+        assert!(
+            failed_spoof
+                .error
+                .as_deref()
+                .is_some_and(|error| { error.contains("native_compaction_proof_mismatch") })
+        );
+        let mut raw = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&raw_stream)
+            .unwrap();
+        writeln!(
+            raw,
+            "{{\"type\":\"compaction_end\",\"reason\":\"manual\",\"result\":{{}},\"aborted\":false,\"willRetry\":false}}"
+        )
+        .unwrap();
+        let manual_spoof = handle_worker_request(
+            &dir,
+            WorkerRequestEnvelope {
+                protocol: WORKER_CONTROL_PROTOCOL.into(),
+                request_id: "authorize-manual-spoof".into(),
+                capability: capability.clone(),
+                operation: authorize_operation(endpoint_proof.clone()),
+            },
+            &logger,
+        );
+        assert!(!manual_spoof.ok);
+        assert!(
+            manual_spoof
+                .error
+                .as_deref()
+                .is_some_and(|error| { error.contains("native_compaction_proof_mismatch") })
+        );
+        writeln!(
+            raw,
+            "{{\"type\":\"compaction_start\",\"reason\":\"threshold\"}}"
+        )
+        .unwrap();
+        drop(raw);
+
         let authorize = handle_worker_request(
             &dir,
             WorkerRequestEnvelope {
@@ -4126,6 +4188,11 @@ mod tests {
             .to_string();
         let watchdog = PiWatchdog::open(&state_path).unwrap();
         let record = watchdog.compaction_kick(&action_id).unwrap().clone();
+        assert_ne!(record.native_compaction_event_seq, 0);
+        assert_eq!(
+            record.native_compaction_event_seq,
+            watchdog.state().native_activity.compaction_event_seq
+        );
 
         // Crash boundary: the graph continuation CAS committed, but the
         // watchdog permit record and broker response did not. Recovery runs

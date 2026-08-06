@@ -65,6 +65,7 @@ fn verified_compaction(w: &PiWatchdog, entry: &str, parent: &str) -> VerifiedCom
         session_id: w.state().session.session_id.clone(),
         session_file_digest: "session-file-digest".into(),
         session_leaf_id: entry.into(),
+        native_compaction_event_seq: w.state().compaction_kicks.len() as u64 + 1,
         process_pid: w.state().process.pid,
         process_epoch: w.state().process_epoch,
         process_identity_digest: w.state().process.digest(),
@@ -93,6 +94,15 @@ fn threshold_compaction_gap_authorizes_permits_and_acks_exactly_once() {
     let duplicate = w.authorize_compaction_kick(input, 2).unwrap();
     assert_eq!(duplicate.action_id, action.action_id);
     assert_eq!(w.state().compaction_kicks.len(), 1);
+
+    let mut reused_native_event = verified_compaction(&w, "compact-forged", "assistant-2");
+    reused_native_event.native_compaction_event_seq = action.native_compaction_event_seq;
+    assert_eq!(
+        w.authorize_compaction_kick(reused_native_event, 2)
+            .unwrap_err()
+            .code,
+        "compaction_native_event_reused"
+    );
 
     let permit = w
         .permit_compaction_kick(&action.action_id, 1, true, 3)

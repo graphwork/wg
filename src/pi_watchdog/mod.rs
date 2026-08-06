@@ -493,6 +493,10 @@ pub struct PiCompactionKickRecord {
     pub session_id: String,
     pub session_file_digest: String,
     pub session_leaf_id: String,
+    /// Canonical native observer sequence for the correlated compaction event.
+    /// Zero is reserved for records written before this proof was introduced.
+    #[serde(default)]
+    pub native_compaction_event_seq: u64,
     pub process_epoch: u32,
     pub process_identity_digest: String,
     pub route_snapshot_digest: String,
@@ -520,6 +524,7 @@ pub struct VerifiedCompactionOccurrence {
     pub session_id: String,
     pub session_file_digest: String,
     pub session_leaf_id: String,
+    pub native_compaction_event_seq: u64,
     pub process_pid: u32,
     pub process_epoch: u32,
     pub process_identity_digest: String,
@@ -1040,10 +1045,13 @@ impl PiWatchdog {
                 "a terminal receipt won before threshold-compaction authorization",
             ));
         }
-        if occurrence.reason != "threshold" || occurrence.will_retry {
+        if occurrence.reason != "threshold"
+            || occurrence.will_retry
+            || occurrence.native_compaction_event_seq == 0
+        {
             return Err(WatchdogError::new(
                 "compaction_not_qualifying",
-                "only successful non-retrying threshold compaction qualifies",
+                "only a broker-correlated successful non-retrying threshold compaction qualifies",
             ));
         }
         if !occurrence.quiescent
@@ -1089,6 +1097,18 @@ impl PiWatchdog {
             ));
         }
 
+        if self.state.compaction_kicks.iter().any(|record| {
+            record.process_epoch == occurrence.process_epoch
+                && record.native_compaction_event_seq != 0
+                && record.native_compaction_event_seq == occurrence.native_compaction_event_seq
+                && record.compaction_entry_id != occurrence.compaction_entry_id
+        }) {
+            return Err(WatchdogError::new(
+                "compaction_native_event_reused",
+                "one native compaction event cannot authorize multiple journal leaves",
+            ));
+        }
+
         let occurrence_id = digest_json(&serde_json::json!([
             "wg.pi.threshold-compaction-occurrence/v1",
             occurrence.graph_id,
@@ -1118,6 +1138,9 @@ impl PiWatchdog {
                 && existing.session_id == occurrence.session_id
                 && existing.session_file_digest == occurrence.session_file_digest
                 && existing.session_leaf_id == occurrence.session_leaf_id
+                && (existing.native_compaction_event_seq == 0
+                    || existing.native_compaction_event_seq
+                        == occurrence.native_compaction_event_seq)
                 && existing.process_identity_digest == occurrence.process_identity_digest
                 && existing.route_snapshot_digest == occurrence.route_snapshot_digest;
             if identical {
@@ -1148,6 +1171,7 @@ impl PiWatchdog {
             session_id: occurrence.session_id,
             session_file_digest: occurrence.session_file_digest,
             session_leaf_id: occurrence.session_leaf_id,
+            native_compaction_event_seq: occurrence.native_compaction_event_seq,
             process_epoch: occurrence.process_epoch,
             process_identity_digest: occurrence.process_identity_digest,
             route_snapshot_digest: occurrence.route_snapshot_digest,
