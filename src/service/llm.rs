@@ -1029,8 +1029,11 @@ fn pi_one_shot_model_arg(raw_spec: &str) -> Option<PiOneShotModelArg> {
     })
 }
 
-const PI_ONESHOT_MAX_STDOUT_BYTES: usize = 1024 * 1024;
-const PI_ONESHOT_MAX_STDERR_BYTES: usize = 256 * 1024;
+// Pi JSON mode may emit cumulative reasoning/message snapshots, so a valid
+// complex review can exceed one MiB. Keep a finite ceiling with enough room
+// for that native stream shape; overflow still closes the pipe immediately.
+const PI_ONESHOT_MAX_STDOUT_BYTES: usize = 8 * 1024 * 1024;
+const PI_ONESHOT_MAX_STDERR_BYTES: usize = 1024 * 1024;
 
 struct BoundedChildOutput {
     status: process::ExitStatus,
