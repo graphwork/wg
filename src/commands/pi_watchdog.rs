@@ -517,6 +517,9 @@ pub(crate) struct CompactionKickAuthorizeArgs {
     pub provider: String,
     pub model: String,
     pub reasoning: Option<String>,
+    pub handler: String,
+    pub endpoint_proof: String,
+    pub route_snapshot_digest: String,
     pub plugin_compat: String,
     pub quiescent: bool,
     pub host_idle: bool,
@@ -525,11 +528,11 @@ pub(crate) struct CompactionKickAuthorizeArgs {
 }
 
 fn ensure_compaction_kick_supported() -> Result<()> {
-    #[cfg(not(unix))]
+    #[cfg(not(target_os = "linux"))]
     anyhow::bail!(
-        "compaction_kick.unsupported_platform: cross-process transaction locking is unavailable"
+        "compaction_kick.unsupported_platform: exact cross-process lock and descendant proof are unavailable"
     );
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     {
         if std::env::var("WG_PI_COMPACTION_KICK")
             .map(|value| value.trim() == "0")
@@ -551,6 +554,25 @@ fn bounded_identity(value: &str, label: &str) -> Result<()> {
         anyhow::bail!("compaction_kick.invalid_{label}");
     }
     Ok(())
+}
+
+pub(crate) fn pi_route_snapshot(model: &str, reasoning: Option<&str>) -> RouteSnapshot {
+    let inner = model.strip_prefix("pi:").unwrap_or(model);
+    let (provider, model_id) = inner.split_once(':').unwrap_or(("unknown", inner));
+    RouteSnapshot {
+        handler: "pi".into(),
+        provider: provider.into(),
+        model: model_id.into(),
+        reasoning: reasoning.map(str::to_owned),
+        endpoint_redacted: "pi-owned".into(),
+        // Pi owns provider resolution, so WG never persists its endpoint URL or
+        // credentials. This launch-bound opaque proof nevertheless freezes the
+        // exact handler/provider/model route across spawn, plugin, and watchdog.
+        endpoint_hmac: format!("b3:{}", blake3::hash(model.as_bytes()).to_hex()),
+        qos: QosClass::Low,
+        pi_binary_digest: "pi-path-owned".into(),
+        plugin_digest: worksgood::pi_plugin::WG_PI_PLUGIN_COMPAT_VERSION.into(),
+    }
 }
 
 fn lifecycle_unresolved_for_watchdog(task: &worksgood::graph::Task, watchdog: &PiWatchdog) -> bool {
@@ -637,6 +659,9 @@ pub(crate) fn compaction_kick_authorize(
         (&args.session_leaf_id, "session_leaf"),
         (&args.provider, "provider"),
         (&args.model, "model"),
+        (&args.handler, "handler"),
+        (&args.endpoint_proof, "endpoint_proof"),
+        (&args.route_snapshot_digest, "route_snapshot_digest"),
         (&args.plugin_compat, "plugin_compat"),
     ] {
         bounded_identity(value, label)?;
@@ -673,6 +698,13 @@ pub(crate) fn compaction_kick_authorize(
     let task = graph.get_task_or_err(&binding.task_id)?;
     if !lifecycle_unresolved_for_watchdog(task, &watchdog) {
         anyhow::bail!("compaction_kick.lifecycle_resolved_or_held");
+    }
+
+    if args.handler != watchdog.state().route.handler
+        || args.endpoint_proof != watchdog.state().route.endpoint_hmac
+        || args.route_snapshot_digest != watchdog.state().route.digest()
+    {
+        anyhow::bail!("compaction_kick.route_launch_proof_mismatch");
     }
 
     let supplied_session_file = PathBuf::from(&args.session_file)
@@ -755,7 +787,7 @@ pub(crate) fn compaction_kick_authorize(
     let process_pid = watchdog.state().process.pid;
     let process_epoch = watchdog.state().process_epoch;
     let process_identity_digest = watchdog.state().process.digest();
-    let route_snapshot_digest = watchdog.state().route.digest();
+    let route_snapshot_digest = args.route_snapshot_digest;
     let record = watchdog
         .authorize_compaction_kick(
             worksgood::pi_watchdog::VerifiedCompactionOccurrence {
@@ -1595,8 +1627,6 @@ fn bootstrap(
         .get("model")
         .and_then(|v| v.as_str())
         .unwrap_or("pi:unknown:unknown");
-    let inner = model.strip_prefix("pi:").unwrap_or(model);
-    let (provider, model_id) = inner.split_once(':').unwrap_or(("unknown", inner));
     let planned_session_file = PathBuf::from(
         plan["session_file"]
             .as_str()
@@ -1652,20 +1682,10 @@ fn bootstrap(
         worktree_lease_epoch: task.lifecycle.fence,
         worktree_path: worktree,
     };
-    let route = RouteSnapshot {
-        handler: "pi".into(),
-        provider: provider.into(),
-        model: model_id.into(),
-        reasoning: metadata
-            .get("reasoning")
-            .and_then(|v| v.as_str())
-            .map(str::to_owned),
-        endpoint_redacted: "pi-owned".into(),
-        endpoint_hmac: format!("b3:{}", blake3::hash(model.as_bytes()).to_hex()),
-        qos: QosClass::Low,
-        pi_binary_digest: "pi-path-owned".into(),
-        plugin_digest: worksgood::pi_plugin::WG_PI_PLUGIN_COMPAT_VERSION.into(),
-    };
+    let route = pi_route_snapshot(
+        model,
+        metadata.get("reasoning").and_then(|value| value.as_str()),
+    );
     let session = SessionProof {
         session_id: session_id.into(),
         branch_leaf: selected.branch_leaf,

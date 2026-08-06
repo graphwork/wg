@@ -5638,6 +5638,12 @@ pub enum PiCompactionKickCommands {
         #[arg(long)]
         reasoning: Option<String>,
         #[arg(long)]
+        handler: String,
+        #[arg(long)]
+        endpoint_proof: String,
+        #[arg(long)]
+        route_snapshot_digest: String,
+        #[arg(long)]
         plugin_compat: String,
         #[arg(long)]
         quiescent: bool,

@@ -82,6 +82,9 @@ function harness(
     WG_PI_COMPACTION_KICK: "1",
     WG_PI_COMPACTION_KICK_HOST_CONTRACT: "pi-0.83-session-compact-sync-v1",
     WG_PI_PLUGIN_COMPAT_VERSION: "0.3.0",
+    WG_PI_ROUTE_HANDLER: "pi",
+    WG_PI_ENDPOINT_PROOF: "b3:fixture-endpoint",
+    WG_PI_ROUTE_SNAPSHOT_DIGEST: "b3:fixture-route",
     ...overrides,
   };
   installCompactionContinuation(pi as any, backend as any, env, hostVersion);
@@ -165,6 +168,11 @@ describe("authoritative threshold-compaction continuation", () => {
 
     expect(h.backend.compactionKickAuthorize).toHaveBeenCalledTimes(1);
     expect(h.backend.compactionKickAuthorize.mock.calls[0][0]).not.toHaveProperty("summary");
+    expect(h.backend.compactionKickAuthorize.mock.calls[0][0]).toMatchObject({
+      handler: "pi",
+      endpointProof: "b3:fixture-endpoint",
+      routeSnapshotDigest: "b3:fixture-route",
+    });
     expect(h.backend.compactionKickPermit).toHaveBeenCalledTimes(1);
     expect(h.sent).toHaveLength(1);
     expect(h.sent[0]).toEqual({

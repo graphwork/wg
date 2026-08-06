@@ -1683,10 +1683,17 @@ pub(crate) fn spawn_agent_inner_authorized(
     cmd.env("WG_AGENT_ID", &temp_agent_id);
     cmd.env("WG_EXECUTOR_TYPE", &settings.executor_type);
     if settings.executor_type == "pi" {
+        let pi_route = crate::commands::pi_watchdog::pi_route_snapshot(
+            &plan.model.raw,
+            resolved_reasoning.map(|reasoning| reasoning.as_str()),
+        );
         cmd.env(
             "WG_PI_PLUGIN_COMPAT_VERSION",
             worksgood::pi_plugin::WG_PI_PLUGIN_COMPAT_VERSION,
         );
+        cmd.env("WG_PI_ROUTE_HANDLER", &pi_route.handler);
+        cmd.env("WG_PI_ENDPOINT_PROOF", &pi_route.endpoint_hmac);
+        cmd.env("WG_PI_ROUTE_SNAPSHOT_DIGEST", pi_route.digest());
         cmd.env("WG_PI_TASK_WORKER", "1");
         cmd.env(
             "WG_PI_COMPACTION_KICK_HOST_CONTRACT",

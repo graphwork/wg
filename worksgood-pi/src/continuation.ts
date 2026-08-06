@@ -89,6 +89,9 @@ function enabled(
       env.WG_PI_TASK_WORKER === "1" &&
       env.WG_PI_COMPACTION_KICK !== "0" &&
       env.WG_PI_PLUGIN_COMPAT_VERSION &&
+      env.WG_PI_ROUTE_HANDLER &&
+      env.WG_PI_ENDPOINT_PROOF &&
+      env.WG_PI_ROUTE_SNAPSHOT_DIGEST &&
       env.WG_PI_COMPACTION_KICK_HOST_CONTRACT === WG_PI_COMPACTION_KICK_HOST_CONTRACT,
   );
   if (eligible && hostVersion !== "0.83.0") {
@@ -316,6 +319,9 @@ export function installCompactionContinuation(
         provider: model.provider,
         model: model.model,
         reasoning: env.WG_REASONING,
+        handler: env.WG_PI_ROUTE_HANDLER!,
+        endpointProof: env.WG_PI_ENDPOINT_PROOF!,
+        routeSnapshotDigest: env.WG_PI_ROUTE_SNAPSHOT_DIGEST!,
         pluginCompat: env.WG_PI_PLUGIN_COMPAT_VERSION!,
         quiescent: true,
         hostIdle: false,

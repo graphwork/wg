@@ -1039,6 +1039,9 @@ fn execute_worker_operation(
                 provider,
                 model,
                 reasoning,
+                handler,
+                endpoint_proof,
+                route_snapshot_digest,
                 plugin_compat,
                 quiescent,
                 host_idle,
@@ -1059,6 +1062,9 @@ fn execute_worker_operation(
                     provider,
                     model,
                     reasoning,
+                    handler,
+                    endpoint_proof,
+                    route_snapshot_digest,
                     plugin_compat,
                     quiescent,
                     host_idle,
@@ -3732,6 +3738,9 @@ mod tests {
         let state_path = worksgood::attempt_runtime::component_for_update(&dir, &runtime_key, "pi")
             .unwrap()
             .join("state.json");
+        let route_handler = route.handler.clone();
+        let endpoint_proof = route.endpoint_hmac.clone();
+        let route_snapshot_digest = route.digest();
         PiWatchdog::new_at(
             state_path.clone(),
             source,
@@ -3759,30 +3768,59 @@ mod tests {
         )
         .unwrap();
         let logger = DaemonLogger::open(&dir).unwrap();
+        let authorize_operation =
+            |supplied_endpoint_proof: String| WorkerOperation::PiCompactionKickAuthorize {
+                reason: "threshold".into(),
+                will_retry: false,
+                compaction_entry_id: "compact-broker".into(),
+                compaction_parent_id: "assistant-before".into(),
+                session_id: "session-broker".into(),
+                session_file: session_file.display().to_string(),
+                session_leaf_id: "compact-broker".into(),
+                pid,
+                provider: "fixture".into(),
+                model: "fixture-model".into(),
+                reasoning: Some("high".into()),
+                handler: route_handler.clone(),
+                endpoint_proof: supplied_endpoint_proof,
+                route_snapshot_digest: route_snapshot_digest.clone(),
+                plugin_compat: "0.3.0".into(),
+                quiescent: true,
+                host_idle: false,
+                queue_empty: true,
+                tool_clear: true,
+            };
+        let mismatch = handle_worker_request(
+            &dir,
+            WorkerRequestEnvelope {
+                protocol: WORKER_CONTROL_PROTOCOL.into(),
+                request_id: "authorize-endpoint-mismatch".into(),
+                capability: capability.clone(),
+                operation: authorize_operation("b3:wrong-endpoint".into()),
+            },
+            &logger,
+        );
+        assert!(!mismatch.ok);
+        assert!(
+            mismatch
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("route_launch_proof_mismatch"))
+        );
+        assert!(
+            PiWatchdog::open(&state_path)
+                .unwrap()
+                .state()
+                .compaction_kicks
+                .is_empty()
+        );
         let authorize = handle_worker_request(
             &dir,
             WorkerRequestEnvelope {
                 protocol: WORKER_CONTROL_PROTOCOL.into(),
                 request_id: "authorize-broker".into(),
                 capability: capability.clone(),
-                operation: WorkerOperation::PiCompactionKickAuthorize {
-                    reason: "threshold".into(),
-                    will_retry: false,
-                    compaction_entry_id: "compact-broker".into(),
-                    compaction_parent_id: "assistant-before".into(),
-                    session_id: "session-broker".into(),
-                    session_file: session_file.display().to_string(),
-                    session_leaf_id: "compact-broker".into(),
-                    pid,
-                    provider: "fixture".into(),
-                    model: "fixture-model".into(),
-                    reasoning: Some("high".into()),
-                    plugin_compat: "0.3.0".into(),
-                    quiescent: true,
-                    host_idle: false,
-                    queue_empty: true,
-                    tool_clear: true,
-                },
+                operation: authorize_operation(endpoint_proof),
             },
             &logger,
         );

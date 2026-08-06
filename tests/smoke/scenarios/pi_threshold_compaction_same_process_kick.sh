@@ -215,6 +215,8 @@ assert attempt and attempt.get('disposition')=='failed',attempt
 assert any(e.get('event_kind')=='attempt-failed' for e in show['lifecycle'].get('audit',[]))
 watchdog=show.get('pi_watchdog')
 assert watchdog and len(watchdog.get('compaction_kicks',[]))==1,watchdog
+auth=show['lifecycle'].get('pi_continuation')
+assert auth and kicks[0]['route_snapshot_digest']==auth['route_snapshot_digest'],(kicks[0],auth)
 PY
 ! grep -q 'UNFINISHED_WORK_STATE' "$status_json" || loud_fail "watchdog diagnostics leaked compaction summary"
 ! grep -q 'UNFINISHED_WORK_STATE' "$show_json" || loud_fail "wg show diagnostics leaked compaction summary"
@@ -342,6 +344,8 @@ assert show['status']=='failed',show['status']
 attempt=show['lifecycle'].get('current_attempt')
 assert attempt and attempt.get('disposition')=='failed',attempt
 assert any(e.get('event_kind')=='attempt-failed' for e in show['lifecycle'].get('audit',[]))
+auth=show['lifecycle'].get('pi_continuation')
+assert auth and all(k['route_snapshot_digest']==auth['route_snapshot_digest'] for k in kicks),(kicks,auth)
 assert [events[i]['message']['details']['actionId'] for i in custom]==[k['action_id'] for k in kicks]
 entries=[]
 for path in pathlib.Path(sessions_dir).glob('*.jsonl'):

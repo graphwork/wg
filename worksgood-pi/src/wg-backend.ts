@@ -107,6 +107,9 @@ export interface CompactionKickAuthorizeRequest {
   provider: string;
   model: string;
   reasoning?: string;
+  handler: string;
+  endpointProof: string;
+  routeSnapshotDigest: string;
   pluginCompat: string;
   quiescent: boolean;
   hostIdle: boolean;
@@ -226,6 +229,9 @@ export class WgBackend {
       "--pid", String(request.pid),
       "--provider", request.provider,
       "--model", request.model,
+      "--handler", request.handler,
+      "--endpoint-proof", request.endpointProof,
+      "--route-snapshot-digest", request.routeSnapshotDigest,
       "--plugin-compat", request.pluginCompat,
     ];
     if (request.reasoning) args.push("--reasoning", request.reasoning);
