@@ -105,10 +105,12 @@ The implementation MUST preserve these invariants:
    corresponding elapsed-seconds limit) are exhausted. Exhaustion is a loud
    `HeldOperatorRequired(continuation_budget_exhausted)`, not a silent stop and
    not permission to start a new route/session/process.
-4. **Same owner.** A kick changes only `pi_continuation_epoch`. It does not
-   change task generation, attempt ID/fence, attempt sequence, worktree path or
-   lease epoch, Pi session ID/file/branch, process epoch, PID birth identity, or
-   route snapshot.
+4. **Same owner.** At permit, the only owner/attempt accounting field changed
+   by a kick is `pi_continuation_epoch`; action, effect-lease, ack, and abort
+   receipts are bounded lifecycle bookkeeping. A kick does not change task
+   generation, attempt ID/fence, attempt sequence, worktree path or lease epoch,
+   Pi session ID/file/branch, process epoch, PID birth identity, or route
+   snapshot.
 5. **Fail closed.** Missing evidence, an old plugin/host, an uncertain send,
    queue races, terminal races, process exit, or any guard mismatch means no
    send. Existing exact-owner exit convergence remains the recovery path.
@@ -217,31 +219,60 @@ the unresolved-work decision and never create an action by themselves.
 
 ### Queue-race boundary
 
-Pi exposes no atomic “queue is empty and append this message” API. WG closes the
-practical race by making task workers hermetic: disable ambient extension
-and settings discovery, load the embedded plugin explicitly and last, and give
-one-shot JSON stdin EOF after the initial prompt. Earlier explicit extension
-handlers (including the credential-free test provider) finish before the last
-embedded `session_compact` handler, so their queued work is visible to the final
-checks. If the launch permits an unbounded/background extension that can enqueue
-later, the kick feature MUST be disabled for that launch. A pending message that
-appears after authorization cancels that action; a message racing after the
-permit consumes the permit but does not authorize a second send.
+Pi exposes no transactional “queue is empty and append this message” method, so
+WG MUST establish an equivalent **host-serialized critical section**, not rely
+on timing. For the pinned supported host, both `ctx.hasPendingMessages()` and
+`pi.sendMessage()` are synchronous, extension handlers execute in one Node
+isolate, and Pi awaits the current `session_compact` handler before core queue
+processing resumes. Installed 0.83.0 supplies concrete proof points:
+`dist/core/extensions/runner.js:576-585` iterates and awaits handlers in load
+order, `dist/core/agent-session.js:1674-1709` awaits `session_compact` before its
+queue decision, and `dist/core/extensions/types.d.ts:231-240` plus
+`docs/extensions.md:1388-1410` expose synchronous queue/read send signatures.
+After the asynchronous permit call returns, the final
+handler code MUST execute these two statements in one JavaScript call stack,
+with no `await`, promise continuation, timer, `queueMicrotask`, callback, or
+other yield between them:
+
+```ts
+if (ctx.hasPendingMessages()) return suppressAfterPermit(actionId, "queue_nonempty");
+pi.sendMessage(message, { deliverAs: "followUp", triggerTurn: true });
+```
+
+JavaScript run-to-completion is the linearization boundary: no extension,
+native-queue callback, or microtask can mutate the queue between the read and
+the synchronous append. The hermetic launch makes that claim enforceable:
+disable ambient extension/settings discovery, explicitly load the embedded
+plugin last, give one-shot JSON stdin EOF after the initial prompt, and reject
+any explicit extension allowed to retain a background queue writer. Earlier
+handlers (including the credential-free provider) are awaited before the final
+handler, so work queued before this critical section is visible. A startup
+host-contract probe and the real-host smoke MUST prove sequential handler
+awaiting, synchronous queue read/append, and same-stack ordering; an unknown
+host, failed probe, asynchronous wrapper, or possible out-of-isolate writer
+disables the feature loudly. A message observed after authorization but before
+the critical section suppresses the action. Once the same-stack append occurs,
+there was no intervening queued-message race.
 
 ## 5. Protocol
 
-Add three capability-scoped operations and one optional cancellation/status
-operation. Suggested internal CLI spelling is:
+Add capability-scoped action operations plus an effect/cancellation interlock.
+Suggested internal CLI spelling for one-shot operations is:
 
 ```text
 wg pi-watchdog compaction-kick authorize ...
 wg pi-watchdog compaction-kick permit --action <id> ...
 wg pi-watchdog compaction-kick ack --action <id> ...
 wg pi-watchdog compaction-kick cancel --action <id> --reason <code>
+wg pi-watchdog compaction-kick effect-begin --action <id> --tool-call <id>
+wg pi-watchdog compaction-kick effect-end --action <id> --tool-call <id>
+wg pi-watchdog compaction-kick abort-ack --action <id> --terminal <receipt-id>
 ```
 
-They are not operator continuation commands. In worker mode they translate to
-typed `WorkerOperation`s and cannot fall back to graph-file access.
+The plugin also opens an action-scoped terminal-cancellation subscription over
+the existing local worker-control IPC before sending. These are not operator
+continuation commands. In worker mode they translate to typed
+`WorkerOperation`s and cannot fall back to graph-file access.
 
 ### 5.1 Observe and authorize
 
@@ -288,10 +319,11 @@ No path charges the epoch twice.
 
 A terminal/park that commits first rejects the permit. A permit that commits
 first authorizes at most this one delivery; a later terminal cannot rewrite
-history, but it consumes all later continuation authority. The acknowledgement
-response tells the plugin to abort the just-started run if a terminal/park won
-after permit. Absent a terminal, the same attempt remains eligible for a later,
-distinct compaction occurrence under the shared continuation budget.
+history, but §5.4 makes an accepted terminal revoke the run, block all later
+effects, and request immediate Pi abort. The acknowledgement response also tells
+the plugin to abort if a terminal/park won after permit but before ack. Absent a
+terminal, the same attempt remains eligible for a later, distinct compaction
+occurrence under the shared continuation budget.
 
 ### 5.3 Enqueue and acknowledge
 
@@ -329,6 +361,55 @@ That new persisted entry starts a new occurrence/action and receives its own
 kick if the existing shared overall epoch/time budget still admits it. There is
 no one-kick-per-attempt suppression.
 
+### 5.4 Accepted-terminal cancellation and effect interlock
+
+Acknowledgement means Pi selected the kick; it does not give the recovery run a
+right to outlive a later accepted `wg_done`, `wg_fail`, or `wg_wait`. Before the
+fresh send, the plugin opens an action-scoped terminal subscription over the
+existing daemon IPC and installs the embedded plugin as the final `tool_call`
+handler. The subscription is advisory for prompt/token cancellation; the
+authoritative no-later-effect property is a lifecycle CAS interlock:
+
+1. Every recovery-run tool other than the dedicated WG terminal tools is
+   conservatively effectful. Installed Pi explicitly defines `tool_call` as
+   occurring before execution and as block-capable
+   (`docs/extensions.md:751-765`). Hermetic launch permits no earlier effectful
+   `tool_call` handler; any such extension disables kicking. The final handler
+   calls `effect-begin(action_id, toolCallId)` and returns `{ block: true }`
+   unless the
+   lifecycle atomically proves the exact running action/process/session, no
+   terminal receipt, and opens an idempotent `ToolContract` effect lease. Only
+   then may Pi execute the tool. `tool_result`/`tool_execution_end` closes that
+   exact lease with `effect-end`; ambiguous/crashed leases remain unsafe/held.
+2. `PiTerminalIntent` and `AttemptParked` use the same lifecycle serialization.
+   They may become **accepted** only when no kick effect lease is open. If one is
+   open, the terminal request is pending/refused with `effect_in_flight` and no
+   accepted terminal receipt is created; it may retry after the exact effect
+   end. The terminal CAS sets the receipt, revokes continuation/action authority,
+   and makes every later `effect-begin` fail in the same transaction.
+3. The WG terminal tools (`wg_done`, `wg_fail`, `wg_wait`) do not open a normal
+   effect lease. Their preflight requires no sibling lease; their execution
+   performs the terminal/park CAS. A terminal tool preflighted alongside an
+   already-leased parallel sibling is blocked and must be retried alone, so it
+   cannot accept terminal while that sibling executes. A shell command that
+   invokes `wg done` remains under its shell lease and therefore cannot create
+   an accepted terminal receipt mid-effect.
+4. On accepted terminal, the daemon publishes its receipt on the subscription.
+   The plugin calls `ctx.abort()` against the active run and sends idempotent
+   `abort-ack`. If notification or abort acknowledgement is lost, lifecycle
+   revocation plus the final `tool_call` gate still proves that **no new effect
+   can start**; only provider text may drain until reconnect, settlement, or
+   process reap. There was no effect already running at terminal commit by rule
+   2. Reconnect may retry abort/ack, never the kick.
+
+This interlock narrows existing worker authority; it grants no new effect
+capability. Process exit with an ambiguous open lease uses the existing unsafe-
+effect/exit reconciliation and is held loudly rather than fabricated closed.
+The implementation may represent leases by extending the existing
+`ToolContract` projection, but the terminal check and lease count/action binding
+must live in lifecycle state so effect-begin versus terminal is one CAS domain,
+not a race between the graph and watchdog files.
+
 ## 6. Durable state machine
 
 `PiCompactionKickRecord` is a bounded map/list in `PiWatchdogState`, keyed by
@@ -358,10 +439,14 @@ below are per record, so creating `O2/A2` never reopens or mutates `O1/A1`.
 | `DeliveryPermitted` | process exits or session/process identity changes before ack | `Uncertain` | No redelivery; existing exit convergence |
 | `Acknowledged` | duplicate ack/replayed message event | No mutation | None |
 | `Acknowledged` | later `agent_start`/turn evidence | Optional `Running` diagnostic; same action | None |
+| `Acknowledged` / `Running` | final `tool_call` gate wins terminal-clear CAS | Open action/tool-call-bound effect lease; state remains running | Permit exactly that tool execution |
+| `Acknowledged` / `Running` with open effect lease | terminal/park requested | No terminal transition/receipt; return pending/refused `effect_in_flight` | Existing effect finishes or remains loudly held |
+| `Acknowledged` / `Running` with zero effect leases | terminal/park CAS succeeds | `TerminalObserved`; atomically revoke action/continuation and future effect-begins | Publish cancellation; plugin calls `ctx.abort()` |
+| `TerminalObserved` | matching abort acknowledgement | `TerminalAbortAcknowledged` | Normal finalization/reap; no effect/kick authority |
 | Any existing record(s) | a **different** persisted threshold-compaction entry qualifies while source remains running | Insert new `occurrence_id`/`action_id` record as `Authorized`; prior records unchanged | Start the independent permit flow for this occurrence |
-| `Acknowledged` / `Running` | accepted WG terminal receipt | `TerminalObserved` | Existing finalization; no later permit |
 | latest `Acknowledged` / `Running` | later `agent_settled`, no terminal or newer occurrence | `SettledAfterKick`; hold `kick_completed_without_terminal` | No settlement-derived prompt/kick; only a future distinct compaction event could authorize |
-| Any nonterminal action | exact process exit | `Authorized -> CancelledProcessExit`; `DeliveryPermitted -> Uncertain`; acked states retained | Wrapper/lifecycle exit path only |
+| `Running` with open effect lease | tool-end missing or exact process exits | `HeldUnsafeEffect` until existing receipt/exit reconciliation proves disposition | Never infer success or grant another kick/effect |
+| Any other nonterminal action | exact process exit | `Authorized -> CancelledProcessExit`; `DeliveryPermitted -> Uncertain`; acked states retained | Wrapper/lifecycle exit path only |
 | Any | duplicate raw/plugin lines, callback replay, or finished-stream replay for the same entry | Cursor/occurrence/action/request IDs make transition idempotent | Raw observer never sends; broker never issues another fresh grant |
 
 `compaction_end` is still projected. A matching successful threshold end
@@ -380,11 +465,11 @@ loudly. It cannot authorize a retry.
 | Overflow | `willRetry == true` (and/or reason `overflow`); Pi already owns its one retry |
 | Failed compaction | No successful `session_compact` entry; `compaction_end.result` absent/error |
 | Aborted compaction | No successful qualifying entry; `aborted == true` diagnostic only |
-| Queued steering/follow-up | `ctx.hasPendingMessages()` at any of the three local checks cancels/suppresses; raw queue counts corroborate only |
+| Queued steering/follow-up | `ctx.hasPendingMessages()` before authorize/permit or in the final same-stack queue-read/send critical section cancels/suppresses; raw queue counts corroborate only. Unsupported host serialization disables the feature |
 | Non-idle provider/tool run | Require the post-`agent_end`, pre-settlement `CompactionQuiescent` automaton and no open tool. A random `session_compact`/reload/timer cannot send |
 | Already idle/settled JSON | `ctx.isIdle() == true` is rejected because it would start a detached prompt that print mode does not await |
-| `wg_done` / `wg_fail` / `wg_wait` | Lifecycle first-terminal/park CAS before permit cancels. If it races after permit, no later permit is possible and ack requests abort |
-| Unsafe in-flight effect | Open/unsafe/receipt-ambiguous `ToolContract` or false effect guard holds the action |
+| `wg_done` / `wg_fail` / `wg_wait` | Lifecycle first-terminal/park CAS before permit cancels. After permit/ack, terminal may be accepted only at zero effect leases; it atomically revokes later effect/kick authority, publishes cancellation, and the plugin aborts/acks. A terminal racing an open effect is not yet accepted |
+| Unsafe in-flight effect | Open/unsafe/receipt-ambiguous `ToolContract`, effect lease, or false effect guard holds the action and terminal acceptance; every recovery tool passes the final lifecycle effect gate |
 | Route mismatch | Frozen route digest/model/reasoning/plugin artifact must match; profiles/config are not re-resolved |
 | Session/branch mismatch | Exact ID/header/file/current compaction leaf/prefix must match; no fork/resume selector substitution |
 | Process mismatch/exit | Exact process epoch and PID birth identity must match; no replacement process is launched |
@@ -407,18 +492,24 @@ The table uses `A` = durable `Authorized`, `P` = lifecycle CAS committed and
 | Terminal/park before permit CAS | Terminal receipt; `A` may exist | Permit rejects and marks cancelled | Terminal wins, no send |
 | During permit before graph commit | `A`, old epoch | Replay retries same CAS/action ID | At most one epoch charge |
 | Graph permit commit, crash before watchdog `P`/reply | Lifecycle audit has action ID and new epoch; watchdog may still have `A` | Reconcile to `P`, but any replay returns `freshDeliveryGrant=false`; never reconstruct a deliverable reply | Permit is not charged twice; this occurrence may lose liveness, never duplicate |
+| Message queues while permit RPC is awaited | `P` or `A`; final local queue read sees nonempty | Suppress/cancel according to whether permit committed; never append kick | Real queued work wins |
+| Final queue read versus send | Same synchronous handler call stack on a host that passed the serialization probe | No callback/microtask can interleave; append is the next statement. If this cannot be established, feature is disabled before authorization | No check/send race |
 | After permit reply, final local guard fails before `S` | `P`, plus plugin cancel/status reason when reachable | Mark `DeliverySuppressedAfterPermit`; keep the epoch charge and never grant again | Queued real work or unsafe phase wins; zero kick for this occurrence, no duplicate |
 | After permit reply, before `S` (crash) | `P`; send unknown | Never automatically resend. If the original handler is still executing it may make its one immediate call; after restart/exit mark uncertain | At-most-once beats liveness |
 | During/after `S`, before matching `message_start` | `P`; Pi queue may contain action | Do not send again. Original process may drain and ack; reload may only inspect/ack a persisted matching custom entry | No duplicate; uncertain on exit |
 | Matching message selected, crash during ack RPC | Pi observed exact action; watchdog may still show `P` | Retry ack only from matching events/session entry; never send | Eventually ack or remain uncertain |
 | After `D`, before provider/assistant response | `Acknowledged` | Duplicate authorize/permit/ack are no-ops | Never redeliver; process exit uses convergence |
-| Terminal commits after `P`, before `D` | Permit and terminal both ordered; no further authority | Matching ack returns `abort=true`; plugin aborts if possible | One committed kick maximum for this occurrence, no later occurrence can pass terminal guards |
-| Terminal commits after `D` | Ack plus terminal | Normal first-terminal finalization; no further permit | Terminal wins future work |
+| Terminal commits after `P`, before `D` | Permit and terminal both ordered; no effect lease exists yet | Matching ack returns `abort=true`; cancellation subscription also fires | Plugin aborts; one committed kick maximum for this occurrence |
+| `effect-begin` races terminal after `D` | One lifecycle CAS order | Terminal first rejects/blocks the tool; effect lease first makes terminal pending/not accepted until exact `effect-end` | No accepted terminal overlaps an effect |
+| Terminal requested after `D` with an effect lease open | Running action + exact open lease; no terminal receipt | Return/persist pending `effect_in_flight`; after close, retry terminal CAS | Existing effect is not mislabeled post-terminal; no accepted terminal yet |
+| Terminal commits after `D` with zero effect leases | Terminal receipt + revoked action; cancel notification may be unacked | Every later effect-begin fails; plugin calls/retries `ctx.abort()` and abort-ack | Accepted terminal suppresses all later effects even if provider text drains |
+| Crash/loss after terminal commit before cancel/abort ack | Durable terminal/revocation; zero effects at commit | Reconnect repeats cancel; final tool gate remains fail-closed; process reap is fallback | No later effects; no kick replay |
 | Public `agent_settled` before a kick | This means delivery did not enter the required active callback | Do not send post-settled; hold and let wrapper exit | Avoid JSON detached-run loss |
 | Public `agent_settled` after `D` | Latest action becomes `SettledAfterKick` | No settlement-derived second prompt | Hold/operator/convergence; settlement is not a compaction occurrence |
 | Process exits with `A` only | `CancelledProcessExit` | No permit on a new PID | Existing new-attempt convergence |
 | Process exits with `P` but no `D` | `Uncertain` | Never redeliver same action | Existing new-attempt convergence |
-| Process exits after `D` unresolved | Delivered action plus exact reap | No same-action retry; convergence may create a **new generation/attempt** under existing rules | Ownership boundaries stay explicit |
+| Process exits after `D` unresolved, no open effect | Delivered action plus exact reap | No same-action retry; convergence may create a **new generation/attempt** under existing rules | Ownership boundaries stay explicit |
+| Process exits with an ambiguous open effect lease | Lease + exact reap but no end receipt | Existing unsafe-effect reconciliation; loudly hold rather than close/retry | No hidden continuation or terminal fabrication |
 | Duplicate raw/plugin events for one compaction entry | Same stream cursor/occurrence/action/request IDs | Return stored state or conflict on changed bytes; no fresh grant | No extra send/charge |
 | Second qualifying threshold compaction after kick 1 | A different persisted descendant entry `E2`, with `O2/A2`; `A1` is already acked and shared budget remains | Insert/permit `A2` independently; duplicate `E1` or `E2` events still resolve to their own existing records | Exactly two no-crash kicks and two epoch charges, one per occurrence |
 | Daemon restarts | Watchdog outbox + lifecycle audit survive | Reconcile `A`/`P` ordering before replying | Same action only |
@@ -443,6 +534,7 @@ A successful permit records these before/after assertions:
 | process epoch / PID identity | `p / pid-digest` | unchanged when same PID |
 | route snapshot | `route_digest` | unchanged; no profile re-resolution or model switch |
 | continuation epoch | `c` | `c + 1` exactly once for this occurrence at permit (`c + 2` after two separately permitted occurrences) |
+| kick effect leases | none | transient action/tool-call-bound receipts only; zero before accepted terminal and after settled reconciliation |
 | retry/admission/breaker/eval/accounting domains | current values | no increments caused by the kick (ordinary Pi usage still accounts normally) |
 
 The raw observer must project every recovery run's ordinary usage once. Each
@@ -498,19 +590,22 @@ wires no continuation handler at `worksgood-pi/src/index.ts:75-89`.
     as transition idempotency key;
   - reconcile the graph-commit/watchdog-write crash split.
 - `src/lifecycle.rs`
-  - no new retry domain and preferably no new transition kind;
-  - preserve first-terminal semantics and reuse
+  - no new retry domain; preserve first-terminal semantics and reuse
     `PiContinuationEpochReserved`;
-  - if the implementation cannot recover the action ID from lifecycle audit,
-    add an optional `action_id` field (serde-defaulted) to that transition and
-    bump `LIFECYCLE_SCHEMA_VERSION` from 1 to 2. Do not create a parallel
-    continuation authority.
+  - add the action ID to epoch reservation and lifecycle-owned, idempotent
+    `PiKickEffectLeaseOpened/Closed` records keyed by action/tool-call/process;
+  - make `PiTerminalIntent` and `AttemptParked` require zero open kick effect
+    leases, then atomically revoke the action/continuation so later effect-begin
+    fails. This is the terminal/effect CAS domain, not parallel authority;
+  - bump `LIFECYCLE_SCHEMA_VERSION` from 1 to 2 with serde-default fields.
 - `src/worker_control.rs`, `src/worker_cli.rs`,
   `src/commands/service/ipc.rs`, and `src/cli.rs`
-  - add typed authorize/permit/ack/cancel payloads;
+  - add typed authorize/permit/ack/cancel, effect-begin/end, terminal-watch, and
+    abort-ack payloads;
   - add a dedicated `WorkerOperationKind::PiCompactionKick` to newly issued
     capabilities; do not silently broaden already issued capabilities;
-  - use deterministic request IDs for all four operations.
+  - use deterministic request IDs; make terminal-watch a bounded local IPC
+    subscription whose reconnect replays only the durable terminal receipt.
 - `src/commands/pi_stream_bridge.rs`
   - project current Pi names and action evidence; remain evidence-only;
   - eliminate silent “action vectors imply delivery” behavior.
@@ -532,10 +627,12 @@ workers to RPC.
 - new `worksgood-pi/src/continuation.ts`
   - finite event automaton (`agent_start/end`, tools,
     `session_compact`, `message_start`, `agent_settled`, shutdown);
-  - local guard checks, authorize/permit/send-once per occurrence, independent
-    successive occurrences, and ack-only replay;
+  - local guard checks, same-stack queue-read/send, authorize/permit/send-once
+    per occurrence, independent successive occurrences, and ack-only replay;
+  - final `tool_call` effect-begin gate, effect-end receipts, terminal
+    subscription, `ctx.abort()`, and abort acknowledgement;
   - no registration without the exact worker capability/task-worker launch
-    contract.
+    contract or a passing pinned-host serialization probe.
 - `worksgood-pi/src/index.ts`
   - install the continuation module after tools/commands/model bridge so it is
     the final embedded handler.
@@ -547,17 +644,19 @@ workers to RPC.
   - bump plugin compatibility and regenerate with
     `make embed-worksgood-pi`.
 - `worksgood-pi/test/plugin.test.ts` plus a focused new continuation test
-  - registration, quiescent-window qualification, queue/terminal/mismatch
-    suppression, send once per distinct occurrence (including two in one
-    attempt), duplicate-event deduplication, ack-only replay, and host-contract
-    assertions.
+  - registration, quiescent-window qualification, same-stack queue/send proof,
+    unsupported-host disable, queue/terminal/mismatch suppression, send once per
+    distinct occurrence (including two in one attempt), duplicate-event
+    deduplication, effect/terminal CAS outcomes, abort notification/ack, ack-only
+    replay, and host-contract assertions.
 
 ### Tests
 
 - `tests/integration_pi_watchdog.rs`: state transitions, exact occurrence/action
   key, two successive occurrence records, per-occurrence deduplication,
-  lifecycle CAS, terminal/wait races, effect/session/route/process guards,
-  shared budget, and all crash barriers.
+  lifecycle CAS, terminal/wait versus effect-begin/end races, post-ack terminal
+  revocation/abort, effect/session/route/process guards, shared budget, and all
+  crash barriers.
 - existing `tests/fixtures/fake-pi-compaction-stall/**`: retain the upstream
   defect/control reproducer; extend or add a companion wrapper fixture without
   turning it into the authority.
@@ -575,16 +674,20 @@ projection fields use `#[serde(default)]`. Schema-2 migration initializes an
 empty ledger and current bounded projection. It MUST NOT scan old Pi sessions
 or raw streams to create actions.
 
-Prefer reusing lifecycle's existing continuation authorization and epoch
-transition. If an optional action ID is added to persisted lifecycle events,
-serde-default old events and bump the lifecycle schema as described in §11.
+Reuse lifecycle's existing continuation authorization and epoch transition,
+but bump `LIFECYCLE_SCHEMA_VERSION` from 1 to 2 for the serde-defaulted action
+ID, kick effect-lease map, and terminal-revocation/abort status. V1 migration
+starts with no kick action and no effect leases. It does not make an old active
+attempt eligible: only a newly issued capability plus matching plugin can open a
+lease or kick, so treating old state as empty cannot race an old recovery run.
 There is no task graph status migration and no new task generation/attempt.
 
-The typed worker operation is additive. Keep
+The typed worker operations are additive. Keep
 `WORKER_CONTROL_PROTOCOL = worksgood-worker-control-v2` if old peers already
-fail closed on unknown operation tags; otherwise bump it once and migrate the
-daemon/CLI together. In either case, old capabilities lacking the dedicated
-operation cannot kick and must wait for a newly spawned attempt.
+fail closed on unknown operation tags and cannot subscribe; otherwise bump it
+once and migrate daemon/CLI/plugin together. In either case, old capabilities
+lacking the dedicated operation cannot kick, open an effect lease, or subscribe,
+and must wait for a newly spawned attempt.
 
 ### Plugin/host compatibility
 
@@ -607,7 +710,10 @@ installed Pi behavior used here; an open peer dependency is not sufficient.
   bounded states/reason codes, counts, and guards—never prompt/summary text.
 - Disabling after `Authorized` cancels it without charge. Disabling after
   `DeliveryPermitted` cannot unsend; it forbids all later permits and leaves an
-  unacknowledged action uncertain.
+  unacknowledged action uncertain. Disabling an acknowledged/running kick
+  publishes cancellation and aborts it, but MUST retain the terminal/effect gate
+  until abort/settlement/reap; a kill switch cannot turn off the safety
+  interlock underneath an active run.
 - Binary rollback procedure: set the kill switch, stop spawning new Pi workers,
   let current exact owners settle/reap, then install the prior binary/plugin
   pair. Old code must not be asked to interpret a live schema-v3 permit. Because
@@ -671,7 +777,11 @@ Also assert one OS Pi PID/one wrapper launch; unchanged task generation,
 attempt ID/fence/sequence, worktree path/lease, session ID/file/branch lineage,
 process epoch/PID digest, and frozen route; continuation epoch advances exactly
 once; exactly one action/custom message/provider recovery turn exists; no retry
-or breaker domain increments; usage is still accounted.
+or breaker domain increments; usage is still accounted. Instrument the pinned
+host to prove the final queue read and send occur in one call stack: a queued
+message arriving while permit is awaited is observed/suppressed, while a
+scheduled microtask cannot run between the final read and append. The same test
+must fail closed when the host probe is forced unsupported.
 
 This is a terminal/user-visible worker behavior fix. The smoke is the scripted
 actual terminal flow, not only a Rust or TypeScript unit substitute, and its
@@ -695,11 +805,16 @@ The installed-flow fixture plus integration/plugin tests must cover:
 - manual compaction;
 - overflow `willRetry=true` (one Pi-owned retry, zero WG kick);
 - failed and aborted compaction;
-- steering and follow-up already queued;
+- steering and follow-up already queued, queued while permit is awaited, and
+  attempted callback/microtask interleaving at the final same-stack boundary;
 - non-quiescent provider/tool activity and post-settled JSON;
 - accepted success/failure/wait receipts before authorize and before permit;
-- terminal after permit before/after acknowledgement (abort response);
-- unsafe/open effect;
+- terminal after permit before acknowledgement (abort response), after
+  acknowledgement with zero effects (revocation + cancel + abort-ack), and while
+  an effect lease is open (not accepted until exact close);
+- effect-begin versus terminal CAS in both orders, parallel terminal+sibling
+  tool preflight, lost cancellation notification/reconnect, and abort-ack replay;
+- unsafe/open/ambiguous effect lease and process exit while leased;
 - session ID/file/leaf/fork mismatch;
 - route/model/reasoning/plugin mismatch;
 - process epoch/PID birth mismatch and process exit at each state;
@@ -742,8 +857,11 @@ prose. The only qualifying situation is a live, successful, non-retrying
 threshold `session_compact` in an exact capability-bound task attempt whose WG
 lifecycle is still unresolved. The lifecycle kernel grants one finite permit
 per distinct qualifying compaction occurrence; the embedded plugin uses Pi's
-existing in-process queue before JSON settlement; a matching custom message
-event acknowledges delivery. Successive distinct occurrences get successive
-permits until the existing overall epoch/time budget is loudly exhausted. All
-uncertain crash windows stop rather than duplicate. The wrapper, generation,
-attempt, worktree, session, process, and route remain the same.
+existing in-process queue before JSON settlement inside a proven same-stack
+queue-read/append critical section; a matching custom message event acknowledges
+delivery. A lifecycle effect lease interlocks every recovery tool with terminal
+CAS, so a later accepted terminal revokes the action, blocks new effects, and
+aborts the run. Successive distinct occurrences get successive permits until
+the existing overall epoch/time budget is loudly exhausted. All uncertain crash
+windows stop rather than duplicate. The wrapper, generation, attempt, worktree,
+session, process, and route remain the same.
