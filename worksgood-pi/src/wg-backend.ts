@@ -131,6 +131,13 @@ export interface CompactionKickAck extends CompactionKickAction {
   abort: boolean;
 }
 
+export interface CompactionKickTerminalStatus {
+  actionId: string;
+  abort: boolean;
+  settled: boolean;
+  timedOut: boolean;
+}
+
 /**
  * Thin client over the `wg` CLI. Every method returns the raw {@link ExecResult}
  * so tools can surface stdout/stderr/exit-code faithfully; helpers that parse
@@ -247,6 +254,19 @@ export class WgBackend {
       ...this.kickArgs("ack", actionId),
       "--prompt-version", promptVersion,
       "--prompt-digest", promptDigest,
+    ], opts);
+  }
+
+  async compactionKickTerminalWatch(
+    actionId: string,
+    watchSequence: number,
+    waitMs: number,
+    opts: WgRunOptions = {},
+  ): Promise<CompactionKickTerminalStatus> {
+    return this.requiredJson<CompactionKickTerminalStatus>([
+      ...this.kickArgs("terminal-watch", actionId),
+      "--watch-sequence", String(watchSequence),
+      "--wait-ms", String(waitMs),
     ], opts);
   }
 

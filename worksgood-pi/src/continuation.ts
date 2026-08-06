@@ -1,4 +1,5 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -11,6 +12,7 @@ import type {
   CompactionKickAction,
   CompactionKickAuthorizeRequest,
   CompactionKickPermit,
+  CompactionKickTerminalStatus,
   WgBackend,
 } from "./wg-backend.js";
 
@@ -27,6 +29,12 @@ interface ContinuationBackend {
     promptVersion: string,
     promptDigest: string,
   ): Promise<{ actionId: string; state: string; abort: boolean }>;
+  compactionKickTerminalWatch(
+    actionId: string,
+    watchSequence: number,
+    waitMs: number,
+    opts?: { signal?: AbortSignal },
+  ): Promise<CompactionKickTerminalStatus>;
   compactionKickCancel(actionId: string, reason: string): Promise<unknown>;
   compactionKickSettle(actionId: string): Promise<unknown>;
   compactionKickAbortAck(actionId: string): Promise<unknown>;
@@ -44,8 +52,36 @@ interface PermitIdentity {
   compactionEntryId: string;
 }
 
-function enabled(env: Record<string, string | undefined>, backend: ContinuationBackend): boolean {
-  return Boolean(
+export function detectPiHostVersion(entrypoint: string | undefined = process.argv[1]): string | undefined {
+  if (!entrypoint) return undefined;
+  let current: string;
+  try {
+    current = dirname(realpathSync(entrypoint));
+  } catch {
+    return undefined;
+  }
+  for (let depth = 0; depth < 6; depth += 1) {
+    try {
+      const pkg = JSON.parse(readFileSync(join(current, "package.json"), "utf8"));
+      if (pkg?.name === "@earendil-works/pi-coding-agent") {
+        return typeof pkg.version === "string" ? pkg.version : undefined;
+      }
+    } catch {
+      // Continue toward the package root.
+    }
+    const parent = dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return undefined;
+}
+
+function enabled(
+  env: Record<string, string | undefined>,
+  backend: ContinuationBackend,
+  hostVersion: string | undefined,
+): boolean {
+  const eligible = Boolean(
     backend.env.taskId &&
       env.WG_TASK_ID === backend.env.taskId &&
       env.WG_AGENT_ID &&
@@ -55,6 +91,11 @@ function enabled(env: Record<string, string | undefined>, backend: ContinuationB
       env.WG_PI_PLUGIN_COMPAT_VERSION &&
       env.WG_PI_COMPACTION_KICK_HOST_CONTRACT === WG_PI_COMPACTION_KICK_HOST_CONTRACT,
   );
+  if (eligible && hostVersion !== "0.83.0") {
+    boundedError("unsupported host", new Error(`pi_host_version_${hostVersion ?? "unknown"}`));
+    return false;
+  }
+  return eligible;
 }
 
 function modelIdentity(ctx: ExtensionContext): { provider: string; model: string } | null {
@@ -107,8 +148,9 @@ export function installCompactionContinuation(
   pi: ExtensionAPI,
   backend: ContinuationBackend | WgBackend,
   env: Record<string, string | undefined> = process.env,
+  hostVersion: string | undefined = detectPiHostVersion(),
 ): void {
-  if (!enabled(env, backend)) return;
+  if (!enabled(env, backend, hostVersion)) return;
 
   let sawAgentEnd = false;
   let sawAgentSettled = false;
@@ -118,7 +160,71 @@ export function installCompactionContinuation(
   const permits = new Map<string, PermitIdentity>();
   const occurrenceEntries = new Set<string>();
   const leasedTools = new Map<string, string>();
+  const acknowledgedActions = new Set<string>();
+  const terminalWatches = new Map<string, AbortController>();
   let activeActionId: string | undefined;
+
+  const stopTerminalWatch = (actionId: string) => {
+    terminalWatches.get(actionId)?.abort();
+    terminalWatches.delete(actionId);
+  };
+
+  const terminalAbort = async (
+    actionId: string,
+    ctx: ExtensionContext,
+    reason: string,
+  ) => {
+    stopTerminalWatch(actionId);
+    ctx.abort();
+    if (acknowledgedActions.has(actionId)) {
+      await backend
+        .compactionKickAbortAck(actionId)
+        .catch((error) => boundedError("abort ack held", error));
+    } else {
+      await backend
+        .compactionKickCancel(actionId, reason)
+        .catch((error) => boundedError("terminal suppression held", error));
+    }
+  };
+
+  const runTerminalWatch = async (
+    actionId: string,
+    ctx: ExtensionContext,
+    controller: AbortController,
+  ) => {
+    for (let sequence = 1; sequence <= 64 && !controller.signal.aborted; sequence += 1) {
+      try {
+        const status = await backend.compactionKickTerminalWatch(
+          actionId,
+          sequence,
+          20_000,
+          { signal: controller.signal },
+        );
+        if (controller.signal.aborted) return;
+        if (status.abort) {
+          await terminalAbort(actionId, ctx, "terminal_watch_before_ack");
+          return;
+        }
+        if (status.settled) {
+          stopTerminalWatch(actionId);
+          return;
+        }
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        // Loss of the cancellation channel cannot leave the provider/effect
+        // run live. Lifecycle effect-begin remains the authoritative backstop.
+        ctx.abort();
+        stopTerminalWatch(actionId);
+        boundedError("terminal watch held", error);
+        return;
+      }
+    }
+    if (!controller.signal.aborted) {
+      ctx.abort();
+      stopTerminalWatch(actionId);
+      boundedError("terminal watch exhausted", new Error("finite_watch_budget_exhausted"));
+    }
+  };
 
   const locallyQuiescent = (ctx: ExtensionContext) =>
     sawAgentEnd &&
@@ -250,6 +356,25 @@ export function installCompactionContinuation(
     }
     if (!permit.freshDeliveryGrant || !permit.prompt) return;
 
+    // Establish the action-scoped cancellation channel before touching Pi's
+    // queue. A terminal/park that already won suppresses the committed permit;
+    // the lifecycle epoch remains charged and is never re-granted.
+    try {
+      const terminal = await backend.compactionKickTerminalWatch(action.actionId, 0, 0);
+      if (terminal.abort || terminal.settled) {
+        await backend
+          .compactionKickCancel(action.actionId, "terminal_before_native_send")
+          .catch((error) => boundedError("terminal suppression held", error));
+        return;
+      }
+    } catch (error) {
+      await backend
+        .compactionKickCancel(action.actionId, "terminal_watch_unavailable")
+        .catch((cancelError) => boundedError("terminal suppression held", cancelError));
+      boundedError("terminal watch held", error);
+      return;
+    }
+
     const afterPermit = sessionIdentity(ctx);
     const permitIdentity: PermitIdentity = {
       actionId: action.actionId,
@@ -275,10 +400,18 @@ export function installCompactionContinuation(
       return;
     }
 
+    // Arm the bounded cancellation subscription before touching Pi's queue.
+    // Calling this async function starts the broker request synchronously up to
+    // its first await; no callback can run until this handler yields.
+    const terminalController = new AbortController();
+    terminalWatches.set(action.actionId, terminalController);
+    void runTerminalWatch(action.actionId, ctx, terminalController);
+
     // Host-serialized linearization boundary. Do not insert an await, promise,
     // timer, callback, or microtask between this final queue read and the
     // synchronous Pi queue append.
     if (ctx.hasPendingMessages()) {
+      stopTerminalWatch(action.actionId);
       await backend
         .compactionKickCancel(action.actionId, "queue_nonempty_after_permit")
         .catch((error) => boundedError("queue suppression held", error));
@@ -322,6 +455,7 @@ export function installCompactionContinuation(
         permit.promptVersion,
         permit.promptDigest,
       );
+      acknowledgedActions.add(actionId);
       activeActionId = actionId;
       if (ack.abort) {
         ctx.abort();
@@ -388,11 +522,16 @@ export function installCompactionContinuation(
 
   pi.on("agent_settled", async () => {
     sawAgentSettled = true;
+    for (const actionId of [...terminalWatches.keys()]) stopTerminalWatch(actionId);
     if (!activeActionId) return;
     const actionId = activeActionId;
     activeActionId = undefined;
     await backend
       .compactionKickSettle(actionId)
       .catch((error) => boundedError("settle held", error));
+  });
+
+  pi.on("session_shutdown", () => {
+    for (const actionId of [...terminalWatches.keys()]) stopTerminalWatch(actionId);
   });
 }

@@ -4,7 +4,10 @@ import { installCompactionContinuation } from "../pi-worksgood/continuation.js";
 
 type Handler = (event: any, ctx: any) => Promise<any> | any;
 
-function harness(overrides: Record<string, string | undefined> = {}) {
+function harness(
+  overrides: Record<string, string | undefined> = {},
+  hostVersion = "0.83.0",
+) {
   const handlers = new Map<string, Handler[]>();
   const sent: any[] = [];
   const calls: string[] = [];
@@ -42,6 +45,14 @@ function harness(overrides: Record<string, string | undefined> = {}) {
       calls.push(`ack:${actionId}`);
       return { actionId, state: "acknowledged", abort: false };
     }),
+    compactionKickTerminalWatch: vi.fn(async (
+      actionId: string,
+      watchSequence: number,
+      waitMs: number,
+    ) => {
+      calls.push(`terminal-watch:${actionId}:${watchSequence}`);
+      return { actionId, abort: false, settled: waitMs > 0, timedOut: false };
+    }),
     compactionKickCancel: vi.fn(async (actionId: string, reason: string) => {
       calls.push(`cancel:${actionId}:${reason}`);
       return { actionId, state: "cancelled" };
@@ -73,7 +84,7 @@ function harness(overrides: Record<string, string | undefined> = {}) {
     WG_PI_PLUGIN_COMPAT_VERSION: "0.3.0",
     ...overrides,
   };
-  installCompactionContinuation(pi as any, backend as any, env);
+  installCompactionContinuation(pi as any, backend as any, env, hostVersion);
   let pending = false;
   let idle = false;
   let leaf = "entry-1";
@@ -169,6 +180,8 @@ describe("authoritative threshold-compaction continuation", () => {
       },
       options: { deliverAs: "followUp", triggerTurn: true },
     });
+    expect(h.calls.indexOf("terminal-watch:action-entry-1:1"))
+      .toBeLessThan(h.calls.indexOf("final-queue-read"));
     expect(h.calls.indexOf("final-queue-read")).toBeLessThan(h.calls.indexOf("send"));
     expect(h.calls.indexOf("send")).toBeLessThan(h.calls.indexOf("boundary-microtask"));
 
@@ -279,6 +292,14 @@ describe("authoritative threshold-compaction continuation", () => {
       await unmanaged.emit("session_compact", compaction());
       expect(unmanaged.backend.compactionKickAuthorize).not.toHaveBeenCalled();
     }
+
+    for (const hostVersion of ["0.84.0", ""]) {
+      const unsupported = harness({}, hostVersion);
+      await unsupported.emit("agent_start");
+      await unsupported.emit("agent_end");
+      await unsupported.emit("session_compact", compaction());
+      expect(unsupported.backend.compactionKickAuthorize).not.toHaveBeenCalled();
+    }
   });
 
   it.each(["wg_done", "wg_fail", "wg_wait"])(
@@ -355,6 +376,52 @@ describe("authoritative threshold-compaction continuation", () => {
     });
     expect(h.ctx.abort).toHaveBeenCalledTimes(1);
     expect(h.backend.compactionKickEffectBegin).not.toHaveBeenCalled();
+  });
+
+  it("opens cancellation watch before send and aborts an externally accepted terminal", async () => {
+    const h = harness();
+    h.backend.compactionKickTerminalWatch
+      .mockResolvedValueOnce({
+        actionId: "action-entry-1", abort: false, settled: false, timedOut: false,
+      })
+      .mockResolvedValueOnce({
+        actionId: "action-entry-1", abort: true, settled: false, timedOut: false,
+      });
+    await h.emit("agent_start");
+    await h.emit("agent_end");
+    await h.emit("session_compact", compaction());
+    await Promise.resolve();
+    expect(h.calls.indexOf("terminal-watch:action-entry-1:0"))
+      .toBeLessThan(h.calls.indexOf("send"));
+    expect(h.ctx.abort).toHaveBeenCalledTimes(1);
+    expect(h.backend.compactionKickCancel).toHaveBeenCalledWith(
+      "action-entry-1", "terminal_watch_before_ack",
+    );
+  });
+
+  it("aborts and acknowledges an accepted terminal observed after delivery ack", async () => {
+    const h = harness();
+    let releaseWatch!: (status: any) => void;
+    h.backend.compactionKickTerminalWatch
+      .mockResolvedValueOnce({
+        actionId: "action-entry-1", abort: false, settled: false, timedOut: false,
+      })
+      .mockImplementationOnce(async () => new Promise((resolve) => {
+        releaseWatch = resolve;
+      }));
+    await h.emit("agent_start");
+    await h.emit("agent_end");
+    await h.emit("session_compact", compaction());
+    await h.emit("message_start", {
+      message: { role: "custom", ...h.sent[0].message },
+    });
+    releaseWatch({
+      actionId: "action-entry-1", abort: true, settled: false, timedOut: false,
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(h.ctx.abort).toHaveBeenCalledTimes(1);
+    expect(h.backend.compactionKickAbortAck).toHaveBeenCalledWith("action-entry-1");
+    expect(h.backend.compactionKickCancel).not.toHaveBeenCalled();
   });
 
   it("aborts when terminal won after permit but before acknowledgement", async () => {

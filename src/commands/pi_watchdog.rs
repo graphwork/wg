@@ -966,6 +966,77 @@ pub(crate) fn compaction_kick_ack(
     }))
 }
 
+/// Hold one bounded action-scoped cancellation subscription. The worker opens
+/// the zero-wait probe before the native queue append, then keeps one long
+/// poll outstanding while the recovery turn runs. Terminal/park and exact
+/// process changes are lifecycle truth; this observer grants no continuation
+/// or effect authority.
+pub(crate) fn compaction_kick_terminal_watch(
+    dir: &Path,
+    task_id: &str,
+    action_id: &str,
+    wait_ms: u64,
+) -> Result<serde_json::Value> {
+    bounded_identity(action_id, "action_id")?;
+    if wait_ms > 30_000 {
+        anyhow::bail!("compaction_kick.terminal_watch_too_long");
+    }
+    let watchdog = checked_open(dir, task_id)?;
+    let record = watchdog
+        .compaction_kick(action_id)
+        .cloned()
+        .context("compaction_kick.action_missing")?;
+    if !matches!(
+        record.state,
+        worksgood::pi_watchdog::PiCompactionKickState::DeliveryPermitted
+            | worksgood::pi_watchdog::PiCompactionKickState::Acknowledged
+            | worksgood::pi_watchdog::PiCompactionKickState::AcknowledgedTerminalRace
+            | worksgood::pi_watchdog::PiCompactionKickState::Running
+            | worksgood::pi_watchdog::PiCompactionKickState::TerminalObserved
+            | worksgood::pi_watchdog::PiCompactionKickState::TerminalAbortAcknowledged
+            | worksgood::pi_watchdog::PiCompactionKickState::SettledAfterKick
+    ) {
+        anyhow::bail!("compaction_kick.action_not_permitted");
+    }
+    let source = watchdog.state().source.clone();
+    drop(watchdog);
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(wait_ms);
+    loop {
+        let graph = load_graph(dir.join("graph.jsonl"))?;
+        let task = graph.get_task_or_err(task_id)?;
+        let settled = task
+            .lifecycle
+            .audit
+            .iter()
+            .any(|event| event.idempotency_key == format!("pi-kick-settle:{action_id}"));
+        let terminal = task.status != worksgood::graph::Status::InProgress
+            || task.lifecycle.pi_terminal_reservation.is_some()
+            || task.lifecycle.pi_kick_revoked_actions.contains(action_id)
+            || task.lifecycle.generation != source.generation
+            || task.lifecycle.fence != source.attempt_fence
+            || task.lifecycle.pi_process_epoch != record.process_epoch
+            || (!task.lifecycle.pi_process_identity_digest.is_empty()
+                && task.lifecycle.pi_process_identity_digest != record.process_identity_digest)
+            || task
+                .lifecycle
+                .current_attempt
+                .as_ref()
+                .is_none_or(|attempt| {
+                    attempt.id != source.attempt_id || attempt.disposition.is_some()
+                });
+        if terminal || settled || std::time::Instant::now() >= deadline {
+            return Ok(serde_json::json!({
+                "actionId": action_id,
+                "abort": terminal,
+                "settled": settled,
+                "timedOut": !terminal && !settled && wait_ms > 0,
+            }));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}
+
 pub(crate) fn compaction_kick_cancel(
     dir: &Path,
     task_id: &str,
@@ -985,9 +1056,18 @@ pub(crate) fn compaction_kick_settle(
     action_id: &str,
 ) -> Result<serde_json::Value> {
     let mut watchdog = checked_open(dir, task_id)?;
-    watchdog
+    let kick_state = watchdog
         .compaction_kick(action_id)
+        .map(|record| record.state)
         .context("compaction_kick.action_missing")?;
+    if !matches!(
+        kick_state,
+        worksgood::pi_watchdog::PiCompactionKickState::Acknowledged
+            | worksgood::pi_watchdog::PiCompactionKickState::Running
+            | worksgood::pi_watchdog::PiCompactionKickState::SettledAfterKick
+    ) {
+        anyhow::bail!("compaction_kick.action_not_running");
+    }
     // Lifecycle is the effect/terminal authority, so remove the active action
     // there first. Only after that exact CAS succeeds may the watchdog report a
     // settled diagnostic state. A crash between the two durable writes is
@@ -1032,6 +1112,29 @@ pub(crate) fn compaction_kick_abort_ack(
 ) -> Result<serde_json::Value> {
     let mut watchdog = checked_open(dir, task_id)?;
     let graph_path = dir.join("graph.jsonl");
+    let graph = load_graph(&graph_path)?;
+    let task = graph.get_task_or_err(task_id)?;
+    if !task.lifecycle.pi_kick_revoked_actions.contains(action_id) {
+        anyhow::bail!("compaction_kick.abort_without_terminal_revocation");
+    }
+    // A terminal subscription can observe lifecycle revocation after the
+    // original acknowledgement RPC. Refresh the watchdog's diagnostic state
+    // from that exact durable action before recording abort acknowledgement;
+    // otherwise Acknowledged -> AbortAck would be an invalid transition and a
+    // lost notification could never converge.
+    if matches!(
+        watchdog
+            .compaction_kick(action_id)
+            .map(|record| record.state),
+        Some(
+            worksgood::pi_watchdog::PiCompactionKickState::Acknowledged
+                | worksgood::pi_watchdog::PiCompactionKickState::Running
+        )
+    ) {
+        watchdog
+            .acknowledge_compaction_kick(action_id, true, Utc::now().timestamp())
+            .map_err(anyhow::Error::new)?;
+    }
     let mut rejection = None;
     modify_graph(&graph_path, |graph| {
         let Some(task) = graph.get_task_mut(task_id) else {

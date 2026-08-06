@@ -46,6 +46,15 @@ fn request_id(operation: &WorkerOperation, capability: &str) -> String {
         WorkerOperation::PiCompactionKickAck { action_id, .. } => {
             format!("pi-kick-ack:{}", short_digest(action_id))
         }
+        WorkerOperation::PiCompactionKickTerminalWatch {
+            action_id,
+            watch_sequence,
+            ..
+        } => format!(
+            "pi-kick-terminal-watch:{}:{}",
+            short_digest(action_id),
+            watch_sequence
+        ),
         WorkerOperation::PiCompactionKickCancel { action_id, reason } => format!(
             "pi-kick-cancel:{}:{}",
             short_digest(action_id),
@@ -506,6 +515,19 @@ pub fn maybe_run(command: &Commands, json: bool) -> Result<Option<()>> {
                             action_id: action.clone(),
                             prompt_version: prompt_version.clone(),
                             prompt_digest: prompt_digest.clone(),
+                        }
+                    }
+                    PiCompactionKickCommands::TerminalWatch {
+                        id,
+                        action,
+                        watch_sequence,
+                        wait_ms,
+                    } => {
+                        task_matches(id)?;
+                        WorkerOperation::PiCompactionKickTerminalWatch {
+                            action_id: action.clone(),
+                            watch_sequence: *watch_sequence,
+                            wait_ms: *wait_ms,
                         }
                     }
                     PiCompactionKickCommands::Cancel { id, action, reason } => {

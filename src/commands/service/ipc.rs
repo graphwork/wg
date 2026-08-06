@@ -276,12 +276,15 @@ impl IpcResponse {
     }
 }
 
-/// Handle a single IPC connection
+/// Handle a single IPC connection.
 ///
 /// Each connection carries exactly one request and one response. Returning
 /// immediately after the response closes the accepted stream from the server
 /// side, so a client can never leave the single-threaded daemon accept loop
-/// parked on a second `read()` after its one-shot request is complete.
+/// parked on a second `read()` after its one-shot request is complete. The one
+/// exception is the bounded, read-only Pi terminal subscription: it is moved to
+/// a dedicated thread after parsing so its long poll cannot prevent the daemon
+/// from accepting the terminal operation that must wake it.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn handle_connection(
     dir: &Path,
@@ -335,6 +338,56 @@ pub(crate) fn handle_connection(
             return Ok(());
         }
     };
+
+    let terminal_watch = match &request {
+        IpcRequest::Worker { request }
+            if matches!(
+                &request.operation,
+                WorkerOperation::PiCompactionKickTerminalWatch { .. }
+            ) =>
+        {
+            Some(request.clone())
+        }
+        _ => None,
+    };
+    if let Some(request) = terminal_watch {
+        // Authenticate on the serialized daemon thread before allocating a
+        // detached subscription, so an untrusted socket peer cannot create a
+        // thread fan-out. The exact binding is then immutable for this call.
+        let binding = match validate_worker_capability(dir, &request) {
+            Ok(binding) => binding,
+            Err(error) => {
+                audit_worker_request(dir, &request, None, "rejected", &error.to_string(), logger);
+                let response = IpcResponse::error(&error.to_string());
+                write_response_or_cancel(&stream, &response, logger)?;
+                return Ok(());
+            }
+        };
+        // The normal service socket is intentionally single-threaded. Running
+        // a 20s subscription on that thread would deadlock its own wakeup:
+        // wg_done/fail/wait could not be accepted until the watch timed out.
+        // Only this capability-authenticated, read-only operation is detached.
+        // All lifecycle mutations remain on the normal serialized path.
+        drop(reader);
+        let dir = dir.to_path_buf();
+        let logger = logger.clone();
+        std::thread::Builder::new()
+            .name("wg-pi-terminal-watch".into())
+            .spawn(move || {
+                logger.info(&format!(
+                    "Worker IPC: request_id={} operation={:?}",
+                    request.request_id,
+                    request.operation.kind()
+                ));
+                let response =
+                    handle_worker_terminal_watch_request(&dir, request, binding, &logger);
+                if let Err(error) = write_response_or_cancel(&stream, &response, &logger) {
+                    logger.warn(&format!("Pi terminal watch response failed: {error}"));
+                }
+            })
+            .context("spawn Pi terminal watch subscription")?;
+        return Ok(());
+    }
 
     let response = handle_request(
         dir,
@@ -1032,6 +1085,16 @@ fn execute_worker_operation(
                 &prompt_version,
                 &prompt_digest,
             ),
+            WorkerOperation::PiCompactionKickTerminalWatch {
+                action_id,
+                watch_sequence: _,
+                wait_ms,
+            } => crate::commands::pi_watchdog::compaction_kick_terminal_watch(
+                dir,
+                &binding.task_id,
+                &action_id,
+                wait_ms,
+            ),
             WorkerOperation::PiCompactionKickCancel { action_id, reason } => {
                 crate::commands::pi_watchdog::compaction_kick_cancel(
                     dir,
@@ -1123,6 +1186,36 @@ fn execute_worker_operation(
         Ok(data) => IpcResponse::success(data),
         Err(error) => IpcResponse::error(&error.to_string()),
     }
+}
+
+/// Execute the one read-only long-poll operation without entering the durable
+/// mutation-response journal. The action permit itself is already durable and
+/// this observer grants no authority; journaling it would introduce a second
+/// concurrent read/modify/write of the capability registry while normal worker
+/// operations continue on the daemon thread. Reconnect uses a fresh bounded
+/// watch sequence and re-reads lifecycle truth.
+fn handle_worker_terminal_watch_request(
+    dir: &Path,
+    request: WorkerRequestEnvelope,
+    binding: worksgood::worker_control::AttemptCapabilityBinding,
+    logger: &DaemonLogger,
+) -> IpcResponse {
+    debug_assert!(matches!(
+        &request.operation,
+        WorkerOperation::PiCompactionKickTerminalWatch { .. }
+    ));
+    let response = super::with_worker_control_operation(|| {
+        execute_worker_operation(dir, &binding, request.operation.clone())
+    });
+    audit_worker_request(
+        dir,
+        &request,
+        Some(&binding.task_id),
+        if response.ok { "allowed" } else { "failed" },
+        response.error.as_deref().unwrap_or("ok"),
+        logger,
+    );
+    response
 }
 
 fn handle_worker_request(

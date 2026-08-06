@@ -6,8 +6,17 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 
 unset WG_WORKER_CAPABILITY WG_WORKER_IPC WG_WORKER_CONTROL_PROTOCOL WG_GRAPH_ID WG_AGENT_ID
 require_wg
-command -v pi >/dev/null 2>&1 || loud_skip "MISSING PI BINARY" "pi is required for the installed-host compaction regression"
-[[ "$(pi --version 2>/dev/null)" == "0.83.0" ]] || loud_skip "UNSUPPORTED PI HOST" "this regression pins Pi 0.83.0 session_compact queue serialization"
+pi_bin="$(command -v pi 2>/dev/null || true)"
+repo_pi="$HERE/../../../worksgood-pi/node_modules/.bin/pi"
+if [[ -z "$pi_bin" || "$("$pi_bin" --version 2>/dev/null || true)" != "0.83.0" ]]; then
+  # The plugin's lockfile installs the exact real host used by its API and
+  # contract tests. Prefer it when an unrelated global Pi has moved ahead;
+  # this remains the native Pi binary/package, not a host simulator.
+  [[ -x "$repo_pi" && "$("$repo_pi" --version 2>/dev/null || true)" == "0.83.0" ]] \
+    || loud_skip "UNSUPPORTED PI HOST" "this regression requires Pi 0.83.0 session_compact queue serialization"
+  pi_bin="$repo_pi"
+fi
+export PATH="$(dirname "$pi_bin"):$PATH"
 
 # Keep the Unix-domain control socket below sun_path's 108-byte limit even
 # when the caller's TMPDIR is a long cargo-agent path.

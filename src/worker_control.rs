@@ -271,6 +271,11 @@ pub enum WorkerOperation {
         prompt_version: String,
         prompt_digest: String,
     },
+    PiCompactionKickTerminalWatch {
+        action_id: String,
+        watch_sequence: u32,
+        wait_ms: u64,
+    },
     PiCompactionKickCancel {
         action_id: String,
         reason: String,
@@ -326,6 +331,7 @@ impl WorkerOperation {
             Self::PiCompactionKickAuthorize { .. }
             | Self::PiCompactionKickPermit { .. }
             | Self::PiCompactionKickAck { .. }
+            | Self::PiCompactionKickTerminalWatch { .. }
             | Self::PiCompactionKickCancel { .. }
             | Self::PiCompactionKickSettle { .. }
             | Self::PiCompactionKickAbortAck { .. }

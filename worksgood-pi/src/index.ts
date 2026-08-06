@@ -102,6 +102,7 @@ export { registerWgCommands, parseModelSpec } from "./commands.js";
 export { installGraphWidget, parseReady, renderWidget } from "./graph-widget.js";
 export { installModelBridge, wgSpecFromModel, buildProviderConfig } from "./model-bridge.js";
 export {
+  detectPiHostVersion,
   installCompactionContinuation,
   WG_PI_COMPACTION_KICK_HOST_CONTRACT,
   WG_PI_COMPACTION_KICK_CUSTOM_TYPE,

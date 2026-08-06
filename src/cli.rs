@@ -5662,6 +5662,15 @@ pub enum PiCompactionKickCommands {
         #[arg(long)]
         prompt_digest: String,
     },
+    TerminalWatch {
+        id: String,
+        #[arg(long)]
+        action: String,
+        #[arg(long)]
+        watch_sequence: u32,
+        #[arg(long, default_value_t = 0)]
+        wait_ms: u64,
+    },
     Cancel {
         id: String,
         #[arg(long)]

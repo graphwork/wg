@@ -92,6 +92,6 @@ export { registerWgTools } from "./tools.js";
 export { registerWgCommands, parseModelSpec } from "./commands.js";
 export { installGraphWidget, parseReady, renderWidget } from "./graph-widget.js";
 export { installModelBridge, wgSpecFromModel, buildProviderConfig } from "./model-bridge.js";
-export { installCompactionContinuation, WG_PI_COMPACTION_KICK_HOST_CONTRACT, WG_PI_COMPACTION_KICK_CUSTOM_TYPE, } from "./continuation.js";
+export { detectPiHostVersion, installCompactionContinuation, WG_PI_COMPACTION_KICK_HOST_CONTRACT, WG_PI_COMPACTION_KICK_CUSTOM_TYPE, } from "./continuation.js";
 export { WG_PI_PLUGIN_COMPAT_VERSION } from "./version.js";
 //# sourceMappingURL=index.js.map

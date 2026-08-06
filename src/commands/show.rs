@@ -1804,6 +1804,15 @@ fn print_human_readable(details: &TaskDetails) {
             watchdog.elapsed_reserved_secs,
             watchdog.reason_code.as_deref().unwrap_or("none"),
         );
+        if let Some(kick) = watchdog.compaction_kicks.last() {
+            println!(
+                "  compaction-kicks={}; latest={} {:?} reason={}",
+                watchdog.compaction_kicks.len(),
+                kick.action_id,
+                kick.state,
+                kick.reason_code,
+            );
+        }
         println!("  next: wg pi-watchdog status {}", watchdog.source.task_id);
     }
     if let Some(ref not_before) = details.not_before {

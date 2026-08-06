@@ -136,6 +136,43 @@ fn threshold_compaction_gap_authorizes_permits_and_acks_exactly_once() {
 }
 
 #[test]
+fn accepted_terminal_after_ack_refreshes_and_acknowledges_abort_exactly_once() {
+    let mut w = fixture(0);
+    let action = w
+        .authorize_compaction_kick(
+            verified_compaction(&w, "compact-terminal", "assistant-1"),
+            1,
+        )
+        .unwrap();
+    w.permit_compaction_kick(&action.action_id, 1, true, 2)
+        .unwrap();
+    w.acknowledge_compaction_kick(&action.action_id, false, 3)
+        .unwrap();
+
+    // The initial ack predated an accepted lifecycle terminal. The bounded
+    // cancellation subscription refreshes that exact action rather than
+    // sending or charging again, then records an idempotent abort receipt.
+    let refreshed = w
+        .acknowledge_compaction_kick(&action.action_id, true, 4)
+        .unwrap();
+    assert!(refreshed.abort);
+    assert_eq!(refreshed.state, PiCompactionKickState::TerminalObserved);
+    let aborted = w.abort_ack_compaction_kick(&action.action_id, 5).unwrap();
+    assert_eq!(
+        aborted.state,
+        PiCompactionKickState::TerminalAbortAcknowledged
+    );
+    let replay = w.abort_ack_compaction_kick(&action.action_id, 6).unwrap();
+    assert_eq!(
+        replay.state,
+        PiCompactionKickState::TerminalAbortAcknowledged
+    );
+    assert_eq!(w.state().continuation_epoch, 1);
+    assert_eq!(w.state().epochs_used, 1);
+    assert_eq!(w.state().compaction_kicks.len(), 1);
+}
+
+#[test]
 fn broker_settlement_before_stream_observer_does_not_double_charge() {
     let mut w = fixture(0);
     let action = w

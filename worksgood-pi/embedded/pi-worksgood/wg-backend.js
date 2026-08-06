@@ -151,6 +151,13 @@ export class WgBackend {
             "--prompt-digest", promptDigest,
         ], opts);
     }
+    async compactionKickTerminalWatch(actionId, watchSequence, waitMs, opts = {}) {
+        return this.requiredJson([
+            ...this.kickArgs("terminal-watch", actionId),
+            "--watch-sequence", String(watchSequence),
+            "--wait-ms", String(waitMs),
+        ], opts);
+    }
     async compactionKickCancel(actionId, reason, opts = {}) {
         return this.requiredJson([
             ...this.kickArgs("cancel", actionId), "--reason", reason,
