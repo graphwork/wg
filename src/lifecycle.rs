@@ -1324,6 +1324,16 @@ impl LifecycleKernel {
             }
             TransitionKind::PiCompactionKickSettled { action_id } => {
                 Self::require_actor(&request, &[ActorKind::ProcessObserver])?;
+                if projection
+                    .pi_kick_effect_leases
+                    .values()
+                    .any(|lease| lease.action_id == *action_id)
+                {
+                    return Err(TransitionRejection::new(
+                        "effect_in_flight",
+                        "cannot settle a compaction kick while its effect lease is open",
+                    ));
+                }
                 projection.pi_kick_active_actions.remove(action_id);
             }
             TransitionKind::PiCompactionKickAbortAcknowledged { action_id } => {
@@ -2116,6 +2126,51 @@ mod tests {
         ));
         assert_eq!(restarted.status, Status::Open);
         assert_eq!(restarted.lifecycle.generation, 1);
+    }
+
+    #[test]
+    fn compaction_kick_settlement_refuses_its_open_effect_lease() {
+        let mut task = task("kick-settle-effect", Status::Open);
+        reserve(&mut task);
+        task.lifecycle
+            .pi_kick_active_actions
+            .insert("kick-a".to_string());
+        task.lifecycle.pi_kick_effect_leases.insert(
+            "tool-a".to_string(),
+            PiKickEffectLease {
+                action_id: "kick-a".to_string(),
+                tool_call_id: "tool-a".to_string(),
+                process_epoch: 1,
+                process_identity_digest: "process-a".to_string(),
+            },
+        );
+
+        let mut blocked = request(
+            TransitionKind::PiCompactionKickSettled {
+                action_id: "kick-a".to_string(),
+            },
+            ActorKind::ProcessObserver,
+            "settle-with-effect",
+        );
+        blocked.expected = FenceExpectation::current(&task);
+        assert!(matches!(
+            apply(&mut task, blocked),
+            Err(ref code) if code == "effect_in_flight"
+        ));
+        assert!(task.lifecycle.pi_kick_active_actions.contains("kick-a"));
+        assert_eq!(task.lifecycle.pi_kick_effect_leases.len(), 1);
+
+        task.lifecycle.pi_kick_effect_leases.clear();
+        let mut settled = request(
+            TransitionKind::PiCompactionKickSettled {
+                action_id: "kick-a".to_string(),
+            },
+            ActorKind::ProcessObserver,
+            "settle-after-effect",
+        );
+        settled.expected = FenceExpectation::current(&task);
+        apply(&mut task, settled).unwrap();
+        assert!(!task.lifecycle.pi_kick_active_actions.contains("kick-a"));
     }
 
     #[test]
