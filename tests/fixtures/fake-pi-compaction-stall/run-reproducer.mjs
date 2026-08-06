@@ -251,7 +251,10 @@ function compactTrace(label, events) {
 	return lines.join("\n");
 }
 
-const target = runJsonScenario("threshold", "Perform the long fixture task through its intermediate tool step.");
+const target = runJsonScenario(
+	"threshold",
+	"Perform the long fixture task: record intermediate progress, then execute one concrete finish-work provider turn and report completion.",
+);
 const overflow = runJsonScenario("overflow", "Exercise overflow compaction retry.");
 const failed = runJsonScenario("failed", "Exercise failed threshold compaction.");
 const agentEndFollowUp = runJsonScenario("agent-end-follow-up", "Exercise the agent_end queued follow-up control.");
@@ -342,13 +345,23 @@ console.log(`Pi fixture output: ${outputDir}`);
 console.log(trace);
 console.log("CONTROL ASSERTIONS: PASS (overflow, manual, failed compaction, agent_end queued follow-up)");
 
-const recoveryMessage = targetAfterCompaction.find(
-	(event) => event.type === "message_end" && eventText(event).includes(recoveryMarker),
-);
+const targetRecoveryInterval = targetAfterCompaction.slice(0, targetSettled);
+function orderedRecoveryTurn(events) {
+	const agentStart = events.findIndex((event) => event.type === "agent_start");
+	const turnStart = events.findIndex((event, index) => index > agentStart && event.type === "turn_start");
+	const assistantMarker = events.findIndex(
+		(event, index) =>
+			index > turnStart && event.type === "message_end" && eventText(event).includes(recoveryMarker),
+	);
+	const turnEnd = events.findIndex((event, index) => index > assistantMarker && event.type === "turn_end");
+	const agentEnd = events.findIndex((event, index) => index > turnEnd && event.type === "agent_end");
+	return agentStart >= 0 && turnStart > agentStart && assistantMarker > turnStart && turnEnd > assistantMarker && agentEnd > turnEnd;
+}
+const hasOrderedRecoveryTurn = orderedRecoveryTurn(targetRecoveryInterval);
 if (captureOnly) {
-	assert.equal(recoveryMessage, undefined, "capture-only: installed Pi no longer exhibits the threshold idle stall");
+	assert.equal(hasOrderedRecoveryTurn, false, "capture-only: installed Pi no longer exhibits the threshold idle stall");
 	assert.equal(
-		targetAfterCompaction.some((event) => event.type === "turn_start"),
+		targetRecoveryInterval.some((event) => event.type === "turn_start"),
 		false,
 		"capture-only: installed Pi unexpectedly started a post-compaction turn",
 	);
@@ -357,6 +370,6 @@ if (captureOnly) {
 }
 
 assert.ok(
-	recoveryMessage,
+	hasOrderedRecoveryTurn,
 	`RED: threshold compaction with explicit unfinished work must schedule one concrete post-compaction recovery turn (expected assistant marker ${recoveryMarker} after successful compaction_end(willRetry=false))`,
 );

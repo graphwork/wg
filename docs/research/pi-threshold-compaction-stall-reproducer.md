@@ -6,7 +6,7 @@ Upstream issue: [`earendil-works/pi#6424`](https://github.com/earendil-works/pi/
 
 ## Result
 
-**Reproduced, credential-free, against the installed Pi CLI.** A two-response agentic run calls a real Pi tool, reports context usage above the configured threshold, successfully writes a real `compaction` session entry whose structured fields say that a specific next action is unexecuted, and has no steering or follow-up queued. Pi then emits:
+**Reproduced, credential-free, against the installed Pi CLI.** The user prompt explicitly requires both an intermediate progress record and a subsequent concrete finish-work provider turn. A two-response agentic run calls a real Pi tool, reports context usage above the configured threshold before that requested finish-work turn executes, successfully writes a real `compaction` session entry whose structured fields say that the required action is unexecuted, and has no steering or follow-up queued. Pi then emits:
 
 ```text
 agent_end(willRetry=false)
@@ -69,7 +69,7 @@ tests/fixtures/fake-pi-compaction-stall/
 
 1. It registers a credential-free custom provider and a model with a 2,000-token context window.
 2. Isolated settings set `reserveTokens=500` and `keepRecentTokens=1`; reported usage of 1,700 tokens therefore crosses the real `contextTokens > contextWindow - reserveTokens` threshold.
-3. The threshold case returns a real `fixture_progress` tool call, lets Pi execute and persist the tool result, then returns a final high-usage assistant response. This is a multi-response agentic run, not a one-message session stub.
+3. The threshold prompt explicitly asks Pi to record intermediate progress **and then execute one concrete finish-work provider turn and report completion**. The provider returns a real `fixture_progress` tool call, lets Pi execute and persist the tool result, then returns a high-usage assistant response stating that the requested finish-work action has not executed. This is a multi-response agentic run with demonstrably pending requested work, not a one-message session stub or work invented only by the compaction hook.
 4. `session_before_compact` supplies a deterministic successful compaction result. Pi itself emits the compaction events, appends the session entry, rebuilds context, checks its actual queues, emits `agent_settled`, and exits JSON mode.
 5. If Pi requests another provider turn after compaction, the provider emits the unambiguous marker `FIXTURE_RECOVERY_TURN_EXECUTED`. Installed Pi never requests it.
 
@@ -161,6 +161,7 @@ There is no target `queue_update` with a nonempty queue (in this run there is no
 The corresponding v3 session tail is:
 
 ```json
+{"type":"message","message":{"role":"user","content":[{"type":"text","text":"Perform the long fixture task: record intermediate progress, then execute one concrete finish-work provider turn and report completion."}]}}
 {"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"fixture-progress-call","name":"fixture_progress","arguments":{"step":"prepare-recovery-input"}}],"usage":{"totalTokens":200},"stopReason":"toolUse"}}
 {"type":"message","message":{"role":"toolResult","toolCallId":"fixture-progress-call","toolName":"fixture_progress","content":[{"type":"text","text":"RECORDED_INTERMEDIATE_STEP:prepare-recovery-input"}],"details":{"recorded":true,"step":"prepare-recovery-input"},"isError":false}}
 {"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Preparation is complete. The required finish-work action has NOT been executed."}],"usage":{"totalTokens":1700},"stopReason":"stop"}}
@@ -171,7 +172,7 @@ IDs, parent IDs, and timestamps are deliberately omitted above because they vary
 
 ### Expected fixed ordering
 
-The implementation task should make the target include one concrete provider turn after successful threshold compaction and before settling. The fixture accepts the recovery marker only after the target `compaction_end`:
+The implementation task should make the target include one complete concrete provider turn after successful threshold compaction and before the **first** `agent_settled`. The fixture requires the following ordered lifecycle inside that interval; a marker after Pi has already settled does not pass:
 
 ```text
 compaction_end reason=threshold aborted=false willRetry=false result=true
@@ -247,4 +248,4 @@ The implementation task should inherit this assertion verbatim:
 RED: threshold compaction with explicit unfinished work must schedule one concrete post-compaction recovery turn (expected assistant marker FIXTURE_RECOVERY_TURN_EXECUTED after successful compaction_end(willRetry=false))
 ```
 
-All overflow/manual/failure/`agent_end`-follow-up controls are asserted before this final check. Consequently the default invocation fails only because the successful threshold case lacks its post-compaction recovery response.
+All overflow/manual/failure/`agent_end`-follow-up controls are asserted before this final check. The final predicate requires, in order and strictly between target `compaction_end` and the first `agent_settled`, `agent_start` → `turn_start` → assistant recovery marker → `turn_end` → `agent_end`. Consequently the default invocation fails only because the successful threshold case lacks its complete post-compaction recovery turn.
