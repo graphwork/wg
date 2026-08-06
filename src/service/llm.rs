@@ -6,7 +6,7 @@
 //! - Native OpenAI-compatible API client (when provider is "openai"/"openrouter")
 
 use std::collections::{BTreeMap, HashSet};
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::process;
 use std::time::Duration;
 
@@ -1029,6 +1029,71 @@ fn pi_one_shot_model_arg(raw_spec: &str) -> Option<PiOneShotModelArg> {
     })
 }
 
+const PI_ONESHOT_MAX_STDOUT_BYTES: usize = 1024 * 1024;
+const PI_ONESHOT_MAX_STDERR_BYTES: usize = 256 * 1024;
+
+struct BoundedChildOutput {
+    status: process::ExitStatus,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    stdout_overflow: bool,
+    stderr_overflow: bool,
+}
+
+fn drain_pipe_bounded<R: Read>(mut pipe: R, max_bytes: usize) -> std::io::Result<(Vec<u8>, bool)> {
+    let mut retained = Vec::with_capacity(max_bytes.min(16 * 1024));
+    let mut overflow = false;
+    let mut chunk = [0u8; 8 * 1024];
+    loop {
+        let read = pipe.read(&mut chunk)?;
+        if read == 0 {
+            break;
+        }
+        let remaining = max_bytes.saturating_sub(retained.len());
+        let keep = remaining.min(read);
+        retained.extend_from_slice(&chunk[..keep]);
+        if keep < read {
+            overflow = true;
+            // Stop reading and close this pipe immediately at the hard bound.
+            // A writer sees EPIPE/SIGPIPE instead of making WG spend CPU
+            // draining attacker-controlled bytes until the wall timeout.
+            break;
+        }
+    }
+    Ok((retained, overflow))
+}
+
+fn wait_with_bounded_pi_output(mut child: process::Child) -> Result<BoundedChildOutput> {
+    let stdout = child
+        .stdout
+        .take()
+        .context("Pi CLI stdout pipe was not configured")?;
+    let stderr = child
+        .stderr
+        .take()
+        .context("Pi CLI stderr pipe was not configured")?;
+    let stdout_reader =
+        std::thread::spawn(move || drain_pipe_bounded(stdout, PI_ONESHOT_MAX_STDOUT_BYTES));
+    let stderr_reader =
+        std::thread::spawn(move || drain_pipe_bounded(stderr, PI_ONESHOT_MAX_STDERR_BYTES));
+    let status = child.wait().context("Failed to wait for pi CLI output")?;
+    let (stdout, stdout_overflow) = stdout_reader
+        .join()
+        .map_err(|_| anyhow::anyhow!("Pi CLI stdout reader panicked"))?
+        .context("Failed to read bounded Pi CLI stdout")?;
+    let (stderr, stderr_overflow) = stderr_reader
+        .join()
+        .map_err(|_| anyhow::anyhow!("Pi CLI stderr reader panicked"))?
+        .context("Failed to read bounded Pi CLI stderr")?;
+    Ok(BoundedChildOutput {
+        status,
+        stdout,
+        stderr,
+        stdout_overflow,
+        stderr_overflow,
+    })
+}
+
 fn bounded_tail(value: &str, max_chars: usize) -> String {
     // Walk from the end so hostile multi-megabyte output never gets copied into
     // a second unbounded `Vec`. Only the diagnostic tail is materialized.
@@ -1185,9 +1250,19 @@ fn call_pi_cli(
             .context("Failed to write prompt to pi CLI stdin")?;
     }
 
-    let output = child
-        .wait_with_output()
-        .context("Failed to wait for pi CLI output")?;
+    let output = wait_with_bounded_pi_output(child)?;
+
+    if output.stdout_overflow || output.stderr_overflow {
+        anyhow::bail!(
+            "Pi CLI output exceeded bounded capture (stdout_limit={} stdout_overflow={} stderr_limit={} stderr_overflow={}): stdout_prefix_tail={:?} stderr_prefix_tail={:?}",
+            PI_ONESHOT_MAX_STDOUT_BYTES,
+            output.stdout_overflow,
+            PI_ONESHOT_MAX_STDERR_BYTES,
+            output.stderr_overflow,
+            bounded_tail(&String::from_utf8_lossy(&output.stdout), 1_000),
+            bounded_tail(&String::from_utf8_lossy(&output.stderr), 1_000),
+        );
+    }
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);

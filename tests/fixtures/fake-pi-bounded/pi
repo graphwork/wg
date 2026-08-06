@@ -59,6 +59,14 @@ PY
 )"
     exit 0
     ;;
+  fake-output-over-limit)
+    [[ -z "${WG_BOUNDED_EVALUATION:-}" ]]
+    python3 - <<'PY'
+import json
+print(json.dumps({"type": "hostile", "payload": "x" * (1024 * 1024 + 8192)}))
+PY
+    exit 0
+    ;;
   fake-many-unique-events)
     [[ -z "${WG_BOUNDED_EVALUATION:-}" ]]
     python3 - "$provider" "$model" <<'PY'

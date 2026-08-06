@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use interprocess::local_socket::{Stream, prelude::*};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
@@ -25,9 +25,18 @@ use crate::commands::graph_path;
 const MAX_PI_TERMINAL_WATCH_SEQUENCE: u32 = 64;
 const MAX_CONCURRENT_PI_TERMINAL_WATCHES: usize = 32;
 
-fn active_pi_terminal_watches() -> &'static Mutex<HashSet<String>> {
-    static ACTIVE: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
-    ACTIVE.get_or_init(|| Mutex::new(HashSet::new()))
+#[derive(Default)]
+struct PiTerminalWatchState {
+    active: HashSet<String>,
+    /// Highest sequence admitted for an exact task/action in this daemon
+    /// epoch. Entries intentionally outlive individual long polls so a
+    /// capability holder cannot replay sequence 1 after every response.
+    consumed: HashMap<String, u32>,
+}
+
+fn pi_terminal_watch_state() -> &'static Mutex<PiTerminalWatchState> {
+    static STATE: OnceLock<Mutex<PiTerminalWatchState>> = OnceLock::new();
+    STATE.get_or_init(|| Mutex::new(PiTerminalWatchState::default()))
 }
 
 /// Process-local lease for the only detached worker-control operation.
@@ -43,8 +52,8 @@ struct PiTerminalWatchLease {
 
 impl Drop for PiTerminalWatchLease {
     fn drop(&mut self) {
-        if let Ok(mut active) = active_pi_terminal_watches().lock() {
-            active.remove(&self.key);
+        if let Ok(mut state) = pi_terminal_watch_state().lock() {
+            state.active.remove(&self.key);
         }
     }
 }
@@ -71,16 +80,27 @@ fn acquire_pi_terminal_watch_lease(
         anyhow::bail!("compaction_kick.terminal_watch_too_long");
     }
     let key = format!("{task_id}\u{0}{action_id}");
-    let mut active = active_pi_terminal_watches()
+    let mut state = pi_terminal_watch_state()
         .lock()
         .map_err(|_| anyhow::anyhow!("compaction_kick.terminal_watch_limiter_poisoned"))?;
-    if active.contains(&key) {
+    if state.active.contains(&key) {
         anyhow::bail!("compaction_kick.terminal_watch_already_active");
     }
-    if active.len() >= MAX_CONCURRENT_PI_TERMINAL_WATCHES {
+    if state.active.len() >= MAX_CONCURRENT_PI_TERMINAL_WATCHES {
         anyhow::bail!("compaction_kick.terminal_watch_capacity_exhausted");
     }
-    active.insert(key.clone());
+    if let Some(last) = state.consumed.get(&key) {
+        if *watch_sequence != last.saturating_add(1) {
+            anyhow::bail!("compaction_kick.terminal_watch_sequence_replayed_or_out_of_order");
+        }
+    } else if *watch_sequence > 1 {
+        // Sequence zero is an optional non-waiting probe; the native plugin
+        // begins directly at one. Both beginnings are finite, but no gaps or
+        // repeats are accepted after the first admission.
+        anyhow::bail!("compaction_kick.terminal_watch_sequence_replayed_or_out_of_order");
+    }
+    state.consumed.insert(key.clone(), *watch_sequence);
+    state.active.insert(key.clone());
     Ok(PiTerminalWatchLease { key })
 }
 
@@ -3555,11 +3575,28 @@ mod tests {
     #[test]
     fn terminal_watch_limiter_enforces_finite_sequence_and_concurrency() {
         let zero = terminal_watch_request("zero", 0, 0);
-        let _zero_lease = acquire_pi_terminal_watch_lease(&zero, "limiter-task").unwrap();
+        let zero_lease = acquire_pi_terminal_watch_lease(&zero, "limiter-task").unwrap();
         let duplicate = acquire_pi_terminal_watch_lease(&zero, "limiter-task")
             .unwrap_err()
             .to_string();
         assert!(duplicate.contains("terminal_watch_already_active"));
+        drop(zero_lease);
+
+        let replay = acquire_pi_terminal_watch_lease(&zero, "limiter-task")
+            .unwrap_err()
+            .to_string();
+        assert!(replay.contains("terminal_watch_sequence_replayed_or_out_of_order"));
+        let one = terminal_watch_request("zero", 1, 20_000);
+        drop(acquire_pi_terminal_watch_lease(&one, "limiter-task").unwrap());
+        let replay_one = acquire_pi_terminal_watch_lease(&one, "limiter-task")
+            .unwrap_err()
+            .to_string();
+        assert!(replay_one.contains("terminal_watch_sequence_replayed_or_out_of_order"));
+        let skipped = terminal_watch_request("zero", 3, 20_000);
+        let skipped = acquire_pi_terminal_watch_lease(&skipped, "limiter-task")
+            .unwrap_err()
+            .to_string();
+        assert!(skipped.contains("terminal_watch_sequence_replayed_or_out_of_order"));
 
         let invalid_sequence =
             terminal_watch_request("sequence", MAX_PI_TERMINAL_WATCH_SEQUENCE + 1, 20_000);
@@ -3585,7 +3622,7 @@ mod tests {
         );
 
         let mut leases = Vec::new();
-        for index in 1..MAX_CONCURRENT_PI_TERMINAL_WATCHES {
+        for index in 0..MAX_CONCURRENT_PI_TERMINAL_WATCHES {
             leases.push(
                 acquire_pi_terminal_watch_lease(
                     &terminal_watch_request(&format!("capacity-{index}"), 1, 20_000),

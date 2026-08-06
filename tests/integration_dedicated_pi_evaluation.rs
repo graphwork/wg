@@ -468,6 +468,33 @@ fn central_pi_empty_success_is_unavailable_with_actionable_bounded_diagnostics()
 
 #[test]
 #[serial]
+fn central_pi_process_capture_refuses_output_over_hard_limit() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().join("home");
+    fs::create_dir_all(&home).unwrap();
+    let _env = test_env(&home);
+
+    let error = run_exact_agency_dispatch_call(
+        &Config::default(),
+        &exact_pi_dispatch("fake-output-over-limit"),
+        "Return one verdict",
+        5,
+    )
+    .unwrap_err();
+    let diagnostic = format!("{error:#}");
+    assert!(
+        diagnostic.contains("output exceeded bounded capture"),
+        "{diagnostic}"
+    );
+    assert!(diagnostic.contains("stdout_overflow=true"), "{diagnostic}");
+    assert!(
+        diagnostic.len() < 4_096,
+        "overflow diagnostic escaped bound"
+    );
+}
+
+#[test]
+#[serial]
 fn central_pi_empty_success_diagnostics_bound_hostile_unique_event_types() {
     let tmp = TempDir::new().unwrap();
     let home = tmp.path().join("home");
