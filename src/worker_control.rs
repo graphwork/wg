@@ -83,19 +83,6 @@ pub enum WorkerOperationKind {
     ArtifactAdd,
     ArtifactRemove,
     DependencyArtifactRead,
-    DependencyAdd,
-    DependencyRemove,
-    GraphBlocked,
-    GraphContext,
-    GraphList,
-    GraphReady,
-    GraphStatus,
-    TaskAdd,
-    TaskAssign,
-    TaskContract,
-    TaskEdit,
-    TaskPublish,
-    TaskShow,
     Checkpoint,
     Wait,
     CompletionObject,
@@ -1198,29 +1185,6 @@ pub fn token_hint(token: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn capability_registry_accepts_graph_task_and_pi_watchdog_tags() {
-        for tag in [
-            "dependency_add",
-            "dependency_remove",
-            "graph_blocked",
-            "graph_context",
-            "graph_list",
-            "graph_ready",
-            "graph_status",
-            "task_add",
-            "task_assign",
-            "task_contract",
-            "task_edit",
-            "task_publish",
-            "task_show",
-            "pi_compaction_kick",
-        ] {
-            serde_json::from_value::<WorkerOperationKind>(serde_json::json!(tag))
-                .unwrap_or_else(|error| panic!("registry tag {tag} must remain readable: {error}"));
-        }
-    }
 
     #[test]
     fn registry_never_persists_bearer_token() {
