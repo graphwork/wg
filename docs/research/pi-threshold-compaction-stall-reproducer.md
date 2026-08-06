@@ -92,7 +92,7 @@ The persisted entry also has structured details:
 }
 ```
 
-`run-reproducer.mjs` invokes the installed `pi` executable with `--mode json`, an isolated `HOME`, explicit extension loading, disabled discovery, `--offline`, and a literal fixture API key. No network listener is started and no credential is read. The manual control uses Pi's documented RPC `compact` command—the headless equivalent of explicit `/compact`—because built-in TUI slash commands are not commands in JSON mode.
+`run-reproducer.mjs` invokes the installed `pi` executable with `--mode json`, an isolated `HOME`, explicit extension loading, disabled discovery, `--offline`, and a literal fixture API key. Its child environment is an allowlist (`PATH`, isolated `HOME`, offline/color/locale settings, optional `TMPDIR`, and the fixture scenario); it does not forward parent API-key, provider-auth, Pi-session, or WG variables. No network listener is started and no credential is read. The manual control uses Pi's documented RPC `compact` command—the headless equivalent of explicit `/compact`—because built-in TUI slash commands are not commands in JSON mode.
 
 ## Run it
 

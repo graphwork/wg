@@ -31,11 +31,16 @@ writeFileSync(
 	),
 );
 
+// Deliberately allowlist process state instead of forwarding the parent environment.
+// In particular, no provider/API credential variables and no ambient Pi auth/session
+// variables can reach the credential-free child process.
 const baseEnv = {
-	...process.env,
+	PATH: process.env.PATH ?? "/usr/bin:/bin",
 	HOME: home,
 	PI_OFFLINE: "1",
 	NO_COLOR: "1",
+	LANG: process.env.LANG ?? "C.UTF-8",
+	...(process.env.TMPDIR ? { TMPDIR: process.env.TMPDIR } : {}),
 };
 
 const commonArgs = (sessionDir) => [
