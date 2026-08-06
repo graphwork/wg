@@ -849,10 +849,9 @@ fn v2_css_carries_tui_palette() {
     // Spec: "Color values verified to match TUI palette (cite source file or
     // document the mapping)" — the CSS must contain the exact RGB triples
     // documented at src/tui/viz_viewer/state.rs:271 and the magenta/cyan
-    // edge highlight colors from render.rs:1500. In-progress is the
-    // exception: it uses the rendered-badge color (`Color::Yellow` =>
-    // rgb(229,229,16)) rather than the cyan flash, mirroring what the TUI
-    // task list actually displays.
+    // edge highlight colors from render.rs:1500. In-progress uses the
+    // rendered-badge yellow while ordinary open tasks use the neutral theme
+    // foreground, mirroring the terminal viz's yellow/white distinction.
     let dir = TempDir::new().unwrap();
     let graph = build_graph(vec![make_task("anything", "A", "public")]);
     html::render_site(
@@ -873,12 +872,20 @@ fn v2_css_carries_tui_palette() {
         "rgb(80, 220, 100)", // done
         "rgb(220, 60, 60)",  // failed
         "rgb(229, 229, 16)", // in-progress = Color::Yellow (render.rs)
-        "rgb(200, 200, 80)", // open
         "rgb(60, 160, 220)", // waiting
         "rgb(140, 230, 80)", // pending-eval
     ] {
         assert!(css.contains(needle), "missing TUI status color {}", needle);
     }
+    assert_eq!(
+        css.matches("--status-open: var(--fg);").count(),
+        3,
+        "open must use the theme foreground in default, OS-light, and explicit-light palettes"
+    );
+    assert!(
+        !css.contains("--status-open: rgb("),
+        "open must not alias the yellow/ochre live palette"
+    );
     // Edge highlight colors (TUI render.rs:1500 — magenta/cyan/yellow)
     assert!(
         css.contains("rgb(188, 63, 188)"),

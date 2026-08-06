@@ -53,12 +53,13 @@
 :root {
     /* Status colors — TUI parity. In-progress uses the actual rendered
        badge color (`Color::Yellow` in render.rs => rgb(229, 229, 16)),
-       not the cyan flash from flash_color_for_status. Other statuses
-       follow flash_color_for_status (state.rs:271). */
+       while an ordinary open task uses the theme foreground, matching the
+       terminal viz's neutral white. Remaining statuses follow
+       flash_color_for_status (state.rs:271). */
     --status-done: rgb(80, 220, 100);
     --status-failed: rgb(220, 60, 60);
     --status-in-progress: rgb(229, 229, 16);
-    --status-open: rgb(200, 200, 80);
+    --status-open: var(--fg);
     --status-blocked: rgb(180, 120, 60);
     --status-abandoned: rgb(140, 100, 160);
     --status-waiting: rgb(60, 160, 220);
@@ -66,7 +67,7 @@
     --status-pending-eval: rgb(140, 230, 80);
     --status-incomplete: rgb(255, 165, 0);
 
-    /* Paused: orthogonal modifier — soft blue-gray, distinct from open (yellow),
+    /* Paused: orthogonal modifier — soft blue-gray, distinct from open (neutral),
        abandoned (purple), and blocked (gray). Mirrors ANSI 256-color 110 used
        in the CLI / TUI ascii viz (src/commands/viz/ascii.rs). */
     --status-paused: rgb(150, 165, 195);
@@ -117,7 +118,7 @@
         --status-done: rgb(40, 160, 70);
         --status-failed: rgb(180, 40, 40);
         --status-in-progress: rgb(180, 140, 0);
-        --status-open: rgb(140, 110, 30);
+        --status-open: var(--fg);
         --status-blocked: rgb(140, 90, 30);
         --status-abandoned: rgb(100, 70, 130);
         --status-waiting: rgb(40, 110, 170);
@@ -151,7 +152,7 @@
     --status-done: rgb(40, 160, 70);
     --status-failed: rgb(180, 40, 40);
     --status-in-progress: rgb(180, 140, 0);
-    --status-open: rgb(140, 110, 30);
+    --status-open: var(--fg);
     --status-blocked: rgb(140, 90, 30);
     --status-abandoned: rgb(100, 70, 130);
     --status-waiting: rgb(40, 110, 170);
@@ -1270,7 +1271,7 @@ body.task-page {
    reads as a foreground text color rather than dim, so unread messages pop
    against the row text — matching the TUI's bold envelope behavior. */
 :root {
-    --msg-unseen: var(--status-open);          /* yellow-ish — pending action */
+    --msg-unseen: var(--status-open);          /* foreground — pending action */
     --msg-seen: var(--fg-muted);               /* gray — neutral */
     --msg-replied: var(--status-done);         /* green — done */
     --msg-bg-unread: rgba(229, 229, 16, 0.08); /* faint highlight on row bg */

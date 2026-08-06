@@ -2738,6 +2738,75 @@ mod tests {
     }
 
     // ────────────────────────────────────────────────────────────────────
+    // HTML status palette parity
+    // ────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn html_open_status_uses_theme_foreground_not_live_yellow() {
+        assert_eq!(
+            STYLE_CSS.matches("--status-open: var(--fg);").count(),
+            3,
+            "open must resolve through the foreground in the default, OS-light, and explicit-light palettes"
+        );
+        assert!(
+            !STYLE_CSS.contains("--status-open: rgb("),
+            "open must not regain its own yellow/brown status color"
+        );
+        assert!(
+            STYLE_CSS.contains("--status-in-progress: rgb(229, 229, 16);")
+                && STYLE_CSS
+                    .matches("--status-in-progress: rgb(180, 140, 0);")
+                    .count()
+                    == 2,
+            "in-progress must retain distinct accessible dark/light yellow colors"
+        );
+        assert!(
+            STYLE_CSS.contains(
+                r#".viz-pre .task-link[data-status="open"]                  { color: var(--status-open); }"#
+            ),
+            "graph task links must consume --status-open"
+        );
+        assert!(
+            STYLE_CSS.contains(".badge.open                  { color: var(--status-open); }"),
+            "task-list badges must consume --status-open"
+        );
+        assert!(
+            STYLE_CSS.contains("color: var(--edge-upstream) !important;")
+                && STYLE_CSS.contains("color: var(--edge-downstream) !important;"),
+            "selection relationship overlays must continue to override status colors"
+        );
+    }
+
+    #[test]
+    fn html_task_links_preserve_distinct_open_and_live_status_values() {
+        let mut out = String::new();
+        let line_chars: Vec<char> = "open-task live-task".chars().collect();
+        let ranges: Vec<(usize, usize, usize, &str, Status, bool)> = vec![
+            (0, 9, 9, "open-task", Status::Open, false),
+            (10, 19, 19, "live-task", Status::InProgress, false),
+        ];
+        let edges: HashMap<(usize, usize), Vec<(String, String)>> = HashMap::new();
+        render_line(
+            &mut out,
+            0,
+            &line_chars,
+            &ranges,
+            &[],
+            &edges,
+            "open-task live-task",
+        );
+
+        assert!(
+            out.contains(r#"data-task-id="open-task" data-status="open""#),
+            "open task must retain data-status=open; got: {out}"
+        );
+        assert!(
+            out.contains(r#"data-task-id="live-task" data-status="in-progress""#),
+            "live task must retain data-status=in-progress; got: {out}"
+        );
+    }
+
+    // ────────────────────────────────────────────────────────────────────
     // Chat agent color (smoke-polish-wg-html)
     // ────────────────────────────────────────────────────────────────────
 

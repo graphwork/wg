@@ -1165,8 +1165,9 @@ script = "scenarios/wg_html_v2_tui_parity.sh"
 owners = [
     "wg-html-v2",
     "fix-wg-html-2",
+    "fix-html-open-live-status-colors",
 ]
-description = "TUI-parity contract for `wg html` (v2). Pins: (1) default = all tasks (no flags) — wg-html-redesign default was wrong for the read-only TUI-sibling use case. (2) Edge connector glyphs carry `data-edges=\"from>to\"` per character so JS can colorize upstream vs downstream on selection. (3) CSS holds the exact TUI RGB palette for status colors (state.rs:271) and edge highlights — magenta=upstream, cyan=downstream, yellow=cycle (render.rs:1500). (4) Both auto (prefers-color-scheme) and manual (data-theme) dark/light themes are wired, with localStorage bootstrap to avoid a flash on load. (5) panel.js applies is-upstream / is-downstream / is-cycle / is-selected classes and honors OS prefers-color-scheme; it does NOT call fetch/XHR (rsync-friendly static contract). (6) WG_EDGES['parent'].down includes the child id (the reachability set the JS uses for highlight decisions)."
+description = "TUI-parity contract for `wg html` (v2). Pins: (1) default = all tasks (no flags) — wg-html-redesign default was wrong for the read-only TUI-sibling use case. (2) Edge connector glyphs carry `data-edges=\"from>to\"` per character so JS can colorize upstream vs downstream on selection. (3) Generated task links and list badges preserve distinct open/in-progress statuses; CSS maps live to accessible yellow/ochre and open to neutral theme foreground in dark, OS-light, and explicit-light palettes, while paused/chat/agency/selected/upstream/downstream modifiers retain their intended precedence. Edge highlights remain magenta=upstream, cyan=downstream, yellow=cycle (render.rs:1500). (4) Both auto (prefers-color-scheme) and manual (data-theme) dark/light themes are wired, with localStorage bootstrap to avoid a flash on load. (5) panel.js applies is-upstream / is-downstream / is-cycle / is-selected classes and honors OS prefers-color-scheme; it does NOT call fetch/XHR (rsync-friendly static contract). (6) WG_EDGES['parent'].down includes the child id (the reachability set the JS uses for highlight decisions)."
 timeout_seconds = 60
 
 [[scenario]]
@@ -1467,7 +1468,7 @@ script = "scenarios/wg_html_chat_color_and_markdown.sh"
 owners = [
     "polish-wg-html",
 ]
-description = "Pins polish-wg-html: (1) chat task nodes in the viz must carry the 'chat-agent' CSS class (so --chat-task blue overrides open/yellow status color); (2) description JSON must include description_html (markdown rendered to HTML); (3) panel.js must have the desc-toggle wiring for raw/pretty toggle; (4) CSS must declare --chat-task color (TUI Color::Blue = rgb(36,114,200))."
+description = "Pins polish-wg-html: (1) chat task nodes in the viz must carry the 'chat-agent' CSS class (so --chat-task blue overrides the neutral open status color); (2) description JSON must include description_html (markdown rendered to HTML); (3) panel.js must have the desc-toggle wiring for raw/pretty toggle; (4) CSS must declare --chat-task color (TUI Color::Blue = rgb(36,114,200))."
 timeout_seconds = 60
 
 [[scenario]]

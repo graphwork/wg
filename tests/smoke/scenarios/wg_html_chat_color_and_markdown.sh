@@ -4,7 +4,7 @@
 # Pins two features added in polish-wg-html:
 #   1. Chat task nodes (.chat-N / .coordinator-N) in the viz HTML must carry
 #      the 'chat-agent' CSS class so the --chat-task CSS variable (TUI Blue,
-#      rgb(36,114,200)) overrides the yellow open-status color.
+#      rgb(36,114,200)) overrides the neutral open-status color.
 #   2. Task description JSON must include a description_html field containing
 #      parsed markdown (not raw text).
 #   3. panel.js must wire the desc-toggle button for raw/pretty switching.

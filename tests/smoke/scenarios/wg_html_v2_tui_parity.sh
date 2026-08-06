@@ -6,8 +6,9 @@
 #      wrong for the read-only TUI-sibling use case).
 #   2. Edge spans must carry data-edges="from>to" attribution per character so
 #      JS can distinguish upstream vs downstream when a node is selected.
-#   3. CSS must carry exact TUI palette RGB triples (state.rs:271 status colors
-#      and render.rs:1500 magenta/cyan/yellow edge highlights).
+#   3. CSS must preserve terminal status parity: live/in-progress is yellow,
+#      ordinary open is the neutral theme foreground, and edge highlights use
+#      render.rs:1500 magenta/cyan/yellow.
 #   4. CSS must declare both auto (prefers-color-scheme) and manual
 #      (data-theme) overrides for dark + light themes.
 #   5. The page is statically rsync-friendly: opens over file:// with no
@@ -30,6 +31,10 @@ wg --dir .wg init --executor claude --model claude:opus 2>/dev/null \
 wg --dir .wg add 'parent task' --id parent-v2t -d 'parent for smoke'    >/dev/null
 wg --dir .wg add 'child task'  --id child-v2t  --after parent-v2t \
     -d 'child for smoke'                                                       >/dev/null
+# Exercise both user-visible statuses in the generated fixture without
+# disturbing the parent→child dependency used by the edge assertions.
+wg --dir .wg add 'live task' --id live-v2t -d 'live for palette smoke' >/dev/null
+wg --dir .wg claim live-v2t --actor html-v2-smoke >/dev/null
 
 # Render with all defaults — the spec says no flags = all tasks.
 wg --dir .wg html --out "$OUTDIR" 2>&1
@@ -52,22 +57,77 @@ grep -q 'data-edges="parent-v2t>child-v2t"' "$INDEX" \
          grep -o 'data-edges="[^"]*"' "$INDEX" | head -5; \
          exit 1; }
 
-# Both task ids must be wrapped as task-link spans with their status.
-grep -q 'data-task-id="parent-v2t".*data-status' "$INDEX" \
-    || grep -q 'data-task-id="parent-v2t"' "$INDEX" \
-    || { echo "FAIL: parent task-link missing"; exit 1; }
-grep -q 'data-task-id="child-v2t"' "$INDEX" \
-    || { echo "FAIL: child task-link missing";  exit 1; }
+# Both task ids must be wrapped as task-link spans with distinct status data,
+# and the compact list must retain the matching badge classes.
+python3 - "$INDEX" <<'PYEOF'
+import re, sys
+html = open(sys.argv[1]).read()
+checks = [
+    (r'data-task-id="parent-v2t"[^>]*data-status="open"', 'open graph task-link'),
+    (r'data-task-id="live-v2t"[^>]*data-status="in-progress"', 'live graph task-link'),
+    (r'class="badge open"', 'open task-list badge'),
+    (r'class="badge in-progress"', 'live task-list badge'),
+]
+for pattern, label in checks:
+    if not re.search(pattern, html):
+        print(f'FAIL: generated HTML missing {label}')
+        sys.exit(1)
+PYEOF
 
-# (3) TUI palette in CSS — exact RGB triples from state.rs:271 / render.rs:1500.
-# InProgress overrides the cyan flash with TUI Color::Yellow (rgb(229,229,16))
-# to match what the TUI task list actually renders for active tasks.
+# (3) TUI palette in CSS: live remains yellow/ochre while ordinary open
+# resolves through --fg in default dark, OS-light, and explicit-light scopes.
 CSS="$OUTDIR/style.css"
+python3 - "$CSS" <<'PYEOF'
+import sys
+css = open(sys.argv[1]).read()
+if css.count('--status-open: var(--fg);') != 3:
+    print('FAIL: open must use var(--fg) in default, OS-light, and explicit-light palettes')
+    sys.exit(1)
+if '--status-open: rgb(' in css:
+    print('FAIL: open regained a yellow/brown RGB color')
+    sys.exit(1)
+if '--status-in-progress: rgb(229, 229, 16);' not in css:
+    print('FAIL: dark-theme live yellow is missing')
+    sys.exit(1)
+if css.count('--status-in-progress: rgb(180, 140, 0);') != 2:
+    print('FAIL: OS-light and explicit-light live ochre declarations are missing')
+    sys.exit(1)
+
+# Both rendering surfaces consume the corrected variable.
+open_link = '.viz-pre .task-link[data-status="open"]                  { color: var(--status-open); }'
+open_badge = '.badge.open                  { color: var(--status-open); }'
+for rule in (open_link, open_badge):
+    if rule not in css:
+        print(f'FAIL: corrected open variable is not consumed by {rule}')
+        sys.exit(1)
+
+# Modifier precedence is deliberate: chat then paused override base status;
+# agency changes opacity only; selected relationships force their accent.
+chat = '.viz-pre .task-link.chat-agent { color: var(--chat-task); }'
+paused = '.viz-pre .task-link.paused {'
+agency = '.viz-pre.viz-agency .task-link.is-agency {'
+if not (css.index(open_link) < css.index(chat) < css.index(paused)):
+    print('FAIL: chat/paused status override order changed')
+    sys.exit(1)
+agency_block = css[css.index(agency):css.index('}', css.index(agency))]
+if 'color:' in agency_block or 'opacity: 0.6' not in agency_block:
+    print('FAIL: agency modifier must dim without replacing status color')
+    sys.exit(1)
+for accent in ('--edge-upstream', '--edge-downstream'):
+    if f'color: var({accent}) !important;' not in css:
+        print(f'FAIL: {accent} no longer overrides status colors')
+        sys.exit(1)
+if 'body[data-selected] .viz-pre .task-link.is-selected' not in css:
+    print('FAIL: selected-task overlay missing')
+    sys.exit(1)
+if '.badge.paused                { color: var(--status-paused); }' not in css:
+    print('FAIL: paused badge override missing')
+    sys.exit(1)
+PYEOF
+
 for needle in \
     'rgb(80, 220, 100)'   `# Done`           \
     'rgb(220, 60, 60)'    `# Failed`         \
-    'rgb(229, 229, 16)'   `# InProgress = Color::Yellow (render.rs)`   \
-    'rgb(200, 200, 80)'   `# Open`           \
     'rgb(60, 160, 220)'   `# Waiting`        \
     'rgb(140, 230, 80)'   `# PendingEval`    \
     'rgb(188, 63, 188)'   `# upstream edge (magenta)` \
