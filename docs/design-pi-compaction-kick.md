@@ -86,18 +86,25 @@ The implementation MUST preserve these invariants:
    must-not-trigger case when it has its accepted terminal receipt (or belongs
    to a non-WG session); a managed worker that emits final prose but omits its
    required WG receipt is intentionally still unresolved.
-2. **Exactly one kick opportunity, at most one send invocation per action.** In
-   the no-crash qualifying path the one durable action permits exactly one kick.
-   Duplicate events, daemon replies, plugin reloads, and crashes do not create a
-   second call to Pi for the same action ID. Distributed atomic exactly-once
-   between two processes is not claimed: a crash after permit but before
-   acknowledgement is held as indeterminate, never “fixed” by blind redelivery.
-3. **Finite authority.** A kick consumes one existing Pi continuation epoch and
-   its elapsed-time charge. The default dedicated cap is one compaction kick per
-   source attempt, additionally bounded by the existing
-   `max_continuation_epochs = 3` and `max_continuation_elapsed_secs = 1800`.
-   The dedicated cap may later be configurable only within the existing hard
-   bounds; the first implementation should keep it at one.
+2. **Exactly once per durable compaction occurrence, at most one send
+   invocation per action.** Every distinct qualifying persisted threshold-
+   compaction entry gets exactly one durable occurrence/action record and, on
+   the no-crash path, exactly one kick. Duplicate/replayed events for that entry,
+   daemon replies, and plugin reloads cannot create another fresh delivery grant
+   or Pi call. A second qualifying entry in the same attempt gets a different
+   occurrence/action and therefore a second kick. Distributed atomic exactly-
+   once delivery between WG and Pi is not claimed: a crash after permit commit
+   but before acknowledgement may yield zero observed delivery and is held as
+   indeterminate, never “fixed” by blind redelivery.
+3. **Finite shared authority, with no per-attempt kick cap.** Every kick consumes
+   one existing Pi continuation epoch and its elapsed-time charge. There is no
+   dedicated `kick_used`, one-kick-per-attempt flag, or compaction-kick count
+   limit. Successive qualifying compactions continue to receive distinct kicks
+   until the already-existing overall authorization limits
+   (`max_continuation_epochs` / lifecycle `max_replacement_epochs` and the
+   corresponding elapsed-seconds limit) are exhausted. Exhaustion is a loud
+   `HeldOperatorRequired(continuation_budget_exhausted)`, not a silent stop and
+   not permission to start a new route/session/process.
 4. **Same owner.** A kick changes only `pi_continuation_epoch`. It does not
    change task generation, attempt ID/fence, attempt sequence, worktree path or
    lease epoch, Pi session ID/file/branch, process epoch, PID birth identity, or
@@ -117,14 +124,17 @@ not replace JSON workers with RPC.
 There are two related identifiers so lookup remains idempotent even after the
 continuation epoch advances.
 
-### 3.1 Candidate ID
+### 3.1 Durable compaction occurrence ID
 
 The daemon, not JavaScript, locates the named entry in the attested session file
-and hashes its exact canonical JSON. It computes:
+and hashes its exact canonical JSON. The Pi-managed compaction entry ID is the
+durable unique event identity: a later compaction is a different descendant
+entry with a different ID, while duplicate callbacks/raw lines refer to the
+same entry. The daemon computes:
 
 ```text
-candidate_id = b3(canonical-json([
-  "wg.pi.threshold-compaction-candidate/v1",
+occurrence_id = b3(canonical-json([
+  "wg.pi.threshold-compaction-occurrence/v1",
   graph_id,
   task_id, generation, attempt_id, attempt_fence,
   worktree_lease_epoch,
@@ -135,9 +145,15 @@ candidate_id = b3(canonical-json([
 ]))
 ```
 
-The candidate tuple is unique in the watchdog ledger. A repeated authorization
-request first looks it up and returns that record; it never derives a fresh
-record from the now-advanced continuation epoch.
+The occurrence tuple has a unique index in the watchdog ledger. A repeated
+authorization request first looks it up and returns that record; it never
+derives a fresh record from the now-advanced continuation epoch. A different
+persisted compaction entry, including a later descendant in the same
+session/process/attempt, is a different occurrence and MUST allocate a new
+record. The record may also store a monotonically increasing
+`occurrence_ordinal` per source/session for diagnostics, allocated in the same
+insert transaction, but correctness and deduplication use `occurrence_id`, not
+arrival order.
 
 ### 3.2 Exactly-once durable action key
 
@@ -147,19 +163,25 @@ continuation epoch and frozen stock prompt:
 ```text
 action_id = b3(canonical-json([
   "wg.pi.threshold-compaction-kick/v1",
-  candidate_id,
+  occurrence_id,
   authorized_from_continuation_epoch,
   "WG_PI_COMPACTION_KICK_V1", prompt_digest
 ]))
 ```
 
-The record fixes `to_continuation_epoch = from + 1`. The unique candidate index
+The record fixes `to_continuation_epoch = from + 1`. The unique occurrence index
 and action ID together make these illegal:
 
-- two action IDs for one compaction entry;
+- two action IDs or fresh delivery grants for one compaction entry;
 - one action applied to a different source/process/session/route;
 - two epoch charges for a replayed permit;
 - changed prompt bytes under an existing action ID.
+
+They deliberately do **not** make “an attempt already kicked” illegal. If entry
+`E1` produces `occurrence_id O1` / `action_id A1` and its recovery turn later
+produces a second threshold-compaction entry `E2`, then `E2 != E1`, `O2 != O1`,
+and `A2 != A1`. Subject to the shared overall epoch/time budget and all current
+guards, `A2` receives its own permit and kick.
 
 The prompt is the stock WG finalization instruction with a bounded observation
 code such as `threshold_compaction_protocol_unresolved`. It MUST NOT include the
@@ -186,7 +208,7 @@ state or exact local Pi state.
 | Exact session | Session ID, selected file/header, current compaction leaf, append-only prefix, and no branch/fork replacement match `SessionProof` | Hold/cancel |
 | Exact route | Handler/provider/model/reasoning and route digest match bootstrap; plugin compat/artifact digest matches; no intervening `model_select` | Hold/cancel. Never “resume” on a newly resolved profile route |
 | Exact process | Process epoch and PID/PGID/start ticks/boot ID/nonce match. Broker verifies the `wg` claimant descends from the exact Pi child | Hold/cancel |
-| Budget | Dedicated kick count is below one and existing epoch + elapsed limits admit `from + 1` | `continuation_budget_exhausted`; operator required |
+| Budget | Existing overall watchdog/lifecycle continuation epoch and elapsed limits admit `from + 1`; there is no dedicated kick count | Loud `HeldOperatorRequired(continuation_budget_exhausted)`; no permit |
 | Feature/host contract | Kill switch enabled; exact compatible embedded plugin loaded hermetically; supported host exposes awaited `session_compact`, custom message lifecycle, and active-window `followUp` behavior | No action; loud diagnostic |
 
 The broker should reconcile bounded raw-stream observations to the current
@@ -232,8 +254,10 @@ summary or prompt text.
 The broker authenticates the capability and exact process ancestry, reconciles
 the session entry from disk, evaluates §4, and persists an `Authorized` watchdog
 outbox record before replying. Authorization does not increment an epoch and is
-safe to replay. A duplicate with identical fields returns the same action; a
-duplicate candidate with different fields is a conflict.
+safe to replay. A duplicate occurrence with identical fields returns the same
+action; the same occurrence ID with different fields is a conflict. A later
+entry ID is not a duplicate merely because task, attempt, process, or session is
+the same.
 
 ### 5.2 Delivery permit — the linearization point
 
@@ -247,26 +271,40 @@ idempotency key is the action ID.
 
 This lifecycle CAS is the **linearization point** against `wg_done`, `wg_fail`,
 `wg_wait`, cancel, and abort. The broker then persists the watchdog record as
-`DeliveryPermitted` and only then returns the frozen prompt and permit receipt.
-If the graph commit succeeded but the watchdog write/reply crashed, replay finds
-the lifecycle audit event with this action ID and exact epoch, repairs the
-outbox to `DeliveryPermitted`, and returns the same permit without another
-charge. If the watchdog write happened but the graph CAS did not, no permit is
-returned and replay retries the one CAS.
+`DeliveryPermitted` and only the request that performed that successful CAS may
+receive `{ freshDeliveryGrant: true, prompt, permitReceipt }`. A request that
+finds the action already `DeliveryPermitted` receives status only,
+`freshDeliveryGrant: false`, and no prompt authority. Concurrent duplicate
+permit calls therefore cannot both send.
+
+If the graph commit succeeded but the watchdog write or reply crashed, replay
+finds the lifecycle audit event with this action ID and exact epoch and repairs
+the outbox to `DeliveryPermitted`, but returns a **non-deliverable** replay
+status. WG cannot prove whether the original reply crossed the process boundary,
+so liveness is sacrificed rather than minting a second send opportunity. If the
+broker crashes before the graph CAS, the record remains `Authorized`; replay of
+the deterministic request may perform the one CAS and receive the fresh grant.
+No path charges the epoch twice.
 
 A terminal/park that commits first rejects the permit. A permit that commits
 first authorizes at most this one delivery; a later terminal cannot rewrite
 history, but it consumes all later continuation authority. The acknowledgement
 response tells the plugin to abort the just-started run if a terminal/park won
-after permit.
+after permit. Absent a terminal, the same attempt remains eligible for a later,
+distinct compaction occurrence under the shared continuation budget.
 
 ### 5.3 Enqueue and acknowledge
 
-Immediately after receiving a permit, with no timer or event-loop deferral, the
-plugin checks the same local identity/queue/quiescence tuple once more and calls
+Immediately after receiving a **fresh** delivery grant, with no timer or
+event-loop deferral, the plugin checks the same local identity/queue/quiescence
+tuple once more, atomically marks that action ID `sendAttempted` in its live
+module before invoking Pi, and calls
 `pi.sendMessage(..., { deliverAs: "followUp", triggerTurn: true })` exactly
-once. The action remains `DeliveryPermitted` during the unavoidable
-send/ack gap; this state means “send may have happened,” never “safe to retry.”
+once. Duplicate callbacks and permit responses consult that live set and do not
+call Pi. The action remains `DeliveryPermitted` during the unavoidable send/ack
+gap; this state means “send or a deliverable reply may have happened,” never
+“safe to retry.” A plugin reload loses the live set but cannot obtain a fresh
+grant, so it still cannot resend.
 
 The plugin registers `message_start`. When Pi selects a custom message whose
 `customType`, action ID, prompt version, prompt digest, and content digest match
@@ -282,40 +320,48 @@ again. On session reload it may acknowledge an already persisted matching Pi
 custom-message entry, but it may not reconstruct or send an action from a
 historical compaction entry.
 
-The next public `agent_settled` after an acknowledged kick closes the action as
-`SettledAfterKick`. If WG remains unresolved, the watchdog holds for existing
-process-exit convergence/operator handling; it MUST NOT manufacture another
-kick from settlement alone. A later distinct threshold compaction can qualify
-only if the dedicated and shared budgets still allow it (the initial cap of one
-means it will not).
+The next public `agent_settled` after an acknowledged kick closes the latest
+open action as `SettledAfterKick`. If WG remains unresolved, the watchdog holds
+for existing process-exit convergence/operator handling; it MUST NOT manufacture
+another kick from settlement alone. Before settlement, however, the recovery
+turn may itself finish with another successful qualifying threshold compaction.
+That new persisted entry starts a new occurrence/action and receives its own
+kick if the existing shared overall epoch/time budget still admits it. There is
+no one-kick-per-attempt suppression.
 
 ## 6. Durable state machine
 
 `PiCompactionKickRecord` is a bounded map/list in `PiWatchdogState`, keyed by
-candidate and action IDs. Terminal states are retained for the source attempt.
+occurrence and action IDs. Terminal states are retained for the source attempt.
+The bound is the existing overall continuation-epoch budget plus small
+suppressed-diagnostic retention; it is not a one-action slot. State transitions
+below are per record, so creating `O2/A2` never reopens or mutates `O1/A1`.
 
 | Current state | Input / condition | Transaction and next state | External action |
 | --- | --- | --- | --- |
 | `Absent` | `compaction_start` raw JSON | Record bounded diagnostic reason/start sequence only | None |
 | `Absent` | `session_compact(threshold, willRetry=false)` and all authorize guards pass | Persist immutable record as `Authorized` | Return action metadata, no prompt authority yet |
-| `Absent` | manual, overflow, pending queue, non-quiescent host, terminal WG state, unsafe effect, mismatch, disabled, or budget exhausted | No action, or bounded `Suppressed(reason)` diagnostic | None |
-| `Absent` | failed/aborted `compaction_end` | Record diagnostic outcome; no candidate exists | None |
+| `Absent` | manual, overflow, pending queue, non-quiescent host, terminal WG state, unsafe effect, mismatch, or disabled | No action, or bounded `Suppressed(reason)` diagnostic | None |
+| `Absent` | otherwise qualifying occurrence but shared overall budget exhausted | Persist/emit loud `HeldOperatorRequired(continuation_budget_exhausted)` diagnostic | None; never silently loop or restart |
+| `Absent` | failed/aborted `compaction_end` | Record diagnostic outcome; no qualifying occurrence exists | None |
 | `Authorized` | identical duplicate authorize | No mutation | Return same action |
-| `Authorized` | changed payload for same candidate | `HeldConflict` | None |
+| `Authorized` | changed payload for same occurrence | `HeldConflict` | None |
 | `Authorized` | local guard fails / queue appears | `Cancelled(reason)` | None; budget was not charged |
-| `Authorized` | permit and terminal-clear CAS succeeds | Lifecycle epoch increments once; persist `DeliveryPermitted` | Return frozen prompt/permit |
-| `Authorized` | terminal/park/process/mismatch/budget wins | `Cancelled` or `HeldMismatch` | None |
-| `DeliveryPermitted` | duplicate permit | No increment | Return same permit |
+| `Authorized` | permit and terminal-clear CAS succeeds | Lifecycle epoch increments once; persist `DeliveryPermitted` | Return frozen prompt/permit with `freshDeliveryGrant=true` only to this winning call |
+| `Authorized` | terminal/park/process/mismatch wins | `Cancelled` or `HeldMismatch` | None |
+| `Authorized` | shared overall epoch/time budget is now exhausted | `HeldOperatorRequired(continuation_budget_exhausted)` | None; loud status/diagnostic |
+| `DeliveryPermitted` | duplicate/recovered permit request | No increment | Return `freshDeliveryGrant=false`; never return prompt/send authority again |
 | `DeliveryPermitted` | plugin invokes Pi API | State remains `DeliveryPermitted` (indeterminate until ack) | Exactly one local send call |
 | `DeliveryPermitted` | exact custom `message_start`, terminal still clear | Persist `Acknowledged` | Pi continues existing process/session |
 | `DeliveryPermitted` | exact custom `message_start`, terminal/park won after permit | Persist `AcknowledgedTerminalRace`; reply `abort=true` | Plugin calls `ctx.abort()`, never resends |
 | `DeliveryPermitted` | process exits or session/process identity changes before ack | `Uncertain` | No redelivery; existing exit convergence |
 | `Acknowledged` | duplicate ack/replayed message event | No mutation | None |
 | `Acknowledged` | later `agent_start`/turn evidence | Optional `Running` diagnostic; same action | None |
+| Any existing record(s) | a **different** persisted threshold-compaction entry qualifies while source remains running | Insert new `occurrence_id`/`action_id` record as `Authorized`; prior records unchanged | Start the independent permit flow for this occurrence |
 | `Acknowledged` / `Running` | accepted WG terminal receipt | `TerminalObserved` | Existing finalization; no later permit |
-| `Acknowledged` / `Running` | later `agent_settled`, no terminal | `SettledAfterKick`; hold `kick_completed_without_terminal` | No second settlement-derived prompt/kick |
+| latest `Acknowledged` / `Running` | later `agent_settled`, no terminal or newer occurrence | `SettledAfterKick`; hold `kick_completed_without_terminal` | No settlement-derived prompt/kick; only a future distinct compaction event could authorize |
 | Any nonterminal action | exact process exit | `Authorized -> CancelledProcessExit`; `DeliveryPermitted -> Uncertain`; acked states retained | Wrapper/lifecycle exit path only |
-| Any | duplicate raw lines / finished-stream replay | Cursor/action IDs make transition idempotent | Raw observer never sends |
+| Any | duplicate raw/plugin lines, callback replay, or finished-stream replay for the same entry | Cursor/occurrence/action/request IDs make transition idempotent | Raw observer never sends; broker never issues another fresh grant |
 
 `compaction_end` is still projected. A matching successful threshold end
 confirms diagnostics. A missing end because the process died leaves the action
@@ -341,8 +387,8 @@ loudly. It cannot authorize a retry.
 | Route mismatch | Frozen route digest/model/reasoning/plugin artifact must match; profiles/config are not re-resolved |
 | Session/branch mismatch | Exact ID/header/file/current compaction leaf/prefix must match; no fork/resume selector substitution |
 | Process mismatch/exit | Exact process epoch and PID birth identity must match; no replacement process is launched |
-| Exhausted continuation budget | Dedicated per-attempt cap and shared epoch/elapsed limits both must pass |
-| Duplicate/replayed event | Candidate/action unique keys return the existing terminal state |
+| Exhausted continuation budget | Only the existing shared overall epoch/elapsed limits apply. Exhaustion records/surfaces `HeldOperatorRequired(continuation_budget_exhausted)`; there is no per-attempt kick-used cap |
+| Duplicate/replayed event | Occurrence/action unique keys return the existing state and never a second fresh grant; a distinct later compaction entry is not a duplicate |
 | Non-WG human/chat Pi | Missing attempt capability or chat binding: continuation module is inert and performs no broker call |
 | Historical compaction on upgrade/reload | Never backfill; only a live awaited qualifying callback may authorize |
 
@@ -359,19 +405,20 @@ The table uses `A` = durable `Authorized`, `P` = lifecycle CAS committed and
 | After `A`, before permit request | `Authorized`, epoch unchanged | Same live process/callback may request permit once; a restarted/different process cancels stale `A` | Safe retry of authorization/permit, no send yet |
 | Terminal/park before permit CAS | Terminal receipt; `A` may exist | Permit rejects and marks cancelled | Terminal wins, no send |
 | During permit before graph commit | `A`, old epoch | Replay retries same CAS/action ID | At most one epoch charge |
-| Graph permit commit, crash before watchdog `P`/reply | Lifecycle audit has action ID and new epoch; watchdog has `A` | Reconcile to `P`; same live caller may receive same permit. Different/dead process becomes uncertain/cancelled | Permit is not charged twice |
+| Graph permit commit, crash before watchdog `P`/reply | Lifecycle audit has action ID and new epoch; watchdog may still have `A` | Reconcile to `P`, but any replay returns `freshDeliveryGrant=false`; never reconstruct a deliverable reply | Permit is not charged twice; this occurrence may lose liveness, never duplicate |
 | After permit reply, before `S` | `P`; send unknown | Never automatically resend. If the original handler is still executing it may make its one immediate call; after restart/exit mark uncertain | At-most-once beats liveness |
 | During/after `S`, before matching `message_start` | `P`; Pi queue may contain action | Do not send again. Original process may drain and ack; reload may only inspect/ack a persisted matching custom entry | No duplicate; uncertain on exit |
 | Matching message selected, crash during ack RPC | Pi observed exact action; watchdog may still show `P` | Retry ack only from matching events/session entry; never send | Eventually ack or remain uncertain |
 | After `D`, before provider/assistant response | `Acknowledged` | Duplicate authorize/permit/ack are no-ops | Never redeliver; process exit uses convergence |
-| Terminal commits after `P`, before `D` | Permit and terminal both ordered; no further authority | Matching ack returns `abort=true`; plugin aborts if possible | One committed kick maximum, no loop |
+| Terminal commits after `P`, before `D` | Permit and terminal both ordered; no further authority | Matching ack returns `abort=true`; plugin aborts if possible | One committed kick maximum for this occurrence, no later occurrence can pass terminal guards |
 | Terminal commits after `D` | Ack plus terminal | Normal first-terminal finalization; no further permit | Terminal wins future work |
 | Public `agent_settled` before a kick | This means delivery did not enter the required active callback | Do not send post-settled; hold and let wrapper exit | Avoid JSON detached-run loss |
-| Public `agent_settled` after `D` | `SettledAfterKick` | No settlement-derived second prompt | Finite stop/operator/convergence |
+| Public `agent_settled` after `D` | Latest action becomes `SettledAfterKick` | No settlement-derived second prompt | Hold/operator/convergence; settlement is not a compaction occurrence |
 | Process exits with `A` only | `CancelledProcessExit` | No permit on a new PID | Existing new-attempt convergence |
 | Process exits with `P` but no `D` | `Uncertain` | Never redeliver same action | Existing new-attempt convergence |
 | Process exits after `D` unresolved | Delivered action plus exact reap | No same-action retry; convergence may create a **new generation/attempt** under existing rules | Ownership boundaries stay explicit |
-| Duplicate raw/plugin events | Same stream cursor/candidate/action/request IDs | Return stored state or conflict on changed bytes | No extra send/charge |
+| Duplicate raw/plugin events for one compaction entry | Same stream cursor/occurrence/action/request IDs | Return stored state or conflict on changed bytes; no fresh grant | No extra send/charge |
+| Second qualifying threshold compaction after kick 1 | A different persisted descendant entry `E2`, with `O2/A2`; `A1` is already acked and shared budget remains | Insert/permit `A2` independently; duplicate `E1` or `E2` events still resolve to their own existing records | Exactly two no-crash kicks and two epoch charges, one per occurrence |
 | Daemon restarts | Watchdog outbox + lifecycle audit survive | Reconcile `A`/`P` ordering before replying | Same action only |
 | Plugin reload, same process | Session scan may find a persisted custom action | Ack existing action only; never authorize from historical compaction | No replay send |
 
@@ -393,11 +440,13 @@ A successful permit records these before/after assertions:
 | Pi branch | compaction entry is current leaf | Pi session manager appends the custom message and responses as descendants; no fork/new session |
 | process epoch / PID identity | `p / pid-digest` | unchanged when same PID |
 | route snapshot | `route_digest` | unchanged; no profile re-resolution or model switch |
-| continuation epoch | `c` | `c + 1` exactly once at permit |
+| continuation epoch | `c` | `c + 1` exactly once for this occurrence at permit (`c + 2` after two separately permitted occurrences) |
 | retry/admission/breaker/eval/accounting domains | current values | no increments caused by the kick (ordinary Pi usage still accounts normally) |
 
-The raw observer must project the second run's ordinary usage once. The kick
-itself adds no source retry or replacement-process accounting.
+The raw observer must project every recovery run's ordinary usage once. Each
+new qualifying occurrence repeats only the continuation-epoch row above; the
+kick itself adds no source retry or replacement-process accounting. There is no
+attempt-wide boolean whose value changes after the first occurrence.
 
 ## 10. Native event projection
 
@@ -435,7 +484,7 @@ wires no continuation handler at `worksgood-pi/src/index.ts:75-89`.
 
 - `src/pi_watchdog/mod.rs`
   - add schema-v3 bounded compaction/queue/retry projection;
-  - add `PiCompactionKickRecord`, states, candidate/action derivation,
+  - add `PiCompactionKickRecord`, states, occurrence/action derivation,
     authorize/permit/ack/cancel/reconcile methods;
   - reuse continuation budget and exact guards;
   - suppress the generic settlement prompt after an acknowledged kick;
@@ -481,7 +530,8 @@ workers to RPC.
 - new `worksgood-pi/src/continuation.ts`
   - finite event automaton (`agent_start/end`, tools,
     `session_compact`, `message_start`, `agent_settled`, shutdown);
-  - local guard checks, authorize/permit/send-once/ack-only replay;
+  - local guard checks, authorize/permit/send-once per occurrence, independent
+    successive occurrences, and ack-only replay;
   - no registration without the exact worker capability/task-worker launch
     contract.
 - `worksgood-pi/src/index.ts`
@@ -496,13 +546,16 @@ workers to RPC.
     `make embed-worksgood-pi`.
 - `worksgood-pi/test/plugin.test.ts` plus a focused new continuation test
   - registration, quiescent-window qualification, queue/terminal/mismatch
-    suppression, send once, ack-only replay, and host-contract assertions.
+    suppression, send once per distinct occurrence (including two in one
+    attempt), duplicate-event deduplication, ack-only replay, and host-contract
+    assertions.
 
 ### Tests
 
-- `tests/integration_pi_watchdog.rs`: state transitions, exact key, lifecycle
-  CAS, terminal/wait races, effect/session/route/process guards, budget, and all
-  crash barriers.
+- `tests/integration_pi_watchdog.rs`: state transitions, exact occurrence/action
+  key, two successive occurrence records, per-occurrence deduplication,
+  lifecycle CAS, terminal/wait races, effect/session/route/process guards,
+  shared budget, and all crash barriers.
 - existing `tests/fixtures/fake-pi-compaction-stall/**`: retain the upstream
   defect/control reproducer; extend or add a companion wrapper fixture without
   turning it into the authority.
@@ -598,7 +651,8 @@ The new smoke must use:
    explicit fixture extension;
 5. real raw JSON and Pi v3 session files.
 
-For the target, assert in order and before the first `agent_settled`:
+For the single-occurrence target, assert in order and before the first
+`agent_settled`:
 
 ```text
 compaction_end threshold success willRetry=false
@@ -621,6 +675,17 @@ This is a terminal/user-visible worker behavior fix. The smoke is the scripted
 actual terminal flow, not only a Rust or TypeScript unit substitute, and its
 manifest owner is grow-only.
 
+The same real-flow smoke MUST include a second hardening phase whose first
+recovery turn itself reaches another successful threshold compaction before
+settlement. Assert the ordered subsequence
+`E1 -> A1/message1 -> recovery-run-1 -> E2 -> A2/message2 -> recovery-run-2 ->
+agent_settled`, with distinct Pi compaction entry IDs, `O1 != O2`, `A1 != A2`,
+two custom messages, two provider recovery markers, one unchanged OS PID and
+source/session/route tuple, and `continuation_epoch = c + 2`. Replay each entry's
+plugin/raw events and both acks and assert the totals stay exactly two. Configure
+the existing overall epoch/time budget high enough for two; do not add or relax
+a special kick cap for this test.
+
 ### C. Negative controls
 
 The installed-flow fixture plus integration/plugin tests must cover:
@@ -636,7 +701,8 @@ The installed-flow fixture plus integration/plugin tests must cover:
 - session ID/file/leaf/fork mismatch;
 - route/model/reasoning/plugin mismatch;
 - process epoch/PID birth mismatch and process exit at each state;
-- dedicated and shared continuation budget exhaustion;
+- shared overall continuation epoch exhaustion and elapsed-time exhaustion,
+  each loud as `HeldOperatorRequired`; no dedicated kick-count limit;
 - duplicate/reordered `compaction_start`, `session_compact`, `compaction_end`,
   `agent_settled`, custom-message, and ack events;
 - daemon crash before/after authorization, graph permit CAS, watchdog permit
@@ -672,8 +738,10 @@ queued-follow-up controls must stay green.
 This design addresses #6424 without teaching WG to read intent from model
 prose. The only qualifying situation is a live, successful, non-retrying
 threshold `session_compact` in an exact capability-bound task attempt whose WG
-lifecycle is still unresolved. The lifecycle kernel grants one finite permit;
-the embedded plugin uses Pi's existing in-process queue before JSON settlement;
-a matching custom message event acknowledges delivery. All uncertain crash
-windows stop rather than duplicate. The wrapper, generation, attempt, worktree,
-session, process, and route remain the same.
+lifecycle is still unresolved. The lifecycle kernel grants one finite permit
+per distinct qualifying compaction occurrence; the embedded plugin uses Pi's
+existing in-process queue before JSON settlement; a matching custom message
+event acknowledges delivery. Successive distinct occurrences get successive
+permits until the existing overall epoch/time budget is loudly exhausted. All
+uncertain crash windows stop rather than duplicate. The wrapper, generation,
+attempt, worktree, session, process, and route remain the same.
