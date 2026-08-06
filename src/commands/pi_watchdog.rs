@@ -557,18 +557,32 @@ fn bounded_identity(value: &str, label: &str) -> Result<()> {
 }
 
 pub(crate) fn pi_route_snapshot(model: &str, reasoning: Option<&str>) -> RouteSnapshot {
+    use sha2::{Digest, Sha256};
+
     let inner = model.strip_prefix("pi:").unwrap_or(model);
     let (provider, model_id) = inner.split_once(':').unwrap_or(("unknown", inner));
+    // Pi owns provider resolution. Freeze the exact base URL without
+    // persisting it: built-ins use Pi's canonical runtime endpoint and custom
+    // providers must declare the URL to WG at spawn. The embedded extension
+    // independently hashes ctx.model.baseUrl and authorization compares it.
+    let endpoint_url = std::env::var("WG_PI_EXPECTED_ENDPOINT_URL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| match provider {
+            "openrouter" => "https://openrouter.ai/api/v1".into(),
+            "openai-codex" => "https://chatgpt.com/backend-api".into(),
+            "openai" => "https://api.openai.com/v1".into(),
+            "anthropic" => "https://api.anthropic.com".into(),
+            "google" => "https://generativelanguage.googleapis.com/v1beta".into(),
+            _ => format!("unsupported-pi-endpoint:{provider}"),
+        });
     RouteSnapshot {
         handler: "pi".into(),
         provider: provider.into(),
         model: model_id.into(),
         reasoning: reasoning.map(str::to_owned),
-        endpoint_redacted: "pi-owned".into(),
-        // Pi owns provider resolution, so WG never persists its endpoint URL or
-        // credentials. This launch-bound opaque proof nevertheless freezes the
-        // exact handler/provider/model route across spawn, plugin, and watchdog.
-        endpoint_hmac: format!("b3:{}", blake3::hash(model.as_bytes()).to_hex()),
+        endpoint_redacted: format!("pi-owned:{provider}"),
+        endpoint_hmac: format!("sha256:{:x}", Sha256::digest(endpoint_url.as_bytes())),
         qos: QosClass::Low,
         pi_binary_digest: "pi-path-owned".into(),
         plugin_digest: worksgood::pi_plugin::WG_PI_PLUGIN_COMPAT_VERSION.into(),

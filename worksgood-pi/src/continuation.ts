@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type {
@@ -90,7 +91,6 @@ function enabled(
       env.WG_PI_COMPACTION_KICK !== "0" &&
       env.WG_PI_PLUGIN_COMPAT_VERSION &&
       env.WG_PI_ROUTE_HANDLER &&
-      env.WG_PI_ENDPOINT_PROOF &&
       env.WG_PI_ROUTE_SNAPSHOT_DIGEST &&
       env.WG_PI_COMPACTION_KICK_HOST_CONTRACT === WG_PI_COMPACTION_KICK_HOST_CONTRACT,
   );
@@ -101,10 +101,22 @@ function enabled(
   return eligible;
 }
 
-function modelIdentity(ctx: ExtensionContext): { provider: string; model: string } | null {
+function modelIdentity(
+  ctx: ExtensionContext,
+): { provider: string; model: string; endpointProof: string } | null {
   const model = ctx.model;
-  if (!model || typeof model.provider !== "string" || typeof model.id !== "string") return null;
-  return { provider: model.provider, model: model.id };
+  if (
+    !model ||
+    typeof model.provider !== "string" ||
+    typeof model.id !== "string" ||
+    typeof model.baseUrl !== "string" ||
+    !model.baseUrl
+  ) return null;
+  return {
+    provider: model.provider,
+    model: model.id,
+    endpointProof: `sha256:${createHash("sha256").update(model.baseUrl).digest("hex")}`,
+  };
 }
 
 function sessionIdentity(ctx: ExtensionContext) {
@@ -320,7 +332,7 @@ export function installCompactionContinuation(
         model: model.model,
         reasoning: env.WG_REASONING,
         handler: env.WG_PI_ROUTE_HANDLER!,
-        endpointProof: env.WG_PI_ENDPOINT_PROOF!,
+        endpointProof: model.endpointProof,
         routeSnapshotDigest: env.WG_PI_ROUTE_SNAPSHOT_DIGEST!,
         pluginCompat: env.WG_PI_PLUGIN_COMPAT_VERSION!,
         quiescent: true,

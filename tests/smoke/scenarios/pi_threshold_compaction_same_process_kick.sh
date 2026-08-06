@@ -47,6 +47,9 @@ export HOME="$home"
 export XDG_CONFIG_HOME="$home/.config"
 export XDG_CACHE_HOME="$home/.cache"
 export WG_PI_PLUGIN_FORCE_CACHE=1
+# Custom providers must declare the exact Pi model base URL at spawn; the
+# embedded extension independently hashes ctx.model.baseUrl before authorize.
+export WG_PI_EXPECTED_ENDPOINT_URL="http://127.0.0.1.invalid"
 export FAKE_PI_SCENARIO=threshold
 
 wg init -m pi:fake-pi-compaction-stall:fake-long-agentic-turn --no-agency >"$scratch/init.log" 2>&1 || loud_fail "wg init failed: $(cat "$scratch/init.log")"
@@ -361,5 +364,135 @@ print(json.dumps({'actions':[k['action_id'] for k in kicks],'pid':state['process
 PY
 [[ "$(find "$G2/agents" -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 1 ]] \
   || loud_fail "two qualifying occurrences spawned a second process/agent owner"
+wg --dir "$G2" service stop >/dev/null 2>&1 || true
 
-echo "PASS: installed wg wrapper + embedded plugin delivered one kick for one occurrence and two distinct kicks for two same-process occurrences, each ending in one accepted WG terminal receipt"
+# Fault-injected installed flow: the real Pi host is SIGKILLed by the fixture
+# after the native custom queue append but before pi-worksgood's acknowledgement
+# handler. Restart the coordinator and prove durable uncertainty never becomes
+# a second prompt, side effect, process, owner, attempt, session, or charge.
+project3="$scratch/crash-project"
+home3="$scratch/crash-home"
+mkdir -p "$project3" "$home3/.config/workgraph" "$home3/.pi/agent" "$home3/.cache"
+: >"$home3/.config/workgraph/config.toml"
+cp "$home/.pi/agent/settings.json" "$home3/.pi/agent/settings.json"
+cd "$project3"
+git init -q
+git config user.name 'WG Pi crash-boundary smoke'
+git config user.email 'wg-pi-crash@test.invalid'
+printf 'crash fixture project\n' >README.md
+git add README.md
+git commit -qm init
+export HOME="$home3"
+export XDG_CONFIG_HOME="$home3/.config"
+export XDG_CACHE_HOME="$home3/.cache"
+export FAKE_PI_SCENARIO=crash-after-send
+wg init -m pi:fake-pi-compaction-stall:fake-long-agentic-turn --no-agency >"$scratch/init-crash.log" 2>&1 \
+  || loud_fail "crash-phase wg init failed: $(cat "$scratch/init-crash.log")"
+G3="$(graph_dir_in "$project3")"
+wg --dir "$G3" config --auto-assign false --no-reload >/dev/null 2>&1 || loud_fail "crash-phase wg config failed"
+mkdir -p "$G3/executors"
+cat >"$G3/executors/pi.toml" <<TOML
+[executor]
+type = "pi"
+command = "pi"
+args = [
+  "--mode", "json",
+  "-p", "Complete the WG task prompt supplied on stdin.",
+  "--offline", "--approve",
+  "--no-skills", "--no-prompt-templates", "--no-context-files", "--no-builtin-tools",
+  "--extension", "$fixture"
+]
+
+[executor.env]
+FAKE_PI_SCENARIO = "crash-after-send"
+TOML
+wg --dir "$G3" add "Pi send-before-ack crash boundary" --id pi-kick-smoke-crash \
+  --model pi:fake-pi-compaction-stall:fake-long-agentic-turn --reasoning high \
+  -d $'Crash the exact Pi host after native queue append and before WG acknowledgement.\n\n## Validation\n- restart never duplicates prompt, effect, owner, attempt, process, session, or charge' >/dev/null
+wg --dir "$G3" publish pi-kick-smoke-crash --only >/dev/null
+start_wg_daemon "$project3" --max-agents 1 --no-chat-agent --force
+agent_dir3=""
+for _ in $(seq 1 160); do
+  for candidate in "$G3/agents"/agent-*; do
+    [[ -f "$candidate/metadata.json" ]] || continue
+    if grep -q '"task_id": "pi-kick-smoke-crash"' "$candidate/metadata.json"; then
+      agent_dir3="$candidate"
+      break
+    fi
+  done
+  [[ -n "$agent_dir3" ]] && break
+  sleep 0.25
+done
+[[ -n "$agent_dir3" ]] || loud_fail "crash-phase generated wrapper missing"
+state3=""
+for _ in $(seq 1 200); do
+  state3="$(find "$G3" -path '*/pi/state.json' -type f -print -quit 2>/dev/null || true)"
+  if [[ -n "$state3" ]] && python3 - "$state3" <<'PY' >/dev/null 2>&1
+import json,sys
+s=json.load(open(sys.argv[1]))['state']
+k=s.get('compaction_kicks',[])
+assert len(k)==1 and k[0]['state']=='uncertain' and k[0].get('acknowledged_at') is None
+assert s['classification']=='needs-finalization' and s['continuation_epoch']==s['epochs_used']==1
+PY
+  then break; fi
+  sleep 0.25
+done
+[[ -n "$state3" ]] || loud_fail "crash-phase watchdog state missing"
+# A real coordinator restart is the recovery boundary. It may reconcile the
+# exact dead owner, but must never launch or deliver a replacement.
+wg --dir "$G3" service stop >/dev/null 2>&1 || true
+start_wg_daemon "$project3" --max-agents 1 --no-chat-agent --force
+sleep 2
+wg --dir "$G3" service stop >/dev/null 2>&1 || true
+show3="$scratch/show-crash.json"
+status3a="$scratch/status-crash-a.json"
+status3b="$scratch/status-crash-b.json"
+wg --dir "$G3" --json pi-watchdog status pi-kick-smoke-crash >"$status3a" \
+  || loud_fail "crash-phase first restarted status failed"
+wg --dir "$G3" --json pi-watchdog status pi-kick-smoke-crash >"$status3b" \
+  || loud_fail "crash-phase replayed status failed"
+wg --dir "$G3" show pi-kick-smoke-crash --json >"$show3" \
+  || loud_fail "crash-phase wg show failed"
+python3 - "$state3" "$status3a" "$status3b" "$show3" "$agent_dir3/pi-session" "$agent_dir3/raw_stream.jsonl" <<'PY'
+import json,sys,pathlib,os
+state_path,status_a,status_b,show_path,sessions_dir,raw_path=sys.argv[1:]
+state=json.load(open(state_path))['state']
+a=json.load(open(status_a))['state']
+b=json.load(open(status_b))['state']
+show=json.load(open(show_path))
+for candidate in (state,a,b):
+    kicks=candidate.get('compaction_kicks',[])
+    assert len(kicks)==1 and kicks[0]['state']=='uncertain',kicks
+    assert kicks[0].get('acknowledged_at') is None,kicks[0]
+    assert candidate['continuation_epoch']==candidate['epochs_used']==1,candidate
+    assert candidate['process_epoch']==1,candidate
+assert a['compaction_kicks'][0]['action_id']==b['compaction_kicks'][0]['action_id']
+assert show['status'] in ('in-progress','failed'),show['status']
+attempt=show['lifecycle']['current_attempt']
+assert attempt and attempt['id']=='attempt-0-1',attempt
+if show['status']=='in-progress': assert attempt.get('disposition') is None,attempt
+if show['status']=='failed': assert attempt.get('disposition')=='failed',attempt
+assert show['lifecycle']['attempt_sequence']==1,show['lifecycle']
+assert show['lifecycle']['pi_continuation']['epochs_used']==1,show['lifecycle']['pi_continuation']
+entries=[]
+for path in pathlib.Path(sessions_dir).glob('*.jsonl'):
+    entries += [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+custom=[e for e in entries if e.get('type')=='custom_message' and e.get('customType')=='wg-pi-compaction-kick']
+assert len(custom)<=1,custom
+marker=pathlib.Path(sessions_dir)/'crash-after-send.marker'
+assert marker.is_file(),marker
+selected=json.loads(marker.read_text())
+assert selected.get('role')=='custom' and selected.get('customType')=='wg-pi-compaction-kick',selected
+assert selected.get('details',{}).get('actionId')==state['compaction_kicks'][0]['action_id'],selected
+raw=[]
+if os.path.exists(raw_path):
+    raw=[json.loads(line) for line in open(raw_path) if line.strip()]
+compaction_end=max(i for i,e in enumerate(raw) if e.get('type')=='compaction_end')
+assert not any(e.get('type')=='tool_execution_start' for e in raw[compaction_end+1:]),raw[compaction_end+1:]
+PY
+[[ "$(find "$G3/agents" -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 1 ]] \
+  || loud_fail "send-before-ack restart spawned a duplicate process/owner"
+! kill -0 "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["state"]["process"]["pid"])' "$state3")" 2>/dev/null \
+  || loud_fail "fault-injected Pi process was not reaped"
+
+echo "PASS: installed wg wrapper + embedded plugin proved accepted recovery terminals and send-before-ack crash/restart non-duplication"

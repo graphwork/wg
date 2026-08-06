@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 export const WG_PI_COMPACTION_KICK_HOST_CONTRACT = "pi-0.83-session-compact-sync-v1";
@@ -38,7 +39,6 @@ function enabled(env, backend, hostVersion) {
         env.WG_PI_COMPACTION_KICK !== "0" &&
         env.WG_PI_PLUGIN_COMPAT_VERSION &&
         env.WG_PI_ROUTE_HANDLER &&
-        env.WG_PI_ENDPOINT_PROOF &&
         env.WG_PI_ROUTE_SNAPSHOT_DIGEST &&
         env.WG_PI_COMPACTION_KICK_HOST_CONTRACT === WG_PI_COMPACTION_KICK_HOST_CONTRACT);
     if (eligible && hostVersion !== "0.83.0") {
@@ -49,9 +49,17 @@ function enabled(env, backend, hostVersion) {
 }
 function modelIdentity(ctx) {
     const model = ctx.model;
-    if (!model || typeof model.provider !== "string" || typeof model.id !== "string")
+    if (!model ||
+        typeof model.provider !== "string" ||
+        typeof model.id !== "string" ||
+        typeof model.baseUrl !== "string" ||
+        !model.baseUrl)
         return null;
-    return { provider: model.provider, model: model.id };
+    return {
+        provider: model.provider,
+        model: model.id,
+        endpointProof: `sha256:${createHash("sha256").update(model.baseUrl).digest("hex")}`,
+    };
 }
 function sessionIdentity(ctx) {
     const sessionId = ctx.sessionManager.getSessionId();
@@ -242,7 +250,7 @@ export function installCompactionContinuation(pi, backend, env = process.env, ho
                 model: model.model,
                 reasoning: env.WG_REASONING,
                 handler: env.WG_PI_ROUTE_HANDLER,
-                endpointProof: env.WG_PI_ENDPOINT_PROOF,
+                endpointProof: model.endpointProof,
                 routeSnapshotDigest: env.WG_PI_ROUTE_SNAPSHOT_DIGEST,
                 pluginCompat: env.WG_PI_PLUGIN_COMPAT_VERSION,
                 quiescent: true,

@@ -1,3 +1,5 @@
+import { writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import {
 	createAssistantMessageEventStream,
 	type Api,
@@ -215,7 +217,11 @@ export default function fixture(pi: ExtensionAPI) {
 		streamSimple(model: Model<Api>, context: Context, _options?: SimpleStreamOptions) {
 			providerCalls += 1;
 
-			if (scenario === "threshold" || scenario === "threshold-twice") {
+			if (
+				scenario === "threshold" ||
+				scenario === "threshold-twice" ||
+				scenario === "crash-after-send"
+			) {
 				if (providerCalls === 1) return toolResponse(model);
 				if (providerCalls === 2) {
 					return textResponse(
@@ -274,6 +280,27 @@ export default function fixture(pi: ExtensionAPI) {
 
 			return textResponse(model, "Manual-control seed response.", 200);
 		},
+	});
+
+	// Fault boundary for the installed-flow crash proof. This fixture is loaded
+	// before the embedded WG extension, so the native custom message is already
+	// appended, but WG's message_start acknowledgement handler has not run.
+	pi.on("message_start", (event, ctx) => {
+		const message = event.message as { role?: string; customType?: string };
+		if (
+			scenario === "crash-after-send" &&
+			message.role === "custom" &&
+			message.customType === "wg-pi-compaction-kick"
+		) {
+			const sessionFile = ctx.sessionManager.getSessionFile();
+			if (sessionFile) {
+				writeFileSync(
+					join(dirname(sessionFile), "crash-after-send.marker"),
+					JSON.stringify(message),
+				);
+			}
+			process.kill(process.pid, "SIGKILL");
+		}
 	});
 
 	pi.on("session_before_compact", (event) => {

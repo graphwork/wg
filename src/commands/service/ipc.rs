@@ -3660,7 +3660,8 @@ mod tests {
             model: "fixture-model".into(),
             reasoning: Some("high".into()),
             endpoint_redacted: "fixture://local".into(),
-            endpoint_hmac: "fixture-endpoint".into(),
+            endpoint_hmac:
+                "sha256:3a8205bc989225f06325a86f7dd7b349a9d6325a63665bdf87d98e751d739595".into(),
             qos: QosClass::Free,
             pi_binary_digest: "fixture-pi".into(),
             plugin_digest: "0.3.0".into(),

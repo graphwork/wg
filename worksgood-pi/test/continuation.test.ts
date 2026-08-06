@@ -83,7 +83,6 @@ function harness(
     WG_PI_COMPACTION_KICK_HOST_CONTRACT: "pi-0.83-session-compact-sync-v1",
     WG_PI_PLUGIN_COMPAT_VERSION: "0.3.0",
     WG_PI_ROUTE_HANDLER: "pi",
-    WG_PI_ENDPOINT_PROOF: "b3:fixture-endpoint",
     WG_PI_ROUTE_SNAPSHOT_DIGEST: "b3:fixture-route",
     ...overrides,
   };
@@ -101,7 +100,11 @@ function harness(
       pendingReadHook?.(pendingReads);
       return pending;
     },
-    model: { provider: "fake-provider", id: "fake-model" },
+    model: {
+      provider: "fake-provider",
+      id: "fake-model",
+      baseUrl: "http://127.0.0.1.invalid",
+    },
     thinkingLevel: "high",
     sessionManager: {
       getSessionId: () => "session-a",
@@ -170,7 +173,7 @@ describe("authoritative threshold-compaction continuation", () => {
     expect(h.backend.compactionKickAuthorize.mock.calls[0][0]).not.toHaveProperty("summary");
     expect(h.backend.compactionKickAuthorize.mock.calls[0][0]).toMatchObject({
       handler: "pi",
-      endpointProof: "b3:fixture-endpoint",
+      endpointProof: "sha256:3a8205bc989225f06325a86f7dd7b349a9d6325a63665bdf87d98e751d739595",
       routeSnapshotDigest: "b3:fixture-route",
     });
     expect(h.backend.compactionKickPermit).toHaveBeenCalledTimes(1);
