@@ -3711,6 +3711,16 @@ HEARTBEAT_PID=$!
 }} {{HEARTBEAT_GUARD_FD}}>&-
 EXIT_CODE=$?
 {session_fallback_block}
+# Credential-free installed-flow fault boundary. This is inert unless an
+# operator-owned test launch explicitly requests it; the wrapper kills only
+# itself after the exact Pi child has exited and before bridge/process-exit
+# reconciliation, proving daemon restart cannot mint duplicate authority.
+if [ "{executor_type}" = "pi" ] && [ "${{WG_PI_TEST_CRASH_AFTER_CHILD_EXIT:-0}}" = "1" ]; then
+    if [ -n "${{WG_PI_TEST_CRASH_MARKER:-}}" ]; then
+        printf '%s\n' "$$" > "$WG_PI_TEST_CRASH_MARKER"
+    fi
+    kill -KILL "$$"
+fi
 # Stop the heartbeat watcher and close its guard on normal completion.
 exec {{HEARTBEAT_GUARD_FD}}>&-
 kill $HEARTBEAT_PID 2>/dev/null; wait $HEARTBEAT_PID 2>/dev/null
@@ -6698,6 +6708,17 @@ mod tests {
         assert!(script.contains("--pid $WG_PI_CHILD_PID --wrapper-pid $$"));
         assert!(script.contains(": > \"$WG_PI_BOOTSTRAP_GATE\""));
         assert!(script.contains("wait $WG_PI_CHILD_PID"));
+        let wrapper_crash = script
+            .find("WG_PI_TEST_CRASH_AFTER_CHILD_EXIT")
+            .expect("installed-flow wrapper crash boundary");
+        let bridge = script.find("wg pi-stream-bridge").expect("Pi bridge");
+        let process_exit = script
+            .find("wg pi-watchdog process-exit")
+            .expect("Pi process-exit observer");
+        assert!(
+            wrapper_crash < bridge && wrapper_crash < process_exit,
+            "wrapper crash boundary must follow child exit but precede bridge/process reconciliation"
+        );
         assert!(
             script.contains(">> '") && script.contains("raw_stream.jsonl' 2>> \"$OUTPUT_FILE\""),
             "Pi stdout must have one authoritative raw-stream sink"

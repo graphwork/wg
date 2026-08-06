@@ -495,4 +495,167 @@ PY
 ! kill -0 "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["state"]["process"]["pid"])' "$state3")" 2>/dev/null \
   || loud_fail "fault-injected Pi process was not reaped"
 
-echo "PASS: installed wg wrapper + embedded plugin proved accepted recovery terminals and send-before-ack crash/restart non-duplication"
+# Exercise the remaining real-host crash splits. Each phase uses a fresh graph,
+# installed wrapper, embedded plugin, Pi 0.83 isolate, and durable broker. A
+# restart may fail the original attempt, but it may not create another prompt,
+# owner, attempt, process, session, side effect, or continuation charge.
+run_late_crash_phase() {
+  local scenario="$1" expected_class="$2" marker_name="$3"
+  local phase_project="$scratch/$scenario-project"
+  local phase_home="$scratch/$scenario-home"
+  local task_id="pi-kick-$scenario"
+  local wrapper_marker="$scratch/$scenario-wrapper.marker"
+  mkdir -p "$phase_project" "$phase_home/.config/workgraph" "$phase_home/.pi/agent" "$phase_home/.cache"
+  : >"$phase_home/.config/workgraph/config.toml"
+  cp "$home/.pi/agent/settings.json" "$phase_home/.pi/agent/settings.json"
+  cd "$phase_project"
+  git init -q
+  git config user.name 'WG Pi late crash smoke'
+  git config user.email 'wg-pi-late-crash@test.invalid'
+  printf '%s fixture project\n' "$scenario" >README.md
+  git add README.md
+  git commit -qm init
+  export HOME="$phase_home" XDG_CONFIG_HOME="$phase_home/.config" XDG_CACHE_HOME="$phase_home/.cache"
+  export FAKE_PI_SCENARIO="$scenario"
+  unset WG_PI_TEST_CRASH_AFTER_CHILD_EXIT WG_PI_TEST_CRASH_MARKER
+  if [[ "$scenario" == "wrapper-exit-crash" ]]; then
+    export WG_PI_TEST_CRASH_AFTER_CHILD_EXIT=1
+    export WG_PI_TEST_CRASH_MARKER="$wrapper_marker"
+  fi
+  wg init -m pi:fake-pi-compaction-stall:fake-long-agentic-turn --no-agency >"$scratch/init-$scenario.log" 2>&1 \
+    || loud_fail "$scenario wg init failed: $(cat "$scratch/init-$scenario.log")"
+  local phase_graph
+  phase_graph="$(graph_dir_in "$phase_project")"
+  wg --dir "$phase_graph" config --auto-assign false --no-reload >/dev/null 2>&1 \
+    || loud_fail "$scenario wg config failed"
+  mkdir -p "$phase_graph/executors"
+  local wrapper_crash_enabled=0
+  [[ "$scenario" == "wrapper-exit-crash" ]] && wrapper_crash_enabled=1
+  cat >"$phase_graph/executors/pi.toml" <<TOML
+[executor]
+type = "pi"
+command = "pi"
+args = [
+  "--mode", "json",
+  "-p", "Complete the WG task prompt supplied on stdin.",
+  "--offline", "--approve",
+  "--no-skills", "--no-prompt-templates", "--no-context-files", "--no-builtin-tools",
+  "--extension", "$fixture"
+]
+
+[executor.env]
+FAKE_PI_SCENARIO = "$scenario"
+WG_PI_TEST_CRASH_AFTER_CHILD_EXIT = "$wrapper_crash_enabled"
+WG_PI_TEST_CRASH_MARKER = "$wrapper_marker"
+TOML
+  wg --dir "$phase_graph" add "Pi $scenario boundary" --id "$task_id" \
+    --model pi:fake-pi-compaction-stall:fake-long-agentic-turn --reasoning high \
+    -d $'Crash one exact native recovery boundary.\n\n## Validation\n- restart preserves one action/process/session/owner/attempt/charge' >/dev/null
+  wg --dir "$phase_graph" publish "$task_id" --only >/dev/null
+  start_wg_daemon "$phase_project" --max-agents 1 --no-chat-agent --force
+
+  local phase_agent="" phase_state="" phase_marker=""
+  local phase_before="$scratch/$scenario-before.json"
+  for _ in $(seq 1 200); do
+    for candidate in "$phase_graph/agents"/agent-*; do
+      [[ -f "$candidate/metadata.json" ]] || continue
+      if grep -q "\"task_id\": \"$task_id\"" "$candidate/metadata.json"; then
+        phase_agent="$candidate"
+        break
+      fi
+    done
+    if [[ -n "$phase_agent" ]]; then
+      phase_state="$(find "$phase_graph" -path '*/pi/state.json' -type f -print -quit 2>/dev/null || true)"
+      if [[ "$scenario" == "wrapper-exit-crash" ]]; then
+        phase_marker="$wrapper_marker"
+      else
+        phase_marker="$phase_agent/pi-session/$marker_name"
+      fi
+      if [[ -n "$phase_state" && -f "$phase_marker" ]] && python3 - "$phase_state" "$expected_class" <<'PY' >/dev/null 2>&1
+import json,sys
+s=json.load(open(sys.argv[1]))['state']; expected=sys.argv[2]
+k=s.get('compaction_kicks',[])
+assert len(k)==1,k
+if expected == 'acknowledged_no_settle':
+    assert k[0]['state'] in ('acknowledged','running','terminal_observed','terminal_abort_acknowledged'),k[0]
+    assert k[0].get('settled_at') is None,k[0]
+else:
+    assert expected == 'settled' and k[0]['state']=='settled_after_kick',k[0]
+    assert k[0].get('settled_at') is not None,k[0]
+assert k[0].get('acknowledged_at') is not None,k[0]
+assert s['continuation_epoch']==s['epochs_used']==1,s
+assert s['process_epoch']==1,s
+PY
+      then
+        cp "$phase_state" "$phase_before"
+        break
+      fi
+    fi
+    sleep 0.25
+  done
+  if [[ -z "$phase_agent" || -z "$phase_state" || ! -f "$phase_marker" || ! -f "$phase_before" ]]; then
+    local phase_diag="agent=${phase_agent:-missing} state=${phase_state:-missing} marker=${phase_marker:-missing}"
+    if [[ -n "$phase_state" && -f "$phase_state" ]]; then
+      phase_diag="$phase_diag watchdog=$(python3 -c 'import json,sys; s=json.load(open(sys.argv[1]))["state"]; print([(k["state"], bool(k.get("acknowledged_at")), bool(k.get("settled_at"))) for k in s.get("compaction_kicks",[])])' "$phase_state" 2>/dev/null || true)"
+    fi
+    loud_fail "$scenario did not reach its real-host crash marker/state: $phase_diag"
+  fi
+
+  wg --dir "$phase_graph" service stop >/dev/null 2>&1 || true
+  unset WG_PI_TEST_CRASH_AFTER_CHILD_EXIT WG_PI_TEST_CRASH_MARKER
+  start_wg_daemon "$phase_project" --max-agents 1 --no-chat-agent --force
+  sleep 2
+  wg --dir "$phase_graph" service stop >/dev/null 2>&1 || true
+  local phase_status="$scratch/$scenario-status.json"
+  local phase_show="$scratch/$scenario-show.json"
+  wg --dir "$phase_graph" --json pi-watchdog status "$task_id" >"$phase_status" \
+    || loud_fail "$scenario restarted watchdog status failed"
+  wg --dir "$phase_graph" show "$task_id" --json >"$phase_show" \
+    || loud_fail "$scenario restarted show failed"
+  python3 - "$phase_before" "$phase_status" "$phase_show" "$phase_agent/pi-session" "$phase_agent/raw_stream.jsonl" "$expected_class" <<'PY'
+import json,sys,pathlib,os
+state_path,status_path,show_path,sessions_dir,raw_path,expected=sys.argv[1:]
+before=json.load(open(state_path))['state']
+after=json.load(open(status_path))['state']
+show=json.load(open(show_path))
+for s in (before,after):
+    k=s.get('compaction_kicks',[])
+    assert len(k)==1,k
+    if expected == 'acknowledged_no_settle':
+        assert k[0]['state'] in ('acknowledged','running','terminal_observed','terminal_abort_acknowledged'),k[0]
+        assert k[0].get('settled_at') is None,k[0]
+    else:
+        assert expected == 'settled' and k[0]['state']=='settled_after_kick',k[0]
+        assert k[0].get('settled_at') is not None,k[0]
+    assert k[0].get('acknowledged_at') is not None,k[0]
+    assert s['continuation_epoch']==s['epochs_used']==1,s
+    assert s['process_epoch']==1,s
+assert before['compaction_kicks'][0]['action_id']==after['compaction_kicks'][0]['action_id']
+assert before['session']['session_id']==after['session']['session_id']
+assert before['source']==after['source']
+assert show['lifecycle']['attempt_sequence']==1,show['lifecycle']
+attempt=show['lifecycle']['current_attempt']
+assert attempt and attempt['id']=='attempt-0-1',attempt
+assert len(list(pathlib.Path(sessions_dir).glob('*.jsonl')))==1
+entries=[]
+for path in pathlib.Path(sessions_dir).glob('*.jsonl'):
+    entries += [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+custom=[e for e in entries if e.get('type')=='custom_message' and e.get('customType')=='wg-pi-compaction-kick']
+assert len(custom)<=1,custom
+raw=[]
+if os.path.exists(raw_path): raw=[json.loads(line) for line in open(raw_path) if line.strip()]
+starts=[e for e in raw if e.get('type')=='message_start' and e.get('message',{}).get('customType')=='wg-pi-compaction-kick']
+assert len(starts)==1,starts
+assert sum(1 for e in raw if e.get('type')=='tool_execution_start' and e.get('toolName')=='wg_show') <= 1
+PY
+  [[ "$(find "$phase_graph/agents" -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 1 ]] \
+    || loud_fail "$scenario restart spawned a duplicate process/owner"
+  ! kill -0 "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["state"]["process"]["pid"])' "$phase_state")" 2>/dev/null \
+    || loud_fail "$scenario Pi process was not reaped"
+}
+
+run_late_crash_phase crash-after-ack acknowledged_no_settle crash-after-ack.marker
+run_late_crash_phase crash-after-settle settled crash-after-settle.marker
+run_late_crash_phase wrapper-exit-crash settled wrapper-exit.marker
+
+echo "PASS: installed WG/Pi flow proved send, ack, settle, and wrapper-exit crash/restart non-duplication"

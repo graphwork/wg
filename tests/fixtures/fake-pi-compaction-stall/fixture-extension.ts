@@ -220,7 +220,10 @@ export default function fixture(pi: ExtensionAPI) {
 			if (
 				scenario === "threshold" ||
 				scenario === "threshold-twice" ||
-				scenario === "crash-after-send"
+				scenario === "crash-after-send" ||
+				scenario === "crash-after-ack" ||
+				scenario === "crash-after-settle" ||
+				scenario === "wrapper-exit-crash"
 			) {
 				if (providerCalls === 1) return toolResponse(model);
 				if (providerCalls === 2) {
@@ -251,6 +254,9 @@ export default function fixture(pi: ExtensionAPI) {
 				}
 				if (scenario === "threshold-twice") {
 					return terminalRecoveryResponse(model, context, "FIXTURE_RECOVERY_TURN_2_EXECUTED");
+				}
+				if (scenario === "crash-after-settle" || scenario === "wrapper-exit-crash") {
+					return recoveryResponse(model, context, RECOVERY_MARKER, 200);
 				}
 				return terminalRecoveryResponse(model, context, RECOVERY_MARKER);
 			}
@@ -303,6 +309,27 @@ export default function fixture(pi: ExtensionAPI) {
 		}
 	});
 
+	// By message_end all message_start handlers have completed, including the
+	// embedded WG acknowledgement CAS. Killing here exercises acknowledged
+	// delivery without allowing the recovery provider or a tool to start.
+	pi.on("message_end", (event, ctx) => {
+		const message = event.message as { role?: string; customType?: string; details?: { actionId?: string } };
+		if (
+			scenario === "crash-after-ack" &&
+			message.role === "custom" &&
+			message.customType === "wg-pi-compaction-kick"
+		) {
+			const sessionFile = ctx.sessionManager.getSessionFile();
+			if (sessionFile) {
+				writeFileSync(
+					join(dirname(sessionFile), "crash-after-ack.marker"),
+					JSON.stringify(message),
+				);
+			}
+			process.kill(process.pid, "SIGKILL");
+		}
+	});
+
 	pi.on("session_before_compact", (event) => {
 		if (scenario === "failed") return;
 		return {
@@ -330,5 +357,17 @@ export default function fixture(pi: ExtensionAPI) {
 		if (scenario !== "agent-end-follow-up" || queuedAgentEndFollowUp) return;
 		queuedAgentEndFollowUp = true;
 		pi.sendUserMessage("AGENT_END_QUEUED_FOLLOW_UP", { deliverAs: "followUp" });
+	});
+
+	// session_shutdown runs only after every awaited agent_settled handler. The
+	// embedded extension has therefore durably persisted SettledAfterKick; this
+	// SIGKILL exercises the settle-to-wrapper-exit crash split in the real host.
+	pi.on("session_shutdown", (_event, ctx) => {
+		if (scenario !== "crash-after-settle") return;
+		const sessionFile = ctx.sessionManager.getSessionFile();
+		if (sessionFile) {
+			writeFileSync(join(dirname(sessionFile), "crash-after-settle.marker"), String(process.pid));
+		}
+		process.kill(process.pid, "SIGKILL");
 	});
 }
