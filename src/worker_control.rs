@@ -93,6 +93,9 @@ pub enum WorkerOperationKind {
     FailHandoff,
     FinishHandoff,
     PiWatchdog,
+    /// Forward-compatible registry/audit tag emitted by the Pi compaction
+    /// watchdog. It has no direct worker request variant in this build.
+    PiCompactionKick,
     Telemetry,
     Heartbeat,
 }
