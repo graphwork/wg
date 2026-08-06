@@ -502,13 +502,6 @@ pub(crate) fn collect_dependency_outputs(
         if dependency.status != Status::Done {
             bail!("dependency '{dependency_id}' is not Done");
         }
-        // Dot-prefixed assignment/evaluation scaffolding is scheduling
-        // metadata, not a deliverable dependency. Legacy Done system tasks
-        // predate immutable candidates and must not make every real worker's
-        // otherwise-complete submission impossible to resolve.
-        if worksgood::graph::is_system_task(dependency_id) {
-            continue;
-        }
         let candidate = dependency.completion_candidate.as_ref().with_context(|| {
             format!("dependency '{dependency_id}' has no immutable completion candidate")
         })?;
@@ -587,30 +580,6 @@ mod tests {
     };
     use worksgood::graph::{CompletionContract, Node};
     use worksgood::parser::save_graph;
-
-    #[test]
-    fn legacy_done_system_dependency_requires_no_completion_candidate() {
-        let temp = tempdir().unwrap();
-        let store = CompletionArtifactStore::open(temp.path().join("completion")).unwrap();
-        let mut graph = WorkGraph::new();
-        graph.add_node(Node::Task(Task {
-            id: ".assign-real-task".to_string(),
-            title: "assignment metadata".to_string(),
-            status: Status::Done,
-            ..Default::default()
-        }));
-        let task = Task {
-            id: "real-task".to_string(),
-            title: "real work".to_string(),
-            after: vec![".assign-real-task".to_string()],
-            ..Default::default()
-        };
-        assert!(
-            collect_dependency_outputs(&store, &graph, &task)
-                .unwrap()
-                .is_empty()
-        );
-    }
 
     struct FakeReviewer {
         route: String,
