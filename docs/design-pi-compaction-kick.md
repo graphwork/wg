@@ -351,6 +351,7 @@ below are per record, so creating `O2/A2` never reopens or mutates `O1/A1`.
 | `Authorized` | terminal/park/process/mismatch wins | `Cancelled` or `HeldMismatch` | None |
 | `Authorized` | shared overall epoch/time budget is now exhausted | `HeldOperatorRequired(continuation_budget_exhausted)` | None; loud status/diagnostic |
 | `DeliveryPermitted` | duplicate/recovered permit request | No increment | Return `freshDeliveryGrant=false`; never return prompt/send authority again |
+| `DeliveryPermitted` | final local queue/quiescence/tool guard fails before Pi API call | `DeliverySuppressedAfterPermit(reason)`; epoch remains charged | No send and no replacement grant |
 | `DeliveryPermitted` | plugin invokes Pi API | State remains `DeliveryPermitted` (indeterminate until ack) | Exactly one local send call |
 | `DeliveryPermitted` | exact custom `message_start`, terminal still clear | Persist `Acknowledged` | Pi continues existing process/session |
 | `DeliveryPermitted` | exact custom `message_start`, terminal/park won after permit | Persist `AcknowledgedTerminalRace`; reply `abort=true` | Plugin calls `ctx.abort()`, never resends |
@@ -406,7 +407,8 @@ The table uses `A` = durable `Authorized`, `P` = lifecycle CAS committed and
 | Terminal/park before permit CAS | Terminal receipt; `A` may exist | Permit rejects and marks cancelled | Terminal wins, no send |
 | During permit before graph commit | `A`, old epoch | Replay retries same CAS/action ID | At most one epoch charge |
 | Graph permit commit, crash before watchdog `P`/reply | Lifecycle audit has action ID and new epoch; watchdog may still have `A` | Reconcile to `P`, but any replay returns `freshDeliveryGrant=false`; never reconstruct a deliverable reply | Permit is not charged twice; this occurrence may lose liveness, never duplicate |
-| After permit reply, before `S` | `P`; send unknown | Never automatically resend. If the original handler is still executing it may make its one immediate call; after restart/exit mark uncertain | At-most-once beats liveness |
+| After permit reply, final local guard fails before `S` | `P`, plus plugin cancel/status reason when reachable | Mark `DeliverySuppressedAfterPermit`; keep the epoch charge and never grant again | Queued real work or unsafe phase wins; zero kick for this occurrence, no duplicate |
+| After permit reply, before `S` (crash) | `P`; send unknown | Never automatically resend. If the original handler is still executing it may make its one immediate call; after restart/exit mark uncertain | At-most-once beats liveness |
 | During/after `S`, before matching `message_start` | `P`; Pi queue may contain action | Do not send again. Original process may drain and ack; reload may only inspect/ack a persisted matching custom entry | No duplicate; uncertain on exit |
 | Matching message selected, crash during ack RPC | Pi observed exact action; watchdog may still show `P` | Retry ack only from matching events/session entry; never send | Eventually ack or remain uncertain |
 | After `D`, before provider/assistant response | `Acknowledged` | Duplicate authorize/permit/ack are no-ops | Never redeliver; process exit uses convergence |
