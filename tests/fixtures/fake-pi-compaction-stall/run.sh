@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+fixture_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec node "$fixture_dir/run-reproducer.mjs" "$@"
