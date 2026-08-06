@@ -4815,18 +4815,18 @@ pub struct ResourceManagementConfig {
     #[serde(default = "default_recovery_prune_interval")]
     pub recovery_prune_interval: u64,
 
-    /// Enable predictive disk/build admission control. This advanced gate is
-    /// opt-in because historical high-water projections can over-reserve a
-    /// preserved warm target and block recovery before process creation.
-    /// Explicit cleanup and owned-cache/stream safeguards remain independent.
-    /// Default: false.
+    /// Enable predictive disk/build admission control. Normal service keeps
+    /// this fail-closed gate enabled; operators may explicitly disable it only
+    /// for exceptional recovery. Shared-baseline accounting prevents the old
+    /// error of charging every worker for another full cold target.
+    /// Default: true.
     #[serde(default = "default_disk_sentinel_enabled")]
     pub disk_sentinel_enabled: bool,
     /// Additional target/tmp paths whose backing mounts must have headroom.
     #[serde(default)]
     pub disk_paths: Vec<String>,
-    /// Optional root for isolated `wg-target-<agent>` Cargo targets. Absolute
-    /// paths are supported and explicitly registered for later cleanup.
+    /// Optional root for the unified immutable-baseline/private-layer Cargo
+    /// cache. Absolute paths are supported and owned by the disk lifecycle.
     #[serde(default)]
     pub cargo_target_root: Option<String>,
     /// Optional root for per-agent Cargo-install/tmp scratch directories.
@@ -4848,17 +4848,16 @@ pub struct ResourceManagementConfig {
     pub disk_resume_hysteresis_bytes: u64,
     #[serde(default = "default_disk_resume_hysteresis_percent")]
     pub disk_resume_hysteresis_percent: f64,
-    /// Concurrent build-heavy tasks have a separate budget from ordinary
-    /// agents. One serial validator is the safe default.
+    /// Concurrent build-heavy tasks have a separate admission budget. Private
+    /// CoW layers make bounded parallel validation safe; the default is four.
     #[serde(default = "default_max_build_agents")]
     pub max_build_agents: usize,
     /// Cold-start projection for a build-capable (but not explicitly heavy)
     /// worker. Measured target high-water marks supersede this floor.
     #[serde(default = "default_estimated_build_bytes")]
     pub estimated_build_bytes: u64,
-    /// Cold-start projection for Cargo test/build/install and other heavy
-    /// validation. The default reflects the 40–60 GiB targets seen in this
-    /// repository rather than the old optimistic 16 GiB reserve.
+    /// Per-attempt physical-delta projection for Cargo test/build/install.
+    /// The immutable baseline is already charged once in measured free space.
     #[serde(default = "default_estimated_build_heavy_bytes")]
     pub estimated_build_heavy_bytes: u64,
     /// Additional final-link/test scratch headroom reserved above the measured
@@ -5110,7 +5109,7 @@ fn default_recovery_prune_interval() -> u64 {
 }
 
 fn default_disk_sentinel_enabled() -> bool {
-    false
+    true
 }
 fn default_disk_warning_bytes() -> u64 {
     64 * 1024 * 1024 * 1024
@@ -5137,16 +5136,16 @@ fn default_disk_resume_hysteresis_percent() -> f64 {
     2.0
 }
 fn default_max_build_agents() -> usize {
-    1
+    4
 }
 fn default_estimated_build_bytes() -> u64 {
-    16 * 1024 * 1024 * 1024
+    4 * 1024 * 1024 * 1024
 }
 fn default_estimated_build_heavy_bytes() -> u64 {
-    64 * 1024 * 1024 * 1024
+    16 * 1024 * 1024 * 1024
 }
 fn default_build_link_test_safety_bytes() -> u64 {
-    8 * 1024 * 1024 * 1024
+    4 * 1024 * 1024 * 1024
 }
 fn default_disk_scan_interval_seconds() -> u64 {
     30
@@ -7375,8 +7374,8 @@ model = "claude:opus"
             "task archival must remain opt-in on a fresh install"
         );
         assert!(
-            !config.coordinator.resource_management.disk_sentinel_enabled,
-            "predictive build admission must be opt-in"
+            config.coordinator.resource_management.disk_sentinel_enabled,
+            "normal service must keep fail-closed disk admission enabled"
         );
         assert!(config.validate_pi_model_plane().is_err());
     }
@@ -7409,7 +7408,7 @@ model = "claude:opus"
     #[test]
     fn disk_sentinel_old_explicit_values_and_absent_key_parse_deterministically() {
         let absent: Config = toml::from_str("").unwrap();
-        assert!(!absent.coordinator.resource_management.disk_sentinel_enabled);
+        assert!(absent.coordinator.resource_management.disk_sentinel_enabled);
 
         let enabled: Config =
             toml::from_str("[dispatcher.resource_management]\ndisk_sentinel_enabled = true\n")

@@ -646,7 +646,7 @@ mod tests {
     }
 
     #[test]
-    fn every_generated_setup_route_disables_predictive_build_admission() {
+    fn every_generated_setup_route_keeps_predictive_build_admission_enabled() {
         for route in [
             SetupRoute::Openrouter,
             SetupRoute::ClaudeCli,
@@ -657,18 +657,18 @@ mod tests {
         ] {
             let config = config_for_route(route, RouteParams::default());
             assert!(
-                !config.coordinator.resource_management.disk_sentinel_enabled,
-                "{} setup config unexpectedly enabled predictive admission",
+                config.coordinator.resource_management.disk_sentinel_enabled,
+                "{} setup config disabled fail-closed disk admission",
                 route.as_name()
             );
             let encoded = toml::to_string_pretty(&config).unwrap();
             assert!(
-                encoded.contains("disk_sentinel_enabled = false"),
+                encoded.contains("disk_sentinel_enabled = true"),
                 "{} generated TOML did not declare the safe default",
                 route.as_name()
             );
             assert!(
-                !round_trip(&config)
+                round_trip(&config)
                     .coordinator
                     .resource_management
                     .disk_sentinel_enabled

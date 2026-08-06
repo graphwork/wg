@@ -46,7 +46,7 @@ cd "$repo_root"
 log=$(mktemp -t nex_streaming_resilience.XXXXXX.log)
 add_cleanup_hook "rm -f $log"
 
-if ! cargo test --test integration_nex_streaming_resilience -- --nocapture >"$log" 2>&1; then
+if ! cargo test --test executor_streaming integration_nex_streaming_resilience:: -- --nocapture >"$log" 2>&1; then
     loud_fail "integration_nex_streaming_resilience failed:
 $(tail -60 "$log")"
 fi

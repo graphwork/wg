@@ -35,6 +35,35 @@ const OUTPUT_RESERVATION_FILE: &str = ".spawn-reservation";
 const LAUNCH_GATE_FILE: &str = ".launch-permit";
 const WORKTREE_RECLAIM_FILE: &str = "worktree-spawn-reclaims-v1.json";
 
+/// A prepared target/tmp path is not durable ownership until the launch permit
+/// is published. Any error before that boundary removes it automatically, so a
+/// crash/claim race cannot leave an unregistered layer outside cache GC.
+struct UnpublishedCachePath {
+    path: PathBuf,
+    published: bool,
+}
+
+impl UnpublishedCachePath {
+    fn new(path: PathBuf) -> Self {
+        Self {
+            path,
+            published: false,
+        }
+    }
+
+    fn publish(&mut self) {
+        self.published = true;
+    }
+}
+
+impl Drop for UnpublishedCachePath {
+    fn drop(&mut self) {
+        if !self.published {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct WorktreeSpawnReclaim {
     action_id: String,
@@ -1419,29 +1448,27 @@ pub(crate) fn spawn_agent_inner_authorized(
     vars.in_worktree = worktree_info.is_some();
 
     let owned_target_path = if build_class.is_build_capable() {
-        worksgood::disk_sentinel::target_path_for_agent(
-            &config.coordinator.resource_management,
-            worktree_info.as_ref().map(|wt| wt.path.as_path()),
-            &temp_agent_id,
+        let source_root = worktree_info
+            .as_ref()
+            .map(|worktree| worktree.path.as_path())
+            .unwrap_or(project_root);
+        Some(
+            worksgood::disk_sentinel::prepare_target_for_agent(
+                dir,
+                &config.coordinator.resource_management,
+                source_root,
+                &temp_agent_id,
+            )
+            .with_context(|| {
+                format!(
+                    "Failed to prepare copy-on-write Cargo target for {}",
+                    temp_agent_id
+                )
+            })?,
         )
-        .map(|path| {
-            if path.is_absolute() {
-                path
-            } else {
-                worktree_info
-                    .as_ref()
-                    .map(|wt| wt.path.join(&path))
-                    .or_else(|| std::env::current_dir().ok().map(|cwd| cwd.join(&path)))
-                    .unwrap_or(path)
-            }
-        })
     } else {
         None
     };
-    if let Some(path) = owned_target_path.as_ref() {
-        fs::create_dir_all(path)
-            .with_context(|| format!("Failed to create owned Cargo target {}", path.display()))?;
-    }
     let owned_tmp_path = if build_class.is_build_capable() {
         let root = config
             .coordinator
@@ -1458,6 +1485,14 @@ pub(crate) fn spawn_agent_inner_authorized(
         fs::create_dir_all(path)
             .with_context(|| format!("Failed to create owned build scratch {}", path.display()))?;
     }
+    let mut target_publish_guard = owned_target_path
+        .as_ref()
+        .cloned()
+        .map(UnpublishedCachePath::new);
+    let mut tmp_publish_guard = owned_tmp_path
+        .as_ref()
+        .cloned()
+        .map(UnpublishedCachePath::new);
 
     // Apply templates to executor settings (with effective model in vars)
     let mut settings = executor_config.apply_templates(&vars);
@@ -1765,9 +1800,12 @@ pub(crate) fn spawn_agent_inner_authorized(
         cmd.current_dir(wd);
     }
     if let Some(path) = owned_target_path.as_ref() {
-        // Isolate Cargo and make the exact absolute/temporary path explicit in
-        // the ownership registry after the child PID identity is available.
+        // Each attempt writes a private layer; unchanged artifacts are physical
+        // hard links to an immutable content-keyed baseline.
         cmd.env("CARGO_TARGET_DIR", path);
+        cmd.env("CARGO_INCREMENTAL", "0");
+        cmd.env("CARGO_PROFILE_DEV_DEBUG", "line-tables-only");
+        cmd.env("CARGO_PROFILE_TEST_DEBUG", "line-tables-only");
     }
     if let Some(path) = owned_tmp_path.as_ref() {
         cmd.env("TMPDIR", path);
@@ -2098,6 +2136,12 @@ pub(crate) fn spawn_agent_inner_authorized(
             &spawn_run_id,
         )?;
         workspace.commit_after_launch();
+        if let Some(guard) = target_publish_guard.as_mut() {
+            guard.publish();
+        }
+        if let Some(guard) = tmp_publish_guard.as_mut() {
+            guard.publish();
+        }
         Ok((agent_id, pid))
     })();
 

@@ -1,5 +1,12 @@
 # Design: Copy-on-Write Worktrees for Agent Isolation
 
+> **Historical survey, superseded for Cargo artifact storage.** The later
+> incident proved that a shared writable `CARGO_TARGET_DIR` or compiler cache is
+> insufficient and unsafe for divergent worktrees. The implemented immutable
+> baseline + private hard-link CoW layer model is authoritative in
+> [build-artifact-storage.md](build-artifact-storage.md). The source-worktree
+> survey below remains useful historical context.
+
 ## 1. Survey of Current Worktree Usage
 
 ### Creation

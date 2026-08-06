@@ -3606,22 +3606,15 @@ fn spawn_shell_inline(dir: &Path, task_id: &str) -> Result<(String, u32)> {
     }
     let agent_id = format!("agent-{}", locked_registry.next_agent_id);
     let target_path = if build_class.is_build_capable() {
-        Some(
-            config
-                .coordinator
-                .resource_management
-                .cargo_target_root
-                .as_deref()
-                .map(PathBuf::from)
-                .unwrap_or_else(|| dir.join("service").join("disk").join("build-targets"))
-                .join(format!("wg-target-{agent_id}")),
-        )
+        Some(worksgood::disk_sentinel::prepare_target_for_agent(
+            dir,
+            &config.coordinator.resource_management,
+            dir.parent().unwrap_or(dir),
+            &agent_id,
+        )?)
     } else {
         None
     };
-    if let Some(path) = target_path.as_ref() {
-        fs::create_dir_all(path)?;
-    }
     let tmp_path = if build_class.is_build_capable() {
         Some(
             config
@@ -3704,6 +3697,9 @@ exit $EXIT_CODE"#,
     cmd.stderr(Stdio::null());
     if let Some(path) = target_path.as_ref() {
         cmd.env("CARGO_TARGET_DIR", path);
+        cmd.env("CARGO_INCREMENTAL", "0");
+        cmd.env("CARGO_PROFILE_DEV_DEBUG", "line-tables-only");
+        cmd.env("CARGO_PROFILE_TEST_DEBUG", "line-tables-only");
     }
     if let Some(path) = tmp_path.as_ref() {
         cmd.env("TMPDIR", path);

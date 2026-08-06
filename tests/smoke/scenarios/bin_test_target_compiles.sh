@@ -7,7 +7,7 @@
 # src/commands/peer.rs were never updated — they still passed 6 arguments.
 #
 # This compiled and shipped GREEN because CI deliberately runs only
-# `cargo test --lib` / `--doc` / `--test integration_*` and NEVER compiles
+# `cargo test --lib` / `--doc` / selected domain harnesses and NEVER compiles
 # the binary crate's `#[cfg(test)]` modules (the lib-vs-bin blind spot
 # documented in the project memory). So a broken bin unit test is invisible
 # to every CI gate and to `cargo test --lib`.

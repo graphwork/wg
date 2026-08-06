@@ -2,6 +2,10 @@
 name = "worksgood"
 version = "0.1.0"
 edition = "2024"
+# Integration cases are consolidated into bounded domain harnesses below.
+# Without this, Cargo auto-discovers every tests/*.rs case as an independent
+# crate and links the full dependency graph 176 times.
+autotests = false
 description = "WorksGood: graph work for humans and AI agents"
 license = "MIT"
 repository = "https://github.com/graphwork/wg"
@@ -39,6 +43,79 @@ path = "src/bin/worksgood.rs"
 [[bin]]
 name = "casa-adapter"
 path = "adapters/casa/src/main.rs"
+
+# Domain harnesses preserve normal Rust test filtering while bounding the
+# number of independently linked integration executables. Process-global
+# cases retain their existing serial_test guards; nextest remains the preferred
+# isolated runner for the integrated suite.
+[[test]]
+name = "agency"
+path = "tests/harness_agency.rs"
+
+[[test]]
+name = "config_models"
+path = "tests/harness_config_models.rs"
+
+[[test]]
+name = "service_dispatch"
+path = "tests/harness_service_dispatch.rs"
+
+[[test]]
+name = "executor_streaming"
+path = "tests/harness_executor_streaming.rs"
+
+[[test]]
+name = "lifecycle_graph"
+path = "tests/harness_lifecycle_graph.rs"
+
+[[test]]
+name = "ui_messaging"
+path = "tests/harness_ui_messaging.rs"
+
+[[test]]
+name = "federation_security"
+path = "tests/harness_federation_security.rs"
+
+[[test]]
+name = "core_misc"
+path = "tests/harness_core_misc.rs"
+
+# Keep the existing insta snapshot crate identity so consolidation does not
+# rename every approved snapshot.
+[[test]]
+name = "prompt_snapshots"
+path = "tests/prompt_snapshots.rs"
+
+# These cases mutate process-global environment. Keeping each in its own crate
+# preserves the isolation they had before consolidation; their internal
+# serial_test guards continue to protect tests within the case.
+[[test]]
+name = "isolated_native_coordinator"
+path = "tests/harness_isolated_integration_native_coordinator.rs"
+
+[[test]]
+name = "isolated_model_management"
+path = "tests/harness_isolated_integration_model_management.rs"
+
+[[test]]
+name = "isolated_state_injection"
+path = "tests/harness_isolated_integration_state_injection.rs"
+
+[[test]]
+name = "isolated_openrouter_routing"
+path = "tests/harness_isolated_smoke_openrouter_routing.rs"
+
+[[test]]
+name = "isolated_provider"
+path = "tests/harness_isolated_integration_provider.rs"
+
+[[test]]
+name = "isolated_deep_readonly_flip"
+path = "tests/harness_isolated_integration_deep_readonly_flip.rs"
+
+[[test]]
+name = "isolated_dedicated_pi_evaluation"
+path = "tests/harness_isolated_integration_dedicated_pi_evaluation.rs"
 
 [features]
 default = ["matrix-lite"]
@@ -177,3 +254,26 @@ tempfile = "3.10"
 serial_test = "3"
 insta = { version = "1", features = ["yaml"] }
 worksgood = { path = ".", features = ["test-support"] }
+
+# Routine worker builds need line-level backtraces, not hundreds of MiB of
+# variable/type DWARF in every binary/harness. Incremental state is a poor trade
+# for short-lived isolated worktrees and was a second multi-GiB tree.
+[profile.dev]
+debug = "line-tables-only"
+incremental = false
+
+[profile.test]
+debug = "line-tables-only"
+incremental = false
+
+# Explicit forensic rerun paths retain full DWARF without re-enabling the large
+# mutable incremental database.
+[profile.dev-full-debug]
+inherits = "dev"
+debug = "full"
+incremental = false
+
+[profile.test-full-debug]
+inherits = "test"
+debug = "full"
+incremental = false

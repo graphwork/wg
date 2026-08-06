@@ -1,14 +1,14 @@
 # Disk sentinel and owned build caches
 
-WG keeps predictive disk/build admission separate from cleanup and preservation safeguards. Predictive admission is **disabled by default**: dispatch and recovery availability must not depend on an inaccurate hypothetical full cold-build reservation, especially when recovery already has a preserved warm target. Advanced users may explicitly opt in; when enabled, low space pauses only build-capable work while dot-prefixed agency tasks, read-only work, and graph operations remain eligible. Build-heavy tasks (Cargo build/test/install/clippy, CMake, and full-suite validation) also use a separate concurrency budget, serialized by default.
+WG keeps predictive disk/build admission, physical artifact accounting, and conservative cleanup in one owned-cache lifecycle. Predictive admission is **enabled by default** and charges one immutable shared Cargo baseline plus measured private per-attempt deltas; it never projects another complete target for every worktree. Low space pauses only build-capable work while dot-prefixed agency tasks, read-only work, and graph operations remain eligible. See [Bounded worktree build artifacts](build-artifact-storage.md) for the CoW layout, key, measurements, and test-harness policy.
 
 ## Configuration
 
 All keys live under `[dispatcher.resource_management]`:
 
 ```toml
-# Advanced opt-in only. The ordinary availability-first default is false.
-disk_sentinel_enabled = false
+# Fail-closed normal-service default.
+disk_sentinel_enabled = true
 disk_paths = ["/mnt/build", "/tmp"]
 cargo_target_root = "/mnt/build/wg"   # optional; creates wg-target-<agent>
 build_tmp_root = "/tmp/wg-build"     # optional root; default is system temp
@@ -21,10 +21,10 @@ disk_pause_build_percent = 8.0
 disk_hard_refuse_percent = 4.0
 disk_resume_hysteresis_bytes = 5368709120
 disk_resume_hysteresis_percent = 2.0
-max_build_agents = 1
-estimated_build_bytes = 17179869184        # ordinary build-capable cold floor
-estimated_build_heavy_bytes = 68719476736  # Cargo test/link cold floor
-build_link_test_safety_bytes = 8589934592  # final link/test scratch
+max_build_agents = 4
+estimated_build_bytes = 4294967296         # ordinary private-delta floor
+estimated_build_heavy_bytes = 17179869184  # test/link private-delta floor
+build_link_test_safety_bytes = 4294967296  # final link/test scratch
 disk_scan_interval_seconds = 30
 disk_scan_max_entries = 200000
 owned_cache_lease_seconds = 300
@@ -36,13 +36,13 @@ terminal_output_tail_bytes = 2097152
 
 Both byte and percentage thresholds are enforced for the graph/project-worktree mount and every distinct configured target/tmp mount. A paused state clears only after every mount exceeds the pause threshold plus the configured hysteresis.
 
-When `disk_sentinel_enabled = true` is explicitly configured, build admission is projected, not just reactive. WG persists the measured per-target high-water and uses the larger of that measurement or the class-specific cold floor, then adds final-link/test safety and the unmaterialized reservation for every concurrent live build. The projection must remain above the **warning** floor. Before returning a pressure refusal, admission runs one idempotent cleanup of eligible explicitly-owned caches/terminal streams and reassesses; unknown, dirty-source, live/open and artifact guards remain unchanged. Spawn admission is serialized through the agent registry lock, so two large builds cannot both spend the same free bytes; heavy builds are additionally serialized by `max_build_agents`.
+Build admission is projected, not just reactive. WG persists the measured **private-delta** high-water and uses the larger of that measurement or the class floor, then adds final-link safety and the unmaterialized private reservation for concurrent live builds. The immutable baseline is already present in measured free space and is not charged again. The projection must remain above the **warning** floor. Before returning a refusal, admission runs one idempotent cleanup and reassesses; unknown, dirty-source, live/open and artifact guards remain unchanged. Spawn admission is serialized only around the accounting transaction so two candidates cannot spend the same free bytes; admitted builds execute concurrently up to `max_build_agents`.
 
-This projection is intentionally not dispatch authority on the default path. Historical high-water is not proof that a second cold target will be materialized, and charging a preserved warm recovery target as another full cold build can self-deadlock the dispatcher. With the default `false`, process creation proceeds without that hypothetical reservation. `wg config lint` reports whether the merged configuration is using the disabled default or the advanced opt-in and tells old explicit configurations how to return to the default. Existing explicit `true` and `false` values remain deterministic; WG does not silently rewrite an operator's opt-in.
+Old full-tree high-water files migrate once to the delta schema rather than carrying the incident's invalid 74 GiB-per-worker projection forward. An explicit `disk_sentinel_enabled = false` remains an emergency operator escape hatch, but status reports it as `Warning` with unverified headroom—never `Healthy`.
 
 ## Ownership and cleanup safety
 
-A build-capable spawn writes `.wg/service/disk/owned-caches.json` before it is allowed to continue untracked. Each lease records the exact path, cache kind, task, agent, PID and `/proc` start identity, mount device, creation time, expiry, and owning worktree. Absolute and `/tmp` targets are first-class; cleanup never searches by a `wg-target-*` filename. Every build-capable spawn also receives an isolated `TMPDIR` (`wg-cargo-tmp-<agent>`) so Cargo-install scratch is owned and reapable rather than orphaned.
+A build-capable spawn writes `.wg/service/disk/owned-caches.json` before it is allowed to continue untracked. Each lease records the exact private layer path, cache kind, task, agent, PID and `/proc` start identity, mount device, creation time, expiry, and owning worktree. The one cache root contains content-keyed immutable baselines and per-agent layers; cleanup never infers ownership from a filename. Every build-capable spawn also receives an isolated `TMPDIR` (`wg-cargo-tmp-<agent>`) so Cargo-install scratch is owned and reapable rather than orphaned.
 
 Automatic cache removal requires all recorded owners of a path to satisfy every guard:
 

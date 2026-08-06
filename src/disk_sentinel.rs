@@ -151,7 +151,13 @@ pub struct TargetUsage {
     pub path: String,
     pub task_id: String,
     pub agent_id: String,
+    /// Logical tree bytes (shared hard links included).
     pub bytes: u64,
+    /// Physical bytes unique to this attempt layer.
+    #[serde(default)]
+    pub private_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_key: Option<String>,
     pub growth_bytes_per_sec: i64,
     pub stale: bool,
 }
@@ -200,12 +206,19 @@ pub struct PreservedPath {
     pub reason: String,
 }
 
+const HIGH_WATER_SCHEMA: u32 = 2;
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct BuildHighWater {
     #[serde(default)]
-    build_capable_bytes: u64,
+    schema: u32,
+    /// Peak physical per-attempt delta. The immutable shared baseline is
+    /// already reflected in statvfs free space and must not be reserved once
+    /// again for every concurrent worker.
     #[serde(default)]
-    build_heavy_bytes: u64,
+    build_capable_delta_bytes: u64,
+    #[serde(default)]
+    build_heavy_delta_bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -317,10 +330,20 @@ fn save_ownership(dir: &Path, registry: &OwnershipRegistry) -> Result<()> {
 }
 
 fn load_high_water(dir: &Path) -> BuildHighWater {
-    fs::read(high_water_path(dir))
+    let loaded: BuildHighWater = fs::read(high_water_path(dir))
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    if loaded.schema == HIGH_WATER_SCHEMA {
+        loaded
+    } else {
+        // One-time migration: legacy values measured complete duplicated target
+        // trees and are invalid under the shared-baseline physical-byte model.
+        BuildHighWater {
+            schema: HIGH_WATER_SCHEMA,
+            ..BuildHighWater::default()
+        }
+    }
 }
 
 fn save_high_water(dir: &Path, high_water: &BuildHighWater) -> Result<()> {
@@ -563,9 +586,7 @@ pub fn configured_paths(dir: &Path, cfg: &ResourceManagementConfig) -> Vec<PathB
         paths.push(PathBuf::from(inherited));
     }
     paths.extend(cfg.disk_paths.iter().map(PathBuf::from));
-    if let Some(root) = cfg.cargo_target_root.as_deref() {
-        paths.push(PathBuf::from(root));
-    }
+    paths.push(target_cache_root(dir, cfg));
     if let Some(root) = cfg.build_tmp_root.as_deref() {
         paths.push(PathBuf::from(root));
     }
@@ -580,8 +601,8 @@ pub fn current_admission(
 ) -> (DiskLevel, String, Vec<MountSpace>) {
     if !cfg.disk_sentinel_enabled {
         return (
-            DiskLevel::Healthy,
-            "disk sentinel disabled".into(),
+            DiskLevel::Warning,
+            "disk sentinel explicitly disabled; build headroom is unverified".into(),
             Vec::new(),
         );
     }
@@ -658,11 +679,11 @@ fn projection_for_class(
 ) -> u64 {
     let target = if class.is_heavy() {
         cfg.estimated_build_heavy_bytes
-            .max(high_water.build_heavy_bytes)
-            .max(high_water.build_capable_bytes)
+            .max(high_water.build_heavy_delta_bytes)
+            .max(high_water.build_capable_delta_bytes)
     } else {
         cfg.estimated_build_bytes
-            .max(high_water.build_capable_bytes)
+            .max(high_water.build_capable_delta_bytes)
     };
     target.saturating_add(cfg.build_link_test_safety_bytes)
 }
@@ -723,7 +744,13 @@ pub fn build_admission(
             .caches
             .iter()
             .filter(|cache| cache.agent_id == agent.id && cache.kind == CacheKind::CargoTarget)
-            .map(|cache| bounded_size(Path::new(&cache.path), cfg.disk_scan_max_entries).bytes)
+            .map(|cache| {
+                if crate::target_cache::layer_key_from_path(Path::new(&cache.path)).is_some() {
+                    crate::target_cache::layer_bytes(Path::new(&cache.path)).1
+                } else {
+                    bounded_size(Path::new(&cache.path), cfg.disk_scan_max_entries).bytes
+                }
+            })
             .sum::<u64>();
         concurrent_reserved =
             concurrent_reserved.saturating_add(projection.saturating_sub(materialized));
@@ -888,19 +915,30 @@ pub fn refresh_snapshot(dir: &Path, cfg: &ResourceManagementConfig) -> Result<Di
             .and_then(|graph| graph.get_task(&cache.task_id))
             .map(classify_task)
             .unwrap_or(BuildClass::BuildCapable);
+        let (logical_bytes, private_bytes) = if cache.kind == CacheKind::CargoTarget
+            && crate::target_cache::layer_key_from_path(Path::new(&cache.path)).is_some()
+        {
+            crate::target_cache::layer_bytes(Path::new(&cache.path))
+        } else {
+            (usage.bytes, usage.bytes)
+        };
         if cache.kind == CacheKind::CargoTarget {
             if class.is_heavy() {
-                high_water.build_heavy_bytes = high_water.build_heavy_bytes.max(usage.bytes);
+                high_water.build_heavy_delta_bytes =
+                    high_water.build_heavy_delta_bytes.max(private_bytes);
             } else {
-                high_water.build_capable_bytes = high_water.build_capable_bytes.max(usage.bytes);
+                high_water.build_capable_delta_bytes =
+                    high_water.build_capable_delta_bytes.max(private_bytes);
             }
         }
         targets.push(TargetUsage {
             path: cache.path.clone(),
             task_id: cache.task_id.clone(),
             agent_id: cache.agent_id.clone(),
-            bytes: usage.bytes,
-            growth_bytes_per_sec: (usage.bytes as i128 - old as i128)
+            bytes: logical_bytes,
+            private_bytes,
+            cache_key: crate::target_cache::layer_key_from_path(Path::new(&cache.path)),
+            growth_bytes_per_sec: (logical_bytes as i128 - old as i128)
                 .clamp(i64::MIN as i128, i64::MAX as i128) as i64
                 / elapsed,
             stale: owner_is_stale(cache, &registry, graph.as_ref()),
@@ -946,7 +984,13 @@ pub fn refresh_snapshot(dir: &Path, cfg: &ResourceManagementConfig) -> Result<Di
             .caches
             .iter()
             .filter(|cache| cache.agent_id == agent.id && cache.kind == CacheKind::CargoTarget)
-            .map(|cache| bounded_size(Path::new(&cache.path), cfg.disk_scan_max_entries).bytes)
+            .map(|cache| {
+                if crate::target_cache::layer_key_from_path(Path::new(&cache.path)).is_some() {
+                    crate::target_cache::layer_bytes(Path::new(&cache.path)).1
+                } else {
+                    bounded_size(Path::new(&cache.path), cfg.disk_scan_max_entries).bytes
+                }
+            })
             .sum::<u64>();
         reserved = reserved.saturating_add(
             projection_for_class(cfg, &high_water, class).saturating_sub(materialized),
@@ -1674,15 +1718,19 @@ pub fn cleanup_owned(
         if cache.kind != CacheKind::CargoTarget || !owner_is_stale(cache, &registry, Some(&graph)) {
             continue;
         }
-        let bytes = bounded_size(Path::new(&cache.path), cfg.disk_scan_max_entries).bytes;
+        let bytes = if crate::target_cache::layer_key_from_path(Path::new(&cache.path)).is_some() {
+            crate::target_cache::layer_bytes(Path::new(&cache.path)).1
+        } else {
+            bounded_size(Path::new(&cache.path), cfg.disk_scan_max_entries).bytes
+        };
         let class = graph
             .get_task(&cache.task_id)
             .map(classify_task)
             .unwrap_or(BuildClass::BuildCapable);
         if class.is_heavy() {
-            high_water.build_heavy_bytes = high_water.build_heavy_bytes.max(bytes);
+            high_water.build_heavy_delta_bytes = high_water.build_heavy_delta_bytes.max(bytes);
         } else {
-            high_water.build_capable_bytes = high_water.build_capable_bytes.max(bytes);
+            high_water.build_capable_delta_bytes = high_water.build_capable_delta_bytes.max(bytes);
         }
     }
     if execute {
@@ -1720,7 +1768,26 @@ pub fn cleanup_owned(
         }
         let representative = &owners[0];
         if execute {
-            let existed = Path::new(&path).exists();
+            let cache_path = Path::new(&path);
+            if representative.kind == CacheKind::CargoTarget
+                && crate::target_cache::layer_key_from_path(cache_path).is_some()
+            {
+                match crate::target_cache::promote_layer(cache_path) {
+                    Ok(true) => report.ignored.push(PreservedPath {
+                        path: path.clone(),
+                        reason: "promoted clean completed layer to immutable shared baseline"
+                            .into(),
+                    }),
+                    Ok(false) => {}
+                    Err(error) => report.ignored.push(PreservedPath {
+                        path: path.clone(),
+                        reason: format!(
+                            "baseline promotion skipped after validation error; private rebuildable layer remains eligible for cleanup: {error:#}"
+                        ),
+                    }),
+                }
+            }
+            let existed = cache_path.exists();
             match safe_remove_owned_path(representative, &registry, &graph, project_root) {
                 Ok(bytes) => {
                     if existed {
@@ -1758,6 +1825,30 @@ pub fn cleanup_owned(
     ownership.caches = keep;
     if execute {
         save_ownership(dir, &ownership)?;
+        let active_keys = ownership
+            .caches
+            .iter()
+            .filter_map(|cache| crate::target_cache::layer_key_from_path(Path::new(&cache.path)))
+            .collect::<HashSet<_>>();
+        for (path, bytes) in
+            crate::target_cache::gc_superseded_baselines(&target_cache_root(dir, cfg), &active_keys)
+                .unwrap_or_else(|error| {
+                    report.preserved.push(PreservedPath {
+                        path: target_cache_root(dir, cfg).display().to_string(),
+                        reason: format!("shared baseline GC failed closed: {error:#}"),
+                    });
+                    Vec::new()
+                })
+        {
+            report.reaped += 1;
+            report.bytes_freed = report.bytes_freed.saturating_add(bytes);
+            report.reaped_paths.push(PreservedPath {
+                path: path.display().to_string(),
+                reason: format!(
+                    "removed superseded inactive shared baseline ({bytes} physical bytes)"
+                ),
+            });
+        }
     }
     compress_terminal_streams(dir, cfg, &registry, &graph, execute, &mut report);
     deduplicate_terminal_outputs(dir, cfg, &registry, &graph, execute, &mut report);
@@ -1766,23 +1857,38 @@ pub fn cleanup_owned(
     Ok(report)
 }
 
-pub fn target_path_for_agent(
-    cfg: &ResourceManagementConfig,
-    worktree: Option<&Path>,
-    agent_id: &str,
-) -> Option<PathBuf> {
+/// The one owned Cargo artifact store. `cargo_target_root` now selects the
+/// cache as a whole (immutable baselines + private layers), rather than creating
+/// another unrelated per-worker target-controller path.
+pub fn target_cache_root(dir: &Path, cfg: &ResourceManagementConfig) -> PathBuf {
+    let project = dir.parent().unwrap_or(dir);
     if let Some(root) = cfg.cargo_target_root.as_deref() {
-        Some(PathBuf::from(root).join(format!("wg-target-{agent_id}")))
-    } else if let Some(worktree) = worktree {
-        Some(worktree.join("target"))
-    } else if let Some(inherited) = std::env::var_os("CARGO_TARGET_DIR") {
-        Some(PathBuf::from(inherited))
-    } else {
-        // A failed/disabled worktree must not fall back to an unowned shared
-        // `<project>/target`. Give the worker an explicit external target that
-        // remains visible to the ownership registry across worktree GC.
-        Some(std::env::temp_dir().join(format!("wg-target-{agent_id}")))
+        let root = PathBuf::from(root);
+        return if root.is_absolute() {
+            root
+        } else {
+            project.join(root)
+        };
     }
+    let identity = fs::canonicalize(project).unwrap_or_else(|_| project.to_path_buf());
+    let digest = blake3::hash(identity.to_string_lossy().as_bytes()).to_hex();
+    dirs::cache_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("wg")
+        .join("build-targets")
+        .join(digest.as_str())
+}
+
+/// Create one private target layer, seeded with hard links from the immutable
+/// content-keyed baseline when one is available.
+pub fn prepare_target_for_agent(
+    dir: &Path,
+    cfg: &ResourceManagementConfig,
+    source_root: &Path,
+    agent_id: &str,
+) -> Result<PathBuf> {
+    let root = target_cache_root(dir, cfg);
+    crate::target_cache::prepare_layer(&root, source_root, agent_id).map(|layer| layer.path)
 }
 
 #[cfg(test)]
@@ -1879,38 +1985,70 @@ mod tests {
     }
 
     #[test]
-    fn default_admission_ignores_historical_cold_build_high_water() {
+    fn default_admission_is_enabled_and_legacy_full_tree_high_water_is_migrated() {
         let root = TempDir::new().unwrap();
         let dir = root.path().join(".wg");
         fs::create_dir_all(sentinel_dir(&dir)).unwrap();
-        save_high_water(
-            &dir,
-            &BuildHighWater {
-                build_capable_bytes: u64::MAX,
-                build_heavy_bytes: u64::MAX,
-            },
+        // Old schema represented N complete target trees, not private deltas.
+        fs::write(
+            high_water_path(&dir),
+            r#"{"build_capable_bytes":18446744073709551615,"build_heavy_bytes":18446744073709551615}"#,
         )
         .unwrap();
 
         let cfg = ResourceManagementConfig::default();
-        assert!(!cfg.disk_sentinel_enabled);
-        let admission = build_admission(&dir, &cfg, BuildClass::BuildHeavy);
-        assert!(admission.allowed);
-        assert_eq!(admission.candidate_bytes, 0);
-        assert_eq!(admission.concurrent_reserved_bytes, 0);
-        assert_eq!(admission.reason, "disk admission not required");
+        assert!(cfg.disk_sentinel_enabled);
+        let migrated = load_high_water(&dir);
+        assert_eq!(migrated.schema, HIGH_WATER_SCHEMA);
+        assert_eq!(migrated.build_capable_delta_bytes, 0);
+        assert_eq!(migrated.build_heavy_delta_bytes, 0);
     }
 
     #[test]
-    fn explicit_opt_in_still_enforces_predictive_admission() {
+    fn explicitly_disabled_sentinel_never_reports_healthy() {
+        let cfg = ResourceManagementConfig {
+            disk_sentinel_enabled: false,
+            ..Default::default()
+        };
+        assert_eq!(
+            current_admission(Path::new("."), &cfg).0,
+            DiskLevel::Warning
+        );
+        assert!(
+            current_admission(Path::new("."), &cfg)
+                .1
+                .contains("explicitly disabled")
+        );
+    }
+
+    #[test]
+    fn zero_headroom_never_reports_healthy_even_with_zero_thresholds() {
+        let cfg = ResourceManagementConfig {
+            disk_warning_bytes: 0,
+            disk_pause_build_bytes: 0,
+            disk_hard_refuse_bytes: 0,
+            disk_warning_percent: 0.0,
+            disk_pause_build_percent: 0.0,
+            disk_hard_refuse_percent: 0.0,
+            ..Default::default()
+        };
+        assert_eq!(
+            assess_mounts(&[mount("full", 0, 0.0)], &cfg, None).0,
+            DiskLevel::HardRefuse
+        );
+    }
+
+    #[test]
+    fn enabled_sentinel_enforces_predictive_admission() {
         let root = TempDir::new().unwrap();
         let dir = root.path().join(".wg");
         fs::create_dir_all(sentinel_dir(&dir)).unwrap();
         save_high_water(
             &dir,
             &BuildHighWater {
-                build_capable_bytes: u64::MAX,
-                build_heavy_bytes: u64::MAX,
+                schema: HIGH_WATER_SCHEMA,
+                build_capable_delta_bytes: u64::MAX,
+                build_heavy_delta_bytes: u64::MAX,
             },
         )
         .unwrap();
@@ -1933,28 +2071,28 @@ mod tests {
     }
 
     #[test]
-    fn incident_scale_projection_refuses_then_allows_after_cleanup_and_serializes() {
+    fn delta_projection_refuses_enospc_but_allows_bounded_concurrent_builds() {
         const GIB: u64 = 1024 * 1024 * 1024;
         let cfg = ResourceManagementConfig {
             disk_warning_bytes: 32 * GIB,
             disk_warning_percent: 0.0,
-            estimated_build_heavy_bytes: 56 * GIB,
-            build_link_test_safety_bytes: 8 * GIB,
+            estimated_build_heavy_bytes: 16 * GIB,
+            build_link_test_safety_bytes: 4 * GIB,
             ..Default::default()
         };
         let candidate = cfg
             .estimated_build_heavy_bytes
             .saturating_add(cfg.build_link_test_safety_bytes);
 
-        // Incident-like 80 GiB free: a 56 GiB target plus 8 GiB final-link
+        // At 48 GiB free, one 16 GiB private delta plus 4 GiB final-link
         // safety would cross the 32 GiB warning floor.
         let before = assess_projected_build(
             &[MountSpace {
                 path: "/synthetic".into(),
                 mount_id: "synthetic".into(),
-                free_bytes: 80 * GIB,
+                free_bytes: 48 * GIB,
                 total_bytes: 400 * GIB,
-                free_percent: 20.0,
+                free_percent: 12.0,
             }],
             &cfg,
             candidate,
@@ -1962,7 +2100,7 @@ mod tests {
         );
         assert!(!before.allowed);
 
-        // Sparse/synthetic cleanup frees 64 GiB; the same projection is safe.
+        // Cleanup frees space; multiple private deltas can then proceed.
         let after_mount = MountSpace {
             path: "/synthetic".into(),
             mount_id: "synthetic".into(),
@@ -1972,10 +2110,10 @@ mod tests {
         };
         assert!(assess_projected_build(&[after_mount.clone()], &cfg, candidate, 0).allowed);
 
-        // One concurrent build reserves the same unmaterialized growth, so a
-        // second cannot overcommit the mount even though each alone fits.
+        // The shared baseline is already charged in free_bytes. Two concurrent
+        // private deltas fit and are admitted without mutable-target sharing.
         let concurrent = assess_projected_build(&[after_mount], &cfg, candidate, candidate);
-        assert!(!concurrent.allowed);
+        assert!(concurrent.allowed);
         assert_eq!(concurrent.concurrent_reserved_bytes, candidate);
     }
 

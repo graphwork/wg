@@ -111,15 +111,18 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Rust/Lean lifecycle reducer conformance
-        run: >-
-          cargo test --locked
-          --test lifecycle_protocol_conformance
-          --test simple_land_conformance
-          --test simple_land_lean_oracle
-          --test completion_manifest_resolver
-          --test completion_review_valve
-          --test completion_task_projection
-          --test legacy_completion_authority_retired
+        run: |
+          for case in \
+            lifecycle_protocol_conformance \
+            simple_land_conformance \
+            simple_land_lean_oracle \
+            completion_manifest_resolver \
+            completion_review_valve \
+            completion_task_projection \
+            legacy_completion_authority_retired
+          do
+            cargo test --locked --test lifecycle_graph "${case}::" -- --test-threads=1
+          done
 
       - name: Hermetic worker-owned completion canary
         run: cargo test --locked --bin wg commands::completion_canary_tests
@@ -157,8 +160,8 @@ jobs:
           "${root}/bin/nex" --help >/dev/null
           echo "${root}/bin" >> "${GITHUB_PATH}"
 
-      - name: cargo test --test integration_service
-        run: cargo test --test integration_service -- --test-threads=1
+      - name: cargo test service integration module
+        run: cargo test --test service_dispatch integration_service:: -- --test-threads=1
         timeout-minutes: 10
 
   installer-windows:

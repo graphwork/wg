@@ -3026,3 +3026,10 @@ script = "scenarios/stale_worktree_spawn_owner_convergence.sh"
 owners = ["fix-stale-worktree-spawn-owner-convergence"]
 description = "Candidate-binary real-daemon regression seeded with a proven-dead registered spawn owner, private wg-spawn-owner token, dirty WIP, and exact observer state: preparation records one replay-safe reclaim/retain acknowledgement without editing evidence, dispatches one current attempt in the reused verified worktree, protects generation/fence and remains breaker/Dispatch-falloff neutral; the v3 pure trace replays byte-identically."
 timeout_seconds = 180
+
+[[scenario]]
+name = "bounded_worktree_build_storage"
+script = "scenarios/bounded_worktree_build_storage.sh"
+owners = ["fix-worktree-cow-build-storage"]
+description = "Pins the ENOSPC incident fix: Cargo discovers at most 16 bounded integration harnesses, routine tests retain line-table diagnostics with incremental state disabled, ext4 hard-link CoW layers share unchanged immutable artifacts without mutable-target races, divergent replacement cannot clobber the lower, key dimensions invalidate, crash promotion repairs, active baselines survive stale GC, and zero headroom fails closed."
+timeout_seconds = 300

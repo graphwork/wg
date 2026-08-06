@@ -573,7 +573,7 @@ scenario_4b_dispatch_boot_regression() {
     # Run the full integration_dispatch_boot suite (incl. ignored subprocess
     # tests). Total runtime should be a few seconds.
     local out
-    out=$(cd "$REPO_ROOT" && cargo test --test integration_dispatch_boot \
+    out=$(cd "$REPO_ROOT" && cargo test --test service_dispatch integration_dispatch_boot:: \
               -- --include-ignored 2>&1 | tail -20)
     if echo "$out" | grep -qE 'test result: ok\. [0-9]+ passed; 0 failed'; then
         pass "$desc"

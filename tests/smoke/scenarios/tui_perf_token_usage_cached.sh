@@ -28,8 +28,8 @@ fi
 log=$(mktemp -t tui_perf_token.XXXXXX.log)
 add_cleanup_hook "rm -f $log"
 cd "$repo_root"
-if ! cargo test --test integration_tui_perf_benchmarks \
-        bench_token_usage_cache_avoids_reparse \
+if ! cargo test --test ui_messaging \
+        integration_tui_perf_benchmarks::bench_token_usage_cache_avoids_reparse \
         -- --nocapture >"$log" 2>&1; then
     loud_fail "bench_token_usage_cache_avoids_reparse failed:
 $(tail -40 "$log")"

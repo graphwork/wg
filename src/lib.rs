@@ -107,6 +107,7 @@ pub mod simple_land;
 pub mod smoke;
 pub mod stream_event;
 pub mod syntect_convert;
+pub mod target_cache;
 pub mod telegram_commands;
 pub mod telemetry;
 pub mod trust;
