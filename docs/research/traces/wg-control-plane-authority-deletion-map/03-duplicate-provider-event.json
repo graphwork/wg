@@ -1,0 +1,152 @@
+{
+  "trace_schema": "wg-single-attempt-deletion-audit/v1",
+  "incident": "duplicate-provider-event",
+  "credential_free": true,
+  "source_revision": "4e227b1f52ab63e9eeeb3c613f7329448d872410",
+  "source_evidence": [
+    {
+      "path": "src/service/provider_health.rs",
+      "symbol": "ProviderHealthStatus::record_failure",
+      "lines": "329-344",
+      "fact": "fatal failure increments a counter without an event identity"
+    },
+    {
+      "path": "src/commands/service/triage.rs",
+      "symbol": "track_provider_health",
+      "lines": "580-730",
+      "fact": "dead-agent evidence updates provider_health.json"
+    },
+    {
+      "path": "src/telemetry/mod.rs",
+      "symbol": "append_record_at",
+      "lines": "380-418",
+      "fact": "telemetry separately replaces by task/attempt/executor/bucket rather than provider event id"
+    }
+  ],
+  "current_trace": [
+    {
+      "seq": 1,
+      "authority": "dead-agent triage",
+      "event": "run-88 fatal provider outcome increments route count"
+    },
+    {
+      "seq": 2,
+      "authority": "provider health replay",
+      "event": "same semantic outcome presented again increments again because no provider_event_id exists"
+    },
+    {
+      "seq": 3,
+      "authority": "telemetry",
+      "event": "a second durable projection deduplicates under a different composite key"
+    }
+  ],
+  "current_contradiction": {
+    "fact": "one provider failure has no common identity across provider_health.json and provider-telemetry.jsonl",
+    "risk": "duplicate delivery can trip or extend a breaker; distinct events can also be overwritten by the coarse telemetry key"
+  },
+  "single_kernel_replay": {
+    "initial": {
+      "attempt_phase": "running",
+      "terminal": null,
+      "requests": {},
+      "effect_ids": [],
+      "observation_ids": [],
+      "holds": [],
+      "assignment_receipt": null,
+      "provider_failure_count": 0,
+      "continuation_ids": []
+    },
+    "steps": [
+      {
+        "seq": 1,
+        "request": {
+          "idempotency_key": "provider-failure:run-88",
+          "kind": "provider-failure-observed",
+          "attempt_id": "attempt-7",
+          "fence": 11
+        },
+        "decision": "applied",
+        "before": {
+          "attempt_phase": "running",
+          "terminal": null,
+          "requests": {},
+          "effect_ids": [],
+          "observation_ids": [],
+          "holds": [],
+          "assignment_receipt": null,
+          "provider_failure_count": 0,
+          "continuation_ids": []
+        },
+        "after": {
+          "attempt_phase": "running",
+          "terminal": null,
+          "requests": {},
+          "effect_ids": [],
+          "observation_ids": [
+            "provider-failure:run-88"
+          ],
+          "holds": [],
+          "assignment_receipt": null,
+          "provider_failure_count": 1,
+          "continuation_ids": []
+        },
+        "note": "first exact provider event increments its route projection once"
+      },
+      {
+        "seq": 2,
+        "request": {
+          "idempotency_key": "provider-failure:run-88",
+          "kind": "provider-failure-observed",
+          "attempt_id": "attempt-7",
+          "fence": 11
+        },
+        "decision": "duplicate-noop",
+        "before": {
+          "attempt_phase": "running",
+          "terminal": null,
+          "requests": {},
+          "effect_ids": [],
+          "observation_ids": [
+            "provider-failure:run-88"
+          ],
+          "holds": [],
+          "assignment_receipt": null,
+          "provider_failure_count": 1,
+          "continuation_ids": []
+        },
+        "after": {
+          "attempt_phase": "running",
+          "terminal": null,
+          "requests": {},
+          "effect_ids": [],
+          "observation_ids": [
+            "provider-failure:run-88"
+          ],
+          "holds": [],
+          "assignment_receipt": null,
+          "provider_failure_count": 1,
+          "continuation_ids": []
+        },
+        "note": "same event identity is inert"
+      }
+    ],
+    "expected_final": {
+      "attempt_phase": "running",
+      "terminal": null,
+      "requests": {},
+      "effect_ids": [],
+      "observation_ids": [
+        "provider-failure:run-88"
+      ],
+      "holds": [],
+      "assignment_receipt": null,
+      "provider_failure_count": 1,
+      "continuation_ids": []
+    },
+    "invariants": [
+      "provider counters derive from unique event ids",
+      "provider observations never terminalize a task",
+      "duplicate delivery does not change cooldown or count"
+    ]
+  }
+}

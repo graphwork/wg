@@ -1,0 +1,218 @@
+{
+  "trace_schema": "wg-single-attempt-deletion-audit/v1",
+  "incident": "repeated-threshold-compactions",
+  "credential_free": true,
+  "source_revision": "4e227b1f52ab63e9eeeb3c613f7329448d872410",
+  "source_evidence": [
+    {
+      "path": "src/pi_watchdog/mod.rs",
+      "symbol": "PiWatchdog::ingest_native_value",
+      "lines": "988-1081",
+      "fact": "current compaction_start/end names are unmatched; only compaction_retry is recognized"
+    },
+    {
+      "path": "src/pi_watchdog/mod.rs",
+      "symbol": "needs_finalization/emit_completion_prompt",
+      "lines": "1676-1781",
+      "fact": "agent_settled reserves an epoch and writes a custom marker"
+    },
+    {
+      "path": "src/commands/pi_stream_bridge.rs",
+      "symbol": "observe_live/translate_finished_stream",
+      "lines": "33-111,137-201",
+      "fact": "production callers discard returned LaunchSameSession/AppendCompletionPrompt actions"
+    }
+  ],
+  "current_trace": [
+    {
+      "seq": 1,
+      "authority": "raw Pi stream",
+      "event": "threshold compaction entry-20 ends; parser treats it as inert"
+    },
+    {
+      "seq": 2,
+      "authority": "Pi watchdog",
+      "event": "agent_settled reserves continuation epoch 1 and records a marker; delivery action is discarded"
+    },
+    {
+      "seq": 3,
+      "authority": "raw Pi stream",
+      "event": "same threshold boundary is replayed at a different capture offset"
+    },
+    {
+      "seq": 4,
+      "authority": "Pi watchdog",
+      "event": "another settled boundary can reserve another finite epoch while no turn was delivered"
+    }
+  ],
+  "current_contradiction": {
+    "fact": "durable continuation reservations and actual Pi turns diverge",
+    "risk": "repeated threshold/settled observations consume budget or loop markers without one acknowledged delivery"
+  },
+  "single_kernel_replay": {
+    "initial": {
+      "attempt_phase": "running",
+      "terminal": null,
+      "requests": {},
+      "effect_ids": [],
+      "observation_ids": [],
+      "holds": [],
+      "assignment_receipt": null,
+      "provider_failure_count": 0,
+      "continuation_ids": []
+    },
+    "steps": [
+      {
+        "seq": 1,
+        "request": {
+          "idempotency_key": "compaction:session-4:entry-20",
+          "kind": "threshold-compaction-settled",
+          "attempt_id": "attempt-7",
+          "fence": 11
+        },
+        "decision": "issue-one-effect",
+        "before": {
+          "attempt_phase": "running",
+          "terminal": null,
+          "requests": {},
+          "effect_ids": [],
+          "observation_ids": [],
+          "holds": [],
+          "assignment_receipt": null,
+          "provider_failure_count": 0,
+          "continuation_ids": []
+        },
+        "after": {
+          "attempt_phase": "running",
+          "terminal": null,
+          "requests": {},
+          "effect_ids": [
+            "continue:attempt-7:process-1:entry-20"
+          ],
+          "observation_ids": [
+            "compaction:session-4:entry-20"
+          ],
+          "holds": [],
+          "assignment_receipt": null,
+          "provider_failure_count": 0,
+          "continuation_ids": [
+            "entry-20"
+          ]
+        },
+        "note": "unique compaction identity may issue one continuation effect"
+      },
+      {
+        "seq": 2,
+        "request": {
+          "idempotency_key": "compaction:session-4:entry-20",
+          "kind": "threshold-compaction-settled",
+          "attempt_id": "attempt-7",
+          "fence": 11
+        },
+        "decision": "duplicate-noop",
+        "before": {
+          "attempt_phase": "running",
+          "terminal": null,
+          "requests": {},
+          "effect_ids": [
+            "continue:attempt-7:process-1:entry-20"
+          ],
+          "observation_ids": [
+            "compaction:session-4:entry-20"
+          ],
+          "holds": [],
+          "assignment_receipt": null,
+          "provider_failure_count": 0,
+          "continuation_ids": [
+            "entry-20"
+          ]
+        },
+        "after": {
+          "attempt_phase": "running",
+          "terminal": null,
+          "requests": {},
+          "effect_ids": [
+            "continue:attempt-7:process-1:entry-20"
+          ],
+          "observation_ids": [
+            "compaction:session-4:entry-20"
+          ],
+          "holds": [],
+          "assignment_receipt": null,
+          "provider_failure_count": 0,
+          "continuation_ids": [
+            "entry-20"
+          ]
+        },
+        "note": "replayed boundary cannot reserve a second epoch"
+      },
+      {
+        "seq": 3,
+        "request": {
+          "idempotency_key": "delivery-ack:continue:attempt-7:process-1:entry-20",
+          "kind": "effect-acknowledged",
+          "attempt_id": "attempt-7",
+          "fence": 11
+        },
+        "decision": "applied",
+        "before": {
+          "attempt_phase": "running",
+          "terminal": null,
+          "requests": {},
+          "effect_ids": [
+            "continue:attempt-7:process-1:entry-20"
+          ],
+          "observation_ids": [
+            "compaction:session-4:entry-20"
+          ],
+          "holds": [],
+          "assignment_receipt": null,
+          "provider_failure_count": 0,
+          "continuation_ids": [
+            "entry-20"
+          ]
+        },
+        "after": {
+          "attempt_phase": "running",
+          "terminal": null,
+          "requests": {},
+          "effect_ids": [
+            "continue:attempt-7:process-1:entry-20"
+          ],
+          "observation_ids": [
+            "compaction:session-4:entry-20"
+          ],
+          "holds": [],
+          "assignment_receipt": null,
+          "provider_failure_count": 0,
+          "continuation_ids": [
+            "entry-20"
+          ]
+        },
+        "note": "ack settles the same effect; absence of ack remains a hold, never permission to redeliver"
+      }
+    ],
+    "expected_final": {
+      "attempt_phase": "running",
+      "terminal": null,
+      "requests": {},
+      "effect_ids": [
+        "continue:attempt-7:process-1:entry-20"
+      ],
+      "observation_ids": [
+        "compaction:session-4:entry-20"
+      ],
+      "holds": [],
+      "assignment_receipt": null,
+      "provider_failure_count": 0,
+      "continuation_ids": [
+        "entry-20"
+      ]
+    },
+    "invariants": [
+      "one compaction identity creates at most one continuation effect",
+      "reservation and delivery acknowledgement share one effect id",
+      "unknown or replayed stream records cannot consume continuation budget"
+    ]
+  }
+}

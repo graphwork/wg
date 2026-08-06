@@ -1,0 +1,206 @@
+{
+  "trace_schema": "wg-single-attempt-deletion-audit/v1",
+  "incident": "child-exit-and-observer-eof",
+  "credential_free": true,
+  "source_revision": "4e227b1f52ab63e9eeeb3c613f7329448d872410",
+  "source_evidence": [
+    {
+      "path": "src/commands/spawn/execution.rs",
+      "symbol": "generated Pi wrapper",
+      "lines": "3513-3521,3696-3711",
+      "fact": "wrapper waits child, then observer, then invokes bridge/process-exit/failure logic"
+    },
+    {
+      "path": "src/pi_watchdog/mod.rs",
+      "symbol": "Observation::PipeEof/ProcessExited",
+      "lines": "1382-1394",
+      "fact": "EOF and exit independently call needs_finalization"
+    },
+    {
+      "path": "src/commands/pi_watchdog.rs",
+      "symbol": "process_exit",
+      "lines": "907-961",
+      "fact": "returned watchdog actions are not executed by the process-exit adapter"
+    }
+  ],
+  "current_trace": [
+    {
+      "seq": 1,
+      "authority": "stream observer",
+      "event": "EOF/settled requests continuation/finalization actions"
+    },
+    {
+      "seq": 2,
+      "authority": "wrapper",
+      "event": "exact child exit is retained separately"
+    },
+    {
+      "seq": 3,
+      "authority": "Pi watchdog/lifecycle",
+      "event": "continuation authorization can keep exit pre-terminal"
+    },
+    {
+      "seq": 4,
+      "authority": "wrapper fallback",
+      "event": "still-in-progress check may call wg fail"
+    }
+  ],
+  "current_contradiction": {
+    "fact": "EOF, child exit, continuation reservation, and wrapper fallback can each nominate a different next action",
+    "risk": "observer success/EOF is confused with writer disposition and competes with exact exit handling"
+  },
+  "single_kernel_replay": {
+    "initial": {
+      "attempt_phase": "running",
+      "terminal": null,
+      "requests": {},
+      "effect_ids": [],
+      "observation_ids": [],
+      "holds": [],
+      "assignment_receipt": null,
+      "provider_failure_count": 0,
+      "continuation_ids": []
+    },
+    "steps": [
+      {
+        "seq": 1,
+        "request": {
+          "idempotency_key": "observer-eof:stream-55",
+          "kind": "observer-eof",
+          "attempt_id": "attempt-7",
+          "fence": 11
+        },
+        "decision": "evidence-only",
+        "before": {
+          "attempt_phase": "running",
+          "terminal": null,
+          "requests": {},
+          "effect_ids": [],
+          "observation_ids": [],
+          "holds": [],
+          "assignment_receipt": null,
+          "provider_failure_count": 0,
+          "continuation_ids": []
+        },
+        "after": {
+          "attempt_phase": "running",
+          "terminal": null,
+          "requests": {},
+          "effect_ids": [],
+          "observation_ids": [
+            "observer-eof:stream-55"
+          ],
+          "holds": [],
+          "assignment_receipt": null,
+          "provider_failure_count": 0,
+          "continuation_ids": []
+        },
+        "note": "observer EOF says only that an evidence channel closed"
+      },
+      {
+        "seq": 2,
+        "request": {
+          "idempotency_key": "child-exit:pid-4242:birth-9",
+          "kind": "exact-child-exit-without-terminal",
+          "attempt_id": "attempt-7",
+          "fence": 11
+        },
+        "decision": "applied-one-reconciliation-effect",
+        "before": {
+          "attempt_phase": "running",
+          "terminal": null,
+          "requests": {},
+          "effect_ids": [],
+          "observation_ids": [
+            "observer-eof:stream-55"
+          ],
+          "holds": [],
+          "assignment_receipt": null,
+          "provider_failure_count": 0,
+          "continuation_ids": []
+        },
+        "after": {
+          "attempt_phase": "finishing",
+          "terminal": null,
+          "requests": {},
+          "effect_ids": [
+            "reconcile-disposition:attempt-7"
+          ],
+          "observation_ids": [
+            "observer-eof:stream-55",
+            "child-exit:pid-4242:birth-9"
+          ],
+          "holds": [],
+          "assignment_receipt": null,
+          "provider_failure_count": 0,
+          "continuation_ids": []
+        },
+        "note": "exact exit moves to one finishing hold and schedules one disposition reconciliation"
+      },
+      {
+        "seq": 3,
+        "request": {
+          "idempotency_key": "observer-eof:stream-55",
+          "kind": "observer-eof",
+          "attempt_id": "attempt-7",
+          "fence": 11
+        },
+        "decision": "duplicate-noop",
+        "before": {
+          "attempt_phase": "finishing",
+          "terminal": null,
+          "requests": {},
+          "effect_ids": [
+            "reconcile-disposition:attempt-7"
+          ],
+          "observation_ids": [
+            "observer-eof:stream-55",
+            "child-exit:pid-4242:birth-9"
+          ],
+          "holds": [],
+          "assignment_receipt": null,
+          "provider_failure_count": 0,
+          "continuation_ids": []
+        },
+        "after": {
+          "attempt_phase": "finishing",
+          "terminal": null,
+          "requests": {},
+          "effect_ids": [
+            "reconcile-disposition:attempt-7"
+          ],
+          "observation_ids": [
+            "observer-eof:stream-55",
+            "child-exit:pid-4242:birth-9"
+          ],
+          "holds": [],
+          "assignment_receipt": null,
+          "provider_failure_count": 0,
+          "continuation_ids": []
+        },
+        "note": "late/replayed observer EOF cannot fail or complete the attempt"
+      }
+    ],
+    "expected_final": {
+      "attempt_phase": "finishing",
+      "terminal": null,
+      "requests": {},
+      "effect_ids": [
+        "reconcile-disposition:attempt-7"
+      ],
+      "observation_ids": [
+        "observer-eof:stream-55",
+        "child-exit:pid-4242:birth-9"
+      ],
+      "holds": [],
+      "assignment_receipt": null,
+      "provider_failure_count": 0,
+      "continuation_ids": []
+    },
+    "invariants": [
+      "observer exit or EOF never supplies worker disposition",
+      "one exact child exit creates one reconciliation effect",
+      "no terminal success without a completion receipt"
+    ]
+  }
+}
