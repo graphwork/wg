@@ -114,7 +114,7 @@ Tests currently assert the vectors and marker count, not an actual Pi turn: `set
 
 ### Reproducible exhaustive searches for negative claims
 
-These repository-wide/source-scope searches were run at audit commit `302d31e3`:
+These repository-wide/source-scope searches were run against the exact candidate tree (`git rev-parse HEAD` is recorded with the immutable validation evidence):
 
 ```text
 $ rg -n 'watchdog\.tick|PiWatchdog::tick|\.tick\(now' src --glob '*.rs'
