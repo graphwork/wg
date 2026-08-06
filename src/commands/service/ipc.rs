@@ -3570,6 +3570,302 @@ mod tests {
     }
 
     #[test]
+    fn completed_permit_response_loss_never_reissues_native_prompt_authority() {
+        let replay = worker_response_from_stored(
+            &WorkerOperation::PiCompactionKickPermit {
+                action_id: "action-a".into(),
+            },
+            worksgood::worker_control::StoredWorkerResponse {
+                ok: true,
+                error: None,
+                data: Some(serde_json::json!({
+                    "actionId": "action-a",
+                    "freshDeliveryGrant": true,
+                    "prompt": worksgood::pi_watchdog::COMPACTION_KICK_PROMPT,
+                    "state": "delivery-permitted"
+                })),
+            },
+        );
+        assert!(replay.ok);
+        let data = replay.data.unwrap();
+        assert_eq!(data["actionId"], "action-a");
+        assert_eq!(data["freshDeliveryGrant"], false);
+        assert!(data["prompt"].is_null());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn graph_permit_cas_crash_replays_through_broker_without_prompt_or_duplicate_owner() {
+        use worksgood::attempt_runtime::AttemptRuntimeKey;
+        use worksgood::graph::{Node, Status, Task, WorkGraph};
+        use worksgood::lifecycle::{
+            ActorKind, FenceExpectation, LifecycleActor, PiAuthorizationState,
+            PiContinuationAuthorization, TransitionKind, TransitionRequest, apply_transition,
+        };
+        use worksgood::pi_watchdog::{
+            PiWatchdog, ProcessIdentity, QosClass, RouteSnapshot, SessionProof, SourceTuple,
+            WatchdogPolicy,
+        };
+
+        let project = TempDir::new().unwrap();
+        let dir = project.path().join(".wg");
+        let worktree = project.path().join(".wg-worktrees/agent-7");
+        let sessions = worktree.join("pi-session");
+        fs::create_dir_all(&sessions).unwrap();
+        let session_file = sessions.join("session-broker.jsonl");
+        let header = "{\"type\":\"session\",\"id\":\"session-broker\"}\n";
+        let entry = "{\"type\":\"compaction\",\"id\":\"compact-broker\",\"parentId\":\"assistant-before\",\"summary\":\"bounded\"}\n";
+        let session_bytes = format!("{header}{entry}");
+        fs::write(&session_file, &session_bytes).unwrap();
+        let selected =
+            worksgood::pi_watchdog::select_canonical_session_journal(&sessions, "session-broker")
+                .unwrap();
+        let session = SessionProof {
+            session_id: "session-broker".into(),
+            branch_leaf: "compact-broker".into(),
+            session_dir: sessions,
+            session_file: session_file.clone(),
+            header_digest: selected.header_digest,
+            append_prefix_digest: format!("b3:{}", blake3::hash(header.as_bytes()).to_hex()),
+            append_prefix_len: header.len() as u64,
+        };
+        let pid = std::process::id();
+        let stat = fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+        let close = stat.rfind(')').unwrap();
+        let start_ticks = stat[close + 2..]
+            .split_whitespace()
+            .nth(19)
+            .unwrap()
+            .parse()
+            .unwrap();
+        let process = ProcessIdentity {
+            pid,
+            pgid: unsafe { libc::getpgid(0) as u32 },
+            start_ticks,
+            boot_id: fs::read_to_string("/proc/sys/kernel/random/boot_id")
+                .unwrap()
+                .trim()
+                .to_string(),
+            nonce: "broker-crash-test".into(),
+        };
+        let route = RouteSnapshot {
+            handler: "pi".into(),
+            provider: "fixture".into(),
+            model: "fixture-model".into(),
+            reasoning: Some("high".into()),
+            endpoint_redacted: "fixture://local".into(),
+            endpoint_hmac: "fixture-endpoint".into(),
+            qos: QosClass::Free,
+            pi_binary_digest: "fixture-pi".into(),
+            plugin_digest: "0.3.0".into(),
+        };
+        let mut task = Task {
+            id: "task-a".into(),
+            title: "Task A".into(),
+            status: Status::Open,
+            assigned: Some("agent-7".into()),
+            ..Task::default()
+        };
+        apply_transition(
+            &mut task,
+            TransitionRequest::new(
+                TransitionKind::AttemptReserved {
+                    owner_id: Some("agent-7".into()),
+                },
+                LifecycleActor {
+                    kind: ActorKind::Dispatcher,
+                    id: "dispatcher".into(),
+                },
+                "spawn_reservation",
+                "reserve-broker",
+            ),
+        )
+        .unwrap();
+        let attempt = task.lifecycle.current_attempt.clone().unwrap();
+        let source = SourceTuple {
+            task_id: task.id.clone(),
+            generation: attempt.generation,
+            attempt_id: attempt.id.clone(),
+            attempt_fence: attempt.fence,
+            worktree_lease_epoch: attempt.fence,
+            worktree_path: worktree,
+        };
+        let authorization = PiContinuationAuthorization {
+            authorization_id: format!("pi-auth:{}", attempt.id),
+            task_id: task.id.clone(),
+            generation: attempt.generation,
+            attempt_id: attempt.id.clone(),
+            attempt_fence: attempt.fence,
+            worktree_lease_epoch: attempt.fence,
+            session_proof_digest: session.digest(),
+            route_snapshot_digest: route.digest(),
+            state: PiAuthorizationState::Active,
+            max_replacement_epochs: 3,
+            max_reserved_elapsed_secs: 1800,
+            epochs_used: 0,
+            elapsed_reserved_secs: 0,
+            issued_by_policy: "pi-watchdog-static-v1".into(),
+        };
+        let expected = FenceExpectation::current(&task);
+        apply_transition(
+            &mut task,
+            TransitionRequest::new(
+                TransitionKind::PiContinuationAuthorized {
+                    authorization,
+                    initial_process_epoch: 1,
+                    initial_process_identity_digest: process.digest(),
+                },
+                LifecycleActor {
+                    kind: ActorKind::Dispatcher,
+                    id: "pi-bootstrap".into(),
+                },
+                "pi_authorized",
+                format!("pi-auth:{}", attempt.id),
+            )
+            .expecting(expected),
+        )
+        .unwrap();
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(task.clone()));
+        worksgood::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+        let runtime_key = AttemptRuntimeKey::for_attempt(&task, &attempt);
+        let state_path = worksgood::attempt_runtime::component_for_update(&dir, &runtime_key, "pi")
+            .unwrap()
+            .join("state.json");
+        PiWatchdog::new_at(
+            state_path.clone(),
+            source,
+            route,
+            session,
+            process,
+            WatchdogPolicy::default(),
+            1,
+        )
+        .unwrap();
+        let (capability, _) = worksgood::worker_control::mint_attempt_capability(
+            &dir,
+            "task-a",
+            attempt.generation,
+            &attempt.id,
+            attempt.fence,
+            attempt.fence,
+            "agent-7",
+        )
+        .unwrap();
+        worksgood::worker_control::grant_capability_operation(
+            &dir,
+            &capability,
+            worksgood::worker_control::WorkerOperationKind::PiCompactionKick,
+        )
+        .unwrap();
+        let logger = DaemonLogger::open(&dir).unwrap();
+        let authorize = handle_worker_request(
+            &dir,
+            WorkerRequestEnvelope {
+                protocol: WORKER_CONTROL_PROTOCOL.into(),
+                request_id: "authorize-broker".into(),
+                capability: capability.clone(),
+                operation: WorkerOperation::PiCompactionKickAuthorize {
+                    reason: "threshold".into(),
+                    will_retry: false,
+                    compaction_entry_id: "compact-broker".into(),
+                    compaction_parent_id: "assistant-before".into(),
+                    session_id: "session-broker".into(),
+                    session_file: session_file.display().to_string(),
+                    session_leaf_id: "compact-broker".into(),
+                    pid,
+                    provider: "fixture".into(),
+                    model: "fixture-model".into(),
+                    reasoning: Some("high".into()),
+                    plugin_compat: "0.3.0".into(),
+                    quiescent: true,
+                    host_idle: false,
+                    queue_empty: true,
+                    tool_clear: true,
+                },
+            },
+            &logger,
+        );
+        assert!(authorize.ok, "{:?}", authorize.error);
+        let action_id = authorize.data.unwrap()["actionId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let watchdog = PiWatchdog::open(&state_path).unwrap();
+        let record = watchdog.compaction_kick(&action_id).unwrap().clone();
+
+        // Crash boundary: the graph continuation CAS committed, but the
+        // watchdog permit record and broker response did not. Recovery runs
+        // the real broker operation with the same request identity.
+        worksgood::parser::modify_graph(dir.join("graph.jsonl"), |graph| {
+            let task = graph.get_task_mut("task-a").unwrap();
+            apply_transition(
+                task,
+                TransitionRequest::new(
+                    TransitionKind::PiContinuationEpochReserved {
+                        expected_process_epoch: record.process_epoch,
+                        process_identity_digest: record.process_identity_digest.clone(),
+                        expected_continuation_epoch: record.authorized_from_continuation_epoch,
+                        next_continuation_epoch: record.to_continuation_epoch,
+                        elapsed_charge_secs: WatchdogPolicy::default()
+                            .continuation_epoch_lease_secs,
+                    },
+                    LifecycleActor {
+                        kind: ActorKind::ProcessObserver,
+                        id: "pi-compaction-kick".into(),
+                    },
+                    "threshold_compaction_kick",
+                    action_id.clone(),
+                )
+                .expecting(FenceExpectation::current(task))
+                .with_evidence(record.occurrence_id.clone()),
+            )
+            .unwrap();
+            true
+        })
+        .unwrap();
+        let permit_request = WorkerRequestEnvelope {
+            protocol: WORKER_CONTROL_PROTOCOL.into(),
+            request_id: "permit-after-graph-crash".into(),
+            capability,
+            operation: WorkerOperation::PiCompactionKickPermit {
+                action_id: action_id.clone(),
+            },
+        };
+        let repaired = handle_worker_request(&dir, permit_request.clone(), &logger);
+        assert!(repaired.ok, "{:?}", repaired.error);
+        let data = repaired.data.unwrap();
+        assert_eq!(data["freshDeliveryGrant"], false);
+        assert!(data["prompt"].is_null());
+        let replay = handle_worker_request(&dir, permit_request, &logger);
+        assert!(replay.ok, "{:?}", replay.error);
+        let replay_data = replay.data.unwrap();
+        assert_eq!(replay_data["freshDeliveryGrant"], false);
+        assert!(replay_data["prompt"].is_null());
+
+        let restarted = PiWatchdog::open(&state_path).unwrap();
+        assert_eq!(restarted.state().continuation_epoch, 1);
+        assert_eq!(restarted.state().epochs_used, 1);
+        assert_eq!(restarted.state().compaction_kicks.len(), 1);
+        let graph = worksgood::parser::load_graph(dir.join("graph.jsonl")).unwrap();
+        let task = graph.get_task("task-a").unwrap();
+        assert_eq!(
+            task.lifecycle.current_attempt.as_ref().unwrap().id,
+            attempt.id
+        );
+        assert_eq!(
+            task.lifecycle
+                .audit
+                .iter()
+                .filter(|event| event.idempotency_key == action_id)
+                .count(),
+            1
+        );
+        assert_eq!(graph.tasks().count(), 1);
+        assert_eq!(fs::read(&session_file).unwrap(), session_bytes.as_bytes());
+    }
+
+    #[test]
     fn done_handoff_requires_exact_review_and_creates_no_save_transaction() {
         let project = TempDir::new().unwrap();
         let dir = project.path().join(".wg");
