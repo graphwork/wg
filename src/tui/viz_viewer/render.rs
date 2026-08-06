@@ -18582,7 +18582,7 @@ mod tests {
         assert!(chat.find('⊞').unwrap() < chat.find("Dinner").unwrap());
         assert!(letters.find('C').unwrap() < letters.find('+').unwrap());
         assert!(letters.find('+').unwrap() < letters.find("Dinner").unwrap());
-        assert!(empty.contains("Activity") && empty.contains('⊞'), "{empty}");
+        assert!(empty.contains("Workspace") && empty.contains('⊞'));
         assert!(wide.find('↯').unwrap() < wide.find('⊞').unwrap());
         assert!(wide.find('⊞').unwrap() < wide.find("Dinner planning").unwrap());
         assert!(wide.find("Dinner planning").unwrap() < wide.find("●2/4⊳3▸1∴2").unwrap());

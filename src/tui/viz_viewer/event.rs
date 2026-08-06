@@ -14279,15 +14279,18 @@ mod chat_open_tests {
         assert_eq!(app.input_mode, InputMode::CoordinatorPicker);
         app.close_coordinator_picker();
 
-        // Workspace selects its compact primary Dashboard face. Plain Tab
-        // then reaches Graph without substituting a Task or Chat destination.
+        // Workspace is the compact Graph face. Plain Tab returns to the exact
+        // Chat inspector and never substitutes Detail or Log.
         activate_context_lane_control(&mut app, ContextLane::Workspace);
-        assert_eq!(app.single_panel_view, SinglePanelView::Detail);
-        assert_eq!(app.right_panel_tab, RightPanelTab::Dashboard);
+        assert_eq!(app.single_panel_view, SinglePanelView::Graph);
         assert_eq!(app.current_context_lane(), ContextLane::Workspace);
         app.toggle_panel_focus();
-        assert_eq!(app.single_panel_view, SinglePanelView::Graph);
-        assert_eq!(app.right_panel_tab, RightPanelTab::Dashboard);
+        assert_eq!(app.single_panel_view, SinglePanelView::Detail);
+        assert_eq!(app.right_panel_tab, RightPanelTab::Chat);
+        assert_eq!(
+            app.active_chat_view_identity().map(|id| id.task_id),
+            chat_id
+        );
 
         activate_context_lane_control(&mut app, ContextLane::Task);
         assert_eq!(app.single_panel_view, SinglePanelView::Detail);
