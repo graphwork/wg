@@ -736,7 +736,8 @@ pub(crate) fn compaction_kick_authorize(
         anyhow::bail!("compaction_kick.session_proof_mismatch");
     }
     let prior = watchdog.state().session.clone();
-    let session_bytes = std::fs::read(&selected_file)?;
+    let session_bytes = worksgood::pi_watchdog::read_bounded_session_journal(&selected_file)
+        .map_err(anyhow::Error::new)?;
     if selected_file
         == prior
             .session_file
@@ -901,7 +902,9 @@ pub(crate) fn compaction_kick_permit(
         &record.session_id,
     )
     .map_err(anyhow::Error::new)?;
-    let session_bytes = std::fs::read(&selected.session_file)?;
+    let session_bytes =
+        worksgood::pi_watchdog::read_bounded_session_journal(&selected.session_file)
+            .map_err(anyhow::Error::new)?;
     let session_digest = format!("b3:{}", blake3::hash(&session_bytes).to_hex());
     let final_leaf = session_bytes
         .split(|byte| *byte == b'\n')
@@ -1658,7 +1661,8 @@ fn bootstrap(
     let planned_header_digest = plan["header_digest"]
         .as_str()
         .context("header digest missing")?;
-    let planned_bytes = std::fs::read(&planned_session_file)?;
+    let planned_bytes = worksgood::pi_watchdog::read_bounded_session_journal(&planned_session_file)
+        .map_err(anyhow::Error::new)?;
     let planned_header = planned_bytes
         .split(|byte| *byte == b'\n')
         .next()
@@ -1677,7 +1681,9 @@ fn bootstrap(
         let expected_leaf = plan["canonical_leaf"]
             .as_str()
             .context("canonical leaf missing")?;
-        let selected_bytes = std::fs::read(&selected.session_file)?;
+        let selected_bytes =
+            worksgood::pi_watchdog::read_bounded_session_journal(&selected.session_file)
+                .map_err(anyhow::Error::new)?;
         let prefix_len = usize::try_from(prefix_len).context("canonical prefix too large")?;
         if selected_bytes.len() < prefix_len
             || format!(

@@ -7,13 +7,15 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 pub const PROMPT_VERSION: &str = "WG_PI_CONTINUATION_V2";
 pub const COMPACTION_KICK_PROMPT_VERSION: &str = "WG_PI_COMPACTION_KICK_V1";
 pub const COMPACTION_KICK_OBSERVATION: &str = "threshold_compaction_protocol_unresolved";
 pub const COMPACTION_KICK_PROMPT: &str = "[WG_PI_COMPACTION_KICK_V1]\nA successful threshold compaction completed, but the exact WG lifecycle attempt\nstill has no accepted terminal or wait receipt. Continue the SAME unresolved task\nin this SAME Pi session and leased worktree. Inspect the compacted summary and\ndurable WG task contract, reconcile side effects from receipts before repeating\nanything, then produce exactly one protocol outcome: `wg_done`, `wg_fail`, or\nthe correlated `wg_wait` required by the task. This guidance grants no new tool\nor graph authority.\n";
+pub const MAX_SESSION_JOURNAL_BYTES: u64 = 64 * 1024 * 1024;
+pub const MAX_SESSION_JOURNAL_LINE_BYTES: usize = 16 * 1024 * 1024;
 pub const PRODUCTION_SOFT_SILENCE_SECS: u64 = 300;
 pub const MIN_FREE_LOW_HARD_RESUME_SECS: u64 = 900;
 pub const STOCK_PROMPT_TEMPLATE: &str = "[WG_PI_CONTINUATION_V2]\nWG observed `<OBSERVATION_CODE>` for this process epoch; no accepted terminal\nreceipt exists. Inspect the durable SAME Pi session, leased worktree, task\ncontract, candidate state, relevant tests, and supplied receipt summaries.\nDo not repeat a side effect; reconcile it from receipts/postconditions first.\nThen produce exactly one explicit outcome: `wg_done`, `wg_fail`, or the\ncorrelated `wg_wait` required by the task. This prompt is guidance, not proof.\n";
@@ -2372,7 +2374,7 @@ impl PiWatchdog {
         }
         if !self.session_has_marker(&action_id)? {
             self.append_session_marker(&action_id, reason, &prompt)?;
-            let bytes = fs::read(&self.state.session.session_file).map_err(io_error)?;
+            let bytes = read_bounded_session_journal(&self.state.session.session_file)?;
             self.state.session.branch_leaf = digest_bytes(&bytes);
             self.state.session.append_prefix_digest = digest_bytes(&bytes);
             self.state.session.append_prefix_len = bytes.len() as u64;
@@ -2386,7 +2388,7 @@ impl PiWatchdog {
     }
 
     fn session_has_marker(&self, action_id: &str) -> Result<bool, WatchdogError> {
-        let bytes = fs::read(&self.state.session.session_file)
+        let bytes = read_bounded_session_journal(&self.state.session.session_file)
             .map_err(|error| WatchdogError::new("prompt_marker_uncertain", error.to_string()))?;
         let needle = format!("\"actionId\":\"{action_id}\"");
         Ok(String::from_utf8_lossy(&bytes).contains(&needle))
@@ -2580,6 +2582,54 @@ struct JournalFrame {
     previous_digest: String,
 }
 
+fn read_bounded_session_journal_with_limits(
+    path: &Path,
+    max_file_bytes: u64,
+    max_line_bytes: usize,
+) -> Result<Vec<u8>, WatchdogError> {
+    let file = fs::File::open(path).map_err(io_error)?;
+    let declared_len = file.metadata().map_err(io_error)?.len();
+    if declared_len > max_file_bytes {
+        return Err(WatchdogError::new(
+            "session_journal_too_large",
+            format!("Pi session journal exceeds {max_file_bytes} bytes"),
+        ));
+    }
+    let max_plus_one = max_file_bytes.saturating_add(1);
+    let capacity = usize::try_from(declared_len.min(max_file_bytes)).unwrap_or(0);
+    let mut bytes = Vec::with_capacity(capacity);
+    file.take(max_plus_one)
+        .read_to_end(&mut bytes)
+        .map_err(io_error)?;
+    if bytes.len() as u64 > max_file_bytes {
+        return Err(WatchdogError::new(
+            "session_journal_too_large",
+            format!("Pi session journal grew beyond {max_file_bytes} bytes while reading"),
+        ));
+    }
+    if bytes
+        .split(|byte| *byte == b'\n')
+        .any(|line| line.len() > max_line_bytes)
+    {
+        return Err(WatchdogError::new(
+            "session_journal_line_too_large",
+            format!("Pi session journal line exceeds {max_line_bytes} bytes"),
+        ));
+    }
+    Ok(bytes)
+}
+
+/// Read a Pi journal under the compaction protocol's fixed memory and JSON-line
+/// ceilings. The handle length is checked before allocation and the bounded
+/// read detects growth after that check; every line is bounded before parsing.
+pub fn read_bounded_session_journal(path: &Path) -> Result<Vec<u8>, WatchdogError> {
+    read_bounded_session_journal_with_limits(
+        path,
+        MAX_SESSION_JOURNAL_BYTES,
+        MAX_SESSION_JOURNAL_LINE_BYTES,
+    )
+}
+
 /// Select the one resumable journal for `session_id` without changing the
 /// directory. Pi may leave WG's bootstrap header beside the timestamped file
 /// it actually appends. Header-only matches are evidence, not competing
@@ -2599,7 +2649,7 @@ pub fn select_canonical_session_journal(
         {
             continue;
         }
-        let bytes = fs::read(&path).map_err(io_error)?;
+        let bytes = read_bounded_session_journal(&path)?;
         let first_end = bytes
             .iter()
             .position(|byte| *byte == b'\n')
@@ -2849,4 +2899,33 @@ fn journal_last_digest(path: &Path) -> Option<String> {
         .nth(1)
         .and_then(|v| std::str::from_utf8(v).ok())
         .map(str::to_owned)
+}
+
+#[cfg(test)]
+mod bounded_session_journal_tests {
+    use super::read_bounded_session_journal_with_limits;
+
+    #[test]
+    fn rejects_oversized_journal_and_line_before_json_parsing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+
+        std::fs::write(&path, vec![b'x'; 65]).unwrap();
+        let error = read_bounded_session_journal_with_limits(&path, 64, 32)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("session_journal_too_large"), "{error}");
+
+        std::fs::write(&path, b"header\n123456789\n").unwrap();
+        let error = read_bounded_session_journal_with_limits(&path, 64, 8)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("session_journal_line_too_large"), "{error}");
+
+        std::fs::write(&path, b"header\n12345678\n").unwrap();
+        assert_eq!(
+            read_bounded_session_journal_with_limits(&path, 64, 8).unwrap(),
+            b"header\n12345678\n"
+        );
+    }
 }
