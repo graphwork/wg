@@ -3,8 +3,10 @@
 use anyhow::{Context, Result};
 use interprocess::local_socket::{Stream, prelude::*};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use worksgood::config::Config;
@@ -19,6 +21,68 @@ use worksgood::worker_control::{
 
 use super::{CoordinatorState, DaemonConfig, DaemonLogger, ServiceState};
 use crate::commands::graph_path;
+
+const MAX_PI_TERMINAL_WATCH_SEQUENCE: u32 = 64;
+const MAX_CONCURRENT_PI_TERMINAL_WATCHES: usize = 32;
+
+fn active_pi_terminal_watches() -> &'static Mutex<HashSet<String>> {
+    static ACTIVE: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    ACTIVE.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+/// Process-local lease for the only detached worker-control operation.
+///
+/// A capability holder cannot use caller-chosen request IDs or watch sequences
+/// to create unbounded long-poll threads: at most one watch exists for an exact
+/// task/action and the daemon has a fixed global ceiling. The durable lifecycle
+/// remains authoritative; this lease carries no continuation or effect right.
+#[derive(Debug)]
+struct PiTerminalWatchLease {
+    key: String,
+}
+
+impl Drop for PiTerminalWatchLease {
+    fn drop(&mut self) {
+        if let Ok(mut active) = active_pi_terminal_watches().lock() {
+            active.remove(&self.key);
+        }
+    }
+}
+
+fn acquire_pi_terminal_watch_lease(
+    request: &WorkerRequestEnvelope,
+    task_id: &str,
+) -> Result<PiTerminalWatchLease> {
+    let WorkerOperation::PiCompactionKickTerminalWatch {
+        action_id,
+        watch_sequence,
+        wait_ms,
+    } = &request.operation
+    else {
+        anyhow::bail!("compaction_kick.terminal_watch_operation_required");
+    };
+    if *watch_sequence > MAX_PI_TERMINAL_WATCH_SEQUENCE {
+        anyhow::bail!("compaction_kick.terminal_watch_sequence_exhausted");
+    }
+    if (*watch_sequence == 0) != (*wait_ms == 0) {
+        anyhow::bail!("compaction_kick.terminal_watch_sequence_wait_mismatch");
+    }
+    if *wait_ms > 30_000 {
+        anyhow::bail!("compaction_kick.terminal_watch_too_long");
+    }
+    let key = format!("{task_id}\u{0}{action_id}");
+    let mut active = active_pi_terminal_watches()
+        .lock()
+        .map_err(|_| anyhow::anyhow!("compaction_kick.terminal_watch_limiter_poisoned"))?;
+    if active.contains(&key) {
+        anyhow::bail!("compaction_kick.terminal_watch_already_active");
+    }
+    if active.len() >= MAX_CONCURRENT_PI_TERMINAL_WATCHES {
+        anyhow::bail!("compaction_kick.terminal_watch_capacity_exhausted");
+    }
+    active.insert(key.clone());
+    Ok(PiTerminalWatchLease { key })
+}
 
 /// IPC Request types
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -363,6 +427,26 @@ pub(crate) fn handle_connection(
                 return Ok(());
             }
         };
+        // Enforce the plugin's finite sequence and acquire a bounded server
+        // slot before allocating a thread. Authentication alone is not a
+        // resource bound: a faulty or hostile capability holder controls the
+        // request id and could otherwise fan out arbitrary long polls.
+        let watch_lease = match acquire_pi_terminal_watch_lease(&request, &binding.task_id) {
+            Ok(lease) => lease,
+            Err(error) => {
+                audit_worker_request(
+                    dir,
+                    &request,
+                    Some(&binding.task_id),
+                    "rejected",
+                    &error.to_string(),
+                    logger,
+                );
+                let response = IpcResponse::error(&error.to_string());
+                write_response_or_cancel(&stream, &response, logger)?;
+                return Ok(());
+            }
+        };
         // The normal service socket is intentionally single-threaded. Running
         // a 20s subscription on that thread would deadlock its own wakeup:
         // wg_done/fail/wait could not be accepted until the watch timed out.
@@ -374,6 +458,7 @@ pub(crate) fn handle_connection(
         std::thread::Builder::new()
             .name("wg-pi-terminal-watch".into())
             .spawn(move || {
+                let _watch_lease = watch_lease;
                 logger.info(&format!(
                     "Worker IPC: request_id={} operation={:?}",
                     request.request_id,
@@ -3448,6 +3533,74 @@ mod tests {
             }
         });
         fs::write(dir.join("graph.jsonl"), format!("{row}\n")).unwrap();
+    }
+
+    fn terminal_watch_request(
+        action_id: &str,
+        sequence: u32,
+        wait_ms: u64,
+    ) -> WorkerRequestEnvelope {
+        WorkerRequestEnvelope {
+            protocol: WORKER_CONTROL_PROTOCOL.to_string(),
+            request_id: format!("watch-{action_id}-{sequence}"),
+            capability: "test-capability".to_string(),
+            operation: WorkerOperation::PiCompactionKickTerminalWatch {
+                action_id: action_id.to_string(),
+                watch_sequence: sequence,
+                wait_ms,
+            },
+        }
+    }
+
+    #[test]
+    fn terminal_watch_limiter_enforces_finite_sequence_and_concurrency() {
+        let zero = terminal_watch_request("zero", 0, 0);
+        let _zero_lease = acquire_pi_terminal_watch_lease(&zero, "limiter-task").unwrap();
+        let duplicate = acquire_pi_terminal_watch_lease(&zero, "limiter-task")
+            .unwrap_err()
+            .to_string();
+        assert!(duplicate.contains("terminal_watch_already_active"));
+
+        let invalid_sequence =
+            terminal_watch_request("sequence", MAX_PI_TERMINAL_WATCH_SEQUENCE + 1, 20_000);
+        assert!(
+            acquire_pi_terminal_watch_lease(&invalid_sequence, "limiter-task")
+                .unwrap_err()
+                .to_string()
+                .contains("terminal_watch_sequence_exhausted")
+        );
+        let invalid_zero_wait = terminal_watch_request("zero-wait", 0, 20_000);
+        assert!(
+            acquire_pi_terminal_watch_lease(&invalid_zero_wait, "limiter-task")
+                .unwrap_err()
+                .to_string()
+                .contains("terminal_watch_sequence_wait_mismatch")
+        );
+        let invalid_poll_wait = terminal_watch_request("poll-wait", 1, 0);
+        assert!(
+            acquire_pi_terminal_watch_lease(&invalid_poll_wait, "limiter-task")
+                .unwrap_err()
+                .to_string()
+                .contains("terminal_watch_sequence_wait_mismatch")
+        );
+
+        let mut leases = Vec::new();
+        for index in 1..MAX_CONCURRENT_PI_TERMINAL_WATCHES {
+            leases.push(
+                acquire_pi_terminal_watch_lease(
+                    &terminal_watch_request(&format!("capacity-{index}"), 1, 20_000),
+                    "limiter-task",
+                )
+                .unwrap(),
+            );
+        }
+        let capacity = acquire_pi_terminal_watch_lease(
+            &terminal_watch_request("capacity-overflow", 1, 20_000),
+            "limiter-task",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(capacity.contains("terminal_watch_capacity_exhausted"));
     }
 
     #[test]
