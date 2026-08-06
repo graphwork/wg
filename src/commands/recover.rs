@@ -699,7 +699,7 @@ mod tests {
         let opts = RecoverOptions {
             yes: true,
             max_attempts: 5,
-            set_model: Some("openrouter:anthropic/claude-sonnet-4-6".to_string()),
+            set_model: Some("pi:openrouter:anthropic/claude-sonnet-4-6".to_string()),
             ..Default::default()
         };
         run(dp, opts).unwrap();
@@ -709,7 +709,7 @@ mod tests {
         assert_eq!(t.status, Status::Open);
         assert_eq!(
             t.model.as_deref(),
-            Some("openrouter:anthropic/claude-sonnet-4-6")
+            Some("pi:openrouter:anthropic/claude-sonnet-4-6")
         );
     }
 
@@ -936,7 +936,7 @@ mod tests {
     }
 
     #[test]
-    fn test_recover_set_endpoint_edits_before_retry() {
+    fn test_recover_set_endpoint_is_rejected_before_retry() {
         let dir = tempdir().unwrap();
         let dp = dir.path();
         let t1 = task("user-a", Status::Failed);
@@ -948,13 +948,13 @@ mod tests {
             set_endpoint: Some("openrouter".to_string()),
             ..Default::default()
         };
-        run(dp, opts).unwrap();
+        let error = run(dp, opts).unwrap_err().to_string();
+        assert!(error.contains("--set-endpoint is unsupported"), "{error}");
 
         let g = load_graph(graph_path(dp)).unwrap();
-        assert_eq!(
-            g.get_task("user-a").unwrap().endpoint.as_deref(),
-            Some("openrouter")
-        );
+        let task = g.get_task("user-a").unwrap();
+        assert_eq!(task.status, Status::Failed);
+        assert!(task.endpoint.is_none());
     }
 
     #[test]
@@ -991,7 +991,7 @@ mod tests {
             set_model: Some("not-a-valid-spec".to_string()),
             ..Default::default()
         };
-        let err = run(dp, opts).unwrap_err();
-        assert!(err.to_string().contains("Invalid --set-model"));
+        let error = run(dp, opts).unwrap_err().to_string();
+        assert!(error.contains("WG-PI-ROUTE-REQUIRED"), "{error}");
     }
 }
