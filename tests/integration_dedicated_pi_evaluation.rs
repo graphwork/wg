@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use serial_test::serial;
 use tempfile::TempDir;
 use worksgood::config::{Config, ReasoningLevel};
+use worksgood::dispatch::ExecutorKind;
 use worksgood::eval_lifecycle::{AgencyStage, EvaluationGateApplicability};
 use worksgood::evaluation::bounded::{
     EvaluationLaneStatus, load_lane_status, run_one_pending, status_path,
@@ -19,6 +20,7 @@ use worksgood::finalization::{
 };
 use worksgood::graph::{LogEntry, Node, Status, Task, WorkGraph};
 use worksgood::parser::{load_graph, save_graph};
+use worksgood::service::llm::{AgencyDispatch, run_exact_agency_dispatch_call};
 
 fn fixture_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-pi-bounded")
@@ -350,12 +352,118 @@ fn bounded_pi_lane_uses_no_worker_or_worktree() {
     for flag in [
         "--mode json",
         "--print",
+        "--system-prompt",
+        "--no-context-files",
+        "--no-skills",
+        "--no-prompt-templates",
         "--no-tools",
         "-ne",
         "--no-session",
     ] {
         assert!(args.contains(flag), "missing {flag}: {args}");
     }
+}
+
+fn exact_pi_dispatch(model: &str) -> AgencyDispatch {
+    AgencyDispatch {
+        handler: ExecutorKind::Pi,
+        raw_spec: format!("pi:test:{model}"),
+        model_id: model.to_string(),
+        reasoning: Some(ReasoningLevel::Low),
+    }
+}
+
+#[test]
+#[serial]
+fn central_pi_one_shot_is_ambient_context_free_and_bounded() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().join("home");
+    fs::create_dir_all(&home).unwrap();
+    fs::write(
+        home.join("AGENTS.md"),
+        "AMBIENT_CONTEXT_MUST_NOT_REACH_PI_ONESHOT_14853",
+    )
+    .unwrap();
+    let _env = test_env(&home);
+    let _poisoned_selectors = [
+        ("WG_TASK_ID", "ambient-worker-task"),
+        ("WG_AGENT_ID", "ambient-worker-agent"),
+        ("WG_SPAWN_RUN_ID", "ambient-run"),
+        ("WG_WORKER_CAPABILITY", "ambient-capability"),
+        ("WG_PI_TASK_WORKER", "1"),
+        ("WG_CHAT_ID", "ambient-chat"),
+        ("WG_CHAT_REF", "ambient-chat-ref"),
+        ("WG_MODEL", "pi:test:ambient-worker-model"),
+        ("WG_PROVIDER", "ambient-provider"),
+        ("WG_REASONING", "max"),
+        ("WG_ENDPOINT", "https://ambient.invalid"),
+        ("WG_EXECUTOR_TYPE", "pi"),
+        ("PI_SESSION_ID", "ambient-session"),
+        ("PI_SESSION_FILE", "/tmp/ambient-session.jsonl"),
+        ("PI_PROVIDER", "ambient-provider"),
+        ("PI_MODEL", "ambient-model"),
+        ("PI_REASONING_LEVEL", "max"),
+        ("PI_CODING_AGENT", "true"),
+        ("PI_CODING_AGENT_SESSION_DIR", "/tmp/ambient-sessions"),
+        ("AI_AGENT", "pi"),
+    ]
+    .map(|(name, value)| EnvGuard::set(name, value));
+
+    let result = run_exact_agency_dispatch_call(
+        &Config::default(),
+        &exact_pi_dispatch("fake-hermetic"),
+        "Return OK",
+        5,
+    )
+    .unwrap();
+    assert_eq!(result.text, "OK");
+    let usage = result
+        .token_usage
+        .expect("Pi usage survives one-shot review");
+    assert_eq!(
+        usage.input_tokens, 47,
+        "ambient coding context was amplified"
+    );
+    assert!(usage.input_tokens < 100);
+
+    let invocation = fs::read_to_string(home.join("fake-pi-invocations.log")).unwrap();
+    assert!(invocation.contains("--system-prompt"));
+    assert!(invocation.contains("--no-context-files"));
+    assert!(!invocation.contains("AMBIENT_CONTEXT_MUST_NOT_REACH"));
+}
+
+#[test]
+#[serial]
+fn central_pi_empty_success_is_unavailable_with_actionable_bounded_diagnostics() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().join("home");
+    fs::create_dir_all(&home).unwrap();
+    let _env = test_env(&home);
+
+    let error = run_exact_agency_dispatch_call(
+        &Config::default(),
+        &exact_pi_dispatch("fake-empty-success"),
+        "Return one verdict",
+        5,
+    )
+    .unwrap_err();
+    let diagnostic = format!("{error:#}");
+    assert!(
+        diagnostic.contains("no final assistant text"),
+        "{diagnostic}"
+    );
+    assert!(
+        diagnostic.contains("context_length_exceeded"),
+        "{diagnostic}"
+    );
+    assert!(
+        diagnostic.contains("stop_reasons=[\"error\"]"),
+        "{diagnostic}"
+    );
+    assert!(diagnostic.contains("input_tokens=14853"), "{diagnostic}");
+    assert!(diagnostic.contains("stderr_tail="), "{diagnostic}");
+    assert!(diagnostic.contains("stdout_tail="), "{diagnostic}");
+    assert!(diagnostic.len() < 8_192, "diagnostic was not bounded");
 }
 
 #[test]

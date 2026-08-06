@@ -1210,22 +1210,8 @@ impl BoundedEvaluationAdapter for PiBoundedAdapter {
                     None,
                 )
             })?;
-        let mut args = vec![
-            "--mode".to_string(),
-            "json".to_string(),
-            "--print".to_string(),
-            "--no-tools".to_string(),
-            "-ne".to_string(),
-            "--no-session".to_string(),
-            "--provider".to_string(),
-            provider.clone(),
-            "--model".to_string(),
-            model.clone(),
-        ];
-        if let Some(reasoning) = request.reasoning {
-            args.push("--thinking".into());
-            args.push(reasoning.as_str().into());
-        }
+        let args =
+            crate::service::llm::pi_one_shot_route_args(&provider, &model, request.reasoning);
         let start = Instant::now();
         let spawned = crate::platform_timeout::spawn_with_timeout(
             "pi",
