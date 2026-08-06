@@ -268,6 +268,27 @@ fn reconcile_compaction_action_outbox(
 ) -> Result<()> {
     let graph = load_graph(dir.join("graph.jsonl"))?;
     let task = graph.get_task_or_err(task_id)?;
+    let terminal = watchdog
+        .state()
+        .compaction_kicks
+        .iter()
+        .filter(|record| {
+            matches!(
+                record.state,
+                worksgood::pi_watchdog::PiCompactionKickState::Acknowledged
+                    | worksgood::pi_watchdog::PiCompactionKickState::Running
+            ) && task
+                .lifecycle
+                .pi_kick_revoked_actions
+                .contains(&record.action_id)
+        })
+        .map(|record| record.action_id.clone())
+        .collect::<Vec<_>>();
+    for action_id in terminal {
+        watchdog
+            .acknowledge_compaction_kick(&action_id, true, Utc::now().timestamp())
+            .map_err(anyhow::Error::new)?;
+    }
     let settled = watchdog
         .state()
         .compaction_kicks
@@ -277,9 +298,13 @@ fn reconcile_compaction_action_outbox(
                 record.state,
                 worksgood::pi_watchdog::PiCompactionKickState::Acknowledged
                     | worksgood::pi_watchdog::PiCompactionKickState::Running
-            ) && task.lifecycle.audit.iter().any(|event| {
-                event.idempotency_key == format!("pi-kick-settle:{}", record.action_id)
-            })
+            ) && !task
+                .lifecycle
+                .pi_kick_revoked_actions
+                .contains(&record.action_id)
+                && task.lifecycle.audit.iter().any(|event| {
+                    event.idempotency_key == format!("pi-kick-settle:{}", record.action_id)
+                })
         })
         .map(|record| record.action_id.clone())
         .collect::<Vec<_>>();

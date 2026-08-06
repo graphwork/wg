@@ -96,7 +96,7 @@ raw="$agent_dir/raw_stream.jsonl"
 for _ in $(seq 1 160); do
   if [[ -s "$raw" ]] \
     && grep -q 'FIXTURE_RECOVERY_TURN_EXECUTED' "$raw" \
-    && grep -q '"type":"agent_settled"' "$raw"; then
+    && grep -q '"type":"tool_execution_end","toolCallId":"fixture-terminal-FIXTURE_RECOVERY_TURN_EXECUTED"' "$raw"; then
     break
   fi
   sleep 0.25
@@ -148,11 +148,9 @@ show_end=idx(lambda e:e.get('type')=='tool_execution_end' and e.get('toolName')=
 show_receipt=json.dumps(events[show_end],sort_keys=True)
 assert 'pi-kick-smoke' in show_receipt and 'Validation' in show_receipt and 'exactly one same-process WG kick' in show_receipt,show_receipt
 marker=idx(lambda e:e.get('type')=='message_end' and 'FIXTURE_RECOVERY_TURN_EXECUTED' in text(e) and 'FIXTURE_COMPACTED_SUMMARY_VISIBLE' in text(e) and 'FIXTURE_DURABLE_TASK_CONTRACT_VISIBLE' in text(e),show_end)
-te=idx(lambda e:e.get('type')=='turn_end',marker)
-ae=idx(lambda e:e.get('type')=='agent_end',te)
-settled=idx(lambda e:e.get('type')=='agent_settled',ae)
-assert settled>ae
-assert not any(e.get('type')=='agent_settled' for e in events[c:settled])
+terminal_start=idx(lambda e:e.get('type')=='tool_execution_start' and e.get('toolName')=='wg_fail',marker)
+terminal_end=idx(lambda e:e.get('type')=='tool_execution_end' and e.get('toolName')=='wg_fail',terminal_start)
+assert not any(e.get('type')=='agent_settled' for e in events[c:terminal_end])
 
 kicks=state.get('compaction_kicks',[])
 assert len(kicks)==1,kicks
@@ -195,13 +193,31 @@ grep -q -- "worksgood-pi/0.3.0/pi-worksgood/index.js" "$agent_dir/run.sh" || lou
 grep -q -- " -ne" "$agent_dir/run.sh" || loud_fail "ambient Pi extension discovery was not disabled"
 [[ "$(find "$G/agents" -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 1 ]] || loud_fail "kick spawned a second process/agent owner"
 
-# Existing diagnostics expose bounded IDs/states but no prompt/summary bytes.
+# Existing diagnostics expose bounded IDs/states but no prompt/summary bytes,
+# and the recovery turn must have produced an accepted protocol terminal.
 status_json="$scratch/status.json"
-wg --dir "$G" pi-watchdog status pi-kick-smoke --json >"$status_json" 2>/dev/null || true
-if [[ -s "$status_json" ]]; then
-  grep -q 'compaction_kicks' "$status_json" || loud_fail "watchdog status omitted kick diagnostics"
-  ! grep -q 'UNFINISHED_WORK_STATE' "$status_json" || loud_fail "watchdog diagnostics leaked compaction summary"
-fi
+show_json="$scratch/show.json"
+wg --dir "$G" --json pi-watchdog status pi-kick-smoke >"$status_json" \
+  || loud_fail "pi-watchdog status failed after accepted recovery terminal"
+wg --dir "$G" show pi-kick-smoke --json >"$show_json" \
+  || loud_fail "wg show failed after accepted recovery terminal"
+python3 - "$status_json" "$show_json" <<'PY'
+import json,sys
+status=json.load(open(sys.argv[1]))
+show=json.load(open(sys.argv[2]))
+state=status.get('state',status)
+kicks=state.get('compaction_kicks',[])
+assert len(kicks)==1,kicks
+assert kicks[0]['state'] in ('acknowledged_terminal_race','terminal_observed','terminal_abort_acknowledged'),kicks[0]
+assert show['status']=='failed',show['status']
+attempt=show['lifecycle'].get('current_attempt')
+assert attempt and attempt.get('disposition')=='failed',attempt
+assert any(e.get('event_kind')=='attempt-failed' for e in show['lifecycle'].get('audit',[]))
+watchdog=show.get('pi_watchdog')
+assert watchdog and len(watchdog.get('compaction_kicks',[]))==1,watchdog
+PY
+! grep -q 'UNFINISHED_WORK_STATE' "$status_json" || loud_fail "watchdog diagnostics leaked compaction summary"
+! grep -q 'UNFINISHED_WORK_STATE' "$show_json" || loud_fail "wg show diagnostics leaked compaction summary"
 
 # Hardening phase: a recovery run itself compacts before settlement. Each
 # distinct persisted entry receives one independent action/epoch in the same
@@ -265,7 +281,7 @@ raw2="$agent_dir2/raw_stream.jsonl"
 for _ in $(seq 1 200); do
   if [[ -s "$raw2" ]] \
     && grep -q 'FIXTURE_RECOVERY_TURN_2_EXECUTED' "$raw2" \
-    && grep -q '"type":"agent_settled"' "$raw2"; then
+    && grep -q '"type":"tool_execution_end","toolCallId":"fixture-terminal-FIXTURE_RECOVERY_TURN_2_EXECUTED"' "$raw2"; then
     break
   fi
   sleep 0.25
@@ -278,17 +294,21 @@ for _ in $(seq 1 80); do
   python3 - "$state2" <<'PY' >/dev/null 2>&1 && break || true
 import json,sys
 s=json.load(open(sys.argv[1]))['state']
-assert len(s.get('compaction_kicks',[]))==2 and s['compaction_kicks'][-1]['state']=='settled_after_kick'
+assert len(s.get('compaction_kicks',[]))==2 and s['compaction_kicks'][-1]['state'] in ('acknowledged_terminal_race','terminal_observed','terminal_abort_acknowledged')
 PY
   sleep 0.25
 done
 state2="$(find "$G2" -path '*/pi/state.json' -type f -print -quit 2>/dev/null || true)"
 [[ -n "$state2" ]] || loud_fail "second-phase watchdog state missing"
-python3 - "$raw2" "$state2" "$agent_dir2/pi-session" <<'PY'
+show2="$scratch/show-two.json"
+wg --dir "$G2" show pi-kick-smoke-two --json >"$show2" \
+  || loud_fail "second-phase wg show failed after accepted recovery terminal"
+python3 - "$raw2" "$state2" "$agent_dir2/pi-session" "$show2" <<'PY'
 import json,sys,pathlib
-raw_path,state_path,sessions_dir=sys.argv[1:]
+raw_path,state_path,sessions_dir,show_path=sys.argv[1:]
 events=[json.loads(x) for x in open(raw_path) if x.strip()]
 state=json.load(open(state_path))['state']
+show=json.load(open(show_path))
 
 def text(e):
     content=e.get('message',{}).get('content',[])
@@ -301,11 +321,13 @@ custom=indices(lambda e:e.get('type')=='message_start' and e.get('message',{}).g
 mark1=indices(lambda e:e.get('type')=='message_end' and 'FIXTURE_RECOVERY_TURN_1_EXECUTED' in text(e) and 'FIXTURE_COMPACTED_SUMMARY_VISIBLE' in text(e) and 'FIXTURE_DURABLE_TASK_CONTRACT_VISIBLE' in text(e))
 mark2=indices(lambda e:e.get('type')=='message_end' and 'FIXTURE_RECOVERY_TURN_2_EXECUTED' in text(e) and 'FIXTURE_COMPACTED_SUMMARY_VISIBLE' in text(e) and 'FIXTURE_DURABLE_TASK_CONTRACT_VISIBLE' in text(e))
 shows=indices(lambda e:e.get('type')=='tool_execution_end' and e.get('toolName')=='wg_show')
-settled=indices(lambda e:e.get('type')=='agent_settled')
-assert len(comp)==2 and len(custom)==2 and len(mark1)==1 and len(mark2)==1 and len(shows)==2,(comp,custom,mark1,mark2,shows)
-assert comp[0] < custom[0] < shows[0] < mark1[0] < comp[1] < custom[1] < shows[1] < mark2[0] < settled[-1]
-for show in shows:
-    receipt=json.dumps(events[show],sort_keys=True)
+terminals=indices(lambda e:e.get('type')=='tool_execution_start' and e.get('toolName')=='wg_fail')
+terminal_ends=indices(lambda e:e.get('type')=='tool_execution_end' and e.get('toolName')=='wg_fail')
+assert len(comp)==2 and len(custom)==2 and len(mark1)==1 and len(mark2)==1 and len(shows)==2 and len(terminals)==len(terminal_ends)==1,(comp,custom,mark1,mark2,shows,terminals,terminal_ends)
+assert comp[0] < custom[0] < shows[0] < mark1[0] < comp[1] < custom[1] < shows[1] < mark2[0] < terminals[0] < terminal_ends[0]
+assert not any(e.get('type')=='agent_settled' for e in events[comp[0]:terminal_ends[0]])
+for show_index in shows:
+    receipt=json.dumps(events[show_index],sort_keys=True)
     assert 'pi-kick-smoke-two' in receipt and 'Validation' in receipt and 'exactly two distinct WG kicks' in receipt,receipt
 kicks=state.get('compaction_kicks',[])
 assert len(kicks)==2,kicks
@@ -315,6 +337,11 @@ assert state['continuation_epoch']==2,state
 assert state['epochs_used']==2,state
 assert state['process_epoch']==1,state
 assert state['domain_counters']=={'admission':0,'source_retry':0,'spawn_breaker':0,'provider_breaker':0,'evaluation_jobs':0,'accounting_attempts':0}
+assert kicks[-1]['state'] in ('acknowledged_terminal_race','terminal_observed','terminal_abort_acknowledged'),kicks[-1]
+assert show['status']=='failed',show['status']
+attempt=show['lifecycle'].get('current_attempt')
+assert attempt and attempt.get('disposition')=='failed',attempt
+assert any(e.get('event_kind')=='attempt-failed' for e in show['lifecycle'].get('audit',[]))
 assert [events[i]['message']['details']['actionId'] for i in custom]==[k['action_id'] for k in kicks]
 entries=[]
 for path in pathlib.Path(sessions_dir).glob('*.jsonl'):
@@ -331,4 +358,4 @@ PY
 [[ "$(find "$G2/agents" -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 1 ]] \
   || loud_fail "two qualifying occurrences spawned a second process/agent owner"
 
-echo "PASS: installed wg wrapper + embedded plugin delivered one kick for one occurrence and two distinct kicks for two same-process occurrences before settlement"
+echo "PASS: installed wg wrapper + embedded plugin delivered one kick for one occurrence and two distinct kicks for two same-process occurrences, each ending in one accepted WG terminal receipt"

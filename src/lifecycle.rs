@@ -737,6 +737,15 @@ impl LifecycleKernel {
                     ],
                 )?;
                 Self::require_running_attempt(task, &request)?;
+                if !projection.pi_kick_effect_leases.is_empty() {
+                    return Err(TransitionRejection::new(
+                        "effect_in_flight",
+                        "success cannot be accepted while a kick effect lease is open",
+                    ));
+                }
+                projection
+                    .pi_kick_revoked_actions
+                    .append(&mut projection.pi_kick_active_actions);
                 Self::terminalize_attempt(&mut projection, AttemptDisposition::Succeeded)?;
                 new_state = if acceptance_ref.is_some() {
                     Status::Done
@@ -757,6 +766,15 @@ impl LifecycleKernel {
                     ],
                 )?;
                 Self::require_running_attempt(task, &request)?;
+                if !projection.pi_kick_effect_leases.is_empty() {
+                    return Err(TransitionRejection::new(
+                        "effect_in_flight",
+                        "failure cannot be accepted while a kick effect lease is open",
+                    ));
+                }
+                projection
+                    .pi_kick_revoked_actions
+                    .append(&mut projection.pi_kick_active_actions);
                 Self::terminalize_attempt(&mut projection, AttemptDisposition::Failed)?;
                 new_state = Status::Failed;
             }
@@ -2098,6 +2116,59 @@ mod tests {
         ));
         assert_eq!(restarted.status, Status::Open);
         assert_eq!(restarted.lifecycle.generation, 1);
+    }
+
+    #[test]
+    fn accepted_failure_interlocks_and_revokes_an_active_compaction_kick() {
+        let mut task = task("kick-failure", Status::Open);
+        reserve(&mut task);
+        task.lifecycle
+            .pi_kick_active_actions
+            .insert("kick-a".to_string());
+        task.lifecycle.pi_kick_effect_leases.insert(
+            "tool-a".to_string(),
+            PiKickEffectLease {
+                action_id: "kick-a".to_string(),
+                tool_call_id: "tool-a".to_string(),
+                process_epoch: 1,
+                process_identity_digest: "process-a".to_string(),
+            },
+        );
+
+        let mut blocked = request(
+            TransitionKind::AttemptFailed { class: None },
+            ActorKind::Worker,
+            "fail-with-effect",
+        );
+        blocked.expected = FenceExpectation::current(&task);
+        assert!(matches!(
+            apply(&mut task, blocked),
+            Err(ref code) if code == "effect_in_flight"
+        ));
+        assert_eq!(task.status, Status::InProgress);
+        assert!(task.lifecycle.pi_kick_active_actions.contains("kick-a"));
+
+        // Model the separately receipt-tested exact effect close, then commit
+        // the same first-terminal transition. It must atomically revoke the
+        // action before exposing the accepted failure receipt.
+        task.lifecycle.pi_kick_effect_leases.clear();
+        let mut accepted = request(
+            TransitionKind::AttemptFailed { class: None },
+            ActorKind::Worker,
+            "fail-after-effect",
+        );
+        accepted.expected = FenceExpectation::current(&task);
+        apply(&mut task, accepted).unwrap();
+        assert_eq!(task.status, Status::Failed);
+        assert!(task.lifecycle.pi_kick_active_actions.is_empty());
+        assert!(task.lifecycle.pi_kick_revoked_actions.contains("kick-a"));
+        assert_eq!(
+            task.lifecycle
+                .current_attempt
+                .as_ref()
+                .and_then(|attempt| attempt.disposition),
+            Some(AttemptDisposition::Failed)
+        );
     }
 
     #[test]

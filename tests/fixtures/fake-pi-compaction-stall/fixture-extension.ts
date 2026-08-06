@@ -114,6 +114,59 @@ function recoveryResponse(
 	);
 }
 
+function terminalRecoveryResponse(
+	model: Model<Api>,
+	context: Context,
+	marker: string,
+): AssistantMessageEventStream {
+	const contextText = JSON.stringify(context.messages);
+	const taskId = process.env.WG_TASK_ID ?? "";
+	const summaryVisible = contextText.includes("UNFINISHED_WORK_STATE: true");
+	const contractVisible = Boolean(
+		taskId &&
+		contextText.includes(taskId) &&
+		contextText.includes("Validation") &&
+		contextText.includes("exactly"),
+	);
+	if (!summaryVisible || !contractVisible) {
+		return textResponse(
+			model,
+			`FIXTURE_RECOVERY_CONTEXT_MISSING summary=${summaryVisible} contract=${contractVisible}`,
+			200,
+		);
+	}
+	const stream = createAssistantMessageEventStream();
+	const output = newMessage(model, 200);
+	const text = `${marker} ${SUMMARY_VISIBLE_MARKER} ${CONTRACT_VISIBLE_MARKER}`;
+	const textBlock = { type: "text" as const, text };
+	const toolCall = {
+		type: "toolCall" as const,
+		id: `fixture-terminal-${marker}`,
+		name: "wg_fail",
+		arguments: {
+			id: taskId,
+			reason: "fixture accepted terminal receipt after concrete compaction recovery",
+		},
+	};
+	output.content.push(textBlock, toolCall);
+	output.stopReason = "toolUse";
+	stream.push({ type: "start", partial: output });
+	stream.push({ type: "text_start", contentIndex: 0, partial: output });
+	stream.push({ type: "text_delta", contentIndex: 0, delta: text, partial: output });
+	stream.push({ type: "text_end", contentIndex: 0, content: text, partial: output });
+	stream.push({ type: "toolcall_start", contentIndex: 1, partial: output });
+	stream.push({
+		type: "toolcall_delta",
+		contentIndex: 1,
+		delta: JSON.stringify(toolCall.arguments),
+		partial: output,
+	});
+	stream.push({ type: "toolcall_end", contentIndex: 1, toolCall, partial: output });
+	stream.push({ type: "done", reason: "toolUse", message: output });
+	stream.end();
+	return stream;
+}
+
 function errorResponse(model: Model<Api>, errorMessage: string, totalTokens: number): AssistantMessageEventStream {
 	const stream = createAssistantMessageEventStream();
 	const output = newMessage(model, totalTokens);
@@ -191,9 +244,9 @@ export default function fixture(pi: ExtensionAPI) {
 					);
 				}
 				if (scenario === "threshold-twice") {
-					return recoveryResponse(model, context, "FIXTURE_RECOVERY_TURN_2_EXECUTED", 200);
+					return terminalRecoveryResponse(model, context, "FIXTURE_RECOVERY_TURN_2_EXECUTED");
 				}
-				return recoveryResponse(model, context, RECOVERY_MARKER, 200);
+				return terminalRecoveryResponse(model, context, RECOVERY_MARKER);
 			}
 
 			if (scenario === "overflow") {
