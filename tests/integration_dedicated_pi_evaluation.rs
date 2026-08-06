@@ -468,6 +468,42 @@ fn central_pi_empty_success_is_unavailable_with_actionable_bounded_diagnostics()
 
 #[test]
 #[serial]
+fn central_pi_empty_success_diagnostics_bound_hostile_unique_event_types() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().join("home");
+    fs::create_dir_all(&home).unwrap();
+    let _env = test_env(&home);
+
+    let error = run_exact_agency_dispatch_call(
+        &Config::default(),
+        &exact_pi_dispatch("fake-many-unique-events"),
+        "Return one verdict",
+        5,
+    )
+    .unwrap_err();
+    let diagnostic = format!("{error:#}");
+    assert!(
+        diagnostic.contains("no final assistant text"),
+        "{diagnostic}"
+    );
+    assert!(
+        diagnostic.contains("event_types_overflow=177"),
+        "{diagnostic}"
+    );
+    assert!(diagnostic.contains("input_tokens=99"), "{diagnostic}");
+    assert!(
+        diagnostic.contains("stderr_bytes=20014") && diagnostic.contains("stderr_tail="),
+        "stderr size/tail evidence was lost: {diagnostic}"
+    );
+    assert!(
+        diagnostic.len() < 8_192,
+        "hostile event taxonomy escaped diagnostic bound: {} bytes",
+        diagnostic.len()
+    );
+}
+
+#[test]
+#[serial]
 fn bounded_pi_verdict_consumed_exactly_once() {
     let tmp = TempDir::new().unwrap();
     let home = tmp.path().join("home");

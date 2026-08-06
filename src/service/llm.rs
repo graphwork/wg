@@ -1030,11 +1030,11 @@ fn pi_one_shot_model_arg(raw_spec: &str) -> Option<PiOneShotModelArg> {
 }
 
 fn bounded_tail(value: &str, max_chars: usize) -> String {
-    let chars = value.chars().collect::<Vec<_>>();
-    if chars.len() <= max_chars {
-        return value.to_string();
-    }
-    chars[chars.len() - max_chars..].iter().collect()
+    // Walk from the end so hostile multi-megabyte output never gets copied into
+    // a second unbounded `Vec`. Only the diagnostic tail is materialized.
+    let mut chars = value.chars().rev().take(max_chars).collect::<Vec<_>>();
+    chars.reverse();
+    chars.into_iter().collect()
 }
 
 fn push_unique_bounded(values: &mut Vec<String>, value: &str, max_values: usize) {
@@ -1057,7 +1057,11 @@ fn pi_empty_response_diagnostic(
     stderr: &str,
     translation: &crate::stream_event::PiTranslation,
 ) -> String {
+    const MAX_EVENT_TYPES: usize = 24;
+    const MAX_EVENT_TYPE_CHARS: usize = 80;
+
     let mut event_counts = BTreeMap::<String, usize>::new();
+    let mut event_types_overflow = 0usize;
     let mut stop_reasons = Vec::new();
     let mut errors = Vec::new();
 
@@ -1068,8 +1072,17 @@ fn pi_empty_response_diagnostic(
         let event_type = value
             .get("type")
             .and_then(serde_json::Value::as_str)
-            .unwrap_or("unknown");
-        *event_counts.entry(event_type.to_string()).or_insert(0) += 1;
+            .unwrap_or("unknown")
+            .chars()
+            .take(MAX_EVENT_TYPE_CHARS)
+            .collect::<String>();
+        if let Some(count) = event_counts.get_mut(&event_type) {
+            *count += 1;
+        } else if event_counts.len() < MAX_EVENT_TYPES {
+            event_counts.insert(event_type.clone(), 1);
+        } else {
+            event_types_overflow = event_types_overflow.saturating_add(1);
+        }
 
         for pointer in [
             "/message/stopReason",
@@ -1111,7 +1124,7 @@ fn pi_empty_response_diagnostic(
     }
 
     format!(
-        "Pi CLI emitted no final assistant text (exit 0): events={event_counts:?} turn_count={} input_tokens={} output_tokens={} cache_read_input_tokens={} stop_reasons={stop_reasons:?} errors={errors:?} stderr_bytes={} stderr_tail={:?} stdout_bytes={} stdout_tail={:?}",
+        "Pi CLI emitted no final assistant text (exit 0): events={event_counts:?} event_types_overflow={event_types_overflow} turn_count={} input_tokens={} output_tokens={} cache_read_input_tokens={} stop_reasons={stop_reasons:?} errors={errors:?} stderr_bytes={} stderr_tail={:?} stdout_bytes={} stdout_tail={:?}",
         translation.turn_count,
         translation.total.input_tokens,
         translation.total.output_tokens,

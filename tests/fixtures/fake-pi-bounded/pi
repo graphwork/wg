@@ -59,6 +59,20 @@ PY
 )"
     exit 0
     ;;
+  fake-many-unique-events)
+    [[ -z "${WG_BOUNDED_EVALUATION:-}" ]]
+    python3 - "$provider" "$model" <<'PY'
+import json,sys
+provider,model=sys.argv[1:]
+for i in range(200):
+    print(json.dumps({"type": f"hostile-{i:03d}-" + "x" * 240}))
+print(json.dumps({"type":"turn_end","message":{"role":"assistant","content":[],"provider":provider,"model":model,"stopReason":"error","usage":{"input":99,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":99,"cost":{"total":0.0}}}}))
+PY
+    python3 - <<'PY' >&2
+print("large-stderr-" + "z" * 20000)
+PY
+    exit 0
+    ;;
   fake-valid|fake-duplicate)
     verdict='{"schema_version":2,"score":0.92,"outcome":"pass","dimensions":{"correctness":0.95,"completeness":0.89},"summary":"Candidate satisfies the bounded task contract."}'
     input_tokens=17
