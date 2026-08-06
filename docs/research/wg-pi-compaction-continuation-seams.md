@@ -1,6 +1,7 @@
 # WG Pi compaction-continuation seams audit
 
-**Status:** current-code audit; no fix implemented  
+**Status:** current-code audit; no fix implemented
+
 **Scope:** generated task-worker wrapper → `pi --mode json` → `@worksgood/pi` → native stream observer → `PiWatchdog` → lifecycle/convergence/finalization.
 
 ## Executive finding
