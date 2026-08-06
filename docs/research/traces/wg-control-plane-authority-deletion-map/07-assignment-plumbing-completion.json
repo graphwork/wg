@@ -1,0 +1,220 @@
+{
+  "trace_schema": "wg-single-attempt-deletion-audit/v1",
+  "incident": "assignment-plumbing-completion",
+  "credential_free": true,
+  "source_revision": "4e227b1f52ab63e9eeeb3c613f7329448d872410",
+  "source_evidence": [
+    {
+      "path": "src/commands/eval_scaffold.rs",
+      "symbol": "scaffold_assign_task",
+      "lines": "329-392",
+      "fact": "creates Open .assign task and reciprocal blocking edge"
+    },
+    {
+      "path": "src/commands/service/coordinator.rs",
+      "symbol": "build_auto_assign_tasks",
+      "lines": "926-1535",
+      "fact": "runs assignment and directly marks the synthetic task Done"
+    },
+    {
+      "path": "src/commands/spawn/execution.rs",
+      "symbol": "committed spawn audit",
+      "lines": "2205-2250",
+      "fact": "fallback creates an already-Done assignment receipt after source spawn and no reciprocal source.after edge"
+    },
+    {
+      "path": "docs/reports/bug-report-assign-task-not-blocking.md",
+      "symbol": "Observed Behavior",
+      "lines": "82-103",
+      "fact": "records the two-path collision and simultaneous source/receipt timestamps"
+    }
+  ],
+  "current_trace": [
+    {
+      "seq": 1,
+      "authority": "publish/coordinator scaffold",
+      "event": "path A represents assignment as an Open blocking graph task"
+    },
+    {
+      "seq": 2,
+      "authority": "spawn audit fallback",
+      "event": "path B starts the source then creates a born-Done nonblocking graph task"
+    },
+    {
+      "seq": 3,
+      "authority": "query readiness",
+      "event": "only path A participates in dependency admission"
+    }
+  ],
+  "current_contradiction": {
+    "fact": "assignment-required and assignment-receipt are represented by incompatible graph transitions",
+    "risk": "preassigned work can run before the supposed assignment gate while UI shows a completed assignment task"
+  },
+  "single_kernel_replay": {
+    "initial": {
+      "attempt_phase": "open",
+      "terminal": null,
+      "requests": {},
+      "effect_ids": [],
+      "observation_ids": [],
+      "holds": [],
+      "assignment_receipt": null,
+      "provider_failure_count": 0,
+      "continuation_ids": []
+    },
+    "steps": [
+      {
+        "seq": 1,
+        "request": {
+          "idempotency_key": "reserve:task-a:attempt-7",
+          "kind": "attempt-reserve",
+          "attempt_id": "attempt-7",
+          "fence": 11
+        },
+        "decision": "reject-assignment-required",
+        "before": {
+          "attempt_phase": "open",
+          "terminal": null,
+          "requests": {},
+          "effect_ids": [],
+          "observation_ids": [],
+          "holds": [],
+          "assignment_receipt": null,
+          "provider_failure_count": 0,
+          "continuation_ids": []
+        },
+        "after": {
+          "attempt_phase": "open",
+          "terminal": null,
+          "requests": {},
+          "effect_ids": [],
+          "observation_ids": [],
+          "holds": [
+            "assignment-required"
+          ],
+          "assignment_receipt": null,
+          "provider_failure_count": 0,
+          "continuation_ids": []
+        },
+        "note": "admission cannot reserve before a receipt"
+      },
+      {
+        "seq": 2,
+        "request": {
+          "idempotency_key": "assignment:task-a:policy-3",
+          "kind": "assignment-receipt",
+          "attempt_id": "attempt-7",
+          "fence": 11
+        },
+        "decision": "applied",
+        "before": {
+          "attempt_phase": "open",
+          "terminal": null,
+          "requests": {},
+          "effect_ids": [],
+          "observation_ids": [],
+          "holds": [
+            "assignment-required"
+          ],
+          "assignment_receipt": null,
+          "provider_failure_count": 0,
+          "continuation_ids": []
+        },
+        "after": {
+          "attempt_phase": "open",
+          "terminal": null,
+          "requests": {},
+          "effect_ids": [],
+          "observation_ids": [],
+          "holds": [],
+          "assignment_receipt": "assignment:task-a:policy-3",
+          "provider_failure_count": 0,
+          "continuation_ids": []
+        },
+        "note": "assignment is one source-bound receipt, not a task"
+      },
+      {
+        "seq": 3,
+        "request": {
+          "idempotency_key": "reserve:task-a:attempt-7",
+          "kind": "attempt-reserve",
+          "attempt_id": "attempt-7",
+          "fence": 11
+        },
+        "decision": "applied",
+        "before": {
+          "attempt_phase": "open",
+          "terminal": null,
+          "requests": {},
+          "effect_ids": [],
+          "observation_ids": [],
+          "holds": [],
+          "assignment_receipt": "assignment:task-a:policy-3",
+          "provider_failure_count": 0,
+          "continuation_ids": []
+        },
+        "after": {
+          "attempt_phase": "running",
+          "terminal": null,
+          "requests": {},
+          "effect_ids": [],
+          "observation_ids": [],
+          "holds": [],
+          "assignment_receipt": "assignment:task-a:policy-3",
+          "provider_failure_count": 0,
+          "continuation_ids": []
+        },
+        "note": "the same kernel admits the attempt after the receipt"
+      },
+      {
+        "seq": 4,
+        "request": {
+          "idempotency_key": "assignment:task-a:policy-3",
+          "kind": "assignment-receipt",
+          "attempt_id": "attempt-7",
+          "fence": 11
+        },
+        "decision": "duplicate-noop",
+        "before": {
+          "attempt_phase": "running",
+          "terminal": null,
+          "requests": {},
+          "effect_ids": [],
+          "observation_ids": [],
+          "holds": [],
+          "assignment_receipt": "assignment:task-a:policy-3",
+          "provider_failure_count": 0,
+          "continuation_ids": []
+        },
+        "after": {
+          "attempt_phase": "running",
+          "terminal": null,
+          "requests": {},
+          "effect_ids": [],
+          "observation_ids": [],
+          "holds": [],
+          "assignment_receipt": "assignment:task-a:policy-3",
+          "provider_failure_count": 0,
+          "continuation_ids": []
+        },
+        "note": "replay cannot create a synthetic task or another edge"
+      }
+    ],
+    "expected_final": {
+      "attempt_phase": "running",
+      "terminal": null,
+      "requests": {},
+      "effect_ids": [],
+      "observation_ids": [],
+      "holds": [],
+      "assignment_receipt": "assignment:task-a:policy-3",
+      "provider_failure_count": 0,
+      "continuation_ids": []
+    },
+    "invariants": [
+      "assignment is an admission fact, not lifecycle work",
+      "no .assign task or dependency is created",
+      "attempt reservation and assignment receipt share one source key"
+    ]
+  }
+}

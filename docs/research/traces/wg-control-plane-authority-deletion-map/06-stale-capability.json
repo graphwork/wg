@@ -1,0 +1,144 @@
+{
+  "trace_schema": "wg-single-attempt-deletion-audit/v1",
+  "incident": "stale-attempt-capability",
+  "credential_free": true,
+  "source_revision": "4e227b1f52ab63e9eeeb3c613f7329448d872410",
+  "source_evidence": [
+    {
+      "path": "src/commands/service/ipc.rs",
+      "symbol": "validate_worker_capability",
+      "lines": "602-659",
+      "fact": "fresh operations compare graph, generation, attempt, fence, lease and owner"
+    },
+    {
+      "path": "src/lifecycle.rs",
+      "symbol": "check_expectation/require_running_attempt",
+      "lines": "1397-1478",
+      "fact": "the lifecycle reducer independently rechecks attempt/fence/worker ownership"
+    },
+    {
+      "path": "src/lifecycle_protocol.rs",
+      "symbol": "exact_owner/reduce",
+      "lines": "260-340",
+      "fact": "a second reference reducer has its own stale-capability rule"
+    }
+  ],
+  "current_trace": [
+    {
+      "seq": 1,
+      "authority": "worker broker",
+      "event": "capability for attempt-6/fence-10 is presented while attempt-7/fence-11 owns task"
+    },
+    {
+      "seq": 2,
+      "authority": "worker broker",
+      "event": "fresh operation is rejected stale_capability"
+    },
+    {
+      "seq": 3,
+      "authority": "lifecycle/reference reducers",
+      "event": "parallel tuple checks encode the same semantic decision independently"
+    }
+  ],
+  "current_contradiction": {
+    "fact": "the fresh broker path is safe, but stale ownership is implemented in three reducers with different state shapes",
+    "risk": "future operations can cut over only one check and create inconsistent replay behavior"
+  },
+  "single_kernel_replay": {
+    "initial": {
+      "attempt_phase": "running",
+      "terminal": null,
+      "requests": {},
+      "effect_ids": [],
+      "observation_ids": [],
+      "holds": [],
+      "assignment_receipt": null,
+      "provider_failure_count": 0,
+      "continuation_ids": []
+    },
+    "steps": [
+      {
+        "seq": 1,
+        "request": {
+          "idempotency_key": "stale-done:attempt-6:fence-10",
+          "kind": "terminal-intent",
+          "attempt_id": "attempt-7",
+          "fence": 11
+        },
+        "decision": "reject-stale-attempt",
+        "before": {
+          "attempt_phase": "running",
+          "terminal": null,
+          "requests": {},
+          "effect_ids": [],
+          "observation_ids": [],
+          "holds": [],
+          "assignment_receipt": null,
+          "provider_failure_count": 0,
+          "continuation_ids": []
+        },
+        "after": {
+          "attempt_phase": "running",
+          "terminal": null,
+          "requests": {},
+          "effect_ids": [],
+          "observation_ids": [],
+          "holds": [],
+          "assignment_receipt": null,
+          "provider_failure_count": 0,
+          "continuation_ids": []
+        },
+        "note": "non-current capability is inert evidence"
+      },
+      {
+        "seq": 2,
+        "request": {
+          "idempotency_key": "stale-done:attempt-6:fence-10",
+          "kind": "terminal-intent",
+          "attempt_id": "attempt-7",
+          "fence": 11
+        },
+        "decision": "duplicate-same-rejection",
+        "before": {
+          "attempt_phase": "running",
+          "terminal": null,
+          "requests": {},
+          "effect_ids": [],
+          "observation_ids": [],
+          "holds": [],
+          "assignment_receipt": null,
+          "provider_failure_count": 0,
+          "continuation_ids": []
+        },
+        "after": {
+          "attempt_phase": "running",
+          "terminal": null,
+          "requests": {},
+          "effect_ids": [],
+          "observation_ids": [],
+          "holds": [],
+          "assignment_receipt": null,
+          "provider_failure_count": 0,
+          "continuation_ids": []
+        },
+        "note": "replay returns the same rejection without breaker charge"
+      }
+    ],
+    "expected_final": {
+      "attempt_phase": "running",
+      "terminal": null,
+      "requests": {},
+      "effect_ids": [],
+      "observation_ids": [],
+      "holds": [],
+      "assignment_receipt": null,
+      "provider_failure_count": 0,
+      "continuation_ids": []
+    },
+    "invariants": [
+      "all mutating requests compare one attempt key",
+      "stale requests create no effect and charge no breaker",
+      "stale evidence cannot alter the current owner"
+    ]
+  }
+}

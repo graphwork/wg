@@ -1,0 +1,157 @@
+{
+  "trace_schema": "wg-single-attempt-deletion-audit/v1",
+  "incident": "live-pid-with-missing-heartbeat",
+  "credential_free": true,
+  "source_revision": "4e227b1f52ab63e9eeeb3c613f7329448d872410",
+  "source_evidence": [
+    {
+      "path": "src/commands/service/triage.rs",
+      "symbol": "detect_dead_reason",
+      "lines": "194-270",
+      "fact": "a verified live PID can still return HeartbeatTimeout when stream activity is not newer"
+    },
+    {
+      "path": "src/commands/service/triage.rs",
+      "symbol": "cleanup_dead_agents",
+      "lines": "272-470",
+      "fact": "HeartbeatTimeout marks registry Dead and requests AttemptLost"
+    },
+    {
+      "path": "src/service/registry.rs",
+      "symbol": "AgentEntry/heartbeat",
+      "lines": "42-180",
+      "fact": "process status and heartbeat are separately persisted in registry.json"
+    }
+  ],
+  "current_trace": [
+    {
+      "seq": 1,
+      "authority": "OS/process identity",
+      "event": "PID 4242 exists and birth identity matches"
+    },
+    {
+      "seq": 2,
+      "authority": "registry heartbeat",
+      "event": "last_heartbeat exceeds timeout"
+    },
+    {
+      "seq": 3,
+      "authority": "stream clock",
+      "event": "no newer stream record"
+    },
+    {
+      "seq": 4,
+      "authority": "reaper/lifecycle",
+      "event": "HeartbeatTimeout => registry Dead => AttemptLost/Failed"
+    }
+  ],
+  "current_contradiction": {
+    "fact": "the same owner is process-authenticated live and registry-declared dead",
+    "risk": "a missing helper heartbeat can terminalize a live attempt"
+  },
+  "single_kernel_replay": {
+    "initial": {
+      "attempt_phase": "running",
+      "terminal": null,
+      "requests": {},
+      "effect_ids": [],
+      "observation_ids": [],
+      "holds": [],
+      "assignment_receipt": null,
+      "provider_failure_count": 0,
+      "continuation_ids": []
+    },
+    "steps": [
+      {
+        "seq": 1,
+        "request": {
+          "idempotency_key": "pid:4242:birth-9",
+          "kind": "owner-observed-live",
+          "attempt_id": "attempt-7",
+          "fence": 11
+        },
+        "decision": "evidence-only",
+        "before": {
+          "attempt_phase": "running",
+          "terminal": null,
+          "requests": {},
+          "effect_ids": [],
+          "observation_ids": [],
+          "holds": [],
+          "assignment_receipt": null,
+          "provider_failure_count": 0,
+          "continuation_ids": []
+        },
+        "after": {
+          "attempt_phase": "running",
+          "terminal": null,
+          "requests": {},
+          "effect_ids": [],
+          "observation_ids": [
+            "pid:4242:birth-9"
+          ],
+          "holds": [],
+          "assignment_receipt": null,
+          "provider_failure_count": 0,
+          "continuation_ids": []
+        },
+        "note": "authenticated live process is an observation, not success"
+      },
+      {
+        "seq": 2,
+        "request": {
+          "idempotency_key": "heartbeat-missing:attempt-7:bucket-4",
+          "kind": "heartbeat-missing",
+          "attempt_id": "attempt-7",
+          "fence": 11
+        },
+        "decision": "evidence-only",
+        "before": {
+          "attempt_phase": "running",
+          "terminal": null,
+          "requests": {},
+          "effect_ids": [],
+          "observation_ids": [
+            "pid:4242:birth-9"
+          ],
+          "holds": [],
+          "assignment_receipt": null,
+          "provider_failure_count": 0,
+          "continuation_ids": []
+        },
+        "after": {
+          "attempt_phase": "running",
+          "terminal": null,
+          "requests": {},
+          "effect_ids": [],
+          "observation_ids": [
+            "pid:4242:birth-9"
+          ],
+          "holds": [],
+          "assignment_receipt": null,
+          "provider_failure_count": 0,
+          "continuation_ids": []
+        },
+        "note": "missing heartbeat cannot override stronger exact live-process evidence"
+      }
+    ],
+    "expected_final": {
+      "attempt_phase": "running",
+      "terminal": null,
+      "requests": {},
+      "effect_ids": [],
+      "observation_ids": [
+        "pid:4242:birth-9"
+      ],
+      "holds": [],
+      "assignment_receipt": null,
+      "provider_failure_count": 0,
+      "continuation_ids": []
+    },
+    "invariants": [
+      "heartbeat absence is never proof of death",
+      "only exact exit/reap proof may request lost",
+      "liveness observations cannot imply success"
+    ]
+  }
+}

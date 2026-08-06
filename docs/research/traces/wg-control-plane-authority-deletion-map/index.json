@@ -1,0 +1,16 @@
+{
+  "trace_schema": "wg-single-attempt-deletion-audit/v1",
+  "source_revision": "4e227b1f52ab63e9eeeb3c613f7329448d872410",
+  "credential_free": true,
+  "incident_count": 8,
+  "traces": [
+    "01-lost-ipc-response-after-durable-mutation.json",
+    "02-live-pid-missing-heartbeat.json",
+    "03-duplicate-provider-event.json",
+    "04-repeated-threshold-compactions.json",
+    "05-child-exit-observer-eof.json",
+    "06-stale-capability.json",
+    "07-assignment-plumbing-completion.json",
+    "08-completion-response-replay.json"
+  ]
+}

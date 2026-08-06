@@ -1,0 +1,206 @@
+{
+  "trace_schema": "wg-single-attempt-deletion-audit/v1",
+  "incident": "completion-response-replay",
+  "credential_free": true,
+  "source_revision": "4e227b1f52ab63e9eeeb3c613f7329448d872410",
+  "source_evidence": [
+    {
+      "path": "src/commands/completion_done.rs",
+      "symbol": "run/commit_done",
+      "lines": "28-135,228-281",
+      "fact": "Done is derived and written directly to graph.jsonl"
+    },
+    {
+      "path": "src/commands/service/ipc.rs",
+      "symbol": "replay_pending_completion",
+      "lines": "504-534",
+      "fact": "a Pending Done request reruns completion_done and then completes the request journal"
+    },
+    {
+      "path": "src/commands/service/ipc.rs",
+      "symbol": "handle_worker_request",
+      "lines": "973-1124",
+      "fact": "completed responses replay before live capability validation"
+    }
+  ],
+  "current_trace": [
+    {
+      "seq": 1,
+      "authority": "completion v3",
+      "event": "immutable evidence verified; graph becomes Done"
+    },
+    {
+      "seq": 2,
+      "authority": "worker request journal",
+      "event": "response completion write is lost and request remains Pending"
+    },
+    {
+      "seq": 3,
+      "authority": "special Done replay",
+      "event": "completion_done verifier is executed again to reconstruct response"
+    },
+    {
+      "seq": 4,
+      "authority": "worker request journal",
+      "event": "reconstructed response becomes Completed"
+    }
+  ],
+  "current_contradiction": {
+    "fact": "terminal state and response are committed by separate stores, then repaired by semantic re-execution only for Done",
+    "risk": "completion has a bespoke replay rule unlike every other worker operation and can repeat expensive/publication reads"
+  },
+  "single_kernel_replay": {
+    "initial": {
+      "attempt_phase": "running",
+      "terminal": null,
+      "requests": {},
+      "effect_ids": [],
+      "observation_ids": [],
+      "holds": [],
+      "assignment_receipt": null,
+      "provider_failure_count": 0,
+      "continuation_ids": []
+    },
+    "steps": [
+      {
+        "seq": 1,
+        "request": {
+          "idempotency_key": "done:req-44",
+          "kind": "terminal-success-with-receipt",
+          "attempt_id": "attempt-7",
+          "fence": 11
+        },
+        "decision": "applied-response-recorded",
+        "before": {
+          "attempt_phase": "running",
+          "terminal": null,
+          "requests": {},
+          "effect_ids": [],
+          "observation_ids": [],
+          "holds": [],
+          "assignment_receipt": null,
+          "provider_failure_count": 0,
+          "continuation_ids": []
+        },
+        "after": {
+          "attempt_phase": "done",
+          "terminal": "succeeded:receipt-44",
+          "requests": {
+            "done:req-44": "completed:ok"
+          },
+          "effect_ids": [
+            "publish:receipt-44"
+          ],
+          "observation_ids": [],
+          "holds": [],
+          "assignment_receipt": null,
+          "provider_failure_count": 0,
+          "continuation_ids": []
+        },
+        "note": "terminal event, effect receipt and response commit atomically"
+      },
+      {
+        "seq": 2,
+        "request": {
+          "idempotency_key": "transport-loss:done:req-44",
+          "kind": "response-delivery",
+          "attempt_id": "attempt-7",
+          "fence": 11
+        },
+        "decision": "evidence-only",
+        "before": {
+          "attempt_phase": "done",
+          "terminal": "succeeded:receipt-44",
+          "requests": {
+            "done:req-44": "completed:ok"
+          },
+          "effect_ids": [
+            "publish:receipt-44"
+          ],
+          "observation_ids": [],
+          "holds": [],
+          "assignment_receipt": null,
+          "provider_failure_count": 0,
+          "continuation_ids": []
+        },
+        "after": {
+          "attempt_phase": "done",
+          "terminal": "succeeded:receipt-44",
+          "requests": {
+            "done:req-44": "completed:ok"
+          },
+          "effect_ids": [
+            "publish:receipt-44"
+          ],
+          "observation_ids": [],
+          "holds": [],
+          "assignment_receipt": null,
+          "provider_failure_count": 0,
+          "continuation_ids": []
+        },
+        "note": "lost delivery does not reopen completion"
+      },
+      {
+        "seq": 3,
+        "request": {
+          "idempotency_key": "done:req-44",
+          "kind": "terminal-success-with-receipt",
+          "attempt_id": "attempt-7",
+          "fence": 11
+        },
+        "decision": "duplicate-replay-original-response",
+        "before": {
+          "attempt_phase": "done",
+          "terminal": "succeeded:receipt-44",
+          "requests": {
+            "done:req-44": "completed:ok"
+          },
+          "effect_ids": [
+            "publish:receipt-44"
+          ],
+          "observation_ids": [],
+          "holds": [],
+          "assignment_receipt": null,
+          "provider_failure_count": 0,
+          "continuation_ids": []
+        },
+        "after": {
+          "attempt_phase": "done",
+          "terminal": "succeeded:receipt-44",
+          "requests": {
+            "done:req-44": "completed:ok"
+          },
+          "effect_ids": [
+            "publish:receipt-44"
+          ],
+          "observation_ids": [],
+          "holds": [],
+          "assignment_receipt": null,
+          "provider_failure_count": 0,
+          "continuation_ids": []
+        },
+        "note": "exact replay returns stored bytes without re-running completion or publication"
+      }
+    ],
+    "expected_final": {
+      "attempt_phase": "done",
+      "terminal": "succeeded:receipt-44",
+      "requests": {
+        "done:req-44": "completed:ok"
+      },
+      "effect_ids": [
+        "publish:receipt-44"
+      ],
+      "observation_ids": [],
+      "holds": [],
+      "assignment_receipt": null,
+      "provider_failure_count": 0,
+      "continuation_ids": []
+    },
+    "invariants": [
+      "first terminal wins",
+      "terminal mutation and response share one commit",
+      "response replay performs no physical or semantic effect"
+    ]
+  }
+}

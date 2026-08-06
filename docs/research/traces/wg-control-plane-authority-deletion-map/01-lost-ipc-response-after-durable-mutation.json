@@ -1,0 +1,200 @@
+{
+  "trace_schema": "wg-single-attempt-deletion-audit/v1",
+  "incident": "lost-ipc-response-after-durable-mutation",
+  "credential_free": true,
+  "source_revision": "4e227b1f52ab63e9eeeb3c613f7329448d872410",
+  "source_evidence": [
+    {
+      "path": "src/commands/service/ipc.rs",
+      "symbol": "handle_worker_request",
+      "lines": "973-1124",
+      "fact": "begin_request is persisted, the operation executes, and complete_request is a later write"
+    },
+    {
+      "path": "src/worker_control.rs",
+      "symbol": "begin_request/complete_request",
+      "lines": "660-715",
+      "fact": "Pending and Completed live in worker-capabilities.json"
+    }
+  ],
+  "current_trace": [
+    {
+      "seq": 1,
+      "authority": "worker request journal",
+      "event": "req-log-17 becomes Pending"
+    },
+    {
+      "seq": 2,
+      "authority": "graph/message operation",
+      "event": "log mutation becomes durable"
+    },
+    {
+      "seq": 3,
+      "authority": "worker request journal",
+      "event": "response journal write is lost"
+    },
+    {
+      "seq": 4,
+      "authority": "IPC replay",
+      "event": "same request is held as pending_reconciliation; response unavailable"
+    }
+  ],
+  "current_contradiction": {
+    "fact": "one request has mutated durable state but its independent journal still says Pending",
+    "risk": "generic replay cannot return the committed result and must rely on later reconciliation"
+  },
+  "single_kernel_replay": {
+    "initial": {
+      "attempt_phase": "running",
+      "terminal": null,
+      "requests": {},
+      "effect_ids": [],
+      "observation_ids": [],
+      "holds": [],
+      "assignment_receipt": null,
+      "provider_failure_count": 0,
+      "continuation_ids": []
+    },
+    "steps": [
+      {
+        "seq": 1,
+        "request": {
+          "idempotency_key": "req-log-17",
+          "kind": "log",
+          "attempt_id": "attempt-7",
+          "fence": 11
+        },
+        "decision": "applied-response-recorded",
+        "before": {
+          "attempt_phase": "running",
+          "terminal": null,
+          "requests": {},
+          "effect_ids": [],
+          "observation_ids": [],
+          "holds": [],
+          "assignment_receipt": null,
+          "provider_failure_count": 0,
+          "continuation_ids": []
+        },
+        "after": {
+          "attempt_phase": "running",
+          "terminal": null,
+          "requests": {
+            "req-log-17": "completed:ok"
+          },
+          "effect_ids": [
+            "log:req-log-17"
+          ],
+          "observation_ids": [],
+          "holds": [],
+          "assignment_receipt": null,
+          "provider_failure_count": 0,
+          "continuation_ids": []
+        },
+        "note": "mutation and replayable response commit together"
+      },
+      {
+        "seq": 2,
+        "request": {
+          "idempotency_key": "transport-loss:req-log-17",
+          "kind": "response-delivery",
+          "attempt_id": "attempt-7",
+          "fence": 11
+        },
+        "decision": "evidence-only",
+        "before": {
+          "attempt_phase": "running",
+          "terminal": null,
+          "requests": {
+            "req-log-17": "completed:ok"
+          },
+          "effect_ids": [
+            "log:req-log-17"
+          ],
+          "observation_ids": [],
+          "holds": [],
+          "assignment_receipt": null,
+          "provider_failure_count": 0,
+          "continuation_ids": []
+        },
+        "after": {
+          "attempt_phase": "running",
+          "terminal": null,
+          "requests": {
+            "req-log-17": "completed:ok"
+          },
+          "effect_ids": [
+            "log:req-log-17"
+          ],
+          "observation_ids": [],
+          "holds": [],
+          "assignment_receipt": null,
+          "provider_failure_count": 0,
+          "continuation_ids": []
+        },
+        "note": "transport loss has no semantic authority"
+      },
+      {
+        "seq": 3,
+        "request": {
+          "idempotency_key": "req-log-17",
+          "kind": "log",
+          "attempt_id": "attempt-7",
+          "fence": 11
+        },
+        "decision": "duplicate-replay-original-response",
+        "before": {
+          "attempt_phase": "running",
+          "terminal": null,
+          "requests": {
+            "req-log-17": "completed:ok"
+          },
+          "effect_ids": [
+            "log:req-log-17"
+          ],
+          "observation_ids": [],
+          "holds": [],
+          "assignment_receipt": null,
+          "provider_failure_count": 0,
+          "continuation_ids": []
+        },
+        "after": {
+          "attempt_phase": "running",
+          "terminal": null,
+          "requests": {
+            "req-log-17": "completed:ok"
+          },
+          "effect_ids": [
+            "log:req-log-17"
+          ],
+          "observation_ids": [],
+          "holds": [],
+          "assignment_receipt": null,
+          "provider_failure_count": 0,
+          "continuation_ids": []
+        },
+        "note": "same key and digest returns the recorded response without another log append"
+      }
+    ],
+    "expected_final": {
+      "attempt_phase": "running",
+      "terminal": null,
+      "requests": {
+        "req-log-17": "completed:ok"
+      },
+      "effect_ids": [
+        "log:req-log-17"
+      ],
+      "observation_ids": [],
+      "holds": [],
+      "assignment_receipt": null,
+      "provider_failure_count": 0,
+      "continuation_ids": []
+    },
+    "invariants": [
+      "one semantic key creates at most one mutation",
+      "an acknowledged mutation always has a replayable response",
+      "transport loss never changes attempt state"
+    ]
+  }
+}
