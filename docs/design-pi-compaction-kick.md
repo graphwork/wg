@@ -91,16 +91,19 @@ The implementation MUST preserve these invariants:
    actual qualifying threshold compaction but lacking the required WG receipt is
    not the normal control trace and remains lifecycle-unresolved. Suppressing it
    would require the forbidden prose heuristic and would reproduce #6424.
-2. **Exactly once per durable compaction occurrence, at most one send
-   invocation per action.** Every distinct qualifying persisted threshold-
-   compaction entry gets exactly one durable occurrence/action record and, on
-   the no-crash path, exactly one kick. Duplicate/replayed events for that entry,
-   daemon replies, and plugin reloads cannot create another fresh delivery grant
-   or Pi call. A second qualifying entry in the same attempt gets a different
-   occurrence/action and therefore a second kick. Distributed atomic exactly-
-   once delivery between WG and Pi is not claimed: a crash after permit commit
-   but before acknowledgement may yield zero observed delivery and is held as
-   indeterminate, never “fixed” by blind redelivery.
+2. **Exactly-once durable authorization per occurrence; at-most-once
+   delivery.** Every distinct qualifying persisted threshold-compaction entry
+   gets exactly one durable occurrence/action record and epoch charge, with at
+   most one fresh delivery grant/send invocation. On the no-crash path that
+   grant produces exactly one kick. Duplicate/replayed events for that entry,
+   daemon replies, and plugin reloads cannot create another fresh grant or Pi
+   call. A second qualifying entry in the same attempt gets a different
+   occurrence/action and, on the no-crash path, a second kick. Distributed
+   guaranteed exactly-once delivery is explicitly **not** claimed: a crash after
+   permit commit but before a proven reply/ack may yield zero observed delivery
+   and is held indeterminate, never “fixed” by blind redelivery. Thus “exactly
+   one kick is possible per occurrence” means one durable opportunity/maximum,
+   not guaranteed liveness across the untransactional WG-to-Pi boundary.
 3. **Finite shared authority, with no per-attempt kick cap.** Every kick consumes
    one existing Pi continuation epoch and its elapsed-time charge. There is no
    dedicated `kick_used`, one-kick-per-attempt flag, or compaction-kick count
@@ -162,7 +165,7 @@ record. The record may also store a monotonically increasing
 insert transaction, but correctness and deduplication use `occurrence_id`, not
 arrival order.
 
-### 3.2 Exactly-once durable action key
+### 3.2 Exactly-once durable authorization/action key
 
 On the first authorization only, the watchdog captures the then-current
 continuation epoch and frozen stock prompt:
@@ -343,13 +346,21 @@ gap; this state means “send or a deliverable reply may have happened,” never
 “safe to retry.” A plugin reload loses the live set but cannot obtain a fresh
 grant, so it still cannot resend.
 
-The plugin registers `message_start`. When Pi selects a custom message whose
-`customType`, action ID, prompt version, prompt digest, and content digest match
-the permit, the handler calls `ack` before returning. This is the delivery
-acknowledgement: the exact live Pi process dequeued the exact permitted message
-for agent context. `ack` rechecks the source/process/session/action, persists
-`Acknowledged`, and is idempotent. A later raw `agent_start`/turn and terminal
-receipt are ordinary watchdog/lifecycle evidence, not additional authority.
+The plugin registers `message_start`. This is a substantiated dequeue event on
+the pinned host, not an assumed callback: `pi-agent-core/dist/agent-loop.js:95-
+101` emits `message_start`/`message_end` for each pending follow-up before adding
+it to current context; `dist/core/agent-session.js:350-365` awaits forwarding
+that exact message to extension handlers and persists a custom message on end;
+and `dist/core/agent-session.js:1065-1084` shows queued custom messages preserve
+`customType`, content, and `details`. When the handler sees the exact custom
+message whose `customType`, action ID, prompt version, prompt digest, and content
+digest match the permit, it calls `ack` before returning. This proves that the
+exact live Pi process selected the permitted message for agent context. `ack`
+rechecks source/process/session/action, persists `Acknowledged`, and is
+idempotent. The following `message_end`/Pi-managed `custom_message` session entry
+is the durable reconciliation proof if the ack RPC response is lost. A later
+raw `agent_start`/turn and terminal receipt are ordinary watchdog/lifecycle
+evidence, not additional authority.
 
 If ack fails transiently after message selection, the plugin may retry **ack
 only** on later matching message/turn events. It may never call `sendMessage`
@@ -521,10 +532,13 @@ The table uses `A` = durable `Authorized`, `P` = lifecycle CAS committed and
 | Daemon restarts | Watchdog outbox + lifecycle audit survive | Reconcile `A`/`P` ordering before replying | Same action only |
 | Plugin reload, same process | Session scan may find a persisted custom action | Ack existing action only; never authorize from historical compaction | No replay send |
 
-This is intentionally at-most-once at the Pi API boundary with an explicit
+This is exactly-once for durable occurrence/action creation and epoch charging,
+but intentionally at-most-once at the Pi API boundary with an explicit
 `Uncertain` state. Claiming guaranteed exactly-once delivery across the `P -> S
 -> D` crash window would be false because Pi exposes neither a transactional
-queue API nor a send promise/receipt to extensions.
+WG permit + Pi queue commit nor a send promise/receipt to extensions. The
+no-crash conformance path requires one observed kick per permitted occurrence;
+crash paths require zero-or-one, never two.
 
 ## 9. Preservation and accounting
 
@@ -751,6 +765,27 @@ RED: threshold compaction with explicit unfinished work must schedule one concre
 The standalone reproducer remains a non-WG control after the fix and therefore
 must not start receiving WG kicks merely because the plugin is globally
 installed.
+
+A bounded **design-time host-contract probe** (not WG authority implementation)
+was also run against the exact installed Pi 0.83.0 with the credential-free fake
+provider plus a temporary final extension. It observed:
+
+```text
+WG_PROBE_QUEUE_READ pending=false
+WG_PROBE_SEND_RETURN
+WG_PROBE_MICROTASK
+WG_PROBE_ACK action=wg-probe-action-1
+```
+
+The JSON stream contained one successful threshold `compaction_end`, then one
+`agent_start`, one matching custom `message_start` with its action in `details`,
+one recovery assistant marker, and one final `agent_settled`. The asserted order
+`queue-read < send-return < queued-microtask < matching-message_start-ack` proves
+both host assumptions are feasible on the pinned binary. Immutable validation
+evidence carries the probe source, command/output, installed source digests, and
+numbered dequeue/forwarding excerpts. The implementation MUST turn this bounded
+probe into a permanent installed-flow regression; a different host still fails
+closed rather than inheriting the observation.
 
 ### B. Decisive real flow
 
