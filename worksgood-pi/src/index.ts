@@ -18,6 +18,7 @@ import { readWgEnv, WgBackend } from "./wg-backend.js";
 import { registerWgTools } from "./tools.js";
 import { registerWgCommands } from "./commands.js";
 import { installModelBridge } from "./model-bridge.js";
+import { installCompactionContinuation } from "./continuation.js";
 import { WG_PI_PLUGIN_COMPAT_VERSION as EMBEDDED_COMPAT } from "./version.js";
 
 /**
@@ -81,6 +82,10 @@ export default function worksgoodPi(pi: ExtensionAPI): void {
   registerWgTools(pi, backend); // wg_ready / wg_show / wg_add / wg_publish / wg_done / wg_fail / wg_msg_* / wg_run
   registerWgCommands(pi, backend); // /wg, /wg-model (+ autocomplete)
   installModelBridge(pi, backend, process.env); // registerProvider + model_select → CoordinatorState
+  // Must remain the final embedded handler: its same-stack queue read/append
+  // and tool_call gate serialize after all earlier explicit fixture/provider
+  // extensions. It is inert outside a capability-bound hermetic task worker.
+  installCompactionContinuation(pi, backend, process.env);
 
   // Tear down any session-scoped resources (the future daemon-IPC socket /
   // graph watcher live here once wg-backend upgrades from exec to IPC).
@@ -96,4 +101,9 @@ export { registerWgTools } from "./tools.js";
 export { registerWgCommands, parseModelSpec } from "./commands.js";
 export { installGraphWidget, parseReady, renderWidget } from "./graph-widget.js";
 export { installModelBridge, wgSpecFromModel, buildProviderConfig } from "./model-bridge.js";
+export {
+  installCompactionContinuation,
+  WG_PI_COMPACTION_KICK_HOST_CONTRACT,
+  WG_PI_COMPACTION_KICK_CUSTOM_TYPE,
+} from "./continuation.js";
 export { WG_PI_PLUGIN_COMPAT_VERSION } from "./version.js";

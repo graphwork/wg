@@ -2095,6 +2095,10 @@ mod tests {
                 pi_continuation_epoch: 0,
                 pi_continuation: None,
                 pi_terminal_reservation: None,
+                pi_kick_active_actions: Default::default(),
+                pi_kick_revoked_actions: Default::default(),
+                pi_kick_effect_leases: Default::default(),
+                pi_kick_abort_acks: Default::default(),
                 reopen_intent: None,
             },
         }
@@ -2322,6 +2326,10 @@ mod tests {
                 pi_continuation_epoch: 0,
                 pi_continuation: None,
                 pi_terminal_reservation: None,
+                pi_kick_active_actions: Default::default(),
+                pi_kick_revoked_actions: Default::default(),
+                pi_kick_effect_leases: Default::default(),
+                pi_kick_abort_acks: Default::default(),
                 reopen_intent: None,
             },
         });

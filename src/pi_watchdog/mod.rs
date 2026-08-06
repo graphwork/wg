@@ -11,6 +11,9 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 pub const PROMPT_VERSION: &str = "WG_PI_CONTINUATION_V2";
+pub const COMPACTION_KICK_PROMPT_VERSION: &str = "WG_PI_COMPACTION_KICK_V1";
+pub const COMPACTION_KICK_OBSERVATION: &str = "threshold_compaction_protocol_unresolved";
+pub const COMPACTION_KICK_PROMPT: &str = "[WG_PI_COMPACTION_KICK_V1]\nA successful threshold compaction completed, but the exact WG lifecycle attempt\nstill has no accepted terminal or wait receipt. Continue the SAME unresolved task\nin this SAME Pi session and leased worktree. Inspect the compacted summary and\ndurable WG task contract, reconcile side effects from receipts before repeating\nanything, then produce exactly one protocol outcome: `wg_done`, `wg_fail`, or\nthe correlated `wg_wait` required by the task. This guidance grants no new tool\nor graph authority.\n";
 pub const PRODUCTION_SOFT_SILENCE_SECS: u64 = 300;
 pub const MIN_FREE_LOW_HARD_RESUME_SECS: u64 = 900;
 pub const STOCK_PROMPT_TEMPLATE: &str = "[WG_PI_CONTINUATION_V2]\nWG observed `<OBSERVATION_CODE>` for this process epoch; no accepted terminal\nreceipt exists. Inspect the durable SAME Pi session, leased worktree, task\ncontract, candidate state, relevant tests, and supplied receipt summaries.\nDo not repeat a side effect; reconcile it from receipts/postconditions first.\nThen produce exactly one explicit outcome: `wg_done`, `wg_fail`, or the\ncorrelated `wg_wait` required by the task. This prompt is guidance, not proof.\n";
@@ -82,6 +85,24 @@ pub struct NativeActivityProjection {
     /// never filesystem paths or provider content.
     #[serde(default)]
     stream_offsets: BTreeMap<String, u64>,
+    /// Content-free current Pi compaction/queue/retry diagnostics. These are
+    /// observations only; only the capability broker may authorize a kick.
+    #[serde(default)]
+    pub compaction_reason: Option<String>,
+    #[serde(default)]
+    pub compaction_aborted: Option<bool>,
+    #[serde(default)]
+    pub compaction_will_retry: Option<bool>,
+    #[serde(default)]
+    pub compaction_succeeded: Option<bool>,
+    #[serde(default)]
+    pub compaction_event_seq: u64,
+    #[serde(default)]
+    pub steering_queue_count: u64,
+    #[serde(default)]
+    pub follow_up_queue_count: u64,
+    #[serde(default)]
+    pub retry_state: Option<String>,
 }
 
 /// A matching Pi journal selected without rewriting or deleting any evidence.
@@ -436,6 +457,101 @@ pub struct DomainCounters {
     pub accounting_attempts: u64,
 }
 
+/// Bounded, content-free state of one qualifying persisted threshold
+/// compaction occurrence. The stock prompt is reconstructed by version; it is
+/// never stored in diagnostics or accepted from Pi.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PiCompactionKickState {
+    Authorized,
+    DeliveryPermitted,
+    DeliverySuppressedAfterPermit,
+    Acknowledged,
+    AcknowledgedTerminalRace,
+    Running,
+    TerminalObserved,
+    TerminalAbortAcknowledged,
+    SettledAfterKick,
+    Cancelled,
+    CancelledProcessExit,
+    HeldMismatch,
+    HeldConflict,
+    HeldOperatorRequired,
+    Uncertain,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PiCompactionKickRecord {
+    pub occurrence_id: String,
+    pub action_id: String,
+    pub occurrence_ordinal: u32,
+    pub compaction_entry_id: String,
+    pub compaction_parent_id: String,
+    pub compaction_entry_digest: String,
+    pub session_id: String,
+    pub session_file_digest: String,
+    pub session_leaf_id: String,
+    pub process_epoch: u32,
+    pub process_identity_digest: String,
+    pub route_snapshot_digest: String,
+    pub authorized_from_continuation_epoch: u32,
+    pub to_continuation_epoch: u32,
+    pub prompt_version: String,
+    pub prompt_digest: String,
+    pub state: PiCompactionKickState,
+    pub reason_code: String,
+    pub authorized_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permitted_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acknowledged_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settled_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedCompactionOccurrence {
+    pub graph_id: String,
+    pub compaction_entry_id: String,
+    pub compaction_parent_id: String,
+    pub compaction_entry_digest: String,
+    pub session_id: String,
+    pub session_file_digest: String,
+    pub session_leaf_id: String,
+    pub process_pid: u32,
+    pub process_epoch: u32,
+    pub process_identity_digest: String,
+    pub provider: String,
+    pub model: String,
+    pub reasoning: Option<String>,
+    pub route_snapshot_digest: String,
+    pub plugin_compat: String,
+    pub reason: String,
+    pub will_retry: bool,
+    pub quiescent: bool,
+    pub host_idle: bool,
+    pub queue_empty: bool,
+    pub tool_clear: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PiCompactionKickPermit {
+    pub action_id: String,
+    pub state: PiCompactionKickState,
+    pub fresh_delivery_grant: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    pub prompt_version: String,
+    pub prompt_digest: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PiCompactionKickAck {
+    pub action_id: String,
+    pub state: PiCompactionKickState,
+    pub abort: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PiWatchdogState {
     pub schema_version: u32,
@@ -488,6 +604,10 @@ pub struct PiWatchdogState {
     pub possible_unattributed_cost: bool,
     #[serde(default)]
     pub native_activity: NativeActivityProjection,
+    /// Grow-only for the current source attempt, bounded by the existing
+    /// continuation budget plus a small diagnostic allowance.
+    #[serde(default)]
+    pub compaction_kicks: Vec<PiCompactionKickRecord>,
     pub domain_counters: DomainCounters,
 }
 
@@ -724,7 +844,7 @@ impl PiWatchdog {
         fs::create_dir_all(root).map_err(io_error)?;
         let mut watchdog = Self {
             state: PiWatchdogState {
-                schema_version: 2,
+                schema_version: 3,
                 source,
                 route,
                 session,
@@ -768,6 +888,7 @@ impl PiWatchdog {
                     process_epoch: 1,
                     ..NativeActivityProjection::default()
                 },
+                compaction_kicks: Vec::new(),
                 domain_counters: DomainCounters::default(),
             },
             policy,
@@ -783,8 +904,15 @@ impl PiWatchdog {
         let bytes = fs::read(path).map_err(io_error)?;
         let persisted: Persisted = serde_json::from_slice(&bytes).map_err(json_error)?;
         persisted.policy.validate()?;
+        let mut state = persisted.state;
+        // Schema upgrades are deliberately empty: historical Pi journals and
+        // raw streams never backfill kick authority.
+        if state.schema_version < 3 {
+            state.schema_version = 3;
+            state.compaction_kicks.clear();
+        }
         Ok(Self {
-            state: persisted.state,
+            state,
             policy: persisted.policy,
             state_path: path.to_owned(),
             journal_path: path.with_file_name("progress.jsonl"),
@@ -896,6 +1024,392 @@ impl PiWatchdog {
         &self.policy
     }
 
+    /// Authorize one exact live threshold-compaction occurrence without
+    /// charging a continuation epoch. Session entry selection/canonicalization
+    /// is performed by the capability broker before this method is called.
+    pub fn authorize_compaction_kick(
+        &mut self,
+        occurrence: VerifiedCompactionOccurrence,
+        now: i64,
+    ) -> Result<PiCompactionKickRecord, WatchdogError> {
+        if self.state.terminal || self.state.terminal_receipt.is_some() {
+            return Err(WatchdogError::new(
+                "attempt_already_terminal",
+                "a terminal receipt won before threshold-compaction authorization",
+            ));
+        }
+        if occurrence.reason != "threshold" || occurrence.will_retry {
+            return Err(WatchdogError::new(
+                "compaction_not_qualifying",
+                "only successful non-retrying threshold compaction qualifies",
+            ));
+        }
+        if !occurrence.quiescent
+            || occurrence.host_idle
+            || !occurrence.queue_empty
+            || !occurrence.tool_clear
+        {
+            return Err(WatchdogError::new(
+                "compaction_host_window_mismatch",
+                "Pi is not in the empty-queue quiescent session_compact window",
+            ));
+        }
+        if self.state.phase == Phase::Tool
+            || self.state.tool.is_some()
+            || !self.state.exact_guards.all()
+        {
+            return Err(WatchdogError::new(
+                "continuation_guard_failed",
+                "exact session/route/worktree/process/effect/terminal guards do not admit a kick",
+            ));
+        }
+        if occurrence.session_id != self.state.session.session_id
+            || occurrence.process_pid != self.state.process.pid
+            || occurrence.process_epoch != self.state.process_epoch
+            || occurrence.process_identity_digest != self.state.process.digest()
+            || occurrence.provider != self.state.route.provider
+            || occurrence.model != self.state.route.model
+            || occurrence.reasoning != self.state.route.reasoning
+            || occurrence.route_snapshot_digest != self.state.route.digest()
+            || occurrence.plugin_compat != self.state.route.plugin_digest
+        {
+            return Err(WatchdogError::new(
+                "compaction_proof_mismatch",
+                "threshold compaction does not match the frozen process/session/route proof",
+            ));
+        }
+        if !self.budget_available(false) {
+            self.hold("continuation_budget_exhausted");
+            self.persist("compaction-kick-budget-held", now)?;
+            return Err(WatchdogError::new(
+                "continuation_budget_exhausted",
+                "finite shared Pi continuation budget is exhausted",
+            ));
+        }
+
+        let occurrence_id = digest_json(&serde_json::json!([
+            "wg.pi.threshold-compaction-occurrence/v1",
+            occurrence.graph_id,
+            self.state.source.task_id,
+            self.state.source.generation,
+            self.state.source.attempt_id,
+            self.state.source.attempt_fence,
+            self.state.source.worktree_lease_epoch,
+            self.state.process_epoch,
+            self.state.process.digest(),
+            occurrence.session_id,
+            self.state.session.header_digest,
+            occurrence.compaction_entry_id,
+            occurrence.compaction_parent_id,
+            occurrence.compaction_entry_digest,
+            self.state.route.digest(),
+        ]));
+        if let Some(existing) = self
+            .state
+            .compaction_kicks
+            .iter()
+            .find(|record| record.occurrence_id == occurrence_id)
+        {
+            let identical = existing.compaction_entry_id == occurrence.compaction_entry_id
+                && existing.compaction_parent_id == occurrence.compaction_parent_id
+                && existing.compaction_entry_digest == occurrence.compaction_entry_digest
+                && existing.session_id == occurrence.session_id
+                && existing.session_file_digest == occurrence.session_file_digest
+                && existing.session_leaf_id == occurrence.session_leaf_id
+                && existing.process_identity_digest == occurrence.process_identity_digest
+                && existing.route_snapshot_digest == occurrence.route_snapshot_digest;
+            if identical {
+                return Ok(existing.clone());
+            }
+            return Err(WatchdogError::new(
+                "compaction_occurrence_conflict",
+                "an existing occurrence id was presented with changed proof bytes",
+            ));
+        }
+
+        let prompt_digest = digest_bytes(COMPACTION_KICK_PROMPT.as_bytes());
+        let from = self.state.continuation_epoch;
+        let action_id = digest_json(&serde_json::json!([
+            "wg.pi.threshold-compaction-kick/v1",
+            occurrence_id,
+            from,
+            COMPACTION_KICK_PROMPT_VERSION,
+            prompt_digest,
+        ]));
+        let record = PiCompactionKickRecord {
+            occurrence_id,
+            action_id,
+            occurrence_ordinal: self.state.compaction_kicks.len().saturating_add(1) as u32,
+            compaction_entry_id: occurrence.compaction_entry_id,
+            compaction_parent_id: occurrence.compaction_parent_id,
+            compaction_entry_digest: occurrence.compaction_entry_digest,
+            session_id: occurrence.session_id,
+            session_file_digest: occurrence.session_file_digest,
+            session_leaf_id: occurrence.session_leaf_id,
+            process_epoch: occurrence.process_epoch,
+            process_identity_digest: occurrence.process_identity_digest,
+            route_snapshot_digest: occurrence.route_snapshot_digest,
+            authorized_from_continuation_epoch: from,
+            to_continuation_epoch: from.saturating_add(1),
+            prompt_version: COMPACTION_KICK_PROMPT_VERSION.into(),
+            prompt_digest,
+            state: PiCompactionKickState::Authorized,
+            reason_code: COMPACTION_KICK_OBSERVATION.into(),
+            authorized_at: now,
+            permitted_at: None,
+            acknowledged_at: None,
+            settled_at: None,
+        };
+        self.state.compaction_kicks.push(record.clone());
+        // Keep diagnostics bounded even if a manually enlarged lifecycle
+        // budget is configured. Terminal records remain grow-only within the
+        // finite current attempt; suppressed raw observations live elsewhere.
+        let cap = self.policy.max_continuation_epochs.saturating_add(8) as usize;
+        if self.state.compaction_kicks.len() > cap {
+            return Err(WatchdogError::new(
+                "compaction_kick_ledger_bound",
+                "compaction kick ledger exceeded its finite attempt bound",
+            ));
+        }
+        self.state.reason_code = Some("compaction_kick_authorized".into());
+        self.persist("compaction-kick-authorized", now)?;
+        Ok(record)
+    }
+
+    pub fn compaction_kick(&self, action_id: &str) -> Option<&PiCompactionKickRecord> {
+        self.state
+            .compaction_kicks
+            .iter()
+            .find(|record| record.action_id == action_id)
+    }
+
+    /// Reconcile the lifecycle epoch CAS into the watchdog outbox. `fresh` may
+    /// be true only for the request that just committed that CAS.
+    pub fn permit_compaction_kick(
+        &mut self,
+        action_id: &str,
+        lifecycle_epoch: u32,
+        fresh: bool,
+        now: i64,
+    ) -> Result<PiCompactionKickPermit, WatchdogError> {
+        let index = self
+            .state
+            .compaction_kicks
+            .iter()
+            .position(|record| record.action_id == action_id)
+            .ok_or_else(|| {
+                WatchdogError::new("compaction_action_missing", "unknown kick action")
+            })?;
+        let record = self.state.compaction_kicks[index].clone();
+        if lifecycle_epoch != record.to_continuation_epoch {
+            return Err(WatchdogError::new(
+                "stale_continuation_epoch",
+                "lifecycle permit epoch does not match the action",
+            ));
+        }
+        let first = record.state == PiCompactionKickState::Authorized;
+        if first {
+            if self.state.continuation_epoch != record.authorized_from_continuation_epoch {
+                return Err(WatchdogError::new(
+                    "stale_continuation_epoch",
+                    "watchdog continuation epoch no longer matches the action",
+                ));
+            }
+            // The lifecycle CAS already applied the finite charge. Mirror that
+            // exact one charge without creating a second authority domain.
+            self.state.continuation_epoch = record.to_continuation_epoch;
+            self.state.epochs_used = self.state.epochs_used.saturating_add(1);
+            self.state.elapsed_reserved_secs = self
+                .state
+                .elapsed_reserved_secs
+                .saturating_add(self.policy.continuation_epoch_lease_secs);
+            let current = &mut self.state.compaction_kicks[index];
+            current.state = PiCompactionKickState::DeliveryPermitted;
+            current.permitted_at = Some(now);
+            current.reason_code = "compaction_kick_delivery_permitted".into();
+            self.state.reason_code = Some("compaction_kick_delivery_permitted".into());
+            self.persist("compaction-kick-delivery-permitted", now)?;
+        }
+        let current = self.state.compaction_kicks[index].clone();
+        let deliverable =
+            first && fresh && current.state == PiCompactionKickState::DeliveryPermitted;
+        Ok(PiCompactionKickPermit {
+            action_id: current.action_id,
+            state: current.state,
+            fresh_delivery_grant: deliverable,
+            prompt: deliverable.then(|| COMPACTION_KICK_PROMPT.to_string()),
+            prompt_version: current.prompt_version,
+            prompt_digest: current.prompt_digest,
+        })
+    }
+
+    pub fn suppress_compaction_kick(
+        &mut self,
+        action_id: &str,
+        reason: &str,
+        now: i64,
+    ) -> Result<PiCompactionKickRecord, WatchdogError> {
+        let record = self
+            .state
+            .compaction_kicks
+            .iter_mut()
+            .find(|record| record.action_id == action_id)
+            .ok_or_else(|| {
+                WatchdogError::new("compaction_action_missing", "unknown kick action")
+            })?;
+        match record.state {
+            PiCompactionKickState::Authorized => record.state = PiCompactionKickState::Cancelled,
+            PiCompactionKickState::DeliveryPermitted => {
+                record.state = PiCompactionKickState::DeliverySuppressedAfterPermit
+            }
+            _ => return Ok(record.clone()),
+        }
+        record.reason_code = safe_reason_code(reason);
+        let result = record.clone();
+        self.state.reason_code = Some(result.reason_code.clone());
+        self.persist("compaction-kick-suppressed", now)?;
+        Ok(result)
+    }
+
+    pub fn acknowledge_compaction_kick(
+        &mut self,
+        action_id: &str,
+        terminal_won: bool,
+        now: i64,
+    ) -> Result<PiCompactionKickAck, WatchdogError> {
+        let record = self
+            .state
+            .compaction_kicks
+            .iter_mut()
+            .find(|record| record.action_id == action_id)
+            .ok_or_else(|| {
+                WatchdogError::new("compaction_action_missing", "unknown kick action")
+            })?;
+        match record.state {
+            PiCompactionKickState::DeliveryPermitted => {
+                record.state = if terminal_won {
+                    PiCompactionKickState::AcknowledgedTerminalRace
+                } else {
+                    PiCompactionKickState::Acknowledged
+                };
+                record.acknowledged_at = Some(now);
+                record.reason_code = if terminal_won {
+                    "compaction_kick_acknowledged_terminal_race"
+                } else {
+                    "compaction_kick_acknowledged"
+                }
+                .into();
+            }
+            PiCompactionKickState::Acknowledged | PiCompactionKickState::Running
+                if terminal_won =>
+            {
+                record.state = PiCompactionKickState::TerminalObserved;
+                record.reason_code = "compaction_kick_terminal_observed".into();
+            }
+            PiCompactionKickState::Acknowledged
+            | PiCompactionKickState::AcknowledgedTerminalRace
+            | PiCompactionKickState::Running
+            | PiCompactionKickState::TerminalObserved
+            | PiCompactionKickState::TerminalAbortAcknowledged
+            | PiCompactionKickState::SettledAfterKick => {}
+            _ => {
+                return Err(WatchdogError::new(
+                    "compaction_ack_not_permitted",
+                    "kick acknowledgement has no matching delivery permit",
+                ));
+            }
+        }
+        let result = PiCompactionKickAck {
+            action_id: record.action_id.clone(),
+            state: record.state,
+            abort: terminal_won
+                || matches!(
+                    record.state,
+                    PiCompactionKickState::AcknowledgedTerminalRace
+                        | PiCompactionKickState::TerminalObserved
+                ),
+        };
+        self.state.reason_code = Some(record.reason_code.clone());
+        self.persist("compaction-kick-acknowledged", now)?;
+        Ok(result)
+    }
+
+    pub fn abort_ack_compaction_kick(
+        &mut self,
+        action_id: &str,
+        now: i64,
+    ) -> Result<PiCompactionKickRecord, WatchdogError> {
+        let record = self
+            .state
+            .compaction_kicks
+            .iter_mut()
+            .find(|record| record.action_id == action_id)
+            .ok_or_else(|| {
+                WatchdogError::new("compaction_action_missing", "unknown kick action")
+            })?;
+        if matches!(
+            record.state,
+            PiCompactionKickState::AcknowledgedTerminalRace
+                | PiCompactionKickState::TerminalObserved
+        ) {
+            record.state = PiCompactionKickState::TerminalAbortAcknowledged;
+            record.reason_code = "compaction_kick_terminal_abort_acknowledged".into();
+        } else if record.state != PiCompactionKickState::TerminalAbortAcknowledged {
+            return Err(WatchdogError::new(
+                "compaction_abort_not_requested",
+                "kick abort acknowledgement requires terminal cancellation",
+            ));
+        }
+        let result = record.clone();
+        self.persist("compaction-kick-abort-acknowledged", now)?;
+        Ok(result)
+    }
+
+    pub fn settle_compaction_kick(
+        &mut self,
+        action_id: &str,
+        now: i64,
+    ) -> Result<PiCompactionKickRecord, WatchdogError> {
+        let record = self
+            .state
+            .compaction_kicks
+            .iter_mut()
+            .find(|record| record.action_id == action_id)
+            .ok_or_else(|| {
+                WatchdogError::new("compaction_action_missing", "unknown kick action")
+            })?;
+        if matches!(
+            record.state,
+            PiCompactionKickState::Acknowledged | PiCompactionKickState::Running
+        ) {
+            record.state = PiCompactionKickState::SettledAfterKick;
+            record.settled_at = Some(now);
+            record.reason_code = "kick_completed_without_terminal".into();
+        }
+        let result = record.clone();
+        self.state.classification = Classification::StalledOperatorRequired;
+        self.state.phase = Phase::Settled;
+        self.state.reason_code = Some("kick_completed_without_terminal".into());
+        self.persist("compaction-kick-settled", now)?;
+        Ok(result)
+    }
+
+    pub fn mark_compaction_kick_running(&mut self, now: i64) -> Result<bool, WatchdogError> {
+        let Some(record) = self
+            .state
+            .compaction_kicks
+            .iter_mut()
+            .rev()
+            .find(|record| record.state == PiCompactionKickState::Acknowledged)
+        else {
+            return Ok(false);
+        };
+        record.state = PiCompactionKickState::Running;
+        record.reason_code = "compaction_kick_running".into();
+        self.persist("compaction-kick-running", now)?;
+        Ok(true)
+    }
+
     /// Bind a reopened watchdog to the lifecycle projection before any
     /// receipt is accepted. Schema-v1 states may contain the historical split
     /// where an in-process continuation incorrectly advanced only the
@@ -994,6 +1508,34 @@ impl PiWatchdog {
         // watchdog (the canonical native parser), never in a UI renderer.
         let native_changed = self.project_native_activity(value, now);
         let ty = value.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        if ty == "agent_start" {
+            let _ = self.mark_compaction_kick_running(now)?;
+        }
+        if ty == "agent_settled"
+            && let Some((action_id, kick_state)) = self
+                .state
+                .compaction_kicks
+                .iter()
+                .rev()
+                .find(|record| {
+                    matches!(
+                        record.state,
+                        PiCompactionKickState::Acknowledged
+                            | PiCompactionKickState::Running
+                            | PiCompactionKickState::SettledAfterKick
+                    )
+                })
+                .map(|record| (record.action_id.clone(), record.state))
+        {
+            // The plugin may synchronously settle through the broker before
+            // the independent raw-stream observer ingests this same event.
+            // Treat that durable settlement as consumed: never let the stale
+            // observer reserve a second generic continuation epoch.
+            if kick_state != PiCompactionKickState::SettledAfterKick {
+                self.settle_compaction_kick(&action_id, now)?;
+            }
+            return Ok(Vec::new());
+        }
         let observation = match ty {
             "turn_start" | "provider_request_start" | "model_request_start" => {
                 Some(Observation::ProviderRequestStarted {
@@ -1007,8 +1549,18 @@ impl PiWatchdog {
             "message_start" | "provider_response_start" | "model_response_start" => {
                 Some(Observation::ProviderResponseStarted)
             }
-            "provider_retry" => Some(Observation::ProviderRetry),
-            "compaction_retry" => Some(Observation::CompactionRetry),
+            "provider_retry" | "auto_retry_start" | "auto_retry_end" => {
+                Some(Observation::ProviderRetry)
+            }
+            "compaction_retry"
+            | "summarization_retry_scheduled"
+            | "summarization_retry_attempt_start"
+            | "summarization_retry_finished" => Some(Observation::CompactionRetry),
+            "queue_update"
+                if queue_count(value, "steering") > 0 || queue_count(value, "followUp") > 0 =>
+            {
+                Some(Observation::QueuedFollowUp)
+            }
             "message_update" => match value
                 .get("assistantMessageEvent")
                 .and_then(|v| v.get("type"))
@@ -1123,7 +1675,7 @@ impl PiWatchdog {
         let ty = value.get("type").and_then(|v| v.as_str()).unwrap_or("");
         let mut changed = false;
         match ty {
-            "turn_start" | "message_start" | "agent_end" => {
+            "turn_start" | "message_start" | "agent_start" | "agent_end" | "agent_settled" => {
                 native.event_seq = native.event_seq.saturating_add(1);
                 native.last_activity_at = Some(now);
                 changed = true;
@@ -1221,6 +1773,57 @@ impl PiWatchdog {
                 );
                 native.current_tool_label = None;
                 native.current_tool_class = None;
+                changed = true;
+            }
+            "compaction_start" => {
+                native.event_seq = native.event_seq.saturating_add(1);
+                native.compaction_event_seq = native.event_seq;
+                native.compaction_reason = value
+                    .get("reason")
+                    .and_then(|v| v.as_str())
+                    .map(safe_state_label);
+                native.compaction_aborted = None;
+                native.compaction_will_retry = None;
+                native.compaction_succeeded = None;
+                native.last_activity_at = Some(now);
+                changed = true;
+            }
+            "compaction_end" => {
+                native.event_seq = native.event_seq.saturating_add(1);
+                native.compaction_event_seq = native.event_seq;
+                native.compaction_reason = value
+                    .get("reason")
+                    .and_then(|v| v.as_str())
+                    .map(safe_state_label);
+                native.compaction_aborted = value.get("aborted").and_then(|v| v.as_bool());
+                native.compaction_will_retry = value.get("willRetry").and_then(|v| v.as_bool());
+                native.compaction_succeeded = Some(
+                    value.get("result").is_some_and(|result| !result.is_null())
+                        && value.get("errorMessage").is_none(),
+                );
+                native.last_activity_at = Some(now);
+                changed = true;
+            }
+            "queue_update" => {
+                native.event_seq = native.event_seq.saturating_add(1);
+                native.steering_queue_count = queue_count(value, "steering");
+                native.follow_up_queue_count = queue_count(value, "followUp");
+                native.last_activity_at = Some(now);
+                changed = true;
+            }
+            "provider_retry" | "auto_retry_start" | "auto_retry_end" => {
+                native.event_seq = native.event_seq.saturating_add(1);
+                native.retry_state = Some(safe_state_label(ty));
+                native.last_activity_at = Some(now);
+                changed = true;
+            }
+            "compaction_retry"
+            | "summarization_retry_scheduled"
+            | "summarization_retry_attempt_start"
+            | "summarization_retry_finished" => {
+                native.event_seq = native.event_seq.saturating_add(1);
+                native.retry_state = Some(safe_state_label(ty));
+                native.last_activity_at = Some(now);
                 changed = true;
             }
             "turn_end" => {
@@ -1380,6 +1983,19 @@ impl PiWatchdog {
             }
             Observation::ProcessExited { status, reaped } => {
                 self.state.phase = Phase::Exited;
+                for record in &mut self.state.compaction_kicks {
+                    match record.state {
+                        PiCompactionKickState::Authorized => {
+                            record.state = PiCompactionKickState::CancelledProcessExit;
+                            record.reason_code = "process_exit_before_permit".into();
+                        }
+                        PiCompactionKickState::DeliveryPermitted => {
+                            record.state = PiCompactionKickState::Uncertain;
+                            record.reason_code = "process_exit_before_ack".into();
+                        }
+                        _ => {}
+                    }
+                }
                 let reason = match status {
                     ExitStatus::Code(0) => "process_exit_zero_no_terminal",
                     ExitStatus::Code(_) => "process_exit_nonzero_no_terminal",
@@ -2074,8 +2690,45 @@ fn safe_state_label(raw: &str) -> String {
         "waiting" => "waiting".into(),
         "exited" => "exited".into(),
         "completed" => "completed".into(),
+        "manual" => "manual".into(),
+        "threshold" => "threshold".into(),
+        "overflow" => "overflow".into(),
+        "provider_retry" => "provider-retry".into(),
+        "auto_retry_start" => "auto-retry-start".into(),
+        "auto_retry_end" => "auto-retry-end".into(),
+        "compaction_retry" => "compaction-retry".into(),
+        "summarization_retry_scheduled" => "summarization-retry-scheduled".into(),
+        "summarization_retry_attempt_start" => "summarization-retry-attempt-start".into(),
+        "summarization_retry_finished" => "summarization-retry-finished".into(),
         _ => "unknown".into(),
     }
+}
+
+fn safe_reason_code(raw: &str) -> String {
+    match raw.trim() {
+        "queue_nonempty"
+        | "queue_nonempty_after_authorize"
+        | "queue_nonempty_after_permit"
+        | "not_quiescent_after_authorize"
+        | "not_quiescent_after_permit"
+        | "tool_active_after_authorize"
+        | "tool_active_after_permit"
+        | "identity_changed_after_authorize"
+        | "identity_changed_after_permit"
+        | "feature_disabled"
+        | "terminal_won"
+        | "process_exit" => raw.trim().to_string(),
+        _ => "local_guard_failed".into(),
+    }
+}
+
+fn queue_count(value: &serde_json::Value, key: &str) -> u64 {
+    value
+        .get(key)
+        .and_then(|value| value.as_array())
+        .map(|values| values.len() as u64)
+        .or_else(|| value.get(key).and_then(|value| value.as_u64()))
+        .unwrap_or(0)
 }
 
 fn tool_class(value: &serde_json::Value, raw_name: &str) -> String {

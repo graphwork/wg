@@ -1,5 +1,7 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
+use std::fs::{File, OpenOptions};
+use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use worksgood::lifecycle::{
     ActorKind, FenceExpectation, LifecycleActor, TransitionKind, TransitionRequest,
@@ -46,6 +48,12 @@ pub fn run(dir: &Path, command: PiWatchdogCommands, json: bool) -> Result<()> {
         PiWatchdogCommands::ProcessExit { id, exit_code, pid } => {
             process_exit(dir, &id, exit_code, pid)
         }
+        PiWatchdogCommands::CompactionKick { command } => {
+            let _ = command;
+            anyhow::bail!(
+                "worker_control.capability_required: Pi compaction-kick operations are not operator commands"
+            )
+        }
         PiWatchdogCommands::FixtureInit { id, worktree, now } => {
             fixture_init(dir, &id, &worktree, now)
         }
@@ -89,8 +97,84 @@ fn state_path(dir: &Path, task_id: &str) -> Result<PathBuf> {
     )
 }
 
-fn checked_open(dir: &Path, task_id: &str) -> Result<PiWatchdog> {
+/// Serializes the complete read/verify/mutate/persist transaction. The raw
+/// stream observer and the in-process plugin broker are distinct processes;
+/// atomic rename alone prevents torn JSON but cannot prevent a stale observer
+/// from overwriting a newly authorized kick between authorize and permit.
+pub(crate) struct LockedWatchdog {
+    watchdog: PiWatchdog,
+    _lock: WatchdogTransactionLock,
+}
+
+impl Deref for LockedWatchdog {
+    type Target = PiWatchdog;
+
+    fn deref(&self) -> &Self::Target {
+        &self.watchdog
+    }
+}
+
+impl DerefMut for LockedWatchdog {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.watchdog
+    }
+}
+
+struct WatchdogTransactionLock {
+    #[cfg(unix)]
+    file: File,
+}
+
+impl WatchdogTransactionLock {
+    fn acquire(state_path: &Path) -> Result<Self> {
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+
+            let lock_path = state_path.with_file_name("transaction.lock");
+            let file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&lock_path)
+                .with_context(|| format!("open Pi watchdog lock {}", lock_path.display()))?;
+            loop {
+                if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0 {
+                    break;
+                }
+                let error = std::io::Error::last_os_error();
+                if error.kind() != std::io::ErrorKind::Interrupted {
+                    return Err(error).with_context(|| {
+                        format!("acquire Pi watchdog lock {}", lock_path.display())
+                    });
+                }
+            }
+            Ok(Self { file })
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = state_path;
+            Ok(Self {})
+        }
+    }
+}
+
+impl Drop for WatchdogTransactionLock {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            unsafe {
+                libc::flock(self.file.as_raw_fd(), libc::LOCK_UN);
+            }
+        }
+    }
+}
+
+pub(crate) fn checked_open(dir: &Path, task_id: &str) -> Result<LockedWatchdog> {
     let path = state_path(dir, task_id)?;
+    let lock = WatchdogTransactionLock::acquire(&path)?;
     let mut watchdog = PiWatchdog::open(&path).map_err(anyhow::Error::new)?;
     let graph = load_graph(dir.join("graph.jsonl"))?;
     let task = graph.get_task_or_err(task_id)?;
@@ -111,8 +195,65 @@ fn checked_open(dir: &Path, task_id: &str) -> Result<PiWatchdog> {
     watchdog
         .reconcile_pending_same_process_prompt(Utc::now().timestamp())
         .map_err(anyhow::Error::new)?;
+    reconcile_compaction_permit_outbox(dir, task_id, &mut watchdog)?;
     sync_lifecycle_continuation_authority(dir, task_id, &watchdog)?;
-    Ok(watchdog)
+    Ok(LockedWatchdog {
+        watchdog,
+        _lock: lock,
+    })
+}
+
+/// Repair the deliberate graph-CAS -> watchdog-outbox crash split. A lifecycle
+/// epoch exactly one ahead is accepted only when its audit key names the one
+/// immutable Authorized compaction action for that epoch. Reconciliation never
+/// recreates fresh delivery authority: the original permit reply may have
+/// crossed the process boundary before the crash.
+fn reconcile_compaction_permit_outbox(
+    dir: &Path,
+    task_id: &str,
+    watchdog: &mut PiWatchdog,
+) -> Result<()> {
+    let graph = load_graph(dir.join("graph.jsonl"))?;
+    let task = graph.get_task_or_err(task_id)?;
+    let lifecycle_epoch = task.lifecycle.pi_continuation_epoch;
+    let watchdog_epoch = watchdog.state().continuation_epoch;
+    if lifecycle_epoch <= watchdog_epoch {
+        return Ok(());
+    }
+    if lifecycle_epoch != watchdog_epoch.saturating_add(1) {
+        anyhow::bail!(
+            "stale_continuation_epoch: lifecycle is more than one epoch ahead of watchdog"
+        );
+    }
+    let Some(record) = watchdog
+        .state()
+        .compaction_kicks
+        .iter()
+        .find(|record| {
+            record.state == worksgood::pi_watchdog::PiCompactionKickState::Authorized
+                && record.authorized_from_continuation_epoch == watchdog_epoch
+                && record.to_continuation_epoch == lifecycle_epoch
+                && task
+                    .lifecycle
+                    .audit
+                    .iter()
+                    .any(|event| event.idempotency_key == record.action_id)
+        })
+        .cloned()
+    else {
+        anyhow::bail!(
+            "stale_continuation_epoch: lifecycle is ahead without an audited compaction permit"
+        );
+    };
+    watchdog
+        .permit_compaction_kick(
+            &record.action_id,
+            lifecycle_epoch,
+            false,
+            Utc::now().timestamp(),
+        )
+        .map_err(anyhow::Error::new)?;
+    Ok(())
 }
 
 /// Reconcile a crash-safe process replacement outbox. The watchdog swaps the
@@ -303,6 +444,638 @@ pub(crate) fn sync_lifecycle_continuation_authority(
     Ok(())
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct CompactionKickAuthorizeArgs {
+    pub reason: String,
+    pub will_retry: bool,
+    pub compaction_entry_id: String,
+    pub compaction_parent_id: String,
+    pub session_id: String,
+    pub session_file: String,
+    pub session_leaf_id: String,
+    pub pid: u32,
+    pub provider: String,
+    pub model: String,
+    pub reasoning: Option<String>,
+    pub plugin_compat: String,
+    pub quiescent: bool,
+    pub host_idle: bool,
+    pub queue_empty: bool,
+    pub tool_clear: bool,
+}
+
+fn compaction_kick_enabled() -> bool {
+    std::env::var("WG_PI_COMPACTION_KICK")
+        .map(|value| value.trim() != "0")
+        .unwrap_or(true)
+}
+
+fn bounded_identity(value: &str, label: &str) -> Result<()> {
+    if value.is_empty()
+        || value.len() > 1024
+        || value
+            .bytes()
+            .any(|byte| byte == 0 || byte == b'\n' || byte == b'\r')
+    {
+        anyhow::bail!("compaction_kick.invalid_{label}");
+    }
+    Ok(())
+}
+
+/// Pull the native observer's bounded projection through the latest complete
+/// capture line before an authority decision. The file follower is a separate
+/// process and can lag the awaited Pi callback; without this reconciliation a
+/// completed tool-end can transiently look like an unsafe open effect and make
+/// an otherwise identical occurrence nondeterministically fail closed.
+fn reconcile_native_capture_to_current_complete_line(watchdog: &mut PiWatchdog) -> Result<()> {
+    let Some(agent_dir) = watchdog.state().session.session_dir.parent() else {
+        return Ok(());
+    };
+    let raw_path = agent_dir.join(worksgood::stream_event::RAW_STREAM_FILE_NAME);
+    let Ok(bytes) = std::fs::read(&raw_path) else {
+        return Ok(());
+    };
+    let stream_id = raw_path.to_string_lossy().into_owned();
+    let mut offset = watchdog.native_stream_offset(&stream_id);
+    let start = usize::try_from(offset).context("Pi native stream offset does not fit")?;
+    if start > bytes.len() {
+        anyhow::bail!("compaction_kick.native_capture_shrank");
+    }
+    let complete_end = bytes
+        .iter()
+        .rposition(|byte| *byte == b'\n')
+        .map(|index| index + 1)
+        .unwrap_or(start);
+    if complete_end <= start {
+        return Ok(());
+    }
+    for line in bytes[start..complete_end].split_inclusive(|byte| *byte == b'\n') {
+        offset = offset.saturating_add(line.len() as u64);
+        let line = std::str::from_utf8(line)?.trim_end_matches(['\r', '\n']);
+        if line.is_empty() {
+            continue;
+        }
+        watchdog
+            .ingest_native_line(line, &stream_id, offset, Utc::now().timestamp())
+            .map_err(anyhow::Error::new)?;
+    }
+    Ok(())
+}
+
+/// Authenticate and persist one exact compaction occurrence. The worker
+/// capability binding has already been validated by the IPC broker; this
+/// function independently rechecks its tuple against the watchdog/lifecycle.
+pub(crate) fn compaction_kick_authorize(
+    dir: &Path,
+    binding: &worksgood::worker_control::AttemptCapabilityBinding,
+    args: CompactionKickAuthorizeArgs,
+) -> Result<serde_json::Value> {
+    if !compaction_kick_enabled() {
+        anyhow::bail!("compaction_kick.feature_disabled");
+    }
+    for (value, label) in [
+        (&args.compaction_entry_id, "entry_id"),
+        (&args.compaction_parent_id, "parent_id"),
+        (&args.session_id, "session_id"),
+        (&args.session_file, "session_file"),
+        (&args.session_leaf_id, "session_leaf"),
+        (&args.provider, "provider"),
+        (&args.model, "model"),
+        (&args.plugin_compat, "plugin_compat"),
+    ] {
+        bounded_identity(value, label)?;
+    }
+    if args.reason != "threshold" || args.will_retry {
+        anyhow::bail!("compaction_kick.not_qualifying");
+    }
+    if binding.task_id != binding.save_source.task_id
+        || binding.generation != binding.save_source.generation
+        || binding.attempt_id != binding.save_source.attempt_id
+        || binding.fence != binding.save_source.attempt_fence
+        || binding.lease_epoch != binding.save_source.worktree_lease_epoch
+    {
+        anyhow::bail!("compaction_kick.capability_binding_mismatch");
+    }
+
+    let mut watchdog = checked_open(dir, &binding.task_id)?;
+    reconcile_native_capture_to_current_complete_line(&mut watchdog)?;
+    let source = &watchdog.state().source;
+    if source.generation != binding.generation
+        || source.attempt_id != binding.attempt_id
+        || source.attempt_fence != binding.fence
+        || source.worktree_lease_epoch != binding.lease_epoch
+    {
+        anyhow::bail!("compaction_kick.stale_capability");
+    }
+    if !process_identity_matches_kernel(&watchdog.state().process)
+        || (args.pid != watchdog.state().process.pid
+            && !process_descends_from(args.pid, watchdog.state().process.pid))
+    {
+        anyhow::bail!("compaction_kick.process_proof_mismatch");
+    }
+    let graph = load_graph(dir.join("graph.jsonl"))?;
+    let task = graph.get_task_or_err(&binding.task_id)?;
+    let lifecycle_attempt = task.lifecycle.current_attempt.as_ref();
+    let lifecycle_unresolved = task.status == worksgood::graph::Status::InProgress
+        && lifecycle_attempt.is_some_and(|attempt| {
+            attempt.id == binding.attempt_id
+                && attempt.generation == binding.generation
+                && attempt.fence == binding.fence
+                && attempt.disposition.is_none()
+        })
+        && task.lifecycle.pi_terminal_reservation.is_none()
+        && task.lifecycle.pi_kick_effect_leases.is_empty()
+        && task
+            .lifecycle
+            .pi_continuation
+            .as_ref()
+            .is_some_and(|authorization| {
+                authorization.state == worksgood::lifecycle::PiAuthorizationState::Active
+                    && authorization.attempt_id == binding.attempt_id
+                    && authorization.attempt_fence == binding.fence
+                    && authorization.worktree_lease_epoch == binding.lease_epoch
+            });
+    if !lifecycle_unresolved {
+        anyhow::bail!("compaction_kick.lifecycle_resolved_or_held");
+    }
+
+    let supplied_session_file = PathBuf::from(&args.session_file)
+        .canonicalize()
+        .context("canonicalize Pi session file")?;
+    let selected = worksgood::pi_watchdog::select_canonical_session_journal(
+        &watchdog.state().session.session_dir,
+        &args.session_id,
+    )
+    .map_err(anyhow::Error::new)?;
+    let selected_file = selected.session_file.canonicalize()?;
+    if supplied_session_file != selected_file
+        || args.session_id != watchdog.state().session.session_id
+    {
+        anyhow::bail!("compaction_kick.session_proof_mismatch");
+    }
+    let prior = watchdog.state().session.clone();
+    let session_bytes = std::fs::read(&selected_file)?;
+    if selected_file
+        == prior
+            .session_file
+            .canonicalize()
+            .unwrap_or_else(|_| prior.session_file.clone())
+    {
+        let prefix_len = usize::try_from(prior.append_prefix_len)
+            .context("attested Pi prefix length does not fit")?;
+        if prefix_len > session_bytes.len()
+            || format!("b3:{}", blake3::hash(&session_bytes[..prefix_len]).to_hex())
+                != prior.append_prefix_digest
+        {
+            anyhow::bail!("compaction_kick.session_prefix_mismatch");
+        }
+    } else if selected.header_digest != prior.header_digest {
+        anyhow::bail!("compaction_kick.session_header_mismatch");
+    }
+
+    let mut matching_entry: Option<serde_json::Value> = None;
+    let mut final_leaf: Option<String> = None;
+    for (line_no, line) in session_bytes.split(|byte| *byte == b'\n').enumerate() {
+        if line.is_empty() {
+            continue;
+        }
+        let value: serde_json::Value = serde_json::from_slice(line)
+            .with_context(|| format!("parse Pi session line {}", line_no + 1))?;
+        if line_no == 0 {
+            if value.get("type").and_then(|value| value.as_str()) != Some("session")
+                || value.get("id").and_then(|value| value.as_str())
+                    != Some(args.session_id.as_str())
+            {
+                anyhow::bail!("compaction_kick.session_header_mismatch");
+            }
+            continue;
+        }
+        if let Some(id) = value.get("id").and_then(|value| value.as_str()) {
+            final_leaf = Some(id.to_string());
+            if id == args.compaction_entry_id {
+                if matching_entry.is_some() {
+                    anyhow::bail!("compaction_kick.ambiguous_entry");
+                }
+                matching_entry = Some(value);
+            }
+        }
+    }
+    let entry = matching_entry.context("compaction_kick.entry_missing")?;
+    if entry.get("type").and_then(|value| value.as_str()) != Some("compaction")
+        || entry.get("parentId").and_then(|value| value.as_str())
+            != Some(args.compaction_parent_id.as_str())
+        || final_leaf.as_deref() != Some(args.session_leaf_id.as_str())
+        || args.session_leaf_id != args.compaction_entry_id
+    {
+        anyhow::bail!("compaction_kick.entry_leaf_mismatch");
+    }
+    let compaction_entry_digest =
+        format!("b3:{}", blake3::hash(&serde_json::to_vec(&entry)?).to_hex());
+    let session_file_digest = format!("b3:{}", blake3::hash(&session_bytes).to_hex());
+    watchdog
+        .reconcile_session_journal(Utc::now().timestamp())
+        .map_err(anyhow::Error::new)?;
+
+    let process_pid = watchdog.state().process.pid;
+    let process_epoch = watchdog.state().process_epoch;
+    let process_identity_digest = watchdog.state().process.digest();
+    let route_snapshot_digest = watchdog.state().route.digest();
+    let record = watchdog
+        .authorize_compaction_kick(
+            worksgood::pi_watchdog::VerifiedCompactionOccurrence {
+                graph_id: binding.graph_id.clone(),
+                compaction_entry_id: args.compaction_entry_id,
+                compaction_parent_id: args.compaction_parent_id,
+                compaction_entry_digest,
+                session_id: args.session_id,
+                session_file_digest,
+                session_leaf_id: args.session_leaf_id,
+                // The watchdog's exact launch authority is the generated
+                // wrapper's gated Pi command process; with GNU timeout/stdin
+                // plumbing the live Pi isolate is a verified descendant.
+                // Preserve the authoritative epoch identity here after the
+                // ancestry check above.
+                process_pid,
+                process_epoch,
+                process_identity_digest,
+                provider: args.provider,
+                model: args.model,
+                reasoning: args.reasoning,
+                route_snapshot_digest,
+                plugin_compat: args.plugin_compat,
+                reason: args.reason,
+                will_retry: args.will_retry,
+                quiescent: args.quiescent,
+                host_idle: args.host_idle,
+                queue_empty: args.queue_empty,
+                tool_clear: args.tool_clear,
+            },
+            Utc::now().timestamp(),
+        )
+        .map_err(anyhow::Error::new)?;
+    Ok(serde_json::json!({
+        "actionId": record.action_id,
+        "occurrenceId": record.occurrence_id,
+        "state": record.state,
+        "occurrenceOrdinal": record.occurrence_ordinal,
+    }))
+}
+
+/// Commit/reconcile the lifecycle epoch CAS and return prompt authority only
+/// to the call that performed the fresh CAS.
+pub(crate) fn compaction_kick_permit(
+    dir: &Path,
+    task_id: &str,
+    action_id: &str,
+    allow_fresh: bool,
+) -> Result<serde_json::Value> {
+    if !compaction_kick_enabled() {
+        anyhow::bail!("compaction_kick.feature_disabled");
+    }
+    let mut watchdog = checked_open(dir, task_id)?;
+    reconcile_native_capture_to_current_complete_line(&mut watchdog)?;
+    let record = watchdog
+        .compaction_kick(action_id)
+        .cloned()
+        .context("compaction_kick.action_missing")?;
+    if record.state != worksgood::pi_watchdog::PiCompactionKickState::Authorized {
+        let permit = watchdog
+            .permit_compaction_kick(
+                action_id,
+                record.to_continuation_epoch,
+                false,
+                Utc::now().timestamp(),
+            )
+            .map_err(anyhow::Error::new)?;
+        return Ok(compaction_permit_json(permit));
+    }
+    if !process_identity_matches_kernel(&watchdog.state().process) {
+        anyhow::bail!("compaction_kick.process_exited");
+    }
+    if watchdog.state().phase == worksgood::pi_watchdog::Phase::Tool
+        || watchdog.state().tool.is_some()
+        || !watchdog.state().exact_guards.session
+        || !watchdog.state().exact_guards.route
+        || !watchdog.state().exact_guards.worktree
+        || !watchdog.state().exact_guards.pid_identity
+        || !watchdog.state().exact_guards.containment
+        || !watchdog.state().exact_guards.effect
+        || !watchdog.state().exact_guards.terminal_clear
+    {
+        anyhow::bail!("compaction_kick.guard_changed_before_permit");
+    }
+    let selected = worksgood::pi_watchdog::select_canonical_session_journal(
+        &watchdog.state().session.session_dir,
+        &record.session_id,
+    )
+    .map_err(anyhow::Error::new)?;
+    let session_bytes = std::fs::read(&selected.session_file)?;
+    let session_digest = format!("b3:{}", blake3::hash(&session_bytes).to_hex());
+    let final_leaf = session_bytes
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .filter_map(|line| serde_json::from_slice::<serde_json::Value>(line).ok())
+        .filter_map(|entry| {
+            entry
+                .get("id")
+                .and_then(|id| id.as_str())
+                .map(str::to_owned)
+        })
+        .next_back();
+    if selected.session_file.canonicalize()?
+        != watchdog.state().session.session_file.canonicalize()?
+        || selected.header_digest != watchdog.state().session.header_digest
+        || session_digest != record.session_file_digest
+        || final_leaf.as_deref() != Some(record.session_leaf_id.as_str())
+    {
+        anyhow::bail!("compaction_kick.session_changed_before_permit");
+    }
+    let graph_path = dir.join("graph.jsonl");
+    let mut rejection = None;
+    let mut fresh_cas = false;
+    modify_graph(&graph_path, |graph| {
+        let Some(task) = graph.get_task_mut(task_id) else {
+            return false;
+        };
+        let duplicate = task
+            .lifecycle
+            .audit
+            .iter()
+            .any(|event| event.idempotency_key == action_id);
+        let request = TransitionRequest::new(
+            TransitionKind::PiContinuationEpochReserved {
+                expected_process_epoch: record.process_epoch,
+                process_identity_digest: record.process_identity_digest.clone(),
+                expected_continuation_epoch: record.authorized_from_continuation_epoch,
+                next_continuation_epoch: record.to_continuation_epoch,
+                elapsed_charge_secs: watchdog.policy().continuation_epoch_lease_secs,
+            },
+            LifecycleActor {
+                kind: ActorKind::ProcessObserver,
+                id: "pi-compaction-kick".into(),
+            },
+            "threshold_compaction_kick",
+            action_id.to_string(),
+        )
+        .expecting(FenceExpectation::current(task))
+        .with_evidence(record.occurrence_id.clone());
+        if let Err(error) = apply_transition(task, request) {
+            rejection = Some(error);
+            return false;
+        }
+        fresh_cas = !duplicate;
+        true
+    })?;
+    if let Some(error) = rejection {
+        return Err(anyhow::Error::new(error));
+    }
+    let permit = watchdog
+        .permit_compaction_kick(
+            action_id,
+            record.to_continuation_epoch,
+            allow_fresh && fresh_cas,
+            Utc::now().timestamp(),
+        )
+        .map_err(anyhow::Error::new)?;
+    Ok(compaction_permit_json(permit))
+}
+
+fn compaction_permit_json(
+    permit: worksgood::pi_watchdog::PiCompactionKickPermit,
+) -> serde_json::Value {
+    serde_json::json!({
+        "actionId": permit.action_id,
+        "state": permit.state,
+        "freshDeliveryGrant": permit.fresh_delivery_grant,
+        "prompt": permit.prompt,
+        "promptVersion": permit.prompt_version,
+        "promptDigest": permit.prompt_digest,
+    })
+}
+
+pub(crate) fn compaction_kick_ack(
+    dir: &Path,
+    task_id: &str,
+    action_id: &str,
+    prompt_version: &str,
+    prompt_digest: &str,
+) -> Result<serde_json::Value> {
+    let mut watchdog = checked_open(dir, task_id)?;
+    let record = watchdog
+        .compaction_kick(action_id)
+        .context("compaction_kick.action_missing")?;
+    if record.prompt_version != prompt_version || record.prompt_digest != prompt_digest {
+        anyhow::bail!("compaction_kick.prompt_proof_mismatch");
+    }
+    let graph_path = dir.join("graph.jsonl");
+    let mut rejection = None;
+    modify_graph(&graph_path, |graph| {
+        let Some(task) = graph.get_task_mut(task_id) else {
+            return false;
+        };
+        let request = TransitionRequest::new(
+            TransitionKind::PiCompactionKickAcknowledged {
+                action_id: action_id.to_string(),
+                process_epoch: record.process_epoch,
+                process_identity_digest: record.process_identity_digest.clone(),
+            },
+            LifecycleActor {
+                kind: ActorKind::ProcessObserver,
+                id: "pi-compaction-kick".into(),
+            },
+            "compaction_kick_selected",
+            format!("pi-kick-ack:{action_id}"),
+        )
+        .expecting(FenceExpectation::current(task));
+        if let Err(error) = apply_transition(task, request) {
+            rejection = Some(error);
+            return false;
+        }
+        true
+    })?;
+    if let Some(error) = rejection {
+        return Err(anyhow::Error::new(error));
+    }
+    let graph = load_graph(&graph_path)?;
+    let terminal_won = graph
+        .get_task_or_err(task_id)?
+        .lifecycle
+        .pi_terminal_reservation
+        .is_some();
+    let ack = watchdog
+        .acknowledge_compaction_kick(action_id, terminal_won, Utc::now().timestamp())
+        .map_err(anyhow::Error::new)?;
+    Ok(serde_json::json!({
+        "actionId": ack.action_id,
+        "state": ack.state,
+        "abort": ack.abort,
+    }))
+}
+
+pub(crate) fn compaction_kick_cancel(
+    dir: &Path,
+    task_id: &str,
+    action_id: &str,
+    reason: &str,
+) -> Result<serde_json::Value> {
+    let mut watchdog = checked_open(dir, task_id)?;
+    let record = watchdog
+        .suppress_compaction_kick(action_id, reason, Utc::now().timestamp())
+        .map_err(anyhow::Error::new)?;
+    Ok(serde_json::json!({"actionId": record.action_id, "state": record.state}))
+}
+
+pub(crate) fn compaction_kick_settle(
+    dir: &Path,
+    task_id: &str,
+    action_id: &str,
+) -> Result<serde_json::Value> {
+    let mut watchdog = checked_open(dir, task_id)?;
+    let record = watchdog
+        .settle_compaction_kick(action_id, Utc::now().timestamp())
+        .map_err(anyhow::Error::new)?;
+    let graph_path = dir.join("graph.jsonl");
+    let _ = modify_graph(&graph_path, |graph| {
+        let Some(task) = graph.get_task_mut(task_id) else {
+            return false;
+        };
+        apply_transition(
+            task,
+            TransitionRequest::new(
+                TransitionKind::PiCompactionKickSettled {
+                    action_id: action_id.to_string(),
+                },
+                LifecycleActor {
+                    kind: ActorKind::ProcessObserver,
+                    id: "pi-compaction-kick".into(),
+                },
+                "compaction_kick_settled",
+                format!("pi-kick-settle:{action_id}"),
+            )
+            .expecting(FenceExpectation::current(task)),
+        )
+        .is_ok()
+    });
+    Ok(serde_json::json!({"actionId": record.action_id, "state": record.state}))
+}
+
+pub(crate) fn compaction_kick_abort_ack(
+    dir: &Path,
+    task_id: &str,
+    action_id: &str,
+) -> Result<serde_json::Value> {
+    let mut watchdog = checked_open(dir, task_id)?;
+    let graph_path = dir.join("graph.jsonl");
+    let mut rejection = None;
+    modify_graph(&graph_path, |graph| {
+        let Some(task) = graph.get_task_mut(task_id) else {
+            return false;
+        };
+        let request = TransitionRequest::new(
+            TransitionKind::PiCompactionKickAbortAcknowledged {
+                action_id: action_id.to_string(),
+            },
+            LifecycleActor {
+                kind: ActorKind::ProcessObserver,
+                id: "pi-compaction-kick".into(),
+            },
+            "compaction_kick_abort_acknowledged",
+            format!("pi-kick-abort-ack:{action_id}"),
+        )
+        .expecting(FenceExpectation::current(task));
+        if let Err(error) = apply_transition(task, request) {
+            rejection = Some(error);
+            return false;
+        }
+        true
+    })?;
+    if let Some(error) = rejection {
+        return Err(anyhow::Error::new(error));
+    }
+    let record = watchdog
+        .abort_ack_compaction_kick(action_id, Utc::now().timestamp())
+        .map_err(anyhow::Error::new)?;
+    Ok(serde_json::json!({"actionId": record.action_id, "state": record.state}))
+}
+
+pub(crate) fn compaction_kick_effect(
+    dir: &Path,
+    task_id: &str,
+    action_id: &str,
+    tool_call_id: &str,
+    begin: bool,
+) -> Result<serde_json::Value> {
+    bounded_identity(action_id, "action_id")?;
+    bounded_identity(tool_call_id, "tool_call_id")?;
+    let watchdog = checked_open(dir, task_id)?;
+    let record = watchdog
+        .compaction_kick(action_id)
+        .context("compaction_kick.action_missing")?;
+    if !matches!(
+        record.state,
+        worksgood::pi_watchdog::PiCompactionKickState::Acknowledged
+            | worksgood::pi_watchdog::PiCompactionKickState::Running
+    ) {
+        anyhow::bail!("compaction_kick.action_not_running");
+    }
+    let graph_path = dir.join("graph.jsonl");
+    let mut rejection = None;
+    modify_graph(&graph_path, |graph| {
+        let Some(task) = graph.get_task_mut(task_id) else {
+            return false;
+        };
+        let kind = if begin {
+            TransitionKind::PiKickEffectLeaseOpened {
+                lease: worksgood::lifecycle::PiKickEffectLease {
+                    action_id: action_id.to_string(),
+                    tool_call_id: tool_call_id.to_string(),
+                    process_epoch: record.process_epoch,
+                    process_identity_digest: record.process_identity_digest.clone(),
+                },
+            }
+        } else {
+            TransitionKind::PiKickEffectLeaseClosed {
+                action_id: action_id.to_string(),
+                tool_call_id: tool_call_id.to_string(),
+                process_epoch: record.process_epoch,
+            }
+        };
+        let request = TransitionRequest::new(
+            kind,
+            LifecycleActor {
+                kind: ActorKind::ProcessObserver,
+                id: "pi-compaction-kick-effect".into(),
+            },
+            if begin {
+                "kick_effect_begin"
+            } else {
+                "kick_effect_end"
+            },
+            format!(
+                "pi-kick-effect-{}:{}:{}",
+                if begin { "begin" } else { "end" },
+                action_id,
+                tool_call_id
+            ),
+        )
+        .expecting(FenceExpectation::current(task));
+        if let Err(error) = apply_transition(task, request) {
+            rejection = Some(error);
+            return false;
+        }
+        true
+    })?;
+    if let Some(error) = rejection {
+        return Err(anyhow::Error::new(error));
+    }
+    Ok(serde_json::json!({
+        "actionId": action_id,
+        "toolCallId": tool_call_id,
+        "permitted": true,
+        "state": if begin { "opened" } else { "closed" },
+    }))
+}
+
 fn status(dir: &Path, id: &str, json: bool) -> Result<()> {
     let watchdog = checked_open(dir, id)?;
     let state = watchdog.state();
@@ -421,6 +1194,50 @@ fn status(dir: &Path, id: &str, json: bool) -> Result<()> {
         watchdog.policy().max_continuation_elapsed_secs,
         state.manual_elapsed_granted_secs
     );
+    println!(
+        "  compaction: reason={} success={} aborted={} will-retry={} queue={}/{} retry={} kicks={}",
+        state
+            .native_activity
+            .compaction_reason
+            .as_deref()
+            .unwrap_or("none"),
+        state
+            .native_activity
+            .compaction_succeeded
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unknown".into()),
+        state
+            .native_activity
+            .compaction_aborted
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unknown".into()),
+        state
+            .native_activity
+            .compaction_will_retry
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unknown".into()),
+        state.native_activity.steering_queue_count,
+        state.native_activity.follow_up_queue_count,
+        state
+            .native_activity
+            .retry_state
+            .as_deref()
+            .unwrap_or("none"),
+        state.compaction_kicks.len(),
+    );
+    for kick in state.compaction_kicks.iter().rev().take(4).rev() {
+        println!(
+            "    kick #{} action={} occurrence={} state={:?} entry={} epoch={}->{} reason={}",
+            kick.occurrence_ordinal,
+            kick.action_id,
+            kick.occurrence_id,
+            kick.state,
+            kick.compaction_entry_id,
+            kick.authorized_from_continuation_epoch,
+            kick.to_continuation_epoch,
+            kick.reason_code,
+        );
+    }
     println!(
         "  reason: {}; pending={:?}; exact-route-error={:?}",
         state.reason_code.as_deref().unwrap_or("none"),
@@ -886,6 +1703,38 @@ fn attest_worker_descends_from_current_process(watchdog: &PiWatchdog) -> Result<
         }
         Ok(())
     }
+}
+
+#[cfg(target_os = "linux")]
+fn process_descends_from(mut candidate: u32, ancestor: u32) -> bool {
+    for _ in 0..64 {
+        if candidate == ancestor {
+            return true;
+        }
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{candidate}/stat")) else {
+            return false;
+        };
+        let Some(close) = stat.rfind(')') else {
+            return false;
+        };
+        let Some(parent) = stat[close + 2..]
+            .split_whitespace()
+            .nth(1)
+            .and_then(|value| value.parse::<u32>().ok())
+        else {
+            return false;
+        };
+        if parent == 0 || parent == candidate {
+            return false;
+        }
+        candidate = parent;
+    }
+    false
+}
+
+#[cfg(not(target_os = "linux"))]
+fn process_descends_from(candidate: u32, ancestor: u32) -> bool {
+    candidate == ancestor || unsafe { libc::getppid() as u32 } == ancestor
 }
 
 #[cfg(target_os = "linux")]

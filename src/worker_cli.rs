@@ -4,7 +4,7 @@
 //! either translated to a typed worker operation or refused. There is no
 //! filesystem graph fallback, even when cwd happens to contain a guessed `.wg`.
 
-use crate::cli::{Commands, MsgCommands, PiWatchdogCommands};
+use crate::cli::{Commands, MsgCommands, PiCompactionKickCommands, PiWatchdogCommands};
 use crate::commands;
 use anyhow::{Context, Result};
 use std::io::Read;
@@ -35,7 +35,51 @@ fn request_id(operation: &WorkerOperation, capability: &str) -> String {
             worksgood::worker_control::token_digest(capability)
         );
     }
-    format!("worker:{}", uuid::Uuid::now_v7())
+    match operation {
+        WorkerOperation::PiCompactionKickAuthorize {
+            compaction_entry_id,
+            ..
+        } => format!("pi-kick-authorize:{}", short_digest(compaction_entry_id)),
+        WorkerOperation::PiCompactionKickPermit { action_id } => {
+            format!("pi-kick-permit:{}", short_digest(action_id))
+        }
+        WorkerOperation::PiCompactionKickAck { action_id, .. } => {
+            format!("pi-kick-ack:{}", short_digest(action_id))
+        }
+        WorkerOperation::PiCompactionKickCancel { action_id, reason } => format!(
+            "pi-kick-cancel:{}:{}",
+            short_digest(action_id),
+            short_digest(reason)
+        ),
+        WorkerOperation::PiCompactionKickSettle { action_id } => {
+            format!("pi-kick-settle:{}", short_digest(action_id))
+        }
+        WorkerOperation::PiCompactionKickAbortAck { action_id } => {
+            format!("pi-kick-abort-ack:{}", short_digest(action_id))
+        }
+        WorkerOperation::PiCompactionKickEffectBegin {
+            action_id,
+            tool_call_id,
+        } => format!(
+            "pi-kick-effect-begin:{}:{}",
+            short_digest(action_id),
+            short_digest(tool_call_id)
+        ),
+        WorkerOperation::PiCompactionKickEffectEnd {
+            action_id,
+            tool_call_id,
+        } => format!(
+            "pi-kick-effect-end:{}:{}",
+            short_digest(action_id),
+            short_digest(tool_call_id)
+        ),
+        _ => format!("worker:{}", uuid::Uuid::now_v7()),
+    }
+}
+
+fn short_digest(value: &str) -> String {
+    let digest = blake3::hash(value.as_bytes()).to_hex().to_string();
+    digest[..24].to_string()
 }
 
 fn render_response(
@@ -403,6 +447,110 @@ pub fn maybe_run(command: &Commands, json: bool) -> Result<Option<()>> {
             PiWatchdogCommands::Status { id } => {
                 task_matches(id)?;
                 Some(WorkerOperation::Show { json })
+            }
+            PiWatchdogCommands::CompactionKick { command } => {
+                let operation = match command {
+                    PiCompactionKickCommands::Authorize {
+                        id,
+                        reason,
+                        will_retry,
+                        compaction_entry_id,
+                        compaction_parent_id,
+                        session_id,
+                        session_file,
+                        session_leaf_id,
+                        pid,
+                        provider,
+                        model,
+                        reasoning,
+                        plugin_compat,
+                        quiescent,
+                        host_idle,
+                        queue_empty,
+                        tool_clear,
+                    } => {
+                        task_matches(id)?;
+                        WorkerOperation::PiCompactionKickAuthorize {
+                            reason: reason.clone(),
+                            will_retry: *will_retry,
+                            compaction_entry_id: compaction_entry_id.clone(),
+                            compaction_parent_id: compaction_parent_id.clone(),
+                            session_id: session_id.clone(),
+                            session_file: session_file.clone(),
+                            session_leaf_id: session_leaf_id.clone(),
+                            pid: *pid,
+                            provider: provider.clone(),
+                            model: model.clone(),
+                            reasoning: reasoning.clone(),
+                            plugin_compat: plugin_compat.clone(),
+                            quiescent: *quiescent,
+                            host_idle: *host_idle,
+                            queue_empty: *queue_empty,
+                            tool_clear: *tool_clear,
+                        }
+                    }
+                    PiCompactionKickCommands::Permit { id, action } => {
+                        task_matches(id)?;
+                        WorkerOperation::PiCompactionKickPermit {
+                            action_id: action.clone(),
+                        }
+                    }
+                    PiCompactionKickCommands::Ack {
+                        id,
+                        action,
+                        prompt_version,
+                        prompt_digest,
+                    } => {
+                        task_matches(id)?;
+                        WorkerOperation::PiCompactionKickAck {
+                            action_id: action.clone(),
+                            prompt_version: prompt_version.clone(),
+                            prompt_digest: prompt_digest.clone(),
+                        }
+                    }
+                    PiCompactionKickCommands::Cancel { id, action, reason } => {
+                        task_matches(id)?;
+                        WorkerOperation::PiCompactionKickCancel {
+                            action_id: action.clone(),
+                            reason: reason.clone(),
+                        }
+                    }
+                    PiCompactionKickCommands::Settle { id, action } => {
+                        task_matches(id)?;
+                        WorkerOperation::PiCompactionKickSettle {
+                            action_id: action.clone(),
+                        }
+                    }
+                    PiCompactionKickCommands::AbortAck { id, action } => {
+                        task_matches(id)?;
+                        WorkerOperation::PiCompactionKickAbortAck {
+                            action_id: action.clone(),
+                        }
+                    }
+                    PiCompactionKickCommands::EffectBegin {
+                        id,
+                        action,
+                        tool_call,
+                    } => {
+                        task_matches(id)?;
+                        WorkerOperation::PiCompactionKickEffectBegin {
+                            action_id: action.clone(),
+                            tool_call_id: tool_call.clone(),
+                        }
+                    }
+                    PiCompactionKickCommands::EffectEnd {
+                        id,
+                        action,
+                        tool_call,
+                    } => {
+                        task_matches(id)?;
+                        WorkerOperation::PiCompactionKickEffectEnd {
+                            action_id: action.clone(),
+                            tool_call_id: tool_call.clone(),
+                        }
+                    }
+                };
+                Some(operation)
             }
             _ => anyhow::bail!("worker_control.operator_watchdog_action_refused"),
         },

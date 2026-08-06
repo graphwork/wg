@@ -126,7 +126,7 @@ export default function fixture(pi: ExtensionAPI) {
 		streamSimple(model: Model<Api>, _context: Context, _options?: SimpleStreamOptions) {
 			providerCalls += 1;
 
-			if (scenario === "threshold") {
+			if (scenario === "threshold" || scenario === "threshold-twice") {
 				if (providerCalls === 1) return toolResponse(model);
 				if (providerCalls === 2) {
 					return textResponse(
@@ -134,6 +134,12 @@ export default function fixture(pi: ExtensionAPI) {
 						"Preparation is complete. The required finish-work action has NOT been executed.",
 						1700,
 					);
+				}
+				if (scenario === "threshold-twice" && providerCalls === 3) {
+					return textResponse(model, "FIXTURE_RECOVERY_TURN_1_EXECUTED", 1700);
+				}
+				if (scenario === "threshold-twice") {
+					return textResponse(model, "FIXTURE_RECOVERY_TURN_2_EXECUTED", 200);
 				}
 				return textResponse(model, RECOVERY_MARKER, 200);
 			}

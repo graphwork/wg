@@ -95,6 +95,42 @@ export interface WgRunOptions {
   json?: boolean;
 }
 
+export interface CompactionKickAuthorizeRequest {
+  reason: "threshold";
+  willRetry: false;
+  compactionEntryId: string;
+  compactionParentId: string;
+  sessionId: string;
+  sessionFile: string;
+  sessionLeafId: string;
+  pid: number;
+  provider: string;
+  model: string;
+  reasoning?: string;
+  pluginCompat: string;
+  quiescent: boolean;
+  hostIdle: boolean;
+  queueEmpty: boolean;
+  toolClear: boolean;
+}
+
+export interface CompactionKickAction {
+  actionId: string;
+  occurrenceId?: string;
+  state: string;
+}
+
+export interface CompactionKickPermit extends CompactionKickAction {
+  freshDeliveryGrant: boolean;
+  prompt?: string | null;
+  promptVersion: string;
+  promptDigest: string;
+}
+
+export interface CompactionKickAck extends CompactionKickAction {
+  abort: boolean;
+}
+
 /**
  * Thin client over the `wg` CLI. Every method returns the raw {@link ExecResult}
  * so tools can surface stdout/stderr/exit-code faithfully; helpers that parse
@@ -162,6 +198,119 @@ export class WgBackend {
 
   log(id: string, message: string, opts: WgRunOptions = {}): Promise<ExecResult> {
     return this.run(["log", id, message], opts);
+  }
+
+  // ── authoritative Pi compaction kick (managed task workers only) ────────
+
+  async compactionKickAuthorize(
+    request: CompactionKickAuthorizeRequest,
+    opts: WgRunOptions = {},
+  ): Promise<CompactionKickAction> {
+    const task = this.env.taskId;
+    if (!task) throw new Error("compaction kick requires a managed WG task");
+    const args = [
+      "pi-watchdog", "compaction-kick", "authorize", task,
+      "--reason", request.reason,
+      "--compaction-entry-id", request.compactionEntryId,
+      "--compaction-parent-id", request.compactionParentId,
+      "--session-id", request.sessionId,
+      "--session-file", request.sessionFile,
+      "--session-leaf-id", request.sessionLeafId,
+      "--pid", String(request.pid),
+      "--provider", request.provider,
+      "--model", request.model,
+      "--plugin-compat", request.pluginCompat,
+    ];
+    if (request.reasoning) args.push("--reasoning", request.reasoning);
+    if (request.willRetry) args.push("--will-retry");
+    if (request.quiescent) args.push("--quiescent");
+    if (request.hostIdle) args.push("--host-idle");
+    if (request.queueEmpty) args.push("--queue-empty");
+    if (request.toolClear) args.push("--tool-clear");
+    return this.requiredJson<CompactionKickAction>(args, opts);
+  }
+
+  async compactionKickPermit(
+    actionId: string,
+    opts: WgRunOptions = {},
+  ): Promise<CompactionKickPermit> {
+    return this.requiredJson<CompactionKickPermit>(this.kickArgs("permit", actionId), opts);
+  }
+
+  async compactionKickAck(
+    actionId: string,
+    promptVersion: string,
+    promptDigest: string,
+    opts: WgRunOptions = {},
+  ): Promise<CompactionKickAck> {
+    return this.requiredJson<CompactionKickAck>([
+      ...this.kickArgs("ack", actionId),
+      "--prompt-version", promptVersion,
+      "--prompt-digest", promptDigest,
+    ], opts);
+  }
+
+  async compactionKickCancel(
+    actionId: string,
+    reason: string,
+    opts: WgRunOptions = {},
+  ): Promise<CompactionKickAction> {
+    return this.requiredJson<CompactionKickAction>([
+      ...this.kickArgs("cancel", actionId), "--reason", reason,
+    ], opts);
+  }
+
+  async compactionKickSettle(
+    actionId: string,
+    opts: WgRunOptions = {},
+  ): Promise<CompactionKickAction> {
+    return this.requiredJson<CompactionKickAction>(this.kickArgs("settle", actionId), opts);
+  }
+
+  async compactionKickAbortAck(
+    actionId: string,
+    opts: WgRunOptions = {},
+  ): Promise<CompactionKickAction> {
+    return this.requiredJson<CompactionKickAction>(this.kickArgs("abort-ack", actionId), opts);
+  }
+
+  async compactionKickEffectBegin(
+    actionId: string,
+    toolCallId: string,
+    opts: WgRunOptions = {},
+  ): Promise<CompactionKickAction> {
+    return this.requiredJson<CompactionKickAction>([
+      ...this.kickArgs("effect-begin", actionId), "--tool-call", toolCallId,
+    ], opts);
+  }
+
+  async compactionKickEffectEnd(
+    actionId: string,
+    toolCallId: string,
+    opts: WgRunOptions = {},
+  ): Promise<CompactionKickAction> {
+    return this.requiredJson<CompactionKickAction>([
+      ...this.kickArgs("effect-end", actionId), "--tool-call", toolCallId,
+    ], opts);
+  }
+
+  private kickArgs(verb: string, actionId: string): string[] {
+    const task = this.env.taskId;
+    if (!task) throw new Error("compaction kick requires a managed WG task");
+    return ["pi-watchdog", "compaction-kick", verb, task, "--action", actionId];
+  }
+
+  private async requiredJson<T>(args: string[], opts: WgRunOptions): Promise<T> {
+    const result = await this.run(args, { ...opts, json: true });
+    if (result.code !== 0) {
+      const detail = (result.stderr || result.stdout).split(/\r?\n/).find(Boolean) ?? "refused";
+      throw new Error(`WG compaction-kick broker refused: ${detail}`);
+    }
+    try {
+      return JSON.parse(result.stdout) as T;
+    } catch {
+      throw new Error("WG compaction-kick broker returned invalid JSON");
+    }
   }
 
   // ── messaging verbs ─────────────────────────────────────────────────────

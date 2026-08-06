@@ -5577,6 +5577,13 @@ pub enum PiWatchdogCommands {
         #[arg(long)]
         pid: Option<u32>,
     },
+    /// Capability-only threshold-compaction continuation protocol used by the
+    /// exact embedded Pi task-worker extension.
+    #[command(name = "compaction-kick", hide = true)]
+    CompactionKick {
+        #[command(subcommand)]
+        command: PiCompactionKickCommands,
+    },
     /// Credential-free deterministic adapter used only by the permanent Fake-Pi smoke.
     #[command(name = "fixture-init", hide = true)]
     FixtureInit {
@@ -5601,6 +5608,90 @@ pub enum PiWatchdogCommands {
         id: String,
         #[arg(long)]
         now: i64,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum PiCompactionKickCommands {
+    Authorize {
+        id: String,
+        #[arg(long)]
+        reason: String,
+        #[arg(long)]
+        will_retry: bool,
+        #[arg(long)]
+        compaction_entry_id: String,
+        #[arg(long)]
+        compaction_parent_id: String,
+        #[arg(long)]
+        session_id: String,
+        #[arg(long)]
+        session_file: String,
+        #[arg(long)]
+        session_leaf_id: String,
+        #[arg(long)]
+        pid: u32,
+        #[arg(long)]
+        provider: String,
+        #[arg(long)]
+        model: String,
+        #[arg(long)]
+        reasoning: Option<String>,
+        #[arg(long)]
+        plugin_compat: String,
+        #[arg(long)]
+        quiescent: bool,
+        #[arg(long)]
+        host_idle: bool,
+        #[arg(long)]
+        queue_empty: bool,
+        #[arg(long)]
+        tool_clear: bool,
+    },
+    Permit {
+        id: String,
+        #[arg(long)]
+        action: String,
+    },
+    Ack {
+        id: String,
+        #[arg(long)]
+        action: String,
+        #[arg(long)]
+        prompt_version: String,
+        #[arg(long)]
+        prompt_digest: String,
+    },
+    Cancel {
+        id: String,
+        #[arg(long)]
+        action: String,
+        #[arg(long)]
+        reason: String,
+    },
+    Settle {
+        id: String,
+        #[arg(long)]
+        action: String,
+    },
+    AbortAck {
+        id: String,
+        #[arg(long)]
+        action: String,
+    },
+    EffectBegin {
+        id: String,
+        #[arg(long)]
+        action: String,
+        #[arg(long)]
+        tool_call: String,
+    },
+    EffectEnd {
+        id: String,
+        #[arg(long)]
+        action: String,
+        #[arg(long)]
+        tool_call: String,
     },
 }
 

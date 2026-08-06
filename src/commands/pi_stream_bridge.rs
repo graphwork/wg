@@ -235,7 +235,9 @@ pub fn run(agent_dir: &Path, exit_code: i32, follow_pid: Option<u32>) -> Result<
     Ok(())
 }
 
-fn open_watchdog_for_agent(agent_dir: &Path) -> Option<worksgood::pi_watchdog::PiWatchdog> {
+fn open_watchdog_for_agent(
+    agent_dir: &Path,
+) -> Option<crate::commands::pi_watchdog::LockedWatchdog> {
     let content = std::fs::read_to_string(agent_dir.join("metadata.json")).ok()?;
     let val: serde_json::Value = serde_json::from_str(&content).ok()?;
     let graph_dir = agent_dir.parent()?.parent()?;
@@ -251,40 +253,16 @@ fn open_watchdog_for_agent(agent_dir: &Path) -> Option<worksgood::pi_watchdog::P
         return None;
     }
     let key = worksgood::attempt_runtime::AttemptRuntimeKey::for_attempt(task, attempt);
-    let state_path = worksgood::attempt_runtime::component_for_update(graph_dir, &key, "pi")
-        .ok()?
-        .join("state.json");
-    if !state_path.is_file() {
+    if val.get("attempt_id")?.as_str()? != key.attempt_id {
         return None;
     }
-    let mut watchdog = worksgood::pi_watchdog::PiWatchdog::open(&state_path).ok()?;
-    if watchdog.state().source.task_id != key.task_id
-        || watchdog.state().source.generation != key.generation
-        || watchdog.state().source.attempt_id != key.attempt_id
-        || watchdog.state().source.attempt_fence != key.attempt_fence
-        || watchdog.state().source.worktree_lease_epoch != key.worktree_lease_epoch
-    {
-        return None;
-    }
-    // The native follower is not an independent epoch authority. Refuse all
-    // progress unless lifecycle and watchdog agree on the exact current
-    // process fence/identity; this also performs the one-time schema-v1 repair.
-    crate::commands::pi_watchdog::sync_lifecycle_process_authority(
-        graph_dir,
-        &watchdog.state().source.task_id.clone(),
-        &mut watchdog,
-    )
-    .ok()?;
-    watchdog
-        .reconcile_pending_same_process_prompt(chrono::Utc::now().timestamp())
-        .ok()?;
-    crate::commands::pi_watchdog::sync_lifecycle_continuation_authority(
-        graph_dir,
-        &watchdog.state().source.task_id,
-        &watchdog,
-    )
-    .ok()?;
-    Some(watchdog)
+    drop(graph);
+
+    // Keep the cross-process transaction lock for the caller's complete
+    // ingest/reconcile/persist operation. The live observer otherwise races
+    // the plugin broker's authorize -> permit boundary and can overwrite its
+    // durable kick outbox with a stale projection.
+    crate::commands::pi_watchdog::checked_open(graph_dir, &task_id).ok()
 }
 
 fn read_metadata_model(agent_dir: &Path) -> Option<String> {

@@ -56,6 +56,170 @@ fn fixture(now: i64) -> PiWatchdog {
     .unwrap()
 }
 
+fn verified_compaction(w: &PiWatchdog, entry: &str, parent: &str) -> VerifiedCompactionOccurrence {
+    VerifiedCompactionOccurrence {
+        graph_id: "wggraph:v1:test".into(),
+        compaction_entry_id: entry.into(),
+        compaction_parent_id: parent.into(),
+        compaction_entry_digest: format!("digest-{entry}"),
+        session_id: w.state().session.session_id.clone(),
+        session_file_digest: "session-file-digest".into(),
+        session_leaf_id: entry.into(),
+        process_pid: w.state().process.pid,
+        process_epoch: w.state().process_epoch,
+        process_identity_digest: w.state().process.digest(),
+        provider: w.state().route.provider.clone(),
+        model: w.state().route.model.clone(),
+        reasoning: w.state().route.reasoning.clone(),
+        route_snapshot_digest: w.state().route.digest(),
+        plugin_compat: w.state().route.plugin_digest.clone(),
+        reason: "threshold".into(),
+        will_retry: false,
+        quiescent: true,
+        host_idle: false,
+        queue_empty: true,
+        tool_clear: true,
+    }
+}
+
+#[test]
+fn threshold_compaction_gap_authorizes_permits_and_acks_exactly_once() {
+    let mut w = fixture(0);
+    let input = verified_compaction(&w, "compact-1", "assistant-1");
+    let action = w.authorize_compaction_kick(input.clone(), 1).unwrap();
+    assert_eq!(action.state, PiCompactionKickState::Authorized);
+    assert_eq!(w.state().continuation_epoch, 0);
+
+    let duplicate = w.authorize_compaction_kick(input, 2).unwrap();
+    assert_eq!(duplicate.action_id, action.action_id);
+    assert_eq!(w.state().compaction_kicks.len(), 1);
+
+    let permit = w
+        .permit_compaction_kick(&action.action_id, 1, true, 3)
+        .unwrap();
+    assert!(permit.fresh_delivery_grant);
+    assert_eq!(permit.prompt.as_deref(), Some(COMPACTION_KICK_PROMPT));
+    assert_eq!(w.state().continuation_epoch, 1);
+    assert_eq!(w.state().epochs_used, 1);
+
+    let replay = w
+        .permit_compaction_kick(&action.action_id, 1, true, 4)
+        .unwrap();
+    assert!(!replay.fresh_delivery_grant);
+    assert!(replay.prompt.is_none());
+    assert_eq!(w.state().continuation_epoch, 1);
+    assert_eq!(w.state().epochs_used, 1);
+
+    let ack = w
+        .acknowledge_compaction_kick(&action.action_id, false, 5)
+        .unwrap();
+    assert_eq!(ack.state, PiCompactionKickState::Acknowledged);
+    w.ingest_native_value(&serde_json::json!({"type":"agent_start"}), 6)
+        .unwrap();
+    assert_eq!(
+        w.compaction_kick(&action.action_id).unwrap().state,
+        PiCompactionKickState::Running
+    );
+    // Settlement closes diagnostics but must not manufacture the legacy
+    // session-file prompt or reserve another epoch.
+    assert!(
+        w.ingest_native_value(&serde_json::json!({"type":"agent_settled"}), 7)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(w.state().continuation_epoch, 1);
+    assert_eq!(w.state().prompt_count, 0);
+    assert_eq!(
+        w.compaction_kick(&action.action_id).unwrap().state,
+        PiCompactionKickState::SettledAfterKick
+    );
+}
+
+#[test]
+fn broker_settlement_before_stream_observer_does_not_double_charge() {
+    let mut w = fixture(0);
+    let action = w
+        .authorize_compaction_kick(verified_compaction(&w, "compact-race", "assistant-1"), 1)
+        .unwrap();
+    w.permit_compaction_kick(&action.action_id, 1, true, 2)
+        .unwrap();
+    w.acknowledge_compaction_kick(&action.action_id, false, 3)
+        .unwrap();
+    w.mark_compaction_kick_running(4).unwrap();
+
+    // Pi awaits extension event handlers before the independent file follower
+    // necessarily sees the same agent_settled record.
+    w.settle_compaction_kick(&action.action_id, 5).unwrap();
+    assert!(
+        w.ingest_native_value(&serde_json::json!({"type":"agent_settled"}), 6)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(w.state().continuation_epoch, 1);
+    assert_eq!(w.state().epochs_used, 1);
+    assert_eq!(w.state().prompt_count, 0);
+    assert_eq!(w.state().phase, Phase::Settled);
+}
+
+#[test]
+fn distinct_threshold_compactions_share_finite_epoch_budget_without_attempt_cap() {
+    let mut w = fixture(0);
+    let first = w
+        .authorize_compaction_kick(verified_compaction(&w, "compact-1", "a1"), 1)
+        .unwrap();
+    w.permit_compaction_kick(&first.action_id, 1, true, 2)
+        .unwrap();
+    w.acknowledge_compaction_kick(&first.action_id, false, 3)
+        .unwrap();
+
+    let second = w
+        .authorize_compaction_kick(verified_compaction(&w, "compact-2", "a2"), 4)
+        .unwrap();
+    assert_ne!(first.occurrence_id, second.occurrence_id);
+    assert_ne!(first.action_id, second.action_id);
+    let permit = w
+        .permit_compaction_kick(&second.action_id, 2, true, 5)
+        .unwrap();
+    assert!(permit.fresh_delivery_grant);
+    assert_eq!(w.state().continuation_epoch, 2);
+    assert_eq!(w.state().compaction_kicks.len(), 2);
+}
+
+#[test]
+fn compaction_kick_must_not_trigger_for_manual_overflow_queue_idle_tool_or_mismatch() {
+    let base = fixture(0);
+    let mut cases = Vec::new();
+    let mut manual = verified_compaction(&base, "c1", "a1");
+    manual.reason = "manual".into();
+    cases.push(manual);
+    let mut overflow = verified_compaction(&base, "c2", "a2");
+    overflow.reason = "overflow".into();
+    overflow.will_retry = true;
+    cases.push(overflow);
+    let mut queued = verified_compaction(&base, "c3", "a3");
+    queued.queue_empty = false;
+    cases.push(queued);
+    let mut idle = verified_compaction(&base, "c4", "a4");
+    idle.host_idle = true;
+    cases.push(idle);
+    let mut tool = verified_compaction(&base, "c5", "a5");
+    tool.tool_clear = false;
+    cases.push(tool);
+    let mut route = verified_compaction(&base, "c6", "a6");
+    route.model = "different".into();
+    cases.push(route);
+    let mut process = verified_compaction(&base, "c7", "a7");
+    process.process_epoch = 9;
+    cases.push(process);
+
+    for input in cases {
+        let mut w = fixture(0);
+        assert!(w.authorize_compaction_kick(input, 1).is_err());
+        assert!(w.state().compaction_kicks.is_empty());
+        assert_eq!(w.state().continuation_epoch, 0);
+    }
+}
+
 #[test]
 fn native_live_projection_is_numeric_deduplicated_and_text_free() {
     let mut w = fixture(0);
@@ -861,6 +1025,85 @@ fn lifecycle_kernel_alone_defers_authorized_pi_exit_and_orders_terminal_cas() {
     apply_transition(
         &mut task,
         TransitionRequest::new(
+            TransitionKind::PiCompactionKickAcknowledged {
+                action_id: "kick-a".into(),
+                process_epoch: 2,
+                process_identity_digest: "process-2".into(),
+            },
+            LifecycleActor {
+                kind: ActorKind::ProcessObserver,
+                id: "pi-kick".into(),
+            },
+            "kick_ack",
+            "kick-ack-a",
+        )
+        .expecting(expected),
+    )
+    .unwrap();
+    let expected = FenceExpectation::current(&task);
+    apply_transition(
+        &mut task,
+        TransitionRequest::new(
+            TransitionKind::PiKickEffectLeaseOpened {
+                lease: PiKickEffectLease {
+                    action_id: "kick-a".into(),
+                    tool_call_id: "effect-1".into(),
+                    process_epoch: 2,
+                    process_identity_digest: "process-2".into(),
+                },
+            },
+            LifecycleActor {
+                kind: ActorKind::ProcessObserver,
+                id: "pi-kick".into(),
+            },
+            "effect_begin",
+            "effect-begin-1",
+        )
+        .expecting(expected),
+    )
+    .unwrap();
+    let expected = FenceExpectation::current(&task);
+    let effect_race = apply_transition(
+        &mut task,
+        TransitionRequest::new(
+            TransitionKind::PiTerminalIntent {
+                receipt: receipt.clone(),
+            },
+            LifecycleActor {
+                kind: ActorKind::Worker,
+                id: "worker".into(),
+            },
+            "success_intent",
+            "terminal",
+        )
+        .expecting(expected),
+    )
+    .unwrap_err();
+    assert_eq!(effect_race.code, "effect_in_flight");
+    assert!(task.lifecycle.pi_terminal_reservation.is_none());
+    let expected = FenceExpectation::current(&task);
+    apply_transition(
+        &mut task,
+        TransitionRequest::new(
+            TransitionKind::PiKickEffectLeaseClosed {
+                action_id: "kick-a".into(),
+                tool_call_id: "effect-1".into(),
+                process_epoch: 2,
+            },
+            LifecycleActor {
+                kind: ActorKind::ProcessObserver,
+                id: "pi-kick".into(),
+            },
+            "effect_end",
+            "effect-end-1",
+        )
+        .expecting(expected),
+    )
+    .unwrap();
+    let expected = FenceExpectation::current(&task);
+    apply_transition(
+        &mut task,
+        TransitionRequest::new(
             TransitionKind::PiTerminalIntent { receipt },
             LifecycleActor {
                 kind: ActorKind::Worker,
@@ -872,6 +1115,8 @@ fn lifecycle_kernel_alone_defers_authorized_pi_exit_and_orders_terminal_cas() {
         .expecting(expected),
     )
     .unwrap();
+    assert!(task.lifecycle.pi_kick_active_actions.is_empty());
+    assert!(task.lifecycle.pi_kick_revoked_actions.contains("kick-a"));
     assert_eq!(
         task.status,
         Status::InProgress,

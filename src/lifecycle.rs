@@ -10,7 +10,7 @@
 //! legacy status spellings remain readable, while converted command families
 //! acquire generation/attempt fences and durable actor/reason diagnostics.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -22,7 +22,7 @@ use uuid::Uuid;
 use crate::current_user;
 use crate::graph::{FailureClass, LogEntry, Status, Task, WorkGraph};
 
-pub const LIFECYCLE_SCHEMA_VERSION: u32 = 1;
+pub const LIFECYCLE_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -177,6 +177,14 @@ impl ReopenIntent {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PiKickEffectLease {
+    pub action_id: String,
+    pub tool_call_id: String,
+    pub process_epoch: u32,
+    pub process_identity_digest: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct LifecycleProjection {
     #[serde(default)]
@@ -207,6 +215,14 @@ pub struct LifecycleProjection {
     pub pi_continuation: Option<PiContinuationAuthorization>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pi_terminal_reservation: Option<crate::pi_watchdog::TerminalIntentReceipt>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub pi_kick_active_actions: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub pi_kick_revoked_actions: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub pi_kick_effect_leases: BTreeMap<String, PiKickEffectLease>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub pi_kick_abort_acks: BTreeSet<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reopen_intent: Option<ReopenIntent>,
 }
@@ -350,6 +366,25 @@ pub enum TransitionKind {
         next_continuation_epoch: u32,
         elapsed_charge_secs: u64,
     },
+    PiCompactionKickAcknowledged {
+        action_id: String,
+        process_epoch: u32,
+        process_identity_digest: String,
+    },
+    PiKickEffectLeaseOpened {
+        lease: PiKickEffectLease,
+    },
+    PiKickEffectLeaseClosed {
+        action_id: String,
+        tool_call_id: String,
+        process_epoch: u32,
+    },
+    PiCompactionKickSettled {
+        action_id: String,
+    },
+    PiCompactionKickAbortAcknowledged {
+        action_id: String,
+    },
     /// CAS a genuinely new exact process identity into the process fence.
     /// Continuation prompts must never use this transition.
     PiProcessEpochReplaced {
@@ -398,6 +433,13 @@ impl TransitionKind {
             Self::PiContinuationAuthorized { .. } => "pi-continuation-authorized",
             Self::PiContinuationHeld { .. } => "pi-continuation-held",
             Self::PiContinuationEpochReserved { .. } => "pi-continuation-epoch-reserved",
+            Self::PiCompactionKickAcknowledged { .. } => "pi-compaction-kick-acknowledged",
+            Self::PiKickEffectLeaseOpened { .. } => "pi-kick-effect-lease-opened",
+            Self::PiKickEffectLeaseClosed { .. } => "pi-kick-effect-lease-closed",
+            Self::PiCompactionKickSettled { .. } => "pi-compaction-kick-settled",
+            Self::PiCompactionKickAbortAcknowledged { .. } => {
+                "pi-compaction-kick-abort-acknowledged"
+            }
             Self::PiProcessEpochReplaced { .. } => "pi-process-epoch-replaced",
             Self::PiTerminalIntent { .. } => "pi-terminal-intent",
             Self::PiProcessEpochExited { .. } => "pi-process-epoch-exited",
@@ -492,6 +534,14 @@ pub struct LifecycleEventProjection {
     pub pi_continuation: Option<PiContinuationAuthorization>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pi_terminal_reservation: Option<crate::pi_watchdog::TerminalIntentReceipt>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub pi_kick_active_actions: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub pi_kick_revoked_actions: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub pi_kick_effect_leases: BTreeMap<String, PiKickEffectLease>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub pi_kick_abort_acks: BTreeSet<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reopen_intent: Option<ReopenIntent>,
 }
@@ -510,6 +560,10 @@ impl LifecycleEvent {
         task.lifecycle.pi_continuation_epoch = self.projection.pi_continuation_epoch;
         task.lifecycle.pi_continuation = self.projection.pi_continuation.clone();
         task.lifecycle.pi_terminal_reservation = self.projection.pi_terminal_reservation.clone();
+        task.lifecycle.pi_kick_active_actions = self.projection.pi_kick_active_actions.clone();
+        task.lifecycle.pi_kick_revoked_actions = self.projection.pi_kick_revoked_actions.clone();
+        task.lifecycle.pi_kick_effect_leases = self.projection.pi_kick_effect_leases.clone();
+        task.lifecycle.pi_kick_abort_acks = self.projection.pi_kick_abort_acks.clone();
         task.lifecycle.reopen_intent = self.projection.reopen_intent.clone();
         if self.event_kind == "graph-save-committed" {
             task.completion_disposition = match task.completion_contract {
@@ -803,6 +857,15 @@ impl LifecycleKernel {
             TransitionKind::AttemptParked => {
                 Self::require_actor(&request, &[ActorKind::Worker, ActorKind::Operator])?;
                 Self::require_running_attempt(task, &request)?;
+                if !projection.pi_kick_effect_leases.is_empty() {
+                    return Err(TransitionRejection::new(
+                        "effect_in_flight",
+                        "wait/park cannot be accepted while a kick effect lease is open",
+                    ));
+                }
+                projection
+                    .pi_kick_revoked_actions
+                    .append(&mut projection.pi_kick_active_actions);
                 Self::terminalize_attempt(&mut projection, AttemptDisposition::Parked)?;
                 new_state = Status::Waiting;
             }
@@ -884,6 +947,10 @@ impl LifecycleKernel {
                 projection.pi_continuation_epoch = 0;
                 projection.pi_continuation = None;
                 projection.pi_terminal_reservation = None;
+                projection.pi_kick_active_actions.clear();
+                projection.pi_kick_revoked_actions.clear();
+                projection.pi_kick_effect_leases.clear();
+                projection.pi_kick_abort_acks.clear();
                 new_state = Status::Open;
             }
             TransitionKind::ReopenRequested { intent } => {
@@ -960,6 +1027,10 @@ impl LifecycleKernel {
                 projection.pi_continuation_epoch = 0;
                 projection.pi_continuation = None;
                 projection.pi_terminal_reservation = None;
+                projection.pi_kick_active_actions.clear();
+                projection.pi_kick_revoked_actions.clear();
+                projection.pi_kick_effect_leases.clear();
+                projection.pi_kick_abort_acks.clear();
                 projection.reopen_intent = None;
                 new_state = Status::Open;
             }
@@ -1051,6 +1122,10 @@ impl LifecycleKernel {
                 projection.pi_continuation_epoch = 0;
                 projection.pi_continuation = Some(authorization.clone());
                 projection.pi_terminal_reservation = None;
+                projection.pi_kick_active_actions.clear();
+                projection.pi_kick_revoked_actions.clear();
+                projection.pi_kick_effect_leases.clear();
+                projection.pi_kick_abort_acks.clear();
             }
             TransitionKind::PiContinuationHeld { reason } => {
                 Self::require_actor(
@@ -1145,6 +1220,104 @@ impl LifecycleKernel {
                     .saturating_add(*elapsed_charge_secs);
                 projection.pi_continuation_epoch = *next_continuation_epoch;
             }
+            TransitionKind::PiCompactionKickAcknowledged {
+                action_id,
+                process_epoch,
+                process_identity_digest,
+            } => {
+                Self::require_actor(&request, &[ActorKind::ProcessObserver])?;
+                Self::require_running_attempt(task, &request)?;
+                if action_id.trim().is_empty()
+                    || projection.pi_process_epoch != *process_epoch
+                    || (!projection.pi_process_identity_digest.is_empty()
+                        && projection.pi_process_identity_digest != *process_identity_digest)
+                {
+                    return Err(TransitionRejection::new(
+                        "compaction_kick_ack_mismatch",
+                        "kick acknowledgement is not bound to the exact process",
+                    ));
+                }
+                if projection.pi_terminal_reservation.is_some() {
+                    projection.pi_kick_revoked_actions.insert(action_id.clone());
+                } else {
+                    projection.pi_kick_active_actions.insert(action_id.clone());
+                }
+            }
+            TransitionKind::PiKickEffectLeaseOpened { lease } => {
+                Self::require_actor(&request, &[ActorKind::ProcessObserver])?;
+                Self::require_running_attempt(task, &request)?;
+                if projection.pi_terminal_reservation.is_some()
+                    || projection
+                        .pi_kick_revoked_actions
+                        .contains(&lease.action_id)
+                    || !projection.pi_kick_active_actions.contains(&lease.action_id)
+                {
+                    return Err(TransitionRejection::new(
+                        "kick_action_revoked",
+                        "terminal/revocation won before kick effect begin",
+                    ));
+                }
+                if lease.tool_call_id.trim().is_empty()
+                    || lease.process_epoch != projection.pi_process_epoch
+                    || (!projection.pi_process_identity_digest.is_empty()
+                        && projection.pi_process_identity_digest != lease.process_identity_digest)
+                {
+                    return Err(TransitionRejection::new(
+                        "kick_effect_mismatch",
+                        "effect lease is not bound to the exact action/tool/process",
+                    ));
+                }
+                if let Some(existing) = projection.pi_kick_effect_leases.get(&lease.tool_call_id) {
+                    if existing != lease {
+                        return Err(TransitionRejection::new(
+                            "kick_effect_conflict",
+                            "tool call already has a different effect lease",
+                        ));
+                    }
+                } else {
+                    projection
+                        .pi_kick_effect_leases
+                        .insert(lease.tool_call_id.clone(), lease.clone());
+                }
+            }
+            TransitionKind::PiKickEffectLeaseClosed {
+                action_id,
+                tool_call_id,
+                process_epoch,
+            } => {
+                Self::require_actor(&request, &[ActorKind::ProcessObserver])?;
+                Self::require_running_attempt(task, &request)?;
+                let lease = projection
+                    .pi_kick_effect_leases
+                    .get(tool_call_id)
+                    .ok_or_else(|| {
+                        TransitionRejection::new(
+                            "kick_effect_missing",
+                            "no exact kick effect lease exists",
+                        )
+                    })?;
+                if lease.action_id != *action_id || lease.process_epoch != *process_epoch {
+                    return Err(TransitionRejection::new(
+                        "kick_effect_mismatch",
+                        "effect end does not match its action/tool/process lease",
+                    ));
+                }
+                projection.pi_kick_effect_leases.remove(tool_call_id);
+            }
+            TransitionKind::PiCompactionKickSettled { action_id } => {
+                Self::require_actor(&request, &[ActorKind::ProcessObserver])?;
+                projection.pi_kick_active_actions.remove(action_id);
+            }
+            TransitionKind::PiCompactionKickAbortAcknowledged { action_id } => {
+                Self::require_actor(&request, &[ActorKind::ProcessObserver])?;
+                if !projection.pi_kick_revoked_actions.contains(action_id) {
+                    return Err(TransitionRejection::new(
+                        "kick_abort_not_requested",
+                        "abort acknowledgement requires a revoked kick action",
+                    ));
+                }
+                projection.pi_kick_abort_acks.insert(action_id.clone());
+            }
             TransitionKind::PiProcessEpochReplaced {
                 expected_process_epoch,
                 expected_process_identity_digest,
@@ -1209,7 +1382,16 @@ impl LifecycleKernel {
                         "first Pi terminal receipt already won",
                     ));
                 }
+                if !projection.pi_kick_effect_leases.is_empty() {
+                    return Err(TransitionRejection::new(
+                        "effect_in_flight",
+                        "terminal intent cannot be accepted while a kick effect lease is open",
+                    ));
+                }
                 projection.pi_terminal_reservation = Some(receipt.clone());
+                projection
+                    .pi_kick_revoked_actions
+                    .append(&mut projection.pi_kick_active_actions);
                 if let Some(authorization) = projection.pi_continuation.as_mut() {
                     authorization.state = PiAuthorizationState::Consumed;
                 }
@@ -1238,12 +1420,13 @@ impl LifecycleKernel {
                         "exit belongs to an old Pi process authority",
                     ));
                 }
+                let exit_effect_safe = *effect_safe && projection.pi_kick_effect_leases.is_empty();
                 if projection.pi_terminal_reservation.is_some() {
                     // A terminal tool won the first-terminal CAS. Exit supplies
                     // exact reap evidence only; the candidate finalizer owns
                     // rescue-before-disposition and must not be raced by a
                     // contradictory generic RuntimeExit classification.
-                    if !*exact_reap_proof || !*effect_safe {
+                    if !*exact_reap_proof || !exit_effect_safe {
                         if let Some(a) = projection.pi_continuation.as_mut() {
                             a.state = PiAuthorizationState::HeldOperatorRequired;
                         }
@@ -1257,7 +1440,7 @@ impl LifecycleKernel {
                         )
                     });
                     if continuation_valid {
-                        if !*exact_reap_proof || !*effect_safe {
+                        if !*exact_reap_proof || !exit_effect_safe {
                             if let Some(a) = projection.pi_continuation.as_mut() {
                                 a.state = PiAuthorizationState::HeldOperatorRequired;
                             }
@@ -1333,6 +1516,10 @@ impl LifecycleKernel {
                 pi_continuation_epoch: projection.pi_continuation_epoch,
                 pi_continuation: projection.pi_continuation,
                 pi_terminal_reservation: projection.pi_terminal_reservation,
+                pi_kick_active_actions: projection.pi_kick_active_actions,
+                pi_kick_revoked_actions: projection.pi_kick_revoked_actions,
+                pi_kick_effect_leases: projection.pi_kick_effect_leases,
+                pi_kick_abort_acks: projection.pi_kick_abort_acks,
                 reopen_intent: projection.reopen_intent,
             },
         };

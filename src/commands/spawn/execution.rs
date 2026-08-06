@@ -1682,6 +1682,25 @@ pub(crate) fn spawn_agent_inner_authorized(
     }
     cmd.env("WG_AGENT_ID", &temp_agent_id);
     cmd.env("WG_EXECUTOR_TYPE", &settings.executor_type);
+    if settings.executor_type == "pi" {
+        cmd.env(
+            "WG_PI_PLUGIN_COMPAT_VERSION",
+            worksgood::pi_plugin::WG_PI_PLUGIN_COMPAT_VERSION,
+        );
+        cmd.env("WG_PI_TASK_WORKER", "1");
+        cmd.env(
+            "WG_PI_COMPACTION_KICK_HOST_CONTRACT",
+            "pi-0.83-session-compact-sync-v1",
+        );
+        cmd.env(
+            "WG_PI_COMPACTION_KICK",
+            if std::env::var("WG_PI_COMPACTION_KICK").as_deref() == Ok("0") {
+                "0"
+            } else {
+                "1"
+            },
+        );
+    }
     // Time budget: inject timeout and spawn epoch for graceful completion
     if let Some(secs) = effective_timeout_secs {
         cmd.env("WG_TASK_TIMEOUT_SECS", secs.to_string());
@@ -1850,7 +1869,7 @@ pub(crate) fn spawn_agent_inner_authorized(
         if !endpoint.exists() {
             anyhow::bail!("worker_control.endpoint_missing: {}", endpoint.display());
         }
-        let (worker_token, worker_binding) =
+        let (worker_token, mut worker_binding) =
             worksgood::worker_control::mint_attempt_capability_for_worktree(
                 dir,
                 task_id,
@@ -1864,6 +1883,13 @@ pub(crate) fn spawn_agent_inner_authorized(
                     .map(|worktree| worktree.path.as_path())
                     .or_else(|| nongit_workspace.as_deref()),
             )?;
+        if settings.executor_type == "pi" {
+            worker_binding = worksgood::worker_control::grant_capability_operation(
+                dir,
+                &worker_token,
+                worksgood::worker_control::WorkerOperationKind::PiCompactionKick,
+            )?;
+        }
         worker_capability_digest = Some(worker_binding.token_sha256.clone());
         cmd.env("WG_WORKER_IPC", &endpoint);
         cmd.env("WG_WORKER_CAPABILITY", &worker_token);
@@ -2739,6 +2765,18 @@ fn external_prompt_command(
         resolved_reasoning,
     );
     if settings.executor_type == "pi" {
+        // Task workers use the exact plugin bytes embedded in this wg binary.
+        // Explicit fixture/provider extensions from executor args remain
+        // earlier; pi-worksgood is loaded last so its queue/effect handlers are
+        // the final host-serialized guard. Ambient discovery is disabled.
+        let plugin =
+            worksgood::pi_plugin::ensure_pi_plugin(worksgood::pi_plugin::EnsureMode::Hermetic)
+                .context("ensure embedded pi-worksgood for task worker")?;
+        cmd_parts.push("-e".into());
+        cmd_parts.push(shell_escape(&plugin.dist_entry.to_string_lossy()));
+        if !args_have_flag(&settings.args, &["--no-extensions", "-ne"]) {
+            cmd_parts.push("-ne".into());
+        }
         let (session_id, session_dir, session_file, header_json) =
             if let Some(exact_id) = resume_session_id {
                 let (session_dir, session_file, header_json) =

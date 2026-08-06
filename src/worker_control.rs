@@ -74,6 +74,23 @@ pub struct AttemptCapabilityBinding {
 #[serde(rename_all = "snake_case")]
 pub enum WorkerOperationKind {
     Show,
+    // Preserve coordination capabilities minted by a newer daemon while an
+    // installed worker binary is rolling across versions. This worker does
+    // not grant or execute these kinds, but must round-trip the shared
+    // registry rather than making unrelated active workers unreadable.
+    TaskShow,
+    TaskEdit,
+    TaskAdd,
+    TaskPublish,
+    TaskContract,
+    TaskAssign,
+    DependencyAdd,
+    DependencyRemove,
+    GraphContext,
+    GraphList,
+    GraphReady,
+    GraphStatus,
+    GraphBlocked,
     Context,
     MessageRead,
     MessagePoll,
@@ -93,6 +110,10 @@ pub enum WorkerOperationKind {
     FailHandoff,
     FinishHandoff,
     PiWatchdog,
+    /// Dedicated capability for the embedded hermetic Pi task-worker
+    /// threshold-compaction continuation protocol. Never present on legacy or
+    /// non-Pi capabilities.
+    PiCompactionKick,
     Telemetry,
     Heartbeat,
 }
@@ -134,6 +155,7 @@ impl WorkerOperationKind {
             Self::ArtifactList,
             Self::DependencyArtifactRead,
             Self::PiWatchdog,
+            Self::PiCompactionKick,
             Self::Telemetry,
             Self::Heartbeat,
         ]
@@ -223,6 +245,50 @@ pub enum WorkerOperation {
         exit_code: i32,
         pid: Option<u32>,
     },
+    PiCompactionKickAuthorize {
+        reason: String,
+        will_retry: bool,
+        compaction_entry_id: String,
+        compaction_parent_id: String,
+        session_id: String,
+        session_file: String,
+        session_leaf_id: String,
+        pid: u32,
+        provider: String,
+        model: String,
+        reasoning: Option<String>,
+        plugin_compat: String,
+        quiescent: bool,
+        host_idle: bool,
+        queue_empty: bool,
+        tool_clear: bool,
+    },
+    PiCompactionKickPermit {
+        action_id: String,
+    },
+    PiCompactionKickAck {
+        action_id: String,
+        prompt_version: String,
+        prompt_digest: String,
+    },
+    PiCompactionKickCancel {
+        action_id: String,
+        reason: String,
+    },
+    PiCompactionKickSettle {
+        action_id: String,
+    },
+    PiCompactionKickAbortAck {
+        action_id: String,
+    },
+    PiCompactionKickEffectBegin {
+        action_id: String,
+        tool_call_id: String,
+    },
+    PiCompactionKickEffectEnd {
+        action_id: String,
+        tool_call_id: String,
+    },
     RecordTelemetry {
         raw_stream: Option<String>,
         exit_code: i32,
@@ -257,6 +323,14 @@ impl WorkerOperation {
             Self::PiWatchdogBootstrap { .. } | Self::PiWatchdogProcessExit { .. } => {
                 WorkerOperationKind::PiWatchdog
             }
+            Self::PiCompactionKickAuthorize { .. }
+            | Self::PiCompactionKickPermit { .. }
+            | Self::PiCompactionKickAck { .. }
+            | Self::PiCompactionKickCancel { .. }
+            | Self::PiCompactionKickSettle { .. }
+            | Self::PiCompactionKickAbortAck { .. }
+            | Self::PiCompactionKickEffectBegin { .. }
+            | Self::PiCompactionKickEffectEnd { .. } => WorkerOperationKind::PiCompactionKick,
             Self::RecordTelemetry { .. } => WorkerOperationKind::Telemetry,
             Self::Heartbeat => WorkerOperationKind::Heartbeat,
         }
@@ -564,6 +638,31 @@ pub fn mint_attempt_capability_for_worktree(
     registry.capabilities.insert(digest, binding.clone());
     save_registry(dir, &registry)?;
     Ok((token, binding))
+}
+
+/// Add one operation to a newly minted, still-gated capability. Spawn calls
+/// this only for a Pi task worker before publishing its launch gate.
+pub fn grant_capability_operation(
+    dir: &Path,
+    token: &str,
+    operation: WorkerOperationKind,
+) -> Result<AttemptCapabilityBinding> {
+    let digest = token_digest(token);
+    let mut registry = load_registry(dir)?;
+    let binding = registry
+        .capabilities
+        .get_mut(&digest)
+        .ok_or_else(|| anyhow::anyhow!("worker_control.capability_unknown"))?;
+    if binding.revoked_at.is_some() {
+        bail!("worker_control.capability_revoked");
+    }
+    if !binding.allowed_operations.contains(&operation) {
+        binding.allowed_operations.push(operation);
+        binding.allowed_operations.sort();
+    }
+    let result = binding.clone();
+    save_registry(dir, &registry)?;
+    Ok(result)
 }
 
 pub fn revoke_capability(dir: &Path, token_sha256: &str) -> Result<()> {

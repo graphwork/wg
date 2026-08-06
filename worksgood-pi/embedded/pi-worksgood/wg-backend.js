@@ -109,6 +109,88 @@ export class WgBackend {
     log(id, message, opts = {}) {
         return this.run(["log", id, message], opts);
     }
+    // ── authoritative Pi compaction kick (managed task workers only) ────────
+    async compactionKickAuthorize(request, opts = {}) {
+        const task = this.env.taskId;
+        if (!task)
+            throw new Error("compaction kick requires a managed WG task");
+        const args = [
+            "pi-watchdog", "compaction-kick", "authorize", task,
+            "--reason", request.reason,
+            "--compaction-entry-id", request.compactionEntryId,
+            "--compaction-parent-id", request.compactionParentId,
+            "--session-id", request.sessionId,
+            "--session-file", request.sessionFile,
+            "--session-leaf-id", request.sessionLeafId,
+            "--pid", String(request.pid),
+            "--provider", request.provider,
+            "--model", request.model,
+            "--plugin-compat", request.pluginCompat,
+        ];
+        if (request.reasoning)
+            args.push("--reasoning", request.reasoning);
+        if (request.willRetry)
+            args.push("--will-retry");
+        if (request.quiescent)
+            args.push("--quiescent");
+        if (request.hostIdle)
+            args.push("--host-idle");
+        if (request.queueEmpty)
+            args.push("--queue-empty");
+        if (request.toolClear)
+            args.push("--tool-clear");
+        return this.requiredJson(args, opts);
+    }
+    async compactionKickPermit(actionId, opts = {}) {
+        return this.requiredJson(this.kickArgs("permit", actionId), opts);
+    }
+    async compactionKickAck(actionId, promptVersion, promptDigest, opts = {}) {
+        return this.requiredJson([
+            ...this.kickArgs("ack", actionId),
+            "--prompt-version", promptVersion,
+            "--prompt-digest", promptDigest,
+        ], opts);
+    }
+    async compactionKickCancel(actionId, reason, opts = {}) {
+        return this.requiredJson([
+            ...this.kickArgs("cancel", actionId), "--reason", reason,
+        ], opts);
+    }
+    async compactionKickSettle(actionId, opts = {}) {
+        return this.requiredJson(this.kickArgs("settle", actionId), opts);
+    }
+    async compactionKickAbortAck(actionId, opts = {}) {
+        return this.requiredJson(this.kickArgs("abort-ack", actionId), opts);
+    }
+    async compactionKickEffectBegin(actionId, toolCallId, opts = {}) {
+        return this.requiredJson([
+            ...this.kickArgs("effect-begin", actionId), "--tool-call", toolCallId,
+        ], opts);
+    }
+    async compactionKickEffectEnd(actionId, toolCallId, opts = {}) {
+        return this.requiredJson([
+            ...this.kickArgs("effect-end", actionId), "--tool-call", toolCallId,
+        ], opts);
+    }
+    kickArgs(verb, actionId) {
+        const task = this.env.taskId;
+        if (!task)
+            throw new Error("compaction kick requires a managed WG task");
+        return ["pi-watchdog", "compaction-kick", verb, task, "--action", actionId];
+    }
+    async requiredJson(args, opts) {
+        const result = await this.run(args, { ...opts, json: true });
+        if (result.code !== 0) {
+            const detail = (result.stderr || result.stdout).split(/\r?\n/).find(Boolean) ?? "refused";
+            throw new Error(`WG compaction-kick broker refused: ${detail}`);
+        }
+        try {
+            return JSON.parse(result.stdout);
+        }
+        catch {
+            throw new Error("WG compaction-kick broker returned invalid JSON");
+        }
+    }
     // ── messaging verbs ─────────────────────────────────────────────────────
     msgSend(target, message, opts = {}) {
         return this.run(["msg", "send", target, message], opts);

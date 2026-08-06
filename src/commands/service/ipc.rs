@@ -482,12 +482,23 @@ pub(crate) fn handle_chat_control_connection(
 }
 
 fn worker_response_from_stored(
+    operation: &WorkerOperation,
     response: worksgood::worker_control::StoredWorkerResponse,
 ) -> IpcResponse {
+    let mut data = response.data;
+    // A completed transport replay is never a fresh Pi delivery grant. The
+    // first response may have crossed the process boundary, so replay exposes
+    // status only and strips the stock prompt authority.
+    if matches!(operation, WorkerOperation::PiCompactionKickPermit { .. })
+        && let Some(value) = data.as_mut()
+    {
+        value["freshDeliveryGrant"] = serde_json::Value::Bool(false);
+        value["prompt"] = serde_json::Value::Null;
+    }
     IpcResponse {
         ok: response.ok,
         error: response.error,
-        data: response.data,
+        data,
     }
 }
 
@@ -499,6 +510,52 @@ fn stored_worker_response(
         error: response.error.clone(),
         data: response.data.clone(),
     }
+}
+
+fn refresh_replayed_compaction_ack(
+    dir: &Path,
+    request: &WorkerRequestEnvelope,
+) -> Result<Option<IpcResponse>> {
+    let WorkerOperation::PiCompactionKickAck {
+        action_id,
+        prompt_version,
+        prompt_digest,
+    } = &request.operation
+    else {
+        return Ok(None);
+    };
+    let binding = worksgood::worker_control::lookup_capability(dir, &request.capability)?;
+    let data = crate::commands::pi_watchdog::compaction_kick_ack(
+        dir,
+        &binding.task_id,
+        action_id,
+        prompt_version,
+        prompt_digest,
+    )?;
+    Ok(Some(IpcResponse::success(data)))
+}
+
+fn replay_pending_compaction_permit(
+    dir: &Path,
+    request: &WorkerRequestEnvelope,
+) -> Result<Option<IpcResponse>> {
+    let WorkerOperation::PiCompactionKickPermit { action_id } = &request.operation else {
+        return Ok(None);
+    };
+    let binding = worksgood::worker_control::lookup_capability(dir, &request.capability)?;
+    let data = crate::commands::pi_watchdog::compaction_kick_permit(
+        dir,
+        &binding.task_id,
+        action_id,
+        false,
+    )?;
+    let response = IpcResponse::success(data);
+    worksgood::worker_control::complete_request(
+        dir,
+        &request.request_id,
+        stored_worker_response(&response),
+    )?;
+    Ok(Some(response))
 }
 
 fn replay_pending_completion(
@@ -917,6 +974,106 @@ fn execute_worker_operation(
                 )?;
                 Ok(serde_json::json!({"watchdog": "process_exit"}))
             }
+            WorkerOperation::PiCompactionKickAuthorize {
+                reason,
+                will_retry,
+                compaction_entry_id,
+                compaction_parent_id,
+                session_id,
+                session_file,
+                session_leaf_id,
+                pid,
+                provider,
+                model,
+                reasoning,
+                plugin_compat,
+                quiescent,
+                host_idle,
+                queue_empty,
+                tool_clear,
+            } => crate::commands::pi_watchdog::compaction_kick_authorize(
+                dir,
+                binding,
+                crate::commands::pi_watchdog::CompactionKickAuthorizeArgs {
+                    reason,
+                    will_retry,
+                    compaction_entry_id,
+                    compaction_parent_id,
+                    session_id,
+                    session_file,
+                    session_leaf_id,
+                    pid,
+                    provider,
+                    model,
+                    reasoning,
+                    plugin_compat,
+                    quiescent,
+                    host_idle,
+                    queue_empty,
+                    tool_clear,
+                },
+            ),
+            WorkerOperation::PiCompactionKickPermit { action_id } => {
+                crate::commands::pi_watchdog::compaction_kick_permit(
+                    dir,
+                    &binding.task_id,
+                    &action_id,
+                    true,
+                )
+            }
+            WorkerOperation::PiCompactionKickAck {
+                action_id,
+                prompt_version,
+                prompt_digest,
+            } => crate::commands::pi_watchdog::compaction_kick_ack(
+                dir,
+                &binding.task_id,
+                &action_id,
+                &prompt_version,
+                &prompt_digest,
+            ),
+            WorkerOperation::PiCompactionKickCancel { action_id, reason } => {
+                crate::commands::pi_watchdog::compaction_kick_cancel(
+                    dir,
+                    &binding.task_id,
+                    &action_id,
+                    &reason,
+                )
+            }
+            WorkerOperation::PiCompactionKickSettle { action_id } => {
+                crate::commands::pi_watchdog::compaction_kick_settle(
+                    dir,
+                    &binding.task_id,
+                    &action_id,
+                )
+            }
+            WorkerOperation::PiCompactionKickAbortAck { action_id } => {
+                crate::commands::pi_watchdog::compaction_kick_abort_ack(
+                    dir,
+                    &binding.task_id,
+                    &action_id,
+                )
+            }
+            WorkerOperation::PiCompactionKickEffectBegin {
+                action_id,
+                tool_call_id,
+            } => crate::commands::pi_watchdog::compaction_kick_effect(
+                dir,
+                &binding.task_id,
+                &action_id,
+                &tool_call_id,
+                true,
+            ),
+            WorkerOperation::PiCompactionKickEffectEnd {
+                action_id,
+                tool_call_id,
+            } => crate::commands::pi_watchdog::compaction_kick_effect(
+                dir,
+                &binding.task_id,
+                &action_id,
+                &tool_call_id,
+                false,
+            ),
             WorkerOperation::Heartbeat => {
                 let response = handle_heartbeat(dir, &binding.agent_id);
                 if !response.ok {
@@ -985,6 +1142,9 @@ fn handle_worker_request(
         &request.operation,
     ) {
         Ok(Some(worksgood::worker_control::BeginRequest::Completed(response))) => {
+            if let Ok(Some(current)) = refresh_replayed_compaction_ack(dir, &request) {
+                return current;
+            }
             let task_id = worksgood::worker_control::lookup_capability(dir, &request.capability)
                 .ok()
                 .map(|binding| binding.task_id);
@@ -996,9 +1156,20 @@ fn handle_worker_request(
                 "completed response replayed",
                 logger,
             );
-            return worker_response_from_stored(response);
+            return worker_response_from_stored(&request.operation, response);
         }
         Ok(Some(worksgood::worker_control::BeginRequest::Pending)) => {
+            if let Ok(Some(response)) = replay_pending_compaction_permit(dir, &request) {
+                audit_worker_request(
+                    dir,
+                    &request,
+                    None,
+                    "replayed",
+                    "pending compaction permit reconciled without fresh delivery authority",
+                    logger,
+                );
+                return response;
+            }
             if let Ok(Some(response)) = replay_pending_completion(dir, &request) {
                 audit_worker_request(
                     dir,
@@ -1050,6 +1221,9 @@ fn handle_worker_request(
     };
     match begin {
         worksgood::worker_control::BeginRequest::Completed(response) => {
+            if let Ok(Some(current)) = refresh_replayed_compaction_ack(dir, &request) {
+                return current;
+            }
             audit_worker_request(
                 dir,
                 &request,
@@ -1058,9 +1232,20 @@ fn handle_worker_request(
                 "completed response replayed",
                 logger,
             );
-            return worker_response_from_stored(response);
+            return worker_response_from_stored(&request.operation, response);
         }
         worksgood::worker_control::BeginRequest::Pending => {
+            if let Ok(Some(response)) = replay_pending_compaction_permit(dir, &request) {
+                audit_worker_request(
+                    dir,
+                    &request,
+                    Some(&binding.task_id),
+                    "replayed",
+                    "pending compaction permit reconciled without fresh delivery authority",
+                    logger,
+                );
+                return response;
+            }
             if let Ok(Some(response)) = replay_pending_completion(dir, &request) {
                 audit_worker_request(
                     dir,
