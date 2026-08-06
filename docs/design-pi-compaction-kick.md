@@ -82,10 +82,15 @@ The implementation MUST preserve these invariants:
    unresolved iff its exact lifecycle attempt remains running and no accepted
    `wg_done`, `wg_fail`, `wg_wait`/park, cancellation, abort, or other first
    terminal receipt exists. Neither assistant text nor the compaction summary is
-   classified. “I am done” is not a WG receipt. A normal final answer is a
-   must-not-trigger case when it has its accepted terminal receipt (or belongs
-   to a non-WG session); a managed worker that emits final prose but omits its
-   required WG receipt is intentionally still unresolved.
+   classified. “I am done” is not a WG receipt. **Normal final answer** has a
+   protocol definition, not a prose definition: either (a) Pi follows the
+   ordinary no-compaction control trace `agent_end(willRetry=false) ->
+   agent_settled`, so no qualifying `session_compact` occurrence exists, or (b)
+   a managed answer has its accepted terminal/park receipt before permit. Both
+   are must-not-trigger cases. A final-sounding managed message followed by an
+   actual qualifying threshold compaction but lacking the required WG receipt is
+   not the normal control trace and remains lifecycle-unresolved. Suppressing it
+   would require the forbidden prose heuristic and would reproduce #6424.
 2. **Exactly once per durable compaction occurrence, at most one send
    invocation per action.** Every distinct qualifying persisted threshold-
    compaction entry gets exactly one durable occurrence/action record and, on
@@ -460,7 +465,7 @@ loudly. It cannot authorize a retry.
 
 | Must not over-trigger | Explicit rule |
 | --- | --- |
-| Normal final answer | Accepted `wg_done`/success terminal receipt wins. Prose is ignored. A final answer in an unmanaged Pi session has no capability and no handler registration. |
+| Normal final answer | Exact no-compaction control trace (`agent_end(willRetry=false) -> agent_settled`) creates no occurrence/action at all. If threshold compaction did occur, an accepted terminal/park receipt wins before permit. Prose is ignored. An unmanaged final has no capability/handler. “Final-sounding + threshold occurrence + no WG receipt” is explicitly not this control case because no receipt-safe classifier can call it complete |
 | Manual compact | `event.reason != "threshold"`; ignore even when successful and idle |
 | Overflow | `willRetry == true` (and/or reason `overflow`); Pi already owns its one retry |
 | Failed compaction | No successful `session_compact` entry; `compaction_end.result` absent/error |
@@ -485,6 +490,7 @@ The table uses `A` = durable `Authorized`, `P` = lifecycle CAS committed and
 
 | Crash/race point | Durable evidence after recovery | Replay behavior | Outcome |
 | --- | --- | --- | --- |
+| Normal final-answer control: `agent_end(willRetry=false) -> agent_settled` with no `session_compact` | No occurrence/action | Settlement alone never authorizes | No kick, regardless of final prose bytes |
 | Before `session_compact` / during `compaction_start` | No action; optional bounded start diagnostic | Do not infer from start | Process exit/convergence or Pi's normal behavior |
 | Compaction fails/aborts before saved entry | No action | Replayed end remains diagnostic | No kick |
 | Saved entry, crash before `A` | Session may contain compaction; no live authorization record | Do **not** backfill from session | No kick; process-exit convergence |
@@ -825,7 +831,12 @@ The installed-flow fixture plus integration/plugin tests must cover:
 - daemon crash before/after authorization, graph permit CAS, watchdog permit
   persistence/reply, send, and ack;
 - plugin reload/session scan (ack only, never resend/backfill);
-- normal final response with an accepted WG terminal receipt;
+- normal managed final-answer control trace with no compaction (zero action even
+  without classifying its prose), plus a threshold-compaction trace whose final
+  answer has an accepted WG terminal receipt before permit (zero kick);
+- the same final-sounding bytes followed by a qualifying threshold compaction
+  but no WG receipt (one kick), proving prose cannot silently weaken receipt
+  authority;
 - a non-WG human Pi session in the same checkout/global-plugin environment.
 
 ### D. Repository gates
@@ -853,9 +864,11 @@ queued-follow-up controls must stay green.
 ## 14. Acceptance summary
 
 This design addresses #6424 without teaching WG to read intent from model
-prose. The only qualifying situation is a live, successful, non-retrying
-threshold `session_compact` in an exact capability-bound task attempt whose WG
-lifecycle is still unresolved. The lifecycle kernel grants one finite permit
+prose. An ordinary final-answer trace with no threshold compaction creates no
+action; a protocol-complete final has a terminal receipt and suppresses permit.
+The only qualifying situation is a live, successful, non-retrying threshold
+`session_compact` in an exact capability-bound task attempt whose WG lifecycle
+is still unresolved. The lifecycle kernel grants one finite permit
 per distinct qualifying compaction occurrence; the embedded plugin uses Pi's
 existing in-process queue before JSON settlement inside a proven same-stack
 queue-read/append critical section; a matching custom message event acknowledges
