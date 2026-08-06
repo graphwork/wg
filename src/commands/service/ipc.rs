@@ -24,6 +24,7 @@ use crate::commands::graph_path;
 
 const MAX_PI_TERMINAL_WATCH_SEQUENCE: u32 = 64;
 const MAX_CONCURRENT_PI_TERMINAL_WATCHES: usize = 32;
+const MAX_TRACKED_PI_TERMINAL_WATCH_SEQUENCES: usize = 256;
 
 #[derive(Default)]
 struct PiTerminalWatchState {
@@ -37,6 +38,13 @@ struct PiTerminalWatchState {
 fn pi_terminal_watch_state() -> &'static Mutex<PiTerminalWatchState> {
     static STATE: OnceLock<Mutex<PiTerminalWatchState>> = OnceLock::new();
     STATE.get_or_init(|| Mutex::new(PiTerminalWatchState::default()))
+}
+
+fn forget_pi_terminal_watch(key: &str) {
+    if let Ok(mut state) = pi_terminal_watch_state().lock() {
+        state.active.remove(key);
+        state.consumed.remove(key);
+    }
 }
 
 /// Process-local lease for the only detached worker-control operation.
@@ -88,6 +96,11 @@ fn acquire_pi_terminal_watch_lease(
     }
     if state.active.len() >= MAX_CONCURRENT_PI_TERMINAL_WATCHES {
         anyhow::bail!("compaction_kick.terminal_watch_capacity_exhausted");
+    }
+    if !state.consumed.contains_key(&key)
+        && state.consumed.len() >= MAX_TRACKED_PI_TERMINAL_WATCH_SEQUENCES
+    {
+        anyhow::bail!("compaction_kick.terminal_watch_tracking_capacity_exhausted");
     }
     if let Some(last) = state.consumed.get(&key) {
         if *watch_sequence != last.saturating_add(1) {
@@ -447,6 +460,53 @@ pub(crate) fn handle_connection(
                 return Ok(());
             }
         };
+        // Validate the action against durable watchdog/lifecycle truth before
+        // admitting its caller-controlled ID into process tracking. A valid
+        // attempt capability alone must not be able to grow the sequence map
+        // with arbitrary action IDs. A terminal preflight can answer directly
+        // without allocating either a map entry or a thread.
+        let action_id = match &request.operation {
+            WorkerOperation::PiCompactionKickTerminalWatch { action_id, .. } => action_id,
+            _ => unreachable!("terminal watch was matched above"),
+        };
+        let preflight = match crate::commands::pi_watchdog::compaction_kick_terminal_watch(
+            dir,
+            &binding.task_id,
+            action_id,
+            0,
+        ) {
+            Ok(status) => status,
+            Err(error) => {
+                audit_worker_request(
+                    dir,
+                    &request,
+                    Some(&binding.task_id),
+                    "rejected",
+                    &error.to_string(),
+                    logger,
+                );
+                write_response_or_cancel(&stream, &IpcResponse::error(&error.to_string()), logger)?;
+                return Ok(());
+            }
+        };
+        if preflight.get("abort").and_then(serde_json::Value::as_bool) == Some(true)
+            || preflight
+                .get("settled")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true)
+        {
+            audit_worker_request(
+                dir,
+                &request,
+                Some(&binding.task_id),
+                "allowed",
+                "terminal preflight",
+                logger,
+            );
+            write_response_or_cancel(&stream, &IpcResponse::success(preflight), logger)?;
+            return Ok(());
+        }
+
         // Enforce the plugin's finite sequence and acquire a bounded server
         // slot before allocating a thread. Authentication alone is not a
         // resource bound: a faulty or hostile capability holder controls the
@@ -473,6 +533,7 @@ pub(crate) fn handle_connection(
         // Only this capability-authenticated, read-only operation is detached.
         // All lifecycle mutations remain on the normal serialized path.
         drop(reader);
+        let watch_key = watch_lease.key.clone();
         let dir = dir.to_path_buf();
         let logger = logger.clone();
         std::thread::Builder::new()
@@ -486,6 +547,13 @@ pub(crate) fn handle_connection(
                 ));
                 let response =
                     handle_worker_terminal_watch_request(&dir, request, binding, &logger);
+                let terminal = response.data.as_ref().is_some_and(|data| {
+                    data.get("abort").and_then(serde_json::Value::as_bool) == Some(true)
+                        || data.get("settled").and_then(serde_json::Value::as_bool) == Some(true)
+                });
+                if terminal {
+                    forget_pi_terminal_watch(&watch_key);
+                }
                 if let Err(error) = write_response_or_cancel(&stream, &response, &logger) {
                     logger.warn(&format!("Pi terminal watch response failed: {error}"));
                 }
@@ -3574,6 +3642,11 @@ mod tests {
 
     #[test]
     fn terminal_watch_limiter_enforces_finite_sequence_and_concurrency() {
+        {
+            let mut state = pi_terminal_watch_state().lock().unwrap();
+            state.active.clear();
+            state.consumed.clear();
+        }
         let zero = terminal_watch_request("zero", 0, 0);
         let zero_lease = acquire_pi_terminal_watch_lease(&zero, "limiter-task").unwrap();
         let duplicate = acquire_pi_terminal_watch_lease(&zero, "limiter-task")
@@ -3638,6 +3711,37 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(capacity.contains("terminal_watch_capacity_exhausted"));
+        drop(leases);
+
+        {
+            let mut state = pi_terminal_watch_state().lock().unwrap();
+            state.active.clear();
+            state.consumed.clear();
+        }
+        for index in 0..MAX_TRACKED_PI_TERMINAL_WATCH_SEQUENCES {
+            drop(
+                acquire_pi_terminal_watch_lease(
+                    &terminal_watch_request(&format!("tracked-{index}"), 1, 20_000),
+                    "limiter-task",
+                )
+                .unwrap(),
+            );
+        }
+        let tracking = acquire_pi_terminal_watch_lease(
+            &terminal_watch_request("tracked-overflow", 1, 20_000),
+            "limiter-task",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(tracking.contains("terminal_watch_tracking_capacity_exhausted"));
+        forget_pi_terminal_watch("limiter-task\0tracked-0");
+        assert_eq!(
+            pi_terminal_watch_state().lock().unwrap().consumed.len(),
+            MAX_TRACKED_PI_TERMINAL_WATCH_SEQUENCES - 1
+        );
+        let mut state = pi_terminal_watch_state().lock().unwrap();
+        state.active.clear();
+        state.consumed.clear();
     }
 
     #[test]
