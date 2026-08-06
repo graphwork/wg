@@ -2986,8 +2986,8 @@ timeout_seconds = 180
 [[scenario]]
 name = "worker_owned_completion_canary"
 script = "scenarios/worker_owned_completion_canary.sh"
-owners = ["simple-worker-owned-convergence"]
-description = "Candidate-binary credential-free real-daemon exit canary: ten concurrent Pi workers complete Land/Report/Explore; two overlapping Land workers exercise compare/fast-forward and same-worker moved-main reintegration while non-Git workers use isolated attempt workspaces. All snapshot immutable outputs/evidence, build bound manifests through the broker, pass exact FLIP then eval without child tasks, derive Done from publication, create no SaveTransaction/finalization authority, and receive no replacement workers."
+owners = ["simple-worker-owned-convergence", "implement-wg-pi-compaction-kick"]
+description = "Candidate-binary credential-free real-daemon exit canary: ten concurrent Pi workers complete Land/Report/Explore; two overlapping Land workers exercise compare/fast-forward and same-worker moved-main reintegration while non-Git workers use isolated attempt workspaces. All snapshot immutable outputs/evidence, build bound manifests through the broker, pass exact FLIP then eval without child tasks, derive Done from publication, create no SaveTransaction/finalization authority, and receive no replacement workers. The installed candidate's exact fake Pi reviewer route must also replace the ambient coding system prompt, disable every context/discovery surface, clear inherited worker/chat/session selectors, and complete all reviews without ReviewUnavailable."
 timeout_seconds = 180
 
 [[scenario]]
