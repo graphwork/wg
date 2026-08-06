@@ -6,6 +6,7 @@ use worksgood::graph::{
     PRIORITY_DEFAULT, Status, Task, TokenUsage, WorkGraph, format_token_display,
 };
 use worksgood::messages::{CoordinatorMessageStatus, MessageStats};
+use worksgood::task_times::{CompactWidth, TaskTimeProjection};
 
 use super::{LayoutMode, VizOutput};
 
@@ -26,7 +27,7 @@ struct BackEdgeArc {
 ///   ← always marks the dependent node regardless of vertical position
 /// - Arrowheads: → on left (tree connectors), ← on right (arc dependents)
 /// - Dash fill (─) connects node text to right-side arcs
-#[allow(clippy::only_used_in_recursion, clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn generate_ascii(
     graph: &WorkGraph,
     tasks: &[&Task],
@@ -39,6 +40,43 @@ pub(crate) fn generate_ascii(
     edge_color: &str,
     message_stats: &HashMap<String, MessageStats>,
     coordinator_status: &HashMap<String, CoordinatorMessageStatus>,
+) -> VizOutput {
+    generate_ascii_with_times(
+        graph,
+        tasks,
+        task_ids,
+        annotations,
+        live_token_usage,
+        agency_token_usage,
+        layout,
+        context_ids,
+        edge_color,
+        message_stats,
+        coordinator_status,
+        &HashMap::new(),
+        CompactWidth::Full,
+    )
+}
+
+/// Production entry point used by both `wg viz` and the interactive TUI.
+/// Keeping the old wrapper above makes historical/unit callers source
+/// compatible while the shared read-side projection supplies authoritative
+/// exact-attempt activity to real views.
+#[allow(clippy::only_used_in_recursion, clippy::too_many_arguments)]
+pub(crate) fn generate_ascii_with_times(
+    graph: &WorkGraph,
+    tasks: &[&Task],
+    task_ids: &HashSet<&str>,
+    annotations: &HashMap<String, super::AnnotationInfo>,
+    live_token_usage: &HashMap<String, TokenUsage>,
+    agency_token_usage: &HashMap<String, TokenUsage>,
+    layout: LayoutMode,
+    context_ids: &HashSet<String>,
+    edge_color: &str,
+    message_stats: &HashMap<String, MessageStats>,
+    coordinator_status: &HashMap<String, CoordinatorMessageStatus>,
+    task_times: &HashMap<String, TaskTimeProjection>,
+    compact_width: CompactWidth,
 ) -> VizOutput {
     if tasks.is_empty() {
         return VizOutput {
@@ -445,24 +483,14 @@ pub(crate) fn generate_ascii(
                 })
             })
             .unwrap_or_default();
-        let relative_ts = task
-            .and_then(|t| {
-                // Pick the most relevant timestamp based on status
-                let ts_str = match t.status {
-                    Status::InProgress => t.started_at.as_deref(),
-                    Status::Done => t.completed_at.as_deref(),
-                    _ => None,
-                }
-                .or(t.created_at.as_deref());
-                ts_str.and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-            })
-            .map(|dt| {
-                let secs = (now - dt.with_timezone(&Utc)).num_seconds().max(0);
-                let dur = worksgood::format_duration(secs, true);
+        let lifecycle_times = task
+            .and_then(|task| task_times.get(&task.id))
+            .map(|projection| {
+                let text = projection.compact(now, compact_width);
                 if use_color {
-                    format!(" \x1b[90m{}\x1b[0m", dur)
+                    format!(" \x1b[90m{}\x1b[0m", text)
                 } else {
-                    format!(" {}", dur)
+                    format!(" {}", text)
                 }
             })
             .unwrap_or_default();
@@ -487,7 +515,7 @@ pub(crate) fn generate_ascii(
             status_with_tokens,
             paren_reset,
             delay_hint,
-            relative_ts,
+            lifecycle_times,
             msg_indicator,
             phase_info,
             loop_info
@@ -1614,6 +1642,80 @@ mod tests {
             &HashMap::new(),
         );
         assert_eq!(result.text, "(no tasks to display)");
+    }
+
+    #[test]
+    fn lifecycle_screen_dump_labels_open_running_retried_done_and_missing() {
+        let now = Utc::now();
+        let mut graph = WorkGraph::new();
+        for (id, status, retry) in [
+            ("open", Status::Open, 0),
+            ("running", Status::InProgress, 0),
+            ("retried", Status::InProgress, 1),
+            ("done", Status::Done, 0),
+            ("missing", Status::Open, 0),
+        ] {
+            let mut task = make_task(id, id);
+            task.status = status;
+            task.retry_count = retry;
+            graph.add_node(Node::Task(task));
+        }
+        let tasks: Vec<_> = graph.tasks().collect();
+        let task_ids = tasks.iter().map(|task| task.id.as_str()).collect();
+        let known = |started_minutes: i64, activity_seconds: i64| TaskTimeProjection {
+            attempt_id: Some("attempt".into()),
+            created: worksgood::task_times::ProjectedTime::Known(now - chrono::Duration::hours(16)),
+            started: worksgood::task_times::ProjectedTime::Known(
+                now - chrono::Duration::minutes(started_minutes),
+            ),
+            agent_activity: worksgood::task_times::ProjectedTime::Known(
+                now - chrono::Duration::seconds(activity_seconds),
+            ),
+        };
+        let mut times = HashMap::from([
+            ("open".into(), known(40, 3)),
+            ("running".into(), known(40, 3)),
+            ("retried".into(), known(2, 1)),
+            ("done".into(), known(90, 60)),
+        ]);
+        times.insert(
+            "missing".into(),
+            TaskTimeProjection {
+                attempt_id: None,
+                created: worksgood::task_times::ProjectedTime::Unknown,
+                started: worksgood::task_times::ProjectedTime::Unknown,
+                agent_activity: worksgood::task_times::ProjectedTime::Unknown,
+            },
+        );
+        let dump = generate_ascii_with_times(
+            &graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::Tree,
+            &HashSet::new(),
+            "gray",
+            &HashMap::new(),
+            &HashMap::new(),
+            &times,
+            CompactWidth::Full,
+        )
+        .text;
+        for id in ["open", "running", "retried", "done", "missing"] {
+            let line = dump.lines().find(|line| line.contains(id)).unwrap();
+            assert!(line.contains("C:"), "{line}");
+            assert!(line.contains("S:"), "{line}");
+            assert!(line.contains("A:"), "{line}");
+        }
+        assert!(
+            dump.lines()
+                .find(|line| line.contains("missing"))
+                .unwrap()
+                .contains("A:—")
+        );
+        assert!(!dump.contains(" A:0s"));
     }
 
     #[test]

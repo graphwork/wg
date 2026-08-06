@@ -11018,20 +11018,17 @@ fn draw_status_bar(frame: &mut Frame, app: &VizApp, area: Rect) {
         ));
     }
 
-    // Live refresh indicator
-    if app.task_counts.in_progress > 0 {
-        spans.push(Span::styled("| ", Style::default().fg(Color::DarkGray)));
-        spans.push(Span::styled(
-            format!("LIVE {} ", app.last_refresh_display),
-            Style::default().fg(Color::Green),
-        ));
-    } else {
-        spans.push(Span::styled("| ", Style::default().fg(Color::DarkGray)));
-        spans.push(Span::styled(
-            format!("{} ", app.last_refresh_display),
-            Style::default().fg(Color::DarkGray),
-        ));
-    }
+    // This clock is only the last graph snapshot refresh. Label it explicitly
+    // so operators cannot mistake it for normalized agent activity (A:...).
+    spans.push(Span::styled("| ", Style::default().fg(Color::DarkGray)));
+    spans.push(Span::styled(
+        format!("GRAPH REFRESH {} ", app.last_refresh_display),
+        if app.task_counts.in_progress > 0 {
+            Style::default().fg(Color::Green)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        },
+    ));
 
     // Trace state indicator
     if !app.trace_visible {

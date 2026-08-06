@@ -3,6 +3,7 @@ use std::io::IsTerminal;
 use worksgood::graph::{
     PRIORITY_DEFAULT, Status, Task, TokenUsage, WorkGraph, format_token_display,
 };
+use worksgood::task_times::{CompactWidth, TaskTimeProjection};
 
 use super::ascii::visible_len;
 
@@ -36,10 +37,58 @@ pub fn generate_graph(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
+pub fn generate_graph_with_times(
+    graph: &WorkGraph,
+    tasks: &[&Task],
+    task_ids: &HashSet<&str>,
+    annotations: &HashMap<String, super::AnnotationInfo>,
+    live_token_usage: &HashMap<String, TokenUsage>,
+    agency_token_usage: &HashMap<String, TokenUsage>,
+    context_ids: &HashSet<String>,
+    task_times: &HashMap<String, TaskTimeProjection>,
+) -> String {
+    generate_graph_inner(
+        graph,
+        tasks,
+        task_ids,
+        annotations,
+        &HashMap::new(),
+        live_token_usage,
+        agency_token_usage,
+        context_ids,
+        task_times,
+    )
+}
+
 /// Like generate_graph but allows overriding the displayed status for each task.
 /// Used by trace animation to show historical snapshots.
 #[allow(clippy::too_many_arguments)]
 pub fn generate_graph_with_overrides(
+    graph: &WorkGraph,
+    tasks: &[&Task],
+    task_ids: &HashSet<&str>,
+    annotations: &HashMap<String, super::AnnotationInfo>,
+    status_overrides: &HashMap<&str, Status>,
+    live_token_usage: &HashMap<String, TokenUsage>,
+    agency_token_usage: &HashMap<String, TokenUsage>,
+    context_ids: &HashSet<String>,
+) -> String {
+    generate_graph_inner(
+        graph,
+        tasks,
+        task_ids,
+        annotations,
+        status_overrides,
+        live_token_usage,
+        agency_token_usage,
+        context_ids,
+        &HashMap::new(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn generate_graph_inner(
     _graph: &WorkGraph,
     tasks: &[&Task],
     task_ids: &HashSet<&str>,
@@ -48,6 +97,7 @@ pub fn generate_graph_with_overrides(
     live_token_usage: &HashMap<String, TokenUsage>,
     agency_token_usage: &HashMap<String, TokenUsage>,
     context_ids: &HashSet<String>,
+    task_times: &HashMap<String, TaskTimeProjection>,
 ) -> String {
     if tasks.is_empty() {
         return String::from("(no tasks to display)");
@@ -252,7 +302,9 @@ pub fn generate_graph_with_overrides(
                 ),
             )
         };
-        let width = line1.len().max(line2.len());
+        let lifecycle_line = task_times
+            .get(id)
+            .map(|projection| projection.compact(chrono::Utc::now(), CompactWidth::Narrow));
 
         let color = if task.paused && use_color {
             paused_color
@@ -280,7 +332,15 @@ pub fn generate_graph_with_overrides(
         } else {
             identity_line
         };
-        let display_width = display_line1.chars().count().max(line2.chars().count());
+        let display_width = display_line1
+            .chars()
+            .count()
+            .max(line2.chars().count())
+            .max(
+                lifecycle_line
+                    .as_ref()
+                    .map_or(0, |line| line.chars().count()),
+            );
         let color_line1 = format!(
             "{}{}{}",
             color,
@@ -288,15 +348,26 @@ pub fn generate_graph_with_overrides(
             reset
         );
         let color_line2 = format!("{}{}{}", color, center_str(&line2, display_width), reset);
+        let mut lines = vec![
+            center_str(&display_line1, display_width),
+            center_str(&line2, display_width),
+        ];
+        let mut color_lines = vec![color_line1, color_line2];
+        if let Some(lifecycle_line) = lifecycle_line {
+            lines.push(center_str(&lifecycle_line, display_width));
+            color_lines.push(format!(
+                "{}{}{}",
+                if use_color { "\x1b[90m" } else { "" },
+                center_str(&lifecycle_line, display_width),
+                reset
+            ));
+        }
 
         box_infos.insert(
             id,
             BoxInfo {
-                lines: vec![
-                    center_str(&display_line1, display_width),
-                    center_str(&line2, display_width),
-                ],
-                color_lines: vec![color_line1, color_line2],
+                lines,
+                color_lines,
                 width: display_width,
             },
         );
@@ -368,8 +439,12 @@ pub fn generate_graph_with_overrides(
     let mut output: Vec<String> = Vec::new();
 
     for (layer_idx, layer) in layers.iter().enumerate() {
-        // Draw boxes for this layer (3 rows: top border, content lines, bottom border)
-        let num_content_lines = 2;
+        // Draw boxes for this layer (top border, shared content rows, bottom border).
+        let num_content_lines = layer
+            .iter()
+            .map(|id| box_infos[id].lines.len())
+            .max()
+            .unwrap_or(2);
         let mut row_top = vec![' '; canvas_width];
         let mut row_bot = vec![' '; canvas_width];
         let mut content_rows: Vec<Vec<char>> = (0..num_content_lines)
@@ -409,14 +484,16 @@ pub fn generate_graph_with_overrides(
             }
 
             // Content lines: │text│
-            for (ci, _line) in info.lines.iter().enumerate() {
+            for ci in 0..num_content_lines {
                 let row = &mut content_rows[ci];
                 if left < canvas_width {
                     row[left] = '│';
                 }
-                for (j, ch) in info.lines[ci].chars().enumerate() {
-                    if left + 1 + j < canvas_width {
-                        row[left + 1 + j] = ch;
+                if let Some(line) = info.lines.get(ci) {
+                    for (j, ch) in line.chars().enumerate() {
+                        if left + 1 + j < canvas_width {
+                            row[left + 1 + j] = ch;
+                        }
                     }
                 }
                 if left + outer_w - 1 < canvas_width {
@@ -442,8 +519,13 @@ pub fn generate_graph_with_overrides(
                         s.push(' ');
                     }
                     s.push('│');
-                    // Use the color_lines version
-                    s.push_str(&info.color_lines[ci]);
+                    // Use the color_lines version, or a blank row when another
+                    // box in this layer has lifecycle detail and this one does not.
+                    if let Some(line) = info.color_lines.get(ci) {
+                        s.push_str(line);
+                    } else {
+                        s.push_str(&" ".repeat(info.width));
+                    }
                     // Pad to fill box if color_lines is shorter visually
                     s.push('│');
                     // Pad to outer_w

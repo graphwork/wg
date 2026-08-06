@@ -14913,35 +14913,22 @@ impl VizApp {
             lines.push(String::new());
         }
 
-        // ── Timing ──
-        let has_timing =
-            task.created_at.is_some() || task.started_at.is_some() || task.completed_at.is_some();
-        if has_timing {
-            lines.push("── Timing ──".to_string());
-            if let Some(ref ts) = task.created_at {
-                lines.push(format!("  Created:   {}", format_timestamp(ts)));
-            }
-            if let Some(ref ts) = task.started_at {
-                lines.push(format!("  Started:   {}", format_timestamp(ts)));
-            }
-            if let Some(ref ts) = task.completed_at {
-                lines.push(format!("  Completed: {}", format_timestamp(ts)));
-            }
-            // Duration
-            if let (Some(start), Some(end)) = (&task.started_at, &task.completed_at)
-                && let (Ok(s), Ok(e)) = (
-                    chrono::DateTime::parse_from_rfc3339(start),
-                    chrono::DateTime::parse_from_rfc3339(end),
-                )
-            {
-                let dur = (e - s).num_seconds();
-                lines.push(format!(
-                    "  Duration:  {}",
-                    worksgood::format_duration(dur, false)
-                ));
-            }
-            lines.push(String::new());
+        // ── Lifecycle times ──
+        // This is the same exact-attempt projection used by static viz.
+        let now = chrono::Utc::now();
+        let lifecycle_times =
+            worksgood::task_times::project_task_times(&self.workgraph_dir, &task, now);
+        lines.push("── Lifecycle times ──".to_string());
+        for line in lifecycle_times.detail_lines(now) {
+            lines.push(format!("  {line}"));
         }
+        if let Some(ref ts) = task.completed_at {
+            lines.push(format!("  Completed:       {}", format_timestamp(ts)));
+        }
+        if let Some(attempt) = task.lifecycle.current_attempt.as_ref() {
+            lines.push(format!("  Current attempt: {}", attempt.id));
+        }
+        lines.push(String::new());
 
         // ── Cycle ──
         if let Some(ref cc) = task.cycle_config {
@@ -15258,34 +15245,21 @@ impl VizApp {
             lines.push(String::new());
         }
 
-        // ── Timing ──
-        let has_timing =
-            task.created_at.is_some() || task.started_at.is_some() || task.completed_at.is_some();
-        if has_timing {
-            lines.push("── Timing ──".to_string());
-            if let Some(ref ts) = task.created_at {
-                lines.push(format!("  Created:   {}", format_timestamp(ts)));
-            }
-            if let Some(ref ts) = task.started_at {
-                lines.push(format!("  Started:   {}", format_timestamp(ts)));
-            }
-            if let Some(ref ts) = task.completed_at {
-                lines.push(format!("  Completed: {}", format_timestamp(ts)));
-            }
-            if let (Some(start), Some(end)) = (&task.started_at, &task.completed_at)
-                && let (Ok(s), Ok(e)) = (
-                    chrono::DateTime::parse_from_rfc3339(start),
-                    chrono::DateTime::parse_from_rfc3339(end),
-                )
-            {
-                let dur = (e - s).num_seconds();
-                lines.push(format!(
-                    "  Duration:  {}",
-                    worksgood::format_duration(dur, false)
-                ));
-            }
-            lines.push(String::new());
+        // ── Lifecycle times ──
+        let now = chrono::Utc::now();
+        let lifecycle_times =
+            worksgood::task_times::project_task_times(&self.workgraph_dir, &task, now);
+        lines.push("── Lifecycle times ──".to_string());
+        for line in lifecycle_times.detail_lines(now) {
+            lines.push(format!("  {line}"));
         }
+        if let Some(ref ts) = task.completed_at {
+            lines.push(format!("  Completed:       {}", format_timestamp(ts)));
+        }
+        if let Some(attempt) = task.lifecycle.current_attempt.as_ref() {
+            lines.push(format!("  Current attempt: {}", attempt.id));
+        }
+        lines.push(String::new());
 
         // ── Cycle ──
         if let Some(ref cc) = task.cycle_config {

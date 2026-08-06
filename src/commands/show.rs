@@ -94,6 +94,8 @@ struct TaskDetails {
     completed_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     last_interaction_at: Option<String>,
+    /// Shared exact-attempt lifecycle clock projection used by viz/TUI/show.
+    lifecycle_times: worksgood::task_times::TaskTimeProjection,
     #[serde(skip_serializing_if = "Option::is_none")]
     not_before: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -846,6 +848,7 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         started_at: task.started_at.clone(),
         completed_at: task.completed_at.clone(),
         last_interaction_at: task.last_interaction_at.clone(),
+        lifecycle_times: worksgood::task_times::project_task_times(dir, task, chrono::Utc::now()),
         not_before: task.not_before.clone(),
         log: task.log.clone(),
         retry_count: task.retry_count,
@@ -1650,12 +1653,15 @@ fn print_human_readable(details: &TaskDetails) {
 
     println!();
 
-    // Timestamps
-    if let Some(ref created) = details.created_at {
-        println!("Created: {}", created);
+    // Shared lifecycle timestamps. `Attempt started` is intentionally scoped
+    // to the current attempt; `Agent activity` is exact-attempt normalized
+    // provider evidence and never a graph/log/message/heartbeat/file mtime.
+    let now = Utc::now();
+    for line in details.lifecycle_times.detail_lines(now) {
+        println!("{line}");
     }
-    if let Some(ref started) = details.started_at {
-        println!("Started: {}", started);
+    if let Some(attempt) = details.lifecycle.current_attempt.as_ref() {
+        println!("Current attempt: {}", attempt.id);
     }
     if let Some(ref completed) = details.completed_at {
         println!("Completed: {}", completed);
@@ -2308,6 +2314,12 @@ mod tests {
             started_at: Some("2026-01-20T16:30:00+00:00".to_string()),
             completed_at: None,
             last_interaction_at: None,
+            lifecycle_times: worksgood::task_times::TaskTimeProjection {
+                attempt_id: None,
+                created: worksgood::task_times::ProjectedTime::Unknown,
+                started: worksgood::task_times::ProjectedTime::Unknown,
+                agent_activity: worksgood::task_times::ProjectedTime::Unknown,
+            },
             not_before: None,
             log: vec![],
             retry_count: 0,

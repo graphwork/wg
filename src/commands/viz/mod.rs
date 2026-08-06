@@ -772,9 +772,28 @@ pub fn generate_viz_output_from_graph(
         }
     }
 
+    // One shared lifecycle-clock projection feeds static viz and the TUI (the
+    // TUI refresh path calls this same function). No renderer is allowed to
+    // substitute graph/log/message/heartbeat/file mtimes for agent activity.
+    let projection_now = chrono::Utc::now();
+    let task_times: HashMap<String, worksgood::task_times::TaskTimeProjection> = tasks_to_show
+        .iter()
+        .map(|task| {
+            (
+                task.id.clone(),
+                worksgood::task_times::project_task_times(dir, task, projection_now),
+            )
+        })
+        .collect();
+    let compact_width = match options.max_columns {
+        Some(columns) if columns < 56 => worksgood::task_times::CompactWidth::Tiny,
+        Some(columns) if columns < 90 => worksgood::task_times::CompactWidth::Narrow,
+        _ => worksgood::task_times::CompactWidth::Full,
+    };
+
     // Generate output
     let output = match options.format {
-        OutputFormat::Ascii => ascii::generate_ascii(
+        OutputFormat::Ascii => ascii::generate_ascii_with_times(
             graph,
             &tasks_to_show,
             &task_ids,
@@ -786,6 +805,8 @@ pub fn generate_viz_output_from_graph(
             &options.edge_color,
             &message_stats,
             &coordinator_status,
+            &task_times,
+            compact_width,
         ),
         _ => {
             let text = match options.format {
@@ -803,7 +824,7 @@ pub fn generate_viz_output_from_graph(
                     &critical_path_set,
                     &annotations,
                 ),
-                OutputFormat::Graph => graph::generate_graph(
+                OutputFormat::Graph => graph::generate_graph_with_times(
                     graph,
                     &tasks_to_show,
                     &task_ids,
@@ -811,6 +832,7 @@ pub fn generate_viz_output_from_graph(
                     &live_token_usage,
                     &agency_token_usage,
                     &context_ids,
+                    &task_times,
                 ),
                 OutputFormat::Ascii => unreachable!(),
             };
