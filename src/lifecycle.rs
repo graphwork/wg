@@ -327,6 +327,11 @@ pub enum TransitionKind {
     ReconciliationIssue {
         issue_id: String,
     },
+    /// One-time migration of an unauthenticated legacy Done row into a
+    /// non-satisfying quarantine. Ordinary runtime callers cannot use this.
+    LegacyCompletionQuarantined {
+        record_ref: String,
+    },
     MessageObserved {
         message_id: String,
     },
@@ -393,6 +398,7 @@ impl TransitionKind {
             Self::EvaluationEvidence { .. } => "evaluation-evidence",
             Self::CandidateCheckpointed { .. } => "candidate-checkpointed",
             Self::ReconciliationIssue { .. } => "reconciliation-issue",
+            Self::LegacyCompletionQuarantined { .. } => "legacy-completion-quarantined",
             Self::MessageObserved { .. } => "message-observed",
             Self::LegacyCheckpointImported => "legacy-checkpoint-imported",
             Self::PiContinuationAuthorized { .. } => "pi-continuation-authorized",
@@ -1016,6 +1022,13 @@ impl LifecycleKernel {
                 Self::require_actor(&request, &[ActorKind::Reconciler])?;
                 // Breaker-neutral evidence only.
             }
+            TransitionKind::LegacyCompletionQuarantined { record_ref } => {
+                Self::require_actor(&request, &[ActorKind::Reconciler])?;
+                if old_state != Status::Done || record_ref.trim().is_empty() {
+                    return Err(Self::state_rejection(old_state));
+                }
+                new_state = Status::Incomplete;
+            }
             TransitionKind::MessageObserved { .. } => {
                 // Ordinary messages are immutable data, never lifecycle
                 // authority, regardless of sender or task state.
@@ -1286,6 +1299,7 @@ impl LifecycleKernel {
                     | TransitionKind::ReopenOwnerReleased { .. }
                     | TransitionKind::DurableSuccessProjected { .. }
                     | TransitionKind::GraphSaveCommitted { .. }
+                    | TransitionKind::LegacyCompletionQuarantined { .. }
             )
         {
             return Err(TransitionRejection::new(

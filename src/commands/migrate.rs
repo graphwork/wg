@@ -606,7 +606,7 @@ mod tests {
                 .exists()
         );
         let ledger = std::fs::read_to_string(wg_dir.join("lifecycle/events.jsonl")).unwrap();
-        assert!(ledger.contains("\"event_kind\":\"reconciliation-issue\""));
+        assert!(ledger.contains("\"event_kind\":\"legacy-completion-quarantined\""));
         assert!(ledger.contains("\"new_state\":\"incomplete\""));
 
         let after_first_bytes = std::fs::read(wg_dir.join("graph.jsonl")).unwrap();
