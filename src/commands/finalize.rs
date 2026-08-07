@@ -214,12 +214,15 @@ fn ensure_terminal_attempt_in_task(task: &mut Task, actor_id: Option<&str>) -> R
         attempt.disposition = None;
         return Ok(true);
     }
-    if task
-        .lifecycle
-        .current_attempt
-        .as_ref()
-        .is_some_and(|attempt| attempt.disposition.is_none())
+    if let Some(attempt) = task.lifecycle.current_attempt.as_ref()
         && task.status != worksgood::graph::Status::Waiting
+        && (attempt.disposition.is_none()
+            || (task.status == worksgood::graph::Status::Failed
+                && matches!(
+                    attempt.disposition,
+                    Some(worksgood::lifecycle::AttemptDisposition::Failed)
+                        | Some(worksgood::lifecycle::AttemptDisposition::Lost)
+                )))
     {
         return Ok(false);
     }
