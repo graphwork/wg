@@ -74,15 +74,15 @@ The reduced kernel must preserve:
 
 ## Recovery result
 
-At `8f129c55`, the same scanner reports:
+At the final recovery cut, the same scanner reports:
 
 ```text
 fixed control-plane paths:        62
-production control-plane LOC:     68,127
+production control-plane LOC:     67,991
 status writers outside applier:   0 in 0 files
 ```
 
-The recovery deleted 3,551 production control-plane lines (5.0%) while removing
+The recovery deleted 3,687 production control-plane lines (5.1%) while removing
 all measured direct task-status assignments outside the lifecycle applier.
 Completion-side validators, evaluator reconciliation, heartbeat age, daemon
 cleanup, replay, IPC, cron, and remote-result observations now either emit
