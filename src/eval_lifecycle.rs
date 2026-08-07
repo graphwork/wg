@@ -1099,88 +1099,11 @@ fn lifecycle_conflict(task: &mut Task, message: String) -> bool {
 /// the graph. A legacy Codex split is canonical; an OpenRouter provider without
 /// a handler is deliberately parked because it cannot distinguish Pi from Nex.
 /// Each row is rearmed at most once per lifecycle schema.
-pub fn repair_historical_rows(graph: &mut WorkGraph) -> bool {
-    let satellite_ids: Vec<String> = graph
-        .tasks()
-        .filter(|task| task.id.starts_with(".flip-") || task.id.starts_with(".evaluate-"))
-        .filter(|task| task.agency_dispatch.is_none())
-        // Never rewrite an active or previously claimed legacy run. Route
-        // repair is automatic only for rows with pre-claim evidence.
-        .filter(|task| task.assigned.is_none() && task.started_at.is_none())
-        .map(|task| task.id.clone())
-        .collect();
-    let mut modified = false;
-
-    for satellite_id in satellite_ids {
-        let source_id = satellite_id
-            .strip_prefix(".flip-")
-            .or_else(|| satellite_id.strip_prefix(".evaluate-"))
-            .expect("filtered satellite id");
-        let Some(source) = graph.get_task(source_id).cloned() else {
-            continue;
-        };
-        if !matches!(
-            source.status,
-            Status::PendingEval | Status::FailedPendingEval
-        ) {
-            continue;
-        }
-        let satellite_snapshot = graph
-            .get_task(&satellite_id)
-            .expect("collected satellite")
-            .clone();
-        match migrate_legacy_plan(&source, &satellite_snapshot) {
-            Ok(plan) => {
-                let satellite = graph
-                    .get_task_mut(&satellite_id)
-                    .expect("collected satellite");
-                satellite.model = Some(plan.calls[0].route.clone());
-                satellite.provider = Some(plan.calls[0].system.handler.clone());
-                satellite.endpoint = plan.calls[0].endpoint.clone();
-                satellite.reasoning = plan.calls[0].reasoning;
-                satellite.agency_dispatch = Some(plan.clone());
-                let lifecycle = satellite
-                    .evaluation_lifecycle
-                    .get_or_insert_with(|| lifecycle_for_plan(&plan));
-                if satellite.status == Status::Incomplete
-                    && satellite.assigned.is_none()
-                    && satellite.started_at.is_none()
-                    && satellite.spawn_failures > 0
-                    && lifecycle.repair_version < EVAL_LIFECYCLE_SCHEMA
-                {
-                    satellite.status = Status::Open;
-                    satellite.spawn_failures = 0;
-                    satellite.failure_reason = None;
-                    lifecycle.repair_version = EVAL_LIFECYCLE_SCHEMA;
-                    lifecycle.execution_state = EvaluationExecutionState::Ready;
-                }
-                satellite.log.push(LogEntry {
-                    timestamp: Utc::now().to_rfc3339(),
-                    actor: Some("eval-lifecycle-repair".to_string()),
-                    user: None,
-                    message: format!(
-                        "Installed lossless historical plan {}; route={}",
-                        plan.plan_hash, plan.calls[0].route
-                    ),
-                });
-                modified = true;
-            }
-            Err(error) => {
-                let diagnostic = format!("Lifecycle route repair required: {error:#}");
-                let satellite = graph
-                    .get_task_mut(&satellite_id)
-                    .expect("collected satellite");
-                if satellite.status != Status::Blocked
-                    || satellite.failure_reason.as_deref() != Some(diagnostic.as_str())
-                {
-                    satellite.status = Status::Blocked;
-                    satellite.wait_condition = None;
-                    modified |= lifecycle_conflict(satellite, diagnostic);
-                }
-            }
-        }
-    }
-    modified
+pub fn repair_historical_rows(_graph: &mut WorkGraph) -> bool {
+    // Historical evaluator rows are receipts, not schedulable control-plane
+    // work. Reconciliation must never reopen or block them from inferred route
+    // observations; the explicit agency-retirement migration owns their fate.
+    false
 }
 
 /// Backfill a plan on a completed, claimed pre-schema satellite only after a
@@ -1298,13 +1221,8 @@ fn mark_satellite_verdict(
         *slot = Some(verdict.verdict_id.clone());
         modified = true;
     }
-    if task.status != Status::Done {
-        task.status = Status::Done;
-        task.assigned = None;
-        task.completed_at
-            .get_or_insert_with(|| Utc::now().to_rfc3339());
-        modified = true;
-    }
+    // The durable verdict is linked as evidence only. It cannot terminalize
+    // the legacy synthetic task row; lifecycle authority belongs to the source.
     if lifecycle.semantic_attempts == 0 {
         lifecycle.semantic_attempts = 1;
         modified = true;
@@ -1374,13 +1292,8 @@ fn prepare_rearm_plan(
 
 fn apply_rearm_plan(task: &mut Task, plan: AgencyDispatchPlan, actor: &str) {
     let primary = &plan.calls[0];
-    task.status = Status::Open;
-    task.assigned = None;
-    task.started_at = None;
-    task.completed_at = None;
-    task.failure_reason = None;
-    task.wait_condition = None;
-    task.spawn_failures = 0;
+    // Persisted plans are receipts. Installing one must not reopen a synthetic
+    // evaluator row or clear evidence from its previous exact attempt.
     // Compatibility mirrors follow the persisted plan; no route is resolved
     // again from ambient config during retry or repair.
     task.model = Some(primary.route.clone());
@@ -1394,7 +1307,7 @@ fn apply_rearm_plan(task: &mut Task, plan: AgencyDispatchPlan, actor: &str) {
         actor: Some(actor.to_string()),
         user: None,
         message: format!(
-            "Rearmed exact persisted route for source attempt {}; plan={}",
+            "Installed exact persisted route receipt for source attempt {}; plan={}",
             plan.source_attempt, plan.plan_hash
         ),
     });
@@ -1909,7 +1822,6 @@ pub fn begin_source_attempt(graph: &mut WorkGraph, source_id: &str, reason: &str
                 && satellite.status != Status::InProgress
                 && satellite.assigned.is_none()
             {
-                satellite.status = Status::Blocked;
                 lifecycle_conflict(satellite, diagnostic.clone());
             }
         }
@@ -2749,21 +2661,8 @@ where
             .gate_policy
             .as_ref()
             .is_some_and(|policy| policy.flip_policy == FlipVerdictPolicy::Required);
-        modified |= repair_pending_pipeline(
-            graph,
-            &source_id,
-            !flips.is_empty(),
-            !evals.is_empty(),
-            flip_required,
-        );
-        if graph
-            .get_task(&source_id)
-            .and_then(|source| source.evaluation_lifecycle.as_ref())
-            .and_then(|lifecycle| lifecycle.diagnostic.as_ref())
-            .is_some()
-        {
-            continue;
-        }
+        // Missing evidence remains a parked gate. Reconciliation may consume
+        // exact durable receipts, but it cannot repair/rearm evaluator work.
 
         if let Some(flip) = flips.first() {
             let task_id = format!(".flip-{source_id}");
@@ -3573,7 +3472,7 @@ mod tests {
             assert_eq!(plan.pipeline_id, authoritative.pipeline_id);
             assert_eq!(plan.source_attempt, 2);
             assert_eq!(plan.calls, calls, "route/reasoning identity drifted");
-            assert_eq!(task.status, Status::Open);
+            assert_eq!(task.status, Status::Done);
         }
 
         // Daemon restart boundary: source completes after graph round-trip.
@@ -3695,18 +3594,15 @@ mod tests {
                 .unwrap()
                 .contains("could not atomically rearm")
         );
-        assert_eq!(
-            graph.get_task(".flip-source").unwrap().status,
-            Status::Blocked
-        );
+        assert_eq!(graph.get_task(".flip-source").unwrap().status, Status::Done);
         assert_eq!(
             graph.get_task(".evaluate-source").unwrap().status,
-            Status::Blocked
+            Status::Done
         );
     }
 
     #[test]
-    fn pending_parent_repairs_live_incident_stale_terminal_satellites_once() {
+    fn pending_parent_does_not_rearm_stale_terminal_satellites() {
         let attempt_one = source();
         let mut flip = planned_satellite(".flip-source", &attempt_one);
         let mut eval = planned_satellite(".evaluate-source", &attempt_one);
@@ -3744,16 +3640,16 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .repair_attempts,
-            1
+            0
         );
         for task_id in [".flip-source", ".evaluate-source"] {
             let task = graph.get_task(task_id).unwrap();
-            assert_eq!(task.status, Status::Open);
-            assert_eq!(task.agency_dispatch.as_ref().unwrap().source_attempt, 2);
+            assert_eq!(task.status, Status::Done);
+            assert_eq!(task.agency_dispatch.as_ref().unwrap().source_attempt, 1);
         }
         assert_eq!(
             evaluation_health(&graph, "source").unwrap().state,
-            EvaluationHealthState::ActiveEvaluation
+            EvaluationHealthState::RepairablePipelineDrift
         );
         assert!(!reconcile_durable_verdicts(
             &mut graph,
@@ -3766,7 +3662,7 @@ mod tests {
     }
 
     #[test]
-    fn partial_flip_evidence_rearms_only_failed_evaluator_and_is_bounded() {
+    fn partial_flip_evidence_stays_parked_without_evaluator_retry() {
         let mut source = source();
         source.status = Status::PendingEval;
         source.evaluation_lifecycle = Some(EvaluationLifecycle::for_source(&source));
@@ -3793,7 +3689,7 @@ mod tests {
         assert_eq!(graph.get_task(".flip-source").unwrap().status, Status::Done);
         assert_eq!(
             graph.get_task(".evaluate-source").unwrap().status,
-            Status::Open
+            Status::Failed
         );
         assert_eq!(
             graph
@@ -3807,8 +3703,7 @@ mod tests {
             Some(flip_verdict.verdict_id.as_str())
         );
 
-        graph.get_task_mut(".evaluate-source").unwrap().status = Status::Failed;
-        assert!(reconcile_durable_verdicts(
+        assert!(!reconcile_durable_verdicts(
             &mut graph,
             &[flip_verdict.clone()],
             0.7,
@@ -3823,9 +3718,7 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .diagnostic
-                .as_deref()
-                .unwrap()
-                .contains("REPAIR-EXHAUSTED")
+                .is_none()
         );
         let logs = source.log.len();
         assert!(!reconcile_durable_verdicts(
@@ -3938,11 +3831,11 @@ mod tests {
         let mut graph = WorkGraph::new();
         graph.add_node(crate::graph::Node::Task(source));
         graph.add_node(crate::graph::Node::Task(satellite));
-        assert!(repair_historical_rows(&mut graph));
-        let repaired = graph.get_task(".evaluate-source").unwrap();
-        assert_eq!(repaired.status, Status::Open);
-        assert_eq!(repaired.spawn_failures, 0);
-        assert_eq!(repaired.model.as_deref(), Some("codex:gpt-5.5"));
+        assert!(!repair_historical_rows(&mut graph));
+        let untouched = graph.get_task(".evaluate-source").unwrap();
+        assert_eq!(untouched.status, Status::Incomplete);
+        assert_eq!(untouched.spawn_failures, 5);
+        assert_eq!(untouched.model.as_deref(), Some("gpt-5.5"));
         assert!(!repair_historical_rows(&mut graph));
     }
 
@@ -4398,9 +4291,16 @@ mod tests {
             ),
         ] {
             let task = graph.get_task(task_id).unwrap();
-            assert_eq!(task.status, Status::Open, "{task_id} rearmed to Open");
-            assert_eq!(task.assigned, None, "{task_id} cleared prior producer");
-            assert_eq!(task.failure_reason, None, "{task_id} cleared prior failure");
+            assert_eq!(task.status, Status::Failed, "{task_id} remains a receipt");
+            assert_eq!(
+                task.assigned.as_deref(),
+                Some("producer-run-prior"),
+                "{task_id} retains prior producer"
+            );
+            assert!(
+                task.failure_reason.is_some(),
+                "{task_id} retains prior failure"
+            );
             let plan = task.agency_dispatch.as_ref().unwrap();
             assert_eq!(plan.route_generation, 1, "{task_id} carries new generation");
             assert_eq!(plan.pipeline_id, lifecycle.pipeline_id);
@@ -4678,23 +4578,23 @@ mod tests {
         assert_eq!(health.route_generation, 0);
         assert_eq!(health.migration_count, 0);
 
-        // (2) migrated/rearmed: satellites re-armed Open + unassigned.
+        // (2) migration installs route receipts without rearming task rows.
         let config = migration_config(route);
         migrate_missing_pi_reasoning(&mut graph, &config);
         let health = evaluation_health(&graph, "source").unwrap();
-        assert_eq!(health.state, EvaluationHealthState::MigratedRearmed);
+        assert_eq!(health.state, EvaluationHealthState::RepairablePipelineDrift);
         assert_eq!(health.route_generation, 1);
         assert_eq!(health.migration_count, 2);
 
-        // (3) active evaluation: once a satellite is claimed, the state leaves
-        // the freshly-rearmed band and reports active evaluation.
+        // (3) observation cannot promote a receipt-only migrated pipeline into
+        // an active evaluator authority.
         {
             let eval = graph.get_task_mut(".evaluate-source").unwrap();
             eval.status = Status::InProgress;
             eval.assigned = Some("producer-run-new".into());
         }
         let health = evaluation_health(&graph, "source").unwrap();
-        assert_eq!(health.state, EvaluationHealthState::ActiveEvaluation);
+        assert_eq!(health.state, EvaluationHealthState::RepairablePipelineDrift);
 
         // (4) operator-required ambiguity is the fail-closed terminal for a
         // missing-reasoning plan whose route is non-Pi (no fallback).
