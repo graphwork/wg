@@ -971,9 +971,9 @@ fn test_runs_show_nonexistent() {
     assert!(!output.status.success(), "Should fail for nonexistent run");
 }
 
-// 3.6 runs_restore_actual_task_status
+// 3.6 snapshot restore cannot roll lifecycle generations backward
 #[test]
-fn test_runs_restore_actual_task_status() {
+fn test_runs_restore_preserves_newer_lifecycle_status() {
     let tmp = TempDir::new().unwrap();
     let t1 = make_task("t1", "Task 1", Status::Failed);
     let wg_dir = setup_workgraph(&tmp, vec![t1]);
@@ -988,13 +988,9 @@ fn test_runs_restore_actual_task_status() {
     // Restore from run-001
     wg_ok(&wg_dir, &["runs", "restore", "run-001"]);
 
-    // Verify t1 is back to Failed
+    // The append-only lifecycle event remains authoritative over snapshot bytes.
     let graph = load_wg_graph(&wg_dir);
-    assert_eq!(
-        graph.get_task("t1").unwrap().status,
-        Status::Failed,
-        "t1 should be restored to Failed from snapshot"
-    );
+    assert_eq!(graph.get_task("t1").unwrap().status, Status::Open);
 }
 
 // 3.8 runs_restore_provenance
@@ -1260,13 +1256,9 @@ fn test_full_replay_restore_round_trip() {
     // 3. Restore from run-001
     wg_ok(&wg_dir, &["runs", "restore", "run-001"]);
 
-    // 4. Verify t2 is back to Failed
+    // 4. Snapshot bytes cannot roll the newer lifecycle generation backward.
     let graph = load_wg_graph(&wg_dir);
-    assert_eq!(
-        graph.get_task("t2").unwrap().status,
-        Status::Failed,
-        "t2 should be restored to Failed"
-    );
+    assert_eq!(graph.get_task("t2").unwrap().status, Status::Open);
     assert_eq!(
         graph.get_task("t1").unwrap().status,
         Status::Done,
@@ -2053,9 +2045,9 @@ fn test_replay_preserves_agent_archives() {
     assert_eq!(run["timestamp"], "2026-02-18T10:00:00Z");
 }
 
-// 4.7 restore_then_diff_shows_no_changes
+// 4.7 restore exposes the lifecycle-authority delta
 #[test]
-fn test_restore_then_diff_shows_no_changes() {
+fn test_restore_then_diff_shows_lifecycle_delta() {
     let tmp = TempDir::new().unwrap();
     let mut t1 = make_task("t1", "Task", Status::Failed);
     t1.failure_reason = Some("err".to_string());
@@ -2067,21 +2059,12 @@ fn test_restore_then_diff_shows_no_changes() {
     // Restore from run-001 (graph matches the snapshot)
     wg_ok(&wg_dir, &["runs", "restore", "run-001"]);
 
-    // Diff against run-001 should show no changes
+    // The restored bytes differ from the authoritative lifecycle projection.
     let output = wg_ok(&wg_dir, &["runs", "diff", "run-001"]);
-    assert!(
-        output.contains("No differences"),
-        "After restoring from a snapshot, diffing same snapshot should show no changes: {}",
-        output
-    );
+    assert!(output.contains("failed -> open"), "{output}");
 
-    // JSON diff should confirm
     let json = wg_json(&wg_dir, &["runs", "diff", "run-001"]);
-    assert_eq!(
-        json["total_changes"], 0,
-        "total_changes should be 0 after restore then diff: {:?}",
-        json
-    );
+    assert_eq!(json["total_changes"], 1);
 }
 
 // --- HELPER GAPS ---
@@ -2469,14 +2452,14 @@ fn test_trace_after_restore() {
     let graph = load_wg_graph(&wg_dir);
     assert_eq!(graph.get_task("t1").unwrap().status, Status::Open);
 
-    // Restore from run-001 (t1 back to Failed)
+    // Restore snapshot bytes; lifecycle authority keeps the newer generation.
     wg_ok(&wg_dir, &["runs", "restore", "run-001"]);
 
-    // Trace should show restored state
+    // Trace follows the lifecycle projection, not stale snapshot status.
     let json = wg_json(&wg_dir, &["trace", "show", "t1"]);
     assert_eq!(
-        json["status"], "failed",
-        "Trace should show restored status (failed)"
+        json["status"], "open",
+        "Trace should show the authoritative replay generation"
     );
 
     // Agent archives should still be accessible
