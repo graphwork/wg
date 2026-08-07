@@ -72,6 +72,10 @@ use std::time::{Duration, Instant};
 use interprocess::local_socket::{
     Listener, ListenerNonblockingMode, ListenerOptions, Stream, prelude::*,
 };
+use worksgood::lifecycle::{
+    ActorKind, FenceExpectation, LifecycleActor, TransitionKind, TransitionRequest,
+    apply_transition,
+};
 
 /// Derive the local-socket name for the daemon at the given filesystem path.
 ///
@@ -2290,9 +2294,25 @@ fn cleanup_legacy_daemon_tasks(dir: &Path, logger: &DaemonLogger) {
         let mut changed = false;
         for task_id in &stale_ids {
             if let Some(task) = graph.get_task_mut(task_id) {
-                task.status = worksgood::graph::Status::Abandoned;
-                task.completed_at
-                    .get_or_insert_with(|| Utc::now().to_rfc3339());
+                if !task.status.is_terminal() {
+                    let request = TransitionRequest::new(
+                        TransitionKind::Abandoned,
+                        LifecycleActor {
+                            kind: ActorKind::Operator,
+                            id: "legacy-daemon-migration".to_string(),
+                        },
+                        "legacy_daemon_task_retired",
+                        format!(
+                            "retire-legacy-daemon-task:{task_id}:{}",
+                            task.lifecycle.generation
+                        ),
+                    )
+                    .expecting(FenceExpectation::current(task));
+                    if apply_transition(task, request).is_ok() {
+                        task.completed_at
+                            .get_or_insert_with(|| Utc::now().to_rfc3339());
+                    }
+                }
                 task.cycle_config = None;
                 let msg = if task_id.starts_with(".compact-") || task_id.starts_with(".archive-") {
                     "Retired: .compact-N / .archive-N cycles were removed; \
@@ -5802,7 +5822,21 @@ fn direct_purge_chats(
             };
             let Some(rid) = resolved else { continue };
             let task = graph.get_task_mut(&rid).unwrap();
-            task.status = worksgood::graph::Status::Done;
+            if !task.status.is_terminal() {
+                let request = TransitionRequest::new(
+                    TransitionKind::Abandoned,
+                    LifecycleActor {
+                        kind: ActorKind::Operator,
+                        id: "service-purge-chats".to_string(),
+                    },
+                    "chat_purged",
+                    format!("purge-chat:{id}:{}", task.lifecycle.generation),
+                )
+                .expecting(FenceExpectation::current(task));
+                if apply_transition(task, request).is_err() {
+                    continue;
+                }
+            }
             task.tags
                 .retain(|t| !worksgood::chat_id::is_chat_loop_tag(t));
             if !task.tags.contains(&"archived".to_string()) {
@@ -7671,10 +7705,10 @@ mod tests {
         // Graph: both chats archived.
         let g = worksgood::parser::load_graph(&dir.join("graph.jsonl")).unwrap();
         let t0 = g.get_task(".chat-0").unwrap();
-        assert_eq!(t0.status, worksgood::graph::Status::Done);
+        assert_eq!(t0.status, worksgood::graph::Status::Abandoned);
         assert!(t0.tags.contains(&"archived".to_string()));
         let t1 = g.get_task(".chat-1").unwrap();
-        assert_eq!(t1.status, worksgood::graph::Status::Done);
+        assert_eq!(t1.status, worksgood::graph::Status::Abandoned);
         assert!(t1.tags.contains(&"archived".to_string()));
 
         // State files: gone.
