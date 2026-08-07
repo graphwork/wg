@@ -2,328 +2,158 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
 use worksgood::graph::{LogEntry, Status};
-use worksgood::parser::{load_graph, modify_graph};
+use worksgood::lifecycle::{
+    FenceExpectation, LifecycleActor, TransitionKind, TransitionRequest, apply_transition,
+};
+use worksgood::parser::modify_graph;
 
-#[cfg(test)]
-use super::graph_path;
-#[cfg(test)]
-use worksgood::parser::save_graph;
-
-/// Reject a task that is pending validation, reopening it with feedback.
-/// If rejection_count >= max_rejections, the task is failed instead.
+/// Reject the current acceptance candidate without inferring a worker retry.
+///
+/// The source attempt and its immutable evidence stay in `PendingEval`.
+/// Repair, waiver, or an explicit operator retry is a separate request.
 pub fn run(dir: &Path, id: &str, reason: &str) -> Result<()> {
     let path = super::graph_path(dir);
     if !path.exists() {
         anyhow::bail!("WG not initialized. Run 'wg init' first.");
     }
-
-    let preflight = load_graph(&path).context("Failed to load graph")?;
-    let preflight_task = preflight
-        .get_task(id)
-        .ok_or_else(|| anyhow::anyhow!("Task '{}' not found", id))?;
-    if matches!(
-        preflight_task.status,
-        Status::PendingValidation | Status::PendingEval
-    ) {
-        super::finalize::record_terminal_abort(dir, id, reason)?;
+    if reason.trim().is_empty() {
+        anyhow::bail!("Rejection requires a non-empty evidence reason");
     }
-    drop(preflight);
 
-    let mut error: Option<anyhow::Error> = None;
-    let mut rejection_count: u32 = 0;
-    let mut max_rejections: u32 = 3;
-    let mut outcome = "reopened";
-
-    let _graph = modify_graph(&path, |graph| {
-        let task = match graph.get_task_mut(id) {
-            Some(t) => t,
-            None => {
-                error = Some(anyhow::anyhow!("Task '{}' not found", id));
-                return false;
-            }
+    let reason_owned = reason.to_string();
+    let evidence_ref = format!(
+        "rejection:{}",
+        blake3::hash(reason_owned.as_bytes()).to_hex()
+    );
+    let mut error = None;
+    let mut rejection_count = 0;
+    modify_graph(&path, |graph| {
+        let Some(task) = graph.get_task_mut(id) else {
+            error = Some(anyhow::anyhow!("Task '{}' not found", id));
+            return false;
         };
-
         if !matches!(task.status, Status::PendingValidation | Status::PendingEval) {
             error = Some(anyhow::anyhow!(
-                "Task '{}' is not awaiting validation (status: {:?}). Only pending-validation \
-                 and pending-eval tasks can be rejected.",
+                "Task '{}' is not awaiting acceptance (status: {})",
                 id,
                 task.status
             ));
             return false;
         }
 
-        task.rejection_count += 1;
-        rejection_count = task.rejection_count;
-        max_rejections = task.max_rejections.unwrap_or(3);
-
-        if rejection_count >= max_rejections {
-            // Too many rejections — fail the task
-            outcome = "failed";
-            task.status = Status::Failed;
-            task.failure_reason = Some(format!(
-                "Exceeded max rejections ({}/{}): {}",
-                rejection_count, max_rejections, reason
-            ));
-            task.log.push(LogEntry {
-                timestamp: Utc::now().to_rfc3339(),
-                actor: std::env::var("WG_AGENT_ID").ok(),
-                user: Some(worksgood::current_user()),
-                message: format!(
-                    "Task rejected ({}/{}), failing: {}",
-                    rejection_count, max_rejections, reason
-                ),
-            });
-        } else {
-            // Reopen for continuation, but never overlap the still-owned
-            // source worktree/session. The exact-owner reaper enables the next
-            // generation after quiescence.
-            if let Err(rejection) = super::reopen::request(
-                task,
-                "reject",
-                false,
-                true,
-                "validation rejection continuation",
-                worksgood::lifecycle::LifecycleActor::operator(worksgood::current_user()),
-                "validation_rejected_reopen",
-            ) {
-                error = Some(anyhow::anyhow!(rejection));
-                return false;
-            }
-            task.log.push(LogEntry {
-                timestamp: Utc::now().to_rfc3339(),
-                actor: std::env::var("WG_AGENT_ID").ok(),
-                user: Some(worksgood::current_user()),
-                message: format!(
-                    "Task rejected ({}/{}): {}",
-                    rejection_count, max_rejections, reason
-                ),
-            });
+        let request = TransitionRequest::new(
+            TransitionKind::AcceptanceRejected {
+                evidence_ref: evidence_ref.clone(),
+            },
+            LifecycleActor::operator(worksgood::current_user()),
+            "acceptance_candidate_rejected",
+            format!(
+                "reject-candidate:{id}:{}:{}",
+                task.lifecycle.generation,
+                task.rejection_count.saturating_add(1)
+            ),
+        )
+        .with_evidence(evidence_ref.clone())
+        .expecting(FenceExpectation::current(task));
+        if let Err(rejection) = apply_transition(task, request) {
+            error = Some(anyhow::anyhow!(rejection));
+            return false;
         }
-
+        task.rejection_count = task.rejection_count.saturating_add(1);
+        rejection_count = task.rejection_count;
+        task.failure_reason = Some(format!("Acceptance candidate rejected: {reason_owned}"));
+        task.assigned = None;
+        task.log.push(LogEntry {
+            timestamp: Utc::now().to_rfc3339(),
+            actor: std::env::var("WG_AGENT_ID").ok(),
+            user: Some(worksgood::current_user()),
+            message: format!(
+                "Acceptance candidate rejected (observation {}): {}. Source attempt retained; no retry inferred.",
+                rejection_count, reason_owned
+            ),
+        });
         true
     })
     .context("Failed to save graph")?;
-
-    if let Some(e) = error {
-        return Err(e);
+    if let Some(error) = error {
+        return Err(error);
     }
 
     super::notify_graph_changed(dir);
-    if outcome == "reopened" {
-        let _ = super::reopen::reconcile_pending(dir)?;
-    }
-
     let config = worksgood::config::Config::load_or_default(dir);
     let _ = worksgood::provenance::record(
         dir,
         "reject",
         Some(id),
-        std::env::var("WG_AGENT_ID").ok().as_deref(),
+        None,
         serde_json::json!({
             "reason": reason,
             "rejection_count": rejection_count,
-            "max_rejections": max_rejections,
-            "outcome": outcome,
+            "outcome": "awaiting-acceptance",
+            "evidence_ref": evidence_ref,
         }),
         config.log.rotation_threshold,
     );
-
-    if outcome == "failed" {
-        println!(
-            "Rejected '{}' ({}/{} rejections) — task failed",
-            id, rejection_count, max_rejections
-        );
-    } else {
-        println!(
-            "Rejected '{}' ({}/{} rejections) — reopened for re-dispatch",
-            id, rejection_count, max_rejections
-        );
-    }
-
+    println!(
+        "Rejected candidate for '{}'; source attempt retained awaiting repair, waiver, or explicit retry",
+        id
+    );
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
     use tempfile::tempdir;
     use worksgood::graph::{Node, Task, WorkGraph};
+    use worksgood::parser::{load_graph, save_graph};
 
-    fn make_task(id: &str, title: &str, status: Status) -> Task {
-        Task {
-            id: id.to_string(),
-            title: title.to_string(),
-            status,
-            ..Task::default()
-        }
-    }
-
-    fn setup_workgraph(dir: &Path, tasks: Vec<Task>) -> std::path::PathBuf {
-        fs::create_dir_all(dir).unwrap();
-        let path = graph_path(dir);
+    fn setup(status: Status) -> tempfile::TempDir {
+        let dir = tempdir().unwrap();
         let mut graph = WorkGraph::new();
-        for task in tasks {
-            graph.add_node(Node::Task(task));
+        graph.add_node(Node::Task(Task {
+            id: "work".into(),
+            title: "work".into(),
+            status,
+            assigned: Some("agent-1".into()),
+            ..Task::default()
+        }));
+        save_graph(&graph, &dir.path().join("graph.jsonl")).unwrap();
+        dir
+    }
+
+    #[test]
+    fn rejection_retains_candidate_without_retrying() {
+        let dir = setup(Status::PendingEval);
+        run(dir.path(), "work", "missing edge case").unwrap();
+        let graph = load_graph(dir.path().join("graph.jsonl")).unwrap();
+        let task = graph.get_task("work").unwrap();
+        assert_eq!(task.status, Status::PendingEval);
+        assert_eq!(task.rejection_count, 1);
+        assert!(task.assigned.is_none());
+        assert_eq!(task.lifecycle.audit.len(), 1);
+        assert_eq!(
+            task.lifecycle.audit[0].reason_code,
+            "acceptance_candidate_rejected"
+        );
+    }
+
+    #[test]
+    fn repeated_rejection_never_becomes_retry_or_terminal_failure() {
+        let dir = setup(Status::PendingValidation);
+        for reason in ["first", "second", "third", "fourth"] {
+            run(dir.path(), "work", reason).unwrap();
         }
-        save_graph(&graph, &path).unwrap();
-        path
+        let graph = load_graph(dir.path().join("graph.jsonl")).unwrap();
+        let task = graph.get_task("work").unwrap();
+        assert_eq!(task.status, Status::PendingEval);
+        assert_eq!(task.rejection_count, 4);
+        assert!(task.lifecycle.reopen_intent.is_none());
     }
 
     #[test]
-    fn test_reject_reopens_task() {
-        let dir = tempdir().unwrap();
-        let dir_path = dir.path();
-        setup_workgraph(
-            dir_path,
-            vec![make_task("t1", "Test task", Status::PendingValidation)],
-        );
-
-        let result = run(dir_path, "t1", "Tests fail");
-        assert!(result.is_ok());
-
-        let path = graph_path(dir_path);
-        let graph = load_graph(&path).unwrap();
-        let task = graph.get_task("t1").unwrap();
-        assert_eq!(task.status, Status::Open);
-        assert_eq!(task.rejection_count, 1);
-        assert!(task.assigned.is_none());
-    }
-
-    #[test]
-    fn test_reject_adds_feedback_to_log() {
-        let dir = tempdir().unwrap();
-        let dir_path = dir.path();
-        setup_workgraph(
-            dir_path,
-            vec![make_task("t1", "Test task", Status::PendingValidation)],
-        );
-
-        run(dir_path, "t1", "3 test failures in auth module").unwrap();
-
-        let path = graph_path(dir_path);
-        let graph = load_graph(&path).unwrap();
-        let task = graph.get_task("t1").unwrap();
-        let last_log = task.log.last().unwrap();
-        assert!(last_log.message.contains("3 test failures in auth module"));
-        assert!(last_log.message.contains("rejected"));
-    }
-
-    #[test]
-    fn test_reject_max_rejections_fails_task() {
-        let dir = tempdir().unwrap();
-        let dir_path = dir.path();
-        let mut task = make_task("t1", "Test task", Status::PendingValidation);
-        task.rejection_count = 2;
-        task.max_rejections = Some(3);
-        setup_workgraph(dir_path, vec![task]);
-
-        let result = run(dir_path, "t1", "Still broken");
-        assert!(result.is_ok());
-
-        let path = graph_path(dir_path);
-        let graph = load_graph(&path).unwrap();
-        let task = graph.get_task("t1").unwrap();
-        assert_eq!(task.status, Status::Failed);
-        assert!(
-            task.failure_reason
-                .as_ref()
-                .unwrap()
-                .contains("max rejections")
-        );
-    }
-
-    #[test]
-    fn test_reject_within_max_reopens() {
-        let dir = tempdir().unwrap();
-        let dir_path = dir.path();
-        let mut task = make_task("t1", "Test task", Status::PendingValidation);
-        task.rejection_count = 1;
-        task.max_rejections = Some(3);
-        setup_workgraph(dir_path, vec![task]);
-
-        run(dir_path, "t1", "Minor issue").unwrap();
-
-        let path = graph_path(dir_path);
-        let graph = load_graph(&path).unwrap();
-        let task = graph.get_task("t1").unwrap();
-        assert_eq!(task.status, Status::Open);
-        assert_eq!(task.rejection_count, 2);
-    }
-
-    #[test]
-    fn test_reject_non_pending_task_fails() {
-        let dir = tempdir().unwrap();
-        let dir_path = dir.path();
-        setup_workgraph(dir_path, vec![make_task("t1", "Test task", Status::Open)]);
-
-        let result = run(dir_path, "t1", "reason");
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(err.contains("not awaiting validation"));
-    }
-
-    #[test]
-    fn test_reject_pending_eval_reopens_task() {
-        let dir = tempdir().unwrap();
-        let dir_path = dir.path();
-        setup_workgraph(
-            dir_path,
-            vec![make_task("t1", "Test task", Status::PendingEval)],
-        );
-
-        let result = run(dir_path, "t1", "Eval failed");
-        assert!(result.is_ok(), "reject should accept PendingEval");
-
-        let path = graph_path(dir_path);
-        let graph = load_graph(&path).unwrap();
-        let task = graph.get_task("t1").unwrap();
-        assert_eq!(task.status, Status::Open);
-        assert_eq!(task.rejection_count, 1);
-    }
-
-    #[test]
-    fn test_reject_clears_assigned() {
-        let dir = tempdir().unwrap();
-        let dir_path = dir.path();
-        let mut task = make_task("t1", "Test task", Status::PendingValidation);
-        task.assigned = Some("agent-1".to_string());
-        setup_workgraph(dir_path, vec![task]);
-
-        run(dir_path, "t1", "needs rework").unwrap();
-
-        let path = graph_path(dir_path);
-        let graph = load_graph(&path).unwrap();
-        let task = graph.get_task("t1").unwrap();
-        assert!(task.assigned.is_none());
-    }
-
-    #[test]
-    fn test_reject_nonexistent_task_fails() {
-        let dir = tempdir().unwrap();
-        let dir_path = dir.path();
-        setup_workgraph(dir_path, vec![]);
-
-        let result = run(dir_path, "nonexistent", "reason");
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("not found"));
-    }
-
-    #[test]
-    fn test_reject_default_max_rejections_is_3() {
-        let dir = tempdir().unwrap();
-        let dir_path = dir.path();
-        let mut task = make_task("t1", "Test task", Status::PendingValidation);
-        // No max_rejections set — should default to 3
-        task.rejection_count = 2;
-        setup_workgraph(dir_path, vec![task]);
-
-        run(dir_path, "t1", "third strike").unwrap();
-
-        let path = graph_path(dir_path);
-        let graph = load_graph(&path).unwrap();
-        let task = graph.get_task("t1").unwrap();
-        assert_eq!(task.status, Status::Failed);
+    fn rejection_refuses_non_acceptance_state() {
+        let dir = setup(Status::Open);
+        assert!(run(dir.path(), "work", "no").is_err());
     }
 }
