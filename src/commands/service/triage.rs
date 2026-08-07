@@ -163,8 +163,6 @@ enum DeadReason {
     ProcessExited,
     /// PID exists but belongs to a different process (PID reuse after daemon restart)
     PidReused,
-    /// Agent has not sent a heartbeat within the configured timeout
-    HeartbeatTimeout,
 }
 
 /// Check stream file activity for an agent. Returns the timestamp of the last
@@ -201,11 +199,7 @@ fn check_stream_liveness(agent: &AgentEntry) -> Option<i64> {
 /// `grace_period_secs` is the minimum uptime before a dead PID is acted on.
 /// This avoids race conditions where the coordinator registers a PID but the
 /// process hasn't fully started yet.
-fn detect_dead_reason(
-    agent: &AgentEntry,
-    grace_period_secs: i64,
-    heartbeat_timeout_secs: i64,
-) -> Option<DeadReason> {
+fn detect_dead_reason(agent: &AgentEntry, grace_period_secs: i64) -> Option<DeadReason> {
     if !agent.is_alive() {
         return None;
     }
@@ -234,36 +228,6 @@ fn detect_dead_reason(
         return Some(DeadReason::PidReused);
     }
 
-    // Check for heartbeat timeout, but first check stream activity as a positive
-    // liveness signal. If the agent's stream has recent events, it's actively working
-    // even if the registry heartbeat is stale (e.g., wrapper heartbeat loop hasn't
-    // kicked in yet).
-    if let Ok(last_hb) = agent
-        .last_heartbeat
-        .parse::<chrono::DateTime<chrono::Utc>>()
-    {
-        let now = chrono::Utc::now();
-        let since_heartbeat = (now - last_hb).num_seconds();
-        if since_heartbeat > heartbeat_timeout_secs {
-            // Before declaring timeout, check stream file for recent activity.
-            // If the stream has events newer than the last heartbeat AND those
-            // events are within the timeout window, the agent is actively working.
-            // We require events to be newer than the heartbeat to avoid Init
-            // bookend events (written once at spawn) from indefinitely extending
-            // the timeout window.
-            if let Some(last_event_ms) = check_stream_liveness(agent) {
-                let hb_ms = last_hb.timestamp_millis();
-                let now_ms = now.timestamp_millis();
-                let since_event_secs = (now_ms - last_event_ms) / 1000;
-                if last_event_ms > hb_ms && since_event_secs <= heartbeat_timeout_secs {
-                    // Stream has activity newer than last heartbeat — agent is alive
-                    return None;
-                }
-            }
-            return Some(DeadReason::HeartbeatTimeout);
-        }
-    }
-
     None
 }
 
@@ -272,8 +236,6 @@ fn detect_dead_reason(
 pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<String>> {
     let config = Config::load_or_default(dir);
     let grace_secs = config.agent.reaper_grace_seconds as i64;
-    let heartbeat_timeout_secs = config.agent.heartbeat_timeout_secs() as i64;
-
     let mut locked_registry = AgentRegistry::load_locked(dir)?;
 
     // Find agents that are dead: process gone
@@ -281,7 +243,7 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
         .agents
         .values()
         .filter_map(|a| {
-            detect_dead_reason(a, grace_secs, heartbeat_timeout_secs).map(|reason| {
+            detect_dead_reason(a, grace_secs).map(|reason| {
                 (
                     a.id.clone(),
                     a.task_id.clone(),
@@ -379,9 +341,6 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
                     task.failure_reason = Some(match reason {
                         DeadReason::ProcessExited => "worker process exited".to_string(),
                         DeadReason::PidReused => "worker PID identity was reused".to_string(),
-                        DeadReason::HeartbeatTimeout => {
-                            "worker heartbeat timed out after process verification".to_string()
-                        }
                     });
                 }
                 tasks_modified = true;
@@ -1622,7 +1581,7 @@ mod tests {
         };
 
         assert!(
-            detect_dead_reason(&agent, DEFAULT_REAPER_GRACE_PERIOD_SECS, 60).is_none(),
+            detect_dead_reason(&agent, DEFAULT_REAPER_GRACE_PERIOD_SECS).is_none(),
             "Agent within grace period should not be detected as dead"
         );
     }
@@ -1646,7 +1605,7 @@ mod tests {
             worktree_path: None,
         };
 
-        let reason = detect_dead_reason(&agent, DEFAULT_REAPER_GRACE_PERIOD_SECS, 60);
+        let reason = detect_dead_reason(&agent, DEFAULT_REAPER_GRACE_PERIOD_SECS);
         assert!(
             reason.is_some(),
             "Agent past grace period with dead PID should be detected"
@@ -1675,7 +1634,7 @@ mod tests {
             worktree_path: None,
         };
 
-        let reason = detect_dead_reason(&agent, 0, 60);
+        let reason = detect_dead_reason(&agent, 0);
         assert!(
             reason.is_some(),
             "Grace period 0 should detect dead PID immediately"
@@ -1704,7 +1663,7 @@ mod tests {
         };
 
         assert!(
-            detect_dead_reason(&agent, DEFAULT_REAPER_GRACE_PERIOD_SECS, 60).is_none(),
+            detect_dead_reason(&agent, DEFAULT_REAPER_GRACE_PERIOD_SECS).is_none(),
             "Already-dead agent should not be re-detected"
         );
     }
@@ -1730,7 +1689,7 @@ mod tests {
         // actual start time doesn't match 2020. On non-Linux this falls
         // through to None. Either way the process IS alive, so ProcessExited
         // should never fire.
-        let reason = detect_dead_reason(&agent, DEFAULT_REAPER_GRACE_PERIOD_SECS, 60);
+        let reason = detect_dead_reason(&agent, DEFAULT_REAPER_GRACE_PERIOD_SECS);
         if let Some(ref r) = reason {
             // Only PidReused is acceptable here (on Linux where /proc is available)
             assert!(

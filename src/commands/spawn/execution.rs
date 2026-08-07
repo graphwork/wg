@@ -3579,12 +3579,7 @@ if [ $EXIT_CODE -ne 0 ]; then
         echo "" >> "$OUTPUT_FILE"
         echo "[wrapper] Session not resumable, starting fresh session" >> "$OUTPUT_FILE"
         wg log "$TASK_ID" "session not resumable, falling back to fresh session" 2>/dev/null || true
-        # The heartbeat guard writer belongs only to this wrapper. Close it
-        # around the fallback executor exactly as for the primary executor, so
-        # wrapper death produces immediate EOF even while the fallback lives.
-        {{
-            {fallback_run_command}
-        }} {{HEARTBEAT_GUARD_FD}}>&-
+        {fallback_run_command}
         EXIT_CODE=$?
     fi
 fi
@@ -3654,22 +3649,9 @@ if [ -n "${{WG_WORKTREE_OBSERVER_STATE_DIR:-}}" ]; then
     WG_WORKTREE_OBSERVER_PID=$!
     unset WG_WORKTREE_OBSERVER_STATE_DIR
 fi
-# Guarded heartbeat watcher — keeps registry heartbeat fresh while this wrapper
-# owns the anonymous pipe's write descriptor. The executor runs with that
-# descriptor closed, so even an untrappable wrapper death produces immediate
-# EOF and the watcher exits instead of orphaning a `sleep 120` subprocess.
-exec {{HEARTBEAT_GUARD_FD}}> >(wg heartbeat-watch "$WG_AGENT_ID" --supervised-pid "$$" 2>/dev/null)
-HEARTBEAT_PID=$!
-
-# Run the agent command without inheriting the heartbeat guard writer.
-{{
-    {run_command}
-}} {{HEARTBEAT_GUARD_FD}}>&-
+{run_command}
 EXIT_CODE=$?
 {session_fallback_block}
-# Stop the heartbeat watcher and close its guard on normal completion.
-exec {{HEARTBEAT_GUARD_FD}}>&-
-kill $HEARTBEAT_PID 2>/dev/null; wait $HEARTBEAT_PID 2>/dev/null
 {stream_result}
 
 # Provider telemetry runs independently of process exit. This catches pi's
@@ -6625,13 +6607,9 @@ mod tests {
             script.contains("claude --print < prompt.txt"),
             "Wrapper should contain the fallback command"
         );
-        let fallback = script
-            .split("Session not resumable, starting fresh session")
-            .nth(1)
-            .expect("fallback block");
         assert!(
-            fallback.contains("} {HEARTBEAT_GUARD_FD}>&-"),
-            "fallback executor must not inherit the heartbeat guard writer"
+            !script.contains("heartbeat-watch") && !script.contains("HEARTBEAT_GUARD_FD"),
+            "the wrapper must not launch a heartbeat control helper"
         );
     }
 
@@ -6672,7 +6650,7 @@ mod tests {
     }
 
     #[test]
-    fn test_wrapper_script_no_fallback_when_none() {
+    fn test_wrapper_has_no_heartbeat_control_helper() {
         let temp_dir = tempfile::TempDir::new().unwrap();
         let output_dir = temp_dir.path();
 
@@ -6692,14 +6670,8 @@ mod tests {
             !script.contains("Session not resumable"),
             "Wrapper should NOT contain session fallback when no fallback provided"
         );
-        assert!(
-            script.contains("exec {HEARTBEAT_GUARD_FD}> >(wg heartbeat-watch \"$WG_AGENT_ID\""),
-            "wrapper must launch the pipe-guarded heartbeat watcher"
-        );
-        assert!(
-            script.matches("{HEARTBEAT_GUARD_FD}>&-").count() >= 2,
-            "executor must close the guard writer and wrapper must close it on completion"
-        );
+        assert!(!script.contains("heartbeat-watch"));
+        assert!(!script.contains("HEARTBEAT_GUARD_FD"));
         assert!(
             !script
                 .lines()
