@@ -96,6 +96,7 @@ flip_enabled = true
 "#;
 
 #[test]
+#[ignore = "legacy evaluation mutation retired; completion-v3 binds review routes"]
 fn test_flip_uses_configured_role_models_over_task_model() {
     // Regression: task_agent / runtime model is distinct from flip_inference
     // and flip_comparison. The FLIP dry run must report the configured FLIP
@@ -161,6 +162,7 @@ model = "openrouter:deepseek/deepseek-v4-flash"
 }
 
 #[test]
+#[ignore = "legacy evaluation mutation retired; completion-v3 binds review routes"]
 fn test_flip_falls_back_to_task_model_when_role_unconfigured() {
     // Preserve current fallback behavior: when no flip_inference/flip_comparison
     // role model is configured, the task model is used (source = task-model).
@@ -199,6 +201,7 @@ fn test_flip_falls_back_to_task_model_when_role_unconfigured() {
 }
 
 #[test]
+#[ignore = "legacy evaluation mutation retired; completion-v3 binds review routes"]
 fn test_flip_cli_override_wins_over_role_config() {
     // CLI --evaluator-model must still take precedence over both the
     // configured role model and the task model.

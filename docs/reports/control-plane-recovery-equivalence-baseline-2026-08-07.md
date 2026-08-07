@@ -78,11 +78,11 @@ At the final recovery cut, the same scanner reports:
 
 ```text
 fixed control-plane paths:        62
-production control-plane LOC:     67,998
+production control-plane LOC:     68,001
 status writers outside applier:   0 in 0 files
 ```
 
-The recovery deleted 3,680 production control-plane lines (5.1%) while removing
+The recovery deleted 3,677 production control-plane lines (5.1%) while removing
 all measured direct task-status assignments outside the lifecycle applier.
 Completion-side validators, evaluator reconciliation, heartbeat age, daemon
 cleanup, replay, IPC, cron, and remote-result observations now either emit
