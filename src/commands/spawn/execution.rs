@@ -3637,18 +3637,6 @@ unset CLAUDE_CODE_SDK_HAS_OAUTH_REFRESH
 {timeout_note}
 {debug_env_vars}
 {stream_init}
-# Start the source observer before the handler. The baseline was already
-# fsynced by the parent spawn transaction before this wrapper received its
-# launch permit. Native events only wake content reconciliation.
-if [ -n "${{WG_WORKTREE_OBSERVER_STATE_DIR:-}}" ]; then
-    if command -v setsid >/dev/null 2>&1; then
-        setsid env -u WG_WORKER_CAPABILITY -u WG_WORKER_IPC -u WG_TASK_ID wg worktree-observer-run --state-dir "$WG_WORKTREE_OBSERVER_STATE_DIR" --parent-pid "$$" >/dev/null 2>&1 &
-    else
-        nohup env -u WG_WORKER_CAPABILITY -u WG_WORKER_IPC -u WG_TASK_ID wg worktree-observer-run --state-dir "$WG_WORKTREE_OBSERVER_STATE_DIR" --parent-pid "$$" </dev/null >/dev/null 2>&1 &
-    fi
-    WG_WORKTREE_OBSERVER_PID=$!
-    unset WG_WORKTREE_OBSERVER_STATE_DIR
-fi
 {run_command}
 EXIT_CODE=$?
 {session_fallback_block}
@@ -6672,6 +6660,7 @@ mod tests {
         );
         assert!(!script.contains("heartbeat-watch"));
         assert!(!script.contains("HEARTBEAT_GUARD_FD"));
+        assert!(!script.contains("worktree-observer-run"));
         assert!(
             !script
                 .lines()

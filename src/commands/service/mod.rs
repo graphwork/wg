@@ -2918,17 +2918,6 @@ pub fn run_daemon(
         );
     }
 
-    match worksgood::worktree_observer::restart_current_observers(&dir) {
-        Ok(0) => {}
-        Ok(count) => logger.info(&format!(
-            "Reattached {} isolated-worktree observer process(es); live watcher leases deduplicate startup",
-            count
-        )),
-        Err(error) => logger.warn(&format!(
-            "Worktree observer startup reconciliation degraded; persisted evidence remains fail-closed: {error:#}"
-        )),
-    }
-
     let (resolved_executor, resolved_model) = resolve_service_coordinator_settings(
         &dir,
         &config,
