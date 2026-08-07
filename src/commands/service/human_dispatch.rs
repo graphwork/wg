@@ -31,7 +31,12 @@ use chrono::Utc;
 
 use worksgood::agency::{self, Agent, TelegramBindingMap};
 use worksgood::graph::{
-    LogEntry, Status, Task, WaitCondition, WaitSpec, WorkGraph, is_system_task,
+    LogEntry, MessageWaitSelector, MessageWaitSubscription, Status, Task, WaitCondition, WaitSpec,
+    WorkGraph, is_system_task,
+};
+use worksgood::lifecycle::{
+    ActorKind, FenceExpectation, LifecycleActor, TransitionKind, TransitionRequest,
+    apply_transition,
 };
 use worksgood::messages;
 use worksgood::notify::NotificationChannel;
@@ -100,8 +105,58 @@ pub fn park_ready_human_tasks(graph: &mut WorkGraph, dir: &Path) -> Vec<ParkedHu
     for task_id in target_ids {
         if let Some(t) = graph.get_task_mut(&task_id) {
             let agent_id = t.agent.clone().unwrap_or_default();
-            t.status = Status::Waiting;
+            let reservation = TransitionRequest::new(
+                TransitionKind::AttemptReserved {
+                    owner_id: Some(agent_id.clone()),
+                },
+                LifecycleActor {
+                    kind: ActorKind::Dispatcher,
+                    id: "human-dispatch".to_string(),
+                },
+                "human_attempt_reserved",
+                format!(
+                    "human-reserve:{}:{}:{}",
+                    t.id,
+                    t.lifecycle.generation,
+                    t.lifecycle.attempt_sequence + 1
+                ),
+            )
+            .expecting(FenceExpectation::current(t));
+            if apply_transition(t, reservation).is_err() {
+                continue;
+            }
+            let attempt = t
+                .lifecycle
+                .current_attempt
+                .as_ref()
+                .expect("human reservation projected an attempt")
+                .clone();
+            let park = TransitionRequest::new(
+                TransitionKind::AttemptParked,
+                LifecycleActor {
+                    kind: ActorKind::Worker,
+                    id: agent_id.clone(),
+                },
+                "awaiting_human_input",
+                format!("human-park:{}:{}", t.id, attempt.id),
+            )
+            .expecting(FenceExpectation::current(t));
+            if apply_transition(t, park).is_err() {
+                continue;
+            }
             t.wait_condition = Some(WaitSpec::All(vec![WaitCondition::HumanInput]));
+            t.message_wait = Some(MessageWaitSubscription {
+                id: format!(
+                    "message-wait:{}:{}:{}",
+                    t.id, attempt.generation, attempt.id
+                ),
+                attempt_epoch: attempt.generation,
+                attempt_id: attempt.id,
+                selector: MessageWaitSelector::HumanInput,
+                armed: true,
+                consumed_by_message_id: None,
+                resume_request_id: None,
+            });
             t.log.push(LogEntry {
                 timestamp: Utc::now().to_rfc3339(),
                 actor: Some("coordinator".to_string()),
