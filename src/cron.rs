@@ -216,8 +216,25 @@ pub fn reset_cron_task(task: &mut Task) -> bool {
     task.next_cron_fire =
         calculate_next_fire_with_jitter(&task.id, &schedule, now).map(|dt| dt.to_rfc3339());
 
-    // Reset task to Open for next cron cycle
-    task.status = crate::graph::Status::Open;
+    // Cron is an explicit next-attempt request, not a direct status reset.
+    let request = crate::lifecycle::TransitionRequest::new(
+        crate::lifecycle::TransitionKind::GenerationCreated,
+        crate::lifecycle::LifecycleActor {
+            kind: crate::lifecycle::ActorKind::Reconciler,
+            id: "cron".to_string(),
+        },
+        "cron_fire",
+        format!(
+            "cron-fire:{}:{}:{}",
+            task.id,
+            task.lifecycle.generation,
+            task.last_cron_fire.as_deref().unwrap_or("unknown")
+        ),
+    )
+    .expecting(crate::lifecycle::FenceExpectation::current(task));
+    if crate::lifecycle::apply_transition(task, request).is_err() {
+        return false;
+    }
     task.assigned = None;
     task.completed_at = None;
 
