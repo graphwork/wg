@@ -271,7 +271,19 @@ pub fn rerun_poison_descendants(dir: &Path, poisoned_task: &str, reset: bool) ->
                 if !finished {
                     continue;
                 }
-                t.status = Status::Open;
+                let request = worksgood::lifecycle::TransitionRequest::new(
+                    worksgood::lifecycle::TransitionKind::GenerationCreated,
+                    worksgood::lifecycle::LifecycleActor::operator(worksgood::current_user()),
+                    "poisoned_artifact_rerun",
+                    format!(
+                        "poison-rerun:{poison}:{id}:{}:{}",
+                        t.lifecycle.generation, t.lifecycle.fence
+                    ),
+                )
+                .expecting(worksgood::lifecycle::FenceExpectation::current(t));
+                if worksgood::lifecycle::apply_transition(t, request).is_err() {
+                    continue;
+                }
                 t.assigned = None;
                 t.started_at = None;
                 t.completed_at = None;
