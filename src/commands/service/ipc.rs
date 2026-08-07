@@ -2724,7 +2724,22 @@ fn handle_delete_coordinator(dir: &Path, coordinator_id: u32) -> IpcResponse {
             return false;
         };
         let task = graph.get_task_mut(resolved_id).unwrap();
-        task.status = worksgood::graph::Status::Abandoned;
+        if !task.status.is_terminal() {
+            let request = worksgood::lifecycle::TransitionRequest::new(
+                worksgood::lifecycle::TransitionKind::Abandoned,
+                worksgood::lifecycle::LifecycleActor {
+                    kind: worksgood::lifecycle::ActorKind::Operator,
+                    id: "ipc-delete-chat".to_string(),
+                },
+                "chat_deleted",
+                format!("delete-chat:{coordinator_id}:{}", task.lifecycle.generation),
+            )
+            .expecting(worksgood::lifecycle::FenceExpectation::current(task));
+            if worksgood::lifecycle::apply_transition(task, request).is_err() {
+                result_msg = Some(format!("Chat task '{}' changed during delete", resolved_id));
+                return false;
+            }
+        }
         task.log.push(worksgood::graph::LogEntry {
             timestamp: chrono::Utc::now().to_rfc3339(),
             actor: Some("daemon".to_string()),
@@ -2872,7 +2887,28 @@ fn handle_archive_coordinator(dir: &Path, coordinator_id: u32) -> IpcResponse {
             return false;
         };
         let task = graph.get_task_mut(resolved_id).unwrap();
-        task.status = worksgood::graph::Status::Done;
+        if !task.status.is_terminal() {
+            let request = worksgood::lifecycle::TransitionRequest::new(
+                worksgood::lifecycle::TransitionKind::Abandoned,
+                worksgood::lifecycle::LifecycleActor {
+                    kind: worksgood::lifecycle::ActorKind::Operator,
+                    id: "ipc-archive-chat".to_string(),
+                },
+                "chat_archived",
+                format!(
+                    "archive-chat:{coordinator_id}:{}",
+                    task.lifecycle.generation
+                ),
+            )
+            .expecting(worksgood::lifecycle::FenceExpectation::current(task));
+            if worksgood::lifecycle::apply_transition(task, request).is_err() {
+                result_msg = Some(format!(
+                    "Chat task '{}' changed during archive",
+                    resolved_id
+                ));
+                return false;
+            }
+        }
         task.tags
             .retain(|t| !worksgood::chat_id::is_chat_loop_tag(t));
         if !task.tags.contains(&"archived".to_string()) {
@@ -3031,7 +3067,20 @@ fn handle_stop_coordinator(dir: &Path, coordinator_id: u32) -> IpcResponse {
             return false;
         };
         let task = graph.get_task_mut(actual_id).unwrap();
-        task.status = worksgood::graph::Status::Open;
+        let request = worksgood::lifecycle::TransitionRequest::new(
+            worksgood::lifecycle::TransitionKind::GenerationCreated,
+            worksgood::lifecycle::LifecycleActor {
+                kind: worksgood::lifecycle::ActorKind::Operator,
+                id: "ipc-stop-chat".to_string(),
+            },
+            "chat_stopped",
+            format!("stop-chat:{coordinator_id}:{}", task.lifecycle.generation),
+        )
+        .expecting(worksgood::lifecycle::FenceExpectation::current(task));
+        if worksgood::lifecycle::apply_transition(task, request).is_err() {
+            result_msg = Some(format!("Chat task '{}' changed during stop", actual_id));
+            return false;
+        }
         task.assigned = None;
         task.log.push(worksgood::graph::LogEntry {
             timestamp: chrono::Utc::now().to_rfc3339(),
@@ -4635,9 +4684,33 @@ poll_interval = 60
         // Reload and check task state
         let graph = worksgood::parser::load_graph(&dir.join("graph.jsonl")).unwrap();
         let task = graph.get_task(".coordinator-2").unwrap();
-        assert_eq!(task.status, worksgood::graph::Status::Done);
+        assert_eq!(task.status, worksgood::graph::Status::Abandoned);
         assert!(task.tags.contains(&"archived".to_string()));
+        assert_eq!(task.lifecycle.audit.len(), 1);
         assert!(!task.tags.contains(&"coordinator-loop".to_string()));
+    }
+
+    #[test]
+    fn test_handle_stop_coordinator_opens_audited_generation() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+        let mut graph = worksgood::graph::WorkGraph::new();
+        graph.add_node(worksgood::graph::Node::Task(worksgood::graph::Task {
+            id: ".chat-3".to_string(),
+            title: "Chat 3".to_string(),
+            status: worksgood::graph::Status::InProgress,
+            tags: vec![worksgood::chat_id::CHAT_LOOP_TAG.to_string()],
+            ..Default::default()
+        }));
+        worksgood::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+
+        let response = handle_stop_coordinator(dir, 3);
+        assert!(response.ok, "{:?}", response.error);
+        let graph = worksgood::parser::load_graph(&dir.join("graph.jsonl")).unwrap();
+        let task = graph.get_task(".chat-3").unwrap();
+        assert_eq!(task.status, worksgood::graph::Status::Open);
+        assert_eq!(task.lifecycle.generation, 1);
+        assert_eq!(task.lifecycle.audit.len(), 1);
     }
 
     #[test]
