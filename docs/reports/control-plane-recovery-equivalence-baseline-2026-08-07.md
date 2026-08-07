@@ -72,4 +72,23 @@ The reduced kernel must preserve:
 9. review and publication remain bound to one immutable manifest;
 10. graph, registry, telemetry, and TUI are rebuildable projections.
 
-This report is characterization only. It adds no runtime authority.
+## Recovery result
+
+At `8f129c55`, the same scanner reports:
+
+```text
+fixed control-plane paths:        62
+production control-plane LOC:     68,127
+status writers outside applier:   0 in 0 files
+```
+
+The recovery deleted 3,551 production control-plane lines (5.0%) while removing
+all measured direct task-status assignments outside the lifecycle applier.
+Completion-side validators, evaluator reconciliation, heartbeat age, daemon
+cleanup, replay, IPC, cron, and remote-result observations now either emit
+receipts or request lifecycle transitions; they no longer project task status
+independently.
+
+This metric establishes the production authority boundary, not formal
+correctness by itself. The formal builds, conformance suites, and independent
+canary remain separate acceptance evidence.
