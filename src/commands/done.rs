@@ -2155,70 +2155,6 @@ fn run_inner(
                 );
             }
             eprintln!("Warning: skipping verify command: {}", verify_cmd);
-        } else if Config::load_or_default(dir).coordinator.verify_mode == "separate" {
-            // Separate verification mode: transition to PendingValidation and let
-            // the coordinator spawn a separate agent to run the verify command.
-            // This prevents false-PASS rates where the implementation agent
-            // rubber-stamps its own work.
-            let id_sep = id.to_string();
-            let mut assigned_agent = None;
-            let _graph = modify_graph(&path, |graph| {
-                let task = match graph.get_task_mut(&id_sep) {
-                    Some(t) => t,
-                    None => return false,
-                };
-                if task.status.is_terminal() {
-                    return false;
-                }
-                assigned_agent = task.assigned.clone();
-                task.status = Status::PendingValidation;
-                task.completed_at = Some(Utc::now().to_rfc3339());
-                task.log.push(LogEntry {
-                    timestamp: Utc::now().to_rfc3339(),
-                    actor: task.assigned.clone(),
-                    user: Some(worksgood::current_user()),
-                    message: "Pending separate verification (verify_mode=separate)".to_string(),
-                });
-                true
-            })
-            .context("Failed to save graph for separate verification")?;
-
-            super::notify_graph_changed(dir);
-
-            // Update agent registry
-            if let Ok(mut locked_registry) = AgentRegistry::load_locked(dir) {
-                if let Some(agent) = locked_registry.get_agent_by_task_mut(id) {
-                    agent.status = worksgood::service::registry::AgentStatus::Done;
-                    if agent.completed_at.is_none() {
-                        agent.completed_at = Some(Utc::now().to_rfc3339());
-                    }
-                }
-                let _ = locked_registry.save_ref();
-            }
-
-            if let Err(error) = worksgood::disk_sentinel::release_owned_cache_leases(dir, id, None)
-            {
-                eprintln!("Warning: failed to release build-cache lease: {error:#}");
-            }
-
-            println!(
-                "Task '{}' is pending separate verification (verify command: {})",
-                id, verify_cmd
-            );
-
-            // Archive agent conversation for provenance
-            if let Some(ref agent_id) = assigned_agent {
-                match super::log::archive_agent(dir, id, agent_id) {
-                    Ok(archive_dir) => {
-                        eprintln!("Agent archived to {}", archive_dir.display());
-                    }
-                    Err(e) => {
-                        eprintln!("Warning: agent archive failed: {}", e);
-                    }
-                }
-            }
-
-            return Ok(());
         } else {
             let project_root = dir.parent().unwrap_or(dir);
             eprintln!("Running verify command: {}", verify_cmd);
@@ -2414,50 +2350,9 @@ fn run_inner(
                             message: log_msg,
                         });
 
-                        // Circuit breaker: auto-fail after threshold
-                        if max_verify_failures > 0 && failures >= max_verify_failures {
-                            task.status = Status::Failed;
-                            task.assigned = None;
-                            task.failure_reason = Some(format!(
-                                "Verify command failed {} consecutive times. Command: `{}`. \
-                                 Last exit code: {}. Last stderr: {}. \
-                                 This may be descriptive text instead of an executable command.",
-                                failures,
-                                verify_cmd_clone,
-                                exit_code,
-                                if stderr_preview.is_empty() {
-                                    "(empty)".to_string()
-                                } else {
-                                    stderr_preview.clone()
-                                },
-                            ));
-                            task.log.push(LogEntry {
-                                timestamp: Utc::now().to_rfc3339(),
-                                actor: Some("verify-circuit-breaker".to_string()),
-                                user: None,
-                                message: format!(
-                                    "Circuit breaker tripped: verify command failed {} times, auto-failing task",
-                                    failures,
-                                ),
-                            });
-                        }
                         true
                     })
                     .context("Failed to save verify failure state")?;
-
-                    // Reload graph to check if circuit breaker tripped
-                    let (new_graph, _) = super::load_workgraph_mut(dir)?;
-                    if let Some(task) = new_graph.get_task(id)
-                        && task.status == Status::Failed
-                    {
-                        eprintln!(
-                            "Verify circuit breaker tripped for '{}': {} consecutive failures. Task auto-failed.",
-                            id, task.verify_failures,
-                        );
-                        super::notify_graph_changed(dir);
-                        // Return Ok — the task is now Failed, not an error in the command
-                        return Ok(());
-                    }
 
                     // Not yet at threshold — propagate error so agent retries
                     let mut error_msg = format!(
@@ -2532,163 +2427,11 @@ fn run_inner(
         }
     }
 
-    // LLM validation: transition to PendingValidation, where the coordinator
-    // will dispatch an independent-reviewer evaluator that runs the gate.
-    // See docs/design/llm-verification-gate.md §4.
-    if validation_mode == "llm" {
-        let id_llm = id.to_string();
-        let mut assigned_agent = None;
-        let graph = modify_graph(&path, |graph| {
-            let task = match graph.get_task_mut(&id_llm) {
-                Some(t) => t,
-                None => return false,
-            };
-            if task.status.is_terminal() {
-                return false;
-            }
-            assigned_agent = task.assigned.clone();
-            task.status = Status::PendingValidation;
-            task.completed_at = Some(Utc::now().to_rfc3339());
-            task.log.push(LogEntry {
-                timestamp: Utc::now().to_rfc3339(),
-                actor: task.assigned.clone(),
-                user: Some(worksgood::current_user()),
-                message: "Task pending LLM gate validation".to_string(),
-            });
-            true
-        })
-        .context("Failed to save graph")?;
-        super::notify_graph_changed(dir);
-
-        if let Ok(mut locked_registry) = AgentRegistry::load_locked(dir) {
-            if let Some(agent) = locked_registry.get_agent_by_task_mut(id) {
-                agent.status = worksgood::service::registry::AgentStatus::Done;
-                if agent.completed_at.is_none() {
-                    agent.completed_at = Some(Utc::now().to_rfc3339());
-                }
-            }
-            let _ = locked_registry.save_ref();
-        }
-
-        let config = worksgood::config::Config::load_or_default(dir);
-        let _ = worksgood::provenance::record(
-            dir,
-            "done",
-            Some(id),
-            None,
-            serde_json::json!({ "validation": "llm", "status": "pending-validation" }),
-            config.log.rotation_threshold,
+    if matches!(validation_mode.as_str(), "llm" | "external") {
+        anyhow::bail!(
+            "validation mode '{}' used a retired reviewer-task authority; use completion manifest review/receipts instead",
+            validation_mode
         );
-
-        if let Err(error) = worksgood::disk_sentinel::release_owned_cache_leases(dir, id, None) {
-            eprintln!("Warning: failed to release build-cache lease: {error:#}");
-        }
-
-        println!("Task '{}' is pending LLM gate validation", id);
-
-        if let Some(ref agent_id) = assigned_agent {
-            match super::log::archive_agent(dir, id, agent_id) {
-                Ok(archive_dir) => {
-                    eprintln!("Agent archived to {}", archive_dir.display());
-                }
-                Err(e) => {
-                    eprintln!("Warning: agent archive failed: {}", e);
-                }
-            }
-        }
-
-        if let Some(task) = graph.get_task(id) {
-            match capture_task_output(dir, task) {
-                Ok(output_dir) => {
-                    eprintln!("Output captured to {}", output_dir.display());
-                }
-                Err(e) => {
-                    eprintln!("Warning: output capture failed: {}", e);
-                }
-            }
-        }
-
-        return Ok(());
-    }
-
-    // External validation: transition to PendingValidation instead of Done
-    if validation_mode == "external" {
-        let id_ext = id.to_string();
-        let mut assigned_agent = None;
-        let graph = modify_graph(&path, |graph| {
-            let task = match graph.get_task_mut(&id_ext) {
-                Some(t) => t,
-                None => return false,
-            };
-            if task.status.is_terminal() {
-                return false;
-            }
-            assigned_agent = task.assigned.clone();
-            task.status = Status::PendingValidation;
-            task.completed_at = Some(Utc::now().to_rfc3339());
-            task.log.push(LogEntry {
-                timestamp: Utc::now().to_rfc3339(),
-                actor: task.assigned.clone(),
-                user: Some(worksgood::current_user()),
-                message: "Task pending external validation".to_string(),
-            });
-            true
-        })
-        .context("Failed to save graph")?;
-        super::notify_graph_changed(dir);
-
-        // Update agent registry for external validation path too
-        if let Ok(mut locked_registry) = AgentRegistry::load_locked(dir) {
-            if let Some(agent) = locked_registry.get_agent_by_task_mut(id) {
-                agent.status = worksgood::service::registry::AgentStatus::Done;
-                if agent.completed_at.is_none() {
-                    agent.completed_at = Some(Utc::now().to_rfc3339());
-                }
-            }
-            let _ = locked_registry.save_ref();
-        }
-
-        let config = worksgood::config::Config::load_or_default(dir);
-        let _ = worksgood::provenance::record(
-            dir,
-            "done",
-            Some(id),
-            None,
-            serde_json::json!({ "validation": "external", "status": "pending-validation" }),
-            config.log.rotation_threshold,
-        );
-
-        if let Err(error) = worksgood::disk_sentinel::release_owned_cache_leases(dir, id, None) {
-            eprintln!("Warning: failed to release build-cache lease: {error:#}");
-        }
-
-        println!("Task '{}' is pending external validation", id);
-
-        // Archive agent conversation for provenance
-        if let Some(ref agent_id) = assigned_agent {
-            match super::log::archive_agent(dir, id, agent_id) {
-                Ok(archive_dir) => {
-                    eprintln!("Agent archived to {}", archive_dir.display());
-                }
-                Err(e) => {
-                    eprintln!("Warning: agent archive failed: {}", e);
-                }
-            }
-        }
-
-        // Capture task output for validation
-        if let Some(task) = graph.get_task(id) {
-            match capture_task_output(dir, task) {
-                Ok(output_dir) => {
-                    eprintln!("Output captured to {}", output_dir.display());
-                }
-                Err(e) => {
-                    eprintln!("Warning: output capture failed: {}", e);
-                }
-            }
-        }
-
-        return Ok(());
     }
 
     // When --converged is passed, determine whether the task's cycle has a
@@ -4094,7 +3837,7 @@ mod tests {
     }
 
     #[test]
-    fn test_done_external_validation_transitions_to_pending() {
+    fn test_done_external_validation_satellite_is_retired() {
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
 
@@ -4102,18 +3845,21 @@ mod tests {
         task.validation = Some("external".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false, false, false, false);
-        assert!(result.is_ok());
+        let error = run(dir_path, "t1", false, false, false, false, false).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("retired reviewer-task authority")
+        );
 
-        let path = graph_path(dir_path);
-        let graph = load_graph(&path).unwrap();
+        let graph = load_graph(&graph_path(dir_path)).unwrap();
         let task = graph.get_task("t1").unwrap();
-        assert_eq!(task.status, Status::PendingValidation);
-        assert!(task.completed_at.is_some());
+        assert_eq!(task.status, Status::InProgress);
+        assert!(task.completed_at.is_none());
     }
 
     #[test]
-    fn test_done_llm_validation_transitions_to_pending() {
+    fn test_done_llm_validation_satellite_is_retired() {
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
 
@@ -4121,37 +3867,17 @@ mod tests {
         task.validation = Some("llm".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        run(dir_path, "t1", false, false, false, false, false).unwrap();
-
-        let path = graph_path(dir_path);
-        let graph = load_graph(&path).unwrap();
-        let task = graph.get_task("t1").unwrap();
-        assert_eq!(task.status, Status::PendingValidation);
-        assert!(task.completed_at.is_some());
-        let last_log = task.log.last().unwrap();
+        let error = run(dir_path, "t1", false, false, false, false, false).unwrap_err();
         assert!(
-            last_log.message.contains("pending LLM gate validation"),
-            "log should mention LLM gate validation: {}",
-            last_log.message
+            error
+                .to_string()
+                .contains("retired reviewer-task authority")
         );
-    }
 
-    #[test]
-    fn test_done_external_validation_adds_log() {
-        let dir = tempdir().unwrap();
-        let dir_path = dir.path();
-
-        let mut task = make_task("t1", "External validation task", Status::InProgress);
-        task.validation = Some("external".to_string());
-        setup_workgraph(dir_path, vec![task]);
-
-        run(dir_path, "t1", false, false, false, false, false).unwrap();
-
-        let path = graph_path(dir_path);
-        let graph = load_graph(&path).unwrap();
+        let graph = load_graph(&graph_path(dir_path)).unwrap();
         let task = graph.get_task("t1").unwrap();
-        let last_log = task.log.last().unwrap();
-        assert!(last_log.message.contains("pending external validation"));
+        assert_eq!(task.status, Status::InProgress);
+        assert!(task.completed_at.is_none());
     }
 
     #[test]
@@ -4340,7 +4066,7 @@ mod tests {
     }
 
     #[test]
-    fn test_verify_circuit_breaker_trips_after_threshold() {
+    fn test_verify_failures_never_become_terminal_authority() {
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
 
@@ -4348,55 +4074,21 @@ mod tests {
         task.verify = Some("echo 'FAIL: test not found' >&2; exit 1".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        // Default threshold is 3 — fail 3 times
         for i in 0..3 {
             let result = run(dir_path, "t1", false, false, false, false, false);
-            if i < 2 {
-                // First two failures: should error (not yet at threshold)
-                assert!(result.is_err(), "attempt {} should fail with error", i);
-            } else {
-                // Third failure: circuit breaker trips, returns Ok (task is auto-failed)
-                assert!(
-                    result.is_ok(),
-                    "attempt {} should succeed (circuit breaker trips): {:?}",
-                    i,
-                    result
-                );
-            }
+            assert!(result.is_err(), "attempt {} must remain non-terminal", i);
         }
 
-        let path = graph_path(dir_path);
-        let graph = load_graph(&path).unwrap();
+        let graph = load_graph(&graph_path(dir_path)).unwrap();
         let task = graph.get_task("t1").unwrap();
-        assert_eq!(task.status, Status::Failed);
+        assert_eq!(task.status, Status::InProgress);
         assert_eq!(task.verify_failures, 3);
-
-        // Check failure reason includes verify command and error output
-        let reason = task.failure_reason.as_ref().unwrap();
+        assert!(task.failure_reason.is_none());
         assert!(
-            reason.contains("failed 3 consecutive times"),
-            "failure_reason should mention count, got: {}",
-            reason
-        );
-        assert!(
-            reason.contains("exit 1"),
-            "failure_reason should include exit code, got: {}",
-            reason
-        );
-        assert!(
-            reason.contains("FAIL: test not found"),
-            "failure_reason should include stderr, got: {}",
-            reason
-        );
-
-        // Check circuit breaker log entry
-        assert!(
-            task.log
+            !task
+                .log
                 .iter()
-                .any(|e| e.actor == Some("verify-circuit-breaker".to_string())
-                    && e.message.contains("Circuit breaker tripped")),
-            "Expected circuit breaker log entry, got: {:?}",
-            task.log
+                .any(|e| e.actor == Some("verify-circuit-breaker".to_string()))
         );
     }
 
@@ -4492,7 +4184,7 @@ mod tests {
     }
 
     #[test]
-    fn test_verify_circuit_breaker_configurable_threshold() {
+    fn test_verify_failure_threshold_is_observational_only() {
         // Test that the config controls the threshold.
         // We write a config with max_verify_failures = 2.
         let dir = tempdir().unwrap();
@@ -4510,24 +4202,23 @@ mod tests {
         let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_err());
 
-        // Second failure — should trip circuit breaker at threshold 2
+        // The second failure remains evidence and cannot terminalize the task.
         let result = run(dir_path, "t1", false, false, false, false, false);
-        assert!(result.is_ok(), "Circuit breaker should trip at threshold 2");
+        assert!(result.is_err());
 
-        let path = graph_path(dir_path);
-        let graph = load_graph(&path).unwrap();
+        let graph = load_graph(&graph_path(dir_path)).unwrap();
         let task = graph.get_task("t1").unwrap();
-        assert_eq!(task.status, Status::Failed);
+        assert_eq!(task.status, Status::InProgress);
         assert_eq!(task.verify_failures, 2);
     }
 
     #[test]
-    fn test_done_separate_verify_transitions_to_pending_validation() {
+    fn test_done_separate_verify_setting_has_no_status_authority() {
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
 
         let mut task = make_task("t1", "Task with verify", Status::InProgress);
-        task.verify = Some("cargo test".to_string());
+        task.verify = Some("true".to_string());
         setup_workgraph(dir_path, vec![task]);
 
         // Write config with verify_mode = "separate"
@@ -4543,17 +4234,13 @@ mod tests {
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
         let task = graph.get_task("t1").unwrap();
-        assert_eq!(
-            task.status,
-            Status::PendingValidation,
-            "should be pending validation, not done"
-        );
+        assert_eq!(task.status, Status::Done);
         assert!(task.completed_at.is_some());
         assert!(
-            task.log
+            !task
+                .log
                 .iter()
-                .any(|e| e.message.contains("verify_mode=separate")),
-            "should have separate verify log entry"
+                .any(|e| e.message.contains("verify_mode=separate"))
         );
     }
 
