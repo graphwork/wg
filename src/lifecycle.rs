@@ -701,6 +701,7 @@ impl LifecycleKernel {
                         ActorKind::Worker,
                         ActorKind::ProcessObserver,
                         ActorKind::Operator,
+                        ActorKind::Dispatcher,
                     ],
                 )?;
                 Self::require_running_attempt(task, &request)?;

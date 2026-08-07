@@ -2,8 +2,7 @@
 
 use anyhow::{Context, Result};
 use chrono::Utc;
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use worksgood::agency;
 use worksgood::agency::evolver::{self, EvolutionTrigger, EvolverState};
 use worksgood::chat;
@@ -575,23 +574,12 @@ fn evaluate_waiting_tasks(graph: &mut worksgood::graph::WorkGraph, dir: &Path) -
     // First, detect circular waits
     let circular = detect_circular_waits(graph);
     for cycle in &circular {
-        eprintln!("[dispatcher] Circular wait detected: {:?}", cycle);
-        for task_id in cycle {
-            if let Some(t) = graph.get_task_mut(task_id)
-                && t.status == Status::Waiting
-            {
-                t.status = Status::Failed;
-                t.wait_condition = None;
-                t.failure_reason = Some(format!("Circular wait detected: {}", cycle.join(" -> ")));
-                t.log.push(LogEntry {
-                    timestamp: Utc::now().to_rfc3339(),
-                    actor: Some("coordinator".to_string()),
-                    user: Some(worksgood::current_user()),
-                    message: format!("Failed: circular wait detected ({})", cycle.join(" -> ")),
-                });
-                modified = true;
-            }
-        }
+        // A wait observation is not terminal authority. Keep the exact parked
+        // attempt intact for an explicit operator decision.
+        eprintln!(
+            "[dispatcher] Circular wait requires operator action: {:?}",
+            cycle
+        );
     }
 
     // Collect waiting tasks with their data to avoid borrow conflicts
@@ -646,23 +634,11 @@ fn evaluate_waiting_tasks(graph: &mut worksgood::graph::WorkGraph, dir: &Path) -
         };
 
         if is_unsatisfiable {
-            let reason = format!(
-                "Wait condition unsatisfiable: {}",
+            eprintln!(
+                "[dispatcher] Waiting task '{}' requires operator action: {}",
+                task_id,
                 unsatisfiable_reasons.join(", ")
             );
-            if let Some(t) = graph.get_task_mut(task_id) {
-                t.status = Status::Failed;
-                t.wait_condition = None;
-                t.failure_reason = Some(reason.clone());
-                t.log.push(LogEntry {
-                    timestamp: Utc::now().to_rfc3339(),
-                    actor: Some("coordinator".to_string()),
-                    user: Some(worksgood::current_user()),
-                    message: format!("Failed: {}", reason),
-                });
-                modified = true;
-                eprintln!("[dispatcher] Waiting task '{}' failed: {}", task_id, reason);
-            }
             continue;
         }
 
@@ -864,26 +840,44 @@ fn unblock_stuck_tasks(graph: &mut worksgood::graph::WorkGraph, dir: &Path) -> b
         });
 
         if all_deps_satisfied {
-            // Get mutable reference to update the task
             if let Some(task) = graph.get_task_mut(&task_id)
                 && !task.after.is_empty()
             {
-                task.status = Status::Open;
-                task.log.push(LogEntry {
-                        timestamp: Utc::now().to_rfc3339(),
-                        actor: Some("coordinator".to_string()),
-                        user: Some(worksgood::current_user()),
-                        message: format!(
-                            "Unblocked by coordinator scan — all required-success dependencies are canonically satisfied. Dependencies: {}",
-                            task.after.join(", ")
-                        ),
-                    });
-                eprintln!(
-                    "[dispatcher] Unblocked stuck task '{}' (blocked on: {})",
-                    task.id,
-                    task.after.join(", ")
-                );
-                modified = true;
+                let dependencies = task.after.join(", ");
+                let request = TransitionRequest::new(
+                    TransitionKind::GenerationCreated,
+                    LifecycleActor {
+                        kind: ActorKind::Reconciler,
+                        id: "dependency-reconciler".to_string(),
+                    },
+                    "dependencies_satisfied",
+                    format!(
+                        "dependencies-satisfied:{}:{}:{}",
+                        task.id, task.lifecycle.generation, task.lifecycle.revision
+                    ),
+                )
+                .expecting(FenceExpectation::current(task));
+                match apply_transition(task, request) {
+                    Ok(_) => {
+                        task.log.push(LogEntry {
+                            timestamp: Utc::now().to_rfc3339(),
+                            actor: Some("dependency-reconciler".to_string()),
+                            user: None,
+                            message: format!(
+                                "Opened a new generation after required-success dependencies were satisfied: {dependencies}"
+                            ),
+                        });
+                        eprintln!(
+                            "[dispatcher] Opened new generation for '{}' (dependencies: {})",
+                            task.id, dependencies
+                        );
+                        modified = true;
+                    }
+                    Err(rejection) => eprintln!(
+                        "[dispatcher] Dependency reconciliation rejected for '{}': {}",
+                        task.id, rejection
+                    ),
+                }
             }
         } else {
             // Log diagnostic for stale blocked state
@@ -1758,127 +1752,6 @@ fn compute_priority_inheritance(
 /// an unchanged transient can fall off to its cap but never becomes generic
 /// `Failed` merely because a counter was exhausted.
 
-/// Check if a task has exceeded the spawn failure threshold and should be skipped.
-///
-/// State of the per-task spawn circuit breaker for one dispatch tick.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum SpawnBreakerState {
-    /// Counter is below threshold (or the breaker is disabled) — proceed to
-    /// spawn. A successful spawn will clear the counter (clear-on-success).
-    Ok,
-    /// Counter is at/above threshold AND the cooldown has NOT elapsed — skip
-    /// this task this tick. Other tasks are unaffected (the breaker is
-    /// per-task).
-    Tripped(String),
-    /// Counter is at/above threshold BUT the cooldown HAS elapsed since the
-    /// last failure — the breaker has **decayed**. The caller resets
-    /// `spawn_failures` (and `last_spawn_failure_at`) and then proceeds to
-    /// spawn, so a transient burst does not permanently brick a task.
-    Decayable,
-}
-
-/// Check if a task's spawn circuit breaker blocks dispatch this tick.
-///
-/// The breaker is per-task: it only ever skips the task whose counter
-/// tripped, never the whole dispatcher.
-///
-/// `cooldown` is the decay window (parsed from
-/// `coordinator.spawn_failure_cooldown`); `None` disables decay.
-pub(crate) fn check_spawn_circuit_breaker(
-    task: &Task,
-    max_spawn_failures: u32,
-    cooldown: Option<std::time::Duration>,
-) -> SpawnBreakerState {
-    if max_spawn_failures == 0 {
-        return SpawnBreakerState::Ok; // circuit breaker disabled
-    }
-    if task.spawn_failures < max_spawn_failures {
-        return SpawnBreakerState::Ok;
-    }
-    // At/above threshold. Offer the self-healing cooldown decay before
-    // declaring the task blocked.
-    if let (Some(cooldown), Some(ts)) = (cooldown, task.last_spawn_failure_at.as_ref())
-        && let Ok(last) = ts.parse::<chrono::DateTime<chrono::Utc>>()
-    {
-        let elapsed_secs = chrono::Utc::now().signed_duration_since(last).num_seconds();
-        if elapsed_secs >= cooldown.as_secs() as i64 {
-            return SpawnBreakerState::Decayable;
-        }
-    }
-    SpawnBreakerState::Tripped(format!(
-        "spawn circuit breaker: {} consecutive spawn failures (threshold: {}). Will retry after the cooldown or a `wg retry`.",
-        task.spawn_failures, max_spawn_failures,
-    ))
-}
-
-/// Record a spawn failure: increment the counter, log the error, and auto-fail
-/// the task if the threshold is reached. Returns true if the task was auto-failed.
-fn record_spawn_failure(
-    graph_path: &Path,
-    task_id: &str,
-    error: &str,
-    executor: &str,
-    exec_mode: Option<&str>,
-    max_spawn_failures: u32,
-) -> bool {
-    let now = Utc::now();
-    let task_id_owned = task_id.to_string();
-    let error_owned = error.to_string();
-    let executor_owned = executor.to_string();
-    let exec_mode_owned = exec_mode.map(|s| s.to_string());
-    let mut tripped = false;
-
-    let _ = modify_graph(graph_path, |graph| {
-        let task = match graph.get_task_mut(&task_id_owned) {
-            Some(t) => t,
-            None => return false,
-        };
-        task.spawn_failures += 1;
-        task.last_spawn_failure_at = Some(now.to_rfc3339());
-        let failures = task.spawn_failures;
-
-        let mode_str = exec_mode_owned.as_deref().unwrap_or("default");
-
-        // Log the spawn failure
-        task.log.push(LogEntry {
-            timestamp: now.to_rfc3339(),
-            actor: Some("spawn".to_string()),
-            user: None,
-            message: format!(
-                "Spawn failed (attempt {}/{}): {}. exec_mode={}, executor={}",
-                failures,
-                if max_spawn_failures > 0 {
-                    max_spawn_failures.to_string()
-                } else {
-                    "unlimited".to_string()
-                },
-                error_owned,
-                mode_str,
-                executor_owned,
-            ),
-        });
-
-        // Circuit breaker: mark incomplete after threshold (evaluator decides fail)
-        if max_spawn_failures > 0 && failures >= max_spawn_failures {
-            task.status = Status::Incomplete;
-            task.assigned = None;
-            task.log.push(LogEntry {
-                timestamp: now.to_rfc3339(),
-                actor: Some("spawn-circuit-breaker".to_string()),
-                user: None,
-                message: format!(
-                    "Circuit breaker tripped: spawn failed {} times. Last error: {}. exec_mode={}, executor={}. Task marked incomplete for evaluator review.",
-                    failures, error_owned, mode_str, executor_owned,
-                ),
-            });
-            tripped = true;
-        }
-        true
-    });
-
-    tripped
-}
-
 /// Record one fail-stop launch decision. Capacity and resource admission do
 /// not call this helper; it is reserved for a selected route whose preparation
 /// or process launch failed. The coordinator never retries this task
@@ -1891,6 +1764,10 @@ fn record_direct_dispatch_failure(
 ) -> bool {
     let now = Utc::now().to_rfc3339();
     let diagnostic = diagnostic.to_string();
+    let diagnostic_ref = format!(
+        "dispatch-diagnostic:{}",
+        blake3::hash(diagnostic.as_bytes()).to_hex()
+    );
     let executor = executor.to_string();
     let mut recorded = false;
     let _ = modify_graph(graph_path, |graph| {
@@ -1900,9 +1777,67 @@ fn record_direct_dispatch_failure(
         if task.status.is_terminal() {
             return false;
         }
-        task.status = Status::Failed;
+        if task.status != Status::Open {
+            let reopen = TransitionRequest::new(
+                TransitionKind::GenerationCreated,
+                LifecycleActor {
+                    kind: ActorKind::Reconciler,
+                    id: "direct-dispatch".to_string(),
+                },
+                "dispatch_retry_generation",
+                format!(
+                    "dispatch-retry-generation:{task_id}:{}:{}",
+                    task.lifecycle.generation, task.lifecycle.revision
+                ),
+            )
+            .expecting(FenceExpectation::current(task));
+            if apply_transition(task, reopen).is_err() {
+                return false;
+            }
+        }
+        let reservation = TransitionRequest::new(
+            TransitionKind::AttemptReserved { owner_id: None },
+            LifecycleActor {
+                kind: ActorKind::Dispatcher,
+                id: "direct-dispatch".to_string(),
+            },
+            "dispatch_attempt_reserved",
+            format!(
+                "dispatch-failure-reserve:{task_id}:{}:{}",
+                task.lifecycle.generation,
+                task.lifecycle.attempt_sequence + 1
+            ),
+        )
+        .expecting(FenceExpectation::current(task));
+        if apply_transition(task, reservation).is_err() {
+            return false;
+        }
+        let attempt_id = task
+            .lifecycle
+            .current_attempt
+            .as_ref()
+            .expect("reservation projected an attempt")
+            .id
+            .clone();
+        let failure = TransitionRequest::new(
+            TransitionKind::AttemptFailed {
+                class: Some(worksgood::graph::FailureClass::ExecutorConfig),
+            },
+            LifecycleActor {
+                kind: ActorKind::Dispatcher,
+                id: "direct-dispatch".to_string(),
+            },
+            "dispatch_launch_failed",
+            format!("dispatch-failure:{task_id}:{attempt_id}:{diagnostic_ref}"),
+        )
+        .with_evidence(diagnostic_ref.clone())
+        .expecting(FenceExpectation::current(task));
+        if apply_transition(task, failure).is_err() {
+            return false;
+        }
         task.assigned = None;
         task.failure_reason = Some(diagnostic.clone());
+        task.failure_class = Some(worksgood::graph::FailureClass::ExecutorConfig);
         task.completed_at = Some(now.clone());
         task.spawn_failures = task.spawn_failures.saturating_add(1);
         task.last_spawn_failure_at = Some(now.clone());
@@ -1911,39 +1846,13 @@ fn record_direct_dispatch_failure(
             actor: Some("direct-dispatch".to_string()),
             user: None,
             message: format!(
-                "Exact-route launch failed; task failed visibly and will not be retried automatically. executor={executor}: {diagnostic}"
+                "Exact-route launch failed; the lifecycle attempt failed and will not be retried automatically. executor={executor}: {diagnostic}"
             ),
         });
         recorded = true;
         true
     });
     recorded
-}
-
-/// Reset a task's spawn circuit breaker: zero out `spawn_failures` and clear
-/// `last_spawn_failure_at`, logging why. This is the shared primitive behind
-/// cooldown-decay, `wg retry`, edit, and clear-on-success — the four ways the
-/// breaker clears so a transient burst never permanently bricks a task.
-fn reset_spawn_failures(graph_path: &Path, task_id: &str, why: &str) {
-    let task_id_owned = task_id.to_string();
-    let why_owned = why.to_string();
-    let _ = modify_graph(graph_path, |graph| {
-        let Some(task) = graph.get_task_mut(&task_id_owned) else {
-            return false;
-        };
-        if task.spawn_failures == 0 && task.last_spawn_failure_at.is_none() {
-            return false;
-        }
-        task.spawn_failures = 0;
-        task.last_spawn_failure_at = None;
-        task.log.push(LogEntry {
-            timestamp: Utc::now().to_rfc3339(),
-            actor: Some("spawn-circuit-breaker".to_string()),
-            user: None,
-            message: format!("Spawn circuit breaker reset ({why_owned})."),
-        });
-        true
-    });
 }
 
 /// Persist exactly one breaker-neutral diagnostic when the transactional spawn
@@ -3521,7 +3430,7 @@ mod tests {
     }
 
     #[test]
-    fn test_evaluate_waiting_tasks_autofails_unsatisfiable() {
+    fn test_evaluate_waiting_tasks_does_not_infer_failure_from_unsatisfiable_observation() {
         let dir = tempdir().unwrap();
 
         let mut dep = Task::default();
@@ -3541,19 +3450,15 @@ mod tests {
         let mut graph = load_wait_graph(dir.path());
         let modified = evaluate_waiting_tasks(&mut graph, dir.path());
 
-        assert!(modified);
+        assert!(!modified);
         let task = graph.get_task("main").unwrap();
-        assert_eq!(task.status, Status::Failed);
-        assert!(
-            task.failure_reason
-                .as_ref()
-                .unwrap()
-                .contains("unsatisfiable")
-        );
+        assert_eq!(task.status, Status::Waiting);
+        assert!(task.failure_reason.is_none());
+        assert!(task.wait_condition.is_some());
     }
 
     #[test]
-    fn test_evaluate_waiting_tasks_fails_circular_waits() {
+    fn test_evaluate_waiting_tasks_does_not_infer_failure_from_circular_waits() {
         let dir = tempdir().unwrap();
 
         let mut task_a = Task::default();
@@ -3577,12 +3482,42 @@ mod tests {
         let mut graph = load_wait_graph(dir.path());
         let modified = evaluate_waiting_tasks(&mut graph, dir.path());
 
-        assert!(modified);
+        assert!(!modified);
         let a = graph.get_task("task-a").unwrap();
         let b = graph.get_task("task-b").unwrap();
-        assert_eq!(a.status, Status::Failed);
-        assert_eq!(b.status, Status::Failed);
-        assert!(a.failure_reason.as_ref().unwrap().contains("Circular wait"));
+        assert_eq!(a.status, Status::Waiting);
+        assert_eq!(b.status, Status::Waiting);
+        assert!(a.failure_reason.is_none());
+        assert!(b.failure_reason.is_none());
+    }
+
+    #[test]
+    fn dependency_reconciliation_opens_audited_new_generation() {
+        let dir = tempdir().unwrap();
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(Task {
+            id: "dep".into(),
+            title: "dep".into(),
+            status: Status::Done,
+            ..Task::default()
+        }));
+        graph.add_node(Node::Task(Task {
+            id: "work".into(),
+            title: "work".into(),
+            status: Status::Blocked,
+            after: vec!["dep".into()],
+            ..Task::default()
+        }));
+
+        assert!(unblock_stuck_tasks(&mut graph, dir.path()));
+        let task = graph.get_task("work").unwrap();
+        assert_eq!(task.status, Status::Open);
+        assert_eq!(task.lifecycle.generation, 1);
+        assert_eq!(task.lifecycle.audit.len(), 1);
+        assert_eq!(
+            task.lifecycle.audit[0].reason_code,
+            "dependencies_satisfied"
+        );
     }
 
     #[test]
@@ -3836,204 +3771,6 @@ mod tests {
     }
 
     #[test]
-    fn test_spawn_circuit_breaker_allows_below_threshold() {
-        let mut task = Task::default();
-        task.id = "t1".to_string();
-        task.spawn_failures = 0;
-        assert_eq!(
-            check_spawn_circuit_breaker(&task, 5, None),
-            SpawnBreakerState::Ok
-        );
-
-        task.spawn_failures = 4;
-        assert_eq!(
-            check_spawn_circuit_breaker(&task, 5, None),
-            SpawnBreakerState::Ok
-        );
-    }
-
-    #[test]
-    fn test_spawn_circuit_breaker_blocks_at_threshold() {
-        let mut task = Task::default();
-        task.id = "t1".to_string();
-        task.spawn_failures = 5;
-        let result = check_spawn_circuit_breaker(&task, 5, None);
-        assert!(matches!(result, SpawnBreakerState::Tripped(_)));
-        if let SpawnBreakerState::Tripped(msg) = result {
-            assert!(msg.contains("spawn circuit breaker"), "msg: {}", msg);
-            assert!(msg.contains("5 consecutive"), "msg: {}", msg);
-        }
-    }
-
-    #[test]
-    fn test_spawn_circuit_breaker_disabled_when_zero() {
-        let mut task = Task::default();
-        task.id = "t1".to_string();
-        task.spawn_failures = 100;
-        // threshold=0 means disabled
-        assert_eq!(
-            check_spawn_circuit_breaker(&task, 0, None),
-            SpawnBreakerState::Ok
-        );
-    }
-
-    #[test]
-    fn test_spawn_circuit_breaker_decays_after_cooldown() {
-        // Self-heal: a tripped breaker DECAYS once the cooldown has elapsed,
-        // so a transient burst (e.g. a registry/key outage) does not
-        // permanently brick a task.
-        let mut task = Task::default();
-        task.id = "t1".to_string();
-        task.spawn_failures = 5;
-        // last failure well in the past → cooldown elapsed
-        task.last_spawn_failure_at =
-            Some((chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339());
-        let cooldown = std::time::Duration::from_secs(300); // 5m
-        assert_eq!(
-            check_spawn_circuit_breaker(&task, 5, Some(cooldown)),
-            SpawnBreakerState::Decayable
-        );
-    }
-
-    #[test]
-    fn test_spawn_circuit_breaker_stays_tripped_within_cooldown() {
-        let mut task = Task::default();
-        task.id = "t1".to_string();
-        task.spawn_failures = 5;
-        // last failure just now → cooldown NOT elapsed
-        task.last_spawn_failure_at = Some(chrono::Utc::now().to_rfc3339());
-        let cooldown = std::time::Duration::from_secs(300); // 5m
-        assert!(matches!(
-            check_spawn_circuit_breaker(&task, 5, Some(cooldown)),
-            SpawnBreakerState::Tripped(_)
-        ));
-    }
-
-    #[test]
-    fn test_spawn_circuit_breaker_decay_disabled_when_no_cooldown() {
-        // No cooldown configured → breaker only clears via retry/edit/success.
-        let mut task = Task::default();
-        task.id = "t1".to_string();
-        task.spawn_failures = 5;
-        task.last_spawn_failure_at =
-            Some((chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339());
-        assert!(matches!(
-            check_spawn_circuit_breaker(&task, 5, None),
-            SpawnBreakerState::Tripped(_)
-        ));
-    }
-
-    #[test]
-    fn test_spawn_circuit_breaker() {
-        // Full integration test: record_spawn_failure increments counter
-        // and auto-fails after threshold
-        let dir = tempdir().unwrap();
-        let wg_dir = dir.path().join(".wg");
-        std::fs::create_dir_all(&wg_dir).unwrap();
-        let gp = wg_dir.join("graph.jsonl");
-
-        // Create a task with status Open
-        let mut graph = WorkGraph::new();
-        let mut task = Task::default();
-        task.id = "test-task".to_string();
-        task.title = "Test Task".to_string();
-        task.status = Status::Open;
-        task.exec_mode = Some("shell".to_string());
-        graph.add_node(Node::Task(task));
-        save_graph(&graph, &gp).unwrap();
-
-        let max_failures: u32 = 5;
-
-        // Record 4 failures — task should remain open
-        for i in 1..=4 {
-            let tripped = record_spawn_failure(
-                &gp,
-                "test-task",
-                &format!("error {}", i),
-                "claude",
-                Some("shell"),
-                max_failures,
-            );
-            assert!(!tripped, "should not trip at failure {}", i);
-
-            let g = load_graph(&gp).unwrap();
-            let t = g.get_task("test-task").unwrap();
-            assert_eq!(t.spawn_failures, i as u32);
-            assert_eq!(t.status, Status::Open);
-        }
-
-        // 5th failure — should trip the circuit breaker
-        let tripped = record_spawn_failure(
-            &gp,
-            "test-task",
-            "final error: exec_mode mismatch",
-            "claude",
-            Some("shell"),
-            max_failures,
-        );
-        assert!(tripped, "should trip at failure 5");
-
-        let g = load_graph(&gp).unwrap();
-        let t = g.get_task("test-task").unwrap();
-        assert_eq!(t.spawn_failures, 5);
-        assert_eq!(
-            t.status,
-            Status::Incomplete,
-            "Circuit breaker should mark task Incomplete (not Failed) — evaluator decides failure"
-        );
-
-        // No failure_reason set — circuit breaker logs evidence but doesn't auto-fail
-        assert!(
-            t.failure_reason.is_none(),
-            "Circuit breaker should not set failure_reason (evaluator decides)"
-        );
-
-        // Check log entries
-        assert!(
-            t.log.iter().any(|e| e.actor == Some("spawn".to_string())
-                && e.message.contains("Spawn failed")),
-            "Expected spawn failure log entry"
-        );
-        assert!(
-            t.log
-                .iter()
-                .any(|e| e.actor == Some("spawn-circuit-breaker".to_string())
-                    && e.message.contains("Circuit breaker tripped")),
-            "Expected circuit breaker log entry"
-        );
-        assert!(
-            t.log.iter().any(|e| e.message.contains("evaluator review")),
-            "Circuit breaker log should mention evaluator review"
-        );
-    }
-
-    #[test]
-    fn test_record_spawn_failure_stamps_last_failure_time() {
-        // record_spawn_failure must stamp last_spawn_failure_at so the
-        // cooldown-decay self-heal can measure elapsed time.
-        let dir = tempdir().unwrap();
-        let wg_dir = dir.path().join(".wg");
-        std::fs::create_dir_all(&wg_dir).unwrap();
-        let gp = wg_dir.join("graph.jsonl");
-
-        let mut graph = WorkGraph::new();
-        let mut task = Task::default();
-        task.id = "t".to_string();
-        task.status = Status::Open;
-        graph.add_node(Node::Task(task));
-        save_graph(&graph, &gp).unwrap();
-
-        record_spawn_failure(&gp, "t", "boom", "claude", None, 5);
-        let g = load_graph(&gp).unwrap();
-        let t = g.get_task("t").unwrap();
-        assert_eq!(t.spawn_failures, 1);
-        assert!(
-            t.last_spawn_failure_at.is_some(),
-            "last_spawn_failure_at must be stamped"
-        );
-    }
-
-    #[test]
     fn direct_dispatch_failure_is_terminal_and_has_no_implicit_wait() {
         let dir = tempdir().unwrap();
         let wg_dir = dir.path().join(".wg");
@@ -4062,6 +3799,14 @@ mod tests {
         assert_eq!(
             task.failure_reason.as_deref(),
             Some("selected Pi route exited before launch")
+        );
+        assert_eq!(task.lifecycle.audit.len(), 2);
+        assert_eq!(
+            task.lifecycle
+                .current_attempt
+                .as_ref()
+                .and_then(|attempt| attempt.disposition),
+            Some(worksgood::lifecycle::AttemptDisposition::Failed)
         );
         assert!(task.log.iter().any(|entry| {
             entry.actor.as_deref() == Some("direct-dispatch")
@@ -4099,35 +3844,6 @@ mod tests {
         assert!(
             t.log.iter().any(|e| e.message.contains("Spawn succeeded")),
             "should log clear-on-success"
-        );
-    }
-
-    #[test]
-    fn test_reset_spawn_failures_helper() {
-        // The shared primitive behind cooldown-decay / wg retry / edit.
-        let dir = tempdir().unwrap();
-        let wg_dir = dir.path().join(".wg");
-        std::fs::create_dir_all(&wg_dir).unwrap();
-        let gp = wg_dir.join("graph.jsonl");
-
-        let mut graph = WorkGraph::new();
-        let mut task = Task::default();
-        task.id = "t".to_string();
-        task.status = Status::Incomplete;
-        task.spawn_failures = 5;
-        task.last_spawn_failure_at = Some(chrono::Utc::now().to_rfc3339());
-        graph.add_node(Node::Task(task));
-        save_graph(&graph, &gp).unwrap();
-
-        reset_spawn_failures(&gp, "t", "test");
-        let g = load_graph(&gp).unwrap();
-        let t = g.get_task("t").unwrap();
-        assert_eq!(t.spawn_failures, 0);
-        assert!(t.last_spawn_failure_at.is_none());
-        assert!(
-            t.log
-                .iter()
-                .any(|e| e.message.contains("Spawn circuit breaker reset"))
         );
     }
 
