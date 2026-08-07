@@ -888,7 +888,28 @@ pub fn run_with_remote_provider(
             }
 
             let parent = graph.get_task_mut(&parent_id).expect("verified above");
-            parent.status = Status::Waiting;
+            let actor_id = parent
+                .assigned
+                .clone()
+                .unwrap_or_else(worksgood::current_user);
+            let request = worksgood::lifecycle::TransitionRequest::new(
+                worksgood::lifecycle::TransitionKind::AttemptParked,
+                if parent.assigned.is_some() {
+                    worksgood::lifecycle::LifecycleActor::worker(actor_id)
+                } else {
+                    worksgood::lifecycle::LifecycleActor::operator(actor_id)
+                },
+                "waiting_for_subtask",
+                format!(
+                    "subtask-wait:{parent_id}:{child_id}:{}",
+                    parent.lifecycle.generation
+                ),
+            )
+            .expecting(worksgood::lifecycle::FenceExpectation::current(parent));
+            if let Err(rejection) = worksgood::lifecycle::apply_transition(parent, request) {
+                wait_error = Some(anyhow::anyhow!(rejection));
+                return false;
+            }
             parent.wait_condition = Some(worksgood::graph::WaitSpec::Any(vec![
                 worksgood::graph::WaitCondition::TaskStatus {
                     task_id: child_id.clone(),
