@@ -946,11 +946,11 @@ fn resolve_model_source_reports_tier_override() {
 }
 
 // ===========================================================================
-// Lazy evaluation creation tests (publish creates assignment only)
+// Agency decisions are receipts, never publish-time graph tasks.
 // ===========================================================================
 
 #[test]
-fn publish_creates_assignment_but_no_evaluation_satellites() {
+fn publish_creates_no_synthetic_agency_tasks() {
     // Evaluation and FLIP are candidate-bound hidden records, even when both
     // policies are enabled before publication.
     let tmp = TempDir::new().unwrap();
@@ -974,7 +974,7 @@ fn publish_creates_assignment_but_no_evaluation_satellites() {
         show
     );
 
-    // Publish creates only the pre-execution assignment prerequisite.
+    // Legacy flags no longer mint scheduler work.
     wg_ok(&wg_dir, &["publish", "my-feature"]);
 
     // Load the graph and verify the workspace remains uncluttered.
@@ -986,10 +986,7 @@ fn publish_creates_assignment_but_no_evaluation_satellites() {
         graph.get_task("my-feature").is_some(),
         "Main task should exist"
     );
-    assert!(
-        graph.get_task(".assign-my-feature").is_some(),
-        ".assign-my-feature should be created by wg publish"
-    );
+    assert!(graph.get_task(".assign-my-feature").is_none());
     assert!(graph.get_task(".flip-my-feature").is_none());
     assert!(graph.get_task(".evaluate-my-feature").is_none());
     assert!(
@@ -1002,8 +999,7 @@ fn publish_creates_assignment_but_no_evaluation_satellites() {
 }
 
 #[test]
-fn publish_creates_only_assignment_edge() {
-    // The only publish-time agency edge is assignment → source.
+fn publish_creates_no_agency_dependency_edges() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(&tmp);
 
@@ -1020,33 +1016,16 @@ fn publish_creates_only_assignment_edge() {
     let graph_path = wg_dir.join("graph.jsonl");
     let graph = load_graph(&graph_path).unwrap();
 
-    // .assign-* has no deps (placement is merged, runs first)
-    let assign = graph.get_task(".assign-my-feature").unwrap();
-    assert!(
-        assign.after.is_empty(),
-        ".assign-* should have no deps (placement merged), got after: {:?}",
-        assign.after
-    );
-    assert!(
-        assign.before.contains(&"my-feature".to_string()),
-        ".assign-* should block main task"
-    );
-
-    // main task depends on .assign-*
     let main_task = graph.get_task("my-feature").unwrap();
-    assert!(
-        main_task.after.contains(&".assign-my-feature".to_string()),
-        "main task should depend on .assign-*, got after: {:?}",
-        main_task.after
-    );
-
+    assert!(main_task.after.is_empty());
+    assert!(graph.get_task(".assign-my-feature").is_none());
     assert!(graph.get_task(".flip-my-feature").is_none());
     assert!(graph.get_task(".evaluate-my-feature").is_none());
 }
 
 #[test]
 fn publish_no_place_task_created() {
-    // Placement is merged into assignment — no separate .place-* tasks are created.
+    // Placement and assignment are metadata — no graph tasks are created.
     let tmp = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(&tmp);
 
@@ -1063,10 +1042,7 @@ fn publish_no_place_task_created() {
         graph.get_task(".place-my-task").is_none(),
         ".place-* tasks should not be created"
     );
-    assert!(
-        graph.get_task(".assign-my-task").is_some(),
-        ".assign-* task should still be created"
-    );
+    assert!(graph.get_task(".assign-my-task").is_none());
 }
 
 #[test]

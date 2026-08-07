@@ -841,9 +841,12 @@ mod tests {
             "should create 5 agents (1 default + 4 special)"
         );
 
-        // Config should have auto_assign and auto_evaluate enabled
+        // Evaluation is enabled; assignment stays direct admission metadata.
         let config = worksgood::config::Config::load(&wg_dir).unwrap();
-        assert!(config.agency.auto_assign, "auto_assign should be enabled");
+        assert!(
+            !config.agency.auto_assign,
+            "synthetic auto-assignment should be disabled"
+        );
         assert!(
             config.agency.auto_evaluate,
             "auto_evaluate should be enabled"

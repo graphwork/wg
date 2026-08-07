@@ -12,7 +12,7 @@ use std::process::{Child, Command, Stdio};
 use worksgood::agency;
 use worksgood::config::{CapBehavior, Config, EndpointConfig, ReasoningLevel};
 use worksgood::dispatch::plan_spawn;
-use worksgood::graph::{LogEntry, Node, Status, Task, WorkGraph, is_system_task};
+use worksgood::graph::{LogEntry, Status, WorkGraph};
 use worksgood::lifecycle::{
     ActorKind, FenceExpectation, LifecycleActor, TransitionKind, TransitionRequest,
     apply_transition,
@@ -940,7 +940,6 @@ pub(crate) fn spawn_agent_inner_authorized(
     }
 
     // Capture audit info before mutable borrows
-    let task_title_for_audit = task.title.clone();
     let task_agent_for_audit = task.agent.clone();
 
     // Look up agency agent preferences if task has an assigned agent identity.
@@ -2202,46 +2201,6 @@ pub(crate) fn spawn_agent_inner_authorized(
             });
         }
 
-        let assign_task_id = format!(".assign-{task_id_for_audit}");
-        if !is_system_task(&task_id_for_audit) && graph.get_task(&assign_task_id).is_none() {
-            let now = Utc::now().to_rfc3339();
-            let description = task_agent_for_audit.as_ref().map_or_else(
-                || format!(
-                    "Direct dispatch: '{}'\nNo agent pre-assigned (auto_assign disabled or skipped)",
-                    task_id_for_audit
-                ),
-                |agency_agent| format!(
-                    "Direct dispatch: agent={} → '{}'\nNo lightweight assignment flow (auto_assign disabled or skipped)",
-                    agency_agent, task_id_for_audit
-                ),
-            );
-            graph.add_node(Node::Task(Task {
-                id: assign_task_id,
-                title: format!("Assign agent for: {task_title_for_audit}"),
-                presentation: worksgood::graph::TaskPresentation::Plumbing,
-                origin: worksgood::graph::TaskOrigin::plumbing(
-                    Some(task_id_for_audit.clone()),
-                    "direct dispatch assignment receipt",
-                ),
-                description: Some(description),
-                status: Status::Done,
-                before: vec![task_id_for_audit.clone()],
-                tags: vec!["assignment".to_string(), "agency".to_string()],
-                created_at: Some(now.clone()),
-                started_at: Some(now.clone()),
-                completed_at: Some(now),
-                exec_mode: Some("bare".to_string()),
-                visibility: "internal".to_string(),
-                log: vec![LogEntry {
-                    timestamp: Utc::now().to_rfc3339(),
-                    actor: Some("coordinator".to_string()),
-                    user: Some(worksgood::current_user()),
-                    message: "Created at committed spawn time (no prior .assign-* task existed)"
-                        .to_string(),
-                }],
-                ..Default::default()
-            }));
-        }
         true
     }) {
         eprintln!(
