@@ -17,6 +17,71 @@ use super::spawn::worktree;
 #[cfg(test)]
 use super::graph_path;
 
+fn reserve_exec_attempt(
+    task: &mut worksgood::graph::Task,
+    task_id: &str,
+    owner_id: Option<String>,
+    reason: &str,
+) -> Result<()> {
+    if task.status != Status::Open {
+        let reopen = worksgood::lifecycle::TransitionRequest::new(
+            worksgood::lifecycle::TransitionKind::GenerationCreated,
+            worksgood::lifecycle::LifecycleActor::operator(worksgood::current_user()),
+            "explicit_exec_generation",
+            format!(
+                "exec-generation:{task_id}:{}:{}",
+                task.lifecycle.generation, task.lifecycle.fence
+            ),
+        )
+        .expecting(worksgood::lifecycle::FenceExpectation::current(task));
+        worksgood::lifecycle::apply_transition(task, reopen).map_err(anyhow::Error::msg)?;
+    }
+    let request = worksgood::lifecycle::TransitionRequest::new(
+        worksgood::lifecycle::TransitionKind::AttemptReserved {
+            owner_id: owner_id.clone(),
+        },
+        worksgood::lifecycle::LifecycleActor::operator(worksgood::current_user()),
+        reason,
+        format!(
+            "exec-claim:{task_id}:{}:{}",
+            task.lifecycle.generation,
+            task.lifecycle.attempt_sequence + 1
+        ),
+    )
+    .expecting(worksgood::lifecycle::FenceExpectation::current(task));
+    worksgood::lifecycle::apply_transition(task, request).map_err(anyhow::Error::msg)?;
+    Ok(())
+}
+
+fn fail_exec_attempt(
+    task: &mut worksgood::graph::Task,
+    task_id: &str,
+    actor: Option<&str>,
+    reason: &str,
+) -> Result<()> {
+    let actor = actor.map_or_else(
+        || worksgood::lifecycle::LifecycleActor::operator(worksgood::current_user()),
+        worksgood::lifecycle::LifecycleActor::worker,
+    );
+    let attempt_id = task
+        .lifecycle
+        .current_attempt
+        .as_ref()
+        .map(|attempt| attempt.id.as_str())
+        .unwrap_or("missing-attempt");
+    let request = worksgood::lifecycle::TransitionRequest::new(
+        worksgood::lifecycle::TransitionKind::AttemptFailed { class: None },
+        actor,
+        "exec_attempt_failed",
+        format!("exec-failed:{task_id}:{attempt_id}"),
+    )
+    .expecting(worksgood::lifecycle::FenceExpectation::current(task));
+    worksgood::lifecycle::apply_transition(task, request).map_err(anyhow::Error::msg)?;
+    task.retry_count = task.retry_count.saturating_add(1);
+    task.failure_reason = Some(reason.to_string());
+    Ok(())
+}
+
 /// Execute a task's shell command
 ///
 /// This implements the "optional exec helper" part of the execution model:
@@ -64,21 +129,11 @@ pub fn run(dir: &Path, task_id: &str, actor: Option<&str>, dry_run: bool) -> Res
         // Claim the task if open
         if matches!(task.status, Status::Open | Status::Incomplete) {
             let task = graph.get_task_mut(task_id).expect("task verified above");
-            if task.status == Status::Incomplete {
-                task.status = Status::Open;
-            }
             let owner = actor.map(String::from);
-            let request = worksgood::lifecycle::TransitionRequest::new(
-                worksgood::lifecycle::TransitionKind::AttemptReserved {
-                    owner_id: owner.clone(),
-                },
-                worksgood::lifecycle::LifecycleActor::operator(worksgood::current_user()),
-                "exec_claim_reserved",
-                format!("exec-claim:{}:{}", task_id, task.lifecycle.generation),
-            )
-            .expecting(worksgood::lifecycle::FenceExpectation::current(task));
-            if let Err(rejection) = worksgood::lifecycle::apply_transition(task, request) {
-                error = Some(anyhow::anyhow!(rejection));
+            if let Err(rejection) =
+                reserve_exec_attempt(task, task_id, owner.clone(), "exec_claim_reserved")
+            {
+                error = Some(rejection);
                 return false;
             }
             task.started_at = Some(Utc::now().to_rfc3339());
@@ -153,9 +208,16 @@ pub fn run(dir: &Path, task_id: &str, actor: Option<&str>, dry_run: bool) -> Res
     )?;
     modify_graph(&path, |graph| {
         if let Some(task) = graph.get_task_mut(task_id) {
-            task.status = Status::Failed;
-            task.retry_count += 1;
-            task.failure_reason = Some(format!("Command exited with code {}", exit_code));
+            if fail_exec_attempt(
+                task,
+                task_id,
+                actor_clone.as_deref(),
+                &format!("Command exited with code {exit_code}"),
+            )
+            .is_err()
+            {
+                return false;
+            }
             task.log.push(LogEntry {
                 timestamp: Utc::now().to_rfc3339(),
                 actor: actor_clone.clone(),
@@ -170,13 +232,7 @@ pub fn run(dir: &Path, task_id: &str, actor: Option<&str>, dry_run: bool) -> Res
     .context("Failed to save graph")?;
     super::notify_graph_changed(dir);
 
-    if success {
-        println!("Task '{}' completed successfully", task_id);
-    } else {
-        anyhow::bail!("Task '{}' failed with exit code {}", task_id, exit_code);
-    }
-
-    Ok(())
+    anyhow::bail!("Task '{}' failed with exit code {}", task_id, exit_code)
 }
 
 /// Drop into an interactive agent session for a task.
@@ -313,13 +369,16 @@ pub fn run_interactive(
         let actor_s = actor.map(String::from);
         modify_graph(&path, |graph| {
             if let Some(t) = graph.get_task_mut(task_id) {
-                t.status = Status::InProgress;
-                t.started_at = Some(Utc::now().to_rfc3339());
-                if let Some(ref a) = actor_s {
-                    t.assigned = Some(a.clone());
-                } else {
-                    t.assigned = Some(format!("exec-{}", worksgood::current_user()));
+                let owner = actor_s
+                    .clone()
+                    .unwrap_or_else(|| format!("exec-{}", worksgood::current_user()));
+                if reserve_exec_attempt(t, task_id, Some(owner.clone()), "interactive_exec_claim")
+                    .is_err()
+                {
+                    return false;
                 }
+                t.started_at = Some(Utc::now().to_rfc3339());
+                t.assigned = Some(owner);
                 t.log.push(LogEntry {
                     timestamp: Utc::now().to_rfc3339(),
                     actor: actor_s.clone(),
@@ -481,10 +540,15 @@ pub fn run_interactive(
                 )?;
                 modify_graph(&path, |graph| {
                     if let Some(t) = graph.get_task_mut(task_id) {
-                        t.status = Status::Failed;
-                        t.retry_count += 1;
-                        if let Some(ref r) = reason_opt {
-                            t.failure_reason = Some(r.clone());
+                        if fail_exec_attempt(
+                            t,
+                            task_id,
+                            actor,
+                            reason_opt.as_deref().unwrap_or("interactive exec failed"),
+                        )
+                        .is_err()
+                        {
+                            return false;
                         }
                         t.log.push(LogEntry {
                             timestamp: Utc::now().to_rfc3339(),
