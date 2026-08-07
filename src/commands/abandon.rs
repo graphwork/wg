@@ -20,7 +20,7 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>, superseded_by: &[String])
     let preflight_task = preflight
         .get_task(id)
         .ok_or_else(|| anyhow::anyhow!("Task '{}' not found", id))?;
-    if !matches!(preflight_task.status, Status::Done | Status::Abandoned) {
+    if !preflight_task.status.is_terminal() {
         super::finalize::record_terminal_abort(
             dir,
             id,
@@ -56,24 +56,26 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>, superseded_by: &[String])
             already_abandoned = true;
             return false;
         }
+        if task.status.is_terminal() {
+            error = Some(anyhow::anyhow!(
+                "Task '{}' is already terminal ({}) and cannot be abandoned",
+                id,
+                task.status
+            ));
+            return false;
+        }
 
         prev_assigned = task.assigned.clone();
-        if task.status == Status::Failed {
-            // Historical failed generations may already have a terminal
-            // disposition. Abandoning them changes operator disposition only.
-            task.status = Status::Abandoned;
-        } else {
-            let request = TransitionRequest::new(
-                TransitionKind::Abandoned,
-                LifecycleActor::operator(worksgood::current_user()),
-                "operator_abandoned",
-                format!("abandon:{id}:{}", task.lifecycle.generation),
-            )
-            .expecting(FenceExpectation::current(task));
-            if let Err(rejection) = apply_transition(task, request) {
-                error = Some(anyhow::anyhow!(rejection));
-                return false;
-            }
+        let request = TransitionRequest::new(
+            TransitionKind::Abandoned,
+            LifecycleActor::operator(worksgood::current_user()),
+            "operator_abandoned",
+            format!("abandon:{id}:{}", task.lifecycle.generation),
+        )
+        .expecting(FenceExpectation::current(task));
+        if let Err(rejection) = apply_transition(task, request) {
+            error = Some(anyhow::anyhow!(rejection));
+            return false;
         }
         task.failure_reason = reason.map(String::from);
         if !superseded_by.is_empty() {
@@ -131,7 +133,19 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>, superseded_by: &[String])
 
         for target_id in &cascade_targets {
             if let Some(t) = graph.get_task_mut(target_id) {
-                t.status = Status::Abandoned;
+                let request = TransitionRequest::new(
+                    TransitionKind::Abandoned,
+                    LifecycleActor::operator(worksgood::current_user()),
+                    "parent_abandoned",
+                    format!(
+                        "cascade-abandon:{id}:{target_id}:{}",
+                        t.lifecycle.generation
+                    ),
+                )
+                .expecting(FenceExpectation::current(t));
+                if apply_transition(t, request).is_err() {
+                    continue;
+                }
                 t.failure_reason = Some(format!("Parent task '{}' was abandoned", id));
                 t.log.push(LogEntry {
                     timestamp: Utc::now().to_rfc3339(),

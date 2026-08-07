@@ -277,11 +277,9 @@ fn run_inner(
             }
         };
 
-        // Eager profile stamp: pin the profile onto EVERY member of the set
-        // (the WCC / subgraph / single task) in this same atomic transaction.
-        // Tasks added to the component later inherit via `wg add`
-        // (inherit-on-attach), and agency satellites are stamped inside
-        // `scaffold_agency_for_unpaused` below.
+        // Eager profile stamp: pin the profile onto every selected work item
+        // in this same atomic transaction. Tasks added later inherit via
+        // `wg add` (inherit-on-attach).
         if let Some(name) = profile {
             stamped = stamp_profile(graph, &members, name);
         }
@@ -297,8 +295,7 @@ fn run_inner(
                 }
             }
 
-            // Eagerly scaffold agency pipeline for every newly-unpaused task.
-            // Each satellite inherits the parent task's stamped profile.
+            // Retire safe synthetic agency rows left by legacy graphs.
             scaffold_agency_for_unpaused(dir, graph, &unpaused, action);
         }
 
@@ -680,71 +677,27 @@ fn stamp_profile(graph: &mut WorkGraph, members: &[String], profile: &str) -> us
     changed
 }
 
-/// Create publish-time agency prerequisites for each unpaused task in one
-/// atomic pass. Assignment remains a graph prerequisite; evaluation/FLIP are
-/// selected later from candidate completion and stored on the source.
-///
-/// All prerequisites and edges are written together into the same graph
-/// object before the caller saves. Idempotent: skips existing assignment rows.
+/// Retire safe legacy review satellites during the publish transaction.
 fn scaffold_agency_for_unpaused(
-    dir: &Path,
+    _dir: &Path,
     graph: &mut WorkGraph,
     task_ids: &[String],
     action: &str,
 ) {
-    let global = worksgood::config::Config::load_or_default(dir);
-
-    // Collect (id, title, profile) triples, filtering out system tasks.
-    // The profile was just stamped on each member by `stamp_profile`.
-    let candidates: Vec<(String, String, Option<String>)> = task_ids
+    let candidates: Vec<String> = task_ids
         .iter()
         .filter(|id| !worksgood::graph::is_system_task(id))
-        .filter_map(|id| {
-            graph
-                .get_task(id)
-                .map(|t| (id.clone(), t.title.clone(), t.profile.clone()))
-        })
+        .filter(|id| graph.get_task(id).is_some())
+        .cloned()
         .collect();
 
-    // Memoize loaded profile configs by name within this publish pass.
-    let mut profile_cache: std::collections::HashMap<String, Option<worksgood::config::Config>> =
-        std::collections::HashMap::new();
-    let mut count = 0;
-
-    for (id, title, profile) in &candidates {
-        // Resolve the effective profile config for assignment now and for
-        // lazy candidate policy later. Historical satellites, when present,
-        // retain their existing compatibility routing.
-        let eff: worksgood::config::Config = match profile {
-            Some(name) => profile_cache
-                .entry(name.clone())
-                .or_insert_with(|| worksgood::dispatch::profile::load_profile_config(name))
-                .clone()
-                .unwrap_or_else(|| global.clone()),
-            None => global.clone(),
-        };
-
-        if eval_scaffold::scaffold_full_pipeline(dir, graph, id, title, &eff) {
-            count += 1;
-        }
-
-        // Stamp the parent's profile onto assignment and any retained legacy
-        // satellites so compatibility work remains in the profiled WCC.
-        if let Some(name) = profile {
-            for prefix in [".assign-", ".flip-", ".evaluate-"] {
-                let sat_id = format!("{}{}", prefix, id);
-                if let Some(sat) = graph.get_task_mut(&sat_id) {
-                    sat.profile = Some(name.clone());
-                }
-            }
-        }
-    }
+    let count = candidates
+        .iter()
+        .map(|id| eval_scaffold::retire_stale_legacy_satellites(graph, id, false))
+        .sum::<usize>();
 
     if count > 0 {
-        eprintln!(
-            "[{}] Scaffolded publish-time agency prerequisites for {} task(s)",
-            action, count
-        );
+        eprintln!("[{action}] Retired {count} legacy agency task(s)");
     }
 }
 
@@ -1321,9 +1274,7 @@ mod tests {
     }
 
     #[test]
-    fn test_publish_creates_assignment_without_eager_evaluation() {
-        // Publish owns only the pre-execution assignment prerequisite.
-        // Evaluation is minted after authenticated candidate completion.
+    fn test_publish_creates_no_synthetic_agency_tasks() {
         let dir = tempdir().unwrap();
         let mut task = make_task("my-task", "My Task", Status::Open);
         task.paused = true;
@@ -1341,10 +1292,7 @@ mod tests {
         assert!(result.is_ok());
 
         let graph = load_graph(graph_path(dir.path())).unwrap();
-        assert!(
-            graph.get_task(".assign-my-task").is_some(),
-            ".assign-my-task must be created at publish time"
-        );
+        assert!(graph.get_task(".assign-my-task").is_none());
         assert!(graph.get_task(".evaluate-my-task").is_none());
         assert!(graph.get_task(".flip-my-task").is_none());
         assert!(
@@ -1359,7 +1307,7 @@ mod tests {
     // --- Resume scaffolding tests ---
 
     #[test]
-    fn test_resume_scaffolds_assignment_without_eager_evaluation() {
+    fn test_resume_creates_no_synthetic_agency_tasks() {
         let dir = tempdir().unwrap();
         let mut task = make_task("my-task", "My Task", Status::Open);
         task.paused = true;
@@ -1375,10 +1323,7 @@ mod tests {
         assert!(result.is_ok());
 
         let graph = load_graph(graph_path(dir.path())).unwrap();
-        assert!(
-            graph.get_task(".assign-my-task").is_some(),
-            ".assign-my-task must be created at resume time"
-        );
+        assert!(graph.get_task(".assign-my-task").is_none());
         assert!(graph.get_task(".evaluate-my-task").is_none());
         assert!(graph.get_task(".flip-my-task").is_none());
         assert!(
@@ -1391,7 +1336,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resume_only_scaffolds_assignment_without_eager_evaluation() {
+    fn test_resume_only_creates_no_synthetic_agency_tasks() {
         let dir = tempdir().unwrap();
         let mut task = make_task("my-task", "My Task", Status::Open);
         task.paused = true;
@@ -1407,10 +1352,7 @@ mod tests {
         assert!(result.is_ok());
 
         let graph = load_graph(graph_path(dir.path())).unwrap();
-        assert!(
-            graph.get_task(".assign-my-task").is_some(),
-            ".assign-my-task must be created at resume time (--only)"
-        );
+        assert!(graph.get_task(".assign-my-task").is_none());
         assert!(graph.get_task(".evaluate-my-task").is_none());
         assert!(graph.get_task(".flip-my-task").is_none());
         assert!(
@@ -1423,7 +1365,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resume_does_not_double_scaffold_already_published_task() {
+    fn test_resume_after_publish_still_has_no_synthetic_agency_tasks() {
         let dir = tempdir().unwrap();
         let mut task = make_task("my-task", "My Task", Status::Open);
         task.paused = true;
@@ -1435,12 +1377,10 @@ mod tests {
         )
         .unwrap();
 
-        // First: publish (creates assignment only)
         publish(dir.path(), "my-task", false, false, None, false).unwrap();
 
         let graph = load_graph(graph_path(dir.path())).unwrap();
-        let assign = graph.get_task(".assign-my-task").unwrap();
-        let assign_created_at = assign.created_at.clone();
+        assert!(graph.get_task(".assign-my-task").is_none());
         assert!(graph.get_task(".evaluate-my-task").is_none());
 
         // Now pause and resume the task
@@ -1456,10 +1396,8 @@ mod tests {
 
         run(dir.path(), "my-task", false).unwrap();
 
-        // Scaffold tasks should still be the same (not recreated)
         let graph = load_graph(graph_path(dir.path())).unwrap();
-        let assign = graph.get_task(".assign-my-task").unwrap();
-        assert_eq!(assign.created_at, assign_created_at);
+        assert!(graph.get_task(".assign-my-task").is_none());
         assert!(graph.get_task(".evaluate-my-task").is_none());
         assert!(graph.get_task(".flip-my-task").is_none());
     }
@@ -1767,12 +1705,11 @@ mod tests {
 
     // --- Profile propagation tests (`wg publish --profile`) ---
 
-    /// `wg publish <seed> --profile <name>` stamps the profile onto EVERY task
-    /// in the weakly-connected component (work tasks) AND each work task's
-    /// agency satellites (.assign-*/.evaluate-*).
+    /// `wg publish <seed> --profile <name>` stamps every work task in the
+    /// weakly-connected component without minting agency tasks.
     #[test]
     #[ignore = "retired non-Pi execution compatibility behavior"]
-    fn test_publish_with_profile_stamps_wcc_and_satellites() {
+    fn test_publish_with_profile_stamps_wcc_without_satellites() {
         let dir = tempdir().unwrap();
         let mut t1 = make_task("research", "Research X", Status::Open);
         t1.paused = true;
@@ -1784,7 +1721,7 @@ mod tests {
         t3.after = vec!["implement".to_string()];
         setup_workgraph(dir.path(), vec![t1, t2, t3]);
 
-        // Enable agency scaffolding so satellites are created at publish.
+        // Legacy feature flags must not create synthetic graph tasks.
         fs::write(
             dir.path().join("config.toml"),
             "[agency]\nauto_assign = true\nauto_evaluate = true\n",
@@ -1812,24 +1749,10 @@ mod tests {
             );
         }
 
-        // Each work task's agency satellites inherit the profile too.
-        for sat in &[
-            ".assign-research",
-            ".evaluate-research",
-            ".assign-implement",
-            ".evaluate-implement",
-            ".assign-test-x",
-            ".evaluate-test-x",
-        ] {
-            let t = graph
-                .get_task(sat)
-                .unwrap_or_else(|| panic!("satellite '{}' must exist", sat));
-            assert_eq!(
-                t.profile.as_deref(),
-                Some("claude"),
-                "agency satellite '{}' must inherit the WCC profile",
-                sat
-            );
+        for source in ["research", "implement", "test-x"] {
+            for prefix in [".assign-", ".flip-", ".evaluate-"] {
+                assert!(graph.get_task(&format!("{prefix}{source}")).is_none());
+            }
         }
     }
 

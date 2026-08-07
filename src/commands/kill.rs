@@ -16,6 +16,9 @@ use chrono::Utc;
 use std::collections::HashSet;
 use std::path::Path;
 use worksgood::graph::{LogEntry, Status};
+use worksgood::lifecycle::{
+    FenceExpectation, LifecycleActor, TransitionKind, TransitionRequest, apply_transition,
+};
 use worksgood::parser::modify_graph;
 use worksgood::query::build_reverse_index;
 use worksgood::service::{AgentRegistry, AgentStatus};
@@ -342,7 +345,16 @@ pub fn run_tree(
                 if let Some(task) = graph.get_task_mut(tid)
                     && !task.status.is_terminal()
                 {
-                    task.status = Status::Abandoned;
+                    let request = TransitionRequest::new(
+                        TransitionKind::Abandoned,
+                        LifecycleActor::operator(worksgood::current_user()),
+                        "tree_killed",
+                        format!("tree-kill:{task_id}:{tid}:{}", task.lifecycle.generation),
+                    )
+                    .expecting(FenceExpectation::current(task));
+                    if apply_transition(task, request).is_err() {
+                        continue;
+                    }
                     task.assigned = None;
                     task.failure_reason = Some(format!("Tree-killed from root task '{}'", task_id));
                     task.log.push(LogEntry {
@@ -421,8 +433,21 @@ fn unclaim_task(dir: &Path, task_id: &str, agent_id: &str, pause: bool) -> Resul
     modify_graph(&path, |graph| {
         if let Some(task) = graph.get_task_mut(task_id)
             && task.status == Status::InProgress
+            && task.assigned.as_deref() == Some(agent_id)
         {
-            task.status = Status::Open;
+            let request = TransitionRequest::new(
+                TransitionKind::GenerationCreated,
+                LifecycleActor::operator(worksgood::current_user()),
+                "killed_owner_reaped",
+                format!(
+                    "kill-reopen:{task_id}:{agent_id}:{}:{}",
+                    task.lifecycle.generation, task.lifecycle.fence
+                ),
+            )
+            .expecting(FenceExpectation::current(task));
+            if apply_transition(task, request).is_err() {
+                return false;
+            }
             task.retry_count = task.retry_count.saturating_add(1);
             task.assigned = None;
             task.started_at = None;
@@ -490,7 +515,7 @@ mod tests {
         // Create graph with a task assigned to the agent
         let mut graph = WorkGraph::new();
         let mut task = make_task("task-1", "Test Task", Status::InProgress);
-        task.assigned = Some("test-agent".to_string());
+        task.assigned = Some("agent-1".to_string());
         graph.add_node(Node::Task(task));
         save_graph(&graph, &path).unwrap();
 

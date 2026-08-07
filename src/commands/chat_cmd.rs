@@ -38,7 +38,7 @@ pub enum ChatRuntimeStatus {
     /// Chat task exists in graph; service daemon is NOT running.
     /// Inbox messages will be queued until the daemon is started.
     Dormant,
-    /// Chat task is Status::Done with the `archived` tag.
+    /// Chat task carries the `archived` tag after lifecycle retirement.
     Archived,
     /// Chat task is Status::Abandoned.
     Deleted,
@@ -1002,7 +1002,18 @@ fn archive_chat_direct(dir: &Path, cid: u32, json: bool) -> Result<()> {
             return false;
         };
         if let Some(t) = g.get_task_mut(&resolved) {
-            t.status = Status::Done;
+            if !t.status.is_terminal() {
+                let request = worksgood::lifecycle::TransitionRequest::new(
+                    worksgood::lifecycle::TransitionKind::Abandoned,
+                    worksgood::lifecycle::LifecycleActor::operator(worksgood::current_user()),
+                    "chat_archived",
+                    format!("archive-chat:{cid}:{}", t.lifecycle.generation),
+                )
+                .expecting(worksgood::lifecycle::FenceExpectation::current(t));
+                if worksgood::lifecycle::apply_transition(t, request).is_err() {
+                    return false;
+                }
+            }
             if !t.tags.iter().any(|x| x == "archived") {
                 t.tags.push("archived".to_string());
             }
@@ -1074,7 +1085,18 @@ fn delete_chat_direct(dir: &Path, cid: u32, json: bool) -> Result<()> {
             return false;
         };
         if let Some(t) = g.get_task_mut(&resolved) {
-            t.status = Status::Abandoned;
+            if !t.status.is_terminal() {
+                let request = worksgood::lifecycle::TransitionRequest::new(
+                    worksgood::lifecycle::TransitionKind::Abandoned,
+                    worksgood::lifecycle::LifecycleActor::operator(worksgood::current_user()),
+                    "chat_deleted",
+                    format!("delete-chat:{cid}:{}", t.lifecycle.generation),
+                )
+                .expecting(worksgood::lifecycle::FenceExpectation::current(t));
+                if worksgood::lifecycle::apply_transition(t, request).is_err() {
+                    return false;
+                }
+            }
             t.log.push(worksgood::graph::LogEntry {
                 timestamp: chrono::Utc::now().to_rfc3339(),
                 actor: Some("wg-chat-delete".to_string()),

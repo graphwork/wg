@@ -364,7 +364,20 @@ pub fn execute_claim(workgraph_dir: &Path, task_id: &str, actor: Option<&str>) -
         }
 
         if matches!(task.status, Status::Blocked | Status::Incomplete) {
-            task.status = Status::Open;
+            let reopen = crate::lifecycle::TransitionRequest::new(
+                crate::lifecycle::TransitionKind::GenerationCreated,
+                crate::lifecycle::LifecycleActor::operator(crate::current_user()),
+                "matrix_claim_generation",
+                format!(
+                    "matrix-claim-generation:{}:{}:{}",
+                    task_id, task.lifecycle.generation, task.lifecycle.fence
+                ),
+            )
+            .expecting(crate::lifecycle::FenceExpectation::current(task));
+            if let Err(rejection) = crate::lifecycle::apply_transition(task, reopen) {
+                result_msg = Some(format!("Error: {rejection}"));
+                return false;
+            }
         }
         let request = crate::lifecycle::TransitionRequest::new(
             crate::lifecycle::TransitionKind::AttemptReserved {
@@ -500,7 +513,30 @@ pub fn execute_unclaim(workgraph_dir: &Path, task_id: &str) -> String {
             }
         };
 
-        task.status = Status::Open;
+        if task.status == Status::Open && task.assigned.is_none() {
+            return false;
+        }
+        if task.status.is_terminal() {
+            result_msg = Some(format!(
+                "Error: Task '{}' is terminal ({}) and cannot be unclaimed",
+                task_id, task.status
+            ));
+            return false;
+        }
+        let request = crate::lifecycle::TransitionRequest::new(
+            crate::lifecycle::TransitionKind::GenerationCreated,
+            crate::lifecycle::LifecycleActor::operator(crate::current_user()),
+            "matrix_unclaim",
+            format!(
+                "matrix-unclaim:{}:{}:{}",
+                task_id, task.lifecycle.generation, task.lifecycle.fence
+            ),
+        )
+        .expecting(crate::lifecycle::FenceExpectation::current(task));
+        if let Err(rejection) = crate::lifecycle::apply_transition(task, request) {
+            result_msg = Some(format!("Error: {rejection}"));
+            return false;
+        }
         task.assigned = None;
         true
     }) {

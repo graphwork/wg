@@ -211,8 +211,8 @@ pub fn classify_legacy_completions(
 fn quarantine_active_task(task: &mut Task, record: &LegacyCompletionRecord) -> Result<()> {
     let record_cid = record.cid()?;
     let request = TransitionRequest::new(
-        TransitionKind::ReconciliationIssue {
-            issue_id: record_cid.clone(),
+        TransitionKind::LegacyCompletionQuarantined {
+            record_ref: record_cid.clone(),
         },
         LifecycleActor {
             kind: ActorKind::Reconciler,
@@ -225,23 +225,8 @@ fn quarantine_active_task(task: &mut Task, record: &LegacyCompletionRecord) -> R
     apply_transition(task, request)
         .map_err(|error| anyhow::anyhow!("failed to append quarantine event: {error}"))?;
 
-    // The shared Status schema does not yet expose `NeedsReconciliation`.
-    // Rewrite this migration event's compatibility projection to the existing
-    // non-satisfying `Incomplete` spelling as part of the same graph commit;
-    // this is essential because ledger replay must reproduce the hold after a
-    // crash between ledger fsync and graph replacement.
-    let event = task
-        .lifecycle
-        .audit
-        .last_mut()
-        .ok_or_else(|| anyhow::anyhow!("quarantine transition produced no audit event"))?;
-    event.new_state = Status::Incomplete;
-    event.projection.status = Status::Incomplete;
-
-    // `Incomplete` is the current compatibility spelling for a terminal hold.
-    // The shared schema will eventually expose `NeedsReconciliation`; neither
-    // spelling is dependency-satisfying.
-    task.status = Status::Incomplete;
+    // `Incomplete` is the compatibility spelling for a terminal hold; the
+    // lifecycle transition owns that projection and ledger replay reproduces it.
     if !task.tags.iter().any(|tag| tag == LEGACY_QUARANTINE_TAG) {
         task.tags.push(LEGACY_QUARANTINE_TAG.to_string());
     }
@@ -284,10 +269,10 @@ pub fn apply_quarantine_plan(graph: &mut WorkGraph, report: &LegacyMigrationRepo
                 }
                 let existing = graph.take_node(&record.task_id);
                 let boundary = match existing {
-                    Some(Node::ArchivedBoundary(mut boundary)) => {
-                        boundary.status = Status::Incomplete;
-                        boundary
-                    }
+                    Some(Node::ArchivedBoundary(boundary)) => ArchivedBoundary {
+                        status: Status::Incomplete,
+                        ..boundary
+                    },
                     Some(other) => {
                         graph.add_node(other);
                         continue;
@@ -398,7 +383,7 @@ mod tests {
                 .lifecycle
                 .audit
                 .iter()
-                .any(|event| event.event_kind == "reconciliation-issue")
+                .any(|event| event.event_kind == "legacy-completion-quarantined")
         );
     }
 

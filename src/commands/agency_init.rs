@@ -9,8 +9,8 @@ use worksgood::graph::TrustLevel;
 
 use super::agency_import;
 
-/// `wg agency init` — bootstrap agency with starter roles, tradeoffs, a default
-/// agent, and enable auto_assign + auto_evaluate in config.
+/// `wg agency init` — bootstrap agency identities and enable manifest-bound
+/// evaluation. Assignment remains direct admission metadata.
 pub fn run(workgraph_dir: &Path) -> Result<()> {
     let agency_dir = workgraph_dir.join("agency");
 
@@ -165,7 +165,8 @@ pub fn run(workgraph_dir: &Path) -> Result<()> {
         special_agent_ids.push((role_name, sa_id));
     }
 
-    // 4. Enable auto_assign and auto_evaluate in config. Record selection
+    // 4. Enable manifest-bound evaluation. Assignment is admission metadata,
+    // never a synthetic graph prerequisite. Record selection
     // before serde compatibility defaults are loaded: those defaults are
     // catalog placeholders and must never become an on-disk route merely
     // because agency metadata was initialized.
@@ -175,10 +176,6 @@ pub fn run(workgraph_dir: &Path) -> Result<()> {
     let mut config = Config::load(workgraph_dir)?;
     let mut config_changed = false;
 
-    if !config.agency.auto_assign {
-        config.agency.auto_assign = true;
-        config_changed = true;
-    }
     if !config.agency.auto_evaluate {
         config.agency.auto_evaluate = true;
         config_changed = true;
@@ -221,7 +218,7 @@ pub fn run(workgraph_dir: &Path) -> Result<()> {
         if !execution_was_selected {
             remove_inactive_route_fields(workgraph_dir)?;
         }
-        println!("Enabled auto_assign and auto_evaluate in config.");
+        println!("Configured manifest-bound agency evaluation.");
     }
 
     // 5. Register the creator-pipeline function if it doesn't exist
@@ -627,7 +624,7 @@ mod tests {
 
         // Verify config was updated
         let config = Config::load(&wg_dir).unwrap();
-        assert!(config.agency.auto_assign);
+        assert!(!config.agency.auto_assign);
         assert!(config.agency.auto_evaluate);
 
         // Verify special agent hashes are set in config

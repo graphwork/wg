@@ -496,7 +496,24 @@ fn fail_task(dir: &Path, task_id: &str, actor_id: &str, reason: &str) -> Result<
     let mut error: Option<anyhow::Error> = None;
     modify_graph(&path, |graph| match graph.get_task_mut(task_id) {
         Some(task) => {
-            task.status = Status::Failed;
+            let request = worksgood::lifecycle::TransitionRequest::new(
+                worksgood::lifecycle::TransitionKind::AttemptFailed { class: None },
+                worksgood::lifecycle::LifecycleActor::worker(actor_id),
+                "autonomous_agent_failed",
+                format!(
+                    "agent-failed:{task_id}:{}",
+                    task.lifecycle
+                        .current_attempt
+                        .as_ref()
+                        .map(|attempt| attempt.id.as_str())
+                        .unwrap_or("missing-attempt")
+                ),
+            )
+            .expecting(worksgood::lifecycle::FenceExpectation::current(task));
+            if let Err(rejection) = worksgood::lifecycle::apply_transition(task, request) {
+                error = Some(anyhow::anyhow!(rejection));
+                return false;
+            }
             task.retry_count += 1;
             task.failure_reason = Some(reason.to_string());
             task.log.push(LogEntry {

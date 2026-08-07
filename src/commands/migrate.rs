@@ -313,7 +313,7 @@ pub fn run_retire_compact_archive(dir: &Path, dry_run: bool, json: bool) -> Resu
         let graph = worksgood::parser::load_graph(&graph_path)?;
         for task in graph.tasks() {
             if (task.id.starts_with(".compact-") || task.id.starts_with(".archive-"))
-                && task.status != worksgood::graph::Status::Abandoned
+                && !task.status.is_terminal()
             {
                 result.abandoned_ids.push(task.id.clone());
             }
@@ -330,15 +330,23 @@ pub fn run_retire_compact_archive(dir: &Path, dry_run: bool, json: bool) -> Resu
             let all_ids: Vec<String> = graph.tasks().map(|t| t.id.clone()).collect();
             for tid in &all_ids {
                 let is_target = tid.starts_with(".compact-") || tid.starts_with(".archive-");
-                let already_abandoned = graph
+                let can_retire = graph
                     .get_task(tid)
-                    .map(|t| t.status == worksgood::graph::Status::Abandoned)
-                    .unwrap_or(false);
+                    .is_some_and(|task| !task.status.is_terminal());
                 if is_target
-                    && !already_abandoned
+                    && can_retire
                     && let Some(t) = graph.get_task_mut(tid)
                 {
-                    t.status = worksgood::graph::Status::Abandoned;
+                    let request = worksgood::lifecycle::TransitionRequest::new(
+                        worksgood::lifecycle::TransitionKind::Abandoned,
+                        worksgood::lifecycle::LifecycleActor::operator(worksgood::current_user()),
+                        "legacy_compact_archive_retired",
+                        format!("retire-compact-archive:{tid}:{}", t.lifecycle.generation),
+                    )
+                    .expecting(worksgood::lifecycle::FenceExpectation::current(t));
+                    if worksgood::lifecycle::apply_transition(t, request).is_err() {
+                        continue;
+                    }
                     t.completed_at.get_or_insert_with(|| now.clone());
                     t.cycle_config = None;
                     t.log.push(LogEntry {
@@ -598,7 +606,7 @@ mod tests {
                 .exists()
         );
         let ledger = std::fs::read_to_string(wg_dir.join("lifecycle/events.jsonl")).unwrap();
-        assert!(ledger.contains("\"event_kind\":\"reconciliation-issue\""));
+        assert!(ledger.contains("\"event_kind\":\"legacy-completion-quarantined\""));
         assert!(ledger.contains("\"new_state\":\"incomplete\""));
 
         let after_first_bytes = std::fs::read(wg_dir.join("graph.jsonl")).unwrap();

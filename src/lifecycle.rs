@@ -327,6 +327,11 @@ pub enum TransitionKind {
     ReconciliationIssue {
         issue_id: String,
     },
+    /// One-time migration of an unauthenticated legacy Done row into a
+    /// non-satisfying quarantine. Ordinary runtime callers cannot use this.
+    LegacyCompletionQuarantined {
+        record_ref: String,
+    },
     MessageObserved {
         message_id: String,
     },
@@ -393,6 +398,7 @@ impl TransitionKind {
             Self::EvaluationEvidence { .. } => "evaluation-evidence",
             Self::CandidateCheckpointed { .. } => "candidate-checkpointed",
             Self::ReconciliationIssue { .. } => "reconciliation-issue",
+            Self::LegacyCompletionQuarantined { .. } => "legacy-completion-quarantined",
             Self::MessageObserved { .. } => "message-observed",
             Self::LegacyCheckpointImported => "legacy-checkpoint-imported",
             Self::PiContinuationAuthorized { .. } => "pi-continuation-authorized",
@@ -680,6 +686,7 @@ impl LifecycleKernel {
                         ActorKind::Worker,
                         ActorKind::ProcessObserver,
                         ActorKind::Operator,
+                        ActorKind::Finalizer,
                     ],
                 )?;
                 Self::require_running_attempt(task, &request)?;
@@ -700,6 +707,7 @@ impl LifecycleKernel {
                         ActorKind::Worker,
                         ActorKind::ProcessObserver,
                         ActorKind::Operator,
+                        ActorKind::Dispatcher,
                     ],
                 )?;
                 Self::require_running_attempt(task, &request)?;
@@ -1014,6 +1022,13 @@ impl LifecycleKernel {
                 Self::require_actor(&request, &[ActorKind::Reconciler])?;
                 // Breaker-neutral evidence only.
             }
+            TransitionKind::LegacyCompletionQuarantined { record_ref } => {
+                Self::require_actor(&request, &[ActorKind::Reconciler])?;
+                if old_state != Status::Done || record_ref.trim().is_empty() {
+                    return Err(Self::state_rejection(old_state));
+                }
+                new_state = Status::Incomplete;
+            }
             TransitionKind::MessageObserved { .. } => {
                 // Ordinary messages are immutable data, never lifecycle
                 // authority, regardless of sender or task state.
@@ -1284,6 +1299,7 @@ impl LifecycleKernel {
                     | TransitionKind::ReopenOwnerReleased { .. }
                     | TransitionKind::DurableSuccessProjected { .. }
                     | TransitionKind::GraphSaveCommitted { .. }
+                    | TransitionKind::LegacyCompletionQuarantined { .. }
             )
         {
             return Err(TransitionRejection::new(
@@ -1948,6 +1964,31 @@ mod tests {
         assert_eq!(
             task.lifecycle.ledger_head.as_deref(),
             Some(first.event_id.as_str())
+        );
+    }
+
+    #[test]
+    fn completion_v3_finalizer_can_commit_exact_receipt() {
+        let mut task = task("completion-v3", Status::Open);
+        reserve(&mut task);
+        let mut completion = request(
+            TransitionKind::AttemptSucceeded {
+                acceptance_ref: Some("b3:reviewed-publication".to_string()),
+                manual_review: false,
+            },
+            ActorKind::Finalizer,
+            "completion-v3-receipt",
+        );
+        completion.expected = FenceExpectation::current(&task);
+        let event = apply(&mut task, completion).unwrap();
+        assert_eq!(task.status, Status::Done);
+        assert_eq!(event.actor_kind, ActorKind::Finalizer);
+        assert_eq!(
+            task.lifecycle
+                .current_attempt
+                .as_ref()
+                .and_then(|attempt| attempt.disposition),
+            Some(AttemptDisposition::Succeeded)
         );
     }
 

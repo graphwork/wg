@@ -1,0 +1,127 @@
+{
+  "control_path_count": 62,
+  "direct_task_status_assignment_count": 65,
+  "direct_task_status_assignment_file_count": 26,
+  "direct_task_status_assignments": {
+    "src/commands/abandon.rs": [
+      64,
+      134
+    ],
+    "src/commands/add.rs": [
+      891
+    ],
+    "src/commands/agent.rs": [
+      499
+    ],
+    "src/commands/chat_cmd.rs": [
+      1005,
+      1077
+    ],
+    "src/commands/completion_done.rs": [
+      262
+    ],
+    "src/commands/completion_repair.rs": [
+      239,
+      244,
+      288
+    ],
+    "src/commands/dead_agents.rs": [
+      167
+    ],
+    "src/commands/done.rs": [
+      2174,
+      2419,
+      2550,
+      2627
+    ],
+    "src/commands/edit.rs": [
+      1032
+    ],
+    "src/commands/evaluate.rs": [
+      2439
+    ],
+    "src/commands/exec.rs": [
+      68,
+      156,
+      316,
+      484
+    ],
+    "src/commands/exec_fed_cmd.rs": [
+      1111
+    ],
+    "src/commands/finalize.rs": [
+      247
+    ],
+    "src/commands/incomplete.rs": [
+      84,
+      106
+    ],
+    "src/commands/kill.rs": [
+      345,
+      425
+    ],
+    "src/commands/migrate.rs": [
+      341
+    ],
+    "src/commands/mod.rs": [
+      274
+    ],
+    "src/commands/reject.rs": [
+      63
+    ],
+    "src/commands/replay.rs": [
+      272
+    ],
+    "src/commands/service/coordinator.rs": [
+      585,
+      656,
+      873,
+      1001,
+      1057,
+      1208,
+      1510,
+      3133,
+      3145,
+      3153,
+      3281,
+      3378,
+      3510,
+      3672,
+      3730,
+      4062,
+      4102,
+      4168,
+      4205,
+      4212
+    ],
+    "src/commands/service/human_dispatch.rs": [
+      103
+    ],
+    "src/commands/service/ipc.rs": [
+      2733,
+      2881,
+      3040
+    ],
+    "src/commands/service/mod.rs": [
+      2293,
+      5816
+    ],
+    "src/cron.rs": [
+      220
+    ],
+    "src/eval_lifecycle.rs": [
+      1151,
+      1176,
+      1302,
+      1377,
+      1912
+    ],
+    "src/matrix_commands.rs": [
+      367,
+      503
+    ]
+  },
+  "missing_paths": [],
+  "production_control_plane_loc": 71678,
+  "schema": "wg-control-plane-metrics/v1"
+}

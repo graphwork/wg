@@ -214,7 +214,15 @@ fn ensure_terminal_attempt_in_task(task: &mut Task, actor_id: Option<&str>) -> R
         attempt.disposition = None;
         return Ok(true);
     }
-    if task.lifecycle.current_attempt.is_some() && task.status != worksgood::graph::Status::Waiting
+    if let Some(attempt) = task.lifecycle.current_attempt.as_ref()
+        && task.status != worksgood::graph::Status::Waiting
+        && (attempt.disposition.is_none()
+            || (task.status == worksgood::graph::Status::Failed
+                && matches!(
+                    attempt.disposition,
+                    Some(worksgood::lifecycle::AttemptDisposition::Failed)
+                        | Some(worksgood::lifecycle::AttemptDisposition::Lost)
+                )))
     {
         return Ok(false);
     }
@@ -231,33 +239,8 @@ fn ensure_terminal_attempt_in_task(task: &mut Task, actor_id: Option<&str>) -> R
         apply_transition(task, request).map_err(anyhow::Error::msg)?;
         return Ok(true);
     }
-    // Staged migration for historical compatibility rows that were written
-    // InProgress/Pending* without lifecycle attempt authority.  The adapter
-    // mints an explicit source tuple before any terminal evidence is written.
-    if matches!(
-        task.status,
-        worksgood::graph::Status::InProgress
-            | worksgood::graph::Status::PendingValidation
-            | worksgood::graph::Status::PendingEval
-            | worksgood::graph::Status::Waiting
-    ) {
-        task.lifecycle.attempt_sequence = task.lifecycle.attempt_sequence.saturating_add(1);
-        task.lifecycle.fence = task.lifecycle.fence.saturating_add(1);
-        if task.status == worksgood::graph::Status::Waiting {
-            task.status = worksgood::graph::Status::InProgress;
-        }
-        task.lifecycle.current_attempt = Some(worksgood::lifecycle::AttemptRef {
-            id: format!(
-                "attempt-{}-{}",
-                task.lifecycle.generation, task.lifecycle.attempt_sequence
-            ),
-            generation: task.lifecycle.generation,
-            fence: task.lifecycle.fence,
-            actor_id: actor_id.unwrap_or("terminal-adapter").to_string(),
-            disposition: None,
-        });
-        return Ok(true);
-    }
+    // Historical non-Open rows without an attempt are ambiguous. Never mint
+    // lifecycle authority from compatibility status alone.
     bail!(
         "status {} cannot acquire a terminal source attempt",
         task.status
@@ -2819,6 +2802,7 @@ mod atomic_terminal_tests {
     use super::*;
     use tempfile::tempdir;
     use worksgood::graph::{Node, Status};
+    use worksgood::lifecycle::AttemptRef;
     use worksgood::parser::save_graph;
 
     fn setup(status: Status) -> (tempfile::TempDir, PathBuf) {
@@ -2826,12 +2810,24 @@ mod atomic_terminal_tests {
         let dir = root.path().join(".wg");
         std::fs::create_dir_all(&dir).unwrap();
         let mut graph = WorkGraph::new();
-        graph.add_node(Node::Task(Task {
+        let mut task = Task {
             id: "terminal".into(),
             title: "terminal adapter".into(),
             status,
             ..Task::default()
-        }));
+        };
+        if status == Status::InProgress {
+            task.lifecycle.fence = 1;
+            task.lifecycle.attempt_sequence = 1;
+            task.lifecycle.current_attempt = Some(AttemptRef {
+                id: "test-attempt:terminal:0:1".into(),
+                generation: 0,
+                fence: 1,
+                actor_id: "test".into(),
+                disposition: None,
+            });
+        }
+        graph.add_node(Node::Task(task));
         save_graph(&graph, dir.join("graph.jsonl")).unwrap();
         (root, dir)
     }

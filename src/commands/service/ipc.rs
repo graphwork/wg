@@ -515,11 +515,27 @@ fn replay_pending_completion(
     if *converged || *full_smoke {
         anyhow::bail!("legacy Done handoff flags are not supported");
     }
-    // A crash after the graph/Git publication check but before response
-    // journaling is recovered by rerunning the same derived predicate. No save
-    // transaction or finalizer phase is replayed.
     let binding = worksgood::worker_control::lookup_capability(dir, &request.capability)?;
-    crate::commands::completion_done::run(dir, &binding.task_id, "refs/heads/main")?;
+    let graph = worksgood::parser::load_graph(dir.join("graph.jsonl"))?;
+    let task = graph
+        .get_task(&binding.task_id)
+        .context("pending completion task missing")?;
+    let receipt = task
+        .completion_receipt
+        .as_deref()
+        .context("pending completion has no durable receipt")?;
+    let exact_event = task.lifecycle.audit.iter().any(|event| {
+        event.event_kind == "attempt-succeeded"
+            && event.attempt_id.as_deref() == Some(binding.attempt_id.as_str())
+            && event.fence == binding.fence
+            && event
+                .evidence_refs
+                .iter()
+                .any(|evidence| evidence == receipt)
+    });
+    if task.status != worksgood::graph::Status::Done || !exact_event {
+        return Ok(None);
+    }
     let response = IpcResponse::success(serde_json::json!({
         "handoff": "done",
         "derived": true,
@@ -530,6 +546,45 @@ fn replay_pending_completion(
         stored_worker_response(&response),
     )?;
     Ok(Some(response))
+}
+
+fn replay_existing_worker_request(
+    dir: &Path,
+    request: &WorkerRequestEnvelope,
+    state: worksgood::worker_control::BeginRequest,
+    task_id: Option<&str>,
+    logger: &DaemonLogger,
+) -> Option<IpcResponse> {
+    match state {
+        worksgood::worker_control::BeginRequest::Fresh => None,
+        worksgood::worker_control::BeginRequest::Completed(response) => {
+            audit_worker_request(
+                dir,
+                request,
+                task_id,
+                "replayed",
+                "completed response replayed",
+                logger,
+            );
+            Some(worker_response_from_stored(response))
+        }
+        worksgood::worker_control::BeginRequest::Pending => {
+            if let Ok(Some(response)) = replay_pending_completion(dir, request) {
+                audit_worker_request(
+                    dir,
+                    request,
+                    task_id,
+                    "replayed",
+                    "committed lifecycle response replayed",
+                    logger,
+                );
+                return Some(response);
+            }
+            let reason = "worker_control.request_pending_reconciliation: mutation may already be durable; refusing duplicate execution";
+            audit_worker_request(dir, request, task_id, "held", reason, logger);
+            Some(IpcResponse::error(reason))
+        }
+    }
 }
 
 fn audit_worker_request(
@@ -973,48 +1028,22 @@ fn handle_worker_request(
     request: WorkerRequestEnvelope,
     logger: &DaemonLogger,
 ) -> IpcResponse {
-    // Replay the exact durable response before checking whether the mutation
-    // released its attempt owner. This is safe because the journal binds the
-    // request id to the capability-token digest and operation; a different
-    // token or operation still fails closed. Fresh requests continue through
-    // full live-capability validation below.
     match worksgood::worker_control::replay_request(
         dir,
         &request.request_id,
         &request.capability,
         &request.operation,
     ) {
-        Ok(Some(worksgood::worker_control::BeginRequest::Completed(response))) => {
+        Ok(Some(state)) => {
             let task_id = worksgood::worker_control::lookup_capability(dir, &request.capability)
                 .ok()
                 .map(|binding| binding.task_id);
-            audit_worker_request(
-                dir,
-                &request,
-                task_id.as_deref(),
-                "replayed",
-                "completed response replayed",
-                logger,
-            );
-            return worker_response_from_stored(response);
-        }
-        Ok(Some(worksgood::worker_control::BeginRequest::Pending)) => {
-            if let Ok(Some(response)) = replay_pending_completion(dir, &request) {
-                audit_worker_request(
-                    dir,
-                    &request,
-                    None,
-                    "replayed",
-                    "pending Done request re-derived from immutable review and publication",
-                    logger,
-                );
+            if let Some(response) =
+                replay_existing_worker_request(dir, &request, state, task_id.as_deref(), logger)
+            {
                 return response;
             }
-            let reason = "worker_control.request_pending_reconciliation: mutation may already be durable; refusing duplicate execution";
-            audit_worker_request(dir, &request, None, "held", reason, logger);
-            return IpcResponse::error(reason);
         }
-        Ok(Some(worksgood::worker_control::BeginRequest::Fresh)) => unreachable!(),
         Ok(None) => {}
         Err(error) => {
             audit_worker_request(dir, &request, None, "rejected", &error.to_string(), logger);
@@ -1048,47 +1077,12 @@ fn handle_worker_request(
             return IpcResponse::error(&error.to_string());
         }
     };
-    match begin {
-        worksgood::worker_control::BeginRequest::Completed(response) => {
-            audit_worker_request(
-                dir,
-                &request,
-                Some(&binding.task_id),
-                "replayed",
-                "completed response replayed",
-                logger,
-            );
-            return worker_response_from_stored(response);
-        }
-        worksgood::worker_control::BeginRequest::Pending => {
-            if let Ok(Some(response)) = replay_pending_completion(dir, &request) {
-                audit_worker_request(
-                    dir,
-                    &request,
-                    Some(&binding.task_id),
-                    "replayed",
-                    "pending Done request re-derived from immutable review and publication",
-                    logger,
-                );
-                return response;
-            }
-            let reason = "worker_control.request_pending_reconciliation: mutation may already be durable; refusing duplicate execution";
-            audit_worker_request(
-                dir,
-                &request,
-                Some(&binding.task_id),
-                "held",
-                reason,
-                logger,
-            );
-            return IpcResponse::error(reason);
-        }
-        worksgood::worker_control::BeginRequest::Fresh => {}
+    if let Some(response) =
+        replay_existing_worker_request(dir, &request, begin, Some(&binding.task_id), logger)
+    {
+        return response;
     }
 
-    // The request journal provides transport idempotency only. Completion
-    // itself is derived synchronously from immutable receipts and publication;
-    // there is no prepared save transaction or finalizer replay.
     let response = super::with_worker_control_operation(|| {
         execute_worker_operation(dir, &binding, request.operation.clone())
     });
@@ -2730,7 +2724,22 @@ fn handle_delete_coordinator(dir: &Path, coordinator_id: u32) -> IpcResponse {
             return false;
         };
         let task = graph.get_task_mut(resolved_id).unwrap();
-        task.status = worksgood::graph::Status::Abandoned;
+        if !task.status.is_terminal() {
+            let request = worksgood::lifecycle::TransitionRequest::new(
+                worksgood::lifecycle::TransitionKind::Abandoned,
+                worksgood::lifecycle::LifecycleActor {
+                    kind: worksgood::lifecycle::ActorKind::Operator,
+                    id: "ipc-delete-chat".to_string(),
+                },
+                "chat_deleted",
+                format!("delete-chat:{coordinator_id}:{}", task.lifecycle.generation),
+            )
+            .expecting(worksgood::lifecycle::FenceExpectation::current(task));
+            if worksgood::lifecycle::apply_transition(task, request).is_err() {
+                result_msg = Some(format!("Chat task '{}' changed during delete", resolved_id));
+                return false;
+            }
+        }
         task.log.push(worksgood::graph::LogEntry {
             timestamp: chrono::Utc::now().to_rfc3339(),
             actor: Some("daemon".to_string()),
@@ -2878,7 +2887,28 @@ fn handle_archive_coordinator(dir: &Path, coordinator_id: u32) -> IpcResponse {
             return false;
         };
         let task = graph.get_task_mut(resolved_id).unwrap();
-        task.status = worksgood::graph::Status::Done;
+        if !task.status.is_terminal() {
+            let request = worksgood::lifecycle::TransitionRequest::new(
+                worksgood::lifecycle::TransitionKind::Abandoned,
+                worksgood::lifecycle::LifecycleActor {
+                    kind: worksgood::lifecycle::ActorKind::Operator,
+                    id: "ipc-archive-chat".to_string(),
+                },
+                "chat_archived",
+                format!(
+                    "archive-chat:{coordinator_id}:{}",
+                    task.lifecycle.generation
+                ),
+            )
+            .expecting(worksgood::lifecycle::FenceExpectation::current(task));
+            if worksgood::lifecycle::apply_transition(task, request).is_err() {
+                result_msg = Some(format!(
+                    "Chat task '{}' changed during archive",
+                    resolved_id
+                ));
+                return false;
+            }
+        }
         task.tags
             .retain(|t| !worksgood::chat_id::is_chat_loop_tag(t));
         if !task.tags.contains(&"archived".to_string()) {
@@ -3037,7 +3067,20 @@ fn handle_stop_coordinator(dir: &Path, coordinator_id: u32) -> IpcResponse {
             return false;
         };
         let task = graph.get_task_mut(actual_id).unwrap();
-        task.status = worksgood::graph::Status::Open;
+        let request = worksgood::lifecycle::TransitionRequest::new(
+            worksgood::lifecycle::TransitionKind::GenerationCreated,
+            worksgood::lifecycle::LifecycleActor {
+                kind: worksgood::lifecycle::ActorKind::Operator,
+                id: "ipc-stop-chat".to_string(),
+            },
+            "chat_stopped",
+            format!("stop-chat:{coordinator_id}:{}", task.lifecycle.generation),
+        )
+        .expecting(worksgood::lifecycle::FenceExpectation::current(task));
+        if worksgood::lifecycle::apply_transition(task, request).is_err() {
+            result_msg = Some(format!("Chat task '{}' changed during stop", actual_id));
+            return false;
+        }
         task.assigned = None;
         task.log.push(worksgood::graph::LogEntry {
             timestamp: chrono::Utc::now().to_rfc3339(),
@@ -3204,6 +3247,83 @@ mod tests {
         assert_eq!(first.data, second.data);
         let audit = fs::read_to_string(worksgood::worker_control::audit_path(temp.path())).unwrap();
         assert!(audit.contains("\"outcome\":\"replayed\""));
+    }
+
+    #[test]
+    fn pending_done_replays_committed_lifecycle_response_without_reverification() {
+        let temp = TempDir::new().unwrap();
+        write_owned_task(temp.path(), 1, 2);
+        let (token, _) = worksgood::worker_control::mint_attempt_capability(
+            temp.path(),
+            "task-a",
+            1,
+            "attempt-1-1",
+            2,
+            2,
+            "agent-7",
+        )
+        .unwrap();
+        let request = WorkerRequestEnvelope {
+            protocol: WORKER_CONTROL_PROTOCOL.to_string(),
+            request_id: "lost-done-response".to_string(),
+            capability: token.clone(),
+            operation: WorkerOperation::DoneHandoff {
+                converged: false,
+                full_smoke: false,
+            },
+        };
+        assert!(matches!(
+            worksgood::worker_control::begin_request(
+                temp.path(),
+                &request.request_id,
+                &token,
+                &request.operation,
+            )
+            .unwrap(),
+            worksgood::worker_control::BeginRequest::Fresh
+        ));
+        worksgood::parser::modify_graph(temp.path().join("graph.jsonl"), |graph| {
+            let task = graph.get_task_mut("task-a").unwrap();
+            let receipt = "b3:committed-completion".to_string();
+            let mut transition = worksgood::lifecycle::TransitionRequest::new(
+                worksgood::lifecycle::TransitionKind::AttemptSucceeded {
+                    acceptance_ref: Some(receipt.clone()),
+                    manual_review: false,
+                },
+                worksgood::lifecycle::LifecycleActor {
+                    kind: worksgood::lifecycle::ActorKind::Finalizer,
+                    id: "completion-v3".to_string(),
+                },
+                "reviewed_publication_committed",
+                "completion-v3:task-a:1:receipt",
+            )
+            .with_evidence(receipt.clone());
+            transition.expected = worksgood::lifecycle::FenceExpectation::current(task);
+            worksgood::lifecycle::apply_transition(task, transition).unwrap();
+            task.completion_receipt = Some(receipt);
+            true
+        })
+        .unwrap();
+
+        let replay = replay_pending_completion(temp.path(), &request)
+            .unwrap()
+            .expect("committed lifecycle response");
+        assert!(replay.ok);
+        assert_eq!(
+            replay.data,
+            Some(serde_json::json!({"handoff":"done","derived":true}))
+        );
+        assert!(matches!(
+            worksgood::worker_control::replay_request(
+                temp.path(),
+                &request.request_id,
+                &token,
+                &request.operation,
+            )
+            .unwrap(),
+            Some(worksgood::worker_control::BeginRequest::Completed(_))
+        ));
+        assert!(!temp.path().join("completion/v3").exists());
     }
 
     #[test]
@@ -4564,9 +4684,33 @@ poll_interval = 60
         // Reload and check task state
         let graph = worksgood::parser::load_graph(&dir.join("graph.jsonl")).unwrap();
         let task = graph.get_task(".coordinator-2").unwrap();
-        assert_eq!(task.status, worksgood::graph::Status::Done);
+        assert_eq!(task.status, worksgood::graph::Status::Abandoned);
         assert!(task.tags.contains(&"archived".to_string()));
+        assert_eq!(task.lifecycle.audit.len(), 1);
         assert!(!task.tags.contains(&"coordinator-loop".to_string()));
+    }
+
+    #[test]
+    fn test_handle_stop_coordinator_opens_audited_generation() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+        let mut graph = worksgood::graph::WorkGraph::new();
+        graph.add_node(worksgood::graph::Node::Task(worksgood::graph::Task {
+            id: ".chat-3".to_string(),
+            title: "Chat 3".to_string(),
+            status: worksgood::graph::Status::InProgress,
+            tags: vec![worksgood::chat_id::CHAT_LOOP_TAG.to_string()],
+            ..Default::default()
+        }));
+        worksgood::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+
+        let response = handle_stop_coordinator(dir, 3);
+        assert!(response.ok, "{:?}", response.error);
+        let graph = worksgood::parser::load_graph(&dir.join("graph.jsonl")).unwrap();
+        let task = graph.get_task(".chat-3").unwrap();
+        assert_eq!(task.status, worksgood::graph::Status::Open);
+        assert_eq!(task.lifecycle.generation, 1);
+        assert_eq!(task.lifecycle.audit.len(), 1);
     }
 
     #[test]
@@ -4849,14 +4993,14 @@ poll_interval = 60
         let g = worksgood::parser::load_graph(&dir.join("graph.jsonl")).unwrap();
 
         let t0 = g.get_task(".chat-0").expect("chat-0 task still exists");
-        assert_eq!(t0.status, worksgood::graph::Status::Done);
+        assert_eq!(t0.status, worksgood::graph::Status::Abandoned);
         assert!(t0.tags.contains(&"archived".to_string()));
         assert!(!t0.tags.iter().any(|t| t == "chat-loop"));
 
         let t1 = g
             .get_task(".coordinator-1")
             .expect("coordinator-1 task still exists");
-        assert_eq!(t1.status, worksgood::graph::Status::Done);
+        assert_eq!(t1.status, worksgood::graph::Status::Abandoned);
         assert!(t1.tags.contains(&"archived".to_string()));
         assert!(!t1.tags.iter().any(|t| t == "coordinator-loop"));
 

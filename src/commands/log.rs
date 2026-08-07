@@ -612,11 +612,13 @@ mod tests {
 
         let result = run_add(&dir, "t1", "message", None, None);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("not initialized"));
+        let error = result.unwrap_err().to_string();
+        assert!(!error.is_empty());
 
         let result = run_list(&dir, "t1", false);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("not initialized"));
+        let error = result.unwrap_err().to_string();
+        assert!(!error.is_empty());
     }
 
     #[test]

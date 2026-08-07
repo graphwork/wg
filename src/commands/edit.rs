@@ -1010,32 +1010,10 @@ pub fn run_with_reasoning_and_route_clear(
         }
     } // task borrow released here
 
-    // When new dependencies are added, clear any existing auto-assignment.
+    // When new dependencies are added, clear any selected agent metadata.
     // This prevents the race where a task gets assigned before its real
     // dependencies are wired (e.g., `wg add` then `wg edit --add-after`).
     if !add_after.is_empty() && changed {
-        // Check dot-prefix first, fall back to legacy prefix
-        let assign_task_id = format!(".assign-{}", task_id);
-        let legacy_assign_id = format!("assign-{}", task_id);
-        let found_id = if graph.get_task(&assign_task_id).is_some() {
-            Some(assign_task_id)
-        } else if graph.get_task(&legacy_assign_id).is_some() {
-            Some(legacy_assign_id)
-        } else {
-            None
-        };
-        if let Some(ref aid) = found_id
-            && let Some(assign_task) = graph.get_task_mut(aid)
-        {
-            match assign_task.status {
-                worksgood::graph::Status::Open | worksgood::graph::Status::InProgress => {
-                    assign_task.status = worksgood::graph::Status::Abandoned;
-                    println!("Abandoned assignment task '{}' (dependencies changed)", aid);
-                }
-                _ => {}
-            }
-        }
-
         // Clear the agent field so the task gets re-assigned when actually ready
         let task = match graph.get_task_mut(task_id) {
             Some(t) => t,
@@ -1990,7 +1968,7 @@ mod tests {
     }
 
     #[test]
-    fn test_add_after_abandons_assign_task() {
+    fn test_add_after_does_not_rewrite_legacy_assignment_row() {
         let temp_dir = TempDir::new().unwrap();
         create_test_graph_with_two_tasks(temp_dir.path()).unwrap();
 
@@ -2046,11 +2024,8 @@ mod tests {
 
         let graph = load_graph(&path).unwrap();
         let assign = graph.get_task("assign-test-task").unwrap();
-        assert_eq!(
-            assign.status,
-            worksgood::graph::Status::Abandoned,
-            "assign task should be abandoned when deps change"
-        );
+        assert_eq!(assign.status, worksgood::graph::Status::Open);
+        assert!(assign.lifecycle.audit.is_empty());
     }
 
     #[test]

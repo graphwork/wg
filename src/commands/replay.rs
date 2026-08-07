@@ -212,11 +212,12 @@ pub fn run(dir: &Path, opts: &ReplayOptions, json: bool) -> Result<()> {
         let mut modified = false;
         for task_id in &reset_ids {
             if let Some(task) = graph.get_task_mut(task_id) {
-                reset_task(task);
-                if let Some(ref model) = model_clone {
-                    task.model = Some(model.clone());
+                if reset_task(task) {
+                    if let Some(ref model) = model_clone {
+                        task.model = Some(model.clone());
+                    }
+                    modified = true;
                 }
-                modified = true;
             }
         }
         modified
@@ -267,9 +268,21 @@ pub fn run(dir: &Path, opts: &ReplayOptions, json: bool) -> Result<()> {
     Ok(())
 }
 
-/// Reset a task to Open status, clearing execution state but preserving structure.
-fn reset_task(task: &mut Task) {
-    task.status = Status::Open;
+/// Create an explicit replay generation and clear derived execution state.
+fn reset_task(task: &mut Task) -> bool {
+    let request = worksgood::lifecycle::TransitionRequest::new(
+        worksgood::lifecycle::TransitionKind::GenerationCreated,
+        worksgood::lifecycle::LifecycleActor::operator(worksgood::current_user()),
+        "explicit_replay",
+        format!(
+            "replay-reset:{}:{}:{}",
+            task.id, task.lifecycle.generation, task.lifecycle.fence
+        ),
+    )
+    .expecting(worksgood::lifecycle::FenceExpectation::current(task));
+    if worksgood::lifecycle::apply_transition(task, request).is_err() {
+        return false;
+    }
     task.assigned = None;
     task.started_at = None;
     task.completed_at = None;
@@ -278,6 +291,7 @@ fn reset_task(task: &mut Task) {
     task.failure_reason = None;
     task.paused = false;
     // Preserve: log, after, blocks, description, tags, skills, etc.
+    true
 }
 
 /// Build a reverse dependency index: task_id -> list of tasks that depend on it.
@@ -505,9 +519,11 @@ mod tests {
             ..Task::default()
         };
 
-        reset_task(&mut task);
+        assert!(reset_task(&mut task));
 
         assert_eq!(task.status, Status::Open);
+        assert_eq!(task.lifecycle.generation, 1);
+        assert_eq!(task.lifecycle.audit.len(), 1);
         assert!(task.assigned.is_none());
         assert!(task.started_at.is_none());
         assert!(task.completed_at.is_none());

@@ -169,7 +169,7 @@ mod tests {
 
         let graph = graph_at(dir);
         let board = graph.get_task(".user-testuser-0").unwrap();
-        assert_eq!(board.status, Status::InProgress);
+        assert_eq!(board.status, Status::Open);
         assert!(board.tags.contains(&"user-board".to_string()));
     }
 
@@ -234,7 +234,7 @@ mod tests {
 
         // Successor should exist and be active
         let new = graph.get_task(".user-testuser-1").unwrap();
-        assert_eq!(new.status, Status::InProgress);
+        assert_eq!(new.status, Status::Open);
         assert!(new.tags.contains(&"user-board".to_string()));
     }
 

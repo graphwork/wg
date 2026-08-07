@@ -962,9 +962,16 @@ pub fn run_accept(
 
     // M15 — bridge the remote result's usage into the graph task's accounting so remote
     // spend shows in `wg show` / `wg spend` / `wg stats` (best-effort; a no-op when the
-    // exec task id is not a graph task, e.g. the pure-exec spark tasks). `--complete-task`
-    // marks the task Done so `wg spend` (which counts Done/Failed) reflects it.
-    let accounted = bridge_usage_into_graph(workgraph_dir, &result, complete_task);
+    // exec task id is not a graph task, e.g. the pure-exec spark tasks).
+    let accounted = bridge_usage_into_graph(workgraph_dir, &result);
+    if complete_task && accounted {
+        super::finalize::commit_terminal_success(
+            workgraph_dir,
+            &result.task_id,
+            None,
+            "accepted_remote_exec_graphsave",
+        )?;
+    }
 
     // Observability (M20): a committed result, correlated by the task id.
     worksgood::obs::record_exec_result(true);
@@ -1082,10 +1089,8 @@ fn gate_on_rerun(
 /// M15 — accumulate a remote result's usage into the graph task's `token_usage` so remote
 /// spend reaches `wg show` / `wg spend` / `wg stats` (the same surfaces local spend uses).
 /// Best-effort + gated: returns `false` (a no-op) when the exec task id is not a graph task.
-/// `complete` marks the task `Done` so `wg spend` (which counts Done/Failed tasks) reflects
-/// the remote run.
-fn bridge_usage_into_graph(workgraph_dir: &Path, result: &ResultEnvelope, complete: bool) -> bool {
-    use worksgood::graph::{Status, TokenUsage};
+fn bridge_usage_into_graph(workgraph_dir: &Path, result: &ResultEnvelope) -> bool {
+    use worksgood::graph::TokenUsage;
     let graph_path = workgraph_dir.join("graph.jsonl");
     if !graph_path.exists() {
         return false;
@@ -1098,7 +1103,6 @@ fn bridge_usage_into_graph(workgraph_dir: &Path, result: &ResultEnvelope, comple
         cache_read_input_tokens: 0,
         cache_creation_input_tokens: 0,
     };
-    let producer = result.producer.clone();
     let _ = worksgood::modify_graph(&graph_path, |g| {
         let Some(task) = g.get_task_mut(&result.task_id) else {
             return false;
@@ -1106,17 +1110,6 @@ fn bridge_usage_into_graph(workgraph_dir: &Path, result: &ResultEnvelope, comple
         match task.token_usage.as_mut() {
             Some(tu) => tu.accumulate(&usage),
             None => task.token_usage = Some(usage.clone()),
-        }
-        if complete && task.status != Status::Done {
-            task.status = Status::Done;
-            task.log.push(worksgood::graph::LogEntry {
-                timestamp: chrono::Utc::now().to_rfc3339(),
-                actor: None,
-                user: Some(worksgood::current_user()),
-                message: format!(
-                    "remote exec completed by provider {producer} — usage bridged into accounting (M15)"
-                ),
-            });
         }
         accounted = true;
         true
