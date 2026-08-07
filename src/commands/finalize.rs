@@ -231,33 +231,8 @@ fn ensure_terminal_attempt_in_task(task: &mut Task, actor_id: Option<&str>) -> R
         apply_transition(task, request).map_err(anyhow::Error::msg)?;
         return Ok(true);
     }
-    // Staged migration for historical compatibility rows that were written
-    // InProgress/Pending* without lifecycle attempt authority.  The adapter
-    // mints an explicit source tuple before any terminal evidence is written.
-    if matches!(
-        task.status,
-        worksgood::graph::Status::InProgress
-            | worksgood::graph::Status::PendingValidation
-            | worksgood::graph::Status::PendingEval
-            | worksgood::graph::Status::Waiting
-    ) {
-        task.lifecycle.attempt_sequence = task.lifecycle.attempt_sequence.saturating_add(1);
-        task.lifecycle.fence = task.lifecycle.fence.saturating_add(1);
-        if task.status == worksgood::graph::Status::Waiting {
-            task.status = worksgood::graph::Status::InProgress;
-        }
-        task.lifecycle.current_attempt = Some(worksgood::lifecycle::AttemptRef {
-            id: format!(
-                "attempt-{}-{}",
-                task.lifecycle.generation, task.lifecycle.attempt_sequence
-            ),
-            generation: task.lifecycle.generation,
-            fence: task.lifecycle.fence,
-            actor_id: actor_id.unwrap_or("terminal-adapter").to_string(),
-            disposition: None,
-        });
-        return Ok(true);
-    }
+    // Historical non-Open rows without an attempt are ambiguous. Never mint
+    // lifecycle authority from compatibility status alone.
     bail!(
         "status {} cannot acquire a terminal source attempt",
         task.status
