@@ -699,7 +699,7 @@ mod tests {
         let opts = RecoverOptions {
             yes: true,
             max_attempts: 5,
-            set_model: Some("openrouter:anthropic/claude-sonnet-4-6".to_string()),
+            set_model: Some("pi:openrouter:anthropic/claude-sonnet-4-6".to_string()),
             ..Default::default()
         };
         run(dp, opts).unwrap();
@@ -709,7 +709,7 @@ mod tests {
         assert_eq!(t.status, Status::Open);
         assert_eq!(
             t.model.as_deref(),
-            Some("openrouter:anthropic/claude-sonnet-4-6")
+            Some("pi:openrouter:anthropic/claude-sonnet-4-6")
         );
     }
 
@@ -948,13 +948,11 @@ mod tests {
             set_endpoint: Some("openrouter".to_string()),
             ..Default::default()
         };
-        run(dp, opts).unwrap();
+        let error = run(dp, opts).unwrap_err();
+        assert!(error.to_string().contains("--set-endpoint is unsupported"));
 
         let g = load_graph(graph_path(dp)).unwrap();
-        assert_eq!(
-            g.get_task("user-a").unwrap().endpoint.as_deref(),
-            Some("openrouter")
-        );
+        assert_eq!(g.get_task("user-a").unwrap().endpoint, None);
     }
 
     #[test]
@@ -992,6 +990,6 @@ mod tests {
             ..Default::default()
         };
         let err = run(dp, opts).unwrap_err();
-        assert!(err.to_string().contains("Invalid --set-model"));
+        assert!(err.to_string().contains("WG-PI-ROUTE-REQUIRED"));
     }
 }

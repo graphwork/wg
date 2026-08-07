@@ -2,6 +2,9 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
 use worksgood::graph::{LogEntry, Status};
+use worksgood::lifecycle::{
+    ActorKind, LifecycleActor, TransitionKind, TransitionRequest, apply_transition,
+};
 use worksgood::parser::{load_graph, modify_graph};
 
 #[cfg(test)]
@@ -34,16 +37,27 @@ pub fn run(dir: &Path, id: &str) -> Result<()> {
         );
     }
     drop(graph);
-    super::finalize::commit_terminal_success(
-        dir,
-        id,
-        std::env::var("WG_AGENT_ID").ok().as_deref(),
-        "validator_approved_graphsave",
-    )?;
+    let approval_ref = format!("manual-approval:{id}");
+    let actor_id = std::env::var("WG_AGENT_ID").unwrap_or_else(|_| worksgood::current_user());
     modify_graph(&path, |graph| {
         let Some(task) = graph.get_task_mut(id) else {
             return false;
         };
+        let request = TransitionRequest::new(
+            TransitionKind::AcceptanceSatisfied {
+                acceptance_ref: approval_ref.clone(),
+            },
+            LifecycleActor {
+                kind: ActorKind::AcceptanceController,
+                id: actor_id.clone(),
+            },
+            "manual_validation_approved",
+            format!("manual-approval:{id}:{}", task.lifecycle.generation),
+        )
+        .with_evidence(approval_ref.clone());
+        if apply_transition(task, request).is_err() {
+            return false;
+        }
         task.log.push(LogEntry {
             timestamp: Utc::now().to_rfc3339(),
             actor: std::env::var("WG_AGENT_ID").ok(),

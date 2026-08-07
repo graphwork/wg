@@ -2330,26 +2330,23 @@ mod tests {
     #[test]
     fn resolve_model_input_valid_provider_model() {
         let dir = tempfile::TempDir::new().unwrap();
-        let result = resolve_model_input("openrouter:minimax/minimax-m2.7", dir.path()).unwrap();
-        assert_eq!(result, "openrouter:minimax/minimax-m2.7");
+        let result = resolve_model_input("pi:openrouter:minimax/minimax-m2.7", dir.path()).unwrap();
+        assert_eq!(result, "pi:openrouter:minimax/minimax-m2.7");
     }
 
     #[test]
     fn resolve_model_input_preserves_opencode_executor_route() {
         let dir = tempfile::TempDir::new().unwrap();
         let input = "opencode:openrouter/stepfun/step-3.7-flash";
-        let result = resolve_model_input(input, dir.path()).unwrap();
-        assert_eq!(
-            result, input,
-            "executor-qualified OpenCode route must not be wrapped as openrouter:opencode:..."
-        );
+        let error = resolve_model_input(input, dir.path()).unwrap_err();
+        assert!(error.to_string().contains("WG-EXEC-ROUTE-REQUIRED"));
     }
 
     #[test]
     fn resolve_model_input_slash_format() {
         let dir = tempfile::TempDir::new().unwrap();
-        let result = resolve_model_input("minimax/minimax-m2.7", dir.path()).unwrap();
-        assert_eq!(result, "openrouter:minimax/minimax-m2.7");
+        let error = resolve_model_input("minimax/minimax-m2.7", dir.path()).unwrap_err();
+        assert!(error.to_string().contains("WG-EXEC-ROUTE-REQUIRED"));
     }
 
     #[test]
@@ -2364,8 +2361,8 @@ mod tests {
         });
         std::fs::write(dir.path().join("model_cache.json"), cache.to_string()).unwrap();
 
-        let result = resolve_model_input("minimax-m2.7", dir.path()).unwrap();
-        assert_eq!(result, "openrouter:minimax/minimax-m2.7");
+        let error = resolve_model_input("minimax-m2.7", dir.path()).unwrap_err();
+        assert!(error.to_string().contains("WG-EXEC-ROUTE-REQUIRED"));
     }
 
     #[test]
@@ -2376,8 +2373,8 @@ mod tests {
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(
-            err_msg.contains("wg models fetch"),
-            "Error should suggest fetching: {}",
+            err_msg.contains("WG-EXEC-ROUTE-REQUIRED"),
+            "Error should require an explicit worker route: {}",
             err_msg
         );
     }
@@ -2411,13 +2408,8 @@ context_window = 32768
         });
         std::fs::write(dir.path().join("model_cache.json"), cache.to_string()).unwrap();
 
-        let result = resolve_model_input("qwen3-coder-30b", dir.path()).unwrap();
-        // Serialized models now emit "nex:" prefix (the canonical name
-        // matching the `wg nex` subcommand; legacy internal tags "openai"
-        // / "oai-compat" / "local" all map to the user-facing "nex:" via
-        // native_provider_to_prefix). The legacy "openai:" / "oai-compat:"
-        // / "local:" forms still parse correctly; we just don't emit them.
-        assert_eq!(result, "nex:qwen3-coder-30b");
+        let error = resolve_model_input("qwen3-coder-30b", dir.path()).unwrap_err();
+        assert!(error.to_string().contains("WG-EXEC-ROUTE-REQUIRED"));
     }
 
     #[test]
@@ -2440,8 +2432,8 @@ tier = "standard"
         });
         std::fs::write(dir.path().join("model_cache.json"), cache.to_string()).unwrap();
 
-        let result = resolve_model_input("minimax-m2.7", dir.path()).unwrap();
-        assert_eq!(result, "openrouter:minimax/minimax-m2.7");
+        let error = resolve_model_input("minimax-m2.7", dir.path()).unwrap_err();
+        assert!(error.to_string().contains("WG-EXEC-ROUTE-REQUIRED"));
     }
 
     #[test]

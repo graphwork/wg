@@ -317,6 +317,44 @@ pub fn try_complete_human_task_on_reply(
         }
     }
 
+    let wait_receipt = format!(
+        "human-reply:{}:{}",
+        task_id,
+        wait_started.unwrap_or("unknown")
+    );
+    let wait_transition = graph.get_task_mut(task_id).and_then(|task| {
+        let wait_id = task
+            .message_wait
+            .as_ref()
+            .map(|wait| wait.id.clone())
+            .unwrap_or_else(|| format!("human-wait:{task_id}"));
+        let request = TransitionRequest::new(
+            TransitionKind::WaitSatisfied {
+                wait_id,
+                receipt_id: wait_receipt.clone(),
+            },
+            LifecycleActor {
+                kind: ActorKind::WaitMatcher,
+                id: "human-dispatch".to_string(),
+            },
+            "human_reply_observed",
+            format!(
+                "human-wait-satisfied:{task_id}:{}",
+                task.lifecycle.generation
+            ),
+        )
+        .with_evidence(wait_receipt.clone())
+        .expecting(FenceExpectation::current(task));
+        Some(apply_transition(task, request))
+    });
+    if !matches!(wait_transition, Some(Ok(_))) {
+        eprintln!(
+            "[dispatcher] Refused human wait satisfaction for '{}'",
+            task_id
+        );
+        return false;
+    }
+
     if let Err(error) = crate::commands::finalize::commit_terminal_success_in_graph(
         dir,
         graph,

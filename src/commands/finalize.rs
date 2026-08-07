@@ -214,7 +214,12 @@ fn ensure_terminal_attempt_in_task(task: &mut Task, actor_id: Option<&str>) -> R
         attempt.disposition = None;
         return Ok(true);
     }
-    if task.lifecycle.current_attempt.is_some() && task.status != worksgood::graph::Status::Waiting
+    if task
+        .lifecycle
+        .current_attempt
+        .as_ref()
+        .is_some_and(|attempt| attempt.disposition.is_none())
+        && task.status != worksgood::graph::Status::Waiting
     {
         return Ok(false);
     }
@@ -2794,6 +2799,7 @@ mod atomic_terminal_tests {
     use super::*;
     use tempfile::tempdir;
     use worksgood::graph::{Node, Status};
+    use worksgood::lifecycle::AttemptRef;
     use worksgood::parser::save_graph;
 
     fn setup(status: Status) -> (tempfile::TempDir, PathBuf) {
@@ -2801,12 +2807,24 @@ mod atomic_terminal_tests {
         let dir = root.path().join(".wg");
         std::fs::create_dir_all(&dir).unwrap();
         let mut graph = WorkGraph::new();
-        graph.add_node(Node::Task(Task {
+        let mut task = Task {
             id: "terminal".into(),
             title: "terminal adapter".into(),
             status,
             ..Task::default()
-        }));
+        };
+        if status == Status::InProgress {
+            task.lifecycle.fence = 1;
+            task.lifecycle.attempt_sequence = 1;
+            task.lifecycle.current_attempt = Some(AttemptRef {
+                id: "test-attempt:terminal:0:1".into(),
+                generation: 0,
+                fence: 1,
+                actor_id: "test".into(),
+                disposition: None,
+            });
+        }
+        graph.add_node(Node::Task(task));
         save_graph(&graph, dir.join("graph.jsonl")).unwrap();
         (root, dir)
     }

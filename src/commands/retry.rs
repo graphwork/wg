@@ -807,7 +807,7 @@ mod tests {
     }
 
     #[test]
-    fn test_failed_retry_mints_parent_and_rearms_unconsumed_attempt_routes() {
+    fn test_failed_retry_mints_parent_without_reopening_receipt_rows() {
         let dir = tempdir().unwrap();
         let tasks = source_with_eval_satellites(Status::Failed);
         let old_calls: Vec<_> = tasks[1..]
@@ -824,7 +824,7 @@ mod tests {
         for (index, task_id) in [".flip-t1", ".evaluate-t1"].iter().enumerate() {
             let satellite = graph.get_task(task_id).unwrap();
             let plan = satellite.agency_dispatch.as_ref().unwrap();
-            assert_eq!(satellite.status, Status::Open);
+            assert_eq!(satellite.status, Status::Done);
             assert_eq!(plan.pipeline_id, lifecycle.pipeline_id);
             assert_eq!(plan.source_attempt, 2);
             assert_eq!(plan.calls, old_calls[index]);
@@ -832,7 +832,7 @@ mod tests {
     }
 
     #[test]
-    fn test_fresh_failed_retry_rearms_same_immutable_routes() {
+    fn test_fresh_failed_retry_rebinds_receipts_without_reopening_them() {
         let dir = tempdir().unwrap();
         let tasks = source_with_eval_satellites(Status::Failed);
         let old_calls: Vec<_> = tasks[1..]
@@ -849,7 +849,7 @@ mod tests {
         for (index, task_id) in [".flip-t1", ".evaluate-t1"].iter().enumerate() {
             let satellite = graph.get_task(task_id).unwrap();
             let plan = satellite.agency_dispatch.as_ref().unwrap();
-            assert_eq!(satellite.status, Status::Open);
+            assert_eq!(satellite.status, Status::Done);
             assert_eq!(plan.pipeline_id, lifecycle.pipeline_id);
             assert_eq!(plan.calls, old_calls[index]);
         }
@@ -899,13 +899,13 @@ mod tests {
             worksgood::eval_lifecycle::evaluation_health(&graph, "t1").is_none(),
             "an Open retry must no longer report operator-required evaluation health"
         );
-        // Satellites are re-armed for the fresh attempt.
+        // Satellite receipts are rebound but never reopened as graph work.
         for task_id in [".flip-t1", ".evaluate-t1"] {
             let satellite = graph.get_task(task_id).unwrap();
             assert_eq!(
                 satellite.status,
-                Status::Open,
-                "{task_id} should be re-armed to Open"
+                Status::Done,
+                "{task_id} remains a receipt"
             );
             let plan = satellite.agency_dispatch.as_ref().unwrap();
             assert_eq!(plan.source_attempt, lifecycle.source_attempt);

@@ -1353,10 +1353,12 @@ pub fn create_user_board_task(handle: &str, seq: u32) -> Task {
             "User board for {} — persistent conversation surface.",
             handle
         )),
-        status: Status::InProgress,
+        // A board is persistent graph state, not an already-running worker.
+        // Leave it Open so any terminal action acquires an exact lifecycle
+        // attempt instead of inheriting an unaudited InProgress status.
+        status: Status::Open,
         tags: vec!["user-board".to_string()],
         created_at: Some(chrono::Utc::now().to_rfc3339()),
-        started_at: Some(chrono::Utc::now().to_rfc3339()),
         ..Task::default()
     }
 }

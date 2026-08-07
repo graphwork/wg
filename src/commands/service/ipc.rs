@@ -4993,14 +4993,14 @@ poll_interval = 60
         let g = worksgood::parser::load_graph(&dir.join("graph.jsonl")).unwrap();
 
         let t0 = g.get_task(".chat-0").expect("chat-0 task still exists");
-        assert_eq!(t0.status, worksgood::graph::Status::Done);
+        assert_eq!(t0.status, worksgood::graph::Status::Abandoned);
         assert!(t0.tags.contains(&"archived".to_string()));
         assert!(!t0.tags.iter().any(|t| t == "chat-loop"));
 
         let t1 = g
             .get_task(".coordinator-1")
             .expect("coordinator-1 task still exists");
-        assert_eq!(t1.status, worksgood::graph::Status::Done);
+        assert_eq!(t1.status, worksgood::graph::Status::Abandoned);
         assert!(t1.tags.contains(&"archived".to_string()));
         assert!(!t1.tags.iter().any(|t| t == "coordinator-loop"));
 

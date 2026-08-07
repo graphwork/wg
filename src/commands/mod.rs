@@ -1080,8 +1080,8 @@ mod provenance_coverage_tests {
         )
         .unwrap();
         super::fail::run(dir, "prov-gc", Some("oops"), None).unwrap();
-        super::abandon::run(dir, "prov-gc", Some("giving up"), &[]).unwrap();
-
+        // A terminal failure cannot be rewritten as abandoned; GC consumes the
+        // existing terminal lifecycle projection directly.
         super::gc::run(dir, false, false, None).unwrap();
         let entries = ops_with_type(dir, "gc");
         assert_eq!(entries.len(), 1);
