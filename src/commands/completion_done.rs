@@ -7,8 +7,11 @@ use worksgood::completion_manifest::{OutputRef, ReviewResolver};
 use worksgood::completion_task::{load_exact_review_pair, load_submission_bytes};
 use worksgood::graph::{CompletionContract, CompletionDisposition, LogEntry, Status};
 use worksgood::identity::canonical_json;
+use worksgood::lifecycle::{
+    ActorKind, FenceExpectation, LifecycleActor, TransitionKind, TransitionRequest,
+    apply_transition,
+};
 use worksgood::parser::{load_graph, modify_graph};
-use worksgood::service::registry::{AgentRegistry, AgentStatus};
 
 use super::completion_submit::{collect_dependency_outputs, store};
 
@@ -27,7 +30,6 @@ struct CompletionReceipt {
 }
 
 /// Derive Done from exact immutable review plus current publication truth.
-/// No cleanup, process, planner, finalizer, or transaction participates.
 pub fn run(dir: &Path, id: &str, integration_ref: &str) -> Result<()> {
     let graph_path = dir.join("graph.jsonl");
     let graph = load_graph(&graph_path)?;
@@ -98,8 +100,6 @@ pub fn run(dir: &Path, id: &str, integration_ref: &str) -> Result<()> {
         .context("missing eval receipt")?
         .content_digest
         .to_string();
-    // Keep the loaded values live in this scope: successful serialization below
-    // therefore follows exact receipt verification, not merely reference presence.
     let _ = reviews;
     let completed_at = Utc::now().to_rfc3339();
     let receipt = CompletionReceipt {
@@ -119,7 +119,6 @@ pub fn run(dir: &Path, id: &str, integration_ref: &str) -> Result<()> {
         &receipt_bytes,
         "application/vnd.worksgood.completion-receipt+json",
     )?;
-    let assigned = task.assigned.clone();
     commit_done(
         &graph_path,
         id,
@@ -129,7 +128,6 @@ pub fn run(dir: &Path, id: &str, integration_ref: &str) -> Result<()> {
         &receipt_ref.content_digest.to_string(),
         &completed_at,
     )?;
-    mark_agent_done(dir, assigned.as_deref())?;
     println!(
         "Done '{}': exact FLIP+eval accepted manifest {} and publication is verified",
         id, manifest_digest
@@ -253,13 +251,26 @@ fn commit_done(
                 return false;
             }
         };
-        if task.status == Status::Done
-            && task.completion_disposition == Some(disposition)
-            && task.completion_receipt.as_deref() == Some(receipt_digest)
-        {
+        let mut request = TransitionRequest::new(
+            TransitionKind::AttemptSucceeded {
+                acceptance_ref: Some(receipt_digest.to_string()),
+                manual_review: false,
+            },
+            LifecycleActor {
+                kind: ActorKind::Finalizer,
+                id: "completion-v3".to_string(),
+            },
+            "reviewed_publication_committed",
+            format!("completion-v3:{id}:{generation}:{receipt_digest}"),
+        )
+        .with_evidence(receipt_digest.to_string());
+        if task.lifecycle.current_attempt.is_some() {
+            request.expected = FenceExpectation::current(task);
+        }
+        if let Err(error) = apply_transition(task, request) {
+            refusal = Some(error.to_string());
             return false;
         }
-        task.status = Status::Done;
         task.completion_disposition = Some(disposition);
         task.completion_receipt = Some(receipt_digest.to_string());
         task.completed_at = Some(completed_at.to_string());
@@ -281,21 +292,6 @@ fn commit_done(
     })?;
     if let Some(refusal) = refusal {
         bail!(refusal);
-    }
-    Ok(())
-}
-
-fn mark_agent_done(dir: &Path, assigned: Option<&str>) -> Result<()> {
-    let Some(agent_id) = assigned else {
-        return Ok(());
-    };
-    let mut registry = AgentRegistry::load_locked(dir)?;
-    if let Some(agent) = registry.get_agent_mut(agent_id) {
-        agent.status = AgentStatus::Done;
-        if agent.completed_at.is_none() {
-            agent.completed_at = Some(Utc::now().to_rfc3339());
-        }
-        registry.save_ref()?;
     }
     Ok(())
 }

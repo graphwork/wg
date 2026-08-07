@@ -680,6 +680,7 @@ impl LifecycleKernel {
                         ActorKind::Worker,
                         ActorKind::ProcessObserver,
                         ActorKind::Operator,
+                        ActorKind::Finalizer,
                     ],
                 )?;
                 Self::require_running_attempt(task, &request)?;
@@ -1948,6 +1949,31 @@ mod tests {
         assert_eq!(
             task.lifecycle.ledger_head.as_deref(),
             Some(first.event_id.as_str())
+        );
+    }
+
+    #[test]
+    fn completion_v3_finalizer_can_commit_exact_receipt() {
+        let mut task = task("completion-v3", Status::Open);
+        reserve(&mut task);
+        let mut completion = request(
+            TransitionKind::AttemptSucceeded {
+                acceptance_ref: Some("b3:reviewed-publication".to_string()),
+                manual_review: false,
+            },
+            ActorKind::Finalizer,
+            "completion-v3-receipt",
+        );
+        completion.expected = FenceExpectation::current(&task);
+        let event = apply(&mut task, completion).unwrap();
+        assert_eq!(task.status, Status::Done);
+        assert_eq!(event.actor_kind, ActorKind::Finalizer);
+        assert_eq!(
+            task.lifecycle
+                .current_attempt
+                .as_ref()
+                .and_then(|attempt| attempt.disposition),
+            Some(AttemptDisposition::Succeeded)
         );
     }
 
