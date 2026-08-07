@@ -1,13 +1,13 @@
 //! Dead agent detection and cleanup
 //!
-//! Detects agents that have stopped sending heartbeats and cleans them up:
+//! Detects agents whose exact process no longer exists and cleans them up:
 //! - Marks agents as dead in the registry
-//! - Unclaims their tasks (sets back to open)
+//! - Fails their exact lifecycle attempt (explicit retry required)
 //! - Optionally kills the process if still running
 //!
 //! Usage:
 //!   wg dead-agents                   # Just check, don't modify (default)
-//!   wg dead-agents --cleanup         # Mark dead and unclaim tasks
+//!   wg dead-agents --cleanup         # Mark dead and fail exact attempts
 //!   wg dead-agents --threshold 10    # Use 10-minute threshold (default: from config)
 //!   wg dead-agents --purge           # Remove dead/done/failed entries from registry
 //!   wg dead-agents --purge --delete-dirs  # Also delete agent work directories
@@ -17,6 +17,10 @@ use chrono::Utc;
 use std::path::Path;
 use worksgood::config::Config;
 use worksgood::graph::{LogEntry, Status};
+use worksgood::lifecycle::{
+    ActorKind, FenceExpectation, LifecycleActor, TransitionKind, TransitionRequest,
+    apply_transition,
+};
 use worksgood::parser::modify_graph;
 use worksgood::service::{AgentRegistry, AgentStatus};
 
@@ -47,7 +51,11 @@ pub fn run_check(dir: &Path, threshold_minutes: Option<u64>, json: bool) -> Resu
     let threshold_secs = threshold_mins.saturating_mul(60) as i64;
 
     let registry = AgentRegistry::load(dir)?;
-    let dead_agents = registry.find_dead_agents(threshold_secs);
+    let dead_agents: Vec<_> = registry
+        .find_dead_agents(threshold_secs)
+        .into_iter()
+        .filter(|agent| !super::is_process_alive(agent.pid))
+        .collect();
 
     if json {
         let output = serde_json::json!({
@@ -82,14 +90,14 @@ pub fn run_check(dir: &Path, threshold_minutes: Option<u64>, json: bool) -> Resu
                 );
             }
             println!();
-            println!("Run 'wg dead-agents --cleanup' to mark as dead and unclaim tasks.");
+            println!("Run 'wg dead-agents --cleanup' to mark dead and fail exact attempts.");
         }
     }
 
     Ok(())
 }
 
-/// Detect dead agents, mark them as dead, and unclaim their tasks
+/// Detect absent agent processes, mark them dead, and fail exact attempts.
 pub fn run_cleanup(
     dir: &Path,
     threshold_minutes: Option<u64>,
@@ -112,6 +120,7 @@ pub fn run_cleanup(
     let dead_info: Vec<DeadAgentInfo> = locked_registry
         .find_dead_agents(threshold_secs)
         .iter()
+        .filter(|agent| !super::is_process_alive(agent.pid))
         .filter_map(|a| {
             Some(DeadAgentInfo {
                 agent_id: a.id.clone(),
@@ -123,13 +132,15 @@ pub fn run_cleanup(
         })
         .collect();
 
-    // Mark agents as dead
-    let _dead_ids = locked_registry.mark_dead_agents(threshold_secs);
+    // Registry follows exact process evidence; heartbeat age alone is inert.
+    for dead_agent in &dead_info {
+        let _ = locked_registry.update_status(&dead_agent.agent_id, AgentStatus::Dead);
+    }
 
     // Save registry
     locked_registry.save_ref()?;
 
-    // Now unclaim tasks from dead agents
+    // Fail exact task attempts owned by absent processes.
     let mut tasks_unclaimed = Vec::new();
     let mut errors = Vec::new();
 
@@ -163,16 +174,44 @@ pub fn run_cleanup(
                                 | worksgood::lifecycle::PiAuthorizationState::HeldOperatorRequired
                         )
                     });
-                if task.status == Status::InProgress && !pi_continuation_owns_reconciliation {
-                    task.status = Status::Open;
+                if task.status == Status::InProgress
+                    && task.assigned.as_deref() == Some(dead_agent.agent_id.as_str())
+                    && !pi_continuation_owns_reconciliation
+                {
+                    let request = TransitionRequest::new(
+                        TransitionKind::AttemptLost,
+                        LifecycleActor {
+                            kind: ActorKind::Reconciler,
+                            id: "dead-process-reconciler".to_string(),
+                        },
+                        "exact_process_missing",
+                        format!(
+                            "dead-process:{}:{}:{}",
+                            dead_agent.task_id,
+                            dead_agent.agent_id,
+                            task.lifecycle
+                                .current_attempt
+                                .as_ref()
+                                .map(|attempt| attempt.id.as_str())
+                                .unwrap_or("missing-attempt")
+                        ),
+                    )
+                    .expecting(FenceExpectation::current(task));
+                    if apply_transition(task, request).is_err() {
+                        continue;
+                    }
                     task.assigned = None;
+                    task.failure_reason = Some(format!(
+                        "Exact worker process {} for agent '{}' no longer exists",
+                        dead_agent.pid, dead_agent.agent_id
+                    ));
 
                     task.log.push(LogEntry {
                         timestamp: Utc::now().to_rfc3339(),
                         actor: None,
                         user: Some(worksgood::current_user()),
                         message: format!(
-                            "Task unclaimed: agent '{}' (PID {}) detected as dead (no heartbeat for {} seconds)",
+                            "Attempt lost: agent '{}' exact process (PID {}) is absent (last heartbeat {} seconds ago)",
                             dead_agent.agent_id,
                             dead_agent.pid,
                             dead_agent.seconds_since_heartbeat
@@ -233,7 +272,10 @@ pub fn run_cleanup(
 
             if !result.tasks_unclaimed.is_empty() {
                 println!();
-                println!("Unclaimed {} task(s):", result.tasks_unclaimed.len());
+                println!(
+                    "Failed {} lost task attempt(s):",
+                    result.tasks_unclaimed.len()
+                );
                 for task_id in &result.tasks_unclaimed {
                     println!("  {}", task_id);
                 }
@@ -483,8 +525,20 @@ mod tests {
 
         // Create graph with a task assigned to the agent
         let mut graph = WorkGraph::new();
-        let mut task = make_task("task-1", "Test Task", Status::InProgress);
-        task.assigned = Some("test-agent".to_string());
+        let mut task = make_task("task-1", "Test Task", Status::Open);
+        let request = TransitionRequest::new(
+            TransitionKind::AttemptReserved {
+                owner_id: Some("agent-1".to_string()),
+            },
+            LifecycleActor {
+                kind: ActorKind::Dispatcher,
+                id: "test".to_string(),
+            },
+            "test_reservation",
+            "test-reserve:task-1",
+        );
+        apply_transition(&mut task, request).unwrap();
+        task.assigned = Some("agent-1".to_string());
         graph.add_node(Node::Task(task));
         save_graph(&graph, &path).unwrap();
 
@@ -527,10 +581,10 @@ mod tests {
         let agent = registry.get_agent("agent-1").unwrap();
         assert_eq!(agent.status, AgentStatus::Dead);
 
-        // Verify task is unclaimed
+        // Verify the exact attempt failed; retry is explicit.
         let graph = load_graph(graph_path(temp_dir.path())).unwrap();
         let task = graph.get_task("task-1").unwrap();
-        assert_eq!(task.status, Status::Open);
+        assert_eq!(task.status, Status::Failed);
         assert!(task.assigned.is_none());
     }
 
@@ -681,7 +735,7 @@ mod tests {
         let task = graph.get_task("task-1").unwrap();
         assert!(!task.log.is_empty());
         let log = task.log.last().unwrap();
-        assert!(log.message.contains("dead"));
+        assert!(log.message.contains("Attempt lost"));
         assert!(log.message.contains("agent-1"));
     }
 
