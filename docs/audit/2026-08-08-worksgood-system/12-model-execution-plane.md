@@ -4,7 +4,7 @@
 **Evidence checked through:** 2026-08-08  
 **Source-evidence revision:** `3947642acdf11f61cffce97e7a4efb8115ba19ef` (tree `5780e1d40d234ade5bcfeab7a014d6b3cb79e0c5`)
 **Execution revisions:** focused suites and initial traces at `98b319c36aa8a21fd4506fc7469fe6d58978cdda`; rebuilt generated-wrapper/smoke evidence at `3947642acdf11f61cffce97e7a4efb8115ba19ef`
-**Freshness:** snapshot-current; `git diff --quiet b0892ea7..3947642a -- <audited source/test/docs>` returned 0. The output-commit check in section 7.1 extends that comparison through the exact reviewed output rather than treating `98b319c3` as final provenance.
+**Freshness:** snapshot-current; both `git diff --quiet b0892ea7..3947642a -- <audited paths>` and the direct focused-test-to-source check `git diff --quiet 98b319c3..3947642a -- <audited paths>` returned 0. Section 7.1 records the full path set and extends provenance through the exact reviewed output.
 **Scope:** model routing, configuration/profile/tier/reasoning precedence, Pi/Claude/Codex/native/OpenCode handlers, discovery, worker processes and wrappers, Pi streaming/watchdogs, usage/cost, credentials/fallbacks, deprecations, and documentation drift  
 **Change boundary:** this new audit artifact only
 
@@ -311,6 +311,20 @@ git diff --quiet \
 ```
 
 **`[VERIFIED]`** Bounded result: `scoped_diff_exit=0`; audited source, tests, and named behavior documents were byte-unchanged from the inherited snapshot through source revision `3947642a`. Static citations are interpreted against that exact source tree.
+
+**`[VERIFIED]`** The focused suites in section 7.2 executed at `98b319c3`. The following **direct** equivalence check (not merely an inference through the older snapshot) also returned exit 0, proving that their audited inputs match source revision `3947642a` even if intermediate history had changed and reverted files:
+
+```bash
+git diff --quiet \
+  98b319c36aa8a21fd4506fc7469fe6d58978cdda..\
+  3947642acdf11f61cffce97e7a4efb8115ba19ef -- \
+  src tests README.md docs/README.md \
+  docs/design-handler-first-model-spec.md \
+  docs/design-two-tier-pi-profile.md \
+  docs/design-pi-plugin-install.md AGENTS.md
+```
+
+**`[VERIFIED]`** Bounded result: `focused_to_source_scoped_diff_exit=0`. This is file-content equivalence for the complete paths exercised/cited by those suites; it is not a claim that unrelated repository paths or dependency/toolchain state were identical.
 
 **`[VERIFIED]`** After committing this artifact, validation re-runs `git diff --quiet 3947642a..HEAD -- <the same audited paths>` and records the resulting output commit/tree in immutable completion evidence. This is the output-commit provenance check requested by review: any source/test drift after `3947642a` makes completion fail rather than silently extending claims. The required artifact checks also run on the exact output tree:
 
