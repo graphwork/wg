@@ -20,7 +20,7 @@
 
 **`[CONTRADICTION]`** Current source/tests say agency decisions are receipts and publication creates no `.assign-*` work. Another passing integration target privately copies a retired auto-assign subgraph instead of exercising production. The coordinator does not call the dormant lightweight assignment function. `auto_assign` is configurable, but no inspected automatic dispatch path uses it to select an agency identity (`AGENCY-003`).
 
-**`[VERIFIED]`** Eight selected targets passed in a worker-control-neutral environment: agency schema (5), agency lifecycle (5), agency pipeline (34 passed/5 ignored), auto assignment (22), evaluation recording (30), deep-readonly FLIP (9), trace functions (64), and context scope (21). `integration_trace_function_layers` failed 3/53 because old `Done` fixtures lack now-required GraphSave completion evidence. `integration_chat` failed 3/9 daemon round-trip/concurrency tests with two-second IPC timeouts. These are execution evidence, not automatic product attribution.
+**`[VERIFIED]`** Eight selected targets passed in a worker-control-neutral environment: agency schema (5), agency lifecycle (5), agency pipeline (34 passed/5 ignored), auto assignment (22), evaluation recording (30), deep-readonly FLIP (9), trace functions (64), and context scope (21). `integration_trace_function_layers` failed 3/53 because old `Done` fixtures lack now-required GraphSave completion evidence. An initial `integration_chat` run failed 3/9; a later fully scrubbed rerun passed 8/9 and left only the concurrent-message IPC timeout. These are execution evidence, not automatic product attribution.
 
 **Priority decision:** make candidate-bound evaluation the sole authority, or explicitly retain two lanes; then define an exactly-once projection of accepted verdicts into agency learning. Otherwise gating can work while adaptive assignment/evolution stays starved.
 
@@ -232,7 +232,7 @@ reply -> confirmed sender/bot/agent match -> freshest waiting task only
 - **Severity/likelihood/confidence:** S2; observed in audit environment; medium
 - State spans inbox/outbox JSONL, plaintext `chat.log`, vendor journal, UUID registry, cursors, stream state, runtime ledger, and graph metadata (`chat.rs:1-60,246-317`; `commands/chat.rs:244-304`; `chat_sessions.rs:1-146`; `chat_runtime.rs:1-117`). History prefers vendor data then inbox/outbox (`commands/chat.rs:244-304`).
 - Inbox/outbox are flocked and cursors atomic (`chat.rs:181-391`). Registry saves use unique temp files, but only coordinator registration locks the whole read-modify-write; the comment admits other concurrent writers can lose updates (`chat_sessions.rs:37-65,164-245,397-433`).
-- `integration_chat` passed 6/9; round-trip, instant-wakeup, and concurrent-message tests timed out after 2s with EAGAIN. Real daemons plus concurrent audit load make attribution uncertain.
+- The initial `integration_chat` run passed 6/9: round-trip storage, instant wakeup, and concurrent messages timed out after 2s with EAGAIN. A later `env -i` rerun passed 8/9; only `chat_concurrent_messages` still timed out after 2s/EAGAIN. Real daemons plus concurrent audit load make root attribution uncertain, but the concurrency failure reproduced.
 - Restart/resume smoke spec inspected, not run: `tui_stateful_chat_restart_resume.sh:1-207`.
 - **Recommendation:** `CHAT-REC-001`.
 
@@ -330,12 +330,12 @@ reply -> confirmed sender/bot/agent match -> freshest waiting task only
 
 **`[VERIFIED]`** Production source at checkout equals the pinned snapshot: `git diff --name-only b0892ea7..98b319c3` returned only the subsequently added audit charter. Toolchain: `rustc 1.96.0`, `cargo 1.96.0`. Static method: read schemas/stores/prompts, traced CLI → coordinator/executor → persistence, searched callers/fields, cross-checked manuals/designs/tests/smoke scripts, then executed representative tests. No network/model call, product mutation, daemon action, or destructive identity edit was used.
 
-Initial inherited `WG_TASK_ID`, `WG_AGENT_ID`, `WG_AGENT_DIR`, and related worker-control variables caused false failures by activating worker guards. All reported test results below use:
+Initial inherited worker-control variables caused false failures by activating worker guards. The final captured rerun uses a fully scrubbed environment rather than a partial `-u` list:
 
 ```sh
-env -u WG_TASK_ID -u WG_AGENT_ID -u WG_AGENT_DIR -u WG_TASK_DIR \
-    -u WG_ROOT_TASK_ID -u WG_PARENT_TASK_ID -u WG_EXECUTOR_TYPE \
-    -u WG_MODEL -u WG_ENDPOINT -u WG_DAEMON_MANAGED \
+env -i HOME="$HOME" PATH="$PATH" USER="$USER" LOGNAME="$LOGNAME" \
+    SHELL="$SHELL" TERM="$TERM" CARGO_HOME="$CARGO_HOME" \
+    RUSTUP_HOME="$RUSTUP_HOME" \
     cargo test --test <target> -- --test-threads=1
 ```
 
@@ -351,7 +351,7 @@ env -u WG_TASK_ID -u WG_AGENT_ID -u WG_AGENT_DIR -u WG_TASK_DIR \
 | `integration_deep_readonly_flip` | 9 passed | deep policy, exact candidate, budgets, restart, no-authority tools |
 | `integration_trace_functions` | 64 passed | extraction/static apply/import/export basics |
 | `integration_trace_function_layers` | 50 passed, 3 failed | failures at tests `711-733`, `964-1014`, `1280-1328`; current source requires GraphSave, fixtures only set `Done` |
-| `integration_chat` | 6 passed, 3 failed | failures `chat_round_trip_storage`, `chat_instant_wakeup`, `chat_concurrent_messages`; 2s IPC EAGAIN timeouts |
+| `integration_chat` | final rerun: 8 passed, 1 failed | reproducible failure `chat_concurrent_messages`; 2s IPC EAGAIN timeout. Initial less-isolated run was 6/9. |
 | `integration_context_scope` | 21 passed | ordering, inclusion, override/fallback behavior |
 
 **`[UNCERTAINTY]`** Chat failures were not isolated enough to distinguish product IPC defect, test resource contention, or audit-host load. Reproduce with a clean unique daemon/socket/tmux environment and capture service logs before classification.
