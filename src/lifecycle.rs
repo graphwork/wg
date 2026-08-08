@@ -332,6 +332,17 @@ pub enum TransitionKind {
     LegacyCompletionQuarantined {
         record_ref: String,
     },
+    /// Audit-only attribution for a normal trusted CLI metadata mutation. The
+    /// source attempt fields are recorded on the resulting lifecycle event;
+    /// target lifecycle state is otherwise unchanged.
+    TrustedGraphMutation {
+        command: String,
+        source_task_id: String,
+        source_generation: u64,
+        source_attempt_id: String,
+        source_fence: u64,
+        source_lease_epoch: u64,
+    },
     MessageObserved {
         message_id: String,
     },
@@ -399,6 +410,7 @@ impl TransitionKind {
             Self::CandidateCheckpointed { .. } => "candidate-checkpointed",
             Self::ReconciliationIssue { .. } => "reconciliation-issue",
             Self::LegacyCompletionQuarantined { .. } => "legacy-completion-quarantined",
+            Self::TrustedGraphMutation { .. } => "trusted-graph-mutation",
             Self::MessageObserved { .. } => "message-observed",
             Self::LegacyCheckpointImported => "legacy-checkpoint-imported",
             Self::PiContinuationAuthorized { .. } => "pi-continuation-authorized",
@@ -1054,6 +1066,17 @@ impl LifecycleKernel {
                 }
                 new_state = Status::Incomplete;
             }
+            TransitionKind::TrustedGraphMutation { command, .. } => {
+                Self::require_actor(&request, &[ActorKind::Worker])?;
+                if command.trim().is_empty() {
+                    return Err(TransitionRejection::new(
+                        "mutation_command_missing",
+                        "trusted graph mutation requires its normal CLI command",
+                    ));
+                }
+                // Audit only: metadata was changed by the surrounding normal
+                // CLI transaction; status/ownership projection is unchanged.
+            }
             TransitionKind::MessageObserved { .. } => {
                 // Ordinary messages are immutable data, never lifecycle
                 // authority, regardless of sender or task state.
@@ -1334,10 +1357,20 @@ impl LifecycleKernel {
         }
 
         projection.revision += 1;
-        let attempt_id = projection
-            .current_attempt
-            .as_ref()
-            .map(|attempt| attempt.id.clone());
+        let (attempt_id, event_fence) = match kind {
+            TransitionKind::TrustedGraphMutation {
+                source_attempt_id,
+                source_fence,
+                ..
+            } => (Some(source_attempt_id.clone()), *source_fence),
+            _ => (
+                projection
+                    .current_attempt
+                    .as_ref()
+                    .map(|attempt| attempt.id.clone()),
+                projection.fence,
+            ),
+        };
         let event = LifecycleEvent {
             schema_version: LIFECYCLE_SCHEMA_VERSION,
             event_id: request.event_id,
@@ -1351,7 +1384,7 @@ impl LifecycleKernel {
             actor_kind: request.actor.kind,
             actor_id: request.actor.id,
             attempt_id,
-            fence: projection.fence,
+            fence: event_fence,
             reason_code: request.reason_code,
             evidence_refs: {
                 let mut refs = request.evidence_refs;

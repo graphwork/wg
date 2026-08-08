@@ -1,11 +1,10 @@
 //! Worker-side CLI adapter for the attempt-scoped daemon capability channel.
 //!
-//! Presence of `WG_WORKER_CAPABILITY` is a hard mode switch: commands are
-//! translated to attempt-fenced daemon operations. Scoped/read-only workers use
-//! narrow typed operations. Trusted local workers may delegate ordinary public
-//! graph CLI commands after the daemon authenticates the exact attempt; own-task
-//! completion remains typed and receipt-backed. There is no filesystem graph
-//! fallback, even when cwd happens to contain a guessed `.wg`.
+//! Presence of `WG_WORKER_CAPABILITY` is a hard mode switch. Scoped/read-only
+//! workers use narrow typed daemon operations. Trusted local workers run normal
+//! positively-bounded coordination commands directly against the canonical
+//! graph; every graph commit revalidates the exact capability/fence under lock.
+//! Own-task completion remains typed and receipt-backed.
 
 use crate::cli::{Commands, MsgCommands, PiWatchdogCommands};
 use crate::commands;
@@ -108,16 +107,6 @@ fn render_response(
                 print!("{content}");
             }
         }
-        WorkerOperation::GraphCli { .. } => {
-            if let Some(stderr) = data.get("stderr").and_then(|value| value.as_str())
-                && !stderr.is_empty()
-            {
-                eprint!("{stderr}");
-            }
-            if let Some(stdout) = data.get("stdout").and_then(|value| value.as_str()) {
-                print!("{stdout}");
-            }
-        }
         WorkerOperation::Capabilities => {
             if data.get("mode").is_some() {
                 if std::env::args().any(|arg| arg == "--json") {
@@ -147,21 +136,28 @@ fn render_response(
     Ok(())
 }
 
-fn graph_cli_operation(command: &Commands) -> Result<WorkerOperation> {
-    let stdin = match command {
-        Commands::Msg {
-            command: MsgCommands::Send { stdin: true, .. },
-        } => {
-            let mut body = String::new();
-            std::io::stdin().read_to_string(&mut body)?;
-            Some(body)
-        }
-        _ => None,
-    };
-    Ok(WorkerOperation::GraphCli {
-        argv: std::env::args().skip(1).collect(),
-        stdin,
-    })
+fn trusted_cli_passthrough() -> Result<Option<()>> {
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    if argv
+        .iter()
+        .any(|arg| arg == "--dir" || arg.starts_with("--dir="))
+    {
+        anyhow::bail!("worker_control.graph_cli_cross_graph_refused");
+    }
+    let command = argv
+        .iter()
+        .find(|arg| !arg.starts_with('-'))
+        .map(String::as_str)
+        .unwrap_or("");
+    if !worksgood::worker_control::trusted_coordination_command(command) {
+        anyhow::bail!(
+            "worker_control.operation_refused: {command} is not in the trusted local graph-coordination boundary"
+        );
+    }
+    // SAFETY: CLI dispatch is single-threaded at this point. The marker is
+    // consumed only by this process's graph commit path.
+    unsafe { std::env::set_var("WG_TRUSTED_DIRECT_CLI", command) };
+    Ok(None)
 }
 
 fn send(operation: WorkerOperation) -> Result<()> {
@@ -186,15 +182,17 @@ pub fn maybe_run(command: &Commands, json: bool) -> Result<Option<()>> {
     if std::env::var_os("WG_WORKER_CAPABILITY").is_none() {
         return Ok(None);
     }
-    if std::env::var_os("WG_DIR").is_some() {
+    let mode = control_mode();
+    if mode != WorkerControlMode::Trusted && std::env::var_os("WG_DIR").is_some() {
         anyhow::bail!("worker_control.raw_graph_environment_refused: WG_DIR must not be present");
     }
-
-    let mode = control_mode();
+    if mode == WorkerControlMode::Trusted && std::env::var_os("WG_DIR").is_none() {
+        anyhow::bail!("worker_control.trusted_graph_environment_missing");
+    }
     let operation = match command {
         Commands::Capabilities => Some(WorkerOperation::Capabilities),
         Commands::Show { id } if mode == WorkerControlMode::Trusted && !task_is_own(id) => {
-            Some(graph_cli_operation(command)?)
+            return trusted_cli_passthrough();
         }
         Commands::Show { id } => {
             task_matches(id)?;
@@ -203,7 +201,7 @@ pub fn maybe_run(command: &Commands, json: bool) -> Result<Option<()>> {
         Commands::Context { task, dependents }
             if mode == WorkerControlMode::Trusted && (!task_is_own(task) || *dependents) =>
         {
-            Some(graph_cli_operation(command)?)
+            return trusted_cli_passthrough();
         }
         Commands::Context { task, dependents } => {
             task_matches(task)?;
@@ -226,7 +224,7 @@ pub fn maybe_run(command: &Commands, json: bool) -> Result<Option<()>> {
                 || *list
                 || actor.is_some()) =>
         {
-            Some(graph_cli_operation(command)?)
+            return trusted_cli_passthrough();
         }
         Commands::Log {
             id,
@@ -270,7 +268,7 @@ pub fn maybe_run(command: &Commands, json: bool) -> Result<Option<()>> {
                 }
             } =>
         {
-            Some(graph_cli_operation(command)?)
+            return trusted_cli_passthrough();
         }
         Commands::Msg { command } => match command {
             MsgCommands::Read { task_id, .. } => {
@@ -579,7 +577,7 @@ pub fn maybe_run(command: &Commands, json: bool) -> Result<Option<()>> {
             )?;
             return Ok(Some(()));
         }
-        _ if mode == WorkerControlMode::Trusted => Some(graph_cli_operation(command)?),
+        _ if mode == WorkerControlMode::Trusted => return trusted_cli_passthrough(),
         _ => anyhow::bail!(
             "worker_control.operation_refused: this command requires operator/graph authority; effective mode={mode}; run `wg capabilities`"
         ),

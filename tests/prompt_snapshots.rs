@@ -332,7 +332,35 @@ fn shipped_worker_prompt_authority_audit_is_complete() {
     }
 
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let guide = std::fs::read_to_string(root.join("src/text/agent_guide.md")).unwrap();
+    // Exhaustive inventory of shipped worker/system prompt constructors and
+    // surfaces. This deliberately includes the spawn + executor builders, not
+    // only the rendered universal guide.
+    let prompt_sources = [
+        "src/text/agent_guide.md",
+        "src/service/executor.rs",
+        "src/commands/spawn/context.rs",
+        "src/service/coordinator_prompt.rs",
+        "src/commands/service/assignment.rs",
+        "src/commands/service/triage.rs",
+        "src/commands/service/human_dispatch.rs",
+        "src/review/pass2_review.rs",
+        "worksgood-pi/src/tools.ts",
+        "worksgood-pi/src/wg-backend.ts",
+    ];
+    let mut shipped = String::new();
+    for relative in prompt_sources {
+        let content = std::fs::read_to_string(root.join(relative))
+            .unwrap_or_else(|error| panic!("prompt inventory missing {relative}: {error}"));
+        shipped.push_str(&format!("\n--- {relative} ---\n{content}"));
+        for command in ["add", "edit", "assign", "reprioritize", "publish", "msg"] {
+            if content.contains(&format!("wg {command}")) {
+                assert!(
+                    worksgood::worker_control::trusted_coordination_command(command),
+                    "{relative} instructs wg {command} without compatible trusted authority"
+                );
+            }
+        }
+    }
     for command in [
         "wg capabilities",
         "wg add",
@@ -340,7 +368,7 @@ fn shipped_worker_prompt_authority_audit_is_complete() {
         "wg publish",
         "wg msg",
     ] {
-        assert!(guide.contains(command), "guide lost {command}");
+        assert!(shipped.contains(command), "prompt inventory lost {command}");
     }
     for boundary in [
         "Ordinary local workers are trusted participants",
@@ -348,17 +376,18 @@ fn shipped_worker_prompt_authority_audit_is_complete() {
         "completion remains own-task",
         "worker-control:inbound",
     ] {
-        assert!(guide.contains(boundary), "guide lost boundary: {boundary}");
+        assert!(
+            shipped.contains(boundary),
+            "prompt inventory lost boundary: {boundary}"
+        );
     }
 
     let quality = std::fs::read_to_string(root.join("docs/designs/quality-pass.md")).unwrap();
     for command in ["wg assign", "wg edit", "wg publish"] {
         assert!(quality.contains(command), "quality prompt lost {command}");
     }
-
-    let pi_tools = std::fs::read_to_string(root.join("worksgood-pi/src/tools.ts")).unwrap();
-    assert!(pi_tools.contains("name: \"wg_capabilities\""));
-    assert!(pi_tools.contains("backend.capabilities"));
+    assert!(shipped.contains("name: \"wg_capabilities\""));
+    assert!(shipped.contains("backend.capabilities"));
 }
 
 #[test]

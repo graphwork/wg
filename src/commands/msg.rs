@@ -6,7 +6,8 @@ use std::io::Read;
 use std::path::Path;
 
 use worksgood::graph::{
-    Node, create_user_board_task, is_user_board, next_user_board_seq, resolve_user_board_alias,
+    LogEntry, Node, create_user_board_task, is_user_board, next_user_board_seq,
+    resolve_user_board_alias,
 };
 use worksgood::messages;
 use worksgood::parser::modify_graph;
@@ -85,6 +86,22 @@ pub fn run_send(
     }
 
     let id = messages::send_message(dir, &effective_id, &message_body, sender, priority)?;
+    if std::env::var_os("WG_TRUSTED_DIRECT_CLI").is_some() {
+        let graph_path = super::graph_path(dir);
+        modify_graph(&graph_path, |graph| {
+            let Some(task) = graph.get_task_mut(&effective_id) else {
+                return false;
+            };
+            task.log.push(LogEntry {
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                actor: Some(sender.to_string()),
+                user: Some(worksgood::current_user()),
+                message: format!("trusted CLI message mutation: message_id={id}"),
+            });
+            true
+        })
+        .context("record trusted message mutation attribution")?;
+    }
     println!("Message #{} sent to '{}'", id, effective_id);
 
     Ok(())

@@ -3,6 +3,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 /// Check if a task is past its not_before and ready_after timestamps (or has no timestamps),
 /// and if cron-enabled, whether it is due to fire.
@@ -484,19 +485,18 @@ fn advisory_quality_infrastructure_failure(
             FailureReason::RateLimit
             | FailureReason::CreditExhausted
             | FailureReason::QuotaToken
-            | FailureReason::Auth
             | FailureReason::ProviderUnavailable
             | FailureReason::ProviderOverloaded
             | FailureReason::Transient5xx
             | FailureReason::Timeout => signal.route.is_some(),
-            FailureReason::Hard | FailureReason::Unknown => false,
+            FailureReason::Auth | FailureReason::Hard | FailureReason::Unknown => false,
         }
     });
     (class_is_infrastructure || signal_is_infrastructure)
         .then(|| quality_batch_is_unchanged(dir, graph, task))
         .filter(|unchanged| *unchanged)
         .map(|_| {
-            format!(
+            let warning = format!(
                 "optional quality pass {} unavailable; verified baseline and released unchanged batch (class={}, signal={})",
                 task.id,
                 task.failure_class
@@ -506,7 +506,22 @@ fn advisory_quality_infrastructure_failure(
                     .as_ref()
                     .map(|signal| signal.reason.to_string())
                     .unwrap_or_else(|| "none".to_string())
-            )
+            );
+            // Dependency satisfaction is the release boundary, not only the
+            // dispatcher. Emit once per process/generation so CLI readiness,
+            // show/completion, and service paths cannot silently consume the
+            // bypass without flooding a long-running coordinator loop.
+            static WARNED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+            let key = format!("{}:{}", task.id, task.lifecycle.generation);
+            if WARNED
+                .get_or_init(|| Mutex::new(HashSet::new()))
+                .lock()
+                .expect("quality warning mutex poisoned")
+                .insert(key)
+            {
+                eprintln!("WARNING: {warning}");
+            }
+            warning
         })
 }
 /// Only the owning `.flip-X` or direct `.evaluate-X` satellite may cross X's
@@ -1074,6 +1089,19 @@ mod tests {
                 &changed_graph,
                 Some(temp.path())
             ),
+            DependencyDisposition::Blocked { .. }
+        ));
+
+        let mut auth_graph = graph.clone();
+        let auth = auth_graph.get_task_mut(&quality.id).unwrap();
+        auth.failure_class = None;
+        auth.failure_signal = Some(crate::graph::FailureSignal {
+            reason: crate::graph::FailureReason::Auth,
+            route: Some("openrouter:test/model".into()),
+            ..crate::graph::FailureSignal::default()
+        });
+        assert!(matches!(
+            dependency_disposition(&quality.id, &downstream.id, &auth_graph, Some(temp.path())),
             DependencyDisposition::Blocked { .. }
         ));
 

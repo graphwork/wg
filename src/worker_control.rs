@@ -1,8 +1,9 @@
 //! Attempt-scoped worker control-plane capabilities.
 //!
-//! A task worker never receives a graph directory.  It receives an opaque
-//! bearer token and the daemon endpoint; the daemon resolves that token to the
-//! exact lifecycle tuple below before performing a typed operation.  The
+//! Strict task workers receive only an opaque capability channel. Trusted local
+//! workers additionally receive the canonical graph directory so ordinary WG
+//! coordination commands run directly; graph commits revalidate the same opaque
+//! capability against the exact lifecycle tuple under the graph lock. The
 //! registry intentionally stores only a SHA-256 digest of the bearer token.
 
 use anyhow::{Context, Result, bail};
@@ -132,6 +133,62 @@ pub fn control_restrictions(mode: WorkerControlMode) -> &'static str {
     }
 }
 
+/// Positive boundary for ordinary trusted-worker CLI coordination. Commands in
+/// this set run through the normal CLI implementation; the list is not an
+/// operation broker. Terminal completion stays on typed capability operations,
+/// while service/config/admin/evidence internals are absent and fail closed.
+pub fn trusted_coordination_command(command: &str) -> bool {
+    matches!(
+        command,
+        "show"
+            | "status"
+            | "list"
+            | "ready"
+            | "discover"
+            | "blocked"
+            | "why-blocked"
+            | "context"
+            | "check"
+            | "structure"
+            | "critical-path"
+            | "bottlenecks"
+            | "impact"
+            | "plan"
+            | "forecast"
+            | "workload"
+            | "resources"
+            | "coordinate"
+            | "metrics"
+            | "analyze"
+            | "cost"
+            | "spend"
+            | "stats"
+            | "velocity"
+            | "aging"
+            | "cycles"
+            | "matrix"
+            | "trajectory"
+            | "next"
+            | "which"
+            | "add"
+            | "edit"
+            | "insert"
+            | "add-dep"
+            | "rm-dep"
+            | "assign"
+            | "reprioritize"
+            | "publish"
+            | "pause"
+            | "resume"
+            | "retry"
+            | "requeue"
+            | "reschedule"
+            | "abandon"
+            | "log"
+            | "msg"
+    )
+}
+
 fn legacy_binding_control_mode() -> WorkerControlMode {
     // A capability minted before v3 must never silently widen.
     WorkerControlMode::Scoped
@@ -159,7 +216,7 @@ pub fn filesystem_isolation_status() -> FilesystemIsolationStatus {
     FilesystemIsolationStatus {
         mode: FilesystemIsolationMode::Degraded,
         enforced: false,
-        reason: "no verified mount/container sandbox adapter installed; capability broker is enforced but same-uid path guessing remains possible".to_string(),
+        reason: "no verified mount/container sandbox adapter installed; strict modes use the capability broker and trusted commits use exact-fence guards, but same-uid path guessing remains possible".to_string(),
     }
 }
 
@@ -213,7 +270,6 @@ pub enum WorkerOperationKind {
     Telemetry,
     Heartbeat,
     Capabilities,
-    GraphCli,
 }
 
 impl WorkerOperationKind {
@@ -241,7 +297,6 @@ impl WorkerOperationKind {
             Self::Telemetry,
             Self::Heartbeat,
             Self::Capabilities,
-            Self::GraphCli,
         ]
     }
 
@@ -352,14 +407,6 @@ pub enum WorkerOperation {
     },
     Heartbeat,
     Capabilities,
-    /// Execute an ordinary public WG CLI command through the daemon after the
-    /// exact attempt fence and trusted mode have been validated. Completion
-    /// commands never use this path.
-    GraphCli {
-        argv: Vec<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        stdin: Option<String>,
-    },
 }
 
 impl WorkerOperation {
@@ -390,7 +437,6 @@ impl WorkerOperation {
             Self::RecordTelemetry { .. } => WorkerOperationKind::Telemetry,
             Self::Heartbeat => WorkerOperationKind::Heartbeat,
             Self::Capabilities => WorkerOperationKind::Capabilities,
-            Self::GraphCli { .. } => WorkerOperationKind::GraphCli,
         }
     }
 }
@@ -793,6 +839,102 @@ pub fn lookup_capability(dir: &Path, token: &str) -> Result<AttemptCapabilityBin
         }
     }
     Ok(binding)
+}
+
+/// Revalidate a trusted direct-CLI graph commit while the caller holds the
+/// graph lock. This closes the authorization-to-write race without routing the
+/// ordinary command implementation through a daemon execution broker.
+pub fn validate_trusted_graph_write(
+    dir: &Path,
+    token: &str,
+    graph: &crate::graph::WorkGraph,
+) -> Result<AttemptCapabilityBinding> {
+    let digest = token_digest(token);
+    let registry = load_registry(dir)?;
+    let binding = registry
+        .capabilities
+        .get(&digest)
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("worker_control.capability_unknown"))?;
+    if binding.protocol != WORKER_CONTROL_PROTOCOL {
+        bail!("worker_control.capability_protocol_mismatch");
+    }
+    if binding.revoked_at.is_some() {
+        bail!("worker_control.capability_revoked");
+    }
+    if binding.control_mode != WorkerControlMode::Trusted {
+        bail!("worker_control.trusted_graph_write_refused");
+    }
+    let graph_id = load_or_create_graph_identity(dir)?;
+    if binding.graph_id != graph_id || binding.save_source.graph_id != graph_id {
+        bail!("worker_control.graph_identity_mismatch");
+    }
+    if binding.save_source.task_id != binding.task_id
+        || binding.save_source.generation != binding.generation
+        || binding.save_source.attempt_id != binding.attempt_id
+        || binding.save_source.attempt_fence != binding.fence
+        || binding.save_source.worktree_lease_epoch != binding.lease_epoch
+    {
+        bail!("worker_control.capability_source_mismatch");
+    }
+    let task = graph
+        .get_task(&binding.task_id)
+        .ok_or_else(|| anyhow::anyhow!("worker_control.task_missing"))?;
+    let attempt = task
+        .lifecycle
+        .current_attempt
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("worker_control.owner_released"))?;
+    if task.status != crate::graph::Status::InProgress
+        || task.lifecycle.generation != binding.generation
+        || task.lifecycle.fence != binding.fence
+        || binding.lease_epoch != binding.fence
+        || attempt.id != binding.attempt_id
+        || attempt.fence != binding.fence
+        || task.assigned.as_deref() != Some(binding.agent_id.as_str())
+    {
+        bail!(
+            "worker_control.stale_capability: expected task={} generation={} attempt={} fence={} lease={} owner={}",
+            binding.task_id,
+            binding.generation,
+            binding.attempt_id,
+            binding.fence,
+            binding.lease_epoch,
+            binding.agent_id
+        );
+    }
+    Ok(binding)
+}
+
+pub fn append_trusted_mutation_audit(
+    dir: &Path,
+    binding: &AttemptCapabilityBinding,
+    command: &str,
+    task_ids: &[String],
+) -> Result<()> {
+    let path = dir.join("service/trusted-mutation-audit.jsonl");
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let row = serde_json::json!({
+        "timestamp": Utc::now().to_rfc3339(),
+        "event": "trusted_cli_graph_commit",
+        "command": command,
+        "task_ids": task_ids,
+        "graph_id": binding.graph_id,
+        "source_task_id": binding.task_id,
+        "generation": binding.generation,
+        "actor_id": binding.agent_id,
+        "attempt_id": binding.attempt_id,
+        "fence": binding.fence,
+        "lease_epoch": binding.lease_epoch,
+    });
+    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+    serde_json::to_writer(&mut file, &row)?;
+    file.write_all(b"\n")?;
+    file.flush()?;
+    file.sync_all()?;
+    Ok(())
 }
 
 fn validate_request_id(request_id: &str) -> Result<()> {
@@ -1409,6 +1551,79 @@ mod tests {
             effective_control_mode(WorkerControlMode::Trusted, &remote),
             WorkerControlMode::Scoped
         );
+    }
+
+    #[test]
+    fn trusted_cli_boundary_is_positive_and_excludes_privileged_families() {
+        for allowed in [
+            "show",
+            "add",
+            "edit",
+            "assign",
+            "reprioritize",
+            "publish",
+            "msg",
+        ] {
+            assert!(trusted_coordination_command(allowed), "{allowed}");
+        }
+        for refused in [
+            "trace",
+            "func",
+            "replay",
+            "service",
+            "config",
+            "completion-object",
+            "candidate",
+        ] {
+            assert!(!trusted_coordination_command(refused), "{refused}");
+        }
+    }
+
+    #[test]
+    fn trusted_direct_graph_write_revalidates_the_exact_live_fence() {
+        let project = tempfile::tempdir().unwrap();
+        let dir = project.path().join(".wg");
+        fs::create_dir_all(&dir).unwrap();
+        let row = serde_json::json!({
+            "kind": "task",
+            "id": "task-a",
+            "title": "Task A",
+            "status": "in-progress",
+            "assigned": "agent-1",
+            "lifecycle": {
+                "generation": 1,
+                "fence": 2,
+                "attempt_sequence": 1,
+                "current_attempt": {
+                    "id": "attempt-1-1",
+                    "generation": 1,
+                    "fence": 2,
+                    "actor_id": "agent-1"
+                }
+            }
+        });
+        fs::write(dir.join("graph.jsonl"), format!("{row}\n")).unwrap();
+        let (token, _) = mint_attempt_capability_for_worktree_mode(
+            &dir,
+            "task-a",
+            1,
+            "attempt-1-1",
+            2,
+            2,
+            "agent-1",
+            Some(project.path()),
+            WorkerControlMode::Trusted,
+        )
+        .unwrap();
+        let mut graph = crate::parser::load_graph(dir.join("graph.jsonl")).unwrap();
+        validate_trusted_graph_write(&dir, &token, &graph).unwrap();
+        let task = graph.get_task_mut("task-a").unwrap();
+        task.lifecycle.fence = 3;
+        task.status = crate::graph::Status::Failed;
+        let error = validate_trusted_graph_write(&dir, &token, &graph)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("stale_capability"), "{error}");
     }
 
     #[test]

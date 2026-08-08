@@ -679,14 +679,6 @@ fn validate_worker_capability(
     {
         anyhow::bail!("worker_control.operation_not_allowed");
     }
-    if matches!(request.operation, WorkerOperation::GraphCli { .. })
-        && binding.control_mode != worksgood::worker_control::WorkerControlMode::Trusted
-    {
-        anyhow::bail!(
-            "worker_control.operation_refused: graph CLI delegation requires trusted mode; effective mode={}",
-            binding.control_mode
-        );
-    }
     if binding.control_mode == worksgood::worker_control::WorkerControlMode::ReadOnly
         && matches!(
             request.operation,
@@ -747,142 +739,6 @@ fn validate_worker_capability(
         );
     }
     Ok(binding)
-}
-
-fn trusted_graph_coordination_command(command: &str) -> bool {
-    matches!(
-        command,
-        // Read-only graph inspection and planning.
-        "show"
-            | "status"
-            | "list"
-            | "ready"
-            | "blocked"
-            | "why-blocked"
-            | "context"
-            | "check"
-            | "structure"
-            | "critical-path"
-            | "bottlenecks"
-            | "impact"
-            | "plan"
-            | "forecast"
-            | "workload"
-            | "coordinate"
-            | "metrics"
-            | "analyze"
-            | "cost"
-            | "spend"
-            | "stats"
-            | "aging"
-            | "cycles"
-            | "matrix"
-            | "trajectory"
-            | "next"
-            | "which"
-            // Positive coordination surface. Terminal completion and immutable
-            // evidence commands never enter GraphCli; they stay typed.
-            | "add"
-            | "edit"
-            | "insert"
-            | "add-dep"
-            | "rm-dep"
-            | "assign"
-            | "reprioritize"
-            | "publish"
-            | "pause"
-            | "resume"
-            | "retry"
-            | "requeue"
-            | "reschedule"
-            | "abandon"
-            | "log"
-            | "msg"
-    )
-}
-
-fn execute_trusted_graph_cli(
-    dir: &Path,
-    binding: &worksgood::worker_control::AttemptCapabilityBinding,
-    argv: &[String],
-    stdin: Option<&str>,
-) -> Result<serde_json::Value> {
-    if argv.is_empty()
-        || argv.len() > 128
-        || argv
-            .iter()
-            .any(|arg| arg.len() > 1024 * 1024 || arg.contains('\0'))
-    {
-        anyhow::bail!("worker_control.graph_cli_argv_invalid");
-    }
-    if argv.iter().any(|arg| {
-        arg == "--dir" || arg.starts_with("--dir=") || arg == "-d" || arg.starts_with("-d=")
-    }) {
-        anyhow::bail!("worker_control.graph_cli_cross_graph_refused");
-    }
-    let command_name = argv
-        .iter()
-        .find(|arg| !arg.starts_with('-'))
-        .map(String::as_str)
-        .unwrap_or("");
-    if !trusted_graph_coordination_command(command_name) {
-        anyhow::bail!(
-            "worker_control.operation_refused: {command_name} is not in the trusted local graph-coordination allowlist"
-        );
-    }
-
-    let executable = std::env::current_exe().context("resolve wg executable for trusted worker")?;
-    let mut command = std::process::Command::new(executable);
-    command
-        .args(argv)
-        .current_dir(&binding.worktree_path)
-        .env("WG_DIR", dir)
-        .env("WG_TASK_ID", &binding.task_id)
-        .env("WG_AGENT_ID", &binding.agent_id)
-        .env("WG_WORKER_CONTROL_MODE", binding.control_mode.to_string())
-        .env("WG_WORKER_ATTEMPT_ID", &binding.attempt_id)
-        .env("WG_WORKER_ATTEMPT_FENCE", binding.fence.to_string())
-        .env_remove("WG_WORKER_CAPABILITY")
-        .env_remove("WG_WORKER_CONTROL_PROTOCOL")
-        .env_remove("WG_WORKER_IPC")
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
-    if stdin.is_some() {
-        command.stdin(std::process::Stdio::piped());
-    } else {
-        command.stdin(std::process::Stdio::null());
-    }
-    let mut child = command
-        .spawn()
-        .context("launch trusted worker graph command")?;
-    if let Some(input) = stdin
-        && let Some(mut pipe) = child.stdin.take()
-    {
-        use std::io::Write as _;
-        pipe.write_all(input.as_bytes())?;
-    }
-    let output = child.wait_with_output()?;
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    if !output.status.success() {
-        anyhow::bail!(
-            "trusted graph command exited {}: {}{}",
-            output.status.code().unwrap_or(-1),
-            stderr,
-            stdout
-        );
-    }
-    Ok(serde_json::json!({
-        "exit_code": output.status.code().unwrap_or(0),
-        "stdout": stdout,
-        "stderr": stderr,
-        "actor": {
-            "task_id": binding.task_id,
-            "agent_id": binding.agent_id,
-            "attempt_id": binding.attempt_id,
-            "fence": binding.fence,
-        }
-    }))
 }
 
 fn execute_worker_operation(
@@ -1152,9 +1008,6 @@ fn execute_worker_operation(
                 "attempt_id": binding.attempt_id,
                 "fence": binding.fence,
             })),
-            WorkerOperation::GraphCli { argv, stdin } => {
-                execute_trusted_graph_cli(dir, binding, &argv, stdin.as_deref())
-            }
             WorkerOperation::Heartbeat => {
                 let response = handle_heartbeat(dir, &binding.agent_id);
                 if !response.ok {
@@ -3370,32 +3223,6 @@ mod tests {
             }
         });
         fs::write(dir.join("graph.jsonl"), format!("{row}\n")).unwrap();
-    }
-
-    #[test]
-    fn trusted_graph_delegation_is_a_positive_coordination_allowlist() {
-        for allowed in [
-            "show",
-            "add",
-            "edit",
-            "assign",
-            "reprioritize",
-            "publish",
-            "msg",
-        ] {
-            assert!(trusted_graph_coordination_command(allowed), "{allowed}");
-        }
-        for refused in [
-            "trace",
-            "func",
-            "replay",
-            "service",
-            "config",
-            "completion-object",
-            "candidate",
-        ] {
-            assert!(!trusted_graph_coordination_command(refused), "{refused}");
-        }
     }
 
     #[test]

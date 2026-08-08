@@ -3001,6 +3001,13 @@ description = "Candidate-binary credential-free real-daemon worker regression: a
 timeout_seconds = 180
 
 [[scenario]]
+name = "trust_first_historical_before_after"
+script = "../historical/trust_first_worker_control_regression.sh"
+owners = ["restore-trust-first-local-worker-control"]
+description = "Executable before/after regression: builds pinned pre-fix commit da286458 and runs its own real-daemon/Fake-Pi capability fixture to reproduce the actual own-task/cross-task refusal, then runs the current candidate's default-trusted .quality-pass flow to prove normal cross-task coordination and release are restored."
+timeout_seconds = 900
+
+[[scenario]]
 name = "trust_first_local_worker_coordination"
 script = "scenarios/trust_first_local_worker_coordination.sh"
 owners = ["restore-trust-first-local-worker-control"]

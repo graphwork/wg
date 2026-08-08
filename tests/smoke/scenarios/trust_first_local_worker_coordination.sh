@@ -71,6 +71,11 @@ wg completion-object validation.log --media-type text/plain --evidence-kind vali
 wg completion-manifest "$WG_TASK_ID" --summary summary.txt --git --evidence-ref evidence-ref.json > manifest.json
 wg submit "$WG_TASK_ID" --manifest manifest.json --summary summary.txt >/dev/null
 wg done "$WG_TASK_ID" >/dev/null
+if wg edit downstream --description 'stale worker corrupted downstream' > stale-write.out 2>&1; then
+  echo 'terminal worker unexpectedly retained graph-write authority' >&2
+  exit 94
+fi
+grep -q 'worker_control.stale_capability' stale-write.out
 SH
 chmod +x "$scratch/bin/worker.sh"
 printf 'base\n' > "$project/README.md"
@@ -93,11 +98,13 @@ wgrun service start --max-agents 1 --no-coordinator-agent --no-supervise >/dev/n
 
 for _ in $(seq 1 320); do
   status=$(wgrun show .quality-pass-local-coordinator --json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status",""))' 2>/dev/null || true)
-  [[ $status == done ]] && break
+  [[ $status == done && -s "$project/stale-write.out" ]] && break
   [[ $status == failed || $status == abandoned ]] && loud_fail "trusted worker terminal status: $status"
   sleep 0.25
 done
-[[ ${status:-} == done ]] || loud_fail "trusted quality-pass worker did not complete through immutable review"
+[[ ${status:-} == done && -s "$project/stale-write.out" ]] \
+  || loud_fail "trusted quality-pass worker did not complete and prove its terminal fence"
+wgrun service stop --force --kill-agents >/dev/null
 
 downstream=$(wgrun show downstream --json)
 printf '%s' "$downstream" | grep -Eq '"satisfied"[[:space:]]*:[[:space:]]*true' \
@@ -113,7 +120,7 @@ grep -q '"id":"trusted-local-subtask"' "$project/.wg/graph.jsonl" || loud_fail "
 grep -q 'trusted worker coordinated downstream metadata' "$project/.wg/messages/downstream.jsonl" || loud_fail "cross-task message absent"
 
 registry="$project/.wg/service/worker-capabilities.json"
-audit="$project/.wg/service/worker-capability-audit.jsonl"
+audit="$project/.wg/service/trusted-mutation-audit.jsonl"
 read -r agent attempt fence < <(python3 - "$registry" <<'PY'
 import json,sys
 r=json.load(open(sys.argv[1]))
@@ -127,15 +134,43 @@ prompt="$project/.wg/agents/$agent/prompt.txt"
 grep -q 'Effective mode.*trusted' "$prompt" || loud_fail "startup prompt omitted effective trusted mode"
 grep -q 'wg add' "$prompt" || loud_fail "cross-task creation instructions disappeared instead of receiving compatible authority"
 grep -q 'wg edit' "$prompt" || loud_fail "cross-task edit instructions disappeared instead of receiving compatible authority"
-python3 - "$audit" "$agent" "$attempt" "$fence" <<'PY'
+python3 - "$audit" "$project/.wg/graph.jsonl" "$agent" "$attempt" "$fence" <<'PY'
 import json,sys
-path,agent,attempt,fence=sys.argv[1:]
+path,graph_path,agent,attempt,fence=sys.argv[1:]
 fence=int(fence)
 events=[json.loads(x) for x in open(path) if x.strip()]
-graph=[e for e in events if e.get('operation')=='graph_cli' and e.get('outcome')=='allowed']
-assert len(graph) >= 6, graph
-assert all(e.get('agent_id')==agent and e.get('attempt_id')==attempt and e.get('fence')==fence for e in graph), graph
-assert all(e.get('control_mode')=='trusted' for e in graph), graph
+commits=[e for e in events if e.get('event')=='trusted_cli_graph_commit']
+commands={e.get('command') for e in commits}
+assert {'add','edit','reprioritize','msg','publish'} <= commands, commits
+assert all(e.get('actor_id')==agent and e.get('attempt_id')==attempt and e.get('fence')==fence for e in commits), commits
+tasks={row['id']:row for row in map(json.loads,open(graph_path)) if 'title' in row}
+def audited(task, command):
+    return any(
+        entry.get('actor')==agent
+        and f'command={command}' in entry.get('message','')
+        and f'attempt={attempt}' in entry.get('message','')
+        and f'fence={fence}' in entry.get('message','')
+        for entry in tasks[task].get('log',[])
+    )
+def lifecycle_audited(task, command):
+    return any(
+        event.get('event_kind')=='trusted-graph-mutation'
+        and event.get('actor_id')==agent
+        and event.get('attempt_id')==attempt
+        and event.get('fence')==fence
+        and f':{command}:' in event.get('idempotency_key','')
+        for event in tasks[task].get('lifecycle',{}).get('audit',[])
+    )
+assert audited('downstream','edit'), tasks['downstream'].get('log')
+assert audited('downstream','reprioritize'), tasks['downstream'].get('log')
+assert audited('downstream','msg'), tasks['downstream'].get('log')
+assert audited('trusted-local-subtask','add'), tasks['trusted-local-subtask'].get('log')
+assert audited('trusted-local-subtask','publish'), tasks['trusted-local-subtask'].get('log')
+for task,command in [
+    ('downstream','edit'),('downstream','reprioritize'),('downstream','msg'),
+    ('trusted-local-subtask','add'),('trusted-local-subtask','publish')
+]:
+    assert lifecycle_audited(task,command), (task,command,tasks[task].get('lifecycle'))
 PY
 
 show_source=$(wgrun show .quality-pass-local-coordinator --json)

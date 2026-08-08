@@ -22,7 +22,9 @@ ordinary trust-first control mode, so intended downstream edits are direct and
 audited rather than brokered through a bespoke allowlist. One narrow scheduler
 rule prevents advisory infrastructure from becoming a permanent gate: a failed
 optional quality pass with an explicitly allowlisted class/provider signal may be
-satisfied with a loud “released unchanged” warning. Before admission WG stores a
+satisfied with a loud “released unchanged” warning emitted at the dependency
+satisfaction boundary (not only by the dispatcher). Authentication failure is
+never in that advisory set. Before admission WG stores a
 create-once digest of the exact transitive downstream batch, and release requires
 the current task IDs and serialized metadata to match that baseline. A worker that
 edited the batch before failing stays blocked. The visible `quality-pass:required`

@@ -14,23 +14,20 @@ set to own-task typed operations (`src/worker_cli.rs`). In particular,
 to prescribe `wg add`, sibling edits, graph decomposition, and quality-pass
 metadata changes.
 
-Reproduction evidence is retained in two executable fixtures:
+Reproduction evidence is retained in executable before/after fixtures:
 
+- `tests/historical/trust_first_worker_control_regression.sh` builds the pinned
+  pre-fix tree at `da286458ac640a6c4a49b269284c39e1d9ff3fdf`, then runs that
+  tree's own real-daemon/Fake-Pi broker smoke to reproduce the actual scoped
+  graph/cross-task refusal. It next runs the current candidate's trust-first
+  quality-pass flow. This is runtime evidence, not a `git show` inspection.
 - `tests/smoke/scenarios/worker_control_capability_broker.sh` explicitly sets
-  `[worker_control] mode = "scoped"` and proves the pre-fix
-  `worker_control.cross_task_refused` behavior remains available by choice.
+  `[worker_control] mode = "scoped"` and proves that strict behavior remains
+  available by current policy choice.
 - `tests/smoke/scenarios/trust_first_local_worker_coordination.sh` omits policy
-  (the historical compatibility case) and performs the old legitimate flow
-  through public commands: downstream show/edit, subtask add/link/assignment,
-  reprioritization, publish, and cross-task messaging.
-
-To inspect the source-level historical fixture:
-
-```bash
-git show 5b0e67b4^:src/commands/spawn/execution.rs \
-  | rg -n 'WG_DIR|WG_TASK_ID|WG_AGENT_ID'
-git show --stat 5b0e67b4
-```
+  and performs the legitimate flow through public commands: downstream
+  show/edit, subtask add/link/assignment, reprioritization, publish, messaging,
+  immutable completion, and downstream release.
 
 ## Policy
 
@@ -58,20 +55,24 @@ mode and restrictions before an instruction is attempted.
 
 Trusted does not mean unfenced or unaudited:
 
-1. The daemon validates graph identity plus the exact source task, generation,
-   attempt ID, fence, lease epoch, and owner before every delegated command.
-2. Each request is intent-journaled and append-only audited with exact
-   `agent_id`, `attempt_id`, `fence`, mode, operation CID, and outcome.
-3. Own-task completion stays on typed `completion-object` → immutable manifest
+1. Trusted coordination runs the normal CLI directly against the canonical
+   graph; it is not re-executed as a daemon `GraphCli` broker operation.
+2. At the graph commit boundary, under the graph lock, WG revalidates graph
+   identity plus the exact source task, generation, attempt ID, fence, lease
+   epoch, owner, and opaque capability. Revoked/released/stale attempts fail
+   before replacement.
+3. Every changed task receives a `trusted-graph-mutation` lifecycle event and
+   task-log attribution naming command, source, generation, actor, attempt,
+   fence, and lease. The lifecycle ledger is fsynced before graph replacement;
+   a second fsynced append-only `trusted-mutation-audit.jsonl` records the exact
+   committed task IDs.
+4. Own-task completion stays on typed `completion-object` → immutable manifest
    → `submit` → exact review receipts → `land` (Land only) → derived `done`.
-   Generic graph delegation is a positive allowlist of ordinary inspection and
-   coordination verbs; omitted families (`trace`, `func`, `replay`, service/admin,
-   federation/review) are refused. It cannot replace immutable completion evidence.
-4. Existing command locks/CAS/transactions remain the mutation mechanism; the
-   trusted lane shells back through the normal public CLI rather than writing
-   graph bytes.
-5. Revoked, released, or stale attempts fail validation before execution. The
-   stale-fence unit regression remains in `src/commands/service/ipc.rs`.
+   The direct CLI boundary positively names ordinary coordination verbs; omitted
+   families (`trace`, `func`, `replay`, service/admin, federation/review) fail
+   closed and cannot replace immutable completion evidence.
+5. Existing command locks/CAS/transactions remain the mutation mechanism; no
+   alternate graph writer or permission ceremony is introduced.
 
 These are consistency and evidence boundaries. Unequal source/target task IDs
 are not themselves a security decision for a trusted local actor.
@@ -86,24 +87,26 @@ may yield an `AdvisoryQualityBypass`. Before admission WG create-once snapshots
 the exact transitive downstream batch for that task generation. Release occurs
 only when current task IDs and serialized metadata match that baseline; a
 quality worker that changed the batch before failing remains an ordinary
-blocker. `wg show` carries the loud reason. The dispatcher records the warning once when it observes the
-release. A required tag preserves ordinary required-success failure semantics.
+blocker. The satisfaction boundary itself emits the loud warning, so readiness,
+show/completion, and dispatcher paths cannot silently consume the bypass; the
+dispatcher additionally persists the warning once. Authentication failures are
+never advisory infrastructure. A required tag preserves ordinary
+required-success failure semantics.
 
 `tests/smoke/scenarios/quality_pass_advisory_provider_failure.sh` uses an
 isolated fake Pi/OpenRouter 402 envelope to prove both paths credential-free.
 
 ## Prompt compatibility audit
 
-Shipped cross-task instructions occur in:
-
-- universal quality-pass guidance (`src/text/agent_guide.md`);
-- decomposition/follow-up/prerequisite guidance in the worker prompt
-  (`src/commands/spawn/context.rs` and `src/service/executor.rs`);
-- the quality-pass template/design (`docs/designs/quality-pass.md`);
-- Pi tools (`worksgood-pi/src/tools.ts`).
+The executable inventory in `tests/prompt_snapshots.rs` scans every shipped
+worker/system prompt surface: the universal guide; spawn context and executor;
+coordinator, assignment, triage, and human-dispatch prompt builders; the review
+prompt; and both Pi tool/backend surfaces. Every discovered cross-task command
+is checked against compatible trusted authority. The quality-pass design/template
+is checked alongside that shipped inventory.
 
 All ordinary local task forms resolve to `trusted`. Evaluator/reviewer/assigner
 prompts do not receive cross-task mutation authority; they remain scoped and
 communicate through their typed evidence/lifecycle lanes. Remote WG-Exec
 providers remain independently UCAN/lease scoped and never enter this local
-trusted delegation path.
+trusted direct-CLI path.

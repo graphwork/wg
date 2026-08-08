@@ -1880,6 +1880,11 @@ pub(crate) fn spawn_agent_inner_authorized(
         );
         cmd.env("WG_GRAPH_ID", &worker_binding.graph_id);
         cmd.env("WG_WORKER_CONTROL_MODE", control_mode.to_string());
+        if control_mode == worksgood::worker_control::WorkerControlMode::Trusted {
+            // Trusted local workers use the normal WG CLI. Graph commits still
+            // revalidate the opaque attempt capability under the graph lock.
+            cmd.env("WG_DIR", dir);
+        }
         cmd.env("WG_WORKER_ATTEMPT_ID", &worker_binding.attempt_id);
         cmd.env("WG_WORKER_ATTEMPT_FENCE", worker_binding.fence.to_string());
         eprintln!(

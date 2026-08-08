@@ -731,9 +731,9 @@ fn main() -> Result<()> {
         Cli::parse_from(rewritten)
     };
 
-    // A worker capability is a hard authority boundary. Handle/refuse the
-    // command before graph discovery, canonicalization, or usage logging so a
-    // guessed `.wg` can never become a filesystem fallback.
+    // A worker capability is a hard authority boundary. Strict modes are
+    // handled/refused before graph discovery. Trusted coordination is admitted
+    // here to the normal CLI and its graph commit revalidates the exact fence.
     if !cli.help
         && !cli.help_all
         && let Some(command) = cli.command.as_ref()
