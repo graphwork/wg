@@ -4,7 +4,7 @@
 
 **Audit snapshot:** `b0892ea7496fd2cc8f641417a3d8e33ca9add369`
 
-**Evidence checked through:** 2026-08-08T12:39:41Z
+**Evidence checked through:** 2026-08-08T12:46:09Z
 
 **Artifact status:** leaf audit; snapshot-current
 
@@ -664,13 +664,19 @@ source and targeted tests rather than this human trace.
   manifest content, low confidence in current scenario outcomes.
 - **Evidence:** active scenarios still pin the historical real-`wg done`
   uncommitted/squash path (`tests/smoke/manifest.toml:943-975`) and a brokered
-  completion/v2 GraphSaved/Cleaned path (`:2970-2979`). The same grow-only
-  manifest now contains `worker_owned_completion_canary`, which explicitly
-  requires v3 immutable manifests, exact FLIP/eval, publication-derived Done,
-  no SaveTransaction authority, and ten concurrent workers (`:2987-2996`), plus
-  `completion_done_single_lifecycle_path` (`:3031-3036`). Reopen-owner,
-  worktree-observer, and recurring-cron scenarios provide substantial
-  human-flow coverage (`:2094-2135,2925-2969`).
+  completion/v2 GraphSaved/Cleaned path (`:2970-2979`). The uncommitted script
+  actually invokes `wg done ... --skip-smoke` and expects an error naming the
+  staged file (`tests/smoke/scenarios/wg_done_refuses_uncommitted_worktree.sh:80-112`),
+  while current main routing rejects the flag before worktree inspection. The
+  same grow-only manifest now contains `worker_owned_completion_canary`, whose
+  script drives completion-object/manifest/submit/land/done through ten real
+  brokered workers and asserts no legacy SaveTransaction authority
+  (`tests/smoke/scenarios/worker_owned_completion_canary.sh:1-152`), plus the
+  focused credential-free Report lifecycle
+  (`tests/smoke/scenarios/completion_done_single_lifecycle_path.sh:1-84`).
+  Reopen-owner and recurring-cron scripts provide substantial real-daemon
+  recovery coverage (`tests/smoke/scenarios/reopen_waits_for_pi_owner_release.sh:1-221`;
+  `cron_recurring_no_duplicate_fire.sh:1-198`).
 - **Inference:** scenario presence across generations is useful migration
   history but cannot be treated as one coherent current release contract until
   each is labeled current/compatibility/retired and run against the candidate.
@@ -965,7 +971,7 @@ HEAD is the audit's provenance basis.
 | Fail/retry/reopen/recover | `src/commands/fail.rs:47-260`; `retry.rs:141-443,493-700`; `reopen.rs:1-328`; `recover.rs:1-167,256-421` |
 | Wait/cycle/cron | `src/commands/wait.rs:15-148,150-390`; `src/graph.rs:3044-3640`; `src/cron.rs:1-260`; coordinator maintenance at `coordinator.rs:2498-2610` |
 | User-facing lifecycle docs | `docs/README.md:60-80,190-240`; `docs/manual/02-task-graph.md:65-125,230-280`; `docs/manual/04-coordination.md:145-225` |
-| Smoke lifecycle contracts | `tests/smoke/manifest.toml:943-975,2094-2135,2925-3036` [inspected, not run] |
+| Smoke lifecycle contracts | `tests/smoke/manifest.toml:943-975,2094-2135,2925-3036`; `tests/smoke/scenarios/wg_done_refuses_uncommitted_worktree.sh:1-130`; `worker_owned_completion_canary.sh:1-152`; `completion_done_single_lifecycle_path.sh:1-84`; `reopen_waits_for_pi_owner_release.sh:1-221`; `cron_recurring_no_duplicate_fire.sh:1-198` [inspected, not run] |
 
 ### 7.3 Executed CLI traces
 
@@ -1140,7 +1146,8 @@ test before changing code or assertions.
 - `tests/integration_error_recovery.rs`
 - `tests/test_recovery_verification.rs`
 - completion protocol suites named in section 7.4
-- `tests/smoke/manifest.toml:943-975,2094-2135,2925-3036` [scenario contracts inspected, not run]
+- `tests/smoke/manifest.toml:943-975,2094-2135,2925-3036` and the five
+  concrete scenario scripts indexed in section 7.2 [inspected, not run]
 - `docs/README.md`, `docs/manual/02-task-graph.md`, and
   `docs/manual/04-coordination.md` at the spans indexed in section 7.2
 
