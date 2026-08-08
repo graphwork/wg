@@ -905,7 +905,11 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         rescued: task.rescued,
         meta_eval_attempts: task.meta_eval_attempts,
         evaluations,
-        evaluation_records: task.evaluation_records.clone(),
+        evaluation_records: if task.completion_review_activity.is_empty() {
+            task.evaluation_records.clone()
+        } else {
+            Vec::new()
+        },
         flip_gate: worksgood::evaluation::flip_gate_projection(task),
         evaluation_health: worksgood::eval_lifecycle::evaluation_health(&graph, id),
         evaluation_gate,

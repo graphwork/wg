@@ -109,6 +109,8 @@ wgrun service start --no-coordinator-agent --no-supervise >/dev/null; wgrun serv
 show=$(wgrun --json show pi-done)
 python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["token_usage"]["input_tokens"]==205; assert d["actual_executor"]=="pi"; assert len(d["completion_review_activity"])==4' <<<"$show"
 list=$(wgrun list --all)
+list_json=$(wgrun --json list --all)
+python3 -c 'import json,sys; x=json.load(sys.stdin); r=[v for v in x if v.get("kind")=="completion-review-activity"]; assert len(r)==4,r; assert len({v["receipt"] for v in r})==4,r; assert not [v for v in x if v.get("kind")=="evaluation-lane-activity"],x' <<<"$list_json"
 grep -q 'internal completion-review lane (virtual audit rows; not graph tasks)' <<<"$list" || loud_fail "list does not explain review lane semantics"
 grep -q 'Flip.*Unavailable.*route=pi:test:fake-review.*executor=pi$' <<<"$list" || loud_fail "FLIP timeout virtual row missing"
 grep -q 'Flip.*Reject.*route=pi:test:fake-review.*usage=2in/1out' <<<"$list" || loud_fail "FLIP rejection virtual row/usage missing"
