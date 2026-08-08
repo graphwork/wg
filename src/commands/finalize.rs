@@ -1971,6 +1971,8 @@ fn commit_brokered_cleaned_success(
     initial: SaveTransactionState,
 ) -> Result<String> {
     let accounting = completion_accounting(dir, task);
+    let mut task_snapshot = task.clone();
+    apply_completion_accounting(&mut task_snapshot, &accounting);
     let mut state = worksgood::worker_control::load_save_transaction(dir, &initial.transaction_id)?
         .context("completion.bridge_transaction_missing")?;
     let bundle = if state.phase == SavePhase::GraphSaved {
@@ -1978,7 +1980,7 @@ fn commit_brokered_cleaned_success(
     } else {
         prepare_graph_save_for_source(
             dir,
-            task,
+            &task_snapshot,
             "brokered_done_exact_receipts",
             initial.source.clone(),
             Some(legacy),
