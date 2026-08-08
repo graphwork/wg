@@ -48,6 +48,7 @@ function makeFakePi(): FakePi {
 
 const EXPECTED_TOOLS = [
   "wg_ready",
+  "wg_capabilities",
   "wg_show",
   "wg_add",
   "wg_publish",

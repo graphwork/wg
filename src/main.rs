@@ -1737,6 +1737,32 @@ fn main() -> Result<()> {
             restore_default_sigpipe_for_show()?;
             commands::show::run(&workgraph_dir, &id, cli.json)
         }
+        Commands::Capabilities => {
+            let mode = std::env::var("WG_WORKER_CONTROL_MODE")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or_else(|| Config::load_or_default(&workgraph_dir).worker_control.mode);
+            if cli.json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "mode": mode,
+                        "restrictions": worksgood::worker_control::control_restrictions(mode),
+                        "task_id": std::env::var("WG_TASK_ID").ok(),
+                        "agent_id": std::env::var("WG_AGENT_ID").ok(),
+                        "attempt_id": std::env::var("WG_WORKER_ATTEMPT_ID").ok(),
+                        "attempt_fence": std::env::var("WG_WORKER_ATTEMPT_FENCE").ok(),
+                    }))?
+                );
+            } else {
+                println!("Worker control mode: {mode}");
+                println!(
+                    "Restrictions: {}",
+                    worksgood::worker_control::control_restrictions(mode)
+                );
+            }
+            Ok(())
+        }
         Commands::Trace { command } => match command {
             TraceCommands::Show {
                 id,

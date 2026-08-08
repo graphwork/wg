@@ -952,6 +952,8 @@ If ANY dependency has status=Failed:
 /// Additional context for scope-based prompt assembly beyond TemplateVars.
 #[derive(Debug, Default, Clone)]
 pub struct ScopeContext {
+    /// Effective graph-authority policy, visible before the first LLM call.
+    pub worker_control_info: String,
     /// Downstream task IDs + titles (R1, task+ scope)
     pub downstream_info: String,
     /// Task tags and skills (R4, task+ scope)
@@ -1025,6 +1027,12 @@ pub fn build_prompt(vars: &TemplateVars, scope: ContextScope, ctx: &ScopeContext
         "## Your Task\n- **ID:** {}\n- **Title:** {}\n- **Description:** {}",
         vars.task_id, vars.task_title, vars.task_description
     ));
+
+    // All scopes: authority is part of startup context, not a surprise after
+    // an LLM has already attempted an impossible graph operation.
+    if !ctx.worker_control_info.is_empty() {
+        parts.push(ctx.worker_control_info.clone());
+    }
 
     // All scopes: pattern keywords glossary (conditional on description content)
     if description_has_pattern_keywords(&vars.task_description) {

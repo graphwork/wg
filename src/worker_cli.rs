@@ -1,15 +1,32 @@
 //! Worker-side CLI adapter for the attempt-scoped daemon capability channel.
 //!
 //! Presence of `WG_WORKER_CAPABILITY` is a hard mode switch: commands are
-//! either translated to a typed worker operation or refused. There is no
-//! filesystem graph fallback, even when cwd happens to contain a guessed `.wg`.
+//! translated to attempt-fenced daemon operations. Scoped/read-only workers use
+//! narrow typed operations. Trusted local workers may delegate ordinary public
+//! graph CLI commands after the daemon authenticates the exact attempt; own-task
+//! completion remains typed and receipt-backed. There is no filesystem graph
+//! fallback, even when cwd happens to contain a guessed `.wg`.
 
 use crate::cli::{Commands, MsgCommands, PiWatchdogCommands};
 use crate::commands;
 use anyhow::{Context, Result};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use worksgood::worker_control::{WORKER_CONTROL_PROTOCOL, WorkerOperation, WorkerRequestEnvelope};
+use worksgood::worker_control::{
+    WORKER_CONTROL_PROTOCOL, WorkerControlMode, WorkerOperation, WorkerRequestEnvelope,
+};
+
+fn control_mode() -> WorkerControlMode {
+    std::env::var("WG_WORKER_CONTROL_MODE")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        // Capabilities minted before the visible-mode rollout stay narrow.
+        .unwrap_or(WorkerControlMode::Scoped)
+}
+
+fn task_is_own(task: &str) -> bool {
+    std::env::var("WG_TASK_ID").as_deref() == Ok(task)
+}
 
 fn task_matches(task: &str) -> Result<()> {
     let own = std::env::var("WG_TASK_ID").context("worker capability missing WG_TASK_ID")?;
@@ -91,6 +108,36 @@ fn render_response(
                 print!("{content}");
             }
         }
+        WorkerOperation::GraphCli { .. } => {
+            if let Some(stderr) = data.get("stderr").and_then(|value| value.as_str())
+                && !stderr.is_empty()
+            {
+                eprint!("{stderr}");
+            }
+            if let Some(stdout) = data.get("stdout").and_then(|value| value.as_str()) {
+                print!("{stdout}");
+            }
+        }
+        WorkerOperation::Capabilities => {
+            if data.get("mode").is_some() {
+                if std::env::args().any(|arg| arg == "--json") {
+                    println!("{}", serde_json::to_string_pretty(&data)?);
+                } else {
+                    println!(
+                        "Worker control mode: {}",
+                        data.get("mode")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown")
+                    );
+                    println!(
+                        "Restrictions: {}",
+                        data.get("restrictions")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown")
+                    );
+                }
+            }
+        }
         _ => {
             if !data.is_null() {
                 println!("{}", serde_json::to_string(&data)?);
@@ -98,6 +145,23 @@ fn render_response(
         }
     }
     Ok(())
+}
+
+fn graph_cli_operation(command: &Commands) -> Result<WorkerOperation> {
+    let stdin = match command {
+        Commands::Msg {
+            command: MsgCommands::Send { stdin: true, .. },
+        } => {
+            let mut body = String::new();
+            std::io::stdin().read_to_string(&mut body)?;
+            Some(body)
+        }
+        _ => None,
+    };
+    Ok(WorkerOperation::GraphCli {
+        argv: std::env::args().skip(1).collect(),
+        stdin,
+    })
 }
 
 fn send(operation: WorkerOperation) -> Result<()> {
@@ -126,10 +190,20 @@ pub fn maybe_run(command: &Commands, json: bool) -> Result<Option<()>> {
         anyhow::bail!("worker_control.raw_graph_environment_refused: WG_DIR must not be present");
     }
 
+    let mode = control_mode();
     let operation = match command {
+        Commands::Capabilities => Some(WorkerOperation::Capabilities),
+        Commands::Show { id } if mode == WorkerControlMode::Trusted && !task_is_own(id) => {
+            Some(graph_cli_operation(command)?)
+        }
         Commands::Show { id } => {
             task_matches(id)?;
             Some(WorkerOperation::Show { json })
+        }
+        Commands::Context { task, dependents }
+            if mode == WorkerControlMode::Trusted && (!task_is_own(task) || *dependents) =>
+        {
+            Some(graph_cli_operation(command)?)
         }
         Commands::Context { task, dependents } => {
             task_matches(task)?;
@@ -137,6 +211,22 @@ pub fn maybe_run(command: &Commands, json: bool) -> Result<Option<()>> {
                 anyhow::bail!("worker_control.graph_enumeration_refused");
             }
             Some(WorkerOperation::Context { json })
+        }
+        Commands::Log {
+            id,
+            message,
+            actor,
+            list,
+            agent,
+            operations,
+        } if mode == WorkerControlMode::Trusted
+            && (id.as_deref().is_some_and(|id| !task_is_own(id))
+                || *operations
+                || *agent
+                || *list
+                || actor.is_some()) =>
+        {
+            Some(graph_cli_operation(command)?)
         }
         Commands::Log {
             id,
@@ -162,6 +252,25 @@ pub fn maybe_run(command: &Commands, json: bool) -> Result<Option<()>> {
                 (Some(path), false) => Some(WorkerOperation::ArtifactAdd { path: path.clone() }),
                 (Some(path), true) => Some(WorkerOperation::ArtifactRemove { path: path.clone() }),
             }
+        }
+        Commands::Msg {
+            command: msg_command,
+        } if mode == WorkerControlMode::Trusted
+            && match msg_command {
+                MsgCommands::Read { task_id, .. } | MsgCommands::List { task_id } => {
+                    !task_is_own(task_id)
+                }
+                MsgCommands::Poll {
+                    task_id,
+                    as_identity,
+                    ..
+                } => as_identity.is_some() || task_id.as_deref().is_none_or(|id| !task_is_own(id)),
+                MsgCommands::Send { task_id, to, .. } => {
+                    to.is_some() || task_id.as_deref().is_none_or(|id| !task_is_own(id))
+                }
+            } =>
+        {
+            Some(graph_cli_operation(command)?)
         }
         Commands::Msg { command } => match command {
             MsgCommands::Read { task_id, .. } => {
@@ -470,8 +579,9 @@ pub fn maybe_run(command: &Commands, json: bool) -> Result<Option<()>> {
             )?;
             return Ok(Some(()));
         }
+        _ if mode == WorkerControlMode::Trusted => Some(graph_cli_operation(command)?),
         _ => anyhow::bail!(
-            "worker_control.operation_refused: this command requires operator/graph authority"
+            "worker_control.operation_refused: this command requires operator/graph authority; effective mode={mode}; run `wg capabilities`"
         ),
     };
 

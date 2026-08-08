@@ -2993,9 +2993,33 @@ timeout_seconds = 180
 [[scenario]]
 name = "worker_control_capability_broker"
 script = "scenarios/worker_control_capability_broker.sh"
-owners = ["isolate-worker-control-plane-filesystem"]
-description = "Candidate-binary credential-free real-daemon worker regression: a live Fake-Pi worker launches without WG_DIR or a candidate .wg entry, uses an opaque attempt capability for scoped show/log over typed IPC, is refused graph enumeration, persists no bearer token, commits ordinary candidate source, emits allow/reject audit evidence, and reports the filesystem guarantee as degraded rather than falsely equating environment omission/worktree separation with mount isolation."
+owners = [
+    "isolate-worker-control-plane-filesystem",
+    "restore-trust-first-local-worker-control",
+]
+description = "Candidate-binary credential-free real-daemon worker regression: an explicitly scoped Fake-Pi worker launches without WG_DIR or a candidate .wg entry, uses an opaque attempt capability for own-task show/log over typed IPC, is refused graph enumeration and cross-task reads, persists no bearer token, commits ordinary candidate source, emits allow/reject audit evidence, and reports the filesystem guarantee as degraded rather than falsely equating environment omission/worktree separation with mount isolation."
 timeout_seconds = 180
+
+[[scenario]]
+name = "trust_first_local_worker_coordination"
+script = "scenarios/trust_first_local_worker_coordination.sh"
+owners = ["restore-trust-first-local-worker-control"]
+description = "Candidate-binary credential-free real-daemon/Fake-Pi end-to-end regression for the historical trust-first local worker contract: omitted policy resolves to trusted before the LLM starts; public wg commands edit downstream description/validation, create/link/assign a subtask, reprioritize, publish and message across tasks; every delegated mutation is append-only audited to the exact actor/attempt/fence; and show/status expose the effective policy. The companion worker_control_capability_broker scenario preserves explicit scoped refusal."
+timeout_seconds = 180
+
+[[scenario]]
+name = "quality_pass_advisory_provider_failure"
+script = "scenarios/quality_pass_advisory_provider_failure.sh"
+owners = ["restore-trust-first-local-worker-control"]
+description = "Candidate-binary credential-free isolated fake-Pi/OpenRouter provider-failure proof: an optional .quality-pass-* failure satisfies its downstream edge with a loud released-unchanged warning and the batch becomes ready, while the same failure on an explicitly quality-pass:required task remains fail-closed."
+timeout_seconds = 180
+
+[[scenario]]
+name = "worker_control_tui_visibility"
+script = "scenarios/worker_control_tui_visibility.sh"
+owners = ["restore-trust-first-local-worker-control"]
+description = "Candidate-binary real tmux/PTY human-flow regression: launch the actual TUI, drive its key dispatcher, and verify the task inspector renders effective trusted worker-control mode, restrictions, and the wg capabilities preflight rather than relying on a CLI/unit substitute."
+timeout_seconds = 60
 
 [[scenario]]
 name = "daemon_planner_replay"

@@ -343,14 +343,68 @@ pub fn ready_tasks(graph: &WorkGraph) -> Vec<&Task> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DependencyDisposition {
     Satisfied,
-    EvalSystemBypass { blocker_status: Status },
-    Blocked { reason: String },
+    EvalSystemBypass {
+        blocker_status: Status,
+    },
+    /// An optional quality optimization failed because its provider or local
+    /// infrastructure was unavailable. The unchanged batch is released with
+    /// a visible warning rather than stranded behind advisory work.
+    AdvisoryQualityBypass {
+        reason: String,
+    },
+    Blocked {
+        reason: String,
+    },
 }
 
 impl DependencyDisposition {
     pub fn is_satisfied(&self) -> bool {
-        matches!(self, Self::Satisfied | Self::EvalSystemBypass { .. })
+        matches!(
+            self,
+            Self::Satisfied | Self::EvalSystemBypass { .. } | Self::AdvisoryQualityBypass { .. }
+        )
     }
+}
+
+pub fn is_optional_quality_pass(task: &crate::graph::Task) -> bool {
+    task.id.starts_with(".quality-pass-")
+        && !task.tags.iter().any(|tag| tag == "quality-pass:required")
+}
+
+fn advisory_quality_infrastructure_failure(task: &crate::graph::Task) -> Option<String> {
+    if task.status != Status::Failed || !is_optional_quality_pass(task) {
+        return None;
+    }
+    let class_is_infrastructure = task.failure_class.is_some_and(|class| {
+        matches!(
+            class,
+            crate::graph::FailureClass::ApiError429RateLimit
+                | crate::graph::FailureClass::ApiError5xxTransient
+                | crate::graph::FailureClass::AgentHardTimeout
+                | crate::graph::FailureClass::ResourceExhaustedDisk
+                | crate::graph::FailureClass::ExecutorConfig
+                | crate::graph::FailureClass::WrapperInternal
+        )
+    });
+    let signal_is_infrastructure = task.failure_signal.as_ref().is_some_and(|signal| {
+        !matches!(
+            signal.reason,
+            crate::graph::FailureReason::Hard | crate::graph::FailureReason::Unknown
+        )
+    });
+    (class_is_infrastructure || signal_is_infrastructure).then(|| {
+        format!(
+            "optional quality pass {} unavailable; released unchanged batch (class={}, signal={})",
+            task.id,
+            task.failure_class
+                .map(|class| class.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+            task.failure_signal
+                .as_ref()
+                .map(|signal| signal.reason.to_string())
+                .unwrap_or_else(|| "none".to_string())
+        )
+    })
 }
 
 /// Only the owning `.flip-X` or direct `.evaluate-X` satellite may cross X's
@@ -417,6 +471,9 @@ pub fn dependency_disposition(
         return DependencyDisposition::EvalSystemBypass {
             blocker_status: blocker.status,
         };
+    }
+    if let Some(reason) = advisory_quality_infrastructure_failure(blocker) {
+        return DependencyDisposition::AdvisoryQualityBypass { reason };
     }
     let typed_input = graph
         .get_task(dependent_id)
@@ -871,6 +928,36 @@ mod tests {
         let ready = ready_tasks(&graph);
         assert_eq!(ready.len(), 1);
         assert_eq!(ready[0].id, "blocker");
+    }
+
+    #[test]
+    fn optional_quality_pass_infrastructure_failure_releases_but_required_blocks() {
+        let mut graph = WorkGraph::new();
+        let mut quality = make_task(".quality-pass-batch", "Quality pass");
+        quality.status = Status::Failed;
+        quality.failure_class = Some(crate::graph::FailureClass::ExecutorConfig);
+        let mut downstream = make_task("downstream", "Downstream");
+        downstream.after.push(quality.id.clone());
+        graph.add_node(Node::Task(quality.clone()));
+        graph.add_node(Node::Task(downstream.clone()));
+
+        let disposition = dependency_disposition(&quality.id, &downstream.id, &graph, None);
+        assert!(matches!(
+            disposition,
+            DependencyDisposition::AdvisoryQualityBypass { ref reason }
+                if reason.contains("released unchanged batch")
+        ));
+        assert_eq!(ready_tasks(&graph)[0].id, downstream.id);
+
+        let mut required_graph = WorkGraph::new();
+        quality.tags.push("quality-pass:required".into());
+        required_graph.add_node(Node::Task(quality));
+        required_graph.add_node(Node::Task(downstream));
+        assert!(matches!(
+            dependency_disposition(".quality-pass-batch", "downstream", &required_graph, None),
+            DependencyDisposition::Blocked { .. }
+        ));
+        assert!(ready_tasks(&required_graph).is_empty());
     }
 
     #[test]

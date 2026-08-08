@@ -1925,6 +1925,7 @@ fn run_inner(
             let reason = match disposition {
                 query::DependencyDisposition::Blocked { reason } => reason,
                 query::DependencyDisposition::EvalSystemBypass { .. }
+                | query::DependencyDisposition::AdvisoryQualityBypass { .. }
                 | query::DependencyDisposition::Satisfied => return None,
             };
             let status = graph

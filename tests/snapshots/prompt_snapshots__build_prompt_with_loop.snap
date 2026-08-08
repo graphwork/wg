@@ -1,6 +1,6 @@
 ---
 source: tests/prompt_snapshots.rs
-assertion_line: 367
+assertion_line: 368
 expression: output
 ---
 # Task Assignment
@@ -16,6 +16,11 @@ You are a Builder agent.
 - **ID:** test-task-123
 - **Title:** Implement widget factory
 - **Description:** Build a widget factory that produces widgets from specs.
+
+## Worker Control
+
+- **Effective mode:** `trusted`
+- **Restrictions:** normal local graph coordination is allowed
 
 
 ## Tags & Skills

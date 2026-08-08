@@ -595,6 +595,7 @@ fn audit_worker_request(
     reason: &str,
     logger: &DaemonLogger,
 ) {
+    let binding = worksgood::worker_control::lookup_capability(dir, &request.capability).ok();
     let event = WorkerAuditEvent {
         timestamp: chrono::Utc::now().to_rfc3339(),
         request_id: request.request_id.clone(),
@@ -602,7 +603,13 @@ fn audit_worker_request(
         operation: request.operation.kind(),
         outcome: outcome.to_string(),
         reason: reason.to_string(),
-        task_id: task_id.map(str::to_string),
+        task_id: task_id
+            .map(str::to_string)
+            .or_else(|| binding.as_ref().map(|binding| binding.task_id.clone())),
+        agent_id: binding.as_ref().map(|binding| binding.agent_id.clone()),
+        attempt_id: binding.as_ref().map(|binding| binding.attempt_id.clone()),
+        fence: binding.as_ref().map(|binding| binding.fence),
+        control_mode: binding.as_ref().map(|binding| binding.control_mode),
     };
     if let Err(error) = worksgood::worker_control::append_audit(dir, &event) {
         logger.error(&format!(
@@ -672,6 +679,35 @@ fn validate_worker_capability(
     {
         anyhow::bail!("worker_control.operation_not_allowed");
     }
+    if matches!(request.operation, WorkerOperation::GraphCli { .. })
+        && binding.control_mode != worksgood::worker_control::WorkerControlMode::Trusted
+    {
+        anyhow::bail!(
+            "worker_control.operation_refused: graph CLI delegation requires trusted mode; effective mode={}",
+            binding.control_mode
+        );
+    }
+    if binding.control_mode == worksgood::worker_control::WorkerControlMode::ReadOnly
+        && matches!(
+            request.operation,
+            WorkerOperation::MessageRead { .. }
+                | WorkerOperation::MessageSend { .. }
+                | WorkerOperation::Log { .. }
+                | WorkerOperation::ArtifactAdd { .. }
+                | WorkerOperation::ArtifactRemove { .. }
+                | WorkerOperation::Checkpoint { .. }
+                | WorkerOperation::Wait { .. }
+                | WorkerOperation::CompletionObject { .. }
+                | WorkerOperation::CompletionManifest { .. }
+                | WorkerOperation::SubmitCompletion { .. }
+                | WorkerOperation::Land { .. }
+                | WorkerOperation::DoneHandoff { .. }
+                | WorkerOperation::FailHandoff { .. }
+                | WorkerOperation::FinishHandoff { .. }
+        )
+    {
+        anyhow::bail!("worker_control.read_only_refused");
+    }
     let current_graph_id = worksgood::worker_control::load_or_create_graph_identity(dir)?;
     if binding.graph_id != current_graph_id || binding.save_source.graph_id != current_graph_id {
         anyhow::bail!("worker_control.graph_identity_mismatch");
@@ -711,6 +747,137 @@ fn validate_worker_capability(
         );
     }
     Ok(binding)
+}
+
+fn execute_trusted_graph_cli(
+    dir: &Path,
+    binding: &worksgood::worker_control::AttemptCapabilityBinding,
+    argv: &[String],
+    stdin: Option<&str>,
+) -> Result<serde_json::Value> {
+    if argv.is_empty()
+        || argv.len() > 128
+        || argv
+            .iter()
+            .any(|arg| arg.len() > 1024 * 1024 || arg.contains('\0'))
+    {
+        anyhow::bail!("worker_control.graph_cli_argv_invalid");
+    }
+    if argv.iter().any(|arg| {
+        arg == "--dir" || arg.starts_with("--dir=") || arg == "-d" || arg.starts_with("-d=")
+    }) {
+        anyhow::bail!("worker_control.graph_cli_cross_graph_refused");
+    }
+    let command_name = argv
+        .iter()
+        .find(|arg| !arg.starts_with('-'))
+        .map(String::as_str)
+        .unwrap_or("");
+    if [
+        // Runtime/configuration authority.
+        "service",
+        "daemon",
+        "agents",
+        "kill",
+        "spawn",
+        "spawn-task",
+        "reap",
+        "pi-handler",
+        "server",
+        "telegram",
+        "config",
+        "setup",
+        "profile",
+        "login",
+        "pi-plugin",
+        "skill",
+        "upgrade",
+        // Federation, provider, review, and secret administration.
+        "fed-node",
+        "identity",
+        "peer",
+        "provider",
+        "review",
+        "pilot",
+        "secret",
+        // Immutable completion/review internals. Own-task public completion
+        // verbs take the typed receipt-backed path before GraphCli is built.
+        "candidate",
+        "completion-object",
+        "completion-manifest",
+        "submit",
+        "land",
+        "merge-resolution",
+        "approve",
+        "reject",
+        "finalize",
+        // Global repair/cleanup commands are operator maintenance, not normal
+        // local graph coordination.
+        "migrate",
+        "recover",
+        "cleanup",
+        "gc",
+        "sweep",
+    ]
+    .contains(&command_name)
+    {
+        anyhow::bail!(
+            "worker_control.admin_operation_refused: {command_name} is outside trusted local graph coordination"
+        );
+    }
+
+    let executable = std::env::current_exe().context("resolve wg executable for trusted worker")?;
+    let mut command = std::process::Command::new(executable);
+    command
+        .args(argv)
+        .current_dir(&binding.worktree_path)
+        .env("WG_DIR", dir)
+        .env("WG_TASK_ID", &binding.task_id)
+        .env("WG_AGENT_ID", &binding.agent_id)
+        .env("WG_WORKER_CONTROL_MODE", binding.control_mode.to_string())
+        .env("WG_WORKER_ATTEMPT_ID", &binding.attempt_id)
+        .env("WG_WORKER_ATTEMPT_FENCE", binding.fence.to_string())
+        .env_remove("WG_WORKER_CAPABILITY")
+        .env_remove("WG_WORKER_CONTROL_PROTOCOL")
+        .env_remove("WG_WORKER_IPC")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    if stdin.is_some() {
+        command.stdin(std::process::Stdio::piped());
+    } else {
+        command.stdin(std::process::Stdio::null());
+    }
+    let mut child = command
+        .spawn()
+        .context("launch trusted worker graph command")?;
+    if let Some(input) = stdin
+        && let Some(mut pipe) = child.stdin.take()
+    {
+        use std::io::Write as _;
+        pipe.write_all(input.as_bytes())?;
+    }
+    let output = child.wait_with_output()?;
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    if !output.status.success() {
+        anyhow::bail!(
+            "trusted graph command exited {}: {}{}",
+            output.status.code().unwrap_or(-1),
+            stderr,
+            stdout
+        );
+    }
+    Ok(serde_json::json!({
+        "exit_code": output.status.code().unwrap_or(0),
+        "stdout": stdout,
+        "stderr": stderr,
+        "actor": {
+            "task_id": binding.task_id,
+            "agent_id": binding.agent_id,
+            "attempt_id": binding.attempt_id,
+            "fence": binding.fence,
+        }
+    }))
 }
 
 fn execute_worker_operation(
@@ -971,6 +1138,17 @@ fn execute_worker_operation(
                     true,
                 )?;
                 Ok(serde_json::json!({"watchdog": "process_exit"}))
+            }
+            WorkerOperation::Capabilities => Ok(serde_json::json!({
+                "mode": binding.control_mode,
+                "restrictions": worksgood::worker_control::control_restrictions(binding.control_mode),
+                "task_id": binding.task_id,
+                "agent_id": binding.agent_id,
+                "attempt_id": binding.attempt_id,
+                "fence": binding.fence,
+            })),
+            WorkerOperation::GraphCli { argv, stdin } => {
+                execute_trusted_graph_cli(dir, binding, &argv, stdin.as_deref())
             }
             WorkerOperation::Heartbeat => {
                 let response = handle_heartbeat(dir, &binding.agent_id);

@@ -83,6 +83,12 @@ whole connected batch with `wg publish .quality-pass-<batch-id> --wcc`. There
 is no `--before` dependency flag in `wg add`; use `--add-after` (or `--after`
 at creation) instead.
 
+Quality passes are advisory by default. If their model/provider or local
+infrastructure is unavailable, WG emits a loud warning and releases the
+unchanged batch instead of stranding normal tasks. Add the visible task tag
+`quality-pass:required` only when the user explicitly wants provider failure to
+remain fail-closed.
+
 ### Paused-task convention
 
 A task in `waiting` status (set by `wg pause`) is a deliberate hold —
@@ -234,10 +240,32 @@ failure. Exit 77 is a loud environmental skip, not a semantic pass. Never
 substitute a unit test merely because it exercises similar code, and never omit
 the owned smoke evidence from the manifest.
 
+### Worker graph authority
+
+Ordinary local workers are trusted participants in the project graph. Their
+default `trusted` control mode may inspect and edit sibling/downstream task
+metadata, create and link tasks, assign/reprioritize, publish drafts, and send
+messages through normal public `wg` commands. Cross-task identity alone is not
+a refusal reason. Every request is still bound to the exact source
+actor/attempt/fence and recorded in the append-only worker-control audit.
+
+Integrity boundaries do not loosen: a stale/reaped attempt is refused;
+completion remains own-task, immutable-manifest, review-receipt and publication
+backed; service/admin control and evidence internals remain protected.
+
+Projects may opt into `[worker_control] mode = "scoped"` or `"read-only"`.
+A task may visibly override the local project default with the tag
+`worker-control:trusted`, `worker-control:scoped`, or
+`worker-control:read-only`. Observation/evaluation lanes and remote providers
+are structurally narrowed regardless of the local default. Run
+`wg capabilities` to inspect the exact effective mode and restrictions before
+attempting coordination.
+
 A worker agent assigned to `<task-id>` follows this sequence:
 
-1. **Check messages and log progress**:
+1. **Check capabilities, messages, and log progress**:
    ```
+   wg capabilities
    wg msg read <task-id> --agent $WG_AGENT_ID
    wg log <task-id> "Starting implementation..."
    ```

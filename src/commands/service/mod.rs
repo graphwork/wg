@@ -4476,6 +4476,7 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
 
     // Load coordinator state (persisted by daemon, reflects effective config + runtime)
     let coord = CoordinatorState::load_or_default(dir);
+    let config = Config::load_or_default(dir);
     let evaluation_lane = worksgood::evaluation::bounded::load_lane_status(dir);
     let deep_flip_lane = worksgood::evaluation::deep::load_lane_status(dir);
     let cleanup = worktree::load_cleanup_lane_snapshot(dir);
@@ -4508,6 +4509,8 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
             "worker_control": {
                 "protocol": worksgood::worker_control::WORKER_CONTROL_PROTOCOL,
                 "capability_broker": "enforced",
+                "default_mode": config.worker_control.mode,
+                "default_restrictions": worksgood::worker_control::control_restrictions(config.worker_control.mode),
                 "filesystem_isolation": &worker_filesystem_isolation,
             },
             "uptime": uptime,
@@ -4591,7 +4594,9 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
             println!("Historical planner evidence: retained, non-authoritative");
         }
         println!(
-            "Worker control: capability broker enforced; filesystem isolation: {} ({})",
+            "Worker control: default={} ({}); capability broker enforced; filesystem isolation: {} ({})",
+            config.worker_control.mode,
+            worksgood::worker_control::control_restrictions(config.worker_control.mode),
             if worker_filesystem_isolation.enforced {
                 "ENFORCED"
             } else {

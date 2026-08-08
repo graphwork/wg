@@ -51,6 +51,8 @@ struct CoordinatorInfo {
     flip_gate_policy: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     flip_threshold: Option<f64>,
+    worker_control_mode: worksgood::worker_control::WorkerControlMode,
+    worker_control_restrictions: String,
     poll_interval: u64,
 }
 
@@ -404,6 +406,11 @@ fn gather_coordinator_info(dir: &Path) -> CoordinatorInfo {
             evaluator_threshold,
             flip_gate_policy,
             flip_threshold,
+            worker_control_mode: config.worker_control.mode,
+            worker_control_restrictions: worksgood::worker_control::control_restrictions(
+                config.worker_control.mode,
+            )
+            .to_string(),
             poll_interval: coord.poll_interval,
         };
     }
@@ -438,6 +445,11 @@ fn gather_coordinator_info(dir: &Path) -> CoordinatorInfo {
         evaluator_threshold,
         flip_gate_policy,
         flip_threshold,
+        worker_control_mode: config.worker_control.mode,
+        worker_control_restrictions: worksgood::worker_control::control_restrictions(
+            config.worker_control.mode,
+        )
+        .to_string(),
         poll_interval: config.coordinator.poll_interval,
     }
 }
@@ -888,6 +900,10 @@ fn print_status(status: &StatusOutput) {
             .as_deref()
             .unwrap_or("omit"),
         status.coordinator.poll_interval
+    );
+    println!(
+        "Worker control: default={} ({})",
+        status.coordinator.worker_control_mode, status.coordinator.worker_control_restrictions
     );
     println!(
         "Evaluation gate: applicability={}, evaluator-threshold={}, FLIP-policy={}, FLIP-threshold={} (attempt-pinned once visible)",
