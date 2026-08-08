@@ -21,15 +21,33 @@ reasoning before starting a service or spawning an LLM-backed role:
 
 ```bash
 wg setup --route pi --yes --model pi:<provider>:<model>
-# or install/select the shipped complete profile
-wg profile init-starters
-wg profile select pi
+# or activate the shipped complete global profile instead of supplying a custom route
+wg profile use pi
 ```
 
-Pi owns provider authentication, endpoint configuration, model discovery,
-availability checks, usage, and cost. WG stores orchestration policy only:
-exact strong/weak or per-role Pi routes plus inherited reasoning. WG does not
-accept provider API keys or endpoint URLs during setup.
+A global (the default) or `both` setup writes `~/.wg/active-profile = pi` as
+part of the same operation, reloads a running project daemon, and preserves the
+exact configured default/task-agent route. A second `wg profile use pi` is not
+required. `--scope local` intentionally does not mutate that machine-global
+pointer; its project config is already the effective route.
+
+Setup idempotently prepares the compatible `pi-worksgood` plugin, then performs
+a bounded readiness preflight: it reports whether the `pi` handler is present
+and whether the plugin build/console wiring is ready. Pi owns provider authentication, endpoint configuration, model
+discovery, availability checks, usage, and cost, so setup explicitly reports
+auth/model access as **not verified** and makes no provider request. Follow its
+`pi` → `/login` → test-prompt action before relying on unattended work. WG
+stores orchestration policy only: exact strong/weak or per-role Pi routes plus
+inherited reasoning. WG does not accept provider API keys or endpoint URLs
+during setup and never chooses a cross-provider fallback.
+
+**Scope boundary / open product question:** a local setup with a custom model
+cannot truthfully fingerprint-select the shipped `pi` profile because that
+profile may contain different route IDs. It therefore keeps local config as
+the authority instead of inventing a generated project profile. Whether the
+expert `wg setup --scope local` flow should eventually adopt the generated,
+fingerprint-pinned profile transaction used by `worksgood setup --model ...`
+is intentionally left for product adjudication.
 
 Use Pi's own configuration/login flow to choose a provider and model, then copy
 the exact identity into WG. Preview without writing:
