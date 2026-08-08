@@ -302,13 +302,78 @@ targets [('worksgood', ['lib']), ('casa-adapter', ['bin']), ('nex', ['bin']), ('
 **`[VERIFIED]`** Executed 2026-08-08; exit 0. Counts include inline tests and generated-looking checked-in Rust; lexical coupling counts are orientation, not runtime reachability.
 
 ```bash
-python3 <inventory script over Path('src').rglob('*.rs')>
-rg -l 'atomic_file::write_atomic|\bwrite_atomic\(' src --glob '*.rs' | wc -l
-rg -l '(std::fs|fs)::write\(' src --glob '*.rs' | wc -l
-rg -l '(std::fs|fs)::rename\(' src --glob '*.rs' | wc -l
-rg -l '\bmodify_graph\(' src --glob '*.rs' | wc -l
-rg -n 'Config::load_or_default' src --glob '*.rs' | wc -l
-rg -n 'Config::load_merged' src --glob '*.rs' | wc -l
+python3 - <<'PY'
+from pathlib import Path
+import re
+
+files = list(Path("src").rglob("*.rs"))
+line_counts = {p: len(p.read_text(errors="ignore").splitlines()) for p in files}
+print("rust_files", len(files), "loc", sum(line_counts.values()))
+print("command_files", len(list(Path("src/commands").rglob("*.rs"))))
+for path, lines in sorted(line_counts.items(), key=lambda item: item[1], reverse=True)[:20]:
+    print(f"largest {lines} {path}")
+lib = Path("src/lib.rs").read_text()
+print("lib_pub_mod", len(re.findall(r"^pub mod ", lib, re.M)))
+
+cli_lines = Path("src/cli.rs").read_text().splitlines()
+in_commands = False
+brace_depth = 0
+variants = []
+for line in cli_lines:
+    if line.startswith("pub enum Commands {"):
+        in_commands = True
+        brace_depth = 1
+        continue
+    if in_commands:
+        brace_depth += line.count("{") - line.count("}")
+        match = re.match(r"^    ([A-Z][A-Za-z0-9_]*)\s*(?:\{|\(|,)", line)
+        if brace_depth >= 1 and match:
+            variants.append(match.group(1))
+        if brace_depth == 0:
+            break
+print("cli_top_variants", len(variants))
+
+def field_count(path, name, public_struct=True):
+    lines = Path(path).read_text().splitlines()
+    prefix = "pub struct" if public_struct else "struct"
+    start = next(i for i, line in enumerate(lines)
+                 if re.match(rf"{prefix} {name}\s*\{{", line))
+    depth = 0
+    fields = []
+    for i, line in enumerate(lines[start:], start + 1):
+        depth += line.count("{") - line.count("}")
+        if depth == 1:
+            match = re.match(r"\s+(?:pub\s+)?([A-Za-z0-9_]+)\s*:", line)
+            if match:
+                fields.append(match.group(1))
+        if depth == 0:
+            break
+    return len(fields), start + 1, i
+
+for path, name, public in [
+    ("src/graph.rs", "Task", True),
+    ("src/commands/show.rs", "TaskDetails", False),
+    ("src/config.rs", "Config", True),
+]:
+    print("fields", name, *field_count(path, name, public))
+
+for name in ["graph", "config", "parser", "lifecycle", "atomic_file", "service", "dispatch"]:
+    pattern = re.compile(r"(?:crate|worksgood)::" + re.escape(name) + r"\b")
+    counts = [len(pattern.findall(path.read_text(errors="ignore"))) for path in files]
+    print("refs", name, sum(counts), sum(count > 0 for count in counts))
+
+for label, pattern in [
+    ("atomic_helper", r"atomic_file::write_atomic|\bwrite_atomic\("),
+    ("direct_fs_write", r"(?:std::fs|fs)::write\("),
+    ("rename", r"(?:std::fs|fs)::rename\("),
+    ("modify_graph", r"\bmodify_graph\("),
+    ("load_or_default", r"Config::load_or_default"),
+    ("load_merged", r"Config::load_merged"),
+]:
+    regex = re.compile(pattern)
+    counts = [len(regex.findall(path.read_text(errors="ignore"))) for path in files]
+    print("pattern", label, "files", sum(count > 0 for count in counts), "hits", sum(counts))
+PY
 ```
 
 ```text
