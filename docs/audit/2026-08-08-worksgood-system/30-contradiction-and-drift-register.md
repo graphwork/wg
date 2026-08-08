@@ -270,6 +270,6 @@ Two parallel `cargo run`/`cargo test` follow-ups exceeded a 300-second compile-l
 
 - Stable IDs: `WGDR-001..049`, `WGDR-T01..T12`, `WGDR-R01..R12`, `WGDR-U01..U12`.
 - Required item metadata: claim A/B, citations, current authority, confidence, impact, proposed resolution, owner/domain, kind, severity/state, and upstream crosswalk are present in each open row; resolved and uncertainty sections use their appropriate bounded metadata.
-- High-severity entries: independently rechecked against primary evidence in `P1..P12`.
+- High-severity entries: independently rechecked against primary evidence in `P1..P13`.
 - Confirmation-bias controls: apparent/non-issues and uncertainties retained in §§5–6.
 - Production source/tests/pre-existing docs: untouched.
