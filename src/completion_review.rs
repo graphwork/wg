@@ -72,6 +72,12 @@ pub struct ReviewerUnavailable {
 pub trait ManifestReviewer {
     fn route(&self) -> &str;
 
+    /// Return execution metadata for the immediately preceding review call.
+    /// Test/static reviewers may omit it; model adapters expose provider usage.
+    fn take_execution(&mut self) -> Option<ReviewExecution> {
+        None
+    }
+
     fn review(
         &mut self,
         kind: ReviewerKind,
@@ -79,7 +85,145 @@ pub trait ManifestReviewer {
     ) -> Result<SemanticReview, ReviewerUnavailable>;
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct ReviewUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_input_tokens: u64,
+    pub cache_creation_input_tokens: u64,
+    pub cost_usd: f64,
+}
+
+/// Factual execution metadata emitted by a reviewer adapter. This is captured
+/// separately from its semantic verdict so receipt visibility never grants the
+/// review lane graph-task authority.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct ReviewExecution {
+    pub executor: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<ReviewUsage>,
+}
+
+/// Durable task projection used by `wg list --all`, `wg show`, and `wg spend`.
+/// `activity_id` is the immutable receipt object's content digest, making
+/// replay/content-bound recording idempotent.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct CompletionReviewActivity {
+    pub activity_id: String,
+    pub reviewer_kind: ReviewerKind,
+    pub verdict: ReviewVerdict,
+    pub manifest_digest: ContentDigest,
+    pub requirements_digest: ContentDigest,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_route: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<ReviewUsage>,
+    pub created_at: String,
+}
+
+fn legacy_attempt_is_projected(
+    activity_ids: &std::collections::HashSet<&str>,
+    attempt_id: &str,
+    response_digest: Option<&str>,
+) -> bool {
+    activity_ids.contains(attempt_id) || response_digest.is_some_and(|id| activity_ids.contains(id))
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct VerifiedReviewActivityProjection {
+    pub activities: Vec<CompletionReviewActivity>,
+    pub invalid_count: usize,
+}
+
+/// Reload and content-verify the immutable receipt behind every mutable task
+/// projection. Invalid, missing, stale, or mismatched rows fail closed.
+pub fn verified_review_activities(
+    dir: &std::path::Path,
+    task: &crate::graph::Task,
+) -> VerifiedReviewActivityProjection {
+    let mut projection = VerifiedReviewActivityProjection::default();
+    let objects = dir.join("completion/v3/objects");
+    for activity in &task.completion_review_activity {
+        let Some(name) = activity.activity_id.strip_prefix("b3:") else {
+            projection.invalid_count += 1;
+            continue;
+        };
+        let Ok(bytes) = std::fs::read(objects.join(name)) else {
+            projection.invalid_count += 1;
+            continue;
+        };
+        if bytes.len() > 1024 * 1024
+            || ContentDigest::of_bytes(&bytes).as_str() != activity.activity_id
+        {
+            projection.invalid_count += 1;
+            continue;
+        }
+        let Ok(receipt) = serde_json::from_slice::<ReviewReceipt>(&bytes) else {
+            projection.invalid_count += 1;
+            continue;
+        };
+        let exact = receipt.reviewer_kind == activity.reviewer_kind
+            && receipt.verdict == activity.verdict
+            && receipt.manifest_digest == activity.manifest_digest
+            && receipt.requirements_digest == activity.requirements_digest
+            && receipt.model_route == activity.model_route
+            && receipt.executor == activity.executor
+            && receipt.usage == activity.usage
+            && receipt.created_at == activity.created_at;
+        if exact {
+            projection.activities.push(activity.clone());
+        } else {
+            projection.invalid_count += 1;
+        }
+    }
+    projection
+}
+
+/// Return historical evaluation records that are not already represented by a
+/// content-bound completion-review activity. Mixed-version tasks keep older
+/// attempts; only exact stable-ID aliases are removed.
+pub fn unprojected_legacy_evaluation_records(
+    task: &crate::graph::Task,
+    verified_activities: &[CompletionReviewActivity],
+) -> Vec<crate::evaluation::EvaluationRecord> {
+    let activity_ids = verified_activities
+        .iter()
+        .map(|activity| activity.activity_id.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    task.evaluation_records
+        .iter()
+        .filter_map(|record| {
+            let consumed_is_projected = record
+                .consumed_verdict_id
+                .as_deref()
+                .is_some_and(|id| activity_ids.contains(id));
+            if record.attempts.is_empty() {
+                return (!consumed_is_projected).then(|| record.clone());
+            }
+            let mut retained = record.clone();
+            retained.attempts = record
+                .attempts
+                .iter()
+                .filter(|attempt| {
+                    !legacy_attempt_is_projected(
+                        &activity_ids,
+                        &attempt.attempt_id,
+                        attempt.response_digest.as_deref(),
+                    )
+                })
+                .cloned()
+                .collect();
+            if consumed_is_projected {
+                retained.consumed_verdict_id = None;
+            }
+            (!retained.attempts.is_empty()).then_some(retained)
+        })
+        .collect()
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct ReviewReceipt {
     pub receipt_version: u32,
     pub manifest_digest: ContentDigest,
@@ -90,6 +234,10 @@ pub struct ReviewReceipt {
     pub inspected_output_digests: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_route: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<ReviewUsage>,
     pub created_at: String,
 }
 
@@ -108,7 +256,7 @@ impl ReviewReceipt {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct StoredReviewReceipt {
     pub receipt: ReviewReceipt,
     pub receipt_object: ArtifactOutput,
@@ -124,7 +272,7 @@ pub enum ReviewValveStatus {
     IncompleteEvidence,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ReviewValveOutcome {
     pub status: ReviewValveStatus,
     pub flip: StoredReviewReceipt,
@@ -206,6 +354,7 @@ pub fn run_review_valve_at(
                     findings,
                     inspected_output_digests: Vec::new(),
                     model_route: None,
+                    execution: None,
                     created_at,
                 },
             )?;
@@ -227,6 +376,7 @@ pub fn run_review_valve_at(
         return Err(ReviewValveError::MissingExactRoute(ReviewerKind::Flip));
     }
     let flip_result = flip_reviewer.review(ReviewerKind::Flip, &bundle);
+    let flip_execution = flip_reviewer.take_execution();
     let flip = receipt_from_reviewer_result(
         artifact_store,
         manifest_digest,
@@ -235,6 +385,7 @@ pub fn run_review_valve_at(
         &bundle.inspected_output_digests,
         flip_reviewer.route(),
         flip_result,
+        flip_execution,
         created_at,
     )?;
     match flip.receipt.verdict {
@@ -271,6 +422,7 @@ pub fn run_review_valve_at(
         return Err(ReviewValveError::MissingExactRoute(ReviewerKind::Eval));
     }
     let eval_result = eval_reviewer.review(ReviewerKind::Eval, &bundle);
+    let eval_execution = eval_reviewer.take_execution();
     let eval = receipt_from_reviewer_result(
         artifact_store,
         manifest_digest,
@@ -279,6 +431,7 @@ pub fn run_review_valve_at(
         &bundle.inspected_output_digests,
         eval_reviewer.route(),
         eval_result,
+        eval_execution,
         created_at,
     )?;
     let status = match eval.receipt.verdict {
@@ -305,6 +458,7 @@ fn receipt_from_reviewer_result(
     inspected_output_digests: &[String],
     model_route: &str,
     result: Result<SemanticReview, ReviewerUnavailable>,
+    execution: Option<ReviewExecution>,
     created_at: &str,
 ) -> Result<StoredReviewReceipt, ReviewValveError> {
     let (verdict, findings) = match result {
@@ -338,6 +492,7 @@ fn receipt_from_reviewer_result(
             findings,
             inspected_output_digests: inspected_output_digests.to_vec(),
             model_route: Some(model_route.to_string()),
+            execution,
             created_at,
         },
     )
@@ -351,6 +506,7 @@ struct ReceiptMaterial<'a> {
     findings: Vec<ReviewFinding>,
     inspected_output_digests: Vec<String>,
     model_route: Option<String>,
+    execution: Option<ReviewExecution>,
     created_at: &'a str,
 }
 
@@ -374,6 +530,11 @@ fn persist_receipt(
         findings_digest: findings_object.content_digest.clone(),
         inspected_output_digests: material.inspected_output_digests,
         model_route: material.model_route,
+        executor: material
+            .execution
+            .as_ref()
+            .map(|value| value.executor.clone()),
+        usage: material.execution.and_then(|value| value.usage),
         created_at: material.created_at.to_string(),
     };
     let receipt_bytes = canonical_json(&serde_json::to_value(&receipt)?);
@@ -405,4 +566,53 @@ fn normalize_findings(findings: Vec<ReviewFinding>) -> Vec<ReviewFinding> {
 
 fn bounded(value: &str, limit: usize) -> String {
     value.chars().take(limit).collect()
+}
+
+#[cfg(test)]
+mod projection_tests {
+    use super::*;
+
+    #[test]
+    fn missing_immutable_receipt_fails_projection_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let digest = format!("b3:{}", "0".repeat(64));
+        let mut task = crate::graph::Task::default();
+        task.completion_review_activity
+            .push(CompletionReviewActivity {
+                activity_id: digest,
+                reviewer_kind: ReviewerKind::Flip,
+                verdict: ReviewVerdict::Pass,
+                manifest_digest: ContentDigest::of_bytes(b"manifest"),
+                requirements_digest: ContentDigest::of_bytes(b"requirements"),
+                model_route: Some("pi:test:model".into()),
+                executor: Some("pi".into()),
+                usage: None,
+                created_at: "2026-08-08T00:00:00Z".into(),
+            });
+        let projection = verified_review_activities(dir.path(), &task);
+        assert!(projection.activities.is_empty());
+        assert_eq!(projection.invalid_count, 1);
+    }
+
+    #[test]
+    fn mixed_version_projection_deduplicates_only_stable_aliases() {
+        let activity_ids = ["receipt-new"]
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>();
+        assert!(!legacy_attempt_is_projected(
+            &activity_ids,
+            "old-failed-attempt",
+            None,
+        ));
+        assert!(!legacy_attempt_is_projected(
+            &activity_ids,
+            "unmatched-success",
+            None,
+        ));
+        assert!(legacy_attempt_is_projected(
+            &activity_ids,
+            "other-attempt",
+            Some("receipt-new"),
+        ));
+    }
 }

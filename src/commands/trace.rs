@@ -75,6 +75,9 @@ struct TraceOutput {
     #[serde(skip_serializing_if = "Option::is_none")]
     completed_at: Option<String>,
     operations: Vec<OperationEntry>,
+    /// Immutable internal review-lane records; these are audit activity, not
+    /// lifecycle-authoritative graph tasks.
+    completion_review_activity: Vec<worksgood::completion_review::CompletionReviewActivity>,
     agent_runs: Vec<AgentRun>,
     summary: TraceSummary,
 }
@@ -214,6 +217,13 @@ fn load_agent_runs(dir: &Path, task_id: &str, include_content: bool) -> Vec<Agen
 pub fn run(dir: &Path, id: &str, mode: TraceMode) -> Result<()> {
     let (graph, _path) = super::load_workgraph(dir)?;
     let task = graph.get_task_or_err(id)?;
+    let verified_review = worksgood::completion_review::verified_review_activities(dir, task);
+    if verified_review.invalid_count > 0 {
+        eprintln!(
+            "warning: {} invalid completion-review projection(s) omitted for {}",
+            verified_review.invalid_count, task.id
+        );
+    }
 
     // Load operations for this task
     let all_ops = provenance::read_all_operations(dir)?;
@@ -241,6 +251,7 @@ pub fn run(dir: &Path, id: &str, mode: TraceMode) -> Result<()> {
                 started_at: task.started_at.clone(),
                 completed_at: task.completed_at.clone(),
                 operations: task_ops,
+                completion_review_activity: verified_review.activities.clone(),
                 agent_runs,
                 summary,
             };
@@ -256,6 +267,8 @@ pub fn run(dir: &Path, id: &str, mode: TraceMode) -> Result<()> {
             println!();
             print_ops(id, &task_ops);
             println!();
+            print_review_activity(&verified_review.activities);
+            println!();
             print_agent_runs_full(&agent_runs);
             Ok(())
         }
@@ -266,6 +279,8 @@ pub fn run(dir: &Path, id: &str, mode: TraceMode) -> Result<()> {
             print_summary(&summary);
             println!();
             print_ops(id, &task_ops);
+            println!();
+            print_review_activity(&verified_review.activities);
             println!();
             print_agent_runs_summary(&agent_runs);
             Ok(())
@@ -361,6 +376,31 @@ fn print_summary(summary: &TraceSummary) {
         } else {
             println!("  Total output: {:.1} KB", kb);
         }
+    }
+}
+
+fn print_review_activity(activities: &[worksgood::completion_review::CompletionReviewActivity]) {
+    if activities.is_empty() {
+        println!("Completion review lane: (none)");
+        return;
+    }
+    println!("Completion review lane (immutable audit records; not graph tasks):");
+    for activity in activities {
+        let route = activity.model_route.as_deref().unwrap_or("unavailable");
+        let executor = activity.executor.as_deref().unwrap_or("unavailable");
+        let usage = activity.usage.as_ref().map_or_else(
+            || "usage=n/a".to_string(),
+            |usage| {
+                format!(
+                    "usage={}in/{}out cost=${:.6}",
+                    usage.input_tokens, usage.output_tokens, usage.cost_usd
+                )
+            },
+        );
+        println!(
+            "  {:?} {:?} route={} executor={} receipt={} {}",
+            activity.reviewer_kind, activity.verdict, route, executor, activity.activity_id, usage
+        );
     }
 }
 

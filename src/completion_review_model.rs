@@ -8,8 +8,8 @@ use crate::completion_manifest::{
     ResolvedEvidence, ResolvedOutput, ResolvedPayload, ResolvedReviewBundle,
 };
 use crate::completion_review::{
-    ManifestReviewer, ReviewFinding, ReviewerKind, ReviewerUnavailable, SemanticReview,
-    SemanticVerdict,
+    ManifestReviewer, ReviewExecution, ReviewFinding, ReviewUsage, ReviewerKind,
+    ReviewerUnavailable, SemanticReview, SemanticVerdict,
 };
 use crate::config::{Config, DispatchRole};
 use crate::json_extract::extract_json;
@@ -21,12 +21,27 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 const DEFAULT_COMPLETION_REVIEW_TIMEOUT_SECS: u64 = 900;
+const COMPLETION_REVIEW_TIMEOUT_ENV: &str = "WG_COMPLETION_REVIEW_TIMEOUT_SECS";
+
+fn completion_review_timeout_secs() -> u64 {
+    let configured = std::env::var(COMPLETION_REVIEW_TIMEOUT_ENV).ok();
+    parse_completion_review_timeout(configured.as_deref())
+}
+
+fn parse_completion_review_timeout(configured: Option<&str>) -> u64 {
+    configured
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .map(|value| value.min(DEFAULT_COMPLETION_REVIEW_TIMEOUT_SECS))
+        .unwrap_or(DEFAULT_COMPLETION_REVIEW_TIMEOUT_SECS)
+}
 
 pub struct ExactModelReviewer<'a> {
     config: &'a Config,
     kind: ReviewerKind,
     dispatch: AgencyDispatch,
     timeout_secs: u64,
+    last_execution: Option<ReviewExecution>,
 }
 
 impl<'a> ExactModelReviewer<'a> {
@@ -46,7 +61,8 @@ impl<'a> ExactModelReviewer<'a> {
             config,
             kind,
             dispatch,
-            timeout_secs: DEFAULT_COMPLETION_REVIEW_TIMEOUT_SECS,
+            timeout_secs: completion_review_timeout_secs(),
+            last_execution: None,
         })
     }
 
@@ -59,6 +75,10 @@ impl<'a> ExactModelReviewer<'a> {
 impl ManifestReviewer for ExactModelReviewer<'_> {
     fn route(&self) -> &str {
         &self.dispatch.raw_spec
+    }
+
+    fn take_execution(&mut self) -> Option<ReviewExecution> {
+        self.last_execution.take()
     }
 
     fn review(
@@ -76,6 +96,10 @@ impl ManifestReviewer for ExactModelReviewer<'_> {
             });
         }
         let prompt = render_review_prompt(kind, bundle);
+        self.last_execution = Some(ReviewExecution {
+            executor: self.dispatch.handler.as_str().to_string(),
+            usage: None,
+        });
         let result =
             run_exact_agency_dispatch_call(self.config, &self.dispatch, &prompt, self.timeout_secs)
                 .map_err(|error| ReviewerUnavailable {
@@ -85,6 +109,15 @@ impl ManifestReviewer for ExactModelReviewer<'_> {
                         self.dispatch.raw_spec
                     ),
                 })?;
+        if let Some(execution) = self.last_execution.as_mut() {
+            execution.usage = result.token_usage.as_ref().map(|usage| ReviewUsage {
+                input_tokens: usage.input_tokens,
+                output_tokens: usage.output_tokens,
+                cache_read_input_tokens: usage.cache_read_input_tokens,
+                cache_creation_input_tokens: usage.cache_creation_input_tokens,
+                cost_usd: usage.cost_usd,
+            });
+        }
         parse_semantic_review(&result.text)
     }
 }
@@ -259,6 +292,20 @@ mod tests {
         let error =
             parse_semantic_review(r#"{"verdict":"unavailable","findings":[]}"#).unwrap_err();
         assert_eq!(error.code, "reviewer.invalid_response");
+    }
+
+    #[test]
+    fn timeout_override_rejects_zero_and_accepts_bounded_fixture_value() {
+        assert_eq!(
+            parse_completion_review_timeout(Some("0")),
+            DEFAULT_COMPLETION_REVIEW_TIMEOUT_SECS
+        );
+        assert_eq!(parse_completion_review_timeout(Some("1")), 1);
+        assert_eq!(
+            parse_completion_review_timeout(Some("999999999")),
+            DEFAULT_COMPLETION_REVIEW_TIMEOUT_SECS,
+            "the override may tighten but never unbound the review"
+        );
     }
 
     #[test]

@@ -277,6 +277,23 @@ pub struct EvidenceCidSet {
     pub cleanup: String,
 }
 
+/// Exact terminal accounting carried inside the crash-replayable GraphSave
+/// receipt. Cost is a decimal string so the evidence remains `Eq` while
+/// round-tripping the provider-reported f64 without introducing estimates.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalAccountingEvidence {
+    pub usage_present: bool,
+    pub provider_cost_usd: String,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_input_tokens: u64,
+    pub cache_creation_input_tokens: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actual_executor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actual_model: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GraphSaveReceipt {
     pub header: EvidenceHeader,
@@ -287,6 +304,8 @@ pub struct GraphSaveReceipt {
     pub bundle_digest: String,
     pub graph_revision_before_commit: u64,
     pub lifecycle_event_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_accounting: Option<TerminalAccountingEvidence>,
 }
 
 /// Self-contained input to the pure verifier. Durable stores may keep each

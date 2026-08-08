@@ -500,6 +500,8 @@ pub struct LifecycleEventProjection {
     pub pi_terminal_reservation: Option<crate::pi_watchdog::TerminalIntentReceipt>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reopen_intent: Option<ReopenIntent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_accounting: Option<crate::completion_evidence::TerminalAccountingEvidence>,
 }
 
 impl LifecycleEvent {
@@ -517,6 +519,27 @@ impl LifecycleEvent {
         task.lifecycle.pi_continuation = self.projection.pi_continuation.clone();
         task.lifecycle.pi_terminal_reservation = self.projection.pi_terminal_reservation.clone();
         task.lifecycle.reopen_intent = self.projection.reopen_intent.clone();
+        if self.event_kind == "attempt-reserved" {
+            // Runtime accounting is attempt-scoped. A retry must not inherit
+            // the previous attempt's route or usage and block the terminal
+            // successful attempt from becoming authoritative.
+            task.token_usage = None;
+            task.actual_executor = None;
+            task.actual_model = None;
+        }
+        if let Some(accounting) = self.projection.terminal_accounting.as_ref() {
+            if accounting.usage_present {
+                task.token_usage = Some(crate::graph::TokenUsage {
+                    cost_usd: accounting.provider_cost_usd.parse().unwrap_or(0.0),
+                    input_tokens: accounting.input_tokens,
+                    output_tokens: accounting.output_tokens,
+                    cache_read_input_tokens: accounting.cache_read_input_tokens,
+                    cache_creation_input_tokens: accounting.cache_creation_input_tokens,
+                });
+            }
+            task.actual_executor.clone_from(&accounting.actual_executor);
+            task.actual_model.clone_from(&accounting.actual_model);
+        }
         if self.event_kind == "graph-save-committed" {
             task.completion_disposition = match task.completion_contract {
                 crate::graph::CompletionContract::Land => {
@@ -626,6 +649,7 @@ impl LifecycleKernel {
         let mut new_state = old_state;
         let mut projection = task.lifecycle.clone();
         let mut completion_receipt = None;
+        let mut terminal_accounting = None;
         let kind = &request.kind;
 
         match kind {
@@ -797,6 +821,7 @@ impl LifecycleKernel {
                 }
                 attempt.disposition = Some(AttemptDisposition::Succeeded);
                 completion_receipt = Some(verified.graph_save_cid);
+                terminal_accounting.clone_from(&bundle.receipt.terminal_accounting);
                 new_state = Status::Done;
             }
             TransitionKind::AttemptLost => {
@@ -1350,6 +1375,7 @@ impl LifecycleKernel {
                 pi_continuation: projection.pi_continuation,
                 pi_terminal_reservation: projection.pi_terminal_reservation,
                 reopen_intent: projection.reopen_intent,
+                terminal_accounting,
             },
         };
 
