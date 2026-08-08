@@ -33,7 +33,7 @@
 
 The phases intentionally separate **F** factual synchronization, **D** human decision, **I** implementation/behavior, **S** structural documentation, and **V** verification work. A factual edit may describe or narrow current behavior; it may not silently choose desired behavior. A design decision may not be presented as shipped until its implementation and executable acceptance evidence land.
 
-**`[RECOMMENDATION]` Priority:** immediately correct or visibly qualify false high-impact operator/security claims (`WGDR-003`, `008`–`012`, `017`, `029`–`042`, `049`) while routing contested semantics (`WGDR-001`, `002`, `005`, `006`, `013`–`016`, `021`, `028`, `035`, `040`, `042`, and the `WGDR-T*` terms) through the decision queue in §4. No bulk move, archive, or historical rewrite should precede the manifests and owner decisions.
+**`[RECOMMENDATION]` Priority:** immediately correct or visibly qualify false high-impact operator/security claims (`WGDR-003`, `WGDR-008`–`WGDR-012`, `WGDR-017`, `WGDR-029`–`WGDR-042`, `WGDR-049`) while routing contested semantics (`WGDR-001`, `WGDR-002`, `WGDR-005`, `WGDR-006`, `WGDR-013`–`WGDR-016`, `WGDR-021`, `WGDR-028`, `WGDR-035`, `WGDR-040`, `WGDR-042`, and `WGDR-T01`–`WGDR-T12`) through the decision queue in §4. No bulk move, archive, or historical rewrite should precede the manifests and owner decisions.
 
 **`[FACT]` Requirement-to-plan map:** this table is navigation, not evidence that the recommendations are implemented.
 
@@ -83,7 +83,7 @@ The phases intentionally separate **F** factual synchronization, **D** human dec
 
 1. **`docs/manifest.toml` — estate inventory.** One record per tracked documentation artifact (or explicit ignore): stable doc ID, path, kind, audience, authority class, status, owner, `valid_as_of_revision`, source, generated outputs, `supersedes`, `superseded_by`, claim IDs, evidence IDs, retention class, and redirect/alias paths. Path is mutable metadata; doc ID is stable.
 2. **`docs/product-contract.toml` — claims and supported journeys.** One record per public or safety-relevant claim: stable claim ID, scoped statement, status (`current|partial|broken|deferred|historical|decision-required`), support level (`public|advanced|internal|migration|hidden`), terms, source/dispatch sites, behavior tests, CI/release lane, docs, owner, last verified revision/result, bypasses, and supersession.
-3. **`docs/glossary.toml` — namespaced vocabulary.** Stable term ID, preferred display, namespace, definition, source types/commands, allowed aliases, deprecated aliases, “not the same as” links, and decision/status. It must cover `WGDR-T01..T12` before broad rewrites.
+3. **`docs/glossary.toml` — namespaced vocabulary.** Stable term ID, preferred display, namespace, definition, source types/commands, allowed aliases, deprecated aliases, “not the same as” links, and decision/status. It must cover `WGDR-T01`–`WGDR-T12` before broad rewrites.
 4. **Evidence/result index — generated from CI and immutable bundles.** It records `executed-pass`, `executed-fail`, `skip`, `inspected-not-run`, `not-selected`, commit/artifact, environment, and evidence class. It must not be hand-edited into a pass.
 
 **`[RECOMMENDATION]`** Generate or check these views from the registries and primary schemas:
@@ -166,7 +166,7 @@ docs/
     <year>/<topic>/
 ```
 
-**`[RECOMMENDATION]`** Preserve existing paths as generated compatibility files, stubs, or aliases until inbound links and external compatibility are reviewed. `docs/design/` and `docs/designs/` must not be merged until every file has status and successor metadata (`WGDR-043`, `047`; `DOC-REC-010`).
+**`[RECOMMENDATION]`** Preserve existing paths as generated compatibility files, stubs, or aliases until inbound links and external compatibility are reviewed. `docs/design/` and `docs/designs/` must not be merged until every file has status and successor metadata (`WGDR-043`, `WGDR-047`; `DOC-REC-010`).
 
 ### 2.5 Owner/domain model
 
@@ -174,12 +174,12 @@ docs/
 |---|---|---|
 | Product council/maintainer | product sentence, supported journeys, public/internal surface, cycle/retry/model-plane policy | every `D-*` decision and public claim status |
 | Documentation steward | manifest schema, IA, style, generated views, redirects, archive policy | factual/structural doc changes; cannot decide product semantics |
-| Domain owner: lifecycle/completion | task states, admission, Done, smoke, cycles, legacy completion | `WGDR-001..007`, `U01/U02/U04` |
-| Domain owner: model/config/operations/release | launcher, routes, profiles, config, doctor, accounting, packaging/platform | `WGDR-008..018`, `U05/U07/U10` |
-| Domain owner: agency/evaluation/chat/functions | persona/assignment/evaluation/learning/history/human flows | `WGDR-019..027`, `U08/U11` |
-| Security council + Fed/Review/Exec/Pilot owners | custody, recovery, transport, trust/review, remote lifecycle, pilot | `WGDR-028..042`, `U09/U12` |
-| Test/release infrastructure | evidence classes, CI selection, smoke ownership, release receipts | `WGDR-002`, `044..046`, every executable acceptance check |
-| Web/manual/tooling owner | source DAGs, converters, generated files, link/asset checks | `WGDR-043`, `U06` |
+| Domain owner: lifecycle/completion | task states, admission, Done, smoke, cycles, legacy completion | `WGDR-001`–`WGDR-007`; `WGDR-U01`, `WGDR-U02`, `WGDR-U04` |
+| Domain owner: model/config/operations/release | launcher, routes, profiles, config, doctor, accounting, packaging/platform | `WGDR-008`–`WGDR-018`; `WGDR-U05`, `WGDR-U07`, `WGDR-U10` |
+| Domain owner: agency/evaluation/chat/functions | persona/assignment/evaluation/learning/history/human flows | `WGDR-019`–`WGDR-027`; `WGDR-U08`, `WGDR-U11` |
+| Security council + Fed/Review/Exec/Pilot owners | custody, recovery, transport, trust/review, remote lifecycle, pilot | `WGDR-028`–`WGDR-042`; `WGDR-U09`, `WGDR-U12` |
+| Test/release infrastructure | evidence classes, CI selection, smoke ownership, release receipts | `WGDR-002`, `WGDR-044`–`WGDR-046`, every executable acceptance check |
+| Web/manual/tooling owner | source DAGs, converters, generated files, link/asset checks | `WGDR-043`, `WGDR-U06` |
 
 **`[RECOMMENDATION]`** Every backlog item remains unassignable until the role is resolved to a named owner and reviewer. Security-sensitive claims require a security reviewer distinct from the prose author; generated public commands require the CLI domain owner and test owner.
 
@@ -192,7 +192,7 @@ docs/
 - **Label/state:** `[INFERENCE]`; current planning conclusion.
 - **Severity/likelihood/confidence:** S1 where false setup/security/release claims authorize human action; observed text conflict and likely human-action risk; high.
 - **Affected boundary/owner:** public setup, safety, release and operations claims; product council plus documentation steward and relevant domain owner.
-- **Evidence:** 49 open drift records include current operator/security conflicts; current source and primary docs directly disagree on launcher behavior, completion flags, smoke, and manual source authority (`WGDR-001..003`, `008`, `029..042`, `043`).
+- **Evidence:** 49 open drift records include current operator/security conflicts; current source and primary docs directly disagree on launcher behavior, completion flags, smoke, and manual source authority (`WGDR-001`–`WGDR-003`, `WGDR-008`, `WGDR-029`–`WGDR-042`, `WGDR-043`).
 - **Recommendation:** factual corrections and visible limitations may proceed; disputed intended behavior must enter §4.
 
 #### `SYNC-002` — a complete inventory and a curated router are different products
@@ -216,7 +216,7 @@ docs/
 - **Label/state:** `[INFERENCE]`; partial.
 - **Severity/likelihood/confidence:** S2; likely cross-plane misreading; high.
 - **Affected boundary/owner:** identity, agency, model, trust, review and remote-execution narratives; product/domain owners.
-- **Evidence:** the typed authority synthesis distinguishes persona, process, principal, route, local trust assertion, capability, review and completion (`21-agency-federation-safety-synthesis.md:15-48,79-184`); register terms `WGDR-T01..T12` preserve collisions.
+- **Evidence:** the typed authority synthesis distinguishes persona, process, principal, route, local trust assertion, capability, review and completion (`21-agency-federation-safety-synthesis.md:15-48,79-184`); register terms `WGDR-T01`–`WGDR-T12` preserve collisions.
 - **Recommendation:** approve glossary entries and generate namespace/maturity tables before global replacements.
 
 #### `SYNC-005` — historical immutability and current discoverability are compatible
@@ -248,7 +248,7 @@ docs/
 - **Label/state:** `[INFERENCE]`; recommended control.
 - **Severity/likelihood/confidence:** S2; likely recurrent drift; high.
 - **Affected boundary/owner:** every public/schema/test/package delta; documentation tooling, domain and release owners.
-- **Evidence:** accepted historical files may be old, while undated designs may already be superseded (`WGDR-047/048`, `R08/R09`). Existing Pi and guide parity gates detect derivative drift by exact source relationship rather than timestamps.
+- **Evidence:** accepted historical files may be old, while undated designs may already be superseded (`WGDR-047`, `WGDR-048`, `WGDR-R08`, `WGDR-R09`). Existing Pi and guide parity gates detect derivative drift by exact source relationship rather than timestamps.
 - **Recommendation:** gate new public surfaces, enum variants, docs, tests, binaries, constants, and generated outputs against manifests; use age only to request review, never to infer falsehood.
 
 ### 3.2 Work types and change rules
@@ -265,10 +265,10 @@ docs/
 
 | Item / type | Trace | Deliverable and dependency | Acceptance / rollback |
 |---|---|---|---|
-| `P0-01` **S/V** freeze baseline | all `WGDR-*`, `T*`, `R*`, `U*` | Export register rows into a machine-readable temporary ledger; assign named owner/reviewer and disposition. No dependency. | Every ID maps to exactly one backlog item, decision, accepted debt, resolved guard, or uncertainty test. Rollback: delete generated temporary output; audit files remain immutable. |
-| `P0-02` **F** claim containment notices | `001..003`, `008..012`, `021/022`, `029..042`, `049` | Add narrowly scoped current-behavior/known-limitation notices only where a false claim can cause immediate action; depends on owner assignment. | Notice cites source and says `broken/partial/decision-required`; does not promise future fix. Revert atomically if source check is wrong. |
-| `P0-03` **D** authority council | `005/006/013..016/028/035`, `T01..T12`, `U01/U02/U12` | Convene product, security, lifecycle, docs and test owners; open decision records listed in §4. | Each record has deadline, approver, alternatives and no prose “resolution” before acceptance. |
-| `P0-04` **V** evidence baseline | `002`, `044..046`, `U04/U05/U07/U09/U10` | Capture checkout-built help, selected CI/test inventory, links/assets, generators, and current journey results in explicit evidence classes. | Fail/skip/not-selected preserved. A timed-out compile is not pass. Baseline artifact is content-addressed or pinned to commit. |
+| `P0-01` **S/V** freeze baseline | all `WGDR-001`–`WGDR-049`, `WGDR-T01`–`WGDR-T12`, `WGDR-R01`–`WGDR-R12`, `WGDR-U01`–`WGDR-U12` | Export register rows into a machine-readable temporary ledger; assign named owner/reviewer and disposition. No dependency. | Every ID maps to exactly one backlog item, decision, accepted debt, resolved guard, or uncertainty test. Rollback: delete generated temporary output; audit files remain immutable. |
+| `P0-02` **F** claim containment notices | `WGDR-001`–`WGDR-003`, `WGDR-008`–`WGDR-012`, `WGDR-021`, `WGDR-022`, `WGDR-029`–`WGDR-042`, `WGDR-049` | Add narrowly scoped current-behavior/known-limitation notices only where a false claim can cause immediate action; depends on owner assignment. | Notice cites source and says `broken/partial/decision-required`; does not promise future fix. Revert atomically if source check is wrong. |
+| `P0-03` **D** authority council | `WGDR-005`, `WGDR-006`, `WGDR-013`–`WGDR-016`, `WGDR-028`, `WGDR-035`, `WGDR-T01`–`WGDR-T12`, `WGDR-U01`, `WGDR-U02`, `WGDR-U12` | Convene product, security, lifecycle, docs and test owners; open decision records listed in §4. | Each record has deadline, approver, alternatives and no prose “resolution” before acceptance. |
+| `P0-04` **V** evidence baseline | `WGDR-002`, `WGDR-044`–`WGDR-046`, `WGDR-U04`, `WGDR-U05`, `WGDR-U07`, `WGDR-U09`, `WGDR-U10` | Capture checkout-built help, selected CI/test inventory, links/assets, generators, and current journey results in explicit evidence classes. | Fail/skip/not-selected preserved. A timed-out compile is not pass. Baseline artifact is content-addressed or pinned to commit. |
 
 ### 3.4 Phase 1 — bounded factual corrections (P0/P1; no moves)
 
@@ -276,12 +276,12 @@ These packages may run in parallel after `P0-01`; packages touching the same sou
 
 | Item / type / owner | Contradiction trace | Update scope | Acceptance |
 |---|---|---|---|
-| `F-ENTRY` **F**, product docs + launcher | `WGDR-008/009/018/043`, `R01`, `U06` | Split attended existing graph, new route-free graph, unattended automation, and upgrade paths across root/docs landing/install/quickstart. Qualify website equivalence until generated. | Checkout-built release-binary human flows list mutations, credentials, plugin/profile/service effects and rollback; no existing-graph Pi prerequisite claim survives. |
-| `F-LIFE` **F**, lifecycle docs | `WGDR-001..007`, `T08/T09`, `U01/U04` | Publish current lifecycle/completion reachability matrix; correct status/dependency/wait/current v3 path; label legacy/special paths and unsupported flags. Do not decide smoke/cycle/retry policy. | Matrix names parser, dispatch, durable evidence and tests; source paths compile; contested rows say decision-required. |
-| `F-MODEL` **F**, model/config/ops | `WGDR-010..018`, `T03/T04`, `U05/U07/U10` | Correct preservation/unknown-key limitations, accounting scope, handler-vs-surface matrix, Pi worker/RPC topology, fallback and package/upgrade facts. | Each example resolves to an allowed surface; route-aware checks pass or limitation is explicit; package differences remain decision-required. |
-| `F-AGENCY` **F**, agency/evaluation/functions/chat | `WGDR-019..027`, `T01/T02/T06/T08/T10`, `U08/U11`, `R10` | Separate completion review receipt, candidate evaluation record and agency performance evaluation; document manual/dormant assignment, current learning disconnect, function schema/planner and onboarding transaction limits. | Authority/effect table says whether each plane gates lifecycle, records cost, feeds learning or schedules work; no synthetic task restoration is implied. |
-| `F-SEC` **F**, security/Fed/Review/Exec/Pilot | `WGDR-028..042`, `T03/T07/T12`, `U09/U12`, `R06..R09` | Narrow “accepted/complete/custodied/ACL/sigchain/quorum/all seams/dispatcher wired/turnkey” to exact current enforcement and deferred boundary. | Security reviewer confirms every claim names enforcement site and negative gap; historical studies remain unchanged; known S1 gaps are conspicuous. |
-| `F-EVIDENCE` **F**, docs/test/release | `WGDR-043..048`, `R03`, `U06/U07/U10` | Remove completeness/currentness claims from curated indexes, classify smoke evidence, update supersession/status metadata externally, correct compile-only diagnosis. | No “complete/current/passed” assertion lacks scope and evidence class; `KEY_DOCS` is labeled curated until generated. |
+| `F-ENTRY` **F**, product docs + launcher | `WGDR-008`, `WGDR-009`, `WGDR-018`, `WGDR-043`, `WGDR-R01`, `WGDR-U06` | Split attended existing graph, new route-free graph, unattended automation, and upgrade paths across root/docs landing/install/quickstart. Qualify website equivalence until generated. | Checkout-built release-binary human flows list mutations, credentials, plugin/profile/service effects and rollback; no existing-graph Pi prerequisite claim survives. |
+| `F-LIFE` **F**, lifecycle docs | `WGDR-001`–`WGDR-007`, `WGDR-T08`, `WGDR-T09`, `WGDR-U01`, `WGDR-U04` | Publish current lifecycle/completion reachability matrix; correct status/dependency/wait/current v3 path; label legacy/special paths and unsupported flags. Do not decide smoke/cycle/retry policy. | Matrix names parser, dispatch, durable evidence and tests; source paths compile; contested rows say decision-required. |
+| `F-MODEL` **F**, model/config/ops | `WGDR-010`–`WGDR-018`, `WGDR-T03`, `WGDR-T04`, `WGDR-U05`, `WGDR-U07`, `WGDR-U10` | Correct preservation/unknown-key limitations, accounting scope, handler-vs-surface matrix, Pi worker/RPC topology, fallback and package/upgrade facts. | Each example resolves to an allowed surface; route-aware checks pass or limitation is explicit; package differences remain decision-required. |
+| `F-AGENCY` **F**, agency/evaluation/functions/chat | `WGDR-019`–`WGDR-027`, `WGDR-T01`, `WGDR-T02`, `WGDR-T06`, `WGDR-T08`, `WGDR-T10`, `WGDR-U08`, `WGDR-U11`, `WGDR-R10` | Separate completion review receipt, candidate evaluation record and agency performance evaluation; document manual/dormant assignment, current learning disconnect, function schema/planner and onboarding transaction limits. | Authority/effect table says whether each plane gates lifecycle, records cost, feeds learning or schedules work; no synthetic task restoration is implied. |
+| `F-SEC` **F**, security/Fed/Review/Exec/Pilot | `WGDR-028`–`WGDR-042`, `WGDR-T03`, `WGDR-T07`, `WGDR-T12`, `WGDR-U09`, `WGDR-U12`, `WGDR-R06`–`WGDR-R09` | Narrow “accepted/complete/custodied/ACL/sigchain/quorum/all seams/dispatcher wired/turnkey” to exact current enforcement and deferred boundary. | Security reviewer confirms every claim names enforcement site and negative gap; historical studies remain unchanged; known S1 gaps are conspicuous. |
+| `F-EVIDENCE` **F**, docs/test/release | `WGDR-043`–`WGDR-048`, `WGDR-R03`, `WGDR-U06`, `WGDR-U07`, `WGDR-U10` | Remove completeness/currentness claims from curated indexes, classify smoke evidence, update supersession/status metadata externally, correct compile-only diagnosis. | No “complete/current/passed” assertion lacks scope and evidence class; `KEY_DOCS` is labeled curated until generated. |
 
 **`[RECOMMENDATION]`** Quick correction packages should be small, domain-scoped commits. They may link to a known issue rather than duplicate volatile implementation detail. They must not perform path moves, archive bodies, or broad search-and-replace.
 
@@ -289,27 +289,27 @@ These packages may run in parallel after `P0-01`; packages touching the same sou
 
 | Item / type | Trace | Dependency / outcome | Acceptance |
 |---|---|---|---|
-| `D-LIFE` **D→I/F** | `001/002/005/006/007`, `U01/U02/U04` | Decide Done flags, owned smoke, cycles, Abandoned retry and legacy reachability; then implement/test or remove/narrow. | One state/command table across parser, operator/worker dispatch, manual, agent contract and CI; real human/worker flows. |
-| `D-PRODUCT` **D→I/F** | `008/009/013..018`, `043`, `U05/U06/U07/U10` | Decide Pi scope, handler support, package/platform/public command membership, source/website relationship. | Scoped product sentence and support matrix; release archive membership and route-aware readiness tests. |
-| `D-AGENCY` **D→I/F** | `019..023`, `T01/T02/T06..T08`, `U08` | Decide identity mutability, auto-assignment product, review ledger/virtual projections, learning semantics and credit. | Preserve v3 as sole lifecycle consumer unless an explicit contrary ADR passes; exactly-once/non-authoritative acceptance from audit 23. |
-| `D-SECURITY` **D→I/F** | `028..039`, `T07/T12`, `U09/U12` | Ratify or mark experimental; choose custody/recovery/history/revocation/message sealing/review quorum/bypass policies. | Threat-model decisions, adversarial tests, and docs status agree; no test alone ratifies ADR. |
-| `D-REMOTE` **D→I/F** | `040..042` | Choose coordinator-owned remote lifecycle vs explicit manual-only; choose Pilot bootstrap vs turnkey. | Restart/failure-injection two-home flow if shipped; otherwise admission/help/runbook reject turnkey interpretation. |
-| `D-TERMS` **D/S** | `T01..T12`, `R04/R05/R10/R12` | Ratify namespaced glossary and maturity vocabulary after domain decisions. | Each ambiguous term has preferred qualified forms, aliases and source types; generated lint checks cross-plane public text. |
-| `I-CONTROL-INTEGRITY` **I→F/V** | `010/011/012/049`; bounded factual defects from `004/026` | Repair behaviors where an existing contract is already unambiguous (stateful IPC response delivery, lossless/validated config edits within the approved key policy, dated/scope-correct accounting, admission/onboarding atomicity). Product choices such as extension namespaces or override roles remain decision-gated. | Regression fails on the snapshot and passes after the fix; real socket/config/dated-accounting/admission flow runs; factual docs and contract status update in the same candidate. |
-| `V-UNCERTAINTIES` **V** | `U01..U12` | Execute the bounded call-graph, fault, provider, generator, toolchain, platform and adversarial checks in §4.3; can proceed per domain after baseline. | Result remains pass/fail/skip/unknown with exact revision/environment; no inconclusive check closes its row. |
+| `D-LIFE` **D→I/F** | `WGDR-001`, `WGDR-002`, `WGDR-005`, `WGDR-006`, `WGDR-007`, `WGDR-U01`, `WGDR-U02`, `WGDR-U04` | Decide Done flags, owned smoke, cycles, Abandoned retry and legacy reachability; then implement/test or remove/narrow. | One state/command table across parser, operator/worker dispatch, manual, agent contract and CI; real human/worker flows. |
+| `D-PRODUCT` **D→I/F** | `WGDR-008`, `WGDR-009`, `WGDR-013`–`WGDR-018`, `WGDR-043`, `WGDR-U05`, `WGDR-U06`, `WGDR-U07`, `WGDR-U10` | Decide Pi scope, handler support, package/platform/public command membership, source/website relationship. | Scoped product sentence and support matrix; release archive membership and route-aware readiness tests. |
+| `D-AGENCY` **D→I/F** | `WGDR-019`–`WGDR-023`, `WGDR-T01`, `WGDR-T02`, `WGDR-T06`–`WGDR-T08`, `WGDR-U08` | Decide identity mutability, auto-assignment product, review ledger/virtual projections, learning semantics and credit. | Preserve v3 as sole lifecycle consumer unless an explicit contrary ADR passes; exactly-once/non-authoritative acceptance from audit 23. |
+| `D-SECURITY` **D→I/F** | `WGDR-028`–`WGDR-039`, `WGDR-T07`, `WGDR-T12`, `WGDR-U09`, `WGDR-U12` | Ratify or mark experimental; choose custody/recovery/history/revocation/message sealing/review quorum/bypass policies. | Threat-model decisions, adversarial tests, and docs status agree; no test alone ratifies ADR. |
+| `D-REMOTE` **D→I/F** | `WGDR-040`–`WGDR-042` | Choose coordinator-owned remote lifecycle vs explicit manual-only; choose Pilot bootstrap vs turnkey. | Restart/failure-injection two-home flow if shipped; otherwise admission/help/runbook reject turnkey interpretation. |
+| `D-TERMS` **D/S** | `WGDR-T01`–`WGDR-T12`, `WGDR-R04`, `WGDR-R05`, `WGDR-R10`, `WGDR-R12` | Ratify namespaced glossary and maturity vocabulary after domain decisions. | Each ambiguous term has preferred qualified forms, aliases and source types; generated lint checks cross-plane public text. |
+| `I-CONTROL-INTEGRITY` **I→F/V** | `WGDR-010`, `WGDR-011`, `WGDR-012`, `WGDR-049`; bounded factual defects from `WGDR-004`, `WGDR-026` | Repair behaviors where an existing contract is already unambiguous (stateful IPC response delivery, lossless/validated config edits within the approved key policy, dated/scope-correct accounting, admission/onboarding atomicity). Product choices such as extension namespaces or override roles remain decision-gated. | Regression fails on the snapshot and passes after the fix; real socket/config/dated-accounting/admission flow runs; factual docs and contract status update in the same candidate. |
+| `V-UNCERTAINTIES` **V** | `WGDR-U01`–`WGDR-U12` | Execute the bounded call-graph, fault, provider, generator, toolchain, platform and adversarial checks in §4.3; can proceed per domain after baseline. | Result remains pass/fail/skip/unknown with exact revision/environment; no inconclusive check closes its row. |
 
 ### 3.6 Phase 3 — structural contracts and generators (P1; after schema and relevant decisions)
 
 | Item / type | Trace | Deliverable / dependency | Acceptance |
 |---|---|---|---|
-| `S-MANIFEST` **S** | `043/047/048`, all bundle/navigation drift | Implement `docs/manifest.toml` schema and importer; depends on `P0-01`. | 100% of tracked docs/root Markdown classified or explicitly ignored; unique IDs/paths; referenced owners/files/claim IDs exist. |
-| `S-CONTRACT` **S/V** | `001..049` | Implement `docs/product-contract.toml`; depends on decision status vocabulary, not necessarily all decisions resolving. | Every public/safety claim and supported journey has source, test selection, status, owner and docs; unresolved rows are machine-visible. |
-| `S-GLOSSARY` **S** | `T01..T12` | Implement glossary and source mappings; depends on `D-TERMS`. | Enum/schema additions and forbidden unqualified cross-plane terms create actionable failures, with allowlisted historical exemptions. |
-| `S-CLI` **S/V** | `001/014/018/043`, `DOC-003/005` | Generate public CLI from support contract + reachable dispatch; keyed authored examples; depends on `D-LIFE/D-PRODUCT`. | Parser-only flag cannot appear as supported; every public command has positive/negative release-binary test; internal commands are tagged/hidden. |
-| `S-SCHEMA` **S/V** | `003/019..023/033/037..039`, terminology rows | Generate lifecycle/status, identity/trust, review/evaluation, ingress and maturity tables from reviewed schemas/contracts. | Adding/changing variant requires disposition; round-trip/schema tests and clean regeneration pass. |
-| `S-DAG` **S/V** | `043`, `U06`, `SYNC-007` | Declare manual/website/organizational-pattern source DAG; fail closed on converter failure. | Clean checkout regeneration is diff-free; output embeds source revision/generator; raw Typst cannot be published as `.md` on failure. |
-| `S-LINKS` **S/V** | `043`, `DOC-RISK-004` | Policy-aware current-doc link/anchor/asset checker with archive exemptions. | Current/public broken local links/assets fail; exemption has owner/reason/expiry; historical absolute evidence is classified rather than blindly rewritten. |
-| `S-EVIDENCE` **S/V** | `002/044..046`, all claims | Generate selected-target/scenario/release evidence dashboard and orphan/delta checks. | Required lanes cannot pass with zero assertions; skip/not-selected visible; all 176 integration targets and 324 smoke entries classified at baseline. |
+| `S-MANIFEST` **S** | `WGDR-043`, `WGDR-047`, `WGDR-048`, all bundle/navigation drift | Implement `docs/manifest.toml` schema and importer; depends on `P0-01`. | 100% of tracked docs/root Markdown classified or explicitly ignored; unique IDs/paths; referenced owners/files/claim IDs exist. |
+| `S-CONTRACT` **S/V** | `WGDR-001`–`WGDR-049` | Implement `docs/product-contract.toml`; depends on decision status vocabulary, not necessarily all decisions resolving. | Every public/safety claim and supported journey has source, test selection, status, owner and docs; unresolved rows are machine-visible. |
+| `S-GLOSSARY` **S** | `WGDR-T01`–`WGDR-T12` | Implement glossary and source mappings; depends on `D-TERMS`. | Enum/schema additions and forbidden unqualified cross-plane terms create actionable failures, with allowlisted historical exemptions. |
+| `S-CLI` **S/V** | `WGDR-001`, `WGDR-014`, `WGDR-018`, `WGDR-043`, `DOC-003`, `DOC-005` | Generate public CLI from support contract + reachable dispatch; keyed authored examples; depends on `D-LIFE/D-PRODUCT`. | Parser-only flag cannot appear as supported; every public command has positive/negative release-binary test; internal commands are tagged/hidden. |
+| `S-SCHEMA` **S/V** | `WGDR-003`, `WGDR-019`–`WGDR-023`, `WGDR-033`, `WGDR-037`–`WGDR-039`, terminology rows | Generate lifecycle/status, identity/trust, review/evaluation, ingress and maturity tables from reviewed schemas/contracts. | Adding/changing variant requires disposition; round-trip/schema tests and clean regeneration pass. |
+| `S-DAG` **S/V** | `WGDR-043`, `WGDR-U06`, `SYNC-007` | Declare manual/website/organizational-pattern source DAG; fail closed on converter failure. | Clean checkout regeneration is diff-free; output embeds source revision/generator; raw Typst cannot be published as `.md` on failure. |
+| `S-LINKS` **S/V** | `WGDR-043`, `DOC-RISK-004` | Policy-aware current-doc link/anchor/asset checker with archive exemptions. | Current/public broken local links/assets fail; exemption has owner/reason/expiry; historical absolute evidence is classified rather than blindly rewritten. |
+| `S-EVIDENCE` **S/V** | `WGDR-002`, `WGDR-044`–`WGDR-046`, all claims | Generate selected-target/scenario/release evidence dashboard and orphan/delta checks. | Required lanes cannot pass with zero assertions; skip/not-selected visible; all 176 integration targets and 324 smoke entries classified at baseline. |
 
 ### 3.7 Phase 4 — synchronize current docs and migrate IA (P1/P2)
 
@@ -326,9 +326,9 @@ These packages may run in parallel after `P0-01`; packages touching the same sou
 
 | Item / type | Trace | Acceptance |
 |---|---|---|
-| `A-BUNDLES` **S** | `WGDR-028/036/043/047/048`, `R08/R09` | Every audit/report/study/design/incident bundle has an index with observed revision, current applicability, closure and successor; historical body hashes remain unchanged. |
-| `A-STATUS` **S/F** | `028/047/048` | Accepted/proposed/implemented/partial/superseded metadata is section-scoped where needed; product decision owner approves, tests never self-ratify policy. |
-| `A-DESIGNS` **S** | `043/047` | Inventory all `design/` and `designs/` files before consolidation; duplicates need provenance and owner decision; no age-only merge/delete. |
+| `A-BUNDLES` **S** | `WGDR-028`, `WGDR-036`, `WGDR-043`, `WGDR-047`, `WGDR-048`, `WGDR-R08`, `WGDR-R09` | Every audit/report/study/design/incident bundle has an index with observed revision, current applicability, closure and successor; historical body hashes remain unchanged. |
+| `A-STATUS` **S/F** | `WGDR-028`, `WGDR-047`, `WGDR-048` | Accepted/proposed/implemented/partial/superseded metadata is section-scoped where needed; product decision owner approves, tests never self-ratify policy. |
+| `A-DESIGNS` **S** | `WGDR-043`, `WGDR-047` | Inventory all `design/` and `designs/` files before consolidation; duplicates need provenance and owner decision; no age-only merge/delete. |
 | `A-RETENTION` **D/S** | all historical/accepted-debt rows | Ratify retention classes and external-link compatibility window. Archive only with replacement or explicit “no current replacement,” reason and stable lookup. |
 
 ### 3.9 Phase 6 — continuous drift prevention (release gate)
@@ -356,18 +356,18 @@ These are not factual copy edits. The indicated human authority must decide them
 
 | Decision ID / priority | Human question | Register trace | Recommended default, not current fact | Required decision artifact and acceptance |
 |---|---|---|---|---|
-| `DEC-01` P0 completion | Are legacy Done flags removed or restored? Does owned smoke gate Done, publication, or neither? | `WGDR-001/002/007`, `U01` | Keep v3 publication-derived completion sole authority; bind any required smoke to immutable publication evidence, not legacy flags. | Accepted lifecycle decision; operator+worker parser/dispatch/help/tests/agent contract one table. |
-| `DEC-02` P0 lifecycle | Are cycles supported under v3? Is Abandoned reversible? Is manual claim an explicit override? | `004/005/006`, `U02`, `R12` | Default claim shares admission; override/restore is explicit, reasoned, fenced. | Lifecycle ADR and human-flow fixtures for pause/time/cycle/retry. |
-| `DEC-03` P0 product/model | Is Pi sole attended, sole recommended, or sole overall plane? Which handlers are unattended? | `009/014/015/016`, `U05` | Scope “sole” to attended/recommended unless strict worker admission and tests say otherwise. | Product sentence + surface capability matrix + route-aware doctor/setup tests. |
-| `DEC-04` P1 public surface | Which commands, binaries (Casa), install modes and platforms are supported? | `013/018/043/044`, `U07/U10` | Explicit public/advanced/internal/source-only/platform states; no discovery-based implication. | Product/release manifest, archive tests and platform evidence. |
-| `DEC-05` P0 evaluation/agency | How are review attempts represented and how does accepted work feed learning? What is performance? | `019..023`, `T01/T02/T06/T08`, `U08` | Adopt audit 23: append-only review attempt ledger + virtual non-schedulable projection + separate exactly-once learning projector; v3 alone controls lifecycle. | Evaluation ADR including credit, anti-gaming, migration and 12 acceptance tests from audit 23 §6.4. |
-| `DEC-06` P0 identity/human | What binds agency persona, `wgid`, runtime worker and human classification? | `019`, `T01/T02/T07/T08`, synthesis `XAUTH-005` | Signed/authorized binding record; never derive local trust from self-asserted metadata or an unaudited `--human` boolean. | Product/security record with rotation/evolution and mistaken-human negative tests. |
-| `DEC-07` P0 federation governance | Are Fed ADRs accepted, or is implementation experimental? What custody/recovery/history/revocation policy is promised? | `028..036`, `U12`, `R06/R07` | Do not claim hostile-worker custody until separate authenticated signer exists; preserve accepted no-offline-FS debt explicitly. | Accepted threat model, custody/recovery ADR updates and adversarial acceptance. |
-| `DEC-08` P0 review | Is audit best-effort or required? Is Pass 2 escalation or independent quorum? Which bypasses are allowed? | `037..039`, `U09` | Required durable digest-bound record at enforcing edges; call current model path escalation until quorum exists; audit high-value bypass. | Review policy matrix, signed/tamper-verified persistence decision, live source provenance tests. |
-| `DEC-09` P0 remote/Pilot | Is remote placement coordinator-owned or manual? Is Pilot bootstrap or turnkey? | `040..042` | Reject automatic/turnkey interpretation until owned restart-safe state machine and real-host check exist. | WG-Exec/Pilot decision plus two-home restart/failure flow or explicit admission/help refusal. |
-| `DEC-10` P1 docs source graph | Is unified Typst or chapter Typst canonical? Is website generated here or an external consumer? | `043`, `U06` | One declared DAG; generated site/manual outputs only; converter failure is fatal. | Docs build ADR, pinned generator, clean regen and website digest/link test. |
-| `DEC-11` P1 vocabulary | Ratify namespaced meanings and aliases for all collision terms. | `T01..T12`, `R04/R05/R10` | Use qualified nouns at cross-plane boundaries; keep compatibility spellings as explicit aliases only. | Approved glossary with type links and generated public tables. |
-| `DEC-12` P1 persistence claim | What crash/platform guarantee is public? | `U03/U11` | Promise only tested process-crash/Unix bounds until parent fsync and cross-platform locking/fault tests exist. | Persistence/platform ADR and fault/concurrency evidence. |
+| `DEC-01` P0 completion | Are legacy Done flags removed or restored? Does owned smoke gate Done, publication, or neither? | `WGDR-001`, `WGDR-002`, `WGDR-007`, `WGDR-U01` | Keep v3 publication-derived completion sole authority; bind any required smoke to immutable publication evidence, not legacy flags. | Accepted lifecycle decision; operator+worker parser/dispatch/help/tests/agent contract one table. |
+| `DEC-02` P0 lifecycle | Are cycles supported under v3? Is Abandoned reversible? Is manual claim an explicit override? | `WGDR-004`, `WGDR-005`, `WGDR-006`, `WGDR-U02`, `WGDR-R12` | Default claim shares admission; override/restore is explicit, reasoned, fenced. | Lifecycle ADR and human-flow fixtures for pause/time/cycle/retry. |
+| `DEC-03` P0 product/model | Is Pi sole attended, sole recommended, or sole overall plane? Which handlers are unattended? | `WGDR-009`, `WGDR-014`, `WGDR-015`, `WGDR-016`, `WGDR-U05` | Scope “sole” to attended/recommended unless strict worker admission and tests say otherwise. | Product sentence + surface capability matrix + route-aware doctor/setup tests. |
+| `DEC-04` P1 public surface | Which commands, binaries (Casa), install modes and platforms are supported? | `WGDR-013`, `WGDR-018`, `WGDR-043`, `WGDR-044`, `WGDR-U07`, `WGDR-U10` | Explicit public/advanced/internal/source-only/platform states; no discovery-based implication. | Product/release manifest, archive tests and platform evidence. |
+| `DEC-05` P0 evaluation/agency | How are review attempts represented and how does accepted work feed learning? What is performance? | `WGDR-019`–`WGDR-023`, `WGDR-T01`, `WGDR-T02`, `WGDR-T06`, `WGDR-T08`, `WGDR-U08` | Adopt audit 23: append-only review attempt ledger + virtual non-schedulable projection + separate exactly-once learning projector; v3 alone controls lifecycle. | Evaluation ADR including credit, anti-gaming, migration and 12 acceptance tests from audit 23 §6.4. |
+| `DEC-06` P0 identity/human | What binds agency persona, `wgid`, runtime worker and human classification? | `WGDR-019`, `WGDR-T01`, `WGDR-T02`, `WGDR-T07`, `WGDR-T08`, synthesis `XAUTH-005` | Signed/authorized binding record; never derive local trust from self-asserted metadata or an unaudited `--human` boolean. | Product/security record with rotation/evolution and mistaken-human negative tests. |
+| `DEC-07` P0 federation governance | Are Fed ADRs accepted, or is implementation experimental? What custody/recovery/history/revocation policy is promised? | `WGDR-028`–`WGDR-036`, `WGDR-U12`, `WGDR-R06`, `WGDR-R07` | Do not claim hostile-worker custody until separate authenticated signer exists; preserve accepted no-offline-FS debt explicitly. | Accepted threat model, custody/recovery ADR updates and adversarial acceptance. |
+| `DEC-08` P0 review | Is audit best-effort or required? Is Pass 2 escalation or independent quorum? Which bypasses are allowed? | `WGDR-037`–`WGDR-039`, `WGDR-U09` | Required durable digest-bound record at enforcing edges; call current model path escalation until quorum exists; audit high-value bypass. | Review policy matrix, signed/tamper-verified persistence decision, live source provenance tests. |
+| `DEC-09` P0 remote/Pilot | Is remote placement coordinator-owned or manual? Is Pilot bootstrap or turnkey? | `WGDR-040`–`WGDR-042` | Reject automatic/turnkey interpretation until owned restart-safe state machine and real-host check exist. | WG-Exec/Pilot decision plus two-home restart/failure flow or explicit admission/help refusal. |
+| `DEC-10` P1 docs source graph | Is unified Typst or chapter Typst canonical? Is website generated here or an external consumer? | `WGDR-043`, `WGDR-U06` | One declared DAG; generated site/manual outputs only; converter failure is fatal. | Docs build ADR, pinned generator, clean regen and website digest/link test. |
+| `DEC-11` P1 vocabulary | Ratify namespaced meanings and aliases for all collision terms. | `WGDR-T01`–`WGDR-T12`, `WGDR-R04`, `WGDR-R05`, `WGDR-R10` | Use qualified nouns at cross-plane boundaries; keep compatibility spellings as explicit aliases only. | Approved glossary with type links and generated public tables. |
+| `DEC-12` P1 persistence claim | What crash/platform guarantee is public? | `WGDR-U03`, `WGDR-U11` | Promise only tested process-crash/Unix bounds until parent fsync and cross-platform locking/fault tests exist. | Persistence/platform ADR and fault/concurrency evidence. |
 
 ### 4.2 Factual edits versus product/code decisions
 
@@ -386,16 +386,16 @@ These are not factual copy edits. The indicated human authority must decide them
 
 ### 4.3 Uncertainty disposition
 
-**`[RECOMMENDATION]`** `WGDR-U01..U12` remain open until their proposed checks execute. They must appear in the contract as `unknown` or `suspected-drift`, never be converted to `current` by this roadmap. Specifically:
+**`[RECOMMENDATION]`** `WGDR-U01`–`WGDR-U12` remain open until their proposed checks execute. They must appear in the contract as `unknown` or `suspected-drift`, never be converted to `current` by this roadmap. Specifically:
 
-- call-graph/path fixtures: `U01`, `U08`;
-- lifecycle/platform/concurrency/fault tests: `U03`, `U04`, `U11`;
-- live provider/reviewer/child argv evidence: `U05`, `U09`;
-- generator/website/toolchain provenance: `U06`, `U07`;
-- exact-archive Windows/macOS runtime: `U10`;
-- security policy/adversarial chain tests: `U12`.
+- call-graph/path fixtures: `WGDR-U01`, `WGDR-U08`;
+- lifecycle/platform/concurrency/fault tests: `WGDR-U03`, `WGDR-U04`, `WGDR-U11`;
+- live provider/reviewer/child argv evidence: `WGDR-U05`, `WGDR-U09`;
+- generator/website/toolchain provenance: `WGDR-U06`, `WGDR-U07`;
+- exact-archive Windows/macOS runtime: `WGDR-U10`;
+- security policy/adversarial chain tests: `WGDR-U12`.
 
-**`[RECOMMENDATION]`** Resolved/non-issue rows `WGDR-R01..R12` become regression guards, not cleanup targets. Preserve route-free init, attended discovery, agent-guide parity, fail-closed trust resolution, separate assigned/agency fields, accepted offline-FS limitation, task-scoped Exec grants, immutable historical reports, distinct completion/performance evaluation, worker capability interception, and the narrowed cycle uncertainty.
+**`[RECOMMENDATION]`** Resolved/non-issue rows `WGDR-R01`–`WGDR-R12` become regression guards, not cleanup targets. Preserve route-free init, attended discovery, agent-guide parity, fail-closed trust resolution, separate assigned/agency fields, accepted offline-FS limitation, task-scoped Exec grants, immutable historical reports, distinct completion/performance evaluation, worker capability interception, and the narrowed cycle uncertainty.
 
 ## 5. Risks, safeguards, and rollback/archive policy
 
@@ -428,11 +428,11 @@ These are not factual copy edits. The indicated human authority must decide them
 
 The synchronization program is complete only when all of the following hold:
 
-- every `WGDR-001..049`, `WGDR-T01..T12`, `WGDR-R01..R12`, and `WGDR-U01..U12` has a machine-readable disposition, owner, evidence and successor/decision link;
+- every `WGDR-001`–`WGDR-049`, `WGDR-T01`–`WGDR-T12`, `WGDR-R01`–`WGDR-R12`, and `WGDR-U01`–`WGDR-U12` has a machine-readable disposition, owner, evidence and successor/decision link;
 - all tracked docs/root Markdown are in the estate manifest or reviewed ignore list; every current/public/safety document has owner and valid revision;
 - every public/safety claim joins accepted policy (where normative), reachable source, behavior evidence class, CI/release selection and generated docs;
 - current command reference has no parser-only supported flag and no unclassified public command;
-- glossary tables distinguish the authority namespaces and maturity states in `WGDR-T01..T12`;
+- glossary tables distinguish the authority namespaces and maturity states in `WGDR-T01`–`WGDR-T12`;
 - the four supported operator journeys pass actual release-binary human-flow tests on declared platforms and list effects/rollback;
 - current lifecycle, evaluation, trust/review, ingest, remote and maturity matrices agree with accepted decisions and source;
 - manual, website, command, schema and compatibility regeneration is deterministic and diff-free from a clean checkout;
@@ -557,7 +557,7 @@ Bounded result: 281 of the 570 pre-artifact docs Markdown files matched this del
 - Typed authority/trust and security seams: [`21-agency-federation-safety-synthesis.md`](21-agency-federation-safety-synthesis.md), especially `XAUTH-001..010` and §6.
 - Target product/IA/contract/evidence model: [`22-product-docs-quality-synthesis.md`](22-product-docs-quality-synthesis.md), especially §§2.4–2.6 and `PRODUCT-REC-001..015`.
 - Evaluation representation and learning decisions: [`23-evaluation-evolvability-cutover.md`](23-evaluation-evolvability-cutover.md), especially §§5–6.
-- Deduplicated contradiction authority: [`30-contradiction-and-drift-register.md`](30-contradiction-and-drift-register.md), `WGDR-001..049`, `T01..T12`, `R01..R12`, `U01..U12`.
+- Deduplicated contradiction authority: [`30-contradiction-and-drift-register.md`](30-contradiction-and-drift-register.md), `WGDR-001`–`WGDR-049`, `WGDR-T01`–`WGDR-T12`, `WGDR-R01`–`WGDR-R12`, `WGDR-U01`–`WGDR-U12`.
 
 ### 7.4 Limitations
 
