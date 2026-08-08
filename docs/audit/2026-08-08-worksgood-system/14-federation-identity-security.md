@@ -342,7 +342,7 @@ Result at initial evidence collection: worktree/main `98b319c36aa8a21fd4506fc746
 ```bash
 git diff --quiet \
   b0892ea7496fd2cc8f641417a3d8e33ca9add369..HEAD -- \
-  src/identity src/federation.rs src/cli.rs \
+  src/identity src/federation.rs src/cli.rs src/secret.rs \
   src/commands/identity_cmd.rs src/commands/msg.rs \
   docs/ADR-fed-000-acceptance-brief.md \
   docs/ADR-fed-001-identity-key-model.md \
@@ -353,7 +353,8 @@ git diff --quiet \
   tests/smoke/scenarios/federation_spark_two_graphs.sh \
   tests/smoke/scenarios/federation_node_inbox_cross_graph.sh \
   tests/smoke/scenarios/federation_recovery_portable_state.sh \
-  tests/smoke/scenarios/federation_acl_ucan_delegation.sh
+  tests/smoke/scenarios/federation_acl_ucan_delegation.sh \
+  tests/smoke/manifest.toml
 ```
 
 This binds the tested snapshot to the submitted output without claiming that the later artifact-only/merge commits themselves were the revision on which tests ran. The completion manifest's Git output is authoritative for the final submitted commit and tree; this report's `98b319…` is the explicitly identified execution revision.
@@ -383,9 +384,10 @@ Exit status: 0 for both. Build emitted unrelated existing warnings. Test result:
 ```bash
 test -s docs/audit/2026-08-08-worksgood-system/14-federation-identity-security.md
 git diff --check
+git show --check --oneline HEAD
 ```
 
-Exit status: 0 for each command. `test -s` therefore established that the required deliverable existed and was non-empty; `git diff --check` reported no whitespace errors.
+Exit status: 0 for each command. `test -s` therefore established that the required deliverable existed and was non-empty. `git diff --check` checked the final pre-commit amendment, and the post-commit `git show --check --oneline HEAD` bound the same whitespace validation to the exact submitted commit recorded by the completion manifest rather than relying on an empty working-tree diff.
 
 ### 7.3 Federation smoke execution
 
