@@ -2403,11 +2403,16 @@ fn activity_pulse_failure(app: &VizApp) -> bool {
         .coord_last_tick
         .and_then(|tick| tick.elapsed().ok())
         .is_some_and(|age| age.as_secs() >= 30);
-    let disk_warning = app
-        .async_fs
-        .cached_disk_snapshot()
-        .is_some_and(|snapshot| snapshot.level != worksgood::disk_sentinel::DiskLevel::Healthy);
-    !app.vitals.daemon_running || coord_stale || disk_warning || app.service_health.archival_pending
+    let disk_warning = app.service_health.disk_sentinel_enabled
+        && app
+            .async_fs
+            .cached_disk_snapshot()
+            .is_some_and(|snapshot| snapshot.level != worksgood::disk_sentinel::DiskLevel::Healthy);
+    !app.vitals.daemon_running
+        || coord_stale
+        || disk_warning
+        || !app.service_health.admission_deferred.is_empty()
+        || app.service_health.archival_pending
 }
 
 fn cached_activity_pulse(app: &VizApp, symbols: SymbolMode) -> String {
@@ -2428,6 +2433,12 @@ fn cached_activity_pulse(app: &VizApp, symbols: SymbolMode) -> String {
                 pulse.push_str(&format!("○0/{max}"));
             } else {
                 pulse.push_str(&format!("●{}/{max}", app.vitals.agents_alive));
+            }
+            if app.service_health.max_build_agents > 0 {
+                pulse.push_str(&format!(
+                    "B{}/{}",
+                    app.service_health.build_heavy_active, app.service_health.max_build_agents
+                ));
             }
             if app.task_counts.ready > 0 {
                 pulse.push_str(&format!("⊳{}", app.task_counts.ready));
@@ -2453,6 +2464,12 @@ fn cached_activity_pulse(app: &VizApp, symbols: SymbolMode) -> String {
                 String::new()
             };
             pulse.push_str(&format!("A{}/{max}", app.vitals.agents_alive));
+            if app.service_health.max_build_agents > 0 {
+                pulse.push_str(&format!(
+                    "B{}/{}",
+                    app.service_health.build_heavy_active, app.service_health.max_build_agents
+                ));
+            }
             if app.task_counts.ready > 0 {
                 pulse.push_str(&format!("Q{}", app.task_counts.ready));
             }
@@ -3628,7 +3645,11 @@ fn render_legacy_context_row(frame: &mut Frame, app: &mut VizApp, area: Rect, ch
         };
         let daemon_warning = (!app.vitals.daemon_running || coord_age.is_some_and(|age| age >= 30))
             .then_some(daemon_long.clone());
-        let disk = app.async_fs.cached_disk_snapshot();
+        let disk = app
+            .service_health
+            .disk_sentinel_enabled
+            .then(|| app.async_fs.cached_disk_snapshot())
+            .flatten();
         let disk_headroom = disk
             .as_ref()
             .map(|snapshot| snapshot.projected_headroom_bytes as f64 / (1024.0 * 1024.0 * 1024.0));
@@ -3647,8 +3668,13 @@ fn render_legacy_context_row(frame: &mut Frame, app: &mut VizApp, area: Rect, ch
         });
 
         let mut long = format!(
-            "A{}/{} · R{} · Q{}",
-            app.vitals.agents_alive, max, app.vitals.running, app.task_counts.ready
+            "A{}/{} · B{}/{} · R{} · Q{}",
+            app.vitals.agents_alive,
+            max,
+            app.service_health.build_heavy_active,
+            app.service_health.max_build_agents,
+            app.vitals.running,
+            app.task_counts.ready
         );
         if app.task_counts.pending_eval > 0 {
             long.push_str(&format!(" · E{}", app.task_counts.pending_eval));
@@ -3656,17 +3682,36 @@ fn render_legacy_context_row(frame: &mut Frame, app: &mut VizApp, area: Rect, ch
         long.push_str(&format!(" · {daemon_long}"));
         if let Some(disk) = &disk_long {
             long.push_str(&format!(" · {disk}"));
+        } else if !app.service_health.disk_sentinel_enabled {
+            long.push_str(" · disk off (headroom n/a)");
+        }
+        if !app.service_health.admission_deferred.is_empty() {
+            long.push_str(&format!(
+                " · deferred {}",
+                app.service_health.admission_deferred.len()
+            ));
         }
 
         let mut compact = format!(
-            "A{}/{} R{} Q{}",
-            app.vitals.agents_alive, max, app.vitals.running, app.task_counts.ready
+            "A{}/{} B{}/{} R{} Q{}",
+            app.vitals.agents_alive,
+            max,
+            app.service_health.build_heavy_active,
+            app.service_health.max_build_agents,
+            app.vitals.running,
+            app.task_counts.ready
         );
         if app.task_counts.pending_eval > 0 {
             compact.push_str(&format!(" E{}", app.task_counts.pending_eval));
         }
         if let Some(warning) = &daemon_warning {
             compact.push_str(&format!(" {warning}"));
+        }
+        if !app.service_health.admission_deferred.is_empty() {
+            compact.push_str(&format!(
+                " W{}",
+                app.service_health.admission_deferred.len()
+            ));
         }
         if let Some(snapshot) = disk.as_ref() {
             let marker = if snapshot.level == worksgood::disk_sentinel::DiskLevel::Healthy {
@@ -3689,6 +3734,9 @@ fn render_legacy_context_row(frame: &mut Frame, app: &mut VizApp, area: Rect, ch
         }
         if let Some(warning) = disk_warning {
             warning_parts.push(warning);
+        }
+        if !app.service_health.admission_deferred.is_empty() {
+            warning_parts.push(format!("W{}", app.service_health.admission_deferred.len()));
         }
         let warning = warning_parts.join(" ");
         let candidates = [long.as_str(), compact.as_str(), warning.as_str()];
@@ -11611,6 +11659,62 @@ fn draw_service_health_detail(frame: &mut Frame, app: &VizApp) {
         Span::styled(format!("  ({} total)", health.agents_total), dim_style),
     ]));
 
+    lines.push(Line::from(vec![
+        Span::styled("  Build-heavy: ", label_style),
+        Span::styled(
+            format!(
+                "{} active / {} max ({})",
+                health.build_heavy_active, health.max_build_agents, health.max_build_agents_source
+            ),
+            value_style,
+        ),
+    ]));
+    if health.max_build_agents_source == "explicit" && health.max_build_agents < health.agents_max {
+        lines.push(Line::from(vec![
+            Span::styled("  Throttle: ", label_style),
+            Span::styled("explicit — raise with ", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                format!(
+                    "wg config set dispatcher.resource_management.max_build_agents {}",
+                    health.agents_max
+                ),
+                Style::default().fg(Color::Cyan),
+            ),
+        ]));
+    }
+    if health.disk_sentinel_enabled {
+        lines.push(Line::from(vec![
+            Span::styled("  Disk sentinel: ", label_style),
+            Span::styled("enabled", value_style),
+        ]));
+    } else {
+        lines.push(Line::from(vec![
+            Span::styled("  Disk sentinel: ", label_style),
+            Span::styled(
+                "disabled — projected headroom unavailable",
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]));
+    }
+    if !health.admission_deferred.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled("  Admission waiting: ", label_style),
+            Span::styled(
+                format!(
+                    "{} task(s); no attempt charged",
+                    health.admission_deferred.len()
+                ),
+                Style::default().fg(Color::Yellow),
+            ),
+        ]));
+        for waiting in health.admission_deferred.iter().take(4) {
+            lines.push(Line::from(vec![
+                Span::styled(format!("    {}: ", waiting.task_id), label_style),
+                Span::styled(waiting.reason.clone(), Style::default().fg(Color::Yellow)),
+            ]));
+        }
+    }
+
     // Paused
     if health.paused {
         let pause_color = if health.provider_auto_pause {
@@ -11819,6 +11923,25 @@ fn draw_service_control_panel(frame: &mut Frame, app: &VizApp) {
         ),
         Span::styled(format!("  ({} total)", health.agents_total), dim_style),
     ]));
+    lines.push(Line::from(vec![
+        Span::styled("  Build-heavy: ", label_style),
+        Span::styled(
+            format!(
+                "{}/{} ({})",
+                health.build_heavy_active, health.max_build_agents, health.max_build_agents_source
+            ),
+            value_style,
+        ),
+    ]));
+    if !health.admission_deferred.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled("  Admission waiting: ", label_style),
+            Span::styled(
+                format!("{} task(s)", health.admission_deferred.len()),
+                Style::default().fg(Color::Yellow),
+            ),
+        ]));
+    }
     if health.archival_pending {
         lines.push(Line::from(""));
         lines.push(Line::from(vec![
@@ -18993,6 +19116,8 @@ mod tests {
         app.vitals.daemon_running = true;
         app.vitals.coord_last_tick = Some(std::time::SystemTime::now());
         app.service_health.agents_max = 8;
+        app.service_health.max_build_agents = 8;
+        app.service_health.disk_sentinel_enabled = true;
         app.task_counts.ready = 4;
         app.task_counts.pending_eval = 1;
         app.async_fs.seed_disk_snapshot(DiskSnapshot {
@@ -19024,18 +19149,18 @@ mod tests {
 
         for width in [80, 140] {
             let row = context_row_text(&mut app, width);
-            assert!(row.contains("●2/8⊳4▸3∴1"), "width={width}: {row}");
+            assert!(row.contains("●2/8B0/8⊳4▸3∴1"), "width={width}: {row}");
             assert!(row.contains('⊞'), "width={width}: {row}");
             assert_eq!(
                 app.last_context_pulse_area.width as usize,
-                UnicodeWidthStr::width(" ●2/8⊳4▸3∴1 ")
+                UnicodeWidthStr::width(" ●2/8B0/8⊳4▸3∴1 ")
             );
         }
         let mut warning = app.async_fs.cached_disk_snapshot().unwrap();
         warning.level = DiskLevel::Warning;
         app.async_fs.seed_disk_snapshot(warning);
         let warned = context_row_text(&mut app, 140);
-        assert!(warned.contains("!●2/8⊳4▸3∴1"), "{warned}");
+        assert!(warned.contains("!●2/8B0/8⊳4▸3∴1"), "{warned}");
 
         let narrow = context_row_text(&mut app, 40);
         assert!(narrow.contains('⌁') && narrow.contains('a'), "{narrow}");

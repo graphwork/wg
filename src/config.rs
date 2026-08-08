@@ -4849,10 +4849,11 @@ pub struct ResourceManagementConfig {
     pub disk_resume_hysteresis_bytes: u64,
     #[serde(default = "default_disk_resume_hysteresis_percent")]
     pub disk_resume_hysteresis_percent: f64,
-    /// Concurrent build-heavy tasks have a separate budget from ordinary
-    /// agents. One serial validator is the safe default.
-    #[serde(default = "default_max_build_agents")]
-    pub max_build_agents: usize,
+    /// Optional concurrent build-heavy task throttle. When omitted, build-heavy
+    /// capacity follows `dispatcher.max_agents`; an explicit lower value is an
+    /// intentional operator throttle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_build_agents: Option<usize>,
     /// Cold-start projection for a build-capable (but not explicitly heavy)
     /// worker. Measured target high-water marks supersede this floor.
     #[serde(default = "default_estimated_build_bytes")]
@@ -5137,9 +5138,6 @@ fn default_disk_resume_hysteresis_bytes() -> u64 {
 fn default_disk_resume_hysteresis_percent() -> f64 {
     2.0
 }
-fn default_max_build_agents() -> usize {
-    1
-}
 fn default_estimated_build_bytes() -> u64 {
     16 * 1024 * 1024 * 1024
 }
@@ -5195,7 +5193,7 @@ impl Default for ResourceManagementConfig {
             disk_hard_refuse_percent: default_disk_hard_refuse_percent(),
             disk_resume_hysteresis_bytes: default_disk_resume_hysteresis_bytes(),
             disk_resume_hysteresis_percent: default_disk_resume_hysteresis_percent(),
-            max_build_agents: default_max_build_agents(),
+            max_build_agents: None,
             estimated_build_bytes: default_estimated_build_bytes(),
             estimated_build_heavy_bytes: default_estimated_build_heavy_bytes(),
             build_link_test_safety_bytes: default_build_link_test_safety_bytes(),
@@ -5207,6 +5205,25 @@ impl Default for ResourceManagementConfig {
             stream_retention_days: default_stream_retention_days(),
             terminal_stream_max_bytes: default_terminal_stream_max_bytes(),
             terminal_output_tail_bytes: default_terminal_output_tail_bytes(),
+        }
+    }
+}
+
+impl CoordinatorConfig {
+    /// Effective build-heavy concurrency. An absent resource override follows
+    /// the ordinary worker slot budget, so fresh configurations do not hide a
+    /// second serial queue.
+    pub fn effective_max_build_agents(&self) -> usize {
+        self.resource_management
+            .max_build_agents
+            .unwrap_or(self.max_agents)
+    }
+
+    pub fn max_build_agents_source(&self) -> &'static str {
+        if self.resource_management.max_build_agents.is_some() {
+            "explicit"
+        } else {
+            "inherited-from-max-agents"
         }
     }
 }
@@ -7405,6 +7422,32 @@ model = "claude:opus"
         assert_eq!(reloaded.coordinator.archive_retention_days, 31);
         let serialized = fs::read_to_string(dir.path().join("config.toml")).unwrap();
         assert!(serialized.contains("archive_retention_days = 31"));
+    }
+
+    #[test]
+    fn build_heavy_capacity_inherits_worker_slots_and_preserves_explicit_override() {
+        let absent: Config = toml::from_str("[dispatcher]\nmax_agents = 3\n").unwrap();
+        assert_eq!(absent.coordinator.effective_max_build_agents(), 3);
+        assert_eq!(
+            absent.coordinator.max_build_agents_source(),
+            "inherited-from-max-agents"
+        );
+        let encoded = toml::to_string(&absent).unwrap();
+        assert!(
+            !encoded.contains("max_build_agents"),
+            "fresh/default serialization must not bake in a stale serial throttle: {encoded}"
+        );
+
+        let explicit: Config = toml::from_str(
+            "[dispatcher]\nmax_agents = 3\n[dispatcher.resource_management]\nmax_build_agents = 1\n",
+        )
+        .unwrap();
+        assert_eq!(explicit.coordinator.effective_max_build_agents(), 1);
+        assert_eq!(explicit.coordinator.max_build_agents_source(), "explicit");
+        assert_eq!(
+            explicit.coordinator.resource_management.max_build_agents,
+            Some(1)
+        );
     }
 
     #[test]

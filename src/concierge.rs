@@ -1995,6 +1995,70 @@ pub fn run_status(project_path: Option<&Path>) -> Result<()> {
                 .unwrap_or("unknown")
         );
     }
+
+    // Keep the thin operator status flow aligned with `wg service status`
+    // without inventing a second admission read model. The authenticated
+    // sibling executable returns exact live cap/source/deferred-task data.
+    let output = Command::new(&executable.executable)
+        .arg("--dir")
+        .arg(&target.graph)
+        .args(["service", "status", "--json"])
+        .output()
+        .context("Failed to read authenticated service admission status")?;
+    if output.status.success()
+        && let Ok(value) = serde_json::from_slice::<serde_json::Value>(&output.stdout)
+        && let Some(coordinator) = value.get("coordinator")
+    {
+        let active = coordinator
+            .get("build_heavy_active")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0);
+        let max = coordinator
+            .get("max_build_agents")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0);
+        let source = coordinator
+            .get("max_build_agents_source")
+            .and_then(|value| value.as_str())
+            .unwrap_or("unknown");
+        println!("Build-heavy: {active}/{max} active (cap {source})");
+        if source == "explicit"
+            && let Some(worker_max) = coordinator.get("max_agents").and_then(|v| v.as_u64())
+            && max < worker_max
+        {
+            println!(
+                "  Raise throttle: wg config set dispatcher.resource_management.max_build_agents {worker_max}"
+            );
+        }
+        if !coordinator
+            .get("disk_sentinel_enabled")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+        {
+            println!("Disk sentinel: disabled — projected headroom unavailable");
+        }
+        if let Some(waiting) = coordinator
+            .get("admission_deferred")
+            .and_then(|value| value.as_array())
+            .filter(|waiting| !waiting.is_empty())
+        {
+            println!(
+                "Admission waiting: {} task(s); no attempt charged",
+                waiting.len()
+            );
+            for item in waiting {
+                println!(
+                    "  {}: {}",
+                    item.get("task_id")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("?"),
+                    item.get("reason")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("resource admission")
+                );
+            }
+        }
+    }
     Ok(())
 }
 

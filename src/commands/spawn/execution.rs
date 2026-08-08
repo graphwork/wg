@@ -1320,10 +1320,10 @@ pub(crate) fn spawn_agent_inner_authorized(
                     .is_some_and(|task| worksgood::disk_sentinel::classify_task(task).is_heavy())
             })
             .count();
-        if active_heavy >= config.coordinator.resource_management.max_build_agents {
+        let max_build_agents = config.coordinator.effective_max_build_agents();
+        if active_heavy >= max_build_agents {
             return Err(worksgood::disk_sentinel::AdmissionDeferral::new(format!(
-                "build-heavy admission budget full ({}/{})",
-                active_heavy, config.coordinator.resource_management.max_build_agents
+                "build-heavy admission budget full ({active_heavy}/{max_build_agents})"
             ))
             .into());
         }

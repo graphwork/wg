@@ -1651,6 +1651,29 @@ fn handle_status(dir: &Path) -> IpcResponse {
 
     // Use persisted coordinator state (reflects effective config + runtime metrics)
     let coord = CoordinatorState::load_or_default(dir);
+    let config = worksgood::config::Config::load_or_default(dir);
+    let max_build_agents = config
+        .coordinator
+        .resource_management
+        .max_build_agents
+        .unwrap_or(coord.max_agents);
+    let max_build_agents_source = config.coordinator.max_build_agents_source();
+    let build_heavy_active = crate::commands::load_workgraph(dir)
+        .ok()
+        .map(|(graph, _)| {
+            registry
+                .agents
+                .values()
+                .filter(|agent| agent.is_alive() && crate::commands::is_process_alive(agent.pid))
+                .filter(|agent| {
+                    graph.get_task(&agent.task_id).is_some_and(|task| {
+                        worksgood::disk_sentinel::classify_task(task).is_heavy()
+                    })
+                })
+                .count()
+        })
+        .unwrap_or(0);
+    let disk_sentinel_enabled = config.coordinator.resource_management.disk_sentinel_enabled;
     let worker_filesystem_isolation = worksgood::worker_control::filesystem_isolation_status();
 
     IpcResponse::success(serde_json::json!({
@@ -1684,6 +1707,20 @@ fn handle_status(dir: &Path) -> IpcResponse {
             "agents_spawned_last_tick": coord.agents_spawned,
             "admission_deferred_tasks": coord.admission_deferred_tasks,
             "admission_deferred_reason": coord.admission_deferred_reason,
+            "admission_deferred": coord.admission_deferred,
+            "build_heavy_active": build_heavy_active,
+            "max_build_agents": max_build_agents,
+            "max_build_agents_source": max_build_agents_source,
+            "max_build_agents_remediation_command": format!(
+                "wg config set dispatcher.resource_management.max_build_agents {}",
+                coord.max_agents
+            ),
+            "disk_sentinel_enabled": disk_sentinel_enabled,
+            "projected_headroom_bytes": if disk_sentinel_enabled {
+                worksgood::disk_sentinel::load_snapshot(dir).ok().flatten().map(|snapshot| snapshot.projected_headroom_bytes)
+            } else {
+                None
+            },
             "dispatch_state": if coord.admission_deferred_tasks > 0 {
                 "admission-deferred"
             } else {
