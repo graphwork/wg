@@ -385,19 +385,46 @@ PY
 ```
 
 ```text
-src Rust files: 434; physical lines: 511,298
-src/commands Rust files: 198
-src/lib.rs public top-level modules: 95
-CLI top-level Commands variants: 158
-Task fields: 101; TaskDetails fields: 86; Config fields: 30
-largest: state.rs 39,901; render.rs 22,268; event.rs 14,862;
-         config.rs 12,322; service/mod.rs 7,878; spawn/execution.rs 7,332;
-         cli.rs 7,329; commands/done.rs 5,622; graph.rs 5,236; main.rs 4,739
-lexical references: graph 1,104/187 files; config 549/138; parser 420/128;
-                    lifecycle 242/58; service 274/63; dispatch 107/37
-files with atomic-helper patterns: 25; direct fs::write patterns: 168;
-files with rename patterns: 31; files with modify_graph patterns: 68
-Config::load_or_default: 141 occurrences; Config::load_merged: 60
+rust_files 434 loc 511298
+command_files 198
+largest 39901 src/tui/viz_viewer/state.rs
+largest 22268 src/tui/viz_viewer/render.rs
+largest 14862 src/tui/viz_viewer/event.rs
+largest 12322 src/config.rs
+largest 7878 src/commands/service/mod.rs
+largest 7332 src/commands/spawn/execution.rs
+largest 7329 src/cli.rs
+largest 5901 src/commands/service/ipc.rs
+largest 5622 src/commands/done.rs
+largest 5596 src/executor/native/openai_client.rs
+largest 5500 src/executor/native/agent.rs
+largest 5424 src/commands/viz/ascii.rs
+largest 5236 src/graph.rs
+largest 4739 src/main.rs
+largest 4708 src/tui/pty_pane.rs
+largest 4620 src/eval_lifecycle.rs
+largest 4596 src/commands/setup.rs
+largest 4469 src/commands/service/coordinator.rs
+largest 4284 src/commands/config_cmd.rs
+largest 4182 src/commands/service/worktree.rs
+lib_pub_mod 95
+cli_top_variants 158
+fields Task 101 689 1046
+fields TaskDetails 86 40 222
+fields Config 30 215 377
+refs graph 1104 187
+refs config 549 138
+refs parser 420 128
+refs lifecycle 242 58
+refs atomic_file 41 23
+refs service 274 63
+refs dispatch 107 37
+pattern atomic_helper files 25 hits 59
+pattern direct_fs_write files 168 hits 867
+pattern rename files 31 hits 53
+pattern modify_graph files 68 hits 161
+pattern load_or_default files 69 hits 141
+pattern load_merged files 31 hits 60
 ```
 
 ### 7.4 A3 — build and focused persistence behavior
