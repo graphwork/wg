@@ -184,7 +184,10 @@ rows=[json.loads(line) for line in open('.wg/graph.jsonl') if line.strip()]
 print([r for r in rows if r.get('kind')=='task' and r['id']=='b-deferred-build'][-1]['status'])
 PY
 )
-  [ "$second_status" = "in-progress" ] && break
+  if [ "$second_status" = "in-progress" ] \
+    && [ "$(grep -c '^second-run$' "$runs" 2>/dev/null || true)" -eq 1 ]; then
+    break
+  fi
   sleep 0.1
 done
 [ "${second_status:-}" = "in-progress" ] \
