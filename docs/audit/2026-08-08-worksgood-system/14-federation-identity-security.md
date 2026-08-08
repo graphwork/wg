@@ -385,9 +385,10 @@ Exit status: 0 for both. Build emitted unrelated existing warnings. Test result:
 test -s docs/audit/2026-08-08-worksgood-system/14-federation-identity-security.md
 git diff --check
 git show --check --oneline HEAD
+git diff --check main...HEAD
 ```
 
-Exit status: 0 for each command. `test -s` therefore established that the required deliverable existed and was non-empty. `git diff --check` checked the final pre-commit amendment, and the post-commit `git show --check --oneline HEAD` bound the same whitespace validation to the exact submitted commit recorded by the completion manifest rather than relying on an empty working-tree diff.
+Exit status: 0 for each command. `test -s` therefore established that the required deliverable existed and was non-empty. `git diff --check` checked the final pre-commit amendment; post-commit `git show --check --oneline HEAD` checked the exact submitted tip; and `git diff --check main...HEAD` checked the full task-owned artifact delta against the integrated mainline rather than relying on an empty working-tree diff or only a merge commit.
 
 ### 7.3 Federation smoke execution
 
