@@ -8589,14 +8589,11 @@ fn admission_waiting_reason(workgraph_dir: &Path, task_id: &str) -> Option<Strin
         .map(|waiting| waiting.reason)
 }
 
-fn admission_worker_max(workgraph_dir: &Path, configured: usize) -> usize {
-    // This value is rendered as an increase command, so suggest one genuinely
-    // additional slot rather than writing the current (no-op) capacity back.
-    crate::commands::service::CoordinatorState::load_for(workgraph_dir, 0)
-        .map(|state| state.max_agents)
-        .filter(|max| *max > 0)
-        .unwrap_or(configured)
-        .saturating_add(1)
+fn admission_worker_max(_workgraph_dir: &Path, configured: usize) -> usize {
+    // The caller supplies the freshly-loaded Config value. Suggest one
+    // genuinely additional slot rather than consulting persisted coordinator
+    // state or writing the current (no-op) capacity back.
+    configured.saturating_add(1)
 }
 
 #[cfg(test)]
@@ -8615,7 +8612,7 @@ fn build_heavy_active_for_graph(
     AgentRegistry::load_or_warn(workgraph_dir)
         .agents
         .values()
-        .filter(|agent| agent.is_alive())
+        .filter(|agent| agent.is_alive() && crate::commands::is_process_alive(agent.pid))
         .filter(|agent| {
             graph
                 .get_task(&agent.task_id)
