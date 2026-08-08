@@ -54,7 +54,7 @@ wg add 'cargo build occupying the sole build-heavy slot' --id a-occupied-build -
   --exec "printf 'first-start\\n' >> '$runs'; touch '$first_started'; while [ ! -e '$release' ]; do sleep 0.1; done; printf 'first-done\\n' >> '$runs'" \
   --exec-mode shell >/dev/null
 wg add 'cargo test deferred until build capacity frees' --id b-deferred-build --priority 10 \
-  --exec "printf 'second-run\\n' >> '$runs'; while [ ! -e '$second_release' ]; do sleep 0.1; done" --exec-mode shell >/dev/null
+  --exec "printf 'second-run\\n' >> '$runs'; while [ ! -e '$second_release' ]; do sleep 0.1; done; printf 'second-success\\n' >> '$runs'" --exec-mode shell >/dev/null
 wg publish a-occupied-build --only >/dev/null
 wg publish b-deferred-build --only >/dev/null
 
@@ -205,5 +205,13 @@ assert t.get('dispatch_count',0) == 1,t
 assert t.get('current_attempt') is not None or t.get('lifecycle',{}).get('current_attempt') is not None,t
 PY
 touch "$second_release"
+for _ in $(seq 1 80); do
+  [ "$(grep -c '^second-success$' "$runs" 2>/dev/null || true)" -eq 1 ] && break
+  sleep 0.1
+done
+[ "$(grep -c '^second-success$' "$runs" 2>/dev/null || true)" -eq 1 ] \
+  || loud_fail "deferred build command did not complete its successful work body: $(cat "$runs" 2>/dev/null || true)"
+[ "$(grep -c '^second-run$' "$runs" 2>/dev/null || true)" -eq 1 ] \
+  || loud_fail "deferred build command ran more than once after success: $(cat "$runs" 2>/dev/null || true)"
 
-echo "PASS: live daemon reports admission backpressure, coalesces it beyond five ticks, and launches the deferred build exactly once after capacity frees"
+echo "PASS: live daemon reports admission backpressure, coalesces it beyond five ticks, and runs the deferred build work body successfully exactly once after capacity frees"

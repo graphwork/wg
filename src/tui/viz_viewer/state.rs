@@ -8590,10 +8590,22 @@ fn admission_waiting_reason(workgraph_dir: &Path, task_id: &str) -> Option<Strin
 }
 
 fn admission_worker_max(workgraph_dir: &Path, configured: usize) -> usize {
+    // This value is rendered as an increase command, so suggest one genuinely
+    // additional slot rather than writing the current (no-op) capacity back.
     crate::commands::service::CoordinatorState::load_for(workgraph_dir, 0)
         .map(|state| state.max_agents)
         .filter(|max| *max > 0)
         .unwrap_or(configured)
+        .saturating_add(1)
+}
+
+#[cfg(test)]
+#[test]
+fn admission_worker_max_suggests_a_real_increase() {
+    assert_eq!(
+        admission_worker_max(Path::new("/definitely-not-a-wg-graph"), 3),
+        4
+    );
 }
 
 fn build_heavy_active_for_graph(
