@@ -7294,6 +7294,7 @@ pub fn supports_json(cmd: &Commands) -> bool {
             | Commands::WorktreeObserverReconcile { .. }
             | Commands::Screencast { .. }
             | Commands::Cost { .. }
+            | Commands::Spend { .. }
             | Commands::Check
             | Commands::Doctor
             | Commands::Cleanup { .. }

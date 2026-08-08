@@ -20,24 +20,29 @@ use worksgood::service::registry::AgentRegistry;
 use super::completion_submit::{collect_dependency_outputs, store};
 
 #[derive(Clone, Default)]
-struct SourceAccounting {
-    usage: Option<TokenUsage>,
-    executor: Option<String>,
-    model: Option<String>,
+pub(crate) struct SourceAccounting {
+    pub(crate) usage: Option<TokenUsage>,
+    pub(crate) executor: Option<String>,
+    pub(crate) model: Option<String>,
 }
 
-fn source_accounting(dir: &Path, task: &worksgood::graph::Task) -> SourceAccounting {
+pub(crate) fn source_accounting(dir: &Path, task: &worksgood::graph::Task) -> SourceAccounting {
+    let persisted = SourceAccounting {
+        usage: task.token_usage.clone(),
+        executor: task.actual_executor.clone(),
+        model: task.actual_model.clone(),
+    };
     let Some(agent_id) = task.assigned.as_deref() else {
-        return SourceAccounting::default();
+        return persisted;
     };
     let Ok(registry) = AgentRegistry::load(dir) else {
-        return SourceAccounting::default();
+        return persisted;
     };
     let Some(agent) = registry
         .get_agent(agent_id)
         .filter(|agent| agent.task_id == task.id)
     else {
-        return SourceAccounting::default();
+        return persisted;
     };
     let output = Path::new(&agent.output_file);
     let output = if output.is_absolute() {
@@ -46,9 +51,11 @@ fn source_accounting(dir: &Path, task: &worksgood::graph::Task) -> SourceAccount
         dir.parent().unwrap_or(dir).join(output)
     };
     SourceAccounting {
-        usage: parse_token_usage(&output).or_else(|| parse_wg_tokens(&output)),
-        executor: Some(agent.executor.clone()),
-        model: agent.model.clone(),
+        usage: parse_token_usage(&output)
+            .or_else(|| parse_wg_tokens(&output))
+            .or(persisted.usage),
+        executor: Some(agent.executor.clone()).or(persisted.executor),
+        model: agent.model.clone().or(persisted.model),
     }
 }
 

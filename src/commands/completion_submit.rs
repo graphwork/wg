@@ -308,12 +308,14 @@ pub fn run_with_reviewers(
     // Select the immutable candidate before review. This is a single compact
     // graph projection; resolver/reviewer failures preserve it without
     // scheduling a transaction, source retry, or finalizer.
+    let source_accounting = super::completion_done::source_accounting(dir, task);
     select_candidate(
         &graph_path,
         id,
         task.lifecycle.generation,
         &requirements_digest,
         candidate,
+        &source_accounting,
     )?;
 
     let project_root = dir
@@ -406,6 +408,7 @@ fn select_candidate(
     generation: u64,
     expected_requirements: &worksgood::completion_manifest::ContentDigest,
     candidate: CompletionCandidateRefs,
+    source_accounting: &super::completion_done::SourceAccounting,
 ) -> Result<()> {
     let mut refusal = None;
     modify_graph(graph_path, |graph| {
@@ -422,6 +425,15 @@ fn select_candidate(
             return false;
         }
         task.completion_candidate = Some(candidate);
+        if task.token_usage.is_none() {
+            task.token_usage.clone_from(&source_accounting.usage);
+        }
+        if task.actual_executor.is_none() {
+            task.actual_executor.clone_from(&source_accounting.executor);
+        }
+        if task.actual_model.is_none() {
+            task.actual_model.clone_from(&source_accounting.model);
+        }
         task.completion_disposition = None;
         task.completion_receipt = None;
         task.log.push(LogEntry {

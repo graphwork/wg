@@ -39,17 +39,22 @@ struct CompletionAccounting {
 /// `task.assigned`. Pi parsing follows output.log to its sibling raw stream and
 /// counts only authoritative `turn_end` usage once per turn.
 fn completion_accounting(dir: &Path, task: &Task) -> CompletionAccounting {
+    let persisted = CompletionAccounting {
+        token_usage: task.token_usage.clone(),
+        actual_executor: task.actual_executor.clone(),
+        actual_model: task.actual_model.clone(),
+    };
     let Some(agent_id) = task.assigned.as_deref() else {
-        return CompletionAccounting::default();
+        return persisted;
     };
     let Ok(registry) = AgentRegistry::load(dir) else {
-        return CompletionAccounting::default();
+        return persisted;
     };
     let Some(agent) = registry
         .get_agent(agent_id)
         .filter(|agent| agent.task_id == task.id)
     else {
-        return CompletionAccounting::default();
+        return persisted;
     };
     let output = Path::new(&agent.output_file);
     let output = if output.is_absolute() {
@@ -58,9 +63,11 @@ fn completion_accounting(dir: &Path, task: &Task) -> CompletionAccounting {
         dir.parent().unwrap_or(dir).join(output)
     };
     CompletionAccounting {
-        token_usage: parse_token_usage(&output).or_else(|| parse_wg_tokens(&output)),
-        actual_executor: Some(agent.executor.clone()),
-        actual_model: agent.model.clone(),
+        token_usage: parse_token_usage(&output)
+            .or_else(|| parse_wg_tokens(&output))
+            .or(persisted.token_usage),
+        actual_executor: Some(agent.executor.clone()).or(persisted.actual_executor),
+        actual_model: agent.model.clone().or(persisted.actual_model),
     }
 }
 

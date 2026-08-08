@@ -32,41 +32,36 @@ pub fn run(dir: &Path, today_only: bool, json: bool) -> Result<()> {
     let mut accounted_review_receipts = HashSet::new();
 
     // Source-worker totals and internal review-lane totals are deliberately
-    // separate. A review call is not charged to the source task. Receipt IDs
-    // also deduplicate activity represented by both the completion and legacy
-    // evaluation projections.
+    // separate. A review call is not charged to the source task. The durable
+    // completion activity projection is authoritative when present; legacy
+    // evaluation attempts are a fallback only. This mutually exclusive choice
+    // prevents one call (including a failed call with no verdict) from being
+    // charged once under each projection.
     for task in graph.tasks() {
-        for activity in &task.completion_review_activity {
-            if today_only && !occurred_on(&activity.created_at, today) {
-                continue;
+        if !task.completion_review_activity.is_empty() {
+            for activity in &task.completion_review_activity {
+                if today_only && !occurred_on(&activity.created_at, today) {
+                    continue;
+                }
+                if !accounted_review_receipts.insert(activity.activity_id.clone()) {
+                    continue;
+                }
+                if let Some(usage) = activity.usage.as_ref() {
+                    review_attempts_with_usage += 1;
+                    review_cost += usage.cost_usd;
+                    review_input_tokens += usage.input_tokens;
+                    review_output_tokens += usage.output_tokens;
+                }
             }
-            if !accounted_review_receipts.insert(activity.activity_id.clone()) {
-                continue;
-            }
-            if let Some(usage) = activity.usage.as_ref() {
-                review_attempts_with_usage += 1;
-                review_cost += usage.cost_usd;
-                review_input_tokens += usage.input_tokens;
-                review_output_tokens += usage.output_tokens;
-            }
+            continue;
         }
         for record in &task.evaluation_records {
-            for (index, attempt) in record.attempts.iter().enumerate() {
+            for attempt in &record.attempts {
                 if today_only && !occurred_on(&attempt.started_at, today) {
                     continue;
                 }
-                let consumed_receipt = (index + 1 == record.attempts.len()
-                    && attempt.failure.is_none())
-                .then_some(record.consumed_verdict_id.as_deref())
-                .flatten();
-                if accounted_review_receipts.contains(&attempt.attempt_id)
-                    || consumed_receipt.is_some_and(|id| accounted_review_receipts.contains(id))
-                {
+                if !accounted_review_receipts.insert(attempt.attempt_id.clone()) {
                     continue;
-                }
-                accounted_review_receipts.insert(attempt.attempt_id.clone());
-                if let Some(id) = consumed_receipt {
-                    accounted_review_receipts.insert(id.to_string());
                 }
                 if let Some(usage) = attempt.usage.as_ref() {
                     review_attempts_with_usage += 1;

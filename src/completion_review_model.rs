@@ -32,6 +32,7 @@ fn parse_completion_review_timeout(configured: Option<&str>) -> u64 {
     configured
         .and_then(|value| value.parse::<u64>().ok())
         .filter(|value| *value > 0)
+        .map(|value| value.min(DEFAULT_COMPLETION_REVIEW_TIMEOUT_SECS))
         .unwrap_or(DEFAULT_COMPLETION_REVIEW_TIMEOUT_SECS)
 }
 
@@ -300,6 +301,11 @@ mod tests {
             DEFAULT_COMPLETION_REVIEW_TIMEOUT_SECS
         );
         assert_eq!(parse_completion_review_timeout(Some("1")), 1);
+        assert_eq!(
+            parse_completion_review_timeout(Some("999999999")),
+            DEFAULT_COMPLETION_REVIEW_TIMEOUT_SECS,
+            "the override may tighten but never unbound the review"
+        );
     }
 
     #[test]

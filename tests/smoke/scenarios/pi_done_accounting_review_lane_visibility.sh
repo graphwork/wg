@@ -71,15 +71,20 @@ grep -q 'review unavailable' "$scratch/unavailable.log" || loud_fail "reviewer f
 # eval is again correctly skipped.
 if wgrun submit pi-done --manifest manifest.json --summary summary.txt >"$scratch/reject.log" 2>&1; then loud_fail "fixture FLIP rejection unexpectedly passed"; fi
 grep -q 'FLIP rejected' "$scratch/reject.log" || loud_fail "semantic FLIP rejection was not surfaced"
+# Simulate archival before the accepted review and Done projection. The first
+# candidate selection already captured immutable source accounting, so neither
+# the registry row nor raw stream is required from this point onward.
+rm -f "$G/service/registry.json"; rm -rf "$G/agents/agent-pi-fixture"
 # Resubmit exact bytes: fake FLIP + eval now pass, with provider-reported usage.
 wgrun submit pi-done --manifest manifest.json --summary summary.txt >/dev/null
 wgrun done pi-done >/dev/null
 show=$(wgrun --json show pi-done)
 python3 -c 'import json,sys; d=json.load(sys.stdin); u=d["token_usage"]; assert d["status"]=="done"; assert (u["input_tokens"],u["output_tokens"],u["cache_read_input_tokens"])==(205,17,310),u; assert abs(u["cost_usd"]-0.05)<1e-9,u; assert d["actual_executor"]=="pi"; assert d["actual_model"]=="openrouter:z-ai/glm-5.2"; a=d["completion_review_activity"]; assert len(a)==4,a; assert [x["verdict"] for x in a]==["unavailable","reject","pass","pass"],a' <<<"$show"
-spend=$(wgrun spend --json)
+spend=$(wgrun --json spend)
 python3 -c 'import json,sys; d=json.load(sys.stdin); r=d["completion_review_lane"]; assert d["task_count"]==1 and d["total_input_tokens"]==205 and d["total_output_tokens"]==17,d; assert abs(d["total_cost"]-0.05)<1e-9,d; assert r["attempt_count"]==3,r; assert r["total_input_tokens"]==9,r; assert r["total_output_tokens"]==3,r; assert abs(r["total_cost"]-0.003)<1e-9,r' <<<"$spend"
-# Cleanup + real service restart must not erase the terminal projection.
-rm -f "$G/service/registry.json"; rm -rf "$G/agents/agent-pi-fixture"; wgrun service start --no-coordinator-agent --no-supervise >/dev/null; wgrun service stop >/dev/null
+# A real service restart must not erase the terminal projection captured before
+# the pre-Done archival above.
+wgrun service start --no-coordinator-agent --no-supervise >/dev/null; wgrun service stop >/dev/null
 show=$(wgrun --json show pi-done)
 python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["token_usage"]["input_tokens"]==205; assert d["actual_executor"]=="pi"; assert len(d["completion_review_activity"])==4' <<<"$show"
 list=$(wgrun list --all)
