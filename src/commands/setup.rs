@@ -2111,8 +2111,12 @@ pub fn run() -> Result<()> {
         config.tiers = auto_map_tiers(&choices.model_registry_entries);
     }
 
-    let (_, active_profile) =
-        apply_setup_transaction(&config, &[target_path.clone()], scope, route)?;
+    let (_, active_profile) = apply_setup_transaction(
+        &config,
+        &scope_paths(scope, &global_path, &local_path),
+        scope,
+        route,
+    )?;
 
     record_setup_history(&choices, "cli");
     crate::commands::profile_cmd::trigger_daemon_reload(
@@ -2872,39 +2876,27 @@ fn guide_skill_bundle_install(executor: &str) -> Result<String> {
             }
         }
         "pi" => {
-            // Wiring point #1 (onboarding): choosing pi declares "I want pi", so
-            // place the version-locked plugin + wire the global pi settings entry.
-            // ensure-pi-plugin is idempotent and headless-safe.
-            println!("A human `pi` console needs pi-worksgood to get the wg tools + /wg commands.");
-            let install = Confirm::new()
-                .with_prompt("Install pi-worksgood for the Pi console? (recommended)")
-                .default(true)
-                .interact()?;
-            if install {
-                match worksgood::pi_plugin::ensure_pi_plugin(
-                    worksgood::pi_plugin::EnsureMode::Console,
-                ) {
-                    Ok(p) => {
-                        println!("  Installed pi-worksgood (compat {}).", p.compat);
-                        if p.legacy_package_accepted {
-                            println!(
-                                "  Retained the legacy @worksgood/wg-pi-plugin package record with extension loading disabled; remove it after verification with `pi remove npm:@worksgood/wg-pi-plugin`."
-                            );
-                        } else if p.legacy_settings_migrated {
-                            println!(
-                                "  Migrated the legacy managed extension path to pi-worksgood."
-                            );
-                        }
-                        Ok(format!("pi-worksgood installed ✓ (compat {})", p.compat))
+            // Choosing Pi declares "I want Pi". This idempotent, embedded,
+            // headless-safe ensure is part of successful setup rather than an
+            // optional follow-up that can leave the selected route half-ready.
+            println!("Ensuring pi-worksgood for the Pi console and WG tools...");
+            match worksgood::pi_plugin::ensure_pi_plugin(worksgood::pi_plugin::EnsureMode::Console)
+            {
+                Ok(p) => {
+                    println!("  Installed pi-worksgood (compat {}).", p.compat);
+                    if p.legacy_package_accepted {
+                        println!(
+                            "  Retained the legacy @worksgood/wg-pi-plugin package record with extension loading disabled; remove it after verification with `pi remove npm:@worksgood/wg-pi-plugin`."
+                        );
+                    } else if p.legacy_settings_migrated {
+                        println!("  Migrated the legacy managed extension path to pi-worksgood.");
                     }
-                    Err(e) => {
-                        println!("  Install failed: {e}");
-                        Ok("pi-worksgood install FAILED — run `wg pi-plugin install`".to_string())
-                    }
+                    Ok(format!("pi-worksgood installed ✓ (compat {})", p.compat))
                 }
-            } else {
-                println!("  You can install it later with: wg pi-plugin install");
-                Ok("pi-worksgood NOT installed — run `wg pi-plugin install`".to_string())
+                Err(e) => {
+                    println!("  Install failed: {e}");
+                    Ok("pi-worksgood install FAILED — run `wg pi-plugin install`".to_string())
+                }
             }
         }
         _ => {

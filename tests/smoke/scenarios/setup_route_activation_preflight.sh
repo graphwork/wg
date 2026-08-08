@@ -29,7 +29,7 @@ route='pi:openrouter:test/setup-route-activation'
 
 # Real PTY terminal command from a clean HOME. Fake Pi proves executable discovery
 # is credential-free and that setup does not pretend to perform a provider call.
-cmd="cd '$scratch/project' && env -i HOME='$scratch/home' WG_GLOBAL_DIR='$scratch/home/.wg' XDG_CACHE_HOME='$scratch/home/.cache' USER=test TERM=xterm PATH='$scratch/fake-bin:/usr/bin:/bin' PI_INVOCATION_LOG='$scratch/pi-invocations.log' '$W' setup --route pi --yes --model '$route'"
+cmd="cd '$scratch/project' && env -i HOME='$scratch/home' WG_GLOBAL_DIR='$scratch/home/.wg' XDG_CACHE_HOME='$scratch/home/.cache' USER=test TERM=xterm PATH='$scratch/fake-bin:/usr/bin:/bin' PI_INVOCATION_LOG='$scratch/pi-invocations.log' OPENROUTER_API_KEY='must-not-be-used' HTTP_PROXY='http://127.0.0.1:9' HTTPS_PROXY='http://127.0.0.1:9' ALL_PROXY='http://127.0.0.1:9' NO_PROXY='' '$W' setup --route pi --yes --model '$route'"
 script -qec "$cmd" "$scratch/setup.typescript" >/dev/null
 
 [[ "$(cat "$scratch/home/.wg/active-profile")" = pi ]] \

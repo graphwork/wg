@@ -66,7 +66,9 @@ already used by `worksgood setup --model ...`.
 - setup scope/rollback unit filters — 4 pass
 - `integration_pi_two_tier_profile` + `integration_profile_tier_pinning` — 12 pass
 - `tests/smoke/scenarios/setup_route_activation_preflight.sh` — pass using a real
-  PTY, isolated homes/projects, fake Pi, and absent-Pi fixtures
+  PTY, isolated homes/projects, fake Pi, absent-Pi fixtures, a trap provider key,
+  and deliberately unreachable HTTP/HTTPS/ALL proxy settings; setup never invokes
+  Pi and succeeds without any provider/model request
 
 A full repository `cargo test` run reached more than 3,100 passing library tests
 but remains non-green because unrelated tests share and race process-global
