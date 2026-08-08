@@ -421,13 +421,9 @@ fn gather_coordinator_info(dir: &Path) -> CoordinatorInfo {
         let (eval_gate_applicability, evaluator_threshold, flip_gate_policy, flip_threshold) =
             configured_gate_info(&config);
         return CoordinatorInfo {
-            max_agents: coord.max_agents,
+            max_agents: config.coordinator.max_agents,
             build_heavy_active,
-            max_build_agents: config
-                .coordinator
-                .resource_management
-                .max_build_agents
-                .unwrap_or(coord.max_agents),
+            max_build_agents: config.coordinator.effective_max_build_agents(),
             max_build_agents_source: config.coordinator.max_build_agents_source().to_string(),
             max_build_agents_remediation_command:
                 worksgood::config::max_build_agents_remediation_command(dir),

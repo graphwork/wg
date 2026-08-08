@@ -1649,14 +1649,11 @@ fn handle_status(dir: &Path) -> IpcResponse {
     let alive_count = registry.active_count();
     let idle_count = registry.idle_count();
 
-    // Use persisted coordinator state (reflects effective config + runtime metrics)
+    // Coordinator state supplies live metrics; loaded config supplies capacity
+    // so stopped/stale state cannot leak an old inherited limit into status.
     let coord = CoordinatorState::load_or_default(dir);
     let config = worksgood::config::Config::load_or_default(dir);
-    let max_build_agents = config
-        .coordinator
-        .resource_management
-        .max_build_agents
-        .unwrap_or(coord.max_agents);
+    let max_build_agents = config.coordinator.effective_max_build_agents();
     let max_build_agents_source = config.coordinator.max_build_agents_source();
     let build_heavy_active = crate::commands::load_workgraph(dir)
         .ok()
@@ -1696,7 +1693,7 @@ fn handle_status(dir: &Path) -> IpcResponse {
         "coordinator": {
             "enabled": coord.enabled,
             "paused": coord.paused,
-            "max_agents": coord.max_agents,
+            "max_agents": config.coordinator.max_agents,
             "poll_interval": coord.poll_interval,
             "executor": coord.executor,
             "model": coord.model,

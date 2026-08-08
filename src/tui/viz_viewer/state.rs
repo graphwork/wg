@@ -19053,13 +19053,10 @@ impl VizApp {
         self.service_health.authoritative =
             authenticated_service_context(&service_observation, &coord);
         self.service_health.paused = coord.paused;
-        self.service_health.agents_max = coord.max_agents;
         let effective_config = Config::load_or_default(dir);
-        self.service_health.max_build_agents = effective_config
-            .coordinator
-            .resource_management
-            .max_build_agents
-            .unwrap_or(coord.max_agents);
+        self.service_health.agents_max = effective_config.coordinator.max_agents;
+        self.service_health.max_build_agents =
+            effective_config.coordinator.effective_max_build_agents();
         self.service_health.max_build_agents_source = effective_config
             .coordinator
             .max_build_agents_source()

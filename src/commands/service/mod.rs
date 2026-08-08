@@ -4487,14 +4487,12 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
         })
         .unwrap_or_else(|| "unknown".to_string());
 
-    // Load coordinator state (persisted by daemon, reflects effective config + runtime)
+    // Coordinator state supplies runtime metrics; loaded config supplies capacity
+    // so stopped/stale state cannot leak an old inherited limit into status.
     let coord = CoordinatorState::load_or_default(dir);
     let effective_config = Config::load_or_default(dir);
-    let max_build_agents = effective_config
-        .coordinator
-        .resource_management
-        .max_build_agents
-        .unwrap_or(coord.max_agents);
+    let max_agents = effective_config.coordinator.max_agents;
+    let max_build_agents = effective_config.coordinator.effective_max_build_agents();
     let max_build_agents_source = effective_config.coordinator.max_build_agents_source();
     let disk_sentinel_enabled = effective_config
         .coordinator
@@ -4561,7 +4559,7 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
                 "paused": coord.paused,
                 "frozen": coord.frozen,
                 "frozen_pids": coord.frozen_pids,
-                "max_agents": coord.max_agents,
+                "max_agents": max_agents,
                 "poll_interval": coord.poll_interval,
                 "executor": coord.executor,
                 "model": coord.model,
@@ -4729,7 +4727,7 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
             .unwrap_or(coord.executor.as_str());
         println!(
             "Dispatcher: enabled{}, max_agents={}, poll_interval={}s, executor={}, model={}",
-            state_str, coord.max_agents, coord.poll_interval, executor_display, model_str
+            state_str, max_agents, coord.poll_interval, executor_display, model_str
         );
         print_automatic_archival_status(&automatic_archival);
         if coord.frozen && !coord.frozen_pids.is_empty() {

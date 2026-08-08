@@ -123,7 +123,7 @@ fi
 # Drive the actual TUI. Select the last task, open Detail, and inspect both the
 # dashboard pulse and selected-task waiting explanation.
 session="wg-admission-ui-$$"
-trap 'tmux kill-session -t "$session" 2>/dev/null || true; stop_wg_daemon "$project" 2>/dev/null || true; rm -rf "$scratch"' EXIT
+trap 'tmux kill-session -t "$session" 2>/dev/null || true; wg --dir "$project/.wg" service stop >/dev/null 2>&1 || true; rm -rf "$scratch"' EXIT
 tmux new-session -d -s "$session" -x 180 -y 50 \
   "cd '$project' && env HOME='$HOME' WG_GLOBAL_DIR='$WG_GLOBAL_DIR' WG_TUI_APPEARANCE=none '$WG_BIN' --dir '$project/.wg' tui"
 sleep 2

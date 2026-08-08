@@ -75,7 +75,7 @@ for n in 1 2 3; do
   wg publish "build-$n" --only >/dev/null
 done
 start_wg_daemon "$project" --no-chat-agent --interval 1
-trap 'stop_wg_daemon "$project" 2>/dev/null || true; rm -rf "$scratch"' EXIT
+trap 'wg --dir "$project/.wg" service stop >/dev/null 2>&1 || true; rm -rf "$scratch"' EXIT
 for _ in $(seq 1 150); do
   [ -e started-1 ] && [ -e started-2 ] && [ -e started-3 ] && break
   sleep 0.1
@@ -141,4 +141,20 @@ done
   || loud_fail "inherit remediation did not remove the explicit key"
 
 touch "$release"
-echo "PASS: fresh generators omit the cap; inherited and explicit capacities hot-reload; exact inheritance remediation works"
+wg service stop >/dev/null
+for _ in $(seq 1 50); do
+  kill -0 "$pid" 2>/dev/null || break
+  sleep 0.1
+done
+kill -0 "$pid" 2>/dev/null && loud_fail "daemon did not stop before stale-state status check"
+wg config set dispatcher.max_agents 5 --no-reload >/dev/null
+payload=$(wg status --json)
+python3 - "$payload" <<'PY'
+import json,sys
+c=json.loads(sys.argv[1])['coordinator']
+assert c['max_agents']==5,c
+assert c['max_build_agents']==5,c
+assert c['max_build_agents_source']=='inherited-from-max-agents',c
+PY
+
+echo "PASS: fresh generators omit the cap; inherited/explicit/stopped-state capacities are current; exact inheritance remediation works"
