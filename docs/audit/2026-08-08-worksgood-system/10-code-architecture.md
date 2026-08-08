@@ -7,6 +7,7 @@
 **Freshness:** snapshot-current for cited source; executed behavior used a local debug build from the source-equivalent inspection checkout
 **Scope:** Rust package/binaries, CLI parsing and dispatch, major module boundaries, graph/config/runtime persistence, locking/atomicity, and representative CLI-to-state flows
 **Change boundary:** this audit artifact only
+**Normative charter:** `docs/audit/2026-08-08-worksgood-system/README.md:1-10`, especially the fractal/evidence contract at `196-374`
 
 ## 1. Executive abstract
 
@@ -24,7 +25,13 @@
 
 ## 2. Scope and map
 
-### 2.1 Package and executable map
+### 2.1 Charter requirements applied here
+
+**`[DOC-CLAIM]`** The dependency artifact `docs/audit/2026-08-08-worksgood-system/README.md` is the normative audit charter, not product-behavior evidence. It requires seven ordered fractal sections (`docs/audit/2026-08-08-worksgood-system/README.md:196-227`), visible statement labels (`docs/audit/2026-08-08-worksgood-system/README.md:229-247`), evidence-class/citation discipline (`docs/audit/2026-08-08-worksgood-system/README.md:249-294`), stable finding IDs with severity/likelihood/confidence (`docs/audit/2026-08-08-worksgood-system/README.md:296-326`), snapshot freshness (`docs/audit/2026-08-08-worksgood-system/README.md:328-350`), and an audit-only change boundary (`docs/audit/2026-08-08-worksgood-system/README.md:352-374`).
+
+**`[FACT]`** This leaf maps those requirements as follows: sections 1–7 implement the ordered fractal contract; the component/state maps and four flows are in section 2; `ARCH-001`–`ARCH-009` use stable records in section 3; contradictions, risks, and typed recommendations are sections 4–6; and section 7 separates inspected E2/E3 evidence from executed E1 commands and limitations. The header inherits the charter's snapshot and identifies the source-equivalent inspection checkout. The only repository file changed by this task is this new audit artifact.
+
+### 2.2 Package and executable map
 
 **`[FACT]`** `cargo metadata` reported one workspace member and these product targets:
 
@@ -38,7 +45,7 @@
 
 **`[INFERENCE]`** A single package lowers dependency/version coordination cost, but it does not create a strong compile-time boundary between core and products: all four binaries can reach the broad public library, and `wg` has a second large binary-private application layer. A falsifying check would be a dependency-policy test or visibility rule proving that binaries cannot import disallowed modules; none was found in this sample.
 
-### 2.2 Navigable component map
+### 2.3 Navigable component map
 
 **`[FACT]`** The following map is based on module declarations and inspected call sites, not directory names alone.
 
@@ -83,7 +90,7 @@ Cargo package worksgood
 └─ casa-adapter binary → adapter-local model/store + identity/review APIs
 ```
 
-### 2.3 State and persistence map
+### 2.4 State and persistence map
 
 **`[FACT]`** There is no single database or repository abstraction. Important durable authorities and projections include:
 
@@ -100,7 +107,7 @@ Cargo package worksgood
 
 **`[FACT]`** Generic atomic files sync both the file and parent directory (`src/atomic_file.rs:31-66`, `129-142`), but graph and registry replacements use separate implementations that sync the temporary file and rename without an explicit parent-directory fsync (`src/parser.rs:303-353`; `src/service/registry.rs:218-247`). This distinction matters to durability claims, although no power-loss test was run.
 
-### 2.4 Representative end-to-end control flows
+### 2.5 Representative end-to-end control flows
 
 #### Flow A — `wg add` creates a visible draft (executed)
 
@@ -270,6 +277,7 @@ Cargo package worksgood
 
 | Evidence | Observation | Class/status |
 |---|---|---|
+| `docs/audit/2026-08-08-worksgood-system/README.md:1-10`, `194-374` | pinned snapshot/change boundary and normative fractal/evidence/freshness contract applied in section 2.1 | E4, snapshot-current charter |
 | `Cargo.toml:1-56`; `src/lib.rs:20-144` | one package, four binary declarations, broad public library | E2, snapshot-current |
 | `src/main.rs:28-151`, `702-4739`; `src/cli.rs:11-38`, `527-557`; `src/commands/mod.rs:1-198` | resolution, capability interception, 158-command parse/dispatch surface | E2 |
 | `src/bin/{worksgood,nex}.rs`; `adapters/casa/src/main.rs` | distinct executable boundaries | E2 |
