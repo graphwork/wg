@@ -6,6 +6,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/_helpers.sh"
 command -v script >/dev/null 2>&1 || loud_skip "MISSING SCRIPT" "script(1) is required"
 command -v strace >/dev/null 2>&1 || loud_skip "MISSING STRACE" "strace is required to prove setup makes no provider/network request"
+command -v git >/dev/null 2>&1 || loud_skip "MISSING GIT" "git is required for the real worker isolation flow"
 
 repo_root="$(cd "$HERE/../../.." && pwd)"
 if [[ -n "${WG_SMOKE_CANDIDATE_BIN:-}" ]]; then
@@ -19,14 +20,26 @@ fi
 
 scratch=$(make_scratch)
 mkdir -p "$scratch/home" "$scratch/project" "$scratch/fake-bin" "$scratch/empty-path"
-cat >"$scratch/fake-bin/pi" <<'SH'
+cat >"$scratch/fake-bin/pi" <<SH
 #!/bin/sh
-printf 'unexpected setup invocation: %s\n' "$*" >>"${PI_INVOCATION_LOG:?}"
+printf 'unexpected setup invocation: %s\\n' "\$*" >>"$scratch/pi-invocations.log"
 exit 0
 SH
 chmod +x "$scratch/fake-bin/pi"
 : >"$scratch/pi-invocations.log"
 route='pi:openrouter:test/setup-route-activation'
+git -C "$scratch/project" init -q
+git -C "$scratch/project" config user.email smoke@example.com
+git -C "$scratch/project" config user.name Smoke
+printf 'setup activation fixture\n' >"$scratch/project/README.md"
+git -C "$scratch/project" add README.md
+git -C "$scratch/project" commit -qm init
+base_env=(env -i HOME="$scratch/home" WG_GLOBAL_DIR="$scratch/home/.wg" XDG_CACHE_HOME="$scratch/home/.cache" USER=test TERM=xterm PATH="$scratch/fake-bin:/usr/bin:/bin" PI_INVOCATION_LOG="$scratch/pi-invocations.log")
+"${base_env[@]}" "$W" --dir "$scratch/project/.wg" init --no-agency >/dev/null
+cleanup_service() {
+    "${base_env[@]}" "$W" --dir "$scratch/project/.wg" service stop --force >/dev/null 2>&1 || true
+}
+add_cleanup_hook cleanup_service
 
 # Real PTY terminal command from a clean HOME. Fake Pi proves executable discovery
 # is credential-free and that setup does not pretend to perform a provider call.
@@ -61,6 +74,32 @@ default_line=$(grep -E '^  default ' <<<"$models")
 task_line=$(grep -E '^  task_agent ' <<<"$models")
 grep -qF "$route" <<<"$default_line" || loud_fail "effective default route drifted: $default_line"
 grep -qF "$route" <<<"$task_line" || loud_fail "effective task-agent route drifted: $task_line"
+
+# Exercise checked reload against a real running daemon (max-agents=0 keeps
+# this phase deterministic), then drive the first LLM-backed command manually.
+"${base_env[@]}" "$W" --dir "$scratch/project/.wg" service start --max-agents 0 \
+    --no-coordinator-agent --no-supervise >/dev/null
+(
+    cd "$scratch/project"
+    "${base_env[@]}" "$W" setup --route pi --yes --model "$route"
+) >"$scratch/live-reload.log" 2>&1 || loud_fail "setup could not reload its running daemon: $(cat "$scratch/live-reload.log")"
+grep -q 'Daemon reloaded' "$scratch/live-reload.log" \
+    || loud_fail "setup did not confirm checked live reload: $(cat "$scratch/live-reload.log")"
+
+"${base_env[@]}" "$W" --dir "$scratch/project/.wg" add "setup activation probe" \
+    --id setup-activation-probe --model "$route" -d $'Runtime route probe.\n\n## Validation\n- fake Pi receives the exact provider/model' >/dev/null
+"${base_env[@]}" "$W" --dir "$scratch/project/.wg" publish setup-activation-probe --only >/dev/null
+"${base_env[@]}" "$W" --dir "$scratch/project/.wg" spawn-task setup-activation-probe >/dev/null
+for _ in $(seq 1 400); do
+    [[ -s "$scratch/pi-invocations.log" ]] && break
+    sleep 0.05
+done
+[[ -s "$scratch/pi-invocations.log" ]] || loud_fail "first LLM-backed task never reached fake Pi"
+grep -q -- '--provider openrouter' "$scratch/pi-invocations.log" \
+    || loud_fail "first worker did not retain provider: $(cat "$scratch/pi-invocations.log")"
+grep -q -- '--model test/setup-route-activation' "$scratch/pi-invocations.log" \
+    || loud_fail "first worker did not retain model: $(cat "$scratch/pi-invocations.log")"
+cleanup_service
 
 # Unavailable handler case remains explicit and action-oriented. Configuration is
 # selected exactly (graph/config work can continue), but output never calls it ready.

@@ -1529,7 +1529,7 @@ fn run_route(args: &SetupArgs) -> Result<()> {
     // plugin failure is therefore a pre-activation failure, not a half-ready
     // successful setup.
     let plugin_status = ensure_setup_pi_plugin()?;
-    let (written, active_profile, setup_snapshot) = apply_setup_transaction(
+    let (written, active_profile, _setup_snapshot) = apply_setup_transaction(
         &new_config,
         &scope_paths(scope, &global_path, &local_path),
         scope,
@@ -1556,12 +1556,10 @@ fn run_route(args: &SetupArgs) -> Result<()> {
         }
     }
 
-    if let Err(error) = crate::commands::profile_cmd::trigger_daemon_reload_checked(
+    crate::commands::profile_cmd::trigger_daemon_reload_checked(
         &setup_graph_dir(),
         active_profile.then_some(route.as_name()),
-    ) {
-        return Err(rollback_after_reload_failure(&setup_snapshot, error));
-    }
+    )?;
 
     println!();
     println!("{}", format_delta_summary(&new_config));
@@ -1719,36 +1717,6 @@ where
         rollback_errors.push(format!("restore active-profile: {error}"));
     }
     rollback_errors
-}
-
-fn rollback_after_reload_failure(
-    snapshot: &SetupStateSnapshot,
-    reload_error: anyhow::Error,
-) -> anyhow::Error {
-    rollback_after_reload_failure_with_profile_io(snapshot, reload_error, |name| {
-        named_profile::set_active(name.as_deref())
-    })
-}
-
-fn rollback_after_reload_failure_with_profile_io<WriteActive>(
-    snapshot: &SetupStateSnapshot,
-    reload_error: anyhow::Error,
-    write_active: WriteActive,
-) -> anyhow::Error
-where
-    WriteActive: FnMut(Option<String>) -> Result<()>,
-{
-    let rollback_errors = restore_setup_state_with_profile_io(snapshot, write_active);
-    if rollback_errors.is_empty() {
-        reload_error.context(
-            "running daemon reload failed; setup config/profile writes were rolled back. Fix the daemon and rerun `wg setup`",
-        )
-    } else {
-        reload_error.context(format!(
-            "running daemon reload failed and setup rollback was incomplete: {}",
-            rollback_errors.join("; ")
-        ))
-    }
 }
 
 fn inspect_setup_pi_plugin() -> String {
@@ -2190,20 +2158,18 @@ pub fn run() -> Result<()> {
     println!();
     let skill_status = guide_skill_bundle_install(&choices.executor)?;
 
-    let (_, active_profile, setup_snapshot) = apply_setup_transaction(
+    let (_, active_profile, _setup_snapshot) = apply_setup_transaction(
         &config,
         &scope_paths(scope, &global_path, &local_path),
         scope,
         route,
     )?;
 
-    record_setup_history(&choices, "cli");
-    if let Err(error) = crate::commands::profile_cmd::trigger_daemon_reload_checked(
+    crate::commands::profile_cmd::trigger_daemon_reload_checked(
         &setup_graph_dir(),
         active_profile.then_some(route.as_name()),
-    ) {
-        return Err(rollback_after_reload_failure(&setup_snapshot, error));
-    }
+    )?;
+    record_setup_history(&choices, "cli");
 
     // Configure ~/.claude/CLAUDE.md for Claude Code executor
     let claude_md_status = if choices.executor == "claude" {
@@ -4781,48 +4747,6 @@ mod tests {
         assert_eq!(std::fs::read(&config_path).unwrap(), b"original\n");
         assert_eq!(active.borrow().as_deref(), Some("codex"));
         assert_eq!(write_calls.get(), 2, "activation + rollback restore");
-    }
-
-    #[test]
-    fn test_setup_transaction_rolls_back_config_and_profile_after_reload_failure() {
-        use std::cell::RefCell;
-        use std::rc::Rc;
-
-        let tmp = TempDir::new().unwrap();
-        let config_path = tmp.path().join("config.toml");
-        std::fs::write(&config_path, b"original\n").unwrap();
-        let config = config_for_route(SetupRoute::Pi, RouteParams::default());
-        let active = Rc::new(RefCell::new(Some("codex".to_string())));
-        let read_state = Rc::clone(&active);
-        let write_state = Rc::clone(&active);
-        let (_, activated, snapshot) = apply_setup_transaction_with_profile_io(
-            &config,
-            std::slice::from_ref(&config_path),
-            SetupScope::Global,
-            SetupRoute::Pi,
-            move || Ok(read_state.borrow().clone()),
-            move |name| {
-                *write_state.borrow_mut() = name;
-                Ok(())
-            },
-        )
-        .unwrap();
-        assert!(activated);
-        assert_eq!(active.borrow().as_deref(), Some("pi"));
-
-        let restore_state = Rc::clone(&active);
-        let error = rollback_after_reload_failure_with_profile_io(
-            &snapshot,
-            anyhow::anyhow!("injected daemon reload failure"),
-            move |name| {
-                *restore_state.borrow_mut() = name;
-                Ok(())
-            },
-        );
-
-        assert!(error.to_string().contains("rolled back"), "{error:#}");
-        assert_eq!(std::fs::read(&config_path).unwrap(), b"original\n");
-        assert_eq!(active.borrow().as_deref(), Some("codex"));
     }
 
     // ── run_route writes only the requested scope ────────────────────

@@ -31,16 +31,18 @@ Pi's login flow or making a provider request.
 ## Implemented behavior
 
 - Global/default and `both` setup persist the selected `pi` pointer in the same
-  rollback-protected transaction as the exact config. If any config write,
-  activation, or running-daemon reload step fails, prior config/profile state is
-  restored and setup exits with an actionable error. Configured custom
+  rollback-protected transaction as the exact config. Config-write or pointer
+  activation failure restores prior config/profile state. Configured custom
   default/task-agent routes are not replaced by starter routes.
 - `--scope local` keeps its project config authoritative and deliberately does
   not mutate the machine-global active pointer.
 - Setup idempotently ensures the version-locked `pi-worksgood` console plugin
   before committing route/profile state, then requires a running project daemon
-  to reload. Plugin preparation failure is pre-activation; reload failure rolls
-  back the newly written config/profile instead of claiming runtime readiness.
+  to reload. Plugin preparation is an intentional additive/idempotent side
+  effect and is not rolled back. Plugin failure is pre-activation. A reload
+  failure exits nonzero and says on-disk activation succeeded but runtime state
+  is unknown, with the exact `wg service reload` recovery action; it does not
+  risk a compensating rollback after a lost-but-applied reload response.
 - The completion report separates: Pi executable `AVAILABLE`/`UNAVAILABLE`,
   verified pi-worksgood ready/not-ready status, profile active/local/dry-run, and Pi auth/model
   `NOT VERIFIED`. It states that no provider request occurred and directs the
@@ -65,14 +67,16 @@ already used by `worksgood setup --model ...`.
 - `cargo build` — pass
 - `cargo clippy` — pass (existing warnings)
 - `cargo test --test integration_setup_routes` — 13 pass, 11 retired tests ignored
-- setup scope/rollback unit filters — 6 pass, including injected global
-  active-profile and daemon-reload failures with restoration of both prior
-  config/profile state
+- setup scope/rollback unit filters — 5 pass, including injected global
+  active-profile failure and restoration of both prior config/profile state
 - `integration_pi_two_tier_profile` + `integration_profile_tier_pinning` — 12 pass
 - `tests/smoke/scenarios/setup_route_activation_preflight.sh` — pass using a real
   PTY, isolated homes/projects, fake Pi, absent-Pi fixtures, a trap provider key,
   deliberately unreachable HTTP/HTTPS/ALL proxy settings, and `strace` connect
-  tracing; setup never invokes Pi and produces no IPv4/IPv6 provider connection
+  tracing; setup preflight never invokes Pi and produces no IPv4/IPv6 provider
+  connection. The same scenario then starts a real daemon, reruns setup against
+  it with a checked reload acknowledgement, and invokes the first real
+  `spawn-task` LLM command through fake Pi with the exact provider/model argv
 
 A full repository `cargo test` run reached more than 3,100 passing library tests
 but remains non-green because unrelated tests share and race process-global
