@@ -2,8 +2,9 @@
 
 **Audit snapshot:** `b0892ea7496fd2cc8f641417a3d8e33ca9add369` (inherited from the audit charter)  
 **Evidence checked through:** 2026-08-08  
-**Execution revision:** `98b319c36aa8a21fd4506fc7469fe6d58978cdda`  
-**Freshness:** snapshot-current; `git diff --quiet b0892ea7..98b319c3 -- <audited source/test/docs>` returned 0, so the two intervening audit-charter commits did not change the evidence cited here  
+**Source-evidence revision:** `3947642acdf11f61cffce97e7a4efb8115ba19ef` (tree `5780e1d40d234ade5bcfeab7a014d6b3cb79e0c5`)
+**Execution revisions:** focused suites and initial traces at `98b319c36aa8a21fd4506fc7469fe6d58978cdda`; rebuilt generated-wrapper/smoke evidence at `3947642acdf11f61cffce97e7a4efb8115ba19ef`
+**Freshness:** snapshot-current; `git diff --quiet b0892ea7..3947642a -- <audited source/test/docs>` returned 0. The output-commit check in section 7.1 extends that comparison through the exact reviewed output rather than treating `98b319c3` as final provenance.
 **Scope:** model routing, configuration/profile/tier/reasoning precedence, Pi/Claude/Codex/native/OpenCode handlers, discovery, worker processes and wrappers, Pi streaming/watchdogs, usage/cost, credentials/fallbacks, deprecations, and documentation drift  
 **Change boundary:** this new audit artifact only
 
@@ -11,7 +12,7 @@
 
 **`[FACT]`** Current unattended service admission is narrower than WorksGood's handler and executor catalog. Exact `pi:<provider>:<model>`, `claude:<model>`, and `codex:<model>` routes pass the execution-plane validator; nex/native, OpenCode, other external CLIs, leading-provider routes, and bare aliases do not (`src/config.rs:2395-2433,3590-3710` (`parse_supported_execution_route`, `resolve_execution_route_for_role`, `validate_execution_model_plane`); `src/commands/spawn/execution.rs:984-1046` (`execute_spawn_plan` preflight)). The broad resolver and live-chat layer still recognize those additional handlers (`src/dispatch/handler_for_model.rs:76-137`; `src/commands/spawn_task.rs:145-224,280-405`).
 
-**`[VERIFIED]`** Focused tests executed on 2026-08-08 passed: 14 handler-routing unit tests; Pi stream deduplication and raw-stream accounting tests; 19 Pi-watchdog integration tests; 8 Pi-sole-model-plane tests; 6 two-tier-profile tests; 6 executor-taxonomy tests; two agency fallback tests; one Pi process-argv test; one native process/local-OAI-stub test; and three native result-accounting tests. Exact commands, environment, exit statuses, and bounded results are in section 7. No external provider or production credential was invoked.
+**`[VERIFIED]`** Focused tests executed on 2026-08-08 passed: 14 handler-routing unit tests; Pi stream deduplication and raw-stream accounting tests; 19 Pi-watchdog integration tests; 8 Pi-sole-model-plane tests; 6 two-tier-profile tests; 6 executor-taxonomy tests; two agency fallback tests; one Pi process-argv test; one native process/local-OAI-stub test; and three native result-accounting tests. Two credential-free smokes also passed: a real isolated daemon/config/generated-wrapper/fake-Pi completion flow for ten workers and the Pi bridge's canonical non-zero accounting flow. A separate one-worker generated-wrapper trace captured the resolved argv/environment/stdin, raw and canonical streams, reviewed completion, and an important negative result: canonical usage was non-zero but terminal `task.token_usage` remained absent. Exact commands, revisions, and bounded results are in section 7. No external provider or production credential was invoked.
 
 **`[FACT]`** The worker pipeline has strong positive controls: explicit route and reasoning propagation, a transactional launch gate, dedicated raw and canonical streams, provider-failure classification, completion/no-work gates, and a Pi watchdog whose continuation path is evidence-based and same-session (`src/dispatch/plan.rs:387-613,650-809`; `src/commands/spawn/execution.rs:1308-1438,3430-3707`; `src/pi_watchdog/mod.rs:1-15,1274-1730`). Pi usage translation counts only authoritative `turn_end.message.usage`, avoiding repeated update/end snapshots (`src/stream_event.rs:410-690,1125-1152`; `src/graph.rs:1459-1587`).
 
@@ -91,7 +92,11 @@ pi --mode json -p "Complete the WG task prompt supplied on stdin."
 
 **`[VERIFIED]`** `cargo test --bin wg test_build_inner_command_pi_external_emits_model_and_thinking -- --nocapture` passed one test on 2026-08-08 and asserted the actual constructed command contains provider `openai-codex`, model `gpt-5.6-sol`, and thinking `high` (section 7.2).
 
-**`[VERIFIED]`** A deterministic Pi child stub then executed the exact worker-shaped `pi --mode json -p ... --provider openrouter --model z-ai/glm-5.2 --thinking high` process with piped stdin. It captured the argv and `PI_STUB_PROMPT_SENTINEL`, emitted the repository's captured Pi NDJSON fixture, and the real snapshot `wg pi-stream-bridge` produced canonical usage `{input=205, output=17, cacheRead=310, cost=0.05}` plus a non-empty session summary. This is credential-free process/results evidence, not a live-provider claim; exact commands and output are in section 7.4.
+**`[VERIFIED]`** A lower-boundary deterministic Pi child stub first executed the worker-shaped `pi --mode json -p ... --provider openrouter --model z-ai/glm-5.2 --thinking high` process with piped stdin. It emitted the captured Pi NDJSON fixture, and `wg pi-stream-bridge` produced canonical usage `{input=205, output=17, cacheRead=310, cost=0.05}` plus a summary. This direct-child check did **not** establish config/wrapper behavior; it is retained only as an independently reproducible bridge control (section 7.4).
+
+**`[VERIFIED]`** The representative end-to-end trace used a real isolated graph and daemon configured as `pi:test:fake-worker`, reasoning `high`, plus a fake Pi binary. The daemon generated and executed `agents/agent-1/run.sh`; the child captured `--mode json -p 'Complete … stdin.' --provider test --model fake-worker --thinking high --session-dir … --session-id …`, `WG_EXECUTOR_TYPE=pi`, inner `WG_MODEL=test:fake-worker`, `WG_REASONING=high`, and the task assignment on stdin. The generated wrapper's bootstrap/watchdog observer, raw-stream capture, bridge, classifier, and completion gates ran. Raw and canonical usage were both `{input=12, output=3, cacheRead=4, cost=0.007}`; reviewed completion ended `Done` with a receipt. **However, stored `task.token_usage` was `null`, and `wg spend` reported zero**, exposing `MODEL-009` rather than validating the persistence claim. Exact protocol and output are in section 7.5.
+
+**`[VERIFIED]`** Separately, `worker_owned_completion_canary.sh` dispatched ten workers from an exact Pi test config through generated wrappers and ended all ten reviewed tasks `Done`; `pi_stream_bridge_populates_usage.sh` passed its canonical non-zero usage/per-step-event/summary assertions (`tests/smoke/scenarios/worker_owned_completion_canary.sh:1-152`; `tests/smoke/scenarios/pi_stream_bridge_populates_usage.sh:1-93`). These smokes establish completion concurrency and bridge translation, respectively; neither asserts terminal task-level usage persistence.
 #### Trace B — attended/live native and Pi
 
 **`[VERIFIED]`** With a temporary native config, a paused task, and the live-surface hint `WG_EXECUTOR_TYPE=native`, snapshot-built `wg spawn-task native-live --dry-run` printed:
@@ -131,8 +136,9 @@ Pi --mode json stdout
                                                              ├─ canonical stream.jsonl
                                                              └─ session-summary.md
 
-wg done / wg fail ── parse output/raw stream ───────► task.token_usage
-wg show ─────────── stored usage, then live files
+legacy/compat done path ── parse output/raw stream ─► task.token_usage
+task-owned reviewed completion ─────────────────────► observed token_usage=null
+wg show ─────────── stored usage, or live files while agent linkage remains
 wg spend ───────── stored usage on Done/Failed only
 ```
 
@@ -140,7 +146,7 @@ wg spend ───────── stored usage on Done/Failed only
 
 **`[FACT]`** Pi repeats cumulative usage on multiple event types. Translation and graph accounting count only `turn_end.message.usage` once per turn and map `{input, output, cacheRead, cacheWrite, totalTokens, cost.total}` to canonical fields (`src/stream_event.rs:410-690`; `src/graph.rs:1459-1587`). Cost is the sum of Pi-reported `usage.cost.total`; missing or zero Pi cost remains zero and is never estimated by WorksGood (`src/graph.rs:1543-1587`). Registry estimation is implemented for Codex result events, not Pi (`src/graph.rs:1613-1660,1694-1785`).
 
-**`[FACT]`** `wg show` falls back to live parsing if stored usage is absent (`src/commands/show.rs:692-720`). `wg spend` only includes stored usage on `Done|Failed` tasks and assigns selected tasks to `Utc::now().date_naive()` rather than a task terminal timestamp (`src/commands/spend.rs:18-56`). `wg show`'s human display subtracts cache-read input with saturation while its structured fields retain the full values (`src/commands/show.rs:1871-1900`).
+**`[FACT]`** `wg show` can fall back to live parsing when task-to-agent linkage still resolves an agent directory (`src/commands/show.rs:692-720`). In the executed terminal wrapper trace, completion had cleared that linkage, so neither human nor JSON `wg show` recovered the retained canonical usage. `wg spend` only includes stored usage on `Done|Failed` tasks and assigns selected tasks to `Utc::now().date_naive()` rather than a task terminal timestamp (`src/commands/spend.rs:18-56`). `wg show`'s human display subtracts cache-read input with saturation when usage is available, while structured fields retain full values (`src/commands/show.rs:1871-1900`).
 
 **`[FACT]`** The Pi watchdog projects meaningful provider/session/tool/process observations and applies exact guards before continuation (`src/pi_watchdog/mod.rs:1274-1590`). Production soft silence is 300 seconds and free/low-QoS hard thresholds cannot be below 900 seconds (`src/pi_watchdog/mod.rs:14-15,123-181`). Continuation is persisted/fenced and appends to the same session (`src/pi_watchdog/mod.rs:1600-1730`); the module contract explicitly denies it direct task-status authority (`src/pi_watchdog/mod.rs:1-5`).
 
@@ -194,9 +200,9 @@ wg spend ───────── stored usage on Done/Failed only
 
 ### `MODEL-006` — Pi stream accounting correctly avoids duplicate snapshots
 
-**`[VERIFIED]`** **State:** shipped/current. **Severity:** S4 Informational positive control. **Likelihood:** observed for fixtures. **Confidence:** high. **Boundary:** task usage/cost accounting and event UI. **Owner:** streaming/accounting. The focused bridge and live-cache tests passed, and implementation counts authoritative `turn_end` events once (`src/stream_event.rs:497-690,1125-1152`; `src/graph.rs:1459-1587`).
+**`[VERIFIED]`** **State:** shipped/current. **Severity:** S4 Informational positive control. **Likelihood:** observed for fixtures. **Confidence:** high. **Boundary:** canonical bridge and event parsing, not terminal task persistence. **Owner:** streaming/accounting. The focused bridge and live-cache tests passed, and implementation counts authoritative `turn_end` events once (`src/stream_event.rs:497-690,1125-1152`; `src/graph.rs:1459-1587`).
 
-**`[FACT]`** Counter-scope: no real provider stream was captured in this audit; schema evolution remains external. The inspected smoke `tests/smoke/scenarios/pi_stream_bridge_populates_usage.sh:1-93` asserts the end-to-end bridge contract but was not executed here.
+**`[VERIFIED]`** `tests/smoke/scenarios/pi_stream_bridge_populates_usage.sh:1-93` passed against the candidate binary and asserted the end-to-end bridge contract. **`[UNCERTAINTY]`** No external provider stream was captured, so provider-side schema evolution remains outside this result.
 
 **`[RECOMMENDATION]`** Preserve fixtures and add provider-schema compatibility monitoring under `MODEL-REC-007`.
 
@@ -212,9 +218,19 @@ wg spend ───────── stored usage on Done/Failed only
 
 **`[FACT]`** **State:** shipped/current. **Severity:** S3 Low. **Likelihood:** likely when Pi reports no/zero cost or historical tasks are grouped. **Confidence:** high. **Boundary:** operator cost reporting, not token execution. **Owner:** accounting/UX. Pi missing/zero reported cost remains zero without registry estimation; `wg spend` groups every included task under the command's current UTC date (`src/graph.rs:1543-1587`; `src/commands/spend.rs:18-56`).
 
-**`[FACT]`** Counterevidence: full stored token fields remain on the task, `wg show` can parse live streams, and a non-zero Pi-reported cost is preferred. The issue is fallback/presentation, not loss of every usage record (`src/commands/show.rs:692-720`; `src/stream_event.rs:425-448`).
+**`[FACT]`** Counterevidence: canonical stream fields remain retained, live `wg show` can parse streams while linkage exists, and a non-zero Pi-reported cost is preferred. `MODEL-009` shows that retained canonical data does not guarantee terminal task storage. (`src/commands/show.rs:692-720`; `src/stream_event.rs:425-448`).
 
 **`[RECOMMENDATION]`** Linked action: `MODEL-REC-006`.
+
+### `MODEL-009` — reviewed task-owned Pi completion bypasses usage persistence
+
+**`[VERIFIED]`** **State:** shipped/current. **Severity:** S2 Medium. **Likelihood:** observed on the representative generated-wrapper route. **Confidence:** high for this path. **Boundary:** terminal `task.token_usage`, `wg show --json`, spend/stats accounting; not raw/canonical retention. **Owner:** finalization/accounting. The isolated daemon-launched fake Pi emitted usage `{12,3,4,$0.007}`; the generated wrapper retained it in `raw_stream.jsonl` and translated it into `stream.jsonl`; reviewed completion reached `Done`; but the saved task had `token_usage=null` and `wg spend` reported zero (section 7.5).
+
+**`[FACT]`** Source explains the observed branch: worktree-backed completion calls `task_owned_done` and returns early (`src/commands/done.rs:2509-2527`); the later registry/output parsing and assignment of `task.token_usage` lives after that return in the historical compatibility body (`src/commands/done.rs:2684-2694,2881-2887`). `task_owned_done` submits the finish transaction but contains no token-usage resolution (`src/commands/finalize.rs:2385-2427`).
+
+**`[INFERENCE]`** New managed worktree completions can therefore under-report Pi cost/tokens in terminal reporting even though the canonical stream is correct. The exact prevalence across Claude/Codex and non-worktree completion paths was not executed. Falsify by a current managed worker test that reaches `Done` through the same task-owned branch and persists non-zero `task.token_usage`.
+
+**`[RECOMMENDATION]`** Move or share usage resolution before both terminal adapters and pin it with a generated-wrapper completion test; linked action `MODEL-REC-006`.
 
 ## 4. Contradictions and drift
 
@@ -244,7 +260,8 @@ wg spend ───────── stored usage on Done/Failed only
 | `MODEL-RISK-007` | `[FACT]` | S2 / possible | A Pi child that exits without reviewed completion is failed unless watchdog policy authorizes continuation (`src/commands/spawn/execution.rs:3618-3640`). Completion is not inferred from prose. |
 | `MODEL-RISK-008` | `[FACT]` | S3 / possible | Claude retries fresh only for recognized stale-session errors (`src/commands/spawn/execution.rs:3523-3548`). It remains same-handler but loses session continuity. |
 | `MODEL-RISK-009` | `[FACT]` | S2 / possible | If GNU `timeout`/`gtimeout` is absent, the wrapper warns and runs without a hard timeout (`src/commands/spawn/execution.rs:3395-3420`). Availability wins over wall-clock enforcement. |
-| `MODEL-RISK-010` | `[FACT]` | S3 / likely | Unavailable/zero Pi-reported cost remains zero and spend history is bucketed to today (`MODEL-008`). Token fields remain available, limiting accounting loss. |
+| `MODEL-RISK-010` | `[FACT]` | S3 / likely | Unavailable/zero Pi-reported cost remains zero and spend history is bucketed to today (`MODEL-008`). Canonical fields may remain available, but terminal storage is separately exposed by `MODEL-009`. |
+| `MODEL-RISK-011` | `[VERIFIED]` | S2 / observed | Task-owned reviewed Pi completion can retain correct canonical usage yet save no `task.token_usage`, causing terminal `show`/`spend` under-reporting (`MODEL-009`; section 7.5). |
 
 ### 5.2 Coverage and uncertainty gaps
 
@@ -254,7 +271,7 @@ wg spend ───────── stored usage on Done/Failed only
 
 **`[UNCERTAINTY]`** The wrapper's Windows Bash path logic, macOS `gtimeout` fallback, profile daemon hot reload, and keyring backends were only inspected. Next check: CI/platform scenarios with exact binary provenance.
 
-**`[FACT]`** Inspected smoke scenarios are executable specifications, not executed evidence in this artifact: `tests/smoke/scenarios/handler_first_bare_provider_model.sh`, `setup_routes_complete_configs.sh`, `pi_worker_one_shot_prompt_and_cred_error.sh`, `pi_stream_bridge_populates_usage.sh`, and `pi_session_watchdog_human_flow.sh` [inspected, not run].
+**`[FACT]`** Inspected but unexecuted smoke scenarios are executable specifications, not pass evidence here: `tests/smoke/scenarios/handler_first_bare_provider_model.sh`, `setup_routes_complete_configs.sh`, `pi_worker_one_shot_prompt_and_cred_error.sh`, and `pi_session_watchdog_human_flow.sh`. The worker-owned completion canary and Pi bridge smoke are separately marked executed.
 
 ## 6. Recommendations
 
@@ -268,7 +285,7 @@ wg spend ───────── stored usage on Done/Failed only
 
 4. **`MODEL-REC-002` — `[RECOMMENDATION]` (P0, Pi/runtime; links `MODEL-002`, `MODEL-RISK-002`, `MODEL-DRIFT-004`):** decide and enforce the ordinary Pi worker plugin topology. Prefer explicit `-e <embedded>` plus compatibility env on the actual `--mode json` child unless Pi's worker contract forbids it; otherwise narrow the hermetic claim. **Acceptance:** daemon-worker integration captures argv/env, proves expected-versus-found mismatch fails loudly, and proves `wg_*` tools or the documented CLI completion path is available.
 5. **`MODEL-REC-004` — `[RECOMMENDATION]` (P1, config/migration; links `MODEL-003`, `MODEL-DRIFT-006`):** make one release-phase policy control CLI config, config load, service start, and spawn behavior for leading-provider routes. **Acceptance:** a table-driven test asserts identical warn/canonicalize/reject semantics at all strict entry points.
-6. **`MODEL-REC-006` — `[RECOMMENDATION]` (P1, accounting/UX; links `MODEL-008`, `MODEL-RISK-010`):** distinguish unavailable cost from a provider-reported true zero, and group spend by terminal timestamp. **Acceptance:** tests cover non-zero Pi cost, absent cost, reported zero, historical dates, cache fields, Done, and Failed.
+6. **`MODEL-REC-006` — `[RECOMMENDATION]` (P0, finalization/accounting/UX; links `MODEL-008/009`, `MODEL-RISK-010/011`):** resolve and persist usage before both task-owned and compatibility terminal adapters, distinguish unavailable cost from reported zero, and group spend by terminal timestamp. **Acceptance:** a real generated-wrapper fake-Pi task reaches reviewed `Done` with non-zero raw/canonical/**stored** usage; tests also cover absent cost, true zero, historical dates, cache fields, Done, and Failed.
 7. **`MODEL-REC-007` — `[RECOMMENDATION]` (P1, streaming/watchdog; links `MODEL-006/007` and coverage gaps):** preserve fixture tests, add captured-schema regression fixtures, time-controlled long-silence/PID-reuse checks, and an opt-in live canary. **Acceptance:** no duplicate turn accounting; same-session continuation; no watchdog terminal write; explicit provider-schema version failure.
 8. **`MODEL-REC-008` — `[RECOMMENDATION]` (P2, configuration/observability; links `MODEL-005`):** expose route provenance in `wg config --models`, spawn audit, and status: selected project/global profile, model source, reasoning source, handler, inner provider/model, and requested-surface admission. **Acceptance:** both traces in section 2 can be reconstructed from structured output without reading source.
 
@@ -286,16 +303,16 @@ wg spend ───────── stored usage on Done/Failed only
 ```bash
 git diff --quiet \
   b0892ea7496fd2cc8f641417a3d8e33ca9add369..\
-  98b319c36aa8a21fd4506fc7469fe6d58978cdda -- \
+  3947642acdf11f61cffce97e7a4efb8115ba19ef -- \
   src tests README.md docs/README.md \
   docs/design-handler-first-model-spec.md \
   docs/design-two-tier-pi-profile.md \
   docs/design-pi-plugin-install.md AGENTS.md
 ```
 
-**`[VERIFIED]`** Bounded result: `scoped_diff_exit=0`; only the audit charter changed between snapshot and execution revision. Static line citations in this artifact are interpreted against that unchanged evidence.
+**`[VERIFIED]`** Bounded result: `scoped_diff_exit=0`; audited source, tests, and named behavior documents were byte-unchanged from the inherited snapshot through source revision `3947642a`. Static citations are interpreted against that exact source tree.
 
-**`[VERIFIED]`** After each current-`main` integration, including the final output tree, the required artifact checks ran on 2026-08-08 and both returned exit 0 with no output. The completion manifest's separate immutable validation evidence records the exact final commit, integrated-main OID, tree OID, and artifact digest so checking the evidence does not require a self-invalidating commit hash inside this file.
+**`[VERIFIED]`** After committing this artifact, validation re-runs `git diff --quiet 3947642a..HEAD -- <the same audited paths>` and records the resulting output commit/tree in immutable completion evidence. This is the output-commit provenance check requested by review: any source/test drift after `3947642a` makes completion fail rather than silently extending claims. The required artifact checks also run on the exact output tree:
 
 ```bash
 test -s docs/audit/2026-08-08-worksgood-system/12-model-execution-plane.md
@@ -416,7 +433,53 @@ target/debug/wg pi-stream-bridge --agent-dir "$ROOT/agent" --exit-code 0
 
 **`[VERIFIED]`** A Python assertion pass over the generated files verified captured args `--mode json`, provider, model, and `--thinking high`; exact stdin sentinel; canonical result usage `input_tokens=205`, `output_tokens=17`, `cache_read_input_tokens=310`, `cost_usd=0.05`; and a 23-byte non-empty `session-summary.md`. The temporary root was `/tmp/wg-model-pi-stub.ypqqni`. No network or provider credential was available to the stub.
 
-### 7.5 Primary static evidence
+### 7.5 Executed generated-wrapper Pi trace and terminal-accounting result
+
+**`[VERIFIED]`** At source revision `3947642acdf11f61cffce97e7a4efb8115ba19ef`, `cargo build --bin wg` returned 0 and produced candidate SHA-256 `184ccaf5f5858e8ef54090d5f47134381e18856e402ca14055cad3b52aac747e`. A temporary isolated script used `env -i` (only `PATH`, temporary `HOME`/`XDG_CONFIG_HOME`/`WG_GLOBAL_DIR`, and `USER`) so this audit worker's authority could not leak into the trace. Its exact control-plane sequence was:
+
+```bash
+wg init --no-agency
+wg config --local --model pi:test:fake-worker --reasoning high \
+  --auto-assign false --auto-evaluate false \
+  --set-model reviewer pi:test:fake-review --set-reasoning reviewer low \
+  --set-model evaluator pi:test:fake-review --set-reasoning evaluator low \
+  --no-reload
+wg add 'Pi generated-wrapper audit trace' --id pi-wrapper-trace \
+  -d $'Produce report.txt.\n\n## Validation\n- [ ] exact output reviewed'
+wg contract pi-wrapper-trace report
+wg publish pi-wrapper-trace --only
+wg service start --max-agents 1 --model pi:test:fake-worker \
+  --no-coordinator-agent --no-supervise
+```
+
+The temporary `pi` executable selected `--model fake-worker`, captured its complete argv/environment/stdin, emitted one authoritative `turn_end` with usage `{input:12, output:3, cacheRead:4, cacheWrite:2, cost.total:0.007}`, slept one second for capture, created report/validation/summary objects, submitted their immutable completion manifest, and called `wg done`. Its `fake-review` branch returned the bounded JSON pass verdict. No source/test file or external endpoint was touched.
+
+**`[VERIFIED]`** Assertions over `/tmp/wg-model-wrapper.tnGuuG` returned 0 with this bounded output:
+
+```text
+argv=--mode json -p Complete the WG task prompt supplied on stdin. --provider test --model fake-worker --thinking high --session-dir … --session-id …
+stdin_contains_task_prompt=true
+env=WG_EXECUTOR_TYPE=pi WG_MODEL=test:fake-worker WG_REASONING=high
+raw_usage=input:12 output:3 cacheRead:4 cost:0.007
+canonical_usage=input:12 output:3 cacheRead:4 cost:0.007
+stored_task_usage=null (observed accounting persistence gap)
+task_status=done completion_receipt=true
+```
+
+The generated `agents/agent-1/run.sh` was inspected and contained the launch gate, Pi bootstrap, `pi-stream-observe`, `pi-stream-bridge`, provider classifier/telemetry, and terminal-state guards generated by `write_wrapper_script`; this is execution of the production wrapper, not handwritten reproduction of those branches. The success route exercised their boundary and classifier invocation, but it did **not** induce a provider failure or watchdog continuation. Those negative branches remain supported by source/focused tests, not this trace. After completion, `wg show --json` had no `token_usage`, human `wg show` displayed no usage, and `wg spend` returned `Total cost: $0.0000`, `Total tokens: 0`, `Tasks with usage: 0`.
+
+**`[VERIFIED]`** The candidate binary then ran both credential-free smoke scripts under `env -i`; each returned 0:
+
+```bash
+WG_SMOKE_CANDIDATE_BIN="$PWD/target/debug/wg" \
+  bash tests/smoke/scenarios/worker_owned_completion_canary.sh
+PATH="<candidate-symlink-dir>:$PATH" \
+  bash tests/smoke/scenarios/pi_stream_bridge_populates_usage.sh
+```
+
+Bounded output: `PASS worker-owned-completion-canary workers=10`; `PASS: pi-stream-bridge populates nonzero summed usage + per-step events + session summary`. The first script does not assert usage; the second invokes the bridge on a fixture rather than completing a task. This distinction is why neither contradicts `MODEL-009`.
+
+### 7.6 Primary static evidence
 
 | Evidence | Observation | Class / freshness |
 |---|---|---|
@@ -436,8 +499,8 @@ target/debug/wg pi-stream-bridge --agent-dir "$ROOT/agent" --exit-code 0
 | `src/service/llm.rs:251-407,519-600,2578-2660` | same-system explicit fallback and negative tests | `[FACT]` E2/E3; two tests executed |
 | `README.md`, `docs/README.md`, design docs, quickstart, `AGENTS.md` cited spans | conflicting current/design/operator claims | `[DOC-CLAIM]` E4/E5, snapshot-current text |
 
-### 7.6 Inspected tests and limitations
+### 7.7 Inspected tests and limitations
 
-**`[FACT]`** The five smoke scenarios named in section 5.2 were read as E3 executable specifications and were not run. Their presence does not establish pass status.
+**`[FACT]`** The four scenarios marked unexecuted in section 5.2 were read as E3 executable specifications and were not run. The two credential-free scenarios recorded in sections 2.4 and 7.5 were executed and passed.
 
 **`[UNCERTAINTY]`** No network request, model response, credential lookup, OS keyring operation, plugin clean-install, daemon hot reload, real TUI session, GNU-timeout absence, Windows/macOS execution, or production-length watchdog interval was executed. This artifact does not certify provider correctness, security, cost accuracy, or cross-platform readiness.
