@@ -23,7 +23,7 @@ use worksgood::service::registry::AgentRegistry;
 
 use super::human_dispatch;
 use super::triage;
-use crate::commands::{graph_path, is_process_alive, kill_process_graceful, spawn};
+use crate::commands::{graph_path, kill_process_graceful, spawn};
 
 /// Result of a single coordinator tick
 pub struct TickResult {
@@ -100,7 +100,7 @@ fn cleanup_and_count_alive(
         let mut locked_registry = AgentRegistry::load_locked(dir)?;
         let mut killed = Vec::new();
         for agent in locked_registry.registry.agents.values() {
-            if !agent.is_alive() || !is_process_alive(agent.pid) {
+            if !agent.has_live_process_identity() {
                 continue;
             }
             if let Some(task) = graph.get_task(&agent.task_id)
@@ -148,7 +148,7 @@ fn cleanup_and_count_alive(
     let alive_count = registry
         .agents
         .values()
-        .filter(|a| a.is_alive() && is_process_alive(a.pid))
+        .filter(|a| a.has_live_process_identity())
         .count();
 
     if alive_count >= max_agents {
@@ -207,7 +207,7 @@ fn active_build_heavy_count(dir: &Path, graph: &worksgood::graph::WorkGraph) -> 
         .map(|registry| {
             registry
                 .all()
-                .filter(|agent| agent.is_alive() && is_process_alive(agent.pid))
+                .filter(|agent| agent.has_live_process_identity())
                 .filter(|agent| {
                     graph.get_task(&agent.task_id).is_some_and(|task| {
                         worksgood::disk_sentinel::classify_task(task).is_heavy()
@@ -2225,7 +2225,7 @@ fn auto_checkpoint_agents(dir: &Path, config: &Config) {
     let alive_agents: Vec<_> = registry
         .agents
         .values()
-        .filter(|a| a.is_alive() && is_process_alive(a.pid))
+        .filter(|a| a.has_live_process_identity())
         .cloned()
         .collect();
 
