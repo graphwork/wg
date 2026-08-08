@@ -1662,7 +1662,7 @@ fn handle_status(dir: &Path) -> IpcResponse {
             registry
                 .agents
                 .values()
-                .filter(|agent| agent.is_alive() && crate::commands::is_process_alive(agent.pid))
+                .filter(|agent| agent.has_live_process_identity())
                 .filter(|agent| {
                     graph.get_task(&agent.task_id).is_some_and(|task| {
                         worksgood::disk_sentinel::classify_task(task).is_heavy()

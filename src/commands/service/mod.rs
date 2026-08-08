@@ -2066,7 +2066,7 @@ fn record_tick_events(
     if let Ok(registry) = AgentRegistry::load(dir) {
         let mut log = event_log.lock().unwrap_or_else(|e| e.into_inner());
         for agent in registry.list_agents() {
-            if agent.is_alive() && is_process_alive(agent.pid) {
+            if agent.has_live_process_identity() {
                 // Check if agent was spawned very recently (within last 5 seconds)
                 if let Some(secs) = agent.uptime_secs()
                     && secs <= 5
@@ -4528,7 +4528,7 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
             registry
                 .agents
                 .values()
-                .filter(|agent| agent.is_alive() && is_process_alive(agent.pid))
+                .filter(|agent| agent.has_live_process_identity())
                 .filter(|agent| {
                     graph.get_task(&agent.task_id).is_some_and(|task| {
                         worksgood::disk_sentinel::classify_task(task).is_heavy()

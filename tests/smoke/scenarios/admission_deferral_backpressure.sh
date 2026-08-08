@@ -272,4 +272,21 @@ assert c['admission_deferred']==[],c
 assert 'b-deferred-build' not in sys.argv[1],x
 PY
 
-echo "PASS: live admission UI and exact-once work pass; hard-crash/PID-reuse orphaned deferrals are suppressed"
+crash_session="${session}-crash"
+tmux new-session -d -s "$crash_session" -x 180 -y 50 \
+  "cd '$project' && env HOME='$HOME' WG_GLOBAL_DIR='$WG_GLOBAL_DIR' WG_TUI_APPEARANCE=none '$WG_BIN' --dir '$project/.wg' tui"
+sleep 2
+tmux send-keys -t "$crash_session" End 1
+sleep 1
+crash_tui="$scratch/tui-crash-stale-admission.txt"
+tmux capture-pane -p -t "$crash_session" -S - >"$crash_tui" 2>&1 \
+  || loud_fail "crash-state TUI capture failed: $(cat "$crash_tui")"
+! grep -q '⊳1' "$crash_tui" \
+  || loud_fail "TUI pulse exposed orphaned deferred count after PID reuse: $(cat "$crash_tui")"
+! grep -q 'Admission waiting' "$crash_tui" \
+  || loud_fail "TUI inspector exposed orphaned wait after PID reuse: $(cat "$crash_tui")"
+! grep -q 'build-heavy admission budget full' "$crash_tui" \
+  || loud_fail "TUI exposed orphaned reason after PID reuse: $(cat "$crash_tui")"
+tmux kill-session -t "$crash_session" 2>/dev/null || true
+
+echo "PASS: live admission UI and exact-once work pass; hard-crash/PID-reuse orphaned deferrals are suppressed across CLI/TUI"

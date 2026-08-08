@@ -100,6 +100,19 @@ impl AgentEntry {
         )
     }
 
+    /// Status plus kernel process-birth identity. The registry's immutable
+    /// `started_at` is the expected epoch; plain PID liveness is insufficient
+    /// because a reused PID must never consume admission capacity.
+    pub fn has_live_process_identity(&self) -> bool {
+        self.is_alive()
+            && super::is_process_alive(self.pid)
+            && DateTime::parse_from_rfc3339(&self.started_at)
+                .ok()
+                .is_some_and(|started| {
+                    super::verify_process_identity(self.pid, started.timestamp())
+                })
+    }
+
     /// Strict liveness check — the agent is considered *live* if and
     /// only if ALL of the following hold:
     ///

@@ -8660,7 +8660,7 @@ fn build_heavy_active_for_graph(
     AgentRegistry::load_or_warn(workgraph_dir)
         .agents
         .values()
-        .filter(|agent| agent.is_alive() && crate::commands::is_process_alive(agent.pid))
+        .filter(|agent| agent.has_live_process_identity())
         .filter(|agent| {
             graph
                 .get_task(&agent.task_id)
@@ -19155,24 +19155,21 @@ impl VizApp {
         self.service_health.prev_provider_auto_pause = new_provider_auto_pause;
 
         // Load agent registry for alive count and stuck task detection.
-        // Use status-based count (active_count) to match `wg service status` / `wg status`.
-        // The daemon's cleanup routines (triage, dead-agent reaping) keep registry
-        // statuses accurate. PID-based liveness checks are unreliable from the TUI
-        // process because the daemon may have already reaped the zombie (removing it
-        // from the process table) before updating the registry status.
+        // Use status-based count for the broad agent summary, but require the
+        // registry PID to match its immutable process-start epoch for admission
+        // capacity. This refresh already runs off the render thread, so load the
+        // current graph instead of using a potentially older UI cache.
         let registry = worksgood::AgentRegistry::load_or_warn(dir);
         let alive = registry.active_count();
         self.service_health.agents_alive = alive;
         self.service_health.agents_total = registry.agents.len();
-        self.service_health.build_heavy_active = self
-            .coherent_graph()
-            .map(|graph| {
+        self.service_health.build_heavy_active = crate::commands::load_workgraph(dir)
+            .ok()
+            .map(|(graph, _)| {
                 registry
                     .agents
                     .values()
-                    .filter(|agent| {
-                        agent.is_alive() && crate::commands::is_process_alive(agent.pid)
-                    })
+                    .filter(|agent| agent.has_live_process_identity())
                     .filter(|agent| {
                         graph.get_task(&agent.task_id).is_some_and(|task| {
                             worksgood::disk_sentinel::classify_task(task).is_heavy()
@@ -19181,20 +19178,6 @@ impl VizApp {
                     .count()
             })
             .unwrap_or(0);
-        // The live coordinator's exact budget-full reason is also an
-        // authoritative observation of occupied capacity. It closes the
-        // short registry/cache race where the task inspector sees the worker
-        // before the asynchronous service snapshot does, without trusting a
-        // stale/dead process (unavailable-service paths clear this read model).
-        if self.service_health.build_heavy_active == 0
-            && coord.admission_deferred.iter().any(|waiting| {
-                waiting
-                    .reason
-                    .starts_with("build-heavy admission budget full")
-            })
-        {
-            self.service_health.build_heavy_active = self.service_health.max_build_agents;
-        }
 
         // Phase 1 toast triggers: Agent exited → Info, Agent stuck (>5m) → Warning (deduped).
         // Collect into a vec to avoid borrow conflicts (self.prev_agent_statuses + push_toast).
@@ -19243,7 +19226,7 @@ impl VizApp {
             }
             // Agent stuck: alive but output file not modified in >5 minutes.
             // Suppress if the agent has active child processes (waiting on subprocess).
-            if agent.is_alive() && crate::commands::is_process_alive(agent.pid) {
+            if agent.has_live_process_identity() {
                 let output_age_secs = std::fs::metadata(&agent.output_file)
                     .and_then(|m| m.modified())
                     .ok()
