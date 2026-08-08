@@ -114,9 +114,11 @@ wg nex --chat native-live -m nex:audit-model -e audit-local
 
 **`[FACT]`** Compatibility code still describes the unreachable worker downstream shape: the native wrapper expects the native loop to write canonical `stream.jsonl`, and result parsing accepts native `total_usage` (`src/commands/spawn/execution.rs:3430-3456`; `src/graph.rs:1450-1478,1589-1612`).
 
-**`[VERIFIED]`** The reachable native process/results boundary was exercised deterministically outside worker admission: `integration_nex_entrypoint::wg_scoped_eval_mode_uses_configured_openrouter_endpoint_credentials` launched the real snapshot `wg nex` process against an in-test local OAI SSE server, observed the request/auth and successful result without leaking the key, and passed (`tests/integration_nex_entrypoint.rs:85-196,499-615`). Three graph tests then passed for native final `total_usage`, live turn aggregation, and final-result precedence (`src/graph.rs:4541-4600`). These are adjacent controls, not one transaction.
+**`[VERIFIED]`** The reachable native process/results boundary was exercised deterministically outside worker admission: `integration_nex_entrypoint::wg_scoped_eval_mode_uses_configured_openrouter_endpoint_credentials` launched the real snapshot `wg nex` process against an in-test local OAI SSE server, observed the request/auth and successful result without leaking the key, and passed (`tests/integration_nex_entrypoint.rs:85-196,499-615`). Three graph tests then passed for native final `total_usage`, live turn aggregation, and final-result precedence (`src/graph.rs:4541-4600`).
 
-**`[UNCERTAINTY]`** The stronger native requirement—one configuration flowing through admitted worker invocation, result handling, and terminal task accounting—is **unmet** because current strict worker admission refuses native before launch. This artifact therefore demonstrates (a) config→rejection, (b) separately reachable config→real nex/local wire→result, and (c) accounting fixtures, but does not combine them into a native worker end-to-end claim. The next falsifying check requires either an intentionally admitted native worker surface or a product decision that native is attended-only.
+**`[VERIFIED]`** A second, single-configuration compatibility trace joined those boundaries (section 7.6): exact endpoint/key/model config → actual candidate `wg nex --eval-mode` → local authenticated OAI SSE request → native `conversation.jsonl`, `stream.jsonl`, and `trace.ndjson` result handling → a claimed isolated task bound to that exact native trace → terminal `wg fail` accounting. The wire model was `minimax/minimax-m2.7`; native result and terminal task both recorded `{input=11, output=5}`.
+
+**`[FACT]`** Qualification: because strict admission refuses native, the last binding is an explicit audit adapter (registry points the claimed task at the actual attended-native `trace.ndjson`), not a daemon-launched native worker. The trace satisfies config→actual invocation→native result→terminal task accounting without pretending current native worker admission exists. A production-native worker trace remains impossible until policy admits that surface.
 **`[VERIFIED]`** With a separate exact Pi config, snapshot-built `wg spawn-task pi-chat --dry-run` printed:
 
 ```text
@@ -281,7 +283,7 @@ wg spend ───────── stored usage on Done/Failed only
 
 ### 5.2 Coverage and uncertainty gaps
 
-**`[UNCERTAINTY]`** No real Pi/Claude/Codex/OpenCode/native provider, authentication failure, rate limit, context overflow, malformed live stream, or model registry refresh was exercised. Focused fixtures establish local behavior only. Next check: credential-isolated canaries using disposable accounts/endpoints and captured child argv/event artifacts.
+**`[UNCERTAINTY]`** No external Pi/Claude/Codex/OpenCode/native provider, real login, authentication failure, rate limit, context overflow, malformed live stream, or model registry refresh was exercised. Native used an actual process/client against a deterministic local SSE endpoint; other focused fixtures establish local behavior only. Next check: credential-isolated canaries using disposable accounts/endpoints and captured child argv/event artifacts.
 
 **`[UNCERTAINTY]`** The watchdog passed short integration tests but not production-duration silence thresholds, process-group termination, PID reuse, or same-session continuation against a live Pi database. Next check: time-controlled integration plus one opt-in live provider scenario.
 
@@ -527,7 +529,39 @@ PATH="<candidate-symlink-dir>:$PATH" \
 
 Bounded result: exit 1, `SMOKE FAILED … wg setup --route claude-cli --yes failed: Error: --route is required for non-interactive setup. The supported route is: pi`. This is recorded as `MODEL-010`, not hidden as a validation pass.
 
-### 7.6 Primary static evidence
+### 7.6 Executed native config-to-process-to-terminal-accounting trace
+
+**`[VERIFIED]`** Candidate binary `184ccaf…` ran an actual attended native process under an isolated config and local OAI-compatible SSE server. The config selected endpoint `audit-native`, provider `openrouter`, URL `http://127.0.0.1:<port>/v1`, `api_key_file=<temporary file>`, and model `openrouter:minimax/minimax-m2.7`. Exact invocation:
+
+```bash
+env -u WG_TASK_ID -u WG_AGENT_ID -u WG_WORKER_CAPABILITY \
+  -u WG_WORKER_CONTROL_PROTOCOL -u WG_WORKER_IPC -u WG_GRAPH_ID \
+  wg --dir "$G" nex --eval-mode --minimal-tools \
+  --model openrouter:minimax/minimax-m2.7 \
+  --endpoint audit-native --max-turns 1 \
+  'Reply exactly NATIVE_TRACE_OK'
+```
+
+**`[VERIFIED]`** The local server captured `POST /v1/chat/completions`, exact bearer authentication (redacted in the artifact), and wire model `minimax/minimax-m2.7`; it returned a two-event SSE response with usage `{prompt_tokens=11, completion_tokens=5}`. Candidate output was `{"status":"ok","turns":1,"input_tokens":11,"output_tokens":5,"exit_reason":"end_turn"}`. Native itself wrote:
+
+```text
+conversation.jsonl end.total_usage = {input_tokens:11, output_tokens:5}
+stream.jsonl result.usage          = {input_tokens:11, output_tokens:5, model:minimax/minimax-m2.7}
+trace.ndjson result.total_usage    = {input_tokens:11, output_tokens:5}
+```
+
+**`[VERIFIED]`** For the terminal-accounting leg, the same isolated graph created and claimed `native-accounting-projection` as actor `native-agent`; its registry `output_file` was bound to the **actual native-generated** `trace.ndjson`. `wg fail native-accounting-projection --reason 'bounded audit terminal projection after actual native result'` invoked the production terminal parser and persisted `task.token_usage={input_tokens:11, output_tokens:5}`. Python assertions over request, native result, trace, status, and saved task returned 0 with bounded output:
+
+```text
+request=/v1/chat/completions auth=Bearer[redacted] wire_model=minimax/minimax-m2.7
+native_process_result=status:ok response:NATIVE_TRACE_OK input:11 output:5
+native_trace_result=total_usage input:11 output:5
+terminal_task_status=failed stored_usage=input:11 output:5
+```
+
+**`[FACT]`** Boundary: the registry binding is explicit harness plumbing necessitated by strict native worker rejection; it does not validate a daemon-generated native wrapper or native completion success. It does validate one exact native configuration through actual process/wire/result handling and the same terminal parser used by a Failed task. The separate admission trace remains a fail-closed rejection.
+
+### 7.7 Primary static evidence
 
 | Evidence | Observation | Class / freshness |
 |---|---|---|
@@ -547,7 +581,7 @@ Bounded result: exit 1, `SMOKE FAILED … wg setup --route claude-cli --yes fail
 | `src/service/llm.rs:251-407,519-600,2578-2660` | same-system explicit fallback and negative tests | `[FACT]` E2/E3; two tests executed |
 | `README.md`, `docs/README.md`, design docs, quickstart, `AGENTS.md` cited spans | conflicting current/design/operator claims | `[DOC-CLAIM]` E4/E5, snapshot-current text |
 
-### 7.7 Inspected tests and limitations
+### 7.8 Inspected tests and limitations
 
 **`[FACT]`** The three scenarios marked unexecuted in section 5.2 were read as E3 executable specifications and were not run. The two credential-free scenarios recorded in sections 2.4 and 7.5 passed; the setup scenario recorded there was executed and failed against its stale route expectation.
 
