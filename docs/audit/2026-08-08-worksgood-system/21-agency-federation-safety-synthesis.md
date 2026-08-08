@@ -6,7 +6,7 @@
 
 **Evidence checked through:** 2026-08-08
 
-**Freshness:** snapshot-current. The three dependency artifacts were produced from snapshot-equivalent production trees; this synthesis independently spot-checked the material cross-boundary claims against the same primary source. See section 7.
+**Freshness:** snapshot-current for the production files directly spot-checked here. Each dependency artifact separately reports how its evidence checkout was compared to the pinned production snapshot; this synthesis cites those reports rather than inferring equivalence from their different artifact integration revisions. See sections 2.1 and 7.
 
 **Scope:** WorksGood agency/persona identity, model authority, cryptographic identity, local trust assertions, capabilities, context exposure, content review, candidate evaluation, remote execution, learning/evolution, and human control as one authority system.
 
@@ -73,7 +73,7 @@ No one coordinate substitutes for another. A valid signature proves who signed, 
 |---|---|---|
 | [`13-agency-evaluation-chat.md`](13-agency-evaluation-chat.md) | **Adopt:** persona hashes are descriptive, candidate evaluation is strongly bound, attended/human edges are explicit, and modern verdicts do not feed learning. **Narrow:** context scope is exposure quantity, never trust; “identity” must be qualified. | `AGENCY-001..004`, `EVAL-001..003`, `FUNC-001..002`, `CHAT-001..003`, `CONTEXT-001`, `CONCIERGE-001`, `HUMAN-001..002` |
 | [`14-federation-identity-security.md`](14-federation-identity-security.md) | **Adopt:** self-certifying identity, root lock, envelope crypto, and attenuation are real controls; custody, recovery, inbox, handshake, freshness, state load, and governance are partial. **Reject as unqualified:** “worker cannot reach root,” “to is the ACL,” and “WG-Fed complete.” | `FED-001..014`, especially `FED-003/004/006/007/010/011/012/013` |
-| [`15-review-exec-pilot.md`](15-review-exec-pilot.md) | **Adopt:** split trust, four class hooks, default-on gates at named entry points, strong CLI accept ordering, and manual coordinator/pilot seams. **Narrow:** “one dial” means one vocabulary/order with split assertions; deterministic Pass 2 is not an independent quorum; pilot real-host `up` is bootstrap. | `RXP-001..011` |
+| [`15-review-exec-pilot.md`](15-review-exec-pilot.md) | **Adopt:** split trust, four class hooks, default-on gates at the specifically named high-level entry points, strong CLI accept ordering, and manual coordinator/pilot seams. **Narrow:** raw identity polling and explicit bypasses differ; “one dial” means one vocabulary/order with split assertions; deterministic Pass 2 is not an independent quorum; pilot real-host `up` is bootstrap. | `RXP-001..011` |
 
 **`[FACT]`** All three artifacts cite direct source and clearly distinguish inspected from executed evidence. Their important contradictions are preserved in section 4 rather than averaged away.
 
@@ -153,8 +153,10 @@ AuthorityContext {
 4. FEDERATED INBOUND
    relay bytes -> sigchain/signature/recipient authentication
       -> local author trust (peer source; provider may only tighten; revoke override)
-      -> IC4 exact-byte review
-      -> body exposed only on accept at default `wg msg poll`
+      -> IC4 exact-byte review when the consume gate is enabled
+      -> high-level `wg msg poll` enables review unless `--no-review`;
+         raw `wg identity poll` is opt-in and can expose authenticated bytes unscreened
+      -> on the reviewed path, body exposed only on accept
       -> operator/external controller creates graph task (not automatic)
 
 5. REMOTE PLACEMENT
@@ -214,7 +216,7 @@ Primary flow evidence: attended contract `src/text/attended_chat_contract.md:1-1
 
 - **Label/state:** `[FACT]`; shipped/partial
 - **Severity/likelihood/confidence:** S2; possible; high
-- IC4 verifies sender/recipient before review and withholds non-accepted bodies (`src/commands/identity_cmd.rs:1106-1223,1353-1428`). Review treats missing provenance as `Unknown`, infers sensitivity upward, and pins the verdict to exact bytes (`src/review/mod.rs:342-461`).
+- On review-enabled `run_poll`, IC4 verifies sender/recipient before review and withholds non-accepted bodies (`src/commands/identity_cmd.rs:1106-1223,1353-1428`). The high-level `wg msg poll` dispatch passes review by default unless `--no-review`, while raw `wg identity poll` remains opt-in (`src/main.rs:2107-2121`; `src/cli.rs:3762-3771,4636-4649`). Review treats missing provenance as `Unknown`, infers sensitivity upward, and pins the verdict to exact bytes (`src/review/mod.rs:342-461`).
 - The verdict log is a local hash-linked JSONL file without signatures or load-time CID/link verification; live callers record best-effort (`src/review/verdict.rs:53-190`; `src/commands/identity_cmd.rs:1292-1333`). Pass 3/human Pass 4 are stubs/deferred (`src/review/depth.rs:29-40,97-104`).
 - **Impact:** enforcement can block unsafe bytes, but humans may lack durable evidence and there is no shipped adjudication/release workflow for false positives.
 - **Recommendation:** `XAUTH-REC-004`.
@@ -300,7 +302,7 @@ Primary flow evidence: attended contract `src/text/attended_chat_contract.md:1-1
 | “Context scope is least privilege” | ordered clean/task/graph/full; remote task slice and sealing | local scope is quantity, not trust; bound memory inserted separately | **Exposure control, not content trust** — `CONTEXT-001`, `XAUTH-007` |
 | “`to` is encryption ACL” | CLI constructs wraps for resolved recipients | library has independent routing `to` and wrap set | **Wrap set is actual ACL** — `FED-010` |
 | “Authentication prevents unsafe input” | authentication before IC4 review | valid signer can send malicious content | **False category; review remains required** |
-| “All four ingest classes are enforced” | IC1, IC2, IC3, IC4 hooks exist; main paths default-on | IC3 takes manual trust; raw identity poll opt-in; explicit `--no-review`; audit best-effort | **Class coverage shipped; entry-point policy differs** — `RXP-001` |
+| “All four ingest classes are enforced” | IC1, IC2, IC3, IC4 hooks exist; trace import, provider accept, and high-level `wg msg poll` enable review by default | IC3 takes manual trust; raw identity poll is opt-in; explicit `--no-review`; audit best-effort | **Class coverage shipped; entry-point policy differs** — `RXP-001` |
 | “Pass 2 is a quorum / human escalation exists” | deterministic detector and conditional weak→strong model | deterministic `n` ignored; no independent N quorum; Pass 3/4 stubs | **Partial/deferred** — `RXP-003` |
 | “Every verdict is on a sigchain” | locked, hash-linked, content-addressed JSONL | unsigned; no link/CID validation on load; live recording errors ignored | **Claim rejected; local best-effort hash chain** — `RXP-004` |
 | “Candidate evaluation gates exact work” | source/attempt/route/evidence bound, one-time consume, observation-only deep lane | legacy evaluator remains non-transactional and feeds separate store | **Modern gate strong; dual-plane migration unresolved** — `EVAL-001/002` |
