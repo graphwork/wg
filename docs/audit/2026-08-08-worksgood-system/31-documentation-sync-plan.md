@@ -75,7 +75,17 @@ The phases intentionally separate **F** factual synchronization, **D** human dec
 | What passed? | exact CI/release receipt for exact commit/artifact | selected target/scenario class, result and skips | evidence dashboard | treating a test/scenario file as executed assurance |
 | What happened historically? | immutable report at its observed revision | external applicability/supersession record | evidence bundle index | editing old conclusions into present tense or archiving by age alone |
 
-**`[INFERENCE]`** Source wins only the “what current bytes encode” question. An ADR wins only the “what accepted policy intends” question. When they disagree, the contract status is `drift`, `partial`, `broken`, or `decision-required`; neither side is silently rewritten to match the other.
+**`[RECOMMENDATION]` Explicit precedence hierarchy within a scoped question:**
+
+1. **Scope first:** exact revision/artifact, audience, command surface, deployment and time bound every claim. Evidence from another scope cannot outrank evidence in the claimed scope.
+2. **Normative intent:** an accepted, applicable product decision/ADR outranks proposed designs, manuals, reports and comments for what the product *should* promise. If no accepted decision exists, authority is `unknown`; implementation does not self-ratify policy.
+3. **Current behavior:** executed behavior of the exact candidate (E1) outranks source inference for that environment/input; reachable implementation/schema/build configuration (E2) outranks unexecuted tests and prose. A failing current flow is still evidence of behavior, not desired policy.
+4. **Public support join:** `docs/product-contract.toml` is the canonical public-status record only when it cites the applicable decision, reachable dispatch, selected executable evidence and owner. It records disagreement; it does not override missing enforcement.
+5. **Derived reference:** generated CLI/schema/config/compatibility tables outrank hand-copied reference for the fields they generate, and identify their source revision/generator.
+6. **Authored current guidance:** journeys, explanations and runbooks interpret the contract and generated reference for an audience; they may add rationale but not contradict or silently widen them.
+7. **Historical/contextual evidence:** reports, studies, designs and archives remain authoritative only for what they observed or proposed at their pinned revision. External supersession/applicability indexes route readers to current status without rewriting history.
+
+**`[INFERENCE]`** Source wins only the “what current bytes encode” question. An ADR wins only the “what accepted policy intends” question. When they disagree, the contract status is `drift`, `partial`, `broken`, or `decision-required`; neither side is silently rewritten to match the other. The hierarchy above therefore orders evidence **after scope and question are fixed**; it is not a global “newest file wins” ladder.
 
 ### 2.3 Canonical registries and generated views
 
@@ -283,7 +293,18 @@ These packages may run in parallel after `P0-01`; packages touching the same sou
 | `F-SEC` **F**, security/Fed/Review/Exec/Pilot | `WGDR-028`–`WGDR-042`, `WGDR-T03`, `WGDR-T07`, `WGDR-T12`, `WGDR-U09`, `WGDR-U12`, `WGDR-R06`–`WGDR-R09` | Narrow “accepted/complete/custodied/ACL/sigchain/quorum/all seams/dispatcher wired/turnkey” to exact current enforcement and deferred boundary. | Security reviewer confirms every claim names enforcement site and negative gap; historical studies remain unchanged; known S1 gaps are conspicuous. |
 | `F-EVIDENCE` **F**, docs/test/release | `WGDR-043`–`WGDR-048`, `WGDR-R03`, `WGDR-U06`, `WGDR-U07`, `WGDR-U10` | Remove completeness/currentness claims from curated indexes, classify smoke evidence, update supersession/status metadata externally, correct compile-only diagnosis. | No “complete/current/passed” assertion lacks scope and evidence class; `KEY_DOCS` is labeled curated until generated. |
 
-**`[RECOMMENDATION]`** Quick correction packages should be small, domain-scoped commits. They may link to a known issue rather than duplicate volatile implementation detail. They must not perform path moves, archive bodies, or broad search-and-replace.
+**`[RECOMMENDATION]` Initial exact-path review list:** these are candidates to inspect/update, not a license to edit every path. `docs/manifest.toml` ultimately owns the complete mapping.
+
+| Package | Pre-manifest paths to review together |
+|---|---|
+| `F-ENTRY` | `README.md`; `docs/README.md`; `docs/guides/install.md`; `docs/quickstart-pi-openrouter.md`; `website/quickstart-pi-openrouter.html`; launcher help source `src/bin/worksgood.rs` (generate/verify, do not hand-copy) |
+| `F-LIFE` | `docs/manual/02-task-graph.{typ,md}`; `docs/manual/04-coordination.{typ,md}`; `docs/COMMANDS.md`; `docs/AGENT-GUIDE.md`; `src/text/agent_guide.md`; `tests/smoke/README.md`; current CLI/dispatch sources as evidence |
+| `F-MODEL` | `docs/models.md`; `docs/config-precedence.md`; `docs/config-ux-design.md`; `docs/AGENT-SERVICE.md`; profile/setup/doctor sections of `README.md`, `docs/README.md`, and generated reference |
+| `F-AGENCY` | `docs/AGENCY.md`; `docs/manual/03-agency.{typ,md}`; `docs/manual/05-evolution.{typ,md}`; `docs/design-pi-evaluation-plane.md`; `docs/design-worker-owned-universal-review.md`; evaluation/assignment/function reference sections |
+| `F-SEC` | `docs/ADR-fed-000-acceptance-brief.md` and `ADR-fed-001..004`; content/exec acceptance briefs and ADRs; federation/content/exec studies; `docs/ops/runbook.md`; Pilot/federation/review/compute-provider reference sections |
+| `F-EVIDENCE` | `docs/KEY_DOCS.md`; `docs/COMMANDS.md`; `docs/manual/README.md`; `scripts/sync-docs.sh`; `tests/smoke/README.md`; `.github/workflows/ci.yml`; report/study/design bundle indexes to be created |
+
+**`[RECOMMENDATION]`** Quick correction packages should be small, domain-scoped commits. They may link to a known issue rather than duplicate volatile implementation detail. They must not perform path moves, archive bodies, generated-derivative hand edits, or broad search-and-replace.
 
 ### 3.5 Phase 2 — adjudicate policy and behavior (P0/P1; decision queue in §4)
 
