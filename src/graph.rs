@@ -890,9 +890,20 @@ pub struct Task {
     /// - "full" (default): full Claude Code session with all tools
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exec_mode: Option<String>,
-    /// Token usage and cost data extracted from agent output.log
+    /// Token usage and cost data extracted from the exact source worker attempt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_usage: Option<TokenUsage>,
+    /// Actual handler retained at terminal projection time. Unlike the live
+    /// registry this survives agent cleanup and service restarts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actual_executor: Option<String>,
+    /// Actual model retained with `actual_executor` from the same registry row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actual_model: Option<String>,
+    /// Immutable completion-review lane activity. These are virtual audit rows,
+    /// not graph tasks and never carry task lifecycle authority.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub completion_review_activity: Vec<crate::completion_review::CompletionReviewActivity>,
     /// Claude session ID for resume/resurrection (populated from stream.jsonl Init events)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
@@ -1107,6 +1118,9 @@ impl Default for Task {
             context_scope: None,
             exec_mode: None,
             token_usage: None,
+            actual_executor: None,
+            actual_model: None,
+            completion_review_activity: Vec::new(),
             session_id: None,
             wait_condition: None,
             message_wait: None,
@@ -1687,10 +1701,14 @@ fn infer_agent_model_spec(output_log_path: &std::path::Path) -> Option<String> {
         .and_then(|task| task.model.clone())
 }
 
-/// Estimate USD cost for an agent's token usage using model-registry per-token
-/// rates, inferring the model spec + pricing from the agent's `output.log`
-/// neighbourhood (`metadata.json` / graph). Used as a fallback when an executor
-/// (e.g. pi on a provider that does not report cost) reports zero cost.
+/// Explicitly estimate USD cost for an agent's token usage using model-registry
+/// per-token rates, inferring the model spec + pricing from the agent's
+/// `output.log` neighbourhood (`metadata.json` / graph).
+///
+/// This opt-in helper is not part of `parse_token_usage`: provider-reported Pi
+/// cost is persisted exactly, including zero when the provider supplies no
+/// cost, so terminal accounting never silently turns missing cost into an
+/// estimate.
 pub fn estimate_agent_cost_usd(
     output_log_path: &std::path::Path,
     input_tokens: u64,
@@ -2297,6 +2315,12 @@ struct TaskHelper {
     #[serde(default)]
     token_usage: Option<TokenUsage>,
     #[serde(default)]
+    actual_executor: Option<String>,
+    #[serde(default)]
+    actual_model: Option<String>,
+    #[serde(default)]
+    completion_review_activity: Vec<crate::completion_review::CompletionReviewActivity>,
+    #[serde(default)]
     session_id: Option<String>,
     #[serde(default)]
     wait_condition: Option<WaitSpec>,
@@ -2470,6 +2494,9 @@ impl<'de> Deserialize<'de> for Task {
             context_scope: helper.context_scope,
             exec_mode: helper.exec_mode,
             token_usage: helper.token_usage,
+            actual_executor: helper.actual_executor,
+            actual_model: helper.actual_model,
+            completion_review_activity: helper.completion_review_activity,
             session_id: helper.session_id,
             wait_condition: helper.wait_condition,
             message_wait: helper.message_wait,
@@ -4417,6 +4444,28 @@ mod tests {
             usage.input_tokens + usage.output_tokens + usage.cache_read_input_tokens,
             260 + 272
         );
+    }
+
+    #[test]
+    fn test_parse_token_usage_pi_missing_provider_cost_is_not_estimated() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("output.log");
+        std::fs::write(
+            dir.path().join("metadata.json"),
+            r#"{"executor":"pi","model":"openrouter:anthropic/claude-opus-4"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            &log_path,
+            r#"{"type":"turn_end","message":{"usage":{"input":100,"output":25,"cacheRead":5,"cacheWrite":0}}}
+"#,
+        )
+        .unwrap();
+
+        let usage = parse_token_usage(&log_path).unwrap();
+        assert_eq!(usage.input_tokens, 100);
+        assert_eq!(usage.output_tokens, 25);
+        assert_eq!(usage.cost_usd, 0.0, "missing provider cost stays explicit");
     }
 
     #[test]

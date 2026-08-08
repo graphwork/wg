@@ -6,14 +6,17 @@ use worksgood::completion_evidence::{
     AcceptanceOutcome, AttemptSaveKey, CandidateDescriptor as AtomicCandidateDescriptor,
     CleanupCommit, CleanupResult, CompletionIntentReceipt, DispositionReceipt, EffectReceipt,
     EvidenceBinding, EvidenceCidSet, EvidenceHeader, FlipReceipt, GraphSaveBundle,
-    GraphSaveReceipt, OutputReceipt, PromotionReceipt, ValidationReceipt, WorkSaveReceipt,
-    content_cid,
+    GraphSaveReceipt, OutputReceipt, PromotionReceipt, TerminalAccountingEvidence,
+    ValidationReceipt, WorkSaveReceipt, content_cid,
 };
 use worksgood::finalization::{
     FinalizationContext, FinalizationStore, QuiescenceProof, checkpoint_candidate,
     checkpoint_rescue,
 };
-use worksgood::graph::{CompletionContract, CompletionDisposition, Task, WorkGraph};
+use worksgood::graph::{
+    CompletionContract, CompletionDisposition, Task, TokenUsage, WorkGraph, parse_token_usage,
+    parse_wg_tokens,
+};
 use worksgood::lifecycle::{
     FenceExpectation, LifecycleActor, TransitionKind, TransitionRequest, apply_transition,
 };
@@ -21,8 +24,85 @@ use worksgood::parser::{load_graph, modify_graph};
 use worksgood::save_transaction::{
     SaveFact, SavePhase, SaveTransactionKernel, SaveTransactionState, SaveTransitionRequest,
 };
+use worksgood::service::registry::AgentRegistry;
 
 use crate::cli::{CandidateCommands, FinalizeCommands};
+
+#[derive(Clone, Debug, Default)]
+struct CompletionAccounting {
+    token_usage: Option<TokenUsage>,
+    actual_executor: Option<String>,
+    actual_model: Option<String>,
+}
+
+/// Snapshot the exact assigned registry row before terminal projection clears
+/// `task.assigned`. Pi parsing follows output.log to its sibling raw stream and
+/// counts only authoritative `turn_end` usage once per turn.
+fn completion_accounting(dir: &Path, task: &Task) -> CompletionAccounting {
+    let persisted = CompletionAccounting {
+        token_usage: task.token_usage.clone(),
+        actual_executor: task.actual_executor.clone(),
+        actual_model: task.actual_model.clone(),
+    };
+    let Some(agent_id) = task.assigned.as_deref() else {
+        return persisted;
+    };
+    let Ok(registry) = AgentRegistry::load(dir) else {
+        return persisted;
+    };
+    let Some(agent) = registry
+        .get_agent(agent_id)
+        .filter(|agent| agent.task_id == task.id)
+    else {
+        return persisted;
+    };
+    let output = Path::new(&agent.output_file);
+    let output = if output.is_absolute() {
+        output.to_path_buf()
+    } else {
+        dir.parent().unwrap_or(dir).join(output)
+    };
+    CompletionAccounting {
+        token_usage: parse_token_usage(&output)
+            .or_else(|| parse_wg_tokens(&output))
+            .or(persisted.token_usage),
+        actual_executor: Some(agent.executor.clone()).or(persisted.actual_executor),
+        actual_model: agent.model.clone().or(persisted.actual_model),
+    }
+}
+
+fn terminal_accounting_evidence(task: &Task) -> Option<TerminalAccountingEvidence> {
+    let usage = task.token_usage.as_ref();
+    if usage.is_none() && task.actual_executor.is_none() && task.actual_model.is_none() {
+        return None;
+    }
+    Some(TerminalAccountingEvidence {
+        usage_present: usage.is_some(),
+        provider_cost_usd: usage.map(|value| value.cost_usd).unwrap_or(0.0).to_string(),
+        input_tokens: usage.map(|value| value.input_tokens).unwrap_or(0),
+        output_tokens: usage.map(|value| value.output_tokens).unwrap_or(0),
+        cache_read_input_tokens: usage
+            .map(|value| value.cache_read_input_tokens)
+            .unwrap_or(0),
+        cache_creation_input_tokens: usage
+            .map(|value| value.cache_creation_input_tokens)
+            .unwrap_or(0),
+        actual_executor: task.actual_executor.clone(),
+        actual_model: task.actual_model.clone(),
+    })
+}
+
+fn apply_completion_accounting(task: &mut Task, accounting: &CompletionAccounting) {
+    if accounting.token_usage.is_some() {
+        task.token_usage.clone_from(&accounting.token_usage);
+    }
+    if accounting.actual_executor.is_some() {
+        task.actual_executor.clone_from(&accounting.actual_executor);
+    }
+    if accounting.actual_model.is_some() {
+        task.actual_model.clone_from(&accounting.actual_model);
+    }
+}
 
 /// Atomically project a terminal success through the v2 SaveTransaction and
 /// GraphSave authority.  Terminal-facing adapters use this instead of writing
@@ -36,7 +116,9 @@ pub fn commit_terminal_success(
     let graph_path = dir.join("graph.jsonl");
     ensure_terminal_attempt_on_disk(dir, id, actor_id)?;
     let graph = load_graph(&graph_path)?;
-    let task = graph.get_task_or_err(id)?.clone();
+    let mut task = graph.get_task_or_err(id)?.clone();
+    let accounting = completion_accounting(dir, &task);
+    apply_completion_accounting(&mut task, &accounting);
     let (bundle, state) = prepare_graph_save(dir, &task, reason_code)?;
     persist_save_state(dir, &state)?;
     crash_after(SavePhase::GraphSaved)?;
@@ -71,6 +153,7 @@ pub fn commit_terminal_success(
             rejection = Some(error.to_string());
             return false;
         }
+        apply_completion_accounting(task, &accounting);
         task.completed_at = Some(chrono::Utc::now().to_rfc3339());
         task.assigned = None;
         true
@@ -92,7 +175,9 @@ pub fn commit_terminal_success_in_graph(
     reason_code: &str,
 ) -> Result<String> {
     ensure_terminal_attempt_in_task(graph.get_task_mut_or_err(id)?, actor_id)?;
-    let task_snapshot = graph.get_task_or_err(id)?.clone();
+    let mut task_snapshot = graph.get_task_or_err(id)?.clone();
+    let accounting = completion_accounting(dir, &task_snapshot);
+    apply_completion_accounting(&mut task_snapshot, &accounting);
     let (bundle, state) = prepare_graph_save(dir, &task_snapshot, reason_code)?;
     persist_save_state(dir, &state)?;
     crash_after(SavePhase::GraphSaved)?;
@@ -115,6 +200,7 @@ pub fn commit_terminal_success_in_graph(
         occurred_at: chrono::Utc::now().to_rfc3339(),
     };
     apply_transition(task, request).map_err(anyhow::Error::msg)?;
+    apply_completion_accounting(task, &accounting);
     task.completed_at = Some(chrono::Utc::now().to_rfc3339());
     task.assigned = None;
     Ok(graph_save_cid)
@@ -535,6 +621,7 @@ fn prepare_graph_save_for_source(
         evidence,
         graph_revision_before_commit: task.lifecycle.revision,
         lifecycle_event_id: event_id,
+        terminal_accounting: terminal_accounting_evidence(task),
     };
     let bundle = GraphSaveBundle {
         receipt,
@@ -1883,6 +1970,9 @@ fn commit_brokered_cleaned_success(
     legacy: &worksgood::finalization::FinalizationTransaction,
     initial: SaveTransactionState,
 ) -> Result<String> {
+    let accounting = completion_accounting(dir, task);
+    let mut task_snapshot = task.clone();
+    apply_completion_accounting(&mut task_snapshot, &accounting);
     let mut state = worksgood::worker_control::load_save_transaction(dir, &initial.transaction_id)?
         .context("completion.bridge_transaction_missing")?;
     let bundle = if state.phase == SavePhase::GraphSaved {
@@ -1890,7 +1980,7 @@ fn commit_brokered_cleaned_success(
     } else {
         prepare_graph_save_for_source(
             dir,
-            task,
+            &task_snapshot,
             "brokered_done_exact_receipts",
             initial.source.clone(),
             Some(legacy),
@@ -2044,6 +2134,7 @@ fn commit_brokered_cleaned_success(
             rejection = Some(error.to_string());
             return false;
         }
+        apply_completion_accounting(task, &accounting);
         task.completed_at = Some(chrono::Utc::now().to_rfc3339());
         task.assigned = None;
         true
@@ -2874,6 +2965,175 @@ mod atomic_terminal_tests {
         )
         .unwrap();
         assert_eq!(head.phase, SavePhase::GraphSaved);
+    }
+
+    #[test]
+    fn terminal_graphsave_persists_pi_usage_and_runtime_after_registry_cleanup() {
+        let (_root, dir) = setup(Status::InProgress);
+        let agent_dir = dir.join("agents/agent-1");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        std::fs::write(agent_dir.join("output.log"), "").unwrap();
+        std::fs::write(
+            agent_dir.join("raw_stream.jsonl"),
+            concat!(
+                "{\"type\":\"turn_end\",\"message\":{\"usage\":{\"input\":200,\"output\":10,\"cacheRead\":50,\"cacheWrite\":3,\"cost\":{\"total\":0.02}}}}\n",
+                "{\"type\":\"message_end\",\"message\":{\"usage\":{\"input\":200,\"output\":10,\"cacheRead\":50,\"cacheWrite\":3,\"cost\":{\"total\":0.02}}}}\n",
+                "{\"type\":\"turn_end\",\"message\":{\"usage\":{\"input\":5,\"output\":7,\"cacheRead\":260,\"cacheWrite\":4,\"cost\":{\"total\":0.03}}}}\n"
+            ),
+        )
+        .unwrap();
+        let mut registry = AgentRegistry::new();
+        let agent = registry.register_agent_with_model(
+            std::process::id(),
+            "terminal",
+            "pi",
+            agent_dir.join("output.log").to_str().unwrap(),
+            Some("openrouter:test/pi-model"),
+        );
+        assert_eq!(agent, "agent-1");
+        registry.save(&dir).unwrap();
+        modify_graph(dir.join("graph.jsonl"), |graph| {
+            graph.get_task_mut("terminal").unwrap().assigned = Some(agent.clone());
+            true
+        })
+        .unwrap();
+
+        commit_terminal_success(&dir, "terminal", Some(&agent), "pi-fixture-done").unwrap();
+        std::fs::remove_file(AgentRegistry::registry_path(&dir)).unwrap();
+
+        let graph = load_graph(dir.join("graph.jsonl")).unwrap();
+        let task = graph.get_task("terminal").unwrap();
+        let usage = task.token_usage.as_ref().expect("Pi usage persisted");
+        assert_eq!(usage.input_tokens, 205);
+        assert_eq!(usage.output_tokens, 17);
+        assert_eq!(usage.cache_read_input_tokens, 310);
+        assert_eq!(usage.cache_creation_input_tokens, 7);
+        assert!((usage.cost_usd - 0.05).abs() < 0.000001);
+        assert_eq!(task.actual_executor.as_deref(), Some("pi"));
+        assert_eq!(
+            task.actual_model.as_deref(),
+            Some("openrouter:test/pi-model")
+        );
+    }
+
+    #[test]
+    fn successful_retry_replaces_failed_attempt_accounting_and_route() {
+        let (_root, dir) = setup(Status::Open);
+        let agent_dir = dir.join("agents/agent-1");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        std::fs::write(agent_dir.join("output.log"), "").unwrap();
+        std::fs::write(
+            agent_dir.join("raw_stream.jsonl"),
+            "{\"type\":\"turn_end\",\"message\":{\"usage\":{\"input\":9,\"output\":4,\"cacheRead\":2,\"cacheWrite\":1,\"cost\":{\"total\":0.03}}}}\n",
+        )
+        .unwrap();
+        let mut registry = AgentRegistry::new();
+        let agent = registry.register_agent_with_model(
+            std::process::id(),
+            "terminal",
+            "pi",
+            agent_dir.join("output.log").to_str().unwrap(),
+            Some("openrouter:new/success-route"),
+        );
+        registry.save(&dir).unwrap();
+        modify_graph(dir.join("graph.jsonl"), |graph| {
+            let task = graph.get_task_mut("terminal").unwrap();
+            task.token_usage = Some(TokenUsage {
+                cost_usd: 99.0,
+                input_tokens: 999,
+                output_tokens: 999,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
+            });
+            task.actual_executor = Some("claude".into());
+            task.actual_model = Some("claude:old-failed-route".into());
+            let request = TransitionRequest::new(
+                TransitionKind::AttemptReserved {
+                    owner_id: Some(agent.clone()),
+                },
+                LifecycleActor {
+                    kind: worksgood::lifecycle::ActorKind::Dispatcher,
+                    id: "retry-test".into(),
+                },
+                "retry",
+                "retry-accounting-clear",
+            );
+            apply_transition(task, request).unwrap();
+            task.assigned = Some(agent.clone());
+            true
+        })
+        .unwrap();
+
+        commit_terminal_success(&dir, "terminal", Some(&agent), "retry-success").unwrap();
+        let graph = load_graph(dir.join("graph.jsonl")).unwrap();
+        let task = graph.get_task("terminal").unwrap();
+        let usage = task.token_usage.as_ref().unwrap();
+        assert_eq!((usage.input_tokens, usage.output_tokens), (9, 4));
+        assert_eq!(usage.cost_usd, 0.03);
+        assert_eq!(task.actual_executor.as_deref(), Some("pi"));
+        assert_eq!(
+            task.actual_model.as_deref(),
+            Some("openrouter:new/success-route")
+        );
+    }
+
+    #[test]
+    fn graphsave_crash_replay_restores_accounting_without_registry_or_raw_stream() {
+        let (_root, dir) = setup(Status::InProgress);
+        let graph = load_graph(dir.join("graph.jsonl")).unwrap();
+        let mut source = graph.get_task("terminal").unwrap().clone();
+        source.token_usage = Some(TokenUsage {
+            cost_usd: 0.125,
+            input_tokens: 11,
+            output_tokens: 7,
+            cache_read_input_tokens: 3,
+            cache_creation_input_tokens: 2,
+        });
+        source.actual_executor = Some("pi".into());
+        source.actual_model = Some("openrouter:test/provider-model".into());
+
+        // The prepared GraphSave is the crash-replay authority. No registry or
+        // agent directory exists in this fixture.
+        let (bundle, state) = prepare_graph_save(&dir, &source, "crash-replay").unwrap();
+        assert_eq!(state.phase, SavePhase::GraphSaved);
+        let accounting = bundle
+            .receipt
+            .terminal_accounting
+            .as_ref()
+            .expect("GraphSave receipt binds terminal accounting");
+        assert!(accounting.usage_present);
+        assert_eq!(accounting.provider_cost_usd, "0.125");
+
+        // Simulate recovery into a projection that lost the non-lifecycle
+        // fields: applying only the durable receipt restores exact accounting.
+        let mut recovered = source.clone();
+        recovered.token_usage = None;
+        recovered.actual_executor = None;
+        recovered.actual_model = None;
+        let request = TransitionRequest {
+            event_id: bundle.receipt.lifecycle_event_id.clone(),
+            idempotency_key: format!("graphsave:{}", state.transaction_id),
+            actor: LifecycleActor {
+                kind: worksgood::lifecycle::ActorKind::Reconciler,
+                id: "crash-replay-test".into(),
+            },
+            reason_code: "crash-replay".into(),
+            kind: TransitionKind::GraphSaveCommitted {
+                bundle: Box::new(bundle),
+            },
+            expected: FenceExpectation::current(&recovered),
+            evidence_refs: Vec::new(),
+            occurred_at: chrono::Utc::now().to_rfc3339(),
+        };
+        apply_transition(&mut recovered, request).unwrap();
+        let usage = recovered.token_usage.expect("receipt restored usage");
+        assert_eq!((usage.input_tokens, usage.output_tokens), (11, 7));
+        assert_eq!(usage.cost_usd, 0.125);
+        assert_eq!(recovered.actual_executor.as_deref(), Some("pi"));
+        assert_eq!(
+            recovered.actual_model.as_deref(),
+            Some("openrouter:test/provider-model")
+        );
     }
 
     #[test]

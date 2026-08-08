@@ -308,12 +308,14 @@ pub fn run_with_reviewers(
     // Select the immutable candidate before review. This is a single compact
     // graph projection; resolver/reviewer failures preserve it without
     // scheduling a transaction, source retry, or finalizer.
+    let source_accounting = super::completion_done::source_accounting(dir, task);
     select_candidate(
         &graph_path,
         id,
         task.lifecycle.generation,
         &requirements_digest,
         candidate,
+        &source_accounting,
     )?;
 
     let project_root = dir
@@ -406,6 +408,7 @@ fn select_candidate(
     generation: u64,
     expected_requirements: &worksgood::completion_manifest::ContentDigest,
     candidate: CompletionCandidateRefs,
+    source_accounting: &super::completion_done::SourceAccounting,
 ) -> Result<()> {
     let mut refusal = None;
     modify_graph(graph_path, |graph| {
@@ -422,6 +425,15 @@ fn select_candidate(
             return false;
         }
         task.completion_candidate = Some(candidate);
+        if source_accounting.usage.is_some() {
+            task.token_usage.clone_from(&source_accounting.usage);
+        }
+        if source_accounting.executor.is_some() {
+            task.actual_executor.clone_from(&source_accounting.executor);
+        }
+        if source_accounting.model.is_some() {
+            task.actual_model.clone_from(&source_accounting.model);
+        }
         task.completion_disposition = None;
         task.completion_receipt = None;
         task.log.push(LogEntry {
@@ -472,6 +484,29 @@ fn record_review_outcome(
             .eval
             .as_ref()
             .map(|receipt| receipt.receipt_object.clone());
+        for stored in std::iter::once(&outcome.flip).chain(outcome.eval.iter()) {
+            let activity_id = stored.receipt_object.content_digest.to_string();
+            if task
+                .completion_review_activity
+                .iter()
+                .any(|activity| activity.activity_id == activity_id)
+            {
+                continue;
+            }
+            task.completion_review_activity.push(
+                worksgood::completion_review::CompletionReviewActivity {
+                    activity_id,
+                    reviewer_kind: stored.receipt.reviewer_kind,
+                    verdict: stored.receipt.verdict,
+                    manifest_digest: stored.receipt.manifest_digest.clone(),
+                    requirements_digest: stored.receipt.requirements_digest.clone(),
+                    model_route: stored.receipt.model_route.clone(),
+                    executor: stored.receipt.executor.clone(),
+                    usage: stored.receipt.usage.clone(),
+                    created_at: stored.receipt.created_at.clone(),
+                },
+            );
+        }
         task.log.push(LogEntry {
             timestamp: Utc::now().to_rfc3339(),
             actor: Some("completion-review".to_string()),
@@ -751,6 +786,19 @@ mod tests {
             .resolve_submission(&submission.manifest_ref, &requirements, &summary, &[])
             .unwrap();
         load_exact_review_pair(&completion_store, &submission, &manifest, &resolved).unwrap();
+        assert_eq!(task.completion_review_activity.len(), 2);
+        assert_eq!(
+            task.completion_review_activity
+                .iter()
+                .map(|activity| activity.reviewer_kind)
+                .collect::<Vec<_>>(),
+            vec![ReviewerKind::Flip, ReviewerKind::Eval]
+        );
+        assert!(
+            task.completion_review_activity
+                .iter()
+                .all(|activity| !activity.activity_id.is_empty())
+        );
 
         super::super::completion_done::run(&fixture.dir, "report", "refs/heads/main").unwrap();
         let graph_path = fixture.dir.join("graph.jsonl");
@@ -795,6 +843,13 @@ mod tests {
             .unwrap();
         assert!(candidate.flip_receipt.is_some());
         assert!(candidate.eval_receipt.is_none());
+        let activity = &graph.get_task("report").unwrap().completion_review_activity;
+        assert_eq!(activity.len(), 1);
+        assert_eq!(activity[0].reviewer_kind, ReviewerKind::Flip);
+        assert_eq!(
+            activity[0].verdict,
+            worksgood::simple_land::ReviewVerdict::Reject
+        );
     }
 
     #[test]

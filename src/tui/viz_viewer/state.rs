@@ -15133,8 +15133,14 @@ impl VizApp {
                 .and_then(|reg| reg.agents.get(aid).cloned())
         });
         {
-            let actual_executor = registry_entry.as_ref().map(|e| e.executor.as_str());
-            let actual_model = registry_entry.as_ref().and_then(|e| e.model.as_deref());
+            let actual_executor = registry_entry
+                .as_ref()
+                .map(|e| e.executor.as_str())
+                .or(task.actual_executor.as_deref());
+            let actual_model = registry_entry
+                .as_ref()
+                .and_then(|e| e.model.as_deref())
+                .or(task.actual_model.as_deref());
             let configured_model = task.model.as_deref();
 
             if let Some(exec) = actual_executor {

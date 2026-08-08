@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::Path;
 
 use anyhow::Result;
@@ -23,8 +24,62 @@ pub fn run(dir: &Path, today_only: bool, json: bool) -> Result<()> {
     let mut total_input_tokens = 0u64;
     let mut total_output_tokens = 0u64;
     let mut tasks_with_usage = 0usize;
+    let mut review_cost = 0.0;
+    let mut review_input_tokens = 0u64;
+    let mut review_output_tokens = 0u64;
+    let mut review_attempts_with_usage = 0usize;
+    let today = chrono::Utc::now().date_naive();
+    let mut accounted_review_receipts = HashSet::new();
 
-    // Only count completed tasks that have token usage
+    // Source-worker totals and internal review-lane totals are deliberately
+    // separate. A review call is not charged to the source task. Exact stable
+    // IDs merge the authoritative completion projection with any older legacy
+    // records, preserving mixed-version history without double charging.
+    for task in graph.tasks() {
+        let verified = worksgood::completion_review::verified_review_activities(dir, task);
+        if verified.invalid_count > 0 {
+            eprintln!(
+                "warning: {} invalid completion-review projection(s) omitted for {}",
+                verified.invalid_count, task.id
+            );
+        }
+        for activity in &verified.activities {
+            if today_only && !occurred_on(&activity.created_at, today) {
+                continue;
+            }
+            if !accounted_review_receipts.insert(activity.activity_id.clone()) {
+                continue;
+            }
+            if let Some(usage) = activity.usage.as_ref() {
+                review_attempts_with_usage += 1;
+                review_cost += usage.cost_usd;
+                review_input_tokens += usage.input_tokens;
+                review_output_tokens += usage.output_tokens;
+            }
+        }
+        let legacy_records = worksgood::completion_review::unprojected_legacy_evaluation_records(
+            task,
+            &verified.activities,
+        );
+        for record in &legacy_records {
+            for attempt in &record.attempts {
+                if today_only && !occurred_on(&attempt.started_at, today) {
+                    continue;
+                }
+                if !accounted_review_receipts.insert(attempt.attempt_id.clone()) {
+                    continue;
+                }
+                if let Some(usage) = attempt.usage.as_ref() {
+                    review_attempts_with_usage += 1;
+                    review_cost += usage.cost_usd;
+                    review_input_tokens += usage.input_tokens;
+                    review_output_tokens += usage.output_tokens;
+                }
+            }
+        }
+    }
+
+    // Only count completed source tasks that have token usage
     for task in graph.tasks() {
         if task.status != Status::Done && task.status != Status::Failed {
             continue;
@@ -81,6 +136,14 @@ pub fn run(dir: &Path, today_only: bool, json: bool) -> Result<()> {
                         "total_input_tokens": d.total_input_tokens,
                         "total_output_tokens": d.total_output_tokens,
                         "task_count": d.task_count,
+                        "accounting_scope": "source-workers-only",
+                        "completion_review_lane": {
+                            "total_cost": review_cost,
+                            "total_input_tokens": review_input_tokens,
+                            "total_output_tokens": review_output_tokens,
+                            "attempt_count": review_attempts_with_usage,
+                            "accounting_scope": "internal-review-calls-only-not-task-usage"
+                        }
                     })
                 })
                 .unwrap_or(serde_json::json!({
@@ -89,6 +152,14 @@ pub fn run(dir: &Path, today_only: bool, json: bool) -> Result<()> {
                     "total_input_tokens": 0,
                     "total_output_tokens": 0,
                     "task_count": 0,
+                    "accounting_scope": "source-workers-only",
+                    "completion_review_lane": {
+                        "total_cost": review_cost,
+                        "total_input_tokens": review_input_tokens,
+                        "total_output_tokens": review_output_tokens,
+                        "attempt_count": review_attempts_with_usage,
+                        "accounting_scope": "internal-review-calls-only-not-task-usage"
+                    }
                 }))
         } else {
             serde_json::json!({
@@ -97,6 +168,14 @@ pub fn run(dir: &Path, today_only: bool, json: bool) -> Result<()> {
                 "total_output_tokens": total_output_tokens,
                 "task_count": tasks_with_usage,
                 "daily_breakdown": days,
+                "accounting_scope": "source-workers-only",
+                "completion_review_lane": {
+                    "total_cost": review_cost,
+                    "total_input_tokens": review_input_tokens,
+                    "total_output_tokens": review_output_tokens,
+                    "attempt_count": review_attempts_with_usage,
+                    "accounting_scope": "internal-review-calls-only-not-task-usage"
+                }
             })
         };
         println!("{}", serde_json::to_string_pretty(&summary)?);
@@ -114,8 +193,22 @@ pub fn run(dir: &Path, today_only: bool, json: bool) -> Result<()> {
                 format_number(spend.total_output_tokens)
             );
             println!("  Tasks: {}", spend.task_count);
+            println!(
+                "  Internal review lane (separate): ${:.4}, {} tokens, {} attempts",
+                review_cost,
+                format_number(review_input_tokens + review_output_tokens),
+                review_attempts_with_usage
+            );
         } else {
-            println!("No token usage recorded yet today.");
+            println!("No source-task token usage recorded yet today.");
+            if review_attempts_with_usage > 0 {
+                println!(
+                    "Internal review lane (separate): ${:.4}, {} tokens, {} attempts",
+                    review_cost,
+                    format_number(review_input_tokens + review_output_tokens),
+                    review_attempts_with_usage
+                );
+            }
         }
     } else {
         // Show full summary
@@ -128,6 +221,16 @@ pub fn run(dir: &Path, today_only: bool, json: bool) -> Result<()> {
             format_number(total_output_tokens)
         );
         println!("Tasks with usage: {}", tasks_with_usage);
+        println!();
+        println!("Internal completion-review lane (separate; not included above):");
+        println!(
+            "  Cost: ${:.4}; tokens: {} ({} in, {} out); attempts with usage: {}",
+            review_cost,
+            format_number(review_input_tokens + review_output_tokens),
+            format_number(review_input_tokens),
+            format_number(review_output_tokens),
+            review_attempts_with_usage
+        );
         println!();
         println!("Daily breakdown:");
 
@@ -146,6 +249,12 @@ pub fn run(dir: &Path, today_only: bool, json: bool) -> Result<()> {
 }
 
 /// Format a number with thousands separators.
+fn occurred_on(timestamp: &str, date: chrono::NaiveDate) -> bool {
+    chrono::DateTime::parse_from_rfc3339(timestamp)
+        .map(|value| value.with_timezone(&chrono::Utc).date_naive() == date)
+        .unwrap_or(false)
+}
+
 fn format_number(n: u64) -> String {
     let s = n.to_string();
     let mut result = String::new();
@@ -179,6 +288,14 @@ mod tests {
         assert_eq!(format_number(1000), "1,000");
         assert_eq!(format_number(1000000), "1,000,000");
         assert_eq!(format_number(42), "42");
+    }
+
+    #[test]
+    fn review_today_filter_uses_recorded_utc_day_and_fails_closed() {
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 8, 8).unwrap();
+        assert!(occurred_on("2026-08-08T23:59:59Z", day));
+        assert!(!occurred_on("2026-08-07T23:59:59Z", day));
+        assert!(!occurred_on("not-a-timestamp", day));
     }
 
     #[test]
