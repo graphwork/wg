@@ -285,6 +285,25 @@ docs/
 | **S — structural docs** | add manifests, generators, indexes, redirects, reorganize after mapping | bulk-move/delete before inventory/links/owners | schema tests, clean regeneration, redirect/link/archive checks |
 | **V — verification** | execute and record exact evidence class | turn skip/not-selected/compile into pass | exact artifact/revision/environment/result and durable receipt |
 
+#### 3.2.1 Traceability allocation and close rule
+
+**`[RECOMMENDATION]`** Use this as the program-level allocation check. The detailed tables below remain authoritative for dependencies and acceptance; this matrix prevents a range from disappearing between the quick-correction, decision, structural, and verification queues.
+
+| Register allocation | Factual/current-state package | Human decision or implementation gate | Structural/verification successor |
+|---|---|---|---|
+| `WGDR-001`–`WGDR-007` | `F-LIFE` | `DEC-01`, `DEC-02`, `D-LIFE` | `S-CLI`, `S-SCHEMA`, lifecycle human flows |
+| `WGDR-008`–`WGDR-018` | `F-ENTRY`, `F-MODEL`, `F-EVIDENCE` | `DEC-03`, `DEC-04`, `D-PRODUCT`, bounded `I-CONTROL-INTEGRITY` | `S-CONTRACT`, `S-CLI`, journey/platform evidence |
+| `WGDR-019`–`WGDR-027` | `F-AGENCY` | `DEC-05`, `DEC-06`, `D-AGENCY` | `S-SCHEMA`, evaluation/learning evidence |
+| `WGDR-028`–`WGDR-039` | `F-SEC` | `DEC-07`, `DEC-08`, `D-SECURITY` | `S-DECISIONS`, `S-SCHEMA`, adversarial evidence |
+| `WGDR-040`–`WGDR-042` | `F-SEC` | `DEC-09`, `D-REMOTE` | remote/Pilot failure and restart evidence |
+| `WGDR-043`–`WGDR-048` | `F-EVIDENCE` | `DEC-04`, `DEC-10`, retention owner decisions | `S-MANIFEST`, `S-DAG`, `S-LINKS`, `S-EVIDENCE`, `A-*` |
+| `WGDR-049` | current limitation in `P0-02` | bounded `I-CONTROL-INTEGRITY` repair | typed IPC replay/idempotency evidence |
+| `WGDR-T01`–`WGDR-T12` | qualified terms in domain factual packages | `DEC-11`, `D-TERMS` | `S-GLOSSARY` and terminology lint |
+| `WGDR-R01`–`WGDR-R12` | preserve as non-issue/resolved guard | no reopen without new contrary evidence | regression guard linked from contract/evidence index |
+| `WGDR-U01`–`WGDR-U12` | retain `unknown`/`suspected-drift` | only the bounded check in §4.3 may change status | `V-UNCERTAINTIES` with pass/fail/skip/unknown receipt |
+
+**`[RECOMMENDATION]` Close rule:** a row closes only when its machine-readable ledger entry names (1) the exact claim/status change, (2) decision state if normative, (3) implementation state if behavioral, (4) executed or explicitly unexecuted evidence class, (5) current documentation/compatibility paths, and (6) owner approval. A factual prose correction can close its **F** work item while the contradiction remains open as `decision-required` or `broken`; a decision can close its **D** item while implementation remains `deferred`. This prevents “docs synchronized” from erasing unresolved product or code work.
+
 ### 3.3 Phase 0 — baseline, containment, and ownership (P0; before mass edits)
 
 | Item / type | Trace | Deliverable and dependency | Acceptance / rollback |
