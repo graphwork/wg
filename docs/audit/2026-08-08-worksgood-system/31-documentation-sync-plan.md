@@ -44,7 +44,7 @@ The phases intentionally separate **F** factual synchronization, **D** human dec
 | Required roadmap element | Where this artifact supplies it |
 |---|---|
 | target authority hierarchy | §2.2 policy/behavior/support/evidence join |
-| canonical indexes and glossary | §2.3 estate manifest, product-contract, glossary and evidence index |
+| canonical indexes and glossary | §2.3 estate manifest, decision applicability index, product-contract, glossary and evidence index |
 | target document architecture | §2.4 |
 | what to update, decide, implement, generate, test and archive | §§3.3–3.9, with F/D/I/S/V types |
 | migration phases and dependency order | §§3.3–3.9 and §6.1 |
