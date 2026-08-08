@@ -4,9 +4,9 @@
 
 **Audit snapshot:** `b0892ea7496fd2cc8f641417a3d8e33ca9add369`
 
-**Evidence checked through:** 2026-08-08T12:46:09Z
+**Evidence checked through:** 2026-08-08T12:59:00Z
 
-**Artifact status:** leaf audit; snapshot-current
+**Artifact status:** leaf audit; static evidence snapshot-current; executed evidence qualified per binary/environment
 
 **Scope:** creation/publication, readiness and dependencies, manual claim and
 dispatch, service dispatch, attempt/worktree ownership, completion/evaluation,
@@ -55,8 +55,8 @@ Open-state mutation, or abandonment to be non-retriable. These failures are
 valuable drift evidence, not proof that all current production behavior is
 wrong (section 7.4).
 
-**`[VERIFIED]` `ORCH-014` — S1, observed, high confidence with binary-provenance
-qualification.** The daemon executes capability-authenticated worker operations
+**`[VERIFIED]` `ORCH-014` — S2 on the observed installed service; snapshot
+impact inferred, binary-provenance qualified.** The daemon executes capability-authenticated worker operations
 synchronously on its coordinator/IPC thread. During another worker's completion
 review, process ancestry showed the daemon blocked under a reviewer process with
 a 900-second timeout. Two `wg done audit-orchestration` calls and a `wg show`
@@ -153,6 +153,29 @@ stateDiagram-v2
     ReopenHeld --> Open: exact owner reaped\nReopenOwnerReleased; generation++
     Done --> Open: cron GenerationCreated\ngeneration++ / next fire
 ```
+
+**`[FACT]`** Persisted task status is only one axis. The authority matrix below
+separates status, attempt ownership, completion truth, and scheduler overlays so
+“terminal,” “ready,” “published,” and “complete” are not treated as synonyms.
+
+| Persisted axis/value | Current meaning and legal current edge | Compatibility/ambiguity |
+|---|---|---|
+| `Status::Open` | No current owner; may be ready only if unpaused, time-ready, dependency-satisfied, and not held by reopen intent. `AttemptReserved` alone moves it to InProgress. | Manual claim currently ignores pause/time overlays (`ORCH-003`). |
+| `Status::InProgress` | Exact current attempt owns generation/fence; may park, fail/lose, abandon, or complete through receipt-backed success. | Direct legacy Done without candidate is rejected. |
+| `Status::Waiting` | `AttemptParked` terminalizes the current attempt as Parked; wait spec/subscription persists on task. `WaitSatisfied` projects task to **Open**, not InProgress. | Manuals say resume returns InProgress. |
+| `Status::Done` | Successful status; ordinary dependencies require effective Landed disposition, typed inputs require Delivered. Cron/cycle may request a new generation. | Historical Land Done rows receive a narrow effective-Landed bridge. |
+| `Status::Failed` | Terminal failure; never satisfies required-success dependency. Explicit retry/recover/cycle failure restart records a reopen intent. | Manuals say terminal failure unblocks; old eval states can migrate here. |
+| `Status::Abandoned` | Terminal operator withdrawal; never satisfies required-success dependency and is skipped by cycle reactivation. | Retry currently accepts it; help/test disagree (`ORCH-008`). |
+| `Status::Blocked` | Persisted compatibility/manual state; coordinator can create a new Open generation when dependencies truly satisfy. | Most blocking is derived from `after`; `AttemptReserved` itself requires Open. |
+| `Status::Incomplete` | Serialized compatibility spelling for retryable unfinished work. | Current `wg incomplete` records AttemptFailed/Failed; readiness still recognizes legacy Incomplete rows. |
+| `PendingValidation` | Compatibility awaiting-acceptance spelling accepted by lifecycle evidence paths. | Coordinator migrates legacy rows; modern manifest flow does not routinely emit it. |
+| `PendingEval` / `FailedPendingEval` | Compatibility/evaluation-held source states with narrow owning-satellite readiness exceptions. | Current completion review is candidate-bound and hidden; retry/recover clear held rows. |
+| attempt disposition `None` | One live/nonterminal owner for current generation/fence. | Status alone is insufficient ownership proof. |
+| attempt disposition `Succeeded|Failed|Lost|Parked|Cancelled` | Immutable outcome of exact source attempt; later competing terminal events fail/replay inertly. | A new generation gets a new attempt; old disposition is retained in ledger. |
+| `paused`, `not_before`, `ready_after`, cron due | Scheduler overlays applied by readiness; do not change task status. | Claim bypass demonstrates why these need one admission authority. |
+| completion candidate + FLIP/eval refs | Exact immutable candidate selected for task generation/requirements/dependencies. | Rejection retains objects but findings are not worker-reachable (`ORCH-015`). |
+| completion disposition/receipt | Landed/Reported/Explored publication truth plus terminal receipt; required before current Done. | Deliver is historical; v2 GraphSave and v3 manifest representations coexist. |
+| `reopen_intent` | Durable hold inside old generation; fences late owner writes but keeps old terminal/nonterminal status until exact reap. | Cycle functions call this “reactivated” before status becomes Open. |
 
 **`[FACT]`** `AttemptReserved` requires Open and creates an attempt ID from the
 current generation and monotonic attempt sequence while incrementing the fence.
@@ -428,7 +451,8 @@ source and targeted tests rather than this human trace.
   1780-2160,2224-2258`; `src/worker_control.rs:1-23,500-807`.
 - **Executed checks:** `integration_worktree` passed 7/7;
   `integration_worktree_observer` passed 16/16; recovery worktree verification
-  passed 8/8.
+  passed 8/8; the isolated current v3 worker canary dispatched ten fake-Pi
+  workers across Land/Report/Explore and passed.
 - **Counterevidence:** **`[UNCERTAINTY]`** no live model worker, injected
   mid-transaction process crash, PID reuse, NFS fault, or simultaneous
   multi-daemon stress was run here.
@@ -566,6 +590,7 @@ source and targeted tests rather than this human trace.
   1759-1914,1977-2169,2435-2702`; `src/commands/spawn/execution.rs:1283-1387`.
 - **Executed checks:** `integration_service` passed 3/3 active tests; three
   timing-sensitive/legacy pickup tests were ignored. Error recovery passed 8/8.
+  The current v3 smoke canary passed with ten fake-Pi workers and max-agents 4.
 - **Counterevidence:** no sustained concurrency or supervisor-crash chaos test
   ran. Ignored graph-watcher and fallback-poll pickup tests leave the primary
   unattended human flow underverified in this sample.
@@ -575,8 +600,9 @@ source and targeted tests rather than this human trace.
 
 - **Label/state:** **`[VERIFIED]` + `[FACT]`**, shipped/current on the observed
   service; binary provenance qualified below.
-- **Risk:** **S1 High**, observed; high confidence in the mechanism and medium-high
-  confidence that the installed daemon exactly represents the snapshot build.
+- **Risk:** **S2 Medium** on the observed installed service, observed; high
+  confidence in that runtime trace. Snapshot impact is an **`[INFERENCE]`** with
+  medium confidence because the installed binary lacks a commit identity.
 - **Affected boundary:** every capability-authenticated worker operation on one
   graph, ordinary service IPC, coordinator ticks, and completion throughput.
 - **Runtime trace:** while a sibling worker was submitting completion, the live
@@ -658,8 +684,8 @@ source and targeted tests rather than this human trace.
 
 ### `ORCH-017` — smoke inventory straddles incompatible completion generations
 
-- **Label/state:** **`[FACT]` + `[INFERENCE]`**, mixed executable specifications;
-  inspected, not run in this audit.
+- **Label/state:** **`[FACT]` + `[VERIFIED]` + `[INFERENCE]`**, mixed executable
+  specifications; six sampled scripts executed after static classification.
 - **Risk:** **S2 Medium**, possible release-signal ambiguity; high confidence in
   manifest content, low confidence in current scenario outcomes.
 - **Evidence:** active scenarios still pin the historical real-`wg done`
@@ -681,10 +707,16 @@ source and targeted tests rather than this human trace.
   history but cannot be treated as one coherent current release contract until
   each is labeled current/compatibility/retired and run against the candidate.
   The failing Rust direct-Done suites make this more than a theoretical concern.
+- **Executed adjudication:** current v3 `completion_done_single_lifecycle_path`,
+  ten-worker `worker_owned_completion_canary`, and recurring-cron idempotency
+  passed. Historical `wg_done_refuses_uncommitted_worktree` failed because main
+  rejected retired `--skip-smoke` before naming the staged file; brokered v2
+  failed because finalize mutation is retired. The current reopen-owner scenario
+  failed twice before owner-authoritative synchronization. Exact commands and
+  limitations are in §7.5.
 - **Counterevidence:** the smoke manifest is intentionally grow-only; historical
   regression scenarios can remain valuable if their compatibility boundary is
-  explicit. No sampled smoke scenario was executed here, so failure is not
-  asserted.
+  explicit.
 - **Owner/domain:** smoke/release verification and completion lifecycle.
 - **Linked recommendation:** `ORCH-REC-011`.
 
@@ -724,7 +756,8 @@ source and targeted tests rather than this human trace.
 - **Evidence:** `src/commands/wait.rs:15-148,150-235,237-390`;
   `src/commands/service/coordinator.rs:571-790`;
   `src/cron.rs:1-260`.
-- **Executed check:** scheduled and cron dispatch suites passed 40/40 combined.
+- **Executed check:** scheduled and cron dispatch suites passed 40/40 combined;
+  `cron_recurring_no_duplicate_fire.sh` passed all three idempotency checks.
 - **Uncertainty:** no wall-clock wait, authenticated inbound message wake,
   daemon-outage missed-fire catch-up, or file-system timestamp edge case was
   exercised manually. File waits depend on mtime and therefore do not prove
@@ -747,8 +780,10 @@ source and targeted tests rather than this human trace.
   `src/commands/reopen.rs:1-328`; `src/commands/recover.rs:1-167,256-421`.
 - **Executed checks:** manual fail/retry trace produced the expected audit
   events; error recovery passed 8/8; recovery verification passed 8/8.
-- **Counterevidence:** the abandoned retry contract is unresolved; no live hung
-  process was killed/reaped during this audit.
+- **Counterevidence:** the abandoned retry contract is unresolved. The
+  `reopen_waits_for_pi_owner_release` smoke was run twice and failed before its
+  first fake-Pi owner became authoritative even though four agents spawned and
+  watchdog IPC occurred; later reap/retry assertions were therefore not reached.
 - **Linked recommendations:** `ORCH-REC-004`, `ORCH-REC-007`.
 
 ## 4. Contradictions and drift
@@ -764,6 +799,27 @@ source and targeted tests rather than this human trace.
 | `ORCH-DRIFT-007` | **`[CONTRADICTION]`** cycle source says Abandoned members remain abandoned, but several integration expectations assume different reset/all-terminal behavior. | Implementation appears current but suite has multiple stale assumptions; adjudication open. | S3 / medium |
 | `ORCH-DRIFT-008` | **`[CONTRADICTION]`** manuals say all terminal statuses unblock, waits resume InProgress, and direct Done/approve/reject/meta-task evaluation are current; required-success query, lifecycle kernel, main routing, and coordinator encode the opposite/current protocol. | Implementation is current; docs partly current and partly historical. See `ORCH-016`. | S2 / high |
 | `ORCH-DRIFT-009` | **`[CONTRADICTION]`** active smoke descriptions simultaneously declare completion/v2 GraphSaved/Cleaned and v3/no-SaveTransaction completion authority. | Grow-only history explains coexistence but release authority is unclassified. See `ORCH-017`. | S2 / high text conflict, runtime unknown |
+
+### 4.1 Authority/duplication matrix
+
+**`[FACT]`** This matrix makes the ambiguous operations explicit. “Observed” is
+bounded to the command/test sample in section 7; absence means not executed, not
+that an implementation is unreachable.
+
+| Semantic surface | Generated CLI/help | Current source authority | Tests/smoke sampled | User documentation | Observed/adjudication |
+|---|---|---|---|---|---|
+| Draft vs ready | Add help says every add is paused; publish releases only/downstream/WCC. | `add` forces paused; `query` applies pause/time/dependencies. | Scheduled/cron Rust suites passed; add/publish manual trace passed. | `docs/README` staging prose agrees. | Current except claim bypass. |
+| Manual claim | “sets status to InProgress”; no force/override flag. | Checks dependency disposition, then Open lifecycle reservation; omits pause/time. | No direct negative fixture found in sample. | Quick start claims directly; no draft/delay warning. | Paused and future tasks both claimed (`ORCH-003`); design intent unresolved. |
+| Dependency completion | Help does not explain success disposition. | Done plus relation-appropriate Landed/Delivered; Failed/Abandoned block. | Query tests and manual downstream trace agree. | Task manual says all terminal statuses unblock. | Source/runtime authority wins; docs stale. |
+| Wait/resume | Wait supports condition grammar; resume/publish share historical naming. | Parked attempt -> Waiting; `WaitSatisfied` -> Open for redispatch. | Wait unit tests inspected; no elapsed human trace. | Manual says condition returns InProgress. | Source current; live wake remains gap. |
+| Done/completion | Done help exposes retired flags; submit/land commands expose v3. | Manifest -> FLIP/eval -> publication -> receipt-backed Done; main rejects bypass flags. | v3 focused/current smoke passed; direct-Done Rust and historical smoke fail. | Manuals teach direct Done, PendingValidation, approve/reject. | v3 is current; help/docs/tests mixed (`ORCH-006/016/017`). |
+| Review rejection | Submit error says repair same context. | Findings stored separately; graph retains receipt ref only. | Review valve tests pass storage behavior; no worker findings-read test. | No sampled current repair journey. | Rejection observed; findings unavailable (`ORCH-015`). |
+| Retry vs abandon | Retry help omits Abandoned. | Retry accepts Failed/Abandoned/Incomplete/eval-held/InProgress via reopen intent. | One integration test prohibits abandoned retry. | Manual calls Abandoned permanent. | Product decision unresolved (`ORCH-008`). |
+| Cycle iteration | Done help exposes `--converged` but main rejects it. | SCC/implicit analysis records fenced reopen intents; release later creates Open generation. | 49/174 cycle tests fail across legacy/immediate-open expectations. | Manual teaches immediate reopen and `done --converged`. | Names/docs/tests stale; exact live cycle not run. |
+| Cron recurrence | Cron help/config expose schedules. | Done cron creates generation, next due with deterministic jitter; readiness still applies pause/status. | Rust cron 13/13 and current no-duplicate smoke passed. | Manual coverage is limited relative to implementation. | Current sampled behavior agrees. |
+| Worker exit recovery | Worker-facing Done/Fail are brokered; direct graph commands refused. | Exact PID/fence/lifecycle observer; retry waits for owner release. | Worktree/observer tests pass; reopen-owner smoke failed before owner became authoritative. | Coordination manual says wrapper clean exit calls direct Done and triage may mark Done. | Current source stronger; recovery smoke needs repair/adjudication. |
+| Completion generation | Finalize mutation rejected; candidate reads operator-only. | v3 store is current; v2 bridge retained for compatibility. | v2 brokered smoke fails at retired finalize; v3 canary passes. | Manuals predate both exact flows. | Compatibility boundary must be classified. |
+| Service concurrency | Service help exposes max-agents and supervisor. | Registry/graph locks and bounded slots; main IPC executes accepted worker request inline. | Ten-worker isolated v3 canary passed; installed multi-auditor review stalled main IPC. | Manual calls max_agents the single throttle and omits long IPC operation serialization. | Capacity works; control-plane head-of-line risk remains runtime-qualified. |
 
 **`[FACT]`** An apparent contradiction was resolved during checking: the first
 run of `legacy_completion_authority_retired` failed because a worker capability
@@ -786,7 +842,7 @@ adjudicate those terms and carry the drift IDs into the central register.
 | `ORCH-RISK-003` | **`[INFERENCE]`** | S2 / possible | Cycle hold creation after the tick's reopen reconciliation adds at least one reconciliation boundary and makes “reactivated” output premature. A crash is safe because intent is durable, but unattended latency/observability may surprise operators. |
 | `ORCH-RISK-004` | **`[FACT]`** | S2 / possible | Agent-run integration tests can be dominated by inherited worker authority unless every child fixture sanitizes the environment (`ORCH-009`). This affects the project's normal worker context even if clean CI passes. |
 | `ORCH-RISK-005` | **`[INFERENCE]`** | S2 / likely | Completion v2 bridge, completion v3, legacy statuses, and old synthetic-evaluation concepts create duplicated semantic surfaces. Future fixes may land in the wrong layer (`ORCH-011`). |
-| `ORCH-RISK-006` | **`[VERIFIED]`** | **S1 / observed** | One ordinary slow completion review occupied the daemon's main IPC/coordinator thread beyond the 30-second worker deadline, stalling unrelated Done/Show requests and ticks (`ORCH-014`). Repeated clients can amplify queueing and uncertainty about whether timed-out operations committed. |
+| `ORCH-RISK-006` | **`[VERIFIED]` installed behavior; `[INFERENCE]` snapshot applicability** | S2 / observed | One ordinary slow completion review occupied the installed daemon's main IPC/coordinator thread beyond the 30-second worker deadline, stalling unrelated Done/Show requests; source ordering implies ticks also wait (`ORCH-014`). Repeated clients can amplify queueing and uncertainty about whether timed-out operations committed. |
 | `ORCH-RISK-007` | **`[VERIFIED]`** | S2 / observed | Completion review tells the worker to repair while withholding the structured findings needed to identify the failed requirement (`ORCH-015`). Blind resubmission spends reviewer capacity and may never converge. |
 | `ORCH-RISK-008` | **`[CONTRADICTION]`** | S2 / likely | User manuals invert required-success dependency semantics and teach retired completion/wait/evaluation flows (`ORCH-016`), so following the manual can create unsafe expectations or commands that fail closed. |
 | `ORCH-RISK-009` | **`[INFERENCE]`** | S2 / possible | A grow-only smoke inventory spanning v2, v3, and retired direct-Done semantics can yield ambiguous release evidence unless scenario authority is classified (`ORCH-017`). |
@@ -946,6 +1002,28 @@ cargo --version
 sha256sum target/debug/wg
 ```
 
+**`[VERIFIED]`** Final artifact acceptance was rerun after the last content
+change. All commands exited 0:
+
+```bash
+test -s docs/audit/2026-08-08-worksgood-system/11-orchestration-lifecycle.md
+git diff --check
+python3 - <<'PY'
+from pathlib import Path
+p = Path('docs/audit/2026-08-08-worksgood-system/11-orchestration-lifecycle.md')
+s = p.read_text()
+required = [f'## {n}.' for n in range(1, 8)]
+assert all(sum(line.startswith(h) for line in s.splitlines()) == 1 for h in required)
+assert s.count('```') % 2 == 0
+assert sum(line == '```mermaid' for line in s.splitlines()) == 4
+PY
+```
+
+**`[VERIFIED]`** The exact artifact path above exists and is the only
+task-authored deliverable. Merge commits incorporated already-landed sibling
+ audits from `main`; candidate construction used current `main` as its reviewed
+ base, so those sibling files were not part of this task's diff.
+
 **`[UNCERTAINTY]`** The target binary was built in the checkout and the targeted
 cargo tests rebuilt as needed, but no reproducible-build attestation links the
 ELF bytes to source. Production source equality between snapshot and working
@@ -971,7 +1049,7 @@ HEAD is the audit's provenance basis.
 | Fail/retry/reopen/recover | `src/commands/fail.rs:47-260`; `retry.rs:141-443,493-700`; `reopen.rs:1-328`; `recover.rs:1-167,256-421` |
 | Wait/cycle/cron | `src/commands/wait.rs:15-148,150-390`; `src/graph.rs:3044-3640`; `src/cron.rs:1-260`; coordinator maintenance at `coordinator.rs:2498-2610` |
 | User-facing lifecycle docs | `docs/README.md:60-80,190-240`; `docs/manual/02-task-graph.md:65-125,230-280`; `docs/manual/04-coordination.md:145-225` |
-| Smoke lifecycle contracts | `tests/smoke/manifest.toml:943-975,2094-2135,2925-3036`; `tests/smoke/scenarios/wg_done_refuses_uncommitted_worktree.sh:1-130`; `worker_owned_completion_canary.sh:1-152`; `completion_done_single_lifecycle_path.sh:1-84`; `reopen_waits_for_pi_owner_release.sh:1-221`; `cron_recurring_no_duplicate_fire.sh:1-198` [inspected, not run] |
+| Smoke lifecycle contracts | `tests/smoke/manifest.toml:943-975,2094-2135,2925-3036`; `tests/smoke/scenarios/wg_done_refuses_uncommitted_worktree.sh:1-130`; `brokered_deliverable_worktree_preflight.sh:1-102`; `worker_owned_completion_canary.sh:1-152`; `completion_done_single_lifecycle_path.sh:1-84`; `reopen_waits_for_pi_owner_release.sh:1-221`; `cron_recurring_no_duplicate_fire.sh:1-198` [inspected and executed as classified in §7.5] |
 
 ### 7.3 Executed CLI traces
 
@@ -1059,9 +1137,11 @@ Error: FLIP rejected manifest <digest>; repair in the same worker context and su
 
 **`[VERIFIED]`** Own-task `wg show --json` displayed `flip_receipt` content
 addressing and a `completion-review` log with `FlipRejected`, but not the stored
-finding code, message, or evidence. No capability-scoped CLI operation exposed
-the findings object. The repair attempts therefore used the explicit task
-validation checklist and artifact inspection rather than reviewer feedback.
+finding code, message, or evidence. `wg candidate show <rejected-digest>` exited
+1 with `worker_control.operation_refused`. Static enumeration found no
+capability-scoped completion-findings read operation. The repair attempts
+therefore used the explicit task validation checklist and independent artifact
+review rather than the stored reviewer feedback.
 
 #### Follow-up task creation attempt
 
@@ -1131,7 +1211,40 @@ assertions after a reopen intent, abandonment policy, maximum iteration, and
 failure restart expectations. A dedicated migration task must classify each
 test before changing code or assertions.
 
-### 7.5 Inspected test sources and limitations
+### 7.5 Executed smoke scenarios
+
+**`[VERIFIED]`** Six credential-free scenario scripts were executed against the
+checkout `target/debug/wg` (SHA-256 in §7.1), with ambient worker capability,
+task, graph, and worktree variables removed and
+`WG_SMOKE_CANDIDATE_BIN=$PWD/target/debug/wg`. These were direct scenario runs,
+not a claim that the entire manifest or owner gate passed.
+
+| Scenario | Exit | Classification and bounded result |
+|---|---:|---|
+| `completion_done_single_lifecycle_path.sh` | 0 | **current v3 / pass:** real CLI Report candidate used immutable output/evidence, fake exact FLIP+eval, and one receipt-bound AttemptSucceeded. |
+| `worker_owned_completion_canary.sh` | 0 | **current v3 / pass:** isolated daemon completed ten fake-Pi Land/Report/Explore workers, moved-main repair, exact reviews, no SaveTransaction directory, and no replacement workers. |
+| `cron_recurring_no_duplicate_fire.sh` | 0 | **current / pass:** Done→Open reset occurred once, next fire moved to future, and a second tick was idempotent. |
+| `wg_done_refuses_uncommitted_worktree.sh` | 1 | **historical/retired contract:** expected staged filename, but current main rejected `--skip-smoke` first with the publication-derived Done error. This confirms `ORCH-006/017`, not a current safety regression adjudication. |
+| `brokered_deliverable_worktree_preflight.sh` | 1 | **v2 compatibility drift:** stopped at `legacy finalization mutation is retired; use wg submit, wg land, and wg done`. |
+| `reopen_waits_for_pi_owner_release.sh` | 1 twice | **current scenario unresolved:** both isolated runs spawned four agents and logged watchdog IPC, but failed `retry-owner first Pi owner never became authoritative`; held-owner/reap assertions were never reached. Registry-refresh key warnings were incidental because dispatch used fake Pi. |
+
+**`[VERIFIED]`** Exact invocation template:
+
+```bash
+env -u WG_WORKER_CAPABILITY -u WG_WORKER_IPC \
+    -u WG_TASK_ID -u WG_AGENT_ID -u WG_DIR \
+    -u WG_WORKTREE_PATH -u WG_BRANCH -u WG_PROJECT_ROOT \
+    WG_SMOKE_CANDIDATE_BIN="$PWD/target/debug/wg" \
+    PATH="$PWD/target/debug:$PATH" \
+    bash tests/smoke/scenarios/<scenario>.sh
+```
+
+**`[UNCERTAINTY]`** The reopen failure needs an owner-focused reproduction with
+preserved scratch state or increased synchronization diagnostics before it can
+be classified as product defect, timing flake, or changed fake-Pi contract. No
+other smoke scenario was run.
+
+### 7.6 Inspected test sources and limitations
 
 **`[FACT]`** Test sources inspected included:
 
@@ -1146,13 +1259,14 @@ test before changing code or assertions.
 - `tests/integration_error_recovery.rs`
 - `tests/test_recovery_verification.rs`
 - completion protocol suites named in section 7.4
-- `tests/smoke/manifest.toml:943-975,2094-2135,2925-3036` and the five
-  concrete scenario scripts indexed in section 7.2 [inspected, not run]
+- `tests/smoke/manifest.toml:943-975,2094-2135,2925-3036` and the six
+  concrete scenario scripts indexed in section 7.2 [inspected and executed as
+  classified in section 7.5]
 - `docs/README.md`, `docs/manual/02-task-graph.md`, and
   `docs/manual/04-coordination.md` at the spans indexed in section 7.2
 
 **`[UNCERTAINTY]`** This was a bounded leaf audit, not exhaustive verification.
-It did not run the full Cargo suite, smoke manifest, formal model, installer,
+It did not run the full Cargo suite, full smoke owner gate/manifest, formal model, installer,
 TUI, external providers, authenticated remote dependencies, multiple operating
 systems, live human notifications, or destructive recovery. Static source and
 passing tests establish only the stated input/environment. No security,
