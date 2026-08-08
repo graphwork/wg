@@ -6,8 +6,8 @@ use worksgood::completion_evidence::{
     AcceptanceOutcome, AttemptSaveKey, CandidateDescriptor as AtomicCandidateDescriptor,
     CleanupCommit, CleanupResult, CompletionIntentReceipt, DispositionReceipt, EffectReceipt,
     EvidenceBinding, EvidenceCidSet, EvidenceHeader, FlipReceipt, GraphSaveBundle,
-    GraphSaveReceipt, OutputReceipt, PromotionReceipt, ValidationReceipt, WorkSaveReceipt,
-    content_cid,
+    GraphSaveReceipt, OutputReceipt, PromotionReceipt, TerminalAccountingEvidence,
+    ValidationReceipt, WorkSaveReceipt, content_cid,
 };
 use worksgood::finalization::{
     FinalizationContext, FinalizationStore, QuiescenceProof, checkpoint_candidate,
@@ -71,6 +71,27 @@ fn completion_accounting(dir: &Path, task: &Task) -> CompletionAccounting {
     }
 }
 
+fn terminal_accounting_evidence(task: &Task) -> Option<TerminalAccountingEvidence> {
+    let usage = task.token_usage.as_ref();
+    if usage.is_none() && task.actual_executor.is_none() && task.actual_model.is_none() {
+        return None;
+    }
+    Some(TerminalAccountingEvidence {
+        usage_present: usage.is_some(),
+        provider_cost_usd: usage.map(|value| value.cost_usd).unwrap_or(0.0).to_string(),
+        input_tokens: usage.map(|value| value.input_tokens).unwrap_or(0),
+        output_tokens: usage.map(|value| value.output_tokens).unwrap_or(0),
+        cache_read_input_tokens: usage
+            .map(|value| value.cache_read_input_tokens)
+            .unwrap_or(0),
+        cache_creation_input_tokens: usage
+            .map(|value| value.cache_creation_input_tokens)
+            .unwrap_or(0),
+        actual_executor: task.actual_executor.clone(),
+        actual_model: task.actual_model.clone(),
+    })
+}
+
 fn apply_completion_accounting(task: &mut Task, accounting: &CompletionAccounting) {
     if task.token_usage.is_none() {
         task.token_usage.clone_from(&accounting.token_usage);
@@ -95,8 +116,9 @@ pub fn commit_terminal_success(
     let graph_path = dir.join("graph.jsonl");
     ensure_terminal_attempt_on_disk(dir, id, actor_id)?;
     let graph = load_graph(&graph_path)?;
-    let task = graph.get_task_or_err(id)?.clone();
+    let mut task = graph.get_task_or_err(id)?.clone();
     let accounting = completion_accounting(dir, &task);
+    apply_completion_accounting(&mut task, &accounting);
     let (bundle, state) = prepare_graph_save(dir, &task, reason_code)?;
     persist_save_state(dir, &state)?;
     crash_after(SavePhase::GraphSaved)?;
@@ -153,8 +175,9 @@ pub fn commit_terminal_success_in_graph(
     reason_code: &str,
 ) -> Result<String> {
     ensure_terminal_attempt_in_task(graph.get_task_mut_or_err(id)?, actor_id)?;
-    let task_snapshot = graph.get_task_or_err(id)?.clone();
+    let mut task_snapshot = graph.get_task_or_err(id)?.clone();
     let accounting = completion_accounting(dir, &task_snapshot);
+    apply_completion_accounting(&mut task_snapshot, &accounting);
     let (bundle, state) = prepare_graph_save(dir, &task_snapshot, reason_code)?;
     persist_save_state(dir, &state)?;
     crash_after(SavePhase::GraphSaved)?;
@@ -598,6 +621,7 @@ fn prepare_graph_save_for_source(
         evidence,
         graph_revision_before_commit: task.lifecycle.revision,
         lifecycle_event_id: event_id,
+        terminal_accounting: terminal_accounting_evidence(task),
     };
     let bundle = GraphSaveBundle {
         receipt,
@@ -2987,6 +3011,65 @@ mod atomic_terminal_tests {
         assert_eq!(
             task.actual_model.as_deref(),
             Some("openrouter:test/pi-model")
+        );
+    }
+
+    #[test]
+    fn graphsave_crash_replay_restores_accounting_without_registry_or_raw_stream() {
+        let (_root, dir) = setup(Status::InProgress);
+        let graph = load_graph(dir.join("graph.jsonl")).unwrap();
+        let mut source = graph.get_task("terminal").unwrap().clone();
+        source.token_usage = Some(TokenUsage {
+            cost_usd: 0.125,
+            input_tokens: 11,
+            output_tokens: 7,
+            cache_read_input_tokens: 3,
+            cache_creation_input_tokens: 2,
+        });
+        source.actual_executor = Some("pi".into());
+        source.actual_model = Some("openrouter:test/provider-model".into());
+
+        // The prepared GraphSave is the crash-replay authority. No registry or
+        // agent directory exists in this fixture.
+        let (bundle, state) = prepare_graph_save(&dir, &source, "crash-replay").unwrap();
+        assert_eq!(state.phase, SavePhase::GraphSaved);
+        let accounting = bundle
+            .receipt
+            .terminal_accounting
+            .as_ref()
+            .expect("GraphSave receipt binds terminal accounting");
+        assert!(accounting.usage_present);
+        assert_eq!(accounting.provider_cost_usd, "0.125");
+
+        // Simulate recovery into a projection that lost the non-lifecycle
+        // fields: applying only the durable receipt restores exact accounting.
+        let mut recovered = source.clone();
+        recovered.token_usage = None;
+        recovered.actual_executor = None;
+        recovered.actual_model = None;
+        let request = TransitionRequest {
+            event_id: bundle.receipt.lifecycle_event_id.clone(),
+            idempotency_key: format!("graphsave:{}", state.transaction_id),
+            actor: LifecycleActor {
+                kind: worksgood::lifecycle::ActorKind::Reconciler,
+                id: "crash-replay-test".into(),
+            },
+            reason_code: "crash-replay".into(),
+            kind: TransitionKind::GraphSaveCommitted {
+                bundle: Box::new(bundle),
+            },
+            expected: FenceExpectation::current(&recovered),
+            evidence_refs: Vec::new(),
+            occurred_at: chrono::Utc::now().to_rfc3339(),
+        };
+        apply_transition(&mut recovered, request).unwrap();
+        let usage = recovered.token_usage.expect("receipt restored usage");
+        assert_eq!((usage.input_tokens, usage.output_tokens), (11, 7));
+        assert_eq!(usage.cost_usd, 0.125);
+        assert_eq!(recovered.actual_executor.as_deref(), Some("pi"));
+        assert_eq!(
+            recovered.actual_model.as_deref(),
+            Some("openrouter:test/provider-model")
         );
     }
 

@@ -2096,6 +2096,7 @@ mod tests {
                 pi_continuation: None,
                 pi_terminal_reservation: None,
                 reopen_intent: None,
+                terminal_accounting: None,
             },
         }
     }
@@ -2323,6 +2324,7 @@ mod tests {
                 pi_continuation: None,
                 pi_terminal_reservation: None,
                 reopen_intent: None,
+                terminal_accounting: None,
             },
         });
         state.reconcile_goals(
