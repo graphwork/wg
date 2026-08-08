@@ -91,6 +91,7 @@ pi --mode json -p "Complete the WG task prompt supplied on stdin."
 
 **`[VERIFIED]`** `cargo test --bin wg test_build_inner_command_pi_external_emits_model_and_thinking -- --nocapture` passed one test on 2026-08-08 and asserted the actual constructed command contains provider `openai-codex`, model `gpt-5.6-sol`, and thinking `high` (section 7.2).
 
+**`[VERIFIED]`** A deterministic Pi child stub then executed the exact worker-shaped `pi --mode json -p ... --provider openrouter --model z-ai/glm-5.2 --thinking high` process with piped stdin. It captured the argv and `PI_STUB_PROMPT_SENTINEL`, emitted the repository's captured Pi NDJSON fixture, and the real snapshot `wg pi-stream-bridge` produced canonical usage `{input=205, output=17, cacheRead=310, cost=0.05}` plus a non-empty session summary. This is credential-free process/results evidence, not a live-provider claim; exact commands and output are in section 7.4.
 #### Trace B — attended/live native and Pi
 
 **`[VERIFIED]`** With a temporary native config, a paused task, and the live-surface hint `WG_EXECUTOR_TYPE=native`, snapshot-built `wg spawn-task native-live --dry-run` printed:
@@ -386,7 +387,36 @@ env -i PATH="$PATH" HOME="$TMP/home-native" USER="$(id -un)" \
 
 **`[VERIFIED]`** Bounded result: exit 1 and `error[WG-EXEC-ROUTE-REQUIRED] ... unsupported route "nex:audit-model" ... require explicit pi/claude/codex ... never fall back`; no daemon or provider child was launched. This verifies the intentional native worker-plane rejection and explains why there is no current native worker result/accounting artifact.
 
-### 7.4 Primary static evidence
+### 7.4 Executed deterministic Pi child/results trace
+
+**`[VERIFIED]`** On 2026-08-08, with snapshot source unchanged and `target/debug/wg` as identified in section 7.3, the following credential-free process trace returned exit 0:
+
+```bash
+ROOT=$(mktemp -d /tmp/wg-model-pi-stub.XXXXXX)
+mkdir -p "$ROOT/bin" "$ROOT/agent"
+cat > "$ROOT/bin/pi" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" > "${PI_STUB_ARGS:?}"
+cat > "${PI_STUB_STDIN:?}"
+cat "${PI_STUB_FIXTURE:?}"
+SH
+chmod +x "$ROOT/bin/pi"
+export PI_STUB_ARGS="$ROOT/args.txt" PI_STUB_STDIN="$ROOT/stdin.txt"
+export PI_STUB_FIXTURE="$PWD/tests/smoke/fixtures/pi_event_stream.jsonl"
+printf '%s\n' PI_STUB_PROMPT_SENTINEL | PATH="$ROOT/bin:$PATH" \
+  pi --mode json -p 'Complete the WG task prompt supplied on stdin.' \
+  --provider openrouter --model z-ai/glm-5.2 --thinking high \
+  > "$ROOT/agent/raw_stream.jsonl"
+printf '%s\n' \
+  '{"agent_id":"agent-pi-audit","executor":"pi","model":"openrouter:z-ai/glm-5.2","task_id":"audit-pi-stub"}' \
+  > "$ROOT/agent/metadata.json"
+target/debug/wg pi-stream-bridge --agent-dir "$ROOT/agent" --exit-code 0
+```
+
+**`[VERIFIED]`** A Python assertion pass over the generated files verified captured args `--mode json`, provider, model, and `--thinking high`; exact stdin sentinel; canonical result usage `input_tokens=205`, `output_tokens=17`, `cache_read_input_tokens=310`, `cost_usd=0.05`; and a 23-byte non-empty `session-summary.md`. The temporary root was `/tmp/wg-model-pi-stub.ypqqni`. No network or provider credential was available to the stub.
+
+### 7.5 Primary static evidence
 
 | Evidence | Observation | Class / freshness |
 |---|---|---|
@@ -406,7 +436,7 @@ env -i PATH="$PATH" HOME="$TMP/home-native" USER="$(id -un)" \
 | `src/service/llm.rs:251-407,519-600,2578-2660` | same-system explicit fallback and negative tests | `[FACT]` E2/E3; two tests executed |
 | `README.md`, `docs/README.md`, design docs, quickstart, `AGENTS.md` cited spans | conflicting current/design/operator claims | `[DOC-CLAIM]` E4/E5, snapshot-current text |
 
-### 7.5 Inspected tests and limitations
+### 7.6 Inspected tests and limitations
 
 **`[FACT]`** The five smoke scenarios named in section 5.2 were read as E3 executable specifications and were not run. Their presence does not establish pass status.
 
