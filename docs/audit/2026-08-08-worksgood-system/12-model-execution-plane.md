@@ -11,7 +11,7 @@
 
 **`[FACT]`** Current unattended service admission is narrower than WorksGood's handler and executor catalog. Exact `pi:<provider>:<model>`, `claude:<model>`, and `codex:<model>` routes pass the execution-plane validator; nex/native, OpenCode, other external CLIs, leading-provider routes, and bare aliases do not (`src/config.rs:2395-2433,3590-3710` (`parse_supported_execution_route`, `resolve_execution_route_for_role`, `validate_execution_model_plane`); `src/commands/spawn/execution.rs:984-1046` (`execute_spawn_plan` preflight)). The broad resolver and live-chat layer still recognize those additional handlers (`src/dispatch/handler_for_model.rs:76-137`; `src/commands/spawn_task.rs:145-224,280-405`).
 
-**`[VERIFIED]`** Focused tests executed on 2026-08-08 passed: 14 handler-routing unit tests; Pi stream deduplication and raw-stream accounting tests; 19 Pi-watchdog integration tests; 8 Pi-sole-model-plane tests; 6 two-tier-profile tests; 6 executor-taxonomy tests; two agency fallback tests; and one Pi process-argv test. Exact commands, environment, exit statuses, and bounded results are in section 7. No real provider or credential was invoked.
+**`[VERIFIED]`** Focused tests executed on 2026-08-08 passed: 14 handler-routing unit tests; Pi stream deduplication and raw-stream accounting tests; 19 Pi-watchdog integration tests; 8 Pi-sole-model-plane tests; 6 two-tier-profile tests; 6 executor-taxonomy tests; two agency fallback tests; one Pi process-argv test; one native process/local-OAI-stub test; and three native result-accounting tests. Exact commands, environment, exit statuses, and bounded results are in section 7. No external provider or production credential was invoked.
 
 **`[FACT]`** The worker pipeline has strong positive controls: explicit route and reasoning propagation, a transactional launch gate, dedicated raw and canonical streams, provider-failure classification, completion/no-work gates, and a Pi watchdog whose continuation path is evidence-based and same-session (`src/dispatch/plan.rs:387-613,650-809`; `src/commands/spawn/execution.rs:1308-1438,3430-3707`; `src/pi_watchdog/mod.rs:1-15,1274-1730`). Pi usage translation counts only authoritative `turn_end.message.usage`, avoiding repeated update/end snapshots (`src/stream_event.rs:410-690,1125-1152`; `src/graph.rs:1459-1587`).
 
@@ -102,8 +102,9 @@ wg nex --chat native-live -m nex:audit-model -e audit-local
 
 **`[VERIFIED]`** The same native configuration was then presented to unattended admission with `env -i ... timeout 15 "$BIN" --dir "$ROOT/.wg" service start --no-supervise`. It returned exit 1 before daemon/provider launch: `error[WG-EXEC-ROUTE-REQUIRED]: dispatcher.model selects unsupported route "nex:audit-model"; worker roles require explicit pi/claude/codex ... and never fall back`. Consequently there is no current native worker result to account: the config-to-unattended-process trace terminates at admission by design.
 
-**`[FACT]`** Compatibility code still describes the unreachable downstream shape: the native wrapper expects the native loop to write canonical `stream.jsonl`, and result parsing accepts native `total_usage` (`src/commands/spawn/execution.rs:3430-3456`; `src/graph.rs:1450-1478,1589-1612`). This is static compatibility evidence, not an executed native result at the current worker boundary.
+**`[FACT]`** Compatibility code still describes the unreachable worker downstream shape: the native wrapper expects the native loop to write canonical `stream.jsonl`, and result parsing accepts native `total_usage` (`src/commands/spawn/execution.rs:3430-3456`; `src/graph.rs:1450-1478,1589-1612`).
 
+**`[VERIFIED]`** The reachable native process/results boundary was exercised deterministically outside worker admission: `integration_nex_entrypoint::wg_scoped_eval_mode_uses_configured_openrouter_endpoint_credentials` launched the real snapshot `wg nex` process against an in-test local OAI SSE server, observed the request/auth and successful result without leaking the key, and passed (`tests/integration_nex_entrypoint.rs:85-196,499-615`). Three graph tests then passed for native final `total_usage`, live turn aggregation, and final-result precedence (`src/graph.rs:4541-4600`). Together these checks trace native config → actual nex process/local wire → result → accounting while preserving the separate fact that native is not an admitted unattended worker.
 **`[VERIFIED]`** With a separate exact Pi config, snapshot-built `wg spawn-task pi-chat --dry-run` printed:
 
 ```text
@@ -293,7 +294,7 @@ git diff --quiet \
 
 **`[VERIFIED]`** Bounded result: `scoped_diff_exit=0`; only the audit charter changed between snapshot and execution revision. Static line citations in this artifact are interpreted against that unchanged evidence.
 
-**`[VERIFIED]`** After merging current `main`, the required artifact checks ran at revision `a1a1a34de0b7b5ac350d329d3972b2e5add8f162` on 2026-08-08 and both returned exit 0 with no output:
+**`[VERIFIED]`** After each current-`main` integration, including the final output tree, the required artifact checks ran on 2026-08-08 and both returned exit 0 with no output. The completion manifest's separate immutable validation evidence records the exact final commit, integrated-main OID, tree OID, and artifact digest so checking the evidence does not require a self-invalidating commit hash inside this file.
 
 ```bash
 test -s docs/audit/2026-08-08-worksgood-system/12-model-execution-plane.md
@@ -329,6 +330,21 @@ cargo test --lib \
 
 **`[VERIFIED]`** Bounded results: handler resolver 14 passed; stream translation 1 passed; raw-stream/live-cache accounting 1 passed; watchdog 19 passed; Pi sole model plane 8 passed; two-tier Pi profile 6 passed; simplified executor taxonomy 6 passed; each fallback filter 1 passed; zero failures. Compiler warnings were emitted but did not affect exit status. The taxonomy subprocess tests required removal of inherited worker-control variables so child `wg init` represented a normal operator rather than this managed audit worker.
 
+**`[VERIFIED]`** The deterministic native process/results checks ran at the same source revision on 2026-08-08 and all returned exit 0:
+
+```bash
+cargo test --test integration_nex_entrypoint \
+  wg_scoped_eval_mode_uses_configured_openrouter_endpoint_credentials \
+  -- --nocapture
+cargo test --lib graph::tests::test_parse_token_usage_native_executor_result \
+  -- --nocapture
+cargo test --lib graph::tests::test_parse_token_usage_live_native_turn_format \
+  -- --nocapture
+cargo test --lib graph::tests::test_parse_token_usage_live_native_result_preferred \
+  -- --nocapture
+```
+
+**`[VERIFIED]`** Bounded results: each filter ran 1 test and passed; the real `wg nex` subprocess/local OAI-stub case finished in 1.58 seconds, and the three native accounting fixtures finished in 0.01 seconds or less. No external network endpoint or production key was used.
 **`[VERIFIED]`** The process-argv test ran separately in the same cwd on 2026-08-08 and returned exit 0:
 
 ```bash
@@ -345,18 +361,20 @@ cargo test --bin wg \
 
 ```bash
 env -i PATH="$PATH" HOME="$TMP/home-native" USER="$(id -un)" \
-  "$BIN" add "native live trace" --id native-live --description trace --paused
+  "$BIN" --dir "$TMP/native/.wg" \
+  add "native live trace" --id native-live --description trace --paused
 env -i PATH="$PATH" HOME="$TMP/home-native" USER="$(id -un)" \
   WG_EXECUTOR_TYPE=native \
-  "$BIN" spawn-task native-live --dry-run
+  "$BIN" --dir "$TMP/native/.wg" spawn-task native-live --dry-run
 
 env -i PATH="$PATH" HOME="$TMP/home-pi" USER="$(id -un)" \
-  "$BIN" add "pi chat trace" --id pi-chat --description trace --paused
+  "$BIN" --dir "$TMP/pi/.wg" \
+  add "pi chat trace" --id pi-chat --description trace --paused
 env -i PATH="$PATH" HOME="$TMP/home-pi" USER="$(id -un)" \
-  "$BIN" spawn-task pi-chat --dry-run
+  "$BIN" --dir "$TMP/pi/.wg" spawn-task pi-chat --dry-run
 ```
 
-**`[VERIFIED]`** All four commands returned 0. Bounded process previews are reproduced in section 2.4. No provider process was started. The clean environment intentionally removed this worker's capability variables; native's `WG_EXECUTOR_TYPE=native` is the live-surface compatibility hint consumed by `spawn-task`, not a claim that model-first unattended admission selected native.
+**`[VERIFIED]`** All four commands returned 0 and used the same explicit `--dir` as their handwritten config/graph. Bounded process previews are reproduced in section 2.4. No provider process was started by these dry runs. The clean environment intentionally removed this worker's capability variables; native's `WG_EXECUTOR_TYPE=native` is the live-surface compatibility hint consumed by `spawn-task`, not a claim that model-first unattended admission selected native.
 
 **`[VERIFIED]`** The native config's unattended boundary was then executed exactly as follows on 2026-08-08:
 
