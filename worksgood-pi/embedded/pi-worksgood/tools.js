@@ -43,10 +43,19 @@ async function fromExec(command, r) {
 /**
  * Register the wg tool family on a pi extension API.
  *
- * Tool names (the task's contract): `wg_ready`, `wg_show`, `wg_add`,
- * `wg_publish`, `wg_done`, `wg_fail`, `wg_msg_send`, `wg_msg_read`, `wg_run`.
+ * Tool names (the task's contract): `wg_capabilities`, `wg_ready`, `wg_show`,
+ * `wg_add`, `wg_publish`, `wg_done`, `wg_fail`, `wg_msg_send`, `wg_msg_read`, `wg_run`.
  */
 export function registerWgTools(pi, backend) {
+    pi.registerTool({
+        name: "wg_capabilities",
+        label: "WG: worker capabilities",
+        description: "Show this worker's effective trusted/scoped/read-only graph-authority mode and important restrictions before attempting coordination.",
+        parameters: Type.Object({}),
+        async execute(_id, _params, signal) {
+            return fromExec("capabilities", await backend.capabilities({ signal }));
+        },
+    });
     pi.registerTool({
         name: "wg_ready",
         label: "WG: ready tasks",

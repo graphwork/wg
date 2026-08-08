@@ -16,9 +16,14 @@ chain between task creation and task execution:
 coordinator creates tasks → .quality-pass-<batch> reviews them → downstream tasks execute
 ```
 
-The quality pass uses **only existing wg primitives**: `wg assign`, `wg edit`,
-regular tasks, and dependency edges. No new task states, lifecycle phases, or special
-coordinator logic.
+The quality pass uses normal public WG primitives: `wg assign`, `wg edit`,
+`wg publish`, regular tasks, and dependency edges. Its local worker runs in the
+ordinary trust-first control mode, so intended downstream edits are direct and
+audited rather than brokered through a bespoke allowlist. One narrow scheduler
+rule prevents advisory infrastructure from becoming a permanent gate: a failed
+optional quality pass caused by provider/local infrastructure is satisfied with a
+loud “released unchanged” warning. The visible `quality-pass:required` tag keeps
+an explicitly required pass fail-closed.
 
 ## Design Questions — Answered
 
@@ -257,6 +262,11 @@ Review and optimize task metadata for newly created tasks before they enter exec
 {TASK_LIST}
 
 ## What to do
+
+Run `wg capabilities` first. This local coordination task must report effective
+mode `trusted`; do not proceed under an impossible scoped/read-only instruction.
+All downstream mutations use the normal public commands below and are attributed
+to this exact worker attempt.
 
 For EACH task listed above:
 

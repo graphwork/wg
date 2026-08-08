@@ -42,7 +42,7 @@ use include_dir::{Dir, include_dir};
 /// exactly as agency's `1.2.4` is decoupled from any package version. A unit
 /// test asserts this equals `worksgood-pi/embedded/version.json`'s `compat`, so
 /// the Rust const and the embedded bundle can never silently diverge.
-pub const WG_PI_PLUGIN_COMPAT_VERSION: &str = "0.2.0";
+pub const WG_PI_PLUGIN_COMPAT_VERSION: &str = "0.3.0";
 
 /// Canonical and legacy npm identities used by settings migration.
 const NPM_PACKAGE: &str = "@worksgood/pi";

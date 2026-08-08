@@ -72,7 +72,7 @@ export default function worksgoodPi(pi) {
     const env = readWgEnv();
     const backend = new WgBackend(pi, env);
     void assertCompatVersionAsync(backend); // pi→wg: best-effort drift catcher
-    registerWgTools(pi, backend); // wg_ready / wg_show / wg_add / wg_publish / wg_done / wg_fail / wg_msg_* / wg_run
+    registerWgTools(pi, backend); // wg_capabilities / wg_ready / wg_show / wg_add / wg_publish / wg_done / wg_fail / wg_msg_* / wg_run
     registerWgCommands(pi, backend); // /wg, /wg-model (+ autocomplete)
     installModelBridge(pi, backend, process.env); // registerProvider + model_select → CoordinatorState
     // Tear down any session-scoped resources (the future daemon-IPC socket /

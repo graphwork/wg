@@ -176,7 +176,8 @@ fn build_blocking_tree(
                     graph,
                     Some(dir),
                 ) {
-                    worksgood::query::DependencyDisposition::Satisfied => {}
+                    worksgood::query::DependencyDisposition::Satisfied
+                    | worksgood::query::DependencyDisposition::AdvisoryQualityBypass { .. } => {}
                     worksgood::query::DependencyDisposition::EvalSystemBypass {
                         blocker_status,
                     } => tree.nodes[index]

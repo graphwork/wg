@@ -158,6 +158,8 @@ struct TaskDetails {
     context_scope: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     exec_mode: Option<String>,
+    worker_control_mode: worksgood::worker_control::WorkerControlMode,
+    worker_control_restrictions: String,
     /// Per-task worker hard timeout (e.g., `30m`, `4h`). Surfaces the hidden
     /// `wg add --timeout` field so a stuck task can be diagnosed and repaired
     /// with `wg edit <TASK> --timeout ...`.
@@ -659,7 +661,10 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
                     status,
                     satisfied: disposition.is_satisfied(),
                     blocked_reason: match disposition {
-                        worksgood::query::DependencyDisposition::Blocked { reason } => Some(reason),
+                        worksgood::query::DependencyDisposition::Blocked { reason }
+                        | worksgood::query::DependencyDisposition::AdvisoryQualityBypass {
+                            reason,
+                        } => Some(reason),
                         _ => None,
                     },
                     superseded_by: graph
@@ -893,6 +898,14 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         visibility: task.visibility.clone(),
         context_scope: task.context_scope.clone(),
         exec_mode: task.exec_mode.clone(),
+        worker_control_mode: worksgood::worker_control::effective_control_mode(
+            config.worker_control.mode,
+            task,
+        ),
+        worker_control_restrictions: worksgood::worker_control::control_restrictions(
+            worksgood::worker_control::effective_control_mode(config.worker_control.mode, task),
+        )
+        .to_string(),
         timeout: task.timeout.clone(),
         verify_timeout: task.verify_timeout.clone(),
         token_usage,
@@ -1059,6 +1072,8 @@ fn print_human_readable(details: &TaskDetails) {
     if let Some(ref mode) = details.exec_mode {
         println!("Exec mode: {}", mode);
     }
+    println!("Worker control: {}", details.worker_control_mode);
+    println!("  Restrictions: {}", details.worker_control_restrictions);
     if let Some(ref t) = details.timeout {
         println!(
             "Timeout: {} (worker hard timeout; edit with: wg edit {} --timeout <val|\"\">)",
@@ -2403,6 +2418,11 @@ mod tests {
             visibility: "internal".to_string(),
             context_scope: None,
             exec_mode: None,
+            worker_control_mode: worksgood::worker_control::WorkerControlMode::Trusted,
+            worker_control_restrictions: worksgood::worker_control::control_restrictions(
+                worksgood::worker_control::WorkerControlMode::Trusted,
+            )
+            .to_string(),
             timeout: None,
             verify_timeout: None,
             cycle_config: None,

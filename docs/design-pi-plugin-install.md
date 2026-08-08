@@ -347,6 +347,13 @@ that Pi derives the public `pi-worksgood` label from the managed entry's parent.
 
 ### Compat handshake — `WG_PI_PLUGIN_COMPAT_VERSION` (mirrors `WG_AGENCY_COMPAT_VERSION`)
 
+Version 0.3 adds the worker-control handshake: managed Pi workers receive the
+visible `WG_WORKER_CONTROL_MODE`, omit raw `--dir` routing while an opaque
+attempt capability is present, and expose `wg_capabilities` before graph
+coordination. This is wire-visible behavior, so a 0.2 plugin must fail loudly
+rather than accidentally forcing trusted graph commands through the retired
+own-task lane.
+
 Reuse the established compat-version precedent:
 `src/agency/mod.rs` defines `pub const WG_AGENCY_COMPAT_VERSION: &str = "1.2.4";`
 (threaded through `agency_bridge` / `agency_import` / `agency_stats`). Introduce a
@@ -354,7 +361,7 @@ sibling:
 
 ```rust
 // e.g. src/pi_plugin/mod.rs (new module) — single source of truth
-pub const WG_PI_PLUGIN_COMPAT_VERSION: &str = "0.2.0";
+pub const WG_PI_PLUGIN_COMPAT_VERSION: &str = "0.3.0";
 ```
 
 **Single-source rule:** this Rust const is authoritative. `make embed-worksgood-pi`

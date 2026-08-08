@@ -1347,6 +1347,9 @@ pub enum Commands {
         id: String,
     },
 
+    /// Show the effective worker graph-authority mode and restrictions
+    Capabilities,
+
     /// Trace commands: execution history, export, import
     Trace {
         #[command(subcommand)]
@@ -6594,6 +6597,7 @@ pub enum ConfigSubcommand {
     /// Examples:
     ///   wg config set coordinator.max_agents 4
     ///   wg config set coordinator.registry_refresh_interval 0
+    ///   wg config set worker_control.mode scoped   # opt into own-task-only local workers
     ///   wg config set agency.auto_evaluate true --global
     ///   wg config set tiers.fast "pi:openrouter:deepseek/deepseek-chat"
     Set {
@@ -7133,6 +7137,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Coordinator { .. } => "coordinator",
         Commands::Gc { .. } => "gc",
         Commands::Show { .. } => "show",
+        Commands::Capabilities => "capabilities",
         Commands::Trace { .. } => "trace",
         Commands::Func { .. } => "func",
         Commands::Replay { .. } => "replay",
@@ -7256,6 +7261,7 @@ pub fn supports_json(cmd: &Commands) -> bool {
             | Commands::Coordinator { .. }
             | Commands::Gc { .. }
             | Commands::Show { .. }
+            | Commands::Capabilities
             | Commands::Trace { .. }
             | Commands::Func { .. }
             | Commands::Replay { .. }

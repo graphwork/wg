@@ -14203,6 +14203,21 @@ impl VizApp {
         ));
         lines.push(String::new());
 
+        // ── Worker control ──
+        let worker_config = load_tui_config(&self.workgraph_dir);
+        let worker_mode = worksgood::worker_control::effective_control_mode(
+            worker_config.worker_control.mode,
+            &task,
+        );
+        lines.push("── Worker control ──".to_string());
+        lines.push(format!("  Effective mode: {worker_mode}"));
+        lines.push(format!(
+            "  Restrictions: {}",
+            worksgood::worker_control::control_restrictions(worker_mode)
+        ));
+        lines.push("  Preflight: wg capabilities".to_string());
+        lines.push(String::new());
+
         // ── Runtime ──
         // For coordinator tasks, resolve model/executor from CoordinatorState
         // (coordinators don't use the agent registry).

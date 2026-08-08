@@ -20,7 +20,114 @@ use crate::save_transaction::{
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
-pub const WORKER_CONTROL_PROTOCOL: &str = "worksgood-worker-control-v2";
+pub const WORKER_CONTROL_PROTOCOL: &str = "worksgood-worker-control-v3";
+
+/// Graph-authority policy for a spawned worker.
+///
+/// Ordinary local workers are trusted graph participants by default. Narrower
+/// modes are explicit project/task policy, except for structurally
+/// observation-only and remote actors, which are narrowed automatically.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum WorkerControlMode {
+    #[default]
+    Trusted,
+    Scoped,
+    ReadOnly,
+}
+
+impl std::fmt::Display for WorkerControlMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Trusted => "trusted",
+            Self::Scoped => "scoped",
+            Self::ReadOnly => "read-only",
+        })
+    }
+}
+
+impl std::str::FromStr for WorkerControlMode {
+    type Err = String;
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "trusted" => Ok(Self::Trusted),
+            "scoped" => Ok(Self::Scoped),
+            "read-only" | "readonly" | "read_only" => Ok(Self::ReadOnly),
+            _ => Err(format!(
+                "invalid worker control mode {value:?}; expected trusted, scoped, or read-only"
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkerControlConfig {
+    /// Default for ordinary locally-spawned task workers. Existing projects
+    /// that omit this table retain the historical trust-first behavior.
+    #[serde(default)]
+    pub mode: WorkerControlMode,
+}
+
+impl Default for WorkerControlConfig {
+    fn default() -> Self {
+        Self {
+            mode: WorkerControlMode::Trusted,
+        }
+    }
+}
+
+impl WorkerControlConfig {
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+/// Resolve project policy, an explicit task tag, and structural trust floors.
+/// The tags are intentionally visible task metadata rather than a hidden
+/// allowlist: `worker-control:trusted|scoped|read-only`.
+pub fn effective_control_mode(
+    project_mode: WorkerControlMode,
+    task: &crate::graph::Task,
+) -> WorkerControlMode {
+    let explicit = task.tags.iter().find_map(|tag| {
+        tag.strip_prefix("worker-control:")
+            .and_then(|value| value.parse().ok())
+    });
+
+    // Remote providers and observation lanes cannot widen themselves via a
+    // task tag. Quality passes are deliberately NOT in this set: their job is
+    // local cross-task graph coordination.
+    if task.remote_provider.is_some() {
+        return WorkerControlMode::Scoped;
+    }
+    if [".evaluate-", ".flip-", ".assign-", ".review-"]
+        .iter()
+        .any(|prefix| task.id.starts_with(prefix))
+    {
+        return WorkerControlMode::Scoped;
+    }
+    explicit.unwrap_or(project_mode)
+}
+
+pub fn control_restrictions(mode: WorkerControlMode) -> &'static str {
+    match mode {
+        WorkerControlMode::Trusted => {
+            "normal local graph coordination is allowed; terminal completion remains own-attempt, receipt-backed, and fenced; service/admin and immutable evidence internals remain protected"
+        }
+        WorkerControlMode::Scoped => {
+            "graph writes are limited to the worker's own task capability; unrelated cross-task mutations are refused"
+        }
+        WorkerControlMode::ReadOnly => {
+            "observation only; graph mutations, messaging side effects, and completion are refused"
+        }
+    }
+}
+
+fn legacy_binding_control_mode() -> WorkerControlMode {
+    // A capability minted before v3 must never silently widen.
+    WorkerControlMode::Scoped
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -60,6 +167,8 @@ pub struct AttemptCapabilityBinding {
     pub agent_id: String,
     pub token_sha256: String,
     pub issued_at: String,
+    #[serde(default = "legacy_binding_control_mode")]
+    pub control_mode: WorkerControlMode,
     /// Exact immutable source tuple and root selected before launch. Brokered
     /// completion must use these bytes, never reconstruct a path from the
     /// mutable agent registry or daemon-thread environment.
@@ -95,6 +204,8 @@ pub enum WorkerOperationKind {
     PiWatchdog,
     Telemetry,
     Heartbeat,
+    Capabilities,
+    GraphCli,
 }
 
 impl WorkerOperationKind {
@@ -121,6 +232,8 @@ impl WorkerOperationKind {
             Self::PiWatchdog,
             Self::Telemetry,
             Self::Heartbeat,
+            Self::Capabilities,
+            Self::GraphCli,
         ]
     }
 
@@ -230,6 +343,15 @@ pub enum WorkerOperation {
         route: Option<String>,
     },
     Heartbeat,
+    Capabilities,
+    /// Execute an ordinary public WG CLI command through the daemon after the
+    /// exact attempt fence and trusted mode have been validated. Completion
+    /// commands never use this path.
+    GraphCli {
+        argv: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stdin: Option<String>,
+    },
 }
 
 impl WorkerOperation {
@@ -259,6 +381,8 @@ impl WorkerOperation {
             }
             Self::RecordTelemetry { .. } => WorkerOperationKind::Telemetry,
             Self::Heartbeat => WorkerOperationKind::Heartbeat,
+            Self::Capabilities => WorkerOperationKind::Capabilities,
+            Self::GraphCli { .. } => WorkerOperationKind::GraphCli,
         }
     }
 }
@@ -288,6 +412,14 @@ pub struct WorkerAuditEvent {
     pub reason: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fence: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub control_mode: Option<WorkerControlMode>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -506,6 +638,31 @@ pub fn mint_attempt_capability_for_worktree(
     agent_id: &str,
     explicit_worktree: Option<&Path>,
 ) -> Result<(String, AttemptCapabilityBinding)> {
+    mint_attempt_capability_for_worktree_mode(
+        dir,
+        task_id,
+        generation,
+        attempt_id,
+        fence,
+        lease_epoch,
+        agent_id,
+        explicit_worktree,
+        WorkerControlMode::Scoped,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn mint_attempt_capability_for_worktree_mode(
+    dir: &Path,
+    task_id: &str,
+    generation: u64,
+    attempt_id: &str,
+    fence: u64,
+    lease_epoch: u64,
+    agent_id: &str,
+    explicit_worktree: Option<&Path>,
+    control_mode: WorkerControlMode,
+) -> Result<(String, AttemptCapabilityBinding)> {
     let mut random = [0_u8; 32];
     getrandom::getrandom(&mut random).context("generate worker capability")?;
     let token = format!("wgcap_v2_{}", hex::encode(random));
@@ -555,6 +712,7 @@ pub fn mint_attempt_capability_for_worktree(
         agent_id: agent_id.to_string(),
         token_sha256: digest.clone(),
         issued_at: Utc::now().to_rfc3339(),
+        control_mode,
         save_source,
         worktree_path,
         revoked_at: None,
@@ -1182,6 +1340,59 @@ pub fn token_hint(token: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trust_first_is_default_but_structural_and_explicit_scopes_win() {
+        assert_eq!(
+            WorkerControlConfig::default().mode,
+            WorkerControlMode::Trusted
+        );
+        let ordinary = crate::graph::Task {
+            id: "ordinary".into(),
+            ..crate::graph::Task::default()
+        };
+        assert_eq!(
+            effective_control_mode(WorkerControlMode::Trusted, &ordinary),
+            WorkerControlMode::Trusted
+        );
+
+        let mut explicit = ordinary.clone();
+        explicit.tags.push("worker-control:scoped".into());
+        assert_eq!(
+            effective_control_mode(WorkerControlMode::Trusted, &explicit),
+            WorkerControlMode::Scoped
+        );
+
+        let mut quality_pass = ordinary.clone();
+        quality_pass.id = ".quality-pass-batch".into();
+        assert_eq!(
+            effective_control_mode(WorkerControlMode::Trusted, &quality_pass),
+            WorkerControlMode::Trusted,
+            "quality passes need the same cross-task graph authority as ordinary local workers"
+        );
+
+        let mut read_only = ordinary.clone();
+        read_only.tags.push("worker-control:read-only".into());
+        assert_eq!(
+            effective_control_mode(WorkerControlMode::Trusted, &read_only),
+            WorkerControlMode::ReadOnly
+        );
+
+        let mut evaluator = ordinary.clone();
+        evaluator.id = ".evaluate-source".into();
+        evaluator.tags.push("worker-control:trusted".into());
+        assert_eq!(
+            effective_control_mode(WorkerControlMode::Trusted, &evaluator),
+            WorkerControlMode::Scoped
+        );
+
+        let mut remote = ordinary;
+        remote.remote_provider = Some("wgid:provider".into());
+        assert_eq!(
+            effective_control_mode(WorkerControlMode::Trusted, &remote),
+            WorkerControlMode::Scoped
+        );
+    }
 
     #[test]
     fn registry_never_persists_bearer_token() {

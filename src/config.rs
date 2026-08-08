@@ -267,6 +267,15 @@ pub struct Config {
     #[serde(default)]
     pub checkpoint: CheckpointConfig,
 
+    /// Local worker graph-authority policy. Ordinary local task agents default
+    /// to trust-first graph coordination; explicit scoped/read-only policy and
+    /// structurally untrusted actors remain narrow.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::worker_control::WorkerControlConfig::is_default"
+    )]
+    pub worker_control: crate::worker_control::WorkerControlConfig,
+
     /// Attempt-scoped isolated-worktree observer policy. Values are snapshotted
     /// before the launch permit and never adapt from telemetry mid-attempt.
     #[serde(default, skip_serializing_if = "worktree_observer_config_is_default")]

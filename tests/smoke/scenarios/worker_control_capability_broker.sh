@@ -27,8 +27,11 @@ cat >"$project/worker.sh" <<'SH'
 set -euo pipefail
 [[ ! -v WG_DIR ]] || { echo "WG_DIR leaked" >&2; exit 81; }
 [[ -n ${WG_WORKER_CAPABILITY:-} && -S ${WG_WORKER_IPC:-/missing} ]] || exit 82
+mode=${WG_WORKER_CONTROL_MODE:-}
+[[ $mode == scoped || $mode == read-only ]] || exit 89
 [[ ! -e .wg ]] || exit 83
-wg show "$WG_TASK_ID" --json > scoped-show.json
+wg capabilities --json | grep -q "\"mode\": \"$mode\""
+wg show "$WG_TASK_ID" --json > "$mode-show.json"
 if wg list > forbidden.out 2>&1; then
   echo "graph enumeration unexpectedly allowed" >&2
   exit 84
@@ -53,10 +56,25 @@ if git add -f .wg >/dev/null 2>&1; then
   echo "absent .wg unexpectedly entered candidate" >&2
   exit 88
 fi
-wg log "$WG_TASK_ID" "brokered worker log"
-printf 'brokered\n' > brokered.txt
-git add scoped-show.json brokered.txt
-git commit -qm 'worker capability evidence'
+if [[ $mode == scoped ]]; then
+  wg log "$WG_TASK_ID" "brokered worker log"
+  printf 'brokered\n' > brokered.txt
+  git add scoped-show.json brokered.txt
+else
+  if wg log "$WG_TASK_ID" "forbidden read-only log" > read-only-log.out 2>&1; then
+    echo "read-only graph log unexpectedly allowed" >&2
+    exit 90
+  fi
+  grep -q 'worker_control.read_only_refused' read-only-log.out
+  if wg done "$WG_TASK_ID" > read-only-done.out 2>&1; then
+    echo "read-only completion unexpectedly allowed" >&2
+    exit 91
+  fi
+  grep -q 'worker_control.read_only_refused' read-only-done.out
+  printf 'read-only\n' > read-only.txt
+  git add read-only-show.json read-only-log.out read-only-done.out read-only.txt
+fi
+git commit -qm "worker capability evidence: $mode"
 # Keep the owner alive so the scenario can inspect the capability boundary
 # without asking this smoke to exercise the separate finish protocol.
 sleep 120
@@ -69,6 +87,7 @@ git -C "$project" commit -qm base
   env -u WG_DIR "$WG_BIN" init --no-agency --route pi --model pi:openrouter:test/model >/dev/null
 )
 wgrun() { (cd "$project" && env -u WG_AGENT_ID -u WG_TASK_ID -u WG_WORKER_CAPABILITY -u WG_WORKER_IPC WG_DIR="$project/.wg" "$WG_BIN" "$@"); }
+wgrun config set worker_control.mode scoped >/dev/null
 wgrun add "worker broker probe" --id worker-broker-probe >/dev/null
 wgrun publish worker-broker-probe --only >/dev/null
 wgrun service start --max-agents 1 --no-coordinator-agent --no-supervise >/dev/null
@@ -95,4 +114,24 @@ status_json=$(wgrun service status --json)
 printf '%s' "$status_json" | grep -Eq '"capability_broker"[[:space:]]*:[[:space:]]*"enforced"' || loud_fail "broker status absent: $status_json"
 printf '%s' "$status_json" | grep -Eq '"enforced"[[:space:]]*:[[:space:]]*false' || loud_fail "degraded filesystem status overclaimed: $status_json"
 
-echo "PASS: live worker had no WG_DIR/.wg, scoped commands traversed authenticated IPC, graph enumeration was refused, capability bearer was not persisted, and degraded filesystem isolation was reported honestly"
+# The explicit read-only mode keeps observations but refuses own-task mutations
+# and terminal completion through the same attempt-fenced capability channel.
+wgrun service stop --force --kill-agents >/dev/null
+wgrun config set worker_control.mode read-only >/dev/null
+wgrun add "read-only broker probe" --id read-only-broker-probe >/dev/null
+wgrun publish read-only-broker-probe --only >/dev/null
+wgrun service start --max-agents 1 --no-coordinator-agent --no-supervise >/dev/null
+read_only_worktree=""
+for _ in $(seq 1 240); do
+  read_only_worktree=$([[ -d "$project/.wg-worktrees" ]] && find "$project/.wg-worktrees" -mindepth 1 -maxdepth 1 -type d -exec sh -c 'git -C "$1" show HEAD:read-only.txt >/dev/null 2>&1 && printf "%s\\n" "$1"' _ {} \; | head -1 || true)
+  [[ -n $read_only_worktree ]] && break
+  status=$(wgrun show read-only-broker-probe --json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status",""))' 2>/dev/null || true)
+  [[ $status == failed || $status == abandoned ]] && loud_fail "read-only worker terminal status: $status"
+  sleep 0.25
+done
+[[ -n $read_only_worktree ]] || loud_fail "read-only worker evidence absent"
+git -C "$read_only_worktree" show HEAD:read-only.txt | grep -qx read-only || loud_fail "read-only worker commit absent"
+git -C "$read_only_worktree" show HEAD:read-only-log.out | grep -q 'worker_control.read_only_refused' || loud_fail "read-only log refusal absent"
+git -C "$read_only_worktree" show HEAD:read-only-done.out | grep -q 'worker_control.read_only_refused' || loud_fail "read-only completion refusal absent"
+
+echo "PASS: live workers had no WG_DIR/.wg; explicit scoped commands stayed own-task-only; explicit read-only retained observation but refused graph log/completion; bearer tokens were not persisted; and degraded filesystem isolation was reported honestly"

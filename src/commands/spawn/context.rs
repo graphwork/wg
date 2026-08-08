@@ -127,6 +127,14 @@ pub(crate) fn build_scope_context(
 ) -> worksgood::service::executor::ScopeContext {
     let mut ctx = worksgood::service::executor::ScopeContext::default();
 
+    let control_mode =
+        worksgood::worker_control::effective_control_mode(config.worker_control.mode, task);
+    ctx.worker_control_info = format!(
+        "## Worker Control\n\n- **Effective mode:** `{}`\n- **Restrictions:** {}\n- **Preflight:** run `wg capabilities` before coordinating if instructions may require graph writes.",
+        control_mode,
+        worksgood::worker_control::control_restrictions(control_mode)
+    );
+
     // R1: Downstream awareness (task+ scope)
     if scope >= ContextScope::Task {
         let task_id = &task.id;

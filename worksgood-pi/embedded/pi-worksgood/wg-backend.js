@@ -41,6 +41,8 @@ export function readWgEnv(env = process.env) {
         // WG_STATE_DIR is the spec'd name (forward-looking); WG_PROJECT_ROOT /
         // WG_GLOBAL_DIR are what WG exports today.
         stateDir: firstNonEmpty(env.WG_STATE_DIR, env.WG_PROJECT_ROOT, env.WG_GLOBAL_DIR),
+        workerCapability: firstNonEmpty(env.WG_WORKER_CAPABILITY) !== undefined,
+        workerControlMode: firstNonEmpty(env.WG_WORKER_CONTROL_MODE),
         // Forward-looking: the daemon IPC socket for the future direct-IPC client.
         daemonSocket: firstNonEmpty(env.WG_DAEMON_SOCKET),
         // The explicit project dir passed to every `wg` call as `--dir`. WG_DIR is
@@ -62,7 +64,9 @@ export class WgBackend {
     }
     /** `--dir <project>` prefix applied to every invocation when known. */
     baseArgs() {
-        return this.env.dir ? ["--dir", this.env.dir] : [];
+        // A managed worker is graph-bound by its opaque daemon capability. Passing
+        // a guessed/raw --dir would defeat that handshake and is refused by WG.
+        return this.env.dir && !this.env.workerCapability ? ["--dir", this.env.dir] : [];
     }
     /** Run an arbitrary `wg` sub-command. Callers pass verb + args; we add `--dir`. */
     async run(args, opts = {}) {
@@ -85,6 +89,9 @@ export class WgBackend {
         }
     }
     // ── task verbs ──────────────────────────────────────────────────────────
+    capabilities(opts = {}) {
+        return this.run(["capabilities"], { ...opts, json: true });
+    }
     ready(opts = {}) {
         return this.run(["ready"], { ...opts, json: true });
     }

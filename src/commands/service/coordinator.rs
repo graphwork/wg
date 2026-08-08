@@ -1990,6 +1990,51 @@ fn note_admission_deferral(
 /// Once a canonical route is selected, that exact plan is bound directly to
 /// the spawn adapter. A launch failure terminalizes the task visibly; a later
 /// attempt requires an explicit operator retry.
+fn warn_released_advisory_quality_passes(graph_path: &Path, graph: &worksgood::graph::WorkGraph) {
+    let releases: Vec<(String, String, String)> = graph
+        .tasks()
+        .flat_map(|dependent| {
+            dependent.after.iter().filter_map(move |blocker_id| {
+                match worksgood::query::dependency_disposition(
+                    blocker_id,
+                    &dependent.id,
+                    graph,
+                    graph_path.parent(),
+                ) {
+                    worksgood::query::DependencyDisposition::AdvisoryQualityBypass { reason } => {
+                        Some((dependent.id.clone(), blocker_id.clone(), reason))
+                    }
+                    _ => None,
+                }
+            })
+        })
+        .collect();
+    for (dependent_id, quality_id, reason) in releases {
+        let marker = format!("advisory quality pass {quality_id} released unchanged batch");
+        let mut recorded = false;
+        let _ = modify_graph(graph_path, |latest| {
+            let Some(task) = latest.get_task_mut(&dependent_id) else {
+                return false;
+            };
+            if task.log.iter().any(|entry| entry.message.contains(&marker)) {
+                return false;
+            }
+            task.log.push(LogEntry {
+                timestamp: Utc::now().to_rfc3339(),
+                actor: Some("dispatcher".to_string()),
+                user: None,
+                message: format!("WARNING: {marker}: {reason}"),
+            });
+            task.last_interaction_at = Some(Utc::now().to_rfc3339());
+            recorded = true;
+            true
+        });
+        if recorded {
+            eprintln!("[dispatcher] WARNING: {dependent_id}: {reason}");
+        }
+    }
+}
+
 fn spawn_agents_for_ready_tasks(
     dir: &Path,
     graph: &worksgood::graph::WorkGraph,
@@ -1998,11 +2043,12 @@ fn spawn_agents_for_ready_tasks(
     default_model: Option<&str>,
     slots_available: usize,
 ) -> SpawnSummary {
+    let graph_file = graph_path(dir);
+    warn_released_advisory_quality_passes(&graph_file, graph);
     let cycle_analysis = graph.compute_cycle_analysis();
     let ready_tasks = ready_tasks_with_peers_cycle_aware(graph, dir, &cycle_analysis);
     let final_ready = sort_tasks_by_priority_with_features(graph, ready_tasks, config);
     let agents_dir = dir.join("agency").join("cache/agents");
-    let graph_file = graph_path(dir);
     let mut summary = SpawnSummary::default();
     let disk_snapshot = worksgood::disk_sentinel::load_snapshot(dir).ok().flatten();
     let builds_blocked = config.coordinator.resource_management.disk_sentinel_enabled

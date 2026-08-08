@@ -1849,8 +1849,10 @@ pub(crate) fn spawn_agent_inner_authorized(
         if !endpoint.exists() {
             anyhow::bail!("worker_control.endpoint_missing: {}", endpoint.display());
         }
+        let control_mode =
+            worksgood::worker_control::effective_control_mode(config.worker_control.mode, task);
         let (worker_token, worker_binding) =
-            worksgood::worker_control::mint_attempt_capability_for_worktree(
+            worksgood::worker_control::mint_attempt_capability_for_worktree_mode(
                 dir,
                 task_id,
                 claim_snapshot.generation,
@@ -1862,6 +1864,7 @@ pub(crate) fn spawn_agent_inner_authorized(
                     .as_ref()
                     .map(|worktree| worktree.path.as_path())
                     .or_else(|| nongit_workspace.as_deref()),
+                control_mode,
             )?;
         worker_capability_digest = Some(worker_binding.token_sha256.clone());
         cmd.env("WG_WORKER_IPC", &endpoint);
@@ -1871,6 +1874,15 @@ pub(crate) fn spawn_agent_inner_authorized(
             worksgood::worker_control::WORKER_CONTROL_PROTOCOL,
         );
         cmd.env("WG_GRAPH_ID", &worker_binding.graph_id);
+        cmd.env("WG_WORKER_CONTROL_MODE", control_mode.to_string());
+        cmd.env("WG_WORKER_ATTEMPT_ID", &worker_binding.attempt_id);
+        cmd.env("WG_WORKER_ATTEMPT_FENCE", worker_binding.fence.to_string());
+        eprintln!(
+            "[spawn] worker control: mode={} task={} restrictions={}",
+            control_mode,
+            task_id,
+            worksgood::worker_control::control_restrictions(control_mode)
+        );
         let isolation = worksgood::worker_control::filesystem_isolation_status();
         cmd.env(
             "WG_WORKER_FILESYSTEM_ISOLATION",
@@ -2053,6 +2065,10 @@ pub(crate) fn spawn_agent_inner_authorized(
         metadata["attempt_id"] = serde_json::json!(&claim_snapshot.attempt_id);
         metadata["attempt_generation"] = serde_json::json!(claim_snapshot.generation);
         metadata["attempt_fence"] = serde_json::json!(claim_snapshot.attempt_fence);
+        metadata["worker_control_mode"] = serde_json::json!(control_mode.to_string());
+        metadata["worker_control_restrictions"] = serde_json::json!(
+            worksgood::worker_control::control_restrictions(control_mode)
+        );
         metadata["worktree_lease_epoch"] = serde_json::json!(claim_snapshot.attempt_fence);
         if let Some(ref runtime_dir) = attempt_runtime_dir {
             metadata["attempt_runtime_dir"] = serde_json::json!(runtime_dir.to_string_lossy());
