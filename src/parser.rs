@@ -389,76 +389,87 @@ where
     // per-task map used by last-interaction timestamp maintenance.
     let before_graph = graph.clone();
     let before: HashMap<String, Task> = graph.tasks().map(|t| (t.id.clone(), t.clone())).collect();
+    // Validate before invoking the mutation closure so command-specific side
+    // effects (notably message append) cannot occur under a stale capability.
+    // The exclusive graph lock keeps the source lifecycle tuple stable through
+    // graph replacement.
+    let trusted_preflight = if std::env::var_os("WG_TRUSTED_DIRECT_CLI").is_some() {
+        let token = std::env::var("WG_WORKER_CAPABILITY").map_err(|_| {
+            ParseError::Lock("worker_control.capability_missing_at_graph_commit".into())
+        })?;
+        let dir = path.parent().unwrap_or(Path::new("."));
+        let binding = crate::worker_control::validate_trusted_graph_write(dir, &token, &graph)
+            .map_err(|error| ParseError::Lock(error.to_string()))?;
+        let command = std::env::var("WG_TRUSTED_DIRECT_CLI").unwrap_or_else(|_| "unknown".into());
+        Some((binding, command))
+    } else {
+        None
+    };
     let modified = f(&mut graph);
     if modified || replayed {
-        let trusted_commit = if modified && std::env::var_os("WG_TRUSTED_DIRECT_CLI").is_some() {
-            let token = std::env::var("WG_WORKER_CAPABILITY").map_err(|_| {
-                ParseError::Lock("worker_control.capability_missing_at_graph_commit".into())
-            })?;
-            let dir = path.parent().unwrap_or(Path::new("."));
-            let binding =
-                crate::worker_control::validate_trusted_graph_write(dir, &token, &before_graph)
-                    .map_err(|error| ParseError::Lock(error.to_string()))?;
-            let command =
-                std::env::var("WG_TRUSTED_DIRECT_CLI").unwrap_or_else(|_| "unknown".into());
-            let changed_ids: Vec<String> = graph
-                .tasks()
-                .filter(|task| {
-                    before
-                        .get(&task.id)
-                        .is_none_or(|previous| !task.substantively_eq(previous))
-                })
-                .map(|task| task.id.clone())
-                .collect();
-            let message = format!(
-                "trusted CLI mutation: command={} source={} generation={} actor={} attempt={} fence={} lease={}",
-                command,
-                binding.task_id,
-                binding.generation,
-                binding.agent_id,
-                binding.attempt_id,
-                binding.fence,
-                binding.lease_epoch
-            );
-            let now = chrono::Utc::now().to_rfc3339();
-            for id in &changed_ids {
-                if let Some(task) = graph.get_task_mut(id) {
-                    let request = crate::lifecycle::TransitionRequest::new(
-                        crate::lifecycle::TransitionKind::TrustedGraphMutation {
-                            command: command.clone(),
-                            source_task_id: binding.task_id.clone(),
-                            source_generation: binding.generation,
-                            source_attempt_id: binding.attempt_id.clone(),
-                            source_fence: binding.fence,
-                            source_lease_epoch: binding.lease_epoch,
-                        },
-                        crate::lifecycle::LifecycleActor {
-                            kind: crate::lifecycle::ActorKind::Worker,
-                            id: binding.agent_id.clone(),
-                        },
-                        "trusted_cli_graph_mutation",
-                        format!(
-                            "trusted-mutation:{}:{}:{}:{}",
-                            binding.attempt_id,
-                            command,
-                            id,
-                            task.lifecycle.revision + 1
-                        ),
-                    )
-                    .with_evidence(format!("source-task:{}", binding.task_id))
-                    .with_evidence(format!("source-generation:{}", binding.generation))
-                    .with_evidence(format!("source-lease:{}", binding.lease_epoch));
-                    crate::lifecycle::apply_transition(task, request)
-                        .map_err(|error| ParseError::Lock(error.to_string()))?;
-                    task.log.push(LogEntry {
-                        timestamp: now.clone(),
-                        actor: Some(binding.agent_id.clone()),
-                        user: Some(crate::current_user()),
-                        message: message.clone(),
-                    });
+        let trusted_commit = if modified {
+            if let Some((binding, command)) = trusted_preflight {
+                let changed_ids: Vec<String> = graph
+                    .tasks()
+                    .filter(|task| {
+                        before
+                            .get(&task.id)
+                            .is_none_or(|previous| !task.substantively_eq(previous))
+                    })
+                    .map(|task| task.id.clone())
+                    .collect();
+                let message = format!(
+                    "trusted CLI mutation: command={} source={} generation={} actor={} attempt={} fence={} lease={}",
+                    command,
+                    binding.task_id,
+                    binding.generation,
+                    binding.agent_id,
+                    binding.attempt_id,
+                    binding.fence,
+                    binding.lease_epoch
+                );
+                let now = chrono::Utc::now().to_rfc3339();
+                for id in &changed_ids {
+                    if let Some(task) = graph.get_task_mut(id) {
+                        let request = crate::lifecycle::TransitionRequest::new(
+                            crate::lifecycle::TransitionKind::TrustedGraphMutation {
+                                command: command.clone(),
+                                source_task_id: binding.task_id.clone(),
+                                source_generation: binding.generation,
+                                source_attempt_id: binding.attempt_id.clone(),
+                                source_fence: binding.fence,
+                                source_lease_epoch: binding.lease_epoch,
+                            },
+                            crate::lifecycle::LifecycleActor {
+                                kind: crate::lifecycle::ActorKind::Worker,
+                                id: binding.agent_id.clone(),
+                            },
+                            "trusted_cli_graph_mutation",
+                            format!(
+                                "trusted-mutation:{}:{}:{}:{}",
+                                binding.attempt_id,
+                                command,
+                                id,
+                                task.lifecycle.revision + 1
+                            ),
+                        )
+                        .with_evidence(format!("source-task:{}", binding.task_id))
+                        .with_evidence(format!("source-generation:{}", binding.generation))
+                        .with_evidence(format!("source-lease:{}", binding.lease_epoch));
+                        crate::lifecycle::apply_transition(task, request)
+                            .map_err(|error| ParseError::Lock(error.to_string()))?;
+                        task.log.push(LogEntry {
+                            timestamp: now.clone(),
+                            actor: Some(binding.agent_id.clone()),
+                            user: Some(crate::current_user()),
+                            message: message.clone(),
+                        });
+                    }
                 }
+                Some((binding, command, changed_ids))
+            } else {
+                None
             }
-            Some((binding, command, changed_ids))
         } else {
             None
         };

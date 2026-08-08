@@ -17,7 +17,7 @@ cleanup() {
 trap cleanup EXIT
 
 run_case() {
-  local name=$1 required=$2 mutated=${3:-no}
+  local name=$1 required=$2 mutated=${3:-no} admission=${4:-coordinator}
   local root="$scratch/$name" project="$scratch/$name/project" home="$scratch/$name/home"
   mkdir -p "$project" "$home" "$root/bin"
   ln -s "$WG_BIN" "$root/bin/wg"
@@ -45,13 +45,20 @@ SH
     cd "$project"
     "$WG_BIN" init --no-agency --route pi --model pi:openrouter:test/model >/dev/null
     wgrun() { env -u WG_AGENT_ID -u WG_TASK_ID -u WG_WORKER_CAPABILITY -u WG_WORKER_IPC WG_DIR="$project/.wg" "$WG_BIN" "$@"; }
-    wgrun config set dispatcher.settling_delay_ms 5000 >/dev/null
+    if [[ $admission == manual ]]; then
+      wgrun config set dispatcher.settling_delay_ms 60000 >/dev/null
+    else
+      wgrun config set dispatcher.settling_delay_ms 5000 >/dev/null
+    fi
     local tag=()
     [[ $required == yes ]] && tag=(--tag quality-pass:required)
     wgrun add "Quality pass $name" --id ".quality-pass-$name" "${tag[@]}" >/dev/null
     wgrun add "Downstream $name" --id "downstream-$name" --after ".quality-pass-$name" >/dev/null
     wgrun publish ".quality-pass-$name" --wcc >/dev/null
     wgrun service start --max-agents 1 --no-coordinator-agent --no-supervise >/dev/null
+    if [[ $admission == manual ]]; then
+      wgrun spawn ".quality-pass-$name" --executor pi --model pi:openrouter:test/model >/dev/null
+    fi
     for _ in $(seq 1 300); do
       status=$(wgrun show ".quality-pass-$name" --json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status",""))' 2>/dev/null || true)
       [[ $status == failed ]] && break
@@ -84,6 +91,7 @@ SH
 }
 
 run_case optional no
+run_case manual no no manual
 run_case mutated no yes
 run_case required yes
 

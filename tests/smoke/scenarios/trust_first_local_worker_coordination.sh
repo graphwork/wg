@@ -76,6 +76,11 @@ if wg edit downstream --description 'stale worker corrupted downstream' > stale-
   exit 94
 fi
 grep -q 'worker_control.stale_capability' stale-write.out
+if wg msg send downstream 'stale worker message must not append' > stale-message.out 2>&1; then
+  echo 'terminal worker unexpectedly appended a message' >&2
+  exit 95
+fi
+grep -q 'worker_control.stale_capability' stale-message.out
 SH
 chmod +x "$scratch/bin/worker.sh"
 printf 'base\n' > "$project/README.md"
@@ -98,11 +103,11 @@ wgrun service start --max-agents 1 --no-coordinator-agent --no-supervise >/dev/n
 
 for _ in $(seq 1 320); do
   status=$(wgrun show .quality-pass-local-coordinator --json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status",""))' 2>/dev/null || true)
-  [[ $status == done && -s "$project/stale-write.out" ]] && break
+  [[ $status == done && -s "$project/stale-write.out" && -s "$project/stale-message.out" ]] && break
   [[ $status == failed || $status == abandoned ]] && loud_fail "trusted worker terminal status: $status"
   sleep 0.25
 done
-[[ ${status:-} == done && -s "$project/stale-write.out" ]] \
+[[ ${status:-} == done && -s "$project/stale-write.out" && -s "$project/stale-message.out" ]] \
   || loud_fail "trusted quality-pass worker did not complete and prove its terminal fence"
 wgrun service stop --force --kill-agents >/dev/null
 
@@ -118,6 +123,9 @@ child=$(wgrun show trusted-local-subtask --json)
 printf '%s' "$child" | grep -q '.quality-pass-local-coordinator' || loud_fail "trusted subtask not linked to its quality-pass parent"
 grep -q '"id":"trusted-local-subtask"' "$project/.wg/graph.jsonl" || loud_fail "trusted subtask not created"
 grep -q 'trusted worker coordinated downstream metadata' "$project/.wg/messages/downstream.jsonl" || loud_fail "cross-task message absent"
+if grep -q 'stale worker message must not append' "$project/.wg/messages/downstream.jsonl"; then
+  loud_fail "stale trusted worker appended a message before its fence was rejected"
+fi
 
 registry="$project/.wg/service/worker-capabilities.json"
 audit="$project/.wg/service/trusted-mutation-audit.jsonl"

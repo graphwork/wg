@@ -682,8 +682,7 @@ fn validate_worker_capability(
     if binding.control_mode == worksgood::worker_control::WorkerControlMode::ReadOnly
         && matches!(
             request.operation,
-            WorkerOperation::MessageRead { .. }
-                | WorkerOperation::MessageSend { .. }
+            WorkerOperation::MessageSend { .. }
                 | WorkerOperation::Log { .. }
                 | WorkerOperation::ArtifactAdd { .. }
                 | WorkerOperation::ArtifactRemove { .. }
@@ -774,14 +773,21 @@ fn execute_worker_operation(
                 Ok(serde_json::json!({"task": task, "dependencies": dependencies}))
             }
             WorkerOperation::MessageRead { .. } => {
-                let messages =
-                    worksgood::messages::read_unread(dir, &binding.task_id, &binding.agent_id)?;
-                Ok(serde_json::to_value(messages)?)
+                let messages = if binding.control_mode
+                    == worksgood::worker_control::WorkerControlMode::ReadOnly
+                {
+                    // Observation mode must not advance cursors or delivery
+                    // status; list immutable message records only.
+                    worksgood::messages::list_messages(dir, &binding.task_id)?
+                } else {
+                    worksgood::messages::read_unread(dir, &binding.task_id, &binding.agent_id)?
+                };
+                Ok(serde_json::json!({"messages": messages}))
             }
             WorkerOperation::MessagePoll { .. } => {
                 let messages =
                     worksgood::messages::poll_messages(dir, &binding.task_id, &binding.agent_id)?;
-                Ok(serde_json::to_value(messages)?)
+                Ok(serde_json::json!({"messages": messages}))
             }
             WorkerOperation::MessageSend { body, priority } => {
                 if body.trim().is_empty() || body.len() > 1024 * 1024 {
@@ -1486,6 +1492,7 @@ fn handle_request(
                     operation,
                     worksgood::worker_control::WorkerOperationKind::Show
                         | worksgood::worker_control::WorkerOperationKind::Context
+                        | worksgood::worker_control::WorkerOperationKind::MessageRead
                         | worksgood::worker_control::WorkerOperationKind::MessagePoll
                         | worksgood::worker_control::WorkerOperationKind::ArtifactList
                         | worksgood::worker_control::WorkerOperationKind::DependencyArtifactRead

@@ -2047,18 +2047,6 @@ fn spawn_agents_for_ready_tasks(
     warn_released_advisory_quality_passes(&graph_file, graph);
     let cycle_analysis = graph.compute_cycle_analysis();
     let ready_tasks = ready_tasks_with_peers_cycle_aware(graph, dir, &cycle_analysis);
-    for task in &ready_tasks {
-        if let Err(error) =
-            worksgood::query::record_optional_quality_batch_baseline(dir, graph, task)
-        {
-            // Fail closed: without this create-once baseline, a later failure
-            // remains an ordinary blocker and can never claim unchanged release.
-            eprintln!(
-                "[dispatcher] WARNING: could not baseline optional quality pass {}: {error}",
-                task.id
-            );
-        }
-    }
     let final_ready = sort_tasks_by_priority_with_features(graph, ready_tasks, config);
     let agents_dir = dir.join("agency").join("cache/agents");
     let mut summary = SpawnSummary::default();

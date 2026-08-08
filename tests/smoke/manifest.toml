@@ -3018,7 +3018,7 @@ timeout_seconds = 180
 name = "quality_pass_advisory_provider_failure"
 script = "scenarios/quality_pass_advisory_provider_failure.sh"
 owners = ["restore-trust-first-local-worker-control"]
-description = "Candidate-binary credential-free isolated fake-Pi/OpenRouter provider-failure proof: an optional .quality-pass-* failure releases only when its create-once transitive-batch baseline still matches; a trusted pass that edits downstream before the same provider failure remains blocked; and quality-pass:required stays fail-closed."
+description = "Candidate-binary credential-free isolated fake-Pi/OpenRouter provider-failure proof: optional .quality-pass-* failures release only when their create-once transitive-batch baseline still matches under both coordinator scheduling and manual `wg spawn` common admission; a trusted pass that edits downstream before the same provider failure remains blocked; authentication is excluded; warnings are loud; and quality-pass:required stays fail-closed."
 timeout_seconds = 180
 
 [[scenario]]

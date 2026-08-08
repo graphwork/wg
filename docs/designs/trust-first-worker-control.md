@@ -83,8 +83,9 @@ Quality passes are advisory unless tagged `quality-pass:required`. A failed
 optional `.quality-pass-*` with typed provider/local-infrastructure evidence
 (`ExecutorConfig`, rate limit, transient 5xx, timeout, disk/wrapper failure, or
 an explicitly allowlisted normalized provider signal with route provenance)
-may yield an `AdvisoryQualityBypass`. Before admission WG create-once snapshots
-the exact transitive downstream batch for that task generation. Release occurs
+may yield an `AdvisoryQualityBypass`. The common spawn/admission boundary used
+by daemon scheduling, manual `wg spawn`, and future adapters create-once
+snapshots the exact transitive downstream batch for that task generation. Release occurs
 only when current task IDs and serialized metadata match that baseline; a
 quality worker that changed the batch before failing remains an ordinary
 blocker. The satisfaction boundary itself emits the loud warning, so readiness,

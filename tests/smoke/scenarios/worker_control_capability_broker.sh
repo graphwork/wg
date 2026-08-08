@@ -61,6 +61,8 @@ if [[ $mode == scoped ]]; then
   printf 'brokered\n' > brokered.txt
   git add scoped-show.json brokered.txt
 else
+  wg msg list "$WG_TASK_ID" > read-only-messages.out
+  grep -q 'operator message for read-only observation' read-only-messages.out
   if wg log "$WG_TASK_ID" "forbidden read-only log" > read-only-log.out 2>&1; then
     echo "read-only graph log unexpectedly allowed" >&2
     exit 90
@@ -72,7 +74,7 @@ else
   fi
   grep -q 'worker_control.read_only_refused' read-only-done.out
   printf 'read-only\n' > read-only.txt
-  git add read-only-show.json read-only-log.out read-only-done.out read-only.txt
+  git add read-only-show.json read-only-messages.out read-only-log.out read-only-done.out read-only.txt
 fi
 git commit -qm "worker capability evidence: $mode"
 # Keep the owner alive so the scenario can inspect the capability boundary
@@ -119,6 +121,7 @@ printf '%s' "$status_json" | grep -Eq '"enforced"[[:space:]]*:[[:space:]]*false'
 wgrun service stop --force --kill-agents >/dev/null
 wgrun config set worker_control.mode read-only >/dev/null
 wgrun add "read-only broker probe" --id read-only-broker-probe >/dev/null
+wgrun msg send read-only-broker-probe "operator message for read-only observation" >/dev/null
 wgrun publish read-only-broker-probe --only >/dev/null
 wgrun service start --max-agents 1 --no-coordinator-agent --no-supervise >/dev/null
 read_only_worktree=""

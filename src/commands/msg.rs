@@ -85,23 +85,37 @@ pub fn run_send(
         anyhow::bail!("Message body cannot be empty");
     }
 
-    let id = messages::send_message(dir, &effective_id, &message_body, sender, priority)?;
-    if std::env::var_os("WG_TRUSTED_DIRECT_CLI").is_some() {
+    let id = if std::env::var_os("WG_TRUSTED_DIRECT_CLI").is_some() {
         let graph_path = super::graph_path(dir);
+        let mut sent = None;
         modify_graph(&graph_path, |graph| {
             let Some(task) = graph.get_task_mut(&effective_id) else {
                 return false;
             };
-            task.log.push(LogEntry {
-                timestamp: chrono::Utc::now().to_rfc3339(),
-                actor: Some(sender.to_string()),
-                user: Some(worksgood::current_user()),
-                message: format!("trusted CLI message mutation: message_id={id}"),
-            });
-            true
+            match messages::send_message_for_task(dir, task, &message_body, sender, priority) {
+                Ok(id) => {
+                    let now = chrono::Utc::now().to_rfc3339();
+                    task.last_message_at = Some(now.clone());
+                    task.log.push(LogEntry {
+                        timestamp: now,
+                        actor: Some(sender.to_string()),
+                        user: Some(worksgood::current_user()),
+                        message: format!("trusted CLI message mutation: message_id={id}"),
+                    });
+                    sent = Some(Ok(id));
+                    true
+                }
+                Err(error) => {
+                    sent = Some(Err(error));
+                    false
+                }
+            }
         })
-        .context("record trusted message mutation attribution")?;
-    }
+        .context("commit fenced trusted message mutation")?;
+        sent.context("trusted message target disappeared before commit")??
+    } else {
+        messages::send_message(dir, &effective_id, &message_body, sender, priority)?
+    };
     println!("Message #{} sent to '{}'", id, effective_id);
 
     Ok(())

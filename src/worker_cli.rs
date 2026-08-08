@@ -70,9 +70,16 @@ fn render_response(
     match operation {
         WorkerOperation::MessageRead { json } | WorkerOperation::MessagePoll { json } => {
             if *json {
-                println!("{}", serde_json::to_string_pretty(&data)?);
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(data.get("messages").unwrap_or(&data))?
+                );
             } else {
-                let messages = data.as_array().cloned().unwrap_or_default();
+                let messages = data
+                    .get("messages")
+                    .and_then(serde_json::Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
                 if messages.is_empty() {
                     println!(
                         "No unread messages for task '{}'.",

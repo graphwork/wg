@@ -175,6 +175,15 @@ fn capture_recipient_binding(
             disposition: MessageDisposition::LegacyUnbound,
         };
     };
+    capture_recipient_binding_for_task(workgraph_dir, task, sender)
+}
+
+fn capture_recipient_binding_for_task(
+    workgraph_dir: &Path,
+    task: &Task,
+    sender: &str,
+) -> RecipientBinding {
+    let task_id = task.id.as_str();
     let attempt = task.lifecycle.current_attempt.as_ref();
     let attempt_epoch = attempt.map(|a| a.generation);
     let attempt_id = attempt.map(|a| a.id.clone());
@@ -349,6 +358,38 @@ pub fn send_message(
     sender: &str,
     priority: &str,
 ) -> Result<u64> {
+    send_message_inner(workgraph_dir, task_id, body, sender, priority, None)
+}
+
+/// Append while the caller already holds the graph lock and has validated the
+/// exact recipient task snapshot. This avoids recursively loading the graph and
+/// lets trusted direct CLI messaging share the fenced graph transaction.
+pub fn send_message_for_task(
+    workgraph_dir: &Path,
+    task: &Task,
+    body: &str,
+    sender: &str,
+    priority: &str,
+) -> Result<u64> {
+    let binding = capture_recipient_binding_for_task(workgraph_dir, task, sender);
+    send_message_inner(
+        workgraph_dir,
+        &task.id,
+        body,
+        sender,
+        priority,
+        Some(binding),
+    )
+}
+
+fn send_message_inner(
+    workgraph_dir: &Path,
+    task_id: &str,
+    body: &str,
+    sender: &str,
+    priority: &str,
+    binding: Option<RecipientBinding>,
+) -> Result<u64> {
     let msg_dir = messages_dir(workgraph_dir);
     fs::create_dir_all(&msg_dir)
         .with_context(|| format!("Failed to create messages directory: {}", msg_dir.display()))?;
@@ -396,7 +437,9 @@ pub fn send_message(
     };
 
     let next_id = max_id + 1;
-    let binding = capture_recipient_binding(workgraph_dir, task_id, sender);
+    let record_activity_separately = binding.is_none();
+    let binding =
+        binding.unwrap_or_else(|| capture_recipient_binding(workgraph_dir, task_id, sender));
     let msg = Message {
         id: next_id,
         timestamp: Utc::now().to_rfc3339(),
@@ -426,9 +469,14 @@ pub fn send_message(
         .write_all(json.as_bytes())
         .with_context(|| format!("Failed to write to message file: {}", path.display()))?;
 
-    // Lock is released when file is dropped
+    // Release the message-file lock before any graph transaction. Trusted
+    // direct CLI sends take the graph lock first, so retaining this lock while
+    // `record_task_message_activity` loads the graph would invert the order.
+    drop(file);
 
-    record_task_message_activity(workgraph_dir, task_id, &msg.timestamp);
+    if record_activity_separately {
+        record_task_message_activity(workgraph_dir, task_id, &msg.timestamp);
+    }
 
     Ok(next_id)
 }
