@@ -395,6 +395,9 @@ Exit status: 0 for each command. `test -s` therefore established that the requir
 **`[VERIFIED]`** The first direct scenario attempt inherited worker control and failed before minting with `worker_control.operation_refused`; no identity was created. The successful run was an **operator-mode fixture run**, not a governed-worker validation: it deliberately removed inherited worker-control variables, prepended the snapshot-built `target/debug`, and used a dedicated temporary smoke root. This was done so each scenario's nested CLI processes exercised their ordinary standalone interface inside disposable directories rather than being misrouted as control requests for this audit task. No claim is made that clearing those variables was authorized as a worker-control bypass, that the result is equivalent to execution under the worker boundary, or that these smokes validate worker governance. Their evidentiary scope is limited to federation CLI/protocol behavior in the isolated operator-mode environment shown below:
 
 ```bash
+set -euo pipefail
+root=/tmp/wg-audit-federation-smoke-failfast
+test ! -e "$root"                         # refuse any pre-existing root
 for s in federation_spark_two_graphs \
          federation_node_inbox_cross_graph \
          federation_recovery_portable_state \
@@ -404,12 +407,13 @@ for s in federation_spark_two_graphs \
       -u WG_SPAWN_RUN_ID -u WG_SPAWN_EPOCH -u WG_TASK_TIMEOUT_SECS \
       -u WG_BRANCH -u WG_WORKTREE_ACTIVE \
       PATH="$PWD/target/debug:$PATH" \
-      WG_SMOKE_ROOT=/tmp/wg-audit-federation-smoke \
+      WG_SMOKE_ROOT="$root" \
       bash "tests/smoke/scenarios/$s.sh"
+  printf 'SCENARIO_EXIT %s 0\n' "$s"
 done
 ```
 
-Cwd as above. Exit status: 0. Runtime: 2026-08-08T10:29:11Z–10:29:31Z. Every scenario used newly created identities under `/tmp/wg-audit-federation-smoke`; no pre-existing identity was read or mutated. Bounded operator-mode results:
+Cwd as above. This fail-fast rerun completed at 2026-08-08T11:21:52Z with outer exit status 0 and printed an explicit `SCENARIO_EXIT <name> 0` after each of the four scenarios. `set -e` would have stopped the loop on any earlier non-zero status, so the aggregate result cannot mask an earlier fixture failure. Every scenario used newly created identities under `/tmp/wg-audit-federation-smoke-failfast`; the command refused to run if that root already existed, and no pre-existing identity was read or mutated. Bounded operator-mode results:
 
 - `federation_spark_two_graphs`: all seven steps passed—no published key leak, offline reverify, tamper/forgery rejection, and downloader could neither author nor decrypt.
 - `federation_node_inbox_cross_graph`: both localhost HTTP nodes, publish, configured endpoint resolution, offline send, forged-author rejection, fresh/stale gates, and cached offline-origin verification passed.
