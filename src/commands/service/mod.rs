@@ -4712,6 +4712,11 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
                     " — explicit override; restore inheritance with `{}`",
                     worksgood::config::max_build_agents_remediation_command(dir)
                 )
+            } else if coord.admission_deferred_tasks > 0 {
+                format!(
+                    " — capacity full; increase with `{}`",
+                    worksgood::config::max_build_agents_remediation_command(dir)
+                )
             } else {
                 String::new()
             }

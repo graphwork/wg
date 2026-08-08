@@ -2036,12 +2036,18 @@ pub fn run_status(project_path: Option<&Path>) -> Result<()> {
         .and_then(|value| value.as_str())
         .unwrap_or("unknown");
     println!("Build-heavy: {active}/{max} active (cap {source})");
+    let waiting = coordinator
+        .get("admission_deferred")
+        .and_then(|value| value.as_array())
+        .filter(|waiting| !waiting.is_empty());
+    let command = coordinator
+        .get("max_build_agents_remediation_command")
+        .and_then(|value| value.as_str())
+        .unwrap_or("unavailable — inspect `wg config --list`");
     if source == "explicit" {
-        let command = coordinator
-            .get("max_build_agents_remediation_command")
-            .and_then(|value| value.as_str())
-            .unwrap_or("unavailable — inspect `wg config --list`");
         println!("  Restore inheritance: {command}");
+    } else if waiting.is_some() {
+        println!("  Increase capacity: {command}");
     }
     if !coordinator
         .get("disk_sentinel_enabled")
@@ -2050,11 +2056,7 @@ pub fn run_status(project_path: Option<&Path>) -> Result<()> {
     {
         println!("Disk sentinel: disabled — projected headroom unavailable");
     }
-    if let Some(waiting) = coordinator
-        .get("admission_deferred")
-        .and_then(|value| value.as_array())
-        .filter(|waiting| !waiting.is_empty())
-    {
+    if let Some(waiting) = waiting {
         println!(
             "Admission waiting: {} task(s); no attempt charged",
             waiting.len()

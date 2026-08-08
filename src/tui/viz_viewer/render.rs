@@ -11687,6 +11687,15 @@ fn draw_service_health_detail(frame: &mut Frame, app: &VizApp) {
                 Style::default().fg(Color::Cyan),
             ),
         ]));
+    } else if !health.admission_deferred.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled("  Capacity full: ", label_style),
+            Span::styled("increase with ", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                health.max_build_agents_remediation_command.clone(),
+                Style::default().fg(Color::Cyan),
+            ),
+        ]));
     }
     if health.disk_sentinel_enabled {
         lines.push(Line::from(vec![

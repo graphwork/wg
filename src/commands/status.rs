@@ -977,6 +977,11 @@ fn print_status(status: &StatusOutput) {
                 " — explicit override; restore inheritance with `{}`",
                 status.coordinator.max_build_agents_remediation_command
             )
+        } else if status.coordinator.admission_deferred_tasks > 0 {
+            format!(
+                " — capacity full; increase with `{}`",
+                status.coordinator.max_build_agents_remediation_command
+            )
         } else {
             String::new()
         }
