@@ -16,9 +16,9 @@
 
 ## 1. Executive abstract
 
-**`[OBSERVED FACT]`** WorksGood has several effective synchronization controls, but no repository-wide documentation authority system. The universal agent contract is compiled from one Markdown source, and a unit test requires the two root project guides to remain byte-identical (`src/commands/agent_guide.rs:3-15,132-185`). The Pi package has a source-build/re-embed/diff gate in CI (`.github/workflows/ci.yml:174-201`). In contrast, the current checkout has 619 files below `docs/`, including 570 Markdown files, but no `docs/manifest.toml`, `docs/product-contract.toml`, or machine-readable glossary (command in §7.2). `docs/KEY_DOCS.md:1-5` still calls itself the canonical key-doc list and is dated 2026-04-29.
+**`[FACT]`** WorksGood has several effective synchronization controls, but no repository-wide documentation authority system. The universal agent contract is compiled from one Markdown source, and a unit test requires the two root project guides to remain byte-identical (`src/commands/agent_guide.rs:3-15,132-185`). The Pi package has a source-build/re-embed/diff gate in CI (`.github/workflows/ci.yml:174-201`). In contrast, the current checkout has 619 files below `docs/`, including 570 Markdown files, but no `docs/manifest.toml`, `docs/product-contract.toml`, or machine-readable glossary (command in §7.2). `docs/KEY_DOCS.md:1-5` still calls itself the canonical key-doc list and is dated 2026-04-29.
 
-**`[OBSERVED FACT]`** The estate does not have one safe linear authority order. For desired policy, an accepted product decision or ADR is necessary. For current behavior, reachable implementation plus executed evidence is stronger. A parser declaration alone is insufficient: `src/cli.rs:527-557` advertises five `wg done` flags that `src/main.rs:1261-1274` rejects. A test file alone is also insufficient: the smoke contract says owned scenarios gate Done (`tests/smoke/README.md:1-29`), while the current Done dispatch contains no smoke invocation (`src/main.rs:1261-1274`; `src/commands/completion_done.rs:29-294`, checked in audit 30 `P1/P2`). The target therefore needs a **join record**, not another prose hierarchy.
+**`[FACT]`** The estate does not have one safe linear authority order. For desired policy, an accepted product decision or ADR is necessary. For current behavior, reachable implementation plus executed evidence is stronger. A parser declaration alone is insufficient: `src/cli.rs:527-557` advertises five `wg done` flags that `src/main.rs:1261-1274` rejects. A test file alone is also insufficient: the smoke contract says owned scenarios gate Done (`tests/smoke/README.md:1-29`), while the current Done dispatch contains no smoke invocation (`src/main.rs:1261-1274`; `src/commands/completion_done.rs:29-294`, checked in audit 30 `P1/P2`). The target therefore needs a **join record**, not another prose hierarchy.
 
 **`[INFERENCE]` (high confidence)** Documentation drift is the visible symptom of incomplete authority migrations. Completion, onboarding/model routing, evaluation, federation/review/remote execution, and historical evidence each have old and new representations that remain simultaneously discoverable. Rewriting all prose before settling those authorities would create a newer-looking but equally ungrounded layer.
 
@@ -56,9 +56,9 @@ The phases intentionally separate **F** factual synchronization, **D** human dec
 
 ### 2.1 Scope and method
 
-**`[OBSERVED FACT]`** This plan read every required input in full, the documentation leaf's target-architecture section, prior sync artifacts (`docs/design/doc-sync-system.md`, `docs/doc-sync-audit-2026-04-29.md`, `docs/audit/doc-sync-apr12-delta-checklist.md`), and direct primary surfaces: root/docs landing pages, `KEY_DOCS`, manual source declarations, the sync script, command parser/dispatch, the bundled agent-guide test, CI, and smoke policy/manifest. It did not use `AGENTS.md` as sole product evidence.
+**`[FACT]`** This plan read every required input in full, the documentation leaf's target-architecture section, prior sync artifacts (`docs/design/doc-sync-system.md`, `docs/doc-sync-audit-2026-04-29.md`, `docs/audit/doc-sync-apr12-delta-checklist.md`), and direct primary surfaces: root/docs landing pages, `KEY_DOCS`, manual source declarations, the sync script, command parser/dispatch, the bundled agent-guide test, CI, and smoke policy/manifest. It did not use `AGENTS.md` as sole product evidence.
 
-**`[VERIFIED BEHAVIOR]`** This plan executed repository-shape and byte-equivalence commands only. It did not successfully execute a source-built product flow: `cargo run --quiet --bin wg -- done --help` exceeded a 300-second compile-lock budget and is not pass evidence. Audit 30 independently completed the candidate-built help command and records its bounded result in `30-contradiction-and-drift-register.md:13-22,35-55,259-273`.
+**`[VERIFIED]`** This plan executed repository-shape and byte-equivalence commands only. It did not successfully execute a source-built product flow: `cargo run --quiet --bin wg -- done --help` exceeded a 300-second compile-lock budget and is not pass evidence. Audit 30 independently completed the candidate-built help command and records its bounded result in `30-contradiction-and-drift-register.md:13-22,35-55,259-273`.
 
 **`[UNCERTAINTY]`** This roadmap does not know the human maintainers who will own each domain. No `.github/CODEOWNERS` file was found by `find .github -maxdepth 2 -iname '*owner*'`. Owner names below are accountable **roles/domains**; Phase 0 must map each to a named person or team before dispatch.
 
@@ -95,7 +95,7 @@ The phases intentionally separate **F** factual synchronization, **D** human dec
 - bundle indexes for ADRs/designs, audits/reports/incidents, research/studies/plans, and archives;
 - website/manual derivatives with source revision and generator version.
 
-**`[OBSERVED FACT]`** This pattern already works locally. `AGENT_GUIDE_TEXT` uses `include_str!` and parity tests (`src/commands/agent_guide.rs:3-15,132-185`); CI re-embeds Pi and fails on a diff (`.github/workflows/ci.yml:174-201`). The program generalizes those controls rather than inventing a timestamp-based “freshness” detector.
+**`[FACT]`** This pattern already works locally. `AGENT_GUIDE_TEXT` uses `include_str!` and parity tests (`src/commands/agent_guide.rs:3-15,132-185`); CI re-embeds Pi and fails on a diff (`.github/workflows/ci.yml:174-201`). The program generalizes those controls rather than inventing a timestamp-based “freshness” detector.
 
 ### 2.4 Target information architecture
 
@@ -196,14 +196,14 @@ docs/
 
 #### `SYNC-002` — a complete inventory and a curated router are different products
 
-- **Label/state:** `[OBSERVED FACT]` + `[INFERENCE]`; current gap.
+- **Label/state:** `[FACT]` + `[INFERENCE]`; current gap.
 - **Severity/confidence:** S2; high.
 - **Evidence:** `KEY_DOCS` calls itself canonical and is dated 2026-04-29 (`docs/KEY_DOCS.md:1-5`); current checkout has 619 docs files, while no estate manifest exists. Audit 16 measured substantial post-index growth (`16-documentation-information-architecture.md:238-253,587-612`).
 - **Recommendation:** manifest owns completeness; routers own audience selection.
 
 #### `SYNC-003` — command reference must join parser, dispatch, support policy, and behavior
 
-- **Label/state:** `[OBSERVED FACT]`; current.
+- **Label/state:** `[FACT]`; current.
 - **Severity/confidence:** S1 for Done/smoke, otherwise S2; high.
 - **Evidence:** Done flags exist in Clap but are rejected in dispatch (`src/cli.rs:527-557`; `src/main.rs:1261-1274`). CI selects only one named integration target in its integration job (`.github/workflows/ci.yml:126-162`) despite 176 top-level targets in the current checkout.
 - **Recommendation:** generate public reference from contract records whose tests are selected, not from Clap alone.
@@ -217,7 +217,7 @@ docs/
 
 #### `SYNC-005` — historical immutability and current discoverability are compatible
 
-- **Label/state:** `[OBSERVED FACT]` + `[INFERENCE]`; positive pattern/gap.
+- **Label/state:** `[FACT]` + `[INFERENCE]`; positive pattern/gap.
 - **Severity/confidence:** S2 if readers reverse a closed security conclusion; high.
 - **Evidence:** a point-in-time federation audit remains correct for its revision while current source implements a later handshake (`WGDR-R09`); old sync reports currently label many point-in-time reports simply “Current” (`docs/KEY_DOCS.md:82-99,360-376`).
 - **Recommendation:** preserve report bytes; add external applicability/supersession indexes.
@@ -231,7 +231,7 @@ docs/
 
 #### `SYNC-007` — generation requires a declared DAG and fail-closed conversion
 
-- **Label/state:** `[OBSERVED FACT]`; current gap.
+- **Label/state:** `[FACT]`; current gap.
 - **Severity/confidence:** S2; high.
 - **Evidence:** the manual README calls unified `wg-manual.typ` authoritative while retaining chapters as working originals (`docs/manual/README.md:30-42`); the sync script calls Typst source of truth, converts chapters, concatenates Markdown, and on converter failure copies raw Typst into `.md` (`scripts/sync-docs.sh:1-8,66-118`).
 - **Recommendation:** decide source nodes; remove “copy raw as Markdown” from release generation; regenerate-and-diff in CI.
@@ -486,20 +486,20 @@ P0 owner/baseline/containment
 | Evidence | Direct observation | Class |
 |---|---|---|
 | `README.md:87-165` | unqualified bare-launch Pi/plugin and “sole model plane” claims | E4 `[DOC-CLAIM]` |
-| `src/bin/worksgood.rs:6-16,124-151` | existing/new bare launcher is setup-neutral/route-free; advanced options use concierge | E2 `[OBSERVED FACT]` |
+| `src/bin/worksgood.rs:6-16,124-151` | existing/new bare launcher is setup-neutral/route-free; advanced options use concierge | E2 `[FACT]` |
 | `docs/README.md:1-84,145-200` | eight-state/legacy validation and Claude-default first-time setup narrative | E4 `[DOC-CLAIM]` |
-| `src/cli.rs:527-557`; `src/main.rs:1261-1274` | Done flags parsed then rejected; bare route is `completion_done::run` | E2 `[OBSERVED FACT]` |
+| `src/cli.rs:527-557`; `src/main.rs:1261-1274` | Done flags parsed then rejected; bare route is `completion_done::run` | E2 `[FACT]` |
 | `tests/smoke/README.md:1-29`; `tests/smoke/manifest.toml:1-17` | documented Done gate, owner/exit contract, grow-only claim | E4/E3 `[DOC-CLAIM]` / inspected spec |
-| `.github/workflows/ci.yml:68-201` | selected library/formal/one integration/Pi embed lanes; Pi regenerate-and-diff control | E2 `[OBSERVED FACT]` |
-| `src/commands/agent_guide.rs:3-15,132-185` | embedded single source and root-guide byte-parity test | E2/E3 `[OBSERVED FACT]` / inspected test |
+| `.github/workflows/ci.yml:68-201` | selected library/formal/one integration/Pi embed lanes; Pi regenerate-and-diff control | E2 `[FACT]` |
+| `src/commands/agent_guide.rs:3-15,132-185` | embedded single source and root-guide byte-parity test | E2/E3 `[FACT]` / inspected test |
 | `docs/KEY_DOCS.md:1-16,360-376` | canonical/complete/current language and 2026-04-29 date | E4 `[DOC-CLAIM]`, dated-aging |
-| `docs/manual/README.md:30-42`; `scripts/sync-docs.sh:1-8,66-118` | conflicting source declarations and raw-Typst fallback copied to Markdown | E2/E4 `[OBSERVED FACT]` / `[DOC-CLAIM]` |
+| `docs/manual/README.md:30-42`; `scripts/sync-docs.sh:1-8,66-118` | conflicting source declarations and raw-Typst fallback copied to Markdown | E2/E4 `[FACT]` / `[DOC-CLAIM]` |
 | `docs/design/doc-sync-system.md:1-15,82-224` | earlier proposed feature manifest + post-completion AI task design | E4 `[DOC-CLAIM]`, proposed/historical context |
 | `docs/doc-sync-audit-2026-04-29.md:1-30,185-237,273-292` | prior fan-out sync, many explicit deferrals, quarterly pattern | E5 historical context |
 
 ### 7.2 Commands executed for this plan
 
-**`[VERIFIED BEHAVIOR]`** Static inventory/provenance command, cwd `/home/bot/wg/.wg-worktrees/agent-21`, checkout `e7e58501`, 2026-08-08, exit 0:
+**`[VERIFIED]`** Static inventory/provenance command, cwd `/home/bot/wg/.wg-worktrees/agent-21`, checkout `e7e58501`, 2026-08-08, exit 0:
 
 ```bash
 git rev-parse HEAD
@@ -528,7 +528,7 @@ smoke entries=324; top-level integration targets=176
 production/pre-existing-doc delta from audit snapshot: none
 ```
 
-**`[VERIFIED BEHAVIOR]`** Metadata/source-declaration command, same environment, exit 0:
+**`[VERIFIED]`** Metadata/source-declaration command, same environment, exit 0:
 
 ```bash
 rg -l '^(\*\*)?(Status|Last updated|Date|Valid as of|Applies to)(\*\*)?:' \
@@ -553,8 +553,8 @@ Bounded result: 281 of 570 docs Markdown files matched this deliberately narrow 
 
 ### 7.4 Limitations
 
-- **`[OBSERVED FACT]`** No production source, test, workflow, schema, package, generated derivative, or pre-existing documentation was modified.
-- **`[OBSERVED FACT]`** No full Cargo/smoke suite, generator, link checker, browser/TUI flow, release archive, external provider, federation, review, remote execution, Pilot, installer, Windows or macOS runtime was executed here.
+- **`[FACT]`** No production source, test, workflow, schema, package, generated derivative, or pre-existing documentation was modified.
+- **`[FACT]`** No full Cargo/smoke suite, generator, link checker, browser/TUI flow, release archive, external provider, federation, review, remote execution, Pilot, installer, Windows or macOS runtime was executed here.
 - **`[UNCERTAINTY]`** Proposed file names, schema fields, IA paths, compatibility windows and owner roles require implementation/owner review. They are recommendations, not hidden current systems.
 - **`[UNCERTAINTY]`** Documentation counts include the growing audit bundle and are orientation data, not semantic coverage.
 - **`[UNCERTAINTY]`** This program cannot certify correctness or security. It is designed to prevent unsupported claims and make residual uncertainty and deferred behavior difficult to hide.
