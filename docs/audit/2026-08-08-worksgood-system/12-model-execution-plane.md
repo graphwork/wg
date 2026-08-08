@@ -4,7 +4,7 @@
 **Evidence checked through:** 2026-08-08  
 **Source-evidence revision:** `3947642acdf11f61cffce97e7a4efb8115ba19ef` (tree `5780e1d40d234ade5bcfeab7a014d6b3cb79e0c5`)
 **Execution revisions:** focused suites and initial traces at `98b319c36aa8a21fd4506fc7469fe6d58978cdda`; rebuilt generated-wrapper/smoke evidence at `3947642acdf11f61cffce97e7a4efb8115ba19ef`
-**Freshness:** snapshot-current; both `git diff --quiet b0892ea7..3947642a -- <audited paths>` and the direct focused-test-to-source check `git diff --quiet 98b319c3..3947642a -- <audited paths>` returned 0. Section 7.1 records the full path set and extends provenance through the exact reviewed output.
+**Freshness:** snapshot-current; direct diff checks prove repository-wide equivalence outside the newly generated audit-output directory from focused-test revision `98b319c3` through source revision `3947642a`, and from there through the exact output. This scope includes manifests, lockfile, toolchain, build scripts, source, tests, and behavior docs; section 7.1 records the pathspec.
 **Scope:** model routing, configuration/profile/tier/reasoning precedence, Pi/Claude/Codex/native/OpenCode handlers, discovery, worker processes and wrappers, Pi streaming/watchdogs, usage/cost, credentials/fallbacks, deprecations, and documentation drift  
 **Change boundary:** this new audit artifact only
 
@@ -12,7 +12,7 @@
 
 **`[FACT]`** Current unattended service admission is narrower than WorksGood's handler and executor catalog. Exact `pi:<provider>:<model>`, `claude:<model>`, and `codex:<model>` routes pass the execution-plane validator; nex/native, OpenCode, other external CLIs, leading-provider routes, and bare aliases do not (`src/config.rs:2395-2433,3590-3710` (`parse_supported_execution_route`, `resolve_execution_route_for_role`, `validate_execution_model_plane`); `src/commands/spawn/execution.rs:984-1046` (`execute_spawn_plan` preflight)). The broad resolver and live-chat layer still recognize those additional handlers (`src/dispatch/handler_for_model.rs:76-137`; `src/commands/spawn_task.rs:145-224,280-405`).
 
-**`[VERIFIED]`** Focused tests executed on 2026-08-08 passed: 14 handler-routing unit tests; Pi stream deduplication and raw-stream accounting tests; 19 Pi-watchdog integration tests; 8 Pi-sole-model-plane tests; 6 two-tier-profile tests; 6 executor-taxonomy tests; two agency fallback tests; one Pi process-argv test; one native process/local-OAI-stub test; and three native result-accounting tests. Two credential-free smokes also passed: a real isolated daemon/config/generated-wrapper/fake-Pi completion flow for ten workers and the Pi bridge's canonical non-zero accounting flow. A separate one-worker generated-wrapper trace captured the resolved argv/environment/stdin, raw and canonical streams, reviewed completion, and an important negative result: canonical usage was non-zero but terminal `task.token_usage` remained absent. Exact commands, revisions, and bounded results are in section 7. No external provider or production credential was invoked.
+**`[VERIFIED]`** Focused tests executed on 2026-08-08 passed: 14 handler-routing unit tests; Pi stream deduplication and raw-stream accounting tests; 19 Pi-watchdog integration tests; 8 Pi-sole-model-plane tests; 6 two-tier-profile tests; 6 executor-taxonomy tests; two agency fallback tests; one Pi process-argv test; one native process/local-OAI-stub test; and three native result-accounting tests. Two credential-free smokes also passed: a real isolated daemon/config/generated-wrapper/fake-Pi completion flow for ten workers and the Pi bridge's canonical non-zero accounting flow. The stale setup-route smoke was also executed and failed because it expects five routes while current setup accepts only Pi. A separate one-worker generated-wrapper trace captured resolved argv/environment/stdin, raw/canonical streams, reviewed completion, and an important negative result: canonical usage was non-zero but terminal `task.token_usage` remained absent. Exact commands, revisions, and bounded results are in section 7. No external provider or production credential was invoked.
 
 **`[FACT]`** The worker pipeline has strong positive controls: explicit route and reasoning propagation, a transactional launch gate, dedicated raw and canonical streams, provider-failure classification, completion/no-work gates, and a Pi watchdog whose continuation path is evidence-based and same-session (`src/dispatch/plan.rs:387-613,650-809`; `src/commands/spawn/execution.rs:1308-1438,3430-3707`; `src/pi_watchdog/mod.rs:1-15,1274-1730`). Pi usage translation counts only authoritative `turn_end.message.usage`, avoiding repeated update/end snapshots (`src/stream_event.rs:410-690,1125-1152`; `src/graph.rs:1459-1587`).
 
@@ -69,10 +69,14 @@
 | `[FACT]` | Native endpoint | task URL/name → configured OpenRouter endpoint for an OpenRouter model → default endpoint → none | `src/dispatch/plan.rs:495-578`. Only native HTTP consumes it. |
 | `[FACT]` | Native key | selected endpoint secret/env → endpoint-specific child environment | `src/config.rs:1217-1315,6151-6205`; `src/commands/spawn/execution.rs:1690-1751,2932-2978`. |
 | `[FACT]` | Agency one-shot | explicit agency role → weak/fast tier; explicit fallback only within same execution system | `src/service/llm.rs:251-407,519-600`. |
+| `[FACT]` | Non-interactive setup input | explicit `--route pi` → exact `--model pi:<provider>:<model>` implies route Pi when route/provider absent → legacy `--provider` branch; any non-Pi named route is rejected | `src/commands/setup.rs:1372-1400`; `src/config_defaults.rs:37-97`. |
+| `[FACT]` | Setup write target | explicit `--scope` → global default; `local|global|both` selects complete replacement path(s), with backup before write | `src/commands/setup.rs:1458-1523,1557-1572`. Setup does not participate in merged-config precedence until after it writes those files. |
 
 **`[FACT]`** Task-agent role defaults to the standard tier; evaluator, assigner, FLIP, and reviewer roles default to fast (`src/config.rs:1749-1772`). Reasoning is an independent typed value and becomes Pi `--thinking`; it is not a model suffix (`src/config.rs:1508-1604,3502-3553`; `src/commands/spawn/execution.rs:1391-1403`).
 
 **`[FACT]`** The default agent compatibility executor is Pi but its default model route is empty (`src/config.rs:5289-5303,5325-5340`). No-flag `wg init` deliberately follows its graph-only branch without writing a route (`src/commands/init.rs:87-123,247-266`). `wg service start` separately requires explicit selection and then validates all worker roles (`src/commands/service/mod.rs:1442-1475`).
+
+**`[VERIFIED]`** Current non-interactive setup is Pi-only, validates the complete generated config with `validate_pi_model_plane`, backs up and replaces selected target files, and does not activate a named profile pointer or call the interactive plugin prompt (`src/commands/setup.rs:1372-1550,2670-2725`; `src/config_defaults.rs:37-147`). The candidate execution of `tests/smoke/scenarios/setup_routes_complete_configs.sh:1-112` exited 1 at its first legacy expectation: `wg setup --route claude-cli --yes` returned “supported route is: pi.” This is an executable-specification drift, not a current setup failure. Non-interactive `wg setup --route pi --yes --model pi:<provider>:<model>` itself was source-inspected but not separately executed, so clean-host plugin/profile side effects remain a gap.
 
 ### 2.4 Two config-to-process traces
 
@@ -110,7 +114,9 @@ wg nex --chat native-live -m nex:audit-model -e audit-local
 
 **`[FACT]`** Compatibility code still describes the unreachable worker downstream shape: the native wrapper expects the native loop to write canonical `stream.jsonl`, and result parsing accepts native `total_usage` (`src/commands/spawn/execution.rs:3430-3456`; `src/graph.rs:1450-1478,1589-1612`).
 
-**`[VERIFIED]`** The reachable native process/results boundary was exercised deterministically outside worker admission: `integration_nex_entrypoint::wg_scoped_eval_mode_uses_configured_openrouter_endpoint_credentials` launched the real snapshot `wg nex` process against an in-test local OAI SSE server, observed the request/auth and successful result without leaking the key, and passed (`tests/integration_nex_entrypoint.rs:85-196,499-615`). Three graph tests then passed for native final `total_usage`, live turn aggregation, and final-result precedence (`src/graph.rs:4541-4600`). Together these checks trace native config → actual nex process/local wire → result → accounting while preserving the separate fact that native is not an admitted unattended worker.
+**`[VERIFIED]`** The reachable native process/results boundary was exercised deterministically outside worker admission: `integration_nex_entrypoint::wg_scoped_eval_mode_uses_configured_openrouter_endpoint_credentials` launched the real snapshot `wg nex` process against an in-test local OAI SSE server, observed the request/auth and successful result without leaking the key, and passed (`tests/integration_nex_entrypoint.rs:85-196,499-615`). Three graph tests then passed for native final `total_usage`, live turn aggregation, and final-result precedence (`src/graph.rs:4541-4600`). These are adjacent controls, not one transaction.
+
+**`[UNCERTAINTY]`** The stronger native requirement—one configuration flowing through admitted worker invocation, result handling, and terminal task accounting—is **unmet** because current strict worker admission refuses native before launch. This artifact therefore demonstrates (a) config→rejection, (b) separately reachable config→real nex/local wire→result, and (c) accounting fixtures, but does not combine them into a native worker end-to-end claim. The next falsifying check requires either an intentionally admitted native worker surface or a product decision that native is attended-only.
 **`[VERIFIED]`** With a separate exact Pi config, snapshot-built `wg spawn-task pi-chat --dry-run` printed:
 
 ```text
@@ -232,6 +238,14 @@ wg spend ───────── stored usage on Done/Failed only
 
 **`[RECOMMENDATION]`** Move or share usage resolution before both terminal adapters and pin it with a generated-wrapper completion test; linked action `MODEL-REC-006`.
 
+### `MODEL-010` — setup is Pi-only while its shipped smoke still specifies five routes
+
+**`[VERIFIED]`** **State:** current implementation plus stale test contract. **Severity:** S2 Medium. **Likelihood:** observed. **Confidence:** high. **Boundary:** onboarding/setup CI and operator expectations. **Owner:** setup/configuration. `SetupRoute::from_name` and `all` expose only Pi, and route-driven setup validates the Pi model plane (`src/config_defaults.rs:37-97`; `src/commands/setup.rs:1372-1550`). The executed `setup_routes_complete_configs.sh` failed immediately because it still requires `claude-cli`, OpenRouter, and nex-custom setup routes (`tests/smoke/scenarios/setup_routes_complete_configs.sh:1-112`).
+
+**`[FACT]`** Compatibility route builders remain in `config_defaults.rs`, and native Claude/Codex selection moved to profiles; that explains the code shape but does not make the stale smoke pass (`src/config_defaults.rs:122-147`; `src/commands/setup.rs:1800-1808`). The non-interactive write replaces scoped config after backup and does not select an active profile.
+
+**`[RECOMMENDATION]`** Align setup docs/smoke with the Pi-only policy or restore supported route behavior; explicitly test profile activation intent and Pi plugin installation side effects. Linked action `MODEL-REC-011`.
+
 ## 4. Contradictions and drift
 
 | ID | Record |
@@ -244,6 +258,7 @@ wg spend ───────── stored usage on Done/Failed only
 | `MODEL-DRIFT-006` | **`[CONTRADICTION]`** the deprecation flag says the hard-error release is off, but strict worker admission already hard-errors leading-provider routes. **Authority:** entry-point behavior should be decided, not inferred from the flag name. **State:** open. **Severity/confidence:** S2/high. |
 | `MODEL-DRIFT-007` | **`[FACT]`** apparent contradiction resolved: the default compatibility executor is Pi while fresh expert initialization is described as graph-only. The default model is empty and no-flag `wg init` follows an explicit graph-only branch (`src/config.rs:5289-5303,5325-5340`; `src/commands/init.rs:87-123,247-266`). **State:** resolved/apparent non-issue. **Severity/confidence:** S4/high. |
 | `MODEL-DRIFT-008` | **`[FACT]`** apparent contradiction qualified: discovery lists OpenCode/native while worker validation rejects them. This is coherent only when discovery means installed capability across all surfaces, not unattended eligibility. **State:** apparent/non-issue at implementation level, open terminology/UI debt. **Severity/confidence:** S3/high. |
+| `MODEL-DRIFT-009` | **`[VERIFIED]`** `setup_routes_complete_configs.sh` still defines a five-route setup contract, while current `SetupRoute::all/from_name` expose only Pi and the candidate fails its first `claude-cli` assertion. **Authority:** current source/CLI; stale smoke is regression history until updated. **State:** open. **Severity/confidence:** S2/high. |
 
 ## 5. Risks and gaps
 
@@ -262,6 +277,7 @@ wg spend ───────── stored usage on Done/Failed only
 | `MODEL-RISK-009` | `[FACT]` | S2 / possible | If GNU `timeout`/`gtimeout` is absent, the wrapper warns and runs without a hard timeout (`src/commands/spawn/execution.rs:3395-3420`). Availability wins over wall-clock enforcement. |
 | `MODEL-RISK-010` | `[FACT]` | S3 / likely | Unavailable/zero Pi-reported cost remains zero and spend history is bucketed to today (`MODEL-008`). Canonical fields may remain available, but terminal storage is separately exposed by `MODEL-009`. |
 | `MODEL-RISK-011` | `[VERIFIED]` | S2 / observed | Task-owned reviewed Pi completion can retain correct canonical usage yet save no `task.token_usage`, causing terminal `show`/`spend` under-reporting (`MODEL-009`; section 7.5). |
+| `MODEL-RISK-012` | `[VERIFIED]` | S2 / observed | Setup's current Pi-only policy and the five-route smoke disagree, so that scenario fails before checking current onboarding invariants (`MODEL-010`). |
 
 ### 5.2 Coverage and uncertainty gaps
 
@@ -271,7 +287,7 @@ wg spend ───────── stored usage on Done/Failed only
 
 **`[UNCERTAINTY]`** The wrapper's Windows Bash path logic, macOS `gtimeout` fallback, profile daemon hot reload, and keyring backends were only inspected. Next check: CI/platform scenarios with exact binary provenance.
 
-**`[FACT]`** Inspected but unexecuted smoke scenarios are executable specifications, not pass evidence here: `tests/smoke/scenarios/handler_first_bare_provider_model.sh`, `setup_routes_complete_configs.sh`, `pi_worker_one_shot_prompt_and_cred_error.sh`, and `pi_session_watchdog_human_flow.sh`. The worker-owned completion canary and Pi bridge smoke are separately marked executed.
+**`[FACT]`** Inspected but unexecuted smoke scenarios are executable specifications, not pass evidence here: `tests/smoke/scenarios/handler_first_bare_provider_model.sh`, `pi_worker_one_shot_prompt_and_cred_error.sh`, and `pi_session_watchdog_human_flow.sh`. The worker-owned completion canary and Pi bridge smoke passed; the setup-routes smoke was executed and failed as `MODEL-010`.
 
 ## 6. Recommendations
 
@@ -293,6 +309,7 @@ wg spend ───────── stored usage on Done/Failed only
 
 9. **`MODEL-REC-009` — `[RECOMMENDATION]` (P1, product owner; links `MODEL-001`):** decide whether nex/native and OpenCode are intentionally attended-only or planned unattended handlers. Do not let dormant registry/template code make that decision implicitly. **Acceptance:** an accepted decision names each surface and either removes dead worker cues or adds admission/security/accounting tests.
 10. **`MODEL-REC-010` — `[RECOMMENDATION]` (P2, operations owner; links `MODEL-RISK-009`):** decide whether absence of GNU timeout is a startup blocker for unattended services or an accepted degraded mode. **Acceptance:** status exposes degraded timeout enforcement and the operator guide states the policy.
+11. **`MODEL-REC-011` — `[RECOMMENDATION]` (P0, setup/tests/docs; links `MODEL-010`, `MODEL-DRIFT-009`, `MODEL-RISK-012`):** reconcile the Pi-only setup policy with the shipped five-route smoke and onboarding claims. **Acceptance:** the scenario exercises only supported routes (or source restores the routes), asserts scope/backup/replacement, exact Pi route validation, named-profile activation intent, plugin side effects, and passes against the exact candidate.
 
 ## 7. Evidence appendix
 
@@ -312,19 +329,26 @@ git diff --quiet \
 
 **`[VERIFIED]`** Bounded result: `scoped_diff_exit=0`; audited source, tests, and named behavior documents were byte-unchanged from the inherited snapshot through source revision `3947642a`. Static citations are interpreted against that exact source tree.
 
-**`[VERIFIED]`** The focused suites in section 7.2 executed at `98b319c3`. The following **direct** equivalence check (not merely an inference through the older snapshot) also returned exit 0, proving that their audited inputs match source revision `3947642a` even if intermediate history had changed and reverted files:
+**`[VERIFIED]`** The focused suites in section 7.2 executed at `98b319c3`. The following **repository-wide build-input equivalence** check also returned exit 0:
 
 ```bash
 git diff --quiet \
   98b319c36aa8a21fd4506fc7469fe6d58978cdda..\
   3947642acdf11f61cffce97e7a4efb8115ba19ef -- \
-  src tests README.md docs/README.md \
-  docs/design-handler-first-model-spec.md \
-  docs/design-two-tier-pi-profile.md \
-  docs/design-pi-plugin-install.md AGENTS.md
+  . ':(exclude)docs/audit/2026-08-08-worksgood-system/**'
 ```
 
-**`[VERIFIED]`** Bounded result: `focused_to_source_scoped_diff_exit=0`. This is file-content equivalence for the complete paths exercised/cited by those suites; it is not a claim that unrelated repository paths or dependency/toolchain state were identical.
+**`[VERIFIED]`** Bounded result: `focused_to_source_non_audit_diff_exit=0`. `git diff --name-status 98b319c3..3947642a` listed only seven newly generated audit reports under the excluded directory. Thus Cargo manifests/lockfile, `rust-toolchain.toml`, build scripts, source, tests, fixtures, and non-audit behavior docs are byte-equivalent; this is not selective test-path provenance.
+
+**`[VERIFIED]`** The source-to-output check uses the same repository-wide exclusion:
+
+```bash
+git diff --quiet \
+  3947642acdf11f61cffce97e7a4efb8115ba19ef..HEAD -- \
+  . ':(exclude)docs/audit/2026-08-08-worksgood-system/**'
+```
+
+Only generated audit outputs changed through the exact candidate.
 
 **`[VERIFIED]`** After committing this artifact, validation re-runs `git diff --quiet 3947642a..HEAD -- <the same audited paths>` and records the resulting output commit/tree in immutable completion evidence. This is the output-commit provenance check requested by review: any source/test drift after `3947642a` makes completion fail rather than silently extending claims. The required artifact checks also run on the exact output tree:
 
@@ -493,6 +517,16 @@ PATH="<candidate-symlink-dir>:$PATH" \
 
 Bounded output: `PASS worker-owned-completion-canary workers=10`; `PASS: pi-stream-bridge populates nonzero summed usage + per-step events + session summary`. The first script does not assert usage; the second invokes the bridge on a fixture rather than completing a task. This distinction is why neither contradicts `MODEL-009`.
 
+**`[VERIFIED]`** The same candidate then executed the setup contract under `env -i` and a candidate-only `wg` symlink:
+
+```bash
+PATH="<candidate-symlink-dir>:$PATH" \
+  WG_SMOKE_SCENARIO=setup_routes_complete_configs \
+  bash tests/smoke/scenarios/setup_routes_complete_configs.sh
+```
+
+Bounded result: exit 1, `SMOKE FAILED … wg setup --route claude-cli --yes failed: Error: --route is required for non-interactive setup. The supported route is: pi`. This is recorded as `MODEL-010`, not hidden as a validation pass.
+
 ### 7.6 Primary static evidence
 
 | Evidence | Observation | Class / freshness |
@@ -515,6 +549,6 @@ Bounded output: `PASS worker-owned-completion-canary workers=10`; `PASS: pi-stre
 
 ### 7.7 Inspected tests and limitations
 
-**`[FACT]`** The four scenarios marked unexecuted in section 5.2 were read as E3 executable specifications and were not run. The two credential-free scenarios recorded in sections 2.4 and 7.5 were executed and passed.
+**`[FACT]`** The three scenarios marked unexecuted in section 5.2 were read as E3 executable specifications and were not run. The two credential-free scenarios recorded in sections 2.4 and 7.5 passed; the setup scenario recorded there was executed and failed against its stale route expectation.
 
 **`[UNCERTAINTY]`** No network request, model response, credential lookup, OS keyring operation, plugin clean-install, daemon hot reload, real TUI session, GNU-timeout absence, Windows/macOS execution, or production-length watchdog interval was executed. This artifact does not certify provider correctness, security, cost accuracy, or cross-platform readiness.
