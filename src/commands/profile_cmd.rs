@@ -1193,7 +1193,7 @@ pub fn use_profile(dir: &Path, name: Option<&str>, no_reload: bool, clear: bool)
 }
 
 /// Send a Reconfigure IPC to the running daemon (if any), or silently continue.
-fn trigger_daemon_reload(dir: &Path, profile_name: Option<&str>) {
+pub(crate) fn trigger_daemon_reload(dir: &Path, profile_name: Option<&str>) {
     use crate::commands::service::ipc::IpcRequest;
     use crate::commands::service::{self, ServiceState};
     use worksgood::service::is_process_alive;

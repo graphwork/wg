@@ -3033,3 +3033,10 @@ script = "scenarios/completion_done_single_lifecycle_path.sh"
 owners = ["control-plane-recovery"]
 description = "Credential-free real CLI completion flow: claim creates one exact attempt, immutable Report output passes FLIP then eval, and wg done records one receipt-bound AttemptSucceeded lifecycle event. The graph Done row and attempt disposition agree, while completion no longer writes registry terminal state independently."
 timeout_seconds = 90
+
+[[scenario]]
+name = "setup_route_activation_preflight"
+script = "scenarios/setup_route_activation_preflight.sh"
+owners = ["setup-route-activation-ux"]
+description = "Candidate-binary real PTY terminal regression for setup-route-activation-ux: from clean isolated HOME/project fixtures, one `wg setup --route pi --yes --model <exact>` command writes the exact effective default/task-agent route and activates global `pi` without a follow-up `wg profile use`; a fake Pi proves bounded executable discovery makes no provider/model call, reports auth/model NOT VERIFIED with `/login` action and no fallback, while an absent-Pi fixture is called UNAVAILABLE rather than ready."
+timeout_seconds = 60

@@ -3995,8 +3995,11 @@ wg tui --no-history --no-mouse
 
 ### `wg setup`
 
-Configure complete Pi route/thinking policy. Provider login, endpoints, model
-search, and support validation stay in Pi.
+Configure complete Pi route/thinking policy. Global/both scope activates the
+`pi` profile in the same operation and reloads a running project daemon;
+project-local scope leaves the global pointer unchanged. Setup reports Pi
+handler/plugin presence, but explicitly leaves provider login, model search,
+and live support validation to Pi (no provider request and no fallback).
 
 ```bash
 wg setup --route pi --yes --model pi:<provider>:<model>

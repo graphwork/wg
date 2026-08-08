@@ -3814,7 +3814,7 @@ fn main() -> Result<()> {
                 from_stdin,
                 backend,
             };
-            commands::setup::run_with_args(&args)
+            commands::setup::run_with_args(&args, &workgraph_dir)
         }
         Commands::Quickstart => commands::quickstart::run(cli.json),
         Commands::DevCheck => commands::dev_check::run(cli.json),

@@ -13,6 +13,7 @@ use worksgood::config::{Config, EndpointConfig, ModelRegistryEntry, Tier};
 use worksgood::config_defaults::{RouteParams, SetupRoute, config_for_route};
 use worksgood::models::ModelRegistry;
 use worksgood::notify::config as notify_config;
+use worksgood::profile::named as named_profile;
 
 use crate::commands::login::{
     self, ConfigScope as LoginConfigScope, OPENROUTER_ENV_VAR, OpenRouterCredentialSource,
@@ -1369,7 +1370,7 @@ fn prompt_secret_backend(default_backend: &Backend) -> Result<Option<String>> {
 }
 
 /// Run the setup wizard, dispatching to interactive or non-interactive mode.
-pub fn run_with_args(args: &SetupArgs) -> Result<()> {
+pub fn run_with_args(args: &SetupArgs, workgraph_dir: &Path) -> Result<()> {
     if args.repair_guides {
         repair_agent_guides()?;
         return Ok(());
@@ -1383,7 +1384,7 @@ pub fn run_with_args(args: &SetupArgs) -> Result<()> {
             let route = "pi";
             let mut routed = args.clone();
             routed.route = Some(route.to_string());
-            return run_route(&routed);
+            return run_route(&routed, workgraph_dir);
         }
         bail!(
             "non-interactive setup requires Pi. Use `wg setup --route pi --yes --model pi:<provider>:<model>`; Pi owns login and model discovery."
@@ -1391,22 +1392,23 @@ pub fn run_with_args(args: &SetupArgs) -> Result<()> {
     }
 
     if args.route.is_some() || (args.yes && args.resolved_route().is_some()) || args.dry_run {
-        return run_route(args);
+        return run_route(args, workgraph_dir);
     }
     if args.provider.is_some() {
         return run_non_interactive(args);
     }
-    run()
+    run(workgraph_dir)
 }
 
 /// Non-interactive route-driven setup: writes complete Pi defaults. Used by:
 ///
 /// - `wg setup --route <name> --yes`
 /// - `wg setup --route <name> --dry-run` (prints, does not write)
-fn run_route(args: &SetupArgs) -> Result<()> {
+fn run_route(args: &SetupArgs, workgraph_dir: &Path) -> Result<()> {
     let route = args.resolved_route().ok_or_else(|| {
         anyhow::anyhow!("--route is required for non-interactive setup. The supported route is: pi")
     })?;
+    let preflight = inspect_pi_setup_readiness();
 
     // Required-input validation per route.
     match route {
@@ -1475,9 +1477,7 @@ fn run_route(args: &SetupArgs) -> Result<()> {
     new_config.validate_pi_model_plane()?;
 
     let global_path = Config::global_config_path()?;
-    let local_path = std::env::current_dir()
-        .map(|p| p.join(".wg").join("config.toml"))
-        .unwrap_or_else(|_| PathBuf::from(".wg/config.toml"));
+    let local_path = workgraph_dir.join("config.toml");
 
     if args.dry_run {
         println!(
@@ -1508,6 +1508,17 @@ fn run_route(args: &SetupArgs) -> Result<()> {
         let toml_str =
             toml::to_string_pretty(&new_config).map_err(|e| anyhow::anyhow!("serialize: {}", e))?;
         println!("{}", toml_str);
+        println!("---");
+        print_pi_setup_preflight(&preflight, None, None);
+        if matches!(scope, SetupScope::Global | SetupScope::Both) {
+            println!(
+                "Apply would activate profile 'pi' for global/both scope; --dry-run changed nothing."
+            );
+        } else {
+            println!(
+                "Apply would select the project-local Pi route without changing the global active-profile; --dry-run changed nothing."
+            );
+        }
         return Ok(());
     }
 
@@ -1541,13 +1552,91 @@ fn run_route(args: &SetupArgs) -> Result<()> {
         }
     }
 
+    let active_profile = activate_setup_profile(scope, route)?;
+    let plugin_status = inspect_setup_pi_plugin();
+    crate::commands::profile_cmd::trigger_daemon_reload(
+        workgraph_dir,
+        active_profile.then_some(route.as_name()),
+    );
+
     println!();
     println!("{}", format_delta_summary(&new_config));
-    println!("Pi owns provider login, endpoints, model availability, and model discovery.");
+    print_pi_setup_preflight(&preflight, Some(active_profile), Some(&plugin_status));
     println!(
-        "Use Pi's model picker/login to change those details; WG stores only exact role routes and reasoning."
+        "The live provider login and exact model were NOT VERIFIED: doing so would require a Pi-owned credential flow and a provider request."
+    );
+    println!(
+        "Next: run `pi`, use `/login` if needed, select the configured provider/model, and send a test prompt."
+    );
+    println!(
+        "The first WG LLM-backed task will retain the exact configured `pi:` route; no cross-provider fallback is selected."
     );
     Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct PiSetupReadiness {
+    binary_path: Option<PathBuf>,
+}
+
+fn inspect_pi_setup_readiness() -> PiSetupReadiness {
+    let binary_path = worksgood::executor_discovery::discover()
+        .into_iter()
+        .find(|executor| executor.name == "pi")
+        .and_then(|executor| executor.binary_path);
+    PiSetupReadiness { binary_path }
+}
+
+fn activate_setup_profile(scope: SetupScope, route: SetupRoute) -> Result<bool> {
+    if matches!(scope, SetupScope::Global | SetupScope::Both) {
+        named_profile::set_active(Some(route.as_name()))?;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+fn inspect_setup_pi_plugin() -> String {
+    let status = worksgood::pi_plugin::status();
+    if status.ready && status.console_wired {
+        format!("ready (compat {})", status.compat)
+    } else {
+        format!(
+            "NOT READY (build={}, console={}); run `wg pi-plugin install`, then `wg pi-plugin status`",
+            if status.ready { "ready" } else { "missing" },
+            if status.console_wired {
+                "wired"
+            } else {
+                "not-wired"
+            }
+        )
+    }
+}
+
+fn print_pi_setup_preflight(
+    preflight: &PiSetupReadiness,
+    active_profile: Option<bool>,
+    plugin_status: Option<&str>,
+) {
+    println!();
+    println!("Setup readiness preflight (bounded; no provider request was made):");
+    match preflight.binary_path.as_ref() {
+        Some(path) => println!("  Pi handler: AVAILABLE ({})", path.display()),
+        None => println!(
+            "  Pi handler: UNAVAILABLE on PATH; install Pi, then rerun `wg setup` (the exact route remains selected and no fallback was chosen)."
+        ),
+    }
+    match active_profile {
+        Some(true) => println!("  Profile: ACTIVE (`pi`; ~/.wg/active-profile updated)"),
+        Some(false) => println!(
+            "  Profile: project-local route is effective; global active-profile intentionally unchanged by --scope local"
+        ),
+        None => println!("  Profile: not activated during --dry-run"),
+    }
+    if let Some(status) = plugin_status {
+        println!("  pi-worksgood: {status}");
+    }
+    println!("  Pi auth/model: NOT VERIFIED (Pi owns login and model discovery)");
 }
 
 /// Return the file paths that should be written for a given scope.
@@ -1686,7 +1775,7 @@ fn backup_global_config(global_path: &Path) -> Result<PathBuf> {
 }
 
 /// Run the interactive setup wizard.
-pub fn run() -> Result<()> {
+pub fn run(workgraph_dir: &Path) -> Result<()> {
     if !std::io::stdin().is_terminal() {
         bail!(
             "wg setup requires an interactive terminal. Use --provider for non-interactive mode."
@@ -1694,9 +1783,7 @@ pub fn run() -> Result<()> {
     }
 
     let global_path = Config::global_config_path()?;
-    let local_path = std::env::current_dir()
-        .map(|p| p.join(".wg").join("config.toml"))
-        .unwrap_or_else(|_| PathBuf::from(".wg/config.toml"));
+    let local_path = workgraph_dir.join("config.toml");
 
     let existing_global = Config::load_global()?.unwrap_or_default();
     let existing_local = load_config_at(&local_path).unwrap_or_default();
@@ -1800,6 +1887,7 @@ pub fn run() -> Result<()> {
     let route = route_choices[route_idx - 1];
 
     debug_assert_eq!(route, SetupRoute::Pi);
+    let preflight = inspect_pi_setup_readiness();
     let provider = "pi".to_string();
     let executor = "pi".to_string();
     println!();
@@ -1946,6 +2034,11 @@ pub fn run() -> Result<()> {
     }
 
     record_setup_history(&choices, "cli");
+    let active_profile = activate_setup_profile(scope, route)?;
+    crate::commands::profile_cmd::trigger_daemon_reload(
+        workgraph_dir,
+        active_profile.then_some(route.as_name()),
+    );
 
     // Post-save: guide skill/bundle installation based on executor
     println!();
@@ -1966,7 +2059,7 @@ pub fn run() -> Result<()> {
     let notify_status = guide_notification_setup()?;
 
     println!();
-    println!("You're all set! Here's what we configured:");
+    println!("Setup configuration applied. Here's what we configured:");
     println!();
     println!("  Provider:       {}", choices.provider);
     println!("  Executor:       {}", choices.executor);
@@ -2001,6 +2094,16 @@ pub fn run() -> Result<()> {
             scope,
         )?;
     }
+    print_pi_setup_preflight(&preflight, Some(active_profile), Some(&skill_status));
+    println!(
+        "The live provider login and exact model were NOT VERIFIED: doing so would require a Pi-owned credential flow and a provider request."
+    );
+    println!(
+        "Next: run `pi`, use `/login` if needed, select the configured provider/model, and send a test prompt."
+    );
+    println!(
+        "The first WG LLM-backed task will retain the exact configured `pi:` route; no cross-provider fallback is selected."
+    );
     println!();
     println!("Next verification commands:");
     println!("  wg setup --help");
@@ -4492,10 +4595,11 @@ mod tests {
             yes: true,
             ..Default::default()
         };
-        let result = run_route(&args);
+        let workgraph_dir = work_dir.join(".wg");
+        let result = run_route(&args, &workgraph_dir);
 
         let global_path = fake_home.join(".wg").join("config.toml");
-        let local_path = work_dir.join(".wg").join("config.toml");
+        let local_path = workgraph_dir.join("config.toml");
 
         // Restore env before any assertions to avoid leaking on panic.
         if let Some(h) = saved_home {
@@ -4537,10 +4641,11 @@ mod tests {
             yes: true,
             ..Default::default()
         };
-        let result = run_route(&args);
+        let workgraph_dir = work_dir.join(".wg");
+        let result = run_route(&args, &workgraph_dir);
 
         let global_path = fake_home.join(".wg").join("config.toml");
-        let local_path = work_dir.join(".wg").join("config.toml");
+        let local_path = workgraph_dir.join("config.toml");
 
         if let Some(h) = saved_home {
             unsafe { std::env::set_var("HOME", h) };
@@ -4577,10 +4682,11 @@ mod tests {
             yes: true,
             ..Default::default()
         };
-        let result = run_route(&args);
+        let workgraph_dir = work_dir.join(".wg");
+        let result = run_route(&args, &workgraph_dir);
 
         let global_path = fake_home.join(".wg").join("config.toml");
-        let local_path = work_dir.join(".wg").join("config.toml");
+        let local_path = workgraph_dir.join("config.toml");
 
         if let Some(h) = saved_home {
             unsafe { std::env::set_var("HOME", h) };

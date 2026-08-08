@@ -47,6 +47,8 @@ fn run_wg_in_isolation_with_env(
     cmd.env_remove("WG_DIR");
     cmd.env_remove("WG_TASK_ID");
     cmd.env_remove("WG_AGENT_ID");
+    cmd.env_remove("WG_WORKER_CAPABILITY");
+    cmd.env_remove("WG_WORKER_CONTROL_PROTOCOL");
     for (key, value) in extra_env {
         cmd.env(key, value);
     }
@@ -195,6 +197,19 @@ fn load_local_config(project_root: &Path) -> Config {
     })
 }
 
+fn install_fake_pi(root: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let bin_dir = root.join("fake-bin");
+    fs::create_dir_all(&bin_dir).unwrap();
+    let pi = bin_dir.join("pi");
+    fs::write(&pi, "#!/bin/sh\nexit 0\n").unwrap();
+    let mut permissions = fs::metadata(&pi).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&pi, permissions).unwrap();
+    bin_dir
+}
+
 // ---------------------------------------------------------------------------
 // Per-route config completeness — pure-Rust tests of config_for_route.
 // (Same names as the validation checklist — also covered in lib unit tests.)
@@ -301,13 +316,20 @@ fn test_route_nex_custom_complete_config() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_setup_non_interactive_route_writes_config() {
-    // wg setup --route pi --yes produces complete exact Pi routing.
+fn test_setup_non_interactive_route_activates_profile_and_exact_model() {
+    // Pre-change regression: setup wrote this config but left active-profile
+    // absent, making `wg profile use pi` appear to be a required second step.
     let tmp = TempDir::new().unwrap();
     let fake_home = tmp.path().join("home");
     fs::create_dir_all(&fake_home).unwrap();
+    let fake_bin = install_fake_pi(tmp.path());
+    let model = "pi:openrouter:test/setup-model";
 
-    let output = run_wg_in_isolation(&fake_home, &["setup", "--route", "pi", "--yes"]);
+    let output = run_wg_in_isolation_with_env(
+        &fake_home,
+        &["setup", "--route", "pi", "--model", model, "--yes"],
+        &[("PATH", fake_bin.to_str().unwrap())],
+    );
     assert!(
         output.status.success(),
         "wg setup --route pi --yes failed.\nstdout: {}\nstderr: {}",
@@ -319,16 +341,70 @@ fn test_setup_non_interactive_route_writes_config() {
     assert_eq!(cfg.coordinator.executor, None);
     assert_eq!(cfg.agent.executor, "pi");
     assert!(cfg.tiers.fast.is_some(), "tiers.fast must be populated");
-    assert!(
-        cfg.tiers.standard.is_some(),
-        "tiers.standard must be populated"
+    assert_eq!(cfg.tiers.standard.as_deref(), Some(model));
+    assert_eq!(cfg.tiers.premium.as_deref(), Some(model));
+    assert_eq!(cfg.agent.model, model);
+    assert_eq!(
+        cfg.models
+            .default
+            .as_ref()
+            .and_then(|role| role.model.as_deref()),
+        Some(model)
     );
-    assert!(
-        cfg.tiers.premium.is_some(),
-        "tiers.premium must be populated"
+    assert_eq!(
+        cfg.models
+            .task_agent
+            .as_ref()
+            .and_then(|role| role.model.as_deref()),
+        Some(model)
     );
-    assert_eq!(cfg.agent.model, "pi:openrouter:z-ai/glm-5.2");
     cfg.validate_pi_model_plane().unwrap();
+
+    assert_eq!(
+        fs::read_to_string(fake_home.join(".wg/active-profile")).unwrap(),
+        "pi\n"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Profile: ACTIVE (`pi`"), "{stdout}");
+    assert!(stdout.contains("Pi handler: AVAILABLE"), "{stdout}");
+    assert!(stdout.contains("Pi auth/model: NOT VERIFIED"), "{stdout}");
+    assert!(stdout.contains("run `pi`, use `/login`"), "{stdout}");
+    assert!(stdout.contains("no cross-provider fallback"), "{stdout}");
+}
+
+#[test]
+fn test_setup_reports_unavailable_pi_without_claiming_auth_or_model_access() {
+    let tmp = TempDir::new().unwrap();
+    let fake_home = tmp.path().join("home");
+    let empty_path = tmp.path().join("empty-path");
+    fs::create_dir_all(&fake_home).unwrap();
+    fs::create_dir_all(&empty_path).unwrap();
+
+    let output = run_wg_in_isolation_with_env(
+        &fake_home,
+        &["setup", "--route", "pi", "--yes"],
+        &[("PATH", empty_path.to_str().unwrap())],
+    );
+    assert!(
+        output.status.success(),
+        "bounded readiness limitation must not invent another route: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(fake_home.join(".wg/active-profile")).unwrap(),
+        "pi\n"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Pi handler: UNAVAILABLE on PATH"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("Pi auth/model: NOT VERIFIED"), "{stdout}");
+    assert!(
+        stdout.contains("install Pi, then rerun `wg setup`"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("no fallback was chosen"), "{stdout}");
 }
 
 #[test]
@@ -570,6 +646,10 @@ fn test_init_dry_run_no_write() {
         .arg(&wg_dir)
         .args(["init", "--route", "pi", "--dry-run"])
         .env("HOME", &fake_home)
+        .env_remove("WG_TASK_ID")
+        .env_remove("WG_AGENT_ID")
+        .env_remove("WG_WORKER_CAPABILITY")
+        .env_remove("WG_WORKER_CONTROL_PROTOCOL")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -981,6 +1061,10 @@ is_default = true
         .current_dir(&project)
         .env("HOME", &fake_home)
         .env("OPENROUTER_API_KEY", "sk-or-global-reuse")
+        .env_remove("WG_TASK_ID")
+        .env_remove("WG_AGENT_ID")
+        .env_remove("WG_WORKER_CAPABILITY")
+        .env_remove("WG_WORKER_CONTROL_PROTOCOL")
         .args(["setup", "--route", "pi", "--scope", "local", "--yes"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -998,6 +1082,14 @@ is_default = true
     assert!(!cfg.llm_endpoints.inherit_global);
     assert!(cfg.llm_endpoints.endpoints.is_empty());
     cfg.validate_pi_model_plane().unwrap();
+    assert!(
+        !fake_home.join(".wg/active-profile").exists(),
+        "--scope local must not mutate the global active-profile pointer"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout)
+            .contains("global active-profile intentionally unchanged by --scope local")
+    );
 }
 
 #[test]
