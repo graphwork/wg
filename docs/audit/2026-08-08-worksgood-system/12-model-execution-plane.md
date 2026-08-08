@@ -20,6 +20,8 @@
 
 **`[INFERENCE]`** The highest bounded risk is an operator configuring or troubleshooting the wrong execution surface: a handler can be discoverable and usable for attended chat yet invalid for unattended work; a Pi task can run without the documented invocation-scoped plugin handshake; and old fallback/deprecation text can predict behavior that strict admission now refuses. Confidence is high for the source topology and medium for production impact because no live provider process was exercised. A falsifying check for the Pi concern is an end-to-end daemon-worker test proving that the actual `pi --mode json` child receives and validates the exact embedded extension despite the argv/environment construction identified here.
 
+**`[UNCERTAINTY]`** **Required genuine daemon-launched native worker trace: UNMET.** Current strict admission rejects native before process launch. Section 7.6 adds a joined attended-native compatibility harness through actual result and terminal parsing, but its explicit registry adapter does not satisfy or masquerade as the missing daemon-native worker path.
+
 **`[RECOMMENDATION]`** The next decision is P0: publish and test one surface-specific capability matrix, then choose whether ordinary Pi task workers must explicitly load the embedded plugin or whether the hermetic-worker claim must be narrowed. See `MODEL-REC-001` and `MODEL-REC-002`.
 
 ## 2. Scope and map
@@ -118,7 +120,7 @@ wg nex --chat native-live -m nex:audit-model -e audit-local
 
 **`[VERIFIED]`** A second, single-configuration compatibility trace joined those boundaries (section 7.6): exact endpoint/key/model config → actual candidate `wg nex --eval-mode` → local authenticated OAI SSE request → native `conversation.jsonl`, `stream.jsonl`, and `trace.ndjson` result handling → a claimed isolated task bound to that exact native trace → terminal `wg fail` accounting. The wire model was `minimax/minimax-m2.7`; native result and terminal task both recorded `{input=11, output=5}`.
 
-**`[FACT]`** Qualification: because strict admission refuses native, the last binding is an explicit audit adapter (registry points the claimed task at the actual attended-native `trace.ndjson`), not a daemon-launched native worker. The trace satisfies config→actual invocation→native result→terminal task accounting without pretending current native worker admission exists. A production-native worker trace remains impossible until policy admits that surface.
+**`[UNCERTAINTY]`** **The genuine daemon-launched native worker requirement remains UNMET.** Because strict admission refuses native, the last binding is an explicit audit adapter (registry points the claimed task at the actual attended-native `trace.ndjson`), not a daemon-launched native worker. The compatibility trace demonstrates config→actual invocation→native result→terminal parser behavior, but it is supplementary evidence only; a production-native worker trace remains impossible until policy admits that surface.
 **`[VERIFIED]`** With a separate exact Pi config, snapshot-built `wg spawn-task pi-chat --dry-run` printed:
 
 ```text
@@ -559,7 +561,7 @@ native_trace_result=total_usage input:11 output:5
 terminal_task_status=failed stored_usage=input:11 output:5
 ```
 
-**`[FACT]`** Boundary: the registry binding is explicit harness plumbing necessitated by strict native worker rejection; it does not validate a daemon-generated native wrapper or native completion success. It does validate one exact native configuration through actual process/wire/result handling and the same terminal parser used by a Failed task. The separate admission trace remains a fail-closed rejection.
+**`[UNCERTAINTY]`** **Requirement status: UNMET for a genuine daemon-launched native worker.** The registry binding is explicit harness plumbing necessitated by strict native worker rejection; it does not validate a daemon-generated native wrapper or native completion success. It validates one exact attended-native configuration through actual process/wire/result handling and the same terminal parser used by a Failed task, but is not counted as fulfillment of the daemon-worker requirement. The separate admission trace remains a fail-closed rejection.
 
 ### 7.7 Primary static evidence
 
