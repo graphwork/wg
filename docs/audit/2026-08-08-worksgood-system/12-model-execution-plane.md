@@ -100,6 +100,10 @@ pi --mode json -p "Complete the WG task prompt supplied on stdin."
 wg nex --chat native-live -m nex:audit-model -e audit-local
 ```
 
+**`[VERIFIED]`** The same native configuration was then presented to unattended admission with `env -i ... timeout 15 "$BIN" --dir "$ROOT/.wg" service start --no-supervise`. It returned exit 1 before daemon/provider launch: `error[WG-EXEC-ROUTE-REQUIRED]: dispatcher.model selects unsupported route "nex:audit-model"; worker roles require explicit pi/claude/codex ... and never fall back`. Consequently there is no current native worker result to account: the config-to-unattended-process trace terminates at admission by design.
+
+**`[FACT]`** Compatibility code still describes the unreachable downstream shape: the native wrapper expects the native loop to write canonical `stream.jsonl`, and result parsing accepts native `total_usage` (`src/commands/spawn/execution.rs:3430-3456`; `src/graph.rs:1450-1478,1589-1612`). This is static compatibility evidence, not an executed native result at the current worker boundary.
+
 **`[VERIFIED]`** With a separate exact Pi config, snapshot-built `wg spawn-task pi-chat --dry-run` printed:
 
 ```text
@@ -132,7 +136,7 @@ wg spend ───────── stored usage on Done/Failed only
 
 **`[FACT]`** Wrapper capture differs by executor: Claude/Codex stdout is teed into `raw_stream.jsonl` and `output.log`; native writes its canonical stream directly; Pi writes authoritative stdout once to `raw_stream.jsonl` and delegates canonical output to the bridge; shell/custom paths receive synthetic init/result bookends (`src/commands/spawn/execution.rs:3430-3511`).
 
-**`[FACT]`** Pi repeats cumulative usage on multiple event types. Translation and graph accounting count only `turn_end.message.usage` once per turn and map `{input, output, cacheRead, cacheWrite, totalTokens, cost.total}` to canonical fields (`src/stream_event.rs:410-690`; `src/graph.rs:1459-1587`). Cost prefers Pi's non-zero reported total, then exact-model registry estimation, then zero. The built-in pricing table contains Claude/Codex entries but no Pi entries (`src/graph.rs:1694-1785`).
+**`[FACT]`** Pi repeats cumulative usage on multiple event types. Translation and graph accounting count only `turn_end.message.usage` once per turn and map `{input, output, cacheRead, cacheWrite, totalTokens, cost.total}` to canonical fields (`src/stream_event.rs:410-690`; `src/graph.rs:1459-1587`). Cost is the sum of Pi-reported `usage.cost.total`; missing or zero Pi cost remains zero and is never estimated by WorksGood (`src/graph.rs:1543-1587`). Registry estimation is implemented for Codex result events, not Pi (`src/graph.rs:1613-1660,1694-1785`).
 
 **`[FACT]`** `wg show` falls back to live parsing if stored usage is absent (`src/commands/show.rs:692-720`). `wg spend` only includes stored usage on `Done|Failed` tasks and assigns selected tasks to `Utc::now().date_naive()` rather than a task terminal timestamp (`src/commands/spend.rs:18-56`). `wg show`'s human display subtracts cache-read input with saturation while its structured fields retain the full values (`src/commands/show.rs:1871-1900`).
 
@@ -202,9 +206,9 @@ wg spend ───────── stored usage on Done/Failed only
 
 **`[RECOMMENDATION]`** Preserve current authority boundary; add periodic live canary coverage in `MODEL-REC-007`.
 
-### `MODEL-008` — cost fallback and spend-date presentation can report misleading zero/current-day values
+### `MODEL-008` — unavailable Pi cost and spend-date presentation can appear as zero/current-day values
 
-**`[FACT]`** **State:** shipped/current. **Severity:** S3 Low. **Likelihood:** likely when Pi reports zero cost or historical tasks are grouped. **Confidence:** high. **Boundary:** operator cost reporting, not token execution. **Owner:** accounting/UX. Pi zero-cost fallback uses the built-in model registry, but that registry has no Pi prices; `wg spend` groups every included task under the command's current UTC date (`src/graph.rs:1543-1587,1712-1785`; `src/commands/spend.rs:18-56`).
+**`[FACT]`** **State:** shipped/current. **Severity:** S3 Low. **Likelihood:** likely when Pi reports no/zero cost or historical tasks are grouped. **Confidence:** high. **Boundary:** operator cost reporting, not token execution. **Owner:** accounting/UX. Pi missing/zero reported cost remains zero without registry estimation; `wg spend` groups every included task under the command's current UTC date (`src/graph.rs:1543-1587`; `src/commands/spend.rs:18-56`).
 
 **`[FACT]`** Counterevidence: full stored token fields remain on the task, `wg show` can parse live streams, and a non-zero Pi-reported cost is preferred. The issue is fallback/presentation, not loss of every usage record (`src/commands/show.rs:692-720`; `src/stream_event.rs:425-448`).
 
@@ -238,7 +242,7 @@ wg spend ───────── stored usage on Done/Failed only
 | `MODEL-RISK-007` | `[FACT]` | S2 / possible | A Pi child that exits without reviewed completion is failed unless watchdog policy authorizes continuation (`src/commands/spawn/execution.rs:3618-3640`). Completion is not inferred from prose. |
 | `MODEL-RISK-008` | `[FACT]` | S3 / possible | Claude retries fresh only for recognized stale-session errors (`src/commands/spawn/execution.rs:3523-3548`). It remains same-handler but loses session continuity. |
 | `MODEL-RISK-009` | `[FACT]` | S2 / possible | If GNU `timeout`/`gtimeout` is absent, the wrapper warns and runs without a hard timeout (`src/commands/spawn/execution.rs:3395-3420`). Availability wins over wall-clock enforcement. |
-| `MODEL-RISK-010` | `[FACT]` | S3 / likely | Pi zero-cost fallback can remain zero and spend history is bucketed to today (`MODEL-008`). Token fields remain available, limiting accounting loss. |
+| `MODEL-RISK-010` | `[FACT]` | S3 / likely | Unavailable/zero Pi-reported cost remains zero and spend history is bucketed to today (`MODEL-008`). Token fields remain available, limiting accounting loss. |
 
 ### 5.2 Coverage and uncertainty gaps
 
@@ -262,7 +266,7 @@ wg spend ───────── stored usage on Done/Failed only
 
 4. **`MODEL-REC-002` — `[RECOMMENDATION]` (P0, Pi/runtime; links `MODEL-002`, `MODEL-RISK-002`, `MODEL-DRIFT-004`):** decide and enforce the ordinary Pi worker plugin topology. Prefer explicit `-e <embedded>` plus compatibility env on the actual `--mode json` child unless Pi's worker contract forbids it; otherwise narrow the hermetic claim. **Acceptance:** daemon-worker integration captures argv/env, proves expected-versus-found mismatch fails loudly, and proves `wg_*` tools or the documented CLI completion path is available.
 5. **`MODEL-REC-004` — `[RECOMMENDATION]` (P1, config/migration; links `MODEL-003`, `MODEL-DRIFT-006`):** make one release-phase policy control CLI config, config load, service start, and spawn behavior for leading-provider routes. **Acceptance:** a table-driven test asserts identical warn/canonicalize/reject semantics at all strict entry points.
-6. **`MODEL-REC-006` — `[RECOMMENDATION]` (P1, accounting/UX; links `MODEL-008`, `MODEL-RISK-010`):** add Pi rates or label cost unavailable, and group spend by terminal timestamp. **Acceptance:** tests cover non-zero Pi cost, zero-cost/no-rate display, historical dates, cache fields, Done, and Failed.
+6. **`MODEL-REC-006` — `[RECOMMENDATION]` (P1, accounting/UX; links `MODEL-008`, `MODEL-RISK-010`):** distinguish unavailable cost from a provider-reported true zero, and group spend by terminal timestamp. **Acceptance:** tests cover non-zero Pi cost, absent cost, reported zero, historical dates, cache fields, Done, and Failed.
 7. **`MODEL-REC-007` — `[RECOMMENDATION]` (P1, streaming/watchdog; links `MODEL-006/007` and coverage gaps):** preserve fixture tests, add captured-schema regression fixtures, time-controlled long-silence/PID-reuse checks, and an opt-in live canary. **Acceptance:** no duplicate turn accounting; same-session continuation; no watchdog terminal write; explicit provider-schema version failure.
 8. **`MODEL-REC-008` — `[RECOMMENDATION]` (P2, configuration/observability; links `MODEL-005`):** expose route provenance in `wg config --models`, spawn audit, and status: selected project/global profile, model source, reasoning source, handler, inner provider/model, and requested-surface admission. **Acceptance:** both traces in section 2 can be reconstructed from structured output without reading source.
 
@@ -288,6 +292,13 @@ git diff --quiet \
 ```
 
 **`[VERIFIED]`** Bounded result: `scoped_diff_exit=0`; only the audit charter changed between snapshot and execution revision. Static line citations in this artifact are interpreted against that unchanged evidence.
+
+**`[VERIFIED]`** After merging current `main`, the required artifact checks ran at revision `a1a1a34de0b7b5ac350d329d3972b2e5add8f162` on 2026-08-08 and both returned exit 0 with no output:
+
+```bash
+test -s docs/audit/2026-08-08-worksgood-system/12-model-execution-plane.md
+git diff --check
+```
 
 ### 7.2 Executed focused tests
 
@@ -346,6 +357,16 @@ env -i PATH="$PATH" HOME="$TMP/home-pi" USER="$(id -un)" \
 ```
 
 **`[VERIFIED]`** All four commands returned 0. Bounded process previews are reproduced in section 2.4. No provider process was started. The clean environment intentionally removed this worker's capability variables; native's `WG_EXECUTOR_TYPE=native` is the live-surface compatibility hint consumed by `spawn-task`, not a claim that model-first unattended admission selected native.
+
+**`[VERIFIED]`** The native config's unattended boundary was then executed exactly as follows on 2026-08-08:
+
+```bash
+env -i PATH="$PATH" HOME="$TMP/home-native" USER="$(id -un)" \
+  timeout 15 "$BIN" --dir "$TMP/native/.wg" \
+  service start --no-supervise
+```
+
+**`[VERIFIED]`** Bounded result: exit 1 and `error[WG-EXEC-ROUTE-REQUIRED] ... unsupported route "nex:audit-model" ... require explicit pi/claude/codex ... never fall back`; no daemon or provider child was launched. This verifies the intentional native worker-plane rejection and explains why there is no current native worker result/accounting artifact.
 
 ### 7.4 Primary static evidence
 
