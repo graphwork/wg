@@ -456,14 +456,15 @@ wg pilot --help:
 **`[VERIFIED]`** In an isolated temporary HOME/project, using the pinned binary, this sequence exited successfully through `fail`; `ready` exited `0` and returned no tasks:
 
 ```bash
-wg init --no-agency
-wg add A --id a
-wg add B --id b --after a
-wg publish a --wcc
-wg claim a --actor tester
-wg fail a --reason 'audit fixture'
-wg ready --json
-wg list --all
+BIN=/home/bot/wg/target/debug/wg  # SHA-256 33d29c847870840d555a5dcfeb38a9083e972e7217efd624c77af6cf42726fd4
+$BIN init --no-agency
+$BIN add A --id a
+$BIN add B --id b --after a
+$BIN publish a --wcc
+$BIN claim a --actor tester
+$BIN fail a --reason 'audit fixture'
+$BIN ready --json
+$BIN list --all
 ```
 
 Bounded result:
@@ -482,9 +483,10 @@ Environment: `/tmp/wg-concept-deps/project`, isolated `HOME`, all inherited `WG_
 **`[VERIFIED]`** In another isolated graph:
 
 ```bash
-wg init --no-agency
-wg add 'Cycle item' --id cycle-item --max-iterations 2
-wg done cycle-item --converged
+BIN=/home/bot/wg/target/debug/wg  # same pinned SHA-256 as section 7.1
+$BIN init --no-agency
+$BIN add 'Cycle item' --id cycle-item --max-iterations 2
+$BIN done cycle-item --converged
 ```
 
 Exit: `1`.
@@ -500,11 +502,12 @@ The graph still contained `cycle_config.max_iterations: 2`, so the fixture prove
 **`[VERIFIED]`** In an isolated initialized Git repository:
 
 ```bash
-wg init --no-agency
-wg add Report --id report
-wg publish report --only
-wg claim report --actor tester
-wg done report
+BIN=/home/bot/wg/target/debug/wg  # same pinned SHA-256 as section 7.1
+$BIN init --no-agency
+$BIN add Report --id report
+$BIN publish report --only
+$BIN claim report --actor tester
+$BIN done report
 ```
 
 Exit: `1`.
