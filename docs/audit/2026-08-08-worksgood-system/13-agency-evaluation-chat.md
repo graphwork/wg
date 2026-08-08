@@ -4,7 +4,7 @@
 
 **Audit snapshot:** `b0892ea7496fd2cc8f641417a3d8e33ca9add369`
 
-**Evidence checkout:** `98b319c36aa8a21fd4506fc7469fe6d58978cdda`; its only diff from the snapshot is this audit's charter README
+**Evidence checkout:** `98b319c36aa8a21fd4506fc7469fe6d58978cdda`; its only diff from the snapshot was this audit's charter README. At final integration, `git diff --name-only b0892ea7..e6fa1e80 -- . ':(exclude)docs/audit/2026-08-08-worksgood-system/**'` was empty: the later integration revision added sibling audit artifacts only, so all audited production source, tests, and pre-existing documentation remain byte-equivalent to the pinned snapshot.
 
 **Evidence checked through:** 2026-08-08T10:35:14Z
 
@@ -328,7 +328,7 @@ reply -> confirmed sender/bot/agent match -> freshest waiting task only
 
 ### 7.1 Snapshot/environment and method
 
-**`[VERIFIED]`** Production source at checkout equals the pinned snapshot: `git diff --name-only b0892ea7..98b319c3` returned only the subsequently added audit charter. Toolchain: `rustc 1.96.0`, `cargo 1.96.0`. Static method: read schemas/stores/prompts, traced CLI → coordinator/executor → persistence, searched callers/fields, cross-checked manuals/designs/tests/smoke scripts, then executed representative tests. No network/model call, product mutation, daemon action, or destructive identity edit was used.
+**`[VERIFIED]`** Production source at checkout equals the pinned snapshot: `git diff --name-only b0892ea7..98b319c3` returned only the subsequently added audit charter. Final integrated main `e6fa1e80` also differs from `b0892ea7` only under `docs/audit/2026-08-08-worksgood-system/**`; the path-excluded diff command above returned no files. Toolchain: `rustc 1.96.0`, `cargo 1.96.0`. Static method: read schemas/stores/prompts, traced CLI → coordinator/executor → persistence, searched callers/fields, cross-checked manuals/designs/tests/smoke scripts, then executed representative tests. No network/model call, product mutation, daemon action, or destructive identity edit was used.
 
 Initial inherited worker-control variables caused false failures by activating worker guards. The final captured rerun uses a fully scrubbed environment rather than a partial `-u` list:
 
