@@ -23,8 +23,36 @@ pub fn run(dir: &Path, today_only: bool, json: bool) -> Result<()> {
     let mut total_input_tokens = 0u64;
     let mut total_output_tokens = 0u64;
     let mut tasks_with_usage = 0usize;
+    let mut review_cost = 0.0;
+    let mut review_input_tokens = 0u64;
+    let mut review_output_tokens = 0u64;
+    let mut review_attempts_with_usage = 0usize;
 
-    // Only count completed tasks that have token usage
+    // Source-worker totals and internal review-lane totals are deliberately
+    // separate. A review call is not charged to the source task, and repeated
+    // Pi snapshots never enter either projection.
+    for task in graph.tasks() {
+        for activity in &task.completion_review_activity {
+            if let Some(usage) = activity.usage.as_ref() {
+                review_attempts_with_usage += 1;
+                review_cost += usage.cost_usd;
+                review_input_tokens += usage.input_tokens;
+                review_output_tokens += usage.output_tokens;
+            }
+        }
+        for record in &task.evaluation_records {
+            for attempt in &record.attempts {
+                if let Some(usage) = attempt.usage.as_ref() {
+                    review_attempts_with_usage += 1;
+                    review_cost += usage.cost_usd;
+                    review_input_tokens += usage.input_tokens;
+                    review_output_tokens += usage.output_tokens;
+                }
+            }
+        }
+    }
+
+    // Only count completed source tasks that have token usage
     for task in graph.tasks() {
         if task.status != Status::Done && task.status != Status::Failed {
             continue;
@@ -81,6 +109,14 @@ pub fn run(dir: &Path, today_only: bool, json: bool) -> Result<()> {
                         "total_input_tokens": d.total_input_tokens,
                         "total_output_tokens": d.total_output_tokens,
                         "task_count": d.task_count,
+                        "accounting_scope": "source-workers-only",
+                        "completion_review_lane": {
+                            "total_cost": review_cost,
+                            "total_input_tokens": review_input_tokens,
+                            "total_output_tokens": review_output_tokens,
+                            "attempt_count": review_attempts_with_usage,
+                            "accounting_scope": "internal-review-calls-only-not-task-usage"
+                        }
                     })
                 })
                 .unwrap_or(serde_json::json!({
@@ -89,6 +125,14 @@ pub fn run(dir: &Path, today_only: bool, json: bool) -> Result<()> {
                     "total_input_tokens": 0,
                     "total_output_tokens": 0,
                     "task_count": 0,
+                    "accounting_scope": "source-workers-only",
+                    "completion_review_lane": {
+                        "total_cost": review_cost,
+                        "total_input_tokens": review_input_tokens,
+                        "total_output_tokens": review_output_tokens,
+                        "attempt_count": review_attempts_with_usage,
+                        "accounting_scope": "internal-review-calls-only-not-task-usage"
+                    }
                 }))
         } else {
             serde_json::json!({
@@ -97,6 +141,14 @@ pub fn run(dir: &Path, today_only: bool, json: bool) -> Result<()> {
                 "total_output_tokens": total_output_tokens,
                 "task_count": tasks_with_usage,
                 "daily_breakdown": days,
+                "accounting_scope": "source-workers-only",
+                "completion_review_lane": {
+                    "total_cost": review_cost,
+                    "total_input_tokens": review_input_tokens,
+                    "total_output_tokens": review_output_tokens,
+                    "attempt_count": review_attempts_with_usage,
+                    "accounting_scope": "internal-review-calls-only-not-task-usage"
+                }
             })
         };
         println!("{}", serde_json::to_string_pretty(&summary)?);
@@ -114,8 +166,22 @@ pub fn run(dir: &Path, today_only: bool, json: bool) -> Result<()> {
                 format_number(spend.total_output_tokens)
             );
             println!("  Tasks: {}", spend.task_count);
+            println!(
+                "  Internal review lane (separate): ${:.4}, {} tokens, {} attempts",
+                review_cost,
+                format_number(review_input_tokens + review_output_tokens),
+                review_attempts_with_usage
+            );
         } else {
-            println!("No token usage recorded yet today.");
+            println!("No source-task token usage recorded yet today.");
+            if review_attempts_with_usage > 0 {
+                println!(
+                    "Internal review lane (separate): ${:.4}, {} tokens, {} attempts",
+                    review_cost,
+                    format_number(review_input_tokens + review_output_tokens),
+                    review_attempts_with_usage
+                );
+            }
         }
     } else {
         // Show full summary
@@ -128,6 +194,16 @@ pub fn run(dir: &Path, today_only: bool, json: bool) -> Result<()> {
             format_number(total_output_tokens)
         );
         println!("Tasks with usage: {}", tasks_with_usage);
+        println!();
+        println!("Internal completion-review lane (separate; not included above):");
+        println!(
+            "  Cost: ${:.4}; tokens: {} ({} in, {} out); attempts with usage: {}",
+            review_cost,
+            format_number(review_input_tokens + review_output_tokens),
+            format_number(review_input_tokens),
+            format_number(review_output_tokens),
+            review_attempts_with_usage
+        );
         println!();
         println!("Daily breakdown:");
 

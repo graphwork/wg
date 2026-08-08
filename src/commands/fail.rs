@@ -118,6 +118,7 @@ fn run_inner(
     let token_usage = output_path
         .as_deref()
         .and_then(|path| parse_token_usage(path).or_else(|| parse_wg_tokens(path)));
+    let actual_executor = agent.map(|agent| agent.executor.clone());
     let executor = agent
         .and_then(|agent| ExecutorKind::from_str(&agent.executor))
         .unwrap_or_default();
@@ -277,6 +278,12 @@ fn run_inner(
             && let Some(ref usage) = token_usage
         {
             task.token_usage = Some(usage.clone());
+        }
+        if task.actual_executor.is_none() {
+            task.actual_executor.clone_from(&actual_executor);
+        }
+        if task.actual_model.is_none() {
+            task.actual_model.clone_from(&route);
         }
 
         // Extract values we need before cycle restart may modify the task

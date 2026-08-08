@@ -1058,7 +1058,7 @@ pub enum Commands {
         json: bool,
     },
 
-    /// List all tasks
+    /// List graph tasks; --all also appends virtual completion-review audit rows
     List {
         /// Filter by status
         #[arg(long)]
@@ -1076,7 +1076,9 @@ pub enum Commands {
         #[arg(long)]
         cron: bool,
 
-        /// Show all tasks including dot-prefixed system tasks (hidden by default)
+        /// Show all graph tasks plus internal completion-review activity as
+        /// virtual audit rows. Review rows are immutable records, not graph
+        /// tasks: they have no dependency, claim, retry, or lifecycle authority.
         #[arg(long)]
         all: bool,
     },

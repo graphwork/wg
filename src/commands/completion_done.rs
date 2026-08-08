@@ -5,15 +5,52 @@ use std::path::Path;
 use std::process::Command;
 use worksgood::completion_manifest::{OutputRef, ReviewResolver};
 use worksgood::completion_task::{load_exact_review_pair, load_submission_bytes};
-use worksgood::graph::{CompletionContract, CompletionDisposition, LogEntry, Status};
+use worksgood::graph::{
+    CompletionContract, CompletionDisposition, LogEntry, Status, TokenUsage, parse_token_usage,
+    parse_wg_tokens,
+};
 use worksgood::identity::canonical_json;
 use worksgood::lifecycle::{
     ActorKind, FenceExpectation, LifecycleActor, TransitionKind, TransitionRequest,
     apply_transition,
 };
 use worksgood::parser::{load_graph, modify_graph};
+use worksgood::service::registry::AgentRegistry;
 
 use super::completion_submit::{collect_dependency_outputs, store};
+
+#[derive(Clone, Default)]
+struct SourceAccounting {
+    usage: Option<TokenUsage>,
+    executor: Option<String>,
+    model: Option<String>,
+}
+
+fn source_accounting(dir: &Path, task: &worksgood::graph::Task) -> SourceAccounting {
+    let Some(agent_id) = task.assigned.as_deref() else {
+        return SourceAccounting::default();
+    };
+    let Ok(registry) = AgentRegistry::load(dir) else {
+        return SourceAccounting::default();
+    };
+    let Some(agent) = registry
+        .get_agent(agent_id)
+        .filter(|agent| agent.task_id == task.id)
+    else {
+        return SourceAccounting::default();
+    };
+    let output = Path::new(&agent.output_file);
+    let output = if output.is_absolute() {
+        output.to_path_buf()
+    } else {
+        dir.parent().unwrap_or(dir).join(output)
+    };
+    SourceAccounting {
+        usage: parse_token_usage(&output).or_else(|| parse_wg_tokens(&output)),
+        executor: Some(agent.executor.clone()),
+        model: agent.model.clone(),
+    }
+}
 
 #[derive(Serialize)]
 struct CompletionReceipt {
@@ -37,6 +74,7 @@ pub fn run(dir: &Path, id: &str, integration_ref: &str) -> Result<()> {
         .get_task(id)
         .with_context(|| format!("task '{id}' not found"))?;
     require_completion_actor(task, id)?;
+    let accounting = source_accounting(dir, task);
     let completion_store = store(dir)?;
     let (submission, manifest, requirements, summary) =
         load_submission_bytes(&completion_store, task)?;
@@ -127,6 +165,7 @@ pub fn run(dir: &Path, id: &str, integration_ref: &str) -> Result<()> {
         task.completion_contract,
         &receipt_ref.content_digest.to_string(),
         &completed_at,
+        &accounting,
     )?;
     println!(
         "Done '{}': exact FLIP+eval accepted manifest {} and publication is verified",
@@ -225,6 +264,7 @@ fn commit_done(
     contract: CompletionContract,
     receipt_digest: &str,
     completed_at: &str,
+    accounting: &SourceAccounting,
 ) -> Result<()> {
     let mut refusal = None;
     modify_graph(graph_path, |graph| {
@@ -273,6 +313,15 @@ fn commit_done(
         }
         task.completion_disposition = Some(disposition);
         task.completion_receipt = Some(receipt_digest.to_string());
+        if task.token_usage.is_none() {
+            task.token_usage.clone_from(&accounting.usage);
+        }
+        if task.actual_executor.is_none() {
+            task.actual_executor.clone_from(&accounting.executor);
+        }
+        if task.actual_model.is_none() {
+            task.actual_model.clone_from(&accounting.model);
+        }
         task.completed_at = Some(completed_at.to_string());
         task.last_interaction_at = Some(completed_at.to_string());
         task.assigned = None;

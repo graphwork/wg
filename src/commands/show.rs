@@ -52,6 +52,8 @@ struct TaskDetails {
     completion_receipt: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     completion_candidate: Option<worksgood::completion_task::CompletionCandidateRefs>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    completion_review_activity: Vec<worksgood::completion_review::CompletionReviewActivity>,
     #[serde(skip_serializing_if = "Option::is_none")]
     finish_phase: Option<String>,
     /// Authoritative generation/attempt/fence projection plus accepted audit.
@@ -376,8 +378,14 @@ fn gather_task_runtime_info(
             .and_then(|reg| reg.agents.get(aid).cloned())
     });
 
-    let actual_executor = registry_entry.as_ref().map(|e| e.executor.clone());
-    let actual_model = registry_entry.as_ref().and_then(|e| e.model.clone());
+    let actual_executor = registry_entry
+        .as_ref()
+        .map(|e| e.executor.clone())
+        .or_else(|| task.actual_executor.clone());
+    let actual_model = registry_entry
+        .as_ref()
+        .and_then(|e| e.model.clone())
+        .or_else(|| task.actual_model.clone());
 
     // For coordinator tasks, resolve model/executor from CoordinatorState
     // (coordinators don't use the agent registry — their runtime info is in
@@ -822,6 +830,7 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         completion_disposition: task.completion_disposition,
         completion_receipt: task.completion_receipt.clone(),
         completion_candidate: task.completion_candidate.clone(),
+        completion_review_activity: task.completion_review_activity.clone(),
         // Historical finalization transactions are evidence only. `show` is a
         // read path and must not open (and thereby materialize) that retired
         // mutable authority.
@@ -949,6 +958,29 @@ fn print_human_readable(details: &TaskDetails) {
                 .map(|receipt| receipt.content_digest.as_str())
                 .unwrap_or("missing")
         );
+    }
+    if !details.completion_review_activity.is_empty() {
+        println!("Completion review lane (immutable activity; not graph tasks):");
+        for activity in &details.completion_review_activity {
+            println!(
+                "  {:?}: {:?} receipt={} route={} executor={}",
+                activity.reviewer_kind,
+                activity.verdict,
+                activity.activity_id,
+                activity.model_route.as_deref().unwrap_or("unavailable"),
+                activity.executor.as_deref().unwrap_or("unavailable")
+            );
+            if let Some(usage) = activity.usage.as_ref() {
+                println!(
+                    "    provider-reported usage: in={} out={} cache-read={} cache-write={} cost=${:.6}",
+                    usage.input_tokens,
+                    usage.output_tokens,
+                    usage.cache_read_input_tokens,
+                    usage.cache_creation_input_tokens,
+                    usage.cost_usd
+                );
+            }
+        }
     }
     if let Some(disposition) = details.completion_disposition {
         println!(
@@ -1200,7 +1232,9 @@ fn print_human_readable(details: &TaskDetails) {
 
     if !details.evaluation_records.is_empty() {
         println!();
-        println!("Evaluation Evidence (hidden from graph/list):");
+        println!(
+            "Completion Review Activity (internal lane; virtual in `wg list --all`, not graph tasks):"
+        );
         for record in &details.evaluation_records {
             println!(
                 "  {} {:?} — {:?} ({})",
@@ -1229,9 +1263,10 @@ fn print_human_readable(details: &TaskDetails) {
             if let Some(manifest) = record.evidence_manifest_id.as_ref() {
                 println!("    evidence manifest: {}", manifest);
             }
-            if let Some(attempt) = record.attempts.last() {
+            for (index, attempt) in record.attempts.iter().enumerate() {
                 println!(
-                    "    evaluator attempt: {} executor={} route={} reasoning={:?} renderer=v{} schema=v{}",
+                    "    evaluator attempt {}: {} executor={} route={} reasoning={:?} renderer=v{} schema=v{}",
+                    index + 1,
                     attempt.attempt_id,
                     attempt.executor,
                     attempt.exact_route,
@@ -2281,6 +2316,7 @@ mod tests {
             completion_disposition: None,
             completion_receipt: None,
             completion_candidate: None,
+            completion_review_activity: Vec::new(),
             finish_phase: None,
             lifecycle: worksgood::lifecycle::LifecycleProjection::default(),
             worktree_observer: None,

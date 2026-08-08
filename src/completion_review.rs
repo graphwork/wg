@@ -72,6 +72,12 @@ pub struct ReviewerUnavailable {
 pub trait ManifestReviewer {
     fn route(&self) -> &str;
 
+    /// Return execution metadata for the immediately preceding review call.
+    /// Test/static reviewers may omit it; model adapters expose provider usage.
+    fn take_execution(&mut self) -> Option<ReviewExecution> {
+        None
+    }
+
     fn review(
         &mut self,
         kind: ReviewerKind,
@@ -79,7 +85,45 @@ pub trait ManifestReviewer {
     ) -> Result<SemanticReview, ReviewerUnavailable>;
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct ReviewUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_input_tokens: u64,
+    pub cache_creation_input_tokens: u64,
+    pub cost_usd: f64,
+}
+
+/// Factual execution metadata emitted by a reviewer adapter. This is captured
+/// separately from its semantic verdict so receipt visibility never grants the
+/// review lane graph-task authority.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct ReviewExecution {
+    pub executor: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<ReviewUsage>,
+}
+
+/// Durable task projection used by `wg list --all`, `wg show`, and `wg spend`.
+/// `activity_id` is the immutable receipt object's content digest, making
+/// replay/content-bound recording idempotent.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct CompletionReviewActivity {
+    pub activity_id: String,
+    pub reviewer_kind: ReviewerKind,
+    pub verdict: ReviewVerdict,
+    pub manifest_digest: ContentDigest,
+    pub requirements_digest: ContentDigest,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_route: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<ReviewUsage>,
+    pub created_at: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct ReviewReceipt {
     pub receipt_version: u32,
     pub manifest_digest: ContentDigest,
@@ -90,6 +134,10 @@ pub struct ReviewReceipt {
     pub inspected_output_digests: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_route: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<ReviewUsage>,
     pub created_at: String,
 }
 
@@ -108,7 +156,7 @@ impl ReviewReceipt {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct StoredReviewReceipt {
     pub receipt: ReviewReceipt,
     pub receipt_object: ArtifactOutput,
@@ -124,7 +172,7 @@ pub enum ReviewValveStatus {
     IncompleteEvidence,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ReviewValveOutcome {
     pub status: ReviewValveStatus,
     pub flip: StoredReviewReceipt,
@@ -206,6 +254,7 @@ pub fn run_review_valve_at(
                     findings,
                     inspected_output_digests: Vec::new(),
                     model_route: None,
+                    execution: None,
                     created_at,
                 },
             )?;
@@ -227,6 +276,7 @@ pub fn run_review_valve_at(
         return Err(ReviewValveError::MissingExactRoute(ReviewerKind::Flip));
     }
     let flip_result = flip_reviewer.review(ReviewerKind::Flip, &bundle);
+    let flip_execution = flip_reviewer.take_execution();
     let flip = receipt_from_reviewer_result(
         artifact_store,
         manifest_digest,
@@ -235,6 +285,7 @@ pub fn run_review_valve_at(
         &bundle.inspected_output_digests,
         flip_reviewer.route(),
         flip_result,
+        flip_execution,
         created_at,
     )?;
     match flip.receipt.verdict {
@@ -271,6 +322,7 @@ pub fn run_review_valve_at(
         return Err(ReviewValveError::MissingExactRoute(ReviewerKind::Eval));
     }
     let eval_result = eval_reviewer.review(ReviewerKind::Eval, &bundle);
+    let eval_execution = eval_reviewer.take_execution();
     let eval = receipt_from_reviewer_result(
         artifact_store,
         manifest_digest,
@@ -279,6 +331,7 @@ pub fn run_review_valve_at(
         &bundle.inspected_output_digests,
         eval_reviewer.route(),
         eval_result,
+        eval_execution,
         created_at,
     )?;
     let status = match eval.receipt.verdict {
@@ -305,6 +358,7 @@ fn receipt_from_reviewer_result(
     inspected_output_digests: &[String],
     model_route: &str,
     result: Result<SemanticReview, ReviewerUnavailable>,
+    execution: Option<ReviewExecution>,
     created_at: &str,
 ) -> Result<StoredReviewReceipt, ReviewValveError> {
     let (verdict, findings) = match result {
@@ -338,6 +392,7 @@ fn receipt_from_reviewer_result(
             findings,
             inspected_output_digests: inspected_output_digests.to_vec(),
             model_route: Some(model_route.to_string()),
+            execution,
             created_at,
         },
     )
@@ -351,6 +406,7 @@ struct ReceiptMaterial<'a> {
     findings: Vec<ReviewFinding>,
     inspected_output_digests: Vec<String>,
     model_route: Option<String>,
+    execution: Option<ReviewExecution>,
     created_at: &'a str,
 }
 
@@ -374,6 +430,11 @@ fn persist_receipt(
         findings_digest: findings_object.content_digest.clone(),
         inspected_output_digests: material.inspected_output_digests,
         model_route: material.model_route,
+        executor: material
+            .execution
+            .as_ref()
+            .map(|value| value.executor.clone()),
+        usage: material.execution.and_then(|value| value.usage),
         created_at: material.created_at.to_string(),
     };
     let receipt_bytes = canonical_json(&serde_json::to_value(&receipt)?);

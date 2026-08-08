@@ -60,7 +60,7 @@ pub fn run(
         .collect();
 
     if json {
-        let output: Vec<_> = tasks
+        let mut output: Vec<_> = tasks
             .iter()
             .map(|t| {
                 let mut obj = serde_json::json!({
@@ -115,11 +115,63 @@ pub fn run(
                 obj
             })
             .collect();
+        if show_all {
+            for task in &tasks {
+                for activity in &task.completion_review_activity {
+                    output.push(serde_json::json!({
+                        "kind": "completion-review-activity",
+                        "virtual": true,
+                        "graph_task": false,
+                        "source_task": task.id,
+                        "id": format!(".review-{}-{}", task.id, activity.activity_id),
+                        "reviewer_kind": activity.reviewer_kind,
+                        "verdict": activity.verdict,
+                        "receipt": activity.activity_id,
+                        "manifest": activity.manifest_digest,
+                        "route": activity.model_route,
+                        "executor": activity.executor,
+                        "usage": activity.usage,
+                        "created_at": activity.created_at,
+                    }));
+                }
+                for record in &task.evaluation_records {
+                    if record.attempts.is_empty() {
+                        output.push(serde_json::json!({
+                            "kind": "evaluation-lane-activity",
+                            "virtual": true,
+                            "graph_task": false,
+                            "source_task": task.id,
+                            "id": format!(".review-{}-{}", task.id, record.evaluation_id),
+                            "product": record.product,
+                            "state": record.state,
+                            "route": record.route,
+                            "receipt": record.consumed_verdict_id,
+                            "created_at": record.created_at,
+                        }));
+                    } else {
+                        for attempt in &record.attempts {
+                            output.push(serde_json::json!({
+                                "kind": "evaluation-lane-activity",
+                                "virtual": true,
+                                "graph_task": false,
+                                "source_task": task.id,
+                                "id": format!(".review-{}-{}", task.id, attempt.attempt_id),
+                                "product": record.product,
+                                "state": record.state,
+                                "attempt": attempt,
+                                "receipt": record.consumed_verdict_id,
+                                "created_at": attempt.started_at,
+                            }));
+                        }
+                    }
+                }
+            }
+        }
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else if tasks.is_empty() {
         println!("No tasks found");
     } else {
-        for task in tasks {
+        for task in &tasks {
             let status = match task.status {
                 Status::Open => "[ ]",
                 Status::InProgress => "[~]",
@@ -178,6 +230,72 @@ pub fn run(
                 cron_str,
                 tag_str
             );
+        }
+        if show_all {
+            let has_review_activity = tasks.iter().any(|task| {
+                !task.completion_review_activity.is_empty() || !task.evaluation_records.is_empty()
+            });
+            if has_review_activity {
+                println!(
+                    "-- internal completion-review lane (virtual audit rows; not graph tasks) --"
+                );
+            }
+            for task in &tasks {
+                for activity in &task.completion_review_activity {
+                    let usage = activity.usage.as_ref().map_or_else(String::new, |usage| {
+                        format!(
+                            " usage={}in/{}out cost=${:.6}",
+                            usage.input_tokens, usage.output_tokens, usage.cost_usd
+                        )
+                    });
+                    println!(
+                        "[R] .review-{}-{:?} - {:?} receipt={} route={} executor={}{}",
+                        task.id,
+                        activity.reviewer_kind,
+                        activity.verdict,
+                        activity.activity_id,
+                        activity.model_route.as_deref().unwrap_or("unavailable"),
+                        activity.executor.as_deref().unwrap_or("unavailable"),
+                        usage
+                    );
+                }
+                for record in &task.evaluation_records {
+                    if record.attempts.is_empty() {
+                        println!(
+                            "[R] .review-{}-{} - {} {:?} receipt={} (not started)",
+                            task.id,
+                            record.evaluation_id,
+                            record.product.label(),
+                            record.state,
+                            record.consumed_verdict_id.as_deref().unwrap_or("pending")
+                        );
+                    }
+                    for attempt in &record.attempts {
+                        let usage = attempt.usage.as_ref().map_or_else(String::new, |usage| {
+                            format!(
+                                " usage={}in/{}out cost=${:.6}",
+                                usage.input_tokens, usage.output_tokens, usage.cost_usd
+                            )
+                        });
+                        let outcome = if let Some(failure) = attempt.failure.as_ref() {
+                            format!("failure={}", failure.code)
+                        } else {
+                            format!("state={:?}", record.state)
+                        };
+                        println!(
+                            "[R] .review-{}-{} - {} {} receipt={} route={} executor={}{}",
+                            task.id,
+                            attempt.attempt_id,
+                            record.product.label(),
+                            outcome,
+                            record.consumed_verdict_id.as_deref().unwrap_or("pending"),
+                            attempt.exact_route,
+                            attempt.executor,
+                            usage
+                        );
+                    }
+                }
+            }
         }
     }
 

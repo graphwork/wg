@@ -8,8 +8,8 @@ use crate::completion_manifest::{
     ResolvedEvidence, ResolvedOutput, ResolvedPayload, ResolvedReviewBundle,
 };
 use crate::completion_review::{
-    ManifestReviewer, ReviewFinding, ReviewerKind, ReviewerUnavailable, SemanticReview,
-    SemanticVerdict,
+    ManifestReviewer, ReviewExecution, ReviewFinding, ReviewUsage, ReviewerKind,
+    ReviewerUnavailable, SemanticReview, SemanticVerdict,
 };
 use crate::config::{Config, DispatchRole};
 use crate::json_extract::extract_json;
@@ -27,6 +27,7 @@ pub struct ExactModelReviewer<'a> {
     kind: ReviewerKind,
     dispatch: AgencyDispatch,
     timeout_secs: u64,
+    last_execution: Option<ReviewExecution>,
 }
 
 impl<'a> ExactModelReviewer<'a> {
@@ -47,6 +48,7 @@ impl<'a> ExactModelReviewer<'a> {
             kind,
             dispatch,
             timeout_secs: DEFAULT_COMPLETION_REVIEW_TIMEOUT_SECS,
+            last_execution: None,
         })
     }
 
@@ -59,6 +61,10 @@ impl<'a> ExactModelReviewer<'a> {
 impl ManifestReviewer for ExactModelReviewer<'_> {
     fn route(&self) -> &str {
         &self.dispatch.raw_spec
+    }
+
+    fn take_execution(&mut self) -> Option<ReviewExecution> {
+        self.last_execution.take()
     }
 
     fn review(
@@ -76,6 +82,10 @@ impl ManifestReviewer for ExactModelReviewer<'_> {
             });
         }
         let prompt = render_review_prompt(kind, bundle);
+        self.last_execution = Some(ReviewExecution {
+            executor: self.dispatch.handler.as_str().to_string(),
+            usage: None,
+        });
         let result =
             run_exact_agency_dispatch_call(self.config, &self.dispatch, &prompt, self.timeout_secs)
                 .map_err(|error| ReviewerUnavailable {
@@ -85,6 +95,15 @@ impl ManifestReviewer for ExactModelReviewer<'_> {
                         self.dispatch.raw_spec
                     ),
                 })?;
+        if let Some(execution) = self.last_execution.as_mut() {
+            execution.usage = result.token_usage.as_ref().map(|usage| ReviewUsage {
+                input_tokens: usage.input_tokens,
+                output_tokens: usage.output_tokens,
+                cache_read_input_tokens: usage.cache_read_input_tokens,
+                cache_creation_input_tokens: usage.cache_creation_input_tokens,
+                cost_usd: usage.cost_usd,
+            });
+        }
         parse_semantic_review(&result.text)
     }
 }
