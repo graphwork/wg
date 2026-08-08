@@ -106,7 +106,25 @@ optional agent binding -> SessionMeta.agent_id -> next spawn reads
 
 **`[FACT]`** The attended contract permits explicit human-directed reads/writes/tests/delegation while preserving actual restrictions (`text/attended_chat_contract.md:1-18`). Composition removes known retired denylist bodies (`coordinator_prompt.rs:1-77`). Create validates route/binary before mutation and treats attended bare Pi as the only route-free LLM chat (`chat_cmd.rs:274-396`). Runtime evidence is explicitly not spawn authority (`chat_runtime.rs:1-14`). Agent → session is 1:1: binding clears that agent from other sessions (`chat_sessions.rs:740-764`).
 
-### 2.6 Flow E — human onboarding/reply
+### 2.6 Flow E — concierge setup/reconciliation
+
+```text
+attended setup -> require TTY + authenticate exact absolute wg executable bytes
+               -> select without-AI / existing profile / exact one-model Pi route
+               -> build redacted immutable plan with profile/config/executable fingerprints
+               -> dry-run stops without writes; otherwise human confirms
+               -> optional graph init -> lifecycle lock -> pending recovery marker
+               -> Pi plugin/readiness -> apply + verify project selection
+               -> reuse/reload/restart/start only an authenticated service
+               -> committed state -> remove pending marker
+rollback       -> verify pending preimage -> clear only this selection/service start
+```
+
+**`[FACT]`** The model choices govern unattended workers/evaluation, explicitly not attended Pi chat. One-model setup validates an exact `pi:<provider>:<model>` route and fails without fallback when Pi is absent (`src/concierge.rs:920-984,1649-1705`). The executable must be an absolute, non-symlink executable from the same bundle or match a signed install receipt; PATH candidates are not authority (`:244-307`). The plan records executable/profile/config fingerprints but not credentials/raw profile content; dry-run writes no graph, profile, journal, plugin, service, or TUI state (`:34-156,1197-1271,1707-1739`).
+
+**`[FACT]`** Reconciliation fails closed on foreign, unverified, or unresponsive services; only a content/build/protocol mismatch permits controlled restart, generation drift permits reload, and an exact match permits reuse (`src/concierge.rs:1007-1130`). After confirmation, graph init remains owned by `wg init`; then a lifecycle lock and durable pending preimage fence profile/plugin/readiness/service changes. Failures explicitly leave an initialized graph resumable, while committed state removes the marker (`:1741-1819`). Rollback preserves graph initialization and handler-owned credentials/plugins and refuses to delete changed/later state (`:1821-1836`).
+
+### 2.7 Flow F — human onboarding/reply
 
 ```text
 agency human add -> telegram Agent -> user board -> unconfirmed binding
@@ -232,6 +250,15 @@ reply -> confirmed sender/bot/agent match -> freshest waiting task only
 - **Severity:** S3
 - Resolution is task > role > config > `task`; invalid stored strings silently fall through (`context_scope.rs:1-70`). Task includes dependencies/downstream/tags/messages; graph adds project/neighborhood; full adds full graph and `CLAUDE.md` (`spawn/context.rs:14-187`). Neighbor summaries are XML-fenced/capped; other sources have separate formatting.
 - `integration_context_scope` passed 21/21. “More context” is not “more trusted context.”
+
+### `CONCIERGE-001` — setup binds unattended routes and service mutation to an attended, fingerprinted transaction
+
+- **Label/state:** `[FACT]`; current
+- **Severity:** S4 positive control with S3 recovery boundary
+- Exact unattended strong/weak routes, reasoning, profile fingerprint, executable SHA-256/build, graph identity, and config generation are planned before confirmation. Foreign/unverifiable processes are never signalled (`src/concierge.rs:34-156,920-1271,1649-1819`).
+- Dry-run and cancellation are pre-mutation. After confirmation, graph initialization precedes the pending transaction marker by design; subsequent errors can therefore leave a new graph plus pending/recoverable setup, and messages explicitly tell the operator to resume. Rollback intentionally does not remove graph initialization or handler-owned credentials/plugins (`:1731-1836`).
+- **Failure/gate analysis:** exact one-model Pi absence fails before graph/profile/plugin/service mutation; advanced profile readiness may fail after graph init and pending write. Service reconciliation authenticates executable bytes and fails closed rather than killing a foreign process. The pending preimage prevents rollback from deleting later profile changes.
+- **Uncertainty:** concierge lifecycle tests were inspected in-module but no attended TTY/plugin/service transaction was executed in this audit.
 
 ### `HUMAN-001` — confirmed binding is a real authority check
 
@@ -374,6 +401,7 @@ rg "auto_assign" src/service/coordinator.rs src/service src/commands/service
 | context scope/assembly | `src/context_scope.rs:1-70`; `src/commands/spawn/context.rs:14-187` |
 | human binding/replies | `src/agency/human_binding.rs:38-269`; `src/commands/service/human_dispatch.rs:82-557` |
 | onboarding ordering | `src/commands/agency_human.rs:126-268,438-476` |
+| concierge plan/authority/reconciliation | `src/concierge.rs:34-156,244-307,920-1271,1649-1836` |
 | manual claims | `docs/manual/03-agency.md:1-133,241-250` |
 | trace design claims | `docs/design/trace-function-protocol.md:76-109,500-572` |
 | session design | `docs/design/sessions-as-identity.md`; `docs/design/chat-agent-persistence.md` |
