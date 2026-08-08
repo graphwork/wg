@@ -21,6 +21,7 @@ cat >"$fakebin/pi" <<'FAKE_PI'
 set -euo pipefail
 cat >/dev/null || true
 state="${FAKE_PI_STATE:?}"; n=0; [[ -f "$state" ]] && n=$(cat "$state"); n=$((n+1)); printf '%s' "$n" >"$state"
+if [[ "$n" == 1 ]]; then sleep 3; exit 0; fi
 if [[ "$n" == 2 ]]; then verdict=reject; else verdict=pass; fi
 python3 - "$verdict" "$n" <<'PY'
 import json,sys
@@ -35,6 +36,7 @@ PY
 FAKE_PI
 chmod +x "$fakebin/pi"
 export HOME="$home" WG_GLOBAL_DIR="$home/.wg" PATH="$fakebin:$PATH" FAKE_PI_STATE="$scratch/pi-calls"
+export WG_COMPLETION_REVIEW_TIMEOUT_SECS=1
 unset WG_TASK_ID WG_AGENT_ID WG_TIER WG_EXECUTOR_TYPE WG_MODEL WG_WORKTREE_PATH WG_WORKTREE_ACTIVE WG_BRANCH
 unset WG_WORKER_CAPABILITY WG_WORKER_CONTROL_PROTOCOL WG_WORKER_IPC WG_GRAPH_ID WG_SPAWN_RUN_ID WG_SPAWN_EPOCH
 cd "$project"
@@ -60,9 +62,10 @@ printf 'implemented and validated\n' >summary.txt; printf 'reviewed report\n' >r
 wgrun completion-object report.txt --media-type text/plain >output-ref.json
 wgrun completion-object validation.log --media-type text/plain --evidence-kind validation >evidence-ref.json
 wgrun completion-manifest pi-done --summary summary.txt --output-ref output-ref.json --evidence-ref evidence-ref.json >manifest.json
-# First exact FLIP returns malformed output: an infrastructure failure receipt
-# is retained with usage, without inventing a semantic verdict or running eval.
-if wgrun submit pi-done --manifest manifest.json --summary summary.txt >"$scratch/unavailable.log" 2>&1; then loud_fail "malformed reviewer response unexpectedly passed"; fi
+# First exact FLIP exceeds the one-second bounded fixture deadline: an
+# infrastructure failure receipt is retained without usage or an invented
+# semantic verdict, and eval does not run.
+if wgrun submit pi-done --manifest manifest.json --summary summary.txt >"$scratch/unavailable.log" 2>&1; then loud_fail "timed-out reviewer unexpectedly passed"; fi
 grep -q 'review unavailable' "$scratch/unavailable.log" || loud_fail "reviewer failure was not surfaced as unavailable"
 # Second exact FLIP semantically rejects. Its receipt also remains visible and
 # eval is again correctly skipped.
@@ -74,14 +77,14 @@ wgrun done pi-done >/dev/null
 show=$(wgrun --json show pi-done)
 python3 -c 'import json,sys; d=json.load(sys.stdin); u=d["token_usage"]; assert d["status"]=="done"; assert (u["input_tokens"],u["output_tokens"],u["cache_read_input_tokens"])==(205,17,310),u; assert abs(u["cost_usd"]-0.05)<1e-9,u; assert d["actual_executor"]=="pi"; assert d["actual_model"]=="openrouter:z-ai/glm-5.2"; a=d["completion_review_activity"]; assert len(a)==4,a; assert [x["verdict"] for x in a]==["unavailable","reject","pass","pass"],a' <<<"$show"
 spend=$(wgrun spend --json)
-python3 -c 'import json,sys; d=json.load(sys.stdin); r=d["completion_review_lane"]; assert d["task_count"]==1 and d["total_input_tokens"]==205 and d["total_output_tokens"]==17,d; assert abs(d["total_cost"]-0.05)<1e-9,d; assert r["attempt_count"]==4,r; assert r["total_input_tokens"]==10,r; assert r["total_output_tokens"]==4,r; assert abs(r["total_cost"]-0.004)<1e-9,r' <<<"$spend"
+python3 -c 'import json,sys; d=json.load(sys.stdin); r=d["completion_review_lane"]; assert d["task_count"]==1 and d["total_input_tokens"]==205 and d["total_output_tokens"]==17,d; assert abs(d["total_cost"]-0.05)<1e-9,d; assert r["attempt_count"]==3,r; assert r["total_input_tokens"]==9,r; assert r["total_output_tokens"]==3,r; assert abs(r["total_cost"]-0.003)<1e-9,r' <<<"$spend"
 # Cleanup + real service restart must not erase the terminal projection.
 rm -f "$G/service/registry.json"; rm -rf "$G/agents/agent-pi-fixture"; wgrun service start --no-coordinator-agent --no-supervise >/dev/null; wgrun service stop >/dev/null
 show=$(wgrun --json show pi-done)
 python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["token_usage"]["input_tokens"]==205; assert d["actual_executor"]=="pi"; assert len(d["completion_review_activity"])==4' <<<"$show"
 list=$(wgrun list --all)
 grep -q 'internal completion-review lane (virtual audit rows; not graph tasks)' <<<"$list" || loud_fail "list does not explain review lane semantics"
-grep -q 'Flip.*Unavailable.*route=pi:test:fake-review.*usage=1in/1out' <<<"$list" || loud_fail "FLIP failure virtual row/usage missing"
+grep -q 'Flip.*Unavailable.*route=pi:test:fake-review.*executor=pi$' <<<"$list" || loud_fail "FLIP timeout virtual row missing"
 grep -q 'Flip.*Reject.*route=pi:test:fake-review.*usage=2in/1out' <<<"$list" || loud_fail "FLIP rejection virtual row/usage missing"
 grep -q 'Eval.*Pass.*route=pi:test:fake-review.*usage=4in/1out' <<<"$list" || loud_fail "eval acceptance virtual row/usage missing"
 show_h=$(wgrun show pi-done); grep -q 'Completion review lane (immutable activity; not graph tasks)' <<<"$show_h" || loud_fail "show review lane missing"

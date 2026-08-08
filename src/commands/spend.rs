@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::Path;
 
 use anyhow::Result;
@@ -27,12 +28,21 @@ pub fn run(dir: &Path, today_only: bool, json: bool) -> Result<()> {
     let mut review_input_tokens = 0u64;
     let mut review_output_tokens = 0u64;
     let mut review_attempts_with_usage = 0usize;
+    let today = chrono::Utc::now().date_naive();
+    let mut accounted_review_receipts = HashSet::new();
 
     // Source-worker totals and internal review-lane totals are deliberately
-    // separate. A review call is not charged to the source task, and repeated
-    // Pi snapshots never enter either projection.
+    // separate. A review call is not charged to the source task. Receipt IDs
+    // also deduplicate activity represented by both the completion and legacy
+    // evaluation projections.
     for task in graph.tasks() {
         for activity in &task.completion_review_activity {
+            if today_only && !occurred_on(&activity.created_at, today) {
+                continue;
+            }
+            if !accounted_review_receipts.insert(activity.activity_id.clone()) {
+                continue;
+            }
             if let Some(usage) = activity.usage.as_ref() {
                 review_attempts_with_usage += 1;
                 review_cost += usage.cost_usd;
@@ -41,7 +51,23 @@ pub fn run(dir: &Path, today_only: bool, json: bool) -> Result<()> {
             }
         }
         for record in &task.evaluation_records {
-            for attempt in &record.attempts {
+            for (index, attempt) in record.attempts.iter().enumerate() {
+                if today_only && !occurred_on(&attempt.started_at, today) {
+                    continue;
+                }
+                let consumed_receipt = (index + 1 == record.attempts.len()
+                    && attempt.failure.is_none())
+                .then_some(record.consumed_verdict_id.as_deref())
+                .flatten();
+                if accounted_review_receipts.contains(&attempt.attempt_id)
+                    || consumed_receipt.is_some_and(|id| accounted_review_receipts.contains(id))
+                {
+                    continue;
+                }
+                accounted_review_receipts.insert(attempt.attempt_id.clone());
+                if let Some(id) = consumed_receipt {
+                    accounted_review_receipts.insert(id.to_string());
+                }
                 if let Some(usage) = attempt.usage.as_ref() {
                     review_attempts_with_usage += 1;
                     review_cost += usage.cost_usd;
@@ -222,6 +248,12 @@ pub fn run(dir: &Path, today_only: bool, json: bool) -> Result<()> {
 }
 
 /// Format a number with thousands separators.
+fn occurred_on(timestamp: &str, date: chrono::NaiveDate) -> bool {
+    chrono::DateTime::parse_from_rfc3339(timestamp)
+        .map(|value| value.with_timezone(&chrono::Utc).date_naive() == date)
+        .unwrap_or(false)
+}
+
 fn format_number(n: u64) -> String {
     let s = n.to_string();
     let mut result = String::new();
@@ -255,6 +287,14 @@ mod tests {
         assert_eq!(format_number(1000), "1,000");
         assert_eq!(format_number(1000000), "1,000,000");
         assert_eq!(format_number(42), "42");
+    }
+
+    #[test]
+    fn review_today_filter_uses_recorded_utc_day_and_fails_closed() {
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 8, 8).unwrap();
+        assert!(occurred_on("2026-08-08T23:59:59Z", day));
+        assert!(!occurred_on("2026-08-07T23:59:59Z", day));
+        assert!(!occurred_on("not-a-timestamp", day));
     }
 
     #[test]

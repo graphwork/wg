@@ -1701,10 +1701,14 @@ fn infer_agent_model_spec(output_log_path: &std::path::Path) -> Option<String> {
         .and_then(|task| task.model.clone())
 }
 
-/// Estimate USD cost for an agent's token usage using model-registry per-token
-/// rates, inferring the model spec + pricing from the agent's `output.log`
-/// neighbourhood (`metadata.json` / graph). Used as a fallback when an executor
-/// (e.g. pi on a provider that does not report cost) reports zero cost.
+/// Explicitly estimate USD cost for an agent's token usage using model-registry
+/// per-token rates, inferring the model spec + pricing from the agent's
+/// `output.log` neighbourhood (`metadata.json` / graph).
+///
+/// This opt-in helper is not part of `parse_token_usage`: provider-reported Pi
+/// cost is persisted exactly, including zero when the provider supplies no
+/// cost, so terminal accounting never silently turns missing cost into an
+/// estimate.
 pub fn estimate_agent_cost_usd(
     output_log_path: &std::path::Path,
     input_tokens: u64,
@@ -4440,6 +4444,28 @@ mod tests {
             usage.input_tokens + usage.output_tokens + usage.cache_read_input_tokens,
             260 + 272
         );
+    }
+
+    #[test]
+    fn test_parse_token_usage_pi_missing_provider_cost_is_not_estimated() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("output.log");
+        std::fs::write(
+            dir.path().join("metadata.json"),
+            r#"{"executor":"pi","model":"openrouter:anthropic/claude-opus-4"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            &log_path,
+            r#"{"type":"turn_end","message":{"usage":{"input":100,"output":25,"cacheRead":5,"cacheWrite":0}}}
+"#,
+        )
+        .unwrap();
+
+        let usage = parse_token_usage(&log_path).unwrap();
+        assert_eq!(usage.input_tokens, 100);
+        assert_eq!(usage.output_tokens, 25);
+        assert_eq!(usage.cost_usd, 0.0, "missing provider cost stays explicit");
     }
 
     #[test]

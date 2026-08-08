@@ -21,6 +21,19 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 const DEFAULT_COMPLETION_REVIEW_TIMEOUT_SECS: u64 = 900;
+const COMPLETION_REVIEW_TIMEOUT_ENV: &str = "WG_COMPLETION_REVIEW_TIMEOUT_SECS";
+
+fn completion_review_timeout_secs() -> u64 {
+    let configured = std::env::var(COMPLETION_REVIEW_TIMEOUT_ENV).ok();
+    parse_completion_review_timeout(configured.as_deref())
+}
+
+fn parse_completion_review_timeout(configured: Option<&str>) -> u64 {
+    configured
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_COMPLETION_REVIEW_TIMEOUT_SECS)
+}
 
 pub struct ExactModelReviewer<'a> {
     config: &'a Config,
@@ -47,7 +60,7 @@ impl<'a> ExactModelReviewer<'a> {
             config,
             kind,
             dispatch,
-            timeout_secs: DEFAULT_COMPLETION_REVIEW_TIMEOUT_SECS,
+            timeout_secs: completion_review_timeout_secs(),
             last_execution: None,
         })
     }
@@ -278,6 +291,15 @@ mod tests {
         let error =
             parse_semantic_review(r#"{"verdict":"unavailable","findings":[]}"#).unwrap_err();
         assert_eq!(error.code, "reviewer.invalid_response");
+    }
+
+    #[test]
+    fn timeout_override_rejects_zero_and_accepts_bounded_fixture_value() {
+        assert_eq!(
+            parse_completion_review_timeout(Some("0")),
+            DEFAULT_COMPLETION_REVIEW_TIMEOUT_SECS
+        );
+        assert_eq!(parse_completion_review_timeout(Some("1")), 1);
     }
 
     #[test]
