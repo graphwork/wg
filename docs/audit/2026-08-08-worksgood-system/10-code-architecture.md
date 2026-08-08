@@ -1,11 +1,11 @@
 # Code architecture, boundaries, and persistence model
 
-**Audit date:** 2026-08-08  
-**Evidence checked through:** 2026-08-08  
-**Audit snapshot:** `b0892ea7496fd2cc8f641417a3d8e33ca9add369`  
-**Inspection checkout:** `98b319c36aa8a21fd4506fc7469fe6d58978cdda` (the charter-only successor; `git diff --quiet b0892e… -- Cargo.toml Cargo.lock src adapters/casa/src` returned 0)  
-**Freshness:** snapshot-current for cited source; executed behavior used a local debug build from the source-equivalent inspection checkout  
-**Scope:** Rust package/binaries, CLI parsing and dispatch, major module boundaries, graph/config/runtime persistence, locking/atomicity, and representative CLI-to-state flows  
+**Audit date:** 2026-08-08
+**Evidence checked through:** 2026-08-08
+**Audit snapshot:** `b0892ea7496fd2cc8f641417a3d8e33ca9add369`
+**Inspection checkout:** `98b319c36aa8a21fd4506fc7469fe6d58978cdda` (the charter-only successor; `git diff --quiet b0892e… -- Cargo.toml Cargo.lock src adapters/casa/src` returned 0)
+**Freshness:** snapshot-current for cited source; executed behavior used a local debug build from the source-equivalent inspection checkout
+**Scope:** Rust package/binaries, CLI parsing and dispatch, major module boundaries, graph/config/runtime persistence, locking/atomicity, and representative CLI-to-state flows
 **Change boundary:** this audit artifact only
 
 ## 1. Executive abstract
