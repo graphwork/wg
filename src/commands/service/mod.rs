@@ -785,6 +785,21 @@ pub fn coordinator_state_path(dir: &Path, coordinator_id: u32) -> PathBuf {
         .join(format!("coordinator-state-{}.json", coordinator_id))
 }
 
+/// Admission deferral is a live read model, not durable task truth. A crashed
+/// daemon can leave its coordinator snapshot behind, so every status reader
+/// suppresses the waiting rows unless the matching service PID is still live.
+pub(crate) fn suppress_stale_admission(dir: &Path, coordinator: &mut CoordinatorState) {
+    let live = ServiceState::load(dir)
+        .ok()
+        .flatten()
+        .is_some_and(|state| is_process_alive(state.pid));
+    if !live {
+        coordinator.admission_deferred_tasks = 0;
+        coordinator.admission_deferred_reason = None;
+        coordinator.admission_deferred.clear();
+    }
+}
+
 /// Session cost tracking for OpenRouter cost caps
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionCostTracking {
@@ -4495,7 +4510,8 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
 
     // Coordinator state supplies runtime metrics; loaded config supplies capacity
     // so stopped/stale state cannot leak an old inherited limit into status.
-    let coord = CoordinatorState::load_or_default(dir);
+    let mut coord = CoordinatorState::load_or_default(dir);
+    suppress_stale_admission(dir, &mut coord);
     let effective_config = Config::load_or_default(dir);
     let max_agents = effective_config.coordinator.max_agents;
     let max_build_agents = effective_config.coordinator.effective_max_build_agents();

@@ -173,6 +173,7 @@ PY
   || loud_fail "identical admission logs were not coalesced: $(grep "b-deferred-build" .wg/service/daemon.log || true)"
 [ "$(grep -c '^second-run$' "$runs" 2>/dev/null || true)" -eq 0 ] \
   || loud_fail "deferred build ran before capacity was released: $(cat "$runs")"
+cp .wg/service/coordinator-state-0.json "$scratch/stale-deferred-coordinator.json"
 
 # Human releases capacity; no retry/edit/transition-helper call is made. The
 # daemon's bounded tick notices the freed slot and runs the deferred task once.
@@ -214,4 +215,29 @@ done
 [ "$(grep -c '^second-run$' "$runs" 2>/dev/null || true)" -eq 1 ] \
   || loud_fail "deferred build command ran more than once after success: $(cat "$runs" 2>/dev/null || true)"
 
-echo "PASS: live daemon reports admission backpressure, coalesces it beyond five ticks, and runs the deferred build work body successfully exactly once after capacity frees"
+# Simulate a hard daemon crash and restore the snapshot captured while the task
+# was deferred. Neither status surface may present that orphaned read model as
+# a current wait reason.
+daemon_pid=$(python3 -c 'import json; print(json.load(open(".wg/service/state.json"))["pid"])')
+kill -KILL "$daemon_pid"
+for _ in $(seq 1 50); do
+  kill -0 "$daemon_pid" 2>/dev/null || break
+  sleep 0.1
+done
+cp "$scratch/stale-deferred-coordinator.json" .wg/service/coordinator-state-0.json
+crash_status=$(wg status --json)
+python3 - "$crash_status" <<'PY'
+import json,sys
+c=json.loads(sys.argv[1])['coordinator']
+assert c['admission_deferred_tasks']==0,c
+assert c.get('admission_deferred',[])==[],c
+PY
+crash_service=$(wg service status --json)
+python3 - "$crash_service" <<'PY'
+import json,sys
+x=json.loads(sys.argv[1])
+assert 'coordinator' not in x,x
+assert 'b-deferred-build' not in sys.argv[1],x
+PY
+
+echo "PASS: live daemon reports admission backpressure, exact-once successful work, and suppresses orphaned deferral state after a hard crash"

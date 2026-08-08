@@ -1651,7 +1651,8 @@ fn handle_status(dir: &Path) -> IpcResponse {
 
     // Coordinator state supplies live metrics; loaded config supplies capacity
     // so stopped/stale state cannot leak an old inherited limit into status.
-    let coord = CoordinatorState::load_or_default(dir);
+    let mut coord = CoordinatorState::load_or_default(dir);
+    super::suppress_stale_admission(dir, &mut coord);
     let config = worksgood::config::Config::load_or_default(dir);
     let max_build_agents = config.coordinator.effective_max_build_agents();
     let max_build_agents_source = config.coordinator.max_build_agents_source();
