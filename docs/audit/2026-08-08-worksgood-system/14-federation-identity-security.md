@@ -6,7 +6,7 @@
 
 **Evidence checked through:** 2026-08-08
 
-**Freshness:** snapshot-current. The audit worktree was at `98b319c36aa8a21fd4506fc7469fe6d58978cdda`; `git diff --name-only b0892ea..98b319c3` showed only the audit charter, so the production source, ADRs, and federation tests executed here were byte-identical to the pinned snapshot.
+**Freshness:** snapshot-current. Evidence collection began at worktree revision `98b319c36aa8a21fd4506fc7469fe6d58978cdda`; `git diff --name-only b0892ea..98b319c3` showed only the audit charter at `docs/audit/2026-08-08-worksgood-system/README.md`. After the artifact commit was merged with current `main` for submission, a path-scoped `git diff --quiet b0892ea..HEAD -- <audited production/source/test/ADR paths>` again returned 0. Thus the submitted artifact is newer than the tested source revision, but every audited production source, ADR, and federation scenario remained byte-identical to the pinned snapshot. Section 7.1 gives the exact binding command and paths.
 
 **Scope:** WG-Fed identity/addressing, key custody, sigchains, signing and sealing, transport/node/inbox, endpoint resolution, freshness and equivocation, rotation/revocation/recovery/fork semantics, multi-recipient ACLs, UCAN-like delegation, leash policy, compatibility, loadable-state security where it intersects federation, CLI reachability, and federation smoke evidence.
 
@@ -16,7 +16,7 @@
 
 **`[FACT]`** The implemented cryptographic core is substantial rather than a naming veneer. A `wgid:` embeds the genesis Ed25519 public key; sigchain verification roots that key at the address, checks hash links and signatures, and restricts key-set mutation to the active root. Signed envelopes use recursively canonicalized JSON and strict Ed25519 verification. Multi-recipient sealing uses X25519, HKDF-SHA256, and XChaCha20-Poly1305; capability verification checks every issuer signature, attenuation, chain connection, expiry, and named revocations (`src/identity/keys.rs:72-175`; `src/identity/mod.rs:55-110`; `src/identity/sigchain.rs:680-886`; `src/identity/envelope.rs:385-615,641-765`; `src/identity/custody.rs:403-486,681-805`).
 
-**`[VERIFIED]`** A build from the snapshot-equivalent tree succeeded. All 100 `identity::` library tests passed, including forged-signature, root-lock, guardian-quorum, recovery-window, equivocation, sealed-sender, ACL, freshness, revocation-head, depth-limit, node quota, and state-safety cases. All four federation smoke scenarios passed against that build: the two-graph spark, HTTP node/inbox, recovery/portable-state, and ACL/UCAN scenarios. This is strong evidence for the exact tested inputs, not a security certification or a production-network test. Exact commands and bounded results are in section 7.
+**`[VERIFIED]`** A build from the snapshot-equivalent tree succeeded. All 100 `identity::` library tests passed, including forged-signature, root-lock, guardian-quorum, recovery-window, equivocation, sealed-sender, ACL, freshness, revocation-head, depth-limit, node quota, and state-safety cases. In a separate, explicitly operator-mode run using only isolated temporary homes/stores, all four federation smoke scenarios passed against that build: the two-graph spark, HTTP node/inbox, recovery/portable-state, and ACL/UCAN scenarios. The smoke run intentionally did not claim equivalence to or validation of the managed worker-control boundary; it validates the federation CLI/protocol behavior exercised by those fixtures. This is evidence for the exact tested inputs, not a security certification, worker-governance test, or production-network test. Exact commands, boundary qualification, and bounded results are in section 7.
 
 **`[INFERENCE]`** The highest security risk is that the claimed custodian is an API shape, not an isolation boundary. `Custodian` reads key material from the same user's `~/.wg/keystore`; in the no-KEK case it deliberately stores plaintext seeds, and its warning is opt-in. The recovery key is minted into that same custodian. The worker observed during this audit ran as the same `bot` user with `HOME=/home/bot`; removing worker-control environment variables was sufficient for the snapshot-built CLI to perform isolated identity operations. A hostile same-UID shell worker can therefore plausibly reach the file/keyring/signing authority the architecture says the worker lacks. This is **FED-003, S1 High**, not a failure of public-bundle redaction.
 
@@ -335,7 +335,28 @@ git diff --name-only b0892ea7496fd2cc8f641417a3d8e33ca9add369..HEAD
 date -u +%FT%TZ
 ```
 
-Result: worktree/main `98b319c36aa8a21fd4506fc7469fe6d58978cdda`; the diff from the audit snapshot named only `docs/audit/2026-08-08-worksgood-system/README.md`. Thus production/test evidence remained snapshot-current.
+Result at initial evidence collection: worktree/main `98b319c36aa8a21fd4506fc7469fe6d58978cdda`; the diff from the audit snapshot named only the audit charter, whose exact path is `docs/audit/2026-08-08-worksgood-system/README.md`. This reconciles “audit charter” and “README.md” as two descriptions of the same file, not two intervening changes.
+
+**`[VERIFIED]`** After committing the artifact and merging current `main` for submission, the following source-scoped check returned exit 0:
+
+```bash
+git diff --quiet \
+  b0892ea7496fd2cc8f641417a3d8e33ca9add369..HEAD -- \
+  src/identity src/federation.rs src/cli.rs \
+  src/commands/identity_cmd.rs src/commands/msg.rs \
+  docs/ADR-fed-000-acceptance-brief.md \
+  docs/ADR-fed-001-identity-key-model.md \
+  docs/ADR-fed-002-transport.md \
+  docs/ADR-fed-003-custody-delegation-recovery.md \
+  docs/ADR-fed-004-loadable-state-safety.md \
+  docs/federation-study/06-decision-memo-and-roadmap.md \
+  tests/smoke/scenarios/federation_spark_two_graphs.sh \
+  tests/smoke/scenarios/federation_node_inbox_cross_graph.sh \
+  tests/smoke/scenarios/federation_recovery_portable_state.sh \
+  tests/smoke/scenarios/federation_acl_ucan_delegation.sh
+```
+
+This binds the tested snapshot to the submitted output without claiming that the later artifact-only/merge commits themselves were the revision on which tests ran. The completion manifest's Git output is authoritative for the final submitted commit and tree; this report's `98b319…` is the explicitly identified execution revision.
 
 **`[VERIFIED]`** Non-secret custody-boundary observation:
 
@@ -346,7 +367,7 @@ stat -c '%a %U %G %n' "$HOME/.wg" "$HOME/.wg/keystore"
 
 Result: `HOME=/home/bot`; `.wg/keystore` was `700 bot bot`. No file names or values were read.
 
-### 7.2 Build and unit tests
+### 7.2 Build, unit tests, and required artifact checks
 
 **`[VERIFIED]`** Cwd `/home/bot/wg/.wg-worktrees/agent-7`, snapshot-equivalent production tree, 2026-08-08 UTC:
 
@@ -357,9 +378,18 @@ cargo test --locked --lib identity:: -- --test-threads=1
 
 Exit status: 0 for both. Build emitted unrelated existing warnings. Test result: `100 passed; 0 failed; 0 ignored; 3049 filtered out`, including every test under `identity::{keys,sigchain,envelope,custody,freshness,equivocation,dedup,node,state_safety,transport}` plus `service_identity` matches selected by the filter.
 
+**`[VERIFIED]`** The audit charter's required artifact validations were run after the final content amendment:
+
+```bash
+test -s docs/audit/2026-08-08-worksgood-system/14-federation-identity-security.md
+git diff --check
+```
+
+Exit status: 0 for each command. `test -s` therefore established that the required deliverable existed and was non-empty; `git diff --check` reported no whitespace errors.
+
 ### 7.3 Federation smoke execution
 
-**`[VERIFIED]`** The first direct scenario attempt inherited worker control and failed before minting with `worker_control.operation_refused`; no identity was created. The successful run deliberately removed worker-control variables, prepended the snapshot-built `target/debug`, and used a dedicated temporary smoke root:
+**`[VERIFIED]`** The first direct scenario attempt inherited worker control and failed before minting with `worker_control.operation_refused`; no identity was created. The successful run was an **operator-mode fixture run**, not a governed-worker validation: it deliberately removed inherited worker-control variables, prepended the snapshot-built `target/debug`, and used a dedicated temporary smoke root. This was done so each scenario's nested CLI processes exercised their ordinary standalone interface inside disposable directories rather than being misrouted as control requests for this audit task. No claim is made that clearing those variables was authorized as a worker-control bypass, that the result is equivalent to execution under the worker boundary, or that these smokes validate worker governance. Their evidentiary scope is limited to federation CLI/protocol behavior in the isolated operator-mode environment shown below:
 
 ```bash
 for s in federation_spark_two_graphs \
@@ -376,7 +406,7 @@ for s in federation_spark_two_graphs \
 done
 ```
 
-Cwd as above. Exit status: 0. Runtime: 2026-08-08T10:29:11Z–10:29:31Z. Bounded results:
+Cwd as above. Exit status: 0. Runtime: 2026-08-08T10:29:11Z–10:29:31Z. Every scenario used newly created identities under `/tmp/wg-audit-federation-smoke`; no pre-existing identity was read or mutated. Bounded operator-mode results:
 
 - `federation_spark_two_graphs`: all seven steps passed—no published key leak, offline reverify, tamper/forgery rejection, and downloader could neither author nor decrypt.
 - `federation_node_inbox_cross_graph`: both localhost HTTP nodes, publish, configured endpoint resolution, offline send, forged-author rejection, fresh/stale gates, and cached offline-origin verification passed.
