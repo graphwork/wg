@@ -96,8 +96,20 @@ assert c['disk_sentinel_enabled'] is False,c
 assert c['projected_headroom_bytes'] is None,c
 PY
 
-# Inherited cap tracks max_agents on hot reload; explicit override then wins,
-# all while the same daemon PID remains alive.
+# A fourth build is actually held at inherited 3/3, then starts exactly once
+# when max_agents hot-reloads to 4 without restarting the daemon.
+wg add 'cargo build inherited hot slot' --id build-4 --priority 90 \
+  --exec "touch '$project/started-4'; while [ ! -e '$release' ]; do sleep 0.1; done" --exec-mode shell >/dev/null
+wg publish build-4 --only >/dev/null
+sleep 2
+[ ! -e started-4 ] || loud_fail "fourth inherited build bypassed the 3/3 worker/build cap"
+python3 - <<'PY'
+import json
+rows=[json.loads(line) for line in open('.wg/graph.jsonl') if line.strip()]
+t=[r for r in rows if r.get('kind')=='task' and r['id']=='build-4'][-1]
+assert t.get('dispatch_count',0)==0,t
+PY
+
 pid=$(python3 -c 'import json; print(json.load(open(".wg/service/state.json"))["pid"])')
 wg config set dispatcher.max_agents 4 >/dev/null
 for _ in $(seq 1 80); do
@@ -106,6 +118,18 @@ for _ in $(seq 1 80); do
   sleep 0.1
 done
 [ "${v:-}" = '4 4 inherited-from-max-agents' ] || loud_fail "inherited cap did not hot reload: ${v:-}"
+for _ in $(seq 1 100); do
+  [ -e started-4 ] && break
+  sleep 0.1
+done
+[ -e started-4 ] || loud_fail "inherited hot reload reported 4 but did not admit build-4"
+python3 - <<'PY'
+import json
+rows=[json.loads(line) for line in open('.wg/graph.jsonl') if line.strip()]
+t=[r for r in rows if r.get('kind')=='task' and r['id']=='build-4'][-1]
+assert t.get('dispatch_count',0)==1,t
+PY
+
 wg config set dispatcher.resource_management.max_build_agents 1 >/dev/null
 for _ in $(seq 1 80); do
   v=$(wg service status --json 2>/dev/null | python3 -c 'import json,sys; c=json.load(sys.stdin)["coordinator"]; print(c["max_build_agents"],c["max_build_agents_source"])' 2>/dev/null || true)
@@ -113,17 +137,56 @@ for _ in $(seq 1 80); do
   sleep 0.1
 done
 [ "${v:-}" = '1 explicit' ] || loud_fail "explicit cap did not hot reload: ${v:-}"
-[ "$pid" = "$(python3 -c 'import json; print(json.load(open(".wg/service/state.json"))["pid"])')" ] \
-  || loud_fail "cap reload restarted daemon"
+# Leave one ordinary worker slot open so the next task reaches the independent
+# explicit build-heavy gate rather than stopping at the general worker cap.
+wg config set dispatcher.max_agents 5 >/dev/null
+for _ in $(seq 1 80); do
+  v=$(wg service status --json 2>/dev/null | python3 -c 'import json,sys; c=json.load(sys.stdin)["coordinator"]; print(c["max_agents"],c["max_build_agents"],c["max_build_agents_source"])' 2>/dev/null || true)
+  [ "$v" = '5 1 explicit' ] && break
+  sleep 0.1
+done
+[ "${v:-}" = '5 1 explicit' ] || loud_fail "explicit cap did not remain independent while worker slots increased: ${v:-}"
+
+# A fifth build is held by the explicit cap, then starts exactly once when the
+# explicit override hot-reloads from 1 to 5.
+wg add 'cargo build explicit hot slot' --id build-5 --priority 80 \
+  --exec "touch '$project/started-5'; while [ ! -e '$release' ]; do sleep 0.1; done" --exec-mode shell >/dev/null
+wg publish build-5 --only >/dev/null
+for _ in $(seq 1 100); do
+  deferred=$(wg service status --json 2>/dev/null | python3 -c 'import json,sys; c=json.load(sys.stdin)["coordinator"]; print(c["admission_deferred_tasks"], c.get("admission_deferred",[{}])[0].get("task_id",""))' 2>/dev/null || true)
+  [ "$deferred" = '1 build-5' ] && break
+  sleep 0.1
+done
+[ "${deferred:-}" = '1 build-5' ] || loud_fail "fifth build was not deferred by explicit cap: ${deferred:-}"
+python3 - <<'PY'
+import json
+rows=[json.loads(line) for line in open('.wg/graph.jsonl') if line.strip()]
+t=[r for r in rows if r.get('kind')=='task' and r['id']=='build-5'][-1]
+assert t.get('dispatch_count',0)==0,t
+PY
 
 lint=$(wg config lint --local)
 grep -q 'explicit build-heavy throttle' <<<"$lint" || loud_fail "lint omitted legacy-safe throttle warning: $lint"
 grep -q 'wg config set dispatcher.resource_management.max_build_agents inherit' <<<"$lint" \
   || loud_fail "lint omitted exact opt-out command: $lint"
+wg config set dispatcher.resource_management.max_build_agents 5 >/dev/null
+for _ in $(seq 1 100); do
+  [ -e started-5 ] && break
+  sleep 0.1
+done
+[ -e started-5 ] || loud_fail "explicit hot reload reported 5 but did not admit build-5"
+python3 - <<'PY'
+import json
+rows=[json.loads(line) for line in open('.wg/graph.jsonl') if line.strip()]
+t=[r for r in rows if r.get('kind')=='task' and r['id']=='build-5'][-1]
+assert t.get('dispatch_count',0)==1,t
+PY
+[ "$pid" = "$(python3 -c 'import json; print(json.load(open(".wg/service/state.json"))["pid"])')" ] \
+  || loud_fail "capacity hot reload restarted daemon"
 
 # An equal-valued explicit override still pins future capacity and therefore
 # remains visible with the same exact inheritance restoration command.
-wg config set dispatcher.resource_management.max_build_agents 4 >/dev/null
+wg config set dispatcher.resource_management.max_build_agents 5 >/dev/null
 lint=$(wg config lint --local)
 grep -q 'explicit cap pins build-heavy capacity' <<<"$lint" \
   || loud_fail "lint hid equal-valued explicit override: $lint"
@@ -134,10 +197,10 @@ grep -q 'max_build_agents inherit' <<<"$lint" \
 wg config set dispatcher.resource_management.max_build_agents inherit >/dev/null
 for _ in $(seq 1 80); do
   v=$(wg service status --json 2>/dev/null | python3 -c 'import json,sys; c=json.load(sys.stdin)["coordinator"]; print(c["max_build_agents"],c["max_build_agents_source"])' 2>/dev/null || true)
-  [ "$v" = '4 inherited-from-max-agents' ] && break
+  [ "$v" = '5 inherited-from-max-agents' ] && break
   sleep 0.1
 done
-[ "${v:-}" = '4 inherited-from-max-agents' ] || loud_fail "inherit remediation did not hot reload: ${v:-}"
+[ "${v:-}" = '5 inherited-from-max-agents' ] || loud_fail "inherit remediation did not hot reload: ${v:-}"
 ! grep -q 'max_build_agents' .wg/config.toml \
   || loud_fail "inherit remediation did not remove the explicit key"
 
@@ -148,18 +211,18 @@ for _ in $(seq 1 50); do
   sleep 0.1
 done
 kill -0 "$pid" 2>/dev/null && loud_fail "daemon did not stop before stale-state status check"
-wg config set dispatcher.max_agents 5 --no-reload >/dev/null
+wg config set dispatcher.max_agents 6 --no-reload >/dev/null
 payload=$(wg status --json)
 python3 - "$payload" <<'PY'
 import json,sys
 c=json.loads(sys.argv[1])['coordinator']
-assert c['max_agents']==5,c
-assert c['max_build_agents']==5,c
+assert c['max_agents']==6,c
+assert c['max_build_agents']==6,c
 assert c['max_build_agents_source']=='inherited-from-max-agents',c
-assert c['max_build_agents_remediation_command']=='wg config set dispatcher.max_agents 6 --local',c
+assert c['max_build_agents_remediation_command']=='wg config set dispatcher.max_agents 7 --local',c
 assert c['projected_headroom_bytes'] is None,c
 assert c['admission_deferred_tasks']==0,c
 assert c.get('admission_deferred',[])==[],c
 PY
 
-echo "PASS: fresh generators omit the cap; inherited/explicit/stopped-state capacities are current; exact inheritance remediation works"
+echo "PASS: inherited/explicit hot reloads enforce exact-once admission; generators, remediation, and stopped status pass"

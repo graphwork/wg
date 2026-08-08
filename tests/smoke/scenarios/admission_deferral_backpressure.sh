@@ -134,12 +134,12 @@ tui_dump="$scratch/tui-admission.txt"
 for _ in $(seq 1 50); do
   tmux capture-pane -p -t "$session" -S - >"$tui_dump" 2>&1 \
     || loud_fail "live TUI pane capture failed: $(cat "$tui_dump")"
-  grep -q 'B1/1' "$tui_dump" && grep -q '⊳1' "$tui_dump" \
+  grep -q 'B1/1' "$tui_dump" && grep -q 'D1' "$tui_dump" \
     && grep -q 'Build-heavy capacity: 1/1 (explicit)' "$tui_dump" && break
   sleep 0.1
 done
-grep -q 'B1/1' "$tui_dump" && grep -q '⊳1' "$tui_dump" \
-  || loud_fail "TUI dashboard pulse omitted exact active/max/deferred count: $(cat "$tui_dump")"
+grep -q 'B1/1' "$tui_dump" && grep -q 'D1' "$tui_dump" \
+  || loud_fail "TUI dashboard pulse omitted exact active/max/admission-deferred count: $(cat "$tui_dump")"
 grep -q 'Admission waiting' "$tui_dump" \
   && grep -q 'b-deferred-build' "$tui_dump" \
   && grep -q 'build-heavy admission budget full (1/1)' "$tui_dump" \
@@ -281,7 +281,7 @@ sleep 1
 crash_tui="$scratch/tui-crash-stale-admission.txt"
 tmux capture-pane -p -t "$crash_session" -S - >"$crash_tui" 2>&1 \
   || loud_fail "crash-state TUI capture failed: $(cat "$crash_tui")"
-! grep -q '⊳1' "$crash_tui" \
+! grep -q 'D1' "$crash_tui" \
   || loud_fail "TUI pulse exposed orphaned deferred count after PID reuse: $(cat "$crash_tui")"
 ! grep -q 'Admission waiting' "$crash_tui" \
   || loud_fail "TUI inspector exposed orphaned wait after PID reuse: $(cat "$crash_tui")"

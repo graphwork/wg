@@ -2443,6 +2443,9 @@ fn cached_activity_pulse(app: &VizApp, symbols: SymbolMode) -> String {
             if app.task_counts.ready > 0 {
                 pulse.push_str(&format!("⊳{}", app.task_counts.ready));
             }
+            if !app.service_health.admission_deferred.is_empty() {
+                pulse.push_str(&format!("D{}", app.service_health.admission_deferred.len()));
+            }
             if app.vitals.running > 0 {
                 pulse.push_str(&format!("▸{}", app.vitals.running));
             }
@@ -2472,6 +2475,9 @@ fn cached_activity_pulse(app: &VizApp, symbols: SymbolMode) -> String {
             }
             if app.task_counts.ready > 0 {
                 pulse.push_str(&format!("Q{}", app.task_counts.ready));
+            }
+            if !app.service_health.admission_deferred.is_empty() {
+                pulse.push_str(&format!("D{}", app.service_health.admission_deferred.len()));
             }
             if app.vitals.running > 0 {
                 pulse.push_str(&format!("R{}", app.vitals.running));
