@@ -426,7 +426,11 @@ fn gather_coordinator_info(dir: &Path) -> CoordinatorInfo {
         let admission_authoritative = crate::commands::service::ServiceState::load(dir)
             .ok()
             .flatten()
-            .is_some_and(|state| crate::commands::is_process_alive(state.pid));
+            .is_some_and(|state| {
+                state.pid_start_identity.is_some()
+                    && state.pid_start_identity
+                        == worksgood::service_identity::pid_start_identity(state.pid)
+            });
         let (admission_deferred_tasks, admission_deferred) = if admission_authoritative {
             (coord.admission_deferred_tasks, coord.admission_deferred)
         } else {

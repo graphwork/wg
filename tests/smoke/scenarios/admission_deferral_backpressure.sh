@@ -248,6 +248,14 @@ for _ in $(seq 1 50); do
   sleep 0.1
 done
 cp "$scratch/stale-deferred-coordinator.json" .wg/service/coordinator-state-0.json
+# Model PID reuse by pointing stale state at this live shell while retaining
+# the dead daemon's OS birth token. Liveness alone must not authorize it.
+python3 - <<'PY'
+import json,os
+p='.wg/service/state.json'
+x=json.load(open(p)); x['pid']=os.getppid(); x['supervisor_pid']=None
+open(p,'w').write(json.dumps(x))
+PY
 crash_status=$(wg status --json)
 python3 - "$crash_status" <<'PY'
 import json,sys
@@ -258,9 +266,10 @@ PY
 crash_service=$(wg service status --json)
 python3 - "$crash_service" <<'PY'
 import json,sys
-x=json.loads(sys.argv[1])
-assert 'coordinator' not in x,x
+x=json.loads(sys.argv[1]); c=x['coordinator']
+assert c['admission_deferred_tasks']==0,c
+assert c['admission_deferred']==[],c
 assert 'b-deferred-build' not in sys.argv[1],x
 PY
 
-echo "PASS: live daemon reports admission backpressure, exact-once successful work, and suppresses orphaned deferral state after a hard crash"
+echo "PASS: live admission UI and exact-once work pass; hard-crash/PID-reuse orphaned deferrals are suppressed"

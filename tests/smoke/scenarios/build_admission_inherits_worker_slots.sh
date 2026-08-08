@@ -91,6 +91,7 @@ assert c['max_agents']==3,c
 assert c['build_heavy_active']==3,c
 assert c['max_build_agents']==3,c
 assert c['max_build_agents_source']=='inherited-from-max-agents',c
+assert c['max_build_agents_remediation_command']=='wg config set dispatcher.max_agents 4 --local',c
 assert c['disk_sentinel_enabled'] is False,c
 assert c['projected_headroom_bytes'] is None,c
 PY
@@ -155,6 +156,7 @@ c=json.loads(sys.argv[1])['coordinator']
 assert c['max_agents']==5,c
 assert c['max_build_agents']==5,c
 assert c['max_build_agents_source']=='inherited-from-max-agents',c
+assert c['max_build_agents_remediation_command']=='wg config set dispatcher.max_agents 6 --local',c
 assert c['projected_headroom_bytes'] is None,c
 assert c['admission_deferred_tasks']==0,c
 assert c.get('admission_deferred',[])==[],c

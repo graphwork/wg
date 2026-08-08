@@ -26,7 +26,7 @@ Validation run in the task worktree on 2026-08-08 with the pinned Rust 1.96.0 to
 Both commands ran with worker-control environment variables unset and the candidate binaries first on `PATH`.
 
 - `tests/smoke/scenarios/build_admission_inherits_worker_slots.sh` — **PASS**: fresh generators omit the cap; inherited/explicit/stopped-state capacities are current; exact inheritance remediation works.
-- `tests/smoke/scenarios/admission_deferral_backpressure.sh` — **PASS**: live daemon reports admission backpressure, exact-once successful work, and suppresses an orphaned deferred snapshot after a hard daemon crash. The scenario drives a real tmux TUI and asserts CLI, JSON, worksgood, dashboard, task-inspector, no-attempt neutrality, and disabled-sentinel output.
+- `tests/smoke/scenarios/admission_deferral_backpressure.sh` — **PASS**: live admission UI and exact-once work pass; hard-crash/PID-reuse orphaned deferrals are suppressed (including a live unrelated PID with a mismatched OS birth token). The scenario drives a real tmux TUI and asserts CLI, JSON, worksgood, dashboard, task-inspector, no-attempt neutrality, and disabled-sentinel output.
 
 ## Scope
 

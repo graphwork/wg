@@ -8626,7 +8626,10 @@ fn admission_waiting_reason(workgraph_dir: &Path, task_id: &str) -> Option<Strin
     let service = crate::commands::service::ServiceState::load(workgraph_dir)
         .ok()
         .flatten()?;
-    crate::commands::is_process_alive(service.pid).then_some(())?;
+    (service.pid_start_identity.is_some()
+        && service.pid_start_identity
+            == worksgood::service_identity::pid_start_identity(service.pid))
+    .then_some(())?;
     crate::commands::service::CoordinatorState::load_for(workgraph_dir, 0)?
         .admission_deferred
         .into_iter()
@@ -19052,7 +19055,11 @@ impl VizApp {
         };
 
         // 2. Check if PID is alive
-        if !is_service_alive(state.pid) {
+        if !is_service_alive(state.pid)
+            || state.pid_start_identity.is_none()
+            || state.pid_start_identity
+                != worksgood::service_identity::pid_start_identity(state.pid)
+        {
             self.service_health.level = ServiceHealthLevel::Red;
             self.service_health.label = "DOWN".to_string();
             self.service_health.pid = Some(state.pid);

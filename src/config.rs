@@ -5480,23 +5480,36 @@ pub enum ConfigSource {
     Default,
 }
 
-/// Return a scope-qualified command that removes an explicit build-heavy cap
-/// from the layer that currently wins. Project profiles do not overlay
-/// dispatcher resource-management keys, so an explicit winner is global or
-/// local; the local fallback keeps the command deterministic for malformed or
-/// concurrently-changing config.
+/// Return a scope-qualified command that removes an explicit build-heavy cap,
+/// or genuinely increases worker slots when the cap is inherited. Project
+/// profiles do not overlay dispatcher resource-management keys, so a winning
+/// source is global or local; the local fallback is deterministic for malformed
+/// or concurrently-changing config.
 pub fn max_build_agents_remediation_command(workgraph_dir: &Path) -> String {
-    const PREFIX: &str = "wg config set dispatcher.resource_management.max_build_agents inherit";
-    let source = Config::load_with_sources(workgraph_dir)
-        .ok()
-        .and_then(|(_, sources)| {
-            sources
-                .get("dispatcher.resource_management.max_build_agents")
-                .copied()
-        });
-    match source {
-        Some(ConfigSource::Global) => format!("{PREFIX} --global"),
-        _ => format!("{PREFIX} --local"),
+    let (config, sources) = Config::load_with_sources(workgraph_dir)
+        .unwrap_or_else(|_| (Config::default(), BTreeMap::new()));
+    let explicit = config
+        .coordinator
+        .resource_management
+        .max_build_agents
+        .is_some();
+    let key = if explicit {
+        "dispatcher.resource_management.max_build_agents"
+    } else {
+        "dispatcher.max_agents"
+    };
+    let scope = if matches!(sources.get(key), Some(ConfigSource::Global)) {
+        "--global"
+    } else {
+        "--local"
+    };
+    if explicit {
+        format!("wg config set dispatcher.resource_management.max_build_agents inherit {scope}")
+    } else {
+        format!(
+            "wg config set dispatcher.max_agents {} {scope}",
+            config.coordinator.max_agents.saturating_add(1)
+        )
     }
 }
 

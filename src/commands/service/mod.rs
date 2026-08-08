@@ -787,12 +787,14 @@ pub fn coordinator_state_path(dir: &Path, coordinator_id: u32) -> PathBuf {
 
 /// Admission deferral is a live read model, not durable task truth. A crashed
 /// daemon can leave its coordinator snapshot behind, so every status reader
-/// suppresses the waiting rows unless the matching service PID is still live.
+/// suppresses waiting rows unless the PID's OS birth identity still matches the
+/// authenticated service state (plain PID liveness is never enough).
 pub(crate) fn suppress_stale_admission(dir: &Path, coordinator: &mut CoordinatorState) {
-    let live = ServiceState::load(dir)
-        .ok()
-        .flatten()
-        .is_some_and(|state| is_process_alive(state.pid));
+    let live = ServiceState::load(dir).ok().flatten().is_some_and(|state| {
+        state.pid_start_identity.is_some()
+            && state.pid_start_identity
+                == worksgood::service_identity::pid_start_identity(state.pid)
+    });
     if !live {
         coordinator.admission_deferred_tasks = 0;
         coordinator.admission_deferred_reason = None;
