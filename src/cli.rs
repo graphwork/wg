@@ -2424,14 +2424,15 @@ pub enum Commands {
         command: ServerCommands,
     },
 
-    /// Interactive configuration wizard for first-time setup
+    /// Configure and activate an exact Pi route, with bounded handler/auth/model preflight
     Setup {
         /// Repair or migrate WorksGood-managed agent guides in this project
         /// and ~/.claude/CLAUDE.md, preserving all user-authored surrounding text.
         #[arg(long)]
         repair_guides: bool,
         /// The supported route is `pi`. Writes exact strong/weak Pi routes and reasoning;
-        /// provider login/model discovery remain in Pi. Use with `--yes` for non-interactive setup.
+        /// global/both scope also activates the `pi` profile. Setup checks handler presence,
+        /// but provider login/model discovery remain in Pi. Use with `--yes` for non-interactive setup.
         #[arg(long)]
         route: Option<String>,
         /// [DEPRECATED/UNSUPPORTED] WG no longer selects providers; use Pi.

@@ -13,6 +13,7 @@ use worksgood::config::{Config, EndpointConfig, ModelRegistryEntry, Tier};
 use worksgood::config_defaults::{RouteParams, SetupRoute, config_for_route};
 use worksgood::models::ModelRegistry;
 use worksgood::notify::config as notify_config;
+use worksgood::profile::named as named_profile;
 
 use crate::commands::login::{
     self, ConfigScope as LoginConfigScope, OPENROUTER_ENV_VAR, OpenRouterCredentialSource,
@@ -1407,6 +1408,7 @@ fn run_route(args: &SetupArgs) -> Result<()> {
     let route = args.resolved_route().ok_or_else(|| {
         anyhow::anyhow!("--route is required for non-interactive setup. The supported route is: pi")
     })?;
+    let preflight = inspect_pi_setup_readiness();
 
     // Required-input validation per route.
     match route {
@@ -1478,6 +1480,7 @@ fn run_route(args: &SetupArgs) -> Result<()> {
     let local_path = std::env::current_dir()
         .map(|p| p.join(".wg").join("config.toml"))
         .unwrap_or_else(|_| PathBuf::from(".wg/config.toml"));
+    let write_paths = setup_write_paths(scope, route, &global_path, &local_path)?;
 
     if args.dry_run {
         println!(
@@ -1485,7 +1488,7 @@ fn run_route(args: &SetupArgs) -> Result<()> {
             route.as_name(),
             scope.as_name()
         );
-        for path in scope_paths(scope, &global_path, &local_path) {
+        for path in &write_paths {
             let existing = load_config_at(&path).unwrap_or_default();
             let diff = diff_summary(&existing, &new_config);
             if !path.exists() {
@@ -1508,18 +1511,27 @@ fn run_route(args: &SetupArgs) -> Result<()> {
         let toml_str =
             toml::to_string_pretty(&new_config).map_err(|e| anyhow::anyhow!("serialize: {}", e))?;
         println!("{}", toml_str);
+        println!("---");
+        let plugin_status = inspect_setup_pi_plugin();
+        print_pi_setup_preflight(&preflight, None, Some(&plugin_status));
+        if matches!(scope, SetupScope::Global | SetupScope::Both) {
+            println!(
+                "Apply would activate profile 'pi' for global/both scope; --dry-run changed nothing."
+            );
+        } else {
+            println!(
+                "Apply would select the project-local Pi route without changing the global active-profile; --dry-run changed nothing."
+            );
+        }
         return Ok(());
     }
 
-    // Write to each target path indicated by scope. Backup before write.
-    let mut written = Vec::new();
-    for path in scope_paths(scope, &global_path, &local_path) {
-        if path.exists() {
-            backup_config_at(&path)?;
-        }
-        save_config_at(&new_config, &path)?;
-        written.push(path);
-    }
+    // Prepare the embedded plugin before committing route/profile state. A
+    // plugin failure is therefore a pre-activation failure, not a half-ready
+    // successful setup.
+    let plugin_status = ensure_setup_pi_plugin()?;
+    let (written, active_profile, _setup_snapshot) =
+        apply_setup_transaction(&new_config, &write_paths, scope, route)?;
 
     let primary = written
         .first()
@@ -1541,13 +1553,216 @@ fn run_route(args: &SetupArgs) -> Result<()> {
         }
     }
 
+    crate::commands::profile_cmd::trigger_daemon_reload_checked(
+        &setup_graph_dir(),
+        active_profile.then_some(route.as_name()),
+    )?;
+
     println!();
     println!("{}", format_delta_summary(&new_config));
-    println!("Pi owns provider login, endpoints, model availability, and model discovery.");
+    print_pi_setup_preflight(&preflight, Some(active_profile), Some(&plugin_status));
     println!(
-        "Use Pi's model picker/login to change those details; WG stores only exact role routes and reasoning."
+        "The live provider login and exact model were NOT VERIFIED: doing so would require a Pi-owned credential flow and a provider request."
+    );
+    println!(
+        "Next: run `pi`, use `/login` if needed, select the configured provider/model, and send a test prompt."
+    );
+    println!(
+        "The first WG LLM-backed task will retain the exact configured `pi:` route; no cross-provider fallback is selected."
     );
     Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct PiSetupReadiness {
+    binary_path: Option<PathBuf>,
+}
+
+fn inspect_pi_setup_readiness() -> PiSetupReadiness {
+    let binary_path = worksgood::executor_discovery::discover()
+        .into_iter()
+        .find(|executor| executor.name == "pi")
+        .and_then(|executor| executor.binary_path);
+    PiSetupReadiness { binary_path }
+}
+
+#[derive(Debug)]
+struct SetupFileSnapshot {
+    path: PathBuf,
+    content: Option<Vec<u8>>,
+}
+
+#[derive(Debug)]
+struct SetupStateSnapshot {
+    files: Vec<SetupFileSnapshot>,
+    previous_active: Option<String>,
+    changes_global_profile: bool,
+}
+
+fn apply_setup_transaction(
+    config: &Config,
+    paths: &[PathBuf],
+    scope: SetupScope,
+    route: SetupRoute,
+) -> Result<(Vec<PathBuf>, bool, SetupStateSnapshot)> {
+    apply_setup_transaction_with_profile_io(
+        config,
+        paths,
+        scope,
+        route,
+        named_profile::active,
+        |name| named_profile::set_active(name.as_deref()),
+    )
+}
+
+fn apply_setup_transaction_with_profile_io<ReadActive, WriteActive>(
+    config: &Config,
+    paths: &[PathBuf],
+    scope: SetupScope,
+    route: SetupRoute,
+    mut read_active: ReadActive,
+    mut write_active: WriteActive,
+) -> Result<(Vec<PathBuf>, bool, SetupStateSnapshot)>
+where
+    ReadActive: FnMut() -> Result<Option<String>>,
+    WriteActive: FnMut(Option<String>) -> Result<()>,
+{
+    let files = paths
+        .iter()
+        .map(|path| {
+            let content = if path.exists() {
+                Some(fs::read(path).with_context(|| {
+                    format!("Failed to snapshot setup target {}", path.display())
+                })?)
+            } else {
+                None
+            };
+            Ok(SetupFileSnapshot {
+                path: path.clone(),
+                content,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let changes_global_profile = matches!(scope, SetupScope::Global | SetupScope::Both);
+    let previous_active = if changes_global_profile {
+        read_active()?
+    } else {
+        None
+    };
+    let snapshot = SetupStateSnapshot {
+        files,
+        previous_active,
+        changes_global_profile,
+    };
+
+    let apply_result = (|| -> Result<bool> {
+        for path in paths {
+            if path.exists() {
+                backup_config_at(path)?;
+            }
+            save_config_at(config, path)?;
+        }
+        if changes_global_profile {
+            write_active(Some(route.as_name().to_string()))?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    })();
+
+    match apply_result {
+        Ok(active) => Ok((paths.to_vec(), active, snapshot)),
+        Err(error) => {
+            let rollback_errors = restore_setup_state_with_profile_io(&snapshot, &mut write_active);
+            if rollback_errors.is_empty() {
+                Err(error.context(
+                    "setup config/profile activation failed; all setup writes were rolled back",
+                ))
+            } else {
+                Err(error.context(format!(
+                    "setup config/profile activation failed and rollback was incomplete: {}",
+                    rollback_errors.join("; ")
+                )))
+            }
+        }
+    }
+}
+
+fn restore_setup_state_with_profile_io<WriteActive>(
+    snapshot: &SetupStateSnapshot,
+    mut write_active: WriteActive,
+) -> Vec<String>
+where
+    WriteActive: FnMut(Option<String>) -> Result<()>,
+{
+    let mut rollback_errors = Vec::new();
+    for file in &snapshot.files {
+        let restored = match file.content.as_ref() {
+            Some(content) => fs::write(&file.path, content)
+                .with_context(|| format!("restore setup target {}", file.path.display())),
+            None if file.path.exists() => fs::remove_file(&file.path)
+                .with_context(|| format!("remove setup target {}", file.path.display())),
+            None => Ok(()),
+        };
+        if let Err(error) = restored {
+            rollback_errors.push(error.to_string());
+        }
+    }
+    if snapshot.changes_global_profile
+        && let Err(error) = write_active(snapshot.previous_active.clone())
+    {
+        rollback_errors.push(format!("restore active-profile: {error}"));
+    }
+    rollback_errors
+}
+
+fn inspect_setup_pi_plugin() -> String {
+    let status = worksgood::pi_plugin::status();
+    if status.ready && status.console_wired {
+        format!("ready (compat {})", status.compat)
+    } else {
+        format!(
+            "NOT READY (build={}, console={}); run `wg pi-plugin install`, then `wg pi-plugin status`",
+            if status.ready { "ready" } else { "missing" },
+            if status.console_wired {
+                "wired"
+            } else {
+                "not-wired"
+            }
+        )
+    }
+}
+
+fn ensure_setup_pi_plugin() -> Result<String> {
+    worksgood::pi_plugin::ensure_pi_plugin(worksgood::pi_plugin::EnsureMode::Console)
+        .context("could not prepare pi-worksgood; run `wg pi-plugin install`, then rerun setup")?;
+    Ok(inspect_setup_pi_plugin())
+}
+
+fn print_pi_setup_preflight(
+    preflight: &PiSetupReadiness,
+    active_profile: Option<bool>,
+    plugin_status: Option<&str>,
+) {
+    println!();
+    println!("Setup readiness preflight (bounded; no provider request was made):");
+    match preflight.binary_path.as_ref() {
+        Some(path) => println!("  Pi handler: AVAILABLE ({})", path.display()),
+        None => println!(
+            "  Pi handler: UNAVAILABLE on PATH; install Pi, then rerun `wg setup` (the exact route remains selected and no fallback was chosen)."
+        ),
+    }
+    match active_profile {
+        Some(true) => println!("  Profile: ACTIVE (`pi`; ~/.wg/active-profile updated)"),
+        Some(false) => println!(
+            "  Profile: project-local route is effective; global active-profile intentionally unchanged by --scope local"
+        ),
+        None => println!("  Profile: not activated during --dry-run"),
+    }
+    if let Some(status) = plugin_status {
+        println!("  pi-worksgood: {status}");
+    }
+    println!("  Pi auth/model: NOT VERIFIED (Pi owns login and model discovery)");
 }
 
 /// Return the file paths that should be written for a given scope.
@@ -1557,6 +1772,22 @@ fn scope_paths(scope: SetupScope, global_path: &Path, local_path: &Path) -> Vec<
         SetupScope::Local => vec![local_path.to_path_buf()],
         SetupScope::Both => vec![global_path.to_path_buf(), local_path.to_path_buf()],
     }
+}
+
+fn setup_write_paths(
+    scope: SetupScope,
+    route: SetupRoute,
+    global_path: &Path,
+    local_path: &Path,
+) -> Result<Vec<PathBuf>> {
+    let mut paths = scope_paths(scope, global_path, local_path);
+    if matches!(scope, SetupScope::Global | SetupScope::Both) {
+        // The active pointer and its reusable definition must agree. Persisting
+        // the selected exact route into `pi.toml` prevents a later profile
+        // reapply/restart from replacing a custom setup route with starter IDs.
+        paths.push(named_profile::profile_path(route.as_name())?);
+    }
+    Ok(paths)
 }
 
 /// Load the Config at a specific path, or `None` if the file does not exist.
@@ -1800,6 +2031,7 @@ pub fn run() -> Result<()> {
     let route = route_choices[route_idx - 1];
 
     debug_assert_eq!(route, SetupRoute::Pi);
+    let preflight = inspect_pi_setup_readiness();
     let provider = "pi".to_string();
     let executor = "pi".to_string();
     println!();
@@ -1934,22 +2166,20 @@ pub fn run() -> Result<()> {
         config.tiers = auto_map_tiers(&choices.model_registry_entries);
     }
 
-    match scope {
-        SetupScope::Local => {
-            let local_dir = target_path
-                .parent()
-                .map(Path::to_path_buf)
-                .unwrap_or_else(|| PathBuf::from(".wg"));
-            config.save(&local_dir)?;
-        }
-        _ => config.save_global()?,
-    }
-
-    record_setup_history(&choices, "cli");
-
-    // Post-save: guide skill/bundle installation based on executor
+    // Plugin/skill preparation is a pre-activation gate: a failure cannot
+    // leave newly-selected config/profile state behind.
     println!();
     let skill_status = guide_skill_bundle_install(&choices.executor)?;
+
+    let write_paths = setup_write_paths(scope, route, &global_path, &local_path)?;
+    let (_, active_profile, _setup_snapshot) =
+        apply_setup_transaction(&config, &write_paths, scope, route)?;
+
+    crate::commands::profile_cmd::trigger_daemon_reload_checked(
+        &setup_graph_dir(),
+        active_profile.then_some(route.as_name()),
+    )?;
+    record_setup_history(&choices, "cli");
 
     // Configure ~/.claude/CLAUDE.md for Claude Code executor
     let claude_md_status = if choices.executor == "claude" {
@@ -1966,7 +2196,7 @@ pub fn run() -> Result<()> {
     let notify_status = guide_notification_setup()?;
 
     println!();
-    println!("You're all set! Here's what we configured:");
+    println!("Setup configuration applied. Here's what we configured:");
     println!();
     println!("  Provider:       {}", choices.provider);
     println!("  Executor:       {}", choices.executor);
@@ -2001,6 +2231,17 @@ pub fn run() -> Result<()> {
             scope,
         )?;
     }
+    let plugin_status = inspect_setup_pi_plugin();
+    print_pi_setup_preflight(&preflight, Some(active_profile), Some(&plugin_status));
+    println!(
+        "The live provider login and exact model were NOT VERIFIED: doing so would require a Pi-owned credential flow and a provider request."
+    );
+    println!(
+        "Next: run `pi`, use `/login` if needed, select the configured provider/model, and send a test prompt."
+    );
+    println!(
+        "The first WG LLM-backed task will retain the exact configured `pi:` route; no cross-provider fallback is selected."
+    );
     println!();
     println!("Next verification commands:");
     println!("  wg setup --help");
@@ -2688,39 +2929,26 @@ fn guide_skill_bundle_install(executor: &str) -> Result<String> {
             }
         }
         "pi" => {
-            // Wiring point #1 (onboarding): choosing pi declares "I want pi", so
-            // place the version-locked plugin + wire the global pi settings entry.
-            // ensure-pi-plugin is idempotent and headless-safe.
-            println!("A human `pi` console needs pi-worksgood to get the wg tools + /wg commands.");
-            let install = Confirm::new()
-                .with_prompt("Install pi-worksgood for the Pi console? (recommended)")
-                .default(true)
-                .interact()?;
-            if install {
-                match worksgood::pi_plugin::ensure_pi_plugin(
-                    worksgood::pi_plugin::EnsureMode::Console,
-                ) {
-                    Ok(p) => {
-                        println!("  Installed pi-worksgood (compat {}).", p.compat);
-                        if p.legacy_package_accepted {
-                            println!(
-                                "  Retained the legacy @worksgood/wg-pi-plugin package record with extension loading disabled; remove it after verification with `pi remove npm:@worksgood/wg-pi-plugin`."
-                            );
-                        } else if p.legacy_settings_migrated {
-                            println!(
-                                "  Migrated the legacy managed extension path to pi-worksgood."
-                            );
-                        }
-                        Ok(format!("pi-worksgood installed ✓ (compat {})", p.compat))
+            // Choosing Pi declares "I want Pi". This idempotent, embedded,
+            // headless-safe ensure is part of successful setup rather than an
+            // optional follow-up that can leave the selected route half-ready.
+            println!("Ensuring pi-worksgood for the Pi console and WG tools...");
+            match worksgood::pi_plugin::ensure_pi_plugin(worksgood::pi_plugin::EnsureMode::Console)
+            {
+                Ok(p) => {
+                    println!("  Installed pi-worksgood (compat {}).", p.compat);
+                    if p.legacy_package_accepted {
+                        println!(
+                            "  Retained the legacy @worksgood/wg-pi-plugin package record with extension loading disabled; remove it after verification with `pi remove npm:@worksgood/wg-pi-plugin`."
+                        );
+                    } else if p.legacy_settings_migrated {
+                        println!("  Migrated the legacy managed extension path to pi-worksgood.");
                     }
-                    Err(e) => {
-                        println!("  Install failed: {e}");
-                        Ok("pi-worksgood install FAILED — run `wg pi-plugin install`".to_string())
-                    }
+                    Ok(format!("pi-worksgood installed ✓ (compat {})", p.compat))
                 }
-            } else {
-                println!("  You can install it later with: wg pi-plugin install");
-                Ok("pi-worksgood NOT installed — run `wg pi-plugin install`".to_string())
+                Err(error) => Err(error).context(
+                    "could not prepare pi-worksgood; run `wg pi-plugin install`, then rerun setup",
+                ),
             }
         }
         _ => {
@@ -4468,6 +4696,67 @@ mod tests {
         let path = tmp.path().join("nope.toml");
         let loaded = load_config_at(&path).unwrap();
         assert_eq!(loaded.agent.model, Config::default().agent.model);
+    }
+
+    #[test]
+    fn test_setup_transaction_rolls_back_an_earlier_config_write() {
+        let tmp = TempDir::new().unwrap();
+        let first = tmp.path().join("first.toml");
+        std::fs::write(&first, b"original\n").unwrap();
+        let invalid_parent = tmp.path().join("not-a-directory");
+        std::fs::write(&invalid_parent, b"file\n").unwrap();
+        let second = invalid_parent.join("config.toml");
+        let config = config_for_route(SetupRoute::Pi, RouteParams::default());
+
+        let error = apply_setup_transaction(
+            &config,
+            &[first.clone(), second],
+            SetupScope::Local,
+            SetupRoute::Pi,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("rolled back"), "{error:#}");
+        assert_eq!(std::fs::read(&first).unwrap(), b"original\n");
+    }
+
+    #[test]
+    fn test_setup_transaction_restores_global_profile_after_activation_failure() {
+        use std::cell::{Cell, RefCell};
+        use std::rc::Rc;
+
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+        std::fs::write(&config_path, b"original\n").unwrap();
+        let config = config_for_route(SetupRoute::Pi, RouteParams::default());
+        let active = Rc::new(RefCell::new(Some("codex".to_string())));
+        let write_calls = Rc::new(Cell::new(0usize));
+        let read_state = Rc::clone(&active);
+        let write_state = Rc::clone(&active);
+        let write_count = Rc::clone(&write_calls);
+
+        let error = apply_setup_transaction_with_profile_io(
+            &config,
+            std::slice::from_ref(&config_path),
+            SetupScope::Global,
+            SetupRoute::Pi,
+            move || Ok(read_state.borrow().clone()),
+            move |name| {
+                *write_state.borrow_mut() = name;
+                let call = write_count.get();
+                write_count.set(call + 1);
+                if call == 0 {
+                    anyhow::bail!("injected active-profile write failure");
+                }
+                Ok(())
+            },
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("rolled back"), "{error:#}");
+        assert_eq!(std::fs::read(&config_path).unwrap(), b"original\n");
+        assert_eq!(active.borrow().as_deref(), Some("codex"));
+        assert_eq!(write_calls.get(), 2, "activation + rollback restore");
     }
 
     // ── run_route writes only the requested scope ────────────────────
