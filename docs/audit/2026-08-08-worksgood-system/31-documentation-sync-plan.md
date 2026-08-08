@@ -35,6 +35,23 @@ The phases intentionally separate **F** factual synchronization, **D** human dec
 
 **`[RECOMMENDATION]` Priority:** immediately correct or visibly qualify false high-impact operator/security claims (`WGDR-003`, `008`–`012`, `017`, `029`–`042`, `049`) while routing contested semantics (`WGDR-001`, `002`, `005`, `006`, `013`–`016`, `021`, `028`, `035`, `040`, `042`, and the `WGDR-T*` terms) through the decision queue in §4. No bulk move, archive, or historical rewrite should precede the manifests and owner decisions.
 
+**`[FACT]` Requirement-to-plan map:** this table is navigation, not evidence that the recommendations are implemented.
+
+| Required roadmap element | Where this artifact supplies it |
+|---|---|
+| target authority hierarchy | §2.2 policy/behavior/support/evidence join |
+| canonical indexes and glossary | §2.3 estate manifest, product-contract, glossary and evidence index |
+| target document architecture | §2.4 |
+| what to update, decide, implement, generate, test and archive | §§3.3–3.9, with F/D/I/S/V types |
+| migration phases and dependency order | §§3.3–3.9 and §6.1 |
+| contradiction traceability | WGDR ranges in every backlog table; full program acceptance in §5.3 |
+| quick corrections versus structural work | §§3.4 and 3.6–3.8 |
+| code behavior versus human adjudication | §§3.5 and 4.1–4.2 |
+| owners/domains | §2.5 |
+| automated drift-prevention checks | §3.9 |
+| acceptance and rollback/archive policy | §§5.2–5.3 |
+| uncertainty and resolved safeguards | §4.3 |
+
 ## 2. Scope, authority map, and target document architecture
 
 ### 2.1 Scope and method
