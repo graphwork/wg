@@ -4,7 +4,7 @@
 
 **Audit snapshot:** `b0892ea7496fd2cc8f641417a3d8e33ca9add369`
 
-**Evidence checked through:** 2026-08-08T12:35:45Z
+**Evidence checked through:** 2026-08-08T12:39:41Z
 
 **Artifact status:** leaf audit; snapshot-current
 
@@ -78,14 +78,16 @@ tasks, followed by successful claims of (a) an unpublished paused draft and
 second. Dependencies are checked, but these two gates are not
 (`src/commands/claim.rs:25-78` versus `src/query.rs:306-343`).
 
-**`[CONTRADICTION]` `ORCH-006/007/008`.** The completion and cycle implementation
-has moved to immutable, publication-derived completion and fenced reopen
-intents, but portions of CLI help, status comments, function names/messages,
-and integration tests still describe direct terminal mutation and immediate
+**`[CONTRADICTION]` `ORCH-006/007/008/016/017`.** The completion and cycle
+implementation has moved to required-success dependencies, immutable
+publication-derived completion, hidden candidate evaluation, and fenced reopen
+intents. Portions of CLI help, user manuals, smoke contracts, status comments,
+function names/messages, and integration tests still describe terminal-failure
+unblocking, direct terminal mutation, synthetic evaluation, and immediate
 reopening. `wg retry` also accepts Abandoned tasks even though its help omits
 them and one integration test requires refusal. The new authority is internally
-stronger, but the transition is incomplete at its operator and verification
-surfaces.
+stronger, but the transition is incomplete at operator, documentation, and
+verification surfaces.
 
 **`[INFERENCE]`** Overall confidence is **high** in the mapped static authority
 and the two manual CLI findings, **medium** in daemon/process behavior because
@@ -116,6 +118,8 @@ bypass.
 | Completion | `completion_submit`, `completion_land`, `completion_done` | **`[FACT]` E2:** immutable manifest and exact review receipts precede publication and derived Done. |
 | Retry/recovery | `retry`, `reopen`, `recover`, `fail` command modules | **`[FACT]` E2:** durable intent fences old ownership; exact release enables one new generation; batch recovery plans first. |
 | Wait/cycle/cron | `wait.rs`; `graph.rs:3044-3640`; `cron.rs:1-260`; coordinator phases 2.5-2.95 | **`[FACT]` E2:** parked attempts and condition matching, SCC/implicit cycles, failure restart budgets, recurring generations. |
+| User documentation | `docs/README.md:60-80,190-240`; `docs/manual/02-task-graph.md:65-125,230-280`; `docs/manual/04-coordination.md:145-225` | **`[DOC-CLAIM]` E4:** staged add is current, but state/dependency/completion/wrapper/evaluation narratives retain retired semantics. |
+| Smoke contracts | `tests/smoke/manifest.toml:943-975,2094-2135,2925-3036` | **`[FACT]` E3:** strong real-flow inventory spans legacy Done, reopen, worktrees, cron, v2 completion, and current manifest completion; sampled only, not executed here. |
 
 ### 2.2 Lifecycle diagram
 
@@ -624,6 +628,60 @@ source and targeted tests rather than this human trace.
 - **Owner/domain:** completion protocol and worker-control API.
 - **Linked recommendation:** `ORCH-REC-010` (P0).
 
+### `ORCH-016` — user manuals teach lifecycle behavior opposite to current authority
+
+- **Label/state:** **`[CONTRADICTION]`**, current/open documentation drift.
+- **Risk:** **S2 Medium**, likely; high confidence in the text/source conflict.
+- **Affected boundary:** operators learning dependencies, waits, completion,
+  crash handling, cycles, assignment, and evaluation.
+- **Documentation claims:** the task-graph manual says Done, Failed, and
+  Abandoned all unblock dependents; Waiting resumes to InProgress;
+  PendingValidation uses `wg approve`/`wg reject`; and cycle convergence is
+  `wg done --converged` (`docs/manual/02-task-graph.md:65-125,230-280`). The
+  coordination manual says a clean wrapper exit calls direct `wg done`,
+  auto-assignment and evaluation create graph meta-tasks, and failed work may be
+  triaged directly to Done (`docs/manual/04-coordination.md:145-215`). The docs
+  landing page repeats PendingValidation/approve/reject and shows bare Done as
+  the completion journey (`docs/README.md:60-80,190-240`).
+- **Current implementation:** only Done satisfies ordinary required-success
+  dependencies; `WaitSatisfied` projects Open for redispatch; root Done rejects
+  convergence/bypass flags and requires immutable candidate/publication; current
+  evaluation is hidden and candidate-bound rather than routine synthetic graph
+  work (`src/graph.rs:517-530`; `src/query.rs:410-460`;
+  `src/lifecycle.rs:821-835`; `src/main.rs:1261-1275`;
+  `src/commands/service/coordinator.rs:2508-2535,2619-2633`).
+- **Counterevidence:** staged `wg add`/`wg publish` prose in `docs/README.md:190-210`
+  agrees with current creation behavior. The manuals remain valuable historical
+  explanations; the conflict is not universal staleness.
+- **Owner/domain:** user documentation and orchestration.
+- **Linked recommendations:** `ORCH-REC-002`, `ORCH-REC-008`.
+
+### `ORCH-017` — smoke inventory straddles incompatible completion generations
+
+- **Label/state:** **`[FACT]` + `[INFERENCE]`**, mixed executable specifications;
+  inspected, not run in this audit.
+- **Risk:** **S2 Medium**, possible release-signal ambiguity; high confidence in
+  manifest content, low confidence in current scenario outcomes.
+- **Evidence:** active scenarios still pin the historical real-`wg done`
+  uncommitted/squash path (`tests/smoke/manifest.toml:943-975`) and a brokered
+  completion/v2 GraphSaved/Cleaned path (`:2970-2979`). The same grow-only
+  manifest now contains `worker_owned_completion_canary`, which explicitly
+  requires v3 immutable manifests, exact FLIP/eval, publication-derived Done,
+  no SaveTransaction authority, and ten concurrent workers (`:2987-2996`), plus
+  `completion_done_single_lifecycle_path` (`:3031-3036`). Reopen-owner,
+  worktree-observer, and recurring-cron scenarios provide substantial
+  human-flow coverage (`:2094-2135,2925-2969`).
+- **Inference:** scenario presence across generations is useful migration
+  history but cannot be treated as one coherent current release contract until
+  each is labeled current/compatibility/retired and run against the candidate.
+  The failing Rust direct-Done suites make this more than a theoretical concern.
+- **Counterevidence:** the smoke manifest is intentionally grow-only; historical
+  regression scenarios can remain valuable if their compatibility boundary is
+  explicit. No sampled smoke scenario was executed here, so failure is not
+  asserted.
+- **Owner/domain:** smoke/release verification and completion lifecycle.
+- **Linked recommendation:** `ORCH-REC-011`.
+
 ### `ORCH-011` — current and legacy orchestration representations coexist
 
 - **Label/state:** **`[FACT]` + `[INFERENCE]`**, partial compatibility debt.
@@ -698,6 +756,8 @@ source and targeted tests rather than this human trace.
 | `ORCH-DRIFT-005` | **`[CONTRADICTION]`** `Status` comments describe synthetic pending-eval workflow while current coordinator says evaluation is hidden and candidate-bound and PendingValidation is migration-only. | Mixed compatibility/current surface; open. See `ORCH-011`. | S2 / medium |
 | `ORCH-DRIFT-006` | **`[CONTRADICTION]`** integration fixtures assume child `wg` is an operator process but do not consistently scrub the capability variable that intentionally hard-switches child commands into worker mode. | Security boundary current; test harness open. See `ORCH-009`. | S2 / high |
 | `ORCH-DRIFT-007` | **`[CONTRADICTION]`** cycle source says Abandoned members remain abandoned, but several integration expectations assume different reset/all-terminal behavior. | Implementation appears current but suite has multiple stale assumptions; adjudication open. | S3 / medium |
+| `ORCH-DRIFT-008` | **`[CONTRADICTION]`** manuals say all terminal statuses unblock, waits resume InProgress, and direct Done/approve/reject/meta-task evaluation are current; required-success query, lifecycle kernel, main routing, and coordinator encode the opposite/current protocol. | Implementation is current; docs partly current and partly historical. See `ORCH-016`. | S2 / high |
+| `ORCH-DRIFT-009` | **`[CONTRADICTION]`** active smoke descriptions simultaneously declare completion/v2 GraphSaved/Cleaned and v3/no-SaveTransaction completion authority. | Grow-only history explains coexistence but release authority is unclassified. See `ORCH-017`. | S2 / high text conflict, runtime unknown |
 
 **`[FACT]`** An apparent contradiction was resolved during checking: the first
 run of `legacy_completion_authority_retired` failed because a worker capability
@@ -722,6 +782,8 @@ adjudicate those terms and carry the drift IDs into the central register.
 | `ORCH-RISK-005` | **`[INFERENCE]`** | S2 / likely | Completion v2 bridge, completion v3, legacy statuses, and old synthetic-evaluation concepts create duplicated semantic surfaces. Future fixes may land in the wrong layer (`ORCH-011`). |
 | `ORCH-RISK-006` | **`[VERIFIED]`** | **S1 / observed** | One ordinary slow completion review occupied the daemon's main IPC/coordinator thread beyond the 30-second worker deadline, stalling unrelated Done/Show requests and ticks (`ORCH-014`). Repeated clients can amplify queueing and uncertainty about whether timed-out operations committed. |
 | `ORCH-RISK-007` | **`[VERIFIED]`** | S2 / observed | Completion review tells the worker to repair while withholding the structured findings needed to identify the failed requirement (`ORCH-015`). Blind resubmission spends reviewer capacity and may never converge. |
+| `ORCH-RISK-008` | **`[CONTRADICTION]`** | S2 / likely | User manuals invert required-success dependency semantics and teach retired completion/wait/evaluation flows (`ORCH-016`), so following the manual can create unsafe expectations or commands that fail closed. |
+| `ORCH-RISK-009` | **`[INFERENCE]`** | S2 / possible | A grow-only smoke inventory spanning v2, v3, and retired direct-Done semantics can yield ambiguous release evidence unless scenario authority is classified (`ORCH-017`). |
 | `ORCH-GAP-001` | **`[UNCERTAINTY]`** | S2 / unknown | No external Pi/Claude/Codex worker was dispatched; provider auth, token streaming, model failures, and actual worker completion were out of scope for credential-free execution. |
 | `ORCH-GAP-002` | **`[UNCERTAINTY]`** | S2 / unknown | No crash injection covered daemon death between graph claim, wrapper spawn, registry save, permit publication, completion store write, Git ref CAS, and Done projection. Static rollback/replay logic and unit tests are not a chaos proof. |
 | `ORCH-GAP-003` | **`[UNCERTAINTY]`** | S2 / unknown | No simultaneous multi-daemon or high-contention process test ran; advisory file locks, registry locks, Git CAS, and process identity were inspected separately. |
@@ -794,7 +856,17 @@ adjudicate those terms and carry the drift IDs into the central register.
 
 ### 6.2 Factual synchronization work
 
-7. **`ORCH-REC-002` — `[RECOMMENDATION]` (P0, CLI/tests/docs; fixes
+7. **`ORCH-REC-011` — `[RECOMMENDATION]` (P0, smoke/release; fixes
+   `ORCH-017/RISK-009`):** classify every completion/lifecycle smoke scenario as
+   current-authority, compatibility, historical-retired, or red-first. Run the
+   current set against one candidate binary; migrate legacy Done/v2 scenarios
+   to assert fail-closed compatibility or remove them from release authority
+   without deleting historical evidence. **Acceptance:** the manifest exposes
+   classification, current completion scenarios agree on v3
+   submit→review→publish→Done, and candidate smoke results have no unexplained
+   legacy/direct-Done failures.
+
+8. **`ORCH-REC-002` — `[RECOMMENDATION]` (P0, CLI/tests/docs; fixes
    `ORCH-006/DRIFT-001/RISK-002`):** regenerate or rewrite `wg done` help around
    immutable manifest → review → publication → derived Done, remove rejected
    flags, and migrate or retire tests that assert old bypass/uncommitted-worktree
@@ -803,7 +875,7 @@ adjudicate those terms and carry the drift IDs into the central register.
    lifecycle/cycle/done suites pass without weakening candidate/publication
    checks.
 
-8. **`ORCH-REC-008` — `[RECOMMENDATION]` (P1, operator documentation; supports
+9. **`ORCH-REC-008` — `[RECOMMENDATION]` (P1, operator documentation; supports
    `ORCH-002/005/012/013`):** publish one lifecycle table distinguishing
    paused draft, status, attempt disposition, completion disposition, and
    reopen hold. Include manual claim/spawn versus service mode, retry-in-place
@@ -813,14 +885,14 @@ adjudicate those terms and carry the drift IDs into the central register.
 
 ### 6.3 Human product/design decisions
 
-9. **`ORCH-REC-004` — `[RECOMMENDATION]` (P0 decision, product/lifecycle;
+10. **`ORCH-REC-004` — `[RECOMMENDATION]` (P0 decision, product/lifecycle;
    resolves `ORCH-008/DRIFT-003`):** decide whether Abandoned is reversible.
    Recommended default: refuse ordinary retry of a superseded/abandoned task;
    provide an explicit operator “restore as new generation” command that checks
    `superseded_by` and logs the rationale. **Acceptance:** source, help, tests,
    and supersession behavior express one decision.
 
-10. **`ORCH-REC-007` — `[RECOMMENDATION]` (P1 verification investment; closes
+11. **`ORCH-REC-007` — `[RECOMMENDATION]` (P1 verification investment; closes
    `ORCH-GAP-001..006`):** add a credential-free fake-handler human flow that
    starts the supervised service, observes watcher pickup and safety-poll
    fallback, runs two workers at capacity, parks/wakes one, injects a pre-permit
@@ -838,7 +910,7 @@ authority`. The audit did not bypass its attempt-scoped worker capability to
 mutate the live WG graph. The recommendations above are therefore
 implementation-ready task specifications for the dispatcher/operator to create
 after accepting this audit, including the subsequently observed P0
-`ORCH-REC-009/010`; no production authority boundary was circumvented merely
+`ORCH-REC-009..011`; no production authority boundary was circumvented merely
 to satisfy bookkeeping.
 
 ## 7. Evidence appendix
@@ -892,6 +964,8 @@ HEAD is the audit's provenance basis.
 | Legacy completion bridge | `src/commands/finalize.rs:28-110,254-617,686-707`; root reachability in `src/main.rs:1261-1342` |
 | Fail/retry/reopen/recover | `src/commands/fail.rs:47-260`; `retry.rs:141-443,493-700`; `reopen.rs:1-328`; `recover.rs:1-167,256-421` |
 | Wait/cycle/cron | `src/commands/wait.rs:15-148,150-390`; `src/graph.rs:3044-3640`; `src/cron.rs:1-260`; coordinator maintenance at `coordinator.rs:2498-2610` |
+| User-facing lifecycle docs | `docs/README.md:60-80,190-240`; `docs/manual/02-task-graph.md:65-125,230-280`; `docs/manual/04-coordination.md:145-225` |
+| Smoke lifecycle contracts | `tests/smoke/manifest.toml:943-975,2094-2135,2925-3036` [inspected, not run] |
 
 ### 7.3 Executed CLI traces
 
@@ -1066,6 +1140,9 @@ test before changing code or assertions.
 - `tests/integration_error_recovery.rs`
 - `tests/test_recovery_verification.rs`
 - completion protocol suites named in section 7.4
+- `tests/smoke/manifest.toml:943-975,2094-2135,2925-3036` [scenario contracts inspected, not run]
+- `docs/README.md`, `docs/manual/02-task-graph.md`, and
+  `docs/manual/04-coordination.md` at the spans indexed in section 7.2
 
 **`[UNCERTAINTY]`** This was a bounded leaf audit, not exhaustive verification.
 It did not run the full Cargo suite, smoke manifest, formal model, installer,
