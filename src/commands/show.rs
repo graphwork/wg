@@ -819,6 +819,13 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
             })
     });
 
+    let verified_review = worksgood::completion_review::verified_review_activities(dir, task);
+    if verified_review.invalid_count > 0 {
+        eprintln!(
+            "warning: {} invalid completion-review projection(s) omitted for {}",
+            verified_review.invalid_count, task.id
+        );
+    }
     let details = TaskDetails {
         id: task.id.clone(),
         title: task.title.clone(),
@@ -830,7 +837,7 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         completion_disposition: task.completion_disposition,
         completion_receipt: task.completion_receipt.clone(),
         completion_candidate: task.completion_candidate.clone(),
-        completion_review_activity: task.completion_review_activity.clone(),
+        completion_review_activity: verified_review.activities.clone(),
         // Historical finalization transactions are evidence only. `show` is a
         // read path and must not open (and thereby materialize) that retired
         // mutable authority.
@@ -907,6 +914,7 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         evaluations,
         evaluation_records: worksgood::completion_review::unprojected_legacy_evaluation_records(
             task,
+            &verified_review.activities,
         ),
         flip_gate: worksgood::evaluation::flip_gate_projection(task),
         evaluation_health: worksgood::eval_lifecycle::evaluation_health(&graph, id),

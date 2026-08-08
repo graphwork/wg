@@ -117,7 +117,14 @@ pub fn run(
             .collect();
         if show_all {
             for task in &tasks {
-                for activity in &task.completion_review_activity {
+                let verified = worksgood::completion_review::verified_review_activities(dir, task);
+                if verified.invalid_count > 0 {
+                    eprintln!(
+                        "warning: {} invalid completion-review projection(s) omitted for {}",
+                        verified.invalid_count, task.id
+                    );
+                }
+                for activity in &verified.activities {
                     output.push(serde_json::json!({
                         "kind": "completion-review-activity",
                         "virtual": true,
@@ -135,7 +142,10 @@ pub fn run(
                     }));
                 }
                 let legacy_records =
-                    worksgood::completion_review::unprojected_legacy_evaluation_records(task);
+                    worksgood::completion_review::unprojected_legacy_evaluation_records(
+                        task,
+                        &verified.activities,
+                    );
                 for record in &legacy_records {
                     if record.attempts.is_empty() {
                         output.push(serde_json::json!({
@@ -243,7 +253,14 @@ pub fn run(
                 );
             }
             for task in &tasks {
-                for activity in &task.completion_review_activity {
+                let verified = worksgood::completion_review::verified_review_activities(dir, task);
+                if verified.invalid_count > 0 {
+                    eprintln!(
+                        "warning: {} invalid completion-review projection(s) omitted for {}",
+                        verified.invalid_count, task.id
+                    );
+                }
+                for activity in &verified.activities {
                     let usage = activity.usage.as_ref().map_or_else(String::new, |usage| {
                         format!(
                             " usage={}in/{}out cost=${:.6}",
@@ -262,7 +279,10 @@ pub fn run(
                     );
                 }
                 let legacy_records =
-                    worksgood::completion_review::unprojected_legacy_evaluation_records(task);
+                    worksgood::completion_review::unprojected_legacy_evaluation_records(
+                        task,
+                        &verified.activities,
+                    );
                 for record in &legacy_records {
                     if record.attempts.is_empty() {
                         println!(

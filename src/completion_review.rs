@@ -127,13 +127,58 @@ fn legacy_attempt_is_projected(
     activity_ids: &std::collections::HashSet<&str>,
     attempt_id: &str,
     response_digest: Option<&str>,
-    consumed_is_projected: bool,
-    index: usize,
-    last_success: Option<usize>,
 ) -> bool {
-    activity_ids.contains(attempt_id)
-        || response_digest.is_some_and(|id| activity_ids.contains(id))
-        || (consumed_is_projected && Some(index) == last_success)
+    activity_ids.contains(attempt_id) || response_digest.is_some_and(|id| activity_ids.contains(id))
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct VerifiedReviewActivityProjection {
+    pub activities: Vec<CompletionReviewActivity>,
+    pub invalid_count: usize,
+}
+
+/// Reload and content-verify the immutable receipt behind every mutable task
+/// projection. Invalid, missing, stale, or mismatched rows fail closed.
+pub fn verified_review_activities(
+    dir: &std::path::Path,
+    task: &crate::graph::Task,
+) -> VerifiedReviewActivityProjection {
+    let mut projection = VerifiedReviewActivityProjection::default();
+    let objects = dir.join("completion/v3/objects");
+    for activity in &task.completion_review_activity {
+        let Some(name) = activity.activity_id.strip_prefix("b3:") else {
+            projection.invalid_count += 1;
+            continue;
+        };
+        let Ok(bytes) = std::fs::read(objects.join(name)) else {
+            projection.invalid_count += 1;
+            continue;
+        };
+        if bytes.len() > 1024 * 1024
+            || ContentDigest::of_bytes(&bytes).as_str() != activity.activity_id
+        {
+            projection.invalid_count += 1;
+            continue;
+        }
+        let Ok(receipt) = serde_json::from_slice::<ReviewReceipt>(&bytes) else {
+            projection.invalid_count += 1;
+            continue;
+        };
+        let exact = receipt.reviewer_kind == activity.reviewer_kind
+            && receipt.verdict == activity.verdict
+            && receipt.manifest_digest == activity.manifest_digest
+            && receipt.requirements_digest == activity.requirements_digest
+            && receipt.model_route == activity.model_route
+            && receipt.executor == activity.executor
+            && receipt.usage == activity.usage
+            && receipt.created_at == activity.created_at;
+        if exact {
+            projection.activities.push(activity.clone());
+        } else {
+            projection.invalid_count += 1;
+        }
+    }
+    projection
 }
 
 /// Return historical evaluation records that are not already represented by a
@@ -141,9 +186,9 @@ fn legacy_attempt_is_projected(
 /// attempts; only exact stable-ID aliases are removed.
 pub fn unprojected_legacy_evaluation_records(
     task: &crate::graph::Task,
+    verified_activities: &[CompletionReviewActivity],
 ) -> Vec<crate::evaluation::EvaluationRecord> {
-    let activity_ids = task
-        .completion_review_activity
+    let activity_ids = verified_activities
         .iter()
         .map(|activity| activity.activity_id.as_str())
         .collect::<std::collections::HashSet<_>>();
@@ -157,26 +202,18 @@ pub fn unprojected_legacy_evaluation_records(
             if record.attempts.is_empty() {
                 return (!consumed_is_projected).then(|| record.clone());
             }
-            let last_success = record
-                .attempts
-                .iter()
-                .rposition(|attempt| attempt.failure.is_none());
             let mut retained = record.clone();
             retained.attempts = record
                 .attempts
                 .iter()
-                .enumerate()
-                .filter(|(index, attempt)| {
+                .filter(|attempt| {
                     !legacy_attempt_is_projected(
                         &activity_ids,
                         &attempt.attempt_id,
                         attempt.response_digest.as_deref(),
-                        consumed_is_projected,
-                        *index,
-                        last_success,
                     )
                 })
-                .map(|(_, attempt)| attempt.clone())
+                .cloned()
                 .collect();
             if consumed_is_projected {
                 retained.consumed_verdict_id = None;
@@ -536,6 +573,28 @@ mod projection_tests {
     use super::*;
 
     #[test]
+    fn missing_immutable_receipt_fails_projection_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let digest = format!("b3:{}", "0".repeat(64));
+        let mut task = crate::graph::Task::default();
+        task.completion_review_activity
+            .push(CompletionReviewActivity {
+                activity_id: digest,
+                reviewer_kind: ReviewerKind::Flip,
+                verdict: ReviewVerdict::Pass,
+                manifest_digest: ContentDigest::of_bytes(b"manifest"),
+                requirements_digest: ContentDigest::of_bytes(b"requirements"),
+                model_route: Some("pi:test:model".into()),
+                executor: Some("pi".into()),
+                usage: None,
+                created_at: "2026-08-08T00:00:00Z".into(),
+            });
+        let projection = verified_review_activities(dir.path(), &task);
+        assert!(projection.activities.is_empty());
+        assert_eq!(projection.invalid_count, 1);
+    }
+
+    #[test]
     fn mixed_version_projection_deduplicates_only_stable_aliases() {
         let activity_ids = ["receipt-new"]
             .into_iter()
@@ -544,25 +603,16 @@ mod projection_tests {
             &activity_ids,
             "old-failed-attempt",
             None,
-            true,
-            0,
-            Some(1),
         ));
-        assert!(legacy_attempt_is_projected(
+        assert!(!legacy_attempt_is_projected(
             &activity_ids,
-            "final-attempt",
+            "unmatched-success",
             None,
-            true,
-            1,
-            Some(1),
         ));
         assert!(legacy_attempt_is_projected(
             &activity_ids,
             "other-attempt",
             Some("receipt-new"),
-            false,
-            0,
-            None,
         ));
     }
 }

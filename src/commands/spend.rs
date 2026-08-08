@@ -36,7 +36,14 @@ pub fn run(dir: &Path, today_only: bool, json: bool) -> Result<()> {
     // IDs merge the authoritative completion projection with any older legacy
     // records, preserving mixed-version history without double charging.
     for task in graph.tasks() {
-        for activity in &task.completion_review_activity {
+        let verified = worksgood::completion_review::verified_review_activities(dir, task);
+        if verified.invalid_count > 0 {
+            eprintln!(
+                "warning: {} invalid completion-review projection(s) omitted for {}",
+                verified.invalid_count, task.id
+            );
+        }
+        for activity in &verified.activities {
             if today_only && !occurred_on(&activity.created_at, today) {
                 continue;
             }
@@ -50,8 +57,10 @@ pub fn run(dir: &Path, today_only: bool, json: bool) -> Result<()> {
                 review_output_tokens += usage.output_tokens;
             }
         }
-        let legacy_records =
-            worksgood::completion_review::unprojected_legacy_evaluation_records(task);
+        let legacy_records = worksgood::completion_review::unprojected_legacy_evaluation_records(
+            task,
+            &verified.activities,
+        );
         for record in &legacy_records {
             for attempt in &record.attempts {
                 if today_only && !occurred_on(&attempt.started_at, today) {
