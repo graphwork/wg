@@ -9,6 +9,7 @@ require_wg
 WG_BIN="${WG_BIN:-$(command -v wg)}"
 command -v python3 >/dev/null 2>&1 || loud_skip "MISSING PYTHON" "python3 required for graph assertions"
 command -v tmux >/dev/null 2>&1 || loud_skip "MISSING TMUX" "tmux required for live TUI admission visibility"
+command -v worksgood >/dev/null 2>&1 || loud_fail "worksgood binary required for operator-flow admission validation"
 
 unset WG_AGENT_ID WG_EXECUTOR_TYPE WG_MODEL WG_REASONING WG_TIER
 scratch=$(make_scratch)
@@ -114,11 +115,12 @@ grep -q 'b-deferred-build: build-heavy admission budget full (1/1)' <<<"$status_
   || loud_fail "wg status omitted per-task admission reason: $status_human"
 grep -q 'projected headroom unavailable' <<<"$status_human" \
   || loud_fail "wg status fabricated disabled disk headroom: $status_human"
-if command -v worksgood >/dev/null 2>&1; then
-  worksgood_status=$(worksgood --project "$project" status)
-  grep -q 'Build-heavy: 1/1 active' <<<"$worksgood_status" \
-    || loud_fail "worksgood operator status omitted build admission: $worksgood_status"
-fi
+worksgood_status=$(worksgood --project "$project" status)
+grep -q 'Build-heavy: 1/1 active (cap explicit)' <<<"$worksgood_status" \
+  || loud_fail "worksgood operator status omitted exact build admission metadata: $worksgood_status"
+grep -q 'Admission waiting: 1 task' <<<"$worksgood_status" \
+  && grep -q 'b-deferred-build: build-heavy admission budget full (1/1)' <<<"$worksgood_status" \
+  || loud_fail "worksgood operator status omitted exact deferred task/reason: $worksgood_status"
 
 # Drive the actual TUI. Select the last task, open Detail, and inspect both the
 # dashboard pulse and selected-task waiting explanation.
@@ -128,21 +130,42 @@ tmux new-session -d -s "$session" -x 180 -y 50 \
   "cd '$project' && env HOME='$HOME' WG_GLOBAL_DIR='$WG_GLOBAL_DIR' WG_TUI_APPEARANCE=none '$WG_BIN' --dir '$project/.wg' tui"
 sleep 2
 tmux send-keys -t "$session" End 1
-sleep 1
 tui_dump="$scratch/tui-admission.txt"
-tmux capture-pane -p -t "$session" -S - >"$tui_dump" 2>&1 \
-  || loud_fail "live TUI pane capture failed: $(cat "$tui_dump")"
-grep -Eq 'B1/1|Build-heavy.*1.*1' "$tui_dump" \
-  || loud_fail "TUI dashboard omitted build capacity: $(cat "$tui_dump")"
+for _ in $(seq 1 50); do
+  tmux capture-pane -p -t "$session" -S - >"$tui_dump" 2>&1 \
+    || loud_fail "live TUI pane capture failed: $(cat "$tui_dump")"
+  grep -q 'B1/1' "$tui_dump" && grep -q '⊳1' "$tui_dump" \
+    && grep -q 'Build-heavy capacity: 1/1 (explicit)' "$tui_dump" && break
+  sleep 0.1
+done
+grep -q 'B1/1' "$tui_dump" && grep -q '⊳1' "$tui_dump" \
+  || loud_fail "TUI dashboard pulse omitted exact active/max/deferred count: $(cat "$tui_dump")"
 grep -q 'Admission waiting' "$tui_dump" \
-  || loud_fail "TUI task inspector omitted admission waiting state: $(cat "$tui_dump")"
-grep -q 'build-heavy admission budget full (1/1)' "$tui_dump" \
-  || loud_fail "TUI task inspector omitted waiting reason: $(cat "$tui_dump")"
+  && grep -q 'b-deferred-build' "$tui_dump" \
+  && grep -q 'build-heavy admission budget full (1/1)' "$tui_dump" \
+  || loud_fail "TUI task inspector omitted exact deferred task/reason: $(cat "$tui_dump")"
 grep -q 'Build-heavy capacity: 1/1 (explicit)' "$tui_dump" \
-  || loud_fail "TUI task inspector omitted active/max cap source: $(cat "$tui_dump")"
+  || loud_fail "TUI task inspector omitted exact active/max cap source: $(cat "$tui_dump")"
 grep -q 'wg config set dispatcher.resource_management.max_build_agents' "$tui_dump" \
   && grep -q 'inherit --local' "$tui_dump" \
-  || loud_fail "TUI task inspector omitted remediation: $(cat "$tui_dump")"
+  || loud_fail "TUI task inspector omitted exact remediation: $(cat "$tui_dump")"
+
+# Open the authenticated dashboard/service detail in this same live PTY to
+# prove exact count/task/reason, source, remediation, and disk metadata.
+tmux send-keys -t "$session" -l 'I'
+sleep 1
+tui_health="$scratch/tui-admission-health.txt"
+tmux capture-pane -p -t "$session" -S - >"$tui_health" 2>&1 \
+  || loud_fail "live TUI health capture failed: $(cat "$tui_health")"
+grep -q 'Build-heavy: 1 active / 1 max (explicit)' "$tui_health" \
+  || loud_fail "TUI dashboard detail omitted exact active/max/source: $(cat "$tui_health")"
+grep -q 'Admission waiting: 1 task(s); no attempt charged' "$tui_health" \
+  && grep -q 'b-deferred-build: build-heavy admission budget full (1/1)' "$tui_health" \
+  || loud_fail "TUI dashboard detail omitted exact deferred count/task/reason: $(cat "$tui_health")"
+grep -q 'max_build_agents inherit --local' "$tui_health" \
+  || loud_fail "TUI dashboard detail omitted scope-qualified remediation: $(cat "$tui_health")"
+grep -q 'Disk sentinel: disabled.*projected headroom unavailable' "$tui_health" \
+  || loud_fail "TUI dashboard detail fabricated disabled disk headroom: $(cat "$tui_health")"
 tmux kill-session -t "$session" 2>/dev/null || true
 
 # Cross the configured five-failure threshold while capacity remains occupied.

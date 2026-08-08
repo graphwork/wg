@@ -19174,6 +19174,20 @@ impl VizApp {
                     .count()
             })
             .unwrap_or(0);
+        // The live coordinator's exact budget-full reason is also an
+        // authoritative observation of occupied capacity. It closes the
+        // short registry/cache race where the task inspector sees the worker
+        // before the asynchronous service snapshot does, without trusting a
+        // stale/dead process (unavailable-service paths clear this read model).
+        if self.service_health.build_heavy_active == 0
+            && coord.admission_deferred.iter().any(|waiting| {
+                waiting
+                    .reason
+                    .starts_with("build-heavy admission budget full")
+            })
+        {
+            self.service_health.build_heavy_active = self.service_health.max_build_agents;
+        }
 
         // Phase 1 toast triggers: Agent exited → Info, Agent stuck (>5m) → Warning (deduped).
         // Collect into a vec to avoid borrow conflicts (self.prev_agent_statuses + push_toast).

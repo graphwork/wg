@@ -1023,7 +1023,7 @@ fn handle_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
     // still owns bare `I`; Ctrl+O enters command mode first, preserving the
     // established child-input contract while keeping exact parity everywhere.
     if matches!(code, KeyCode::Char('I'))
-        && modifiers.is_empty()
+        && (modifiers.is_empty() || modifiers == KeyModifiers::SHIFT)
         && matches!(app.input_mode, InputMode::Normal)
         && app.service_health.authoritative.is_some()
     {
