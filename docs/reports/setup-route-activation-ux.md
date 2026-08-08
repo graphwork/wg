@@ -31,14 +31,16 @@ Pi's login flow or making a provider request.
 ## Implemented behavior
 
 - Global/default and `both` setup persist the selected `pi` pointer in the same
-  rollback-protected transaction as the exact config. If any config write or
-  activation step fails, earlier setup writes are restored. Configured custom
+  rollback-protected transaction as the exact config. If any config write,
+  activation, or running-daemon reload step fails, prior config/profile state is
+  restored and setup exits with an actionable error. Configured custom
   default/task-agent routes are not replaced by starter routes.
 - `--scope local` keeps its project config authoritative and deliberately does
   not mutate the machine-global active pointer.
-- Setup idempotently ensures the version-locked `pi-worksgood` console plugin,
-  then asks the current project daemon to reload, matching `wg profile use`
-  behavior when a daemon exists.
+- Setup idempotently ensures the version-locked `pi-worksgood` console plugin
+  before committing route/profile state, then requires a running project daemon
+  to reload. Plugin preparation failure is pre-activation; reload failure rolls
+  back the newly written config/profile instead of claiming runtime readiness.
 - The completion report separates: Pi executable `AVAILABLE`/`UNAVAILABLE`,
   verified pi-worksgood ready/not-ready status, profile active/local/dry-run, and Pi auth/model
   `NOT VERIFIED`. It states that no provider request occurred and directs the
@@ -63,8 +65,9 @@ already used by `worksgood setup --model ...`.
 - `cargo build` — pass
 - `cargo clippy` — pass (existing warnings)
 - `cargo test --test integration_setup_routes` — 13 pass, 11 retired tests ignored
-- setup scope/rollback unit filters — 5 pass, including injected global
-  active-profile failure and restoration of both prior config/profile state
+- setup scope/rollback unit filters — 6 pass, including injected global
+  active-profile and daemon-reload failures with restoration of both prior
+  config/profile state
 - `integration_pi_two_tier_profile` + `integration_profile_tier_pinning` — 12 pass
 - `tests/smoke/scenarios/setup_route_activation_preflight.sh` — pass using a real
   PTY, isolated homes/projects, fake Pi, absent-Pi fixtures, a trap provider key,

@@ -21,8 +21,8 @@ reasoning before starting a service or spawning an LLM-backed role:
 
 ```bash
 wg setup --route pi --yes --model pi:<provider>:<model>
-# or select the shipped project profile instead of supplying a custom route
-wg profile select pi
+# or activate the shipped complete global profile instead of supplying a custom route
+wg profile use pi
 ```
 
 A global (the default) or `both` setup writes `~/.wg/active-profile = pi` as

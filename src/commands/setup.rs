@@ -1525,7 +1525,11 @@ fn run_route(args: &SetupArgs) -> Result<()> {
         return Ok(());
     }
 
-    let (written, active_profile) = apply_setup_transaction(
+    // Prepare the embedded plugin before committing route/profile state. A
+    // plugin failure is therefore a pre-activation failure, not a half-ready
+    // successful setup.
+    let plugin_status = ensure_setup_pi_plugin()?;
+    let (written, active_profile, setup_snapshot) = apply_setup_transaction(
         &new_config,
         &scope_paths(scope, &global_path, &local_path),
         scope,
@@ -1552,11 +1556,12 @@ fn run_route(args: &SetupArgs) -> Result<()> {
         }
     }
 
-    let plugin_status = ensure_setup_pi_plugin();
-    crate::commands::profile_cmd::trigger_daemon_reload_checked(
+    if let Err(error) = crate::commands::profile_cmd::trigger_daemon_reload_checked(
         &setup_graph_dir(),
         active_profile.then_some(route.as_name()),
-    )?;
+    ) {
+        return Err(rollback_after_reload_failure(&setup_snapshot, error));
+    }
 
     println!();
     println!("{}", format_delta_summary(&new_config));
@@ -1592,12 +1597,19 @@ struct SetupFileSnapshot {
     content: Option<Vec<u8>>,
 }
 
+#[derive(Debug)]
+struct SetupStateSnapshot {
+    files: Vec<SetupFileSnapshot>,
+    previous_active: Option<String>,
+    changes_global_profile: bool,
+}
+
 fn apply_setup_transaction(
     config: &Config,
     paths: &[PathBuf],
     scope: SetupScope,
     route: SetupRoute,
-) -> Result<(Vec<PathBuf>, bool)> {
+) -> Result<(Vec<PathBuf>, bool, SetupStateSnapshot)> {
     apply_setup_transaction_with_profile_io(
         config,
         paths,
@@ -1615,12 +1627,12 @@ fn apply_setup_transaction_with_profile_io<ReadActive, WriteActive>(
     route: SetupRoute,
     mut read_active: ReadActive,
     mut write_active: WriteActive,
-) -> Result<(Vec<PathBuf>, bool)>
+) -> Result<(Vec<PathBuf>, bool, SetupStateSnapshot)>
 where
     ReadActive: FnMut() -> Result<Option<String>>,
     WriteActive: FnMut(Option<String>) -> Result<()>,
 {
-    let snapshots = paths
+    let files = paths
         .iter()
         .map(|path| {
             let content = if path.exists() {
@@ -1642,6 +1654,11 @@ where
     } else {
         None
     };
+    let snapshot = SetupStateSnapshot {
+        files,
+        previous_active,
+        changes_global_profile,
+    };
 
     let apply_result = (|| -> Result<bool> {
         for path in paths {
@@ -1659,28 +1676,9 @@ where
     })();
 
     match apply_result {
-        Ok(active) => Ok((paths.to_vec(), active)),
+        Ok(active) => Ok((paths.to_vec(), active, snapshot)),
         Err(error) => {
-            let mut rollback_errors = Vec::new();
-            for snapshot in &snapshots {
-                let restored = match snapshot.content.as_ref() {
-                    Some(content) => fs::write(&snapshot.path, content).with_context(|| {
-                        format!("restore setup target {}", snapshot.path.display())
-                    }),
-                    None if snapshot.path.exists() => {
-                        fs::remove_file(&snapshot.path).with_context(|| {
-                            format!("remove setup target {}", snapshot.path.display())
-                        })
-                    }
-                    None => Ok(()),
-                };
-                if let Err(restore_error) = restored {
-                    rollback_errors.push(restore_error.to_string());
-                }
-            }
-            if changes_global_profile && let Err(restore_error) = write_active(previous_active) {
-                rollback_errors.push(format!("restore active-profile: {restore_error}"));
-            }
+            let rollback_errors = restore_setup_state_with_profile_io(&snapshot, &mut write_active);
             if rollback_errors.is_empty() {
                 Err(error.context(
                     "setup config/profile activation failed; all setup writes were rolled back",
@@ -1692,6 +1690,64 @@ where
                 )))
             }
         }
+    }
+}
+
+fn restore_setup_state_with_profile_io<WriteActive>(
+    snapshot: &SetupStateSnapshot,
+    mut write_active: WriteActive,
+) -> Vec<String>
+where
+    WriteActive: FnMut(Option<String>) -> Result<()>,
+{
+    let mut rollback_errors = Vec::new();
+    for file in &snapshot.files {
+        let restored = match file.content.as_ref() {
+            Some(content) => fs::write(&file.path, content)
+                .with_context(|| format!("restore setup target {}", file.path.display())),
+            None if file.path.exists() => fs::remove_file(&file.path)
+                .with_context(|| format!("remove setup target {}", file.path.display())),
+            None => Ok(()),
+        };
+        if let Err(error) = restored {
+            rollback_errors.push(error.to_string());
+        }
+    }
+    if snapshot.changes_global_profile
+        && let Err(error) = write_active(snapshot.previous_active.clone())
+    {
+        rollback_errors.push(format!("restore active-profile: {error}"));
+    }
+    rollback_errors
+}
+
+fn rollback_after_reload_failure(
+    snapshot: &SetupStateSnapshot,
+    reload_error: anyhow::Error,
+) -> anyhow::Error {
+    rollback_after_reload_failure_with_profile_io(snapshot, reload_error, |name| {
+        named_profile::set_active(name.as_deref())
+    })
+}
+
+fn rollback_after_reload_failure_with_profile_io<WriteActive>(
+    snapshot: &SetupStateSnapshot,
+    reload_error: anyhow::Error,
+    write_active: WriteActive,
+) -> anyhow::Error
+where
+    WriteActive: FnMut(Option<String>) -> Result<()>,
+{
+    let rollback_errors = restore_setup_state_with_profile_io(snapshot, write_active);
+    if rollback_errors.is_empty() {
+        reload_error.context(
+            "running daemon reload failed; setup config/profile writes were rolled back. Fix the daemon and rerun `wg setup`",
+        )
+    } else {
+        reload_error.context(format!(
+            "running daemon reload failed and setup rollback was incomplete: {}",
+            rollback_errors.join("; ")
+        ))
     }
 }
 
@@ -1712,13 +1768,10 @@ fn inspect_setup_pi_plugin() -> String {
     }
 }
 
-fn ensure_setup_pi_plugin() -> String {
-    match worksgood::pi_plugin::ensure_pi_plugin(worksgood::pi_plugin::EnsureMode::Console) {
-        Ok(_) => inspect_setup_pi_plugin(),
-        Err(error) => {
-            format!("NOT READY ({error}); run `wg pi-plugin install`, then `wg pi-plugin status`")
-        }
-    }
+fn ensure_setup_pi_plugin() -> Result<String> {
+    worksgood::pi_plugin::ensure_pi_plugin(worksgood::pi_plugin::EnsureMode::Console)
+        .context("could not prepare pi-worksgood; run `wg pi-plugin install`, then rerun setup")?;
+    Ok(inspect_setup_pi_plugin())
 }
 
 fn print_pi_setup_preflight(
@@ -2132,7 +2185,12 @@ pub fn run() -> Result<()> {
         config.tiers = auto_map_tiers(&choices.model_registry_entries);
     }
 
-    let (_, active_profile) = apply_setup_transaction(
+    // Plugin/skill preparation is a pre-activation gate: a failure cannot
+    // leave newly-selected config/profile state behind.
+    println!();
+    let skill_status = guide_skill_bundle_install(&choices.executor)?;
+
+    let (_, active_profile, setup_snapshot) = apply_setup_transaction(
         &config,
         &scope_paths(scope, &global_path, &local_path),
         scope,
@@ -2140,14 +2198,12 @@ pub fn run() -> Result<()> {
     )?;
 
     record_setup_history(&choices, "cli");
-    crate::commands::profile_cmd::trigger_daemon_reload_checked(
+    if let Err(error) = crate::commands::profile_cmd::trigger_daemon_reload_checked(
         &setup_graph_dir(),
         active_profile.then_some(route.as_name()),
-    )?;
-
-    // Post-save: guide skill/bundle installation based on executor
-    println!();
-    let skill_status = guide_skill_bundle_install(&choices.executor)?;
+    ) {
+        return Err(rollback_after_reload_failure(&setup_snapshot, error));
+    }
 
     // Configure ~/.claude/CLAUDE.md for Claude Code executor
     let claude_md_status = if choices.executor == "claude" {
@@ -2914,10 +2970,9 @@ fn guide_skill_bundle_install(executor: &str) -> Result<String> {
                     }
                     Ok(format!("pi-worksgood installed ✓ (compat {})", p.compat))
                 }
-                Err(e) => {
-                    println!("  Install failed: {e}");
-                    Ok("pi-worksgood install FAILED — run `wg pi-plugin install`".to_string())
-                }
+                Err(error) => Err(error).context(
+                    "could not prepare pi-worksgood; run `wg pi-plugin install`, then rerun setup",
+                ),
             }
         }
         _ => {
@@ -4726,6 +4781,48 @@ mod tests {
         assert_eq!(std::fs::read(&config_path).unwrap(), b"original\n");
         assert_eq!(active.borrow().as_deref(), Some("codex"));
         assert_eq!(write_calls.get(), 2, "activation + rollback restore");
+    }
+
+    #[test]
+    fn test_setup_transaction_rolls_back_config_and_profile_after_reload_failure() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+        std::fs::write(&config_path, b"original\n").unwrap();
+        let config = config_for_route(SetupRoute::Pi, RouteParams::default());
+        let active = Rc::new(RefCell::new(Some("codex".to_string())));
+        let read_state = Rc::clone(&active);
+        let write_state = Rc::clone(&active);
+        let (_, activated, snapshot) = apply_setup_transaction_with_profile_io(
+            &config,
+            std::slice::from_ref(&config_path),
+            SetupScope::Global,
+            SetupRoute::Pi,
+            move || Ok(read_state.borrow().clone()),
+            move |name| {
+                *write_state.borrow_mut() = name;
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(activated);
+        assert_eq!(active.borrow().as_deref(), Some("pi"));
+
+        let restore_state = Rc::clone(&active);
+        let error = rollback_after_reload_failure_with_profile_io(
+            &snapshot,
+            anyhow::anyhow!("injected daemon reload failure"),
+            move |name| {
+                *restore_state.borrow_mut() = name;
+                Ok(())
+            },
+        );
+
+        assert!(error.to_string().contains("rolled back"), "{error:#}");
+        assert_eq!(std::fs::read(&config_path).unwrap(), b"original\n");
+        assert_eq!(active.borrow().as_deref(), Some("codex"));
     }
 
     // ── run_route writes only the requested scope ────────────────────
