@@ -48,12 +48,13 @@ wg config --local --model pi:openrouter:test/fake >/dev/null
 
 runs="$project/runs.log"
 release="$project/release-first"
+second_release="$project/release-second"
 first_started="$project/first-started"
 wg add 'cargo build occupying the sole build-heavy slot' --id a-occupied-build --priority 100 \
   --exec "printf 'first-start\\n' >> '$runs'; touch '$first_started'; while [ ! -e '$release' ]; do sleep 0.1; done; printf 'first-done\\n' >> '$runs'" \
   --exec-mode shell >/dev/null
 wg add 'cargo test deferred until build capacity frees' --id b-deferred-build --priority 10 \
-  --exec "printf 'second-run\\n' >> '$runs'" --exec-mode shell >/dev/null
+  --exec "printf 'second-run\\n' >> '$runs'; while [ ! -e '$second_release' ]; do sleep 0.1; done" --exec-mode shell >/dev/null
 wg publish a-occupied-build --only >/dev/null
 wg publish b-deferred-build --only >/dev/null
 
@@ -76,7 +77,7 @@ c=json.loads(sys.argv[1])['coordinator']
 assert c['build_heavy_active']==1,c
 assert c['max_build_agents']==1,c
 assert c['max_build_agents_source']=='explicit',c
-assert c['max_build_agents_remediation_command']=='wg config set dispatcher.resource_management.max_build_agents 2',c
+assert c['max_build_agents_remediation_command']=='wg config set dispatcher.resource_management.max_build_agents inherit',c
 assert c['disk_sentinel_enabled'] is False,c
 assert c['projected_headroom_bytes'] is None,c
 assert c['admission_deferred']==[{'task_id':'b-deferred-build','reason':'build-heavy admission budget full (1/1)'}],c
@@ -89,7 +90,7 @@ grep -q 'Reason: build-heavy admission budget full (1/1)' <<<"$human" \
   || loud_fail "human service status omitted deferred reason: $human"
 grep -q 'no spawn failure charged' <<<"$human" \
   || loud_fail "human service status did not distinguish backpressure: $human"
-grep -q 'Build-heavy: 1/1 active (cap explicit).*wg config set dispatcher.resource_management.max_build_agents 2' <<<"$human" \
+grep -q 'Build-heavy: 1/1 active (cap explicit).*wg config set dispatcher.resource_management.max_build_agents inherit' <<<"$human" \
   || loud_fail "human service status omitted cap source/remediation: $human"
 grep -q 'Task b-deferred-build: build-heavy admission budget full (1/1)' <<<"$human" \
   || loud_fail "human service status omitted per-task reason: $human"
@@ -103,7 +104,7 @@ c=json.loads(sys.argv[1])['coordinator']
 assert c['build_heavy_active']==1,c
 assert c['max_build_agents']==1,c
 assert c['max_build_agents_source']=='explicit',c
-assert c['max_build_agents_remediation_command']=='wg config set dispatcher.resource_management.max_build_agents 2',c
+assert c['max_build_agents_remediation_command']=='wg config set dispatcher.resource_management.max_build_agents inherit',c
 assert c['disk_sentinel_enabled'] is False,c
 assert c['admission_deferred'][0]['task_id']=='b-deferred-build',c
 assert 'disk' not in json.loads(sys.argv[1]),'disabled projection must be unavailable'
@@ -139,7 +140,8 @@ grep -q 'build-heavy admission budget full (1/1)' "$tui_dump" \
   || loud_fail "TUI task inspector omitted waiting reason: $(cat "$tui_dump")"
 grep -q 'Build-heavy capacity: 1/1 (explicit)' "$tui_dump" \
   || loud_fail "TUI task inspector omitted active/max cap source: $(cat "$tui_dump")"
-grep -q 'wg config set dispatcher.resource_management.max_build_agents 2' "$tui_dump" \
+grep -q 'wg config set dispatcher.resource_management.max_build_agents' "$tui_dump" \
+  && grep -q '^inherit$' "$tui_dump" \
   || loud_fail "TUI task inspector omitted remediation: $(cat "$tui_dump")"
 tmux kill-session -t "$session" 2>/dev/null || true
 
@@ -182,10 +184,10 @@ rows=[json.loads(line) for line in open('.wg/graph.jsonl') if line.strip()]
 print([r for r in rows if r.get('kind')=='task' and r['id']=='b-deferred-build'][-1]['status'])
 PY
 )
-  [[ "$second_status" =~ ^(done|failed)$ ]] && break
+  [ "$second_status" = "in-progress" ] && break
   sleep 0.1
 done
-[[ "${second_status:-}" =~ ^(done|failed)$ ]] \
+[ "${second_status:-}" = "in-progress" ] \
   || loud_fail "deferred build did not self-dispatch after release (status=${second_status:-unset}): $(tail -120 .wg/service/daemon.log 2>/dev/null || true)"
 [ "$(grep -c '^second-run$' "$runs" 2>/dev/null || true)" -eq 1 ] \
   || loud_fail "deferred build did not run exactly once: $(cat "$runs" 2>/dev/null || true)"
@@ -193,9 +195,12 @@ python3 - <<'PY'
 import json
 rows=[json.loads(line) for line in open('.wg/graph.jsonl') if line.strip()]
 t=[r for r in rows if r.get('kind')=='task' and r['id']=='b-deferred-build'][-1]
-assert t['status'] in ('done','failed'),t
+assert t['status']=='in-progress',t
 assert t.get('spawn_failures',0)==0,t
+assert t.get('retry_count',0)==0,t
 assert t.get('dispatch_count',0) == 1,t
+assert t.get('current_attempt') is not None or t.get('lifecycle',{}).get('current_attempt') is not None,t
 PY
+touch "$second_release"
 
-echo "PASS: live daemon reports admission backpressure, coalesces it beyond five ticks, and self-dispatches the deferred build exactly once after capacity frees"
+echo "PASS: live daemon reports admission backpressure, coalesces it beyond five ticks, and launches the deferred build exactly once after capacity frees"

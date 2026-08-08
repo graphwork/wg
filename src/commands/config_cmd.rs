@@ -3060,9 +3060,20 @@ pub fn set_dotted(
         );
     }
 
+    // `inherit` is the explicit opt-out for the optional build-heavy cap. It
+    // removes the key from the selected layer so the effective value follows
+    // dispatcher.max_agents again (and hot reload observes that immediately).
+    let remove_build_cap = normalized_key == "dispatcher.resource_management.max_build_agents"
+        && matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "inherit" | "inherited" | "default"
+        );
+
     // 1. Validate known typed keys up front so a bad value never reaches disk.
     let typed_value = infer_toml_scalar(value);
-    validate_dotted_value(&normalized_key, value, &typed_value)?;
+    if !remove_build_cap {
+        validate_dotted_value(&normalized_key, value, &typed_value)?;
+    }
 
     // 2. Load the scope file as a raw TOML tree (preserves everything).
     let path = scope_config_path(workgraph_dir, scope)?;
@@ -3075,8 +3086,13 @@ pub fn set_dotted(
         }
     }
 
-    // 3. Apply the dotted key to the tree, creating intermediate tables.
-    set_dotted_value(&mut doc, &normalized_key, typed_value.clone());
+    // 3. Apply the dotted key to the tree, creating intermediate tables, or
+    // remove the optional cap when the operator requests inheritance.
+    if remove_build_cap {
+        remove_dotted_value(&mut doc, &normalized_key);
+    } else {
+        set_dotted_value(&mut doc, &normalized_key, typed_value.clone());
+    }
 
     // 4. Validate the whole document still deserializes (catches type errors
     //    on known fields, e.g. setting max_agents to a non-integer).
@@ -3243,6 +3259,21 @@ fn validate_dotted_value(key: &str, raw: &str, typed: &toml::Value) -> Result<()
 
 /// Set a dotted key (`table.sub.leaf`) on a TOML tree, creating intermediate
 /// tables as needed. Replaces any existing value at the leaf.
+fn remove_dotted_value(doc: &mut toml::Value, dotted: &str) {
+    let segments: Vec<&str> = dotted.split('.').collect();
+    let (path_segs, leaf) = segments.split_at(segments.len() - 1);
+    let mut cursor = doc;
+    for seg in path_segs {
+        let Some(next) = cursor.as_table_mut().and_then(|table| table.get_mut(*seg)) else {
+            return;
+        };
+        cursor = next;
+    }
+    if let Some(table) = cursor.as_table_mut() {
+        table.remove(leaf[0]);
+    }
+}
+
 fn set_dotted_value(doc: &mut toml::Value, dotted: &str, value: toml::Value) {
     let segments: Vec<&str> = dotted.split('.').collect();
     let (path_segs, leaf) = segments.split_at(segments.len() - 1);
@@ -3561,10 +3592,9 @@ pub fn lint_config(workgraph_dir: &Path, target: LintTarget, json: bool) -> Resu
     let max_build_agents_source = merged.coordinator.max_build_agents_source();
     let build_throttle_active =
         max_build_agents_source == "explicit" && max_build_agents < merged.coordinator.max_agents;
-    let build_throttle_command = format!(
-        "wg config set dispatcher.resource_management.max_build_agents {}",
-        merged.coordinator.max_agents
-    );
+    let build_cap_explicit = max_build_agents_source == "explicit";
+    let build_throttle_command =
+        "wg config set dispatcher.resource_management.max_build_agents inherit";
 
     if json {
         let payload = serde_json::json!({
@@ -3592,7 +3622,7 @@ pub fn lint_config(workgraph_dir: &Path, target: LintTarget, json: bool) -> Resu
                 "max": max_build_agents,
                 "source": max_build_agents_source,
                 "throttle_active": build_throttle_active,
-                "remediation_command": build_throttle_active.then_some(&build_throttle_command),
+                "remediation_command": build_cap_explicit.then_some(build_throttle_command),
             },
             "selection_error": selection_error,
         });
@@ -3647,8 +3677,13 @@ pub fn lint_config(workgraph_dir: &Path, target: LintTarget, json: bool) -> Resu
             "  warning: explicit build-heavy throttle is below dispatcher.max_agents={} (legacy generated value cannot be distinguished safely from operator intent)",
             merged.coordinator.max_agents
         );
-        println!("  raise/remove throttle: {build_throttle_command}");
+        println!("  restore inheritance: {build_throttle_command}");
         total_findings += 1;
+    } else if build_cap_explicit {
+        println!(
+            "  note: explicit cap pins build-heavy capacity independently of dispatcher.max_agents"
+        );
+        println!("  restore inheritance: {build_throttle_command}");
     }
     for r in &results {
         print_lint_one(r);

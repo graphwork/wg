@@ -14095,10 +14095,17 @@ impl VizApp {
                 config.coordinator.effective_max_build_agents(),
                 config.coordinator.max_build_agents_source()
             ));
-            lines.push(format!(
-                "  Raise cap: wg config set dispatcher.resource_management.max_build_agents {}",
-                admission_worker_max(&self.workgraph_dir, config.coordinator.max_agents)
-            ));
+            if config.coordinator.max_build_agents_source() == "explicit" {
+                lines.push(
+                    "  Restore inheritance: wg config set dispatcher.resource_management.max_build_agents inherit"
+                        .to_string(),
+                );
+            } else {
+                lines.push(format!(
+                    "  Increase worker slots: wg config set dispatcher.max_agents {}",
+                    admission_worker_max(&self.workgraph_dir, config.coordinator.max_agents)
+                ));
+            }
             lines.push(String::new());
         }
         if let Some(parent) = &task.origin.parent_task {
@@ -15186,10 +15193,17 @@ impl VizApp {
                 config.coordinator.effective_max_build_agents(),
                 config.coordinator.max_build_agents_source()
             ));
-            lines.push(format!(
-                "  Raise cap: wg config set dispatcher.resource_management.max_build_agents {}",
-                admission_worker_max(&self.workgraph_dir, config.coordinator.max_agents)
-            ));
+            if config.coordinator.max_build_agents_source() == "explicit" {
+                lines.push(
+                    "  Restore inheritance: wg config set dispatcher.resource_management.max_build_agents inherit"
+                        .to_string(),
+                );
+            } else {
+                lines.push(format!(
+                    "  Increase worker slots: wg config set dispatcher.max_agents {}",
+                    admission_worker_max(&self.workgraph_dir, config.coordinator.max_agents)
+                ));
+            }
             lines.push(String::new());
         }
         if let Some(parent) = &task.origin.parent_task {

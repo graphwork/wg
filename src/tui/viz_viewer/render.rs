@@ -11669,15 +11669,15 @@ fn draw_service_health_detail(frame: &mut Frame, app: &VizApp) {
             value_style,
         ),
     ]));
-    if health.max_build_agents_source == "explicit" && health.max_build_agents < health.agents_max {
+    if health.max_build_agents_source == "explicit" {
         lines.push(Line::from(vec![
-            Span::styled("  Throttle: ", label_style),
-            Span::styled("explicit — raise with ", Style::default().fg(Color::Yellow)),
+            Span::styled("  Build cap: ", label_style),
             Span::styled(
-                format!(
-                    "wg config set dispatcher.resource_management.max_build_agents {}",
-                    health.agents_max
-                ),
+                "explicit — restore inheritance with ",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::styled(
+                "wg config set dispatcher.resource_management.max_build_agents inherit",
                 Style::default().fg(Color::Cyan),
             ),
         ]));

@@ -2005,58 +2005,68 @@ pub fn run_status(project_path: Option<&Path>) -> Result<()> {
         .args(["service", "status", "--json"])
         .output()
         .context("Failed to read authenticated service admission status")?;
-    if output.status.success()
-        && let Ok(value) = serde_json::from_slice::<serde_json::Value>(&output.stdout)
-        && let Some(coordinator) = value.get("coordinator")
+    if !output.status.success() {
+        println!(
+            "Build-heavy: unavailable — authenticated service status failed ({})",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+        return Ok(());
+    }
+    let value = match serde_json::from_slice::<serde_json::Value>(&output.stdout) {
+        Ok(value) => value,
+        Err(error) => {
+            println!("Build-heavy: unavailable — invalid service status JSON ({error})");
+            return Ok(());
+        }
+    };
+    let Some(coordinator) = value.get("coordinator") else {
+        println!("Build-heavy: unavailable — service status omitted coordinator data");
+        return Ok(());
+    };
+    let active = coordinator
+        .get("build_heavy_active")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0);
+    let max = coordinator
+        .get("max_build_agents")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0);
+    let source = coordinator
+        .get("max_build_agents_source")
+        .and_then(|value| value.as_str())
+        .unwrap_or("unknown");
+    println!("Build-heavy: {active}/{max} active (cap {source})");
+    if source == "explicit" {
+        println!(
+            "  Restore inheritance: wg config set dispatcher.resource_management.max_build_agents inherit"
+        );
+    }
+    if !coordinator
+        .get("disk_sentinel_enabled")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
     {
-        let active = coordinator
-            .get("build_heavy_active")
-            .and_then(|value| value.as_u64())
-            .unwrap_or(0);
-        let max = coordinator
-            .get("max_build_agents")
-            .and_then(|value| value.as_u64())
-            .unwrap_or(0);
-        let source = coordinator
-            .get("max_build_agents_source")
-            .and_then(|value| value.as_str())
-            .unwrap_or("unknown");
-        println!("Build-heavy: {active}/{max} active (cap {source})");
-        if source == "explicit"
-            && let Some(worker_max) = coordinator.get("max_agents").and_then(|v| v.as_u64())
-            && max < worker_max
-        {
+        println!("Disk sentinel: disabled — projected headroom unavailable");
+    }
+    if let Some(waiting) = coordinator
+        .get("admission_deferred")
+        .and_then(|value| value.as_array())
+        .filter(|waiting| !waiting.is_empty())
+    {
+        println!(
+            "Admission waiting: {} task(s); no attempt charged",
+            waiting.len()
+        );
+        for item in waiting {
             println!(
-                "  Raise throttle: wg config set dispatcher.resource_management.max_build_agents {worker_max}"
+                "  {}: {}",
+                item.get("task_id")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("?"),
+                item.get("reason")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("resource admission")
             );
-        }
-        if !coordinator
-            .get("disk_sentinel_enabled")
-            .and_then(|value| value.as_bool())
-            .unwrap_or(false)
-        {
-            println!("Disk sentinel: disabled — projected headroom unavailable");
-        }
-        if let Some(waiting) = coordinator
-            .get("admission_deferred")
-            .and_then(|value| value.as_array())
-            .filter(|waiting| !waiting.is_empty())
-        {
-            println!(
-                "Admission waiting: {} task(s); no attempt charged",
-                waiting.len()
-            );
-            for item in waiting {
-                println!(
-                    "  {}: {}",
-                    item.get("task_id")
-                        .and_then(|value| value.as_str())
-                        .unwrap_or("?"),
-                    item.get("reason")
-                        .and_then(|value| value.as_str())
-                        .unwrap_or("resource admission")
-                );
-            }
         }
     }
     Ok(())

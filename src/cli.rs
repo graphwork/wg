@@ -6594,13 +6594,14 @@ pub enum ConfigSubcommand {
     /// Examples:
     ///   wg config set coordinator.max_agents 4
     ///   wg config set coordinator.registry_refresh_interval 0
+    ///   wg config set dispatcher.resource_management.max_build_agents inherit
     ///   wg config set agency.auto_evaluate true --global
     ///   wg config set tiers.fast "pi:openrouter:deepseek/deepseek-chat"
     Set {
         /// Dotted TOML key (e.g. `coordinator.max_agents`, `agency.auto_assign`).
         key: String,
 
-        /// Value as a string; parsed to bool/int/float/string by the setter.
+        /// Value parsed as bool/int/float/string. The optional build-heavy cap also accepts `inherit` to remove the override.
         value: String,
 
         /// Write to the global config (`~/.wg/config.toml`).

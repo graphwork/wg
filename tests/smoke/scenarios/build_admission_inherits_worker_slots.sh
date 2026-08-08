@@ -21,7 +21,16 @@ touch seed && git add seed && git commit -q -m seed
 wg init --no-agency >/dev/null
 wg config init --local --bare >/dev/null
 ! grep -q 'max_build_agents' .wg/config.toml \
-  || loud_fail "fresh wg init baked in a serial max_build_agents throttle"
+  || loud_fail "fresh wg init/config init baked in a serial max_build_agents throttle"
+wg profile init-starters >/dev/null
+! grep -R -q 'max_build_agents' "$HOME/.wg/profiles" \
+  || loud_fail "fresh starter profile baked in a serial max_build_agents throttle"
+wg config reset --route pi --yes >/dev/null
+! grep -q 'max_build_agents' .wg/config.toml \
+  || loud_fail "fresh config reset baked in a serial max_build_agents throttle"
+setup_preview=$(wg setup --route pi --yes --model pi:openrouter:test/fake --dry-run)
+! grep -q 'max_build_agents' <<<"$setup_preview" \
+  || loud_fail "fresh setup preview baked in a serial max_build_agents throttle: $setup_preview"
 cat >.wg/config.toml <<'EOF'
 [agency]
 auto_assign = false
@@ -94,8 +103,28 @@ done
 
 lint=$(wg config lint --local)
 grep -q 'explicit build-heavy throttle' <<<"$lint" || loud_fail "lint omitted legacy-safe throttle warning: $lint"
-grep -q 'wg config set dispatcher.resource_management.max_build_agents 4' <<<"$lint" \
+grep -q 'wg config set dispatcher.resource_management.max_build_agents inherit' <<<"$lint" \
   || loud_fail "lint omitted exact opt-out command: $lint"
 
+# An equal-valued explicit override still pins future capacity and therefore
+# remains visible with the same exact inheritance restoration command.
+wg config set dispatcher.resource_management.max_build_agents 4 >/dev/null
+lint=$(wg config lint --local)
+grep -q 'explicit cap pins build-heavy capacity' <<<"$lint" \
+  || loud_fail "lint hid equal-valued explicit override: $lint"
+grep -q 'max_build_agents inherit' <<<"$lint" \
+  || loud_fail "lint omitted equal-cap inheritance remediation: $lint"
+
+# The advertised command removes the key and hot-reloads back to inheritance.
+wg config set dispatcher.resource_management.max_build_agents inherit >/dev/null
+for _ in $(seq 1 80); do
+  v=$(wg service status --json 2>/dev/null | python3 -c 'import json,sys; c=json.load(sys.stdin)["coordinator"]; print(c["max_build_agents"],c["max_build_agents_source"])' 2>/dev/null || true)
+  [ "$v" = '4 inherited-from-max-agents' ] && break
+  sleep 0.1
+done
+[ "${v:-}" = '4 inherited-from-max-agents' ] || loud_fail "inherit remediation did not hot reload: ${v:-}"
+! grep -q 'max_build_agents' .wg/config.toml \
+  || loud_fail "inherit remediation did not remove the explicit key"
+
 touch "$release"
-echo "PASS: absent build cap dispatches three workers, follows hot max_agents, and explicit hot throttle remains visible"
+echo "PASS: fresh generators omit the cap; inherited and explicit capacities hot-reload; exact inheritance remediation works"

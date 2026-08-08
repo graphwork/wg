@@ -429,10 +429,8 @@ fn gather_coordinator_info(dir: &Path) -> CoordinatorInfo {
                 .max_build_agents
                 .unwrap_or(coord.max_agents),
             max_build_agents_source: config.coordinator.max_build_agents_source().to_string(),
-            max_build_agents_remediation_command: format!(
-                "wg config set dispatcher.resource_management.max_build_agents {}",
-                coord.max_agents
-            ),
+            max_build_agents_remediation_command:
+                "wg config set dispatcher.resource_management.max_build_agents inherit".to_string(),
             disk_sentinel_enabled: config.coordinator.resource_management.disk_sentinel_enabled,
             admission_deferred_tasks: coord.admission_deferred_tasks,
             admission_deferred: coord.admission_deferred,
@@ -469,10 +467,8 @@ fn gather_coordinator_info(dir: &Path) -> CoordinatorInfo {
         build_heavy_active,
         max_build_agents: config.coordinator.effective_max_build_agents(),
         max_build_agents_source: config.coordinator.max_build_agents_source().to_string(),
-        max_build_agents_remediation_command: format!(
-            "wg config set dispatcher.resource_management.max_build_agents {}",
-            config.coordinator.max_agents
-        ),
+        max_build_agents_remediation_command:
+            "wg config set dispatcher.resource_management.max_build_agents inherit".to_string(),
         disk_sentinel_enabled: config.coordinator.resource_management.disk_sentinel_enabled,
         admission_deferred_tasks: 0,
         admission_deferred: Vec::new(),
@@ -944,11 +940,9 @@ fn print_status(status: &StatusOutput) {
         status.coordinator.build_heavy_active,
         status.coordinator.max_build_agents,
         status.coordinator.max_build_agents_source,
-        if status.coordinator.max_build_agents_source == "explicit"
-            && status.coordinator.max_build_agents < status.coordinator.max_agents
-        {
+        if status.coordinator.max_build_agents_source == "explicit" {
             format!(
-                " — throttle active; raise with `{}`",
+                " — explicit override; restore inheritance with `{}`",
                 status.coordinator.max_build_agents_remediation_command
             )
         } else {
