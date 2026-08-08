@@ -7,18 +7,22 @@
 **Artifact status:** charter and entry point; thematic findings are not yet complete
 
 **Scope root:** the repository at the snapshot above, including tracked source, tests, documentation, packaging, and operator surfaces
+
 **Change boundary:** audit artifacts under this directory only; no production source, tests, or pre-existing documentation may be changed by this audit
 
-This README is the normative contract for every artifact in this audit. It also
-conforms to the seven-part structure that it requires of the rest of the tree.
-A path or test name below is evidence of repository structure, not by itself a
-claim that the represented behavior is correct or has been executed.
+**`[CHARTER-RULE]`** This README is the normative contract for every artifact in
+this audit. It also conforms to the seven-part structure that it requires of the
+rest of the tree. A path or test name below is evidence of repository structure,
+not by itself a claim that the represented behavior is correct or has been
+executed.
 
 ## 1. Executive abstract
 
 **`[INFERENCE]`** The breadth and overlap of the repository make any single
-narrative an unsafe proxy for the implemented system. **`[FACT]`** At the pinned
-snapshot, the Rust library exposes graph, service, agency, identity, provider,
+narrative an unsafe proxy for the implemented system.
+
+**`[FACT]`** At the pinned snapshot, the Rust library exposes graph, service,
+agency, identity, provider,
 review, trust, streaming, and worker-control modules (`src/lib.rs:20-117`);
 Cargo declares four binaries, including the separate Casa adapter
 (`Cargo.toml:23-41`); and the repository contains distinct Rust, Pi/TypeScript,
@@ -27,26 +31,28 @@ counted 434 Rust files below `src/`, 176 top-level Rust test targets, 324 smoke
 scenarios, and 603 files below `docs/` (exact command and limitations in section
 7).
 
-**Charter rule:** the audit uses a **fractal evidence contract**: a reader may stop at
+**`[CHARTER-RULE]`** The audit uses a **fractal evidence contract**: a reader may stop at
 the final executive synthesis, descend into a thematic synthesis, or continue
 to a leaf audit without losing the local abstract, map, findings, drift, risk,
 recommendation, and evidence trail. Parallel leaf audits fan in through three
 explicit syntheses; contradictions are preserved in a separate register; a
 skeptical review occurs before the final synthesis.
 
-The charter does **not** assume that a documented claim is implemented, that an
-implemented branch is reachable, or that a test file has run. Every substantive
-statement must be labeled as an observed fact, verified behavior, documented
-claim, inference, recommendation, contradiction, or uncertainty. Contradictory
-claims remain visible until evidence and authority resolve them.
+**`[CHARTER-RULE]`** The charter does **not** assume that a documented claim is
+implemented, that an implemented branch is reachable, or that a test file has
+run. Every empirical or evaluative statement must be labeled as an observed
+fact, verified behavior, documented claim, inference, recommendation,
+contradiction, or uncertainty. Normative audit instructions are labeled
+`[CHARTER-RULE]`. Contradictory claims remain visible until evidence and
+authority resolve them.
 
 ## 2. Scope and system map
 
 ### 2.1 In scope
 
-Unless explicitly qualified, the path and structure observations in sections
-2.1 and 2.2 are **`[FACT]`** at the pinned snapshot. The audit covers the
-repository-wide relationship among:
+**`[CHARTER-RULE]`** The audit covers the repository-wide relationships listed
+below. Unless explicitly qualified, each path and structure observation is a
+**`[FACT]`** at the pinned snapshot:
 
 1. **Product and executable boundaries:** the `wg`, `worksgood`, `nex`, and
    `casa-adapter` binaries declared in `Cargo.toml:23-41`; the library export
@@ -94,6 +100,10 @@ repository-wide relationship among:
 
 ### 2.2 Repository surface inventory for downstream auditors
 
+**`[CHARTER-RULE]`** In this table, “Primary entry points” records `[FACT]`
+structure at the snapshot; “Required cross-checks” prescribes downstream audit
+work rather than asserting current behavior.
+
 | Surface | Primary entry points | Required cross-checks |
 |---|---|---|
 | Rust package and binaries | `Cargo.toml:1-56`; `src/main.rs`; `src/bin/worksgood.rs`; `src/bin/nex.rs`; `adapters/casa/src/main.rs` | CLI help, dispatch branches, install artifacts, platform behavior |
@@ -112,14 +122,15 @@ repository-wide relationship among:
 | Documentation | 603 files under `docs/`, including 554 Markdown files; 56 root-level Markdown files | authority, freshness, generated copies, duplication, archives, broken or missing indexes |
 | Ancillary trees | `adapters/`, `agency/`, `examples/`, `schemas/`, `templates/`, `website/`, `terminal-bench/`, `scripts/` | determine product status before treating examples, reports, or benchmarks as normative |
 
-Counts are orientation aids, not coverage claims. Generated files, fixtures,
-assets, nested packages, and files outside the named extensions make totals
-non-additive.
+**`[UNCERTAINTY]`** Counts are orientation aids, not coverage claims. Generated
+files, fixtures, assets, nested packages, and files outside the named extensions
+make totals non-additive.
 
 ### 2.3 Planned document tree
 
-The following names are fixed for this audit. A missing file means its task has
-not landed; it must not be silently replaced by a differently named artifact.
+**`[CHARTER-RULE]`** The following names are fixed for this audit. A missing file
+means its task has not landed; it must not be silently replaced by a differently
+named artifact.
 
 ```text
 docs/audit/2026-08-08-worksgood-system/
@@ -146,8 +157,8 @@ docs/audit/2026-08-08-worksgood-system/
 
 ### 2.4 Fan-out, fan-in, and provenance
 
-The task graph is an evidence pipeline rather than a license to copy dependency
-summaries as truth:
+**`[CHARTER-RULE]`** The planned task graph is an evidence pipeline rather than a
+license to copy dependency summaries as truth:
 
 ```text
 README charter
@@ -166,25 +177,27 @@ README charter
 40 + 90 ─> 99 final synthesis
 ```
 
-**Fan-out rule:** each leaf auditor reads primary repository evidence and cites
-it directly; this README and dependency context are navigation, not proof.
+**`[CHARTER-RULE]` Fan-out:** each leaf auditor reads primary repository evidence
+and cites it directly; this README and dependency context are navigation, not
+proof.
 
-**Fan-in rule:** a synthesis cites every input artifact, preserves its stable
-finding/contradiction IDs, and spot-checks material or disputed claims against
-primary evidence. It must say whether it adopts, narrows, rejects, or leaves an
-input claim uncertain. Copying prose without provenance is prohibited.
+**`[CHARTER-RULE]` Fan-in:** a synthesis cites every input artifact, preserves
+its stable finding/contradiction IDs, and spot-checks material or disputed claims
+against primary evidence. It must say whether it adopts, narrows, rejects, or
+leaves an input claim uncertain. Copying prose without provenance is prohibited.
 
-**Finalization rule:** `99-SYNTHESIS.md` does not supersede leaf evidence. It
-links down to it, records responses to `90-independent-review.md`, and maintains
-a trace from each high-severity assertion to primary evidence or an explicit
-uncertainty marker.
+**`[CHARTER-RULE]` Finalization:** `99-SYNTHESIS.md` does not supersede leaf
+evidence. It links down to it, records responses to `90-independent-review.md`,
+and maintains a trace from each high-severity assertion to primary evidence or
+an explicit uncertainty marker.
 
 ## 3. Findings and audit contract
 
 ### 3.1 Required fractal section contract
 
-Every artifact above, and every major domain section within a synthesis, uses
-these headings in this order (wording may be specialized but not omitted):
+**`[CHARTER-RULE]`** Every artifact above, and every major domain section within
+a synthesis, uses these headings in this order (wording may be specialized but
+not omitted):
 
 1. **Executive abstract** — current state in plain language, most important
    findings, highest risk, confidence, and the next decision/action. State what
@@ -207,16 +220,16 @@ these headings in this order (wording may be specialized but not omitted):
 7. **Evidence appendix** — pinned revision, exact paths/line spans, symbols,
    inspected tests, commands with date/environment/exit status, and limitations.
 
-At the synthesis level, each major subsection starts with a short local
-abstract and ends with links to its local evidence/risks/recommendations. It may
-link to the document-level appendix rather than duplicate citations. Empty
-sections must say **“none found in the sampled evidence”** and describe the
-sample; they may not disappear.
+**`[CHARTER-RULE]`** At the synthesis level, each major subsection starts with a
+short local abstract and ends with links to its local
+evidence/risks/recommendations. It may link to the document-level appendix rather
+than duplicate citations. Empty sections must say **“none found in the sampled
+evidence”** and describe the sample; they may not disappear.
 
 ### 3.2 Statement labels and evidence classes
 
-Use the following visible prefixes. A paragraph containing multiple classes
-must split them rather than applying one label to mixed prose.
+**`[CHARTER-RULE]`** Use the following visible prefixes. A paragraph containing
+multiple classes must split them rather than applying one label to mixed prose.
 
 | Label | Meaning | Minimum support |
 |---|---|---|
@@ -227,14 +240,16 @@ must split them rather than applying one label to mixed prose.
 | **`[RECOMMENDATION]`** | Proposed change or decision, not present behavior. | Linked finding/risk, intended owner/domain, priority, and acceptance check. |
 | **`[CONTRADICTION]`** | Two or more claims/evidence sources cannot all be read literally in the same scope. | Both sides cited, scope/time qualifiers, current authority if known, and resolution status. |
 | **`[UNCERTAINTY]`** | Evidence is missing, ambiguous, stale, environment-dependent, or conflicting. | What is unknown, why, consequence, and the next check. |
+| **`[CHARTER-RULE]`** | Normative method, structure, or instruction governing this audit; not a product-behavior claim. | This charter section; downstream deviations must be explicit and justified. |
 
-A test source that was only read supports `[FACT] test X asserts Y`, **not**
+**`[CHARTER-RULE]`** A test source that was only read supports `[FACT] test X asserts Y`, **not**
 `[VERIFIED] Y works`. Likewise, compilation does not verify a CLI human flow,
 and a passing happy-path test does not verify a negative security invariant.
 
 ### 3.3 Evidence hierarchy and citation contract
 
-Evidence is classified by what it can establish, not by prestige:
+**`[CHARTER-RULE]`** Evidence is classified by what it can establish, not by
+prestige:
 
 1. **E1 — executed behavior:** a reproducible command or scripted human flow
    run against the pinned snapshot. Strongest evidence for that environment and
@@ -255,12 +270,13 @@ Evidence is classified by what it can establish, not by prestige:
    live service observations. State assumptions, retrieval date, and why local
    primary evidence is insufficient.
 
-Prefer E1+E2 for behavior findings and E2+E3 for implementation/coverage
-findings. Security claims require both enforcement-site evidence and a negative
-or adversarial check where feasible. Formal claims must delimit modeled state
-from filesystem, process, network, Git, and operator effects.
+**`[CHARTER-RULE]`** Prefer E1+E2 for behavior findings and E2+E3 for
+implementation/coverage findings. Security claims require both enforcement-site
+evidence and a negative or adversarial check where feasible. Formal claims must
+delimit modeled state from filesystem, process, network, Git, and operator
+effects.
 
-Use these citation forms:
+**`[CHARTER-RULE]`** Use these citation forms:
 
 - Source: ``src/parser.rs:285-395 (`load_graph`, `save_graph`, `modify_graph`)``.
 - Test inspected: ``tests/integration_task_lifecycle.rs:<lines> (`<test_name>`) [inspected, not run]``.
@@ -273,13 +289,14 @@ Use these citation forms:
 - Git/history: include commit ID and exact `git log`/`git show` command; author or
   commit date does not by itself make a claim current.
 
-Line ranges are interpreted at the pinned revision. When citing a large file,
-name the symbol/test/scenario as well as lines. Avoid citations to an entire
-module when a smaller enforcement site exists.
+**`[CHARTER-RULE]`** Line ranges are interpreted at the pinned revision. When
+citing a large file, name the symbol/test/scenario as well as lines. Avoid
+citations to an entire module when a smaller enforcement site exists.
 
 ### 3.4 Finding records, confidence, and risk vocabulary
 
-Every material finding uses a stable domain ID such as `ARCH-001`, `ORCH-004`,
+**`[CHARTER-RULE]`** Every material finding uses a stable domain ID such as
+`ARCH-001`, `ORCH-004`,
 `FED-007`, `DOC-012`, or `X-003` (cross-cutting). It records:
 
 - label and concise claim;
@@ -290,7 +307,8 @@ Every material finding uses a stable domain ID such as `ARCH-001`, `ORCH-004`,
 - primary evidence and counterevidence;
 - owner/domain and linked recommendation/decision, if any.
 
-Severity measures plausible impact, not how surprising a discrepancy is:
+**`[CHARTER-RULE]`** Severity measures plausible impact, not how surprising a
+discrepancy is:
 
 | Severity | Definition |
 |---|---|
@@ -300,7 +318,8 @@ Severity measures plausible impact, not how surprising a discrepancy is:
 | **S3 Low** | Localized inconsistency, maintainability/usability issue, or minor documentation defect with low immediate impact. |
 | **S4 Informational** | Observation, positive control, or improvement opportunity without a demonstrated harmful condition. |
 
-Likelihood is separate: **observed**, **likely**, **possible**, **unlikely**, or
+**`[CHARTER-RULE]`** Likelihood is separate: **observed**, **likely**,
+**possible**, **unlikely**, or
 **unknown**. Confidence is **high** (direct, corroborated primary evidence),
 **medium** (partial evidence or bounded inference), or **low** (substantial
 ambiguity/missing checks). A contradiction between documents is not S0/S1
@@ -308,8 +327,9 @@ unless the resulting impact supports it.
 
 ### 3.5 Freshness and date policy
 
-All artifacts inherit the audit snapshot at the top of this README and add an
-`Evidence checked through` date. Evidence uses these freshness states:
+**`[CHARTER-RULE]`** All artifacts inherit the audit snapshot at the top of this
+README and add an `Evidence checked through` date. Evidence uses these freshness
+states:
 
 | State | Meaning at audit time |
 |---|---|
@@ -322,15 +342,16 @@ All artifacts inherit the audit snapshot at the top of this README and add an
 | **superseded** | A named later authority replaces it; cite both and the superseding decision. |
 | **future/proposed** | Plan, design, stub, or deferred capability; never phrase as shipped. |
 
-The repository snapshot, not a file modification timestamp, defines static
-freshness. A date in prose, filename, changelog, or commit is contextual evidence
-only. If the branch moves, auditors either stay pinned or record a new revision
-and recheck every affected citation. External pages and live services require a
-retrieval timestamp and must not silently refresh local conclusions.
+**`[CHARTER-RULE]`** The repository snapshot, not a file modification timestamp,
+defines static freshness. A date in prose, filename, changelog, or commit is
+contextual evidence only. If the branch moves, auditors either stay pinned or
+record a new revision and recheck every affected citation. External pages and
+live services require a retrieval timestamp and must not silently refresh local
+conclusions.
 
 ### 3.6 Explicit non-goals
 
-This audit does not:
+**`[CHARTER-RULE]`** This audit does not:
 
 - edit production source, tests, existing docs, schemas, workflows, packaging,
   or generated artifacts;
@@ -349,7 +370,8 @@ This audit does not:
 
 ## 4. Contradictions and drift
 
-The dedicated register is `30-contradiction-and-drift-register.md`. Each entry
+**`[CHARTER-RULE]`** The dedicated register is
+`30-contradiction-and-drift-register.md`. Each entry
 must contain: stable ID; claim A and claim B; exact citations; time/scope
 qualifiers; evidence class; current authority or **unknown**; severity;
 confidence; impact; proposed adjudication; owner/domain; and state (**open**,
@@ -357,7 +379,8 @@ confidence; impact; proposed adjudication; owner/domain; and state (**open**,
 Resolved apparent contradictions remain in the register to show the check and
 counter confirmation bias.
 
-Initial orientation found these **triage seeds**, not final determinations:
+**`[FACT]`** Initial static orientation found these **triage seeds**, not final
+determinations:
 
 | ID | Record |
 |---|---|
@@ -365,15 +388,15 @@ Initial orientation found these **triage seeds**, not final determinations:
 | `CHARTER-DRIFT-002` | **`[CONTRADICTION]`** the root README calls Pi the sole model plane (`README.md:117-119`), while the docs quick-start still presents Claude as the default executor, `opus`/`sonnet`/`haiku` as default models, and deprecated-looking `executor` keys (`docs/README.md:152-184`). This may be legacy documentation rather than live behavior. **Provisional S2, high confidence that text conflicts; runtime authority unknown.** Model-plane and documentation audits own adjudication. |
 | `CHARTER-UNCERTAINTY-001` | **`[UNCERTAINTY]`** `docs/KEY_DOCS.md:5-5` says its canonical list was last updated 2026-04-29, while this snapshot contains substantial later federation/review/exec/Pi/pilot material. No conclusion is drawn about omissions until the documentation auditor compares the full list. **S3 gap, high confidence.** |
 
-Auditors must add counterevidence and scope qualifiers rather than copying these
-seeds as established product defects.
+**`[CHARTER-RULE]`** Auditors must add counterevidence and scope qualifiers rather
+than copying these seeds as established product defects.
 
 ## 5. Risks and gaps
 
 | ID | Label | Severity | Risk/gap and required control |
 |---|---|---:|---|
 | `CHARTER-RISK-001` | `[INFERENCE]` | S1 | A large, fast-changing cross-plane system can produce high-confidence synthesis by repeated citation of the same stale narrative. Control: leaf auditors return to E1/E2 evidence; syntheses retain provenance and independently spot-check material claims. |
-| `CHARTER-RISK-002` | `[FACT]` + `[INFERENCE]` | S2 | The estate has many evidence-shaped artifacts (324 smoke scripts, 176 top-level Rust test files, 603 docs files). Presence can be mistaken for coverage or successful execution. Control: every test citation says **inspected** or **executed**, with skips/failures recorded. |
+| `CHARTER-RISK-002` | `[FACT]`; `[INFERENCE]` | S2 | **Fact:** the inventory found 324 smoke scripts, 176 top-level Rust test files, and 603 docs files. **Inference:** their presence can be mistaken for coverage or successful execution. Control: every test citation says **inspected** or **executed**, with skips/failures recorded. |
 | `CHARTER-RISK-003` | `[INFERENCE]` | S2 | Generated CLI help, embedded Pi output, website copies, manuals, agent contracts, and source comments can drift independently. Control: compare generation/source chains and name authority; do not pick the newest-looking text without verification. |
 | `CHARTER-RISK-004` | `[UNCERTAINTY]` | S2 | External providers, credentials, platform installers, signing secrets, TTY/tmux flows, and network filesystems may not be available in the audit environment. Control: record unexecuted paths and residual risk; never turn an environmental skip into a pass. |
 | `CHARTER-RISK-005` | `[INFERENCE]` | S2 | Security and authority properties cross identity, trust, review, provider, lease, completion, and operator seams. Component-local tests may miss composition failures. Control: preserve cross-system sequences and negative/adversarial checks in 14, 15, 21, and 99. |
@@ -416,12 +439,19 @@ seeds as established product defects.
 
 ### 7.1 Snapshot and inventory command
 
-Executed from the repository worktree on 2026-08-08, before this new audit
-artifact was created; revision shown below; exit status 0. This is static
-inventory, not behavioral verification. Re-running after audit artifacts land
-will increase documentation counts.
+**`[VERIFIED]`** Executed from the repository worktree on 2026-08-08, before this
+new audit artifact was created; revision shown below; exit status 0. This is
+static inventory, not product-behavior verification. Re-running after audit
+artifacts land will increase documentation counts.
 
 ```bash
+pwd
+uname -srm
+rustc --version
+cargo --version
+rg --version | head -1
+find --version | head -1
+python3 --version
 git rev-parse HEAD
 git show -s --format=%cI HEAD
 find src -type f -name '*.rs' | wc -l
@@ -441,6 +471,13 @@ find .github/workflows -maxdepth 1 -type f | wc -l
 Bounded output:
 
 ```text
+cwd: /home/bot/wg/.wg-worktrees/agent-1
+host: Linux 6.8.0-90-generic x86_64
+rustc: 1.96.0 (ac68faa20 2026-05-25)
+cargo: 1.96.0 (30a34c682 2026-05-25)
+ripgrep: 15.1.0 (rev af60c2de9d)
+GNU findutils: 4.9.0
+Python: 3.12.3
 revision: b0892ea7496fd2cc8f641417a3d8e33ca9add369
 commit_time: 2026-08-07T12:38:38+02:00
 src Rust files: 434
@@ -457,11 +494,15 @@ formal Lean files: 9
 GitHub workflow files: 2
 ```
 
-Limitations: counts include files regardless of reachability/status and exclude
+**`[UNCERTAINTY]`** Limitations: counts include files regardless of
+reachability/status and exclude
 nested test targets from the “top-level Rust test” count. Equal smoke script and
 manifest counts do not establish a one-to-one mapping without a name-level join.
 
 ### 7.2 Primary evidence sampled for this charter
+
+**`[FACT]`** The following primary files were statically inspected; entries
+explicitly say when executable behavior was not run.
 
 | Evidence | What was observed | Class/freshness |
 |---|---|---|
@@ -487,7 +528,7 @@ manifest counts do not establish a one-to-one mapping without a name-level join.
 
 ### 7.3 Commands not run for this charter
 
-No `cargo build`, `cargo test`, smoke scenario, installer, release, network,
+**`[FACT]`** No `cargo build`, `cargo test`, smoke scenario, installer, release, network,
 identity, provider, pilot, TUI, browser, or external-model command was run.
 Their presence in source/CI is `[FACT]`; their behavior remains unverified by
 this artifact.
