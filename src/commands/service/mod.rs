@@ -873,6 +873,13 @@ impl CoordinatorStateFileLock {
     }
 }
 
+/// One ready task held before any spawn attempt by resource admission.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdmissionDeferredTask {
+    pub task_id: String,
+    pub reason: String,
+}
+
 /// Runtime coordinator state persisted to disk for status queries
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CoordinatorState {
@@ -906,6 +913,10 @@ pub struct CoordinatorState {
     /// First intentional admission refusal from the last tick.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub admission_deferred_reason: Option<String>,
+    /// Exact ready tasks deferred in the last tick. These remain Open and have
+    /// no attempt; this read model prevents them looking mysteriously idle.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub admission_deferred: Vec<AdmissionDeferredTask>,
     /// Whether the coordinator is paused (no new agent spawns)
     #[serde(default)]
     pub paused: bool,
@@ -3003,6 +3014,7 @@ pub fn run_daemon(
         agents_spawned: 0,
         admission_deferred_tasks: 0,
         admission_deferred_reason: None,
+        admission_deferred: Vec::new(),
         paused: false,
         frozen: false,
         frozen_pids: Vec::new(),
@@ -3808,6 +3820,7 @@ pub fn run_daemon(
                     coord_state.admission_deferred_tasks = result.admission_deferred_tasks;
                     coord_state.admission_deferred_reason =
                         result.admission_deferred_reason.clone();
+                    coord_state.admission_deferred = result.admission_deferred.clone();
                     // Reload accumulated_tokens from disk before saving to avoid clobbering
                     // increments written by the coordinator agent thread. Reload
                     // runtime_max_agents for the same reason: `handle_reconfigure`
@@ -4477,6 +4490,31 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
     // Load coordinator state (persisted by daemon, reflects effective config + runtime)
     let coord = CoordinatorState::load_or_default(dir);
     let config = Config::load_or_default(dir);
+    let max_build_agents = config
+        .coordinator
+        .resource_management
+        .max_build_agents
+        .unwrap_or(coord.max_agents);
+    let max_build_agents_source = config.coordinator.max_build_agents_source();
+    let disk_sentinel_enabled = config
+        .coordinator
+        .resource_management
+        .disk_sentinel_enabled;
+    let build_heavy_active = crate::commands::load_workgraph(dir)
+        .ok()
+        .map(|(graph, _)| {
+            registry
+                .agents
+                .values()
+                .filter(|agent| agent.is_alive() && is_process_alive(agent.pid))
+                .filter(|agent| {
+                    graph.get_task(&agent.task_id).is_some_and(|task| {
+                        worksgood::disk_sentinel::classify_task(task).is_heavy()
+                    })
+                })
+                .count()
+        })
+        .unwrap_or(0);
     let evaluation_lane = worksgood::evaluation::bounded::load_lane_status(dir);
     let deep_flip_lane = worksgood::evaluation::deep::load_lane_status(dir);
     let cleanup = worktree::load_cleanup_lane_snapshot(dir);
@@ -4536,6 +4574,20 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
                 "agents_spawned_last_tick": coord.agents_spawned,
                 "admission_deferred_tasks": coord.admission_deferred_tasks,
                 "admission_deferred_reason": coord.admission_deferred_reason,
+                "admission_deferred": coord.admission_deferred,
+                "build_heavy_active": build_heavy_active,
+                "max_build_agents": max_build_agents,
+                "max_build_agents_source": max_build_agents_source,
+                "max_build_agents_remediation_command": format!(
+                    "wg config set dispatcher.resource_management.max_build_agents {}",
+                    coord.max_agents
+                ),
+                "disk_sentinel_enabled": disk_sentinel_enabled,
+                "projected_headroom_bytes": if disk_sentinel_enabled {
+                    worksgood::disk_sentinel::load_snapshot(dir).ok().flatten().map(|snapshot| snapshot.projected_headroom_bytes)
+                } else {
+                    None
+                },
                 "dispatch_state": if coord.admission_deferred_tasks > 0 {
                     "admission-deferred"
                 } else {
@@ -4638,6 +4690,20 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
                 );
             }
         }
+        println!(
+            "Build-heavy: {build_heavy_active}/{max_build_agents} active (cap {max_build_agents_source}){}",
+            if max_build_agents_source == "explicit" && max_build_agents < coord.max_agents {
+                format!(
+                    " — throttle active; raise with `wg config set dispatcher.resource_management.max_build_agents {}`",
+                    coord.max_agents
+                )
+            } else {
+                String::new()
+            }
+        );
+        if !disk_sentinel_enabled {
+            println!("Disk sentinel: disabled — projected headroom unavailable");
+        }
         if coord.admission_deferred_tasks > 0 {
             println!(
                 "  Admission deferred: {} ready task(s) by transient resource admission — dispatcher is not wedged; no spawn failure charged; retrying on bounded ticks",
@@ -4645,6 +4711,9 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
             );
             if let Some(reason) = coord.admission_deferred_reason.as_deref() {
                 println!("    Reason: {reason}");
+            }
+            for task in &coord.admission_deferred {
+                println!("    Task {}: {}", task.task_id, task.reason);
             }
         }
         let model_str = coord.model.as_deref().unwrap_or("default");

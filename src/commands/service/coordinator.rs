@@ -43,6 +43,8 @@ pub struct TickResult {
     pub admission_deferred_tasks: usize,
     /// First admission refusal recorded during the tick, for status output.
     pub admission_deferred_reason: Option<String>,
+    /// Per-task waiting reasons for the current tick.
+    pub admission_deferred: Vec<super::AdmissionDeferredTask>,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -50,6 +52,7 @@ struct SpawnSummary {
     spawned: usize,
     admission_deferred_tasks: usize,
     admission_deferred_reason: Option<String>,
+    admission_deferred: Vec<super::AdmissionDeferredTask>,
     /// Tasks skipped this tick because their per-task spawn circuit breaker
     /// is tripped (and the cooldown has not elapsed). Other tasks dispatch
     /// normally — the breaker is per-task.
@@ -163,6 +166,7 @@ fn cleanup_and_count_alive(
             spawn_breaker_tripped_tasks: 0,
             admission_deferred_tasks: 0,
             admission_deferred_reason: None,
+            admission_deferred: Vec::new(),
         }));
     }
 
@@ -265,6 +269,7 @@ fn check_ready_or_return(
             spawn_breaker_tripped_tasks: 0,
             admission_deferred_tasks: 0,
             admission_deferred_reason: None,
+            admission_deferred: Vec::new(),
         });
     }
     None
@@ -1975,6 +1980,12 @@ fn note_admission_deferral(
     summary
         .admission_deferred_reason
         .get_or_insert_with(|| reason.to_string());
+    summary
+        .admission_deferred
+        .push(super::AdmissionDeferredTask {
+            task_id: task_id.to_string(),
+            reason: reason.to_string(),
+        });
     if record_admission_deferral(graph_path, task_id, reason) {
         eprintln!(
             "[dispatcher] Deferring '{}': {} (admission backpressure, not a spawn failure; identical deferrals are coalesced; retrying on bounded coordinator ticks)",
@@ -2042,6 +2053,7 @@ fn spawn_agents_for_ready_tasks(
     config: &Config,
     default_model: Option<&str>,
     slots_available: usize,
+    effective_max_agents: usize,
 ) -> SpawnSummary {
     let graph_file = graph_path(dir);
     warn_released_advisory_quality_passes(&graph_file, graph);
@@ -2113,7 +2125,11 @@ fn spawn_agents_for_ready_tasks(
             task,
             builds_blocked || !projected.allowed,
             active_build_heavy,
-            config.coordinator.resource_management.max_build_agents,
+            config
+                .coordinator
+                .resource_management
+                .max_build_agents
+                .unwrap_or(effective_max_agents),
             disk_reason,
         ) {
             note_admission_deferral(&mut summary, &graph_file, &task.id, &reason);
@@ -2745,6 +2761,7 @@ pub fn coordinator_tick(
         &config,
         Some(effective_model.as_str()),
         slots_available,
+        max_agents,
     );
 
     Ok(TickResult {
@@ -2754,6 +2771,7 @@ pub fn coordinator_tick(
         spawn_breaker_tripped_tasks: spawn_summary.spawn_breaker_tripped_tasks,
         admission_deferred_tasks: spawn_summary.admission_deferred_tasks,
         admission_deferred_reason: spawn_summary.admission_deferred_reason,
+        admission_deferred: spawn_summary.admission_deferred,
     })
 }
 
@@ -4374,7 +4392,7 @@ mod tests {
 
         let mut config = Config::default();
         config.coordinator.resource_management.disk_sentinel_enabled = false;
-        config.coordinator.resource_management.max_build_agents = 1;
+        config.coordinator.resource_management.max_build_agents = Some(1);
         config.coordinator.max_spawn_failures = 5;
         let provider_health_before =
             serde_json::to_value(worksgood::service::ProviderHealth::load(dir.path()).unwrap())
@@ -4385,11 +4403,17 @@ mod tests {
         for _ in 0..=config.coordinator.max_spawn_failures {
             let snapshot = load_graph(&graph_path).unwrap();
             let summary =
-                spawn_agents_for_ready_tasks(dir.path(), &snapshot, "test", &config, None, 1);
+                spawn_agents_for_ready_tasks(dir.path(), &snapshot, "test", &config, None, 1, 1);
             assert_eq!(summary.spawned, 0);
             assert_eq!(
                 summary.admission_deferred_tasks, 1,
                 "the occupied live build slot must be reported as admission backpressure"
+            );
+            assert_eq!(summary.admission_deferred.len(), 1);
+            assert_eq!(summary.admission_deferred[0].task_id, "deferred-build");
+            assert_eq!(
+                summary.admission_deferred[0].reason,
+                "build-heavy admission budget full (1/1)"
             );
         }
 

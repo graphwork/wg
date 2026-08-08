@@ -2751,7 +2751,7 @@ timeout_seconds = 90
 [[scenario]]
 name = "admission_deferral_backpressure"
 script = "scenarios/admission_deferral_backpressure.sh"
-owners = ["fix-admission-deferrals", "integrate-and-canary"]
+owners = ["fix-admission-deferrals", "integrate-and-canary", "fix-build-admission-default-ui"]
 description = "Credential-free installed-binary terminal/daemon flow for admission backpressure: one live build-heavy shell task occupies max_build_agents=1 while a second remains Open and unattempted across more than five bounded ticks with zero spawn/retry/provider-health/evaluator/FLIP charge; service JSON and human status expose the separate deferred count/reason; identical logs and lifecycle evidence coalesce; releasing the first task's capacity (without retry/edit/direct transition calls) makes the daemon dispatch the deferred task exactly once."
 timeout_seconds = 60
 
@@ -3071,3 +3071,10 @@ script = "scenarios/setup_route_activation_preflight.sh"
 owners = ["setup-route-activation-ux"]
 description = "Candidate-binary real PTY terminal regression for setup-route-activation-ux: from clean isolated HOME/project fixtures, one `wg setup --route pi --yes --model <exact>` command writes the exact effective default/task-agent route and activates global `pi` without a follow-up `wg profile use`; a fake Pi proves bounded executable discovery makes no provider/model call, reports auth/model NOT VERIFIED with `/login` action and no fallback, while an absent-Pi fixture is called UNAVAILABLE rather than ready."
 timeout_seconds = 60
+
+[[scenario]]
+name = "build_admission_inherits_worker_slots"
+script = "scenarios/build_admission_inherits_worker_slots.sh"
+owners = ["fix-build-admission-default-ui"]
+description = "Candidate-binary real-daemon terminal regression: with max_agents=3 and no build override, three build-heavy shell fixtures run concurrently and config/service JSON report an inherited 3-slot cap; changing max_agents updates the inherited cap by hot reload, an explicit cap wins without restart, lint gives the exact remediation command, and disabled predictive disk admission exposes headroom as unavailable."
+timeout_seconds = 120

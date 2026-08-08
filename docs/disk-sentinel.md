@@ -1,6 +1,6 @@
 # Disk sentinel and owned build caches
 
-WG keeps predictive disk/build admission separate from cleanup and preservation safeguards. Predictive admission is **disabled by default**: dispatch and recovery availability must not depend on an inaccurate hypothetical full cold-build reservation, especially when recovery already has a preserved warm target. Advanced users may explicitly opt in; when enabled, low space pauses only build-capable work while dot-prefixed agency tasks, read-only work, and graph operations remain eligible. Build-heavy tasks (Cargo build/test/install/clippy, CMake, and full-suite validation) also use a separate concurrency budget, serialized by default.
+WG keeps predictive disk/build admission separate from cleanup and preservation safeguards. Predictive admission is **disabled by default**: dispatch and recovery availability must not depend on an inaccurate hypothetical full cold-build reservation, especially when recovery already has a preserved warm target. Advanced users may explicitly opt in; when enabled, low space pauses only build-capable work while dot-prefixed agency tasks, read-only work, and graph operations remain eligible. Build-heavy tasks (Cargo build/test/install/clippy, CMake, and full-suite validation) also use a separate concurrency budget. By default that budget follows `dispatcher.max_agents`; operators may set a lower explicit throttle.
 
 ## Configuration
 
@@ -21,7 +21,8 @@ disk_pause_build_percent = 8.0
 disk_hard_refuse_percent = 4.0
 disk_resume_hysteresis_bytes = 5368709120
 disk_resume_hysteresis_percent = 2.0
-max_build_agents = 1
+# Optional intentional throttle; when omitted, inherits dispatcher.max_agents.
+# max_build_agents = 1
 estimated_build_bytes = 17179869184        # ordinary build-capable cold floor
 estimated_build_heavy_bytes = 68719476736  # Cargo test/link cold floor
 build_link_test_safety_bytes = 8589934592  # final link/test scratch
@@ -36,7 +37,7 @@ terminal_output_tail_bytes = 2097152
 
 Both byte and percentage thresholds are enforced for the graph/project-worktree mount and every distinct configured target/tmp mount. A paused state clears only after every mount exceeds the pause threshold plus the configured hysteresis.
 
-When `disk_sentinel_enabled = true` is explicitly configured, build admission is projected, not just reactive. WG persists the measured per-target high-water and uses the larger of that measurement or the class-specific cold floor, then adds final-link/test safety and the unmaterialized reservation for every concurrent live build. The projection must remain above the **warning** floor. Before returning a pressure refusal, admission runs one idempotent cleanup of eligible explicitly-owned caches/terminal streams and reassesses; unknown, dirty-source, live/open and artifact guards remain unchanged. Spawn admission is serialized through the agent registry lock, so two large builds cannot both spend the same free bytes; heavy builds are additionally serialized by `max_build_agents`.
+When `disk_sentinel_enabled = true` is explicitly configured, build admission is projected, not just reactive. WG persists the measured per-target high-water and uses the larger of that measurement or the class-specific cold floor, then adds final-link/test safety and the unmaterialized reservation for every concurrent live build. The projection must remain above the **warning** floor. Before returning a pressure refusal, admission runs one idempotent cleanup of eligible explicitly-owned caches/terminal streams and reassesses; unknown, dirty-source, live/open and artifact guards remain unchanged. Spawn admission is serialized through the agent registry lock, so two large builds cannot both spend the same free bytes; heavy builds are additionally bounded by the effective build capacity (`max_build_agents` when explicit, otherwise `dispatcher.max_agents`). Legacy generated `max_build_agents = 1` cannot be distinguished safely from operator intent, so it is preserved; `wg config lint` and status identify the explicit throttle and print an exact `wg config set dispatcher.resource_management.max_build_agents <N>` remediation.
 
 This projection is intentionally not dispatch authority on the default path. Historical high-water is not proof that a second cold target will be materialized, and charging a preserved warm recovery target as another full cold build can self-deadlock the dispatcher. With the default `false`, process creation proceeds without that hypothetical reservation. `wg config lint` reports whether the merged configuration is using the disabled default or the advanced opt-in and tells old explicit configurations how to return to the default. Existing explicit `true` and `false` values remain deterministic; WG does not silently rewrite an operator's opt-in.
 
@@ -70,7 +71,7 @@ wg status                      # cached disk summary
 wg status --json               # full cached snapshot under `disk`
 ```
 
-When predictive admission is enabled, the daemon refreshes a bounded cached snapshot off the TUI input/render thread. It reports mount space, target size/growth/staleness, `.wg-worktrees`, `.wg/agents`, `.wg/log`, active build counts, and projected headroom. The TUI asynchronously reads only this small cache. Service status reports an intentional `admission-deferred` state separately and never diagnoses those opt-in refusals as a wedged dispatcher.
+When predictive admission is enabled, the daemon refreshes a bounded cached snapshot off the TUI input/render thread. It reports mount space, target size/growth/staleness, `.wg-worktrees`, `.wg/agents`, `.wg/log`, active build counts, and projected headroom. The TUI asynchronously reads only this small cache. When disabled, status and TUI say so and render projected headroom as unavailable rather than treating an absent/stale zero projection as healthy. CLI, `worksgood status`, and TUI surfaces report build-heavy active/max capacity, inherited-vs-explicit cap source, admission-deferred task count, and per-task waiting reasons without turning a deferral into an attempt.
 
 Terminal raw/canonical streams are zstd-compressed after the explicit retention window **or immediately on crossing the per-file byte budget**; a bounded final JSONL tail remains at the original path so TUI structured history stays readable. Large `output.log` is retained once as `output.log.zst`; a bounded final plain-text tail remains at both `output.log` and the historical `output.txt` hard-link so `wg show`/TUI history stays readable. The full raw evidence remains decodable, while canonical task result, final assistant response, usage/cost, failure/recovery reason, session summaries, evaluation evidence, task logs and registered artifacts remain available. Live streams are never compacted.
 

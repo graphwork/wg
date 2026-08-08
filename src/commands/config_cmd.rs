@@ -3121,6 +3121,30 @@ pub fn set_dotted(
 pub fn get_dotted(workgraph_dir: &Path, key: &str, json: bool) -> Result<()> {
     let normalized_key = normalize_dotted_key(key);
     let (config, sources) = Config::load_with_sources(workgraph_dir)?;
+    if normalized_key == "dispatcher.resource_management.max_build_agents"
+        && config
+            .coordinator
+            .resource_management
+            .max_build_agents
+            .is_none()
+    {
+        let value = config.coordinator.effective_max_build_agents();
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "key": normalized_key,
+                    "value": value,
+                    "source": "inherited-from-max-agents",
+                    "inherited_from": "dispatcher.max_agents",
+                }))?
+            );
+        } else {
+            println!("{} = {}", normalized_key, value);
+            println!("  [source: inherited from dispatcher.max_agents]");
+        }
+        return Ok(());
+    }
     let merged_val = toml::Value::try_from(&config)?;
     let source = sources
         .get(normalized_key.as_str())
@@ -3533,6 +3557,14 @@ pub fn lint_config(workgraph_dir: &Path, target: LintTarget, json: bool) -> Resu
     } else {
         "disabled (default): dispatch/recovery is not blocked by hypothetical cold-build reservations; explicit cleanup and preservation safeguards remain available"
     };
+    let max_build_agents = merged.coordinator.effective_max_build_agents();
+    let max_build_agents_source = merged.coordinator.max_build_agents_source();
+    let build_throttle_active =
+        max_build_agents_source == "explicit" && max_build_agents < merged.coordinator.max_agents;
+    let build_throttle_command = format!(
+        "wg config set dispatcher.resource_management.max_build_agents {}",
+        merged.coordinator.max_agents
+    );
 
     if json {
         let payload = serde_json::json!({
@@ -3555,6 +3587,12 @@ pub fn lint_config(workgraph_dir: &Path, target: LintTarget, json: bool) -> Resu
                 "enabled": predictive_admission_enabled,
                 "mode": if predictive_admission_enabled { "advanced-opt-in" } else { "disabled-default" },
                 "guidance": predictive_admission_guidance,
+            },
+            "build_heavy_capacity": {
+                "max": max_build_agents,
+                "source": max_build_agents_source,
+                "throttle_active": build_throttle_active,
+                "remediation_command": build_throttle_active.then_some(&build_throttle_command),
             },
             "selection_error": selection_error,
         });
@@ -3601,6 +3639,17 @@ pub fn lint_config(workgraph_dir: &Path, target: LintTarget, json: bool) -> Resu
         }
     );
     println!("  {predictive_admission_guidance}");
+    println!();
+    println!("build-heavy-capacity:");
+    println!("  max: {max_build_agents} ({max_build_agents_source})");
+    if build_throttle_active {
+        println!(
+            "  warning: explicit build-heavy throttle is below dispatcher.max_agents={} (legacy generated value cannot be distinguished safely from operator intent)",
+            merged.coordinator.max_agents
+        );
+        println!("  raise/remove throttle: {build_throttle_command}");
+        total_findings += 1;
+    }
     for r in &results {
         print_lint_one(r);
         total_findings += r.removed_keys.len() + r.renamed_keys.len() + r.rewritten_values.len();

@@ -5544,6 +5544,12 @@ pub struct ServiceHealthState {
     /// Agents alive / max.
     pub agents_alive: usize,
     pub agents_max: usize,
+    /// Effective build-heavy admission capacity and current pressure.
+    pub build_heavy_active: usize,
+    pub max_build_agents: usize,
+    pub max_build_agents_source: String,
+    pub disk_sentinel_enabled: bool,
+    pub admission_deferred: Vec<crate::commands::service::AdmissionDeferredTask>,
     /// Total agents ever spawned.
     pub agents_total: usize,
     /// Whether coordinator is paused.
@@ -5588,6 +5594,11 @@ impl Default for ServiceHealthState {
             authoritative: None,
             agents_alive: 0,
             agents_max: 0,
+            build_heavy_active: 0,
+            max_build_agents: 0,
+            max_build_agents_source: "unknown".to_string(),
+            disk_sentinel_enabled: false,
+            admission_deferred: Vec::new(),
             agents_total: 0,
             paused: false,
             pause_reason: None,
@@ -8564,6 +8575,37 @@ pub struct HudDetail {
     pub output_path: Option<std::path::PathBuf>,
     /// Modification time of the output log at last load (used for "last written X ago" display).
     pub output_mtime: Option<SystemTime>,
+}
+
+fn admission_waiting_reason(workgraph_dir: &Path, task_id: &str) -> Option<String> {
+    crate::commands::service::CoordinatorState::load_for(workgraph_dir, 0)?
+        .admission_deferred
+        .into_iter()
+        .find(|waiting| waiting.task_id == task_id)
+        .map(|waiting| waiting.reason)
+}
+
+fn admission_worker_max(workgraph_dir: &Path, configured: usize) -> usize {
+    crate::commands::service::CoordinatorState::load_for(workgraph_dir, 0)
+        .map(|state| state.max_agents)
+        .filter(|max| *max > 0)
+        .unwrap_or(configured)
+}
+
+fn build_heavy_active_for_graph(
+    workgraph_dir: &Path,
+    graph: &worksgood::graph::WorkGraph,
+) -> usize {
+    AgentRegistry::load_or_warn(workgraph_dir)
+        .agents
+        .values()
+        .filter(|agent| agent.is_alive())
+        .filter(|agent| {
+            graph
+                .get_task(&agent.task_id)
+                .is_some_and(|task| worksgood::disk_sentinel::classify_task(task).is_heavy())
+        })
+        .count()
 }
 
 #[derive(Debug, Clone, Default)]
@@ -14041,6 +14083,24 @@ impl VizApp {
         lines.push(format!("Title: {}", task.title));
         lines.push(format!("Presentation: {}", task.presentation));
         lines.push(format!("Origin actor: {:?}", task.origin.kind));
+        if let Some(reason) = admission_waiting_reason(&self.workgraph_dir, &task.id) {
+            let config = Config::load_or_default(&self.workgraph_dir);
+            lines.push(String::new());
+            lines.push("── Admission waiting ──".to_string());
+            lines.push(format!("  Waiting before first attempt: {reason}"));
+            lines.push("  No spawn/retry/provider-health/review budget charged.".to_string());
+            lines.push(format!(
+                "  Build-heavy capacity: {}/{} ({})",
+                build_heavy_active_for_graph(&self.workgraph_dir, &graph),
+                config.coordinator.effective_max_build_agents(),
+                config.coordinator.max_build_agents_source()
+            ));
+            lines.push(format!(
+                "  Raise cap: wg config set dispatcher.resource_management.max_build_agents {}",
+                admission_worker_max(&self.workgraph_dir, config.coordinator.max_agents)
+            ));
+            lines.push(String::new());
+        }
         if let Some(parent) = &task.origin.parent_task {
             lines.push(format!("Origin parent: {}", parent));
         }
@@ -15129,6 +15189,24 @@ impl VizApp {
         lines.push(format!("Title: {}", task.title));
         lines.push(format!("Presentation: {}", task.presentation));
         lines.push(format!("Origin actor: {:?}", task.origin.kind));
+        if let Some(reason) = admission_waiting_reason(&self.workgraph_dir, &task.id) {
+            let config = Config::load_or_default(&self.workgraph_dir);
+            lines.push(String::new());
+            lines.push("── Admission waiting ──".to_string());
+            lines.push(format!("  Waiting before first attempt: {reason}"));
+            lines.push("  No spawn/retry/provider-health/review budget charged.".to_string());
+            lines.push(format!(
+                "  Build-heavy capacity: {}/{} ({})",
+                build_heavy_active_for_graph(&self.workgraph_dir, &graph),
+                config.coordinator.effective_max_build_agents(),
+                config.coordinator.max_build_agents_source()
+            ));
+            lines.push(format!(
+                "  Raise cap: wg config set dispatcher.resource_management.max_build_agents {}",
+                admission_worker_max(&self.workgraph_dir, config.coordinator.max_agents)
+            ));
+            lines.push(String::new());
+        }
         if let Some(parent) = &task.origin.parent_task {
             lines.push(format!("Origin parent: {}", parent));
         }
@@ -18907,6 +18985,8 @@ impl VizApp {
             self.service_health.uptime_secs = None;
             self.service_health.agents_alive = 0;
             self.service_health.agents_total = 0;
+            self.service_health.build_heavy_active = 0;
+            self.service_health.admission_deferred.clear();
             self.service_health.paused = false;
             self.service_health.stuck_tasks.clear();
             self.service_health.recent_errors.clear();
@@ -18959,6 +19039,21 @@ impl VizApp {
             authenticated_service_context(&service_observation, &coord);
         self.service_health.paused = coord.paused;
         self.service_health.agents_max = coord.max_agents;
+        let effective_config = Config::load_or_default(dir);
+        self.service_health.max_build_agents = effective_config
+            .coordinator
+            .resource_management
+            .max_build_agents
+            .unwrap_or(coord.max_agents);
+        self.service_health.max_build_agents_source = effective_config
+            .coordinator
+            .max_build_agents_source()
+            .to_string();
+        self.service_health.disk_sentinel_enabled = effective_config
+            .coordinator
+            .resource_management
+            .disk_sentinel_enabled;
+        self.service_health.admission_deferred = coord.admission_deferred.clone();
 
         // Load provider health to determine pause reason
         use worksgood::service::provider_health::ProviderHealth;
@@ -19004,6 +19099,23 @@ impl VizApp {
         let alive = registry.active_count();
         self.service_health.agents_alive = alive;
         self.service_health.agents_total = registry.agents.len();
+        self.service_health.build_heavy_active = self
+            .coherent_graph()
+            .map(|graph| {
+                registry
+                    .agents
+                    .values()
+                    .filter(|agent| {
+                        agent.is_alive() && crate::commands::is_process_alive(agent.pid)
+                    })
+                    .filter(|agent| {
+                        graph.get_task(&agent.task_id).is_some_and(|task| {
+                            worksgood::disk_sentinel::classify_task(task).is_heavy()
+                        })
+                    })
+                    .count()
+            })
+            .unwrap_or(0);
 
         // Phase 1 toast triggers: Agent exited → Info, Agent stuck (>5m) → Warning (deduped).
         // Collect into a vec to avoid borrow conflicts (self.prev_agent_statuses + push_toast).

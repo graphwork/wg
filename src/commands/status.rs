@@ -37,6 +37,14 @@ struct ServiceStatusInfo {
 #[derive(Debug, Clone, serde::Serialize)]
 struct CoordinatorInfo {
     max_agents: usize,
+    build_heavy_active: usize,
+    max_build_agents: usize,
+    max_build_agents_source: String,
+    max_build_agents_remediation_command: String,
+    disk_sentinel_enabled: bool,
+    admission_deferred_tasks: usize,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    admission_deferred: Vec<super::service::AdmissionDeferredTask>,
     executor: String,
     model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -273,9 +281,13 @@ fn gather_status(dir: &Path, show_all: bool) -> Result<StatusOutput> {
 
     let waiting_for_owner_release = gather_reopen_holds(dir, show_all);
 
-    // 9. Disk state is a cached, bounded sentinel snapshot. Do not refresh or
-    // scan here: status/TUI latency must not scale with target size.
-    let disk = worksgood::disk_sentinel::load_snapshot(dir).ok().flatten();
+    // 9. Disk state is meaningful only while predictive admission is enabled.
+    // A stale/absent snapshot while disabled is not a healthy zero-headroom
+    // projection and must not be rendered as one.
+    let disk = coordinator
+        .disk_sentinel_enabled
+        .then(|| worksgood::disk_sentinel::load_snapshot(dir).ok().flatten())
+        .flatten();
 
     Ok(StatusOutput {
         service,
@@ -359,8 +371,24 @@ fn configured_gate_info(
 }
 
 fn gather_coordinator_info(dir: &Path) -> CoordinatorInfo {
+    let config = worksgood::config::Config::load_or_default(dir);
+    let build_heavy_active = load_graph(graph_path(dir))
+        .ok()
+        .map(|graph| {
+            let registry = AgentRegistry::load_or_warn(dir);
+            registry
+                .agents
+                .values()
+                .filter(|agent| agent.is_alive() && is_process_alive(agent.pid))
+                .filter(|agent| {
+                    graph.get_task(&agent.task_id).is_some_and(|task| {
+                        worksgood::disk_sentinel::classify_task(task).is_heavy()
+                    })
+                })
+                .count()
+        })
+        .unwrap_or(0);
     let configured_reasoning = || {
-        let config = worksgood::config::Config::load_or_default(dir);
         (
             config
                 .resolve_reasoning_for_role(worksgood::config::DispatchRole::Default)
@@ -393,11 +421,24 @@ fn gather_coordinator_info(dir: &Path) -> CoordinatorInfo {
             })
             .unwrap_or_else(|| "legacy/unsupported".to_string());
         let (reasoning, worker_reasoning, agency_reasoning) = configured_reasoning();
-        let config = worksgood::config::Config::load_or_default(dir);
         let (eval_gate_applicability, evaluator_threshold, flip_gate_policy, flip_threshold) =
             configured_gate_info(&config);
         return CoordinatorInfo {
             max_agents: coord.max_agents,
+            build_heavy_active,
+            max_build_agents: config
+                .coordinator
+                .resource_management
+                .max_build_agents
+                .unwrap_or(coord.max_agents),
+            max_build_agents_source: config.coordinator.max_build_agents_source().to_string(),
+            max_build_agents_remediation_command: format!(
+                "wg config set dispatcher.resource_management.max_build_agents {}",
+                coord.max_agents
+            ),
+            disk_sentinel_enabled: config.coordinator.resource_management.disk_sentinel_enabled,
+            admission_deferred_tasks: coord.admission_deferred_tasks,
+            admission_deferred: coord.admission_deferred,
             executor,
             model: coord.model,
             reasoning,
@@ -425,7 +466,6 @@ fn gather_coordinator_info(dir: &Path) -> CoordinatorInfo {
     // executor (model-derived, with agent.model fallback) so a migrated clean
     // config with `model = "pi:..."` and no legacy executor key shows the
     // real handler instead of the deprecated default.
-    let config = worksgood::config::Config::load_or_default(dir);
     let default = config
         .resolve_execution_route_for_role(worksgood::config::DispatchRole::Default)
         .ok();
@@ -439,6 +479,16 @@ fn gather_coordinator_info(dir: &Path) -> CoordinatorInfo {
         configured_gate_info(&config);
     CoordinatorInfo {
         max_agents: config.coordinator.max_agents,
+        build_heavy_active,
+        max_build_agents: config.coordinator.effective_max_build_agents(),
+        max_build_agents_source: config.coordinator.max_build_agents_source().to_string(),
+        max_build_agents_remediation_command: format!(
+            "wg config set dispatcher.resource_management.max_build_agents {}",
+            config.coordinator.max_agents
+        ),
+        disk_sentinel_enabled: config.coordinator.resource_management.disk_sentinel_enabled,
+        admission_deferred_tasks: 0,
+        admission_deferred: Vec::new(),
         executor: default
             .as_ref()
             .map(|route| route.handler.clone())
@@ -917,6 +967,31 @@ fn print_status(status: &StatusOutput) {
         status.coordinator.worker_control_mode, status.coordinator.worker_control_restrictions
     );
     println!(
+        "Build-heavy: {}/{} active (cap {}){}",
+        status.coordinator.build_heavy_active,
+        status.coordinator.max_build_agents,
+        status.coordinator.max_build_agents_source,
+        if status.coordinator.max_build_agents_source == "explicit"
+            && status.coordinator.max_build_agents < status.coordinator.max_agents
+        {
+            format!(
+                " — throttle active; raise with `{}`",
+                status.coordinator.max_build_agents_remediation_command
+            )
+        } else {
+            String::new()
+        }
+    );
+    if status.coordinator.admission_deferred_tasks > 0 {
+        println!(
+            "  Admission deferred: {} task(s), no attempt or retry budget charged",
+            status.coordinator.admission_deferred_tasks
+        );
+        for task in &status.coordinator.admission_deferred {
+            println!("    {}: {}", task.task_id, task.reason);
+        }
+    }
+    println!(
         "Evaluation gate: completion-review={}, applicability={}, evaluator-threshold={}, FLIP-policy={}, FLIP-threshold={} (model review is non-blocking unless strict)",
         status.coordinator.completion_review_policy,
         status.coordinator.eval_gate_applicability,
@@ -957,7 +1032,10 @@ fn print_status(status: &StatusOutput) {
         }
     }
 
-    if let Some(disk) = status.disk.as_ref() {
+    if !status.coordinator.disk_sentinel_enabled {
+        println!();
+        println!("Disk sentinel: disabled — projected headroom unavailable");
+    } else if let Some(disk) = status.disk.as_ref() {
         println!();
         let headroom_gib = disk.projected_headroom_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
         println!(

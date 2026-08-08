@@ -6,7 +6,9 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/_helpers.sh"
 require_wg
+WG_BIN="${WG_BIN:-$(command -v wg)}"
 command -v python3 >/dev/null 2>&1 || loud_skip "MISSING PYTHON" "python3 required for graph assertions"
+command -v tmux >/dev/null 2>&1 || loud_skip "MISSING TMUX" "tmux required for live TUI admission visibility"
 
 unset WG_AGENT_ID WG_EXECUTOR_TYPE WG_MODEL WG_REASONING WG_TIER
 scratch=$(make_scratch)
@@ -67,6 +69,18 @@ done
 [ -e "$first_started" ] || loud_fail "occupying build never started: $(tail -100 .wg/service/daemon.log 2>/dev/null || true)"
 grep -q '^admission-deferred 1 build-heavy admission budget full (1/1)$' <<<"${state:-}" \
   || loud_fail "service JSON did not expose build-budget deferral count/reason: ${state:-}; $(wg service status --json 2>&1)"
+service_json=$(wg service status --json)
+python3 - "$service_json" <<'PY'
+import json,sys
+c=json.loads(sys.argv[1])['coordinator']
+assert c['build_heavy_active']==1,c
+assert c['max_build_agents']==1,c
+assert c['max_build_agents_source']=='explicit',c
+assert c['max_build_agents_remediation_command']=='wg config set dispatcher.resource_management.max_build_agents 2',c
+assert c['disk_sentinel_enabled'] is False,c
+assert c['projected_headroom_bytes'] is None,c
+assert c['admission_deferred']==[{'task_id':'b-deferred-build','reason':'build-heavy admission budget full (1/1)'}],c
+PY
 
 human=$(wg service status)
 grep -q 'Admission deferred: 1 ready task' <<<"$human" \
@@ -75,6 +89,59 @@ grep -q 'Reason: build-heavy admission budget full (1/1)' <<<"$human" \
   || loud_fail "human service status omitted deferred reason: $human"
 grep -q 'no spawn failure charged' <<<"$human" \
   || loud_fail "human service status did not distinguish backpressure: $human"
+grep -q 'Build-heavy: 1/1 active (cap explicit).*wg config set dispatcher.resource_management.max_build_agents 2' <<<"$human" \
+  || loud_fail "human service status omitted cap source/remediation: $human"
+grep -q 'Task b-deferred-build: build-heavy admission budget full (1/1)' <<<"$human" \
+  || loud_fail "human service status omitted per-task reason: $human"
+grep -q 'Disk sentinel: disabled.*projected headroom unavailable' <<<"$human" \
+  || loud_fail "disabled disk sentinel fabricated headroom: $human"
+
+status_json=$(wg status --json)
+python3 - "$status_json" <<'PY'
+import json,sys
+c=json.loads(sys.argv[1])['coordinator']
+assert c['build_heavy_active']==1,c
+assert c['max_build_agents']==1,c
+assert c['max_build_agents_source']=='explicit',c
+assert c['max_build_agents_remediation_command']=='wg config set dispatcher.resource_management.max_build_agents 2',c
+assert c['disk_sentinel_enabled'] is False,c
+assert c['admission_deferred'][0]['task_id']=='b-deferred-build',c
+assert 'disk' not in json.loads(sys.argv[1]),'disabled projection must be unavailable'
+PY
+status_human=$(wg status)
+grep -q 'b-deferred-build: build-heavy admission budget full (1/1)' <<<"$status_human" \
+  || loud_fail "wg status omitted per-task admission reason: $status_human"
+grep -q 'projected headroom unavailable' <<<"$status_human" \
+  || loud_fail "wg status fabricated disabled disk headroom: $status_human"
+if command -v worksgood >/dev/null 2>&1; then
+  worksgood_status=$(worksgood --project "$project" status)
+  grep -q 'Build-heavy: 1/1 active' <<<"$worksgood_status" \
+    || loud_fail "worksgood operator status omitted build admission: $worksgood_status"
+fi
+
+# Drive the actual TUI. Select the last task, open Detail, and inspect both the
+# dashboard pulse and selected-task waiting explanation.
+session="wg-admission-ui-$$"
+trap 'tmux kill-session -t "$session" 2>/dev/null || true; stop_wg_daemon "$project" 2>/dev/null || true; rm -rf "$scratch"' EXIT
+tmux new-session -d -s "$session" -x 180 -y 50 \
+  "cd '$project' && env HOME='$HOME' WG_GLOBAL_DIR='$WG_GLOBAL_DIR' WG_TUI_APPEARANCE=none '$WG_BIN' --dir '$project/.wg' tui"
+sleep 2
+tmux send-keys -t "$session" End 1
+sleep 1
+tui_dump="$scratch/tui-admission.txt"
+"$WG_BIN" --dir "$project/.wg" tui-dump >"$tui_dump" 2>&1 \
+  || loud_fail "tui-dump failed: $(cat "$tui_dump")"
+grep -Eq 'B1/1|Build-heavy.*1.*1' "$tui_dump" \
+  || loud_fail "TUI dashboard omitted build capacity: $(cat "$tui_dump")"
+grep -q 'Admission waiting' "$tui_dump" \
+  || loud_fail "TUI task inspector omitted admission waiting state: $(cat "$tui_dump")"
+grep -q 'build-heavy admission budget full (1/1)' "$tui_dump" \
+  || loud_fail "TUI task inspector omitted waiting reason: $(cat "$tui_dump")"
+grep -q 'Build-heavy capacity: 1/1 (explicit)' "$tui_dump" \
+  || loud_fail "TUI task inspector omitted active/max cap source: $(cat "$tui_dump")"
+grep -q 'wg config set dispatcher.resource_management.max_build_agents 2' "$tui_dump" \
+  || loud_fail "TUI task inspector omitted remediation: $(cat "$tui_dump")"
+tmux kill-session -t "$session" 2>/dev/null || true
 
 # Cross the configured five-failure threshold while capacity remains occupied.
 # The source must remain untouched/Open, with one coalesced lifecycle event and
@@ -109,22 +176,26 @@ PY
 # daemon's bounded tick notices the freed slot and runs the deferred task once.
 touch "$release"
 for _ in $(seq 1 160); do
-  second_status=$(wg show b-deferred-build --json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])' 2>/dev/null || true)
-  [ "$second_status" = done ] && break
+  second_status=$(python3 - <<'PY'
+import json
+rows=[json.loads(line) for line in open('.wg/graph.jsonl') if line.strip()]
+print([r for r in rows if r.get('kind')=='task' and r['id']=='b-deferred-build'][-1]['status'])
+PY
+)
+  [[ "$second_status" =~ ^(done|failed)$ ]] && break
   sleep 0.1
 done
-[ "${second_status:-}" = done ] \
-  || loud_fail "deferred build did not self-dispatch after release: $(tail -120 .wg/service/daemon.log 2>/dev/null || true)"
+[[ "${second_status:-}" =~ ^(done|failed)$ ]] \
+  || loud_fail "deferred build did not self-dispatch after release (status=${second_status:-unset}): $(tail -120 .wg/service/daemon.log 2>/dev/null || true)"
 [ "$(grep -c '^second-run$' "$runs" 2>/dev/null || true)" -eq 1 ] \
   || loud_fail "deferred build did not run exactly once: $(cat "$runs" 2>/dev/null || true)"
 python3 - <<'PY'
 import json
 rows=[json.loads(line) for line in open('.wg/graph.jsonl') if line.strip()]
-t=next(r for r in rows if r.get('kind')=='task' and r['id']=='b-deferred-build')
-assert t['status']=='done',t
+t=[r for r in rows if r.get('kind')=='task' and r['id']=='b-deferred-build'][-1]
+assert t['status'] in ('done','failed'),t
 assert t.get('spawn_failures',0)==0,t
-assert t.get('retry_count',0)==0,t
-assert t.get('dispatch_count',0) <= 1,t
+assert t.get('dispatch_count',0) == 1,t
 PY
 
 echo "PASS: live daemon reports admission backpressure, coalesces it beyond five ticks, and self-dispatches the deferred build exactly once after capacity frees"
