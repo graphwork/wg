@@ -18,7 +18,9 @@
 
 **`[FACT]`** WorksGood has several effective synchronization controls, but no repository-wide documentation authority system. The universal agent contract is compiled from one Markdown source, and a unit test requires the two root project guides to remain byte-identical (`src/commands/agent_guide.rs:3-15,132-185`). The Pi package has a source-build/re-embed/diff gate in CI (`.github/workflows/ci.yml:174-201`). In contrast, the pre-artifact planning checkout counted 619 files below `docs/`, including 570 Markdown files, but had no `docs/manifest.toml`, `docs/product-contract.toml`, or machine-readable glossary (command in §7.2). `docs/KEY_DOCS.md:1-5` still calls itself the canonical key-doc list and is dated 2026-04-29.
 
-**`[FACT]`** The estate does not have one safe linear authority order. For desired policy, an accepted product decision or ADR is necessary. For current behavior, reachable implementation plus executed evidence is stronger. A parser declaration alone is insufficient: `src/cli.rs:527-557` advertises five `wg done` flags that `src/main.rs:1261-1274` rejects. A test file alone is also insufficient: the smoke contract says owned scenarios gate Done (`tests/smoke/README.md:1-29`), while the current Done dispatch contains no smoke invocation (`src/main.rs:1261-1274`; `src/commands/completion_done.rs:29-294`, checked in audit 30 `P1/P2`). The target therefore needs a **join record**, not another prose hierarchy.
+**`[FACT]`** A parser declaration and dispatch currently disagree: `src/cli.rs:527-557` advertises five `wg done` flags that `src/main.rs:1261-1274` rejects. Test policy and dispatch also disagree: the smoke contract says owned scenarios gate Done (`tests/smoke/README.md:1-29`), while the current Done dispatch contains no smoke invocation (`src/main.rs:1261-1274`; `src/commands/completion_done.rs:29-294`, independently checked in audit 30 `P1/P2`).
+
+**`[INFERENCE]` (high confidence)** The estate therefore does not have one safe global linear authority order. Accepted decisions govern desired policy; reachable implementation and executed evidence govern current behavior in their scope. Public support needs a **join record** that preserves disagreement, not another prose source selected by age.
 
 **`[INFERENCE]` (high confidence)** Documentation drift is the visible symptom of incomplete authority migrations. Completion, onboarding/model routing, evaluation, federation/review/remote execution, and historical evidence each have old and new representations that remain simultaneously discoverable. Rewriting all prose before settling those authorities would create a newer-looking but equally ungrounded layer.
 
@@ -58,9 +60,15 @@ The phases intentionally separate **F** factual synchronization, **D** human dec
 
 **`[FACT]`** This plan read every required input in full, the documentation leaf's target-architecture section, prior sync artifacts (`docs/design/doc-sync-system.md`, `docs/doc-sync-audit-2026-04-29.md`, `docs/audit/doc-sync-apr12-delta-checklist.md`), and direct primary surfaces: root/docs landing pages, `KEY_DOCS`, manual source declarations, the sync script, command parser/dispatch, the bundled agent-guide test, CI, and smoke policy/manifest. It did not use `AGENTS.md` as sole product evidence.
 
-**`[VERIFIED]`** This plan executed repository-shape and byte-equivalence commands only. It did not successfully execute a source-built product flow: `cargo run --quiet --bin wg -- done --help` exceeded a 300-second compile-lock budget and is not pass evidence. Audit 30 independently completed the candidate-built help command and records its bounded result in `30-contradiction-and-drift-register.md:13-22,35-55,259-273`.
+**`[VERIFIED]`** This plan executed repository-shape and byte-equivalence commands only. It did not successfully execute a source-built product flow: `cargo run --quiet --bin wg -- done --help` exceeded a 300-second compile-lock budget and is not pass evidence.
 
-**`[UNCERTAINTY]`** This roadmap does not know the human maintainers who will own each domain. No `.github/CODEOWNERS` file was found by `find .github -maxdepth 2 -iname '*owner*'`. Owner names below are accountable **roles/domains**; Phase 0 must map each to a named person or team before dispatch.
+**`[FACT]`** Audit 30 independently completed the candidate-built help command and records its bounded result in `30-contradiction-and-drift-register.md:13-22,35-55,259-273`.
+
+**`[FACT]`** No `.github/CODEOWNERS` file was found by the exact command in §7.2.
+
+**`[UNCERTAINTY]`** This roadmap does not know the human maintainers who will own each domain.
+
+**`[RECOMMENDATION]`** Owner names below are accountable **roles/domains**; Phase 0 must map each to a named person or team before dispatch.
 
 ### 2.2 Target authority model: a two-axis join, not “newest file wins”
 
@@ -105,7 +113,9 @@ The phases intentionally separate **F** factual synchronization, **D** human dec
 - bundle indexes for ADRs/designs, audits/reports/incidents, research/studies/plans, and archives;
 - website/manual derivatives with source revision and generator version.
 
-**`[FACT]`** This pattern already works locally. `AGENT_GUIDE_TEXT` uses `include_str!` and parity tests (`src/commands/agent_guide.rs:3-15,132-185`); CI re-embeds Pi and fails on a diff (`.github/workflows/ci.yml:174-201`). The program generalizes those controls rather than inventing a timestamp-based “freshness” detector.
+**`[FACT]`** This pattern already works locally. `AGENT_GUIDE_TEXT` uses `include_str!` and parity tests (`src/commands/agent_guide.rs:3-15,132-185`); CI re-embeds Pi and fails on a diff (`.github/workflows/ci.yml:174-201`).
+
+**`[RECOMMENDATION]`** Generalize those controls rather than inventing a timestamp-based “freshness” detector.
 
 ### 2.4 Target information architecture
 
