@@ -4,7 +4,7 @@
 
 **Audit snapshot:** `b0892ea7496fd2cc8f641417a3d8e33ca9add369`
 
-**Evidence checked through:** 2026-08-08T10:59:08Z
+**Evidence checked through:** 2026-08-08T12:05:39Z
 
 **Artifact status:** leaf audit; snapshot-current
 
@@ -239,6 +239,66 @@ silently treating `claim` as that override makes publication and scheduling
 mean different things depending on entry point. A `--force`/`--override-*`
 spelling with an audit record would preserve operator power without weakening
 the default lifecycle contract.
+
+### 2.5 Failure and recovery sequence
+
+**`[FACT]`** This sequence separates attempt failure, crash recovery, explicit
+retry, and batch recovery from the completion sequence above. The reopen hold is
+a durable state within the old generation; it is not a competing new attempt.
+
+```mermaid
+sequenceDiagram
+    participant Worker
+    participant Broker as worker-control/daemon
+    participant Graph as lifecycle ledger + graph
+    participant Registry as agent/PID registry
+    participant Reaper as reopen reconciler
+    participant Dispatcher
+
+    alt explicit worker failure
+        Worker->>Broker: wg fail TASK --reason R
+        Broker->>Graph: terminal-abort evidence + AttemptFailed
+        Graph-->>Worker: Failed, attempt disposition=failed
+    else process exits without terminal handoff
+        Registry-->>Broker: exact PID/attempt no longer live
+        Broker->>Graph: AttemptLost / visible failure evidence
+    end
+
+    Note over Graph,Dispatcher: Failed does not satisfy required-success dependencies
+    Worker->>Broker: wg retry TASK [--fresh|--preserve-session]
+    Broker->>Graph: ReopenRequested bound to generation/attempt/fence/owner
+    Broker-->>Registry: graceful exit request if exact owner still lives
+    Reaper->>Registry: verify PID birth identity and wrapper/child quiescence
+    alt owner still live or identity ambiguous
+        Reaper-->>Graph: keep old terminal state + reopen intent (fail closed)
+    else exact owner released
+        Reaper->>Registry: mark dead; release rebuildable cache leases
+        opt --fresh
+            Reaper->>Reaper: remove verified old worktree after release
+        end
+        Reaper->>Graph: ReopenOwnerReleased; generation++; Open; clear owner
+        Dispatcher->>Graph: reserve new fenced attempt when ready
+    end
+
+    opt wg recover --yes
+        Broker->>Graph: apply precomputed retry plan within max-attempt filters
+        Broker->>Graph: abandon nonterminal legacy agency followups unless kept
+        Reaper->>Graph: reconcile each resulting reopen intent
+    end
+```
+
+**`[FACT]`** Failure is persisted before retry; downstream remains blocked because
+only Done satisfies ordinary dependencies. Retry-in-place preserves source by
+default, `--fresh` defers deletion to the exact-owner reaper, repeated reopen
+requests coalesce, and batch recovery is dry-run by default
+(`src/commands/fail.rs:47-260`; `src/commands/retry.rs:141-443,493-700`;
+`src/commands/reopen.rs:1-328`; `src/commands/recover.rs:1-167,256-421`;
+`src/query.rs:410-460`).
+
+**`[UNCERTAINTY]`** The audit verified the no-live-owner retry path, but did not
+kill a live external model process at each sequence boundary. Exact PID birth
+identity, stubborn-process holds, and fresh-worktree deletion are supported by
+source and targeted tests rather than this human trace.
 
 ## 3. Findings
 
