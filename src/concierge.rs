@@ -2037,9 +2037,11 @@ pub fn run_status(project_path: Option<&Path>) -> Result<()> {
         .unwrap_or("unknown");
     println!("Build-heavy: {active}/{max} active (cap {source})");
     if source == "explicit" {
-        println!(
-            "  Restore inheritance: wg config set dispatcher.resource_management.max_build_agents inherit"
-        );
+        let command = coordinator
+            .get("max_build_agents_remediation_command")
+            .and_then(|value| value.as_str())
+            .unwrap_or("unavailable — inspect `wg config --list`");
+        println!("  Restore inheritance: {command}");
     }
     if !coordinator
         .get("disk_sentinel_enabled")

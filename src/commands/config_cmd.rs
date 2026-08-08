@@ -3594,7 +3594,7 @@ pub fn lint_config(workgraph_dir: &Path, target: LintTarget, json: bool) -> Resu
         max_build_agents_source == "explicit" && max_build_agents < merged.coordinator.max_agents;
     let build_cap_explicit = max_build_agents_source == "explicit";
     let build_throttle_command =
-        "wg config set dispatcher.resource_management.max_build_agents inherit";
+        worksgood::config::max_build_agents_remediation_command(workgraph_dir);
 
     if json {
         let payload = serde_json::json!({
@@ -3622,7 +3622,7 @@ pub fn lint_config(workgraph_dir: &Path, target: LintTarget, json: bool) -> Resu
                 "max": max_build_agents,
                 "source": max_build_agents_source,
                 "throttle_active": build_throttle_active,
-                "remediation_command": build_cap_explicit.then_some(build_throttle_command),
+                "remediation_command": build_cap_explicit.then_some(&build_throttle_command),
             },
             "selection_error": selection_error,
         });

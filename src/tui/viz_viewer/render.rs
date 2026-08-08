@@ -11677,7 +11677,7 @@ fn draw_service_health_detail(frame: &mut Frame, app: &VizApp) {
                 Style::default().fg(Color::Yellow),
             ),
             Span::styled(
-                "wg config set dispatcher.resource_management.max_build_agents inherit",
+                health.max_build_agents_remediation_command.clone(),
                 Style::default().fg(Color::Cyan),
             ),
         ]));

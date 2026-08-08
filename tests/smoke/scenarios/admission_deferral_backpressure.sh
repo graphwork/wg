@@ -77,7 +77,7 @@ c=json.loads(sys.argv[1])['coordinator']
 assert c['build_heavy_active']==1,c
 assert c['max_build_agents']==1,c
 assert c['max_build_agents_source']=='explicit',c
-assert c['max_build_agents_remediation_command']=='wg config set dispatcher.resource_management.max_build_agents inherit',c
+assert c['max_build_agents_remediation_command']=='wg config set dispatcher.resource_management.max_build_agents inherit --local',c
 assert c['disk_sentinel_enabled'] is False,c
 assert c['projected_headroom_bytes'] is None,c
 assert c['admission_deferred']==[{'task_id':'b-deferred-build','reason':'build-heavy admission budget full (1/1)'}],c
@@ -90,7 +90,7 @@ grep -q 'Reason: build-heavy admission budget full (1/1)' <<<"$human" \
   || loud_fail "human service status omitted deferred reason: $human"
 grep -q 'no spawn failure charged' <<<"$human" \
   || loud_fail "human service status did not distinguish backpressure: $human"
-grep -q 'Build-heavy: 1/1 active (cap explicit).*wg config set dispatcher.resource_management.max_build_agents inherit' <<<"$human" \
+grep -q 'Build-heavy: 1/1 active (cap explicit).*wg config set dispatcher.resource_management.max_build_agents inherit --local' <<<"$human" \
   || loud_fail "human service status omitted cap source/remediation: $human"
 grep -q 'Task b-deferred-build: build-heavy admission budget full (1/1)' <<<"$human" \
   || loud_fail "human service status omitted per-task reason: $human"
@@ -104,7 +104,7 @@ c=json.loads(sys.argv[1])['coordinator']
 assert c['build_heavy_active']==1,c
 assert c['max_build_agents']==1,c
 assert c['max_build_agents_source']=='explicit',c
-assert c['max_build_agents_remediation_command']=='wg config set dispatcher.resource_management.max_build_agents inherit',c
+assert c['max_build_agents_remediation_command']=='wg config set dispatcher.resource_management.max_build_agents inherit --local',c
 assert c['disk_sentinel_enabled'] is False,c
 assert c['admission_deferred'][0]['task_id']=='b-deferred-build',c
 assert 'disk' not in json.loads(sys.argv[1]),'disabled projection must be unavailable'
@@ -130,8 +130,8 @@ sleep 2
 tmux send-keys -t "$session" End 1
 sleep 1
 tui_dump="$scratch/tui-admission.txt"
-"$WG_BIN" --dir "$project/.wg" tui-dump >"$tui_dump" 2>&1 \
-  || loud_fail "tui-dump failed: $(cat "$tui_dump")"
+tmux capture-pane -p -t "$session" -S - >"$tui_dump" 2>&1 \
+  || loud_fail "live TUI pane capture failed: $(cat "$tui_dump")"
 grep -Eq 'B1/1|Build-heavy.*1.*1' "$tui_dump" \
   || loud_fail "TUI dashboard omitted build capacity: $(cat "$tui_dump")"
 grep -q 'Admission waiting' "$tui_dump" \
@@ -141,7 +141,7 @@ grep -q 'build-heavy admission budget full (1/1)' "$tui_dump" \
 grep -q 'Build-heavy capacity: 1/1 (explicit)' "$tui_dump" \
   || loud_fail "TUI task inspector omitted active/max cap source: $(cat "$tui_dump")"
 grep -q 'wg config set dispatcher.resource_management.max_build_agents' "$tui_dump" \
-  && grep -q '^inherit$' "$tui_dump" \
+  && grep -q 'inherit --local' "$tui_dump" \
   || loud_fail "TUI task inspector omitted remediation: $(cat "$tui_dump")"
 tmux kill-session -t "$session" 2>/dev/null || true
 

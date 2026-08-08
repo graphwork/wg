@@ -31,6 +31,20 @@ wg config reset --route pi --yes >/dev/null
 setup_preview=$(wg setup --route pi --yes --model pi:openrouter:test/fake --dry-run)
 ! grep -q 'max_build_agents' <<<"$setup_preview" \
   || loud_fail "fresh setup preview baked in a serial max_build_agents throttle: $setup_preview"
+
+# Remediation is qualified to the winning layer, including a global override.
+wg config set dispatcher.resource_management.max_build_agents 1 --global --no-reload >/dev/null
+global_status=$(wg status --json)
+python3 - "$global_status" <<'PY'
+import json,sys
+c=json.loads(sys.argv[1])['coordinator']
+assert c['max_build_agents_source']=='explicit',c
+assert c['max_build_agents_remediation_command'].endswith('inherit --global'),c
+PY
+wg config set dispatcher.resource_management.max_build_agents inherit --global --no-reload >/dev/null
+! grep -q 'max_build_agents' "$HOME/.wg/config.toml" \
+  || loud_fail "global inheritance remediation did not remove the winning override"
+
 cat >.wg/config.toml <<'EOF'
 [agency]
 auto_assign = false

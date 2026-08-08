@@ -1711,7 +1711,7 @@ fn handle_status(dir: &Path) -> IpcResponse {
             "build_heavy_active": build_heavy_active,
             "max_build_agents": max_build_agents,
             "max_build_agents_source": max_build_agents_source,
-            "max_build_agents_remediation_command": "wg config set dispatcher.resource_management.max_build_agents inherit",
+            "max_build_agents_remediation_command": worksgood::config::max_build_agents_remediation_command(dir),
             "disk_sentinel_enabled": disk_sentinel_enabled,
             "projected_headroom_bytes": if disk_sentinel_enabled {
                 worksgood::disk_sentinel::load_snapshot(dir).ok().flatten().map(|snapshot| snapshot.projected_headroom_bytes)

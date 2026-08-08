@@ -5548,6 +5548,7 @@ pub struct ServiceHealthState {
     pub build_heavy_active: usize,
     pub max_build_agents: usize,
     pub max_build_agents_source: String,
+    pub max_build_agents_remediation_command: String,
     pub disk_sentinel_enabled: bool,
     pub admission_deferred: Vec<crate::commands::service::AdmissionDeferredTask>,
     /// Total agents ever spawned.
@@ -5597,6 +5598,9 @@ impl Default for ServiceHealthState {
             build_heavy_active: 0,
             max_build_agents: 0,
             max_build_agents_source: "unknown".to_string(),
+            max_build_agents_remediation_command:
+                "wg config set dispatcher.resource_management.max_build_agents inherit --local"
+                    .to_string(),
             disk_sentinel_enabled: false,
             admission_deferred: Vec::new(),
             agents_total: 0,
@@ -14096,10 +14100,10 @@ impl VizApp {
                 config.coordinator.max_build_agents_source()
             ));
             if config.coordinator.max_build_agents_source() == "explicit" {
-                lines.push(
-                    "  Restore inheritance: wg config set dispatcher.resource_management.max_build_agents inherit"
-                        .to_string(),
-                );
+                lines.push(format!(
+                    "  Restore inheritance: {}",
+                    worksgood::config::max_build_agents_remediation_command(&self.workgraph_dir)
+                ));
             } else {
                 lines.push(format!(
                     "  Increase worker slots: wg config set dispatcher.max_agents {}",
@@ -15194,10 +15198,10 @@ impl VizApp {
                 config.coordinator.max_build_agents_source()
             ));
             if config.coordinator.max_build_agents_source() == "explicit" {
-                lines.push(
-                    "  Restore inheritance: wg config set dispatcher.resource_management.max_build_agents inherit"
-                        .to_string(),
-                );
+                lines.push(format!(
+                    "  Restore inheritance: {}",
+                    worksgood::config::max_build_agents_remediation_command(&self.workgraph_dir)
+                ));
             } else {
                 lines.push(format!(
                     "  Increase worker slots: wg config set dispatcher.max_agents {}",
@@ -19048,6 +19052,8 @@ impl VizApp {
             .coordinator
             .max_build_agents_source()
             .to_string();
+        self.service_health.max_build_agents_remediation_command =
+            worksgood::config::max_build_agents_remediation_command(dir);
         self.service_health.disk_sentinel_enabled = effective_config
             .coordinator
             .resource_management

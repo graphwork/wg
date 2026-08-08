@@ -5480,6 +5480,26 @@ pub enum ConfigSource {
     Default,
 }
 
+/// Return a scope-qualified command that removes an explicit build-heavy cap
+/// from the layer that currently wins. Project profiles do not overlay
+/// dispatcher resource-management keys, so an explicit winner is global or
+/// local; the local fallback keeps the command deterministic for malformed or
+/// concurrently-changing config.
+pub fn max_build_agents_remediation_command(workgraph_dir: &Path) -> String {
+    const PREFIX: &str = "wg config set dispatcher.resource_management.max_build_agents inherit";
+    let source = Config::load_with_sources(workgraph_dir)
+        .ok()
+        .and_then(|(_, sources)| {
+            sources
+                .get("dispatcher.resource_management.max_build_agents")
+                .copied()
+        });
+    match source {
+        Some(ConfigSource::Global) => format!("{PREFIX} --global"),
+        _ => format!("{PREFIX} --local"),
+    }
+}
+
 impl std::fmt::Display for ConfigSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

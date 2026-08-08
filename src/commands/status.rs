@@ -430,7 +430,7 @@ fn gather_coordinator_info(dir: &Path) -> CoordinatorInfo {
                 .unwrap_or(coord.max_agents),
             max_build_agents_source: config.coordinator.max_build_agents_source().to_string(),
             max_build_agents_remediation_command:
-                "wg config set dispatcher.resource_management.max_build_agents inherit".to_string(),
+                worksgood::config::max_build_agents_remediation_command(dir),
             disk_sentinel_enabled: config.coordinator.resource_management.disk_sentinel_enabled,
             admission_deferred_tasks: coord.admission_deferred_tasks,
             admission_deferred: coord.admission_deferred,
@@ -468,7 +468,7 @@ fn gather_coordinator_info(dir: &Path) -> CoordinatorInfo {
         max_build_agents: config.coordinator.effective_max_build_agents(),
         max_build_agents_source: config.coordinator.max_build_agents_source().to_string(),
         max_build_agents_remediation_command:
-            "wg config set dispatcher.resource_management.max_build_agents inherit".to_string(),
+            worksgood::config::max_build_agents_remediation_command(dir),
         disk_sentinel_enabled: config.coordinator.resource_management.disk_sentinel_enabled,
         admission_deferred_tasks: 0,
         admission_deferred: Vec::new(),
