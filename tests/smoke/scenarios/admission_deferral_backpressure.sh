@@ -106,8 +106,8 @@ assert c['max_build_agents']==1,c
 assert c['max_build_agents_source']=='explicit',c
 assert c['max_build_agents_remediation_command']=='wg config set dispatcher.resource_management.max_build_agents inherit --local',c
 assert c['disk_sentinel_enabled'] is False,c
+assert c['projected_headroom_bytes'] is None,c
 assert c['admission_deferred'][0]['task_id']=='b-deferred-build',c
-assert 'disk' not in json.loads(sys.argv[1]),'disabled projection must be unavailable'
 PY
 status_human=$(wg status)
 grep -q 'b-deferred-build: build-heavy admission budget full (1/1)' <<<"$status_human" \

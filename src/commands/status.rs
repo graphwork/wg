@@ -42,6 +42,9 @@ struct CoordinatorInfo {
     max_build_agents_source: String,
     max_build_agents_remediation_command: String,
     disk_sentinel_enabled: bool,
+    /// Null means predictive disk admission is disabled or no projection has
+    /// been measured; never reinterpret null as zero healthy headroom.
+    projected_headroom_bytes: Option<i64>,
     admission_deferred_tasks: usize,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     admission_deferred: Vec<super::service::AdmissionDeferredTask>,
@@ -437,6 +440,18 @@ fn gather_coordinator_info(dir: &Path) -> CoordinatorInfo {
             max_build_agents_remediation_command:
                 worksgood::config::max_build_agents_remediation_command(dir),
             disk_sentinel_enabled: config.coordinator.resource_management.disk_sentinel_enabled,
+            projected_headroom_bytes: if config
+                .coordinator
+                .resource_management
+                .disk_sentinel_enabled
+            {
+                worksgood::disk_sentinel::load_snapshot(dir)
+                    .ok()
+                    .flatten()
+                    .map(|snapshot| snapshot.projected_headroom_bytes)
+            } else {
+                None
+            },
             admission_deferred_tasks,
             admission_deferred,
             executor,
@@ -475,6 +490,14 @@ fn gather_coordinator_info(dir: &Path) -> CoordinatorInfo {
         max_build_agents_remediation_command:
             worksgood::config::max_build_agents_remediation_command(dir),
         disk_sentinel_enabled: config.coordinator.resource_management.disk_sentinel_enabled,
+        projected_headroom_bytes: if config.coordinator.resource_management.disk_sentinel_enabled {
+            worksgood::disk_sentinel::load_snapshot(dir)
+                .ok()
+                .flatten()
+                .map(|snapshot| snapshot.projected_headroom_bytes)
+        } else {
+            None
+        },
         admission_deferred_tasks: 0,
         admission_deferred: Vec::new(),
         executor: default
