@@ -30,15 +30,17 @@ Pi's login flow or making a provider request.
 
 ## Implemented behavior
 
-- Global/default and `both` setup atomically persist the selected `pi` pointer
-  after writing the exact config. The configured custom default/task-agent
-  routes are not replaced by starter routes.
+- Global/default and `both` setup persist the selected `pi` pointer in the same
+  rollback-protected transaction as the exact config. If any config write or
+  activation step fails, earlier setup writes are restored. Configured custom
+  default/task-agent routes are not replaced by starter routes.
 - `--scope local` keeps its project config authoritative and deliberately does
   not mutate the machine-global active pointer.
-- Setup asks the current project daemon to reload, matching `wg profile use`
+- Setup idempotently ensures the version-locked `pi-worksgood` console plugin,
+  then asks the current project daemon to reload, matching `wg profile use`
   behavior when a daemon exists.
 - The completion report separates: Pi executable `AVAILABLE`/`UNAVAILABLE`,
-  pi-worksgood ready/not-ready, profile active/local/dry-run, and Pi auth/model
+  verified pi-worksgood ready/not-ready status, profile active/local/dry-run, and Pi auth/model
   `NOT VERIFIED`. It states that no provider request occurred and directs the
   operator to run Pi, use `/login` if necessary, select the configured model,
   and send a test prompt. No fallback route is selected.
@@ -61,7 +63,7 @@ already used by `worksgood setup --model ...`.
 - `cargo build` — pass
 - `cargo clippy` — pass (existing warnings)
 - `cargo test --test integration_setup_routes` — 13 pass, 11 retired tests ignored
-- setup scope unit filter — 3 pass
+- setup scope/rollback unit filters — 4 pass
 - `integration_pi_two_tier_profile` + `integration_profile_tier_pinning` — 12 pass
 - `tests/smoke/scenarios/setup_route_activation_preflight.sh` — pass using a real
   PTY, isolated homes/projects, fake Pi, and absent-Pi fixtures

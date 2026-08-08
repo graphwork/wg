@@ -1524,15 +1524,12 @@ fn run_route(args: &SetupArgs) -> Result<()> {
         return Ok(());
     }
 
-    // Write to each target path indicated by scope. Backup before write.
-    let mut written = Vec::new();
-    for path in scope_paths(scope, &global_path, &local_path) {
-        if path.exists() {
-            backup_config_at(&path)?;
-        }
-        save_config_at(&new_config, &path)?;
-        written.push(path);
-    }
+    let (written, active_profile) = apply_setup_transaction(
+        &new_config,
+        &scope_paths(scope, &global_path, &local_path),
+        scope,
+        route,
+    )?;
 
     let primary = written
         .first()
@@ -1554,8 +1551,7 @@ fn run_route(args: &SetupArgs) -> Result<()> {
         }
     }
 
-    let active_profile = activate_setup_profile(scope, route)?;
-    let plugin_status = inspect_setup_pi_plugin();
+    let plugin_status = ensure_setup_pi_plugin();
     crate::commands::profile_cmd::trigger_daemon_reload(
         &setup_graph_dir(),
         active_profile.then_some(route.as_name()),
@@ -1589,12 +1585,92 @@ fn inspect_pi_setup_readiness() -> PiSetupReadiness {
     PiSetupReadiness { binary_path }
 }
 
-fn activate_setup_profile(scope: SetupScope, route: SetupRoute) -> Result<bool> {
-    if matches!(scope, SetupScope::Global | SetupScope::Both) {
-        named_profile::set_active(Some(route.as_name()))?;
-        Ok(true)
+#[derive(Debug)]
+struct SetupFileSnapshot {
+    path: PathBuf,
+    content: Option<Vec<u8>>,
+}
+
+fn apply_setup_transaction(
+    config: &Config,
+    paths: &[PathBuf],
+    scope: SetupScope,
+    route: SetupRoute,
+) -> Result<(Vec<PathBuf>, bool)> {
+    let snapshots = paths
+        .iter()
+        .map(|path| {
+            let content = if path.exists() {
+                Some(fs::read(path).with_context(|| {
+                    format!("Failed to snapshot setup target {}", path.display())
+                })?)
+            } else {
+                None
+            };
+            Ok(SetupFileSnapshot {
+                path: path.clone(),
+                content,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let changes_global_profile = matches!(scope, SetupScope::Global | SetupScope::Both);
+    let previous_active = if changes_global_profile {
+        named_profile::active()?
     } else {
-        Ok(false)
+        None
+    };
+
+    let apply_result = (|| -> Result<bool> {
+        for path in paths {
+            if path.exists() {
+                backup_config_at(path)?;
+            }
+            save_config_at(config, path)?;
+        }
+        if changes_global_profile {
+            named_profile::set_active(Some(route.as_name()))?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    })();
+
+    match apply_result {
+        Ok(active) => Ok((paths.to_vec(), active)),
+        Err(error) => {
+            let mut rollback_errors = Vec::new();
+            for snapshot in &snapshots {
+                let restored = match snapshot.content.as_ref() {
+                    Some(content) => fs::write(&snapshot.path, content).with_context(|| {
+                        format!("restore setup target {}", snapshot.path.display())
+                    }),
+                    None if snapshot.path.exists() => {
+                        fs::remove_file(&snapshot.path).with_context(|| {
+                            format!("remove setup target {}", snapshot.path.display())
+                        })
+                    }
+                    None => Ok(()),
+                };
+                if let Err(restore_error) = restored {
+                    rollback_errors.push(restore_error.to_string());
+                }
+            }
+            if changes_global_profile
+                && let Err(restore_error) = named_profile::set_active(previous_active.as_deref())
+            {
+                rollback_errors.push(format!("restore active-profile: {restore_error}"));
+            }
+            if rollback_errors.is_empty() {
+                Err(error.context(
+                    "setup config/profile activation failed; all setup writes were rolled back",
+                ))
+            } else {
+                Err(error.context(format!(
+                    "setup config/profile activation failed and rollback was incomplete: {}",
+                    rollback_errors.join("; ")
+                )))
+            }
+        }
     }
 }
 
@@ -1612,6 +1688,15 @@ fn inspect_setup_pi_plugin() -> String {
                 "not-wired"
             }
         )
+    }
+}
+
+fn ensure_setup_pi_plugin() -> String {
+    match worksgood::pi_plugin::ensure_pi_plugin(worksgood::pi_plugin::EnsureMode::Console) {
+        Ok(_) => inspect_setup_pi_plugin(),
+        Err(error) => {
+            format!("NOT READY ({error}); run `wg pi-plugin install`, then `wg pi-plugin status`")
+        }
     }
 }
 
@@ -2026,19 +2111,10 @@ pub fn run() -> Result<()> {
         config.tiers = auto_map_tiers(&choices.model_registry_entries);
     }
 
-    match scope {
-        SetupScope::Local => {
-            let local_dir = target_path
-                .parent()
-                .map(Path::to_path_buf)
-                .unwrap_or_else(|| PathBuf::from(".wg"));
-            config.save(&local_dir)?;
-        }
-        _ => config.save_global()?,
-    }
+    let (_, active_profile) =
+        apply_setup_transaction(&config, &[target_path.clone()], scope, route)?;
 
     record_setup_history(&choices, "cli");
-    let active_profile = activate_setup_profile(scope, route)?;
     crate::commands::profile_cmd::trigger_daemon_reload(
         &setup_graph_dir(),
         active_profile.then_some(route.as_name()),
@@ -2098,7 +2174,8 @@ pub fn run() -> Result<()> {
             scope,
         )?;
     }
-    print_pi_setup_preflight(&preflight, Some(active_profile), Some(&skill_status));
+    let plugin_status = inspect_setup_pi_plugin();
+    print_pi_setup_preflight(&preflight, Some(active_profile), Some(&plugin_status));
     println!(
         "The live provider login and exact model were NOT VERIFIED: doing so would require a Pi-owned credential flow and a provider request."
     );
@@ -4575,6 +4652,28 @@ mod tests {
         let path = tmp.path().join("nope.toml");
         let loaded = load_config_at(&path).unwrap();
         assert_eq!(loaded.agent.model, Config::default().agent.model);
+    }
+
+    #[test]
+    fn test_setup_transaction_rolls_back_an_earlier_config_write() {
+        let tmp = TempDir::new().unwrap();
+        let first = tmp.path().join("first.toml");
+        std::fs::write(&first, b"original\n").unwrap();
+        let invalid_parent = tmp.path().join("not-a-directory");
+        std::fs::write(&invalid_parent, b"file\n").unwrap();
+        let second = invalid_parent.join("config.toml");
+        let config = config_for_route(SetupRoute::Pi, RouteParams::default());
+
+        let error = apply_setup_transaction(
+            &config,
+            &[first.clone(), second],
+            SetupScope::Local,
+            SetupRoute::Pi,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("rolled back"), "{error:#}");
+        assert_eq!(std::fs::read(&first).unwrap(), b"original\n");
     }
 
     // ── run_route writes only the requested scope ────────────────────

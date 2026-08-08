@@ -31,9 +31,9 @@ exact configured default/task-agent route. A second `wg profile use pi` is not
 required. `--scope local` intentionally does not mutate that machine-global
 pointer; its project config is already the effective route.
 
-Setup performs a bounded readiness preflight: it reports whether the `pi`
-handler is present and whether the compatible `pi-worksgood` plugin was
-prepared. Pi owns provider authentication, endpoint configuration, model
+Setup idempotently prepares the compatible `pi-worksgood` plugin, then performs
+a bounded readiness preflight: it reports whether the `pi` handler is present
+and whether the plugin build/console wiring is ready. Pi owns provider authentication, endpoint configuration, model
 discovery, availability checks, usage, and cost, so setup explicitly reports
 auth/model access as **not verified** and makes no provider request. Follow its
 `pi` → `/login` → test-prompt action before relying on unattended work. WG

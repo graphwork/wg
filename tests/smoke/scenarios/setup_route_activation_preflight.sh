@@ -40,6 +40,8 @@ grep -q 'Profile: ACTIVE (`pi`' "$scratch/setup.typescript" \
     || loud_fail "terminal output did not report active profile"
 grep -q 'Pi handler: AVAILABLE' "$scratch/setup.typescript" \
     || loud_fail "terminal output did not report fake Pi availability"
+grep -q 'pi-worksgood: ready (compat' "$scratch/setup.typescript" \
+    || loud_fail "noninteractive setup did not ensure the compatible Pi plugin"
 grep -q 'Pi auth/model: NOT VERIFIED' "$scratch/setup.typescript" \
     || loud_fail "terminal output silently implied auth/model readiness"
 grep -q 'run `pi`, use `/login`' "$scratch/setup.typescript" \
