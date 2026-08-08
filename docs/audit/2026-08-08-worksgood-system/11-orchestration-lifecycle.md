@@ -4,7 +4,7 @@
 
 **Audit snapshot:** `b0892ea7496fd2cc8f641417a3d8e33ca9add369`
 
-**Evidence checked through:** 2026-08-08T12:26:39Z
+**Evidence checked through:** 2026-08-08T12:35:45Z
 
 **Artifact status:** leaf audit; snapshot-current
 
@@ -165,7 +165,7 @@ encode compatibility acceptance paths (`src/graph.rs:382-539`;
 `src/lifecycle.rs:684-715,836-870`; `src/commands/completion_submit.rs:270-487`).
 The audit did not construct every migration state.
 
-### 2.3 Service-to-completion sequence
+### 2.3 Dispatcher and spawn sequence
 
 ```mermaid
 sequenceDiagram
@@ -176,8 +176,6 @@ sequenceDiagram
     participant Registry as agent registry
     participant WT as isolated worktree/observer
     participant Worker as gated worker process
-    participant Store as completion/v3 object store
-    participant Git as refs/heads/main
 
     Operator->>CLI: wg add A / add B --after A
     CLI->>Graph: persist Open + paused drafts
@@ -185,24 +183,14 @@ sequenceDiagram
     CLI->>Graph: validate selected region and unpause atomically
     CLI-->>Daemon: KickDispatcher
     Daemon->>Graph: maintenance + derive cycle-aware ready set
-    Daemon->>Registry: lock; check max_agents/resource admission
+    Daemon->>Registry: lock; count alive and enforce max_agents/resource admission
     Daemon->>WT: reserve/reuse and verify source workspace
     Daemon->>Graph: AttemptReserved (generation, attempt, fence)
-    Daemon->>Worker: spawn behind unpublished launch permit
+    Daemon->>Worker: spawn wrapper behind unpublished launch permit
     Daemon->>Registry: persist PID/route/worktree owner
+    Daemon->>WT: fsync observer baseline and capability binding
     Daemon->>Worker: publish launch permit
     Note over Worker,CLI: WG_WORKER_CAPABILITY hard-switches CLI before graph discovery
-    Worker->>CLI: own-task put/build-manifest/submit
-    CLI->>Store: content-address objects, manifest, FLIP/eval receipts
-    CLI->>Graph: select exact candidate + receipt refs
-    Worker->>CLI: wg land A (Land contract)
-    CLI->>Git: compare-and-fast-forward exact reviewed commit
-    CLI->>Graph: record landing receipt
-    Worker->>CLI: wg done A
-    CLI->>Store: resolve exact manifest/review pair
-    CLI->>Git: verify publication ancestry
-    CLI->>Graph: receipt-backed AttemptSucceeded -> Done
-    Daemon->>Graph: dependency B now satisfies only with proper disposition
 ```
 
 **`[FACT]`** Preparation occurs before claim; the graph claim is rechecked under
@@ -214,7 +202,57 @@ retained source is not periodically deleted by the dispatch-critical tick
 (`src/commands/spawn/execution.rs:3710-3712`;
 `src/commands/service/coordinator.rs:2435-2448`).
 
-### 2.4 Manual and service modes
+### 2.4 Completion and evaluation sequence
+
+```mermaid
+sequenceDiagram
+    participant Worker
+    participant Broker as worker-control/daemon
+    participant Store as completion/v3 object store
+    participant FLIP as exact FLIP reviewer
+    participant Eval as exact evaluator
+    participant Graph
+    participant Git as refs/heads/main
+
+    Worker->>Broker: completion-object + completion-manifest
+    Broker->>Store: content-address outputs, evidence, summary, manifest
+    Worker->>Broker: wg submit TASK --manifest M --summary S
+    Broker->>Graph: select M for exact generation/requirements/dependency outputs
+    Broker->>FLIP: immutable resolved bundle, no tools/fallback
+    alt FLIP rejects or is unavailable
+        FLIP->>Store: immutable receipt + findings
+        Broker->>Graph: retain candidate and receipt reference
+        Broker-->>Worker: reject/unavailable; no Done and no replacement attempt
+    else FLIP passes
+        FLIP->>Store: exact pass receipt
+        Broker->>Eval: same immutable resolved bundle
+        alt eval rejects or is unavailable
+            Eval->>Store: immutable receipt + findings
+            Broker->>Graph: retain candidate and receipt references
+            Broker-->>Worker: reject/unavailable; repair same source context
+        else eval passes
+            Eval->>Store: exact pass receipt
+            Broker->>Graph: record exact FLIP+eval pair
+            Worker->>Broker: wg land TASK (Land only)
+            Broker->>Git: compare-and-fast-forward reviewed commit
+            Broker->>Graph: record landing receipt
+            Worker->>Broker: wg done TASK
+            Broker->>Store: re-resolve manifest, requirements, deps, review pair
+            Broker->>Git: verify reviewed commit reachable from integration ref
+            Broker->>Graph: receipt-backed AttemptSucceeded -> Done
+        end
+    end
+```
+
+**`[FACT]`** Reviewer failure never falls back or silently becomes rejection;
+semantic rejection preserves exact candidate/receipt evidence. Land uses Git
+compare-and-fast-forward, and Done is derived only after current evidence and
+publication resolve (`src/commands/completion_submit.rs:187-487`;
+`src/completion_review.rs:121-259,310-387`;
+`src/commands/completion_land.rs:30-169`;
+`src/commands/completion_done.rs:29-259`).
+
+### 2.5 Manual and service modes
 
 **`[FACT]`** Service mode starts a detached daemon, supervised by default; the
 supervisor restarts unexpected exits with bounded exponential backoff but exits
@@ -241,7 +279,7 @@ mean different things depending on entry point. A `--force`/`--override-*`
 spelling with an audit record would preserve operator power without weakening
 the default lifecycle contract.
 
-### 2.5 Failure and recovery sequence
+### 2.6 Failure and recovery sequence
 
 **`[FACT]`** This sequence separates attempt failure, crash recovery, explicit
 retry, and batch recovery from the completion sequence above. The reopen hold is
