@@ -1480,6 +1480,7 @@ fn run_route(args: &SetupArgs) -> Result<()> {
     let local_path = std::env::current_dir()
         .map(|p| p.join(".wg").join("config.toml"))
         .unwrap_or_else(|_| PathBuf::from(".wg/config.toml"));
+    let write_paths = setup_write_paths(scope, route, &global_path, &local_path)?;
 
     if args.dry_run {
         println!(
@@ -1487,7 +1488,7 @@ fn run_route(args: &SetupArgs) -> Result<()> {
             route.as_name(),
             scope.as_name()
         );
-        for path in scope_paths(scope, &global_path, &local_path) {
+        for path in &write_paths {
             let existing = load_config_at(&path).unwrap_or_default();
             let diff = diff_summary(&existing, &new_config);
             if !path.exists() {
@@ -1529,12 +1530,8 @@ fn run_route(args: &SetupArgs) -> Result<()> {
     // plugin failure is therefore a pre-activation failure, not a half-ready
     // successful setup.
     let plugin_status = ensure_setup_pi_plugin()?;
-    let (written, active_profile, _setup_snapshot) = apply_setup_transaction(
-        &new_config,
-        &scope_paths(scope, &global_path, &local_path),
-        scope,
-        route,
-    )?;
+    let (written, active_profile, _setup_snapshot) =
+        apply_setup_transaction(&new_config, &write_paths, scope, route)?;
 
     let primary = written
         .first()
@@ -1775,6 +1772,22 @@ fn scope_paths(scope: SetupScope, global_path: &Path, local_path: &Path) -> Vec<
         SetupScope::Local => vec![local_path.to_path_buf()],
         SetupScope::Both => vec![global_path.to_path_buf(), local_path.to_path_buf()],
     }
+}
+
+fn setup_write_paths(
+    scope: SetupScope,
+    route: SetupRoute,
+    global_path: &Path,
+    local_path: &Path,
+) -> Result<Vec<PathBuf>> {
+    let mut paths = scope_paths(scope, global_path, local_path);
+    if matches!(scope, SetupScope::Global | SetupScope::Both) {
+        // The active pointer and its reusable definition must agree. Persisting
+        // the selected exact route into `pi.toml` prevents a later profile
+        // reapply/restart from replacing a custom setup route with starter IDs.
+        paths.push(named_profile::profile_path(route.as_name())?);
+    }
+    Ok(paths)
 }
 
 /// Load the Config at a specific path, or `None` if the file does not exist.
@@ -2158,12 +2171,9 @@ pub fn run() -> Result<()> {
     println!();
     let skill_status = guide_skill_bundle_install(&choices.executor)?;
 
-    let (_, active_profile, _setup_snapshot) = apply_setup_transaction(
-        &config,
-        &scope_paths(scope, &global_path, &local_path),
-        scope,
-        route,
-    )?;
+    let write_paths = setup_write_paths(scope, route, &global_path, &local_path)?;
+    let (_, active_profile, _setup_snapshot) =
+        apply_setup_transaction(&config, &write_paths, scope, route)?;
 
     crate::commands::profile_cmd::trigger_daemon_reload_checked(
         &setup_graph_dir(),

@@ -30,10 +30,11 @@ Pi's login flow or making a provider request.
 
 ## Implemented behavior
 
-- Global/default and `both` setup persist the selected `pi` pointer in the same
-  rollback-protected transaction as the exact config. Config-write or pointer
-  activation failure restores prior config/profile state. Configured custom
-  default/task-agent routes are not replaced by starter routes.
+- Global/default and `both` setup persist the selected `pi` pointer and a
+  matching reusable `profiles/pi.toml` definition alongside the exact config.
+  Returned config-write or pointer-activation failures restore prior
+  config/profile state. Reapplying `wg profile use pi` therefore retains a
+  configured custom default/task-agent route instead of restoring starter IDs.
 - `--scope local` keeps its project config authoritative and deliberately does
   not mutate the machine-global active pointer.
 - Setup idempotently ensures the version-locked `pi-worksgood` console plugin
@@ -43,6 +44,10 @@ Pi's login flow or making a provider request.
   failure exits nonzero and says on-disk activation succeeded but runtime state
   is unknown, with the exact `wg service reload` recovery action; it does not
   risk a compensating rollback after a lost-but-applied reload response.
+  This is error rollback, not a claim of multi-file crash atomicity: abrupt
+  process/power loss can interrupt sequential atomic file replacements, and a
+  rerun of the idempotent setup command is the recovery action. A durable
+  cross-file journal remains a separate product-hardening decision.
 - The completion report separates: Pi executable `AVAILABLE`/`UNAVAILABLE`,
   verified pi-worksgood ready/not-ready status, profile active/local/dry-run, and Pi auth/model
   `NOT VERIFIED`. It states that no provider request occurred and directs the
@@ -66,10 +71,12 @@ already used by `worksgood setup --model ...`.
 - `git diff --check` — pass
 - `cargo build` — pass
 - `cargo clippy` — pass (existing warnings)
-- `cargo test --test integration_setup_routes` — 13 pass, 11 retired tests ignored
+- Clean-HOME relevant integration batch — 31 pass: `integration_setup_routes`
+  (13 pass, 11 retired tests ignored), `integration_pi_two_tier_profile` (6),
+  `integration_profile_tier_pinning` (6), and
+  `integration_simplify_executor_taxonomy` handler-first coverage (6)
 - setup scope/rollback unit filters — 5 pass, including injected global
   active-profile failure and restoration of both prior config/profile state
-- `integration_pi_two_tier_profile` + `integration_profile_tier_pinning` — 12 pass
 - `tests/smoke/scenarios/setup_route_activation_preflight.sh` — pass using a real
   PTY, isolated homes/projects, fake Pi, absent-Pi fixtures, a trap provider key,
   deliberately unreachable HTTP/HTTPS/ALL proxy settings, and `strace` connect
@@ -79,7 +86,13 @@ already used by `worksgood setup --model ...`.
   `spawn-task` LLM command through fake Pi with the exact provider/model argv
 
 A full repository `cargo test` run reached more than 3,100 passing library tests
-but remains non-green because unrelated tests share and race process-global
-`HOME`/`WG_GLOBAL_DIR`; running inside a WG worker also leaks worker-control
-authority into completion tests. The implicated profile tests pass individually.
-No failures pointed to the changed setup/profile paths.
+but remains non-green for two reproducible harness-global classes outside setup:
+parallel `profile::named::tests::test_set_role_model_override_*` cases observe a
+sibling test's removed temporary `HOME`/`WG_GLOBAL_DIR`, poison their shared
+mutex, and then cascade; each named failure passes with an exact single-test
+filter. With test threads serialized inside this WG worker,
+`commands::completion_{canary,land,submit}::tests::*` instead inherit
+`WG_AGENT_ID=agent-15` and fail because that live worker does not own their
+synthetic `canary-*`/`land-task`/`report` tasks. Unsetting worker-control state
+removes that class. The clean-HOME setup/profile/handler-first batch above is
+the bounded relevant suite and is green.

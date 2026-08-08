@@ -364,6 +364,49 @@ fn test_setup_non_interactive_route_activates_profile_and_exact_model() {
         fs::read_to_string(fake_home.join(".wg/active-profile")).unwrap(),
         "pi\n"
     );
+    let profile: Config =
+        toml::from_str(&fs::read_to_string(fake_home.join(".wg/profiles/pi.toml")).unwrap())
+            .unwrap();
+    assert_eq!(profile.agent.model, model);
+    assert_eq!(
+        profile
+            .models
+            .task_agent
+            .as_ref()
+            .and_then(|role| role.model.as_deref()),
+        Some(model)
+    );
+
+    let graph_dir = tmp.path().join("project/.wg");
+    fs::create_dir_all(&graph_dir).unwrap();
+    let reapply = run_wg_in_isolation_with_env(
+        &fake_home,
+        &[
+            "--dir",
+            graph_dir.to_str().unwrap(),
+            "profile",
+            "use",
+            "pi",
+            "--no-reload",
+        ],
+        &[("PATH", fake_bin.to_str().unwrap())],
+    );
+    assert!(
+        reapply.status.success(),
+        "profile reapply failed: {}",
+        String::from_utf8_lossy(&reapply.stderr)
+    );
+    let reapplied = load_global_config(&fake_home);
+    assert_eq!(reapplied.agent.model, model);
+    assert_eq!(
+        reapplied
+            .models
+            .task_agent
+            .as_ref()
+            .and_then(|role| role.model.as_deref()),
+        Some(model)
+    );
+
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Profile: ACTIVE (`pi`"), "{stdout}");
     assert!(stdout.contains("Pi handler: AVAILABLE"), "{stdout}");
