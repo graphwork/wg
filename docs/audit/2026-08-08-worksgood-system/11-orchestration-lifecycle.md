@@ -4,7 +4,7 @@
 
 **Audit snapshot:** `b0892ea7496fd2cc8f641417a3d8e33ca9add369`
 
-**Evidence checked through:** 2026-08-08T12:05:39Z
+**Evidence checked through:** 2026-08-08T12:26:39Z
 
 **Artifact status:** leaf audit; snapshot-current
 
@@ -91,8 +91,9 @@ surfaces.
 and the two manual CLI findings, **medium** in daemon/process behavior because
 only bounded credential-free service tests ran, and **low** for provider
 correctness, forced crash timing, and network-filesystem behavior. The immediate
-engineering action is to remove long worker operations from the daemon's main
-IPC/coordinator thread (`ORCH-REC-009`). The next product decision is whether
+engineering actions are to remove long worker operations from the daemon's main
+IPC/coordinator thread and expose capability-scoped rejection findings
+(`ORCH-REC-009/010`). The next product decision is whether
 `wg claim` is a strict manual execution admission edge or an intentional
 operator override; the CLI needs one explicit contract, not the current silent
 bypass.
@@ -562,6 +563,29 @@ source and targeted tests rather than this human trace.
 - **Owner/domain:** service IPC and completion/evaluation.
 - **Linked recommendation:** `ORCH-REC-009` (P0).
 
+### `ORCH-015` — rejected completion findings are not exposed to the worker
+
+- **Label/state:** **`[VERIFIED]` + `[FACT]`**, shipped/current feedback gap.
+- **Risk:** **S2 Medium**, observed; high confidence.
+- **Affected boundary:** same-context repair after FLIP/eval rejection.
+- **Runtime trace:** two candidate submissions were rejected with only
+  `FLIP rejected manifest <digest>; repair in the same worker context and submit
+  a new manifest`. `wg show --json` exposed the receipt object reference and a
+  log entry naming `FlipRejected`, but no finding code/message/evidence.
+- **Mechanism:** reviewers produce structured `ReviewFinding`s. The store writes
+  a separate findings object and a receipt containing only its digest; the graph
+  candidate projection retains only the receipt object. Worker CLI has put/
+  manifest/submit/land/done operations but no completion-object read or review-
+  findings operation, and nontranslated Candidate/operator commands fail the
+  worker capability boundary (`src/completion_review.rs:32-56,83-118,351-387`;
+  `src/commands/completion_submit.rs:228-249,463-478`;
+  `src/worker_cli.rs:275-380,474-474`).
+- **Counterevidence:** an operator with direct control-plane access could locate
+  objects, and the immutable findings are retained; this is a reachability/
+  presentation failure, not evidence loss.
+- **Owner/domain:** completion protocol and worker-control API.
+- **Linked recommendation:** `ORCH-REC-010` (P0).
+
 ### `ORCH-011` — current and legacy orchestration representations coexist
 
 - **Label/state:** **`[FACT]` + `[INFERENCE]`**, partial compatibility debt.
@@ -659,6 +683,7 @@ adjudicate those terms and carry the drift IDs into the central register.
 | `ORCH-RISK-004` | **`[FACT]`** | S2 / possible | Agent-run integration tests can be dominated by inherited worker authority unless every child fixture sanitizes the environment (`ORCH-009`). This affects the project's normal worker context even if clean CI passes. |
 | `ORCH-RISK-005` | **`[INFERENCE]`** | S2 / likely | Completion v2 bridge, completion v3, legacy statuses, and old synthetic-evaluation concepts create duplicated semantic surfaces. Future fixes may land in the wrong layer (`ORCH-011`). |
 | `ORCH-RISK-006` | **`[VERIFIED]`** | **S1 / observed** | One ordinary slow completion review occupied the daemon's main IPC/coordinator thread beyond the 30-second worker deadline, stalling unrelated Done/Show requests and ticks (`ORCH-014`). Repeated clients can amplify queueing and uncertainty about whether timed-out operations committed. |
+| `ORCH-RISK-007` | **`[VERIFIED]`** | S2 / observed | Completion review tells the worker to repair while withholding the structured findings needed to identify the failed requirement (`ORCH-015`). Blind resubmission spends reviewer capacity and may never converge. |
 | `ORCH-GAP-001` | **`[UNCERTAINTY]`** | S2 / unknown | No external Pi/Claude/Codex worker was dispatched; provider auth, token streaming, model failures, and actual worker completion were out of scope for credential-free execution. |
 | `ORCH-GAP-002` | **`[UNCERTAINTY]`** | S2 / unknown | No crash injection covered daemon death between graph claim, wrapper spawn, registry save, permit publication, completion store write, Git ref CAS, and Done projection. Static rollback/replay logic and unit tests are not a chaos proof. |
 | `ORCH-GAP-003` | **`[UNCERTAINTY]`** | S2 / unknown | No simultaneous multi-daemon or high-contention process test ran; advisory file locks, registry locks, Git CAS, and process identity were inspected separately. |
@@ -682,7 +707,16 @@ adjudicate those terms and carry the drift IDs into the central register.
    ticks complete within their budgets; retrying the same request ID produces
    exactly one review/mutation; overload is bounded and observable.
 
-2. **`ORCH-REC-001` — `[RECOMMENDATION]` (P0, orchestration CLI; fixes
+2. **`ORCH-REC-010` — `[RECOMMENDATION]` (P0, completion/worker control; fixes
+   `ORCH-015/RISK-007`):** add a capability-scoped read operation that resolves
+   only the current task/generation/candidate's review receipt and findings
+   object, and print bounded finding code/message/evidence on submit rejection
+   and `wg show`. Do not expose arbitrary object-store traversal. **Acceptance:**
+   an injected FLIP rejection returns its exact actionable findings to the same
+   worker; a different task/candidate digest is refused; retry after a repaired
+   manifest keeps old findings immutable and visibly superseded.
+
+3. **`ORCH-REC-001` — `[RECOMMENDATION]` (P0, orchestration CLI; fixes
    `ORCH-003/DRIFT-004/RISK-001`):** create one named execution-admission
    predicate used by ready, claim, direct spawn, and daemon spawn. Default claim
    must reject paused and future-scheduled tasks. If operator override is a
@@ -692,7 +726,7 @@ adjudicate those terms and carry the drift IDs into the central register.
    delayed claim fail by default, explicit override is visible in `wg show`, and
    dependency/output gates cannot be bypassed accidentally.
 
-3. **`ORCH-REC-003` — `[RECOMMENDATION]` (P0, lifecycle/cycle; fixes
+4. **`ORCH-REC-003` — `[RECOMMENDATION]` (P0, lifecycle/cycle; fixes
    `ORCH-007/DRIFT-002/RISK-003`):** rename cycle results to “reopen requested”
    until release, or reconcile newly-created cycle intents in a bounded
    post-maintenance phase. Update the return type to distinguish requested,
@@ -701,7 +735,7 @@ adjudicate those terms and carry the drift IDs into the central register.
    abandoned and archived members have an explicit table-driven policy;
    coordinator output never says Open before it is Open.
 
-4. **`ORCH-REC-005` — `[RECOMMENDATION]` (P1, test infrastructure; fixes
+5. **`ORCH-REC-005` — `[RECOMMENDATION]` (P1, test infrastructure; fixes
    `ORCH-009/DRIFT-006/RISK-004`):** centralize operator-child command creation
    for integration tests and remove all attempt capability/identity variables,
    including `WG_WORKER_CAPABILITY`, `WG_WORKER_IPC`, protocol, graph ID, task,
@@ -710,7 +744,7 @@ adjudicate those terms and carry the drift IDs into the central register.
    identical results with and without ambient worker variables; tests that
    intentionally exercise worker mode opt in explicitly.
 
-5. **`ORCH-REC-006` — `[RECOMMENDATION]` (P1, core architecture; fixes
+6. **`ORCH-REC-006` — `[RECOMMENDATION]` (P1, core architecture; fixes
    `ORCH-001` counterevidence and `ORCH-011/RISK-005`):** inventory every
    production and migration writer of status/completion fields, declare the v3
    manifest/lifecycle kernel as the sole new-work authority, and isolate or
@@ -722,7 +756,7 @@ adjudicate those terms and carry the drift IDs into the central register.
 
 ### 6.2 Factual synchronization work
 
-6. **`ORCH-REC-002` — `[RECOMMENDATION]` (P0, CLI/tests/docs; fixes
+7. **`ORCH-REC-002` — `[RECOMMENDATION]` (P0, CLI/tests/docs; fixes
    `ORCH-006/DRIFT-001/RISK-002`):** regenerate or rewrite `wg done` help around
    immutable manifest → review → publication → derived Done, remove rejected
    flags, and migrate or retire tests that assert old bypass/uncommitted-worktree
@@ -731,7 +765,7 @@ adjudicate those terms and carry the drift IDs into the central register.
    lifecycle/cycle/done suites pass without weakening candidate/publication
    checks.
 
-7. **`ORCH-REC-008` — `[RECOMMENDATION]` (P1, operator documentation; supports
+8. **`ORCH-REC-008` — `[RECOMMENDATION]` (P1, operator documentation; supports
    `ORCH-002/005/012/013`):** publish one lifecycle table distinguishing
    paused draft, status, attempt disposition, completion disposition, and
    reopen hold. Include manual claim/spawn versus service mode, retry-in-place
@@ -741,14 +775,14 @@ adjudicate those terms and carry the drift IDs into the central register.
 
 ### 6.3 Human product/design decisions
 
-8. **`ORCH-REC-004` — `[RECOMMENDATION]` (P0 decision, product/lifecycle;
+9. **`ORCH-REC-004` — `[RECOMMENDATION]` (P0 decision, product/lifecycle;
    resolves `ORCH-008/DRIFT-003`):** decide whether Abandoned is reversible.
    Recommended default: refuse ordinary retry of a superseded/abandoned task;
    provide an explicit operator “restore as new generation” command that checks
    `superseded_by` and logs the rationale. **Acceptance:** source, help, tests,
    and supersession behavior express one decision.
 
-9. **`ORCH-REC-007` — `[RECOMMENDATION]` (P1 verification investment; closes
+10. **`ORCH-REC-007` — `[RECOMMENDATION]` (P1 verification investment; closes
    `ORCH-GAP-001..006`):** add a credential-free fake-handler human flow that
    starts the supervised service, observes watcher pickup and safety-poll
    fallback, runs two workers at capacity, parks/wakes one, injects a pre-permit
@@ -766,8 +800,8 @@ authority`. The audit did not bypass its attempt-scoped worker capability to
 mutate the live WG graph. The recommendations above are therefore
 implementation-ready task specifications for the dispatcher/operator to create
 after accepting this audit, including the subsequently observed P0
-`ORCH-REC-009`; no production authority boundary was circumvented merely to
-satisfy bookkeeping.
+`ORCH-REC-009/010`; no production authority boundary was circumvented merely
+to satisfy bookkeeping.
 
 ## 7. Evidence appendix
 
@@ -816,7 +850,7 @@ HEAD is the audit's provenance basis.
 | Coordinator tick | `src/commands/service/coordinator.rs:60-165,1645-1721,1759-2169,2366-2702` |
 | Spawn/worktree transaction | `src/commands/spawn/execution.rs:173-297,335-803,896-1080,1283-1445,1780-2160,2224-2258` |
 | Worker capability | `src/main.rs:734-746`; `src/worker_cli.rs:1-4,120-126,355-474`; `src/worker_control.rs:1-23,500-807` |
-| Completion submit/land/done | `src/commands/completion_submit.rs:18-22,84-159,187-487`; `completion_land.rs:30-300`; `completion_done.rs:29-259` |
+| Completion submit/land/done | `src/commands/completion_submit.rs:18-22,84-159,187-487`; `src/completion_review.rs:32-56,83-118,351-387`; `completion_land.rs:30-300`; `completion_done.rs:29-259` |
 | Legacy completion bridge | `src/commands/finalize.rs:28-110,254-617,686-707`; root reachability in `src/main.rs:1261-1342` |
 | Fail/retry/reopen/recover | `src/commands/fail.rs:47-260`; `retry.rs:141-443,493-700`; `reopen.rs:1-328`; `recover.rs:1-167,256-421` |
 | Wait/cycle/cron | `src/commands/wait.rs:15-148,150-390`; `src/graph.rs:3044-3640`; `src/cron.rs:1-260`; coordinator maintenance at `coordinator.rs:2498-2610` |
@@ -895,6 +929,21 @@ inline call chain in `src/commands/service/mod.rs:3330-3570` and
 `wg 0.1.0`, but their hashes differ and neither exposed a commit ID. The live
 trace is therefore not claimed as a reproducible execution of the pinned debug
 ELF; the source-level mechanism is snapshot-current.
+
+#### Trace D — rejection feedback is retained but not reachable
+
+**`[VERIFIED]`** Two immutable audit candidates reached the exact review valve
+and returned only the generic command error below:
+
+```text
+Error: FLIP rejected manifest <digest>; repair in the same worker context and submit a new manifest
+```
+
+**`[VERIFIED]`** Own-task `wg show --json` displayed `flip_receipt` content
+addressing and a `completion-review` log with `FlipRejected`, but not the stored
+finding code, message, or evidence. No capability-scoped CLI operation exposed
+the findings object. The repair attempts therefore used the explicit task
+validation checklist and artifact inspection rather than reviewer feedback.
 
 #### Follow-up task creation attempt
 
