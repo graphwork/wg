@@ -17,13 +17,18 @@ cleanup() {
 trap cleanup EXIT
 
 run_case() {
-  local name=$1 required=$2
+  local name=$1 required=$2 mutated=${3:-no}
   local root="$scratch/$name" project="$scratch/$name/project" home="$scratch/$name/home"
   mkdir -p "$project" "$home" "$root/bin"
   ln -s "$WG_BIN" "$root/bin/wg"
   cat >"$root/bin/pi" <<'SH'
 #!/usr/bin/env bash
 # Pi/OpenRouter-shaped provider outage, credential-free and deterministic.
+# The mutated case proves baseline integrity: trusted cross-task edits are real,
+# but a worker cannot then call its failed batch "unchanged".
+if [[ ${WG_TASK_ID:-} == .quality-pass-mutated ]]; then
+  wg edit downstream-mutated --description 'mutated before provider failure'
+fi
 printf '%s\n' '{"type":"error","error":{"code":402,"message":"Insufficient credits","metadata":{"error_type":"payment_required"}}}'
 exit 1
 SH
@@ -57,11 +62,15 @@ SH
     # this fixture checks the dependency disposition.
     wgrun service stop --force --kill-agents >/dev/null
     detail=$(wgrun show "downstream-$name" --json)
-    if [[ $required == yes ]]; then
+    if [[ $required == yes || $mutated == yes ]]; then
       printf '%s' "$detail" | grep -Eq '"satisfied"[[:space:]]*:[[:space:]]*false' \
-        || loud_fail "required quality pass did not remain fail-closed: $detail"
+        || loud_fail "$name quality pass did not remain fail-closed: $detail"
       if wgrun ready --json | grep -q "downstream-$name"; then
-        loud_fail "required quality pass released downstream"
+        loud_fail "$name quality pass released downstream"
+      fi
+      if [[ $mutated == yes ]]; then
+        printf '%s' "$detail" | grep -q 'mutated before provider failure' \
+          || loud_fail "mutated fixture did not perform its trusted cross-task edit"
       fi
     else
       printf '%s' "$detail" | grep -Eq '"satisfied"[[:space:]]*:[[:space:]]*true' \
@@ -75,6 +84,7 @@ SH
 }
 
 run_case optional no
+run_case mutated no yes
 run_case required yes
 
-echo "PASS: fake-provider failure released the optional quality-pass batch unchanged with a visible warning, while quality-pass:required stayed fail-closed"
+echo "PASS: fake-provider failure released only a baseline-verified unchanged optional batch; a trusted pass that edited the batch and a quality-pass:required task both stayed fail-closed"

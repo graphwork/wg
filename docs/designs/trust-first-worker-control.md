@@ -44,8 +44,11 @@ git show --stat 5b0e67b4
 
 Project policy is `[worker_control] mode = "…"`. A task override is visible in
 ordinary task metadata as `worker-control:trusted|scoped|read-only`. Structural
-floors win over a widening task tag. `.quality-pass-*` is intentionally not an
-observation lane: its stated purpose is cross-task metadata coordination.
+floors win over a widening task tag. Sandboxed inbound tasks carry the visible
+`worker-control:inbound` (legacy-compatible aliases: `content:inbound` and
+`sandboxed-inbound`) floor and are always `read-only`, even if attacker-controlled
+metadata also asks for `worker-control:trusted`. `.quality-pass-*` is intentionally
+not an observation lane: its stated purpose is cross-task metadata coordination.
 
 `wg capabilities`, startup prompt context, spawn diagnostics/metadata, `wg
 show`, `wg status`, service status, and the TUI inspector expose the effective
@@ -61,8 +64,9 @@ Trusted does not mean unfenced or unaudited:
    `agent_id`, `attempt_id`, `fence`, mode, operation CID, and outcome.
 3. Own-task completion stays on typed `completion-object` → immutable manifest
    → `submit` → exact review receipts → `land` (Land only) → derived `done`.
-   Generic graph delegation cannot invoke service/admin, federation/review
-   authority, or replace immutable completion evidence.
+   Generic graph delegation is a positive allowlist of ordinary inspection and
+   coordination verbs; omitted families (`trace`, `func`, `replay`, service/admin,
+   federation/review) are refused. It cannot replace immutable completion evidence.
 4. Existing command locks/CAS/transactions remain the mutation mechanism; the
    trusted lane shells back through the normal public CLI rather than writing
    graph bytes.
@@ -77,9 +81,12 @@ are not themselves a security decision for a trusted local actor.
 Quality passes are advisory unless tagged `quality-pass:required`. A failed
 optional `.quality-pass-*` with typed provider/local-infrastructure evidence
 (`ExecutorConfig`, rate limit, transient 5xx, timeout, disk/wrapper failure, or
-a normalized provider signal) yields an `AdvisoryQualityBypass`. Downstream
-readiness therefore releases the unchanged batch and `wg show` carries the
-loud reason. The dispatcher records the warning once when it observes the
+an explicitly allowlisted normalized provider signal with route provenance)
+may yield an `AdvisoryQualityBypass`. Before admission WG create-once snapshots
+the exact transitive downstream batch for that task generation. Release occurs
+only when current task IDs and serialized metadata match that baseline; a
+quality worker that changed the batch before failing remains an ordinary
+blocker. `wg show` carries the loud reason. The dispatcher records the warning once when it observes the
 release. A required tag preserves ordinary required-success failure semantics.
 
 `tests/smoke/scenarios/quality_pass_advisory_provider_failure.sh` uses an

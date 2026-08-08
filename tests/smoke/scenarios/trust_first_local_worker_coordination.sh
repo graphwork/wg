@@ -18,7 +18,18 @@ mkdir -p "$project" "$home" "$scratch/bin"
 ln -s "$WG_BIN" "$scratch/bin/wg"
 cat >"$scratch/bin/pi" <<'SH'
 #!/usr/bin/env bash
-exec bash worker.sh
+set -euo pipefail
+model=""
+while (($#)); do
+  case "$1" in --model) model="$2"; shift 2;; *) shift;; esac
+done
+if [[ $model == fake-review ]]; then
+  cat >/dev/null || true
+  printf '%s\n' '{"type":"turn_end","message":{"role":"assistant","content":[{"type":"text","text":"{\"verdict\":\"pass\",\"findings\":[]}"}],"provider":"test","model":"fake-review","stopReason":"stop","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}}}}'
+  exit 0
+fi
+bash "$(dirname "$0")/worker.sh"
+printf '%s\n' '{"type":"turn_end","message":{"role":"assistant","content":[{"type":"text","text":"trusted quality pass completed through immutable review"}],"provider":"test","model":"fake-worker","stopReason":"stop","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}}}}'
 SH
 chmod +x "$scratch/bin/pi"
 export PATH="$scratch/bin:$PATH" HOME="$home" XDG_CONFIG_HOME="$home/.config"
@@ -27,7 +38,7 @@ unset WG_AGENT_ID WG_TASK_ID WG_WORKER_CAPABILITY WG_WORKER_IPC WG_PROJECT_ROOT 
 git -C "$project" init -q -b main
 git -C "$project" config user.email trust-worker@test.invalid
 git -C "$project" config user.name TrustWorker
-cat >"$project/worker.sh" <<'SH'
+cat >"$scratch/bin/worker.sh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 [[ ${WG_WORKER_CONTROL_MODE:-} == trusted ]] || { echo "expected trusted mode" >&2; exit 91; }
@@ -37,7 +48,7 @@ if wg service status > protected-service.out 2>&1; then
   echo "trusted worker unexpectedly gained service administration" >&2
   exit 92
 fi
-grep -q 'worker_control.admin_operation_refused' protected-service.out
+grep -q 'worker_control.operation_refused' protected-service.out
 if wg --dir /tmp list > protected-cross-graph.out 2>&1; then
   echo "trusted worker unexpectedly selected a different graph" >&2
   exit 93
@@ -46,8 +57,7 @@ grep -q 'worker_control.graph_cli_cross_graph_refused' protected-cross-graph.out
 wg show downstream --json > downstream-before.json
 wg edit downstream --description $'Coordinated downstream description.\n\n## Validation\n- [ ] trust-first edit reached the graph'
 wg add "Trusted local subtask" --id trusted-local-subtask --after "$WG_TASK_ID" --assign "$WG_AGENT_ID" \
-  --description $'Created by a trusted local worker.\n\n## Validation\n- [ ] linked before downstream'
-wg edit downstream --add-after trusted-local-subtask
+  --description $'Created and linked by a trusted local worker.\n\n## Validation\n- [ ] depends on its quality-pass parent'
 wg reprioritize downstream critical
 wg msg send downstream "trusted worker coordinated downstream metadata"
 wg publish trusted-local-subtask --only
@@ -55,11 +65,16 @@ wg log "$WG_TASK_ID" "trust-first cross-task coordination complete"
 printf 'trusted\n' > trust-first.txt
 git add capabilities.json downstream-before.json trust-first.txt
 git commit -qm 'trust-first worker evidence'
-# Stay alive while the outer fixture audits exact attempt attribution.
-sleep 120
+printf 'trusted quality-pass coordination completed\n' > summary.txt
+printf 'cross-task edit/add/link/assign/priority/message assertions passed\n' > validation.log
+wg completion-object validation.log --media-type text/plain --evidence-kind validation > evidence-ref.json
+wg completion-manifest "$WG_TASK_ID" --summary summary.txt --git --evidence-ref evidence-ref.json > manifest.json
+wg submit "$WG_TASK_ID" --manifest manifest.json --summary summary.txt >/dev/null
+wg done "$WG_TASK_ID" >/dev/null
 SH
-chmod +x "$project/worker.sh"
-git -C "$project" add worker.sh
+chmod +x "$scratch/bin/worker.sh"
+printf 'base\n' > "$project/README.md"
+git -C "$project" add README.md
 git -C "$project" commit -qm base
 (
   cd "$project"
@@ -70,29 +85,30 @@ wgrun() {
     WG_DIR="$project/.wg" "$WG_BIN" "$@")
 }
 # Omitted [worker_control] is the historical trust-first default.
-wgrun add "Local coordination worker" --id local-coordinator >/dev/null
-wgrun add "Downstream implementation" --id downstream --after local-coordinator >/dev/null
-wgrun publish local-coordinator --wcc >/dev/null
+wgrun config --local --auto-evaluate false --set-model reviewer pi:test:fake-review --set-model evaluator pi:test:fake-review --no-reload >/dev/null
+wgrun add "Quality-pass local coordination worker" --id .quality-pass-local-coordinator >/dev/null
+wgrun add "Downstream implementation" --id downstream --after .quality-pass-local-coordinator >/dev/null
+wgrun publish .quality-pass-local-coordinator --wcc >/dev/null
 wgrun service start --max-agents 1 --no-coordinator-agent --no-supervise >/dev/null
 
-worktree=""
 for _ in $(seq 1 320); do
-  worktree=$([[ -d "$project/.wg-worktrees" ]] && find "$project/.wg-worktrees" -mindepth 1 -maxdepth 1 -type d | head -1 || true)
-  if [[ -n $worktree ]] && git -C "$worktree" show HEAD:trust-first.txt 2>/dev/null | grep -qx trusted; then
-    break
-  fi
-  status=$(wgrun show local-coordinator --json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status",""))' 2>/dev/null || true)
+  status=$(wgrun show .quality-pass-local-coordinator --json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status",""))' 2>/dev/null || true)
+  [[ $status == done ]] && break
   [[ $status == failed || $status == abandoned ]] && loud_fail "trusted worker terminal status: $status"
   sleep 0.25
 done
-[[ -n $worktree ]] || loud_fail "trusted worker worktree was not created"
-git -C "$worktree" show HEAD:trust-first.txt | grep -qx trusted || loud_fail "trusted worker did not finish coordination"
+[[ ${status:-} == done ]] || loud_fail "trusted quality-pass worker did not complete through immutable review"
 
 downstream=$(wgrun show downstream --json)
+printf '%s' "$downstream" | grep -Eq '"satisfied"[[:space:]]*:[[:space:]]*true' \
+  || loud_fail "completed quality pass did not release downstream: $downstream"
+ready=$(wgrun ready --json)
+printf '%s' "$ready" | grep -q 'downstream' || loud_fail "released downstream was not ready"
 printf '%s' "$downstream" | grep -q 'Coordinated downstream description' || loud_fail "downstream description not edited"
 printf '%s' "$downstream" | grep -q 'trust-first edit reached the graph' || loud_fail "downstream validation not edited"
-printf '%s' "$downstream" | grep -q 'trusted-local-subtask' || loud_fail "subtask not linked downstream"
 printf '%s' "$downstream" | grep -Eq '"priority"[[:space:]]*:[[:space:]]*100' || loud_fail "downstream not reprioritized"
+child=$(wgrun show trusted-local-subtask --json)
+printf '%s' "$child" | grep -q '.quality-pass-local-coordinator' || loud_fail "trusted subtask not linked to its quality-pass parent"
 grep -q '"id":"trusted-local-subtask"' "$project/.wg/graph.jsonl" || loud_fail "trusted subtask not created"
 grep -q 'trusted worker coordinated downstream metadata' "$project/.wg/messages/downstream.jsonl" || loud_fail "cross-task message absent"
 
@@ -101,10 +117,11 @@ audit="$project/.wg/service/worker-capability-audit.jsonl"
 read -r agent attempt fence < <(python3 - "$registry" <<'PY'
 import json,sys
 r=json.load(open(sys.argv[1]))
-b=next(v for v in r['capabilities'].values() if v['task_id']=='local-coordinator')
+b=next(v for v in r['capabilities'].values() if v['task_id']=='.quality-pass-local-coordinator')
 print(b['agent_id'], b['attempt_id'], b['fence'])
 PY
 )
+printf '%s' "$child" | grep -q "$agent" || loud_fail "trusted subtask was not assigned to the quality-pass actor"
 prompt="$project/.wg/agents/$agent/prompt.txt"
 [[ -s $prompt ]] || loud_fail "spawned worker prompt missing"
 grep -q 'Effective mode.*trusted' "$prompt" || loud_fail "startup prompt omitted effective trusted mode"
@@ -116,14 +133,14 @@ path,agent,attempt,fence=sys.argv[1:]
 fence=int(fence)
 events=[json.loads(x) for x in open(path) if x.strip()]
 graph=[e for e in events if e.get('operation')=='graph_cli' and e.get('outcome')=='allowed']
-assert len(graph) >= 7, graph
+assert len(graph) >= 6, graph
 assert all(e.get('agent_id')==agent and e.get('attempt_id')==attempt and e.get('fence')==fence for e in graph), graph
 assert all(e.get('control_mode')=='trusted' for e in graph), graph
 PY
 
-show_source=$(wgrun show local-coordinator --json)
+show_source=$(wgrun show .quality-pass-local-coordinator --json)
 printf '%s' "$show_source" | grep -Eq '"worker_control_mode"[[:space:]]*:[[:space:]]*"trusted"' || loud_fail "show omitted effective trusted mode"
 status=$(wgrun status --json)
 printf '%s' "$status" | grep -Eq '"worker_control_mode"[[:space:]]*:[[:space:]]*"trusted"' || loud_fail "status omitted trusted default"
 
-echo "PASS: default trusted local worker edited downstream metadata/validation, created and linked an assigned subtask, reprioritized, messaged, and every public graph mutation was audited to its exact actor/attempt/fence"
+echo "PASS: default-trusted .quality-pass worker edited downstream metadata/validation, created/linked/assigned a subtask, reprioritized, messaged, completed through immutable review, released downstream, and audited every public graph mutation to its exact actor/attempt/fence"

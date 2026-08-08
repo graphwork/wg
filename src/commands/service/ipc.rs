@@ -749,6 +749,58 @@ fn validate_worker_capability(
     Ok(binding)
 }
 
+fn trusted_graph_coordination_command(command: &str) -> bool {
+    matches!(
+        command,
+        // Read-only graph inspection and planning.
+        "show"
+            | "status"
+            | "list"
+            | "ready"
+            | "blocked"
+            | "why-blocked"
+            | "context"
+            | "check"
+            | "structure"
+            | "critical-path"
+            | "bottlenecks"
+            | "impact"
+            | "plan"
+            | "forecast"
+            | "workload"
+            | "coordinate"
+            | "metrics"
+            | "analyze"
+            | "cost"
+            | "spend"
+            | "stats"
+            | "aging"
+            | "cycles"
+            | "matrix"
+            | "trajectory"
+            | "next"
+            | "which"
+            // Positive coordination surface. Terminal completion and immutable
+            // evidence commands never enter GraphCli; they stay typed.
+            | "add"
+            | "edit"
+            | "insert"
+            | "add-dep"
+            | "rm-dep"
+            | "assign"
+            | "reprioritize"
+            | "publish"
+            | "pause"
+            | "resume"
+            | "retry"
+            | "requeue"
+            | "reschedule"
+            | "abandon"
+            | "log"
+            | "msg"
+    )
+}
+
 fn execute_trusted_graph_cli(
     dir: &Path,
     binding: &worksgood::worker_control::AttemptCapabilityBinding,
@@ -773,56 +825,9 @@ fn execute_trusted_graph_cli(
         .find(|arg| !arg.starts_with('-'))
         .map(String::as_str)
         .unwrap_or("");
-    if [
-        // Runtime/configuration authority.
-        "service",
-        "daemon",
-        "agents",
-        "kill",
-        "spawn",
-        "spawn-task",
-        "reap",
-        "pi-handler",
-        "server",
-        "telegram",
-        "config",
-        "setup",
-        "profile",
-        "login",
-        "pi-plugin",
-        "skill",
-        "upgrade",
-        // Federation, provider, review, and secret administration.
-        "fed-node",
-        "identity",
-        "peer",
-        "provider",
-        "review",
-        "pilot",
-        "secret",
-        // Immutable completion/review internals. Own-task public completion
-        // verbs take the typed receipt-backed path before GraphCli is built.
-        "candidate",
-        "completion-object",
-        "completion-manifest",
-        "submit",
-        "land",
-        "merge-resolution",
-        "approve",
-        "reject",
-        "finalize",
-        // Global repair/cleanup commands are operator maintenance, not normal
-        // local graph coordination.
-        "migrate",
-        "recover",
-        "cleanup",
-        "gc",
-        "sweep",
-    ]
-    .contains(&command_name)
-    {
+    if !trusted_graph_coordination_command(command_name) {
         anyhow::bail!(
-            "worker_control.admin_operation_refused: {command_name} is outside trusted local graph coordination"
+            "worker_control.operation_refused: {command_name} is not in the trusted local graph-coordination allowlist"
         );
     }
 
@@ -3365,6 +3370,32 @@ mod tests {
             }
         });
         fs::write(dir.join("graph.jsonl"), format!("{row}\n")).unwrap();
+    }
+
+    #[test]
+    fn trusted_graph_delegation_is_a_positive_coordination_allowlist() {
+        for allowed in [
+            "show",
+            "add",
+            "edit",
+            "assign",
+            "reprioritize",
+            "publish",
+            "msg",
+        ] {
+            assert!(trusted_graph_coordination_command(allowed), "{allowed}");
+        }
+        for refused in [
+            "trace",
+            "func",
+            "replay",
+            "service",
+            "config",
+            "completion-object",
+            "candidate",
+        ] {
+            assert!(!trusted_graph_coordination_command(refused), "{refused}");
+        }
     }
 
     #[test]

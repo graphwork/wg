@@ -317,6 +317,51 @@ fn snapshot_evaluator_prompt_with_downstream_tasks() {
 // ============================================================================
 
 #[test]
+fn shipped_worker_prompt_authority_audit_is_complete() {
+    let vars = test_template_vars();
+    let ctx = test_scope_context();
+    for scope in [
+        ContextScope::Clean,
+        ContextScope::Task,
+        ContextScope::Graph,
+        ContextScope::Full,
+    ] {
+        let prompt = build_prompt(&vars, scope, &ctx);
+        assert!(prompt.contains("## Worker Control"), "scope={scope:?}");
+        assert!(prompt.contains("Effective mode"), "scope={scope:?}");
+    }
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let guide = std::fs::read_to_string(root.join("src/text/agent_guide.md")).unwrap();
+    for command in [
+        "wg capabilities",
+        "wg add",
+        "wg edit",
+        "wg publish",
+        "wg msg",
+    ] {
+        assert!(guide.contains(command), "guide lost {command}");
+    }
+    for boundary in [
+        "Ordinary local workers are trusted participants",
+        "stale/reaped attempt is refused",
+        "completion remains own-task",
+        "worker-control:inbound",
+    ] {
+        assert!(guide.contains(boundary), "guide lost boundary: {boundary}");
+    }
+
+    let quality = std::fs::read_to_string(root.join("docs/designs/quality-pass.md")).unwrap();
+    for command in ["wg assign", "wg edit", "wg publish"] {
+        assert!(quality.contains(command), "quality prompt lost {command}");
+    }
+
+    let pi_tools = std::fs::read_to_string(root.join("worksgood-pi/src/tools.ts")).unwrap();
+    assert!(pi_tools.contains("name: \"wg_capabilities\""));
+    assert!(pi_tools.contains("backend.capabilities"));
+}
+
+#[test]
 fn snapshot_build_prompt_clean_scope() {
     let vars = test_template_vars();
     let ctx = test_scope_context();

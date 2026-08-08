@@ -257,7 +257,9 @@ Projects may opt into `[worker_control] mode = "scoped"` or `"read-only"`.
 A task may visibly override the local project default with the tag
 `worker-control:trusted`, `worker-control:scoped`, or
 `worker-control:read-only`. Observation/evaluation lanes and remote providers
-are structurally narrowed regardless of the local default. Run
+are structurally narrowed regardless of the local default. Sandboxed inbound
+tasks are tagged `worker-control:inbound` and structurally forced read-only;
+untrusted content cannot widen itself with a conflicting tag. Run
 `wg capabilities` to inspect the exact effective mode and restrictions before
 attempting coordination.
 

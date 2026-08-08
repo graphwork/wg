@@ -1,8 +1,8 @@
 use crate::graph::{CycleAnalysis, Status, Task, WorkGraph};
 use chrono::{DateTime, Utc};
-use serde::Serialize;
-use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::path::{Path, PathBuf};
 
 /// Check if a task is past its not_before and ready_after timestamps (or has no timestamps),
 /// and if cron-enabled, whether it is due to fire.
@@ -371,7 +371,98 @@ pub fn is_optional_quality_pass(task: &crate::graph::Task) -> bool {
         && !task.tags.iter().any(|tag| tag == "quality-pass:required")
 }
 
-fn advisory_quality_infrastructure_failure(task: &crate::graph::Task) -> Option<String> {
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct QualityBatchBaseline {
+    schema_version: u32,
+    task_id: String,
+    generation: u64,
+    batch_task_ids: Vec<String>,
+    batch_digest: String,
+}
+
+fn quality_batch_baseline_path(dir: &Path, task: &Task) -> PathBuf {
+    let id_hash = blake3::hash(task.id.as_bytes()).to_hex();
+    dir.join("service")
+        .join("quality-pass-baselines")
+        .join(format!("{id_hash}-{}.json", task.lifecycle.generation))
+}
+
+fn quality_batch_state(graph: &WorkGraph, quality_id: &str) -> (Vec<String>, String) {
+    let mut ids = BTreeSet::new();
+    let mut queue = VecDeque::from([quality_id.to_string()]);
+    while let Some(blocker) = queue.pop_front() {
+        for dependent in graph.tasks().filter(|task| task.after.contains(&blocker)) {
+            if ids.insert(dependent.id.clone()) {
+                queue.push_back(dependent.id.clone());
+            }
+        }
+    }
+    let ids: Vec<String> = ids.into_iter().collect();
+    let tasks: Vec<&Task> = ids.iter().filter_map(|id| graph.get_task(id)).collect();
+    let bytes = serde_json::to_vec(&tasks).expect("task graph serialization is infallible");
+    (ids, format!("b3:{}", blake3::hash(&bytes).to_hex()))
+}
+
+/// Persist the exact downstream batch before an optional quality worker is
+/// admitted. The file is create-once per task generation, so a failing worker
+/// can never bless its own edits by overwriting the baseline.
+pub fn record_optional_quality_batch_baseline(
+    dir: &Path,
+    graph: &WorkGraph,
+    task: &Task,
+) -> anyhow::Result<()> {
+    if !is_optional_quality_pass(task) {
+        return Ok(());
+    }
+    let (batch_task_ids, batch_digest) = quality_batch_state(graph, &task.id);
+    let baseline = QualityBatchBaseline {
+        schema_version: 1,
+        task_id: task.id.clone(),
+        generation: task.lifecycle.generation,
+        batch_task_ids,
+        batch_digest,
+    };
+    let path = quality_batch_baseline_path(dir, task);
+    let bytes = serde_json::to_vec_pretty(&baseline)?;
+    match crate::atomic_file::write_atomic_create_new(&path, &bytes) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let existing: QualityBatchBaseline = serde_json::from_slice(&std::fs::read(&path)?)?;
+            anyhow::ensure!(
+                existing == baseline,
+                "quality-pass baseline collision at {}",
+                path.display()
+            );
+            Ok(())
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn quality_batch_is_unchanged(dir: Option<&Path>, graph: &WorkGraph, task: &Task) -> bool {
+    let Some(dir) = dir else {
+        return false;
+    };
+    let path = quality_batch_baseline_path(dir, task);
+    let Ok(bytes) = std::fs::read(path) else {
+        return false;
+    };
+    let Ok(baseline) = serde_json::from_slice::<QualityBatchBaseline>(&bytes) else {
+        return false;
+    };
+    let (batch_task_ids, batch_digest) = quality_batch_state(graph, &task.id);
+    baseline.schema_version == 1
+        && baseline.task_id == task.id
+        && baseline.generation == task.lifecycle.generation
+        && baseline.batch_task_ids == batch_task_ids
+        && baseline.batch_digest == batch_digest
+}
+
+fn advisory_quality_infrastructure_failure(
+    task: &crate::graph::Task,
+    graph: &WorkGraph,
+    dir: Option<&Path>,
+) -> Option<String> {
     if task.status != Status::Failed || !is_optional_quality_pass(task) {
         return None;
     }
@@ -387,26 +478,37 @@ fn advisory_quality_infrastructure_failure(task: &crate::graph::Task) -> Option<
         )
     });
     let signal_is_infrastructure = task.failure_signal.as_ref().is_some_and(|signal| {
-        !matches!(
-            signal.reason,
-            crate::graph::FailureReason::Hard | crate::graph::FailureReason::Unknown
-        )
+        use crate::graph::FailureReason;
+        match signal.reason {
+            FailureReason::Disk | FailureReason::HardTimeout => true,
+            FailureReason::RateLimit
+            | FailureReason::CreditExhausted
+            | FailureReason::QuotaToken
+            | FailureReason::Auth
+            | FailureReason::ProviderUnavailable
+            | FailureReason::ProviderOverloaded
+            | FailureReason::Transient5xx
+            | FailureReason::Timeout => signal.route.is_some(),
+            FailureReason::Hard | FailureReason::Unknown => false,
+        }
     });
-    (class_is_infrastructure || signal_is_infrastructure).then(|| {
-        format!(
-            "optional quality pass {} unavailable; released unchanged batch (class={}, signal={})",
-            task.id,
-            task.failure_class
-                .map(|class| class.to_string())
-                .unwrap_or_else(|| "none".to_string()),
-            task.failure_signal
-                .as_ref()
-                .map(|signal| signal.reason.to_string())
-                .unwrap_or_else(|| "none".to_string())
-        )
-    })
+    (class_is_infrastructure || signal_is_infrastructure)
+        .then(|| quality_batch_is_unchanged(dir, graph, task))
+        .filter(|unchanged| *unchanged)
+        .map(|_| {
+            format!(
+                "optional quality pass {} unavailable; verified baseline and released unchanged batch (class={}, signal={})",
+                task.id,
+                task.failure_class
+                    .map(|class| class.to_string())
+                    .unwrap_or_else(|| "none".to_string()),
+                task.failure_signal
+                    .as_ref()
+                    .map(|signal| signal.reason.to_string())
+                    .unwrap_or_else(|| "none".to_string())
+            )
+        })
 }
-
 /// Only the owning `.flip-X` or direct `.evaluate-X` satellite may cross X's
 /// soft evaluation state. `.assign-*`, `.verify-*`, unrelated dot tasks,
 /// remote references and ordinary dependents remain blocked.
@@ -472,7 +574,7 @@ pub fn dependency_disposition(
             blocker_status: blocker.status,
         };
     }
-    if let Some(reason) = advisory_quality_infrastructure_failure(blocker) {
+    if let Some(reason) = advisory_quality_infrastructure_failure(blocker, graph, workgraph_dir) {
         return DependencyDisposition::AdvisoryQualityBypass { reason };
     }
     let typed_input = graph
@@ -940,14 +1042,40 @@ mod tests {
         downstream.after.push(quality.id.clone());
         graph.add_node(Node::Task(quality.clone()));
         graph.add_node(Node::Task(downstream.clone()));
+        let temp = tempfile::tempdir().unwrap();
+        record_optional_quality_batch_baseline(
+            temp.path(),
+            &graph,
+            graph.get_task(&quality.id).unwrap(),
+        )
+        .unwrap();
 
-        let disposition = dependency_disposition(&quality.id, &downstream.id, &graph, None);
+        let disposition =
+            dependency_disposition(&quality.id, &downstream.id, &graph, Some(temp.path()));
         assert!(matches!(
             disposition,
             DependencyDisposition::AdvisoryQualityBypass { ref reason }
                 if reason.contains("released unchanged batch")
         ));
-        assert_eq!(ready_tasks(&graph)[0].id, downstream.id);
+        assert_eq!(
+            ready_tasks_with_peers(&graph, temp.path())[0].id,
+            downstream.id
+        );
+
+        let mut changed_graph = graph.clone();
+        changed_graph
+            .get_task_mut("downstream")
+            .unwrap()
+            .description = Some("quality worker mutated the batch before failing".into());
+        assert!(matches!(
+            dependency_disposition(
+                &quality.id,
+                &downstream.id,
+                &changed_graph,
+                Some(temp.path())
+            ),
+            DependencyDisposition::Blocked { .. }
+        ));
 
         let mut required_graph = WorkGraph::new();
         quality.tags.push("quality-pass:required".into());

@@ -1530,7 +1530,7 @@ pub(crate) fn spawn_agent_inner_authorized(
     let effective_working_dir = worktree_info
         .as_ref()
         .map(|wt| wt.path.as_path())
-        .or_else(|| nongit_workspace.as_deref())
+        .or(nongit_workspace.as_deref())
         .or_else(|| settings.working_dir.as_deref().map(Path::new));
     preflight_executor_command(&settings, resolved_executor_name, effective_working_dir)?;
 
@@ -1863,7 +1863,12 @@ pub(crate) fn spawn_agent_inner_authorized(
                 worktree_info
                     .as_ref()
                     .map(|worktree| worktree.path.as_path())
-                    .or_else(|| nongit_workspace.as_deref()),
+                    .or(nongit_workspace.as_deref())
+                    // Shared non-writing system lanes (including quality-pass
+                    // coordinators) still need a real cwd for daemon-delegated
+                    // public graph commands; bind the canonical project root,
+                    // never a guessed .wg-worktrees path.
+                    .or_else(|| dir.parent()),
                 control_mode,
             )?;
         worker_capability_digest = Some(worker_binding.token_sha256.clone());

@@ -3004,14 +3004,14 @@ timeout_seconds = 180
 name = "trust_first_local_worker_coordination"
 script = "scenarios/trust_first_local_worker_coordination.sh"
 owners = ["restore-trust-first-local-worker-control"]
-description = "Candidate-binary credential-free real-daemon/Fake-Pi end-to-end regression for the historical trust-first local worker contract: omitted policy resolves to trusted before the LLM starts; public wg commands edit downstream description/validation, create/link/assign a subtask, reprioritize, publish and message across tasks; every delegated mutation is append-only audited to the exact actor/attempt/fence; and show/status expose the effective policy. The companion worker_control_capability_broker scenario preserves explicit scoped refusal."
+description = "Candidate-binary credential-free real-daemon/Fake-Pi end-to-end regression for the historical trust-first local worker contract using an actual .quality-pass-* actor: omitted policy resolves to trusted before the LLM starts; public wg commands audit/edit downstream description/validation, create/link/assign a subtask, reprioritize, publish and message across tasks without scope refusal; every delegated mutation is append-only audited to the exact actor/attempt/fence; and show/status expose the effective policy. The companion worker_control_capability_broker scenario preserves explicit scoped refusal."
 timeout_seconds = 180
 
 [[scenario]]
 name = "quality_pass_advisory_provider_failure"
 script = "scenarios/quality_pass_advisory_provider_failure.sh"
 owners = ["restore-trust-first-local-worker-control"]
-description = "Candidate-binary credential-free isolated fake-Pi/OpenRouter provider-failure proof: an optional .quality-pass-* failure satisfies its downstream edge with a loud released-unchanged warning and the batch becomes ready, while the same failure on an explicitly quality-pass:required task remains fail-closed."
+description = "Candidate-binary credential-free isolated fake-Pi/OpenRouter provider-failure proof: an optional .quality-pass-* failure releases only when its create-once transitive-batch baseline still matches; a trusted pass that edits downstream before the same provider failure remains blocked; and quality-pass:required stays fail-closed."
 timeout_seconds = 180
 
 [[scenario]]

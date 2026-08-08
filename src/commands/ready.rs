@@ -2,12 +2,12 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use std::path::Path;
 use worksgood::graph::{PRIORITY_DEFAULT, Status};
-use worksgood::query::{blocked_open_cycle_diagnostics, ready_tasks_cycle_aware};
+use worksgood::query::{blocked_open_cycle_diagnostics, ready_tasks_with_peers_cycle_aware};
 
 pub fn run(dir: &Path, json: bool) -> Result<()> {
     let (graph, _path) = super::load_workgraph(dir)?;
     let cycle_analysis = graph.compute_cycle_analysis();
-    let ready = ready_tasks_cycle_aware(&graph, &cycle_analysis);
+    let ready = ready_tasks_with_peers_cycle_aware(&graph, dir, &cycle_analysis);
     let diagnostics = blocked_open_cycle_diagnostics(&graph, &cycle_analysis);
 
     // Find tasks that would be ready except they're waiting on ready_after
@@ -399,7 +399,7 @@ mod tests {
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
         let cycle_analysis = graph.compute_cycle_analysis();
-        let ready = ready_tasks_cycle_aware(&graph, &cycle_analysis);
+        let ready = worksgood::query::ready_tasks_cycle_aware(&graph, &cycle_analysis);
 
         assert_eq!(ready.len(), 1);
         let t = &ready[0];

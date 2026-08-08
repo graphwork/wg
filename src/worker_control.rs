@@ -98,6 +98,14 @@ pub fn effective_control_mode(
     // Remote providers and observation lanes cannot widen themselves via a
     // task tag. Quality passes are deliberately NOT in this set: their job is
     // local cross-task graph coordination.
+    if task.tags.iter().any(|tag| {
+        matches!(
+            tag.as_str(),
+            "worker-control:inbound" | "content:inbound" | "sandboxed-inbound"
+        )
+    }) {
+        return WorkerControlMode::ReadOnly;
+    }
     if task.remote_provider.is_some() {
         return WorkerControlMode::Scoped;
     }
@@ -1376,6 +1384,15 @@ mod tests {
         assert_eq!(
             effective_control_mode(WorkerControlMode::Trusted, &read_only),
             WorkerControlMode::ReadOnly
+        );
+
+        let mut inbound = ordinary.clone();
+        inbound.tags.push("worker-control:inbound".into());
+        inbound.tags.push("worker-control:trusted".into());
+        assert_eq!(
+            effective_control_mode(WorkerControlMode::Trusted, &inbound),
+            WorkerControlMode::ReadOnly,
+            "sandboxed inbound content cannot widen itself"
         );
 
         let mut evaluator = ordinary.clone();
