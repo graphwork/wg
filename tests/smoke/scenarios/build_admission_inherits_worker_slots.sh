@@ -225,4 +225,17 @@ assert c['admission_deferred_tasks']==0,c
 assert c.get('admission_deferred',[])==[],c
 PY
 
-echo "PASS: inherited/explicit hot reloads enforce exact-once admission; generators, remediation, and stopped status pass"
+# A launch-time runtime pin is an intentional effective worker limit. Status,
+# inherited build capacity, remediation, and spawn admission must share it even
+# though the file now says max_agents=6.
+start_wg_daemon "$project" --max-agents 2 --no-chat-agent --interval 1
+for _ in $(seq 1 80); do
+  runtime=$(wg service status --json 2>/dev/null | python3 -c 'import json,sys; c=json.load(sys.stdin)["coordinator"]; print(c["max_agents"],c["max_build_agents"],c["max_build_agents_source"],c["max_build_agents_remediation_command"])' 2>/dev/null || true)
+  grep -q '^2 2 inherited-from-max-agents wg service reload --max-agents 3$' <<<"$runtime" && break
+  sleep 0.1
+done
+grep -q '^2 2 inherited-from-max-agents wg service reload --max-agents 3$' <<<"${runtime:-}" \
+  || loud_fail "runtime worker pin diverged from inherited build status/remediation: ${runtime:-}"
+wg service stop >/dev/null
+
+echo "PASS: hot reload exact-once, scoped remediation, stopped freshness, and runtime-pin parity pass"

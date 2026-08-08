@@ -423,6 +423,7 @@ fn gather_coordinator_info(dir: &Path) -> CoordinatorInfo {
         let (reasoning, worker_reasoning, agency_reasoning) = configured_reasoning();
         let (eval_gate_applicability, evaluator_threshold, flip_gate_policy, flip_threshold) =
             configured_gate_info(&config);
+        let capacity = crate::commands::service::admission_capacity_status(dir, &config, &coord);
         let admission_authoritative = crate::commands::service::ServiceState::load(dir)
             .ok()
             .flatten()
@@ -437,12 +438,11 @@ fn gather_coordinator_info(dir: &Path) -> CoordinatorInfo {
             (0, Vec::new())
         };
         return CoordinatorInfo {
-            max_agents: config.coordinator.max_agents,
+            max_agents: capacity.max_agents,
             build_heavy_active,
-            max_build_agents: config.coordinator.effective_max_build_agents(),
-            max_build_agents_source: config.coordinator.max_build_agents_source().to_string(),
-            max_build_agents_remediation_command:
-                worksgood::config::max_build_agents_remediation_command(dir),
+            max_build_agents: capacity.max_build_agents,
+            max_build_agents_source: capacity.max_build_agents_source.to_string(),
+            max_build_agents_remediation_command: capacity.remediation_command,
             disk_sentinel_enabled: config.coordinator.resource_management.disk_sentinel_enabled,
             projected_headroom_bytes: if config
                 .coordinator

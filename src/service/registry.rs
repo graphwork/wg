@@ -104,13 +104,15 @@ impl AgentEntry {
     /// `started_at` is the expected epoch; plain PID liveness is insufficient
     /// because a reused PID must never consume admission capacity.
     pub fn has_live_process_identity(&self) -> bool {
-        self.is_alive()
-            && super::is_process_alive(self.pid)
-            && DateTime::parse_from_rfc3339(&self.started_at)
-                .ok()
-                .is_some_and(|started| {
-                    super::verify_process_identity(self.pid, started.timestamp())
-                })
+        if !self.is_alive() || !super::is_process_alive(self.pid) {
+            return false;
+        }
+        // Admission is fail-closed: an unknown/malformed expected birth epoch
+        // still consumes capacity. Only a positively detected PID mismatch may
+        // free the slot.
+        DateTime::parse_from_rfc3339(&self.started_at)
+            .ok()
+            .is_none_or(|started| super::verify_process_identity(self.pid, started.timestamp()))
     }
 
     /// Strict liveness check — the agent is considered *live* if and

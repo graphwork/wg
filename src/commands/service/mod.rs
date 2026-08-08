@@ -785,17 +785,62 @@ pub fn coordinator_state_path(dir: &Path, coordinator_id: u32) -> PathBuf {
         .join(format!("coordinator-state-{}.json", coordinator_id))
 }
 
+fn service_state_has_current_birth_identity(dir: &Path) -> bool {
+    ServiceState::load(dir).ok().flatten().is_some_and(|state| {
+        state.pid_start_identity.is_some()
+            && state.pid_start_identity
+                == worksgood::service_identity::pid_start_identity(state.pid)
+    })
+}
+
+/// One read model for config capacity plus a live daemon's intentional runtime
+/// worker override. Stopped/stale state never wins; an explicit build cap always
+/// wins; an inherited cap follows the same effective worker limit admission uses.
+pub(crate) struct AdmissionCapacityStatus {
+    pub max_agents: usize,
+    pub max_build_agents: usize,
+    pub max_build_agents_source: &'static str,
+    pub remediation_command: String,
+}
+
+pub(crate) fn admission_capacity_status(
+    dir: &Path,
+    config: &Config,
+    coordinator: &CoordinatorState,
+) -> AdmissionCapacityStatus {
+    let live = service_state_has_current_birth_identity(dir);
+    let runtime_max_agents = live.then_some(coordinator.runtime_max_agents).flatten();
+    let max_agents = runtime_max_agents.unwrap_or(config.coordinator.max_agents);
+    let explicit_build = config.coordinator.resource_management.max_build_agents;
+    let max_build_agents = explicit_build.unwrap_or(max_agents);
+    let remediation_command = if explicit_build.is_some() {
+        worksgood::config::max_build_agents_remediation_command(dir)
+    } else if runtime_max_agents.is_some() {
+        format!(
+            "wg service reload --max-agents {}",
+            max_agents.saturating_add(1)
+        )
+    } else {
+        worksgood::config::max_build_agents_remediation_command(dir)
+    };
+    AdmissionCapacityStatus {
+        max_agents,
+        max_build_agents,
+        max_build_agents_source: if explicit_build.is_some() {
+            "explicit"
+        } else {
+            "inherited-from-max-agents"
+        },
+        remediation_command,
+    }
+}
+
 /// Admission deferral is a live read model, not durable task truth. A crashed
 /// daemon can leave its coordinator snapshot behind, so every status reader
 /// suppresses waiting rows unless the PID's OS birth identity still matches the
 /// authenticated service state (plain PID liveness is never enough).
 pub(crate) fn suppress_stale_admission(dir: &Path, coordinator: &mut CoordinatorState) {
-    let live = ServiceState::load(dir).ok().flatten().is_some_and(|state| {
-        state.pid_start_identity.is_some()
-            && state.pid_start_identity
-                == worksgood::service_identity::pid_start_identity(state.pid)
-    });
-    if !live {
+    if !service_state_has_current_birth_identity(dir) {
         coordinator.admission_deferred_tasks = 0;
         coordinator.admission_deferred_reason = None;
         coordinator.admission_deferred.clear();
@@ -4510,14 +4555,15 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
         })
         .unwrap_or_else(|| "unknown".to_string());
 
-    // Coordinator state supplies runtime metrics; loaded config supplies capacity
-    // so stopped/stale state cannot leak an old inherited limit into status.
+    // Coordinator state supplies runtime metrics and an authenticated runtime
+    // worker override; loaded config supplies the cold/stopped default.
     let mut coord = CoordinatorState::load_or_default(dir);
     suppress_stale_admission(dir, &mut coord);
     let effective_config = Config::load_or_default(dir);
-    let max_agents = effective_config.coordinator.max_agents;
-    let max_build_agents = effective_config.coordinator.effective_max_build_agents();
-    let max_build_agents_source = effective_config.coordinator.max_build_agents_source();
+    let capacity = admission_capacity_status(dir, &effective_config, &coord);
+    let max_agents = capacity.max_agents;
+    let max_build_agents = capacity.max_build_agents;
+    let max_build_agents_source = capacity.max_build_agents_source;
     let disk_sentinel_enabled = effective_config
         .coordinator
         .resource_management
@@ -4598,7 +4644,7 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
                 "build_heavy_active": build_heavy_active,
                 "max_build_agents": max_build_agents,
                 "max_build_agents_source": max_build_agents_source,
-                "max_build_agents_remediation_command": worksgood::config::max_build_agents_remediation_command(dir),
+                "max_build_agents_remediation_command": capacity.remediation_command,
                 "disk_sentinel_enabled": disk_sentinel_enabled,
                 "projected_headroom_bytes": if disk_sentinel_enabled {
                     worksgood::disk_sentinel::load_snapshot(dir).ok().flatten().map(|snapshot| snapshot.projected_headroom_bytes)
@@ -4710,12 +4756,12 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
             if max_build_agents_source == "explicit" {
                 format!(
                     " — explicit override; restore inheritance with `{}`",
-                    worksgood::config::max_build_agents_remediation_command(dir)
+                    capacity.remediation_command
                 )
             } else if coord.admission_deferred_tasks > 0 {
                 format!(
                     " — capacity full; increase with `{}`",
-                    worksgood::config::max_build_agents_remediation_command(dir)
+                    capacity.remediation_command
                 )
             } else {
                 String::new()

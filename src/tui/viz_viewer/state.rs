@@ -19105,15 +19105,12 @@ impl VizApp {
             authenticated_service_context(&service_observation, &coord);
         self.service_health.paused = coord.paused;
         let effective_config = Config::load_or_default(dir);
-        self.service_health.agents_max = effective_config.coordinator.max_agents;
-        self.service_health.max_build_agents =
-            effective_config.coordinator.effective_max_build_agents();
-        self.service_health.max_build_agents_source = effective_config
-            .coordinator
-            .max_build_agents_source()
-            .to_string();
-        self.service_health.max_build_agents_remediation_command =
-            worksgood::config::max_build_agents_remediation_command(dir);
+        let capacity =
+            crate::commands::service::admission_capacity_status(dir, &effective_config, &coord);
+        self.service_health.agents_max = capacity.max_agents;
+        self.service_health.max_build_agents = capacity.max_build_agents;
+        self.service_health.max_build_agents_source = capacity.max_build_agents_source.to_string();
+        self.service_health.max_build_agents_remediation_command = capacity.remediation_command;
         self.service_health.disk_sentinel_enabled = effective_config
             .coordinator
             .resource_management

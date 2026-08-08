@@ -1649,13 +1649,12 @@ fn handle_status(dir: &Path) -> IpcResponse {
     let alive_count = registry.active_count();
     let idle_count = registry.idle_count();
 
-    // Coordinator state supplies live metrics; loaded config supplies capacity
-    // so stopped/stale state cannot leak an old inherited limit into status.
+    // Coordinator state supplies live metrics and an authenticated runtime
+    // override; loaded config supplies the cold/stopped default.
     let mut coord = CoordinatorState::load_or_default(dir);
     super::suppress_stale_admission(dir, &mut coord);
     let config = worksgood::config::Config::load_or_default(dir);
-    let max_build_agents = config.coordinator.effective_max_build_agents();
-    let max_build_agents_source = config.coordinator.max_build_agents_source();
+    let capacity = super::admission_capacity_status(dir, &config, &coord);
     let build_heavy_active = crate::commands::load_workgraph(dir)
         .ok()
         .map(|(graph, _)| {
@@ -1694,7 +1693,7 @@ fn handle_status(dir: &Path) -> IpcResponse {
         "coordinator": {
             "enabled": coord.enabled,
             "paused": coord.paused,
-            "max_agents": config.coordinator.max_agents,
+            "max_agents": capacity.max_agents,
             "poll_interval": coord.poll_interval,
             "executor": coord.executor,
             "model": coord.model,
@@ -1707,9 +1706,9 @@ fn handle_status(dir: &Path) -> IpcResponse {
             "admission_deferred_reason": coord.admission_deferred_reason,
             "admission_deferred": coord.admission_deferred,
             "build_heavy_active": build_heavy_active,
-            "max_build_agents": max_build_agents,
-            "max_build_agents_source": max_build_agents_source,
-            "max_build_agents_remediation_command": worksgood::config::max_build_agents_remediation_command(dir),
+            "max_build_agents": capacity.max_build_agents,
+            "max_build_agents_source": capacity.max_build_agents_source,
+            "max_build_agents_remediation_command": capacity.remediation_command,
             "disk_sentinel_enabled": disk_sentinel_enabled,
             "projected_headroom_bytes": if disk_sentinel_enabled {
                 worksgood::disk_sentinel::load_snapshot(dir).ok().flatten().map(|snapshot| snapshot.projected_headroom_bytes)
