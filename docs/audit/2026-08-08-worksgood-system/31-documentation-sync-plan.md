@@ -16,7 +16,9 @@
 
 ## 1. Executive abstract
 
-**`[FACT]`** WorksGood has several effective synchronization controls, but no repository-wide documentation authority system. The universal agent contract is compiled from one Markdown source, and a unit test requires the two root project guides to remain byte-identical (`src/commands/agent_guide.rs:3-15,132-185`). The Pi package has a source-build/re-embed/diff gate in CI (`.github/workflows/ci.yml:174-201`). In contrast, the pre-artifact planning checkout counted 619 files below `docs/`, including 570 Markdown files, but had no `docs/manifest.toml`, `docs/product-contract.toml`, or machine-readable glossary (command in §7.2). `docs/KEY_DOCS.md:1-5` still calls itself the canonical key-doc list and is dated 2026-04-29.
+**`[FACT]`** WorksGood declares several bounded synchronization controls. The universal agent contract is compiled from one Markdown source, and a unit test requires the two root project guides to remain byte-identical (`src/commands/agent_guide.rs:3-15,132-185`). CI declares a Pi source-build/re-embed/diff gate (`.github/workflows/ci.yml:174-201`). Those controls were inspected, not executed by this task. In contrast, the pre-artifact planning checkout counted 619 files below `docs/`, including 570 Markdown files, but had no `docs/manifest.toml`, `docs/product-contract.toml`, machine-readable decision index, or machine-readable glossary (command in §7.2). `docs/KEY_DOCS.md:1-5` still calls itself the canonical key-doc list and is dated 2026-04-29.
+
+**`[INFERENCE]` (high confidence)** No repository-wide documentation authority system was located. This is falsified by identifying an applicable estate/claim/decision/term registry or equivalent enforcement surface omitted from §2.1's search.
 
 **`[FACT]`** A parser declaration and dispatch currently disagree: `src/cli.rs:527-557` advertises five `wg done` flags that `src/main.rs:1261-1274` rejects. Test policy and dispatch also disagree: the smoke contract says owned scenarios gate Done (`tests/smoke/README.md:1-29`), while the current Done dispatch contains no smoke invocation (`src/main.rs:1261-1274`; `src/commands/completion_done.rs:29-294`, independently checked in audit 30 `P1/P2`).
 
@@ -97,12 +99,13 @@ The phases intentionally separate **F** factual synchronization, **D** human dec
 
 ### 2.3 Canonical registries and generated views
 
-**`[RECOMMENDATION]`** Create four distinct canonical records. Their separation prevents the old `KEY_DOCS` failure mode, where a curated reading list impersonated a complete estate inventory.
+**`[RECOMMENDATION]`** Create five distinct canonical records. Their separation prevents the old `KEY_DOCS` failure mode, where a curated reading list impersonated a complete estate inventory, and prevents a document-status field from silently ratifying product policy.
 
-1. **`docs/manifest.toml` — estate inventory.** One record per tracked documentation artifact (or explicit ignore): stable doc ID, path, kind, audience, authority class, status, owner, `valid_as_of_revision`, source, generated outputs, `supersedes`, `superseded_by`, claim IDs, evidence IDs, retention class, and redirect/alias paths. Path is mutable metadata; doc ID is stable.
-2. **`docs/product-contract.toml` — claims and supported journeys.** One record per public or safety-relevant claim: stable claim ID, scoped statement, status (`current|partial|broken|deferred|historical|decision-required`), support level (`public|advanced|internal|migration|hidden`), terms, source/dispatch sites, behavior tests, CI/release lane, docs, owner, last verified revision/result, bypasses, and supersession.
-3. **`docs/glossary.toml` — namespaced vocabulary.** Stable term ID, preferred display, namespace, definition, source types/commands, allowed aliases, deprecated aliases, “not the same as” links, and decision/status. It must cover `WGDR-T01`–`WGDR-T12` before broad rewrites.
-4. **Evidence/result index — generated from CI and immutable bundles.** It records `executed-pass`, `executed-fail`, `skip`, `inspected-not-run`, `not-selected`, commit/artifact, environment, and evidence class. It must not be hand-edited into a pass.
+1. **`docs/manifest.toml` — estate inventory.** One record per tracked documentation artifact (or explicit ignore): stable doc ID, path, kind, audience, authority class, owner, `valid_as_of_revision`, source, generated outputs, `supersedes`, `superseded_by`, claim IDs, decision IDs, evidence IDs, retention class, and redirect/alias paths. Path is mutable metadata; doc ID is stable. Its status describes the artifact, not acceptance of the decisions it contains.
+2. **`docs/decision-index.toml` — decision applicability.** One record per proposed or accepted product decision: stable decision ID, scope, state (`proposed|accepted|superseded|rejected|decision-required`), approving authority and receipt, effective/superseding revision, affected claim IDs, migration/rollback, and source sections. Section-level records are required where one ADR mixes accepted and deferred material. Only the named human authority may change acceptance state; a generator or test cannot self-ratify it.
+3. **`docs/product-contract.toml` — claims and supported journeys.** One record per public or safety-relevant claim: stable claim ID, scoped statement, status (`current|partial|broken|deferred|historical|decision-required`), support level (`public|advanced|internal|migration|hidden`), terms, applicable decision IDs, source/dispatch sites, behavior tests, CI/release lane, docs, owner, last verified revision/result, bypasses, and supersession.
+4. **`docs/glossary.toml` — namespaced vocabulary.** Stable term ID, preferred display, namespace, definition, source types/commands, allowed aliases, deprecated aliases, “not the same as” links, and decision/status. It must cover `WGDR-T01`–`WGDR-T12` before broad rewrites.
+5. **Evidence/result index — generated from CI and immutable bundles.** It records `executed-pass`, `executed-fail`, `skip`, `inspected-not-run`, `not-selected`, commit/artifact, environment, and evidence class. It must not be hand-edited into a pass.
 
 **`[RECOMMENDATION]`** Generate or check these views from the registries and primary schemas:
 
@@ -113,9 +116,9 @@ The phases intentionally separate **F** factual synchronization, **D** human dec
 - bundle indexes for ADRs/designs, audits/reports/incidents, research/studies/plans, and archives;
 - website/manual derivatives with source revision and generator version.
 
-**`[FACT]`** This pattern already works locally. `AGENT_GUIDE_TEXT` uses `include_str!` and parity tests (`src/commands/agent_guide.rs:3-15,132-185`); CI re-embeds Pi and fails on a diff (`.github/workflows/ci.yml:174-201`).
+**`[FACT]`** Source and test/workflow definitions already encode this pattern for two bounded surfaces: `AGENT_GUIDE_TEXT` uses `include_str!` and declares parity tests (`src/commands/agent_guide.rs:3-15,132-185`), while CI declares a Pi re-embed-and-diff step (`.github/workflows/ci.yml:174-201`). This task did not execute either control.
 
-**`[RECOMMENDATION]`** Generalize those controls rather than inventing a timestamp-based “freshness” detector.
+**`[RECOMMENDATION]`** Generalize those declared controls rather than inventing a timestamp-based “freshness” detector.
 
 ### 2.4 Target information architecture
 
@@ -128,6 +131,7 @@ AGENTS.md == CLAUDE.md                     # tool-required project layer; parity
 docs/
   README.md                                # curated router generated from manifest
   manifest.toml                            # complete estate inventory
+  decision-index.toml                      # accepted/proposed/superseded decision applicability
   product-contract.toml                    # claims, journeys, support, evidence joins
   glossary.toml                            # canonical namespaced vocabulary
 
@@ -333,8 +337,9 @@ These packages may run in parallel after `P0-01`; packages touching the same sou
 
 | Item / type | Trace | Deliverable / dependency | Acceptance |
 |---|---|---|---|
-| `S-MANIFEST` **S** | `WGDR-043`, `WGDR-047`, `WGDR-048`, all bundle/navigation drift | Implement `docs/manifest.toml` schema and importer; depends on `P0-01`. | 100% of tracked docs/root Markdown classified or explicitly ignored; unique IDs/paths; referenced owners/files/claim IDs exist. |
-| `S-CONTRACT` **S/V** | `WGDR-001`–`WGDR-049` | Implement `docs/product-contract.toml`; depends on decision status vocabulary, not necessarily all decisions resolving. | Every public/safety claim and supported journey has source, test selection, status, owner and docs; unresolved rows are machine-visible. |
+| `S-MANIFEST` **S** | `WGDR-043`, `WGDR-047`, `WGDR-048`, all bundle/navigation drift | Implement `docs/manifest.toml` schema and importer; depends on `P0-01`. | 100% of tracked docs/root Markdown classified or explicitly ignored; unique IDs/paths; referenced owners/files/claim/decision IDs exist. |
+| `S-DECISIONS` **S/D** | `WGDR-005`, `WGDR-006`, `WGDR-013`–`WGDR-016`, `WGDR-028`, `WGDR-035`, `WGDR-040`, `WGDR-042`, all `DEC-01`–`DEC-12` | Implement `docs/decision-index.toml` and import accepted/proposed/superseded status without changing it; depends on named approving authorities and status vocabulary. | Every normative claim cites an applicable decision or says `decision-required`; acceptance changes require a human receipt; mixed ADRs use section-level applicability. |
+| `S-CONTRACT` **S/V** | `WGDR-001`–`WGDR-049` | Implement `docs/product-contract.toml`; depends on decision status vocabulary, not necessarily all decisions resolving. | Every public/safety claim and supported journey has applicable decision/status, source, test selection, owner and docs; unresolved rows are machine-visible. |
 | `S-GLOSSARY` **S** | `WGDR-T01`–`WGDR-T12` | Implement glossary and source mappings; depends on `D-TERMS`. | Enum/schema additions and forbidden unqualified cross-plane terms create actionable failures, with allowlisted historical exemptions. |
 | `S-CLI` **S/V** | `WGDR-001`, `WGDR-014`, `WGDR-018`, `WGDR-043`, `DOC-003`, `DOC-005` | Generate public CLI from support contract + reachable dispatch; keyed authored examples; depends on `D-LIFE/D-PRODUCT`. | Parser-only flag cannot appear as supported; every public command has positive/negative release-binary test; internal commands are tagged/hidden. |
 | `S-SCHEMA` **S/V** | `WGDR-003`, `WGDR-019`–`WGDR-023`, `WGDR-033`, `WGDR-037`–`WGDR-039`, terminology rows | Generate lifecycle/status, identity/trust, review/evaluation, ingress and maturity tables from reviewed schemas/contracts. | Adding/changing variant requires disposition; round-trip/schema tests and clean regeneration pass. |
@@ -367,7 +372,8 @@ These packages may run in parallel after `P0-01`; packages touching the same sou
 | Check | Trigger | Failure condition | Rollback/escalation |
 |---|---|---|---|
 | Manifest delta | every PR | new/moved/deleted doc unclassified; duplicate stable ID/path; invalid supersession | block; revert manifest/output together |
-| Product-contract delta | public command/flag, enum, config key, binary, compat constant, safety enforcement or journey change | no claim disposition/owner/evidence lane | block or explicitly mark internal/deferred with approval |
+| Decision-index delta | ADR/decision state or applicability change | acceptance changed without named human approval/receipt; supersession cycle; affected claims undisposed | block; restore prior state or record a new explicit decision |
+| Product-contract delta | public command/flag, enum, config key, binary, compat constant, safety enforcement or journey change | no claim disposition/owner/decision/evidence lane | block or explicitly mark internal/deferred with approval |
 | Regenerate-and-diff | every PR touching source DAG | generated output differs or generator/source revision absent | block; regenerate with pinned tool or revert source |
 | Parser-dispatch-support join | CLI changes | public parser item unreachable/rejected without contract status; dispatch path undocumented | block; add behavior test and generated reference |
 | Evidence selection | tests/CI/smoke/release changes | target/scenario exists but is not selected/classified; required class has zero assertions; skip budget exceeded | block required lane; advisory lane reports loudly |
@@ -461,6 +467,7 @@ The synchronization program is complete only when all of the following hold:
 
 - every `WGDR-001`–`WGDR-049`, `WGDR-T01`–`WGDR-T12`, `WGDR-R01`–`WGDR-R12`, and `WGDR-U01`–`WGDR-U12` has a machine-readable disposition, owner, evidence and successor/decision link;
 - all tracked docs/root Markdown are in the estate manifest or reviewed ignore list; every current/public/safety document has owner and valid revision;
+- every accepted/proposed/superseded decision has section-scoped applicability, named approval evidence, affected claims and migration/rollback in the decision index;
 - every public/safety claim joins accepted policy (where normative), reachable source, behavior evidence class, CI/release selection and generated docs;
 - current command reference has no parser-only supported flag and no unclassified public command;
 - glossary tables distinguish the authority namespaces and maturity states in `WGDR-T01`–`WGDR-T12`;
@@ -483,7 +490,7 @@ P0 owner/baseline/containment
   └── decision queue DEC-01..12
           │
           ├── accepted behavior changes + executable evidence
-          └── S-MANIFEST + S-CONTRACT + S-GLOSSARY
+          └── S-MANIFEST + S-DECISIONS + S-CONTRACT + S-GLOSSARY
                     │
                     ├── S-CLI/S-SCHEMA/S-DAG/S-LINKS/S-EVIDENCE
                     │         │
@@ -511,9 +518,9 @@ P0 owner/baseline/containment
 
 **`[RECOMMENDATION]`** The comprehensive audit synthesis should carry forward these conclusions without presenting them as implemented:
 
-- target authority is a policy/behavior join recorded in a product contract;
-- estate manifest, claim registry and namespaced glossary have separate duties;
-- v3 completion remains current authority pending human decision; review visibility/learning is a proposed ledger/projector architecture, not shipped;
+- target authority is a policy/behavior join recorded in a product contract, with human decision applicability kept in a separate decision index;
+- estate manifest, decision index, claim registry and namespaced glossary have separate duties;
+- v3 candidate/publication completion is the current ordinary-task authority pending human decision, while special-path reachability remains incompletely inventoried; review visibility/learning is a proposed ledger/projector architecture, not shipped;
 - quick factual correction, structural docs work and product/code decisions are separate queues;
 - historical evidence remains immutable and gains applicability/supersession routing;
 - drift prevention relies on declared derivatives and unclassified-delta gates, not timestamps or AI follow-up alone.
@@ -566,6 +573,15 @@ AGENTS.md == CLAUDE.md; no CODEOWNERS-like file found below `.github/`
 smoke entries=324; top-level integration targets=176
 production/pre-existing-doc delta from audit snapshot: none
 ```
+
+**`[VERIFIED]`** The retry audit checked the proposed decision-index path against the pinned planning tree without changing that tree:
+
+```bash
+if git cat-file -e e7e58501ff13be8fccbb71ee4f1bf343bff56fea:docs/decision-index.toml \
+  2>/dev/null; then echo present; exit 1; else echo absent; fi
+```
+
+Result on 2026-08-08: `absent`, exit 0. This verifies path absence only; it does not prove that no prose decision records exist.
 
 **`[VERIFIED]`** Metadata/source-declaration command, same environment, exit 0:
 
