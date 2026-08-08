@@ -5,6 +5,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/_helpers.sh"
 command -v script >/dev/null 2>&1 || loud_skip "MISSING SCRIPT" "script(1) is required"
+command -v strace >/dev/null 2>&1 || loud_skip "MISSING STRACE" "strace is required to prove setup makes no provider/network request"
 
 repo_root="$(cd "$HERE/../../.." && pwd)"
 if [[ -n "${WG_SMOKE_CANDIDATE_BIN:-}" ]]; then
@@ -29,7 +30,7 @@ route='pi:openrouter:test/setup-route-activation'
 
 # Real PTY terminal command from a clean HOME. Fake Pi proves executable discovery
 # is credential-free and that setup does not pretend to perform a provider call.
-cmd="cd '$scratch/project' && env -i HOME='$scratch/home' WG_GLOBAL_DIR='$scratch/home/.wg' XDG_CACHE_HOME='$scratch/home/.cache' USER=test TERM=xterm PATH='$scratch/fake-bin:/usr/bin:/bin' PI_INVOCATION_LOG='$scratch/pi-invocations.log' OPENROUTER_API_KEY='must-not-be-used' HTTP_PROXY='http://127.0.0.1:9' HTTPS_PROXY='http://127.0.0.1:9' ALL_PROXY='http://127.0.0.1:9' NO_PROXY='' '$W' setup --route pi --yes --model '$route'"
+cmd="cd '$scratch/project' && env -i HOME='$scratch/home' WG_GLOBAL_DIR='$scratch/home/.wg' XDG_CACHE_HOME='$scratch/home/.cache' USER=test TERM=xterm PATH='$scratch/fake-bin:/usr/bin:/bin' PI_INVOCATION_LOG='$scratch/pi-invocations.log' OPENROUTER_API_KEY='must-not-be-used' HTTP_PROXY='http://127.0.0.1:9' HTTPS_PROXY='http://127.0.0.1:9' ALL_PROXY='http://127.0.0.1:9' NO_PROXY='' strace -f -qq -e trace=connect -o '$scratch/network.trace' '$W' setup --route pi --yes --model '$route'"
 script -qec "$cmd" "$scratch/setup.typescript" >/dev/null
 
 [[ "$(cat "$scratch/home/.wg/active-profile")" = pi ]] \
@@ -50,6 +51,9 @@ grep -q 'no cross-provider fallback' "$scratch/setup.typescript" \
     || loud_fail "terminal output omitted exact-route/no-fallback boundary"
 [[ ! -s "$scratch/pi-invocations.log" ]] \
     || loud_fail "setup invoked Pi/provider while claiming a bounded preflight: $(cat "$scratch/pi-invocations.log")"
+if grep -Eq 'sa_family=AF_INET6?|sin6?_family=AF_INET6?' "$scratch/network.trace"; then
+    loud_fail "setup made an IP network/provider request during bounded preflight: $(cat "$scratch/network.trace")"
+fi
 
 models=$(env -i HOME="$scratch/home" WG_GLOBAL_DIR="$scratch/home/.wg" USER=test PATH="/usr/bin:/bin" \
     "$W" --dir "$scratch/project/.wg" config --models)

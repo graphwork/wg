@@ -1511,7 +1511,8 @@ fn run_route(args: &SetupArgs) -> Result<()> {
             toml::to_string_pretty(&new_config).map_err(|e| anyhow::anyhow!("serialize: {}", e))?;
         println!("{}", toml_str);
         println!("---");
-        print_pi_setup_preflight(&preflight, None, None);
+        let plugin_status = inspect_setup_pi_plugin();
+        print_pi_setup_preflight(&preflight, None, Some(&plugin_status));
         if matches!(scope, SetupScope::Global | SetupScope::Both) {
             println!(
                 "Apply would activate profile 'pi' for global/both scope; --dry-run changed nothing."
@@ -1552,10 +1553,10 @@ fn run_route(args: &SetupArgs) -> Result<()> {
     }
 
     let plugin_status = ensure_setup_pi_plugin();
-    crate::commands::profile_cmd::trigger_daemon_reload(
+    crate::commands::profile_cmd::trigger_daemon_reload_checked(
         &setup_graph_dir(),
         active_profile.then_some(route.as_name()),
-    );
+    )?;
 
     println!();
     println!("{}", format_delta_summary(&new_config));
@@ -1597,6 +1598,28 @@ fn apply_setup_transaction(
     scope: SetupScope,
     route: SetupRoute,
 ) -> Result<(Vec<PathBuf>, bool)> {
+    apply_setup_transaction_with_profile_io(
+        config,
+        paths,
+        scope,
+        route,
+        named_profile::active,
+        |name| named_profile::set_active(name.as_deref()),
+    )
+}
+
+fn apply_setup_transaction_with_profile_io<ReadActive, WriteActive>(
+    config: &Config,
+    paths: &[PathBuf],
+    scope: SetupScope,
+    route: SetupRoute,
+    mut read_active: ReadActive,
+    mut write_active: WriteActive,
+) -> Result<(Vec<PathBuf>, bool)>
+where
+    ReadActive: FnMut() -> Result<Option<String>>,
+    WriteActive: FnMut(Option<String>) -> Result<()>,
+{
     let snapshots = paths
         .iter()
         .map(|path| {
@@ -1615,7 +1638,7 @@ fn apply_setup_transaction(
         .collect::<Result<Vec<_>>>()?;
     let changes_global_profile = matches!(scope, SetupScope::Global | SetupScope::Both);
     let previous_active = if changes_global_profile {
-        named_profile::active()?
+        read_active()?
     } else {
         None
     };
@@ -1628,7 +1651,7 @@ fn apply_setup_transaction(
             save_config_at(config, path)?;
         }
         if changes_global_profile {
-            named_profile::set_active(Some(route.as_name()))?;
+            write_active(Some(route.as_name().to_string()))?;
             Ok(true)
         } else {
             Ok(false)
@@ -1655,9 +1678,7 @@ fn apply_setup_transaction(
                     rollback_errors.push(restore_error.to_string());
                 }
             }
-            if changes_global_profile
-                && let Err(restore_error) = named_profile::set_active(previous_active.as_deref())
-            {
+            if changes_global_profile && let Err(restore_error) = write_active(previous_active) {
                 rollback_errors.push(format!("restore active-profile: {restore_error}"));
             }
             if rollback_errors.is_empty() {
@@ -2119,10 +2140,10 @@ pub fn run() -> Result<()> {
     )?;
 
     record_setup_history(&choices, "cli");
-    crate::commands::profile_cmd::trigger_daemon_reload(
+    crate::commands::profile_cmd::trigger_daemon_reload_checked(
         &setup_graph_dir(),
         active_profile.then_some(route.as_name()),
-    );
+    )?;
 
     // Post-save: guide skill/bundle installation based on executor
     println!();
@@ -4666,6 +4687,45 @@ mod tests {
 
         assert!(error.to_string().contains("rolled back"), "{error:#}");
         assert_eq!(std::fs::read(&first).unwrap(), b"original\n");
+    }
+
+    #[test]
+    fn test_setup_transaction_restores_global_profile_after_activation_failure() {
+        use std::cell::{Cell, RefCell};
+        use std::rc::Rc;
+
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+        std::fs::write(&config_path, b"original\n").unwrap();
+        let config = config_for_route(SetupRoute::Pi, RouteParams::default());
+        let active = Rc::new(RefCell::new(Some("codex".to_string())));
+        let write_calls = Rc::new(Cell::new(0usize));
+        let read_state = Rc::clone(&active);
+        let write_state = Rc::clone(&active);
+        let write_count = Rc::clone(&write_calls);
+
+        let error = apply_setup_transaction_with_profile_io(
+            &config,
+            std::slice::from_ref(&config_path),
+            SetupScope::Global,
+            SetupRoute::Pi,
+            move || Ok(read_state.borrow().clone()),
+            move |name| {
+                *write_state.borrow_mut() = name;
+                let call = write_count.get();
+                write_count.set(call + 1);
+                if call == 0 {
+                    anyhow::bail!("injected active-profile write failure");
+                }
+                Ok(())
+            },
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("rolled back"), "{error:#}");
+        assert_eq!(std::fs::read(&config_path).unwrap(), b"original\n");
+        assert_eq!(active.borrow().as_deref(), Some("codex"));
+        assert_eq!(write_calls.get(), 2, "activation + rollback restore");
     }
 
     // ── run_route writes only the requested scope ────────────────────

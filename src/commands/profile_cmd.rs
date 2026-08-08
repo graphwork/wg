@@ -1192,8 +1192,11 @@ pub fn use_profile(dir: &Path, name: Option<&str>, no_reload: bool, clear: bool)
     Ok(())
 }
 
-/// Send a Reconfigure IPC to the running daemon (if any), or silently continue.
-pub(crate) fn trigger_daemon_reload(dir: &Path, profile_name: Option<&str>) {
+/// Send a Reconfigure IPC to the running daemon (if any). Setup uses this
+/// checked form so it cannot claim runtime readiness while a live daemon still
+/// has the previous route. Profile-management commands retain their historical
+/// best-effort wrapper below.
+pub(crate) fn trigger_daemon_reload_checked(dir: &Path, profile_name: Option<&str>) -> Result<()> {
     use crate::commands::service::ipc::IpcRequest;
     use crate::commands::service::{self, ServiceState};
     use worksgood::service::is_process_alive;
@@ -1205,7 +1208,7 @@ pub(crate) fn trigger_daemon_reload(dir: &Path, profile_name: Option<&str>) {
 
     if !running {
         println!("  (Daemon not running — profile applies on next wg service start)");
-        return;
+        return Ok(());
     }
 
     let req = IpcRequest::Reconfigure {
@@ -1219,19 +1222,22 @@ pub(crate) fn trigger_daemon_reload(dir: &Path, profile_name: Option<&str>) {
     match service::send_request(dir, &req) {
         Ok(resp) if resp.ok => {
             println!("  Daemon reloaded — next worker will use the new profile.");
+            Ok(())
         }
-        Ok(resp) => {
-            eprintln!(
-                "  Warning: daemon reconfigure returned error: {}",
-                resp.error.unwrap_or_default()
-            );
-        }
-        Err(e) => {
-            eprintln!(
-                "  Warning: could not reach daemon: {}. Profile will apply on next start.",
-                e
-            );
-        }
+        Ok(resp) => anyhow::bail!(
+            "daemon reconfigure returned error: {}. On-disk setup is active, but the running daemon was not reloaded; run `wg service reload`.",
+            resp.error.unwrap_or_default()
+        ),
+        Err(error) => Err(error).context(
+            "could not reload the running daemon; on-disk setup is active, but runtime activation is incomplete. Run `wg service reload`",
+        ),
+    }
+}
+
+/// Historical best-effort reload used by profile editing commands.
+pub(crate) fn trigger_daemon_reload(dir: &Path, profile_name: Option<&str>) {
+    if let Err(error) = trigger_daemon_reload_checked(dir, profile_name) {
+        eprintln!("  Warning: {error:#}");
     }
 }
 

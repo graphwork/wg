@@ -63,12 +63,13 @@ already used by `worksgood setup --model ...`.
 - `cargo build` — pass
 - `cargo clippy` — pass (existing warnings)
 - `cargo test --test integration_setup_routes` — 13 pass, 11 retired tests ignored
-- setup scope/rollback unit filters — 4 pass
+- setup scope/rollback unit filters — 5 pass, including injected global
+  active-profile failure and restoration of both prior config/profile state
 - `integration_pi_two_tier_profile` + `integration_profile_tier_pinning` — 12 pass
 - `tests/smoke/scenarios/setup_route_activation_preflight.sh` — pass using a real
   PTY, isolated homes/projects, fake Pi, absent-Pi fixtures, a trap provider key,
-  and deliberately unreachable HTTP/HTTPS/ALL proxy settings; setup never invokes
-  Pi and succeeds without any provider/model request
+  deliberately unreachable HTTP/HTTPS/ALL proxy settings, and `strace` connect
+  tracing; setup never invokes Pi and produces no IPv4/IPv6 provider connection
 
 A full repository `cargo test` run reached more than 3,100 passing library tests
 but remains non-green because unrelated tests share and race process-global
