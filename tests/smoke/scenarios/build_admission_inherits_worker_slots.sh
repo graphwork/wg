@@ -155,6 +155,8 @@ c=json.loads(sys.argv[1])['coordinator']
 assert c['max_agents']==5,c
 assert c['max_build_agents']==5,c
 assert c['max_build_agents_source']=='inherited-from-max-agents',c
+assert c['admission_deferred_tasks']==0,c
+assert c.get('admission_deferred',[])==[],c
 PY
 
 echo "PASS: fresh generators omit the cap; inherited/explicit/stopped-state capacities are current; exact inheritance remediation works"

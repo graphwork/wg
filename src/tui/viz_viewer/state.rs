@@ -5625,6 +5625,47 @@ impl Default for ServiceHealthState {
     }
 }
 
+impl ServiceHealthState {
+    fn reset_admission_for_unavailable_service(&mut self, workgraph_dir: &Path) {
+        let config = Config::load_or_default(workgraph_dir);
+        self.agents_max = config.coordinator.max_agents;
+        self.build_heavy_active = 0;
+        self.max_build_agents = config.coordinator.effective_max_build_agents();
+        self.max_build_agents_source = config.coordinator.max_build_agents_source().to_string();
+        self.max_build_agents_remediation_command =
+            worksgood::config::max_build_agents_remediation_command(workgraph_dir);
+        self.disk_sentinel_enabled = config.coordinator.resource_management.disk_sentinel_enabled;
+        self.admission_deferred.clear();
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn unavailable_service_clears_admission_and_reloads_capacity() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join(".wg");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("config.toml"),
+        "[dispatcher]\nmax_agents = 5\n[dispatcher.resource_management]\ndisk_sentinel_enabled = false\n",
+    )
+    .unwrap();
+
+    let mut health = ServiceHealthState::default();
+    health.max_build_agents = 99;
+    health.disk_sentinel_enabled = true;
+    health.admission_deferred = vec![crate::commands::service::AdmissionDeferredTask {
+        task_id: "stale".to_string(),
+        reason: "stale".to_string(),
+    }];
+    health.reset_admission_for_unavailable_service(&dir);
+
+    assert_eq!(health.agents_max, 5);
+    assert_eq!(health.max_build_agents, 5);
+    assert!(!health.disk_sentinel_enabled);
+    assert!(health.admission_deferred.is_empty());
+}
+
 // Time counters
 pub struct TimeCounters {
     pub service_uptime_secs: Option<u64>,
@@ -8582,6 +8623,10 @@ pub struct HudDetail {
 }
 
 fn admission_waiting_reason(workgraph_dir: &Path, task_id: &str) -> Option<String> {
+    let service = crate::commands::service::ServiceState::load(workgraph_dir)
+        .ok()
+        .flatten()?;
+    crate::commands::is_process_alive(service.pid).then_some(())?;
     crate::commands::service::CoordinatorState::load_for(workgraph_dir, 0)?
         .admission_deferred
         .into_iter()
@@ -18997,8 +19042,8 @@ impl VizApp {
             self.service_health.uptime_secs = None;
             self.service_health.agents_alive = 0;
             self.service_health.agents_total = 0;
-            self.service_health.build_heavy_active = 0;
-            self.service_health.admission_deferred.clear();
+            self.service_health
+                .reset_admission_for_unavailable_service(dir);
             self.service_health.paused = false;
             self.service_health.stuck_tasks.clear();
             self.service_health.recent_errors.clear();
@@ -19014,6 +19059,8 @@ impl VizApp {
             self.service_health.socket_path = Some(state.socket_path);
             self.service_health.uptime = None;
             self.service_health.uptime_secs = None;
+            self.service_health
+                .reset_admission_for_unavailable_service(dir);
             self.service_health.last_poll = Instant::now();
             return;
         }

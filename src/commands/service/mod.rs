@@ -4261,6 +4261,12 @@ fn run_stop_inner(dir: &Path, force: bool, kill_agents: bool, json: bool) -> Res
         let _ = fs::remove_file(&chat_socket);
     }
     ServiceState::remove(dir)?;
+    if let Some(mut coordinator) = CoordinatorState::load_for(dir, 0) {
+        coordinator.admission_deferred_tasks = 0;
+        coordinator.admission_deferred_reason = None;
+        coordinator.admission_deferred.clear();
+        coordinator.save_for(dir, 0);
+    }
 
     // Scan for orphan daemon processes that may have been left behind by
     // previous start/stop cycles where the state file was removed but the

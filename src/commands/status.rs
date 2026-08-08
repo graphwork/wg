@@ -420,6 +420,15 @@ fn gather_coordinator_info(dir: &Path) -> CoordinatorInfo {
         let (reasoning, worker_reasoning, agency_reasoning) = configured_reasoning();
         let (eval_gate_applicability, evaluator_threshold, flip_gate_policy, flip_threshold) =
             configured_gate_info(&config);
+        let admission_authoritative = crate::commands::service::ServiceState::load(dir)
+            .ok()
+            .flatten()
+            .is_some_and(|state| crate::commands::is_process_alive(state.pid));
+        let (admission_deferred_tasks, admission_deferred) = if admission_authoritative {
+            (coord.admission_deferred_tasks, coord.admission_deferred)
+        } else {
+            (0, Vec::new())
+        };
         return CoordinatorInfo {
             max_agents: config.coordinator.max_agents,
             build_heavy_active,
@@ -428,8 +437,8 @@ fn gather_coordinator_info(dir: &Path) -> CoordinatorInfo {
             max_build_agents_remediation_command:
                 worksgood::config::max_build_agents_remediation_command(dir),
             disk_sentinel_enabled: config.coordinator.resource_management.disk_sentinel_enabled,
-            admission_deferred_tasks: coord.admission_deferred_tasks,
-            admission_deferred: coord.admission_deferred,
+            admission_deferred_tasks,
+            admission_deferred,
             executor,
             model: coord.model,
             reasoning,
