@@ -56,6 +56,32 @@ The phases intentionally separate **F** factual synchronization, **D** human dec
 | acceptance and rollback/archive policy | §§5.2–5.3 |
 | uncertainty and resolved safeguards | §4.3 |
 
+### 1.1 One-page execution control board
+
+**`[RECOMMENDATION]`** Use this board to operate the program; the later sections provide evidence, exact trace allocations, and rollback detail. Nothing in the board is implemented by this audit.
+
+| Control plane | Canonical target | First accountable action | Release acceptance |
+|---|---|---|---|
+| Authority | scope/question first; accepted human decision for intended policy; executed exact-candidate behavior for current behavior; product contract joins them without hiding disagreement | Product council names approvers and opens `DEC-01`–`DEC-12` | no public/safety claim is `current` without applicable decision (where normative), reachable source, selected evidence, owner and docs |
+| Estate/navigation | `docs/manifest.toml` owns completeness; generated routers own audience selection | Documentation steward classifies every tracked doc/root Markdown path or explicit ignore | orphan/move/delete/duplicate-ID fixtures fail; compatibility paths and owners resolve |
+| Decisions | `docs/decision-index.toml` owns section-scoped acceptance/applicability and human receipts | Product/security/domain approvers classify proposed, accepted, rejected, superseded and decision-required material | no generator, test or document-status edit can self-ratify policy |
+| Claims/support | `docs/product-contract.toml` joins scoped claim, decision, implementation, evidence, audience/support and rollback | Domain owners register high-impact `WGDR` claims first | parser-only, unselected, skipped, broken and deferred surfaces cannot render as supported |
+| Vocabulary | `docs/glossary.toml` owns qualified terms, aliases and “not the same as” relations | Owners adjudicate `WGDR-T01`–`WGDR-T12` through `DEC-11` | cross-plane reference is generated/linted; historical text is exempted, not rewritten |
+| Evidence | generated result index distinguishes pass/fail/skip/inspected/not-selected by exact revision/artifact/environment | Test/release owner captures `P0-04` baseline | required lanes cannot pass with zero assertions; real journey/security negatives are selected |
+| Current guidance | four journeys, conceptual spine, generated reference and rollback-aware runbooks | Factual packages `F-ENTRY/LIFE/MODEL/AGENCY/SEC/EVIDENCE` correct dangerous claims without choosing policy | release-binary human flows and scoped limitation matrices agree with the contract |
+| History/archive | manifest retention plus immutable bundle applicability/supersession indexes | Evidence/docs owners index bundles before any physical move | body hashes unchanged; append-only errata; stable lookup/replacement or explicit none |
+
+**`[RECOMMENDATION]` Release train and dependency fence:**
+
+1. **Contain (Phase 0):** freeze the register, name owners, label dangerous claims `broken/partial/decision-required`, and record honest evidence classes.
+2. **Correct (Phase 1):** land domain-scoped factual edits only; no moves, broad rewrites, historical body edits, or disguised behavior choices.
+3. **Decide and implement (Phase 2):** humans resolve product/security/lifecycle semantics; code/help/tests/docs then move together, while unresolved rows remain visible.
+4. **Build contracts (Phase 3):** establish estate, decision, claim, glossary, generator, link and evidence schemas; warning-only import precedes blocking enforcement.
+5. **Migrate (Phases 4–5):** rewrite supported journeys/reference/runbooks, add destinations and compatibility stubs, then index/archive immutable evidence.
+6. **Prevent recurrence (Phase 6):** after one clean warning-only release, block unclassified docs/surfaces/decisions/tests/generated deltas and stale public claims.
+
+**`[RECOMMENDATION]` Non-negotiable close and rollback fence:** every `WGDR-001`–`WGDR-049`, `WGDR-T01`–`WGDR-T12`, `WGDR-R01`–`WGDR-R12`, and `WGDR-U01`–`WGDR-U12` gets an owner, disposition, evidence class and successor/decision link. **F** copy may close while **D/I** remains open; a decision may close while implementation remains deferred. Current public/safety changes land with their contract/evidence disposition. Moves retain compatibility for at least one release by default; generator rollback restores tool plus outputs; historical corrections are sidecar errata; uncertainty never becomes pass by prose.
+
 ## 2. Scope, authority map, and target document architecture
 
 ### 2.1 Scope and method
