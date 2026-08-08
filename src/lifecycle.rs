@@ -519,6 +519,14 @@ impl LifecycleEvent {
         task.lifecycle.pi_continuation = self.projection.pi_continuation.clone();
         task.lifecycle.pi_terminal_reservation = self.projection.pi_terminal_reservation.clone();
         task.lifecycle.reopen_intent = self.projection.reopen_intent.clone();
+        if self.event_kind == "attempt-reserved" {
+            // Runtime accounting is attempt-scoped. A retry must not inherit
+            // the previous attempt's route or usage and block the terminal
+            // successful attempt from becoming authoritative.
+            task.token_usage = None;
+            task.actual_executor = None;
+            task.actual_model = None;
+        }
         if let Some(accounting) = self.projection.terminal_accounting.as_ref() {
             if accounting.usage_present {
                 task.token_usage = Some(crate::graph::TokenUsage {

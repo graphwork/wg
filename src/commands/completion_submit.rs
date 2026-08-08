@@ -425,13 +425,13 @@ fn select_candidate(
             return false;
         }
         task.completion_candidate = Some(candidate);
-        if task.token_usage.is_none() {
+        if source_accounting.usage.is_some() {
             task.token_usage.clone_from(&source_accounting.usage);
         }
-        if task.actual_executor.is_none() {
+        if source_accounting.executor.is_some() {
             task.actual_executor.clone_from(&source_accounting.executor);
         }
-        if task.actual_model.is_none() {
+        if source_accounting.model.is_some() {
             task.actual_model.clone_from(&source_accounting.model);
         }
         task.completion_disposition = None;

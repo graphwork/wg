@@ -274,15 +274,13 @@ fn run_inner(
         });
 
         // Apply pre-resolved token usage
-        if task.token_usage.is_none()
-            && let Some(ref usage) = token_usage
-        {
+        if let Some(ref usage) = token_usage {
             task.token_usage = Some(usage.clone());
         }
-        if task.actual_executor.is_none() {
+        if actual_executor.is_some() {
             task.actual_executor.clone_from(&actual_executor);
         }
-        if task.actual_model.is_none() {
+        if route.is_some() {
             task.actual_model.clone_from(&route);
         }
 

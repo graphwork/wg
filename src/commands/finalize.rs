@@ -93,13 +93,13 @@ fn terminal_accounting_evidence(task: &Task) -> Option<TerminalAccountingEvidenc
 }
 
 fn apply_completion_accounting(task: &mut Task, accounting: &CompletionAccounting) {
-    if task.token_usage.is_none() {
+    if accounting.token_usage.is_some() {
         task.token_usage.clone_from(&accounting.token_usage);
     }
-    if task.actual_executor.is_none() {
+    if accounting.actual_executor.is_some() {
         task.actual_executor.clone_from(&accounting.actual_executor);
     }
-    if task.actual_model.is_none() {
+    if accounting.actual_model.is_some() {
         task.actual_model.clone_from(&accounting.actual_model);
     }
 }
@@ -3013,6 +3013,67 @@ mod atomic_terminal_tests {
         assert_eq!(
             task.actual_model.as_deref(),
             Some("openrouter:test/pi-model")
+        );
+    }
+
+    #[test]
+    fn successful_retry_replaces_failed_attempt_accounting_and_route() {
+        let (_root, dir) = setup(Status::Open);
+        let agent_dir = dir.join("agents/agent-1");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        std::fs::write(agent_dir.join("output.log"), "").unwrap();
+        std::fs::write(
+            agent_dir.join("raw_stream.jsonl"),
+            "{\"type\":\"turn_end\",\"message\":{\"usage\":{\"input\":9,\"output\":4,\"cacheRead\":2,\"cacheWrite\":1,\"cost\":{\"total\":0.03}}}}\n",
+        )
+        .unwrap();
+        let mut registry = AgentRegistry::new();
+        let agent = registry.register_agent_with_model(
+            std::process::id(),
+            "terminal",
+            "pi",
+            agent_dir.join("output.log").to_str().unwrap(),
+            Some("openrouter:new/success-route"),
+        );
+        registry.save(&dir).unwrap();
+        modify_graph(dir.join("graph.jsonl"), |graph| {
+            let task = graph.get_task_mut("terminal").unwrap();
+            task.token_usage = Some(TokenUsage {
+                cost_usd: 99.0,
+                input_tokens: 999,
+                output_tokens: 999,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
+            });
+            task.actual_executor = Some("claude".into());
+            task.actual_model = Some("claude:old-failed-route".into());
+            let request = TransitionRequest::new(
+                TransitionKind::AttemptReserved {
+                    owner_id: Some(agent.clone()),
+                },
+                LifecycleActor {
+                    kind: worksgood::lifecycle::ActorKind::Dispatcher,
+                    id: "retry-test".into(),
+                },
+                "retry",
+                "retry-accounting-clear",
+            );
+            apply_transition(task, request).unwrap();
+            task.assigned = Some(agent.clone());
+            true
+        })
+        .unwrap();
+
+        commit_terminal_success(&dir, "terminal", Some(&agent), "retry-success").unwrap();
+        let graph = load_graph(dir.join("graph.jsonl")).unwrap();
+        let task = graph.get_task("terminal").unwrap();
+        let usage = task.token_usage.as_ref().unwrap();
+        assert_eq!((usage.input_tokens, usage.output_tokens), (9, 4));
+        assert_eq!(usage.cost_usd, 0.03);
+        assert_eq!(task.actual_executor.as_deref(), Some("pi"));
+        assert_eq!(
+            task.actual_model.as_deref(),
+            Some("openrouter:new/success-route")
         );
     }
 

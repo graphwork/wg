@@ -123,6 +123,69 @@ pub struct CompletionReviewActivity {
     pub created_at: String,
 }
 
+fn legacy_attempt_is_projected(
+    activity_ids: &std::collections::HashSet<&str>,
+    attempt_id: &str,
+    response_digest: Option<&str>,
+    consumed_is_projected: bool,
+    index: usize,
+    last_success: Option<usize>,
+) -> bool {
+    activity_ids.contains(attempt_id)
+        || response_digest.is_some_and(|id| activity_ids.contains(id))
+        || (consumed_is_projected && Some(index) == last_success)
+}
+
+/// Return historical evaluation records that are not already represented by a
+/// content-bound completion-review activity. Mixed-version tasks keep older
+/// attempts; only exact stable-ID aliases are removed.
+pub fn unprojected_legacy_evaluation_records(
+    task: &crate::graph::Task,
+) -> Vec<crate::evaluation::EvaluationRecord> {
+    let activity_ids = task
+        .completion_review_activity
+        .iter()
+        .map(|activity| activity.activity_id.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    task.evaluation_records
+        .iter()
+        .filter_map(|record| {
+            let consumed_is_projected = record
+                .consumed_verdict_id
+                .as_deref()
+                .is_some_and(|id| activity_ids.contains(id));
+            if record.attempts.is_empty() {
+                return (!consumed_is_projected).then(|| record.clone());
+            }
+            let last_success = record
+                .attempts
+                .iter()
+                .rposition(|attempt| attempt.failure.is_none());
+            let mut retained = record.clone();
+            retained.attempts = record
+                .attempts
+                .iter()
+                .enumerate()
+                .filter(|(index, attempt)| {
+                    !legacy_attempt_is_projected(
+                        &activity_ids,
+                        &attempt.attempt_id,
+                        attempt.response_digest.as_deref(),
+                        consumed_is_projected,
+                        *index,
+                        last_success,
+                    )
+                })
+                .map(|(_, attempt)| attempt.clone())
+                .collect();
+            if consumed_is_projected {
+                retained.consumed_verdict_id = None;
+            }
+            (!retained.attempts.is_empty()).then_some(retained)
+        })
+        .collect()
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct ReviewReceipt {
     pub receipt_version: u32,
@@ -466,4 +529,40 @@ fn normalize_findings(findings: Vec<ReviewFinding>) -> Vec<ReviewFinding> {
 
 fn bounded(value: &str, limit: usize) -> String {
     value.chars().take(limit).collect()
+}
+
+#[cfg(test)]
+mod projection_tests {
+    use super::*;
+
+    #[test]
+    fn mixed_version_projection_deduplicates_only_stable_aliases() {
+        let activity_ids = ["receipt-new"]
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>();
+        assert!(!legacy_attempt_is_projected(
+            &activity_ids,
+            "old-failed-attempt",
+            None,
+            true,
+            0,
+            Some(1),
+        ));
+        assert!(legacy_attempt_is_projected(
+            &activity_ids,
+            "final-attempt",
+            None,
+            true,
+            1,
+            Some(1),
+        ));
+        assert!(legacy_attempt_is_projected(
+            &activity_ids,
+            "other-attempt",
+            Some("receipt-new"),
+            false,
+            0,
+            None,
+        ));
+    }
 }

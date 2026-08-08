@@ -320,13 +320,13 @@ fn commit_done(
         }
         task.completion_disposition = Some(disposition);
         task.completion_receipt = Some(receipt_digest.to_string());
-        if task.token_usage.is_none() {
+        if accounting.usage.is_some() {
             task.token_usage.clone_from(&accounting.usage);
         }
-        if task.actual_executor.is_none() {
+        if accounting.executor.is_some() {
             task.actual_executor.clone_from(&accounting.executor);
         }
-        if task.actual_model.is_none() {
+        if accounting.model.is_some() {
             task.actual_model.clone_from(&accounting.model);
         }
         task.completed_at = Some(completed_at.to_string());

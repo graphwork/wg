@@ -134,36 +134,36 @@ pub fn run(
                         "created_at": activity.created_at,
                     }));
                 }
-                if task.completion_review_activity.is_empty() {
-                    for record in &task.evaluation_records {
-                        if record.attempts.is_empty() {
+                let legacy_records =
+                    worksgood::completion_review::unprojected_legacy_evaluation_records(task);
+                for record in &legacy_records {
+                    if record.attempts.is_empty() {
+                        output.push(serde_json::json!({
+                            "kind": "evaluation-lane-activity",
+                            "virtual": true,
+                            "graph_task": false,
+                            "source_task": task.id,
+                            "id": format!(".review-{}-{}", task.id, record.evaluation_id),
+                            "product": record.product,
+                            "state": record.state,
+                            "route": record.route,
+                            "receipt": record.consumed_verdict_id,
+                            "created_at": record.created_at,
+                        }));
+                    } else {
+                        for attempt in &record.attempts {
                             output.push(serde_json::json!({
                                 "kind": "evaluation-lane-activity",
                                 "virtual": true,
                                 "graph_task": false,
                                 "source_task": task.id,
-                                "id": format!(".review-{}-{}", task.id, record.evaluation_id),
+                                "id": format!(".review-{}-{}", task.id, attempt.attempt_id),
                                 "product": record.product,
                                 "state": record.state,
-                                "route": record.route,
+                                "attempt": attempt,
                                 "receipt": record.consumed_verdict_id,
-                                "created_at": record.created_at,
+                                "created_at": attempt.started_at,
                             }));
-                        } else {
-                            for attempt in &record.attempts {
-                                output.push(serde_json::json!({
-                                    "kind": "evaluation-lane-activity",
-                                    "virtual": true,
-                                    "graph_task": false,
-                                    "source_task": task.id,
-                                    "id": format!(".review-{}-{}", task.id, attempt.attempt_id),
-                                    "product": record.product,
-                                    "state": record.state,
-                                    "attempt": attempt,
-                                    "receipt": record.consumed_verdict_id,
-                                    "created_at": attempt.started_at,
-                                }));
-                            }
                         }
                     }
                 }
@@ -261,42 +261,42 @@ pub fn run(
                         usage
                     );
                 }
-                if task.completion_review_activity.is_empty() {
-                    for record in &task.evaluation_records {
-                        if record.attempts.is_empty() {
-                            println!(
-                                "[R] .review-{}-{} - {} {:?} receipt={} (not started)",
-                                task.id,
-                                record.evaluation_id,
-                                record.product.label(),
-                                record.state,
-                                record.consumed_verdict_id.as_deref().unwrap_or("pending")
-                            );
-                        }
-                        for attempt in &record.attempts {
-                            let usage = attempt.usage.as_ref().map_or_else(String::new, |usage| {
-                                format!(
-                                    " usage={}in/{}out cost=${:.6}",
-                                    usage.input_tokens, usage.output_tokens, usage.cost_usd
-                                )
-                            });
-                            let outcome = if let Some(failure) = attempt.failure.as_ref() {
-                                format!("failure={}", failure.code)
-                            } else {
-                                format!("state={:?}", record.state)
-                            };
-                            println!(
-                                "[R] .review-{}-{} - {} {} receipt={} route={} executor={}{}",
-                                task.id,
-                                attempt.attempt_id,
-                                record.product.label(),
-                                outcome,
-                                record.consumed_verdict_id.as_deref().unwrap_or("pending"),
-                                attempt.exact_route,
-                                attempt.executor,
-                                usage
-                            );
-                        }
+                let legacy_records =
+                    worksgood::completion_review::unprojected_legacy_evaluation_records(task);
+                for record in &legacy_records {
+                    if record.attempts.is_empty() {
+                        println!(
+                            "[R] .review-{}-{} - {} {:?} receipt={} (not started)",
+                            task.id,
+                            record.evaluation_id,
+                            record.product.label(),
+                            record.state,
+                            record.consumed_verdict_id.as_deref().unwrap_or("pending")
+                        );
+                    }
+                    for attempt in &record.attempts {
+                        let usage = attempt.usage.as_ref().map_or_else(String::new, |usage| {
+                            format!(
+                                " usage={}in/{}out cost=${:.6}",
+                                usage.input_tokens, usage.output_tokens, usage.cost_usd
+                            )
+                        });
+                        let outcome = if let Some(failure) = attempt.failure.as_ref() {
+                            format!("failure={}", failure.code)
+                        } else {
+                            format!("state={:?}", record.state)
+                        };
+                        println!(
+                            "[R] .review-{}-{} - {} {} receipt={} route={} executor={}{}",
+                            task.id,
+                            attempt.attempt_id,
+                            record.product.label(),
+                            outcome,
+                            record.consumed_verdict_id.as_deref().unwrap_or("pending"),
+                            attempt.exact_route,
+                            attempt.executor,
+                            usage
+                        );
                     }
                 }
             }
