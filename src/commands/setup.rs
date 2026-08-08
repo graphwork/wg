@@ -1370,7 +1370,7 @@ fn prompt_secret_backend(default_backend: &Backend) -> Result<Option<String>> {
 }
 
 /// Run the setup wizard, dispatching to interactive or non-interactive mode.
-pub fn run_with_args(args: &SetupArgs, workgraph_dir: &Path) -> Result<()> {
+pub fn run_with_args(args: &SetupArgs) -> Result<()> {
     if args.repair_guides {
         repair_agent_guides()?;
         return Ok(());
@@ -1384,7 +1384,7 @@ pub fn run_with_args(args: &SetupArgs, workgraph_dir: &Path) -> Result<()> {
             let route = "pi";
             let mut routed = args.clone();
             routed.route = Some(route.to_string());
-            return run_route(&routed, workgraph_dir);
+            return run_route(&routed);
         }
         bail!(
             "non-interactive setup requires Pi. Use `wg setup --route pi --yes --model pi:<provider>:<model>`; Pi owns login and model discovery."
@@ -1392,19 +1392,19 @@ pub fn run_with_args(args: &SetupArgs, workgraph_dir: &Path) -> Result<()> {
     }
 
     if args.route.is_some() || (args.yes && args.resolved_route().is_some()) || args.dry_run {
-        return run_route(args, workgraph_dir);
+        return run_route(args);
     }
     if args.provider.is_some() {
         return run_non_interactive(args);
     }
-    run(workgraph_dir)
+    run()
 }
 
 /// Non-interactive route-driven setup: writes complete Pi defaults. Used by:
 ///
 /// - `wg setup --route <name> --yes`
 /// - `wg setup --route <name> --dry-run` (prints, does not write)
-fn run_route(args: &SetupArgs, workgraph_dir: &Path) -> Result<()> {
+fn run_route(args: &SetupArgs) -> Result<()> {
     let route = args.resolved_route().ok_or_else(|| {
         anyhow::anyhow!("--route is required for non-interactive setup. The supported route is: pi")
     })?;
@@ -1477,7 +1477,9 @@ fn run_route(args: &SetupArgs, workgraph_dir: &Path) -> Result<()> {
     new_config.validate_pi_model_plane()?;
 
     let global_path = Config::global_config_path()?;
-    let local_path = workgraph_dir.join("config.toml");
+    let local_path = std::env::current_dir()
+        .map(|p| p.join(".wg").join("config.toml"))
+        .unwrap_or_else(|_| PathBuf::from(".wg/config.toml"));
 
     if args.dry_run {
         println!(
@@ -1555,7 +1557,7 @@ fn run_route(args: &SetupArgs, workgraph_dir: &Path) -> Result<()> {
     let active_profile = activate_setup_profile(scope, route)?;
     let plugin_status = inspect_setup_pi_plugin();
     crate::commands::profile_cmd::trigger_daemon_reload(
-        workgraph_dir,
+        &setup_graph_dir(),
         active_profile.then_some(route.as_name()),
     );
 
@@ -1775,7 +1777,7 @@ fn backup_global_config(global_path: &Path) -> Result<PathBuf> {
 }
 
 /// Run the interactive setup wizard.
-pub fn run(workgraph_dir: &Path) -> Result<()> {
+pub fn run() -> Result<()> {
     if !std::io::stdin().is_terminal() {
         bail!(
             "wg setup requires an interactive terminal. Use --provider for non-interactive mode."
@@ -1783,7 +1785,9 @@ pub fn run(workgraph_dir: &Path) -> Result<()> {
     }
 
     let global_path = Config::global_config_path()?;
-    let local_path = workgraph_dir.join("config.toml");
+    let local_path = std::env::current_dir()
+        .map(|p| p.join(".wg").join("config.toml"))
+        .unwrap_or_else(|_| PathBuf::from(".wg/config.toml"));
 
     let existing_global = Config::load_global()?.unwrap_or_default();
     let existing_local = load_config_at(&local_path).unwrap_or_default();
@@ -2036,7 +2040,7 @@ pub fn run(workgraph_dir: &Path) -> Result<()> {
     record_setup_history(&choices, "cli");
     let active_profile = activate_setup_profile(scope, route)?;
     crate::commands::profile_cmd::trigger_daemon_reload(
-        workgraph_dir,
+        &setup_graph_dir(),
         active_profile.then_some(route.as_name()),
     );
 
@@ -4595,11 +4599,10 @@ mod tests {
             yes: true,
             ..Default::default()
         };
-        let workgraph_dir = work_dir.join(".wg");
-        let result = run_route(&args, &workgraph_dir);
+        let result = run_route(&args);
 
         let global_path = fake_home.join(".wg").join("config.toml");
-        let local_path = workgraph_dir.join("config.toml");
+        let local_path = work_dir.join(".wg").join("config.toml");
 
         // Restore env before any assertions to avoid leaking on panic.
         if let Some(h) = saved_home {
@@ -4641,11 +4644,10 @@ mod tests {
             yes: true,
             ..Default::default()
         };
-        let workgraph_dir = work_dir.join(".wg");
-        let result = run_route(&args, &workgraph_dir);
+        let result = run_route(&args);
 
         let global_path = fake_home.join(".wg").join("config.toml");
-        let local_path = workgraph_dir.join("config.toml");
+        let local_path = work_dir.join(".wg").join("config.toml");
 
         if let Some(h) = saved_home {
             unsafe { std::env::set_var("HOME", h) };
@@ -4682,11 +4684,10 @@ mod tests {
             yes: true,
             ..Default::default()
         };
-        let workgraph_dir = work_dir.join(".wg");
-        let result = run_route(&args, &workgraph_dir);
+        let result = run_route(&args);
 
         let global_path = fake_home.join(".wg").join("config.toml");
-        let local_path = workgraph_dir.join("config.toml");
+        let local_path = work_dir.join(".wg").join("config.toml");
 
         if let Some(h) = saved_home {
             unsafe { std::env::set_var("HOME", h) };
