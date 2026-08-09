@@ -43,10 +43,25 @@ fn legacy_completion_mutators_are_unreachable_from_the_cli() {
         &["merge-resolution", "retry", "task"],
         "legacy merge-resolution mutation is retired",
     );
-    retired(
-        &["evaluate", "run", "task"],
-        "legacy evaluation mutation is retired",
+    // Scored evaluation is restored only as a task-centric observer. An
+    // invalid/non-terminal source is refused at the eligibility boundary; it
+    // does not regain any of the evaluator lifecycle mutation surface.
+    let root = tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join(".wg")).unwrap();
+    std::fs::write(root.path().join(".wg/graph.jsonl"), b"").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_wg"))
+        .args(["evaluate", "run", "task"])
+        .current_dir(root.path())
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("failed scored-evaluation eligibility"),
+        "{stderr}"
     );
+    assert!(!stderr.contains("legacy evaluation mutation is retired"));
+
     retired(
         &["fail", "task", "--eval-reject"],
         "legacy evaluation rejection is retired",

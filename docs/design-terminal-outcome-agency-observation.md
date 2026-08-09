@@ -92,23 +92,28 @@ independent-ground-truth, assignment-reward, and reviewer-calibration fields.
 Completion FLIP/eval verdicts are evidence; they are **not** converted into
 Agency `Evaluation.score` values.
 
-The existing manual `wg evaluate <task>` and `wg evaluate record` surfaces
-remain the only score-producing paths. Existing evolution and performance
-averages continue to consume scored evaluations, not terminal observations.
+The explicit `wg evaluate run <done-task>` and `wg evaluate record` surfaces
+are the only score-producing paths. `run` binds its separate immutable score to
+the exact terminal observation after re-verifying completion/publication;
+`record` retains an explicit external source. Existing evolution and
+performance averages consume scored evaluations, not completion-review verdicts.
 
 ## Queries
 
-`wg agency stats` prints terminal-observation, unscored, and operator-accepted
-counts separately from scored evaluation count and average. The machine-readable
-form, `wg --json agency stats`, includes:
+`wg agency stats` prints terminal-observation, linked-scored,
+without-linked-score, and operator-accepted counts separately from scored
+evaluation count and average. The machine-readable form, `wg --json agency
+stats`, includes:
 
 - `overview.total_terminal_observations`;
+- `overview.scored_terminal_observations`;
 - `overview.unscored_terminal_observations`;
 - `overview.operator_accepted_terminal_observations`;
-- full `terminal_outcomes[]` records with nullable/omitted score.
+- rich `scored_evaluations[]` envelopes;
+- full immutable `terminal_outcomes[]` records whose own score remains null.
 
-No observation increments a scored `PerformanceRecord` or changes
-`avg_score`.
+The observation itself never increments a `PerformanceRecord`. Only an explicit
+create-once Evaluation linked to it changes performance.
 
 ## Crash recovery and bounded backfill
 

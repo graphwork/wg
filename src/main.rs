@@ -2785,11 +2785,24 @@ fn main() -> Result<()> {
             cli.json,
         ),
         Commands::Evaluate { command } => match command {
-            EvaluateCommands::Run { .. } | EvaluateCommands::Record { .. } => {
-                anyhow::bail!(
-                    "legacy evaluation mutation is retired; `wg submit` runs exact manifest-bound FLIP then eval"
-                )
+            EvaluateCommands::Run { task, dry_run } => {
+                commands::evaluate::run(&workgraph_dir, &task, dry_run, cli.json)
             }
+            EvaluateCommands::Record {
+                task,
+                score,
+                source,
+                notes,
+                dimensions,
+            } => commands::evaluate::run_record(
+                &workgraph_dir,
+                &task,
+                score,
+                &source,
+                notes.as_deref(),
+                &dimensions,
+                cli.json,
+            ),
             EvaluateCommands::Show {
                 task_detail,
                 task,

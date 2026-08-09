@@ -180,19 +180,22 @@ observation directly. The `auto_assign` config key remains load/write
 compatibility for older configs but has no authority to create blocking
 `assign-*` graph tasks.
 
-## Completion review and historical evaluations
+## Completion review and scored evaluation
 
 Ordinary `wg done` records review activity on the exact source attempt and
 completes from immutable candidate/publication receipts. It does not create
 `evaluate-*` or `.flip-*` graph work, and a current source failure terminalizes
 without `FailedPendingEval`.
 
-`wg evaluate show/list/rollout-status` remain read-only views of historical
-records. Legacy mutation commands (`evaluate run/record`) fail deliberately.
-Historical soft states and verdict-bearing rows remain loadable so old graphs do
-not gain inferred success during upgrade. See
-`docs/design-dormant-local-lifecycle-compatibility.md` for the cited inventory
-and removal conditions.
+A separate explicit `wg evaluate run <done-task>` re-verifies that receipt-backed
+terminal observation and current publication, resolves the exact configured Pi
+evaluator route/reasoning, makes one bounded no-tools call, and writes one
+create-once Agency score. `--dry-run` performs the eligibility/evidence check
+without mutation. The evaluator can neither fail/reopen/retry/publish the source
+nor create graph nodes. `wg evaluate record` remains external/manual score
+ingestion; `wg evaluate show` exposes both legacy and rich receipt-bound records.
+Historical soft states and verdict-bearing rows remain loadable without gaining
+new lifecycle authority. See `docs/design-dormant-local-lifecycle-compatibility.md`.
 
 ## Dead Agent Detection and Triage
 

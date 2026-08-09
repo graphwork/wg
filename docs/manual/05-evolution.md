@@ -14,21 +14,23 @@ Evaluation is the act of scoring a completed task. It answers a concrete questio
 
 Normal receipt-backed Done and reasoned operator-accepted Done are projected exactly once into `.wg/agency/terminal-observations/`. The identity includes the task generation, source attempt/fence, and immutable completion receipt, so repeated Done, restart, reload, and reconciliation cannot double-count it. Failed, Waiting/Needs-review, stale, unlanded, or unverifiable candidates are excluded.
 
-These records preserve composition and execution attribution, actual route/model, provider-reported usage/cost, completion-review disagreement, and operator-accept provenance when known. They remain explicitly `unscored`; completion FLIP/eval verdicts are advisory evidence and are never silently converted into the score described below. `wg agency stats` reports observation counts separately, and `wg --json agency stats` exposes the full records. Use the existing `wg evaluate <task-id>` or `wg evaluate record` surface when an actual score is warranted. See [Accepted terminal outcome → Agency observation projection](../design-terminal-outcome-agency-observation.md) for schema, verification, and bounded backfill details.
+These records preserve composition and execution attribution, actual route/model, provider-reported usage/cost, completion-review disagreement, and operator-accept provenance when known. The observation objects stay explicitly `unscored`; completion FLIP/eval verdicts are advisory evidence and are never silently converted into a quality score. `wg agency stats` reports observations with and without a separately linked score, while `wg --json agency stats` exposes both `terminal_outcomes` and rich `scored_evaluations`. Use `wg evaluate run <done-task>` or `wg evaluate record` when a score is warranted. See [Accepted terminal outcome → Agency observation projection](../design-terminal-outcome-agency-observation.md).
 
-The evaluator is itself an LLM agent. It receives the full context of the work: the task definition (title, description, deliverables), the agent’s identity (role and motivation), any artifacts the agent produced, log entries from execution, and timing data (when the task started and finished). From this, it scores four dimensions:
+`wg evaluate run` is one bounded, read-only Pi call. Before calling the model it re-verifies the persisted terminal observation, receipt-bound lifecycle event, current generation/attempt/fence, immutable candidate/reviews/output bytes, and publication. Failed, Waiting, operator-accepted, unlanded, missing, stale, or unverifiable evidence is refused. The exact configured `[models.evaluator]` Pi route and inherited reasoning are used; there is no invocation override or cross-system fallback.
 
-|                 |            |                                                                                 |
-|-----------------|------------|---------------------------------------------------------------------------------|
-| **Dimension**   | **Weight** | **What it measures**                                                            |
-| Correctness     | 40%        | Does the output satisfy the task’s requirements and the role’s desired outcome? |
-| Completeness    | 30%        | Were all aspects of the task addressed? Are deliverables present?               |
-| Efficiency      | 15%        | Was the work done without unnecessary steps, bloat, or wasted effort?           |
-| Style adherence | 15%        | Were project conventions followed? Were the motivation’s constraints respected? |
+The response contains a finite overall score and exactly seven finite 0..1 dimensions:
 
-The weights are deliberate. Correctness dominates because wrong output is worse than incomplete output. Completeness follows because partial work still has value. Efficiency and style adherence matter but are secondary—a correct, complete solution with poor style is more useful than an elegant, incomplete one.
+| **Dimension** | **What it measures** |
+|---|---|
+| `correctness` | Output satisfies the immutable requirements and desired outcome |
+| `completeness` | Required deliverables and validation evidence are present |
+| `efficiency` | Work avoided unnecessary complexity or waste |
+| `style_adherence` | Project conventions and declared tradeoffs were respected |
+| `downstream_usability` | Dependents can consume the result |
+| `coordination_overhead` | The result minimizes avoidable coordination burden |
+| `blocking_impact` | The work resolves rather than transfers blockers |
 
-The four dimension scores are combined into a single weighted score between 0.0 and 1.0. This score is the fundamental unit of evolutionary pressure.
+Notes, evidence previews, response size, timeout, tools, and call count are bounded. The create-once score envelope records the evaluator route/reasoning, Pi-reported usage/cost, evidence digest, completion receipt, and source terminal observation. Reruns repair idempotent performance projections but never duplicate the score.
 
 ### Three-level propagation
 
@@ -44,44 +46,27 @@ This three-level, cross-referenced propagation creates the data structure that m
 
 ### What gets evaluated
 
-Both done and failed tasks can be evaluated. This is intentional—there is useful signal in failure. Which agents fail on which kinds of tasks reveals mismatches between identity and work that evolution can address.
+Only an ordinary, reviewed, receipt-backed `Done` with currently verifiable
+publication evidence is eligible for model scoring. Failure episodes remain
+visible in lifecycle/terminal reporting but are not guessed into a score.
+External systems or humans may deliberately translate their own outcome signal
+through `wg evaluate record`; that explicit source remains distinguishable from
+`llm:terminal-observation`.
 
-Human agents are tracked by the same evaluation machinery, but their evaluations are excluded from the evolution signal. The system does not attempt to “improve” humans. Human evaluation data exists for reporting and trend analysis, not for evolutionary pressure.
+### Completion review is separate from scoring
 
-### FLIP: Fidelity via Latent Intent Probing
-
-Standard evaluation asks an LLM to read the task and its output and score quality. FLIP asks a different question: *does the output faithfully reflect what was asked?*
-
-The FLIP pipeline has two phases. In the *inference* phase, an LLM (default: Sonnet) receives only the agent’s output—no task description—and reconstructs what the original prompt must have been. In the *comparison* phase, a second LLM (default: Sonnet) scores how well the reconstructed prompt matches the actual task description. The result is a fidelity score: high FLIP means the output clearly addresses the task; low FLIP means the output may have drifted from the intent, even if it looks competent in isolation.
-
-FLIP runs alongside standard evaluation when `flip_enabled` is true in the agency configuration. The scores are recorded with source `"flip"` and propagate through the same three-level mechanism as standard evaluations.
-
-When `flip_verification_threshold` is configured, tasks with FLIP scores below the threshold automatically receive a `.verify-flip-{task-id}` verification task. This verification task is dispatched to a stronger model (Opus by default) to independently confirm or reject the result. The full agency pipeline is: **evaluate → FLIP → verify → evolve**.
-
-FLIP is configured via `wg config`:
-
-    wg config --flip-enabled true
-    wg config --flip-inference-model sonnet
-    wg config --flip-comparison-model sonnet
-    wg config --flip-verification-threshold 0.7
-    wg config --flip-verification-model opus
-
-### The eval-gate mechanism
-
-The evaluation gate is a quality floor. When `eval_gate_threshold` is configured, any evaluated task whose weighted score falls below the threshold is automatically *rejected*—its status is set to failed with a descriptive reason citing the score and threshold. This prevents low-quality work from being accepted and unblocking downstream tasks.
-
-By default, the eval gate applies only to tasks tagged `"eval-gate"` (tasks created with `--verify` receive this tag automatically). Setting `eval_gate_all` to true extends the gate to *all* evaluated tasks, creating a project-wide quality minimum.
-
-    wg config --eval-gate-threshold 0.7
-    wg config --eval-gate-all true
-
-The eval gate runs as the final step of `wg evaluate run`, after scoring is complete and before the evaluation is considered finished. A rejected task can be retried (`wg retry`), which re-opens it for a fresh attempt with recovery context from the failed evaluation.
+Manifest-bound completion FLIP/eval receipts are produced before `Done` by the
+completion protocol. They authorize or advise completion according to that
+protocol; they are not converted into the post-terminal Agency score. Historical
+synthetic `.flip-*`/`.evaluate-*`, `PendingEval`, evaluator rejection/retry, and
+automatic eval-gate lifecycle remain load-only compatibility. `wg evaluate run`
+observes `Done` and can never fail, complete, reopen, retry, or publish a task.
 
 ### External evaluation sources
 
 Not every signal about an agent’s performance comes from an LLM reading its output. A trading agent might produce clean, well-structured code that scores 0.91 on internal evaluation—and lose money. A documentation agent might produce prose that the evaluator loves but that users find confusing. Internal quality assessment is necessary but not sufficient. The real test is what happens when the work meets the world.
 
-Every evaluation carries a `source` field that identifies where the score came from. The internal auto-evaluator writes `source: "llm"`. External evaluations use freeform tags that name their origin: `"outcome:sharpe"` for a portfolio’s realized Sharpe ratio, `"ci:test-suite"` for a continuous integration result, `"vx:peer-123"` for a score received from a federated peer, `"user:feedback"` for a human’s direct assessment. The tag is a string, not an enum—any external system can define its own source convention.
+Every evaluation carries a `source` field that identifies where the score came from. The explicit receipt-backed Pi observer writes `source: "llm:terminal-observation"`. External evaluations use freeform tags that name their origin: `"outcome:sharpe"` for a portfolio’s realized Sharpe ratio, `"ci:test-suite"` for a continuous integration result, `"vx:peer-123"` for a score received from a federated peer, `"user:feedback"` for a human’s direct assessment. The tag is a string, not an enum—any external system can define its own source convention.
 
 External evaluations enter the system through `wg evaluate record`:
 
@@ -89,7 +74,7 @@ External evaluations enter the system through `wg evaluate record`:
       --source "outcome:sharpe" --score 0.72 \
       --notes "Realized Sharpe below target"
 
-The command requires a task in done or failed status, resolves the agent identity from the task’s assignment, and writes the evaluation to the same store as internal evaluations. It propagates to the same three levels—agent, role with context, motivation with context. From the perspective of the performance records, an external evaluation is indistinguishable from an internal one except for the source tag.
+The command requires an existing task, validates the overall and dimensional scores, resolves the agent identity from the task’s assignment when present, and writes the evaluation to the same canonical store. It propagates to the same performance levels—agent, role with context, tradeoff with context, components, and outcome. External scores remain distinguishable by their source tag and do not claim terminal-observation provenance.
 
 This is where the evolutionary signal becomes rich. Consider an agent that scores 0.91 internally (clean code, complete deliverables, good style) but 0.72 on outcome (the code it wrote performed poorly in production). The evolver sees both scores in the performance summary. The gap between internal quality and external outcome is itself a signal—it suggests the role’s desired outcome or the motivation’s trade-offs need to account for domain-specific success criteria, not just code quality. The evolver can propose a mutation that sharpens the role toward outcomes the internal evaluator cannot see.
 
@@ -119,7 +104,7 @@ Trends answer the question that aggregate scores cannot: is this entity getting 
 
 Evolution is the process of improving agency entities based on accumulated evaluation data. Where evaluation extracts signal from individual tasks, evolution acts on the aggregate—reading the full performance picture and proposing structural changes to roles and motivations.
 
-Evolution is triggered manually by running `wg evolve run`. This is a deliberate design choice. The system accumulates evaluation data automatically (via the coordinator’s auto-evaluate feature), but the decision to act on that data belongs to the human. Evolution is powerful enough to reshape the agency’s identity space. It should not run unattended. Deferred operations (such as self-mutations requiring human review) are managed via `wg evolve review`.
+Evolution is triggered manually by running `wg evolve run`. This is a deliberate design choice. Scored data accumulates only when an operator or workflow explicitly invokes the receipt-backed observer or records an external score; the coordinator does not create scoring tasks. The decision to act on that data belongs to the human. Evolution is powerful enough to reshape the agency’s identity space. It should not run unattended. Deferred operations (such as self-mutations requiring human review) are managed via `wg evolve review`.
 
 ### The evolver agent
 
@@ -199,7 +184,7 @@ Lineage commands—`wg role lineage`, `wg tradeoff lineage`, `wg agent lineage`�
 
 Step back from the mechanics and see the shape of the whole.
 
-Work enters the system as tasks. The coordinator dispatches agents—each carrying an identity composed of a role and a motivation—to execute those tasks. When a task completes, auto-evaluate creates an evaluation meta-task. The evaluator agent scores the work across four dimensions. Scores propagate to the agent, the role, and the motivation. Over time, performance records accumulate. Trends emerge. The synergy matrix fills in.
+Work enters the system as tasks. The coordinator dispatches agents—each carrying an identity composed of a role and a motivation—to execute those tasks. Ordinary reviewed completion projects an immutable unscored observation. When an operator or workflow explicitly invokes `wg evaluate run`, one bounded Pi observer scores that receipt-bound evidence across seven dimensions; external outcome scores may instead enter through `wg evaluate record`. Scores propagate through the canonical Agency performance records. Over time, trends emerge and the synergy matrix fills in.
 
 When the human decides enough signal has accumulated, `wg evolve` runs. The evolver reads the full performance picture and proposes changes. A role that consistently scores low on efficiency gets its description sharpened to emphasize economy. A motivation whose constraints are too tight gets its trade-offs relaxed. Two high-performing roles get crossed to produce a child that inherits both strengths. A consistently poor performer gets retired.
 

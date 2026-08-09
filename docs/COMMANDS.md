@@ -1946,7 +1946,7 @@ wg agent create "Erik" \
 
 ### `wg evaluate`
 
-Evaluate tasks: trigger LLM-based evaluation, record external scores, or view evaluation history.
+Score verified terminal tasks, record external scores, or view evaluation history.
 
 ```bash
 wg evaluate <SUBCOMMAND>
@@ -1955,7 +1955,7 @@ wg evaluate <SUBCOMMAND>
 **Subcommands:**
 | Subcommand | Description |
 |------------|-------------|
-| `run` | Trigger LLM-based evaluation of a completed task |
+| `run` | Score one receipt-backed ordinary `Done` through the exact configured Pi evaluator |
 | `record` | Record an evaluation from an external source |
 | `show` | Show evaluation history |
 
@@ -1963,31 +1963,35 @@ wg evaluate <SUBCOMMAND>
 
 #### `wg evaluate run`
 
-Trigger LLM-based evaluation of a completed task.
+Score one verified terminal task without giving the evaluator task-lifecycle authority.
 
 ```bash
-wg evaluate run <TASK> [OPTIONS]
+wg evaluate run <TASK> [--dry-run]
 ```
 
-**Options:**
-| Option | Description |
-|--------|-------------|
-| `--evaluator-model <MODEL>` | Model for the evaluator (overrides config) |
-| `--dry-run` | Show what would be evaluated without spawning the evaluator |
-| `--flip` | Run FLIP (roundtrip intent fidelity) evaluation instead of direct evaluation |
+`--dry-run` re-verifies eligibility and prints the exact configured Pi route,
+inherited reasoning, terminal observation, completion receipt, bounded evidence
+digest, and prompt without calling Pi or writing a score.
 
-The task must be done or failed. Spawns an evaluator agent that scores the task across four dimensions:
-- **correctness** (40%) — output matches desired outcome
-- **completeness** (30%) — all aspects addressed
-- **efficiency** (15%) — no unnecessary steps
-- **style_adherence** (15%) — project conventions and constraints followed
+A live run requires an ordinary reviewed, receipt-backed `Done` whose current
+generation/attempt/fence, immutable candidate/reviews/output bytes, and
+publication still verify. Failed, Waiting, operator-accepted, unlanded, stale,
+missing, and unverifiable candidates are refused. The evaluator is a single
+bounded `pi --mode json --no-tools --no-session` call and returns one finite
+0..1 overall score plus exactly seven finite 0..1 dimensions:
+`correctness`, `completeness`, `efficiency`, `style_adherence`,
+`downstream_usability`, `coordination_overhead`, and `blocking_impact`.
 
-Scores propagate to the agent, role, and tradeoff performance records.
+The create-once Agency envelope includes route/reasoning, Pi-reported usage and
+cost, evidence digest, completion receipt, and source terminal observation.
+Replay, restart, and reload do not duplicate it. Evaluation never changes task
+status or creates evaluator graph nodes.
 
 **Example:**
 ```bash
-wg evaluate run my-task
-wg evaluate run my-task --evaluator-model opus --dry-run
+wg evaluate run my-task --dry-run
+wg --json evaluate run my-task
+wg --json evaluate show my-task
 ```
 
 ---
@@ -2019,14 +2023,14 @@ wg evaluate record --task deploy-prod --score 0.85 --source "manual" \
 
 #### `wg evaluate show`
 
-Show evaluation history with optional filters. When a positional `TASK` is given, shows both task-level and org-level scores side by side.
+Show evaluation history with optional filters. Rich receipt-backed records include evaluator route/reasoning, usage/cost, evidence digest, completion receipt, and source terminal observation.
 
 ```bash
 wg evaluate show [TASK] [OPTIONS]
 ```
 
 **Arguments:**
-- `[TASK]` - Show both task-level and org-level scores side by side for this task (optional)
+- `[TASK]` - Show scored evaluations for this task (optional)
 
 **Options:**
 | Option | Description |
@@ -3847,7 +3851,7 @@ and registry flags are hidden migration compatibility.
 | `--poll-interval <SECS>` | Set service daemon background poll interval |
 | `--coordinator-model <MODEL>` | Set exact dispatcher Pi route |
 | `--max-coordinators <N>` | Set max concurrent coordinator agents (LLM sessions). Default: 4 |
-| `--auto-evaluate <BOOL>` | Enable/disable automatic evaluation |
+| `--auto-evaluate <BOOL>` | Pre-receipt compatibility setting; does not create scored-evaluation graph tasks |
 | `--auto-assign <BOOL>` | Enable/disable automatic identity assignment |
 | `--auto-place <BOOL>` | Enable/disable automatic placement analysis on new tasks |
 | `--auto-create <BOOL>` | Enable/disable automatic creator agent invocation |
@@ -3863,8 +3867,8 @@ and registry flags are hidden migration compatibility.
 | `--triage-model <MODEL>` | **[DEPRECATED]** Use `--set-model triage <MODEL>` instead |
 | `--triage-timeout <SECS>` | Set timeout for triage calls (default: 30) |
 | `--triage-max-log-bytes <N>` | Set max bytes for triage log reading (default: 50000) |
-| `--eval-gate-threshold <N>` | Set the finite evaluation gate threshold (0.0–1.0). By default it hard-gates evaluated tasks with structural deliverables; other evaluator jobs are visibly advisory. Tags are inert. |
-| `--eval-gate-all <BOOL>` | Make every task with a persisted evaluator pipeline a hard gate. Every `pending-eval` source then requires exact attempt-bound verdicts. |
+| `--eval-gate-threshold <N>` | Historical persisted-pipeline compatibility threshold; it does not govern `wg evaluate run` or current completion authority |
+| `--eval-gate-all <BOOL>` | Historical persisted-pipeline compatibility switch; current scored evaluation never gates task lifecycle |
 | `--flip-enabled <BOOL>` | Enable or disable FLIP (roundtrip intent fidelity) evaluation |
 | `--flip-inference-model <MODEL>` | Model for FLIP inference phase (reconstructing prompt from output) |
 | `--flip-comparison-model <MODEL>` | Model for FLIP comparison phase (scoring similarity) |
@@ -3901,8 +3905,8 @@ wg config --list
 # Set a complete exact Pi route (applies strong/weak initially)
 wg config --global --model pi:<provider>:<model>
 
-# Enable the full agency automation loop
-wg config --auto-evaluate true --auto-assign true
+# Enable automatic identity assignment (scoring remains explicit)
+wg config --auto-assign true
 
 # Exact role routes and visible thinking
 wg config --models
@@ -3917,9 +3921,8 @@ wg config --tier standard=pi:<provider>:<strong-model>
 
 # Configure provider login, endpoints, and model availability in Pi itself
 
-# Eval gate and FLIP
-wg config --eval-gate-threshold 0.7 --eval-gate-all true
-wg config --flip-enabled true --flip-verification-threshold 0.7
+# Completion-review FLIP role policy (not a scored-evaluator lifecycle)
+wg config --flip-enabled true
 
 # Automation flags
 wg config --auto-place true --auto-create true

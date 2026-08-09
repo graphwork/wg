@@ -86,14 +86,20 @@ wg assign my-task a3f7c21d
 # 2. Execute and produce receipt-bound completion evidence
 wg service start
 
-# 3. Inspect historical observations and optionally evolve
-wg evaluate show --task my-task
+# 3. Optionally attach one receipt-bound score, inspect, then evolve
+wg evaluate run my-task --dry-run
+wg evaluate run my-task
+wg evaluate show my-task
 wg evolve run
 ```
 
-`auto_assign`, pre-receipt soft statuses, and old evaluation/FLIP route fields
-remain load/write compatibility only. `wg evaluate run` and `record` fail with a
-deliberate retirement error rather than creating synthetic judgment.
+`wg evaluate run` is a bounded observation-only Pi call over a verified `Done`
+task. It re-verifies the terminal observation, generation/attempt/fence,
+immutable completion candidate and current publication, then stores one
+create-once Agency score. It never changes the task or creates evaluator graph
+work. `wg evaluate record` remains the explicit external/manual score path.
+`auto_assign`, pre-receipt soft statuses, and synthetic evaluator/FLIP lifecycle
+fields remain compatibility-only.
 
 Additional automation options:
 
@@ -190,13 +196,17 @@ Working, tested code
 - Untested
 ```
 
-### 4. Completion observations and historical evaluation records
+### 4. Terminal observations and scored evaluations
 
 Completion review is recorded directly against the exact source attempt; it is
-not an evaluator graph task. Historical records remain read-only and can be
-viewed with filters:
+not an evaluator graph task and does not itself create an Agency score. After a
+receipt-backed ordinary completion reaches `Done`, score it explicitly and view
+the create-once result:
 
 ```bash
+wg evaluate run <task-id> --dry-run       # verify route/reasoning/evidence; no mutation
+wg evaluate run <task-id>                 # one bounded read-only Pi score
+wg evaluate record --task <id> --score 0.8 --source manual
 wg evaluate show                          # all evaluations
 wg evaluate show --task <task-id>         # filter by task (prefix match)
 wg evaluate show --agent <agent-id>       # filter by agent (prefix match)
@@ -204,32 +214,29 @@ wg evaluate show --source "outcome:*"     # filter by source (glob)
 wg evaluate show --limit 10               # most recent N
 ```
 
-The evaluator scores across four dimensions:
+The evaluator returns one finite overall score plus exactly seven finite 0..1
+dimensions: `correctness`, `completeness`, `efficiency`, `style_adherence`,
+`downstream_usability`, `coordination_overhead`, and `blocking_impact`. Notes,
+response size, evidence previews, process time, tools, and call count are
+bounded. The stored envelope also exposes exact evaluator route/reasoning,
+Pi-reported usage/cost, evidence digest, completion receipt, and source terminal
+observation. Provider/setup failure is loud and leaves both task and score store
+neutral. The model response uses the following strict shape before WG adds its
+receipt, route, reasoning, and usage metadata:
 
-| Dimension | Weight | Description |
-|-----------|--------|-------------|
-| `correctness` | 40% | Does the output match the desired outcome? |
-| `completeness` | 30% | Were all aspects of the task addressed? |
-| `efficiency` | 15% | Was work done without unnecessary steps? |
-| `style_adherence` | 15% | Were project conventions and tradeoff constraints followed? |
-
-The evaluator receives:
-- The task definition (title, description, deliverables)
-- The agent's identity (role + tradeoff)
-- Task artifacts and log entries
-- The evaluation rubric
-
-It outputs a JSON evaluation:
 ```json
 {
-  "score": 0.85,
+  "overall_score": 0.85,
   "dimensions": {
-    "correctness": 0.9,
+    "correctness": 0.90,
     "completeness": 0.85,
-    "efficiency": 0.8,
-    "style_adherence": 0.75
+    "efficiency": 0.80,
+    "style_adherence": 0.75,
+    "downstream_usability": 0.82,
+    "coordination_overhead": 0.78,
+    "blocking_impact": 0.91
   },
-  "notes": "Implementation is correct and complete. Minor efficiency issue..."
+  "notes": "Bounded evidence-based assessment"
 }
 ```
 
@@ -412,15 +419,18 @@ wg assign <task-id> --clear         # remove assignment
 ### `wg evaluate`
 
 ```bash
-wg evaluate show [--task <id>] [--agent <id>] [--source <glob>] [--limit <N>]
-wg evaluate rollout-status
+wg evaluate run <done-task> [--dry-run]
+wg evaluate record --task <id> --score <0..1> --source <source>
+wg evaluate show [<task>] [--task <id>] [--agent <id>] [--source <glob>] [--limit <N>]
+wg evaluate rollout status
 ```
 
 | Subcommand | Description |
 |------------|-------------|
-| `show` | View historical evaluation/observation records without mutation |
-| `rollout-status` | View the evaluation-plane rollout state |
-| `run`, `record` | Retired; fail deliberately and create no evaluator authority |
+| `run` | Re-verify one receipt-backed ordinary `Done`, call the exact configured Pi evaluator once, and create one immutable score |
+| `record` | Preserve an explicit external/manual score in the canonical Agency store |
+| `show` | View scores plus route/reasoning, usage/cost, receipt, and source terminal observation |
+| `rollout status` | Read historical evaluation-rollout compatibility state |
 
 ### `wg evolve`
 
@@ -622,8 +632,7 @@ evolver_model = "opus"           # model for the evolver agent
 evolver_agent = "abc123..."      # content-hash of evolver agent identity
 assigner_model = "haiku"         # model for assigner agents
 assigner_agent = "def456..."     # content-hash of assigner agent identity
-evaluator_model = "haiku"        # model for evaluator agents
-evaluator_agent = "ghi789..."    # content-hash of evaluator agent identity
+evaluator_agent = "ghi789..."    # historical identity metadata only; no dispatch authority
 retention_heuristics = "Retire roles scoring below 0.3 after 10 evaluations"
 ```
 
@@ -632,7 +641,9 @@ Or via CLI:
 ```bash
 wg config --evolver-model opus --evolver-agent abc123
 wg config --assigner-model haiku --assigner-agent def456
-wg config --evaluator-model opus --evaluator-agent ghi789
+wg config --set-model evaluator pi:openrouter:anthropic/claude-sonnet-4.6 \
+  --set-reasoning evaluator low
+wg config --evaluator-agent ghi789       # compatibility metadata only
 wg config --retention-heuristics "Retire roles scoring below 0.3 after 10 evaluations"
 ```
 

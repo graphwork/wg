@@ -1,12 +1,13 @@
 use anyhow::{Context, Result};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use worksgood::agency::{self, DesiredOutcome, Evaluation, Role, RoleComponent, TradeoffConfig};
+use worksgood::agency::{
+    self, DesiredOutcome, Evaluation, Role, RoleComponent, ScoredEvaluationEnvelope, TradeoffConfig,
+};
 use worksgood::parser::load_graph;
 use worksgood::terminal_observation::{
-    TerminalAcceptanceKind, TerminalObservationScoreState, TerminalOutcomeObservation,
-    load_terminal_outcome_observations,
+    TerminalAcceptanceKind, TerminalOutcomeObservation, load_terminal_outcome_observations,
 };
 
 #[derive(Clone)]
@@ -177,8 +178,12 @@ pub fn run(
     let roles = agency::load_all_roles(&roles_dir).context("Failed to load roles")?;
     let tradeoffs =
         agency::load_all_tradeoffs(&tradeoffs_dir).context("Failed to load tradeoffs")?;
-    let evaluations =
-        agency::load_all_evaluations(&evals_dir).context("Failed to load evaluations")?;
+    let scored_evaluations = agency::load_all_scored_evaluations(&evals_dir)
+        .context("Failed to load scored evaluation envelopes")?;
+    let evaluations = scored_evaluations
+        .iter()
+        .map(|envelope| envelope.evaluation.clone())
+        .collect::<Vec<_>>();
     let terminal_observations = load_terminal_outcome_observations(dir)
         .context("Failed to load receipt-backed terminal outcome observations")?;
 
@@ -217,6 +222,7 @@ pub fn run(
             &outcomes,
             &tradeoffs,
             &evaluations,
+            &scored_evaluations,
             &terminal_observations,
             &task_tags,
             &task_types,
@@ -231,6 +237,7 @@ pub fn run(
             &outcomes,
             &tradeoffs,
             &evaluations,
+            &scored_evaluations,
             &terminal_observations,
             &task_tags,
             &task_types,
@@ -437,6 +444,18 @@ fn build_task_type_model_breakdown(
     cells
 }
 
+fn linked_terminal_observation_ids(evaluations: &[ScoredEvaluationEnvelope]) -> HashSet<&str> {
+    evaluations
+        .iter()
+        .filter_map(|envelope| {
+            envelope
+                .source_terminal_observation
+                .as_ref()
+                .map(|source| source.observation_id.as_str())
+        })
+        .collect()
+}
+
 fn find_underexplored(
     roles: &[Role],
     tradeoffs: &[TradeoffConfig],
@@ -478,6 +497,7 @@ fn output_text(
     outcomes: &[DesiredOutcome],
     tradeoffs: &[TradeoffConfig],
     evaluations: &[Evaluation],
+    scored_evaluations: &[ScoredEvaluationEnvelope],
     terminal_observations: &[TerminalOutcomeObservation],
     task_tags: &HashMap<String, Vec<String>>,
     task_types: &HashMap<String, &str>,
@@ -505,10 +525,17 @@ fn output_text(
             observation.acceptance_kind == TerminalAcceptanceKind::OperatorAccepted
         })
         .count();
+    let linked_terminal = linked_terminal_observation_ids(scored_evaluations);
+    let scored_terminal = terminal_observations
+        .iter()
+        .filter(|observation| linked_terminal.contains(observation.observation_id.as_str()))
+        .count();
+    let unscored_terminal = terminal_observations.len().saturating_sub(scored_terminal);
     println!("  TradeoffConfigs:  {}", total_tradeoffs);
     println!("  Evaluations:  {}", total_evaluations);
     println!("  Terminal observations: {}", terminal_observations.len());
-    println!("    Unscored:             {}", terminal_observations.len());
+    println!("    Linked scored:        {}", scored_terminal);
+    println!("    Without score:        {}", unscored_terminal);
     println!("    Operator-accepted:    {}", operator_accepted);
     println!(
         "  Avg score:    {}",
@@ -518,9 +545,47 @@ fn output_text(
     );
     println!("  v1.2.4 fields: quality, domain_specificity, domain, scope, origin_instance_id");
 
+    let rich = scored_evaluations
+        .iter()
+        .filter(|envelope| envelope.source_terminal_observation.is_some())
+        .collect::<Vec<_>>();
+    if !rich.is_empty() {
+        println!("\n--- Receipt-backed Scored Evaluations ---\n");
+        for envelope in rich {
+            let evaluation = &envelope.evaluation;
+            let usage = envelope.evaluator_usage.as_ref();
+            let source = envelope
+                .source_terminal_observation
+                .as_ref()
+                .expect("filtered");
+            println!(
+                "  {} score={:.3} route={} reasoning={} usage={}/{} cost=${:.6}",
+                evaluation.task_id,
+                evaluation.score,
+                envelope.evaluator_route.as_deref().unwrap_or("-"),
+                envelope.evaluator_reasoning.as_deref().unwrap_or("-"),
+                usage.map_or(0, |value| value.input_tokens),
+                usage.map_or(0, |value| value.output_tokens),
+                usage.map_or(0.0, |value| value.cost_usd),
+            );
+            println!(
+                "    terminal={} generation={} attempt={} fence={}",
+                source.observation_id, source.generation, source.attempt_id, source.attempt_fence
+            );
+            println!(
+                "    receipt={} evidence={} work_route={}",
+                source.completion_receipt,
+                envelope.evidence_digest.as_deref().unwrap_or("-"),
+                evaluation.model.as_deref().unwrap_or("-")
+            );
+            println!("    dimensions={:?}", evaluation.dimensions);
+            println!("    notes={}", evaluation.notes);
+        }
+    }
+
     if evaluations.is_empty() {
         println!(
-            "\nNo scored evaluations recorded yet. Terminal observations remain unscored by design; run 'wg evaluate <task-id>' to create an explicit score."
+            "\nNo scored evaluations recorded yet. Run 'wg evaluate run <done-task>' to score one verified terminal observation."
         );
         return;
     }
@@ -783,6 +848,7 @@ fn output_json(
     outcomes: &[DesiredOutcome],
     tradeoffs: &[TradeoffConfig],
     evaluations: &[Evaluation],
+    scored_evaluations: &[ScoredEvaluationEnvelope],
     terminal_observations: &[TerminalOutcomeObservation],
     task_tags: &HashMap<String, Vec<String>>,
     task_types: &HashMap<String, &str>,
@@ -907,13 +973,12 @@ fn output_json(
             observation.acceptance_kind == TerminalAcceptanceKind::OperatorAccepted
         })
         .count();
-    let unscored = terminal_observations
+    let linked_terminal = linked_terminal_observation_ids(scored_evaluations);
+    let scored_terminal = terminal_observations
         .iter()
-        .filter(|observation| {
-            observation.score.is_none()
-                && observation.score_state == TerminalObservationScoreState::Unscored
-        })
+        .filter(|observation| linked_terminal.contains(observation.observation_id.as_str()))
         .count();
+    let unscored = terminal_observations.len().saturating_sub(scored_terminal);
     let mut output = serde_json::json!({
         "overview": {
             "total_roles": roles.len(),
@@ -922,6 +987,7 @@ fn output_json(
             "total_tradeoffs": tradeoffs.len(),
             "total_evaluations": total_evaluations,
             "total_terminal_observations": terminal_observations.len(),
+            "scored_terminal_observations": scored_terminal,
             "unscored_terminal_observations": unscored,
             "operator_accepted_terminal_observations": operator_accepted,
             "avg_score": overall_avg,
@@ -942,6 +1008,7 @@ fn output_json(
             "by_tradeoff": mot_tags_json,
         },
         "underexplored": under_json,
+        "scored_evaluations": scored_evaluations,
         "terminal_outcomes": terminal_observations,
     });
 

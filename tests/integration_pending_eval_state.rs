@@ -305,27 +305,28 @@ fn test_system_dependents_unblock_on_pending_eval_source() {
     );
 }
 
-// Legacy evaluation mutation is rejected before inspecting a loaded soft state.
-// The compatibility loader remains available, but no graph actor is revived.
+// Loaded pre-receipt soft states never become eligible for the restored
+// post-terminal scoring observer, and no synthetic graph actor is revived.
 #[test]
-fn legacy_evaluate_mutation_fails_with_deliberate_retirement_error() {
+fn legacy_soft_states_are_refused_by_scored_evaluation() {
     for status in [Status::PendingEval, Status::FailedPendingEval] {
         let tmp = TempDir::new().unwrap();
         let source = make_task("source", status);
         let wg_dir = setup_workgraph(&tmp, vec![source]);
-        for extra in [None, Some("--flip")] {
-            let mut args = vec!["evaluate", "run", "source", "--dry-run"];
-            if let Some(extra) = extra {
-                args.push(extra);
-            }
-            let output = wg_cmd(&wg_dir, &args);
-            assert!(!output.status.success());
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            assert!(
-                stderr.contains("legacy evaluation mutation is retired"),
-                "unexpected migration error for {status}: {stderr}"
-            );
-        }
+        let graph_before = std::fs::read(wg_dir.join("graph.jsonl")).unwrap();
+        let output = wg_cmd(&wg_dir, &["evaluate", "run", "source", "--dry-run"]);
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("failed scored-evaluation eligibility")
+                && stderr.contains("is not Done"),
+            "unexpected eligibility error for {status}: {stderr}"
+        );
+        assert_eq!(
+            std::fs::read(wg_dir.join("graph.jsonl")).unwrap(),
+            graph_before
+        );
+        assert!(!wg_dir.join("agency/evaluations").exists());
     }
 }
 

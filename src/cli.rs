@@ -1825,7 +1825,7 @@ pub enum Commands {
         reasoning: Option<String>,
     },
 
-    /// Evaluate tasks: auto-evaluate, record external scores, view history
+    /// Score verified terminal tasks, record external scores, and view history
     Evaluate {
         #[command(subcommand)]
         command: EvaluateCommands,
@@ -4689,22 +4689,13 @@ pub enum UserCommands {
 
 #[derive(Subcommand)]
 pub enum EvaluateCommands {
-    /// Trigger LLM-based evaluation of a completed task
+    /// Score one receipt-backed Done task through the exact configured Pi evaluator
     Run {
-        /// Task ID to evaluate
+        /// Done task whose terminal observation and publication evidence will be scored
         task: String,
-        /// Model to use for the evaluator
-        #[arg(long)]
-        evaluator_model: Option<String>,
-        /// Show what would be evaluated without spawning the evaluator
+        /// Verify eligibility and print exact route/reasoning/evidence without mutation
         #[arg(long)]
         dry_run: bool,
-        /// Explicitly run deep read-only system FLIP after candidate completion
-        #[arg(long, conflicts_with = "bounded")]
-        flip: bool,
-        /// Explicitly run one bounded advisory canary through the dedicated lane
-        #[arg(long, conflicts_with = "flip")]
-        bounded: bool,
     },
 
     /// Record an evaluation from an external source
@@ -4726,13 +4717,13 @@ pub enum EvaluateCommands {
         dimensions: Vec<String>,
     },
 
-    /// Manage the ordered, evidence-gated Pi evaluation rollout
+    /// Inspect historical evaluation-rollout compatibility state
     Rollout {
         #[command(subcommand)]
         command: EvaluationRolloutCommands,
     },
 
-    /// Show evaluation history (or both task-level and org-level scores for a specific task)
+    /// Show scored evaluation history, including route, usage, and terminal evidence
     Show {
         /// Show both task-level and org-level scores side by side for this task
         #[arg(value_name = "TASK")]

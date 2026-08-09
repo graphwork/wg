@@ -1,6 +1,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[cfg(unix)]
+use std::os::unix::io::AsRawFd;
+
 use super::store::*;
 use super::types::*;
 use crate::config::AgencyConfig;
@@ -200,6 +203,235 @@ pub fn record_evaluation_with_inference(
     }
 
     Ok(eval_path)
+}
+
+/// Result of create-once scored evaluation persistence.
+#[derive(Debug, Clone)]
+pub struct ExactEvaluationRecord {
+    pub path: PathBuf,
+    pub created: bool,
+}
+
+/// RAII lock for create-once evaluation + performance projection.
+struct ScoredEvaluationLock {
+    #[cfg(unix)]
+    file: fs::File,
+}
+
+impl ScoredEvaluationLock {
+    #[cfg(unix)]
+    fn acquire(path: &Path) -> Result<Self, AgencyError> {
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)?;
+        let fd = file.as_raw_fd();
+        crate::lock::retry_acquire(
+            &crate::lock::RetryPolicy::default(),
+            crate::lock::is_transient_blocking,
+            || {
+                let result = unsafe { libc::flock(fd, libc::LOCK_EX) };
+                if result == 0 {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::last_os_error())
+                }
+            },
+        )?;
+        Ok(Self { file })
+    }
+
+    #[cfg(not(unix))]
+    fn acquire(_path: &Path) -> Result<Self, AgencyError> {
+        Ok(Self {})
+    }
+}
+
+#[cfg(unix)]
+impl Drop for ScoredEvaluationLock {
+    fn drop(&mut self) {
+        unsafe {
+            libc::flock(self.file.as_raw_fd(), libc::LOCK_UN);
+        }
+    }
+}
+
+fn exact_evaluation_path(
+    evaluations_dir: &Path,
+    evaluation_id: &str,
+) -> Result<PathBuf, AgencyError> {
+    if evaluation_id.is_empty()
+        || evaluation_id.len() > 160
+        || !evaluation_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return Err(AgencyError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "scored evaluation id is not a safe immutable object name",
+        )));
+    }
+    Ok(evaluations_dir.join(format!("{evaluation_id}.json")))
+}
+
+fn ensure_evaluation_ref(
+    record: &mut PerformanceRecord,
+    reference: EvaluationRef,
+) -> Result<bool, AgencyError> {
+    if let Some(existing) = record.evaluations.iter().find(|existing| {
+        existing.task_id == reference.task_id
+            && existing.timestamp == reference.timestamp
+            && existing.context_id == reference.context_id
+    }) {
+        if existing.score.to_bits() != reference.score.to_bits() {
+            return Err(AgencyError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "performance evaluation reference collision",
+            )));
+        }
+        let previous_avg = record.avg_score;
+        let previous_count = record.task_count;
+        record.avg_score = recalculate_avg_score(&record.evaluations);
+        record.task_count = record
+            .task_count
+            .max(u32::try_from(record.evaluations.len()).unwrap_or(u32::MAX));
+        return Ok(record.avg_score != previous_avg || record.task_count != previous_count);
+    }
+    update_performance(record, reference);
+    Ok(true)
+}
+
+fn reconcile_exact_performance(
+    evaluation: &Evaluation,
+    agency_dir: &Path,
+) -> Result<(), AgencyError> {
+    let roles_dir = agency_dir.join("cache/roles");
+    let tradeoffs_dir = agency_dir.join("primitives/tradeoffs");
+    let agents_dir = agency_dir.join("cache/agents");
+
+    if !evaluation.agent_id.is_empty()
+        && let Ok(mut agent) = find_agent_by_prefix(&agents_dir, &evaluation.agent_id)
+    {
+        if ensure_evaluation_ref(
+            &mut agent.performance,
+            EvaluationRef {
+                score: evaluation.score,
+                task_id: evaluation.task_id.clone(),
+                timestamp: evaluation.timestamp.clone(),
+                context_id: evaluation.role_id.clone(),
+            },
+        )? {
+            save_agent(&agent, &agents_dir)?;
+        }
+    }
+
+    let mut component_ids = Vec::new();
+    let mut outcome_id = String::new();
+    if !evaluation.role_id.is_empty()
+        && let Ok(mut role) = find_role_by_prefix(&roles_dir, &evaluation.role_id)
+    {
+        component_ids.clone_from(&role.component_ids);
+        outcome_id.clone_from(&role.outcome_id);
+        if ensure_evaluation_ref(
+            &mut role.performance,
+            EvaluationRef {
+                score: evaluation.score,
+                task_id: evaluation.task_id.clone(),
+                timestamp: evaluation.timestamp.clone(),
+                context_id: evaluation.tradeoff_id.clone(),
+            },
+        )? {
+            save_role(&role, &roles_dir)?;
+        }
+    }
+
+    if !evaluation.tradeoff_id.is_empty()
+        && let Ok(mut tradeoff) = find_tradeoff_by_prefix(&tradeoffs_dir, &evaluation.tradeoff_id)
+    {
+        if ensure_evaluation_ref(
+            &mut tradeoff.performance,
+            EvaluationRef {
+                score: evaluation.score,
+                task_id: evaluation.task_id.clone(),
+                timestamp: evaluation.timestamp.clone(),
+                context_id: evaluation.role_id.clone(),
+            },
+        )? {
+            save_tradeoff(&tradeoff, &tradeoffs_dir)?;
+        }
+    }
+
+    let components_dir = agency_dir.join("primitives/components");
+    for component_id in component_ids {
+        if let Ok(mut component) = find_component_by_prefix(&components_dir, &component_id)
+            && ensure_evaluation_ref(
+                &mut component.performance,
+                EvaluationRef {
+                    score: evaluation.score,
+                    task_id: evaluation.task_id.clone(),
+                    timestamp: evaluation.timestamp.clone(),
+                    context_id: evaluation.role_id.clone(),
+                },
+            )?
+        {
+            save_component(&component, &components_dir)?;
+        }
+    }
+
+    if !outcome_id.is_empty()
+        && let Ok(mut outcome) =
+            find_outcome_by_prefix(&agency_dir.join("primitives/outcomes"), &outcome_id)
+    {
+        if ensure_evaluation_ref(
+            &mut outcome.performance,
+            EvaluationRef {
+                score: evaluation.score,
+                task_id: evaluation.task_id.clone(),
+                timestamp: evaluation.timestamp.clone(),
+                context_id: evaluation.agent_id.clone(),
+            },
+        )? {
+            save_outcome(&outcome, &agency_dir.join("primitives/outcomes"))?;
+        }
+    }
+    Ok(())
+}
+
+/// Persist a receipt-backed score immutably and repair its mutable performance
+/// projections idempotently. The evaluation JSON is the commit point: replay
+/// verifies byte-equivalent structured content and never creates a second row.
+pub fn record_scored_evaluation_exactly_once(
+    envelope: &ScoredEvaluationEnvelope,
+    agency_dir: &Path,
+) -> Result<ExactEvaluationRecord, AgencyError> {
+    init(agency_dir)?;
+    let evaluations_dir = agency_dir.join("evaluations");
+    let _lock = ScoredEvaluationLock::acquire(&evaluations_dir.join(".scored-evaluation.lock"))?;
+    let path = exact_evaluation_path(&evaluations_dir, &envelope.evaluation.id)?;
+    let bytes = serde_json::to_vec_pretty(envelope)?;
+    let _: ScoredEvaluationEnvelope = serde_json::from_slice(&bytes)?;
+    let created = match crate::atomic_file::write_atomic_create_new(&path, &bytes) {
+        Ok(()) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let existing: serde_json::Value = serde_json::from_slice(&fs::read(&path)?)?;
+            let expected: serde_json::Value = serde_json::from_slice(&bytes)?;
+            if existing != expected {
+                return Err(AgencyError::Io(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    format!(
+                        "immutable scored evaluation collision at {}",
+                        path.display()
+                    ),
+                )));
+            }
+            false
+        }
+        Err(error) => return Err(error.into()),
+    };
+    reconcile_exact_performance(&envelope.evaluation, agency_dir)?;
+    Ok(ExactEvaluationRecord { path, created })
 }
 
 // ---------------------------------------------------------------------------
@@ -891,6 +1123,60 @@ mod tests {
         // Should not error — missing components/outcomes are warned, not failed
         let result = record_evaluation(&eval, &agency_dir);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn receipt_backed_record_is_create_once_and_performance_idempotent() {
+        let tmp = TempDir::new().unwrap();
+        let agency_dir = tmp.path().join("agency");
+        init(&agency_dir).unwrap();
+        let role = sample_role();
+        let role_id = role.id.clone();
+        save_role(&role, &agency_dir.join("cache/roles")).unwrap();
+        let tradeoff = sample_tradeoff();
+        let tradeoff_id = tradeoff.id.clone();
+        save_tradeoff(&tradeoff, &agency_dir.join("primitives/tradeoffs")).unwrap();
+        let evaluation = Evaluation {
+            id: format!("eval-terminal-v1-{}", "a".repeat(64)),
+            task_id: "terminal-task".into(),
+            agent_id: String::new(),
+            role_id: role_id.clone(),
+            tradeoff_id: tradeoff_id.clone(),
+            score: 0.83,
+            dimensions: HashMap::from([("correctness".into(), 0.9)]),
+            notes: "receipt bound".into(),
+            evaluator: "pi:test:model".into(),
+            timestamp: "2026-08-09T12:00:00Z".into(),
+            model: Some("pi:test:worker".into()),
+            source: "llm:terminal-observation".into(),
+            loop_iteration: 0,
+        };
+        let envelope = ScoredEvaluationEnvelope::legacy(evaluation);
+        let first = record_scored_evaluation_exactly_once(&envelope, &agency_dir).unwrap();
+        // Simulate a restart after the immutable evaluation commit point but
+        // before (or during) mutable performance projection.
+        let mut interrupted_role =
+            find_role_by_prefix(&agency_dir.join("cache/roles"), &role_id).unwrap();
+        interrupted_role.performance = PerformanceRecord::default();
+        save_role(&interrupted_role, &agency_dir.join("cache/roles")).unwrap();
+        let second = record_scored_evaluation_exactly_once(&envelope, &agency_dir).unwrap();
+        assert!(first.created);
+        assert!(!second.created);
+        assert_eq!(first.path, second.path);
+        let role = find_role_by_prefix(&agency_dir.join("cache/roles"), &role_id).unwrap();
+        assert_eq!(role.performance.task_count, 1);
+        assert_eq!(role.performance.evaluations.len(), 1);
+        let tradeoff =
+            find_tradeoff_by_prefix(&agency_dir.join("primitives/tradeoffs"), &tradeoff_id)
+                .unwrap();
+        assert_eq!(tradeoff.performance.task_count, 1);
+        assert_eq!(tradeoff.performance.evaluations.len(), 1);
+        assert_eq!(
+            load_all_evaluations(&agency_dir.join("evaluations"))
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[test]

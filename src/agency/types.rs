@@ -3,7 +3,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use crate::graph::TrustLevel;
+use crate::graph::{TokenUsage, TrustLevel};
 
 // ---------------------------------------------------------------------------
 // Content reference (replaces SkillRef)
@@ -723,6 +723,56 @@ fn is_zero_u32(v: &u32) -> bool {
 
 fn default_eval_source() -> String {
     "llm".to_string()
+}
+
+/// Exact receipt-bound terminal episode scored by a task-centric evaluation.
+/// The terminal observation remains immutable and unscored; this reference
+/// binds the separate score to it without editing the observation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvaluationTerminalSource {
+    pub observation_id: String,
+    pub observation_policy: String,
+    pub generation: u64,
+    pub attempt_id: String,
+    pub attempt_fence: u64,
+    pub completion_receipt: String,
+}
+
+/// Rich on-disk envelope for receipt-backed scored evaluations.
+///
+/// `Evaluation` stays the canonical compatibility/performance record. The
+/// flattened metadata is ignored by legacy `Evaluation` readers but retained
+/// by `wg evaluate show` and Agency statistics.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScoredEvaluationEnvelope {
+    #[serde(flatten)]
+    pub evaluation: Evaluation,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scored_evaluation_schema_version: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evaluator_route: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evaluator_reasoning: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evaluator_usage: Option<TokenUsage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_terminal_observation: Option<EvaluationTerminalSource>,
+}
+
+impl ScoredEvaluationEnvelope {
+    pub fn legacy(evaluation: Evaluation) -> Self {
+        Self {
+            evaluation,
+            scored_evaluation_schema_version: None,
+            evaluator_route: None,
+            evaluator_reasoning: None,
+            evaluator_usage: None,
+            evidence_digest: None,
+            source_terminal_observation: None,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

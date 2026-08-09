@@ -3092,3 +3092,10 @@ script = "scenarios/simple_local_fanout_restart.sh"
 owners = ["simple-local-wg-recovery"]
 description = "Clean-graph composed recovery canary: two real fake-Pi workers coordinate across tasks, one completes while the dispatcher is stopped, restart preserves exact state, and a dependent third worker dispatches and completes with no source retry charge."
 timeout_seconds = 120
+
+[[scenario]]
+name = "bounded_scored_terminal_evaluation"
+script = "scenarios/bounded_scored_terminal_evaluation.sh"
+owners = ["restore-bounded-scored-evaluation"]
+description = "Credential-free real terminal fake-Pi flow for the restored scored authority: Failed/Waiting and missing-observation candidates are refused without graph/evaluation mutation; dry-run re-verifies receipt, generation/attempt/fence, immutable candidate/reviews/publication and prints exact Pi route, xhigh reasoning, terminal observation, receipt and bounded evidence digest without a provider call; one live no-tools scoring call validates the exact seven 0..1 dimensions plus bounded notes and persists one create-once rich Agency evaluation. Explicit rerun, daemon restart, and reload neither re-call Pi nor duplicate/rewrite the row; evaluate show and agency stats expose score, dimensions, route/reasoning, provider usage/cost, receipt, evidence digest, and source terminal observation; no PendingEval or evaluator graph node exists."
+timeout_seconds = 120

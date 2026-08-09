@@ -337,6 +337,30 @@ pub fn load_all_evaluations_or_warn(dir: &Path) -> Vec<Evaluation> {
     }
 }
 
+/// Load evaluation files while retaining optional receipt-backed scoring
+/// metadata. Legacy files deserialize as envelopes with empty metadata.
+pub fn load_scored_evaluation(path: &Path) -> Result<ScoredEvaluationEnvelope, AgencyError> {
+    let contents = fs::read_to_string(path)?;
+    Ok(serde_json::from_str(&contents)?)
+}
+
+pub fn load_all_scored_evaluations(
+    dir: &Path,
+) -> Result<Vec<ScoredEvaluationEnvelope>, AgencyError> {
+    let mut evaluations = Vec::new();
+    if !dir.exists() {
+        return Ok(evaluations);
+    }
+    for entry in fs::read_dir(dir)? {
+        let path = entry?.path();
+        if path.extension().and_then(|extension| extension.to_str()) == Some("json") {
+            evaluations.push(load_scored_evaluation(&path)?);
+        }
+    }
+    evaluations.sort_by(|left, right| left.evaluation.id.cmp(&right.evaluation.id));
+    Ok(evaluations)
+}
+
 // -- TaskAssignmentRecord (YAML)
 pub fn save_assignment_record(
     record: &TaskAssignmentRecord,

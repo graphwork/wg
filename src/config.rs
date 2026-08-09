@@ -3677,7 +3677,7 @@ impl Config {
     }
 
     /// Resolve one role as Pi specifically. Pi-only subsystems (including the
-    /// currently disabled agency/evaluation recovery path) retain this strict
+    /// bounded post-terminal scored-evaluation observer) retain this strict
     /// boundary and do not become native Codex calls implicitly.
     pub fn resolve_pi_route_for_role(&self, role: DispatchRole) -> anyhow::Result<ResolvedPiRoute> {
         let resolved = self.resolve_execution_route_for_role(role)?;

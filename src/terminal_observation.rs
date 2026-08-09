@@ -7,7 +7,7 @@
 
 use crate::agency;
 use crate::completion_manifest::{
-    CompletionArtifactStore, ContentDigest, OutputRef, ReviewResolver,
+    CompletionArtifactStore, ContentDigest, OutputRef, ResolvedReviewBundle, ReviewResolver,
 };
 use crate::completion_review::{
     CompletionReviewBinding, ReviewCandidateState, ReviewFailureClass, ReviewReceipt, ReviewUsage,
@@ -227,6 +227,8 @@ pub enum TerminalObservationError {
     Agency(#[from] agency::AgencyError),
     #[error("graph error: {0}")]
     Graph(String),
+    #[error("task is not eligible for scored evaluation: {0}")]
+    Ineligible(String),
     #[error("terminal observation collision at {0}")]
     Collision(String),
 }
@@ -695,13 +697,13 @@ fn base_observation(input: BaseObservationInput<'_>) -> Result<TerminalOutcomeOb
     })
 }
 
-fn build_reviewed_observation(
+fn build_reviewed_observation_with_bundle(
     workgraph_dir: &Path,
     project_root: &Path,
     task: &Task,
     receipt_digest: &str,
     bytes: &[u8],
-) -> Result<TerminalOutcomeObservation, String> {
+) -> Result<(TerminalOutcomeObservation, ResolvedReviewBundle), String> {
     let receipt: ReviewedCompletionReceipt = serde_json::from_slice(bytes)
         .map_err(|error| format!("invalid reviewed completion receipt: {error}"))?;
     if receipt.receipt_version != 1
@@ -753,28 +755,25 @@ fn build_reviewed_observation(
     {
         return Err("completion candidate review binding is stale for the terminal attempt".into());
     }
+    let dependency_outputs = &task
+        .completion_candidate
+        .as_ref()
+        .ok_or_else(|| "terminal task has no selected completion candidate".to_string())?
+        .dependency_outputs;
     let resolver = ReviewResolver::new(&store);
     let resolved = if task.completion_contract == CompletionContract::Land {
         resolver.repository(project_root).resolve_submission(
             &submission.manifest_ref,
             &requirements,
             &summary,
-            &task
-                .completion_candidate
-                .as_ref()
-                .expect("submission required candidate")
-                .dependency_outputs,
+            dependency_outputs,
         )
     } else {
         resolver.resolve_submission(
             &submission.manifest_ref,
             &requirements,
             &summary,
-            &task
-                .completion_candidate
-                .as_ref()
-                .expect("submission required candidate")
-                .dependency_outputs,
+            dependency_outputs,
         )
     }
     .map_err(|error| format!("completion outputs no longer resolve: {error}"))?;
@@ -815,7 +814,7 @@ fn build_reviewed_observation(
         review_policy: receipt.review_policy,
         publication_receipt: receipt.publication,
     });
-    Ok(observation)
+    Ok((observation, resolved))
 }
 
 fn build_operator_observation(
@@ -885,12 +884,104 @@ fn build_observation(
         .parent()
         .ok_or_else(|| "workgraph directory has no project root".to_string())?;
     if value.get("manifest_digest").is_some() {
-        build_reviewed_observation(workgraph_dir, project_root, task, receipt_digest, &bytes)
+        build_reviewed_observation_with_bundle(
+            workgraph_dir,
+            project_root,
+            task,
+            receipt_digest,
+            &bytes,
+        )
+        .map(|(observation, _)| observation)
     } else if value.get("generation_before_accept").is_some() {
         build_operator_observation(workgraph_dir, task, receipt_digest, &bytes)
     } else {
         Err("completion receipt kind is not eligible for terminal observation projection".into())
     }
+}
+
+/// Fully verified immutable input for the scored-evaluation observer.
+///
+/// This value is assembled only after re-verifying the receipt-bound terminal
+/// lifecycle event, current generation/attempt/fence, selected completion
+/// candidate, review receipts, resolved immutable output bytes, and current
+/// publication truth. It grants no lifecycle or publication authority.
+#[derive(Clone, Debug)]
+pub struct VerifiedTerminalScoringEvidence {
+    pub task: Task,
+    pub observation: TerminalOutcomeObservation,
+    pub bundle: ResolvedReviewBundle,
+}
+
+/// Re-verify one persisted terminal observation and all completion/publication
+/// evidence it names. Only ordinary reviewed completions are scoreable;
+/// operator-accepted and legacy terminal rows remain observable but do not
+/// silently acquire ordinary-publication semantics.
+pub fn verify_terminal_scoring_evidence(
+    workgraph_dir: &Path,
+    task_id: &str,
+) -> Result<VerifiedTerminalScoringEvidence, TerminalObservationError> {
+    let graph = load_graph(workgraph_dir.join("graph.jsonl"))
+        .map_err(|error| TerminalObservationError::Graph(error.to_string()))?;
+    let task = graph
+        .get_task(task_id)
+        .ok_or_else(|| TerminalObservationError::Graph(format!("task '{task_id}' not found")))?
+        .clone();
+    if task.status != Status::Done {
+        return Err(TerminalObservationError::Ineligible(format!(
+            "task status {} is not Done",
+            task.status
+        )));
+    }
+    let receipt_digest = task
+        .completion_receipt
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            TerminalObservationError::Ineligible(
+                "Done task has no immutable completion receipt".to_string(),
+            )
+        })?;
+    let bytes = receipt_object_bytes(workgraph_dir, receipt_digest)
+        .map_err(TerminalObservationError::Ineligible)?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+    if value.get("manifest_digest").is_none() {
+        return Err(TerminalObservationError::Ineligible(
+            "only ordinary reviewed completion/publication receipts are scoreable".to_string(),
+        ));
+    }
+    let project_root = workgraph_dir.parent().ok_or_else(|| {
+        TerminalObservationError::Ineligible("workgraph directory has no project root".to_string())
+    })?;
+    let (observation, bundle) = build_reviewed_observation_with_bundle(
+        workgraph_dir,
+        project_root,
+        &task,
+        receipt_digest,
+        &bytes,
+    )
+    .map_err(TerminalObservationError::Ineligible)?;
+
+    let path = observation_path(workgraph_dir, &observation.observation_id)?;
+    let stored: TerminalOutcomeObservation =
+        serde_json::from_slice(&fs::read(&path).map_err(|error| {
+            TerminalObservationError::Ineligible(format!(
+                "source terminal observation {} is unavailable: {error}",
+                observation.observation_id
+            ))
+        })?)?;
+    verify_observation_identity(&stored)?;
+    if stored != observation || observation_path(workgraph_dir, &stored.observation_id)? != path {
+        return Err(TerminalObservationError::Ineligible(format!(
+            "source terminal observation {} no longer matches terminal evidence",
+            observation.observation_id
+        )));
+    }
+
+    Ok(VerifiedTerminalScoringEvidence {
+        task,
+        observation,
+        bundle,
+    })
 }
 
 /// Project one task if and only if its accepted terminal evidence still

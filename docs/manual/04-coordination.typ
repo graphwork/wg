@@ -38,9 +38,9 @@ Each tick proceeds through a series of phases. A preliminary phase zero processe
 
 *Phase 3: Build auto-assign meta-tasks.* If `auto_assign` is enabled in the agency configuration, the coordinator scans for ready tasks that have no agent identity bound to them. For each, it creates an `assign-{task-id}` meta-task that the original task is after. This meta-task, when dispatched, will spawn an assigner agent that inspects the agency's roster and picks the best fit. The meta-task is tagged `"assignment"` to prevent recursive auto-assignment—the coordinator never creates an assignment task for an assignment task.
 
-*Phase 4: Build auto-evaluate meta-tasks.* If `auto_evaluate` is enabled, the coordinator creates `evaluate-{task-id}` meta-tasks that are after each work task. When the work task reaches a terminal status, the evaluation task becomes ready. Evaluation tasks use the shell executor to run `wg evaluate run`, which spawns a separate evaluator to score the work. Tasks assigned to human agents are skipped—the system does not presume to evaluate human judgment. Meta-tasks tagged `"evaluation"`, `"assignment"`, or `"evolution"` are excluded to prevent infinite regress.
+*Phase 4: Reconcile terminal observations.* The coordinator performs bounded, create-once backfill for missing receipt-backed terminal observations. It does not create evaluator/FLIP graph tasks or call a scoring model. Scoring is an explicit post-terminal command (`wg evaluate run <done-task>`), outside task lifecycle authority.
 
-*Phase 4.5: FLIP verification.* If `flip_verification_threshold` is configured, the coordinator scans for tasks with FLIP scores below the threshold and creates `.verify-flip-{task-id}` verification tasks dispatched to a stronger model (Opus by default). FLIP (Fidelity via Latent Intent Probing) is an independent fidelity check that reconstructs what the task prompt must have been from the agent's output alone, then scores the match—see @sec-evolution for details.
+*Phase 4.5: Historical evaluation compatibility.* Pre-receipt `PendingEval`, `.flip-*`, and `.evaluate-*` bytes remain loadable and fail-closed, but are never created or rearmed by the current coordinator.
 
 *Phase 4.6: Auto-evolve.* If `auto_evolve` is enabled, the coordinator triggers agent evolution when evaluation data warrants it. The evolver reads performance summaries and proposes structured operations—mutations, crossovers, gap-analysis, retirements—to improve the agency's identity space.
 
@@ -184,17 +184,11 @@ The result is a two-phase dispatch: first the assigner runs, binding an identity
 
 Meta-tasks tagged `"assignment"`, `"evaluation"`, or `"evolution"` are excluded from auto-assignment. This prevents the coordinator from creating an assignment task for an assignment task, which would recurse infinitely.
 
-== Auto-Evaluate <auto-evaluate>
+== Explicit Receipt-Backed Evaluation <auto-evaluate>
 
-When `auto_evaluate` is enabled, the coordinator creates evaluation meta-tasks for completed work. For every non-meta-task in the graph, an `evaluate-{task-id}` task is created that is after the original. When the original task reaches a terminal status (done or failed), the evaluation task becomes ready and is dispatched.
+The current coordinator does not create evaluation meta-tasks. Normal completion projects one immutable, unscored terminal observation. An operator or workflow may then run `wg evaluate run <task-id>` on an ordinary reviewed `Done`. The command re-verifies the terminal receipt, generation/attempt/fence, immutable candidate and current publication; resolves the exact configured Pi evaluator route/reasoning; performs one bounded no-tools call; and create-once records an Agency score. #label("forward-ref-evolution")
 
-Evaluation tasks use the shell executor to run `wg evaluate run <task-id>`, which spawns a separate evaluator that reads the task definition, artifacts, and output logs, then scores the work on four dimensions: correctness (40% weight), completeness (30%), efficiency (15%), and style adherence (15%). The scores propagate to the agent, its role, and its motivation, building the performance data that drives evolution (see §5). #label("forward-ref-evolution")
-
-Two exclusions apply. Tasks assigned to human agents are not auto-evaluated—the system does not presume to score human work. And tasks that are themselves meta-tasks (tagged `"evaluation"`, `"assignment"`, or `"evolution"`) are excluded to prevent evaluation of evaluations.
-
-Failed tasks also get evaluated. When a task's status is failed, the coordinator removes the predecessor from the evaluation task so it becomes ready immediately. This is deliberate: failure modes carry signal. An agent that fails consistently on certain kinds of tasks reveals information about its role-motivation pairing that the evolution system can act on.
-
-Evaluations created by auto-evaluate carry a `source` field set to `"llm"`, identifying them as internal assessments from the LLM evaluator. External evaluations can be recorded via `wg evaluate record --task <id> --source <tag> --score <0.0-1.0>`, where the source tag is a freeform string—`"outcome:sharpe"`, `"ci:test-suite"`, `"vx:peer-123"`, or any label meaningful to the project. The evolver reads all evaluations regardless of source (see §5), #label("forward-ref-eval-source") enabling it to weigh internal quality assessments against external outcome data when proposing improvements to the agency.
+Failed, waiting, operator-accepted, unlanded, stale, missing, and unverifiable evidence is refused. The evaluator cannot change task state or create graph nodes. `--dry-run` prints the exact route/reasoning/evidence without mutation. External evaluations remain available through `wg evaluate record --task <id> --source <tag> --score <0.0-1.0>`. #label("forward-ref-eval-source")
 
 == Dead Agent Detection and Triage <dead-agents>
 
@@ -352,7 +346,7 @@ Executors are defined as TOML files in `.wg/executors/`. Each specifies a comman
 
 Custom executors enable integration with any tool. An executor for a different LLM provider, a code execution sandbox, a notification system—any process that can be launched from a shell command can serve as an executor. The prompt template supports the same `{{task_id}}`, `{{task_title}}`, `{{task_description}}`, `{{task_context}}`, and `{{task_identity}}` variables as the built-in executors.
 
-The executor also determines whether an agent is AI or human. The `claude` executor means AI. Executors like `matrix` or `email` (for sending notifications to humans) mean human. This distinction matters for auto-evaluation: human-agent tasks are skipped.
+The executor also determines whether an agent is AI or human. The `claude` executor means AI. Executors like `matrix` or `email` (for sending notifications to humans) mean human. Scored evaluation is never scheduled automatically for either kind.
 
 == Pause, Resume, and Manual Control <manual-control>
 

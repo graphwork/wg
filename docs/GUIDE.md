@@ -623,14 +623,17 @@ wg assign my-task <agent-hash>
 ```
 
 The current agency loop is **assign explicitly → execute → record source-bound
-completion evidence → optionally evolve**. Synthetic evaluator/FLIP graph tasks
-and evaluator mutation commands are retired; historical records remain
-read-only for compatibility and evolution inputs.
+completion evidence → optionally score → optionally evolve**. Scoring observes
+receipt-backed `Done`; it never mutates task lifecycle or creates synthetic
+evaluator/FLIP graph tasks.
 
 ```bash
 wg assign --auto <task>                      # explicit roster ranking/binding
-wg evaluate show                             # historical observations (read-only)
-wg evaluate rollout-status                   # evaluation-plane rollout state
+wg evaluate run <done-task> --dry-run        # exact Pi route/reasoning/evidence, no write
+wg evaluate run <done-task>                  # one bounded create-once score
+wg evaluate record --task <id> --score 0.8 --source manual
+wg evaluate show <done-task>
+wg evaluate rollout status                   # historical rollout compatibility
 
 wg evolve run                                # opt-in evolution cycle
 wg evolve run --strategy mutation --budget 3
