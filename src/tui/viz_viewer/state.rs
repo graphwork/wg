@@ -8654,7 +8654,7 @@ fn build_heavy_active_for_graph(
     registry
         .agents
         .values()
-        .filter(|agent| registry.has_live_process_identity(agent))
+        .filter(|agent| registry.occupies_admission_capacity(agent))
         .filter(|agent| {
             graph
                 .get_task(&agent.task_id)
@@ -19156,7 +19156,7 @@ impl VizApp {
                 registry
                     .agents
                     .values()
-                    .filter(|agent| registry.has_live_process_identity(agent))
+                    .filter(|agent| registry.occupies_admission_capacity(agent))
                     .filter(|agent| {
                         graph.get_task(&agent.task_id).is_some_and(|task| {
                             worksgood::disk_sentinel::classify_task(task).is_heavy()
@@ -19213,7 +19213,7 @@ impl VizApp {
             }
             // Agent stuck: alive but output file not modified in >5 minutes.
             // Suppress if the agent has active child processes (waiting on subprocess).
-            if registry.has_live_process_identity(agent) {
+            if registry.occupies_admission_capacity(agent) {
                 let output_age_secs = std::fs::metadata(&agent.output_file)
                     .and_then(|m| m.modified())
                     .ok()

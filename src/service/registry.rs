@@ -450,17 +450,33 @@ impl AgentRegistry {
         self.agents.values()
     }
 
-    /// Status plus exact kernel process-birth identity. Unknown legacy or
-    /// temporarily unavailable identity data fails closed and consumes a slot;
-    /// only an exact-token mismatch frees it.
+    /// Exact process authority: available matching birth token and a running,
+    /// non-zombie process. Callers may act on the PID only when this is true.
     pub fn has_live_process_identity(&self, agent: &AgentEntry) -> bool {
-        if !agent.is_alive() || !super::is_process_alive(agent.pid) {
+        agent.is_alive()
+            && super::is_process_running(agent.pid)
+            && self
+                .pid_start_identities
+                .get(&agent.id)
+                .is_some_and(|expected| {
+                    crate::service_identity::pid_start_identity(agent.pid)
+                        .is_some_and(|current| current == *expected)
+                })
+    }
+
+    /// Fail-closed admission accounting. Unknown identity holds capacity but
+    /// grants no process authority; a dead/zombie process or an exact-token
+    /// mismatch positively frees the slot.
+    pub fn occupies_admission_capacity(&self, agent: &AgentEntry) -> bool {
+        if !agent.is_alive() || !super::is_process_running(agent.pid) {
             return false;
         }
-        match self.pid_start_identities.get(&agent.id) {
-            Some(expected) => crate::service_identity::pid_start_identity(agent.pid)
-                .is_none_or(|current| current == *expected),
-            None => true,
+        match (
+            self.pid_start_identities.get(&agent.id),
+            crate::service_identity::pid_start_identity(agent.pid),
+        ) {
+            (Some(expected), Some(current)) => current == *expected,
+            _ => true,
         }
     }
 
@@ -659,14 +675,36 @@ mod tests {
         let id = registry.register_agent(pid, "task", "shell", "/tmp/out");
         let agent = registry.get_agent(&id).unwrap().clone();
         assert!(registry.has_live_process_identity(&agent));
+        assert!(registry.occupies_admission_capacity(&agent));
 
         registry
             .pid_start_identities
             .insert(id.clone(), "definitely-not-this-process".into());
         assert!(!registry.has_live_process_identity(&agent));
+        assert!(!registry.occupies_admission_capacity(&agent));
 
         registry.pid_start_identities.remove(&id);
-        assert!(registry.has_live_process_identity(&agent));
+        assert!(!registry.has_live_process_identity(&agent));
+        assert!(registry.occupies_admission_capacity(&agent));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn zombie_never_grants_agent_authority_or_holds_capacity() {
+        let mut child = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("sleep 0.05")
+            .spawn()
+            .expect("spawn short child");
+        let pid = child.id();
+        let mut registry = AgentRegistry::new();
+        let id = registry.register_agent(pid, "task", "shell", "/tmp/out");
+        let agent = registry.get_agent(&id).unwrap().clone();
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        assert!(super::super::is_process_alive(pid));
+        assert!(!registry.has_live_process_identity(&agent));
+        assert!(!registry.occupies_admission_capacity(&agent));
+        child.wait().ok();
     }
 
     #[test]

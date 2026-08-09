@@ -1661,7 +1661,7 @@ fn handle_status(dir: &Path) -> IpcResponse {
             registry
                 .agents
                 .values()
-                .filter(|agent| registry.has_live_process_identity(agent))
+                .filter(|agent| registry.occupies_admission_capacity(agent))
                 .filter(|agent| {
                     graph.get_task(&agent.task_id).is_some_and(|task| {
                         worksgood::disk_sentinel::classify_task(task).is_heavy()

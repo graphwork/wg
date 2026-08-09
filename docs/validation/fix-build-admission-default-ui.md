@@ -20,6 +20,7 @@ Validation run in the task worktree on 2026-08-08 with the pinned Rust 1.96.0 to
 - `cargo test --quiet unavailable_service_clears_admission_and_reloads_capacity` — PASS: 1 passed, 0 failed.
 - `cargo test --quiet admission_identity_uses_exact_kernel_token_and_legacy_fails_closed` — PASS: 1 passed, 0 failed.
 - `cargo test --quiet zombie_process_is_not_running_authority` — PASS: 1 passed, 0 failed.
+- `cargo test --quiet zombie_never_grants_agent_authority_or_holds_capacity` — PASS: 1 passed, 0 failed.
 - `cargo test --quiet authoritative_service_identity_click_keyboard_and_stale_coordinate_parity` — PASS: 1 passed, 0 failed (including physical Shift+I parity).
 - Existing targeted config/coordinator/TUI tests executed during implementation passed.
 
