@@ -332,8 +332,8 @@ fn shipped_worker_prompt_authority_audit_is_complete() {
     }
 
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    // Scan every shipped Rust/Markdown/TypeScript source that can construct a
-    // worker/system prompt. This is intentionally a recursive superset rather
+    // Scan shipped source plus generated runtime artifacts and prompt/template
+    // trees (Rust/Markdown/TypeScript/JavaScript/shell/TOML). This is intentionally a recursive superset rather
     // than a hand-maintained file list: new prompt builders, dynamic fragments,
     // Pi tools (`wg_run`/`wg_*`), and command spellings enter the audit without
     // requiring this test to know their path first.
@@ -357,7 +357,7 @@ fn shipped_worker_prompt_authority_audit_is_complete() {
             }
             if !matches!(
                 path.extension().and_then(|value| value.to_str()),
-                Some("rs" | "md" | "ts")
+                Some("rs" | "md" | "ts" | "js" | "mjs" | "sh" | "toml")
             ) {
                 continue;
             }
@@ -370,7 +370,7 @@ fn shipped_worker_prompt_authority_audit_is_complete() {
                 let trimmed = line.trim_start();
                 let source_comment = matches!(
                     path.extension().and_then(|value| value.to_str()),
-                    Some("rs" | "ts")
+                    Some("rs" | "ts" | "js" | "mjs" | "sh")
                 ) && (trimmed.starts_with("//")
                     || trimmed.starts_with("///")
                     || trimmed.starts_with("//!"));
@@ -397,7 +397,11 @@ fn shipped_worker_prompt_authority_audit_is_complete() {
                     }
                 }
             }
-            if relative == "worksgood-pi/src/tools.ts" && content.contains("wg_run") {
+            if matches!(
+                relative.as_str(),
+                "worksgood-pi/src/tools.ts" | "worksgood-pi/embedded/pi-worksgood/tools.js"
+            ) && content.contains("wg_run")
+            {
                 surface_commands.insert("wg_run".into());
             }
             if !surface_commands.is_empty() {
@@ -428,14 +432,22 @@ fn shipped_worker_prompt_authority_audit_is_complete() {
         &mut prompt_surfaces,
         &mut commands,
     );
-    scan_sources(
-        root,
-        &root.join("worksgood-pi/src"),
-        &mut shipped,
-        &mut scanned,
-        &mut prompt_surfaces,
-        &mut commands,
-    );
+    for shipped_tree in [
+        "worksgood-pi/src",
+        "worksgood-pi/embedded",
+        "worksgood-pi/host",
+        "templates",
+        "docs/prompts",
+    ] {
+        scan_sources(
+            root,
+            &root.join(shipped_tree),
+            &mut shipped,
+            &mut scanned,
+            &mut prompt_surfaces,
+            &mut commands,
+        );
+    }
     assert!(
         scanned > 100,
         "recursive shipped-source audit unexpectedly small"
@@ -453,7 +465,59 @@ fn shipped_worker_prompt_authority_audit_is_complete() {
         ("src/commands/spawn/context.rs", "trusted-worker"),
         ("src/commands/service/coordinator_agent.rs", "coordinator"),
         ("worksgood-pi/src/tools.ts", "capability-aware-pi-tool"),
+        (
+            "worksgood-pi/embedded/pi-worksgood/tools.js",
+            "capability-aware-pi-tool",
+        ),
     ]);
+    let expected_commands: std::collections::BTreeMap<&str, std::collections::BTreeSet<&str>> =
+        std::collections::BTreeMap::from([
+            ("src/commands/add.rs", ["add"].into_iter().collect()),
+            ("src/commands/placement.rs", ["edit"].into_iter().collect()),
+            (
+                "src/commands/quickstart.rs",
+                ["add", "edit", "msg", "publish"].into_iter().collect(),
+            ),
+            (
+                "src/commands/service/coordinator_agent.rs",
+                ["add"].into_iter().collect(),
+            ),
+            ("src/commands/show.rs", ["edit"].into_iter().collect()),
+            (
+                "src/commands/spawn/context.rs",
+                ["add"].into_iter().collect(),
+            ),
+            (
+                "src/service/executor.rs",
+                ["add", "edit", "msg", "publish"].into_iter().collect(),
+            ),
+            (
+                "src/text/agent_guide.md",
+                ["add", "edit", "publish"].into_iter().collect(),
+            ),
+            (
+                "worksgood-pi/embedded/pi-worksgood/tools.js",
+                ["add", "msg", "publish", "wg_run"].into_iter().collect(),
+            ),
+            (
+                "worksgood-pi/src/tools.ts",
+                ["add", "msg", "publish", "wg_run"].into_iter().collect(),
+            ),
+        ]);
+    let expected_commands: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
+        expected_commands
+            .into_iter()
+            .map(|(surface, commands)| {
+                (
+                    surface.to_string(),
+                    commands.into_iter().map(str::to_string).collect(),
+                )
+            })
+            .collect();
+    assert_eq!(
+        prompt_surfaces, expected_commands,
+        "a shipped prompt surface changed its executable command contract"
+    );
     let discovered: std::collections::BTreeSet<&str> =
         prompt_surfaces.keys().map(String::as_str).collect();
     let classified: std::collections::BTreeSet<&str> = expected_authority.keys().copied().collect();
@@ -481,11 +545,31 @@ fn shipped_worker_prompt_authority_audit_is_complete() {
                     && surface_text.contains("backend.capabilities"),
                 "{surface} lacks Pi capability preflight"
             ),
-            "operator-hint"
-            | "operator-validation"
-            | "operator-help"
-            | "coordinator"
-            | "system-placement-adapter" => {}
+            "operator-hint" | "operator-validation" | "operator-help" => {
+                let operator_commands = ["add", "edit", "assign", "reprioritize", "publish", "msg"]
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect::<std::collections::BTreeSet<_>>();
+                assert!(
+                    surface_commands.is_subset(&operator_commands),
+                    "{surface} asks an operator to use a non-operator command"
+                );
+                assert!(
+                    surface.starts_with("src/commands/"),
+                    "operator guidance escaped the operator CLI surface: {surface}"
+                );
+            }
+            "coordinator" => {
+                assert!(surface.contains("coordinator_agent"));
+                assert_eq!(surface_commands, &["add".to_string()].into_iter().collect());
+            }
+            "system-placement-adapter" => {
+                assert!(surface.contains("placement"));
+                assert_eq!(
+                    surface_commands,
+                    &["edit".to_string()].into_iter().collect()
+                );
+            }
             other => panic!("unrecognized authority class {other} for {surface}"),
         }
     }

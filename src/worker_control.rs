@@ -126,7 +126,20 @@ pub fn effective_control_mode(
     {
         return WorkerControlMode::Scoped;
     }
-    explicit.unwrap_or(project_mode)
+    match (project_mode, explicit) {
+        // Task metadata may only narrow the project policy. This makes a
+        // worker-authored `worker-control:trusted` tag inert under scoped or
+        // read-only project policy without requiring mutable provenance flags.
+        (WorkerControlMode::ReadOnly, _) | (_, Some(WorkerControlMode::ReadOnly)) => {
+            WorkerControlMode::ReadOnly
+        }
+        (WorkerControlMode::Scoped, _) | (_, Some(WorkerControlMode::Scoped)) => {
+            WorkerControlMode::Scoped
+        }
+        (WorkerControlMode::Trusted, Some(WorkerControlMode::Trusted) | None) => {
+            WorkerControlMode::Trusted
+        }
+    }
 }
 
 pub fn control_restrictions(mode: WorkerControlMode) -> &'static str {
@@ -1676,6 +1689,21 @@ mod tests {
             effective_control_mode(WorkerControlMode::Trusted, &quality_pass),
             WorkerControlMode::Trusted,
             "quality passes need the same cross-task graph authority as ordinary local workers"
+        );
+
+        let mut attempted_widening = ordinary.clone();
+        attempted_widening
+            .tags
+            .push("worker-control:trusted".into());
+        assert_eq!(
+            effective_control_mode(WorkerControlMode::Scoped, &attempted_widening),
+            WorkerControlMode::Scoped,
+            "task metadata cannot widen project policy"
+        );
+        assert_eq!(
+            effective_control_mode(WorkerControlMode::ReadOnly, &attempted_widening),
+            WorkerControlMode::ReadOnly,
+            "task metadata cannot widen read-only project policy"
         );
 
         let mut read_only = ordinary.clone();

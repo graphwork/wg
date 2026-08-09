@@ -35,6 +35,12 @@ if env -u WG_WORKER_CAPABILITY -u WG_WORKER_CONTROL_PROTOCOL -u WG_WORKER_IPC wg
   exit 93
 fi
 grep -q 'worker_control.capability_required_for_managed_process' env-strip.out
+graph_guess="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/.wg"
+if env WG_WORKER_CONTROL_MODE=trusted WG_DIR="$graph_guess" wg list > mode-widen.out 2>&1; then
+  echo "mutable mode environment unexpectedly widened worker authority" >&2
+  exit 94
+fi
+grep -q 'worker_control.mode_override_refused' mode-widen.out
 wg capabilities --json > capabilities.json
 grep -q "\"mode\": \"$mode\"" capabilities.json
 wg show "$WG_TASK_ID" --json > "$mode-show.json"
@@ -57,7 +63,7 @@ if WG_DIR=/tmp/guessed-control wg show "$WG_TASK_ID" > guessed-path.out 2>&1; th
   echo "raw graph environment unexpectedly accepted" >&2
   exit 87
 fi
-grep -q 'worker_control.raw_graph_environment_refused' guessed-path.out
+grep -Eq 'worker_control.(raw_graph_environment_refused|capability_unknown|graph_identity_mismatch)' guessed-path.out
 if git add -f .wg >/dev/null 2>&1; then
   echo "absent .wg unexpectedly entered candidate" >&2
   exit 88
@@ -65,7 +71,7 @@ fi
 if [[ $mode == scoped ]]; then
   wg log "$WG_TASK_ID" "brokered worker log"
   printf 'brokered\n' > brokered.txt
-  git add capabilities.json env-strip.out scoped-show.json brokered.txt
+  git add capabilities.json env-strip.out mode-widen.out scoped-show.json brokered.txt
 else
   wg msg list "$WG_TASK_ID" > read-only-messages.out
   grep -q 'operator message for read-only observation' read-only-messages.out
@@ -85,7 +91,7 @@ else
   fi
   grep -q 'worker_control.read_only_refused' read-only-done.out
   printf 'read-only\n' > read-only.txt
-  git add capabilities.json env-strip.out read-only-show.json read-only-messages.out read-only-poll.out read-only-log.out read-only-done.out read-only.txt
+  git add capabilities.json env-strip.out mode-widen.out read-only-show.json read-only-messages.out read-only-poll.out read-only-log.out read-only-done.out read-only.txt
 fi
 git commit -qm "worker capability evidence: $mode"
 # Keep the owner alive so the scenario can inspect the capability boundary

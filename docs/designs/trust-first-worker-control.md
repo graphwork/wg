@@ -40,8 +40,11 @@ Reproduction evidence is retained in executable before/after fixtures:
 | `read-only` | explicit observation policy | reads/runtime bookkeeping only; graph mutations refused |
 
 Project policy is `[worker_control] mode = "…"`. A task override is visible in
-ordinary task metadata as `worker-control:trusted|scoped|read-only`. Structural
-floors win over a widening task tag. Sandboxed inbound tasks carry the visible
+ordinary task metadata as `worker-control:trusted|scoped|read-only`, but it may
+only narrow project policy, never widen it. Structural floors win as well. The
+effective mode, source task, and graph identity are sealed into the minted
+attempt capability and reloaded before every CLI dispatch; mutable
+`WG_WORKER_CONTROL_MODE`, `WG_TASK_ID`, and `WG_DIR` are not authority inputs. Sandboxed inbound tasks carry the visible
 `worker-control:inbound` (legacy-compatible aliases: `content:inbound` and
 `sandboxed-inbound`) floor and are always `read-only`, even if attacker-controlled
 metadata also asks for `worker-control:trusted`. `.quality-pass-*` is intentionally

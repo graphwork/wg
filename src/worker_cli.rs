@@ -15,14 +15,6 @@ use worksgood::worker_control::{
     WORKER_CONTROL_PROTOCOL, WorkerControlMode, WorkerOperation, WorkerRequestEnvelope,
 };
 
-fn control_mode() -> WorkerControlMode {
-    std::env::var("WG_WORKER_CONTROL_MODE")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        // Capabilities minted before the visible-mode rollout stay narrow.
-        .unwrap_or(WorkerControlMode::Scoped)
-}
-
 fn task_is_own(task: &str) -> bool {
     std::env::var("WG_TASK_ID").as_deref() == Ok(task)
 }
@@ -390,15 +382,41 @@ fn send(operation: WorkerOperation) -> Result<()> {
 
 /// Return `Ok(None)` outside worker mode, `Ok(Some(()))` when handled.
 pub fn maybe_run(command: &Commands, json: bool, resolved_dir: &Path) -> Result<Option<()>> {
-    if std::env::var_os("WG_WORKER_CAPABILITY").is_none() {
+    let Some(capability) = std::env::var_os("WG_WORKER_CAPABILITY") else {
         if worksgood::worker_control::is_managed_worker_process(resolved_dir)? {
             anyhow::bail!(
                 "worker_control.capability_required_for_managed_process: stripping WG_* does not grant operator authority"
             );
         }
         return Ok(None);
+    };
+    let capability = capability
+        .into_string()
+        .map_err(|_| anyhow::anyhow!("worker_control.capability_encoding_invalid"))?;
+    let binding = worksgood::worker_control::lookup_capability(resolved_dir, &capability)
+        .context("authenticate worker capability before CLI dispatch")?;
+    let graph_id = worksgood::worker_control::load_or_create_graph_identity(resolved_dir)?;
+    if binding.graph_id != graph_id || binding.save_source.graph_id != graph_id {
+        anyhow::bail!("worker_control.graph_identity_mismatch");
     }
-    let mode = control_mode();
+    if let Some(requested_mode) = std::env::var("WG_WORKER_CONTROL_MODE")
+        .ok()
+        .and_then(|value| value.parse::<WorkerControlMode>().ok())
+        && requested_mode != binding.control_mode
+    {
+        anyhow::bail!(
+            "worker_control.mode_override_refused: authenticated={} requested={}",
+            binding.control_mode,
+            requested_mode
+        );
+    }
+    // All downstream own-task checks consume this authenticated value rather
+    // than mutable worker input.
+    unsafe {
+        std::env::set_var("WG_TASK_ID", &binding.task_id);
+        std::env::set_var("WG_WORKER_CONTROL_MODE", binding.control_mode.to_string());
+    }
+    let mode = binding.control_mode;
     if mode != WorkerControlMode::Trusted && std::env::var_os("WG_DIR").is_some() {
         anyhow::bail!("worker_control.raw_graph_environment_refused: WG_DIR must not be present");
     }

@@ -58,7 +58,7 @@ if wg --dir /tmp list > protected-cross-graph.out 2>&1; then
   echo "trusted worker unexpectedly selected a different graph" >&2
   exit 93
 fi
-grep -q 'worker_control.graph_cli_cross_graph_refused' protected-cross-graph.out
+grep -Eq 'worker_control.(graph_cli_cross_graph_refused|capability_unknown|graph_identity_mismatch)' protected-cross-graph.out
 if wg msg send --to wgid:forbidden --from forged --body payload > protected-fed-send.out 2>&1; then
   echo "trusted worker unexpectedly gained federation send authority" >&2
   exit 97
