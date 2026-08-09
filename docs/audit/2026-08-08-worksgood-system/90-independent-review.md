@@ -335,6 +335,15 @@ Bounded results used in this review:
 
 ### 7.3 Validation commands for this artifact
 
+**`[VERIFIED]`** Executed from `/home/bot/wg/.wg-worktrees/agent-27` on
+2026-08-09 UTC after writing this artifact. All three commands below exited 0.
+`test -s` and plain `git diff --check` produced no stdout. The structural `rg`
+printed matches for `Overall score` (line 27), `Primary-evidence spot checks`
+(line 162), `Coverage omissions` (line 221), `Blocking corrections` (line
+245), `Non-blocking improvements` (line 255), and `Explicit release
+recommendation` (line 264). Line numbers are the pre-commit artifact and may
+move if this evidence note is edited; the headings are the assertion.
+
 ```bash
 test -s docs/audit/2026-08-08-worksgood-system/90-independent-review.md
 rg -n '^### Overall score|Primary-evidence spot checks|Blocking corrections|Non-blocking improvements|Coverage omissions|Explicit release recommendation' \
