@@ -245,12 +245,12 @@ ef8719a423d00a0be98eb7c1e4297751e1c0dca32348b9e55f3238b509d01c9b  preserved-refs
 ### Phase 7 — Canary, install, and reconcile
 
 - [x] Build candidate binary without changing the global installation.
-- [ ] Run the clean-graph golden-path canary in §8.
+- [x] Run the clean-graph golden-path canary in §8.
 - [x] Run focused stale-owner, immutable-receipt, and remote-scope safety tests.
-- [ ] Run `cargo fmt --check`, targeted tests, and `cargo clippy`.
-- [ ] Install with `cargo install --path . --locked` only after the canary passes.
-- [ ] Start the service against a disposable copy of the preserved graph and run reconciliation dry-run.
-- [ ] Reconcile already-landed audit artifacts without re-reviewing identical bytes.
+- [x] Run `cargo fmt --check`, targeted tests, and `cargo clippy`.
+- [x] Install with `cargo install --path . --locked` only after the canary passes.
+- [x] Start the service against a disposable copy of the preserved graph and run reconciliation dry-run.
+- [x] Reconcile already-landed audit artifacts without re-reviewing identical bytes.
 - [ ] Mark runaway trust/build task histories superseded by the operator rescue rather than pretending their latest review-expanded branches were accepted.
 - [ ] Resume the real graph only after status, dispatch, completion, review findings, and operator recovery are proven.
 - [ ] Reclaim stale worktree targets only after refs and external snapshot checksums are reverified.
@@ -376,3 +376,12 @@ Prefer deletion, bypass, and reuse of ordinary WG commands over new abstractions
 - Default `wg list --all` task rows now show compact assignment/FLIP/eval state and attempt count parenthetically; review activities remain non-task audit records.
 - The clean `simple_local_recovery` smoke now proves advisory completion, operator recovery, compact parent-row activity, exact strict findings, and bounded strict exhaustion.
 - CLI text/JSON already expose lifecycle audit, attempts, candidates, and immutable review activity; the TUI task inspector now renders the same concepts in a dedicated Completion history section with generation, attempt/fence, candidate digest, review route/verdict, usage, and cost. A focused TUI state test passed.
+
+### 2026-08-09 — Golden canary, install, and disposable reconciliation
+
+- `simple_local_fanout_restart` passed: two trusted fake-Pi workers coordinated across tasks; A completed while the dispatcher was stopped; after restart B completed and dependent C dispatched/completed automatically with zero source retry charge.
+- The legacy ten-worker `worker_owned_completion_canary` also passed, preserving diagnostic submit/land compatibility while the ordinary prompt uses one `wg done`.
+- `cargo fmt --check`, `cargo check --all-targets`, targeted completion/control/reconciliation/TUI tests, and `cargo clippy` passed (existing warnings only).
+- Installed all three binaries with `cargo install --path . --locked` only after the canaries passed; `wg`, `worksgood`, and `nex` report `0.1.0`.
+- Started the installed candidate against an extracted disposable preserved graph with `max_agents=0`; service status stayed healthy and `wg sweep --dry-run` reported no orphan mutation.
+- On that disposable graph, operator reconciliation marked `audit-sync-roadmap` Done with a reason-bound immutable receipt and no model review call, proving the already-integrated-artifact recovery path without touching the real forensic graph.
