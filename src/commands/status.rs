@@ -53,6 +53,7 @@ struct CoordinatorInfo {
     flip_threshold: Option<f64>,
     worker_control_mode: worksgood::worker_control::WorkerControlMode,
     worker_control_restrictions: String,
+    completion_review_policy: String,
     poll_interval: u64,
 }
 
@@ -411,6 +412,11 @@ fn gather_coordinator_info(dir: &Path) -> CoordinatorInfo {
                 config.worker_control.mode,
             )
             .to_string(),
+            completion_review_policy: if config.agency.completion_review_strict {
+                "strict".to_string()
+            } else {
+                "advisory".to_string()
+            },
             poll_interval: coord.poll_interval,
         };
     }
@@ -450,6 +456,11 @@ fn gather_coordinator_info(dir: &Path) -> CoordinatorInfo {
             config.worker_control.mode,
         )
         .to_string(),
+        completion_review_policy: if config.agency.completion_review_strict {
+            "strict".to_string()
+        } else {
+            "advisory".to_string()
+        },
         poll_interval: config.coordinator.poll_interval,
     }
 }
@@ -906,7 +917,8 @@ fn print_status(status: &StatusOutput) {
         status.coordinator.worker_control_mode, status.coordinator.worker_control_restrictions
     );
     println!(
-        "Evaluation gate: applicability={}, evaluator-threshold={}, FLIP-policy={}, FLIP-threshold={} (attempt-pinned once visible)",
+        "Evaluation gate: completion-review={}, applicability={}, evaluator-threshold={}, FLIP-policy={}, FLIP-threshold={} (model review is non-blocking unless strict)",
+        status.coordinator.completion_review_policy,
         status.coordinator.eval_gate_applicability,
         status
             .coordinator

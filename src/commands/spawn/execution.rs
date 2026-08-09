@@ -1828,55 +1828,72 @@ pub(crate) fn spawn_agent_inner_authorized(
         let runtime_dir = worksgood::attempt_runtime::ensure_namespace(dir, &runtime_key)?;
         attempt_runtime_dir = Some(runtime_dir);
 
-        let endpoint = match crate::commands::service::ServiceState::load(dir)? {
-            Some(service_state) => PathBuf::from(service_state.socket_path),
-            #[cfg(test)]
-            None => {
-                // Unit spawn tests terminate the wrapper before it calls WG.
-                // Production remains daemon-only.
-                let endpoint = dir.join("service/test-worker-control.sock");
-                if let Some(parent) = endpoint.parent() {
-                    fs::create_dir_all(parent)?;
-                }
-                fs::write(&endpoint, b"test-only-not-a-socket")?;
-                endpoint
-            }
-            #[cfg(not(test))]
-            None => anyhow::bail!(
-                "worker_control.daemon_required: task workers launch only through a live daemon capability channel"
-            ),
-        };
-        if !endpoint.exists() {
-            anyhow::bail!("worker_control.endpoint_missing: {}", endpoint.display());
-        }
         let control_mode =
             worksgood::worker_control::effective_control_mode(config.worker_control.mode, task);
-        let (worker_token, worker_binding) =
-            worksgood::worker_control::mint_attempt_capability_for_worktree_mode(
-                dir,
-                task_id,
-                claim_snapshot.generation,
-                &claim_snapshot.attempt_id,
-                claim_snapshot.attempt_fence,
-                claim_snapshot.attempt_fence,
-                &temp_agent_id,
-                worktree_info
-                    .as_ref()
-                    .map(|worktree| worktree.path.as_path())
-                    .or_else(|| nongit_workspace.as_deref()),
-                control_mode,
-            )?;
-        worker_capability_digest = Some(worker_binding.token_sha256.clone());
-        cmd.env("WG_WORKER_IPC", &endpoint);
-        cmd.env("WG_WORKER_CAPABILITY", &worker_token);
-        cmd.env(
-            "WG_WORKER_CONTROL_PROTOCOL",
-            worksgood::worker_control::WORKER_CONTROL_PROTOCOL,
-        );
-        cmd.env("WG_GRAPH_ID", &worker_binding.graph_id);
         cmd.env("WG_WORKER_CONTROL_MODE", control_mode.to_string());
-        cmd.env("WG_WORKER_ATTEMPT_ID", &worker_binding.attempt_id);
-        cmd.env("WG_WORKER_ATTEMPT_FENCE", worker_binding.fence.to_string());
+        cmd.env(
+            "WG_WORKER_GENERATION",
+            claim_snapshot.generation.to_string(),
+        );
+        cmd.env("WG_WORKER_ATTEMPT_ID", &claim_snapshot.attempt_id);
+        cmd.env(
+            "WG_WORKER_ATTEMPT_FENCE",
+            claim_snapshot.attempt_fence.to_string(),
+        );
+        if control_mode == worksgood::worker_control::WorkerControlMode::Trusted {
+            // Restore the original local-worker contract: ordinary WG commands
+            // operate directly on the project graph and remain available while
+            // the daemon is restarting. main validates the exact ambient
+            // task/generation/attempt/fence before every mutating command.
+            cmd.env("WG_DIR", dir);
+            cmd.env(
+                "WG_GRAPH_ID",
+                worksgood::worker_control::load_or_create_graph_identity(dir)?,
+            );
+        } else {
+            let endpoint = match crate::commands::service::ServiceState::load(dir)? {
+                Some(service_state) => PathBuf::from(service_state.socket_path),
+                #[cfg(test)]
+                None => {
+                    let endpoint = dir.join("service/test-worker-control.sock");
+                    if let Some(parent) = endpoint.parent() {
+                        fs::create_dir_all(parent)?;
+                    }
+                    fs::write(&endpoint, b"test-only-not-a-socket")?;
+                    endpoint
+                }
+                #[cfg(not(test))]
+                None => anyhow::bail!(
+                    "worker_control.daemon_required: scoped workers require a live capability channel"
+                ),
+            };
+            if !endpoint.exists() {
+                anyhow::bail!("worker_control.endpoint_missing: {}", endpoint.display());
+            }
+            let (worker_token, worker_binding) =
+                worksgood::worker_control::mint_attempt_capability_for_worktree_mode(
+                    dir,
+                    task_id,
+                    claim_snapshot.generation,
+                    &claim_snapshot.attempt_id,
+                    claim_snapshot.attempt_fence,
+                    claim_snapshot.attempt_fence,
+                    &temp_agent_id,
+                    worktree_info
+                        .as_ref()
+                        .map(|worktree| worktree.path.as_path())
+                        .or_else(|| nongit_workspace.as_deref()),
+                    control_mode,
+                )?;
+            worker_capability_digest = Some(worker_binding.token_sha256.clone());
+            cmd.env("WG_WORKER_IPC", &endpoint);
+            cmd.env("WG_WORKER_CAPABILITY", &worker_token);
+            cmd.env(
+                "WG_WORKER_CONTROL_PROTOCOL",
+                worksgood::worker_control::WORKER_CONTROL_PROTOCOL,
+            );
+            cmd.env("WG_GRAPH_ID", &worker_binding.graph_id);
+        }
         eprintln!(
             "[spawn] worker control: mode={} task={} restrictions={}",
             control_mode,

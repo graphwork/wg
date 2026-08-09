@@ -482,6 +482,64 @@ pub fn audit_path(dir: &Path) -> PathBuf {
     service_dir(dir).join("worker-capability-audit.jsonl")
 }
 
+/// Validate the ambient identity of a trusted local worker without requiring a
+/// live daemon round trip. This keeps direct graph coordination available
+/// during service restarts while preserving the exact stale-attempt fence.
+pub fn validate_trusted_local_environment(dir: &Path) -> Result<()> {
+    let mode = std::env::var("WG_WORKER_CONTROL_MODE")
+        .ok()
+        .and_then(|value| value.parse().ok());
+    if mode != Some(WorkerControlMode::Trusted) || std::env::var_os("WG_TASK_ID").is_none() {
+        return Ok(());
+    }
+    let task_id = std::env::var("WG_TASK_ID").context("trusted worker missing WG_TASK_ID")?;
+    let agent_id = std::env::var("WG_AGENT_ID").context("trusted worker missing WG_AGENT_ID")?;
+    let generation = std::env::var("WG_WORKER_GENERATION")
+        .context("trusted worker missing WG_WORKER_GENERATION")?
+        .parse::<u64>()
+        .context("parse trusted worker generation")?;
+    let attempt_id =
+        std::env::var("WG_WORKER_ATTEMPT_ID").context("trusted worker missing attempt id")?;
+    let fence = std::env::var("WG_WORKER_ATTEMPT_FENCE")
+        .context("trusted worker missing attempt fence")?
+        .parse::<u64>()
+        .context("parse trusted worker attempt fence")?;
+    if let Ok(expected_graph) = std::env::var("WG_GRAPH_ID") {
+        let actual = load_or_create_graph_identity(dir)?;
+        if expected_graph != actual {
+            bail!("worker_control.graph_identity_mismatch");
+        }
+    }
+    let graph = crate::parser::load_graph(&dir.join("graph.jsonl"))?;
+    let task = graph
+        .get_task(&task_id)
+        .ok_or_else(|| anyhow::anyhow!("worker_control.task_missing"))?;
+    let attempt = task
+        .lifecycle
+        .current_attempt
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("worker_control.owner_released"))?;
+    if task.lifecycle.generation != generation
+        || task.lifecycle.fence != fence
+        || attempt.id != attempt_id
+        || attempt.generation != generation
+        || attempt.fence != fence
+        || attempt.actor_id != agent_id
+        || attempt.disposition.is_some()
+        || task.assigned.as_deref() != Some(agent_id.as_str())
+    {
+        bail!(
+            "worker_control.stale_capability: expected task={} generation={} attempt={} fence={} owner={}",
+            task_id,
+            generation,
+            attempt_id,
+            fence,
+            agent_id
+        );
+    }
+    Ok(())
+}
+
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     let parent = path.parent().context("worker control path has no parent")?;
     fs::create_dir_all(parent)?;

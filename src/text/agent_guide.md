@@ -66,28 +66,18 @@ the most common source of bugs.
 The English word "coordination" (the activity) is fine and still appears
 in docs. As role-nouns, "coordinator" and "orchestrator" are deprecated.
 
-### Quality pass before batch execution
+### Quality pass is optional
 
-When a chat agent creates more than a couple of tasks in response to one
-user request, it should insert a private `.quality-pass-<batch-id>` task that
-gates downstream execution. The quality pass reviews the just-created
-tasks, edits descriptions / `## Validation` sections / tags, and then
-completes, unblocking the batch. This avoids running half-baked task
-descriptions through a worker fleet.
+Do not insert a quality-pass task merely because a chat created several tasks.
+The normal path is direct publication and worker fan-out; trusted local workers
+may refine sibling/downstream metadata as coordination requires.
 
-Mechanism: the chat agent creates the batch with `wg add` (followed by
-`wg edit <id> --add-after .quality-pass-<batch-id>` for each, or by passing
-`--after .quality-pass-<batch-id>` at creation time), and creates a single
-`.quality-pass-<batch-id>` draft with no `--after`. It then publishes the
-whole connected batch with `wg publish .quality-pass-<batch-id> --wcc`. There
-is no `--before` dependency flag in `wg add`; use `--add-after` (or `--after`
-at creation) instead.
-
-Quality passes are advisory by default. If their model/provider or local
-infrastructure is unavailable, WG emits a loud warning and releases the
-unchanged batch instead of stranding normal tasks. Add the visible task tag
-`quality-pass:required` only when the user explicitly wants provider failure to
-remain fail-closed.
+Create `.quality-pass-<batch-id>` only when the user explicitly asks for a
+separate metadata review or the chat identifies a concrete ambiguity it cannot
+resolve directly. It is advisory by default and MUST NOT be wired as a hard
+dependency that strands the batch. Provider/model/infrastructure failure
+releases the unchanged tasks with a visible warning. The explicit tag
+`quality-pass:required` is reserved for a user-requested fail-closed review.
 
 ### Paused-task convention
 

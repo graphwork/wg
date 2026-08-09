@@ -458,8 +458,13 @@ pub fn maybe_run(command: &Commands, json: bool) -> Result<Option<()>> {
             skip_verify,
             ignore_unmerged_worktree,
             skip_smoke,
+            operator_accept,
+            reason: _,
         } => {
             task_matches(id)?;
+            if *operator_accept {
+                anyhow::bail!("worker_control.operator_accept_refused");
+            }
             if *skip_verify || *ignore_unmerged_worktree || *skip_smoke {
                 anyhow::bail!("worker_control.done_bypass_refused");
             }

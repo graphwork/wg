@@ -225,6 +225,7 @@ pub fn run(dir: &Path, id: &str, manifest_path: &Path, summary_path: &Path) -> R
         flip.as_mut(),
         eval.as_mut(),
     )?;
+    print_review_findings(dir, &outcome);
     match outcome.status {
         ReviewValveStatus::Accepted => {
             println!(
@@ -233,22 +234,61 @@ pub fn run(dir: &Path, id: &str, manifest_path: &Path, summary_path: &Path) -> R
             );
             Ok(())
         }
+        ReviewValveStatus::IncompleteEvidence => bail!(
+            "incomplete deterministic evidence for manifest {}; repair the immutable evidence and submit a new manifest",
+            outcome.flip.receipt.manifest_digest
+        ),
+        status if !config.agency.completion_review_strict => {
+            println!(
+                "Completion candidate recorded with advisory model review status={status:?}: manifest={}. Deterministic publication may continue; inspect `wg show {id}` for history.",
+                outcome.flip.receipt.manifest_digest
+            );
+            Ok(())
+        }
         ReviewValveStatus::FlipRejected => bail!(
-            "FLIP rejected manifest {}; repair in the same worker context and submit a new manifest",
+            "strict FLIP rejected manifest {}; repair using the findings above (bounded by agency.gate_max_attempts) or request operator review",
             outcome.flip.receipt.manifest_digest
         ),
         ReviewValveStatus::EvalRejected => bail!(
-            "eval rejected manifest {}; repair in the same worker context and submit a new manifest",
+            "strict eval rejected manifest {}; repair using the findings above (bounded by agency.gate_max_attempts) or request operator review",
             outcome.flip.receipt.manifest_digest
         ),
         ReviewValveStatus::ReviewUnavailable => bail!(
-            "review unavailable for manifest {}; the candidate is preserved and no source replacement was created",
+            "strict review unavailable for manifest {}; the candidate is preserved and no source quality failure was recorded",
             outcome.flip.receipt.manifest_digest
         ),
-        ReviewValveStatus::IncompleteEvidence => bail!(
-            "incomplete evidence for manifest {}; repair the immutable evidence and submit a new manifest",
-            outcome.flip.receipt.manifest_digest
-        ),
+    }
+}
+
+fn print_review_findings(dir: &Path, outcome: &ReviewValveOutcome) {
+    let Ok(store) = store(dir) else {
+        return;
+    };
+    for review in std::iter::once(&outcome.flip).chain(outcome.eval.iter()) {
+        let Ok(bytes) = store.read_artifact(
+            &review.findings_object,
+            worksgood::completion_task::MAX_COMPLETION_METADATA_BYTES,
+        ) else {
+            continue;
+        };
+        let Ok(findings) =
+            serde_json::from_slice::<Vec<worksgood::completion_review::ReviewFinding>>(&bytes)
+        else {
+            continue;
+        };
+        for finding in findings {
+            eprintln!(
+                "Review {:?} [{}]: {}{}",
+                review.receipt.reviewer_kind,
+                finding.code,
+                finding.message,
+                finding
+                    .evidence
+                    .as_deref()
+                    .map(|evidence| format!(" (evidence: {evidence})"))
+                    .unwrap_or_default()
+            );
+        }
     }
 }
 
@@ -282,6 +322,23 @@ pub fn run_with_reviewers(
         || manifest.requirements_digest != requirements_digest
     {
         bail!("manifest does not bind the current task id, generation, contract, and requirements");
+    }
+    let config = Config::load_merged(dir)?;
+    if config.agency.completion_review_strict {
+        let prior_attempts = task
+            .completion_review_activity
+            .iter()
+            .filter(|activity| {
+                activity.reviewer_kind == ReviewerKind::Flip
+                    && activity.requirements_digest == requirements_digest
+            })
+            .count() as u32;
+        if prior_attempts >= config.agency.gate_max_attempts.max(1) {
+            bail!(
+                "strict model review attempt limit reached ({prior_attempts}/{}); no further model call was made. Inspect `wg show {id}` and use operator review rather than looping.",
+                config.agency.gate_max_attempts.max(1)
+            );
+        }
     }
     let summary_bytes = read_regular_file(summary_path, "worker summary")?;
     if worksgood::completion_manifest::ContentDigest::of_bytes(&summary_bytes)

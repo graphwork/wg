@@ -552,6 +552,16 @@ pub enum Commands {
         /// unless WG_SMOKE_AGENT_OVERRIDE=1 is also exported.
         #[arg(long = "skip-smoke")]
         skip_smoke: bool,
+
+        /// Operator recovery: accept the current task with an immutable,
+        /// reasoned audit receipt even when completion/review bookkeeping is
+        /// unavailable. Refused when WG_AGENT_ID is set.
+        #[arg(long = "operator-accept")]
+        operator_accept: bool,
+
+        /// Required explanation for --operator-accept.
+        #[arg(long, requires = "operator_accept")]
+        reason: Option<String>,
     },
 
     /// Snapshot a file into the immutable completion object store

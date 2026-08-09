@@ -142,9 +142,57 @@ pub fn load_submission_bytes(
 }
 
 #[derive(Clone, Debug)]
+pub struct ReviewEvidence {
+    pub flip: ReviewReceipt,
+    pub eval: Option<ReviewReceipt>,
+}
+
+#[derive(Clone, Debug)]
 pub struct ExactReviewPair {
     pub flip: ReviewReceipt,
     pub eval: ReviewReceipt,
+}
+
+/// Load content-bound review evidence without granting it completion
+/// authority. Advisory local review may reject or be unavailable, but its
+/// receipt must still bind the exact manifest/requirements and, when outputs
+/// were inspectable, the exact resolved output set.
+pub fn load_review_evidence(
+    store: &CompletionArtifactStore,
+    submission: &TaskSubmission,
+    manifest: &CompletionManifest,
+    resolved: &ResolvedReviewBundle,
+) -> Result<ReviewEvidence, CompletionTaskError> {
+    let manifest_digest = manifest
+        .digest()
+        .map_err(|error| CompletionTaskError::Serialize(error.to_string()))?;
+    let flip_ref = submission
+        .flip_receipt_ref
+        .as_ref()
+        .ok_or(CompletionTaskError::Missing("FLIP receipt"))?;
+    let flip = read_receipt(store, flip_ref)?;
+    validate_bound_receipt(
+        &flip,
+        ReviewerKind::Flip,
+        &manifest_digest,
+        &manifest.requirements_digest,
+        resolved,
+    )?;
+    let eval = submission
+        .eval_receipt_ref
+        .as_ref()
+        .map(|reference| read_receipt(store, reference))
+        .transpose()?;
+    if let Some(eval) = eval.as_ref() {
+        validate_bound_receipt(
+            eval,
+            ReviewerKind::Eval,
+            &manifest_digest,
+            &manifest.requirements_digest,
+            resolved,
+        )?;
+    }
+    Ok(ReviewEvidence { flip, eval })
 }
 
 pub fn load_exact_review_pair(
@@ -153,34 +201,35 @@ pub fn load_exact_review_pair(
     manifest: &CompletionManifest,
     resolved: &ResolvedReviewBundle,
 ) -> Result<ExactReviewPair, CompletionTaskError> {
+    let evidence = load_review_evidence(store, submission, manifest, resolved)?;
     let manifest_digest = manifest
         .digest()
         .map_err(|error| CompletionTaskError::Serialize(error.to_string()))?;
-    let flip_ref = submission
-        .flip_receipt_ref
-        .as_ref()
-        .ok_or(CompletionTaskError::Missing("FLIP receipt"))?;
-    let eval_ref = submission
-        .eval_receipt_ref
-        .as_ref()
-        .ok_or(CompletionTaskError::Missing("eval receipt"))?;
-    let flip = read_receipt(store, flip_ref)?;
-    let eval = read_receipt(store, eval_ref)?;
-    validate_receipt(
-        &flip,
+    if !evidence.flip.is_exact_pass(
+        &manifest_digest,
+        &manifest.requirements_digest,
         ReviewerKind::Flip,
+    ) {
+        return Err(CompletionTaskError::InvalidReceipt(
+            "FLIP did not pass the exact manifest and requirements".to_string(),
+        ));
+    }
+    let eval = evidence
+        .eval
+        .ok_or(CompletionTaskError::Missing("eval receipt"))?;
+    if !eval.is_exact_pass(
         &manifest_digest,
         &manifest.requirements_digest,
-        resolved,
-    )?;
-    validate_receipt(
-        &eval,
         ReviewerKind::Eval,
-        &manifest_digest,
-        &manifest.requirements_digest,
-        resolved,
-    )?;
-    Ok(ExactReviewPair { flip, eval })
+    ) {
+        return Err(CompletionTaskError::InvalidReceipt(
+            "Eval did not pass the exact manifest and requirements".to_string(),
+        ));
+    }
+    Ok(ExactReviewPair {
+        flip: evidence.flip,
+        eval,
+    })
 }
 
 fn read_receipt(
@@ -192,24 +241,36 @@ fn read_receipt(
         .map_err(|error| CompletionTaskError::InvalidReceipt(error.to_string()))
 }
 
-fn validate_receipt(
+fn validate_bound_receipt(
     receipt: &ReviewReceipt,
     kind: ReviewerKind,
     manifest: &ContentDigest,
     requirements: &ContentDigest,
     resolved: &ResolvedReviewBundle,
 ) -> Result<(), CompletionTaskError> {
-    if !receipt.is_exact_pass(manifest, requirements, kind) {
+    if receipt.receipt_version != crate::completion_review::COMPLETION_REVIEW_RECEIPT_VERSION
+        || &receipt.manifest_digest != manifest
+        || &receipt.requirements_digest != requirements
+        || receipt.reviewer_kind != kind
+    {
         return Err(CompletionTaskError::InvalidReceipt(format!(
-            "{kind:?} did not pass the exact manifest and requirements"
+            "{kind:?} does not bind the exact manifest and requirements"
         )));
     }
-    if receipt.model_route.as_deref().is_none_or(str::is_empty) {
+    if !matches!(
+        receipt.verdict,
+        crate::simple_land::ReviewVerdict::IncompleteEvidence
+    ) && receipt.model_route.as_deref().is_none_or(str::is_empty)
+    {
         return Err(CompletionTaskError::InvalidReceipt(format!(
             "{kind:?} receipt has no exact model route"
         )));
     }
-    if receipt.inspected_output_digests != resolved.inspected_output_digests {
+    if !matches!(
+        receipt.verdict,
+        crate::simple_land::ReviewVerdict::IncompleteEvidence
+    ) && receipt.inspected_output_digests != resolved.inspected_output_digests
+    {
         return Err(CompletionTaskError::InvalidReceipt(format!(
             "{kind:?} receipt inspected different outputs"
         )));

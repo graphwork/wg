@@ -791,6 +791,27 @@ fn main() -> Result<()> {
         None => return Ok(()),
     };
 
+    // Trusted local workers use the ordinary graph CLI directly so daemon IPC
+    // availability is not a prerequisite for coordination. Mutating commands
+    // still validate the exact ambient task/generation/attempt/fence here.
+    // Read-only and terminal wrapper bookkeeping may remain observable after
+    // the source attempt releases ownership.
+    let terminal_safe_worker_command = matches!(
+        &command,
+        Commands::Show { .. }
+            | Commands::PiStreamBridge { .. }
+            | Commands::PiStreamObserve { .. }
+            | Commands::ClassifyFailure { .. }
+            | Commands::ClassifyNoOp { .. }
+            | Commands::RecordTelemetry { .. }
+            | Commands::PiWatchdog {
+                command: PiWatchdogCommands::ProcessExit { .. } | PiWatchdogCommands::Status { .. },
+            }
+    );
+    if !terminal_safe_worker_command {
+        worksgood::worker_control::validate_trusted_local_environment(&workgraph_dir)?;
+    }
+
     // Warn if --json is passed to a command that doesn't support it
     if cli.json && !supports_json(&command) {
         eprintln!(
@@ -1265,13 +1286,33 @@ fn main() -> Result<()> {
             ignore_unmerged_worktree,
             full_smoke,
             skip_smoke,
+            operator_accept,
+            reason,
         } => {
-            if converged || skip_verify || ignore_unmerged_worktree || full_smoke || skip_smoke {
-                anyhow::bail!(
-                    "legacy wg done bypass/merge/cycle flags are not supported by publication-derived completion"
-                );
+            if operator_accept {
+                if converged || skip_verify || ignore_unmerged_worktree || full_smoke || skip_smoke
+                {
+                    anyhow::bail!(
+                        "--operator-accept cannot be combined with legacy completion flags"
+                    );
+                }
+                commands::completion_done::operator_accept(
+                    &workgraph_dir,
+                    &id,
+                    reason.as_deref().unwrap_or_default(),
+                )
+            } else {
+                if reason.is_some() {
+                    anyhow::bail!("--reason requires --operator-accept");
+                }
+                if converged || skip_verify || ignore_unmerged_worktree || full_smoke || skip_smoke
+                {
+                    anyhow::bail!(
+                        "legacy wg done bypass/merge/cycle flags are not supported by publication-derived completion; use --operator-accept --reason <WHY> for an attributed human recovery"
+                    );
+                }
+                commands::completion_done::run(&workgraph_dir, &id, "refs/heads/main")
             }
-            commands::completion_done::run(&workgraph_dir, &id, "refs/heads/main")
         }
         Commands::CompletionObject {
             path,

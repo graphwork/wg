@@ -5,7 +5,10 @@ use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use worksgood::completion_manifest::{GitOutput, OutputRef, ReviewResolver};
-use worksgood::completion_task::{load_exact_review_pair, load_submission_bytes};
+use worksgood::completion_task::{
+    load_exact_review_pair, load_review_evidence, load_submission_bytes,
+};
+use worksgood::config::Config;
 use worksgood::graph::{CompletionContract, CompletionDisposition, LogEntry};
 use worksgood::identity::canonical_json;
 use worksgood::parser::{load_graph, modify_graph};
@@ -78,7 +81,21 @@ pub fn run_at(
             &current_dependencies,
         )
         .map_err(|error| anyhow::anyhow!("completion evidence no longer resolves: {error}"))?;
-    load_exact_review_pair(&completion_store, &submission, &manifest, &resolved)?;
+    let config = Config::load_merged(dir)?;
+    if config.agency.completion_review_strict {
+        load_exact_review_pair(&completion_store, &submission, &manifest, &resolved)?;
+    } else {
+        let evidence = load_review_evidence(&completion_store, &submission, &manifest, &resolved)?;
+        if evidence.flip.verdict != worksgood::simple_land::ReviewVerdict::Pass
+            || evidence.eval.as_ref().is_some_and(|receipt| {
+                receipt.verdict != worksgood::simple_land::ReviewVerdict::Pass
+            })
+        {
+            eprintln!(
+                "Advisory model review did not pass; deterministic publication continues. Inspect `wg show {id}` for findings."
+            );
+        }
+    }
     let git_output = exact_git_output(&manifest.outputs)?;
     worksgood::control_plane::assert_tree_has_no_control_plane(
         project_root,

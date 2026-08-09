@@ -4006,6 +4006,9 @@ fn default_gate_uncertain_policy() -> String {
 fn default_gate_max_attempts() -> u32 {
     2
 }
+fn default_completion_review_strict() -> bool {
+    false
+}
 fn default_gate_confidence_threshold() -> f64 {
     0.7
 }
@@ -4345,6 +4348,13 @@ pub struct AgencyConfig {
     #[serde(default = "default_gate_max_attempts")]
     pub gate_max_attempts: u32,
 
+    /// Make model FLIP/evaluation a hard completion requirement. The local
+    /// default is false: deterministic task validation stays authoritative,
+    /// while model review remains visible, attributable, and advisory. Remote
+    /// or explicitly hardened deployments may opt into strict mode.
+    #[serde(default = "default_completion_review_strict")]
+    pub completion_review_strict: bool,
+
     /// Confidence floor for auto-approve or auto-reject by the gate. Below
     /// this threshold the gate behaves per `gate_uncertain_policy`.
     /// Range 0.0–1.0. Default: 0.7.
@@ -4412,6 +4422,7 @@ impl Default for AgencyConfig {
             default_validation_mode: None,
             gate_uncertain_policy: default_gate_uncertain_policy(),
             gate_max_attempts: default_gate_max_attempts(),
+            completion_review_strict: default_completion_review_strict(),
             gate_confidence_threshold: default_gate_confidence_threshold(),
         }
     }
