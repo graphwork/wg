@@ -545,10 +545,28 @@ fn prepare_message_inner(
 /// them. Prepared-only sends are discarded; graph-committed sends are finished.
 pub fn recover_prepared_message_transactions(workgraph_dir: &Path) -> Result<()> {
     let transaction_dir = messages_dir(workgraph_dir).join(".transactions");
-    let Ok(entries) = fs::read_dir(&transaction_dir) else {
+    if !transaction_dir.exists() {
         return Ok(());
-    };
-    let graph = crate::parser::load_graph(workgraph_dir.join("graph.jsonl"))?;
+    }
+    let graph_path = workgraph_dir.join("graph.jsonl");
+    let mut outcome = Ok(());
+    crate::parser::modify_graph(&graph_path, |graph| {
+        outcome = recover_prepared_message_transactions_locked(workgraph_dir, graph);
+        false
+    })
+    .context("lock graph while recovering prepared messages")?;
+    outcome
+}
+
+/// Called only while parser::modify_graph owns the exclusive graph lock. The
+/// durable transaction marker and queue publication therefore cannot race a
+/// graph replacement.
+fn recover_prepared_message_transactions_locked(
+    workgraph_dir: &Path,
+    graph: &crate::graph::WorkGraph,
+) -> Result<()> {
+    let transaction_dir = messages_dir(workgraph_dir).join(".transactions");
+    let entries = fs::read_dir(&transaction_dir)?;
     for entry in entries.flatten() {
         let manifest_path = entry.path();
         if manifest_path.extension().and_then(|ext| ext.to_str()) != Some("json") {

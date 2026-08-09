@@ -86,7 +86,8 @@ Trusted does not mean unfenced or unaudited:
    and `msg poll --as` remain privileged cross-plane operations. Accepted local
    sends stage and fsync a complete queue replacement under a stable sidecar
    lock, commit the graph attribution first, and only then atomically
-   publish the message. A durable manifest lets the next send finish a crash
+   publish the message. Recovery takes the same exclusive graph transaction
+   lock before checking the durable marker and publishing. A durable manifest lets the next send finish a crash
    after graph commit or discard a stage after graph-save failure, so neither an
    orphan message nor an unaudited landed graph mutation is accepted.
 6. Worker authority is also bound to the registered OS process session/ancestry,
@@ -112,8 +113,10 @@ by daemon scheduling, manual `wg spawn`, and future adapters create-once
 snapshots the exact transitive downstream batch for that task generation and seals its
 semantic digest into append-only lifecycle evidence. The JSON cache alone has no
 authority. Release occurs only when the seal, cache, current task IDs, and serialized
-metadata all match; a
-quality worker that changed the batch before failing remains an ordinary
+metadata all match. Advisory failure itself requires a positive-confidence,
+durable `FailureSignal`: provider signals must include route provenance, while
+local disk/watchdog signals are intrinsically bound. A coarse failure class is
+never sufficient. A quality worker that changed the batch before failing remains an ordinary
 blocker. The satisfaction boundary itself emits the loud warning, so readiness,
 show/completion, and dispatcher paths cannot silently consume the bypass; the
 dispatcher additionally persists the warning once. Authentication failures are

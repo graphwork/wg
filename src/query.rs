@@ -541,31 +541,28 @@ fn advisory_quality_infrastructure_failure(
         // advisory infrastructure, regardless of a coarse failure_class.
         return None;
     }
-    let class_is_infrastructure = task.failure_class.is_some_and(|class| {
-        matches!(
-            class,
-            crate::graph::FailureClass::ApiError429RateLimit
-                | crate::graph::FailureClass::ApiError5xxTransient
-                | crate::graph::FailureClass::AgentHardTimeout
-                | crate::graph::FailureClass::ResourceExhaustedDisk
-                | crate::graph::FailureClass::WrapperInternal
-        )
-    });
     let signal_is_infrastructure = task.failure_signal.as_ref().is_some_and(|signal| {
         use crate::graph::FailureReason;
-        match signal.reason {
-            FailureReason::Disk | FailureReason::HardTimeout => true,
-            FailureReason::RateLimit
-            | FailureReason::CreditExhausted
-            | FailureReason::QuotaToken
-            | FailureReason::ProviderUnavailable
-            | FailureReason::ProviderOverloaded
-            | FailureReason::Transient5xx
-            | FailureReason::Timeout => signal.route.is_some(),
-            FailureReason::Auth | FailureReason::Hard | FailureReason::Unknown => false,
-        }
+        // A coarse class is not provenance: authentication/config failures can
+        // share it. Advisory release requires a positive-confidence, durable,
+        // explicitly non-auth signal from the classifier. Provider signals are
+        // additionally route-bound; local disk/watchdog signals are intrinsic.
+        let provenance =
+            signal.confidence.is_finite() && signal.confidence > 0.0 && signal.detected_at_ms > 0;
+        provenance
+            && match signal.reason {
+                FailureReason::Disk | FailureReason::HardTimeout => true,
+                FailureReason::RateLimit
+                | FailureReason::CreditExhausted
+                | FailureReason::QuotaToken
+                | FailureReason::ProviderUnavailable
+                | FailureReason::ProviderOverloaded
+                | FailureReason::Transient5xx
+                | FailureReason::Timeout => signal.route.is_some(),
+                FailureReason::Auth | FailureReason::Hard | FailureReason::Unknown => false,
+            }
     });
-    (class_is_infrastructure || signal_is_infrastructure)
+    signal_is_infrastructure
         .then(|| quality_batch_is_unchanged(dir, graph, task))
         .filter(|unchanged| *unchanged)
         .map(|_| {
@@ -1128,7 +1125,9 @@ mod tests {
         quality.failure_class = Some(crate::graph::FailureClass::ExecutorConfig);
         quality.failure_signal = Some(crate::graph::FailureSignal {
             reason: crate::graph::FailureReason::ProviderUnavailable,
+            confidence: 1.0,
             route: Some("openrouter:test/model".into()),
+            detected_at_ms: 1,
             ..crate::graph::FailureSignal::default()
         });
         let mut downstream = make_task("downstream", "Downstream");
@@ -1206,23 +1205,31 @@ mod tests {
             dependency_disposition(&quality.id, &downstream.id, &auth_graph, Some(temp.path())),
             DependencyDisposition::Blocked { .. }
         ));
-        for signal in [None, Some(crate::graph::FailureReason::Unknown)] {
-            let mut ambiguous_graph = graph.clone();
-            let ambiguous = ambiguous_graph.get_task_mut(&quality.id).unwrap();
-            ambiguous.failure_class = Some(crate::graph::FailureClass::ExecutorConfig);
-            ambiguous.failure_signal = signal.map(|reason| crate::graph::FailureSignal {
-                reason,
-                ..crate::graph::FailureSignal::default()
-            });
-            assert!(matches!(
-                dependency_disposition(
-                    &quality.id,
-                    &downstream.id,
-                    &ambiguous_graph,
-                    Some(temp.path())
-                ),
-                DependencyDisposition::Blocked { .. }
-            ));
+        for class in [
+            crate::graph::FailureClass::ExecutorConfig,
+            crate::graph::FailureClass::ApiError429RateLimit,
+            crate::graph::FailureClass::ApiError5xxTransient,
+            crate::graph::FailureClass::ResourceExhaustedDisk,
+            crate::graph::FailureClass::WrapperInternal,
+        ] {
+            for signal in [None, Some(crate::graph::FailureReason::Unknown)] {
+                let mut ambiguous_graph = graph.clone();
+                let ambiguous = ambiguous_graph.get_task_mut(&quality.id).unwrap();
+                ambiguous.failure_class = Some(class);
+                ambiguous.failure_signal = signal.map(|reason| crate::graph::FailureSignal {
+                    reason,
+                    ..crate::graph::FailureSignal::default()
+                });
+                assert!(matches!(
+                    dependency_disposition(
+                        &quality.id,
+                        &downstream.id,
+                        &ambiguous_graph,
+                        Some(temp.path())
+                    ),
+                    DependencyDisposition::Blocked { .. }
+                ));
+            }
         }
 
         let mut required_graph = WorkGraph::new();
