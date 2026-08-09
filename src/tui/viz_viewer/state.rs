@@ -8637,20 +8637,12 @@ fn admission_waiting_reason(workgraph_dir: &Path, task_id: &str) -> Option<Strin
         .map(|waiting| waiting.reason)
 }
 
-fn admission_worker_max(_workgraph_dir: &Path, configured: usize) -> usize {
-    // The caller supplies the freshly-loaded Config value. Suggest one
-    // genuinely additional slot rather than consulting persisted coordinator
-    // state or writing the current (no-op) capacity back.
-    configured.saturating_add(1)
-}
-
-#[cfg(test)]
-#[test]
-fn admission_worker_max_suggests_a_real_increase() {
-    assert_eq!(
-        admission_worker_max(Path::new("/definitely-not-a-wg-graph"), 3),
-        4
-    );
+fn task_inspector_admission_capacity(
+    workgraph_dir: &Path,
+) -> crate::commands::service::AdmissionCapacityStatus {
+    let config = Config::load_or_default(workgraph_dir);
+    let coordinator = crate::commands::service::CoordinatorState::load_or_default(workgraph_dir);
+    crate::commands::service::admission_capacity_status(workgraph_dir, &config, &coordinator)
 }
 
 fn build_heavy_active_for_graph(
@@ -14145,7 +14137,7 @@ impl VizApp {
         lines.push(format!("Presentation: {}", task.presentation));
         lines.push(format!("Origin actor: {:?}", task.origin.kind));
         if let Some(reason) = admission_waiting_reason(&self.workgraph_dir, &task.id) {
-            let config = Config::load_or_default(&self.workgraph_dir);
+            let capacity = task_inspector_admission_capacity(&self.workgraph_dir);
             lines.push(String::new());
             lines.push("── Admission waiting ──".to_string());
             lines.push(format!("  Waiting before first attempt: {reason}"));
@@ -14153,20 +14145,18 @@ impl VizApp {
             lines.push(format!(
                 "  Build-heavy capacity: {}/{} ({})",
                 build_heavy_active_for_graph(&self.workgraph_dir, &graph),
-                config.coordinator.effective_max_build_agents(),
-                config.coordinator.max_build_agents_source()
+                capacity.max_build_agents,
+                capacity.max_build_agents_source
             ));
-            if config.coordinator.max_build_agents_source() == "explicit" {
-                lines.push(format!(
-                    "  Restore inheritance: {}",
-                    worksgood::config::max_build_agents_remediation_command(&self.workgraph_dir)
-                ));
-            } else {
-                lines.push(format!(
-                    "  Increase worker slots: wg config set dispatcher.max_agents {}",
-                    admission_worker_max(&self.workgraph_dir, config.coordinator.max_agents)
-                ));
-            }
+            lines.push(format!(
+                "  {}: {}",
+                if capacity.max_build_agents_source == "explicit" {
+                    "Restore inheritance"
+                } else {
+                    "Increase worker slots"
+                },
+                capacity.remediation_command
+            ));
             lines.push(String::new());
         }
         if let Some(parent) = &task.origin.parent_task {
@@ -15243,7 +15233,7 @@ impl VizApp {
         lines.push(format!("Presentation: {}", task.presentation));
         lines.push(format!("Origin actor: {:?}", task.origin.kind));
         if let Some(reason) = admission_waiting_reason(&self.workgraph_dir, &task.id) {
-            let config = Config::load_or_default(&self.workgraph_dir);
+            let capacity = task_inspector_admission_capacity(&self.workgraph_dir);
             lines.push(String::new());
             lines.push("── Admission waiting ──".to_string());
             lines.push(format!("  Waiting before first attempt: {reason}"));
@@ -15251,20 +15241,18 @@ impl VizApp {
             lines.push(format!(
                 "  Build-heavy capacity: {}/{} ({})",
                 build_heavy_active_for_graph(&self.workgraph_dir, &graph),
-                config.coordinator.effective_max_build_agents(),
-                config.coordinator.max_build_agents_source()
+                capacity.max_build_agents,
+                capacity.max_build_agents_source
             ));
-            if config.coordinator.max_build_agents_source() == "explicit" {
-                lines.push(format!(
-                    "  Restore inheritance: {}",
-                    worksgood::config::max_build_agents_remediation_command(&self.workgraph_dir)
-                ));
-            } else {
-                lines.push(format!(
-                    "  Increase worker slots: wg config set dispatcher.max_agents {}",
-                    admission_worker_max(&self.workgraph_dir, config.coordinator.max_agents)
-                ));
-            }
+            lines.push(format!(
+                "  {}: {}",
+                if capacity.max_build_agents_source == "explicit" {
+                    "Restore inheritance"
+                } else {
+                    "Increase worker slots"
+                },
+                capacity.remediation_command
+            ));
             lines.push(String::new());
         }
         if let Some(parent) = &task.origin.parent_task {

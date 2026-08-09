@@ -6,6 +6,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/_helpers.sh"
 require_wg
 command -v python3 >/dev/null 2>&1 || loud_skip "MISSING PYTHON" "python3 required"
+command -v tmux >/dev/null 2>&1 || loud_skip "MISSING TMUX" "tmux required for runtime-cap inspector validation"
 
 unset WG_AGENT_ID WG_EXECUTOR_TYPE WG_MODEL WG_REASONING WG_TIER
 scratch=$(make_scratch)
@@ -236,6 +237,36 @@ for _ in $(seq 1 80); do
 done
 grep -q '^2 2 inherited-from-max-agents wg service reload --max-agents 3$' <<<"${runtime:-}" \
   || loud_fail "runtime worker pin diverged from inherited build status/remediation: ${runtime:-}"
+
+# Pin a deterministic waiting row while the live service is paused, then drive
+# the real TUI inspector. This isolates rendering from dispatch timing and proves
+# the inspector uses authenticated runtime 2/2 + runtime reload remediation,
+# not the file's 6/6 capacity.
+wg add 'cargo build runtime inspector fixture' --id runtime-inspect --priority 1 \
+  --exec 'true' --exec-mode shell >/dev/null
+wg service pause >/dev/null
+python3 - <<'PY'
+import json
+p='.wg/service/coordinator-state-0.json'; x=json.load(open(p))
+x['admission_deferred_tasks']=1
+x['admission_deferred_reason']='build-heavy admission budget full (2/2)'
+x['admission_deferred']=[{'task_id':'runtime-inspect','reason':'build-heavy admission budget full (2/2)'}]
+open(p,'w').write(json.dumps(x))
+PY
+runtime_session="wg-runtime-cap-ui-$$"
+tmux new-session -d -s "$runtime_session" -x 180 -y 50 \
+  "cd '$project' && env HOME='$HOME' WG_GLOBAL_DIR='$WG_GLOBAL_DIR' WG_TUI_APPEARANCE=none '$WG_BIN' --dir '$project/.wg' tui"
+sleep 2
+tmux send-keys -t "$runtime_session" Home 1
+sleep 1
+runtime_tui="$scratch/tui-runtime-cap.txt"
+tmux capture-pane -p -t "$runtime_session" -S - >"$runtime_tui" 2>&1 \
+  || loud_fail "runtime-cap TUI capture failed: $(cat "$runtime_tui")"
+grep -q 'Build-heavy capacity: 0/2 (inherited-from-max-agents)' "$runtime_tui" \
+  || loud_fail "TUI inspector ignored runtime inherited capacity: $(cat "$runtime_tui")"
+grep -q 'wg service reload --max-agents 3' "$runtime_tui" \
+  || loud_fail "TUI inspector omitted runtime-pin remediation: $(cat "$runtime_tui")"
+tmux kill-session -t "$runtime_session" 2>/dev/null || true
 wg service stop >/dev/null
 
-echo "PASS: hot reload exact-once, scoped remediation, stopped freshness, and runtime-pin parity pass"
+echo "PASS: hot reload exact-once, scoped remediation, stopped freshness, and runtime-pin CLI/TUI parity pass"
