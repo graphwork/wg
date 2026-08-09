@@ -229,8 +229,9 @@ pub fn run(
             } else {
                 format!(" [{}]", task.tags.join(", "))
             };
+            let activity_str = compact_activity_summary(dir, task);
             println!(
-                "{} {} - {}{}{}{}{}{}{}{}",
+                "{} {} - {}{}{}{}{}{}{}{}{}",
                 status,
                 task.id,
                 task.title,
@@ -240,7 +241,8 @@ pub fn run(
                 not_before_str,
                 delay_str,
                 cron_str,
-                tag_str
+                tag_str,
+                activity_str
             );
         }
         if show_all {
@@ -324,6 +326,47 @@ pub fn run(
     }
 
     Ok(())
+}
+
+fn compact_activity_summary(dir: &Path, task: &worksgood::graph::Task) -> String {
+    let verified = worksgood::completion_review::verified_review_activities(dir, task);
+    let mut parts = Vec::new();
+    if task.lifecycle.attempt_sequence > 0 {
+        parts.push("assign ✓".to_string());
+    }
+    for (kind, label) in [
+        (worksgood::completion_review::ReviewerKind::Flip, "flip"),
+        (worksgood::completion_review::ReviewerKind::Eval, "eval"),
+    ] {
+        let attempts = verified
+            .activities
+            .iter()
+            .filter(|activity| activity.reviewer_kind == kind)
+            .collect::<Vec<_>>();
+        if let Some(latest) = attempts.last() {
+            let mark = match latest.verdict {
+                worksgood::simple_land::ReviewVerdict::Pass => "✓",
+                worksgood::simple_land::ReviewVerdict::Reject => "!",
+                worksgood::simple_land::ReviewVerdict::Unavailable => "?",
+                worksgood::simple_land::ReviewVerdict::IncompleteEvidence => "∅",
+                worksgood::simple_land::ReviewVerdict::Absent => "–",
+            };
+            let count = if attempts.len() > 1 {
+                format!("×{}", attempts.len())
+            } else {
+                String::new()
+            };
+            parts.push(format!("{label} {mark}{count}"));
+        }
+    }
+    if task.lifecycle.attempt_sequence > 1 {
+        parts.push(format!("{} attempts", task.lifecycle.attempt_sequence));
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!("  ({})", parts.join(" · "))
+    }
 }
 
 /// If not_before is set and in the future, return a hint string like " [delayed 5m 30s]".

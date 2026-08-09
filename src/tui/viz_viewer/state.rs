@@ -8577,6 +8577,75 @@ pub struct HudDetail {
     pub output_mtime: Option<SystemTime>,
 }
 
+fn append_completion_history(
+    lines: &mut Vec<String>,
+    workgraph_dir: &Path,
+    task: &worksgood::graph::Task,
+) {
+    if task.lifecycle.attempt_sequence == 0
+        && task.lifecycle.audit.is_empty()
+        && task.completion_candidate.is_none()
+        && task.completion_review_activity.is_empty()
+    {
+        return;
+    }
+    lines.push("── Completion history ──".to_string());
+    lines.push(format!(
+        "  generation {} · {} attempt(s) · fence {}",
+        task.lifecycle.generation, task.lifecycle.attempt_sequence, task.lifecycle.fence
+    ));
+    for event in &task.lifecycle.audit {
+        let attempt = event
+            .attempt_id
+            .as_deref()
+            .map(|id| format!(" · {id}"))
+            .unwrap_or_default();
+        lines.push(format!(
+            "  gen {} · {:?}{} · {} → {}",
+            event.generation, event.event_kind, attempt, event.old_state, event.new_state
+        ));
+    }
+    if let Some(candidate) = task.completion_candidate.as_ref() {
+        lines.push(format!(
+            "  candidate {} · {:?}",
+            candidate.manifest.content_digest, task.completion_disposition
+        ));
+    }
+    let verified = worksgood::completion_review::verified_review_activities(workgraph_dir, task);
+    for activity in verified.activities {
+        let route = activity.model_route.as_deref().unwrap_or("unknown route");
+        let usage = activity.usage.as_ref().map_or_else(String::new, |usage| {
+            format!(
+                " · {}in/{}out · ${:.4}",
+                usage.input_tokens, usage.output_tokens, usage.cost_usd
+            )
+        });
+        lines.push(format!(
+            "  {:?} {:?} · {} · {}{}",
+            activity.reviewer_kind, activity.verdict, activity.manifest_digest, route, usage
+        ));
+    }
+    lines.push(String::new());
+}
+
+#[cfg(test)]
+#[test]
+fn tui_completion_history_keeps_generation_attempt_and_review_concepts_distinct() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut task = worksgood::graph::Task::default();
+    task.lifecycle.generation = 3;
+    task.lifecycle.attempt_sequence = 2;
+    task.lifecycle.fence = 7;
+    let mut lines = Vec::new();
+    append_completion_history(&mut lines, temp.path(), &task);
+    assert!(lines.iter().any(|line| line == "── Completion history ──"));
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("generation 3 · 2 attempt(s) · fence 7"))
+    );
+}
+
 fn admission_waiting_reason(workgraph_dir: &Path, task_id: &str) -> Option<String> {
     crate::commands::service::CoordinatorState::load_for(workgraph_dir, 0)?
         .admission_deferred
@@ -15123,6 +15192,8 @@ impl VizApp {
             }
         }
 
+        append_completion_history(&mut lines, &self.workgraph_dir, &task);
+
         // ── Failure reason ──
         if let Some(ref reason) = task.failure_reason {
             lines.push("── Failure ──".to_string());
@@ -15435,6 +15506,8 @@ impl VizApp {
             }
             lines.push(String::new());
         }
+
+        append_completion_history(&mut lines, &self.workgraph_dir, &task);
 
         // ── Failure reason ──
         if let Some(ref reason) = task.failure_reason {

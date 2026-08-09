@@ -205,8 +205,8 @@ ef8719a423d00a0be98eb7c1e4297751e1c0dca32348b9e55f3238b509d01c9b  preserved-refs
 - [x] Return exact findings immediately on repairable rejection.
 - [x] Preserve rejected and superseded candidates without forcing repeated manual manifests.
 - [x] Separate source-worker, assignment, FLIP, and evaluation accounting.
-- [ ] Add the bounded repair/`Needs review` behavior from §4.3.
-- [ ] Remove or hide worker-facing completion ceremony from prompts and normal help.
+- [x] Add the bounded repair/`Needs review` behavior from §4.3.
+- [x] Remove or hide worker-facing completion ceremony from prompts and normal help.
 - [x] Prove infrastructure-unavailable review does not fail or indefinitely block the source task.
 
 **Phase 3 exit:** one command completes normal work; one real semantic defect can be repaired; model or control-plane failure cannot create an infinite loop.
@@ -234,8 +234,8 @@ ef8719a423d00a0be98eb7c1e4297751e1c0dca32348b9e55f3238b509d01c9b  preserved-refs
 
 ### Phase 6 — Task-centric activity and history
 
-- [ ] Show compact assignment/FLIP/eval activity on the parent task row.
-- [ ] Expose full generation/attempt/candidate/review history in CLI, JSON, and TUI.
+- [x] Show compact assignment/FLIP/eval activity on the parent task row.
+- [x] Expose full generation/attempt/candidate/review history in CLI, JSON, and TUI.
 - [x] Make findings, model route, usage, cost, timing, semantic reject, and infrastructure failure queryable.
 - [x] Ensure activities have no graph dependency or source lifecycle authority.
 - [ ] Reconnect accepted terminal outcomes to agency learning through a separate exactly-once observation projection only after the local path is stable.
@@ -366,4 +366,13 @@ Prefer deletion, bypass, and reuse of ordinary WG commands over new abstractions
 - Removed the Pi continuation-token exception from dead-owner sweeping; a dead process can no longer hide an `InProgress` task. The focused unit regression passed.
 - Validated `trust_first_local_worker_coordination`, `worker_control_capability_broker`, `simple_local_recovery`, and `build_admission_inherits_worker_slots` against the candidate binary.
 - Validated completion review tests, neutral spawn-preparation deferral, optional quality-pass release behavior, trusted/scoped actor defaults, `cargo check --all-targets`, and pinned `cargo fmt --check`.
-- Remaining before install: bounded strict repair/Needs-review behavior, parent-row/history UX, clippy/full focused regression, and the complete three-worker restart golden canary.
+- Remaining before install: clippy/full focused regression and the complete three-worker restart golden canary.
+
+### 2026-08-09 — Bounded strict review and compact activity validated
+
+- Explicit strict review now permits a repaired candidate to replace a rejected immutable candidate without manual manifest plumbing.
+- After the configured two non-passing strict attempts, `wg done` parks the task as visible `Waiting`/Needs-review, releases the source worker, preserves both activities, and requires operator accept/reject rather than spinning.
+- Hidden diagnostic completion subcommands remain callable but no longer appear in normal top-level help.
+- Default `wg list --all` task rows now show compact assignment/FLIP/eval state and attempt count parenthetically; review activities remain non-task audit records.
+- The clean `simple_local_recovery` smoke now proves advisory completion, operator recovery, compact parent-row activity, exact strict findings, and bounded strict exhaustion.
+- CLI text/JSON already expose lifecycle audit, attempts, candidates, and immutable review activity; the TUI task inspector now renders the same concepts in a dedicated Completion history section with generation, attempt/fence, candidate digest, review route/verdict, usage, and cost. A focused TUI state test passed.

@@ -23,6 +23,9 @@ git config user.name Recovery
 echo base > base.txt
 git add base.txt && git commit -qm base
 "${clean_env[@]}" "$WG_BIN" init --no-agency >/dev/null
+if "${clean_env[@]}" "$WG_BIN" --help | grep -Eq '^  (completion-object|completion-manifest|submit|land|finalize|candidate)'; then
+  loud_fail "internal completion ceremony leaked into normal top-level help"
+fi
 git add .gitignore AGENTS.md CLAUDE.md && git commit -qm init-wg
 
 run add "Simple completion" --id simple-finish >/dev/null
@@ -34,6 +37,9 @@ git add result.txt && git commit -qm result
 (cd "$repo" && env -u WG_DIR HOME="$home" WG_TASK_ID=simple-finish WG_AGENT_ID=local-worker \
   "$WG_BIN" --dir "$repo/.wg" done simple-finish >"$scratch/done.out" 2>"$scratch/done.err")
 run show simple-finish --json >"$scratch/simple.json"
+run list --all >"$scratch/list.out"
+grep -E 'simple-finish.*\(assign ✓ · flip \?' "$scratch/list.out" >/dev/null \
+  || loud_fail "parent task row omitted compact assignment/review activity"
 python3 - "$scratch/simple.json" <<'PY'
 import json, sys
 x=json.load(open(sys.argv[1]))
@@ -73,4 +79,60 @@ body=json.loads(p.read_text())
 assert body["reason"] == "operator verified preserved result", body
 PY
 
-echo "PASS: simple local completion, advisory review visibility, and audited operator recovery"
+# Explicit strict review remains available, but two non-passing model attempts
+# park visibly and release the worker instead of spinning forever.
+mkdir -p "$scratch/fakebin"
+cat >"$scratch/fakebin/pi" <<'SH'
+#!/usr/bin/env bash
+cat >/dev/null || true
+printf '%s\n' '{"type":"turn_end","message":{"role":"assistant","content":[{"type":"text","text":"{\"verdict\":\"reject\",\"findings\":[{\"code\":\"strict.test\",\"message\":\"repair required\"}]}"}],"provider":"test","model":"fake-review","stopReason":"stop","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}}}}'
+SH
+chmod +x "$scratch/fakebin/pi"
+cat >"$repo/.wg/config.toml" <<'TOML'
+[agency]
+auto_assign = false
+auto_evaluate = false
+completion_review_strict = true
+gate_max_attempts = 2
+
+[models.reviewer]
+model = "pi:openrouter:fake-review"
+reasoning = "low"
+
+[models.evaluator]
+model = "pi:openrouter:fake-review"
+reasoning = "low"
+TOML
+run add "Bounded strict review" --id strict-review >/dev/null
+run publish strict-review --only >/dev/null
+run claim strict-review --actor strict-worker >/dev/null
+git switch -qc worker/strict-review main
+echo strict > strict.txt
+git add strict.txt && git commit -qm strict
+for attempt in 1 2; do
+  if (cd "$repo" && env -u WG_DIR HOME="$home" PATH="$scratch/fakebin:$PATH" \
+    WG_TASK_ID=strict-review WG_AGENT_ID=strict-worker "$WG_BIN" --dir "$repo/.wg" \
+    done strict-review >"$scratch/strict-$attempt.out" 2>"$scratch/strict-$attempt.err"); then
+    loud_fail "strict semantic rejection unexpectedly published on attempt $attempt"
+  fi
+  grep -q 'strict.test.*repair required' "$scratch/strict-$attempt.err" \
+    || loud_fail "strict rejection did not return exact actionable finding: $(cat "$scratch/strict-$attempt.err")"
+done
+if (cd "$repo" && env -u WG_DIR HOME="$home" PATH="$scratch/fakebin:$PATH" \
+  WG_TASK_ID=strict-review WG_AGENT_ID=strict-worker "$WG_BIN" --dir "$repo/.wg" \
+  done strict-review >"$scratch/strict-3.out" 2>"$scratch/strict-3.err"); then
+  loud_fail "strict review attempt limit unexpectedly completed"
+fi
+grep -q 'Needs review: strict model-review attempt limit (2) reached' "$scratch/strict-3.err" \
+  || loud_fail "bounded strict exhaustion was not visible"
+run show strict-review --json >"$scratch/strict.json"
+python3 - "$scratch/strict.json" <<'PY'
+import json,sys
+x=json.load(open(sys.argv[1]))
+assert x["status"] == "waiting", x
+assert x.get("assigned") is None, x
+assert len(x.get("completion_review_activity", [])) == 2, x
+assert any("Needs review" in row["message"] for row in x["log"]), x
+PY
+
+echo "PASS: simple local completion, advisory visibility, audited recovery, and bounded strict review"

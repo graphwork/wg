@@ -3085,3 +3085,10 @@ script = "scenarios/simple_local_recovery.sh"
 owners = ["simple-local-wg-recovery"]
 description = "Credential-free trusted-local golden path: one `wg done` snapshots, records visible advisory review activity, publishes the exact Land commit, and derives Done without submit/land ceremony; operator recovery is refused from worker authority and succeeds outside it with a reason-bound immutable receipt."
 timeout_seconds = 90
+
+[[scenario]]
+name = "simple_local_fanout_restart"
+script = "scenarios/simple_local_fanout_restart.sh"
+owners = ["simple-local-wg-recovery"]
+description = "Clean-graph composed recovery canary: two real fake-Pi workers coordinate across tasks, one completes while the dispatcher is stopped, restart preserves exact state, and a dependent third worker dispatches and completes with no source retry charge."
+timeout_seconds = 120

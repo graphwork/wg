@@ -565,6 +565,7 @@ pub enum Commands {
     },
 
     /// Snapshot a file into the immutable completion object store
+    #[command(hide = true)]
     CompletionObject {
         path: PathBuf,
         #[arg(long, default_value = "application/octet-stream")]
@@ -574,6 +575,7 @@ pub enum Commands {
     },
 
     /// Build a task-bound completion manifest from immutable object references
+    #[command(hide = true)]
     CompletionManifest {
         id: String,
         #[arg(long)]
@@ -590,6 +592,7 @@ pub enum Commands {
     },
 
     /// Submit an immutable candidate and run exact FLIP then eval review
+    #[command(hide = true)]
     Submit {
         id: String,
         #[arg(long)]
@@ -599,6 +602,7 @@ pub enum Commands {
     },
 
     /// Publish the exact reviewed Land commit with compare-and-fast-forward
+    #[command(hide = true)]
     Land {
         id: String,
         #[arg(long, default_value = "refs/heads/main")]
@@ -609,13 +613,14 @@ pub enum Commands {
     Contract { id: String, contract: String },
 
     /// Historical task-owned finish transaction (non-authoritative)
-    #[command(alias = "finish")]
+    #[command(alias = "finish", hide = true)]
     Finalize {
         #[command(subcommand)]
         command: FinalizeCommands,
     },
 
     /// Inspect or materialize immutable candidate versions
+    #[command(hide = true)]
     Candidate {
         #[command(subcommand)]
         command: CandidateCommands,
