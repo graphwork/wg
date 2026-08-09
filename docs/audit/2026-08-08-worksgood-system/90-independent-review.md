@@ -80,7 +80,7 @@ The sample log is in §3.2 and exact commands are in §7.2.
 #### `IR-001` — the synthesis has high coverage and strong evidence navigation
 
 - **Label/state:** `[FACT]`; draft property.
-- **Severity/confidence:** S4 informational; high confidence.
+- **Severity:** S4 informational. **Likelihood:** observed document property. **Confidence:** high.
 - **Evidence:** the draft links every existing numbered artifact `10`–`31`, provides representative primary spans, lists inherited executions by leaf, and states explicit evidence limits (`40-system-synthesis-draft.md:654-768`).
 - **Counterevidence:** the artifact table is not itself a coverage proof, and local domain sections omit the charter's scope/map heading.
 - **Disposition:** preserve the TOC, local abstracts, artifact matrix, and final evidence-limit section.
@@ -88,14 +88,14 @@ The sample log is in §3.2 and exact commands are in §7.2.
 #### `IR-002` — central factual claims survived a broad independent static sample
 
 - **Label/state:** `[FACT]`; snapshot-current static support.
-- **Severity/confidence:** S4 positive control; high confidence for encoded source shape.
+- **Severity:** S4 positive control. **Likelihood:** observed in the static sample. **Confidence:** high for encoded source shape.
 - **Evidence:** §3.2. Eleven of thirteen checks support the draft as written; two support it only after narrowing/counterevidence.
 - **Disposition:** no wholesale rewrite or reversal is warranted.
 
 #### `IR-003` — the draft violates the charter's fractal section and label contract
 
 - **Label/state:** `[CONTRADICTION]`; open.
-- **Severity/likelihood/confidence:** S2; observed; high confidence.
+- **Severity:** S2. **Likelihood:** observed charter/draft conflict. **Confidence:** high.
 - **Claim A:** every artifact and major synthesis domain must use abstract, scope/map, findings, contradictions/drift, risks/gaps, recommendations, and evidence appendix in that order; visible prefixes are prescribed (`README.md:196-244`).
 - **Claim B:** sections 3–11 use Abstract → Findings → Risks → Recommendations → Deeper artifacts, with no local Scope/map or Contradictions/drift headings; the draft systematically uses `OBSERVED FACT` and `VERIFIED BEHAVIOR` (`40-system-synthesis-draft.md:145-504`).
 - **Impact:** omissions and counterevidence are harder to locate at a local stopping depth, and evidence classes cannot be mechanically checked against the charter.
@@ -104,7 +104,7 @@ The sample log is in §3.2 and exact commands are in §7.2.
 #### `IR-004` — risk records confuse confidence with likelihood
 
 - **Label/state:** `[CONTRADICTION]`; open.
-- **Severity/likelihood/confidence:** S2 audit-integrity issue; observed; high confidence.
+- **Severity:** S2 audit-integrity issue. **Likelihood:** observed in the draft. **Confidence:** high.
 - **Claim A:** severity, likelihood, and confidence are separate mandatory fields (`README.md:287-313`).
 - **Claim B:** the executive table explicitly labels its column “Severity / confidence,” and domain risks repeatedly use forms such as `S1/high`, where “high” is usually confidence rather than likelihood (`40-system-synthesis-draft.md:59-72,129-131,234-240,361-368,405-410,488-493`).
 - **Impact:** a high-confidence static discrepancy can be read as a highly likely severe incident. This particularly distorts documentation, accounting, learning, and CI findings.
@@ -113,7 +113,7 @@ The sample log is in §3.2 and exact commands are in §7.2.
 #### `IR-005` — the head-of-line finding is escalated beyond its register authority
 
 - **Label/state:** `[CONTRADICTION]`; open.
-- **Severity/likelihood/confidence:** S2 audit-integrity issue; observed; high confidence.
+- **Severity:** S2 audit-integrity issue. **Likelihood:** observed draft/register conflict. **Confidence:** high.
 - **Claim A:** `WGDR-U04` records an installed-binary trace with unknown audited-build identity as **S2 open uncertainty**, medium applicability, requiring a build-ID candidate concurrency scenario (`30-contradiction-and-drift-register.md:191`).
 - **Claim B:** the draft makes it executive priority 1 as a “current mechanism” and **S1 / medium**, then repeats an S1 risk (`40-system-synthesis-draft.md:63,229,236`).
 - **Inference:** pinned source makes blocking plausible, but source shape does not independently establish duration, all-request impact, or S1 likelihood at the exact snapshot.
@@ -122,7 +122,7 @@ The sample log is in §3.2 and exact commands are in §7.2.
 #### `IR-006` — evidence classes are sometimes mixed in one labeled statement
 
 - **Label/state:** `[CONTRADICTION]`; open.
-- **Severity/likelihood/confidence:** S2; observed; high confidence.
+- **Severity:** S2. **Likelihood:** observed mixed-label construction. **Confidence:** high.
 - **Evidence:** the charter requires mixed classes to be split (`README.md:229-244`). Draft §5 finding 5 is labeled verified behavior but says the exact snapshot is *not* verified, then appends a static source observation (`40-system-synthesis-draft.md:229`). Similar “verified + causal source correction” bundling appears in Pi accounting (`40-system-synthesis-draft.md:268-270`).
 - **Impact:** readers cannot tell which clause was executed against which binary.
 - **Disposition:** blocking correction `BR-4`: split `[VERIFIED] installed binary …`, `[UNCERTAINTY] snapshot applicability …`, and `[FACT] source shape …`; link the exact leaf command.
@@ -130,7 +130,7 @@ The sample log is in §3.2 and exact commands are in §7.2.
 #### `IR-007` — snapshot applicability is explicit globally but misleading locally
 
 - **Label/state:** `[FACT]` + `[INFERENCE]`; open presentation issue.
-- **Severity/likelihood/confidence:** S2 for documentation-sync consumers; likely if used as a current backlog; high confidence.
+- **Severity:** S2 for documentation-sync consumers. **Likelihood:** likely if used as a current backlog. **Confidence:** high.
 - **Evidence:** the draft header pins `b0892ea7` and its caution scopes facts to cited revisions (`40-system-synthesis-draft.md:5-15,768`). It nevertheless defines and repeatedly uses `current/shipped` (`40-system-synthesis-draft.md:121-125`) rather than the charter's `snapshot-current`. Review HEAD differs in 89 non-audit files, including several remediations (§2.2, §7.2).
 - **Impact:** a human synchronization process can reopen already changed behavior or publish historical defects as present tense.
 - **Disposition:** blocking correction `BR-5`: replace local “current” with “snapshot-current” where appropriate and add a post-snapshot applicability notice. Do not silently refresh selected findings.
@@ -138,7 +138,7 @@ The sample log is in §3.2 and exact commands are in §7.2.
 #### `IR-008` — security findings are directionally correct but two countercontrols need to travel with them
 
 - **Label/state:** `[FACT]` + `[INFERENCE]`; partial.
-- **Severity/likelihood/confidence:** S2 audit-presentation issue; possible misreading; high confidence.
+- **Severity:** S2 audit-presentation issue. **Likelihood:** possible misreading. **Confidence:** high.
 - **Evidence:** same-process key loading and unauthenticated inbox operations are directly encoded (§3.2 checks S6–S7). Counterevidence: custody can encrypt seeds under a KEK, though it still does not isolate same-UID invocation (`src/identity/keys.rs:226-300,340-377` at `b0892ea7`); inbox writes are capped by per-inbox count/bytes and retention logic, though unauthorized read/delete and quota consumption remain (`src/identity/node.rs:408-443,551-572` at `b0892ea7`).
 - **Impact:** “fill an inbox” can be read as unbounded resource exhaustion, and “plaintext” can be read as unconditional. Neither narrowing removes the S1 authentication/custody concern.
 - **Disposition:** blocking correction `BR-6`: say **consume the bounded quota** and **same-user in-process custody, with optional at-rest KEK but no hostile-worker isolation**.
@@ -146,7 +146,7 @@ The sample log is in §3.2 and exact commands are in §7.2.
 #### `IR-009` — some operational findings omit design intent that matters to adjudication
 
 - **Label/state:** `[FACT]`; open counterevidence gap.
-- **Severity/likelihood/confidence:** S3; observed; high confidence.
+- **Severity:** S3. **Likelihood:** observed counterevidence omission. **Confidence:** high.
 - **Evidence:** `config set` deliberately accepts unknown paths “so EVERY knob is reachable” and deserializes the resulting document as `Config`, while `toml::to_string_pretty` still erases comments and unknown keys can be ineffective (`src/commands/config_cmd.rs:3029-3098` at `b0892ea7`). The draft presents only silent destruction/typo persistence in its executive ranking (`40-system-synthesis-draft.md:66,477-482`).
 - **Impact:** a factual defect can be “fixed” by banning a deliberate extension surface without the product decision requested by roadmap `I-CONTROL-INTEGRITY` (`31-documentation-sync-plan.md:333`).
 - **Disposition:** non-blocking if the final explicitly carries the roadmap's extension-namespace decision; otherwise include in `BR-2` recalibration.
@@ -154,7 +154,7 @@ The sample log is in §3.2 and exact commands are in §7.2.
 #### `IR-010` — the roadmap is structurally useful but too dense for first human action
 
 - **Label/state:** `[INFERENCE]`; current usability gap.
-- **Severity/likelihood/confidence:** S3; likely; medium-high confidence.
+- **Severity:** S3. **Likelihood:** likely for a new maintainer. **Confidence:** medium-high.
 - **Evidence:** the roadmap separates factual, decision, implementation, structural, and verification work; supplies six phases, owner domains, acceptance, rollback, and decision queue (`31-documentation-sync-plan.md:74-204,276-484`). The draft condenses this but still requires navigation among executive priorities, `WGDR-*`, `DEC-*`, and phase IDs (`40-system-synthesis-draft.md:581-644`).
 - **Falsifier:** a new maintainer can select one top issue and identify the exact immediate doc containment, human decision, implementation owner, evidence check, and current disposition without searching four files.
 - **Disposition:** non-blocking improvement `NBR-3`: add one compact handoff matrix, not another narrative.
@@ -336,18 +336,36 @@ Bounded results used in this review:
 ### 7.3 Validation commands for this artifact
 
 **`[VERIFIED]`** Executed from `/home/bot/wg/.wg-worktrees/agent-27` on
-2026-08-09 UTC after writing this artifact. All three commands below exited 0.
-`test -s` and plain `git diff --check` produced no stdout. The structural `rg`
-printed matches for `Overall score` (line 27), `Primary-evidence spot checks`
-(line 162), `Coverage omissions` (line 221), `Blocking corrections` (line
-245), `Non-blocking improvements` (line 255), and `Explicit release
-recommendation` (line 264). Line numbers are the pre-commit artifact and may
-move if this evidence note is edited; the headings are the assertion.
+2026-08-09 UTC after writing this artifact. Every command below exited 0.
+`test -s` and plain `git diff --check` produced no stdout. `wc` reported 534,
+768, 275, and 615 lines for the charter, draft, register, and roadmap. The
+Python structural check printed `PASS` for the scored rubric, all thirteen
+spot-check IDs, all three synthesis families, blocking/non-blocking lists,
+coverage omissions, and the release recommendation. These structural checks do
+not prove that the source was understood; the direct sampled evidence and
+adjudication are recorded in §3.2.
 
 ```bash
 test -s docs/audit/2026-08-08-worksgood-system/90-independent-review.md
-rg -n '^### Overall score|Primary-evidence spot checks|Blocking corrections|Non-blocking improvements|Coverage omissions|Explicit release recommendation' \
-  docs/audit/2026-08-08-worksgood-system/90-independent-review.md
+wc -l docs/audit/2026-08-08-worksgood-system/{README.md,40-system-synthesis-draft.md,30-contradiction-and-drift-register.md,31-documentation-sync-plan.md}
+python3 - <<'PY'
+from pathlib import Path
+s = Path('docs/audit/2026-08-08-worksgood-system/90-independent-review.md').read_text()
+checks = {
+    'scored rubric': '### Overall score' in s and '**Total**' in s,
+    'thirteen spot checks': all(f'`S{i}`' in s for i in range(1, 14)),
+    'core-runtime family': all(x in s for x in ['Architecture/persistence', 'Lifecycle/completion', 'Model execution/accounting']),
+    'trust-safety family': all(x in s for x in ['Agency/evaluation/evolvability', 'Federation identity/custody', 'Review safety/audit', 'Remote execution/Pilot']),
+    'product-quality family': all(x in s for x in ['Testing/CI/release', 'Documentation/concepts', 'Operations/config/accounting']),
+    'blocking list': all(f'`BR-{i}`' in s for i in range(1, 8)),
+    'non-blocking list': '### 6.2 Non-blocking improvements' in s,
+    'coverage omissions': '### 5.1 Coverage omissions' in s,
+    'release recommendation': '### 6.3 Explicit release recommendation' in s and '**`[RECOMMENDATION]` — HOLD.**' in s,
+}
+for name, ok in checks.items():
+    print(('PASS' if ok else 'FAIL'), name)
+raise SystemExit(0 if all(checks.values()) else 1)
+PY
 git diff --check
 ```
 
