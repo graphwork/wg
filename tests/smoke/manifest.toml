@@ -3082,8 +3082,8 @@ timeout_seconds = 120
 [[scenario]]
 name = "simple_local_recovery"
 script = "scenarios/simple_local_recovery.sh"
-owners = ["simple-local-wg-recovery", "bridge-terminal-outcomes-agency"]
-description = "Credential-free trusted-local golden path: one `wg done` snapshots, records visible advisory review activity, publishes the exact Land commit, and derives Done without submit/land ceremony; operator recovery is refused from worker authority and succeeds outside it with a reason-bound immutable receipt; both accepted outcomes project once into unscored Agency observations across replay, migration, and daemon reconciliation."
+owners = ["simple-local-wg-recovery", "bridge-terminal-outcomes-agency", "prune-dormant-local-lifecycle"]
+description = "Credential-free trusted-local golden path: one `wg done` snapshots, records visible advisory review activity without creating synthetic assignment/evaluator tasks or PendingEval-style states, publishes the exact Land commit, and derives Done without submit/land ceremony; operator recovery is refused from worker authority and succeeds outside it with a reason-bound immutable receipt; both accepted outcomes project once into unscored Agency observations across replay, migration, and daemon reconciliation."
 timeout_seconds = 90
 
 [[scenario]]

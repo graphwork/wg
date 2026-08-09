@@ -161,7 +161,7 @@ The interactive wizard walks you through:
 
 - **Executor backend**: `claude` (default), `amplifier`, or custom
 - **Default model**: `opus`, `sonnet`, or `haiku`
-- **Agency**: Whether to auto-assign agents and auto-evaluate completed work
+- **Agency**: Source-bound completion review and explicit agent-assignment defaults (synthetic assignment/evaluation tasks are retired)
 - **Max agents**: Number of parallel agents the coordinator can spawn
 
 This creates `~/.wg/config.toml`:

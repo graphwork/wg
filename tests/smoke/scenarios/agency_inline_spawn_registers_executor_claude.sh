@@ -48,7 +48,7 @@ fi
 #
 # Note: `wg add --exec X` auto-sets exec_mode=shell, which would route
 # through spawn_shell_inline (executor=shell). Real `.evaluate-*` tasks
-# scaffolded by eval_scaffold.rs have `exec` set but `exec_mode=bare`
+# historical synthetic agency rows have `exec` set but `exec_mode=bare`
 # (LLM-driven, not shell). Reproduce that exactly via `wg edit`.
 if ! wg add "Inline eval smoke" \
         --id .evaluate-smoke-eval-target \

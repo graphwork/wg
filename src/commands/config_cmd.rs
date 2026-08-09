@@ -343,18 +343,12 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
                     } else {
                         "off"
                     }),
-                    DispatchRole::Assigner => Some(if config.agency.auto_assign {
-                        "on"
+                    DispatchRole::Assigner | DispatchRole::Evaluator => Some("legacy-inert"),
+                    DispatchRole::CoordinatorEval => Some(if config.agency.auto_evaluate {
+                        "source-review"
                     } else {
                         "off"
                     }),
-                    DispatchRole::Evaluator | DispatchRole::CoordinatorEval => {
-                        Some(if config.agency.auto_evaluate {
-                            "on"
-                        } else {
-                            "off"
-                        })
-                    }
                     DispatchRole::Creator => Some(if config.agency.auto_create {
                         "on"
                     } else {

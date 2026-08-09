@@ -9,7 +9,7 @@ use worksgood::lifecycle::{
 };
 use worksgood::parser::modify_graph;
 
-use super::eval_scaffold;
+use super::legacy_eval_compat;
 
 #[cfg(test)]
 use super::graph_path;
@@ -693,7 +693,7 @@ fn scaffold_agency_for_unpaused(
 
     let count = candidates
         .iter()
-        .map(|id| eval_scaffold::retire_stale_legacy_satellites(graph, id, false))
+        .map(|id| legacy_eval_compat::retire_safe_synthetic_rows(graph, id, false))
         .sum::<usize>();
 
     if count > 0 {

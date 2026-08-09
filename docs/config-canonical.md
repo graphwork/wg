@@ -148,8 +148,8 @@ A large block. Only the keys most likely to matter to set are listed; full schem
 
 | key | code | default | scope | notes |
 |-----|------|---------|-------|-------|
-| `auto_evaluate` | `:2433` | `true` | B | post-task evaluation |
-| `auto_assign` | `:2437` | `true` | B | auto-assign agent identity |
+| `auto_evaluate` | `src/config.rs` | `true` | B | source-bound review/observation |
+| `auto_assign` | `src/config.rs` | `false` | B | load/write compatibility only; no synthetic assignment dispatch authority |
 | `assigner_agent`, `evaluator_agent`, `evolver_agent`, `creator_agent`, `placer_agent` | `:2441-2458` | `None` | B (per project; identity hashes are content-addressable) | content-hash refs into `.wg/agency/` |
 | `auto_place` | `:2464` | `false` | B | placement during assignment |
 | `auto_create` | `:2469` | `false` | B | auto-invoke creator agent |
@@ -160,7 +160,6 @@ A large block. Only the keys most likely to matter to set are listed; full schem
 | `ucb_exploration_constant` | `:2508` | `√2 ≈ 1.414` | B | |
 | `novelty_bonus_multiplier` | `:2513` | `1.5` | B | |
 | `bizarre_ideation_interval` | `:2518` | `10` | B | |
-| `auto_assign_grace_seconds` | `:2524` | `10` | B | |
 | `eval_gate_threshold` | `:2535` | `Some(0.7)` | B | |
 | `eval_gate_all` | `:2540` | `false` | B | apply gate to all evals |
 | `auto_rescue_on_eval_fail` | `:2552` | `true` | B | |

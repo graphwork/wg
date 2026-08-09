@@ -279,19 +279,15 @@ pub fn build_reverse_index(graph: &WorkGraph) -> HashMap<String, Vec<String>> {
     index
 }
 
-/// Returns true if `.evaluate-{blocker_id}` exists in the graph and is non-terminal.
-/// This is the eval gate: when an evaluation task is scaffolded for a completed
-/// task, downstream dependents wait for the evaluation to finish before unblocking.
-/// Agency eval IS the verification — `wg approve`/`wg reject` are no longer
-/// routine human gates.
+/// Load-only compatibility for a pre-receipt `.evaluate-{blocker_id}` edge.
 ///
-/// Returns false (gate satisfied) when no evaluation was scheduled or the
-/// scheduled evaluation completed successfully. Failed/Abandoned evaluation
-/// jobs are terminal for lifecycle purposes but do not constitute acceptance
-/// evidence, so the gate remains pending/fail-closed.
+/// Current completion never creates this row. When an old graph contains one,
+/// downstream work remains fail-closed until the historical row is exactly
+/// `Done`; terminal evaluator failure is not acceptance evidence. Dot-prefixed
+/// dependents remain exempt to avoid recursive historical gates.
 ///
-/// System tasks (dot-prefixed) are exempt from eval gating to avoid recursive
-/// gates on `.evaluate-X`, `.assign-X`, etc.
+/// Removal condition: the supported graph-input floor no longer includes
+/// synthetic evaluator rows.
 pub fn is_eval_gate_pending(blocker_id: &str, graph: &WorkGraph) -> bool {
     if blocker_id.starts_with('.') {
         return false;
@@ -327,9 +323,10 @@ pub fn ready_tasks(graph: &WorkGraph) -> Vec<&Task> {
             // reference dependencies that haven't been created yet during
             // burst graph construction.
             //
-            // Eval gate: even when blocker is terminal, wait for `.evaluate-X`
-            // to also be terminal — agency eval gates dependent unblocking.
-            // System tasks (dot-prefixed) are exempt from this gate.
+            // Legacy eval gate: even when the source is terminal, an existing
+            // `.evaluate-X` must be exactly Done before ordinary downstream
+            // work unblocks. Current completion never creates this row.
+            // System tasks (dot-prefixed) are exempt from recursive gating.
             task.after.iter().all(|blocker_id| {
                 dependency_disposition(blocker_id, &task.id, graph, None).is_satisfied()
             })
@@ -407,9 +404,10 @@ fn advisory_quality_infrastructure_failure(task: &crate::graph::Task) -> Option<
     })
 }
 
-/// Only the owning `.flip-X` or direct `.evaluate-X` satellite may cross X's
-/// soft evaluation state. `.assign-*`, `.verify-*`, unrelated dot tasks,
-/// remote references and ordinary dependents remain blocked.
+/// Legacy-only relation exception: only the owning `.flip-X` or direct
+/// `.evaluate-X` row may inspect X's loaded soft evaluation state. `.assign-*`,
+/// `.verify-*`, unrelated dot tasks, remote references and ordinary dependents
+/// remain blocked. This must remain relation-scoped while old rows load.
 pub fn is_owning_evaluation_satellite(dependent_id: &str, blocker_id: &str) -> bool {
     dependent_id == format!(".flip-{blocker_id}")
         || dependent_id == format!(".evaluate-{blocker_id}")
@@ -451,18 +449,14 @@ pub fn dependency_disposition(
             },
         };
     };
-    // The owning `.flip-X` / `.evaluate-X` satellites ARE the mechanism that
-    // resolves a source in a post-work evaluation state, so they must be
-    // schedulable against it. The eval-eligible set (the statuses `wg evaluate
-    // run` / `wg flip` accept) is exactly Done | Failed | PendingEval |
-    // FailedPendingEval. Bypassing ALL of them here - rather than only the soft
-    // states - means the `after` edge from the satellite to its source is
-    // PRESERVED instead of being destructively stripped by the dispatcher.
-    // That preservation is what makes a reset-to-Open source correctly
-    // RE-BLOCK its eval satellite, so a stale `.evaluate-*` can never respawn
-    // (and fail "task is open - can't evaluate") against an open source.
-    // `Done` falls through to the ordinary satisfied path below. `Abandoned`
-    // remains a failed-closed ordinary prerequisite.
+    // A retained owning `.flip-X` / `.evaluate-X` row historically consumed a
+    // post-work source state, so preserve that one relation for lossless graph
+    // loading and evidence migration. This query-level bypass does not grant
+    // dispatch authority: the coordinator refuses retired synthetic agency
+    // work. Preserving the edge also means resetting the source to Open
+    // re-blocks the old row instead of making it look independently ready.
+    // `Done` falls through to ordinary satisfaction; `Abandoned` remains a
+    // fail-closed prerequisite.
     if matches!(
         blocker.status,
         Status::Failed | Status::PendingEval | Status::FailedPendingEval

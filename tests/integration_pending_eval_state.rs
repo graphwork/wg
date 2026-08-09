@@ -1,21 +1,8 @@
-//! Integration tests for the PendingEval state and the eval-gated
-//! dependency-unblock contract (add-pendingeval-state).
+//! Load-only compatibility tests for historical PendingEval graphs.
 //!
-//! State machine:
-//!   open → in-progress → pending-eval ─┬─ eval pass → done   → downstream unblocks
-//!                                      └─ eval fail → failed → auto-rescue
-//!
-//! Validation criteria from task description:
-//!   - test_wg_done_transitions_to_pending_eval
-//!   - test_dep_unblocks_after_eval_pass
-//!   - test_dep_stays_blocked_on_eval_fail
-//!   - test_max_eval_rescues_caps_to_failed
-//!   - test_pending_eval_renders_in_distinct_color
-//!   - test_legacy_done_tasks_unchanged
-//!
-//! See: src/commands/done.rs (`pick_done_target_status`),
-//! src/commands/service/coordinator.rs (`resolve_pending_eval_tasks`),
-//! src/graph.rs (Status::PendingEval).
+//! Current trusted-local completion never enters this state. These tests pin
+//! fail-closed dependency behavior, operator-visible rendering, and deliberate
+//! handling of historical command inputs without restoring evaluator authority.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -72,173 +59,6 @@ fn setup_workgraph(tmp: &TempDir, tasks: Vec<Task>) -> PathBuf {
     }
     save_graph(&graph, &graph_path).unwrap();
     wg_dir
-}
-
-// ---------------------------------------------------------------------------
-// Lazy migration: eager row names alone never create an acceptance gate.
-// ---------------------------------------------------------------------------
-
-#[test]
-fn test_wg_done_retires_stale_eager_evaluator_without_pending_eval() {
-    let tmp = TempDir::new().unwrap();
-
-    // Source task is in-progress; .evaluate-A is scheduled (Open) waiting on A.
-    let mut a = make_task("a", Status::InProgress);
-    a.assigned = Some("test-agent".to_string());
-    a.description = Some("## Deliverables\n- artifact.txt\n".to_string());
-    let mut eval_a = make_task(".evaluate-a", Status::Open);
-    eval_a.after = vec!["a".to_string()];
-    eval_a.tags = vec!["evaluation".to_string()];
-
-    let wg_dir = setup_workgraph(&tmp, vec![a, eval_a]);
-    std::fs::write(tmp.path().join("artifact.txt"), "present\n").unwrap();
-
-    let out = wg_cmd(
-        &wg_dir,
-        &["done", "a", "--ignore-unmerged-worktree", "--skip-smoke"],
-    );
-    assert!(
-        out.status.success(),
-        "wg done failed: stderr={}\nstdout={}",
-        String::from_utf8_lossy(&out.stderr),
-        String::from_utf8_lossy(&out.stdout)
-    );
-
-    let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
-    let task = graph.get_task("a").unwrap();
-    assert_eq!(
-        task.status,
-        Status::Done,
-        "a pre-created row without an authenticated attempt/candidate cannot gate completion"
-    );
-
-    // Evidence-free, unclaimed legacy scaffolding is retained for graph
-    // compatibility but safely terminalized so it can never become a zombie.
-    let eval = graph.get_task(".evaluate-a").unwrap();
-    assert_eq!(eval.status, Status::Abandoned);
-    assert!(task.evaluation_records.is_empty());
-}
-
-#[test]
-fn legacy_advisory_row_name_does_not_infer_evaluation_policy() {
-    let tmp = TempDir::new().unwrap();
-    let mut source = make_task("advisory", Status::InProgress);
-    source.assigned = Some("test-agent".to_string());
-    source.description = Some("## Validation\n- write a report\n".to_string());
-    let mut evaluator = make_task(".evaluate-advisory", Status::Open);
-    evaluator.after = vec!["advisory".to_string()];
-    let wg_dir = setup_workgraph(&tmp, vec![source, evaluator]);
-
-    let out = wg_cmd(
-        &wg_dir,
-        &[
-            "done",
-            "advisory",
-            "--ignore-unmerged-worktree",
-            "--skip-smoke",
-        ],
-    );
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
-    let source = graph.get_task("advisory").unwrap();
-    assert_eq!(source.status, Status::Done);
-    assert!(source.evaluation_lifecycle.is_none());
-    assert!(source.evaluation_records.is_empty());
-    assert_eq!(
-        graph.get_task(".evaluate-advisory").unwrap().status,
-        Status::Abandoned
-    );
-}
-
-#[test]
-fn historical_persisted_required_gate_remains_authoritative() {
-    let tmp = TempDir::new().unwrap();
-    let mut source = make_task("historical-gate", Status::InProgress);
-    source.assigned = Some("legacy-agent".to_string());
-    let mut lifecycle = worksgood::eval_lifecycle::EvaluationLifecycle::for_source(&source);
-    lifecycle.gate_policy = Some(worksgood::eval_lifecycle::EvaluationGatePolicy {
-        applicability: worksgood::eval_lifecycle::EvaluationGateApplicability::Required,
-        evaluator_threshold: Some(0.8),
-        flip_policy: worksgood::eval_lifecycle::FlipVerdictPolicy::NotScheduled,
-        flip_threshold: None,
-        flip_threshold_source: None,
-    });
-    source.evaluation_lifecycle = Some(lifecycle);
-    let wg_dir = setup_workgraph(&tmp, vec![source]);
-
-    let out = wg_cmd(
-        &wg_dir,
-        &[
-            "done",
-            "historical-gate",
-            "--ignore-unmerged-worktree",
-            "--skip-smoke",
-        ],
-    );
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
-    assert_eq!(
-        graph.get_task("historical-gate").unwrap().status,
-        Status::PendingEval
-    );
-}
-
-#[test]
-fn test_wg_done_without_eval_scheduled_lands_in_done() {
-    // No .evaluate-X task exists → backward-compat path: straight to Done.
-    let tmp = TempDir::new().unwrap();
-    let mut a = make_task("a", Status::InProgress);
-    a.assigned = Some("test-agent".to_string());
-    let wg_dir = setup_workgraph(&tmp, vec![a]);
-
-    let out = wg_cmd(
-        &wg_dir,
-        &["done", "a", "--ignore-unmerged-worktree", "--skip-smoke"],
-    );
-    assert!(out.status.success());
-
-    let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
-    let task = graph.get_task("a").unwrap();
-    assert_eq!(
-        task.status,
-        Status::Done,
-        "wg done with no eval task should still land in Done (got {:?})",
-        task.status
-    );
-}
-
-#[test]
-fn test_system_task_done_skips_pending_eval() {
-    // .evaluate-X system tasks themselves go straight to Done — gating them
-    // would require .evaluate-.evaluate-X (deadlock).
-    let tmp = TempDir::new().unwrap();
-    let mut eval_task = make_task(".evaluate-a", Status::InProgress);
-    eval_task.assigned = Some("test-agent".to_string());
-    eval_task.tags = vec!["evaluation".to_string()];
-    let wg_dir = setup_workgraph(&tmp, vec![eval_task]);
-
-    let out = wg_cmd(
-        &wg_dir,
-        &[
-            "done",
-            ".evaluate-a",
-            "--ignore-unmerged-worktree",
-            "--skip-smoke",
-        ],
-    );
-    assert!(out.status.success());
-
-    let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
-    let task = graph.get_task(".evaluate-a").unwrap();
-    assert_eq!(task.status, Status::Done);
 }
 
 // ---------------------------------------------------------------------------
@@ -485,115 +305,28 @@ fn test_system_dependents_unblock_on_pending_eval_source() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Bug-flip-and: `wg evaluate run` must accept PendingEval as a valid input
-// state. Otherwise every .evaluate-X / .flip-X task fails with the precondition
-// error "has status PendingEval — must be done or failed to evaluate" because
-// the dispatcher correctly fires those tasks while parent is still PendingEval
-// (per test_system_dependents_unblock_on_pending_eval_source).
-// ---------------------------------------------------------------------------
-
+// Legacy evaluation mutation is rejected before inspecting a loaded soft state.
+// The compatibility loader remains available, but no graph actor is revived.
 #[test]
-fn test_evaluate_run_accepts_pending_eval_source() {
-    // Parent is PendingEval (the eval-gated state).
-    // `wg evaluate run a` must NOT exit 1 with the precondition error
-    // 'has status PendingEval — must be done or failed to evaluate'.
-    // (It may still exit 1 later for missing agent / role / tradeoff, but the
-    // status precondition is what this test asserts.)
-    let tmp = TempDir::new().unwrap();
-    let a = make_task("a", Status::PendingEval);
-    let wg_dir = setup_workgraph(&tmp, vec![a]);
-
-    let out = wg_cmd(&wg_dir, &["evaluate", "run", "a", "--dry-run"]);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        !stderr.contains("has status PendingEval"),
-        "wg evaluate run must not reject PendingEval as a precondition error.\nstderr: {}\nstdout: {}",
-        stderr,
-        stdout
-    );
-    assert!(
-        !stderr.contains("must be done or failed to evaluate"),
-        "wg evaluate run must accept PendingEval (treat as 'done but eval pending').\nstderr: {}\nstdout: {}",
-        stderr,
-        stdout
-    );
-}
-
-#[test]
-fn test_evaluate_run_flip_accepts_pending_eval_source() {
-    // Same contract for `--flip`: PendingEval is a valid input.
-    let tmp = TempDir::new().unwrap();
-    let a = make_task("a", Status::PendingEval);
-    let wg_dir = setup_workgraph(&tmp, vec![a]);
-
-    let out = wg_cmd(&wg_dir, &["evaluate", "run", "a", "--flip", "--dry-run"]);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        !stderr.contains("has status PendingEval"),
-        "wg evaluate run --flip must not reject PendingEval as a precondition error.\nstderr: {}\nstdout: {}",
-        stderr,
-        stdout
-    );
-    assert!(
-        !stderr.contains("must be done or failed to evaluate"),
-        "wg evaluate run --flip must accept PendingEval.\nstderr: {}\nstdout: {}",
-        stderr,
-        stdout
-    );
-}
-
-#[test]
-fn test_evaluate_run_accepts_failed_pending_eval_source() {
-    // FailedPendingEval is the rescue-eval counterpart to PendingEval. The
-    // dispatcher fires `.evaluate-X` while the parent is still in this state,
-    // so the evaluate precondition must accept it too.
-    let tmp = TempDir::new().unwrap();
-    let a = make_task("a", Status::FailedPendingEval);
-    let wg_dir = setup_workgraph(&tmp, vec![a]);
-
-    let out = wg_cmd(&wg_dir, &["evaluate", "run", "a", "--dry-run"]);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        !stderr.contains("has status FailedPendingEval")
-            && !stderr.contains("has status failed-pending-eval"),
-        "wg evaluate run must not reject FailedPendingEval as a precondition error.\nstderr: {}\nstdout: {}",
-        stderr,
-        stdout
-    );
-    assert!(
-        !stderr.contains("must be done, failed, or pending-eval to evaluate"),
-        "wg evaluate run must accept FailedPendingEval and stop emitting the stale allowed-status list.\nstderr: {}\nstdout: {}",
-        stderr,
-        stdout
-    );
-}
-
-#[test]
-fn test_evaluate_run_flip_accepts_failed_pending_eval_source() {
-    let tmp = TempDir::new().unwrap();
-    let a = make_task("a", Status::FailedPendingEval);
-    let wg_dir = setup_workgraph(&tmp, vec![a]);
-
-    let out = wg_cmd(&wg_dir, &["evaluate", "run", "a", "--flip", "--dry-run"]);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        !stderr.contains("has status FailedPendingEval")
-            && !stderr.contains("has status failed-pending-eval"),
-        "wg evaluate run --flip must not reject FailedPendingEval as a precondition error.\nstderr: {}\nstdout: {}",
-        stderr,
-        stdout
-    );
-    assert!(
-        !stderr.contains("must be done, failed, or pending-eval to evaluate"),
-        "wg evaluate run --flip must accept FailedPendingEval and stop emitting the stale allowed-status list.\nstderr: {}\nstdout: {}",
-        stderr,
-        stdout
-    );
+fn legacy_evaluate_mutation_fails_with_deliberate_retirement_error() {
+    for status in [Status::PendingEval, Status::FailedPendingEval] {
+        let tmp = TempDir::new().unwrap();
+        let source = make_task("source", status);
+        let wg_dir = setup_workgraph(&tmp, vec![source]);
+        for extra in [None, Some("--flip")] {
+            let mut args = vec!["evaluate", "run", "source", "--dry-run"];
+            if let Some(extra) = extra {
+                args.push(extra);
+            }
+            let output = wg_cmd(&wg_dir, &args);
+            assert!(!output.status.success());
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                stderr.contains("legacy evaluation mutation is retired"),
+                "unexpected migration error for {status}: {stderr}"
+            );
+        }
+    }
 }
 
 #[test]

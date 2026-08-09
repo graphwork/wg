@@ -832,13 +832,14 @@ mod tests {
         );
         assert!(tradeoff_count >= 4, "should seed at least 4 tradeoffs");
 
-        // Agents should be created (1 default + 4 special)
+        // The retired evaluator actor is not minted: one default plus the
+        // three live explicit special agents remain.
         let agents_dir = agency_dir.join("cache/agents");
         assert!(agents_dir.exists(), "agents dir should be created");
         let agent_count = fs::read_dir(&agents_dir).unwrap().count();
         assert_eq!(
-            agent_count, 5,
-            "should create 5 agents (1 default + 4 special)"
+            agent_count, 4,
+            "should create 4 agents (1 default + 3 live special agents)"
         );
 
         // Evaluation is enabled; assignment stays direct admission metadata.

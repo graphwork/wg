@@ -150,25 +150,22 @@ wg edit my-task --add-skill security --remove-skill docs
 
 ### Verification workflow
 
-Code tasks should include a `## Validation` section in their description
-listing acceptance criteria. When an agent calls `wg done`, the agency
-evaluator (auto_evaluate) reads the section and scores the agent's output
-against it. If `auto_evaluate` is enabled, agents that exit without calling
-`wg done` enter `failed-pending-eval` instead of `failed` until the evaluator
-runs.
+Code tasks should include a `## Validation` section listing executable
+acceptance criteria. `wg done` snapshots and validates the exact source
+candidate, records bounded source-bound review activity, publishes it, and
+commits `Done` from receipts. It does not synthesize an evaluator task or enter
+`pending-eval`/`failed-pending-eval`.
 
 ```bash
 wg add "Security audit" -d $'## Description\nReview surface for vulns.\n\n## Validation\n- [ ] All findings documented with severity ratings\n- [ ] Each finding has reproduction steps'
 
-wg done security-audit                                    # evaluator scores against Validation
-wg approve security-audit                                  # operator transitions pending → Done
-wg reject security-audit --reason "Missing CVE references" # reopens for rework
+wg done security-audit                                     # validate and publish exact candidate
+wg reject security-audit --reason "Missing CVE references" # explicit operator rework request
 ```
 
-Rejected tasks reopen for the agent to address feedback. After too many
-rejections (default: 3), the task is failed automatically. The legacy
-`--verify <CRITERIA>` flag is no longer accepted; `wg add --verify` errors at
-runtime.
+Rejected tasks reopen for another attempt and remain subject to the configured
+rejection limit. `wg approve` remains available for explicit operator holds.
+The legacy `--verify <CRITERIA>` flag is rejected; use `## Validation`.
 
 ### Registering agents
 
@@ -246,13 +243,11 @@ wg config --role-model reviewer=pi:<provider>:<weak-model>
 wg config --set-reasoning reviewer low
 
 # Agency orchestration
-wg config --auto-evaluate true
-wg config --auto-assign true
-wg config --auto-place true
-wg config --auto-create true
+wg config --auto-place true       # policy for explicit wg assign --auto
+wg config --auto-create true      # opt-in primitive creation
 wg config --auto-triage true
-wg config --eval-gate-threshold 0.7
-wg config --flip-enabled true
+# auto_assign/eval_gate/flip route keys remain legacy config compatibility;
+# they do not create assignment/evaluator graph tasks
 
 # Multi-chat
 wg config --max-coordinators 3
@@ -627,17 +622,17 @@ wg agent create "Careful Coder" --role <hash> --tradeoff <hash>
 wg assign my-task <agent-hash>
 ```
 
-The agency loop: **eval → FLIP → verify → evolve**. Evaluation grades quality;
-FLIP (Fidelity via Latent Intent Probing) grades fidelity by reconstructing
-what the task must have been from only the agent's output; verification catches
-low-confidence results; evolution uses performance data to improve identities.
+The current agency loop is **assign explicitly → execute → record source-bound
+completion evidence → optionally evolve**. Synthetic evaluator/FLIP graph tasks
+and evaluator mutation commands are retired; historical records remain
+read-only for compatibility and evolution inputs.
 
 ```bash
-wg evaluate run <task>                       # LLM evaluation
-wg evaluate record --task <id> --score <n> --source <tag>
-wg evaluate show
+wg assign --auto <task>                      # explicit roster ranking/binding
+wg evaluate show                             # historical observations (read-only)
+wg evaluate rollout-status                   # evaluation-plane rollout state
 
-wg evolve run                                # full evolution cycle
+wg evolve run                                # opt-in evolution cycle
 wg evolve run --strategy mutation --budget 3
 wg evolve run --dry-run
 ```

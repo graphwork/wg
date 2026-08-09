@@ -1848,15 +1848,8 @@ pub fn run_start(
 
     let log_path_str = log_path.to_string_lossy().to_string();
 
-    // Warn if auto_assign is enabled but no agency agents are defined
-    let no_agents_defined = {
-        let agents_dir = dir.join("agency").join("cache/agents");
-        agency::load_all_agents_or_warn(&agents_dir).is_empty()
-    };
-    let warn_no_agents = config.agency.auto_assign && no_agents_defined;
-
     if json {
-        let mut output = serde_json::json!({
+        let output = serde_json::json!({
             "status": "started",
             "pid": pid,
             "socket": socket_str,
@@ -1868,11 +1861,6 @@ pub fn run_start(
                 "model": eff_model,
             }
         });
-        if warn_no_agents {
-            output["warning"] = serde_json::json!(
-                "auto_assign is enabled but no agents are defined. Run 'wg agency init' or 'wg agent create' to create agents."
-            );
-        }
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
         println!("Service started (PID {})", pid);
@@ -1883,11 +1871,6 @@ pub fn run_start(
             "Dispatcher: max_agents={}, poll_interval={}s, executor={}, model={}",
             eff_max_agents, eff_poll_interval, eff_executor, model_str
         );
-        if warn_no_agents {
-            println!();
-            println!("Warning: auto_assign is enabled but no agents are defined.");
-            println!("  Run 'wg agency init' or 'wg agent create' to create agents.");
-        }
     }
 
     Ok(())
@@ -6664,55 +6647,6 @@ mod tests {
 
         // State file should be removed
         assert!(ServiceState::load(dir).unwrap().is_none());
-    }
-
-    #[test]
-    fn test_no_agents_warning_when_auto_assign_enabled() {
-        // When auto_assign is enabled but no agency agents exist,
-        // the service start output should include a warning.
-        let temp_dir = TempDir::new().unwrap();
-        let wg_dir = temp_dir.path();
-        fs::create_dir_all(wg_dir.join("agency").join("cache/agents")).unwrap();
-
-        // Enable auto_assign in config
-        let mut config = Config::load_or_default(wg_dir);
-        config.agency.auto_assign = true;
-        config.save(wg_dir).unwrap();
-
-        // Check: no agency agents defined
-        let agents_dir = wg_dir.join("agency").join("cache/agents");
-        let agents = agency::load_all_agents_or_warn(&agents_dir);
-        assert!(agents.is_empty(), "Expected no agents defined");
-
-        // The condition that triggers the warning
-        let no_agents_defined = agents.is_empty();
-        let warn_no_agents = config.agency.auto_assign && no_agents_defined;
-        assert!(
-            warn_no_agents,
-            "Should warn: auto_assign enabled, no agents defined"
-        );
-    }
-
-    #[test]
-    fn test_no_warning_when_agents_exist() {
-        // When agency agents exist, no warning should be shown.
-        let temp_dir = TempDir::new().unwrap();
-        let wg_dir = temp_dir.path();
-
-        // Use agency init to create roles, motivations, and a default agent
-        super::super::agency_init::run(wg_dir).unwrap();
-
-        let mut config = Config::load_or_default(wg_dir);
-        config.agency.auto_assign = true;
-        config.save(wg_dir).unwrap();
-
-        let agents_dir = wg_dir.join("agency").join("cache/agents");
-        let agents = agency::load_all_agents_or_warn(&agents_dir);
-        assert!(!agents.is_empty(), "Expected at least one agent");
-
-        let no_agents_defined = agents.is_empty();
-        let warn_no_agents = config.agency.auto_assign && no_agents_defined;
-        assert!(!warn_no_agents, "Should NOT warn when agents are defined");
     }
 
     #[test]

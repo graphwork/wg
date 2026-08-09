@@ -206,7 +206,10 @@ pub fn build_config(choices: &SetupChoices, base: Option<&Config>) -> Config {
             },
         );
         config.coordinator.max_agents = choices.max_agents;
-        config.agency.auto_assign = choices.agency_enabled;
+        // Synthetic assignment tasks are retired. Agency setup enables
+        // source-bound review/observation only; assignment remains direct
+        // admission metadata.
+        config.agency.auto_assign = false;
         config.agency.auto_evaluate = choices.agency_enabled;
         return config;
     }
@@ -264,7 +267,7 @@ pub fn build_config(choices: &SetupChoices, base: Option<&Config>) -> Config {
         config.model_registry = choices.model_registry_entries.clone();
     }
 
-    config.agency.auto_assign = choices.agency_enabled;
+    config.agency.auto_assign = false;
     config.agency.auto_evaluate = choices.agency_enabled;
 
     config
@@ -427,7 +430,7 @@ pub fn format_summary(choices: &SetupChoices) -> String {
     }
     lines.push(String::new());
     lines.push("[agency]".to_string());
-    lines.push(format!("  auto_assign = {}", choices.agency_enabled));
+    lines.push("  auto_assign = false".to_string());
     lines.push(format!("  auto_evaluate = {}", choices.agency_enabled));
     lines.join("\n")
 }
@@ -843,7 +846,7 @@ pub fn check_existing_config(config: &Config) -> String {
     }
 
     // Agency
-    if config.agency.auto_assign || config.agency.auto_evaluate {
+    if config.agency.auto_evaluate {
         lines.push("  Agency: enabled".to_string());
     } else {
         lines.push("  Agency: disabled".to_string());
@@ -938,7 +941,7 @@ pub fn run_non_interactive(args: &SetupArgs) -> Result<()> {
         provider: provider.to_string(),
         executor: executor.to_string(),
         model: model.to_string(),
-        agency_enabled: existing.agency.auto_assign,
+        agency_enabled: existing.agency.auto_evaluate,
         max_agents: existing.coordinator.max_agents,
         endpoint,
         inherit_global_endpoints: false,
@@ -2110,7 +2113,7 @@ pub fn run() -> Result<()> {
     println!("and evaluate their work when done. It's the evolutionary identity system.");
     let agency_enabled = Confirm::new()
         .with_prompt("Enable agency?")
-        .default(existing.agency.auto_assign || existing.agency.auto_evaluate)
+        .default(existing.agency.auto_evaluate)
         .interact()?;
 
     // 5. Max agents
@@ -3359,7 +3362,10 @@ mod tests {
             config.coordinator.archive_retention_days, 0,
             "setup must not opt a new graph into age-triggered task archival"
         );
-        assert!(config.agency.auto_assign);
+        assert!(
+            !config.agency.auto_assign,
+            "setup must not reactivate retired synthetic assignment tasks"
+        );
         assert!(config.agency.auto_evaluate);
     }
 
@@ -3386,7 +3392,7 @@ mod tests {
         // Wizard-set values
         assert_eq!(config.agent.model, "claude:haiku");
         assert_eq!(config.coordinator.max_agents, 2);
-        assert!(config.agency.auto_assign);
+        assert!(!config.agency.auto_assign);
 
         // Preserved from base
         assert_eq!(config.project.name, Some("my-project".to_string()));
@@ -3433,7 +3439,7 @@ mod tests {
         };
 
         let config = build_config(&choices, None);
-        assert!(config.agency.auto_assign);
+        assert!(!config.agency.auto_assign);
         assert!(config.agency.auto_evaluate);
     }
 
@@ -3454,7 +3460,7 @@ mod tests {
         assert!(summary.contains("executor = \"claude\""));
         assert!(summary.contains("model = \"claude:opus\""));
         assert!(summary.contains("max_agents = 4"));
-        assert!(summary.contains("auto_assign = true"));
+        assert!(summary.contains("auto_assign = false"));
         assert!(summary.contains("auto_evaluate = true"));
     }
 
@@ -3499,7 +3505,7 @@ mod tests {
         assert_eq!(reloaded.coordinator.max_agents, 6);
         assert_eq!(reloaded.coordinator.archive_retention_days, 0);
         assert!(toml_str.contains("archive_retention_days = 0"));
-        assert!(reloaded.agency.auto_assign);
+        assert!(!reloaded.agency.auto_assign);
         assert!(reloaded.agency.auto_evaluate);
     }
 

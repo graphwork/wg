@@ -72,53 +72,28 @@ Every role, tradeoff, and agent is identified by a **SHA-256 content hash** of i
 
 For display, IDs are shown as 8-character prefixes (e.g. `a3f7c21d`). All commands accept unique prefixes.
 
-## The Full Agency Loop
+## The Current Agency Loop
 
-The agency system runs as a loop: assign identity → execute task → evaluate → FLIP fidelity check → evolve. Each step can be manual or automated.
-
-```
-┌─────────────┐     ┌───────────┐     ┌───────────┐     ┌──────────┐     ┌──────────┐
-│  1. Assign  │────>│ 2. Execute│────>│3. Evaluate│────>│ 4. FLIP  │────>│ 5. Evolve│
-│  identity   │     │   task    │     │  results  │     │  fidelity│     │  agency  │
-│  to task    │     │  (agent   │     │  (score   │     │  check   │     │  (create │
-│             │     │   runs)   │     │   agent)  │     │  (+verify│     │   new    │
-│  wg assign  │     │  wg spawn │     │ wg evaluate│    │  if low) │     │  roles)  │
-└─────────────┘     └───────────┘     └───────────┘     └──────────┘     └──────────┘
-       ▲                                                                      │
-       └──────────────────────────────────────────────────────────────────────┘
-                              performance data feeds back
-```
-
-### Manual loop
+The live loop is: explicitly bind an identity → execute the source task → record
+source-bound completion/review evidence → optionally evolve. Assignment may be
+selected explicitly with `wg assign --auto`, but the coordinator does not create
+blocking assignment or evaluator graph satellites.
 
 ```bash
-# 1. Assign
+# 1. Bind identity directly (or rank the roster explicitly with --auto)
 wg assign my-task a3f7c21d
 
-# 2. Execute (service handles this)
+# 2. Execute and produce receipt-bound completion evidence
 wg service start
 
-# 3. Evaluate
-wg evaluate run my-task
-
-# 4. Evolve
+# 3. Inspect historical observations and optionally evolve
+wg evaluate show --task my-task
 wg evolve run
 ```
 
-### Automated loop
-
-```bash
-# Enable auto-assign and auto-evaluate
-wg config --auto-assign true --auto-evaluate true
-
-# The coordinator creates assign-{task} and evaluate-{task} meta-tasks automatically
-# Just start the service and add work:
-wg service start
-wg add "Implement feature X" --skill rust
-
-# Evolution is still manual (run when you have enough evaluations):
-wg evolve run
-```
+`auto_assign`, pre-receipt soft statuses, and old evaluation/FLIP route fields
+remain load/write compatibility only. `wg evaluate run` and `record` fail with a
+deliberate retirement error rather than creating synthetic judgment.
 
 Additional automation options:
 
@@ -215,25 +190,11 @@ Working, tested code
 - Untested
 ```
 
-### 4. Evaluate
+### 4. Completion observations and historical evaluation records
 
-After a task completes, evaluate the agent's work:
-
-```bash
-wg evaluate run <task-id>
-wg evaluate run <task-id> --evaluator-model opus
-wg evaluate run <task-id> --dry-run    # preview the evaluator prompt
-```
-
-You can also record evaluations from external sources (outcome metrics, peer reviews, manual scoring):
-
-```bash
-wg evaluate record --task <task-id> --score 0.9 --source "manual"
-wg evaluate record --task <task-id> --score 0.85 --source "outcome:sharpe" \
-  --dim correctness=0.9 --dim completeness=0.8 --notes "Strong on accuracy"
-```
-
-And view evaluation history with filters:
+Completion review is recorded directly against the exact source attempt; it is
+not an evaluator graph task. Historical records remain read-only and can be
+viewed with filters:
 
 ```bash
 wg evaluate show                          # all evaluations
@@ -277,9 +238,12 @@ Scores propagate to three levels:
 2. The **role's** performance record (with `tradeoff_id` as context)
 3. The **tradeoff's** performance record (with `role_id` as context)
 
-### 4b. FLIP — Fidelity via Latent Intent Probing
+### 4b. Legacy FLIP records — Fidelity via Latent Intent Probing
 
-FLIP is a **roundtrip intent fidelity** metric that complements standard evaluation. While evaluation judges *quality* (was the approach good?), FLIP judges *fidelity* (did the output match what was asked?).
+The following describes the historical metric for interpreting retained
+records. New `.flip-*` tasks are not created or dispatched.
+
+FLIP is a **roundtrip intent fidelity** metric that complemented standard evaluation. While evaluation judges *quality* (was the approach good?), FLIP judges *fidelity* (did the output match what was asked?).
 
 #### How it works
 
@@ -308,29 +272,16 @@ FLIP and evaluation are independent — they measure different things and should
 - **Both high** = ideal
 - **Both low** = needs rework
 
-#### Low-FLIP verification
+#### Historical low-FLIP verification
 
-When a FLIP score falls below the configured threshold (default: 0.70), the coordinator automatically creates a `.verify-flip-{task-id}` task. This task uses a high-capability model (default: opus) to independently verify whether the work was actually completed correctly.
+Older graphs may contain verdict-bearing `.verify-flip-*` rows. They remain
+loadable for exact evidence migration, but the coordinator never creates or
+rearms one and never infers source success from its mere status.
 
-The verification task receives the original task description, the agent's output, and the low FLIP score, then makes a pass/fail determination.
+#### Reading FLIP history
 
-#### Running FLIP
-
-FLIP runs automatically as part of the `.evaluate-*` task when enabled:
-
-```bash
-# Enable globally
-wg config --flip-enabled true
-
-# Or tag individual tasks for FLIP evaluation
-wg add "My task" --tag flip-eval
-
-# Run manually
-wg evaluate run <task-id> --flip
-wg evaluate run <task-id> --flip --dry-run    # preview the prompts
-```
-
-FLIP evaluations are stored with `source: "flip"` in the evaluations directory, separate from standard evaluations.
+Use `wg evaluate show --source "flip"` to inspect retained records. The old
+manual/automatic FLIP mutation commands are deliberately retired.
 
 #### Per-role model routing
 
@@ -461,16 +412,15 @@ wg assign <task-id> --clear         # remove assignment
 ### `wg evaluate`
 
 ```bash
-wg evaluate run <task-id> [--evaluator-model <model>] [--dry-run]
-wg evaluate record --task <id> --score <0.0-1.0> --source <tag> [--notes <text>] [--dim <dim>=<score>]...
 wg evaluate show [--task <id>] [--agent <id>] [--source <glob>] [--limit <N>]
+wg evaluate rollout-status
 ```
 
 | Subcommand | Description |
 |------------|-------------|
-| `run` | Trigger LLM-based evaluation of a completed task |
-| `record` | Record an evaluation from an external source (outcome metrics, peer reviews, manual scores) |
-| `show` | View evaluation history with optional filters (task, agent, source, limit) |
+| `show` | View historical evaluation/observation records without mutation |
+| `rollout-status` | View the evaluation-plane rollout state |
+| `run`, `record` | Retired; fail deliberately and create no evaluator authority |
 
 ### `wg evolve`
 
@@ -708,13 +658,13 @@ Strategy-specific guidance documents live in `.wg/agency/evolver-skills/`:
 
 ## Performance Tracking
 
-### Evaluation flow
+### Historical evaluation flow
 
-1. Task completes → evaluation is created (4 dimensions + overall score)
-2. Evaluation saved as YAML in `.wg/agency/evaluations/`
-3. **Agent's** performance record updated (task count, avg score, eval history)
-4. **Role's** performance record updated (with tradeoff_id as `context_id`)
-5. **Tradeoff's** performance record updated (with role_id as `context_id`)
+Pre-receipt installations may already contain four-dimension evaluation YAML
+and aggregated performance records. These remain readable for history and the
+opt-in evolver. Current completion records source-bound review evidence instead;
+it does not create a synthetic evaluation row or mutate these aggregates through
+`wg evaluate run/record`.
 
 ### Performance records
 
@@ -885,9 +835,9 @@ For example, with an OpenRouter profile active, `evaluator_model = "haiku"` reso
 
 ```toml
 [agency]
-auto_evaluate = false              # auto-create evaluation tasks on completion
-auto_assign = false                # auto-create assignment tasks for ready work
-auto_place = false                 # auto-place new tasks in the graph via .place-* tasks
+auto_evaluate = false              # enable source-bound completion review/observation
+auto_assign = false                # legacy inert key; synthetic assignment tasks are retired
+auto_place = false                 # placement policy for explicit `wg assign --auto`
 auto_create = false                # auto-invoke creator agent for new primitives
 auto_create_threshold = 20         # completed tasks before triggering creator again
 auto_triage = false                # auto-triage dead agents before respawning
@@ -904,8 +854,6 @@ placer_agent = ""                  # content-hash of placer agent
 retention_heuristics = ""          # prose policy for retirement decisions
 triage_timeout = 30                # timeout in seconds for triage calls
 triage_max_log_bytes = 50000       # max bytes of agent log to read for triage
-auto_assign_grace_seconds = 10    # seconds after task creation before auto-assign eligible
-
 # Evaluation gate settings
 eval_gate_threshold = 0.7         # evaluations below this score reject the task (None = disabled)
 eval_gate_all = false             # apply eval gate to ALL tasks, not just those tagged 'eval-gate'
@@ -950,14 +898,11 @@ model = "opus"                     # model for FLIP-triggered verification
 ```
 
 ```bash
-# CLI equivalents
-wg config --auto-evaluate true
-wg config --auto-assign true
+# CLI equivalents for live opt-in operations
 wg config --auto-place true
 wg config --auto-create true
 wg config --auto-triage true
 wg config --assigner-model haiku
-wg config --evaluator-model opus
 wg config --evolver-model opus
 wg config --creator-model haiku
 wg config --triage-model haiku

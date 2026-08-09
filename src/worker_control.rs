@@ -95,9 +95,12 @@ pub fn effective_control_mode(
             .and_then(|value| value.parse().ok())
     });
 
-    // Remote providers and observation lanes cannot widen themselves via a
-    // task tag. Quality passes are deliberately NOT in this set: their job is
-    // local cross-task graph coordination.
+    // Security boundary, not dormant local-lifecycle compatibility: remote
+    // providers and explicit observation/review lanes cannot widen themselves
+    // via a task tag. Keep this floor until those actors authenticate through
+    // an equally restrictive remote capability protocol. Quality passes are
+    // deliberately NOT in this set: their job is local cross-task graph
+    // coordination.
     if task.remote_provider.is_some() {
         return WorkerControlMode::Scoped;
     }
@@ -125,7 +128,10 @@ pub fn control_restrictions(mode: WorkerControlMode) -> &'static str {
 }
 
 fn legacy_binding_control_mode() -> WorkerControlMode {
-    // A capability minted before v3 must never silently widen.
+    // Serialized capability compatibility is a security boundary: a binding
+    // minted before v3 must never silently widen. Remove this default only
+    // after pre-v3 bindings are rejected at load with an explicit migration
+    // error, never by treating them as trusted.
     WorkerControlMode::Scoped
 }
 

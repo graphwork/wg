@@ -1095,21 +1095,10 @@ fn lifecycle_conflict(task: &mut Task, message: String) -> bool {
     true
 }
 
-/// Repair historical pre-claim rows using only lossless evidence already in
-/// the graph. A legacy Codex split is canonical; an OpenRouter provider without
-/// a handler is deliberately parked because it cannot distinguish Pi from Nex.
-/// Each row is rearmed at most once per lifecycle schema.
-pub fn repair_historical_rows(_graph: &mut WorkGraph) -> bool {
-    // Historical evaluator rows are receipts, not schedulable control-plane
-    // work. Reconciliation must never reopen or block them from inferred route
-    // observations; the explicit agency-retirement migration owns their fate.
-    false
-}
-
 /// Backfill a plan on a completed, claimed pre-schema satellite only after a
 /// verified durable verdict proves that its semantic call already completed.
-/// This is deliberately separate from `repair_historical_rows`: it never
-/// rearms claimed work and cannot cause another model invocation.
+/// This read-only evidence migration never rearms claimed work and cannot cause
+/// another model invocation.
 fn install_completed_legacy_plan(
     graph: &mut WorkGraph,
     task_id: &str,
@@ -1669,46 +1658,17 @@ pub fn migrate_missing_pi_reasoning(graph: &mut WorkGraph, config: &Config) -> b
     modified
 }
 
-fn reset_satellite_for_source(graph: &mut WorkGraph, task_id: &str, source: &Task) -> Result<bool> {
-    if graph.get_task(task_id).is_none() {
-        return Ok(false);
-    }
-    let plan = prepare_rearm_plan(graph, task_id, source)?;
-    let task = graph.get_task_mut(task_id).expect("plan came from task");
-    apply_rearm_plan(task, plan, "eval-lifecycle-reconcile");
-    Ok(true)
-}
-
-/// Rearm an existing evaluation chain while preserving its exact prior call
-/// identities. This low-level helper assumes the caller has already minted the
-/// authoritative lifecycle on `source`.
-pub fn rearm_satellites_for_source(graph: &mut WorkGraph, source: &Task) -> bool {
-    if source.id.starts_with('.') {
-        return false;
-    }
-    let mut modified = false;
-    for task_id in [
-        format!(".flip-{}", source.id),
-        format!(".evaluate-{}", source.id),
-    ] {
-        match reset_satellite_for_source(graph, &task_id, source) {
-            Ok(changed) => modified |= changed,
-            Err(error) => {
-                if let Some(task) = graph.get_task_mut(&task_id) {
-                    lifecycle_conflict(task, format!("error[WG-EVAL-PIPELINE-REARM]: {error:#}"));
-                    modified = true;
-                }
-            }
-        }
-    }
-    modified
-}
-
-/// Atomically begin a new source execution attempt and rearm every existing
-/// evaluation satellite to that exact attempt. Callers invoke this from the
-/// same graph transaction that resets the source to a dispatchable state.
-/// Durable verdict files are never touched; only the mutable execution plans
-/// are rebound to the newly minted pipeline.
+/// Atomically begin a new source execution attempt and rebind every existing
+/// legacy evaluation receipt to the new source identity without reopening it.
+///
+/// Removal condition: supported graph input no longer contains pre-receipt
+/// `.flip-*`/`.evaluate-*` rows or source `evaluation_lifecycle` state.
+///
+/// This starts no evaluator work. It exists only so retrying a loaded legacy
+/// graph cannot misattribute an old durable verdict to a new source attempt.
+/// Callers invoke it from the same graph transaction that resets the source to
+/// a dispatchable state. Durable verdict files are never touched; only loaded
+/// compatibility metadata is rebound.
 pub fn begin_source_attempt(graph: &mut WorkGraph, source_id: &str, reason: &str) -> bool {
     let Some(snapshot) = graph.get_task(source_id).cloned() else {
         return false;
@@ -3256,37 +3216,6 @@ mod tests {
     }
 
     #[test]
-    fn explicit_source_retry_rebinds_existing_satellites_without_route_drift() {
-        let mut old_source = source();
-        old_source.status = Status::Failed;
-        old_source.evaluation_lifecycle = Some(EvaluationLifecycle::for_source(&old_source));
-        old_source
-            .evaluation_lifecycle
-            .as_mut()
-            .unwrap()
-            .consumed_verdict = Some("verdict-old".into());
-        let eval = planned_satellite(".evaluate-source", &old_source);
-        let old_plan = eval.agency_dispatch.as_ref().unwrap().clone();
-        let mut graph = WorkGraph::new();
-        graph.add_node(crate::graph::Node::Task(old_source.clone()));
-        graph.add_node(crate::graph::Node::Task(eval));
-
-        let mut retry_source = old_source;
-        retry_source.status = Status::Open;
-        retry_source.retry_count = 1;
-        assert!(rearm_satellites_for_source(&mut graph, &retry_source));
-        let rebound = graph
-            .get_task(".evaluate-source")
-            .unwrap()
-            .agency_dispatch
-            .as_ref()
-            .unwrap();
-        assert_eq!(rebound.calls, old_plan.calls);
-        assert_ne!(rebound.pipeline_id, old_plan.pipeline_id);
-        assert_eq!(rebound.source_attempt, 2);
-    }
-
-    #[test]
     fn preempted_attempt_rearms_before_resume_and_only_current_verdicts_promote() {
         let mut attempt_one = source();
         attempt_one.status = Status::InProgress;
@@ -3657,53 +3586,6 @@ mod tests {
     }
 
     #[test]
-    fn historical_claimed_row_is_never_rearmed_as_preclaim() {
-        let mut source = source();
-        source.status = Status::FailedPendingEval;
-        let satellite = Task {
-            id: ".evaluate-source".into(),
-            title: "eval".into(),
-            status: Status::Incomplete,
-            model: Some("gpt-5.5".into()),
-            provider: Some("codex".into()),
-            spawn_failures: 5,
-            started_at: Some(Utc::now().to_rfc3339()),
-            ..Task::default()
-        };
-        let mut graph = WorkGraph::new();
-        graph.add_node(crate::graph::Node::Task(source));
-        graph.add_node(crate::graph::Node::Task(satellite));
-        assert!(!repair_historical_rows(&mut graph));
-        let row = graph.get_task(".evaluate-source").unwrap();
-        assert_eq!(row.status, Status::Incomplete);
-        assert!(row.agency_dispatch.is_none());
-    }
-
-    #[test]
-    fn historical_codex_preclaim_repair_is_bounded_and_idempotent() {
-        let mut source = source();
-        source.status = Status::FailedPendingEval;
-        let satellite = Task {
-            id: ".evaluate-source".into(),
-            title: "eval".into(),
-            status: Status::Incomplete,
-            model: Some("gpt-5.5".into()),
-            provider: Some("codex".into()),
-            spawn_failures: 5,
-            ..Task::default()
-        };
-        let mut graph = WorkGraph::new();
-        graph.add_node(crate::graph::Node::Task(source));
-        graph.add_node(crate::graph::Node::Task(satellite));
-        assert!(!repair_historical_rows(&mut graph));
-        let untouched = graph.get_task(".evaluate-source").unwrap();
-        assert_eq!(untouched.status, Status::Incomplete);
-        assert_eq!(untouched.spawn_failures, 5);
-        assert_eq!(untouched.model.as_deref(), Some("gpt-5.5"));
-        assert!(!repair_historical_rows(&mut graph));
-    }
-
-    #[test]
     fn unambiguous_legacy_evaluation_migrates_once() {
         let dir = tempfile::tempdir().unwrap();
         let mut source = source();
@@ -3842,10 +3724,9 @@ mod tests {
         assert_eq!(verdicts.len(), 1);
 
         // Simulate a daemon restart after durable migration but before the graph
-        // transaction. Claimed-row preflight repair remains correctly disabled;
-        // verified evidence performs metadata backfill and consumption instead.
+        // transaction. Verified evidence performs metadata backfill and
+        // consumption; there is no preflight rearm phase.
         let mut restarted = crate::parser::load_graph(&dir.path().join("graph.jsonl")).unwrap();
-        assert!(!repair_historical_rows(&mut restarted));
         assert!(reconcile_durable_verdicts(
             &mut restarted,
             &verdicts,

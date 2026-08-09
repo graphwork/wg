@@ -389,17 +389,16 @@ pub enum Status {
     Failed,
     Abandoned,
     PendingValidation,
-    /// Hard-gated soft-done: agent called `wg done`, awaiting every required
-    /// exact-attempt FLIP/evaluator verdict. Each verdict must independently
-    /// meet its persisted effective threshold before `Done`; a low verdict
-    /// enters bounded in-place rescue or terminal `Failed`. Advisory
-    /// evaluations never use this status.
+    /// Load-only compatibility for a pre-receipt hard evaluation gate.
+    /// Ordinary trusted-local `wg done` never emits this status; exact
+    /// completion review is recorded on the source attempt and completion
+    /// derives `Done` directly from immutable receipts. Retained until a
+    /// versioned migration rewrites every supported graph containing it.
     PendingEval,
-    /// Soft-failed: agent exited with `failure_class=AgentExitNonzero` without
-    /// calling `wg done` or `wg fail`. The dispatcher invokes `.evaluate-X`;
-    /// on required verdicts meeting their persisted effective thresholds the
-    /// task is rescued (→ Done with rescued=true), otherwise it transitions to Failed
-    /// (terminal, no auto-rescue spawn).
+    /// Load-only compatibility for a pre-receipt failed source awaiting rescue
+    /// evaluation. Authoritative source failure now terminalizes the attempt;
+    /// no evaluator satellite is scheduled. Retained under the same versioned
+    /// graph-migration removal condition as `PendingEval`.
     FailedPendingEval,
     Incomplete,
 }
@@ -532,8 +531,7 @@ impl Status {
     /// Includes:
     /// - InProgress: agent is currently working
     /// - PendingValidation: agent finished, --verify gate pending
-    /// - PendingEval: agent called `wg done`, awaiting evaluation
-    /// - FailedPendingEval: agent exited implicitly, awaiting eval verdict
+    /// - PendingEval / FailedPendingEval: loaded compatibility hold states
     ///
     /// Excludes Open (not started), Waiting (gated on a wait condition),
     /// Blocked (dependency unmet), and all terminal states.

@@ -36,11 +36,11 @@ Each tick proceeds through a series of phases. A preliminary phase zero processe
 
 2.8. **Message-triggered resurrection.** Done tasks that have unread messages from whitelisted senders (the user, the coordinator, or dependent-task agents) are reopened so the next agent can address the message. Rate-limited to a maximum of three resurrections per task with a cooldown period.
 
-3. **Build auto-assign meta-tasks.** If `auto_assign` is enabled in the agency configuration, the coordinator scans for ready tasks that have no agent identity bound to them. For each, it creates an `assign-{task-id}` meta-task that the original task is after. This meta-task, when dispatched, will spawn an assigner agent that inspects the agency's roster and picks the best fit. The meta-task is tagged `"assignment"` to prevent recursive auto-assignment—the coordinator never creates an assignment task for an assignment task.
+3. **Reconcile legacy lifecycle compatibility.** The coordinator may retire only unclaimed, unstarted, evidence-free historical `assign`/`evaluate`/`flip` rows. Verdict-bearing rows remain loadable and exact historical evidence may be migrated, but no satellite is created, rearmed, or dispatched.
 
-4. **Build auto-evaluate meta-tasks.** If `auto_evaluate` is enabled, the coordinator creates `evaluate-{task-id}` meta-tasks that are after each work task. When the work task reaches a terminal status, the evaluation task becomes ready. Evaluation tasks use the shell executor to run `wg evaluate run`, which spawns a separate evaluator to score the work. Tasks assigned to human agents are skipped—the system does not presume to evaluate human judgment. Meta-tasks tagged `"evaluation"`, `"assignment"`, or `"evolution"` are excluded to prevent infinite regress.
+4. **Reconcile source-bound completion review.** Ordinary trusted-local completion validates and publishes one exact candidate and derives `done` from its receipts. Review observations are bound to that source attempt; the coordinator does not place the source in `pending-eval` or create an evaluator prerequisite.
 
-4.5. **FLIP verification.** If `flip_verification_threshold` is configured, the coordinator scans for tasks with FLIP scores below the threshold and creates `.verify-flip-{task-id}` verification tasks dispatched to a stronger model (Opus by default). FLIP (Fidelity via Latent Intent Probing) is an independent fidelity check that reconstructs what the task prompt must have been from the agent's output alone, then scores the match—see *Section 5* for details.
+4.5. **Historical verdict compatibility.** Exact persisted pre-receipt evaluation evidence remains readable and fail-closed. It cannot infer success for a different task, attempt, candidate, or route.
 
 4.6. **Auto-evolve.** If `auto_evolve` is enabled, the coordinator triggers agent evolution when evaluation data warrants it. The evolver reads performance summaries and proposes structured operations—mutations, crossovers, gap-analysis, retirements—to improve the agency's identity space.
 
@@ -172,27 +172,27 @@ Parallelism in wg arises naturally from the graph structure. A *fan-out* (map) p
 
 These patterns are not built-in primitives. They emerge from dependency edges. A project plan that says "write five sections, then compile the manual" naturally produces a fan-out of five writer tasks followed by a fan-in to a compiler task. The coordinator handles this without any special configuration—`max_agents` determines how many of the five writers run concurrently.
 
-## Auto-Assign
+## Assignment
 
-When the agency system is active and `auto_assign` is enabled in configuration, the coordinator automates the binding of agent identities to tasks. Without auto-assign, a human must run `wg assign <task-id> <agent-hash>` for each task. With it, the coordinator handles matching.
+Agent identity binding is explicit. Use `wg assign <task-id> <agent-hash>` or
+`wg assign --auto <task-id>` to rank the roster and record an assignment
+observation directly. The `auto_assign` config key remains load/write
+compatibility for older configs but has no authority to create blocking
+`assign-*` graph tasks.
 
-The mechanism is indirect. The coordinator does not contain matching logic itself. Instead, it creates a blocking `assign-{task-id}` meta-task for each unassigned ready task. This meta-task is dispatched like any other—an assigner agent (itself an agency entity with its own role and motivation) is spawned to evaluate the available agents and pick the best fit. The assigner reads the agency roster via `wg agent list`, compares capabilities to task requirements, considers performance history, and calls `wg assign <task-id> <agent-hash>` followed by `wg done assign-{task-id}`.
+## Completion review and historical evaluations
 
-The result is a two-phase dispatch: first the assigner runs, binding an identity to the task. The assignment task completes, unblocking the original task. On the next tick, the original task is ready again—now with an agent identity attached—and the coordinator dispatches it normally.
+Ordinary `wg done` records review activity on the exact source attempt and
+completes from immutable candidate/publication receipts. It does not create
+`evaluate-*` or `.flip-*` graph work, and a current source failure terminalizes
+without `FailedPendingEval`.
 
-Meta-tasks tagged `"assignment"`, `"evaluation"`, or `"evolution"` are excluded from auto-assignment. This prevents the coordinator from creating an assignment task for an assignment task, which would recurse infinitely.
-
-## Auto-Evaluate
-
-When `auto_evaluate` is enabled, the coordinator creates evaluation meta-tasks for completed work. For every non-meta-task in the graph, an `evaluate-{task-id}` task is created that is after the original. When the original task reaches a terminal status (done or failed), the evaluation task becomes ready and is dispatched.
-
-Evaluation tasks use the shell executor to run `wg evaluate run <task-id>`, which spawns a separate evaluator that reads the task definition, artifacts, and output logs, then scores the work on four dimensions: correctness (40% weight), completeness (30%), efficiency (15%), and style adherence (15%). The scores propagate to the agent, its role, and its motivation, building the performance data that drives evolution (see §5).
-
-Two exclusions apply. Tasks assigned to human agents are not auto-evaluated—the system does not presume to score human work. And tasks that are themselves meta-tasks (tagged `"evaluation"`, `"assignment"`, or `"evolution"`) are excluded to prevent evaluation of evaluations.
-
-Failed tasks also get evaluated. When a task's status is failed, the coordinator removes the predecessor from the evaluation task so it becomes ready immediately. This is deliberate: failure modes carry signal. An agent that fails consistently on certain kinds of tasks reveals information about its role-motivation pairing that the evolution system can act on.
-
-Evaluations created by auto-evaluate carry a `source` field set to `"llm"`, identifying them as internal assessments from the LLM evaluator. External evaluations can be recorded via `wg evaluate record --task <id> --source <tag> --score <0.0-1.0>`, where the source tag is a freeform string—`"outcome:sharpe"`, `"ci:test-suite"`, `"vx:peer-123"`, or any label meaningful to the project. The evolver reads all evaluations regardless of source (see §5), enabling it to weigh internal quality assessments against external outcome data when proposing improvements to the agency.
+`wg evaluate show/list/rollout-status` remain read-only views of historical
+records. Legacy mutation commands (`evaluate run/record`) fail deliberately.
+Historical soft states and verdict-bearing rows remain loadable so old graphs do
+not gain inferred success during upgrade. See
+`docs/design-dormant-local-lifecycle-compatibility.md` for the cited inventory
+and removal conditions.
 
 ## Dead Agent Detection and Triage
 
@@ -320,13 +320,13 @@ Events can be filtered. The `--event` flag accepts categories—`task_state` for
 
 | **Point**   | **Command**                      | **What flows**                                                                                               |
 |:------------|:---------------------------------|:-------------------------------------------------------------------------------------------------------------|
-| Evaluation  | `wg evaluate record`            | Scores with source tags — external outcome data enters the agency's performance records.                     |
+| Review      | `wg review check`, `wg log`     | Content verdicts or attributed observations without manufacturing lifecycle authority.                       |
 | Task        | `wg add`                        | New work items — an external system can inject tasks with dependencies, skills, and descriptions.            |
 | Context     | `wg trace import`               | Peer exports and knowledge artifacts — enriching agent prompts with cross-boundary data.                     |
 | State       | `wg done`, `wg fail`, `wg log`  | Status changes and progress events — an external system can mark work complete or record observations.       |
 | Observation | `wg watch`                      | The event stream *out* — external systems observe what is happening without polling.                         |
 
-The generic adapter follows a four-step pattern: *observe* the graph via `wg watch`, *translate* external data into wg's vocabulary, *ingest* via the appropriate CLI command, and *react* by triggering external actions. A CI adapter might observe `task.completed` events, run a test suite, and record the result via `wg evaluate record --source "ci:tests"`. A portfolio manager might observe agent completions, measure real-world outcomes, and feed scores back as external evaluations. The adapter pattern is deliberately simple—each integration is a small loop of observe, translate, ingest, react—because the ingestion points are stable CLI commands, not a bespoke API.
+The generic adapter follows a four-step pattern: *observe* the graph via `wg watch`, *translate* external data into wg's vocabulary, *ingest* via an authenticated command, and *react* by triggering external actions. A CI adapter may observe `task.completed`, run its suite, and attach an attributed `wg log` observation or open explicit follow-up work. It must not manufacture an evaluator verdict or terminal transition. Each integration remains a small observe/translate/ingest/react loop over stable CLI commands.
 
 ### The Operations Log and Trace
 
@@ -344,7 +344,7 @@ Executors are defined as TOML files in `.wg/executors/`. Each specifies a comman
 
 Custom executors enable integration with any tool. An executor for a different LLM provider, a code execution sandbox, a notification system—any process that can be launched from a shell command can serve as an executor. The prompt template supports the same `{{task_id}}`, `{{task_title}}`, `{{task_description}}`, `{{task_context}}`, and `{{task_identity}}` variables as the built-in executors.
 
-The executor also determines whether an agent is AI or human. The `claude` executor means AI. Executors like `matrix` or `email` (for sending notifications to humans) mean human. This distinction matters for auto-evaluation: human-agent tasks are skipped.
+The executor also determines whether an agent is AI or human. The `claude` executor means AI. Executors like `matrix` or `email` (for sending notifications to humans) mean human. This distinction affects prompting and delivery, but does not create an evaluator satellite.
 
 ## Pause, Resume, and Manual Control
 
@@ -360,14 +360,12 @@ Here is what happens, end to end, when a human operator types `wg service start 
 
 The daemon forks into the background. It opens a Unix socket, reads `config.toml` for coordinator settings, and writes its PID to the state file. Its first tick runs immediately.
 
-The tick reaps zombies (there are none yet), checks the agent registry (empty), and counts zero alive agents out of a maximum of five. If `auto_assign` is enabled, it scans for ready tasks without agent identities and creates assignment meta-tasks. If `auto_evaluate` is enabled, it creates evaluation tasks for work tasks. It saves the graph if modified, then finds ready tasks.
+The tick reaps zombies (there are none yet), checks the agent registry, retires only safe evidence-free legacy lifecycle rows, and finds ordinary ready source tasks. It creates no assignment or evaluator prerequisites.
 
-Suppose three tasks are ready: two assignment meta-tasks and one task that was already assigned. The coordinator spawns three agents (five slots available, three tasks ready). Each spawn follows the dispatch cycle: resolve executor, resolve model, build context, render prompt, write wrapper script, claim task, fork process, register agent.
-
-The three agents run concurrently. The two assigners examine the agency roster and bind identities. They call `wg done assign-{task-id}`, which triggers `graph_changed` IPC. The daemon wakes for an immediate tick. Now the two originally-unassigned tasks are ready (their assignment predecessors are done). The coordinator spawns two more agents. All five slots are full.
+Suppose three source tasks are ready. The coordinator spawns three agents (five slots available). Each spawn follows the dispatch cycle: resolve handler and model, build context, render the prompt, claim the task, fork the process, and register the agent. Operators may bind agency identities beforehand with `wg assign` or `wg assign --auto`; that explicit command does not add a graph blocker.
 
 Work proceeds. Agents call `wg log` to record progress, `wg artifact` to register output files, and `wg done` when finished. Each `wg done` triggers another tick. Completed tasks unblock their dependents. The coordinator spawns new agents as slots open. If an agent crashes, the next tick detects the dead PID, triages the output, and either marks the task done, injects recovery context and reopens it, or restarts it cleanly.
 
-The graph drains. Tasks move from open through in-progress to done. Evaluation tasks score completed work. Eventually the coordinator finds no ready tasks and all tasks terminal. It logs: "All tasks complete." The daemon continues running, waiting for new tasks. The operator adds more work with `wg add`, the graph_changed signal fires, and the cycle begins again.
+The graph drains. Tasks move from open through in-progress to receipt-backed done, with source-bound completion review observations and no evaluator graph work. Eventually the coordinator finds no ready tasks and all tasks terminal. It logs: "All tasks complete." The daemon continues running, waiting for new tasks. The operator adds more work with `wg add`, the graph-changed signal fires, and the cycle begins again.
 
 This is coordination: a loop that converts a plan into action, one tick at a time.

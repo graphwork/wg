@@ -36,26 +36,26 @@ Every task moves through a state machine. Understanding the states and transitio
 | **Open** | Ready to be claimed/dispatched (all `--after` deps are done) |
 | **Blocked** | Waiting for upstream dependencies to complete |
 | **InProgress** | An agent has claimed the task and is working on it |
-| **PendingValidation** | Agent called `wg done`, but the task is queued for external validation (e.g. via `wg reject` retry loop) |
-| **FailedPendingEval** | Agent exited without `wg done` and `auto_evaluate` is enabled — awaits evaluator verdict before terminal Failed |
+| **PendingValidation** | Compatibility/external-validation hold; ordinary trusted-local completion does not enter it |
+| **PendingEval** | Load-only compatibility for a historical hard evaluation gate; ordinary `wg done` never emits it |
+| **FailedPendingEval** | Load-only compatibility for a historical failed source awaiting rescue evaluation; current source failure terminalizes directly |
 | **Done** | Completed successfully |
 | **Failed** | Agent called `wg fail` or validation failed |
 | **Abandoned** | Manually abandoned via `wg abandon` |
 | **Waiting** | Paused — waiting for an external event or manual intervention |
 
-### Validation flow (PendingValidation)
+### Validation and completion
 
-Tasks describe acceptance criteria via a `## Validation` section in the task description. The agency evaluator (auto_evaluate + FLIP) reads that section and scores the agent's output against it. Tasks may also be queued for manual review via `wg reject` (which keeps the task in `pending-validation` while retries remain).
+Tasks describe acceptance criteria in a `## Validation` section. Ordinary
+trusted-local `wg done` snapshots and validates the exact candidate, records a
+bounded source-bound review observation, publishes it, and reaches `Done` from
+completion receipts. It does not create an evaluator graph task or enter
+`PendingEval`.
 
-```
-InProgress → wg done → PendingValidation → wg approve → Done
-                                          → wg reject  → Open (re-dispatched)
-```
-
-- `wg approve <task-id>` — transitions PendingValidation → Done
-- `wg reject <task-id> --reason "..."` — reopens the task for re-dispatch (clears assignment)
-- After `max_rejections` (default: 3), `wg reject` transitions the task to Failed instead of Open
-- The legacy `--verify <CRITERIA>` flag is no longer accepted (errors at runtime). Put criteria under `## Validation` in the description.
+- `wg reject <task-id> --reason "..."` — explicitly reopens work for another attempt (subject to the rejection limit)
+- `wg approve <task-id>` — resolves an explicit operator validation hold
+- `PendingValidation`, `PendingEval`, and `FailedPendingEval` remain readable for legacy/external holds; they are not the ordinary completion route
+- The legacy `--verify <CRITERIA>` flag is rejected. Put executable criteria under `## Validation`.
 
 #### User-visible behavior fixes require live human-flow validation
 
@@ -134,19 +134,18 @@ The `superseded_by` field creates a traceable link from the old task to its repl
 
 ### Placement flow
 
-When `auto_place` is enabled (`wg config --auto-place true`), placement analysis is merged into the assignment step. Rather than creating separate `.place-*` tasks, the dispatcher performs placement analysis inline when building `.assign-*` tasks for ready unassigned work:
+`auto_place` is policy consumed by the explicit assignment surface. It does not
+cause the dispatcher to create `.place-*` or `.assign-*` graph tasks:
 
 ```
 wg add "New task" → visible Draft
-wg publish new-task --only → Open state → dispatcher creates .assign-<task-id>
-                                → assignment agent analyzes graph context
-                                  (including placement when auto_place is on)
-                                → determines optimal dependencies, wiring,
-                                  and agent assignment
-                                → task is assigned and ready for dispatch
+wg publish new-task --only → Open
+wg assign --auto new-task → rank roster and record assignment directly
+                            → apply placement policy when configured
+                            → task remains ordinary source work
 ```
 
-The assignment agent examines the current graph structure and the task's description to decide:
+The explicit assignment step examines graph structure and the task description to decide:
 - Which existing tasks should be `--after` dependencies (when auto_place is on)
 - The best agent identity to assign
 - Whether the task needs specific context scope or exec mode
@@ -553,17 +552,14 @@ The `--converged` flag tags the cycle header. This prevents further iterations e
 
 ### 4.5 Evolve — the feedback loop
 
-After work accumulates, evaluate and evolve roles:
+Completion records source-bound review observations. Historical evaluation
+records remain available to the opt-in evolver, but evaluator mutation commands
+are retired:
 
 ```bash
-# Evaluate completed work
-wg evaluate run my-task
-
-# Record an external evaluation (e.g., from a human reviewer)
-wg evaluate record --task my-task --score 0.85 --source "manual"
-
-# View evaluation history
+# View historical evaluation/observation history (read-only)
 wg evaluate show --task my-task
+wg evaluate rollout-status
 
 # Preview evolution proposals
 wg evolve run --dry-run
@@ -591,7 +587,7 @@ Escalate from single to double loop when the same task type fails repeatedly.
 | **Monolithic task** | One giant task with no decomposition → no parallelism, no feedback | Break into diamond or pipeline |
 | **Over-specialization** | Too many roles → coordination overhead exceeds benefit | `wg evolve run --strategy retirement` |
 | **Under-specialization** | Generalist role for all tasks → poor quality | `wg evolve run --strategy gap-analysis` |
-| **Skipping evaluation** | No feedback signal → no evolution → performance plateau | Enable `--auto-evaluate` or run `wg evaluate run` manually |
+| **Ignoring completion evidence** | No feedback signal → evolution decisions lack provenance | Keep source-bound completion review enabled and inspect `wg evaluate show` history |
 
 ---
 
@@ -625,8 +621,8 @@ Each tick runs these phases in order:
 
 1. Process chat inbox → clean dead agents → zero-output detection → auto-checkpoint
 2. Graph maintenance: cycle iteration, cycle failure restart, waiting task evaluation, message-triggered resurrection
-3. Agency scaffolding: auto-assign, auto-evaluate, FLIP verification, auto-evolve, auto-create
-4. Find ready tasks → spawn agents
+3. Retire safe evidence-free legacy lifecycle rows; reconcile exact historical verdicts; run opt-in auto-evolve/auto-create
+4. Find ready source tasks → spawn agents (no synthetic assignment/evaluation prerequisites)
 
 Ticks happen on two triggers:
 - **Immediate:** any graph change (`wg done`, `wg add`, etc.) triggers a tick via IPC
@@ -678,7 +674,7 @@ wg watch                       # stream wg events as JSON lines
 wg viz                          # active trees only (default)
 wg viz --all                    # all tasks including fully-done trees
 wg viz my-task                  # only the subgraph containing my-task
-wg viz --show-internal          # include assign-*/evaluate-* meta-tasks
+wg viz --show-internal          # include system and retained legacy meta-task rows
 wg viz --no-tui                 # static output (no interactive TUI)
 wg viz --status open            # filter by status
 wg viz --tag my-tag             # filter by tag (AND semantics with multiple --tag)
@@ -731,12 +727,11 @@ model = "claude:opus"  # provider:model — handler is implied (claude CLI)
 heartbeat_timeout = 5   # minutes before agent is considered dead
 
 [agency]
-auto_evaluate = false
-auto_assign = false
-auto_place = false          # placement analysis merged into assignment step
+auto_evaluate = false       # source-bound completion review/observation
+auto_assign = false         # inert compatibility key; no synthetic assignment tasks
+auto_place = false          # placement policy used by explicit assignment
 auto_create = false         # auto-invoke creator agent for primitive store expansion
-assigner_model = "haiku"    # lightweight model for assignment (default via wg agency init)
-evaluator_model = "haiku"   # lightweight model for evaluation (default via wg agency init)
+assigner_model = "haiku"    # optional explicit assignment metadata route
 ```
 
 ### Model selection
@@ -748,10 +743,10 @@ Model resolution follows a priority chain (highest wins):
 3. `dispatcher.model` — from `[dispatcher]` in config.toml or CLI `--model` (legacy `[coordinator]` accepted)
 4. Executor default — if no model is resolved, no model flag is passed and the executor uses its own default
 
-For agency meta-tasks (assignment, evaluation, evolution), dedicated model settings apply:
-- Assignment: `agency.assigner_model` (defaults to `haiku` after `wg agency init`)
-- Evaluation: `agency.evaluator_model` (defaults to `haiku` after `wg agency init`)
-- Evolution: `agency.evolver_model`
+Dedicated model settings remain for live opt-in agency operations:
+- Explicit assignment may use `agency.assigner_model`
+- Evolution uses `agency.evolver_model`
+- `agency.evaluator_model` is retained config compatibility; it does not authorize a synthetic evaluator task
 
 ```bash
 wg add "Simple fix" --model haiku      # cheap model for simple work

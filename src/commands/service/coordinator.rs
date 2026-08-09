@@ -2613,12 +2613,10 @@ pub fn coordinator_tick(
         // atomically re-identifies source + satellites or changes nothing.
         modified |= worksgood::eval_lifecycle::migrate_missing_pi_reasoning(graph, &config);
 
-        // Phases 2.47–2.48: route-stable evaluation lifecycle repair and
+        // Phases 2.47–2.48: load-only legacy verdict migration and
         // verdict-required parent resolution. A terminal/missing evaluator is
-        // never treated as a score. Historical pre-claim rows are normalized
-        // once; ambiguous routes park for an operator.
+        // never treated as a score, and no historical row is rearmed.
         if eval_evidence_usable {
-            modified |= worksgood::eval_lifecycle::repair_historical_rows(graph);
             modified |= worksgood::eval_lifecycle::reconcile_durable_verdicts(
                 graph,
                 &durable_eval_verdicts,

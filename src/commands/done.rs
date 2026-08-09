@@ -17,9 +17,6 @@ use worksgood::query;
 use worksgood::service::registry::AgentRegistry;
 use worksgood::smoke::{self, Manifest as SmokeManifest, ScenarioOutcome};
 
-// Import evaluate module for LLM verification
-use crate::commands::evaluate;
-
 #[cfg(test)]
 use super::graph_path;
 #[cfg(test)]
@@ -1242,53 +1239,6 @@ fn is_free_text_verify_command(cmd: &str) -> bool {
     false
 }
 
-/// Run LLM evaluation for a free-text verify command.
-/// Creates a verification task that uses the evaluation system.
-fn run_llm_verify_evaluation(
-    verify_cmd: &str,
-    task: &Task,
-    project_root: &Path,
-) -> std::result::Result<VerifyOutput, VerifyOutput> {
-    eprintln!(
-        "[smart-verify] Detected free-text verify command, routing to LLM evaluation: {}",
-        verify_cmd
-    );
-
-    // Find the WG directory (.wg/, or legacy .workgraph/)
-    let workgraph_dir = project_root
-        .ancestors()
-        .find(|p| p.join(".wg").exists() || p.join(".wg").exists())
-        .map(|p| {
-            if p.join(".wg").exists() {
-                p.join(".wg")
-            } else {
-                p.join(".wg")
-            }
-        })
-        .unwrap_or_else(|| project_root.to_path_buf());
-    let workgraph_dir = workgraph_dir.as_path();
-
-    // Run evaluation on the task
-    match evaluate::run(workgraph_dir, &task.id, None, false, false) {
-        Ok(_) => {
-            // Evaluation succeeded - consider verification passed
-            Ok(VerifyOutput {
-                stdout: format!("LLM evaluation completed for: {}", verify_cmd),
-                stderr: String::new(),
-                exit_code: "0".to_string(),
-            })
-        }
-        Err(e) => {
-            // Evaluation failed - consider verification failed
-            Err(VerifyOutput {
-                stdout: String::new(),
-                stderr: format!("LLM evaluation failed for '{}': {}", verify_cmd, e),
-                exit_code: "1".to_string(),
-            })
-        }
-    }
-}
-
 /// Run a verify command in a shell.
 /// Returns Ok(VerifyOutput) with captured output on success,
 /// or Err(VerifyOutput) with captured output on failure.
@@ -1312,9 +1262,15 @@ fn run_verify_command(
         eprintln!("[scoped-verify] Original command: {}", verify_cmd);
     }
 
-    // Smart verify: check if this is free-text and route to LLM evaluation
+    // A free-text `verify` field was once routed into a synthetic evaluator.
+    // That authority is retired: compatibility input fails deliberately rather
+    // than creating review work or interpreting an evaluator as completion.
     if is_free_text_verify_command(&effective_cmd) {
-        return run_llm_verify_evaluation(&effective_cmd, task, project_root);
+        return Err(VerifyOutput {
+            stdout: String::new(),
+            stderr: "free-text verify compatibility is retired; use an executable deterministic verify command or ## Validation criteria".to_string(),
+            exit_code: "retired-free-text-verify".to_string(),
+        });
     }
 
     let mut child = match Command::new("sh")
@@ -1458,26 +1414,6 @@ fn run_verify_command(
             exit_code,
         })
     } else {
-        // Check for exit code 127 (command not found) - likely free-text command
-        if exit_code == "127" {
-            eprintln!(
-                "[smart-verify] Command failed with exit 127 (command not found), retrying with LLM evaluation: {}",
-                effective_cmd
-            );
-            match run_llm_verify_evaluation(&effective_cmd, task, project_root) {
-                Ok(llm_result) => {
-                    eprintln!("[smart-verify] LLM evaluation succeeded for exit 127 fallback");
-                    return Ok(llm_result);
-                }
-                Err(_llm_error) => {
-                    eprintln!(
-                        "[smart-verify] LLM evaluation also failed, returning original shell error"
-                    );
-                    // Fall through to return original error
-                }
-            }
-        }
-
         Err(VerifyOutput {
             stdout,
             stderr,
@@ -2739,7 +2675,7 @@ fn run_inner(
         // Any evidence-free, unclaimed eager rows are historical scaffolding,
         // not work that may outlive this completion transaction. Rows carrying
         // claims/verdicts remain untouched and readable on the legacy path.
-        crate::commands::eval_scaffold::retire_stale_legacy_satellites(
+        crate::commands::legacy_eval_compat::retire_safe_synthetic_rows(
             graph,
             &id_owned,
             true,
@@ -4388,48 +4324,23 @@ mod tests {
     }
 
     #[test]
-    fn test_smart_verify_routes_free_text_to_evaluation() {
-        // This is more of an integration test - we test that the routing works
-        // by checking that free-text commands don't get executed as shell commands
+    fn free_text_verify_fails_deliberately_without_evaluator_authority() {
         let dir = tempdir().unwrap();
-        let dir_path = dir.path();
-
-        let mut task = make_task("t1", "Task with free-text verify", Status::InProgress);
-        task.verify = Some("documentation exists and is comprehensive".to_string());
-        setup_workgraph(dir_path, vec![task]);
-
-        // The task should fail because evaluation requires the task to be Done first
-        // But importantly, it should NOT fail with exit 127 (command not found)
-        let result = run(dir_path, "t1", false, false, false, false, false);
-        assert!(result.is_err());
-
-        let path = graph_path(dir_path);
-        let graph = load_graph(&path).unwrap();
-        let task = graph.get_task("t1").unwrap();
-
-        // Check that the failure is not due to command not found
-        let _verify_logs: Vec<_> = task
-            .log
-            .iter()
-            .filter(|e| e.message.contains("smart-verify") || e.message.contains("LLM evaluation"))
-            .collect();
-
-        // There should be some indication that smart verify was used
-        let has_smart_verify_indication = task
-            .log
-            .iter()
-            .any(|e| e.message.contains("smart-verify") || e.message.contains("LLM evaluation"));
-
-        // Or alternatively, verify that we don't get a "command not found" error
-        let has_command_not_found = task.log.iter().any(|e| {
-            e.message.contains("command not found") || e.message.contains("exit code 127")
-        });
-
-        // We should either see smart-verify logs or no "command not found" errors
+        let task = make_task("t1", "Task with free-text verify", Status::InProgress);
+        let error = match run_verify_command(
+            "documentation exists and is comprehensive",
+            dir.path(),
+            &task,
+            &CoordinatorConfig::default(),
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("free-text verify unexpectedly acquired evaluator authority"),
+        };
+        assert_eq!(error.exit_code, "retired-free-text-verify");
         assert!(
-            has_smart_verify_indication || !has_command_not_found,
-            "Expected smart verify routing or no 'command not found' errors. Logs: {:?}",
-            task.log
+            error
+                .stderr
+                .contains("free-text verify compatibility is retired")
         );
     }
 

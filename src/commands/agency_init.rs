@@ -99,7 +99,6 @@ pub fn run(workgraph_dir: &Path) -> Result<()> {
 
     let special_agents: Vec<(&str, &str, &str)> = vec![
         ("Assigner", "Assigner Balanced", "Default Assigner"),
-        ("Evaluator", "Evaluator Balanced", "Default Evaluator"),
         ("Evolver", "Evolver Balanced", "Default Evolver"),
         ("Agent Creator", "Creator Unconstrained", "Default Creator"),
     ];
@@ -200,7 +199,6 @@ pub fn run(workgraph_dir: &Path) -> Result<()> {
     for (role_name, sa_id) in &special_agent_ids {
         let config_field = match *role_name {
             "Assigner" => &mut config.agency.assigner_agent,
-            "Evaluator" => &mut config.agency.evaluator_agent,
             "Evolver" => &mut config.agency.evolver_agent,
             "Agent Creator" => &mut config.agency.creator_agent,
             _ => continue,
@@ -218,7 +216,7 @@ pub fn run(workgraph_dir: &Path) -> Result<()> {
         if !execution_was_selected {
             remove_inactive_route_fields(workgraph_dir)?;
         }
-        println!("Configured manifest-bound agency evaluation.");
+        println!("Configured agency metadata; the retired evaluator actor remains unset.");
     }
 
     // 5. Register the creator-pipeline function if it doesn't exist
@@ -237,13 +235,11 @@ pub fn run(workgraph_dir: &Path) -> Result<()> {
     }
 
     // Summary
-    let special_agents_created = special_agent_ids.len();
-    let _ = special_agents_created; // always 4, used for tracking
     if roles_created == 0 && tradeoffs_created == 0 && !agent_created && !config_changed {
         println!("Agency already initialized.");
     } else {
         println!();
-        println!("Agency is ready. The service will now auto-assign agents to tasks.");
+        println!("Agency is ready. Bind agents explicitly or start the service.");
         println!("  Next: wg service start");
     }
 
@@ -613,12 +609,13 @@ mod tests {
             outcome_count
         );
 
-        // Verify agents were created (1 default + 4 special)
+        // Evaluator graph actors are retired: init creates one default worker
+        // plus the three live explicit special agents.
         let agents_dir = wg_dir.join("agency").join("cache/agents");
         let agent_count = std::fs::read_dir(&agents_dir).unwrap().count();
         assert_eq!(
-            agent_count, 5,
-            "Expected 5 agents (1 default + 4 special), got {}",
+            agent_count, 4,
+            "Expected 4 agents (1 default + 3 live special), got {}",
             agent_count
         );
 
@@ -633,8 +630,8 @@ mod tests {
             "assigner_agent should be set"
         );
         assert!(
-            config.agency.evaluator_agent.is_some(),
-            "evaluator_agent should be set"
+            config.agency.evaluator_agent.is_none(),
+            "agency init must not mint a retired evaluator graph actor"
         );
         assert!(
             config.agency.evolver_agent.is_some(),
@@ -648,7 +645,6 @@ mod tests {
         // Verify each special agent hash points to an existing agent file
         for hash in [
             config.agency.assigner_agent.as_ref().unwrap(),
-            config.agency.evaluator_agent.as_ref().unwrap(),
             config.agency.evolver_agent.as_ref().unwrap(),
             config.agency.creator_agent.as_ref().unwrap(),
         ] {
@@ -671,12 +667,12 @@ mod tests {
         run(&wg_dir).unwrap();
         run(&wg_dir).unwrap();
 
-        // Should still have exactly 5 agents (1 default + 4 special)
+        // Should still have exactly 4 agents (1 default + 3 live special)
         let agents_dir = wg_dir.join("agency").join("cache/agents");
         let agent_count = std::fs::read_dir(&agents_dir).unwrap().count();
         assert_eq!(
-            agent_count, 5,
-            "Expected 5 agents after idempotent re-run, got {}",
+            agent_count, 4,
+            "Expected 4 agents after idempotent re-run, got {}",
             agent_count
         );
 

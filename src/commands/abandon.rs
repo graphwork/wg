@@ -121,12 +121,12 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>, superseded_by: &[String])
                     return false;
                 }
                 let is_system_dep = t.id.starts_with('.') && t.after.contains(&id.to_string());
-                let is_eval_scaffold = t.id == assign_id
+                let is_legacy_agency_row = t.id == assign_id
                     || t.id == eval_id
                     || t.id == flip_id
                     || t.id == verify_id
                     || t.id == verify_deferred_id;
-                is_system_dep || is_eval_scaffold
+                is_system_dep || is_legacy_agency_row
             })
             .map(|t| t.id.clone())
             .collect();
@@ -329,7 +329,7 @@ mod tests {
     }
 
     #[test]
-    fn test_abandon_cascades_eval_scaffold_with_flip() {
+    fn test_abandon_cascades_loaded_legacy_agency_rows() {
         // When FLIP is enabled, the chain is: task → .flip-task → .evaluate-task
         // .evaluate-task depends on .flip-task, NOT on task directly.
         // The cascade must still abandon .evaluate-task.

@@ -44,7 +44,7 @@ run show simple-finish --json >"$scratch/simple.json"
 run list --all >"$scratch/list.out"
 grep -E 'simple-finish.*\(assign ✓ · flip \?' "$scratch/list.out" >/dev/null \
   || loud_fail "parent task row omitted compact assignment/review activity"
-python3 - "$scratch/simple.json" <<'PY'
+python3 - "$scratch/simple.json" "$repo/.wg/graph.jsonl" <<'PY'
 import json, sys
 x=json.load(open(sys.argv[1]))
 assert x["status"] == "done", x
@@ -54,6 +54,10 @@ activity=x.get("completion_review_activity", [])
 assert len(activity) == 1, activity
 assert activity[0]["reviewer_kind"] == "flip", activity
 assert activity[0]["verdict"] == "unavailable", activity
+rows=[json.loads(line) for line in open(sys.argv[2]) if line.strip()]
+tasks=[row for row in rows if row.get("kind") == "task"]
+assert not any(row.get("status") in {"pending-eval", "failed-pending-eval"} for row in tasks), tasks
+assert not any(row.get("id", "").startswith((".assign-", ".flip-", ".evaluate-")) for row in tasks), tasks
 PY
 [[ "$(git rev-parse main)" == "$(git rev-parse worker/simple-finish)" ]] || loud_fail "one-operation completion did not publish exact worker commit"
 grep -q "Advisory model review did not pass" "$scratch/done.err" || loud_fail "advisory finding was not visible"

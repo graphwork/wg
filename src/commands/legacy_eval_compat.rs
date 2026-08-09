@@ -1,7 +1,14 @@
-//! One-shot migration of legacy synthetic agency tasks.
+//! Load-only compatibility for pre-receipt synthetic agency tasks.
 //!
-//! Assignment and review are receipts on the source attempt. They are never
-//! schedulable `.assign-*`, `.flip-*`, or `.evaluate-*` graph tasks.
+//! Current assignment and review are receipts on the source attempt. This
+//! module may retire a legacy row only when the graph proves it was never
+//! claimed and carries no evaluation evidence. It never creates, schedules,
+//! rearms, or interprets a synthetic `.assign-*`, `.flip-*`, or `.evaluate-*`
+//! row.
+//!
+//! Removal condition: a versioned graph migration has rewritten every
+//! supported pre-receipt graph and the loader deliberately rejects these rows
+//! with a documented migration error.
 
 use chrono::Utc;
 
@@ -12,9 +19,10 @@ use worksgood::lifecycle::{
 };
 
 /// Retire an unclaimed, evidence-free synthetic row and remove an assignment
-/// dependency from its source. Claimed or terminal historical rows remain
-/// visible for explicit migration; this function never guesses their outcome.
-pub fn retire_stale_legacy_satellites(
+/// dependency from its source. Claimed, started, terminal, or verdict-bearing
+/// rows remain visible to the read-only evidence migration; this function
+/// never guesses their outcome.
+pub fn retire_safe_synthetic_rows(
     graph: &mut WorkGraph,
     source_id: &str,
     candidate_completion: bool,
@@ -109,10 +117,7 @@ mod tests {
             }));
         }
 
-        assert_eq!(
-            retire_stale_legacy_satellites(&mut graph, "source", false),
-            3
-        );
+        assert_eq!(retire_safe_synthetic_rows(&mut graph, "source", false), 3);
         assert!(graph.get_task("source").unwrap().after.is_empty());
         for id in [".assign-source", ".flip-source", ".evaluate-source"] {
             let task = graph.get_task(id).unwrap();
@@ -136,10 +141,7 @@ mod tests {
             assigned: Some("agent-1".into()),
             ..Task::default()
         }));
-        assert_eq!(
-            retire_stale_legacy_satellites(&mut graph, "source", false),
-            0
-        );
+        assert_eq!(retire_safe_synthetic_rows(&mut graph, "source", false), 0);
         assert_eq!(
             graph.get_task(".assign-source").unwrap().status,
             Status::Open

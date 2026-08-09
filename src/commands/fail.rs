@@ -8,14 +8,15 @@ use worksgood::graph::{
     parse_token_usage, parse_wg_tokens,
 };
 use worksgood::lifecycle::{
-    ActorKind, FenceExpectation, LifecycleActor, TransitionKind, TransitionRequest,
-    apply_transition,
+    FenceExpectation, LifecycleActor, TransitionKind, TransitionRequest, apply_transition,
 };
 use worksgood::parser::modify_graph;
 use worksgood::service::registry::AgentRegistry;
 
 #[cfg(test)]
 use super::graph_path;
+#[cfg(test)]
+use worksgood::lifecycle::ActorKind;
 #[cfg(test)]
 use worksgood::parser::load_graph;
 
@@ -52,22 +53,6 @@ fn failure_signal_for_class(
 }
 
 pub fn run(dir: &Path, id: &str, reason: Option<&str>, class: Option<FailureClass>) -> Result<()> {
-    run_inner(dir, id, reason, class, false)
-}
-
-/// Reject a done task via evaluation gate. This allows failing a task that is
-/// already Done — the evaluator determined the work is unacceptable.
-pub fn run_eval_reject(dir: &Path, id: &str, reason: Option<&str>) -> Result<()> {
-    run_inner(dir, id, reason, None, true)
-}
-
-fn run_inner(
-    dir: &Path,
-    id: &str,
-    reason: Option<&str>,
-    class: Option<FailureClass>,
-    eval_reject: bool,
-) -> Result<()> {
     // Pre-check with a non-atomic read (gate only — not used for mutation).
     {
         let (graph, _path) = super::load_workgraph_mut(dir)?;
@@ -123,9 +108,7 @@ fn run_inner(
         .and_then(|agent| ExecutorKind::from_str(&agent.executor))
         .unwrap_or_default();
     let route = agent.and_then(|agent| agent.model.clone());
-    let failure_signal = if eval_reject {
-        None
-    } else if let Some(output_path) = output_path.as_deref() {
+    let failure_signal = if let Some(output_path) = output_path.as_deref() {
         let raw_stream = output_path
             .parent()
             .unwrap_or_else(|| Path::new("."))
@@ -152,14 +135,11 @@ fn run_inner(
     };
 
     // Persist the non-success terminal transaction before projecting failure.
-    // Evaluation rejection has its own exact candidate-bound receipt path.
-    if !eval_reject {
-        super::finalize::record_terminal_abort(
-            dir,
-            id,
-            reason.unwrap_or("task failed without an explicit reason"),
-        )?;
-    }
+    super::finalize::record_terminal_abort(
+        dir,
+        id,
+        reason.unwrap_or("task failed without an explicit reason"),
+    )?;
 
     // Atomically load the freshest graph, apply the mutation, and save.
     // Using modify_graph prevents lost updates from concurrent graph writers.
@@ -189,11 +169,8 @@ fn run_inner(
         if task.status == Status::Done {
             return false;
         }
-        // PendingEval → Failed is allowed from both `wg fail` and the
-        // eval-reject path. Falls through to the generic mutation below.
-        //
-        // FailedPendingEval → Failed is the terminal path after eval rejection
-        // (or operator-forced fail). Does NOT trigger auto-rescue spawn.
+        // Loaded PendingEval / FailedPendingEval compatibility states may be
+        // failed explicitly, but no evaluator rejection path creates them.
 
         // Resource admission deferrals happen before reservation and are
         // recorded by the dispatcher. Once a worker attempt is running,
@@ -205,12 +182,7 @@ fn run_inner(
         // `FailedPendingEval` rescue status is produced by the authoritative
         // path. Evaluation may append advisory evidence only.
 
-        let actor = if eval_reject {
-            LifecycleActor {
-                kind: ActorKind::AcceptanceController,
-                id: "evaluation-gate".to_string(),
-            }
-        } else if task.lifecycle.current_attempt.is_some() {
+        let actor = if task.lifecycle.current_attempt.is_some() {
             (std::env::var("WG_TASK_ID").as_deref() == Ok(id_owned.as_str()))
                 .then(|| std::env::var("WG_AGENT_ID").ok())
                 .flatten()
@@ -223,24 +195,11 @@ fn run_inner(
         } else {
             LifecycleActor::operator(worksgood::current_user())
         };
-        let kind = if eval_reject {
-            TransitionKind::AcceptanceRejected {
-                evidence_ref: reason_owned
-                    .clone()
-                    .unwrap_or_else(|| "evaluation-rejected".to_string()),
-            }
-        } else {
-            TransitionKind::AttemptFailed { class }
-        };
         let generation = task.lifecycle.generation;
         let mut request = TransitionRequest::new(
-            kind,
+            TransitionKind::AttemptFailed { class },
             actor,
-            if eval_reject {
-                "acceptance_rejected"
-            } else {
-                "source_execution_failed"
-            },
+            "source_execution_failed",
             format!("fail:{id_owned}:{generation}:{}", task.retry_count),
         );
         if task.lifecycle.current_attempt.is_some() {
@@ -255,16 +214,9 @@ fn run_inner(
         task.failure_class = class;
         task.failure_signal = failure_signal.clone();
 
-        let log_message = if eval_reject {
-            match reason_owned.as_deref() {
-                Some(r) => format!("Evaluation rejected task: {}", r),
-                None => "Evaluation rejected task".to_string(),
-            }
-        } else {
-            match reason_owned.as_deref() {
-                Some(r) => format!("Task marked as failed: {}", r),
-                None => "Task marked as failed".to_string(),
-            }
+        let log_message = match reason_owned.as_deref() {
+            Some(r) => format!("Task marked as failed: {}", r),
+            None => "Task marked as failed".to_string(),
         };
         task.log.push(LogEntry {
             timestamp: Utc::now().to_rfc3339(),
@@ -309,8 +261,7 @@ fn run_inner(
         anyhow::bail!("Lifecycle transition rejected for '{}': {}", id, rejection);
     }
 
-    if !eval_reject
-        && let Some(signal) = failure_signal.clone()
+    if let Some(signal) = failure_signal.clone()
         && let Err(error) = worksgood::telemetry::append_record(
             dir,
             worksgood::telemetry::TelemetryRecord::new(id, retry_count.max(1), signal),
@@ -1162,21 +1113,12 @@ mod tests {
     }
 
     #[test]
-    fn test_eval_reject_done_task() {
+    fn test_fail_cannot_rewrite_done_task() {
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
         setup_workgraph(dir_path, vec![make_task("t1", "Test task", Status::Done)]);
 
-        // Normal fail should error on done tasks
         let result = run(dir_path, "t1", Some("reason"), None);
-        assert!(result.is_err());
-
-        // Evaluation evidence cannot rewrite an already terminal source.
-        let result = run_eval_reject(
-            dir_path,
-            "t1",
-            Some("evaluation score 0.3 below threshold 0.5"),
-        );
         assert!(result.is_err());
 
         let path = graph_path(dir_path);
@@ -1185,23 +1127,6 @@ mod tests {
         assert_eq!(task.status, Status::Done);
         assert_eq!(task.retry_count, 0);
         assert!(task.failure_reason.is_none());
-    }
-
-    #[test]
-    fn test_eval_reject_already_failed_is_noop() {
-        let dir = tempdir().unwrap();
-        let dir_path = dir.path();
-        let mut task = make_task("t1", "Test task", Status::Failed);
-        task.retry_count = 1;
-        setup_workgraph(dir_path, vec![task]);
-
-        let result = run_eval_reject(dir_path, "t1", Some("reason"));
-        assert!(result.is_ok());
-
-        let path = graph_path(dir_path);
-        let graph = load_graph(&path).unwrap();
-        let task = graph.get_task("t1").unwrap();
-        assert_eq!(task.retry_count, 1); // Unchanged
     }
 
     #[test]

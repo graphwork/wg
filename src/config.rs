@@ -4037,10 +4037,6 @@ fn default_evolution_budget() -> u32 {
 fn default_evolution_reactive_threshold() -> f64 {
     0.4
 }
-fn default_auto_assign_grace_seconds() -> u64 {
-    10
-}
-
 /// Persisted stage of the controlled Pi evaluation rollout. Stage order is
 /// intentionally explicit; operators advance it only through
 /// `wg evaluate rollout advance` with machine-readable evidence.
@@ -4120,8 +4116,10 @@ pub struct AgencyConfig {
     #[serde(default)]
     pub auto_evaluate: bool,
 
-    /// Legacy compatibility flag. Synthetic auto-assignment tasks are retired;
-    /// assignment is direct admission metadata.
+    /// Load/write compatibility flag for pre-receipt configs. It has no
+    /// dispatch authority: synthetic auto-assignment tasks are retired and
+    /// assignment is direct admission metadata. Remove after a versioned config
+    /// migration rewrites the key and older binaries are outside support.
     #[serde(default)]
     pub auto_assign: bool,
 
@@ -4129,7 +4127,10 @@ pub struct AgencyConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assigner_agent: Option<String>,
 
-    /// Content-hash of agent to use as evaluator (None = use default pipeline)
+    /// Load/write compatibility for historical evaluator graph actors.
+    /// Completion review resolves a receipt producer directly and never uses
+    /// this field as dispatch authority. Remove with the pre-receipt config
+    /// migration floor.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evaluator_agent: Option<String>,
 
@@ -4216,13 +4217,6 @@ pub struct AgencyConfig {
     /// 0 = disabled. Default: 10
     #[serde(default = "default_bizarre_ideation_interval")]
     pub bizarre_ideation_interval: u32,
-
-    /// Grace period in seconds after task creation before auto-assignment
-    /// is eligible. Prevents premature assignment when tasks are created
-    /// and then have dependencies wired shortly after.
-    /// Default: 10
-    #[serde(default = "default_auto_assign_grace_seconds")]
-    pub auto_assign_grace_seconds: u64,
 
     /// Global evaluation gate threshold. When set, evaluations that score
     /// below this threshold can reject (fail) the original task, blocking
@@ -4398,7 +4392,6 @@ impl Default for AgencyConfig {
             ucb_exploration_constant: default_ucb_exploration_constant(),
             novelty_bonus_multiplier: default_novelty_bonus_multiplier(),
             bizarre_ideation_interval: default_bizarre_ideation_interval(),
-            auto_assign_grace_seconds: default_auto_assign_grace_seconds(),
             eval_gate_threshold: default_eval_gate_threshold(),
             eval_gate_all: false,
             auto_rescue_on_eval_fail: default_auto_rescue_on_eval_fail(),
@@ -10437,7 +10430,7 @@ model = "pi:openrouter:anthropic/claude-opus-4-7"
     /// perturbs `config_fingerprint` (the service-identity digest).
     #[test]
     fn test_load_diagnostics_skipped_from_serialization_and_fingerprint() {
-        let mut clean = Config::default();
+        let clean = Config::default();
         let mut dirty = Config::default();
         dirty
             .load_diagnostics

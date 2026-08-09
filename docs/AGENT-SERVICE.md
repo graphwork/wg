@@ -86,26 +86,18 @@ Each tick does:
      the next agent can address the message. Rate-limited: max 3
      resurrections per task with cooldown.
 
- 3. [IF auto_assign enabled]
-    For each unassigned ready task (no agent field):
-      Skip meta-tasks (tagged assignment/evaluation/evolution)
-      Create assign-{task-id} blocker task
-      Set assigner_model and assigner_agent on the new task
+ 3. Legacy lifecycle compatibility
+    Retire only unclaimed, unstarted, evidence-free synthetic rows.
+    Preserve verdict-bearing rows and migrate exact historical evidence.
+    Never create, rearm, or dispatch assign/evaluate/FLIP satellites.
 
- 4. [IF auto_evaluate enabled]
-    For each completed task without an existing evaluate-{task-id}:
-      Skip meta-tasks (tagged evaluation/assignment/evolution)
-      Create evaluate-{task-id} blocked by the original task
-      Set evaluator_model and evaluator_agent on the new task
-
- 4.5 Legacy advisory FLIP verification (if flip_verification_threshold is set)
-     Advisory pipelines may create an independent verification task for a
-     low FLIP score. Hard-gated persisted pipelines never do: FLIP is an
-     exact attempt-bound required verdict checked independently at its
-     effective threshold, without averaging or another satellite.
+ 4. Completion review reconciliation
+    Consume only source-attempt-bound review/evidence records. Ordinary
+    trusted-local completion reaches Done from publication/completion receipts
+    and does not wait on PendingEval.
 
  4.6 [IF auto_evolve enabled]
-     Trigger agent evolution when evaluation data warrants it.
+     Trigger the still-live, opt-in agent evolution feature when warranted.
 
  4.7 [IF auto_create enabled]
      Invoke the creator agent to expand the primitive store (roles,
@@ -503,9 +495,9 @@ model = "claude:opus"    # default model (handler is implied from prefix)
 heartbeat_timeout = 5    # minutes before stale (default: 5)
 
 [agency]
-auto_evaluate = false    # auto-create evaluation tasks
-auto_assign = false      # auto-create assignment tasks
-auto_place = false       # auto-placement analysis merged into assignment step (see AGENT-GUIDE.md §1b)
+auto_evaluate = false    # source-bound completion review/observation
+auto_assign = false      # inert compatibility key; no synthetic assignment tasks
+auto_place = false       # placement policy used by explicit assignment (see AGENT-GUIDE.md §1b)
 auto_create = false      # auto-invoke creator agent for primitive store expansion
 auto_create_threshold = 20  # completed tasks before next creator invocation (default: 20)
 auto_triage = false      # triage dead agents with LLM before respawning
@@ -529,34 +521,26 @@ wg config --creator-agent <content-hash>
 wg config --creator-model haiku
 ```
 
-### Eval gate configuration
+### Completion review configuration
 
-Control the evaluation gate that blocks task completion pending required verdicts:
+Ordinary trusted-local `wg done` snapshots one immutable candidate, records
+model-review activity on that source attempt, publishes the exact candidate,
+and derives `done` from receipts. It never creates `.evaluate-*`/`.flip-*`
+tasks and never enters `pending-eval`. Review is advisory by default; explicit
+`completion_review_strict = true` requires passing review or parks the source
+for operator action after the bounded attempt limit.
 
-```bash
-wg config --eval-gate-threshold 0.7    # structural-deliverable gates reject below 0.7
-wg config --eval-gate-all true         # make every persisted evaluator a hard gate
-```
-
-A source enters `pending-eval` only for a hard gate. Other scheduled evaluations
-are explicitly advisory: the source goes directly to `done`, and completion of
-the `.evaluate-*` job means only that evaluation execution succeeded — it is not
-a quality pass. Tags are labels and do not opt a task into the gate.
-
-When FLIP is persisted in a hard-gated pipeline it is a required verdict. Its
-threshold is `flip_verification_threshold` when explicitly set, otherwise it
-inherits `eval_gate_threshold`. FLIP and evaluator scores are checked
-independently (strictest required verdict wins); they are never averaged and no
-additional verification satellite is created for a gated FLIP. For advisory
-pipelines only, an explicitly set `flip_verification_threshold` retains the
-legacy independent-verification trigger.
+`pending-eval`, `failed-pending-eval`, synthetic evaluator rows, and the old
+`eval_gate_*` settings remain readable only for pre-receipt graph/config
+compatibility. They may not acquire new dispatch authority. See
+[`design-dormant-local-lifecycle-compatibility.md`](design-dormant-local-lifecycle-compatibility.md)
+for the removal conditions.
 
 ```toml
 [agency]
+completion_review_strict = true
+gate_max_attempts = 2
 flip_enabled = true
-eval_gate_threshold = 0.7
-# optional override; otherwise hard-gate FLIP also uses 0.7
-flip_verification_threshold = 0.65
 ```
 
 ### Retry context injection
@@ -669,7 +653,7 @@ wg service status    # shows recent errors
 | Agent marked dead prematurely | Increase `heartbeat_timeout` in config.toml |
 | Config changes not taking effect | `wg service reload` |
 | Daemon won't start | Check for existing daemon with `wg service status` |
-| Agents not picking up identity | Ensure task has `agent` field set via `wg assign` or auto-assign |
+| Agents not picking up identity | Bind the task explicitly with `wg assign <task> <agent>` or `wg assign --auto <task>` |
 
 ## Manual Cleanup Commands
 
