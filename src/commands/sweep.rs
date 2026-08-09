@@ -66,26 +66,6 @@ pub fn find_orphaned_tasks(dir: &Path) -> Result<Vec<OrphanedTask>> {
     let mut orphaned = Vec::new();
 
     for task in graph.tasks() {
-        // A policy-valid Pi continuation authorization is the lifecycle
-        // kernel's narrow pre-terminal hold. Generic dead-owner cleanup must
-        // not create another attempt/owner while that exact source is being
-        // reconciled by the Pi watchdog.
-        if task.status == Status::InProgress
-            && task
-                .lifecycle
-                .pi_continuation
-                .as_ref()
-                .is_some_and(|authorization| {
-                    matches!(
-                        authorization.state,
-                        worksgood::lifecycle::PiAuthorizationState::Active
-                            | worksgood::lifecycle::PiAuthorizationState::HeldOperatorRequired
-                            | worksgood::lifecycle::PiAuthorizationState::Consumed
-                    )
-                })
-        {
-            continue;
-        }
         let is_inprogress = task.status == Status::InProgress;
         let is_open_with_claim = task.status == Status::Open && task.assigned.is_some();
         if !is_inprogress && !is_open_with_claim {
@@ -445,26 +425,10 @@ pub fn reconcile_orphaned_tasks(dir: &Path, graph_path: &Path) -> Result<usize> 
             .tasks()
             .filter(|task| matches!(task.status, Status::InProgress | Status::Open))
             .filter_map(|task| {
-                // Pi's exact process-exit/finalization lane remains authority
-                // after the wrapper dies, including after a terminal intent
-                // consumes continuation budget. Generic orphan recovery must
-                // not overwrite retained WIP with AttemptLost.
-                if task.status == Status::InProgress
-                    && task
-                        .lifecycle
-                        .pi_continuation
-                        .as_ref()
-                        .is_some_and(|authorization| {
-                            matches!(
-                            authorization.state,
-                            worksgood::lifecycle::PiAuthorizationState::Active
-                                | worksgood::lifecycle::PiAuthorizationState::HeldOperatorRequired
-                                | worksgood::lifecycle::PiAuthorizationState::Consumed
-                        )
-                        })
-                {
-                    return None;
-                }
+                // Once the owning process is dead, no continuation token can
+                // keep the task invisibly InProgress. The exact attempt is
+                // failed below with fence evidence; an operator may then retry
+                // or reconcile it explicitly.
                 let dominated = match &task.assigned {
                     Some(agent_id) => match registry.get_agent(agent_id) {
                         Some(agent) => {
@@ -719,6 +683,41 @@ mod tests {
         assert!(
             orphaned.iter().all(|o| o.task_id != "done-task"),
             "Should not flag Done tasks"
+        );
+    }
+
+    #[test]
+    fn test_sweep_detects_dead_pi_owner_despite_continuation_token() {
+        let temp_dir = TempDir::new().unwrap();
+        setup_with_dead_agent(temp_dir.path());
+        let gpath = graph_path(temp_dir.path());
+        modify_graph(&gpath, |graph| {
+            let task = graph.get_task_mut("stuck-task").unwrap();
+            task.lifecycle.pi_continuation =
+                Some(worksgood::lifecycle::PiContinuationAuthorization {
+                    authorization_id: "pi-auth:attempt-0-1".to_string(),
+                    task_id: task.id.clone(),
+                    generation: 0,
+                    attempt_id: "attempt-0-1".to_string(),
+                    attempt_fence: 1,
+                    worktree_lease_epoch: 1,
+                    session_proof_digest: "b3:test-session".to_string(),
+                    route_snapshot_digest: "b3:test-route".to_string(),
+                    state: worksgood::lifecycle::PiAuthorizationState::HeldOperatorRequired,
+                    max_replacement_epochs: 3,
+                    max_reserved_elapsed_secs: 1800,
+                    epochs_used: 0,
+                    elapsed_reserved_secs: 0,
+                    issued_by_policy: "test".to_string(),
+                });
+            true
+        })
+        .unwrap();
+
+        let orphaned = find_orphaned_tasks(temp_dir.path()).unwrap();
+        assert!(
+            orphaned.iter().any(|entry| entry.task_id == "stuck-task"),
+            "a continuation token must not hide an InProgress task after its owner is dead"
         );
     }
 

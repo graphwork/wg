@@ -3078,3 +3078,10 @@ script = "scenarios/build_admission_inherits_worker_slots.sh"
 owners = ["fix-build-admission-default-ui"]
 description = "Candidate-binary real-daemon terminal regression: with max_agents=3 and no build override, three build-heavy shell fixtures run concurrently and config/service JSON report an inherited 3-slot cap; changing max_agents updates the inherited cap by hot reload, an explicit cap wins without restart, lint gives the exact remediation command, and disabled predictive disk admission exposes headroom as unavailable."
 timeout_seconds = 120
+
+[[scenario]]
+name = "simple_local_recovery"
+script = "scenarios/simple_local_recovery.sh"
+owners = ["simple-local-wg-recovery"]
+description = "Credential-free trusted-local golden path: one `wg done` snapshots, records visible advisory review activity, publishes the exact Land commit, and derives Done without submit/land ceremony; operator recovery is refused from worker authority and succeeds outside it with a reason-bound immutable receipt."
+timeout_seconds = 90

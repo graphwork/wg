@@ -4496,10 +4496,7 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
         .max_build_agents
         .unwrap_or(coord.max_agents);
     let max_build_agents_source = config.coordinator.max_build_agents_source();
-    let disk_sentinel_enabled = config
-        .coordinator
-        .resource_management
-        .disk_sentinel_enabled;
+    let disk_sentinel_enabled = config.coordinator.resource_management.disk_sentinel_enabled;
     let build_heavy_active = crate::commands::load_workgraph(dir)
         .ok()
         .map(|(graph, _)| {

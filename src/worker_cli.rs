@@ -184,6 +184,40 @@ fn send(operation: WorkerOperation) -> Result<()> {
 /// Return `Ok(None)` outside worker mode, `Ok(Some(()))` when handled.
 pub fn maybe_run(command: &Commands, json: bool) -> Result<Option<()>> {
     if std::env::var_os("WG_WORKER_CAPABILITY").is_none() {
+        // Trusted local workers use direct, fence-validated graph access so a
+        // daemon restart cannot stop ordinary coordination. That is not a
+        // grant of service/configuration administration: preserve the same
+        // actor boundary the broker enforced for these command families.
+        if control_mode() == WorkerControlMode::Trusted
+            && std::env::var_os("WG_AGENT_ID").is_some()
+            && matches!(
+                command,
+                Commands::Service { .. }
+                    | Commands::Setup { .. }
+                    | Commands::Config { .. }
+                    | Commands::Profile { .. }
+                    | Commands::Login { .. }
+                    | Commands::PiPlugin { .. }
+                    | Commands::Skill { .. }
+                    | Commands::Upgrade { .. }
+                    | Commands::FedNode { .. }
+                    | Commands::Identity { .. }
+                    | Commands::Peer { .. }
+                    | Commands::Provider { .. }
+                    | Commands::Review { .. }
+                    | Commands::Pilot { .. }
+                    | Commands::Secret { .. }
+                    | Commands::Migrate { .. }
+                    | Commands::Recover { .. }
+                    | Commands::Cleanup { .. }
+                    | Commands::Gc { .. }
+                    | Commands::Sweep { .. }
+            )
+        {
+            anyhow::bail!(
+                "worker_control.admin_operation_refused: command is outside trusted local graph coordination"
+            );
+        }
         return Ok(None);
     }
     if std::env::var_os("WG_DIR").is_some() {

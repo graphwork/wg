@@ -1845,11 +1845,26 @@ pub(crate) fn spawn_agent_inner_authorized(
             // operate directly on the project graph and remain available while
             // the daemon is restarting. main validates the exact ambient
             // task/generation/attempt/fence before every mutating command.
+            let (_discarded_bearer, worker_binding) =
+                worksgood::worker_control::mint_attempt_capability_for_worktree_mode(
+                    dir,
+                    task_id,
+                    claim_snapshot.generation,
+                    &claim_snapshot.attempt_id,
+                    claim_snapshot.attempt_fence,
+                    claim_snapshot.attempt_fence,
+                    &temp_agent_id,
+                    worktree_info
+                        .as_ref()
+                        .map(|worktree| worktree.path.as_path())
+                        .or_else(|| nongit_workspace.as_deref()),
+                    control_mode,
+                )?;
+            // Persist the attempt binding for attribution/reconciliation, but
+            // never give the trusted process a broker bearer token.
+            worker_capability_digest = Some(worker_binding.token_sha256.clone());
             cmd.env("WG_DIR", dir);
-            cmd.env(
-                "WG_GRAPH_ID",
-                worksgood::worker_control::load_or_create_graph_identity(dir)?,
-            );
+            cmd.env("WG_GRAPH_ID", &worker_binding.graph_id);
         } else {
             let endpoint = match crate::commands::service::ServiceState::load(dir)? {
                 Some(service_state) => PathBuf::from(service_state.socket_path),

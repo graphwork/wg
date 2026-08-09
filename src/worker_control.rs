@@ -507,7 +507,7 @@ pub fn validate_trusted_local_environment(dir: &Path) -> Result<()> {
     if let Ok(expected_graph) = std::env::var("WG_GRAPH_ID") {
         let actual = load_or_create_graph_identity(dir)?;
         if expected_graph != actual {
-            bail!("worker_control.graph_identity_mismatch");
+            bail!("worker_control.graph_cli_cross_graph_refused: graph identity mismatch");
         }
     }
     let graph = crate::parser::load_graph(&dir.join("graph.jsonl"))?;
@@ -537,6 +537,22 @@ pub fn validate_trusted_local_environment(dir: &Path) -> Result<()> {
             agent_id
         );
     }
+    append_audit(
+        dir,
+        &WorkerAuditEvent {
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            request_id: format!("direct:{}", uuid::Uuid::now_v7()),
+            token_hint: "trusted-direct".to_string(),
+            operation: WorkerOperationKind::GraphCli,
+            outcome: "allowed".to_string(),
+            reason: "exact ambient trusted-local attempt validated".to_string(),
+            task_id: Some(task_id),
+            agent_id: Some(agent_id),
+            attempt_id: Some(attempt_id),
+            fence: Some(fence),
+            control_mode: Some(WorkerControlMode::Trusted),
+        },
+    )?;
     Ok(())
 }
 

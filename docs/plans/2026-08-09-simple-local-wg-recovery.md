@@ -1,6 +1,6 @@
 # Simple Local WG Recovery Work Document
 
-**Status:** ACTIVE — operator recovery; WG dispatch is stopped  
+**Status:** ACTIVE — Phases 1, 2, 4, and 5 validated; WG dispatch remains stopped pending full canary/install
 **Started:** 2026-08-09  
 **Working branch:** `rescue/simple-local-wg`  
 **Owner:** repository operator  
@@ -177,58 +177,58 @@ ef8719a423d00a0be98eb7c1e4297751e1c0dca32348b9e55f3238b509d01c9b  preserved-refs
 
 ### Phase 1 — Establish a minimal operator bootstrap
 
-- [ ] Add a real operator completion/reconciliation escape that works even when the model-review valve or task generation bookkeeping is broken.
-- [ ] Bound review retries and prevent a reviewer from keeping a dead worker `InProgress`.
-- [ ] Classify pre-execution control failure as neutral startup deferral.
-- [ ] Ensure dead worker reconciliation releases task ownership deterministically.
-- [ ] Add a configuration/default that makes local model review advisory while preserving explicit strict mode.
-- [ ] Prove the bootstrap in an isolated clean graph before touching the preserved graph.
+- [x] Add a real operator completion/reconciliation escape that works even when the model-review valve or task generation bookkeeping is broken.
+- [x] Bound review retries and prevent a reviewer from keeping a dead worker `InProgress`.
+- [x] Classify pre-execution control failure as neutral startup deferral.
+- [x] Ensure dead worker reconciliation releases task ownership deterministically.
+- [x] Add a configuration/default that makes local model review advisory while preserving explicit strict mode.
+- [x] Prove the bootstrap in an isolated clean graph before touching the preserved graph.
 
 **Phase 1 exit:** a human can recover and complete a validated local task without editing graph JSON, object-store files, service registries, or lifecycle ledgers manually.
 
 ### Phase 2 — Restore trust-first local coordination
 
-- [ ] Review the earliest validated trust-first checkpoint; do not merge the latest scope-expanded branch wholesale.
-- [ ] Extract only behavior directly required by the target contract.
-- [ ] Make trusted local workers the default when no explicit strict scope is configured.
-- [ ] Permit normal cross-task graph coordination through public WG commands.
-- [ ] Keep evaluator/reviewer, remote, and explicit scoped actors constrained.
-- [ ] Remove live coordinator availability as a prerequisite for every continuation of a valid local lease.
-- [ ] Provide a worker-readable capability/status view before execution begins.
-- [ ] Run the historical trust-first regression and a current local coordination smoke.
+- [x] Review the earliest validated trust-first checkpoint; do not merge the latest scope-expanded branch wholesale.
+- [x] Extract only behavior directly required by the target contract.
+- [x] Make trusted local workers the default when no explicit strict scope is configured.
+- [x] Permit normal cross-task graph coordination through public WG commands.
+- [x] Keep evaluator/reviewer, remote, and explicit scoped actors constrained.
+- [x] Remove live coordinator availability as a prerequisite for every continuation of a valid local lease.
+- [x] Provide a worker-readable capability/status view before execution begins.
+- [x] Run the historical trust-first regression and a current local coordination smoke.
 
 **Phase 2 exit:** a local worker can create/edit/link/message downstream work and survive temporary coordinator IPC loss without weakening stale-owner fences or immutable evidence.
 
 ### Phase 3 — Simplify completion
 
-- [ ] Make one worker-facing completion operation own candidate snapshot, review, publication, and Done.
-- [ ] Return exact findings immediately on repairable rejection.
-- [ ] Preserve rejected and superseded candidates without forcing repeated manual manifests.
-- [ ] Separate source-worker, assignment, FLIP, and evaluation accounting.
+- [x] Make one worker-facing completion operation own candidate snapshot, review, publication, and Done.
+- [x] Return exact findings immediately on repairable rejection.
+- [x] Preserve rejected and superseded candidates without forcing repeated manual manifests.
+- [x] Separate source-worker, assignment, FLIP, and evaluation accounting.
 - [ ] Add the bounded repair/`Needs review` behavior from §4.3.
 - [ ] Remove or hide worker-facing completion ceremony from prompts and normal help.
-- [ ] Prove infrastructure-unavailable review does not fail or indefinitely block the source task.
+- [x] Prove infrastructure-unavailable review does not fail or indefinitely block the source task.
 
 **Phase 3 exit:** one command completes normal work; one real semantic defect can be repaired; model or control-plane failure cannot create an infinite loop.
 
 ### Phase 4 — Remove surprise scheduler policy
 
-- [ ] Make unset build-heavy capacity inherit `max_agents`.
-- [ ] Preserve only explicit lower operator overrides.
-- [ ] Keep predictive disk admission opt-in.
-- [ ] Show inherited/explicit capacity and waiting reasons in CLI/JSON/TUI.
-- [ ] When disk prediction is disabled, render headroom as unavailable rather than `Healthy — 0.0 GiB`.
-- [ ] Review the earliest validated build-admission checkpoint; do not merge the 28-commit review-expanded branch wholesale.
+- [x] Make unset build-heavy capacity inherit `max_agents`.
+- [x] Preserve only explicit lower operator overrides.
+- [x] Keep predictive disk admission opt-in.
+- [x] Show inherited/explicit capacity and waiting reasons in CLI/JSON/TUI.
+- [x] When disk prediction is disabled, render headroom as unavailable rather than `Healthy — 0.0 GiB`.
+- [x] Review the earliest validated build-admission checkpoint; do not merge the 28-commit review-expanded branch wholesale.
 
 **Phase 4 exit:** absent explicit configuration, worker concurrency is governed by `max_agents` alone.
 
 ### Phase 5 — Remove mandatory quality-pass behavior
 
-- [ ] Remove “always create a quality pass for 2+ tasks” from the default chat/agent contract.
-- [ ] Make quality pass explicitly requested or advisory only.
-- [ ] If used, run it as a trusted local coordinator rather than a brokered cross-task exception.
-- [ ] On quality-pass infrastructure failure, release original tasks unchanged with a warning.
-- [ ] Do not use hard dependency edges that permanently block a batch on advisory metadata optimization.
+- [x] Remove “always create a quality pass for 2+ tasks” from the default chat/agent contract.
+- [x] Make quality pass explicitly requested or advisory only.
+- [x] If used, run it as a trusted local coordinator rather than a brokered cross-task exception.
+- [x] On quality-pass infrastructure failure, release original tasks unchanged with a warning.
+- [x] Do not use hard dependency edges that permanently block a batch on advisory metadata optimization.
 
 **Phase 5 exit:** ordinary fan-out needs no preparatory meta-task; an optional quality pass can help but cannot gum up execution.
 
@@ -236,17 +236,17 @@ ef8719a423d00a0be98eb7c1e4297751e1c0dca32348b9e55f3238b509d01c9b  preserved-refs
 
 - [ ] Show compact assignment/FLIP/eval activity on the parent task row.
 - [ ] Expose full generation/attempt/candidate/review history in CLI, JSON, and TUI.
-- [ ] Make findings, model route, usage, cost, timing, semantic reject, and infrastructure failure queryable.
-- [ ] Ensure activities have no graph dependency or source lifecycle authority.
+- [x] Make findings, model route, usage, cost, timing, semantic reject, and infrastructure failure queryable.
+- [x] Ensure activities have no graph dependency or source lifecycle authority.
 - [ ] Reconnect accepted terminal outcomes to agency learning through a separate exactly-once observation projection only after the local path is stable.
 
 **Phase 6 exit:** review is visible and useful without synthetic task noise or reviewer lifecycle authority.
 
 ### Phase 7 — Canary, install, and reconcile
 
-- [ ] Build candidate binary without changing the global installation.
+- [x] Build candidate binary without changing the global installation.
 - [ ] Run the clean-graph golden-path canary in §8.
-- [ ] Run focused stale-owner, immutable-receipt, and remote-scope safety tests.
+- [x] Run focused stale-owner, immutable-receipt, and remote-scope safety tests.
 - [ ] Run `cargo fmt --check`, targeted tests, and `cargo clippy`.
 - [ ] Install with `cargo install --path . --locked` only after the canary passes.
 - [ ] Start the service against a disposable copy of the preserved graph and run reconciliation dry-run.
@@ -263,7 +263,7 @@ Do this only after the simple path is stable.
 
 - [ ] Remove obsolete `PendingEval`/`FailedPendingEval` and synthetic-satellite compatibility paths where migration evidence permits.
 - [ ] Remove local own-task-only capability branches no longer used by explicit scoped actors.
-- [ ] Remove worker prompt instructions for retired completion commands.
+- [x] Remove worker prompt instructions for retired completion commands.
 - [ ] Remove dead assignment/evaluator/evolver paths or label and isolate intentionally manual compatibility commands.
 - [ ] Publish one authority map for task, attempt, candidate, activity, review, publication, and learning.
 - [ ] Add a complexity budget: any new hard gate needs an explicit user-selected policy, bounded failure behavior, visible state, and a tested operator escape.
@@ -355,3 +355,15 @@ Prefer deletion, bypass, and reuse of ordinary WG commands over new abstractions
 - Runaway task branches retained as evidence.
 - Audit draft and roadmap files already present on the integration baseline; task statuses remain forensic evidence and are not treated as product truth.
 - Next action: implement Phase 1 operator bootstrap directly on `rescue/simple-local-wg`.
+
+### 2026-08-09 — Trusted-local bootstrap validated
+
+- Selectively applied trust checkpoint `5a852b21` and build-admission checkpoint `20dbb11a`; did not merge either review-expanded branch wholesale.
+- Added reason-required, worker-refused `wg done --operator-accept` with an immutable receipt; `simple_local_recovery` proves it in a clean graph.
+- Made completion review advisory by default with explicit strict mode retained; unavailable review is visible and does not block deterministic publication.
+- Collapsed ordinary Land completion to one `wg done`: baseline/configured validation evidence, exact candidate, review activity, landing, and Done are internal.
+- Restored direct trusted graph coordination during daemon outages while retaining exact generation/attempt/fence validation, audit attribution, graph identity checks, and explicit service/configuration administration refusals.
+- Removed the Pi continuation-token exception from dead-owner sweeping; a dead process can no longer hide an `InProgress` task. The focused unit regression passed.
+- Validated `trust_first_local_worker_coordination`, `worker_control_capability_broker`, `simple_local_recovery`, and `build_admission_inherits_worker_slots` against the candidate binary.
+- Validated completion review tests, neutral spawn-preparation deferral, optional quality-pass release behavior, trusted/scoped actor defaults, `cargo check --all-targets`, and pinned `cargo fmt --check`.
+- Remaining before install: bounded strict repair/Needs-review behavior, parent-row/history UX, clippy/full focused regression, and the complete three-worker restart golden canary.

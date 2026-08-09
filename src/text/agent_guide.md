@@ -208,18 +208,19 @@ Add the human-flow simulation.
 
 ## Cycles
 
-Historical graphs may contain cycle metadata, but completion has no
-`--converged` bypass and failure never authorizes an automatic restart. Model
-each new pass as explicit operator-created work. Every pass that becomes Done
-must independently satisfy the universal manifest, FLIP, eval, and publication
-protocol below.
+Historical graphs may contain cycle metadata. Prefer explicit, inspectable
+passes and bounded iteration. Completion runs deterministic task validation;
+model review is advisory unless the operator explicitly selected strict mode.
 
-## Universal Completion Valve
+## Simple Completion
 
-`wg done` never infers success from process exit, cleanup, or an editable
-worktree. Every Land, Report, and Explore task must first publish an immutable
-completion manifest and receive exact FLIP then eval pass receipts for that
-same manifest and requirements digest.
+The normal worker operation is `wg done <task-id>`. WG runs configured
+deterministic validation, snapshots the exact candidate, records FLIP/eval
+activity, lands Land work, and derives Done. Model review is visible and
+attributed but advisory by default; `[agency] completion_review_strict = true`
+is an explicit hardened opt-in. Internal completion-object, manifest, submit,
+and land commands remain diagnostic/compatibility tools, not required worker
+ceremony.
 
 ### Smoke Gate
 
@@ -236,8 +237,9 @@ Ordinary local workers are trusted participants in the project graph. Their
 default `trusted` control mode may inspect and edit sibling/downstream task
 metadata, create and link tasks, assign/reprioritize, publish drafts, and send
 messages through normal public `wg` commands. Cross-task identity alone is not
-a refusal reason. Every request is still bound to the exact source
-actor/attempt/fence and recorded in the append-only worker-control audit.
+a refusal reason. Mutating commands validate the exact ambient source
+actor/generation/attempt/fence directly against the graph and remain available
+during daemon restarts; normal lifecycle/provenance logs retain attribution.
 
 Integrity boundaries do not loosen: a stale/reaped attempt is refused;
 completion remains own-task, immutable-manifest, review-receipt and publication
@@ -260,53 +262,26 @@ A worker agent assigned to `<task-id>` follows this sequence:
    wg log <task-id> "Starting implementation..."
    ```
 
-2. **Work and validate.** Run the declared tests/checks. Save their output as a
-   validation log. Stage only your files; never use `git add -A` or `git add .`.
-   A Land task must commit its candidate. Do not push or merge the root checkout
-   yourself.
+2. **Work and validate.** Run the declared tests/checks. Stage only your files;
+   never use `git add -A` or `git add .`. A Land task commits its candidate. Do
+   not push or merge the root checkout yourself.
 
-3. **Snapshot outputs and evidence.** Report/Explore outputs become immutable
-   object references. Validation evidence is mandatory for every contract:
+3. **Register Report/Explore artifacts.** Land tasks need no manual object
+   plumbing. Report/Explore tasks register each declared output:
    ```
-   wg completion-object report.md --media-type text/markdown > output-ref.json
-   wg completion-object validation.log --media-type text/plain \
-       --evidence-kind validation > evidence-ref.json
-   printf '%s\n' 'Implemented and validated the requested result.' > summary.txt
+   wg artifact <task-id> report.md
    ```
 
-4. **Build the exact task-bound manifest.** For Report/Explore:
+4. **Complete once.** Check messages, then run:
    ```
-   wg completion-manifest <task-id> --summary summary.txt \
-       --output-ref output-ref.json --evidence-ref evidence-ref.json > manifest.json
+   wg done <task-id>
    ```
-   For Land, first merge current local `main` into the worker branch, resolve
-   conflicts in this same worktree, rerun validation, and commit. Then use:
-   ```
-   wg completion-manifest <task-id> --summary summary.txt --git \
-       --evidence-ref evidence-ref.json > manifest.json
-   ```
-   The command supplies the exact task, generation, contract, requirements
-   digest, Git tree/diff identity, and summary digest. Do not hand-invent them.
+   WG reuses an already-selected candidate after a lost response rather than
+   invoking another review. Advisory findings remain visible on the parent task
+   and never spin the worker. In explicit strict mode, model calls stop at the
+   configured attempt limit and require operator review instead of looping.
 
-5. **Submit for mandatory review**:
-   ```
-   wg submit <task-id> --manifest manifest.json --summary summary.txt
-   ```
-   FLIP always runs before eval. A rejection returns findings to this worker;
-   repair, revalidate, rebuild the manifest, and resubmit. Missing evidence is
-   `IncompleteEvidence`; reviewer/provider failure is `Unavailable`. Neither
-   creates a replacement source worker or authorizes fallback.
-
-6. **Publish and derive Done.** After exact review passes:
-   ```
-   wg land <task-id>   # Land only: short-lock compare-and-fast-forward
-   wg done <task-id>   # every contract: re-verifies review + publication
-   ```
-   If `wg land` reports moved main or a conflict, integrate current main in this
-   same worker, revalidate, rebuild, and resubmit. Report/Explore skip `wg land`
-   but never skip review. Check messages once more before `wg done`.
-
-7. **Visible non-success outcomes**:
+5. **Visible non-success outcomes**:
    ```
    wg fail <task-id> --reason "genuine blocker after attempting the work"
    wg wait <task-id> --until <condition>

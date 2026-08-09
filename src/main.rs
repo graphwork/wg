@@ -1311,7 +1311,7 @@ fn main() -> Result<()> {
                         "legacy wg done bypass/merge/cycle flags are not supported by publication-derived completion; use --operator-accept --reason <WHY> for an attributed human recovery"
                     );
                 }
-                commands::completion_done::run(&workgraph_dir, &id, "refs/heads/main")
+                commands::completion_finish::run(&workgraph_dir, &id, "refs/heads/main")
             }
         }
         Commands::CompletionObject {
