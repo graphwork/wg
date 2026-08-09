@@ -1126,6 +1126,11 @@ mod tests {
         let mut quality = make_task(".quality-pass-batch", "Quality pass");
         quality.status = Status::Failed;
         quality.failure_class = Some(crate::graph::FailureClass::ExecutorConfig);
+        quality.failure_signal = Some(crate::graph::FailureSignal {
+            reason: crate::graph::FailureReason::ProviderUnavailable,
+            route: Some("openrouter:test/model".into()),
+            ..crate::graph::FailureSignal::default()
+        });
         let mut downstream = make_task("downstream", "Downstream");
         downstream.after.push(quality.id.clone());
         graph.add_node(Node::Task(quality.clone()));
