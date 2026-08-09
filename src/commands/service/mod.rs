@@ -795,10 +795,6 @@ fn current_service_birth_identity(dir: &Path) -> Option<String> {
     })
 }
 
-fn service_state_has_current_birth_identity(dir: &Path) -> bool {
-    current_service_birth_identity(dir).is_some()
-}
-
 /// One read model for config capacity plus a live daemon's intentional runtime
 /// worker override. Stopped/stale state never wins; an explicit build cap always
 /// wins; an inherited cap follows the same effective worker limit admission uses.
@@ -814,8 +810,11 @@ pub(crate) fn admission_capacity_status(
     config: &Config,
     coordinator: &CoordinatorState,
 ) -> AdmissionCapacityStatus {
-    let live = service_state_has_current_birth_identity(dir);
-    let runtime_max_agents = live.then_some(coordinator.runtime_max_agents).flatten();
+    let generation_matches =
+        current_service_birth_identity(dir) == coordinator.service_pid_start_identity;
+    let runtime_max_agents = generation_matches
+        .then_some(coordinator.runtime_max_agents)
+        .flatten();
     let max_agents = runtime_max_agents.unwrap_or(config.coordinator.max_agents);
     let explicit_build = config.coordinator.resource_management.max_build_agents;
     let max_build_agents = explicit_build.unwrap_or(max_agents);
@@ -6975,16 +6974,26 @@ mod tests {
                 task_id: "old".into(),
                 reason: "old generation".into(),
             }],
+            runtime_max_agents: Some(9),
             service_pid_start_identity: Some("previous-service-generation".into()),
             ..CoordinatorState::default()
         };
+        let config = Config::default();
         suppress_stale_admission(dir, &mut stale);
         assert_eq!(stale.admission_deferred_tasks, 0);
+        assert_eq!(
+            admission_capacity_status(dir, &config, &stale).max_agents,
+            config.coordinator.max_agents
+        );
 
         stale.service_pid_start_identity = Some(birth);
         stale.admission_deferred_tasks = 1;
         suppress_stale_admission(dir, &mut stale);
         assert_eq!(stale.admission_deferred_tasks, 1);
+        assert_eq!(
+            admission_capacity_status(dir, &config, &stale).max_agents,
+            9
+        );
     }
 
     #[test]
