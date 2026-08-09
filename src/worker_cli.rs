@@ -348,8 +348,12 @@ fn send(operation: WorkerOperation) -> Result<()> {
     );
     let capability =
         std::env::var("WG_WORKER_CAPABILITY").context("worker capability token is unavailable")?;
+    let protocol = std::env::var("WG_WORKER_CONTROL_PROTOCOL")
+        .ok()
+        .filter(|protocol| worksgood::worker_control::is_supported_worker_protocol(protocol))
+        .unwrap_or_else(|| WORKER_CONTROL_PROTOCOL.to_string());
     let envelope = WorkerRequestEnvelope {
-        protocol: WORKER_CONTROL_PROTOCOL.to_string(),
+        protocol,
         request_id: request_id(&operation, &capability),
         capability,
         operation: operation.clone(),

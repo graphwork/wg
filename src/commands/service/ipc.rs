@@ -663,11 +663,13 @@ fn validate_worker_capability(
     dir: &Path,
     request: &WorkerRequestEnvelope,
 ) -> Result<worksgood::worker_control::AttemptCapabilityBinding> {
-    if request.protocol != WORKER_CONTROL_PROTOCOL {
+    if !worksgood::worker_control::is_supported_worker_protocol(&request.protocol) {
         anyhow::bail!("worker_control.protocol_mismatch");
     }
     let binding = worksgood::worker_control::lookup_capability(dir, &request.capability)?;
-    if binding.protocol != WORKER_CONTROL_PROTOCOL {
+    if binding.protocol != request.protocol
+        || !worksgood::worker_control::is_supported_worker_protocol(&binding.protocol)
+    {
         anyhow::bail!("worker_control.capability_protocol_mismatch");
     }
     if binding.revoked_at.is_some() {

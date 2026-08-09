@@ -22,6 +22,16 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 pub const WORKER_CONTROL_PROTOCOL: &str = "worksgood-worker-control-v3";
+pub const LEGACY_WORKER_CONTROL_PROTOCOL_V2: &str = "worksgood-worker-control-v2";
+
+/// V2 remains decode-only for workers already live during a rolling upgrade.
+/// Its retired GraphCli operation has no current wire variant or dispatch path.
+pub fn is_supported_worker_protocol(protocol: &str) -> bool {
+    matches!(
+        protocol,
+        WORKER_CONTROL_PROTOCOL | LEGACY_WORKER_CONTROL_PROTOCOL_V2
+    )
+}
 
 /// Graph-authority policy for a spawned worker.
 ///
@@ -280,6 +290,10 @@ pub enum WorkerOperationKind {
     Telemetry,
     Heartbeat,
     Capabilities,
+    /// Deserialize retired v2 registry rows without restoring executable
+    /// GraphCli authority. No current WorkerOperation maps to this value.
+    #[serde(rename = "graph_cli")]
+    LegacyGraphCli,
 }
 
 impl WorkerOperationKind {
