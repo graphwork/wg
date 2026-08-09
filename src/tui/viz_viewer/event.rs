@@ -14177,6 +14177,11 @@ mod chat_open_tests {
         handle_key(&mut app, KeyCode::Char('I'), KeyModifiers::NONE);
         assert!(app.service_health.detail_open);
         app.service_health.detail_open = false;
+        // Real terminals report an uppercase I with SHIFT; it must reach the
+        // same read-only details surface used by the admission TUI smoke.
+        handle_key(&mut app, KeyCode::Char('I'), KeyModifiers::SHIFT);
+        assert!(app.service_health.detail_open);
+        app.service_health.detail_open = false;
         app.activate_context_lane(ContextLane::Workspace);
         open_context_action_menu(&mut app);
         handle_key(&mut app, KeyCode::Char('i'), KeyModifiers::NONE);

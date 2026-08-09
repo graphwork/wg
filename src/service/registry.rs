@@ -112,7 +112,12 @@ impl AgentEntry {
         // free the slot.
         DateTime::parse_from_rfc3339(&self.started_at)
             .ok()
-            .is_none_or(|started| super::verify_process_identity(self.pid, started.timestamp()))
+            .is_none_or(|started| {
+                !matches!(
+                    super::process_identity_match(self.pid, started.timestamp()),
+                    super::ProcessIdentityMatch::Mismatch
+                )
+            })
     }
 
     /// Strict liveness check — the agent is considered *live* if and

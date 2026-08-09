@@ -488,30 +488,52 @@ pub fn has_active_children(_pid: u32) -> bool {
     false
 }
 
-/// Check whether the process at `pid` is the same one that was started at
-/// `expected_start_epoch` (Unix timestamp). Returns `true` if we can confirm
-/// the process identity matches, or if the check is inconclusive (non-Linux,
-/// missing `/proc`, etc.). Returns `false` only when we can positively
-/// determine that the PID has been reused by a different process.
-pub fn verify_process_identity(pid: u32, expected_start_epoch: i64) -> bool {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessIdentityMatch {
+    Match,
+    Mismatch,
+    Unknown,
+}
+
+/// Tri-state process birth comparison. Admission callers must treat `Unknown`
+/// conservatively as occupied and may free a slot only on `Mismatch`.
+pub fn process_identity_match(pid: u32, expected_start_epoch: i64) -> ProcessIdentityMatch {
     match read_proc_start_time_secs(pid) {
         Some(actual_start) => {
             // Allow 120 seconds of slack: the wrapper script may take a
             // moment to start after the spawn timestamp is recorded, and
             // clock granularity in /proc/stat is 1 second.
-            actual_start <= expected_start_epoch + 120
+            if actual_start <= expected_start_epoch + 120 {
+                ProcessIdentityMatch::Match
+            } else {
+                ProcessIdentityMatch::Mismatch
+            }
         }
-        None => {
-            // Can't read /proc — process might be gone, or we're not on
-            // Linux. Fall back to conservative "assume same process".
-            true
-        }
+        None => ProcessIdentityMatch::Unknown,
     }
+}
+
+/// Backward-compatible boolean wrapper. Inconclusive checks remain
+/// conservative; only a positively detected mismatch returns false.
+pub fn verify_process_identity(pid: u32, expected_start_epoch: i64) -> bool {
+    !matches!(
+        process_identity_match(pid, expected_start_epoch),
+        ProcessIdentityMatch::Mismatch
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unavailable_process_identity_is_explicitly_unknown_and_fails_closed() {
+        assert_eq!(
+            process_identity_match(u32::MAX, 0),
+            ProcessIdentityMatch::Unknown
+        );
+        assert!(verify_process_identity(u32::MAX, 0));
+    }
 
     #[cfg(target_os = "linux")]
     #[test]

@@ -32,6 +32,14 @@ wg config reset --route pi --yes >/dev/null
 setup_preview=$(wg setup --route pi --yes --model pi:openrouter:test/fake --dry-run)
 ! grep -q 'max_build_agents' <<<"$setup_preview" \
   || loud_fail "fresh setup preview baked in a serial max_build_agents throttle: $setup_preview"
+wg setup --route pi --yes --model pi:openrouter:test/fake >/dev/null
+for generated in .wg/config.toml "$HOME/.wg/config.toml" "$HOME/.wg/profiles/pi.toml"; do
+  [ ! -f "$generated" ] || ! grep -q 'max_build_agents' "$generated" \
+    || loud_fail "actual setup materialized a serial build cap in $generated"
+done
+# Restore the bare graph-only global used by the admission portion; setup's
+# route profile intentionally changes unrelated dispatch-fairness defaults.
+wg config reset --global --yes >/dev/null
 
 # Remediation is qualified to the winning layer, including a global override.
 wg config set dispatcher.resource_management.max_build_agents 1 --global --no-reload >/dev/null
