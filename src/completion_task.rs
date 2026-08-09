@@ -27,6 +27,10 @@ pub struct CompletionCandidateRefs {
     pub worker_summary: ArtifactOutput,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dependency_outputs: Vec<crate::completion_manifest::EvidenceRef>,
+    /// Exact source attempt/fence plus monotonic per-task candidate chronology.
+    /// Review receipts repeat this binding; it never grants completion authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_binding: Option<crate::completion_review::CompletionReviewBinding>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flip_receipt: Option<ArtifactOutput>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -86,6 +90,7 @@ pub struct TaskSubmission {
     pub manifest_ref: CompletionManifestRef,
     pub requirements_ref: ArtifactOutput,
     pub summary_ref: ArtifactOutput,
+    pub review_binding: Option<crate::completion_review::CompletionReviewBinding>,
     pub flip_receipt_ref: Option<ArtifactOutput>,
     pub eval_receipt_ref: Option<ArtifactOutput>,
 }
@@ -99,6 +104,7 @@ pub fn task_submission(task: &Task) -> Result<TaskSubmission, CompletionTaskErro
         manifest_ref: candidate.manifest.clone(),
         requirements_ref: candidate.requirements.clone(),
         summary_ref: candidate.worker_summary.clone(),
+        review_binding: candidate.review_binding.clone(),
         flip_receipt_ref: candidate.flip_receipt.clone(),
         eval_receipt_ref: candidate.eval_receipt.clone(),
     })
@@ -116,6 +122,21 @@ pub fn load_submission_bytes(
 
     if manifest.task_id != task.id {
         return Err(CompletionTaskError::Binding("manifest task id changed"));
+    }
+    if let Some(binding) = submission.review_binding.as_ref()
+        && (binding.task_id != task.id
+            || binding.generation != task.lifecycle.generation
+            || binding.attempt_fence != task.lifecycle.fence
+            || binding.attempt_id.as_deref()
+                != task
+                    .lifecycle
+                    .current_attempt
+                    .as_ref()
+                    .map(|attempt| attempt.id.as_str()))
+    {
+        return Err(CompletionTaskError::Binding(
+            "completion review binding is stale for the task generation/attempt/fence",
+        ));
     }
     if manifest.generation != task.lifecycle.generation {
         return Err(CompletionTaskError::Binding("manifest generation is stale"));
@@ -171,6 +192,7 @@ pub fn load_review_evidence(
         .as_ref()
         .ok_or(CompletionTaskError::Missing("FLIP receipt"))?;
     let flip = read_receipt(store, flip_ref)?;
+    validate_review_binding(submission, &flip)?;
     validate_bound_receipt(
         &flip,
         ReviewerKind::Flip,
@@ -183,6 +205,9 @@ pub fn load_review_evidence(
         .as_ref()
         .map(|reference| read_receipt(store, reference))
         .transpose()?;
+    if let Some(eval) = eval.as_ref() {
+        validate_review_binding(submission, eval)?;
+    }
     if let Some(eval) = eval.as_ref() {
         validate_bound_receipt(
             eval,
@@ -239,6 +264,18 @@ fn read_receipt(
     let bytes = store.read_artifact(reference, MAX_COMPLETION_METADATA_BYTES)?;
     serde_json::from_slice(&bytes)
         .map_err(|error| CompletionTaskError::InvalidReceipt(error.to_string()))
+}
+
+fn validate_review_binding(
+    submission: &TaskSubmission,
+    receipt: &ReviewReceipt,
+) -> Result<(), CompletionTaskError> {
+    if receipt.binding != submission.review_binding {
+        return Err(CompletionTaskError::InvalidReceipt(
+            "review receipt does not bind the selected candidate chronology".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_bound_receipt(

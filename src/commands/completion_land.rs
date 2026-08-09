@@ -400,6 +400,11 @@ mod tests {
         calls: Arc<Mutex<Vec<ReviewerKind>>>,
     }
 
+    struct RejectReviewer {
+        route: &'static str,
+        calls: Arc<Mutex<Vec<ReviewerKind>>>,
+    }
+
     impl ManifestReviewer for PassReviewer {
         fn route(&self) -> &str {
             self.route
@@ -417,6 +422,26 @@ mod tests {
         }
     }
 
+    impl ManifestReviewer for RejectReviewer {
+        fn route(&self) -> &str {
+            self.route
+        }
+        fn review(
+            &mut self,
+            kind: ReviewerKind,
+            _bundle: &worksgood::completion_manifest::ResolvedReviewBundle,
+        ) -> std::result::Result<SemanticReview, ReviewerUnavailable> {
+            self.calls.lock().unwrap().push(kind);
+            Ok(SemanticReview {
+                verdict: SemanticVerdict::Reject,
+                findings: vec![ReviewFinding::new(
+                    "advisory.fixture",
+                    "bounded actionable finding",
+                )],
+            })
+        }
+    }
+
     struct Fixture {
         _temp: tempfile::TempDir,
         root: PathBuf,
@@ -424,6 +449,8 @@ mod tests {
         worker: PathBuf,
         candidate: String,
         integrated: String,
+        manifest_path: PathBuf,
+        summary_path: PathBuf,
     }
 
     fn command(root: &Path, args: &[&str]) -> String {
@@ -554,6 +581,8 @@ mod tests {
             worker,
             candidate,
             integrated,
+            manifest_path,
+            summary_path,
         }
     }
 
@@ -596,6 +625,62 @@ mod tests {
         super::super::completion_done::run(&fixture.dir, "land-task", "refs/heads/main").unwrap();
         let graph = load_graph(fixture.dir.join("graph.jsonl")).unwrap();
         assert_eq!(graph.get_task("land-task").unwrap().status, Status::Done);
+    }
+
+    #[test]
+    fn advisory_flip_rejection_survives_landing_and_done() {
+        let fixture = fixture();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let mut flip = RejectReviewer {
+            route: "pi:test-advisory-flip",
+            calls: calls.clone(),
+        };
+        let mut eval = PassReviewer {
+            route: "pi:test-eval",
+            calls: calls.clone(),
+        };
+        let outcome = super::super::completion_submit::run_with_reviewers(
+            &fixture.dir,
+            "land-task",
+            &fixture.manifest_path,
+            &fixture.summary_path,
+            &mut flip,
+            &mut eval,
+        )
+        .unwrap();
+        assert_eq!(
+            outcome.status,
+            worksgood::completion_review::ReviewValveStatus::FlipRejected
+        );
+        assert_eq!(*calls.lock().unwrap(), vec![ReviewerKind::Flip]);
+
+        run_at(
+            &fixture.dir,
+            "land-task",
+            "refs/heads/main",
+            Some(&fixture.worker),
+        )
+        .unwrap();
+        super::super::completion_done::run(&fixture.dir, "land-task", "refs/heads/main").unwrap();
+
+        let graph = load_graph(fixture.dir.join("graph.jsonl")).unwrap();
+        let task = graph.get_task("land-task").unwrap();
+        assert_eq!(task.status, Status::Done);
+        assert_eq!(task.completion_review_activity.len(), 3);
+        let verified = worksgood::completion_review::verified_review_activities(&fixture.dir, task);
+        assert_eq!(verified.invalid_count, 0);
+        assert_eq!(
+            verified.activities.last().unwrap().candidate_state,
+            worksgood::completion_review::ReviewCandidateState::Current
+        );
+        assert_eq!(
+            verified.activities.last().unwrap().failure_class,
+            Some(worksgood::completion_review::ReviewFailureClass::SemanticRejection)
+        );
+        assert_eq!(
+            verified.activities.last().unwrap().findings[0].code,
+            "advisory.fixture"
+        );
     }
 
     #[test]

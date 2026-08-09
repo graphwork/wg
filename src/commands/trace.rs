@@ -77,7 +77,7 @@ struct TraceOutput {
     operations: Vec<OperationEntry>,
     /// Immutable internal review-lane records; these are audit activity, not
     /// lifecycle-authoritative graph tasks.
-    completion_review_activity: Vec<worksgood::completion_review::CompletionReviewActivity>,
+    completion_review_activity: Vec<worksgood::completion_review::VerifiedCompletionReviewActivity>,
     agent_runs: Vec<AgentRun>,
     summary: TraceSummary,
 }
@@ -379,7 +379,9 @@ fn print_summary(summary: &TraceSummary) {
     }
 }
 
-fn print_review_activity(activities: &[worksgood::completion_review::CompletionReviewActivity]) {
+fn print_review_activity(
+    activities: &[worksgood::completion_review::VerifiedCompletionReviewActivity],
+) {
     if activities.is_empty() {
         println!("Completion review lane: (none)");
         return;
@@ -398,9 +400,26 @@ fn print_review_activity(activities: &[worksgood::completion_review::CompletionR
             },
         );
         println!(
-            "  {:?} {:?} route={} executor={} receipt={} {}",
-            activity.reviewer_kind, activity.verdict, route, executor, activity.activity_id, usage
+            "  {:?} {:?} candidate={:?} route={} executor={} failure={} duration={} receipt={} {}",
+            activity.reviewer_kind,
+            activity.verdict,
+            activity.candidate_state,
+            route,
+            executor,
+            activity
+                .failure_class
+                .map(|class| format!("{class:?}"))
+                .unwrap_or_else(|| "none".to_string()),
+            activity
+                .duration_ms
+                .map(|duration| format!("{duration}ms"))
+                .unwrap_or_else(|| "n/a".to_string()),
+            activity.activity_id,
+            usage
         );
+        for finding in &activity.findings {
+            println!("    [{}] {}", finding.code, finding.message);
+        }
     }
 }
 

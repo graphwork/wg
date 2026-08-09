@@ -53,7 +53,7 @@ struct TaskDetails {
     #[serde(skip_serializing_if = "Option::is_none")]
     completion_candidate: Option<worksgood::completion_task::CompletionCandidateRefs>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    completion_review_activity: Vec<worksgood::completion_review::CompletionReviewActivity>,
+    completion_review_activity: Vec<worksgood::completion_review::VerifiedCompletionReviewActivity>,
     #[serde(skip_serializing_if = "Option::is_none")]
     finish_phase: Option<String>,
     /// Authoritative generation/attempt/fence projection plus accepted audit.
@@ -981,18 +981,47 @@ fn print_human_readable(details: &TaskDetails) {
                 .map(|receipt| receipt.content_digest.as_str())
                 .unwrap_or("missing")
         );
+        if let Some(binding) = candidate.review_binding.as_ref() {
+            println!(
+                "Completion candidate binding: task={} generation={} attempt={} fence={} sequence={}",
+                binding.task_id,
+                binding.generation,
+                binding.attempt_id.as_deref().unwrap_or("none"),
+                binding.attempt_fence,
+                binding.candidate_sequence
+            );
+        }
     }
     if !details.completion_review_activity.is_empty() {
         println!("Completion review lane (immutable activity; not graph tasks):");
         for activity in &details.completion_review_activity {
             println!(
-                "  {:?}: {:?} receipt={} route={} executor={}",
+                "  {:?}: {:?} candidate={:?} receipt={} route={} executor={} failure={} duration={}",
                 activity.reviewer_kind,
                 activity.verdict,
+                activity.candidate_state,
                 activity.activity_id,
                 activity.model_route.as_deref().unwrap_or("unavailable"),
-                activity.executor.as_deref().unwrap_or("unavailable")
+                activity.executor.as_deref().unwrap_or("unavailable"),
+                activity
+                    .failure_class
+                    .map(|class| format!("{class:?}"))
+                    .unwrap_or_else(|| "none".to_string()),
+                activity
+                    .duration_ms
+                    .map(|duration| format!("{duration}ms"))
+                    .unwrap_or_else(|| "unavailable".to_string())
             );
+            if let Some(binding) = activity.binding.as_ref() {
+                println!(
+                    "    binding: task={} generation={} attempt={} fence={} candidate-sequence={}",
+                    binding.task_id,
+                    binding.generation,
+                    binding.attempt_id.as_deref().unwrap_or("none"),
+                    binding.attempt_fence,
+                    binding.candidate_sequence
+                );
+            }
             if let Some(usage) = activity.usage.as_ref() {
                 println!(
                     "    provider-reported usage: in={} out={} cache-read={} cache-write={} cost=${:.6}",
@@ -1001,6 +1030,18 @@ fn print_human_readable(details: &TaskDetails) {
                     usage.cache_read_input_tokens,
                     usage.cache_creation_input_tokens,
                     usage.cost_usd
+                );
+            }
+            for finding in &activity.findings {
+                println!(
+                    "    finding [{}]: {}{}",
+                    finding.code,
+                    finding.message,
+                    finding
+                        .evidence
+                        .as_deref()
+                        .map(|evidence| format!(" (evidence: {evidence})"))
+                        .unwrap_or_default()
                 );
             }
         }

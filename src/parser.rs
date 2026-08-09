@@ -302,6 +302,35 @@ pub fn load_graph<P: AsRef<Path>>(path: P) -> Result<WorkGraph, ParseError> {
 /// acquires it automatically.
 fn save_graph_inner<P: AsRef<Path>>(graph: &WorkGraph, path: P) -> Result<(), ParseError> {
     let path = path.as_ref();
+    let mut durable_graph = graph.clone();
+
+    // A number of compatibility commands still perform a read followed later
+    // by a full `save_graph`. The graph lock serializes the write, but cannot
+    // make that caller's old in-memory snapshot fresh. Completion-review rows
+    // are immutable receipt references and may only grow, so merge the current
+    // on-disk history before replacement. This closes the concrete stale-save
+    // overwrite that used to retain `candidate.flip_receipt` while silently
+    // deleting earlier/superseded `completion_review_activity` rows.
+    if let Ok(current) = load_graph_inner(path) {
+        for persisted in current.tasks() {
+            let Some(incoming) = durable_graph.get_task_mut(&persisted.id) else {
+                continue;
+            };
+            let mut merged = persisted.completion_review_activity.clone();
+            for activity in &incoming.completion_review_activity {
+                if !merged
+                    .iter()
+                    .any(|existing| existing.activity_id == activity.activity_id)
+                {
+                    merged.push(activity.clone());
+                }
+            }
+            // The persisted vector is already append order (FLIP before Eval).
+            // Keep that chronology and append only genuinely new incoming rows;
+            // sorting by timestamps or CIDs would scramble same-instant reviews.
+            incoming.completion_review_activity = merged;
+        }
+    }
 
     // Write to a temporary file in the same directory, then atomically rename.
     // This ensures a crash mid-write leaves the original file intact.
@@ -316,7 +345,7 @@ fn save_graph_inner<P: AsRef<Path>>(graph: &WorkGraph, path: P) -> Result<(), Pa
             .open(&tmp_path)
             .map_err(|error| io_at("open graph temporary", &tmp_path, error))?;
 
-        for node in graph.nodes() {
+        for node in durable_graph.nodes() {
             let json =
                 serde_json::to_string(node).map_err(|e| ParseError::Json { line: 0, source: e })?;
             writeln!(file, "{}", json)
@@ -539,6 +568,67 @@ mod tests {
         assert_eq!(loaded.len(), 2);
         assert!(loaded.get_task("t1").is_some());
         assert!(loaded.get_task("t2").is_some());
+    }
+
+    #[test]
+    fn stale_full_save_cannot_erase_immutable_completion_review_history() {
+        let file = NamedTempFile::new().unwrap();
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_task("reviewed", "Reviewed")));
+        save_graph(&graph, file.path()).unwrap();
+
+        // Capture the stale snapshot before the receipt-backed activity lands.
+        let mut stale = load_graph(file.path()).unwrap();
+        modify_graph(file.path(), |fresh| {
+            fresh
+                .get_task_mut("reviewed")
+                .unwrap()
+                .completion_review_activity
+                .push(crate::completion_review::CompletionReviewActivity {
+                    activity_id: format!("b3:{}", "1".repeat(64)),
+                    reviewer_kind: crate::completion_review::ReviewerKind::Flip,
+                    verdict: crate::simple_land::ReviewVerdict::Reject,
+                    manifest_digest: crate::completion_manifest::ContentDigest::of_bytes(
+                        b"manifest",
+                    ),
+                    requirements_digest: crate::completion_manifest::ContentDigest::of_bytes(
+                        b"requirements",
+                    ),
+                    binding: Some(crate::completion_review::CompletionReviewBinding {
+                        task_id: "reviewed".to_string(),
+                        generation: 2,
+                        attempt_id: Some("attempt-2-1".to_string()),
+                        attempt_fence: 7,
+                        candidate_sequence: 1,
+                    }),
+                    findings_digest: None,
+                    failure_class: Some(
+                        crate::completion_review::ReviewFailureClass::SemanticRejection,
+                    ),
+                    model_route: Some("pi:test:review".to_string()),
+                    executor: Some("pi".to_string()),
+                    usage: None,
+                    duration_ms: Some(9),
+                    created_at: "2026-08-09T00:00:00Z".to_string(),
+                });
+            true
+        })
+        .unwrap();
+
+        stale.get_task_mut("reviewed").unwrap().priority = 77;
+        save_graph(&stale, file.path()).unwrap();
+        let reloaded = load_graph(file.path()).unwrap();
+        let task = reloaded.get_task("reviewed").unwrap();
+        assert_eq!(task.priority, 77);
+        assert_eq!(task.completion_review_activity.len(), 1);
+        assert_eq!(
+            task.completion_review_activity[0]
+                .binding
+                .as_ref()
+                .unwrap()
+                .candidate_sequence,
+            1
+        );
     }
 
     #[test]

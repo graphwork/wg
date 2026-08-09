@@ -8612,7 +8612,15 @@ fn append_completion_history(
         ));
     }
     let verified = worksgood::completion_review::verified_review_activities(workgraph_dir, task);
-    for activity in verified.activities {
+    append_verified_review_activity(lines, &verified.activities);
+    lines.push(String::new());
+}
+
+fn append_verified_review_activity(
+    lines: &mut Vec<String>,
+    activities: &[worksgood::completion_review::VerifiedCompletionReviewActivity],
+) {
+    for activity in activities {
         let route = activity.model_route.as_deref().unwrap_or("unknown route");
         let usage = activity.usage.as_ref().map_or_else(String::new, |usage| {
             format!(
@@ -8620,12 +8628,40 @@ fn append_completion_history(
                 usage.input_tokens, usage.output_tokens, usage.cost_usd
             )
         });
+        let executor = activity.executor.as_deref().unwrap_or("unknown executor");
+        let failure = activity
+            .failure_class
+            .map(|class| format!(" · failure={class:?}"))
+            .unwrap_or_default();
+        let duration = activity
+            .duration_ms
+            .map(|duration| format!(" · {duration}ms"))
+            .unwrap_or_default();
         lines.push(format!(
-            "  {:?} {:?} · {} · {}{}",
-            activity.reviewer_kind, activity.verdict, activity.manifest_digest, route, usage
+            "  {:?} {:?} · {:?} · {} · {} · {}{}{}{}",
+            activity.reviewer_kind,
+            activity.verdict,
+            activity.candidate_state,
+            activity.manifest_digest,
+            route,
+            executor,
+            failure,
+            duration,
+            usage
         ));
+        if let Some(binding) = activity.binding.as_ref() {
+            lines.push(format!(
+                "    gen {} · attempt {} · fence {} · candidate #{}",
+                binding.generation,
+                binding.attempt_id.as_deref().unwrap_or("none"),
+                binding.attempt_fence,
+                binding.candidate_sequence
+            ));
+        }
+        for finding in &activity.findings {
+            lines.push(format!("    [{}] {}", finding.code, finding.message));
+        }
     }
-    lines.push(String::new());
 }
 
 #[cfg(test)]
@@ -8643,6 +8679,69 @@ fn tui_completion_history_keeps_generation_attempt_and_review_concepts_distinct(
         lines
             .iter()
             .any(|line| line.contains("generation 3 · 2 attempt(s) · fence 7"))
+    );
+}
+
+#[cfg(test)]
+#[test]
+fn tui_review_activity_exposes_current_binding_route_failure_usage_timing_and_findings() {
+    let activity = worksgood::completion_review::VerifiedCompletionReviewActivity {
+        activity: worksgood::completion_review::CompletionReviewActivity {
+            activity_id: format!("b3:{}", "1".repeat(64)),
+            reviewer_kind: worksgood::completion_review::ReviewerKind::Flip,
+            verdict: worksgood::simple_land::ReviewVerdict::Reject,
+            manifest_digest: worksgood::completion_manifest::ContentDigest::of_bytes(b"manifest"),
+            requirements_digest: worksgood::completion_manifest::ContentDigest::of_bytes(
+                b"requirements",
+            ),
+            binding: Some(worksgood::completion_review::CompletionReviewBinding {
+                task_id: "task".to_string(),
+                generation: 4,
+                attempt_id: Some("attempt-4-2".to_string()),
+                attempt_fence: 9,
+                candidate_sequence: 3,
+            }),
+            findings_digest: Some(worksgood::completion_manifest::ContentDigest::of_bytes(
+                b"findings",
+            )),
+            failure_class: Some(
+                worksgood::completion_review::ReviewFailureClass::SemanticRejection,
+            ),
+            model_route: Some("pi:test:reviewer".to_string()),
+            executor: Some("pi".to_string()),
+            usage: Some(worksgood::completion_review::ReviewUsage {
+                input_tokens: 12,
+                output_tokens: 3,
+                cache_read_input_tokens: 4,
+                cache_creation_input_tokens: 0,
+                cost_usd: 0.004,
+            }),
+            duration_ms: Some(17),
+            created_at: "2026-08-09T00:00:00Z".to_string(),
+        },
+        candidate_state: worksgood::completion_review::ReviewCandidateState::Current,
+        findings: vec![worksgood::completion_review::ReviewFinding::new(
+            "fixture.reject",
+            "repair exact evidence",
+        )],
+    };
+    let mut lines = Vec::new();
+    append_verified_review_activity(&mut lines, &[activity]);
+    let rendered = lines.join("\n");
+    assert!(rendered.contains("Flip Reject · Current"), "{rendered}");
+    assert!(rendered.contains("pi:test:reviewer · pi"), "{rendered}");
+    assert!(rendered.contains("failure=SemanticRejection"), "{rendered}");
+    assert!(
+        rendered.contains("17ms · 12in/3out · $0.0040"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("attempt attempt-4-2 · fence 9 · candidate #3"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("[fixture.reject] repair exact evidence"),
+        "{rendered}"
     );
 }
 

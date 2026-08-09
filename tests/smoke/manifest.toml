@@ -3061,8 +3061,8 @@ timeout_seconds = 90
 [[scenario]]
 name = "pi_done_accounting_review_lane_visibility"
 script = "scenarios/pi_done_accounting_review_lane_visibility.sh"
-owners = ["fix-pi-accounting-review-visibility"]
-description = "Credential-free real terminal flow: daemon-authorized dispatch runs a fake Pi worker through the real spawn wrapper, captures native turn_end stdout once, and exercises pi-stream-bridge; after registry/raw-agent archival before accepted review and Done, once-per-turn source usage, provider cost, and actual route persist through restart. list --all/show/trace expose immutable FLIP/eval activity as explicit virtual internal-lane rows (not graph tasks), spend remains separately labeled, and a real bounded reviewer timeout plus semantic rejection are retained without estimates."
+owners = ["fix-pi-accounting-review-visibility", "fix-review-activity-projection"]
+description = "Credential-free real terminal flow: daemon-authorized dispatch runs a fake Pi worker through the real spawn wrapper, captures native turn_end stdout once, and exercises pi-stream-bridge; advisory unavailable/rejected candidates are superseded by an accepted FLIP+Eval candidate, then landing/Done, raw serialization, and restart preserve every immutable task/generation/attempt/fence-bound activity row. list --all/show/trace expose current-vs-superseded chronology, route/executor, verdict/failure class, usage/cost/timing, and bounded findings as explicit virtual internal-lane rows (not graph tasks), while spend remains separately labeled without estimates."
 timeout_seconds = 180
 
 [[scenario]]

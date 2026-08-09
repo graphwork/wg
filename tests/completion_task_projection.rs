@@ -76,6 +76,7 @@ fn graph_projects_only_immutable_candidate_references() {
         requirements: requirements_ref,
         worker_summary: summary_ref,
         dependency_outputs: Vec::new(),
+        review_binding: None,
         flip_receipt: None,
         eval_receipt: None,
     });
@@ -133,6 +134,7 @@ fn changed_graph_requirements_invalidate_candidate_without_mutating_objects() {
         requirements: requirements_ref,
         worker_summary: summary_ref,
         dependency_outputs: Vec::new(),
+        review_binding: None,
         flip_receipt: None,
         eval_receipt: None,
     });

@@ -64,7 +64,14 @@ pub fn run(dir: &Path, id: &str, integration_ref: &str) -> Result<()> {
         let current_activity = task
             .completion_review_activity
             .iter()
-            .filter(|activity| activity.manifest_digest == candidate.manifest.content_digest)
+            .filter(|activity| {
+                activity.manifest_digest == candidate.manifest.content_digest
+                    && match (&candidate.review_binding, &activity.binding) {
+                        (Some(candidate), Some(activity)) => candidate == activity,
+                        (None, None) => true,
+                        _ => false,
+                    }
+            })
             .collect::<Vec<_>>();
         let strict_passed = current_activity.iter().any(|activity| {
             activity.reviewer_kind == worksgood::completion_review::ReviewerKind::Flip

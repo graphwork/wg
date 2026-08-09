@@ -135,9 +135,15 @@ pub fn run(
                         "verdict": activity.verdict,
                         "receipt": activity.activity_id,
                         "manifest": activity.manifest_digest,
+                        "requirements": activity.requirements_digest,
+                        "binding": activity.binding,
+                        "candidate_state": activity.candidate_state,
                         "route": activity.model_route,
                         "executor": activity.executor,
+                        "verdict_failure_class": activity.failure_class,
                         "usage": activity.usage,
+                        "duration_ms": activity.duration_ms,
+                        "findings": activity.findings,
                         "created_at": activity.created_at,
                     }));
                 }
@@ -270,15 +276,27 @@ pub fn run(
                         )
                     });
                     println!(
-                        "[R] .review-{}-{:?} - {:?} receipt={} route={} executor={}{}",
+                        "[R] .review-{}-{:?} - {:?} candidate={:?} failure={} receipt={} route={} executor={} duration={}{}",
                         task.id,
                         activity.reviewer_kind,
                         activity.verdict,
+                        activity.candidate_state,
+                        activity
+                            .failure_class
+                            .map(|class| format!("{class:?}"))
+                            .unwrap_or_else(|| "none".to_string()),
                         activity.activity_id,
                         activity.model_route.as_deref().unwrap_or("unavailable"),
                         activity.executor.as_deref().unwrap_or("unavailable"),
+                        activity
+                            .duration_ms
+                            .map(|duration| format!("{duration}ms"))
+                            .unwrap_or_else(|| "n/a".to_string()),
                         usage
                     );
+                    for finding in &activity.findings {
+                        println!("    finding [{}]: {}", finding.code, finding.message);
+                    }
                 }
                 let legacy_records =
                     worksgood::completion_review::unprojected_legacy_evaluation_records(
@@ -341,7 +359,11 @@ fn compact_activity_summary(dir: &Path, task: &worksgood::graph::Task) -> String
         let attempts = verified
             .activities
             .iter()
-            .filter(|activity| activity.reviewer_kind == kind)
+            .filter(|activity| {
+                activity.reviewer_kind == kind
+                    && activity.candidate_state
+                        == worksgood::completion_review::ReviewCandidateState::Current
+            })
             .collect::<Vec<_>>();
         if let Some(latest) = attempts.last() {
             let mark = match latest.verdict {
@@ -357,6 +379,22 @@ fn compact_activity_summary(dir: &Path, task: &worksgood::graph::Task) -> String
                 String::new()
             };
             parts.push(format!("{label} {mark}{count}"));
+        }
+    }
+    if !verified.activities.is_empty() {
+        let candidate_count = verified
+            .activities
+            .iter()
+            .filter_map(|activity| {
+                activity
+                    .binding
+                    .as_ref()
+                    .map(|binding| binding.candidate_sequence)
+            })
+            .collect::<std::collections::BTreeSet<_>>()
+            .len();
+        if candidate_count > 1 {
+            parts.push(format!("{candidate_count} candidates"));
         }
     }
     if task.lifecycle.attempt_sequence > 1 {

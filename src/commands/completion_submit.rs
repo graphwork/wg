@@ -8,8 +8,8 @@ use worksgood::completion_manifest::{
     EvidenceRef, GitOutput, OutputRef, ReviewResolver,
 };
 use worksgood::completion_review::{
-    ManifestReviewer, ReviewValveOutcome, ReviewValveStatus, ReviewerKind, ReviewerUnavailable,
-    SemanticReview, run_review_valve,
+    CompletionReviewBinding, ManifestReviewer, ReviewValveOutcome, ReviewValveStatus, ReviewerKind,
+    ReviewerUnavailable, SemanticReview, run_review_valve_bound,
 };
 use worksgood::completion_review_model::ExactModelReviewer;
 use worksgood::completion_task::{
@@ -358,6 +358,7 @@ pub fn run_with_reviewers(
         requirements: requirements_ref,
         worker_summary: summary_ref,
         dependency_outputs: dependency_outputs.clone(),
+        review_binding: None,
         flip_receipt: None,
         eval_receipt: None,
     };
@@ -366,10 +367,20 @@ pub fn run_with_reviewers(
     // graph projection; resolver/reviewer failures preserve it without
     // scheduling a transaction, source retry, or finalizer.
     let source_accounting = super::completion_done::source_accounting(dir, task);
-    select_candidate(
+    let expected_binding = CompletionReviewBinding {
+        task_id: id.to_string(),
+        generation: task.lifecycle.generation,
+        attempt_id: task
+            .lifecycle
+            .current_attempt
+            .as_ref()
+            .map(|attempt| attempt.id.clone()),
+        attempt_fence: task.lifecycle.fence,
+        candidate_sequence: 0,
+    };
+    let review_binding = select_candidate(
         &graph_path,
-        id,
-        task.lifecycle.generation,
+        &expected_binding,
         &requirements_digest,
         candidate,
         &source_accounting,
@@ -395,18 +406,19 @@ pub fn run_with_reviewers(
         )
     };
     let manifest_digest = manifest.digest().map_err(anyhow::Error::msg)?;
-    let outcome = run_review_valve(
+    let outcome = run_review_valve_bound(
         &store,
         &manifest_digest,
         &requirements_digest,
         resolved,
         flip,
         eval,
+        Some(&review_binding),
     )?;
     record_review_outcome(
         &graph_path,
         id,
-        task.lifecycle.generation,
+        &review_binding,
         &manifest_digest,
         &requirements_digest,
         &outcome,
@@ -461,26 +473,62 @@ fn read_regular_file(path: &Path, label: &str) -> Result<Vec<u8>> {
 
 fn select_candidate(
     graph_path: &Path,
-    id: &str,
-    generation: u64,
+    expected_binding: &CompletionReviewBinding,
     expected_requirements: &worksgood::completion_manifest::ContentDigest,
-    candidate: CompletionCandidateRefs,
+    mut candidate: CompletionCandidateRefs,
     source_accounting: &super::completion_done::SourceAccounting,
-) -> Result<()> {
+) -> Result<CompletionReviewBinding> {
     let mut refusal = None;
+    let mut selected_binding = None;
     modify_graph(graph_path, |graph| {
-        let Some(task) = graph.get_task_mut(id) else {
+        let Some(task) = graph.get_task_mut(&expected_binding.task_id) else {
             refusal = Some("task disappeared while selecting candidate".to_string());
             return false;
         };
-        if task.status != Status::InProgress || task.lifecycle.generation != generation {
-            refusal = Some("task generation or ownership changed while selecting candidate".into());
+        if task.status != Status::InProgress
+            || task.lifecycle.generation != expected_binding.generation
+            || task.lifecycle.fence != expected_binding.attempt_fence
+            || task
+                .lifecycle
+                .current_attempt
+                .as_ref()
+                .map(|attempt| attempt.id.as_str())
+                != expected_binding.attempt_id.as_deref()
+        {
+            refusal = Some(
+                "task generation, attempt, fence, or ownership changed while selecting candidate"
+                    .into(),
+            );
             return false;
         }
         if requirements_digest(task).ok().as_ref() != Some(expected_requirements) {
             refusal = Some("task requirements changed while selecting candidate".into());
             return false;
         }
+        let candidate_sequence = task
+            .completion_review_activity
+            .iter()
+            .filter_map(|activity| {
+                activity
+                    .binding
+                    .as_ref()
+                    .map(|binding| binding.candidate_sequence)
+            })
+            .chain(
+                task.completion_candidate
+                    .as_ref()
+                    .and_then(|current| current.review_binding.as_ref())
+                    .map(|binding| binding.candidate_sequence),
+            )
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1);
+        let binding = CompletionReviewBinding {
+            candidate_sequence,
+            ..expected_binding.clone()
+        };
+        candidate.review_binding = Some(binding.clone());
+        selected_binding = Some(binding);
         task.completion_candidate = Some(candidate);
         if source_accounting.usage.is_some() {
             task.token_usage.clone_from(&source_accounting.usage);
@@ -505,13 +553,13 @@ fn select_candidate(
     if let Some(refusal) = refusal {
         bail!(refusal);
     }
-    Ok(())
+    selected_binding.context("candidate selection produced no binding")
 }
 
 fn record_review_outcome(
     graph_path: &Path,
     id: &str,
-    generation: u64,
+    expected_binding: &CompletionReviewBinding,
     manifest_digest: &worksgood::completion_manifest::ContentDigest,
     expected_requirements: &worksgood::completion_manifest::ContentDigest,
     outcome: &ReviewValveOutcome,
@@ -522,17 +570,29 @@ fn record_review_outcome(
             refusal = Some("task disappeared while recording review".to_string());
             return false;
         };
-        if task.lifecycle.generation != generation
+        if task.lifecycle.generation != expected_binding.generation
+            || task.lifecycle.fence != expected_binding.attempt_fence
+            || task
+                .lifecycle
+                .current_attempt
+                .as_ref()
+                .map(|attempt| attempt.id.as_str())
+                != expected_binding.attempt_id.as_deref()
             || requirements_digest(task).ok().as_ref() != Some(expected_requirements)
         {
-            refusal = Some("task requirements changed while review was running".to_string());
+            refusal = Some(
+                "task requirements, generation, attempt, or fence changed while review was running"
+                    .to_string(),
+            );
             return false;
         }
         let Some(candidate) = task.completion_candidate.as_mut() else {
             refusal = Some("completion candidate disappeared while recording review".to_string());
             return false;
         };
-        if candidate.manifest.content_digest != *manifest_digest {
+        if candidate.manifest.content_digest != *manifest_digest
+            || candidate.review_binding.as_ref() != Some(expected_binding)
+        {
             refusal = Some("completion candidate changed while review was running".to_string());
             return false;
         }
@@ -557,9 +617,13 @@ fn record_review_outcome(
                     verdict: stored.receipt.verdict,
                     manifest_digest: stored.receipt.manifest_digest.clone(),
                     requirements_digest: stored.receipt.requirements_digest.clone(),
+                    binding: stored.receipt.binding.clone(),
+                    findings_digest: Some(stored.receipt.findings_digest.clone()),
+                    failure_class: stored.receipt.failure_class,
                     model_route: stored.receipt.model_route.clone(),
                     executor: stored.receipt.executor.clone(),
                     usage: stored.receipt.usage.clone(),
+                    duration_ms: stored.receipt.duration_ms,
                     created_at: stored.receipt.created_at.clone(),
                 },
             );
@@ -900,12 +964,141 @@ mod tests {
             .unwrap();
         assert!(candidate.flip_receipt.is_some());
         assert!(candidate.eval_receipt.is_none());
-        let activity = &graph.get_task("report").unwrap().completion_review_activity;
+        let task = graph.get_task("report").unwrap();
+        let activity = &task.completion_review_activity;
         assert_eq!(activity.len(), 1);
         assert_eq!(activity[0].reviewer_kind, ReviewerKind::Flip);
         assert_eq!(
             activity[0].verdict,
             worksgood::simple_land::ReviewVerdict::Reject
+        );
+        assert_eq!(
+            activity[0].failure_class,
+            Some(worksgood::completion_review::ReviewFailureClass::SemanticRejection)
+        );
+        let binding = activity[0].binding.as_ref().unwrap();
+        assert_eq!(binding.task_id, "report");
+        assert_eq!(binding.generation, 3);
+        assert_eq!(binding.candidate_sequence, 1);
+        let verified = worksgood::completion_review::verified_review_activities(&fixture.dir, task);
+        assert_eq!(verified.invalid_count, 0);
+        assert_eq!(verified.activities[0].findings[0].code, "test.reject");
+        assert_eq!(
+            verified.activities[0].candidate_state,
+            worksgood::completion_review::ReviewCandidateState::Current
+        );
+    }
+
+    #[test]
+    fn changed_candidate_preserves_superseded_review_chronology() {
+        let fixture = fixture();
+        let first_calls = Arc::new(Mutex::new(Vec::new()));
+        let mut rejected_flip = FakeReviewer {
+            route: "pi:test/flip".to_string(),
+            result: Ok(semantic(SemanticVerdict::Reject)),
+            calls: first_calls.clone(),
+        };
+        let mut skipped_eval = FakeReviewer {
+            route: "pi:test/eval".to_string(),
+            result: Ok(semantic(SemanticVerdict::Pass)),
+            calls: first_calls,
+        };
+        let first = run_with_reviewers(
+            &fixture.dir,
+            "report",
+            &fixture.manifest_path,
+            &fixture.summary_path,
+            &mut rejected_flip,
+            &mut skipped_eval,
+        )
+        .unwrap();
+        assert_eq!(first.status, ReviewValveStatus::FlipRejected);
+
+        let graph = load_graph(fixture.dir.join("graph.jsonl")).unwrap();
+        let task = graph.get_task("report").unwrap();
+        let summary = std::fs::read(&fixture.summary_path).unwrap();
+        let completion_store = store(&fixture.dir).unwrap();
+        let output = completion_store
+            .put_bytes(b"changed reviewed bytes\n", "text/plain")
+            .unwrap();
+        let evidence = completion_store
+            .evidence_from_bytes(b"changed validation ok\n", "validation", "text/plain")
+            .unwrap();
+        let changed_manifest = CompletionManifest {
+            manifest_version: COMPLETION_MANIFEST_VERSION,
+            task_id: task.id.clone(),
+            generation: task.lifecycle.generation,
+            completion_contract: worksgood::simple_land::CompletionContract::Report,
+            requirements_digest: requirements_digest(task).unwrap(),
+            source_revision: "session:changed".to_string(),
+            outputs: vec![OutputRef::Artifact(output)],
+            validation_evidence: vec![evidence],
+            worker_summary_digest: ContentDigest::of_bytes(&summary),
+        };
+        std::fs::write(
+            &fixture.manifest_path,
+            changed_manifest.canonical_bytes().unwrap(),
+        )
+        .unwrap();
+
+        let accepted_calls = Arc::new(Mutex::new(Vec::new()));
+        let mut accepted_flip = FakeReviewer {
+            route: "pi:test/flip".to_string(),
+            result: Ok(semantic(SemanticVerdict::Pass)),
+            calls: accepted_calls.clone(),
+        };
+        let mut accepted_eval = FakeReviewer {
+            route: "pi:test/eval".to_string(),
+            result: Ok(semantic(SemanticVerdict::Pass)),
+            calls: accepted_calls,
+        };
+        let second = run_with_reviewers(
+            &fixture.dir,
+            "report",
+            &fixture.manifest_path,
+            &fixture.summary_path,
+            &mut accepted_flip,
+            &mut accepted_eval,
+        )
+        .unwrap();
+        assert_eq!(second.status, ReviewValveStatus::Accepted);
+
+        // Serialization reload retains all immutable rows. Only the exact
+        // selected candidate's FLIP+Eval are current acceptance evidence.
+        let graph = load_graph(fixture.dir.join("graph.jsonl")).unwrap();
+        let task = graph.get_task("report").unwrap();
+        assert_eq!(task.completion_review_activity.len(), 3);
+        assert_eq!(
+            task.completion_review_activity
+                .iter()
+                .map(|activity| { activity.binding.as_ref().unwrap().candidate_sequence })
+                .collect::<Vec<_>>(),
+            vec![1, 2, 2]
+        );
+        let verified = worksgood::completion_review::verified_review_activities(&fixture.dir, task);
+        assert_eq!(verified.invalid_count, 0);
+        assert_eq!(
+            verified
+                .activities
+                .iter()
+                .map(|activity| activity.candidate_state)
+                .collect::<Vec<_>>(),
+            vec![
+                worksgood::completion_review::ReviewCandidateState::Superseded,
+                worksgood::completion_review::ReviewCandidateState::Current,
+                worksgood::completion_review::ReviewCandidateState::Current,
+            ]
+        );
+        super::super::completion_done::run(&fixture.dir, "report", "refs/heads/main").unwrap();
+        let graph = load_graph(fixture.dir.join("graph.jsonl")).unwrap();
+        assert_eq!(graph.get_task("report").unwrap().status, Status::Done);
+        assert_eq!(
+            graph
+                .get_task("report")
+                .unwrap()
+                .completion_review_activity
+                .len(),
+            3
         );
     }
 
@@ -950,5 +1143,13 @@ mod tests {
         assert_eq!(task.status, Status::InProgress);
         assert!(task_submission(task).is_ok());
         assert!(task.after.is_empty());
+        assert_eq!(task.completion_review_activity.len(), 1);
+        assert_eq!(
+            task.completion_review_activity[0].failure_class,
+            Some(worksgood::completion_review::ReviewFailureClass::ReviewerUnavailable)
+        );
+        let verified = worksgood::completion_review::verified_review_activities(&fixture.dir, task);
+        assert_eq!(verified.invalid_count, 0);
+        assert_eq!(verified.activities[0].findings[0].code, "test.offline");
     }
 }
