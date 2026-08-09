@@ -404,7 +404,18 @@ pub fn run_with_reviewers(
             &summary_bytes,
             &dependency_outputs,
         )
-    };
+    }
+    .and_then(|bundle| {
+        worksgood::completion_validation::verify_validation_evidence(
+            task,
+            &manifest,
+            Some(&review_binding),
+            &bundle,
+            project_root,
+            dir,
+        )?;
+        Ok(bundle)
+    });
     let manifest_digest = manifest.digest().map_err(anyhow::Error::msg)?;
     let outcome = run_review_valve_bound(
         &store,

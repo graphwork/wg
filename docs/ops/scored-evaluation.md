@@ -1,7 +1,9 @@
 # Receipt-backed scored evaluation
 
 `wg evaluate run <task>` is the scored Agency authority. It is deliberately
-narrower than task completion:
+narrower than task completion. The FLIP/completion-Eval lane described in
+[completion-validation-evidence.md](completion-validation-evidence.md) records
+advisory manifest review and must not be interpreted as this quality score:
 
 - input is one ordinary reviewed, receipt-backed `Done`;
 - current generation, attempt, fence, immutable candidate/review/output bytes,

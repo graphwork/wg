@@ -1,10 +1,8 @@
-//! Tests for removal of `--validation` CLI flag.
+//! Tests for removal of the policy-style `--validation` CLI flag.
 //!
-//! Per the `remove-validation-cli` task: the `--validation` flag is
-//! removed from `wg add` / `wg edit` (kept as a hidden, no-op deprecation
-//! for one release). Quickstart text and agent prompts must no longer
-//! advertise the flag — validation criteria belong in the `## Validation`
-//! section of task descriptions and are scored by the agency evaluator.
+//! Human criteria remain in `## Validation`. The distinct, exact
+//! `--validation-command` setting configures host-run deterministic evidence
+//! and must remain public without reviving the retired policy surface.
 
 use std::process::Command;
 
@@ -29,7 +27,9 @@ fn wg_cmd(bin: &std::path::Path) -> Command {
     cmd
 }
 
-/// `wg add --help` must not advertise `--validation` (or `--validator-*`).
+/// `wg add --help` must not advertise the retired policy flag
+/// `--validation`; the exact `--validation-command` execution setting is a
+/// distinct deterministic evidence surface.
 #[test]
 fn test_cli_add_no_validation_flag() {
     let bin = wg_bin();
@@ -45,8 +45,13 @@ fn test_cli_add_no_validation_flag() {
         String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
 
     assert!(
-        !help.contains("--validation"),
-        "wg add --help must not mention --validation flag, got:\n{}",
+        !help.contains("--validation ") && !help.contains("--validation="),
+        "wg add --help must not mention retired --validation policy flag, got:\n{}",
+        help
+    );
+    assert!(
+        help.contains("--validation-command"),
+        "wg add --help must expose deterministic validation command configuration, got:\n{}",
         help
     );
     assert!(
@@ -59,7 +64,8 @@ fn test_cli_add_no_validation_flag() {
     );
 }
 
-/// `wg edit --help` must not advertise `--validation`.
+/// `wg edit --help` must not advertise retired `--validation`, while the
+/// deterministic command setting remains editable.
 #[test]
 fn test_cli_edit_no_validation_flag() {
     let bin = wg_bin();
@@ -75,9 +81,10 @@ fn test_cli_edit_no_validation_flag() {
         String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
 
     assert!(
-        !help.contains("--validation"),
-        "wg edit --help must not mention --validation flag"
+        !help.contains("--validation ") && !help.contains("--validation="),
+        "wg edit --help must not mention retired --validation policy flag"
     );
+    assert!(help.contains("--validation-command"), "{help}");
 }
 
 /// Quickstart output must mention the `## Validation` section convention but
@@ -127,6 +134,78 @@ fn test_executor_prompt_no_validation_flag() {
         !guidance.contains("--validation"),
         "build_decomposition_guidance output must not contain --validation flag, got:\n{}",
         guidance
+    );
+}
+
+#[test]
+fn test_validation_command_round_trips_and_can_be_cleared() {
+    let bin = wg_bin();
+    if !bin.exists() {
+        eprintln!("wg binary not built; skipping test");
+        return;
+    }
+    let tmp = tempfile::TempDir::new().unwrap();
+    let init = wg_cmd(&bin)
+        .current_dir(tmp.path())
+        .args(["init", "--executor", "shell"])
+        .output()
+        .expect("wg init");
+    assert!(
+        init.status.success(),
+        "{}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+
+    let add = wg_cmd(&bin)
+        .current_dir(tmp.path())
+        .args([
+            "add",
+            "deterministic evidence",
+            "--id",
+            "deterministic-evidence",
+            "--validation-command",
+            "printf exact",
+        ])
+        .output()
+        .expect("wg add --validation-command");
+    assert!(
+        add.status.success(),
+        "{}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+
+    let show = wg_cmd(&bin)
+        .current_dir(tmp.path())
+        .args(["--json", "show", "deterministic-evidence"])
+        .output()
+        .expect("wg show");
+    let value: serde_json::Value = serde_json::from_slice(&show.stdout).unwrap();
+    assert_eq!(
+        value["validation_commands"],
+        serde_json::json!(["printf exact"])
+    );
+
+    let clear = wg_cmd(&bin)
+        .current_dir(tmp.path())
+        .args(["edit", "deterministic-evidence", "--validation-command", ""])
+        .output()
+        .expect("wg edit --validation-command clear");
+    assert!(
+        clear.status.success(),
+        "{}",
+        String::from_utf8_lossy(&clear.stderr)
+    );
+    let show = wg_cmd(&bin)
+        .current_dir(tmp.path())
+        .args(["--json", "show", "deterministic-evidence"])
+        .output()
+        .expect("wg show after clear");
+    let value: serde_json::Value = serde_json::from_slice(&show.stdout).unwrap();
+    assert!(
+        value.get("validation_commands").is_none()
+            || value["validation_commands"]
+                .as_array()
+                .is_some_and(Vec::is_empty)
     );
 }
 

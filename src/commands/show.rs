@@ -138,6 +138,8 @@ struct TaskDetails {
     native_compaction: Option<NativeCompactionInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     verify: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    validation_commands: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     agent: Option<String>,
     #[serde(skip_serializing_if = "is_zero")]
@@ -888,6 +890,7 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         route_pin: route_pin_info(dir, task),
         native_compaction,
         verify: task.verify.clone(),
+        validation_commands: worksgood::completion_validation::configured_validation_commands(task),
         agent: task.agent.clone(),
         loop_iteration: task.loop_iteration,
         last_iteration_completed_at: task.last_iteration_completed_at.clone(),
@@ -1122,7 +1125,13 @@ fn print_human_readable(details: &TaskDetails) {
         );
     }
     if let Some(ref t) = details.verify_timeout {
-        println!("Verify timeout: {} (override for wg done verify gate)", t);
+        println!(
+            "Validation timeout: {} (override for one-step deterministic validation)",
+            t
+        );
+    }
+    for command in &details.validation_commands {
+        println!("Deterministic validation: {command}");
     }
 
     if let Some(ref assigned) = details.assigned {
@@ -2450,6 +2459,7 @@ mod tests {
                 session_summary_words: Some(42),
             }),
             verify: None,
+            validation_commands: Vec::new(),
             agent: None,
             loop_iteration: 0,
             last_iteration_completed_at: None,

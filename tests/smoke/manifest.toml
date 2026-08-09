@@ -3099,3 +3099,10 @@ script = "scenarios/bounded_scored_terminal_evaluation.sh"
 owners = ["restore-bounded-scored-evaluation"]
 description = "Credential-free real terminal fake-Pi flow for the restored scored authority: Failed/Waiting and missing-observation candidates are refused without graph/evaluation mutation; dry-run re-verifies receipt, generation/attempt/fence, immutable candidate/reviews/publication and prints exact Pi route, xhigh reasoning, terminal observation, receipt and bounded evidence digest without a provider call; one live no-tools scoring call validates the exact seven 0..1 dimensions plus bounded notes and persists one create-once rich Agency evaluation. Explicit rerun, daemon restart, and reload neither re-call Pi nor duplicate/rewrite the row; evaluate show and agency stats expose score, dimensions, route/reasoning, provider usage/cost, receipt, evidence digest, and source terminal observation; no PendingEval or evaluator graph node exists."
 timeout_seconds = 120
+
+[[scenario]]
+name = "completion_validation_evidence"
+script = "scenarios/completion_validation_evidence.sh"
+owners = ["bind-completion-validation-evidence"]
+description = "Credential-free real terminal fake-Pi canary for one-step completion evidence: WG executes an exact configured deterministic command, captures bounded stdout/stderr digests and content, exit/timing, cwd/repository/candidate and task/generation/attempt/fence/requirements binding; valid evidence reaches FLIP Pass then completion Eval and both immutable activity rows survive landing, Done, a pre-Done stale daemon save, and restart. Worker-prose-only, same-size CAS-tampered, stale cross-candidate, and failing-command evidence are visibly refused before review; a semantic FLIP rejection remains advisory and lifecycle-neutral by default."
+timeout_seconds = 120

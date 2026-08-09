@@ -263,12 +263,10 @@ pub enum Commands {
         #[arg(long = "verify-timeout", hide = true)]
         verify_timeout: Option<String>,
 
-        /// [DEPRECATED, no-op] The hard-gate `--validation` flag has been
-        /// removed. Put validation criteria in a `## Validation` section of
-        /// the task description; the agency evaluator (auto_evaluate +
-        /// FLIP) reads it. Accepted-but-ignored for one release with a
-        /// deprecation warning.
-        #[arg(long, hide = true)]
+        /// Exact deterministic command run by one-step `wg done`. WG captures
+        /// bounded stdout/stderr digests, exit status, timing, and the exact
+        /// repository/attempt binding as immutable completion evidence.
+        #[arg(long = "validation-command", value_name = "COMMAND")]
         validation: Option<String>,
 
         /// [DEPRECATED, no-op] Removed alongside `--validation`.
@@ -493,9 +491,10 @@ pub enum Commands {
         #[arg(long = "not-before")]
         not_before: Option<String>,
 
-        /// [DEPRECATED] Put validation criteria in a `## Validation` section of the
-        /// task description; the agency evaluator scores against it.
-        #[arg(long, hide = true)]
+        /// Set or clear the exact deterministic completion command. An empty
+        /// string clears configured command execution; `## Validation` remains
+        /// the human/model review contract.
+        #[arg(long = "validation-command", value_name = "COMMAND")]
         verify: Option<String>,
 
         /// Set or clear cron schedule (empty string "" clears; 6-field: "sec min hour day month dow")

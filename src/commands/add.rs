@@ -539,17 +539,26 @@ pub fn run_with_remote_provider(
         );
     }
 
-    // --validation / --validator-agent / --validator-model are deprecated no-ops.
-    // The hard-gate flag was removed; validation criteria belong in the task
-    // description's `## Validation` section, where the agency evaluator reads them.
-    if validation.is_some() || validator_agent.is_some() || validator_model.is_some() {
+    let validation_commands = validation
+        .map(str::trim)
+        .filter(|command| !command.is_empty())
+        .map(|command| vec![command.to_string()])
+        .unwrap_or_default();
+    if validation.is_some() && validation_commands.is_empty() {
+        anyhow::bail!("--validation-command must not be empty");
+    }
+    if validation_commands
+        .iter()
+        .any(|command| command.len() > 16 * 1024)
+    {
+        anyhow::bail!("--validation-command exceeds the 16384-byte bound");
+    }
+    if validator_agent.is_some() || validator_model.is_some() {
         eprintln!(
-            "Warning: --validation, --validator-agent, and --validator-model are deprecated \
-             and ignored. Put validation criteria in a `## Validation` section of the task \
-             description; the agency evaluator scores against it."
+            "Warning: --validator-agent and --validator-model are deprecated and ignored; \
+             deterministic commands run under WG and model review uses the configured reviewer/evaluator routes."
         );
     }
-    // Drop the values so they don't get persisted on the task.
     let validation: Option<&str> = None;
     let validator_agent: Option<&str> = None;
     let validator_model: Option<&str> = None;
@@ -743,7 +752,7 @@ pub fn run_with_remote_provider(
         resurrection_count: 0,
         last_resurrected_at: None,
         validation: validation.map(String::from),
-        validation_commands: vec![],
+        validation_commands,
         validator_agent: validator_agent.map(String::from),
         validator_model: validator_model.map(String::from),
         gate_attempts: 0,

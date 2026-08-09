@@ -304,9 +304,9 @@ fn json_output() -> serde_json::Value {
             }
         },
         "validation": {
-            "description": "Validation criteria live in a ## Validation section of the task description; the agency evaluator (auto_evaluate + FLIP) scores the agent's output against it.",
+            "description": "Validation criteria live in a ## Validation section. Exact executable checks may also be configured on the task; one-step done captures their immutable command/result evidence before advisory completion review.",
             "create": "wg add \"task\" -d \"## Validation\\n- [ ] criteria here\"",
-            "note": "Include a ## Validation section in descriptions with concrete acceptance criteria. Low-FLIP results route to pending-validation for human review (wg approve / wg reject)."
+            "note": "Deterministic configured checks are authoritative. Completion FLIP/eval is visible and advisory by default; explicit scored Agency evaluation remains a separate post-Done operation."
         },
         "messaging": {
             "description": "Inter-agent and task-scoped messaging. Agents must check messages before and after working.",

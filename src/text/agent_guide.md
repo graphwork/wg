@@ -214,13 +214,17 @@ model review is advisory unless the operator explicitly selected strict mode.
 
 ## Simple Completion
 
-The normal worker operation is `wg done <task-id>`. WG runs configured
-deterministic validation, snapshots the exact candidate, records FLIP/eval
-activity, lands Land work, and derives Done. Model review is visible and
-attributed but advisory by default; `[agency] completion_review_strict = true`
-is an explicit hardened opt-in. Internal completion-object, manifest, submit,
-and land commands remain diagnostic/compatibility tools, not required worker
-ceremony.
+The normal worker operation is `wg done <task-id>`. Configure an exact
+executable check at task creation with `--validation-command "COMMAND"` (or
+edit it before completion). WG executes that command itself, captures bounded
+stdout/stderr digests, exit/timing, cwd/repository and candidate/attempt/fence
+binding as immutable evidence, snapshots the exact candidate, records FLIP/eval
+activity, lands Land work, and derives Done. `## Validation` remains the human
+acceptance contract; worker prose or a validation log is not command-result
+evidence. Model review is visible and attributed but advisory by default;
+`[agency] completion_review_strict = true` is an explicit hardened opt-in.
+Internal completion-object, manifest, submit, and land commands remain
+diagnostic/compatibility tools, not required worker ceremony.
 
 ### Smoke Gate
 

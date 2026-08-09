@@ -706,7 +706,7 @@ pub struct IncompleteEvidence {
 }
 
 impl IncompleteEvidence {
-    fn new(
+    pub fn new(
         kind: IncompleteEvidenceKind,
         reference: impl Into<String>,
         detail: impl Into<String>,

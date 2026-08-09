@@ -1144,6 +1144,11 @@ fn main() -> Result<()> {
             let effective_no_place = false;
             let _ = paused; // retained as a harmless compatibility spelling; add is always a draft
             if let Some(ref peer_ref) = repo {
+                if validation.is_some() {
+                    anyhow::bail!(
+                        "--validation-command is local-task configuration; add the task in the target graph or configure it there before publishing"
+                    );
+                }
                 commands::add::run_remote(
                     &workgraph_dir,
                     peer_ref,

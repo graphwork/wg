@@ -33,6 +33,7 @@ pub mod completion_manifest;
 pub mod completion_review;
 pub mod completion_review_model;
 pub mod completion_task;
+pub mod completion_validation;
 pub mod concierge;
 pub mod config;
 pub mod config_defaults;

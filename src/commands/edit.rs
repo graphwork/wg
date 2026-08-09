@@ -673,14 +673,34 @@ pub fn run_with_reasoning_and_route_clear(
             changed = true;
         }
 
-        // --verify is deprecated
-        if verify.is_some() {
-            error = Some(anyhow::anyhow!(
-                "--verify is deprecated and no longer accepted.\n\
-                 Put validation criteria in a ## Validation section of the task description; \
-                 the agency evaluator scores against it."
-            ));
-            return false;
+        if let Some(command) = verify {
+            let command = command.trim();
+            if command.len() > 16 * 1024 {
+                error = Some(anyhow::anyhow!(
+                    "--validation-command exceeds the 16384-byte bound"
+                ));
+                return false;
+            }
+            // Editing the public setting also consumes the singular legacy
+            // `verify` spelling. Otherwise an old task could neither replace
+            // nor clear that command through the supported CLI.
+            let old = worksgood::completion_validation::configured_validation_commands(task);
+            task.verify = None;
+            task.validation_commands = if command.is_empty() {
+                Vec::new()
+            } else {
+                vec![command.to_string()]
+            };
+            field_changes.push(serde_json::json!({
+                "field": "validation_commands",
+                "old": old,
+                "new": task.validation_commands,
+            }));
+            println!(
+                "{} deterministic validation command",
+                if command.is_empty() { "Cleared" } else { "Set" }
+            );
+            changed = true;
         }
 
         // Add skills

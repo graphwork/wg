@@ -117,6 +117,17 @@ pub fn run(dir: &Path, id: &str, integration_ref: &str) -> Result<()> {
         )
     }
     .map_err(|error| anyhow::anyhow!("completion evidence no longer resolves: {error}"))?;
+    worksgood::completion_validation::verify_validation_evidence(
+        task,
+        &manifest,
+        submission.review_binding.as_ref(),
+        &resolved,
+        project_root,
+        dir,
+    )
+    .map_err(|error| {
+        anyhow::anyhow!("deterministic validation evidence no longer resolves: {error}")
+    })?;
     let config = worksgood::config::Config::load_merged(dir)?;
     let review_policy = if config.agency.completion_review_strict {
         load_exact_review_pair(&completion_store, &submission, &manifest, &resolved)?;

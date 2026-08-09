@@ -50,6 +50,10 @@ struct TaskRequirements<'a> {
     skills: &'a [String],
     inputs: &'a [String],
     deliverables: &'a [String],
+    /// Exact deterministic commands are task requirements, not worker prose.
+    /// Omit the empty field so historical requirements bytes remain stable.
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    validation_commands: &'a [String],
 }
 
 pub fn completion_contract(task: &Task) -> Result<CompletionContract, CompletionTaskError> {
@@ -63,6 +67,7 @@ pub fn completion_contract(task: &Task) -> Result<CompletionContract, Completion
 
 /// Canonical exact bytes reviewed as the task requirements.
 pub fn task_requirements_bytes(task: &Task) -> Result<Vec<u8>, CompletionTaskError> {
+    let validation_commands = crate::completion_validation::configured_validation_commands(task);
     let requirements = TaskRequirements {
         requirements_version: TASK_REQUIREMENTS_VERSION,
         task_id: &task.id,
@@ -75,6 +80,7 @@ pub fn task_requirements_bytes(task: &Task) -> Result<Vec<u8>, CompletionTaskErr
         skills: &task.skills,
         inputs: &task.inputs,
         deliverables: &task.deliverables,
+        validation_commands: &validation_commands,
     };
     let value = serde_json::to_value(requirements)
         .map_err(|error| CompletionTaskError::Serialize(error.to_string()))?;
