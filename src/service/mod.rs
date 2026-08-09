@@ -99,6 +99,29 @@ pub fn is_process_alive(pid: u32) -> bool {
     }
 }
 
+/// Process exists and is runnable rather than a Linux zombie. Authority checks
+/// use this stronger predicate because `kill(pid, 0)` succeeds for zombies.
+pub fn is_process_running(pid: u32) -> bool {
+    if !is_process_alive(pid) {
+        return false;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            return false;
+        };
+        let Some(after_comm) = stat.rsplit_once(") ").map(|(_, rest)| rest) else {
+            return false;
+        };
+        return after_comm
+            .split_whitespace()
+            .next()
+            .is_some_and(|state| state != "Z");
+    }
+    #[cfg(not(target_os = "linux"))]
+    true
+}
+
 /// Collect all descendant PIDs of `root_pid` by walking `/proc/*/stat`.
 ///
 /// Returns an empty vec on non-Linux or if `/proc` is unavailable. The root
@@ -488,63 +511,47 @@ pub fn has_active_children(_pid: u32) -> bool {
     false
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProcessIdentityMatch {
-    Match,
-    Mismatch,
-    Unknown,
-}
-
-/// Tri-state process birth comparison. Admission callers must treat `Unknown`
-/// conservatively as occupied and may free a slot only on `Mismatch`.
-pub fn process_identity_match(pid: u32, expected_start_epoch: i64) -> ProcessIdentityMatch {
+/// Check whether the process at `pid` is the same one that was started at
+/// `expected_start_epoch` (Unix timestamp). Returns `true` if we can confirm
+/// the process identity matches, or if the check is inconclusive (non-Linux,
+/// missing `/proc`, etc.). Returns `false` only when we can positively
+/// determine that the PID has been reused by a different process.
+pub fn verify_process_identity(pid: u32, expected_start_epoch: i64) -> bool {
     match read_proc_start_time_secs(pid) {
         Some(actual_start) => {
             // Allow 120 seconds of slack: the wrapper script may take a
             // moment to start after the spawn timestamp is recorded, and
             // clock granularity in /proc/stat is 1 second.
-            if actual_start.abs_diff(expected_start_epoch) <= 120 {
-                ProcessIdentityMatch::Match
-            } else {
-                ProcessIdentityMatch::Mismatch
-            }
+            actual_start <= expected_start_epoch + 120
         }
-        None => ProcessIdentityMatch::Unknown,
+        None => {
+            // Can't read /proc — process might be gone, or we're not on
+            // Linux. Fall back to conservative "assume same process".
+            true
+        }
     }
-}
-
-/// Backward-compatible boolean wrapper. Inconclusive checks remain
-/// conservative; only a positively detected mismatch returns false.
-pub fn verify_process_identity(pid: u32, expected_start_epoch: i64) -> bool {
-    !matches!(
-        process_identity_match(pid, expected_start_epoch),
-        ProcessIdentityMatch::Mismatch
-    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn unavailable_process_identity_is_explicitly_unknown_and_fails_closed() {
-        assert_eq!(
-            process_identity_match(u32::MAX, 0),
-            ProcessIdentityMatch::Unknown
-        );
-        assert!(verify_process_identity(u32::MAX, 0));
-    }
-
     #[cfg(target_os = "linux")]
     #[test]
-    fn older_unrelated_pid_is_a_positive_birth_mismatch() {
-        let pid = std::process::id();
-        let actual = read_proc_start_time_secs(pid).expect("current process has /proc birth time");
-        assert_eq!(
-            process_identity_match(pid, actual + 1_000),
-            ProcessIdentityMatch::Mismatch
+    fn zombie_process_is_not_running_authority() {
+        let mut child = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("exit 0")
+            .spawn()
+            .expect("spawn short child");
+        let pid = child.id();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(
+            is_process_alive(pid),
+            "unreaped zombie still answers kill(0)"
         );
-        assert!(!verify_process_identity(pid, actual + 1_000));
+        assert!(!is_process_running(pid), "zombie must not retain authority");
+        child.wait().ok();
     }
 
     #[cfg(target_os = "linux")]

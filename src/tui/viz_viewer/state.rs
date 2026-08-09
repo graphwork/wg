@@ -8626,7 +8626,8 @@ fn admission_waiting_reason(workgraph_dir: &Path, task_id: &str) -> Option<Strin
     let service = crate::commands::service::ServiceState::load(workgraph_dir)
         .ok()
         .flatten()?;
-    (service.pid_start_identity.is_some()
+    (worksgood::service::is_process_running(service.pid)
+        && service.pid_start_identity.is_some()
         && service.pid_start_identity
             == worksgood::service_identity::pid_start_identity(service.pid))
     .then_some(())?;
@@ -8649,10 +8650,11 @@ fn build_heavy_active_for_graph(
     workgraph_dir: &Path,
     graph: &worksgood::graph::WorkGraph,
 ) -> usize {
-    AgentRegistry::load_or_warn(workgraph_dir)
+    let registry = AgentRegistry::load_or_warn(workgraph_dir);
+    registry
         .agents
         .values()
-        .filter(|agent| agent.has_live_process_identity())
+        .filter(|agent| registry.has_live_process_identity(agent))
         .filter(|agent| {
             graph
                 .get_task(&agent.task_id)
@@ -19154,7 +19156,7 @@ impl VizApp {
                 registry
                     .agents
                     .values()
-                    .filter(|agent| agent.has_live_process_identity())
+                    .filter(|agent| registry.has_live_process_identity(agent))
                     .filter(|agent| {
                         graph.get_task(&agent.task_id).is_some_and(|task| {
                             worksgood::disk_sentinel::classify_task(task).is_heavy()
@@ -19211,7 +19213,7 @@ impl VizApp {
             }
             // Agent stuck: alive but output file not modified in >5 minutes.
             // Suppress if the agent has active child processes (waiting on subprocess).
-            if agent.has_live_process_identity() {
+            if registry.has_live_process_identity(agent) {
                 let output_age_secs = std::fs::metadata(&agent.output_file)
                     .and_then(|m| m.modified())
                     .ok()

@@ -100,26 +100,6 @@ impl AgentEntry {
         )
     }
 
-    /// Status plus kernel process-birth identity. The registry's immutable
-    /// `started_at` is the expected epoch; plain PID liveness is insufficient
-    /// because a reused PID must never consume admission capacity.
-    pub fn has_live_process_identity(&self) -> bool {
-        if !self.is_alive() || !super::is_process_alive(self.pid) {
-            return false;
-        }
-        // Admission is fail-closed: an unknown/malformed expected birth epoch
-        // still consumes capacity. Only a positively detected PID mismatch may
-        // free the slot.
-        DateTime::parse_from_rfc3339(&self.started_at)
-            .ok()
-            .is_none_or(|started| {
-                !matches!(
-                    super::process_identity_match(self.pid, started.timestamp()),
-                    super::ProcessIdentityMatch::Mismatch
-                )
-            })
-    }
-
     /// Strict liveness check — the agent is considered *live* if and
     /// only if ALL of the following hold:
     ///
@@ -180,6 +160,10 @@ pub struct AgentRegistry {
     pub agents: HashMap<String, AgentEntry>,
     /// Next agent ID to assign
     pub next_agent_id: u32,
+    /// Exact kernel birth tokens, keyed by agent ID. Legacy registries omit
+    /// these and are conservatively counted until their PID is positively dead.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub pid_start_identities: HashMap<String, String>,
 }
 
 impl Default for AgentRegistry {
@@ -187,6 +171,7 @@ impl Default for AgentRegistry {
         Self {
             agents: HashMap::new(),
             next_agent_id: 1,
+            pid_start_identities: HashMap::new(),
         }
     }
 }
@@ -386,6 +371,9 @@ impl AgentRegistry {
         };
 
         self.agents.insert(agent_id.clone(), entry);
+        if let Some(identity) = crate::service_identity::pid_start_identity(pid) {
+            self.pid_start_identities.insert(agent_id.clone(), identity);
+        }
         agent_id
     }
 
@@ -453,12 +441,27 @@ impl AgentRegistry {
     ///
     /// Returns the removed agent entry, or None if not found.
     pub fn unregister_agent(&mut self, agent_id: &str) -> Option<AgentEntry> {
+        self.pid_start_identities.remove(agent_id);
         self.agents.remove(agent_id)
     }
 
     /// Get all agents
     pub fn all(&self) -> impl Iterator<Item = &AgentEntry> {
         self.agents.values()
+    }
+
+    /// Status plus exact kernel process-birth identity. Unknown legacy or
+    /// temporarily unavailable identity data fails closed and consumes a slot;
+    /// only an exact-token mismatch frees it.
+    pub fn has_live_process_identity(&self, agent: &AgentEntry) -> bool {
+        if !agent.is_alive() || !super::is_process_alive(agent.pid) {
+            return false;
+        }
+        match self.pid_start_identities.get(&agent.id) {
+            Some(expected) => crate::service_identity::pid_start_identity(agent.pid)
+                .is_none_or(|current| current == *expected),
+            None => true,
+        }
     }
 
     /// List all agents as a Vec
@@ -647,6 +650,23 @@ mod tests {
         let registry = AgentRegistry::new();
         assert!(registry.agents.is_empty());
         assert_eq!(registry.next_agent_id, 1);
+    }
+
+    #[test]
+    fn admission_identity_uses_exact_kernel_token_and_legacy_fails_closed() {
+        let pid = std::process::id();
+        let mut registry = AgentRegistry::new();
+        let id = registry.register_agent(pid, "task", "shell", "/tmp/out");
+        let agent = registry.get_agent(&id).unwrap().clone();
+        assert!(registry.has_live_process_identity(&agent));
+
+        registry
+            .pid_start_identities
+            .insert(id.clone(), "definitely-not-this-process".into());
+        assert!(!registry.has_live_process_identity(&agent));
+
+        registry.pid_start_identities.remove(&id);
+        assert!(registry.has_live_process_identity(&agent));
     }
 
     #[test]

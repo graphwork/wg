@@ -100,7 +100,7 @@ fn cleanup_and_count_alive(
         let mut locked_registry = AgentRegistry::load_locked(dir)?;
         let mut killed = Vec::new();
         for agent in locked_registry.registry.agents.values() {
-            if !agent.has_live_process_identity() {
+            if !locked_registry.registry.has_live_process_identity(agent) {
                 continue;
             }
             if let Some(task) = graph.get_task(&agent.task_id)
@@ -148,7 +148,7 @@ fn cleanup_and_count_alive(
     let alive_count = registry
         .agents
         .values()
-        .filter(|a| a.has_live_process_identity())
+        .filter(|a| registry.has_live_process_identity(a))
         .count();
 
     if alive_count >= max_agents {
@@ -207,7 +207,7 @@ fn active_build_heavy_count(dir: &Path, graph: &worksgood::graph::WorkGraph) -> 
         .map(|registry| {
             registry
                 .all()
-                .filter(|agent| agent.has_live_process_identity())
+                .filter(|agent| registry.has_live_process_identity(agent))
                 .filter(|agent| {
                     graph.get_task(&agent.task_id).is_some_and(|task| {
                         worksgood::disk_sentinel::classify_task(task).is_heavy()
@@ -2225,7 +2225,7 @@ fn auto_checkpoint_agents(dir: &Path, config: &Config) {
     let alive_agents: Vec<_> = registry
         .agents
         .values()
-        .filter(|a| a.has_live_process_identity())
+        .filter(|a| registry.has_live_process_identity(a))
         .cloned()
         .collect();
 

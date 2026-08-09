@@ -379,7 +379,7 @@ fn gather_coordinator_info(dir: &Path) -> CoordinatorInfo {
             registry
                 .agents
                 .values()
-                .filter(|agent| agent.has_live_process_identity())
+                .filter(|agent| registry.has_live_process_identity(agent))
                 .filter(|agent| {
                     graph.get_task(&agent.task_id).is_some_and(|task| {
                         worksgood::disk_sentinel::classify_task(task).is_heavy()

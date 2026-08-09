@@ -1313,7 +1313,7 @@ pub(crate) fn spawn_agent_inner_authorized(
     if build_class.is_heavy() {
         let active_heavy = locked_registry
             .all()
-            .filter(|agent| agent.has_live_process_identity())
+            .filter(|agent| locked_registry.has_live_process_identity(agent))
             .filter(|agent| {
                 graph
                     .get_task(&agent.task_id)
