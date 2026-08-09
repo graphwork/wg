@@ -18,6 +18,7 @@ Validation run in the task worktree on 2026-08-08 with the pinned Rust 1.96.0 to
 - `cargo test --quiet build_heavy_capacity_inherits_worker_slots_and_preserves_explicit_override` — PASS: 1 passed, 0 failed.
 - `cargo test --quiet admission_deferral_never_becomes_spawn_failure_or_pending_eval` — PASS: 1 passed, 0 failed.
 - `cargo test --quiet unavailable_service_clears_admission_and_reloads_capacity` — PASS: 1 passed, 0 failed.
+- `cargo test --quiet admission_snapshot_requires_current_service_generation` — PASS: 1 passed, 0 failed.
 - `cargo test --quiet admission_identity_uses_exact_kernel_token_and_legacy_fails_closed` — PASS: 1 passed, 0 failed.
 - `cargo test --quiet zombie_process_is_not_running_authority` — PASS: 1 passed, 0 failed.
 - `cargo test --quiet zombie_never_grants_agent_authority_or_holds_capacity` — PASS: 1 passed, 0 failed.

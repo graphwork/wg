@@ -428,7 +428,9 @@ fn gather_coordinator_info(dir: &Path) -> CoordinatorInfo {
             .ok()
             .flatten()
             .is_some_and(|state| {
-                state.pid_start_identity.is_some()
+                worksgood::service::is_process_running(state.pid)
+                    && state.pid_start_identity.is_some()
+                    && state.pid_start_identity == coord.service_pid_start_identity
                     && state.pid_start_identity
                         == worksgood::service_identity::pid_start_identity(state.pid)
             });

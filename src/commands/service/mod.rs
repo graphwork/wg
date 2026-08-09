@@ -785,13 +785,18 @@ pub fn coordinator_state_path(dir: &Path, coordinator_id: u32) -> PathBuf {
         .join(format!("coordinator-state-{}.json", coordinator_id))
 }
 
-fn service_state_has_current_birth_identity(dir: &Path) -> bool {
-    ServiceState::load(dir).ok().flatten().is_some_and(|state| {
-        worksgood::service::is_process_running(state.pid)
-            && state.pid_start_identity.is_some()
-            && state.pid_start_identity
-                == worksgood::service_identity::pid_start_identity(state.pid)
+fn current_service_birth_identity(dir: &Path) -> Option<String> {
+    ServiceState::load(dir).ok().flatten().and_then(|state| {
+        let recorded = state.pid_start_identity?;
+        (worksgood::service::is_process_running(state.pid)
+            && Some(&recorded)
+                == worksgood::service_identity::pid_start_identity(state.pid).as_ref())
+        .then_some(recorded)
     })
+}
+
+fn service_state_has_current_birth_identity(dir: &Path) -> bool {
+    current_service_birth_identity(dir).is_some()
 }
 
 /// One read model for config capacity plus a live daemon's intentional runtime
@@ -841,7 +846,7 @@ pub(crate) fn admission_capacity_status(
 /// suppresses waiting rows unless the PID's OS birth identity still matches the
 /// authenticated service state (plain PID liveness is never enough).
 pub(crate) fn suppress_stale_admission(dir: &Path, coordinator: &mut CoordinatorState) {
-    if !service_state_has_current_birth_identity(dir) {
+    if current_service_birth_identity(dir) != coordinator.service_pid_start_identity {
         coordinator.admission_deferred_tasks = 0;
         coordinator.admission_deferred_reason = None;
         coordinator.admission_deferred.clear();
@@ -1036,6 +1041,9 @@ pub struct CoordinatorState {
     /// to `None` = today's behavior, so no schema migration is needed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_max_agents: Option<usize>,
+    /// Exact service generation that owns this transient snapshot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_pid_start_identity: Option<String>,
 }
 
 impl CoordinatorState {
@@ -3090,6 +3098,9 @@ pub fn run_daemon(
         endpoint_override: None,
         route_generation: 0,
         runtime_max_agents,
+        service_pid_start_identity: worksgood::service_identity::pid_start_identity(
+            std::process::id(),
+        ),
     };
     coord_state.save(&dir);
 
@@ -6936,6 +6947,44 @@ mod tests {
             verified.data.as_ref().unwrap()["durable_receipt"],
             serde_json::Value::Bool(true)
         );
+    }
+
+    #[test]
+    fn admission_snapshot_requires_current_service_generation() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path();
+        fs::create_dir_all(dir.join("service")).unwrap();
+        let birth = worksgood::service_identity::pid_start_identity(std::process::id())
+            .expect("current process birth token");
+        ServiceState {
+            pid: std::process::id(),
+            socket_path: default_socket_path(dir).display().to_string(),
+            started_at: chrono::Utc::now().to_rfc3339(),
+            pid_start_identity: Some(birth.clone()),
+            identity: None,
+            supervisor_pid: None,
+            supervisor_pid_start_identity: None,
+        }
+        .save(dir)
+        .unwrap();
+
+        let mut stale = CoordinatorState {
+            admission_deferred_tasks: 1,
+            admission_deferred_reason: Some("old generation".into()),
+            admission_deferred: vec![AdmissionDeferredTask {
+                task_id: "old".into(),
+                reason: "old generation".into(),
+            }],
+            service_pid_start_identity: Some("previous-service-generation".into()),
+            ..CoordinatorState::default()
+        };
+        suppress_stale_admission(dir, &mut stale);
+        assert_eq!(stale.admission_deferred_tasks, 0);
+
+        stale.service_pid_start_identity = Some(birth);
+        stale.admission_deferred_tasks = 1;
+        suppress_stale_admission(dir, &mut stale);
+        assert_eq!(stale.admission_deferred_tasks, 1);
     }
 
     #[test]

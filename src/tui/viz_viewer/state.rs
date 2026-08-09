@@ -5483,7 +5483,9 @@ fn authenticated_service_context(
         return None;
     }
     let state = observation.state.as_ref()?;
-    if !worksgood::service::is_process_running(state.pid) {
+    if !worksgood::service::is_process_running(state.pid)
+        || state.pid_start_identity != coordinator.service_pid_start_identity
+    {
         return None;
     }
     let identity = observation.handshake_identity.as_ref()?;
@@ -8629,12 +8631,14 @@ fn admission_waiting_reason(workgraph_dir: &Path, task_id: &str) -> Option<Strin
     let service = crate::commands::service::ServiceState::load(workgraph_dir)
         .ok()
         .flatten()?;
+    let coordinator = crate::commands::service::CoordinatorState::load_for(workgraph_dir, 0)?;
     (worksgood::service::is_process_running(service.pid)
         && service.pid_start_identity.is_some()
+        && service.pid_start_identity == coordinator.service_pid_start_identity
         && service.pid_start_identity
             == worksgood::service_identity::pid_start_identity(service.pid))
     .then_some(())?;
-    crate::commands::service::CoordinatorState::load_for(workgraph_dir, 0)?
+    coordinator
         .admission_deferred
         .into_iter()
         .find(|waiting| waiting.task_id == task_id)
@@ -19093,10 +19097,11 @@ impl VizApp {
         });
 
         // Load coordinator state (coordinator 0 = dispatch state)
-        let coord = load_coordinator_state_read_only(dir, 0)
+        let mut coord = load_coordinator_state_read_only(dir, 0)
             .ok()
             .flatten()
             .unwrap_or_default();
+        crate::commands::service::suppress_stale_admission(dir, &mut coord);
         self.service_health.authoritative =
             authenticated_service_context(&service_observation, &coord);
         self.service_health.paused = coord.paused;
