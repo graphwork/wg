@@ -503,7 +503,7 @@ pub fn process_identity_match(pid: u32, expected_start_epoch: i64) -> ProcessIde
             // Allow 120 seconds of slack: the wrapper script may take a
             // moment to start after the spawn timestamp is recorded, and
             // clock granularity in /proc/stat is 1 second.
-            if actual_start <= expected_start_epoch + 120 {
+            if actual_start.abs_diff(expected_start_epoch) <= 120 {
                 ProcessIdentityMatch::Match
             } else {
                 ProcessIdentityMatch::Mismatch
@@ -533,6 +533,18 @@ mod tests {
             ProcessIdentityMatch::Unknown
         );
         assert!(verify_process_identity(u32::MAX, 0));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn older_unrelated_pid_is_a_positive_birth_mismatch() {
+        let pid = std::process::id();
+        let actual = read_proc_start_time_secs(pid).expect("current process has /proc birth time");
+        assert_eq!(
+            process_identity_match(pid, actual + 1_000),
+            ProcessIdentityMatch::Mismatch
+        );
+        assert!(!verify_process_identity(pid, actual + 1_000));
     }
 
     #[cfg(target_os = "linux")]

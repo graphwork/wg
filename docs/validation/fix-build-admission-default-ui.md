@@ -19,6 +19,7 @@ Validation run in the task worktree on 2026-08-08 with the pinned Rust 1.96.0 to
 - `cargo test --quiet admission_deferral_never_becomes_spawn_failure_or_pending_eval` — PASS: 1 passed, 0 failed.
 - `cargo test --quiet unavailable_service_clears_admission_and_reloads_capacity` — PASS: 1 passed, 0 failed.
 - `cargo test --quiet unavailable_process_identity_is_explicitly_unknown_and_fails_closed` — PASS: 1 passed, 0 failed.
+- `cargo test --quiet older_unrelated_pid_is_a_positive_birth_mismatch` — PASS: 1 passed, 0 failed.
 - `cargo test --quiet authoritative_service_identity_click_keyboard_and_stale_coordinate_parity` — PASS: 1 passed, 0 failed (including physical Shift+I parity).
 - Existing targeted config/coordinator/TUI tests executed during implementation passed.
 
