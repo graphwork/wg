@@ -78,15 +78,20 @@ Trusted does not mean unfenced or unaudited:
    (`spawn`/worker management, `trace`, `func`, `replay`, service/admin,
    migration, federation/provider/review) fail closed and cannot replace
    immutable completion evidence.
-5. Trusted sends stage and fsync a complete queue replacement under a stable
-   sidecar lock, commit the graph attribution first, and only then atomically
+5. Trusted local sends derive their sender/actor from the authenticated attempt
+   (caller-supplied aliases cannot forge attribution). Federation `msg send --to`
+   and `msg poll --as` remain privileged cross-plane operations. Accepted local
+   sends stage and fsync a complete queue replacement under a stable sidecar
+   lock, commit the graph attribution first, and only then atomically
    publish the message. A durable manifest lets the next send finish a crash
    after graph commit or discard a stage after graph-save failure, so neither an
    orphan message nor an unaudited landed graph mutation is accepted.
 6. Worker authority is also bound to the registered OS process session/ancestry,
-   independently of `WG_*`. A managed child that strips its capability remains a
-   worker and is refused before graph loading; environment removal never grants
-   operator authority.
+   independently of `WG_*`. Detection combines the registry with create-once
+   per-agent spawn metadata, retains terminal wrapper PIDs, and fails closed on
+   malformed/unprovable identity state. A managed child that strips its
+   capability remains a worker and is refused before graph loading; environment
+   removal never grants operator authority.
 7. Existing command locks/CAS/transactions remain the mutation mechanism; no
    alternate graph writer or permission ceremony is introduced.
 
@@ -109,7 +114,9 @@ quality worker that changed the batch before failing remains an ordinary
 blocker. The satisfaction boundary itself emits the loud warning, so readiness,
 show/completion, and dispatcher paths cannot silently consume the bypass; the
 dispatcher additionally persists the warning once. Authentication failures are
-never advisory infrastructure. A required tag preserves ordinary
+never advisory infrastructure. The coarse `ExecutorConfig` class alone (including
+missing/unknown signal) is ambiguous and cannot release a batch; it requires an
+explicit allowlisted non-auth provider signal with route provenance. A required tag preserves ordinary
 required-success failure semantics.
 
 `tests/smoke/scenarios/quality_pass_advisory_provider_failure.sh` uses an

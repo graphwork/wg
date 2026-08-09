@@ -59,16 +59,31 @@ if wg --dir /tmp list > protected-cross-graph.out 2>&1; then
   exit 93
 fi
 grep -q 'worker_control.graph_cli_cross_graph_refused' protected-cross-graph.out
+if wg msg send --to wgid:forbidden --from forged --body payload > protected-fed-send.out 2>&1; then
+  echo "trusted worker unexpectedly gained federation send authority" >&2
+  exit 97
+fi
+grep -Eq 'worker_control.(operation|cross_graph_send)_refused' protected-fed-send.out
+if wg msg poll --as forged > protected-fed-poll.out 2>&1; then
+  echo "trusted worker unexpectedly gained federation poll authority" >&2
+  exit 98
+fi
+grep -Eq 'worker_control.(operation|cross_graph_poll|federated_poll)_refused' protected-fed-poll.out
 wg show downstream --json > downstream-before.json
 wg edit downstream --description $'Coordinated downstream description.\n\n## Validation\n- [ ] trust-first edit reached the graph'
 wg add "Trusted local subtask" --id trusted-local-subtask --after "$WG_TASK_ID" --assign "$WG_AGENT_ID" \
   --description $'Created and linked by a trusted local worker.\n\n## Validation\n- [ ] depends on its quality-pass parent'
 wg reprioritize downstream critical
+if wg msg send downstream forged --from coordinator > spoofed-sender.out 2>&1; then
+  echo "trusted worker unexpectedly forged message attribution" >&2
+  exit 99
+fi
+grep -q 'worker_control.message_sender_spoof_refused' spoofed-sender.out
 wg msg send downstream "trusted worker coordinated downstream metadata"
 wg publish trusted-local-subtask --only
 wg log "$WG_TASK_ID" "trust-first cross-task coordination complete"
 printf 'trusted\n' > trust-first.txt
-git add capabilities.json downstream-before.json trust-first.txt
+git add capabilities.json downstream-before.json protected-fed-send.out protected-fed-poll.out spoofed-sender.out trust-first.txt
 git commit -qm 'trust-first worker evidence'
 printf 'trusted quality-pass coordination completed\n' > summary.txt
 printf 'cross-task edit/add/link/assign/priority/message assertions passed\n' > validation.log
@@ -128,6 +143,12 @@ child=$(wgrun show trusted-local-subtask --json)
 printf '%s' "$child" | grep -q '.quality-pass-local-coordinator' || loud_fail "trusted subtask not linked to its quality-pass parent"
 grep -q '"id":"trusted-local-subtask"' "$project/.wg/graph.jsonl" || loud_fail "trusted subtask not created"
 grep -q 'trusted worker coordinated downstream metadata' "$project/.wg/messages/downstream.jsonl" || loud_fail "cross-task message absent"
+python3 - "$project/.wg/messages/downstream.jsonl" <<'PY'
+import json,sys
+messages=[json.loads(line) for line in open(sys.argv[1]) if line.strip()]
+assert len(messages) == 1, messages
+assert messages[0]['sender'] == 'agent-1', messages[0]
+PY
 if grep -q 'stale worker message must not append' "$project/.wg/messages/downstream.jsonl"; then
   loud_fail "stale trusted worker appended a message before its fence was rejected"
 fi

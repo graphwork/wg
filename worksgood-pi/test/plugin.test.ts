@@ -23,24 +23,30 @@ interface FakePi {
   exec: ReturnType<typeof vi.fn>;
   events: { on: ReturnType<typeof vi.fn>; emit: ReturnType<typeof vi.fn> };
   toolNames: string[];
+  tools: Array<{ name: string; execute: (...args: unknown[]) => Promise<unknown> }>;
   commandNames: string[];
   subscribedEvents: string[];
 }
 
 function makeFakePi(): FakePi {
   const toolNames: string[] = [];
+  const tools: Array<{ name: string; execute: (...args: unknown[]) => Promise<unknown> }> = [];
   const commandNames: string[] = [];
   const subscribedEvents: string[] = [];
   return {
-    registerTool: vi.fn((tool: { name: string }) => toolNames.push(tool.name)),
+    registerTool: vi.fn((tool: { name: string; execute: (...args: unknown[]) => Promise<unknown> }) => {
+      toolNames.push(tool.name);
+      tools.push(tool);
+    }),
     registerCommand: vi.fn((name: string) => commandNames.push(name)),
     registerProvider: vi.fn(),
     on: vi.fn((event: string) => subscribedEvents.push(event)),
     setModel: vi.fn(async () => true),
     sendUserMessage: vi.fn(),
-    exec: vi.fn(async () => ({ stdout: "", stderr: "", code: 0, killed: false })),
+    exec: vi.fn(async () => ({ stdout: "0.3.0\n", stderr: "", code: 0, killed: false })),
     events: { on: vi.fn(), emit: vi.fn() },
     toolNames,
+    tools,
     commandNames,
     subscribedEvents,
   };
@@ -67,6 +73,17 @@ describe("pi-worksgood registration entry", () => {
       expect(pi.toolNames, `tool ${name} should be registered`).toContain(name);
     }
     expect(pi.registerTool).toHaveBeenCalledTimes(EXPECTED_TOOLS.length);
+  });
+
+  it("fails closed before tool execution when the console handshake is empty", async () => {
+    const pi = makeFakePi();
+    pi.exec.mockResolvedValue({ stdout: "", stderr: "old wg", code: 2, killed: false });
+    worksgoodPi(pi);
+    const ready = pi.tools.find((tool) => tool.name === "wg_ready");
+    await expect(ready?.execute("call-1", {}, undefined)).rejects.toThrow(
+      /compatibility handshake returned no valid version/,
+    );
+    expect(pi.exec).toHaveBeenCalledTimes(1);
   });
 
   it("registers the /wg and /wg-model commands", () => {

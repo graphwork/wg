@@ -51,16 +51,19 @@ async function assertCompatVersionAsync(backend) {
     // direction); the sync check already covered the wg→pi spawn.
     if (process.env.WG_PI_PLUGIN_COMPAT_VERSION)
         return;
-    let found;
+    let result;
     try {
-        const r = await backend.run(["pi-plugin", "compat-version"]);
-        if (r.code === 0)
-            found = r.stdout.trim();
+        result = await backend.run(["pi-plugin", "compat-version"]);
     }
-    catch {
-        return; // no `wg` on PATH / older wg without the verb — nothing to assert.
+    catch (error) {
+        throw new Error(`WorksGood Pi integration compatibility handshake failed before WG execution: ${error instanceof Error ? error.message : String(error)}`);
     }
-    if (found && found !== EMBEDDED_COMPAT) {
+    const found = result.stdout.trim();
+    if (result.code !== 0 || !found) {
+        throw new Error(`WorksGood Pi integration compatibility handshake returned no valid version (wg exit ${result.code}). ` +
+            "Install a compatible wg and run `wg pi-plugin install`.");
+    }
+    if (found !== EMBEDDED_COMPAT) {
         throw new Error(`WorksGood Pi integration compat mismatch: extension=${EMBEDDED_COMPAT} wg=${found}. ` +
             "Reinstall the matching plugin with `wg pi-plugin install`.");
     }

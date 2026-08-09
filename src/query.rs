@@ -548,7 +548,6 @@ fn advisory_quality_infrastructure_failure(
                 | crate::graph::FailureClass::ApiError5xxTransient
                 | crate::graph::FailureClass::AgentHardTimeout
                 | crate::graph::FailureClass::ResourceExhaustedDisk
-                | crate::graph::FailureClass::ExecutorConfig
                 | crate::graph::FailureClass::WrapperInternal
         )
     });
@@ -1202,6 +1201,24 @@ mod tests {
             dependency_disposition(&quality.id, &downstream.id, &auth_graph, Some(temp.path())),
             DependencyDisposition::Blocked { .. }
         ));
+        for signal in [None, Some(crate::graph::FailureReason::Unknown)] {
+            let mut ambiguous_graph = graph.clone();
+            let ambiguous = ambiguous_graph.get_task_mut(&quality.id).unwrap();
+            ambiguous.failure_class = Some(crate::graph::FailureClass::ExecutorConfig);
+            ambiguous.failure_signal = signal.map(|reason| crate::graph::FailureSignal {
+                reason,
+                ..crate::graph::FailureSignal::default()
+            });
+            assert!(matches!(
+                dependency_disposition(
+                    &quality.id,
+                    &downstream.id,
+                    &ambiguous_graph,
+                    Some(temp.path())
+                ),
+                DependencyDisposition::Blocked { .. }
+            ));
+        }
 
         let mut required_graph = WorkGraph::new();
         quality.tags.push("quality-pass:required".into());

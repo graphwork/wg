@@ -398,8 +398,9 @@ else backend.setCompatibilityGate(
   global plugin, or vice versa).
 - **Failure surfacing and authority gate:** wg-spawn mismatch throws
   synchronously from the factory and is collected as an extension load error.
-  Human-console probing is necessarily asynchronous, but it is not
-  best-effort: the promise is installed as `WgBackend`'s compatibility gate
+  Human-console probing is necessarily asynchronous, but it is fail-closed:
+  missing `wg`, a nonzero/empty version response, and mismatch all reject. The
+  promise is installed as `WgBackend`'s compatibility gate
   before tool/command registration returns. Every backend operation awaits it,
   so mismatch is printed loudly and rejects before any worker/control command
   can execute. The Node host reads `extensionsResult.errors`, attended pi shows

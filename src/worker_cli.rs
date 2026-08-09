@@ -156,6 +156,33 @@ enum TrustedCliClass {
 /// completion families remain protected.
 fn trusted_cli_class(command: &Commands) -> TrustedCliClass {
     match command {
+        Commands::Msg {
+            command:
+                MsgCommands::Send {
+                    to: None,
+                    body: None,
+                    kind,
+                    seal: false,
+                    store: None,
+                    ..
+                },
+        } if kind == "msg" => TrustedCliClass::Coordination,
+        Commands::Msg {
+            command: MsgCommands::List { .. } | MsgCommands::Read { .. },
+        } => TrustedCliClass::Coordination,
+        Commands::Msg {
+            command:
+                MsgCommands::Poll {
+                    as_identity: None,
+                    store: None,
+                    require_fresh: None,
+                    review: false,
+                    no_review: false,
+                    ..
+                },
+        } => TrustedCliClass::Coordination,
+        Commands::Msg { .. } => TrustedCliClass::Privileged,
+
         Commands::Reset { .. }
         | Commands::Rescue { .. }
         | Commands::Insert { .. }
@@ -207,7 +234,6 @@ fn trusted_cli_class(command: &Commands) -> TrustedCliClass {
         | Commands::Log { .. }
         | Commands::Tokens { .. }
         | Commands::Spend { .. }
-        | Commands::Msg { .. }
         | Commands::Checkpoint { .. }
         | Commands::Assign { .. }
         | Commands::Match { .. }
@@ -365,7 +391,7 @@ fn send(operation: WorkerOperation) -> Result<()> {
 /// Return `Ok(None)` outside worker mode, `Ok(Some(()))` when handled.
 pub fn maybe_run(command: &Commands, json: bool, resolved_dir: &Path) -> Result<Option<()>> {
     if std::env::var_os("WG_WORKER_CAPABILITY").is_none() {
-        if worksgood::worker_control::is_managed_worker_process(resolved_dir) {
+        if worksgood::worker_control::is_managed_worker_process(resolved_dir)? {
             anyhow::bail!(
                 "worker_control.capability_required_for_managed_process: stripping WG_* does not grant operator authority"
             );

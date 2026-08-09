@@ -89,19 +89,37 @@ pub fn run_send(
     }
 
     let id = if std::env::var_os("WG_TRUSTED_DIRECT_CLI").is_some() {
+        let capability = std::env::var("WG_WORKER_CAPABILITY")
+            .context("trusted message missing worker capability")?;
+        let binding = worksgood::worker_control::lookup_capability(dir, &capability)
+            .context("authenticate trusted message sender")?;
+        if sender != "user" && sender != binding.agent_id && sender != binding.task_id {
+            anyhow::bail!(
+                "worker_control.message_sender_spoof_refused: authenticated actor={} source_task={}",
+                binding.agent_id,
+                binding.task_id
+            );
+        }
+        let authenticated_sender = binding.agent_id;
         let graph_path = super::graph_path(dir);
         let mut prepared = None;
         modify_graph(&graph_path, |graph| {
             let Some(task) = graph.get_task_mut(&effective_id) else {
                 return false;
             };
-            match messages::prepare_message_for_task(dir, task, &message_body, sender, priority) {
+            match messages::prepare_message_for_task(
+                dir,
+                task,
+                &message_body,
+                &authenticated_sender,
+                priority,
+            ) {
                 Ok(message) => {
                     let now = chrono::Utc::now().to_rfc3339();
                     task.last_message_at = Some(now.clone());
                     task.log.push(LogEntry {
                         timestamp: now,
-                        actor: Some(sender.to_string()),
+                        actor: Some(authenticated_sender.clone()),
                         user: Some(worksgood::current_user()),
                         message: format!(
                             "trusted CLI message mutation: message_id={} message_transaction={}",

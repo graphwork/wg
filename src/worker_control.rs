@@ -179,34 +179,53 @@ pub fn filesystem_isolation_status() -> FilesystemIsolationStatus {
 /// session leaders (`setsid`), so every ordinary child shares their process
 /// group; Linux ancestor walking is a second proof for shells that adjust job
 /// control. Unsetting WG_* therefore cannot turn a worker into an operator.
-pub fn is_managed_worker_process(dir: &Path) -> bool {
-    let Ok(registry) = crate::service::registry::AgentRegistry::load(dir) else {
-        return false;
-    };
-    let active_pids: HashSet<u32> = registry
-        .agents
-        .values()
-        .filter(|agent| {
-            !matches!(
-                agent.status,
-                crate::service::registry::AgentStatus::Done
-                    | crate::service::registry::AgentStatus::Failed
-                    | crate::service::registry::AgentStatus::Dead
-                    | crate::service::registry::AgentStatus::Parked
+pub fn is_managed_worker_process(dir: &Path) -> Result<bool> {
+    let mut worker_pids = HashSet::new();
+    let mut registry_proven = false;
+    if let Ok(registry) = crate::service::registry::AgentRegistry::load(dir) {
+        worker_pids.extend(registry.agents.values().map(|agent| agent.pid));
+        registry_proven = true;
+    }
+
+    // Registry state is advisory for this authority check: independently scan
+    // create-once spawn metadata. Terminal rows remain relevant because a
+    // stripped/detached descendant must not become an operator after its parent
+    // exits. Any malformed metadata makes the proof fail closed.
+    let agents_dir = dir.join("agents");
+    if agents_dir.exists() {
+        for entry in fs::read_dir(&agents_dir).context("read managed agent metadata")? {
+            let entry = entry?;
+            let metadata_path = entry.path().join("metadata.json");
+            if !metadata_path.exists() {
+                continue;
+            }
+            let value: serde_json::Value = serde_json::from_slice(
+                &fs::read(&metadata_path)
+                    .with_context(|| format!("read {}", metadata_path.display()))?,
             )
-        })
-        .map(|agent| agent.pid)
-        .collect();
-    if active_pids.is_empty() {
-        return false;
+            .with_context(|| format!("parse {}", metadata_path.display()))?;
+            let pid = value
+                .get("pid")
+                .and_then(|value| value.as_u64())
+                .and_then(|value| u32::try_from(value).ok())
+                .ok_or_else(|| anyhow::anyhow!("managed agent metadata missing pid"))?;
+            worker_pids.insert(pid);
+            registry_proven = true;
+        }
+    }
+    if !registry_proven {
+        bail!("worker_control.unmanaged_process_unproven");
+    }
+    if worker_pids.is_empty() {
+        return Ok(false);
     }
 
     #[cfg(unix)]
     {
         // SAFETY: getpgrp has no preconditions and only reads process state.
         let process_group = unsafe { libc::getpgrp() };
-        if process_group > 0 && active_pids.contains(&(process_group as u32)) {
-            return true;
+        if process_group > 0 && worker_pids.contains(&(process_group as u32)) {
+            return Ok(true);
         }
     }
 
@@ -214,8 +233,8 @@ pub fn is_managed_worker_process(dir: &Path) -> bool {
     {
         let mut pid = std::process::id();
         for _ in 0..64 {
-            if active_pids.contains(&pid) {
-                return true;
+            if worker_pids.contains(&pid) {
+                return Ok(true);
             }
             let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) else {
                 break;
@@ -237,7 +256,7 @@ pub fn is_managed_worker_process(dir: &Path) -> bool {
         }
     }
 
-    false
+    Ok(false)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1901,6 +1920,23 @@ mod tests {
         let journal_bytes = fs::read(journal).unwrap();
         assert!(!journal_bytes.windows(5).any(|window| window == b"{torn"));
         assert!(journal_bytes.ends_with(b"\n"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_process_identity_uses_metadata_fallback_and_fails_closed() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(temp.path().join("service")).unwrap();
+        fs::write(temp.path().join("service/registry.json"), b"{broken").unwrap();
+        let metadata = temp.path().join("agents/agent-1/metadata.json");
+        fs::create_dir_all(metadata.parent().unwrap()).unwrap();
+        // SAFETY: getpgrp has no preconditions and reads process state.
+        let process_group = unsafe { libc::getpgrp() };
+        fs::write(&metadata, format!(r#"{{"pid":{process_group}}}"#)).unwrap();
+        assert!(is_managed_worker_process(temp.path()).unwrap());
+
+        fs::write(&metadata, b"{broken").unwrap();
+        assert!(is_managed_worker_process(temp.path()).is_err());
     }
 
     #[test]
