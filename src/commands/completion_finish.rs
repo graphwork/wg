@@ -37,6 +37,30 @@ pub fn run(dir: &Path, id: &str, integration_ref: &str) -> Result<()> {
     // repaired and is intentionally asking WG to snapshot a new revision.
     let config = worksgood::config::Config::load_or_default(dir);
     if let Some(candidate) = task.completion_candidate.as_ref() {
+        let candidate_matches_head = if task.completion_contract == CompletionContract::Land {
+            let head = Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(&cwd)
+                .output()
+                .ok()
+                .filter(|output| output.status.success())
+                .and_then(|output| String::from_utf8(output.stdout).ok())
+                .map(|value| value.trim().to_string());
+            let reviewed_commit = super::completion_submit::store(dir)?
+                .read_manifest(
+                    &candidate.manifest,
+                    worksgood::completion_task::MAX_COMPLETION_METADATA_BYTES,
+                )?
+                .outputs
+                .into_iter()
+                .find_map(|output| match output {
+                    OutputRef::Git(git) => Some(git.commit_oid),
+                    OutputRef::Artifact(_) | OutputRef::External(_) => None,
+                });
+            head.is_some() && head == reviewed_commit
+        } else {
+            true
+        };
         let current_activity = task
             .completion_review_activity
             .iter()
@@ -49,7 +73,7 @@ pub fn run(dir: &Path, id: &str, integration_ref: &str) -> Result<()> {
             activity.reviewer_kind == worksgood::completion_review::ReviewerKind::Eval
                 && activity.verdict == worksgood::simple_land::ReviewVerdict::Pass
         });
-        if !config.agency.completion_review_strict || strict_passed {
+        if candidate_matches_head && (!config.agency.completion_review_strict || strict_passed) {
             if task.completion_contract == CompletionContract::Land
                 && task.completion_disposition
                     != Some(worksgood::graph::CompletionDisposition::Landed)

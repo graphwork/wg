@@ -1,6 +1,6 @@
 # Simple Local WG Recovery Work Document
 
-**Status:** ACTIVE — Phases 1, 2, 4, and 5 validated; WG dispatch remains stopped pending full canary/install
+**Status:** RECOVERED — trusted-local path installed; real graph resumed; final audit synthesis landed
 **Started:** 2026-08-09  
 **Working branch:** `rescue/simple-local-wg`  
 **Owner:** repository operator  
@@ -234,9 +234,9 @@ ef8719a423d00a0be98eb7c1e4297751e1c0dca32348b9e55f3238b509d01c9b  preserved-refs
 
 ### Phase 6 — Task-centric activity and history
 
-- [x] Show compact assignment/FLIP/eval activity on the parent task row.
-- [x] Expose full generation/attempt/candidate/review history in CLI, JSON, and TUI.
-- [x] Make findings, model route, usage, cost, timing, semantic reject, and infrastructure failure queryable.
+- [ ] Show compact assignment/FLIP/eval activity on the parent task row for every real reviewer outcome (setup/unavailable is covered; live semantic receipts still exposed only by digest/log).
+- [ ] Expose full generation/attempt/candidate/review history in CLI, JSON, and TUI (current candidate and lifecycle are exposed; superseded semantic-reject activity projection remains incomplete).
+- [ ] Make findings, model route, usage, cost, timing, semantic reject, and infrastructure failure uniformly queryable (accounting and setup/unavailable are queryable; live semantic findings still require receipt-object inspection).
 - [x] Ensure activities have no graph dependency or source lifecycle authority.
 - [ ] Reconnect accepted terminal outcomes to agency learning through a separate exactly-once observation projection only after the local path is stable.
 
@@ -251,9 +251,9 @@ ef8719a423d00a0be98eb7c1e4297751e1c0dca32348b9e55f3238b509d01c9b  preserved-refs
 - [x] Install with `cargo install --path . --locked` only after the canary passes.
 - [x] Start the service against a disposable copy of the preserved graph and run reconciliation dry-run.
 - [x] Reconcile already-landed audit artifacts without re-reviewing identical bytes.
-- [ ] Mark runaway trust/build task histories superseded by the operator rescue rather than pretending their latest review-expanded branches were accepted.
-- [ ] Resume the real graph only after status, dispatch, completion, review findings, and operator recovery are proven.
-- [ ] Reclaim stale worktree targets only after refs and external snapshot checksums are reverified.
+- [x] Mark runaway trust/build task histories superseded by the operator rescue rather than pretending their latest review-expanded branches were accepted.
+- [x] Resume the real graph only after status, dispatch, completion, review findings, and operator recovery are proven.
+- [x] Reclaim stale worktree targets only after refs and external snapshot checksums are reverified.
 
 **Phase 7 exit:** the installed binary completes a real bounded fan-out, and the preserved project graph resumes without manual internal-state edits.
 
@@ -385,3 +385,9 @@ Prefer deletion, bypass, and reuse of ordinary WG commands over new abstractions
 - Installed all three binaries with `cargo install --path . --locked` only after the canaries passed; `wg`, `worksgood`, and `nex` report `0.1.0`.
 - Started the installed candidate against an extracted disposable preserved graph with `max_agents=0`; service status stayed healthy and `wg sweep --dry-run` reported no orphan mutation.
 - On that disposable graph, operator reconciliation marked `audit-sync-roadmap` Done with a reason-bound immutable receipt and no model review call, proving the already-integrated-artifact recovery path without touching the real forensic graph.
+- Fast-forwarded local `main` to the validated rescue, then marked the runaway trust/build/startup/activity tasks Abandoned with explicit operator-rescue reasons rather than accepting their review-expanded branches.
+- Reconciled the already-integrated `audit-sync-roadmap` and `audit-draft-synthesis` tasks on the real graph with immutable operator receipts, started the installed service, and observed `audit-independent-review` dispatch as `agent-27` on the configured Pi route. The real graph was resumed only after all clean/disposable proofs passed.
+- Independent review landed at `7219f715` and final `99-SYNTHESIS.md` landed at `e6481477`; both tasks are receipt-backed Done. The final worker used the ordinary one-command advisory path and did not spin after FLIP disagreement.
+- The independent-review run exposed two remaining activity-plane facts, so Phase 6 was deliberately recalibrated rather than falsely completed: live semantic review receipts were not projected into `completion_review_activity`, and manual diagnostic resubmission can still invite reviewer-driven iteration. These are visible follow-ups, not completion authorities.
+- Fixed a separate concrete recovery defect observed during that run: after a moved-main/dirty-root landing failure, `wg done` now compares worker HEAD with the reviewed Git commit and snapshots the repaired/rebased HEAD instead of silently reusing a stale accepted candidate.
+- Reverified both external recovery SHA-256 checksums before `wg sweep --reap-targets`; no eligible stale target directories remained.
