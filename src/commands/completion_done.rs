@@ -1,6 +1,5 @@
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
-use serde::Serialize;
 use std::path::Path;
 use std::process::Command;
 use worksgood::completion_manifest::{OutputRef, ReviewResolver};
@@ -18,6 +17,10 @@ use worksgood::lifecycle::{
 };
 use worksgood::parser::{load_graph, modify_graph};
 use worksgood::service::registry::AgentRegistry;
+use worksgood::terminal_observation::{
+    OperatorAcceptanceReceipt, ProjectionStatus, ReviewedCompletionReceipt,
+    project_terminal_outcome,
+};
 
 use super::completion_submit::{collect_dependency_outputs, store};
 
@@ -61,32 +64,16 @@ pub(crate) fn source_accounting(dir: &Path, task: &worksgood::graph::Task) -> So
     }
 }
 
-#[derive(Serialize)]
-struct OperatorAcceptanceReceipt {
-    receipt_version: u32,
-    task_id: String,
-    generation_before_accept: u64,
-    status_before_accept: String,
-    reason: String,
-    operator: String,
-    git_head: Option<String>,
-    accepted_at: String,
-}
-
-#[derive(Serialize)]
-struct CompletionReceipt {
-    receipt_version: u32,
-    task_id: String,
-    generation: u64,
-    manifest_digest: String,
-    requirements_digest: String,
-    flip_receipt_digest: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    eval_receipt_digest: Option<String>,
-    review_policy: String,
-    contract: String,
-    publication: String,
-    completed_at: String,
+fn project_outcome_advisory(dir: &Path, id: &str) {
+    match project_terminal_outcome(dir, id) {
+        Ok(ProjectionStatus::Created { .. } | ProjectionStatus::Existing { .. }) => {}
+        Ok(ProjectionStatus::Skipped { reason }) => eprintln!(
+            "Warning: terminal outcome for '{id}' was not eligible for Agency observation projection: {reason}"
+        ),
+        Err(error) => eprintln!(
+            "Warning: terminal outcome for '{id}' is Done but its Agency observation is pending reconciliation: {error}"
+        ),
+    }
 }
 
 /// Derive Done from exact immutable review plus current publication truth.
@@ -155,6 +142,7 @@ pub fn run(dir: &Path, id: &str, integration_ref: &str) -> Result<()> {
     )?;
     let manifest_digest = manifest.digest().map_err(anyhow::Error::msg)?;
     if task.status == Status::Done {
+        project_outcome_advisory(dir, id);
         println!(
             "Done '{}': exact reviewed manifest {} and publication remain verified",
             id, manifest_digest
@@ -176,7 +164,7 @@ pub fn run(dir: &Path, id: &str, integration_ref: &str) -> Result<()> {
         .as_ref()
         .map(|receipt| receipt.content_digest.to_string());
     let completed_at = Utc::now().to_rfc3339();
-    let receipt = CompletionReceipt {
+    let receipt = ReviewedCompletionReceipt {
         receipt_version: 1,
         task_id: id.to_string(),
         generation: task.lifecycle.generation,
@@ -204,6 +192,7 @@ pub fn run(dir: &Path, id: &str, integration_ref: &str) -> Result<()> {
         &completed_at,
         &accounting,
     )?;
+    project_outcome_advisory(dir, id);
     println!(
         "Done '{}': {} review evidence bound manifest {} and publication is verified",
         id, review_policy, manifest_digest
@@ -230,6 +219,7 @@ pub fn operator_accept(dir: &Path, id: &str, reason: &str) -> Result<()> {
         .get_task(id)
         .with_context(|| format!("task '{id}' not found"))?;
     if task.status == Status::Done {
+        project_outcome_advisory(dir, id);
         println!("Task '{id}' is already Done");
         return Ok(());
     }
@@ -400,6 +390,7 @@ pub fn operator_accept(dir: &Path, id: &str, reason: &str) -> Result<()> {
         }),
         config.log.rotation_threshold,
     );
+    project_outcome_advisory(dir, id);
     super::notify_graph_changed(dir);
     println!("Operator accepted '{id}' with immutable receipt {receipt_digest}: {reason}");
     Ok(())

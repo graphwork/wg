@@ -105,7 +105,7 @@ pub fn run(root: &Path, json: bool, max_depth: usize) -> Result<()> {
     if stores.is_empty() {
         if json {
             println!(
-                "{{\"stores\":[],\"totals\":{{\"components\":0,\"outcomes\":0,\"tradeoffs\":0,\"roles\":0,\"agents\":0,\"evaluations\":0}}}}"
+                "{{\"stores\":[],\"totals\":{{\"components\":0,\"outcomes\":0,\"tradeoffs\":0,\"roles\":0,\"agents\":0,\"evaluations\":0,\"terminal_observations\":0}}}}"
             );
         } else {
             println!("No agency stores found under {}", root.display());
@@ -125,6 +125,7 @@ pub fn run(root: &Path, json: bool, max_depth: usize) -> Result<()> {
         total.tradeoffs += counts.tradeoffs;
         total.agents += counts.agents;
         total.evaluations += counts.evaluations;
+        total.terminal_observations += counts.terminal_observations;
 
         // Make path relative to root for display, or use absolute as fallback
         let display_path = store_path.strip_prefix(&root).unwrap_or(store_path);
@@ -157,13 +158,14 @@ pub fn run(root: &Path, json: bool, max_depth: usize) -> Result<()> {
         for store in &discovered {
             println!("  {}", store.path);
             println!(
-                "    Components: {}  Outcomes: {}  Tradeoffs: {}  Roles: {}  Agents: {}  Evaluations: {}",
+                "    Components: {}  Outcomes: {}  Tradeoffs: {}  Roles: {}  Agents: {}  Evaluations: {}  Terminal observations: {}",
                 store.counts.components,
                 store.counts.outcomes,
                 store.counts.tradeoffs,
                 store.counts.roles,
                 store.counts.agents,
                 store.counts.evaluations,
+                store.counts.terminal_observations,
             );
             if store.bare {
                 println!("    (bare store)");
@@ -173,13 +175,14 @@ pub fn run(root: &Path, json: bool, max_depth: usize) -> Result<()> {
 
         if discovered.len() > 1 {
             println!(
-                "Totals: {} components, {} outcomes, {} tradeoffs, {} roles, {} agents, {} evaluations",
+                "Totals: {} components, {} outcomes, {} tradeoffs, {} roles, {} agents, {} evaluations, {} terminal observations",
                 total.components,
                 total.outcomes,
                 total.tradeoffs,
                 total.roles,
                 total.agents,
                 total.evaluations,
+                total.terminal_observations,
             );
         }
     }

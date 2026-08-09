@@ -2354,7 +2354,25 @@ fn main() -> Result<()> {
                 }
             },
             AgencyCommands::Migrate { dry_run } => {
-                commands::agency_migrate::run(&workgraph_dir, dry_run)
+                commands::agency_migrate::run(&workgraph_dir, dry_run)?;
+                if !dry_run && workgraph_dir.join("graph.jsonl").exists() {
+                    let report = worksgood::terminal_observation::reconcile_terminal_outcomes(
+                        &workgraph_dir,
+                        worksgood::terminal_observation::DEFAULT_TERMINAL_OBSERVATION_BACKFILL_LIMIT,
+                    )?;
+                    println!(
+                        "Terminal observation backfill: created={} existing={} skipped={} remaining={} errors={}",
+                        report.created,
+                        report.existing,
+                        report.skipped,
+                        report.remaining,
+                        report.errors.len()
+                    );
+                    for error in &report.errors {
+                        eprintln!("  terminal observation error: {error}");
+                    }
+                }
+                Ok(())
             }
             AgencyCommands::Stats {
                 min_evals,

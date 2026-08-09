@@ -27,6 +27,7 @@ pub fn init(base: &Path) -> Result<(), AgencyError> {
     fs::create_dir_all(base.join("cache/roles"))?;
     fs::create_dir_all(base.join("cache/agents"))?;
     fs::create_dir_all(base.join("evaluations"))?;
+    fs::create_dir_all(base.join("terminal-observations"))?;
     fs::create_dir_all(base.join("deferred"))?;
     fs::create_dir_all(base.join("assignments"))?;
     Ok(())
@@ -427,6 +428,9 @@ impl LocalStore {
     pub fn assignments_dir(&self) -> PathBuf {
         self.path.join("assignments")
     }
+    pub fn terminal_observations_dir(&self) -> PathBuf {
+        self.path.join("terminal-observations")
+    }
     pub fn is_valid(&self) -> bool {
         self.components_dir().is_dir() || self.roles_dir().is_dir()
     }
@@ -463,6 +467,7 @@ impl LocalStore {
             roles: Self::count_yaml(&self.roles_dir()),
             agents: Self::count_yaml(&self.agents_dir()),
             evaluations: Self::count_json(&self.evaluations_dir()),
+            terminal_observations: Self::count_json(&self.terminal_observations_dir()),
         }
     }
 }

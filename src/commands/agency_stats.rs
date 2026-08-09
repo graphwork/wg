@@ -4,6 +4,10 @@ use std::path::Path;
 
 use worksgood::agency::{self, DesiredOutcome, Evaluation, Role, RoleComponent, TradeoffConfig};
 use worksgood::parser::load_graph;
+use worksgood::terminal_observation::{
+    TerminalAcceptanceKind, TerminalObservationScoreState, TerminalOutcomeObservation,
+    load_terminal_outcome_observations,
+};
 
 #[derive(Clone)]
 #[allow(dead_code)]
@@ -175,6 +179,8 @@ pub fn run(
         agency::load_all_tradeoffs(&tradeoffs_dir).context("Failed to load tradeoffs")?;
     let evaluations =
         agency::load_all_evaluations(&evals_dir).context("Failed to load evaluations")?;
+    let terminal_observations = load_terminal_outcome_observations(dir)
+        .context("Failed to load receipt-backed terminal outcome observations")?;
 
     // Try to load graph for tag-based and task-type-based breakdowns (non-fatal if missing)
     let graph_path = super::graph_path(dir);
@@ -211,6 +217,7 @@ pub fn run(
             &outcomes,
             &tradeoffs,
             &evaluations,
+            &terminal_observations,
             &task_tags,
             &task_types,
             min_evals,
@@ -224,6 +231,7 @@ pub fn run(
             &outcomes,
             &tradeoffs,
             &evaluations,
+            &terminal_observations,
             &task_tags,
             &task_types,
             min_evals,
@@ -470,6 +478,7 @@ fn output_text(
     outcomes: &[DesiredOutcome],
     tradeoffs: &[TradeoffConfig],
     evaluations: &[Evaluation],
+    terminal_observations: &[TerminalOutcomeObservation],
     task_tags: &HashMap<String, Vec<String>>,
     task_types: &HashMap<String, &str>,
     min_evals: u32,
@@ -490,8 +499,17 @@ fn output_text(
     println!("  Components:   {}", components.len());
     println!("  Outcomes:     {}", outcomes.len());
     println!("  Roles:        {}", total_roles);
+    let operator_accepted = terminal_observations
+        .iter()
+        .filter(|observation| {
+            observation.acceptance_kind == TerminalAcceptanceKind::OperatorAccepted
+        })
+        .count();
     println!("  TradeoffConfigs:  {}", total_tradeoffs);
     println!("  Evaluations:  {}", total_evaluations);
+    println!("  Terminal observations: {}", terminal_observations.len());
+    println!("    Unscored:             {}", terminal_observations.len());
+    println!("    Operator-accepted:    {}", operator_accepted);
     println!(
         "  Avg score:    {}",
         overall_avg
@@ -501,7 +519,9 @@ fn output_text(
     println!("  v1.2.4 fields: quality, domain_specificity, domain, scope, origin_instance_id");
 
     if evaluations.is_empty() {
-        println!("\nNo evaluations recorded yet. Run 'wg evaluate <task-id>' to generate data.");
+        println!(
+            "\nNo scored evaluations recorded yet. Terminal observations remain unscored by design; run 'wg evaluate <task-id>' to create an explicit score."
+        );
         return;
     }
 
@@ -763,6 +783,7 @@ fn output_json(
     outcomes: &[DesiredOutcome],
     tradeoffs: &[TradeoffConfig],
     evaluations: &[Evaluation],
+    terminal_observations: &[TerminalOutcomeObservation],
     task_tags: &HashMap<String, Vec<String>>,
     task_types: &HashMap<String, &str>,
     min_evals: u32,
@@ -880,6 +901,19 @@ fn output_json(
         })
         .collect();
 
+    let operator_accepted = terminal_observations
+        .iter()
+        .filter(|observation| {
+            observation.acceptance_kind == TerminalAcceptanceKind::OperatorAccepted
+        })
+        .count();
+    let unscored = terminal_observations
+        .iter()
+        .filter(|observation| {
+            observation.score.is_none()
+                && observation.score_state == TerminalObservationScoreState::Unscored
+        })
+        .count();
     let mut output = serde_json::json!({
         "overview": {
             "total_roles": roles.len(),
@@ -887,6 +921,9 @@ fn output_json(
             "total_outcomes": outcomes.len(),
             "total_tradeoffs": tradeoffs.len(),
             "total_evaluations": total_evaluations,
+            "total_terminal_observations": terminal_observations.len(),
+            "unscored_terminal_observations": unscored,
+            "operator_accepted_terminal_observations": operator_accepted,
             "avg_score": overall_avg,
             "agency_compat_version": agency::WG_AGENCY_COMPAT_VERSION,
             "v1_2_4_fields": [
@@ -905,6 +942,7 @@ fn output_json(
             "by_tradeoff": mot_tags_json,
         },
         "underexplored": under_json,
+        "terminal_outcomes": terminal_observations,
     });
 
     if by_model {

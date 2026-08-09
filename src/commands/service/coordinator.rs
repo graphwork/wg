@@ -2449,6 +2449,30 @@ pub fn coordinator_tick(
     // Load config for agency settings
     let config = Config::load_or_default(dir);
 
+    // Observation-only recovery: a crash after Done but before the separate
+    // Agency projection must converge without touching source lifecycle. The
+    // bounded create-once projector performs no model call, publication,
+    // retry, dispatch, or graph mutation.
+    match worksgood::terminal_observation::reconcile_terminal_outcomes(dir, 64) {
+        Ok(report) if report.created > 0 || !report.errors.is_empty() => {
+            eprintln!(
+                "[agency-observation] created={} existing={} skipped={} remaining={} errors={}",
+                report.created,
+                report.existing,
+                report.skipped,
+                report.remaining,
+                report.errors.len()
+            );
+            for error in &report.errors {
+                eprintln!("[agency-observation] {error}");
+            }
+        }
+        Ok(_) => {}
+        Err(error) => eprintln!(
+            "[agency-observation] reconciliation unavailable (source lifecycle unchanged): {error}"
+        ),
+    }
+
     // Credential-free regression hook for proving that attended chat IPC is
     // independent of a slow unattended dispatcher/evaluation pass. This delay
     // is intentionally inside the real tick, after the daemon has accepted its

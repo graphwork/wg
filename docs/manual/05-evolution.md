@@ -2,13 +2,19 @@
 
 The agency does not merely execute work. It learns from it.
 
-Every completed task generates a signal—a scored evaluation measuring how well the agent performed against the task’s requirements and the agent’s own declared standards. These signals accumulate into performance records on agents, roles, and motivations (called *tradeoffs* in the CLI—`wg tradeoff`). When enough data exists, an evolution cycle reads the aggregate picture and proposes structural changes: sharpen a role’s description, tighten a motivation’s constraints, combine two high-performers into something new, retire what consistently underperforms. The changed entities receive new content-hash IDs, linked to their parents by lineage metadata. Better identities produce better work. Better work produces sharper evaluations. The loop closes.
+Every verified, receipt-backed terminal completion generates an **unscored terminal observation**. A separate explicit evaluation may attach a quality score measuring how well the agent performed against the task’s requirements and declared standards. Scored evaluations accumulate into performance records on agents, roles, and motivations (called *tradeoffs* in the CLI—`wg tradeoff`); terminal observations preserve outcome evidence without inventing a score. When enough scored data exists, an evolution cycle reads the aggregate picture and proposes structural changes: sharpen a role’s description, tighten a motivation’s constraints, combine two high-performers into something new, retire what consistently underperforms. The changed entities receive new content-hash IDs, linked to their parents by lineage metadata. Better identities produce better work. Better work can produce sharper evaluations. The loop closes without confusing completion review with ground-truth scoring.
 
 This is the autopoietic core of the agency system—a structured feedback loop where work produces the data that drives its own improvement.
 
 ## Evaluation
 
 Evaluation is the act of scoring a completed task. It answers a concrete question: given what this agent was asked to do and the identity it was given, how well did it perform?
+
+### Terminal observations are not evaluation scores
+
+Normal receipt-backed Done and reasoned operator-accepted Done are projected exactly once into `.wg/agency/terminal-observations/`. The identity includes the task generation, source attempt/fence, and immutable completion receipt, so repeated Done, restart, reload, and reconciliation cannot double-count it. Failed, Waiting/Needs-review, stale, unlanded, or unverifiable candidates are excluded.
+
+These records preserve composition and execution attribution, actual route/model, provider-reported usage/cost, completion-review disagreement, and operator-accept provenance when known. They remain explicitly `unscored`; completion FLIP/eval verdicts are advisory evidence and are never silently converted into the score described below. `wg agency stats` reports observation counts separately, and `wg --json agency stats` exposes the full records. Use the existing `wg evaluate <task-id>` or `wg evaluate record` surface when an actual score is warranted. See [Accepted terminal outcome → Agency observation projection](../design-terminal-outcome-agency-observation.md) for schema, verification, and bounded backfill details.
 
 The evaluator is itself an LLM agent. It receives the full context of the work: the task definition (title, description, deliverables), the agent’s identity (role and motivation), any artifacts the agent produced, log entries from execution, and timing data (when the task started and finished). From this, it scores four dimensions:
 

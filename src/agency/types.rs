@@ -818,6 +818,9 @@ pub struct StoreCounts {
     pub roles: usize,
     pub agents: usize,
     pub evaluations: usize,
+    /// Receipt-backed terminal episodes. These are observations, not scored
+    /// evaluations, and therefore do not affect `avg_score`.
+    pub terminal_observations: usize,
 }
 
 /// A node in a lineage ancestry tree.
