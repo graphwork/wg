@@ -532,6 +532,15 @@ fn advisory_quality_infrastructure_failure(
     if task.status != Status::Failed || !is_optional_quality_pass(task) {
         return None;
     }
+    if task
+        .failure_signal
+        .as_ref()
+        .is_some_and(|signal| signal.reason == crate::graph::FailureReason::Auth)
+    {
+        // Authentication is a user/actionable integrity boundary, never
+        // advisory infrastructure, regardless of a coarse failure_class.
+        return None;
+    }
     let class_is_infrastructure = task.failure_class.is_some_and(|class| {
         matches!(
             class,
@@ -1183,7 +1192,7 @@ mod tests {
 
         let mut auth_graph = graph.clone();
         let auth = auth_graph.get_task_mut(&quality.id).unwrap();
-        auth.failure_class = None;
+        auth.failure_class = Some(crate::graph::FailureClass::ExecutorConfig);
         auth.failure_signal = Some(crate::graph::FailureSignal {
             reason: crate::graph::FailureReason::Auth,
             route: Some("openrouter:test/model".into()),

@@ -17,7 +17,7 @@ cleanup() {
 trap cleanup EXIT
 
 run_case() {
-  local name=$1 required=$2 mutated=${3:-no} admission=${4:-coordinator}
+  local name=$1 required=$2 mutated=${3:-no} admission=${4:-coordinator} failure=${5:-credit}
   local root="$scratch/$name" project="$scratch/$name/project" home="$scratch/$name/home"
   mkdir -p "$project" "$home" "$root/bin"
   ln -s "$WG_BIN" "$root/bin/wg"
@@ -29,12 +29,16 @@ run_case() {
 if [[ ${WG_TASK_ID:-} == .quality-pass-mutated ]]; then
   wg edit downstream-mutated --description 'mutated before provider failure'
 fi
-printf '%s\n' '{"type":"error","error":{"code":402,"message":"Insufficient credits","metadata":{"error_type":"payment_required"}}}'
+if [[ ${FAKE_QUALITY_FAILURE:-credit} == auth ]]; then
+  printf '%s\n' '{"type":"error","error":{"code":401,"message":"Invalid API key","metadata":{"error_type":"authentication_error"}}}'
+else
+  printf '%s\n' '{"type":"error","error":{"code":402,"message":"Insufficient credits","metadata":{"error_type":"payment_required"}}}'
+fi
 exit 1
 SH
   chmod +x "$root/bin/pi"
   (
-    export PATH="$root/bin:$PATH" HOME="$home" XDG_CONFIG_HOME="$home/.config"
+    export PATH="$root/bin:$PATH" HOME="$home" XDG_CONFIG_HOME="$home/.config" FAKE_QUALITY_FAILURE="$failure"
     unset WG_AGENT_ID WG_TASK_ID WG_WORKER_CAPABILITY WG_WORKER_IPC WG_PROJECT_ROOT WG_WORKTREE_PATH WG_DIR
     git -C "$project" init -q -b main
     git -C "$project" config user.email quality-pass@test.invalid
@@ -69,7 +73,7 @@ SH
     # this fixture checks the dependency disposition.
     wgrun service stop --force --kill-agents >/dev/null
     detail=$(wgrun show "downstream-$name" --json)
-    if [[ $required == yes || $mutated == yes ]]; then
+    if [[ $required == yes || $mutated == yes || $failure == auth ]]; then
       printf '%s' "$detail" | grep -Eq '"satisfied"[[:space:]]*:[[:space:]]*false' \
         || loud_fail "$name quality pass did not remain fail-closed: $detail"
       if wgrun ready --json | grep -q "downstream-$name"; then
@@ -78,6 +82,11 @@ SH
       if [[ $mutated == yes ]]; then
         printf '%s' "$detail" | grep -q 'mutated before provider failure' \
           || loud_fail "mutated fixture did not perform its trusted cross-task edit"
+      fi
+      if [[ $failure == auth ]]; then
+        quality_detail=$(wgrun show ".quality-pass-$name" --json)
+        printf '%s' "$quality_detail" | grep -Eq '"reason"[[:space:]]*:[[:space:]]*"auth"' \
+          || loud_fail "auth fixture did not preserve typed authentication evidence: $quality_detail"
       fi
     else
       printf '%s' "$detail" | grep -Eq '"satisfied"[[:space:]]*:[[:space:]]*true' \
@@ -93,6 +102,7 @@ SH
 run_case optional no
 run_case manual no no manual
 run_case mutated no yes
+run_case auth no no coordinator auth
 run_case required yes
 
-echo "PASS: fake-provider failure released only a baseline-verified unchanged optional batch; a trusted pass that edited the batch and a quality-pass:required task both stayed fail-closed"
+echo "PASS: fake-provider failure released only a lifecycle-sealed unchanged optional batch; mutated, authentication, and quality-pass:required cases stayed fail-closed"

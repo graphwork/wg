@@ -342,7 +342,10 @@ fn shipped_worker_prompt_authority_audit_is_complete() {
         path: &std::path::Path,
         shipped: &mut String,
         scanned: &mut usize,
-        prompt_surfaces: &mut std::collections::BTreeSet<String>,
+        prompt_surfaces: &mut std::collections::BTreeMap<
+            String,
+            std::collections::BTreeSet<String>,
+        >,
         commands: &mut std::collections::BTreeSet<String>,
     ) {
         for entry in std::fs::read_dir(path).unwrap() {
@@ -361,17 +364,44 @@ fn shipped_worker_prompt_authority_audit_is_complete() {
             *scanned += 1;
             let content = std::fs::read_to_string(&path).unwrap();
             let relative = path.strip_prefix(root).unwrap().display().to_string();
-            let prompt_like = content.contains("prompt")
-                || content.contains("instructions")
-                || content.contains("You are")
-                || content.contains("wg_run")
-                || content.contains("wg_");
-            if prompt_like
-                && (content.contains("wg ")
-                    || content.contains("wg_")
-                    || content.contains("wg_run"))
-            {
-                prompt_surfaces.insert(relative.clone());
+            let lines: Vec<&str> = content.lines().collect();
+            let mut surface_commands = std::collections::BTreeSet::new();
+            for (line_index, line) in lines.iter().enumerate() {
+                let trimmed = line.trim_start();
+                let source_comment = matches!(
+                    path.extension().and_then(|value| value.to_str()),
+                    Some("rs" | "ts")
+                ) && (trimmed.starts_with("//")
+                    || trimmed.starts_with("///")
+                    || trimmed.starts_with("//!"));
+                let nearby = lines[line_index.saturating_sub(6)..(line_index + 7).min(lines.len())]
+                    .join("\n")
+                    .to_ascii_lowercase();
+                let prompt_context = [
+                    "prompt",
+                    "instruction",
+                    "you are",
+                    "description",
+                    "registertool",
+                    "worker control",
+                ]
+                .iter()
+                .any(|marker| nearby.contains(marker));
+                for command in ["add", "edit", "assign", "reprioritize", "publish", "msg"] {
+                    if !source_comment
+                        && prompt_context
+                        && (line.contains(&format!("wg {command}"))
+                            || line.contains(&format!("wg_{command}")))
+                    {
+                        surface_commands.insert(command.to_string());
+                    }
+                }
+            }
+            if relative == "worksgood-pi/src/tools.ts" && content.contains("wg_run") {
+                surface_commands.insert("wg_run".into());
+            }
+            if !surface_commands.is_empty() {
+                prompt_surfaces.insert(relative.clone(), surface_commands);
             }
             for (offset, _) in content.match_indices("wg ") {
                 let command: String = content[offset + 3..]
@@ -388,7 +418,7 @@ fn shipped_worker_prompt_authority_audit_is_complete() {
 
     let mut shipped = String::new();
     let mut scanned = 0;
-    let mut prompt_surfaces = std::collections::BTreeSet::new();
+    let mut prompt_surfaces = std::collections::BTreeMap::new();
     let mut commands = std::collections::BTreeSet::new();
     scan_sources(
         root,
@@ -410,10 +440,55 @@ fn shipped_worker_prompt_authority_audit_is_complete() {
         scanned > 100,
         "recursive shipped-source audit unexpectedly small"
     );
-    assert!(
-        prompt_surfaces.len() > 10,
-        "prompt surface discovery regressed"
+    // Discovery is recursive, while classification is explicit and exhaustive:
+    // any new source surface containing a cross-task instruction fails until
+    // its actual execution authority is named here.
+    let expected_authority = std::collections::BTreeMap::from([
+        ("src/text/agent_guide.md", "trusted-worker"),
+        ("src/commands/show.rs", "operator-hint"),
+        ("src/commands/add.rs", "operator-validation"),
+        ("src/commands/placement.rs", "system-placement-adapter"),
+        ("src/commands/quickstart.rs", "operator-help"),
+        ("src/service/executor.rs", "trusted-worker"),
+        ("src/commands/spawn/context.rs", "trusted-worker"),
+        ("src/commands/service/coordinator_agent.rs", "coordinator"),
+        ("worksgood-pi/src/tools.ts", "capability-aware-pi-tool"),
+    ]);
+    let discovered: std::collections::BTreeSet<&str> =
+        prompt_surfaces.keys().map(String::as_str).collect();
+    let classified: std::collections::BTreeSet<&str> = expected_authority.keys().copied().collect();
+    assert_eq!(
+        discovered, classified,
+        "cross-task prompt surface classification is incomplete"
     );
+    for (surface, surface_commands) in &prompt_surfaces {
+        let authority = expected_authority[surface.as_str()];
+        assert!(
+            !surface_commands.is_empty(),
+            "{surface} was discovered without commands"
+        );
+        let surface_text = std::fs::read_to_string(root.join(surface)).unwrap();
+        match authority {
+            "trusted-worker" => assert!(
+                surface_text.contains("Worker Control")
+                    || surface_text.contains("worker_control")
+                    || surface_text.contains("capabilities"),
+                "{surface} lacks its runtime trusted/scoped/read-only preflight"
+            ),
+            "capability-aware-pi-tool" => assert!(
+                surface_commands.contains("wg_run")
+                    && surface_text.contains("name: \"wg_capabilities\"")
+                    && surface_text.contains("backend.capabilities"),
+                "{surface} lacks Pi capability preflight"
+            ),
+            "operator-hint"
+            | "operator-validation"
+            | "operator-help"
+            | "coordinator"
+            | "system-placement-adapter" => {}
+            other => panic!("unrecognized authority class {other} for {surface}"),
+        }
+    }
     assert!(shipped.contains("wg_run") && shipped.contains("wg_ready"));
     for command in ["capabilities", "add", "edit", "publish", "msg"] {
         assert!(
