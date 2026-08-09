@@ -234,11 +234,11 @@ ef8719a423d00a0be98eb7c1e4297751e1c0dca32348b9e55f3238b509d01c9b  preserved-refs
 
 ### Phase 6 — Task-centric activity and history
 
-- [ ] Show compact assignment/FLIP/eval activity on the parent task row for every real reviewer outcome (setup/unavailable is covered; live semantic receipts still exposed only by digest/log).
-- [ ] Expose full generation/attempt/candidate/review history in CLI, JSON, and TUI (current candidate and lifecycle are exposed; superseded semantic-reject activity projection remains incomplete).
-- [ ] Make findings, model route, usage, cost, timing, semantic reject, and infrastructure failure uniformly queryable (accounting and setup/unavailable are queryable; live semantic findings still require receipt-object inspection).
+- [x] Show compact assignment/FLIP/eval activity on the parent task row for every receipt-backed reviewer outcome, including live semantic rejection and reviewer unavailability.
+- [x] Expose generation/attempt/fence, candidate sequence/state, and review chronology in CLI text/JSON and the TUI, including superseded candidates.
+- [x] Make verified findings, model route, executor, usage, cost, timing, semantic rejection, and infrastructure failure uniformly queryable; unknown values remain explicitly absent rather than inferred.
 - [x] Ensure activities have no graph dependency or source lifecycle authority.
-- [ ] Reconnect accepted terminal outcomes to agency learning through a separate exactly-once observation projection only after the local path is stable.
+- [x] Reconnect accepted terminal outcomes to Agency through a separate exactly-once observation projection only after the local path is stable; the projection is deliberately unscored and is not itself an evaluation.
 
 **Phase 6 exit:** review is visible and useful without synthetic task noise or reviewer lifecycle authority.
 
@@ -261,12 +261,134 @@ ef8719a423d00a0be98eb7c1e4297751e1c0dca32348b9e55f3238b509d01c9b  preserved-refs
 
 Do this only after the simple path is stable.
 
-- [ ] Remove obsolete `PendingEval`/`FailedPendingEval` and synthetic-satellite compatibility paths where migration evidence permits.
-- [ ] Remove local own-task-only capability branches no longer used by explicit scoped actors.
+- [ ] Remove obsolete `PendingEval`/`FailedPendingEval` and synthetic-satellite compatibility paths where migration evidence permits. Full deletion is not yet supported: historical soft states and evidence-bearing synthetic rows remain load-only behind an explicit future versioned-migration floor.
+- [x] Remove local own-task-only capability branches no longer used by explicit scoped actors.
 - [x] Remove worker prompt instructions for retired completion commands.
-- [ ] Remove dead assignment/evaluator/evolver paths or label and isolate intentionally manual compatibility commands.
-- [ ] Publish one authority map for task, attempt, candidate, activity, review, publication, and learning.
-- [ ] Add a complexity budget: any new hard gate needs an explicit user-selected policy, bounded failure behavior, visible state, and a tested operator escape.
+- [x] Remove dead assignment/evaluator/evolver paths or label and isolate intentionally manual compatibility commands.
+- [x] Publish one authority map for task, attempt, candidate, activity, review, publication, and learning.
+- [x] Add a complexity budget: any new hard gate needs an explicit user-selected policy, bounded failure behavior, visible state, and a tested operator escape.
+
+### Recovery authority map
+
+| Concept | Canonical record and authority | Explicit non-authority |
+|---|---|---|
+| Task | `Task` plus its lifecycle projection/ledger owns requirements, graph relations, assignment, and terminal status (`src/graph.rs`, `src/lifecycle.rs`). Authorized public graph commands may mutate it. | No candidate, review, activity, publication, or Agency record may independently rewrite task lifecycle. |
+| Attempt | The current generation/attempt/fence and attributed lifecycle events identify the one execution episode allowed to produce task-bound evidence (`src/lifecycle.rs`). Terminal completion must match the current successful attempt. | An old/reaped attempt cannot write through a newer fence, and an attempt identity is not a review or publication verdict. |
+| Candidate | An immutable manifest plus object references is selected only against the current task/generation/attempt/fence; candidate sequence records supersession (`src/commands/completion_submit.rs:474-641`). | Selection records proposed output; it does not make the task Done or erase prior review chronology. |
+| Activity | `CompletionReviewActivity` is an append-only, receipt-ID projection. Reads re-verify the receipt, manifest, findings, and binding (`src/completion_review.rs:203-305`; stale full saves merge history in `src/parser.rs:306-333`). | Activity rows are virtual audit records, not graph tasks, dependency edges, retries, scores, or lifecycle transitions. |
+| Review | Immutable FLIP/eval receipts record verdict, findings, route, executor, usage, cost, timing, and candidate binding (`src/completion_review.rs`; `src/commands/completion_submit.rs:559-641`). Explicit strict policy may withhold acceptance within its bounded budget; default review is advisory. | A reviewer does not own source status, publication, dispatch, or task requirements and cannot turn infrastructure failure into source failure. |
+| Publication | Contract-specific publication verifies the selected immutable outputs, then the completion adapter records a receipt-bound terminal transition (`src/commands/completion_land.rs`, `src/commands/completion_done.rs`). | Publication is not a quality score and cannot substitute for the exact current attempt, candidate, or review evidence required by policy. |
+| Learning | A deterministic key over policy/task/generation/attempt/fence/completion receipt creates one unscored Agency terminal observation (`src/terminal_observation.rs:38-46,277-303,899-980`). `wg evaluate` remains the scored-learning authority. | Observation failure, replay, backfill, or disagreement cannot complete, fail, reopen, publish, retry, or block the task; it never changes performance averages by itself. |
+
+Authority flows in one direction:
+
+```text
+task → fenced attempt → immutable candidate → receipt-backed review activity
+     → policy-qualified publication/Done → create-once unscored observation
+```
+
+No arrow points backward. In particular, learning observes accepted terminal
+truth; it is not lifecycle authority.
+
+### Complexity budget for any future hard gate
+
+A proposed hard gate is admissible only when **all** of these are true:
+
+1. the task's deterministic `## Validation` contract or an explicit
+   human-selected policy requests it;
+2. it reuses the existing task/attempt/receipt authority chain—any new status,
+   protocol, broker, or required background authority needs a written migration
+   and deletion rationale;
+3. attempts, wall time, provider cost, and failure behavior are bounded, with
+   infrastructure failure neutral to source quality;
+4. state, policy, actor, exact findings, and the next recovery action are visible;
+5. a reason-required, append-only operator escape and both trusted-local and
+   scoped/remote safety canaries are tested.
+
+If any condition is absent, the mechanism is advisory. A nonzero control-plane
+surface delta must delete equivalent obsolete ceremony in the same change or
+carry an approved exception with a named removal trigger; hidden or unbounded
+hard gates have a budget of zero.
+
+### Independent follow-up closure evidence (2026-08-09)
+
+The review was performed at `fd32f89f`, after activity projection `7a661989`,
+terminal observation `246e71ed`, and compatibility pruning `fd32f89f`.
+
+**Semantic-review activity gap — closed.** Candidate selection and activity
+append are receipt-bound to task/generation/attempt/fence and monotonically
+number candidates (`src/commands/completion_submit.rs:474-641`). User-facing
+reads hydrate findings/failure/timing only after verifying immutable content
+(`src/completion_review.rs:203-305`), and a stale full save cannot erase prior
+rows (`src/parser.rs:306-333`). Independently observed results:
+
+- `cargo test --bin wg changed_candidate_preserves_superseded_review_chronology`
+  (with ambient worker identity scrubbed): **1 passed**;
+- `cargo test --lib stale_full_save_cannot_erase_immutable_completion_review_history`:
+  **1 passed**;
+- `cargo test --bin wg advisory_flip_rejection_survives_landing_and_done`:
+  **1 passed**;
+- `tests/smoke/scenarios/pi_done_accounting_review_lane_visibility.sh`:
+  **PASS**, preserving `unavailable → reject → pass → pass` across supersession,
+  Done, service restart, CLI/JSON/list/trace, spend accounting, and the live TUI.
+
+**Accepted terminal outcome → Agency — closed at the observation boundary.**
+The key and create-new write are in `src/terminal_observation.rs:38-46,277-303`;
+eligibility verifies exact successful attempt, receipt, candidate, review, and
+publication before projection (`src/terminal_observation.rs:350-886`). Immediate
+projection runs only after Done and daemon recovery performs bounded read-only
+backfill (`src/commands/completion_done.rs:67-76,130-199` and
+`src/commands/service/coordinator.rs:2452-2474`). Independently observed results:
+
+- `cargo test --lib terminal_observation::tests`: **5 passed**, including stale
+  generation/publication refusal, deterministic identity, create-once replay,
+  unscored provenance, and byte-for-byte unchanged graph state;
+- `tests/smoke/scenarios/simple_local_recovery.sh`: **PASS**; ordinary and
+  operator terminal episodes produced exactly two unscored observations, and
+  repeated `done`, `agency migrate`, and `service tick` left the count at two.
+
+This does **not** mean terminal review invented a quality score: terminal
+observations stay unscored, operator acceptance stays distinct and marks
+ordinary publication unverified, and only explicit `wg evaluate` updates scored
+Agency learning.
+
+**Compatibility pruning — bounded rather than overclaimed.**
+`docs/design-dormant-local-lifecycle-compatibility.md` is the line-item removal
+inventory. `PendingEval` and `FailedPendingEval` still deserialize and round-trip
+load-only (`src/graph.rs:392-441`; `tests/legacy_local_lifecycle_compat.rs`:
+**1 passed**); `cargo test --test integration_pending_eval_state` passed **9/9**
+compatibility/retirement checks. The first Phase 8 item therefore remains
+unchecked. Active synthetic
+creation/scheduling and dead auto-assignment brokers were removed or isolated;
+the explicit evaluator command and opt-in evolver are intentionally live, not
+silently described as deleted. Ordinary local trust did not leak into restricted
+actors: `src/worker_control.rs:89-136` forces remote providers and explicit
+review/eval/assignment lanes to scoped mode, and
+`trust_first_is_default_but_structural_and_explicit_scopes_win` passed **1/1**.
+
+The required candidate-binary canaries all passed independently:
+
+- `trust_first_local_worker_coordination.sh` — trusted cross-task coordination,
+  with exact actor/attempt/fence audit;
+- `worker_control_capability_broker.sh` — scoped own-task-only and read-only
+  refusal boundaries;
+- `exec_spark_borrowed_box.sh` — all six remote-provider bounds, including two
+  task-scoped UCANs with no root/blanket write, wrong-task/expiry/replay fences,
+  slice-only context, disjoint verification, and confidential fail-closed;
+- `simple_local_fanout_restart.sh` — daemon outage/restart and reviewed
+  completion;
+- `build_admission_inherits_worker_slots.sh` — inherited slots plus visible
+  explicit throttle;
+- `worker_owned_completion_canary.sh` — **10** worker-owned completions.
+
+**Contradictions/limits retained:** full soft-status/synthetic-row deletion lacks
+migration evidence and remains unchecked; terminal observations are Agency
+inputs but not scores; explicit opt-in evolution remains live. One initial
+focused test run inherited this task's `WG_TASK_ID`/`WG_AGENT_ID` and was
+correctly refused as cross-task authority; the documented pass counts above are
+from the isolated rerun with ambient worker identity scrubbed. No product
+boundary was bypassed to make the tests pass. Final static gates:
+`cargo fmt --check` and `git diff --check` both passed.
 
 ## 7. Preserved Git evidence
 
