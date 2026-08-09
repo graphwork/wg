@@ -10,7 +10,7 @@ use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::{Seek, Write};
 
@@ -162,6 +162,72 @@ pub fn filesystem_isolation_status() -> FilesystemIsolationStatus {
         enforced: false,
         reason: "no verified mount/container sandbox adapter installed; strict modes use the capability broker and trusted commits use exact-fence guards, but same-uid path guessing remains possible".to_string(),
     }
+}
+
+/// Recognize a CLI process running inside a registered worker's OS process
+/// boundary without trusting mutable environment variables. Spawn wrappers are
+/// session leaders (`setsid`), so every ordinary child shares their process
+/// group; Linux ancestor walking is a second proof for shells that adjust job
+/// control. Unsetting WG_* therefore cannot turn a worker into an operator.
+pub fn is_managed_worker_process(dir: &Path) -> bool {
+    let Ok(registry) = crate::service::registry::AgentRegistry::load(dir) else {
+        return false;
+    };
+    let active_pids: HashSet<u32> = registry
+        .agents
+        .values()
+        .filter(|agent| {
+            !matches!(
+                agent.status,
+                crate::service::registry::AgentStatus::Done
+                    | crate::service::registry::AgentStatus::Failed
+                    | crate::service::registry::AgentStatus::Dead
+                    | crate::service::registry::AgentStatus::Parked
+            )
+        })
+        .map(|agent| agent.pid)
+        .collect();
+    if active_pids.is_empty() {
+        return false;
+    }
+
+    #[cfg(unix)]
+    {
+        // SAFETY: getpgrp has no preconditions and only reads process state.
+        let process_group = unsafe { libc::getpgrp() };
+        if process_group > 0 && active_pids.contains(&(process_group as u32)) {
+            return true;
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let mut pid = std::process::id();
+        for _ in 0..64 {
+            if active_pids.contains(&pid) {
+                return true;
+            }
+            let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) else {
+                break;
+            };
+            let Some(after_command) = stat.rsplit_once(") ").map(|(_, rest)| rest) else {
+                break;
+            };
+            let Some(parent) = after_command
+                .split_whitespace()
+                .nth(1)
+                .and_then(|value| value.parse::<u32>().ok())
+            else {
+                break;
+            };
+            if parent == 0 || parent == pid {
+                break;
+            }
+            pid = parent;
+        }
+    }
+
+    false
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -850,19 +916,61 @@ pub fn validate_trusted_graph_write(
     Ok(binding)
 }
 
-pub fn append_trusted_mutation_audit(
-    dir: &Path,
-    binding: &AttemptCapabilityBinding,
-    command: &str,
-    task_ids: &[String],
-) -> Result<()> {
-    let path = dir.join("service/trusted-mutation-audit.jsonl");
+fn append_trusted_audit_row(path: &Path, row: &serde_json::Value) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
+    let mut file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .append(true)
+        .open(path)?;
+    let mut bytes = serde_json::to_vec(row)?;
+    bytes.push(b'\n');
+    file.write_all(&bytes)?;
+    file.flush()?;
+    file.sync_all()?;
+    Ok(())
+}
+
+pub fn prepare_trusted_mutation_audit(
+    dir: &Path,
+    transaction_id: &str,
+    binding: &AttemptCapabilityBinding,
+    command: &str,
+    target_digests: &BTreeMap<String, String>,
+) -> Result<()> {
+    let row = serde_json::json!({
+        "timestamp": Utc::now().to_rfc3339(),
+        "event": "trusted_cli_graph_prepared",
+        "transaction_id": transaction_id,
+        "command": command,
+        "task_ids": target_digests.keys().collect::<Vec<_>>(),
+        "target_digests": target_digests,
+        "graph_id": binding.graph_id,
+        "source_task_id": binding.task_id,
+        "generation": binding.generation,
+        "actor_id": binding.agent_id,
+        "attempt_id": binding.attempt_id,
+        "fence": binding.fence,
+        "lease_epoch": binding.lease_epoch,
+    });
+    append_trusted_audit_row(&dir.join("service/trusted-mutation-audit.jsonl"), &row)
+}
+
+pub fn commit_trusted_mutation_audit(
+    dir: &Path,
+    transaction_id: &str,
+    binding: &AttemptCapabilityBinding,
+    command: &str,
+    task_ids: &[String],
+    recovered: bool,
+) -> Result<()> {
     let row = serde_json::json!({
         "timestamp": Utc::now().to_rfc3339(),
         "event": "trusted_cli_graph_commit",
+        "transaction_id": transaction_id,
+        "recovered": recovered,
         "command": command,
         "task_ids": task_ids,
         "graph_id": binding.graph_id,
@@ -873,11 +981,83 @@ pub fn append_trusted_mutation_audit(
         "fence": binding.fence,
         "lease_epoch": binding.lease_epoch,
     });
-    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-    serde_json::to_writer(&mut file, &row)?;
-    file.write_all(b"\n")?;
-    file.flush()?;
-    file.sync_all()?;
+    append_trusted_audit_row(&dir.join("service/trusted-mutation-audit.jsonl"), &row)
+}
+
+/// Recover an interrupted secondary-audit transaction from the exact graph
+/// projection fsynced after its prepare record. This makes a missing commit
+/// marker repairable without ever treating a prepared-only mutation as landed.
+pub fn reconcile_trusted_mutation_audit(dir: &Path, graph: &crate::graph::WorkGraph) -> Result<()> {
+    let path = dir.join("service/trusted-mutation-audit.jsonl");
+    let Ok(content) = fs::read_to_string(&path) else {
+        return Ok(());
+    };
+    let mut prepared = BTreeMap::<String, serde_json::Value>::new();
+    let mut terminal = HashSet::new();
+    for line in content.lines().filter(|line| !line.trim().is_empty()) {
+        let Ok(row) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let Some(tx) = row
+            .get("transaction_id")
+            .and_then(|value| value.as_str())
+            .map(str::to_owned)
+        else {
+            continue;
+        };
+        match row.get("event").and_then(|value| value.as_str()) {
+            Some("trusted_cli_graph_prepared") => {
+                prepared.insert(tx, row);
+            }
+            Some("trusted_cli_graph_commit" | "trusted_cli_graph_abort") => {
+                terminal.insert(tx);
+            }
+            _ => {}
+        }
+    }
+
+    for (tx, row) in prepared {
+        if terminal.contains(&tx) {
+            continue;
+        }
+        let digests = row
+            .get("target_digests")
+            .and_then(|value| value.as_object())
+            .cloned()
+            .unwrap_or_default();
+        let landed = digests.iter().all(|(task_id, expected)| {
+            let expected = expected.as_str().unwrap_or_default();
+            if expected == "deleted" {
+                return graph.get_task(task_id).is_none();
+            }
+            graph.get_task(task_id).is_some_and(|task| {
+                serde_json::to_vec(task)
+                    .map(|bytes| hex::encode(Sha256::digest(bytes)))
+                    .is_ok_and(|actual| actual == expected)
+            })
+        });
+        let event = if landed {
+            "trusted_cli_graph_commit"
+        } else {
+            "trusted_cli_graph_abort"
+        };
+        let recovered = serde_json::json!({
+            "timestamp": Utc::now().to_rfc3339(),
+            "event": event,
+            "transaction_id": tx,
+            "recovered": true,
+            "command": row.get("command").cloned().unwrap_or_default(),
+            "task_ids": row.get("task_ids").cloned().unwrap_or_default(),
+            "graph_id": row.get("graph_id").cloned().unwrap_or_default(),
+            "source_task_id": row.get("source_task_id").cloned().unwrap_or_default(),
+            "generation": row.get("generation").cloned().unwrap_or_default(),
+            "actor_id": row.get("actor_id").cloned().unwrap_or_default(),
+            "attempt_id": row.get("attempt_id").cloned().unwrap_or_default(),
+            "fence": row.get("fence").cloned().unwrap_or_default(),
+            "lease_epoch": row.get("lease_epoch").cloned().unwrap_or_default(),
+        });
+        append_trusted_audit_row(&path, &recovered)?;
+    }
     Ok(())
 }
 

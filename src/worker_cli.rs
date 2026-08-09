@@ -359,8 +359,13 @@ fn send(operation: WorkerOperation) -> Result<()> {
 }
 
 /// Return `Ok(None)` outside worker mode, `Ok(Some(()))` when handled.
-pub fn maybe_run(command: &Commands, json: bool) -> Result<Option<()>> {
+pub fn maybe_run(command: &Commands, json: bool, resolved_dir: &Path) -> Result<Option<()>> {
     if std::env::var_os("WG_WORKER_CAPABILITY").is_none() {
+        if worksgood::worker_control::is_managed_worker_process(resolved_dir) {
+            anyhow::bail!(
+                "worker_control.capability_required_for_managed_process: stripping WG_* does not grant operator authority"
+            );
+        }
         return Ok(None);
     }
     let mode = control_mode();

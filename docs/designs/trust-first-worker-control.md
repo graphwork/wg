@@ -64,9 +64,12 @@ Trusted does not mean unfenced or unaudited:
 3. Every changed task receives a `trusted-graph-mutation` lifecycle event and
    task-log attribution naming command, source, generation, actor, attempt,
    fence, and lease. Deleted tasks receive the same event as an append-only
-   tombstone before their compatibility row disappears. The lifecycle ledger is fsynced before graph replacement;
-   a second fsynced append-only `trusted-mutation-audit.jsonl` records the exact
-   committed task IDs.
+   tombstone before their compatibility row disappears. The lifecycle ledger is
+   fsynced before graph replacement. The secondary
+   `trusted-mutation-audit.jsonl` is a prepare/commit journal: prepare fsyncs the
+   exact intended task digests before replacement, commit fsyncs afterward, and
+   load-time reconciliation deterministically marks an interrupted transaction
+   committed or aborted from the persisted graph projection.
 4. Own-task completion stays on typed `completion-object` → immutable manifest
    → `submit` → exact review receipts → `land` (Land only) → derived `done`.
    The direct CLI boundary is the normal project CLI rather than a second
@@ -75,7 +78,16 @@ Trusted does not mean unfenced or unaudited:
    (`spawn`/worker management, `trace`, `func`, `replay`, service/admin,
    migration, federation/provider/review) fail closed and cannot replace
    immutable completion evidence.
-5. Existing command locks/CAS/transactions remain the mutation mechanism; no
+5. Trusted sends stage and fsync a complete queue replacement under a stable
+   sidecar lock, commit the graph attribution first, and only then atomically
+   publish the message. A durable manifest lets the next send finish a crash
+   after graph commit or discard a stage after graph-save failure, so neither an
+   orphan message nor an unaudited landed graph mutation is accepted.
+6. Worker authority is also bound to the registered OS process session/ancestry,
+   independently of `WG_*`. A managed child that strips its capability remains a
+   worker and is refused before graph loading; environment removal never grants
+   operator authority.
+7. Existing command locks/CAS/transactions remain the mutation mechanism; no
    alternate graph writer or permission ceremony is introduced.
 
 These are consistency and evidence boundaries. Unequal source/target task IDs

@@ -12,6 +12,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::SystemTime;
+use uuid::Uuid;
 
 use crate::graph::{Status, Task};
 
@@ -358,28 +359,246 @@ pub fn send_message(
     sender: &str,
     priority: &str,
 ) -> Result<u64> {
+    recover_prepared_message_transactions(workgraph_dir)?;
     send_message_inner(workgraph_dir, task_id, body, sender, priority, None)
 }
 
-/// Append while the caller already holds the graph lock and has validated the
-/// exact recipient task snapshot. This avoids recursively loading the graph and
-/// lets trusted direct CLI messaging share the fenced graph transaction.
-pub fn send_message_for_task(
+#[derive(Debug, Serialize, Deserialize)]
+struct PreparedMessageManifest {
+    transaction_id: String,
+    task_id: String,
+    message_id: u64,
+    stage_file: String,
+    base_digest: String,
+    final_digest: String,
+}
+
+/// A message file replacement staged and fsynced while the graph lock is held.
+/// The canonical queue is changed only after graph.jsonl commits. A crash leaves
+/// the manifest for deterministic recovery; an ordinary graph-save error leaves
+/// no orphaned canonical message.
+pub struct PreparedMessage {
+    manifest: PreparedMessageManifest,
+    manifest_path: PathBuf,
+    stage_path: PathBuf,
+    target_path: PathBuf,
+    lock_file: Option<std::fs::File>,
+}
+
+impl PreparedMessage {
+    pub fn id(&self) -> u64 {
+        self.manifest.message_id
+    }
+
+    pub fn transaction_id(&self) -> &str {
+        &self.manifest.transaction_id
+    }
+
+    pub fn commit(mut self) -> Result<u64> {
+        let bytes = fs::read(&self.stage_path).with_context(|| {
+            format!(
+                "read staged message transaction {}",
+                self.stage_path.display()
+            )
+        })?;
+        crate::atomic_file::write_atomic(&self.target_path, &bytes).with_context(|| {
+            format!(
+                "commit staged message transaction {}",
+                self.target_path.display()
+            )
+        })?;
+        let _ = fs::remove_file(&self.stage_path);
+        let _ = fs::remove_file(&self.manifest_path);
+        self.lock_file.take();
+        Ok(self.manifest.message_id)
+    }
+}
+
+impl Drop for PreparedMessage {
+    fn drop(&mut self) {
+        self.lock_file.take();
+        // Prepared files intentionally survive an interrupted/failed graph
+        // transaction. Recovery compares them to durable graph evidence before
+        // either committing or discarding them.
+    }
+}
+
+/// Stage a trusted send while the caller holds the graph lock and has already
+/// validated the exact recipient snapshot.
+pub fn prepare_message_for_task(
     workgraph_dir: &Path,
     task: &Task,
     body: &str,
     sender: &str,
     priority: &str,
-) -> Result<u64> {
+) -> Result<PreparedMessage> {
     let binding = capture_recipient_binding_for_task(workgraph_dir, task, sender);
-    send_message_inner(
-        workgraph_dir,
-        &task.id,
-        body,
-        sender,
-        priority,
-        Some(binding),
-    )
+    prepare_message_inner(workgraph_dir, &task.id, body, sender, priority, binding)
+}
+
+fn lock_message_file(path: &Path) -> Result<std::fs::File> {
+    // Lock a stable sidecar inode. Locking the queue itself is unsafe when a
+    // transaction atomically replaces it: a waiter could later append to the
+    // unlinked old inode and silently lose its message.
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("queue");
+    let lock_path = path.with_file_name(format!(".{file_name}.lock"));
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .with_context(|| format!("Failed to open message lock: {}", lock_path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        let ret = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+        if ret != 0 {
+            anyhow::bail!(
+                "Failed to acquire lock on message file: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+    }
+    Ok(file)
+}
+
+fn bytes_digest(bytes: &[u8]) -> String {
+    blake3::hash(bytes).to_hex().to_string()
+}
+
+fn prepare_message_inner(
+    workgraph_dir: &Path,
+    task_id: &str,
+    body: &str,
+    sender: &str,
+    priority: &str,
+    binding: RecipientBinding,
+) -> Result<PreparedMessage> {
+    let msg_dir = messages_dir(workgraph_dir);
+    fs::create_dir_all(&msg_dir)?;
+    let target_path = message_file(workgraph_dir, task_id);
+    let lock_file = lock_message_file(&target_path)?;
+    let existing = match fs::read(&target_path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => return Err(error.into()),
+    };
+    let max_id = existing
+        .split(|byte| *byte == b'\n')
+        .filter_map(|line| serde_json::from_slice::<Message>(line).ok())
+        .map(|message| message.id)
+        .max()
+        .unwrap_or(0);
+    let message_id = max_id + 1;
+    let msg = Message {
+        id: message_id,
+        timestamp: Utc::now().to_rfc3339(),
+        sender: sender.to_string(),
+        body: body.to_string(),
+        priority: priority.to_string(),
+        status: DeliveryStatus::Sent,
+        read_at: None,
+        recipient_id: Some(task_id.to_string()),
+        recipient_attempt_epoch: binding.attempt_epoch,
+        recipient_attempt_id: binding.attempt_id,
+        subscription_id: binding.subscription_id,
+        accepted_disposition: binding.disposition,
+        from: None,
+        to: Vec::new(),
+        sig: None,
+        refs: Vec::new(),
+    };
+    let mut final_bytes = existing.clone();
+    serde_json::to_writer(&mut final_bytes, &msg)?;
+    final_bytes.push(b'\n');
+
+    let transaction_id = Uuid::new_v4().to_string();
+    let transaction_dir = msg_dir.join(".transactions");
+    fs::create_dir_all(&transaction_dir)?;
+    let stage_file = format!("{transaction_id}.jsonl");
+    let stage_path = transaction_dir.join(&stage_file);
+    crate::atomic_file::write_atomic_create_new(&stage_path, &final_bytes)?;
+    let manifest = PreparedMessageManifest {
+        transaction_id: transaction_id.clone(),
+        task_id: task_id.to_string(),
+        message_id,
+        stage_file,
+        base_digest: bytes_digest(&existing),
+        final_digest: bytes_digest(&final_bytes),
+    };
+    let manifest_path = transaction_dir.join(format!("{transaction_id}.json"));
+    crate::atomic_file::write_atomic_create_new(&manifest_path, serde_json::to_vec(&manifest)?)?;
+    Ok(PreparedMessage {
+        manifest,
+        manifest_path,
+        stage_path,
+        target_path,
+        lock_file: Some(lock_file),
+    })
+}
+
+/// Reconcile staged sends against the graph mutation record that authorizes
+/// them. Prepared-only sends are discarded; graph-committed sends are finished.
+pub fn recover_prepared_message_transactions(workgraph_dir: &Path) -> Result<()> {
+    let transaction_dir = messages_dir(workgraph_dir).join(".transactions");
+    let Ok(entries) = fs::read_dir(&transaction_dir) else {
+        return Ok(());
+    };
+    let graph = crate::parser::load_graph(workgraph_dir.join("graph.jsonl"))?;
+    for entry in entries.flatten() {
+        let manifest_path = entry.path();
+        if manifest_path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let manifest: PreparedMessageManifest = serde_json::from_slice(&fs::read(&manifest_path)?)?;
+        let stage_path = transaction_dir.join(&manifest.stage_file);
+        let graph_committed = graph.get_task(&manifest.task_id).is_some_and(|task| {
+            let marker = format!("message_transaction={}", manifest.transaction_id);
+            task.log.iter().any(|entry| entry.message.contains(&marker))
+        });
+        if !graph_committed {
+            let _ = fs::remove_file(stage_path);
+            let _ = fs::remove_file(manifest_path);
+            continue;
+        }
+
+        let target_path = message_file(workgraph_dir, &manifest.task_id);
+        let lock_file = lock_message_file(&target_path)?;
+        let current = match fs::read(&target_path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(error) => return Err(error.into()),
+        };
+        let current_digest = bytes_digest(&current);
+        if current_digest == manifest.final_digest {
+            let _ = fs::remove_file(stage_path);
+            let _ = fs::remove_file(manifest_path);
+            drop(lock_file);
+            continue;
+        }
+        if current_digest != manifest.base_digest {
+            anyhow::bail!(
+                "message transaction {} needs operator recovery: canonical queue diverged",
+                manifest.transaction_id
+            );
+        }
+        let staged = fs::read(&stage_path)?;
+        if bytes_digest(&staged) != manifest.final_digest {
+            anyhow::bail!(
+                "message transaction {} staged digest mismatch",
+                manifest.transaction_id
+            );
+        }
+        crate::atomic_file::write_atomic(&target_path, staged)?;
+        let _ = fs::remove_file(stage_path);
+        let _ = fs::remove_file(manifest_path);
+        drop(lock_file);
+    }
+    Ok(())
 }
 
 fn send_message_inner(
@@ -396,27 +615,15 @@ fn send_message_inner(
 
     let path = message_file(workgraph_dir, task_id);
 
-    // Open (or create) the file for read+append with locking
+    // Stable sidecar locking coordinates ordinary appenders with atomic
+    // trusted-message replacements.
+    let lock_file = lock_message_file(&path)?;
     let file = OpenOptions::new()
         .read(true)
         .append(true)
         .create(true)
         .open(&path)
         .with_context(|| format!("Failed to open message file: {}", path.display()))?;
-
-    // Lock the file exclusively for ID assignment + append
-    #[cfg(unix)]
-    {
-        use std::os::unix::io::AsRawFd;
-        let fd = file.as_raw_fd();
-        let ret = unsafe { libc::flock(fd, libc::LOCK_EX) };
-        if ret != 0 {
-            anyhow::bail!(
-                "Failed to acquire lock on message file: {}",
-                std::io::Error::last_os_error()
-            );
-        }
-    }
 
     // Read existing messages to find the max ID
     let max_id = {
@@ -473,6 +680,7 @@ fn send_message_inner(
     // direct CLI sends take the graph lock first, so retaining this lock while
     // `record_task_message_activity` loads the graph would invert the order.
     drop(file);
+    drop(lock_file);
 
     if record_activity_separately {
         record_task_message_activity(workgraph_dir, task_id, &msg.timestamp);
@@ -1302,6 +1510,46 @@ mod tests {
         assert_eq!(msgs[1].body, "World");
         assert_eq!(msgs[1].sender, "coordinator");
         assert_eq!(msgs[1].priority, "urgent");
+    }
+
+    #[test]
+    fn trusted_message_stage_is_invisible_until_graph_commit_and_recoverable() {
+        let (_tmp, wg_dir) = setup();
+        let graph_path = wg_dir.join("graph.jsonl");
+        let mut graph = crate::graph::WorkGraph::new();
+        graph.add_node(crate::graph::Node::Task(Task {
+            id: "target".into(),
+            ..Task::default()
+        }));
+        crate::parser::save_graph(&graph, &graph_path).unwrap();
+
+        let task = graph.get_task("target").unwrap().clone();
+        let staged =
+            prepare_message_for_task(&wg_dir, &task, "not committed", "agent-1", "normal").unwrap();
+        assert!(list_messages(&wg_dir, "target").unwrap().is_empty());
+        drop(staged);
+        recover_prepared_message_transactions(&wg_dir).unwrap();
+        assert!(list_messages(&wg_dir, "target").unwrap().is_empty());
+
+        let staged =
+            prepare_message_for_task(&wg_dir, &task, "committed", "agent-1", "normal").unwrap();
+        let tx = staged.transaction_id().to_string();
+        drop(staged); // simulate crash after graph commit but before queue replacement
+        graph
+            .get_task_mut("target")
+            .unwrap()
+            .log
+            .push(crate::graph::LogEntry {
+                timestamp: Utc::now().to_rfc3339(),
+                actor: Some("agent-1".into()),
+                user: None,
+                message: format!("trusted CLI message mutation: message_transaction={tx}"),
+            });
+        crate::parser::save_graph(&graph, &graph_path).unwrap();
+        recover_prepared_message_transactions(&wg_dir).unwrap();
+        let messages = list_messages(&wg_dir, "target").unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].body, "committed");
     }
 
     #[test]

@@ -30,7 +30,13 @@ set -euo pipefail
 mode=${WG_WORKER_CONTROL_MODE:-}
 [[ $mode == scoped || $mode == read-only ]] || exit 89
 [[ ! -e .wg ]] || exit 83
-wg capabilities --json | grep -q "\"mode\": \"$mode\""
+if env -u WG_WORKER_CAPABILITY -u WG_WORKER_CONTROL_PROTOCOL -u WG_WORKER_IPC wg list > env-strip.out 2>&1; then
+  echo "stripping capability environment unexpectedly granted operator authority" >&2
+  exit 93
+fi
+grep -q 'worker_control.capability_required_for_managed_process' env-strip.out
+wg capabilities --json > capabilities.json
+grep -q "\"mode\": \"$mode\"" capabilities.json
 wg show "$WG_TASK_ID" --json > "$mode-show.json"
 if wg list > forbidden.out 2>&1; then
   echo "graph enumeration unexpectedly allowed" >&2
@@ -59,7 +65,7 @@ fi
 if [[ $mode == scoped ]]; then
   wg log "$WG_TASK_ID" "brokered worker log"
   printf 'brokered\n' > brokered.txt
-  git add scoped-show.json brokered.txt
+  git add capabilities.json env-strip.out scoped-show.json brokered.txt
 else
   wg msg list "$WG_TASK_ID" > read-only-messages.out
   grep -q 'operator message for read-only observation' read-only-messages.out
@@ -79,7 +85,7 @@ else
   fi
   grep -q 'worker_control.read_only_refused' read-only-done.out
   printf 'read-only\n' > read-only.txt
-  git add read-only-show.json read-only-messages.out read-only-poll.out read-only-log.out read-only-done.out read-only.txt
+  git add capabilities.json env-strip.out read-only-show.json read-only-messages.out read-only-poll.out read-only-log.out read-only-done.out read-only.txt
 fi
 git commit -qm "worker capability evidence: $mode"
 # Keep the owner alive so the scenario can inspect the capability boundary
@@ -142,4 +148,4 @@ git -C "$read_only_worktree" show HEAD:read-only.txt | grep -qx read-only || lou
 git -C "$read_only_worktree" show HEAD:read-only-log.out | grep -q 'worker_control.read_only_refused' || loud_fail "read-only log refusal absent"
 git -C "$read_only_worktree" show HEAD:read-only-done.out | grep -q 'worker_control.read_only_refused' || loud_fail "read-only completion refusal absent"
 
-echo "PASS: live workers had no WG_DIR/.wg; explicit scoped commands stayed own-task-only; explicit read-only retained observation but refused graph log/completion; bearer tokens were not persisted; and degraded filesystem isolation was reported honestly"
+echo "PASS: live workers had no WG_DIR/.wg; OS process identity blocked WG_* stripping; scoped stayed own-task-only; read-only retained immutable observation but refused polling/writes; bearer tokens were not persisted"

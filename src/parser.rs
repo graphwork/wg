@@ -1,4 +1,5 @@
 use crate::graph::{LogEntry, Node, Task, WorkGraph};
+use sha2::Digest;
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
@@ -367,6 +368,7 @@ fn apply_trusted_mutation_attribution(
     task: &mut Task,
     binding: &crate::worker_control::AttemptCapabilityBinding,
     command: &str,
+    transaction_id: &str,
     now: &str,
     deleted: bool,
 ) -> Result<(), ParseError> {
@@ -397,6 +399,7 @@ fn apply_trusted_mutation_attribution(
     .with_evidence(format!("source-task:{}", binding.task_id))
     .with_evidence(format!("source-generation:{}", binding.generation))
     .with_evidence(format!("source-lease:{}", binding.lease_epoch))
+    .with_evidence(format!("trusted-audit-transaction:{transaction_id}"))
     .with_evidence(format!("target-disposition:{disposition}"));
     crate::lifecycle::apply_transition(task, request)
         .map_err(|error| ParseError::Lock(error.to_string()))?;
@@ -405,8 +408,9 @@ fn apply_trusted_mutation_attribution(
         actor: Some(binding.agent_id.clone()),
         user: Some(crate::current_user()),
         message: format!(
-            "trusted CLI mutation: command={} source={} generation={} actor={} attempt={} fence={} lease={} target_disposition={}",
+            "trusted CLI mutation: command={} transaction={} source={} generation={} actor={} attempt={} fence={} lease={} target_disposition={}",
             command,
+            transaction_id,
             binding.task_id,
             binding.generation,
             binding.agent_id,
@@ -441,6 +445,11 @@ where
 
     let mut graph = load_graph_inner(path)?;
     let replayed = crate::lifecycle::replay_ledger(path, &mut graph)?;
+    crate::worker_control::reconcile_trusted_mutation_audit(
+        path.parent().unwrap_or(Path::new(".")),
+        &graph,
+    )
+    .map_err(|error| ParseError::Lock(error.to_string()))?;
     // Keep both a graph snapshot (for lifecycle-ledger event diffing) and the
     // per-task map used by last-interaction timestamp maintenance.
     let before_graph = graph.clone();
@@ -483,15 +492,36 @@ where
                 changed_ids.sort();
                 changed_ids.dedup();
                 let now = chrono::Utc::now().to_rfc3339();
+                let transaction_id = uuid::Uuid::new_v4().to_string();
                 for id in &changed_ids {
                     if let Some(task) = graph.get_task_mut(id) {
-                        apply_trusted_mutation_attribution(task, &binding, &command, &now, false)?;
+                        apply_trusted_mutation_attribution(
+                            task,
+                            &binding,
+                            &command,
+                            &transaction_id,
+                            &now,
+                            false,
+                        )?;
                     }
                 }
                 for task in &mut deleted_tombstones {
-                    apply_trusted_mutation_attribution(task, &binding, &command, &now, true)?;
+                    apply_trusted_mutation_attribution(
+                        task,
+                        &binding,
+                        &command,
+                        &transaction_id,
+                        &now,
+                        true,
+                    )?;
                 }
-                Some((binding, command, changed_ids, deleted_tombstones))
+                Some((
+                    binding,
+                    command,
+                    transaction_id,
+                    changed_ids,
+                    deleted_tombstones,
+                ))
             } else {
                 None
             }
@@ -499,24 +529,48 @@ where
             None
         };
         bump_interaction_timestamps(&mut graph, &before);
+        if let Some((binding, command, transaction_id, changed_ids, _)) = trusted_commit.as_ref() {
+            let mut target_digests = std::collections::BTreeMap::new();
+            for id in changed_ids {
+                let digest = if let Some(task) = graph.get_task(id) {
+                    let bytes = serde_json::to_vec(task).map_err(|error| {
+                        ParseError::Lock(format!("trusted audit digest failed: {error}"))
+                    })?;
+                    hex::encode(sha2::Sha256::digest(bytes))
+                } else {
+                    "deleted".to_string()
+                };
+                target_digests.insert(id.clone(), digest);
+            }
+            crate::worker_control::prepare_trusted_mutation_audit(
+                path.parent().unwrap_or(Path::new(".")),
+                transaction_id,
+                binding,
+                command,
+                &target_digests,
+            )
+            .map_err(|error| ParseError::Lock(error.to_string()))?;
+        }
         // Lifecycle records are fsynced before graph.jsonl is atomically
         // replaced. Deleted tasks are temporarily reintroduced only into the
         // ledger projection so their mutation tombstone is append-only even
         // though the compatibility graph replacement removes the row.
         let mut ledger_graph = graph.clone();
-        if let Some((_, _, _, deleted_tombstones)) = trusted_commit.as_ref() {
+        if let Some((_, _, _, _, deleted_tombstones)) = trusted_commit.as_ref() {
             for tombstone in deleted_tombstones {
                 ledger_graph.add_node(Node::Task(tombstone.clone()));
             }
         }
         crate::lifecycle::append_new_events(path, &before_graph, &ledger_graph)?;
         save_graph_inner(&graph, path)?;
-        if let Some((binding, command, changed_ids, _)) = trusted_commit {
-            crate::worker_control::append_trusted_mutation_audit(
+        if let Some((binding, command, transaction_id, changed_ids, _)) = trusted_commit {
+            crate::worker_control::commit_trusted_mutation_audit(
                 path.parent().unwrap_or(Path::new(".")),
+                &transaction_id,
                 &binding,
                 &command,
                 &changed_ids,
+                false,
             )
             .map_err(|error| ParseError::Lock(error.to_string()))?;
         }
@@ -1315,6 +1369,7 @@ mod tests {
             &mut tombstone,
             &binding,
             "archive",
+            "test-audit-transaction",
             &chrono::Utc::now().to_rfc3339(),
             true,
         )
@@ -1323,13 +1378,17 @@ mod tests {
         ledger_projection.add_node(Node::Task(tombstone));
         crate::lifecycle::append_new_events(&graph_path, &before, &ledger_projection).unwrap();
         save_graph(&after, &graph_path).unwrap();
-        crate::worker_control::append_trusted_mutation_audit(
+        let target_digests =
+            std::collections::BTreeMap::from([("victim".to_string(), "deleted".to_string())]);
+        crate::worker_control::prepare_trusted_mutation_audit(
             &dir,
+            "test-audit-transaction",
             &binding,
             "archive",
-            &["victim".into()],
+            &target_digests,
         )
         .unwrap();
+        crate::worker_control::reconcile_trusted_mutation_audit(&dir, &after).unwrap();
 
         assert!(
             load_graph(&graph_path)

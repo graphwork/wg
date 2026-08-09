@@ -31,6 +31,9 @@ pub fn run_send(
     priority: &str,
     stdin: bool,
 ) -> Result<()> {
+    if std::env::var_os("WG_TRUSTED_DIRECT_CLI").is_some() {
+        messages::recover_prepared_message_transactions(dir)?;
+    }
     // Resolve user board alias (.user-erik → .user-erik-N)
     let (graph, _path) = super::load_workgraph(dir)?;
     let resolved_id = resolve_user_board_alias(&graph, task_id);
@@ -87,32 +90,38 @@ pub fn run_send(
 
     let id = if std::env::var_os("WG_TRUSTED_DIRECT_CLI").is_some() {
         let graph_path = super::graph_path(dir);
-        let mut sent = None;
+        let mut prepared = None;
         modify_graph(&graph_path, |graph| {
             let Some(task) = graph.get_task_mut(&effective_id) else {
                 return false;
             };
-            match messages::send_message_for_task(dir, task, &message_body, sender, priority) {
-                Ok(id) => {
+            match messages::prepare_message_for_task(dir, task, &message_body, sender, priority) {
+                Ok(message) => {
                     let now = chrono::Utc::now().to_rfc3339();
                     task.last_message_at = Some(now.clone());
                     task.log.push(LogEntry {
                         timestamp: now,
                         actor: Some(sender.to_string()),
                         user: Some(worksgood::current_user()),
-                        message: format!("trusted CLI message mutation: message_id={id}"),
+                        message: format!(
+                            "trusted CLI message mutation: message_id={} message_transaction={}",
+                            message.id(),
+                            message.transaction_id()
+                        ),
                     });
-                    sent = Some(Ok(id));
+                    prepared = Some(Ok(message));
                     true
                 }
                 Err(error) => {
-                    sent = Some(Err(error));
+                    prepared = Some(Err(error));
                     false
                 }
             }
         })
         .context("commit fenced trusted message mutation")?;
-        sent.context("trusted message target disappeared before commit")??
+        prepared
+            .context("trusted message target disappeared before commit")??
+            .commit()?
     } else {
         messages::send_message(dir, &effective_id, &message_body, sender, priority)?
     };

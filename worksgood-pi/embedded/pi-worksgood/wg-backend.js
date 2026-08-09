@@ -58,9 +58,14 @@ export function readWgEnv(env = process.env) {
 export class WgBackend {
     host;
     env;
+    compatibilityGate = Promise.resolve();
     constructor(host, env) {
         this.host = host;
         this.env = env;
+    }
+    /** Block every WG operation until the extension/binary handshake succeeds. */
+    setCompatibilityGate(gate) {
+        this.compatibilityGate = gate;
     }
     /** `--dir <project>` prefix applied to every invocation when known. */
     baseArgs() {
@@ -70,6 +75,7 @@ export class WgBackend {
     }
     /** Run an arbitrary `wg` sub-command. Callers pass verb + args; we add `--dir`. */
     async run(args, opts = {}) {
+        await this.compatibilityGate;
         const full = [...this.baseArgs(), ...args];
         if (opts.json)
             full.push("--json");

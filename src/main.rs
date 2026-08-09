@@ -731,23 +731,25 @@ fn main() -> Result<()> {
         Cli::parse_from(rewritten)
     };
 
-    // A worker capability is a hard authority boundary. Strict modes are
-    // handled/refused before graph discovery. Trusted coordination is admitted
-    // here to the normal CLI and its graph commit revalidates the exact fence.
-    if !cli.help
-        && !cli.help_all
-        && let Some(command) = cli.command.as_ref()
-        && worker_cli::maybe_run(command, cli.json)?.is_some()
-    {
-        return Ok(());
-    }
-
+    // Resolve without creating or reading graph state so the process boundary
+    // can recognize a managed worker even if it strips every WG_* variable.
     let workgraph_dir = resolve_workgraph_dir(
         cli.dir.clone(),
         std::env::var_os("WG_DIR").map(PathBuf::from),
         std::env::current_dir().ok(),
         dirs::home_dir(),
     );
+
+    // A worker capability is a hard authority boundary. Strict modes are
+    // handled/refused before graph loading. Trusted coordination is admitted
+    // here to the normal CLI and its graph commit revalidates the exact fence.
+    if !cli.help
+        && !cli.help_all
+        && let Some(command) = cli.command.as_ref()
+        && worker_cli::maybe_run(command, cli.json, &workgraph_dir)?.is_some()
+    {
+        return Ok(());
+    }
 
     // Auto-create the global fallback `~/.wg` for REPL-style
     // commands that should Just Work from any directory. Project-

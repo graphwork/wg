@@ -380,9 +380,12 @@ flag/contract surface changes.)
 
 ```
 EXPECTED = process.env.WG_PI_PLUGIN_COMPAT_VERSION         // wg→pi: injected at spawn
-        ?? (await pi.exec("wg", ["pi-plugin", "compat-version"])).stdout.trim()   // pi→wg: ask the wg on PATH
-if (EXPECTED && EXPECTED !== EMBEDDED_COMPAT)
-    throw new Error(`WorksGood Pi integration compat mismatch: extension=${EMBEDDED_COMPAT} wg=${EXPECTED}; run \`wg pi-plugin install\``)
+if (EXPECTED) assertSynchronouslyOrThrow(EXPECTED)
+else backend.setCompatibilityGate(
+    pi.exec("wg", ["pi-plugin", "compat-version"])
+      .then(result => assertOrThrow(result.stdout.trim()))  // pi→wg: ask PATH
+)
+// Every backend operation awaits compatibilityGate before exec.
 ```
 
 - **`wg → pi`:** `wg pi-handler` injects `WG_PI_PLUGIN_COMPAT_VERSION` into the
@@ -393,11 +396,16 @@ if (EXPECTED && EXPECTED !== EMBEDDED_COMPAT)
   `wg pi-plugin compat-version` against the wg actually on `PATH` and compares.
   This is the real drift catcher for the console direction (newer wg / older
   global plugin, or vice versa).
-- **Failure surfacing:** a thrown factory error is collected by the SDK as an
-  extension load error — the Node host already reads `extensionsResult.errors`
-  (`worksgood-pi/host/wg-pi-host.mjs` `collectRegistrations` / `runSelftest`), and
-  attended pi shows the load error in its UI. The `wg pi-plugin compat-version`
-  verb is added alongside `wg pi-plugin install` (§4.3).
+- **Failure surfacing and authority gate:** wg-spawn mismatch throws
+  synchronously from the factory and is collected as an extension load error.
+  Human-console probing is necessarily asynchronous, but it is not
+  best-effort: the promise is installed as `WgBackend`'s compatibility gate
+  before tool/command registration returns. Every backend operation awaits it,
+  so mismatch is printed loudly and rejects before any worker/control command
+  can execute. The Node host reads `extensionsResult.errors`, attended pi shows
+  load errors, and the backend gate regression proves the host is never called
+  on mismatch. The `wg pi-plugin compat-version` verb is added alongside
+  `wg pi-plugin install` (§4.3).
 
 `WG_DAEMON_SOCKET` stays **dormant**: `wg-backend.ts` already stubs the
 future daemon-IPC seam; this design is about *install*, not transport, and does

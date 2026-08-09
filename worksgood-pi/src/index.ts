@@ -35,9 +35,10 @@ import { WG_PI_PLUGIN_COMPAT_VERSION as EMBEDDED_COMPAT } from "./version.js";
  *    testable fail path the host `--selftest --force-compat-mismatch` exercises.
  *
  *  - **pi → wg (human console):** the env is absent, so we ask the `wg` actually
- *    on PATH (`wg pi-plugin compat-version`) ASYNCHRONOUSLY and complain loudly
- *    on mismatch. A factory cannot block on a child process, so this path warns
- *    on stderr / via pi notifications rather than throwing at load.
+ *    on PATH (`wg pi-plugin compat-version`) ASYNCHRONOUSLY. The resulting
+ *    promise gates every backend operation: tools may be registered by the
+ *    synchronous extension factory, but cannot execute until compatibility is
+ *    proven, and mismatch rejects loudly before any worker/control operation.
  */
 function assertCompatVersionSync(): void {
   const expected = process.env.WG_PI_PLUGIN_COMPAT_VERSION?.trim();
@@ -63,12 +64,10 @@ async function assertCompatVersionAsync(backend: WgBackend): Promise<void> {
     return; // no `wg` on PATH / older wg without the verb — nothing to assert.
   }
   if (found && found !== EMBEDDED_COMPAT) {
-    const msg =
+    throw new Error(
       `WorksGood Pi integration compat mismatch: extension=${EMBEDDED_COMPAT} wg=${found}. ` +
-      "Reinstall the matching plugin with `wg pi-plugin install`.";
-    // A factory cannot turn an async result into a load-time throw, so the
-    // guaranteed signal for the console direction is a loud stderr line.
-    console.error(`[pi-worksgood] ${msg}`);
+        "Reinstall the matching plugin with `wg pi-plugin install`.",
+    );
   }
 }
 
@@ -76,7 +75,13 @@ export default function worksgoodPi(pi: ExtensionAPI): void {
   assertCompatVersionSync(); // wg→pi: throw → extension load error (loud, testable)
   const env = readWgEnv();
   const backend = new WgBackend(pi, env);
-  void assertCompatVersionAsync(backend); // pi→wg: best-effort drift catcher
+  const compatibilityGate = assertCompatVersionAsync(backend);
+  backend.setCompatibilityGate(compatibilityGate);
+  // Observe and report rejection immediately while preserving the rejected
+  // gate that every tool/command awaits before it can touch WG.
+  void compatibilityGate.catch((error: unknown) => {
+    console.error(`[pi-worksgood] ${error instanceof Error ? error.message : String(error)}`);
+  });
 
   registerWgTools(pi, backend); // wg_capabilities / wg_ready / wg_show / wg_add / wg_publish / wg_done / wg_fail / wg_msg_* / wg_run
   registerWgCommands(pi, backend); // /wg, /wg-model (+ autocomplete)

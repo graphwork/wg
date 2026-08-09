@@ -107,10 +107,17 @@ export interface WgRunOptions {
  * JSON are layered on top.
  */
 export class WgBackend {
+  private compatibilityGate: Promise<void> = Promise.resolve();
+
   constructor(
     private readonly host: ExecHost,
     public readonly env: WgEnv,
   ) {}
+
+  /** Block every WG operation until the extension/binary handshake succeeds. */
+  setCompatibilityGate(gate: Promise<void>): void {
+    this.compatibilityGate = gate;
+  }
 
   /** `--dir <project>` prefix applied to every invocation when known. */
   private baseArgs(): string[] {
@@ -121,6 +128,7 @@ export class WgBackend {
 
   /** Run an arbitrary `wg` sub-command. Callers pass verb + args; we add `--dir`. */
   async run(args: string[], opts: WgRunOptions = {}): Promise<ExecResult> {
+    await this.compatibilityGate;
     const full = [...this.baseArgs(), ...args];
     if (opts.json) full.push("--json");
     return this.host.exec("wg", full, { signal: opts.signal });

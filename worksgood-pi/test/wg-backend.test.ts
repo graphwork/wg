@@ -91,6 +91,17 @@ describe("WgBackend.setModelOverride exit-code handling", () => {
   });
 });
 
+describe("compatibility authority gate", () => {
+  it("refuses every WG operation before a failed compat handshake can touch the CLI", async () => {
+    const { host } = fakeHost({ stdout: "[]", code: 0 });
+    const backend = new WgBackend(host, { dir: "/proj" });
+    backend.setCompatibilityGate(Promise.reject(new Error("compat mismatch")));
+
+    await expect(backend.ready()).rejects.toThrow(/compat mismatch/);
+    expect(host.exec).not.toHaveBeenCalled();
+  });
+});
+
 describe("expert backend boundary", () => {
   it("uses the full wg backend, never the limited worksgood concierge", async () => {
     const { host, calls } = fakeHost({ stdout: "[]", code: 0 });
