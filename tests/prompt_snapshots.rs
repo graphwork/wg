@@ -332,43 +332,94 @@ fn shipped_worker_prompt_authority_audit_is_complete() {
     }
 
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    // Exhaustive inventory of shipped worker/system prompt constructors and
-    // surfaces. This deliberately includes the spawn + executor builders, not
-    // only the rendered universal guide.
-    let prompt_sources = [
-        "src/text/agent_guide.md",
-        "src/service/executor.rs",
-        "src/commands/spawn/context.rs",
-        "src/service/coordinator_prompt.rs",
-        "src/commands/service/assignment.rs",
-        "src/commands/service/triage.rs",
-        "src/commands/service/human_dispatch.rs",
-        "src/review/pass2_review.rs",
-        "worksgood-pi/src/tools.ts",
-        "worksgood-pi/src/wg-backend.ts",
-    ];
-    let mut shipped = String::new();
-    for relative in prompt_sources {
-        let content = std::fs::read_to_string(root.join(relative))
-            .unwrap_or_else(|error| panic!("prompt inventory missing {relative}: {error}"));
-        shipped.push_str(&format!("\n--- {relative} ---\n{content}"));
-        for command in ["add", "edit", "assign", "reprioritize", "publish", "msg"] {
-            if content.contains(&format!("wg {command}")) {
-                assert!(
-                    worksgood::worker_control::trusted_coordination_command(command),
-                    "{relative} instructs wg {command} without compatible trusted authority"
-                );
+    // Scan every shipped Rust/Markdown/TypeScript source that can construct a
+    // worker/system prompt. This is intentionally a recursive superset rather
+    // than a hand-maintained file list: new prompt builders, dynamic fragments,
+    // Pi tools (`wg_run`/`wg_*`), and command spellings enter the audit without
+    // requiring this test to know their path first.
+    fn scan_sources(
+        root: &std::path::Path,
+        path: &std::path::Path,
+        shipped: &mut String,
+        scanned: &mut usize,
+        prompt_surfaces: &mut std::collections::BTreeSet<String>,
+        commands: &mut std::collections::BTreeSet<String>,
+    ) {
+        for entry in std::fs::read_dir(path).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.is_dir() {
+                scan_sources(root, &path, shipped, scanned, prompt_surfaces, commands);
+                continue;
             }
+            if !matches!(
+                path.extension().and_then(|value| value.to_str()),
+                Some("rs" | "md" | "ts")
+            ) {
+                continue;
+            }
+            *scanned += 1;
+            let content = std::fs::read_to_string(&path).unwrap();
+            let relative = path.strip_prefix(root).unwrap().display().to_string();
+            let prompt_like = content.contains("prompt")
+                || content.contains("instructions")
+                || content.contains("You are")
+                || content.contains("wg_run")
+                || content.contains("wg_");
+            if prompt_like
+                && (content.contains("wg ")
+                    || content.contains("wg_")
+                    || content.contains("wg_run"))
+            {
+                prompt_surfaces.insert(relative.clone());
+            }
+            for (offset, _) in content.match_indices("wg ") {
+                let command: String = content[offset + 3..]
+                    .chars()
+                    .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '-' || *ch == '_')
+                    .collect();
+                if !command.is_empty() {
+                    commands.insert(command);
+                }
+            }
+            shipped.push_str(&format!("\n--- {relative} ---\n{content}"));
         }
     }
-    for command in [
-        "wg capabilities",
-        "wg add",
-        "wg edit",
-        "wg publish",
-        "wg msg",
-    ] {
-        assert!(shipped.contains(command), "prompt inventory lost {command}");
+
+    let mut shipped = String::new();
+    let mut scanned = 0;
+    let mut prompt_surfaces = std::collections::BTreeSet::new();
+    let mut commands = std::collections::BTreeSet::new();
+    scan_sources(
+        root,
+        &root.join("src"),
+        &mut shipped,
+        &mut scanned,
+        &mut prompt_surfaces,
+        &mut commands,
+    );
+    scan_sources(
+        root,
+        &root.join("worksgood-pi/src"),
+        &mut shipped,
+        &mut scanned,
+        &mut prompt_surfaces,
+        &mut commands,
+    );
+    assert!(
+        scanned > 100,
+        "recursive shipped-source audit unexpectedly small"
+    );
+    assert!(
+        prompt_surfaces.len() > 10,
+        "prompt surface discovery regressed"
+    );
+    assert!(shipped.contains("wg_run") && shipped.contains("wg_ready"));
+    for command in ["capabilities", "add", "edit", "publish", "msg"] {
+        assert!(
+            commands.contains(command),
+            "source-wide audit lost wg {command}"
+        );
     }
     for boundary in [
         "Ordinary local workers are trusted participants",

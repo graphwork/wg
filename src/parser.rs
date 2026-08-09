@@ -363,6 +363,62 @@ pub fn save_graph<P: AsRef<Path>>(graph: &WorkGraph, path: P) -> Result<(), Pars
     // Lock is automatically released when _lock goes out of scope
 }
 
+fn apply_trusted_mutation_attribution(
+    task: &mut Task,
+    binding: &crate::worker_control::AttemptCapabilityBinding,
+    command: &str,
+    now: &str,
+    deleted: bool,
+) -> Result<(), ParseError> {
+    let disposition = if deleted { "deleted" } else { "changed" };
+    let request = crate::lifecycle::TransitionRequest::new(
+        crate::lifecycle::TransitionKind::TrustedGraphMutation {
+            command: command.to_string(),
+            source_task_id: binding.task_id.clone(),
+            source_generation: binding.generation,
+            source_attempt_id: binding.attempt_id.clone(),
+            source_fence: binding.fence,
+            source_lease_epoch: binding.lease_epoch,
+        },
+        crate::lifecycle::LifecycleActor {
+            kind: crate::lifecycle::ActorKind::Worker,
+            id: binding.agent_id.clone(),
+        },
+        "trusted_cli_graph_mutation",
+        format!(
+            "trusted-mutation:{}:{}:{}:{}:{}",
+            binding.attempt_id,
+            command,
+            task.id,
+            disposition,
+            task.lifecycle.revision + 1
+        ),
+    )
+    .with_evidence(format!("source-task:{}", binding.task_id))
+    .with_evidence(format!("source-generation:{}", binding.generation))
+    .with_evidence(format!("source-lease:{}", binding.lease_epoch))
+    .with_evidence(format!("target-disposition:{disposition}"));
+    crate::lifecycle::apply_transition(task, request)
+        .map_err(|error| ParseError::Lock(error.to_string()))?;
+    task.log.push(LogEntry {
+        timestamp: now.to_string(),
+        actor: Some(binding.agent_id.clone()),
+        user: Some(crate::current_user()),
+        message: format!(
+            "trusted CLI mutation: command={} source={} generation={} actor={} attempt={} fence={} lease={} target_disposition={}",
+            command,
+            binding.task_id,
+            binding.generation,
+            binding.agent_id,
+            binding.attempt_id,
+            binding.fence,
+            binding.lease_epoch,
+            disposition
+        ),
+    });
+    Ok(())
+}
+
 /// Atomically load, modify, and save a graph file.
 ///
 /// The file lock is held for the entire load-modify-save cycle, preventing
@@ -409,7 +465,7 @@ where
     if modified || replayed {
         let trusted_commit = if modified {
             if let Some((binding, command)) = trusted_preflight {
-                let changed_ids: Vec<String> = graph
+                let mut changed_ids: Vec<String> = graph
                     .tasks()
                     .filter(|task| {
                         before
@@ -418,55 +474,24 @@ where
                     })
                     .map(|task| task.id.clone())
                     .collect();
-                let message = format!(
-                    "trusted CLI mutation: command={} source={} generation={} actor={} attempt={} fence={} lease={}",
-                    command,
-                    binding.task_id,
-                    binding.generation,
-                    binding.agent_id,
-                    binding.attempt_id,
-                    binding.fence,
-                    binding.lease_epoch
-                );
+                let mut deleted_tombstones: Vec<Task> = before
+                    .iter()
+                    .filter(|(id, _)| graph.get_task(id).is_none())
+                    .map(|(_, task)| task.clone())
+                    .collect();
+                changed_ids.extend(deleted_tombstones.iter().map(|task| task.id.clone()));
+                changed_ids.sort();
+                changed_ids.dedup();
                 let now = chrono::Utc::now().to_rfc3339();
                 for id in &changed_ids {
                     if let Some(task) = graph.get_task_mut(id) {
-                        let request = crate::lifecycle::TransitionRequest::new(
-                            crate::lifecycle::TransitionKind::TrustedGraphMutation {
-                                command: command.clone(),
-                                source_task_id: binding.task_id.clone(),
-                                source_generation: binding.generation,
-                                source_attempt_id: binding.attempt_id.clone(),
-                                source_fence: binding.fence,
-                                source_lease_epoch: binding.lease_epoch,
-                            },
-                            crate::lifecycle::LifecycleActor {
-                                kind: crate::lifecycle::ActorKind::Worker,
-                                id: binding.agent_id.clone(),
-                            },
-                            "trusted_cli_graph_mutation",
-                            format!(
-                                "trusted-mutation:{}:{}:{}:{}",
-                                binding.attempt_id,
-                                command,
-                                id,
-                                task.lifecycle.revision + 1
-                            ),
-                        )
-                        .with_evidence(format!("source-task:{}", binding.task_id))
-                        .with_evidence(format!("source-generation:{}", binding.generation))
-                        .with_evidence(format!("source-lease:{}", binding.lease_epoch));
-                        crate::lifecycle::apply_transition(task, request)
-                            .map_err(|error| ParseError::Lock(error.to_string()))?;
-                        task.log.push(LogEntry {
-                            timestamp: now.clone(),
-                            actor: Some(binding.agent_id.clone()),
-                            user: Some(crate::current_user()),
-                            message: message.clone(),
-                        });
+                        apply_trusted_mutation_attribution(task, &binding, &command, &now, false)?;
                     }
                 }
-                Some((binding, command, changed_ids))
+                for task in &mut deleted_tombstones {
+                    apply_trusted_mutation_attribution(task, &binding, &command, &now, true)?;
+                }
+                Some((binding, command, changed_ids, deleted_tombstones))
             } else {
                 None
             }
@@ -475,10 +500,18 @@ where
         };
         bump_interaction_timestamps(&mut graph, &before);
         // Lifecycle records are fsynced before graph.jsonl is atomically
-        // replaced. If the second operation fails, replay converges on restart.
-        crate::lifecycle::append_new_events(path, &before_graph, &graph)?;
+        // replaced. Deleted tasks are temporarily reintroduced only into the
+        // ledger projection so their mutation tombstone is append-only even
+        // though the compatibility graph replacement removes the row.
+        let mut ledger_graph = graph.clone();
+        if let Some((_, _, _, deleted_tombstones)) = trusted_commit.as_ref() {
+            for tombstone in deleted_tombstones {
+                ledger_graph.add_node(Node::Task(tombstone.clone()));
+            }
+        }
+        crate::lifecycle::append_new_events(path, &before_graph, &ledger_graph)?;
         save_graph_inner(&graph, path)?;
-        if let Some((binding, command, changed_ids)) = trusted_commit {
+        if let Some((binding, command, changed_ids, _)) = trusted_commit {
             crate::worker_control::append_trusted_mutation_audit(
                 path.parent().unwrap_or(Path::new(".")),
                 &binding,
@@ -1240,6 +1273,78 @@ mod tests {
         // Still the original graph on disk
         let loaded = load_graph(file.path()).unwrap();
         assert_eq!(loaded.len(), 1);
+    }
+
+    #[test]
+    fn trusted_deletion_writes_lifecycle_tombstone_and_secondary_audit() {
+        let project = tempfile::tempdir().unwrap();
+        let dir = project.path().join(".wg");
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = serde_json::json!({
+            "kind": "task", "id": "source", "title": "Source",
+            "status": "in-progress", "assigned": "agent-1",
+            "lifecycle": {
+                "generation": 1, "fence": 2, "attempt_sequence": 1,
+                "current_attempt": {"id":"attempt-1-1","generation":1,"fence":2,"actor_id":"agent-1"}
+            }
+        });
+        let victim = serde_json::json!({
+            "kind": "task", "id": "victim", "title": "Victim", "status": "open"
+        });
+        let graph_path = dir.join("graph.jsonl");
+        std::fs::write(&graph_path, format!("{source}\n{victim}\n")).unwrap();
+        let (_, binding) = crate::worker_control::mint_attempt_capability_for_worktree_mode(
+            &dir,
+            "source",
+            1,
+            "attempt-1-1",
+            2,
+            2,
+            "agent-1",
+            Some(project.path()),
+            crate::worker_control::WorkerControlMode::Trusted,
+        )
+        .unwrap();
+
+        let before = load_graph(&graph_path).unwrap();
+        let mut after = before.clone();
+        let Node::Task(mut tombstone) = after.take_node("victim").unwrap() else {
+            panic!("victim was not a task")
+        };
+        apply_trusted_mutation_attribution(
+            &mut tombstone,
+            &binding,
+            "archive",
+            &chrono::Utc::now().to_rfc3339(),
+            true,
+        )
+        .unwrap();
+        let mut ledger_projection = after.clone();
+        ledger_projection.add_node(Node::Task(tombstone));
+        crate::lifecycle::append_new_events(&graph_path, &before, &ledger_projection).unwrap();
+        save_graph(&after, &graph_path).unwrap();
+        crate::worker_control::append_trusted_mutation_audit(
+            &dir,
+            &binding,
+            "archive",
+            &["victim".into()],
+        )
+        .unwrap();
+
+        assert!(
+            load_graph(&graph_path)
+                .unwrap()
+                .get_task("victim")
+                .is_none()
+        );
+        let ledger = std::fs::read_to_string(dir.join("lifecycle/events.jsonl")).unwrap();
+        assert!(ledger.contains("trusted-graph-mutation"));
+        assert!(ledger.contains("target-disposition:deleted"));
+        assert!(ledger.contains("victim"));
+        let audit =
+            std::fs::read_to_string(dir.join("service/trusted-mutation-audit.jsonl")).unwrap();
+        assert!(audit.contains("victim"));
+        assert!(audit.contains("attempt-1-1"));
     }
 
     #[test]

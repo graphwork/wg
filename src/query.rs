@@ -404,40 +404,93 @@ fn quality_batch_state(graph: &WorkGraph, quality_id: &str) -> (Vec<String>, Str
     (ids, format!("b3:{}", blake3::hash(&bytes).to_hex()))
 }
 
-/// Persist the exact downstream batch before an optional quality worker is
-/// admitted. The file is create-once per task generation, so a failing worker
-/// can never bless its own edits by overwriting the baseline.
+fn quality_baseline_digest(baseline: &QualityBatchBaseline) -> String {
+    let bytes = serde_json::to_vec(baseline).expect("quality baseline serialization is infallible");
+    format!("b3:{}", blake3::hash(&bytes).to_hex())
+}
+
+/// Persist and lifecycle-seal the exact downstream batch before an optional
+/// quality worker is admitted. The JSON is only a cache: advisory release also
+/// requires its semantic digest in the append-only lifecycle ledger for this
+/// generation, so replacing the cache cannot bless worker edits.
 pub fn record_optional_quality_batch_baseline(
     dir: &Path,
-    graph: &WorkGraph,
-    task: &Task,
-) -> anyhow::Result<()> {
-    if !is_optional_quality_pass(task) {
-        return Ok(());
+    graph: &mut WorkGraph,
+    task_id: &str,
+) -> anyhow::Result<bool> {
+    let task = graph
+        .get_task(task_id)
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("quality-pass task {task_id} disappeared"))?;
+    if !is_optional_quality_pass(&task) {
+        return Ok(false);
     }
     let (batch_task_ids, batch_digest) = quality_batch_state(graph, &task.id);
     let baseline = QualityBatchBaseline {
-        schema_version: 1,
+        schema_version: 2,
         task_id: task.id.clone(),
         generation: task.lifecycle.generation,
         batch_task_ids,
-        batch_digest,
+        batch_digest: batch_digest.clone(),
     };
-    let path = quality_batch_baseline_path(dir, task);
+    let baseline_digest = quality_baseline_digest(&baseline);
+    let path = quality_batch_baseline_path(dir, &task);
     let bytes = serde_json::to_vec_pretty(&baseline)?;
     match crate::atomic_file::write_atomic_create_new(&path, &bytes) {
-        Ok(()) => Ok(()),
+        Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            let existing: QualityBatchBaseline = serde_json::from_slice(&std::fs::read(&path)?)?;
+            let existing = std::fs::read(&path)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<QualityBatchBaseline>(&bytes).ok());
             anyhow::ensure!(
-                existing == baseline,
-                "quality-pass baseline collision at {}",
+                existing.as_ref() == Some(&baseline),
+                "quality-pass baseline collision or tampering at {}",
                 path.display()
             );
-            Ok(())
         }
-        Err(error) => Err(error.into()),
+        Err(error) => return Err(error.into()),
     }
+
+    let baseline_ref = format!("quality-baseline:{baseline_digest}");
+    let batch_ref = format!("quality-batch:{batch_digest}");
+    let generation_ref = format!("quality-generation:{}", task.lifecycle.generation);
+    let existing_seal = task.lifecycle.audit.iter().find(|event| {
+        event.event_kind == "quality-batch-baselined"
+            && event.generation == task.lifecycle.generation
+    });
+    if let Some(event) = existing_seal {
+        anyhow::ensure!(
+            event.evidence_refs.contains(&baseline_ref)
+                && event.evidence_refs.contains(&batch_ref)
+                && event.evidence_refs.contains(&generation_ref),
+            "quality-pass lifecycle baseline collision for {} generation {}",
+            task.id,
+            task.lifecycle.generation
+        );
+        return Ok(false);
+    }
+
+    let request = crate::lifecycle::TransitionRequest::new(
+        crate::lifecycle::TransitionKind::QualityBatchBaselined {
+            generation: task.lifecycle.generation,
+            baseline_digest: baseline_digest.clone(),
+            batch_digest: batch_digest.clone(),
+        },
+        crate::lifecycle::LifecycleActor {
+            kind: crate::lifecycle::ActorKind::Dispatcher,
+            id: "quality-baseline-admission".into(),
+        },
+        "quality_batch_admission_baseline",
+        format!(
+            "quality-baseline:{}:{}:{}",
+            task.id, task.lifecycle.generation, baseline_digest
+        ),
+    )
+    .with_evidence(baseline_ref)
+    .with_evidence(batch_ref)
+    .with_evidence(generation_ref);
+    crate::lifecycle::apply_transition(graph.get_task_mut(task_id).unwrap(), request)?;
+    Ok(true)
 }
 
 fn quality_batch_is_unchanged(dir: Option<&Path>, graph: &WorkGraph, task: &Task) -> bool {
@@ -451,8 +504,20 @@ fn quality_batch_is_unchanged(dir: Option<&Path>, graph: &WorkGraph, task: &Task
     let Ok(baseline) = serde_json::from_slice::<QualityBatchBaseline>(&bytes) else {
         return false;
     };
+    let baseline_digest = quality_baseline_digest(&baseline);
+    let baseline_ref = format!("quality-baseline:{baseline_digest}");
+    let batch_ref = format!("quality-batch:{}", baseline.batch_digest);
+    let generation_ref = format!("quality-generation:{}", task.lifecycle.generation);
+    let sealed = task.lifecycle.audit.iter().any(|event| {
+        event.event_kind == "quality-batch-baselined"
+            && event.generation == task.lifecycle.generation
+            && event.evidence_refs.contains(&baseline_ref)
+            && event.evidence_refs.contains(&batch_ref)
+            && event.evidence_refs.contains(&generation_ref)
+    });
     let (batch_task_ids, batch_digest) = quality_batch_state(graph, &task.id);
-    baseline.schema_version == 1
+    sealed
+        && baseline.schema_version == 2
         && baseline.task_id == task.id
         && baseline.generation == task.lifecycle.generation
         && baseline.batch_task_ids == batch_task_ids
@@ -1058,12 +1123,10 @@ mod tests {
         graph.add_node(Node::Task(quality.clone()));
         graph.add_node(Node::Task(downstream.clone()));
         let temp = tempfile::tempdir().unwrap();
-        record_optional_quality_batch_baseline(
-            temp.path(),
-            &graph,
-            graph.get_task(&quality.id).unwrap(),
-        )
-        .unwrap();
+        assert!(
+            record_optional_quality_batch_baseline(temp.path(), &mut graph, &quality.id).unwrap()
+        );
+        crate::parser::save_graph(&graph, &temp.path().join("graph.jsonl")).unwrap();
 
         let disposition =
             dependency_disposition(&quality.id, &downstream.id, &graph, Some(temp.path()));
@@ -1082,6 +1145,32 @@ mod tests {
             .get_task_mut("downstream")
             .unwrap()
             .description = Some("quality worker mutated the batch before failing".into());
+        assert!(matches!(
+            dependency_disposition(
+                &quality.id,
+                &downstream.id,
+                &changed_graph,
+                Some(temp.path())
+            ),
+            DependencyDisposition::Blocked { .. }
+        ));
+
+        // Replacing the cache with a perfect snapshot of the worker-mutated
+        // batch still fails: its semantic digest is not the append-only seal.
+        let changed_quality = changed_graph.get_task(&quality.id).unwrap();
+        let (batch_task_ids, batch_digest) = quality_batch_state(&changed_graph, &quality.id);
+        let forged = QualityBatchBaseline {
+            schema_version: 2,
+            task_id: quality.id.clone(),
+            generation: changed_quality.lifecycle.generation,
+            batch_task_ids,
+            batch_digest,
+        };
+        std::fs::write(
+            quality_batch_baseline_path(temp.path(), changed_quality),
+            serde_json::to_vec_pretty(&forged).unwrap(),
+        )
+        .unwrap();
         assert!(matches!(
             dependency_disposition(
                 &quality.id,

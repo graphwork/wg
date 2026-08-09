@@ -654,6 +654,19 @@ fn claim_task_for_spawn(
         });
         task.started_at = Some(Utc::now().to_rfc3339());
         task.assigned = Some(agent_id.to_string());
+
+        // This serialized claim is the common admission boundary for daemon,
+        // manual `wg spawn`, and future adapters. Seal an optional quality
+        // batch only after AttemptReserved so status consumers see the running
+        // attempt first, but before the launch gate can release the worker.
+        if let Err(error) = worksgood::query::record_optional_quality_batch_baseline(
+            graph_path.parent().unwrap_or(graph_path),
+            graph,
+            task_id,
+        ) {
+            claim_error = Some(error.context("record optional quality-pass admission baseline"));
+            return false;
+        }
         true
     })
     .context("failed to atomically claim task for spawn")?;
@@ -903,11 +916,6 @@ pub(crate) fn spawn_agent_inner_authorized(
     let graph = load_graph(&graph_path).context("Failed to load graph")?;
 
     let task = graph.get_task_or_err(task_id)?;
-    // Common admission boundary for daemon, manual `wg spawn`, and future
-    // adapters. Optional quality release must never depend on which caller
-    // happened to admit the attempt.
-    worksgood::query::record_optional_quality_batch_baseline(dir, &graph, task)
-        .context("record optional quality-pass batch baseline before admission")?;
     if let Some((dep_id, reason)) = spawn_dependency_blocker(&graph, task_id, dir) {
         anyhow::bail!(
             "Cannot spawn task '{}': blocked by prerequisite '{}': {}. Repair with `wg retry {}` or explicitly remove/relink the edge (`wg rm-dep {} {}`).",

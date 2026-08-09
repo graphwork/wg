@@ -143,7 +143,186 @@ fn render_response(
     Ok(())
 }
 
-fn trusted_cli_passthrough() -> Result<Option<()>> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TrustedCliClass {
+    Coordination,
+    Privileged,
+}
+
+/// Exhaustive compile-time classification of every top-level CLI family.
+/// Adding a command cannot silently widen or narrow worker authority: Rust
+/// requires this match to be updated. Coordination uses the normal CLI;
+/// service/admin, execution management, federation/review, and immutable
+/// completion families remain protected.
+fn trusted_cli_class(command: &Commands) -> TrustedCliClass {
+    match command {
+        Commands::Reset { .. }
+        | Commands::Rescue { .. }
+        | Commands::Insert { .. }
+        | Commands::Add { .. }
+        | Commands::Edit { .. }
+        | Commands::Abandon { .. }
+        | Commands::Retry { .. }
+        | Commands::Recover { .. }
+        | Commands::Requeue { .. }
+        | Commands::Approve { .. }
+        | Commands::Reject { .. }
+        | Commands::Claim { .. }
+        | Commands::Unclaim { .. }
+        | Commands::Pause { .. }
+        | Commands::Resume { .. }
+        | Commands::Publish { .. }
+        | Commands::Wait { .. }
+        | Commands::AddDep { .. }
+        | Commands::RmDep { .. }
+        | Commands::Reclaim { .. }
+        | Commands::Ready
+        | Commands::Discover { .. }
+        | Commands::Blocked { .. }
+        | Commands::WhyBlocked { .. }
+        | Commands::Check
+        | Commands::Cycles
+        | Commands::Cron { .. }
+        | Commands::List { .. }
+        | Commands::Viz { .. }
+        | Commands::GraphExport { .. }
+        | Commands::Cost { .. }
+        | Commands::Coordinate { .. }
+        | Commands::Plan { .. }
+        | Commands::Reschedule { .. }
+        | Commands::Reprioritize { .. }
+        | Commands::Impact { .. }
+        | Commands::Structure
+        | Commands::Bottlenecks
+        | Commands::Velocity { .. }
+        | Commands::Aging
+        | Commands::Forecast
+        | Commands::Workload
+        | Commands::Resources
+        | Commands::CriticalPath
+        | Commands::Analyze
+        | Commands::Show { .. }
+        | Commands::Capabilities
+        | Commands::Runs { .. }
+        | Commands::Log { .. }
+        | Commands::Tokens { .. }
+        | Commands::Spend { .. }
+        | Commands::Msg { .. }
+        | Commands::Checkpoint { .. }
+        | Commands::Assign { .. }
+        | Commands::Match { .. }
+        | Commands::Heartbeat { .. }
+        | Commands::HeartbeatWatch { .. }
+        | Commands::Artifact { .. }
+        | Commands::Context { .. }
+        | Commands::Next { .. }
+        | Commands::Trajectory { .. }
+        | Commands::Html { .. }
+        | Commands::Which { .. }
+        | Commands::Status { .. }
+        | Commands::Stats
+        | Commands::Metrics { .. }
+        | Commands::Matrix { .. } => TrustedCliClass::Coordination,
+
+        Commands::Init { .. }
+        | Commands::Done { .. }
+        | Commands::CompletionObject { .. }
+        | Commands::CompletionManifest { .. }
+        | Commands::Submit { .. }
+        | Commands::Land { .. }
+        | Commands::Contract { .. }
+        | Commands::Finalize { .. }
+        | Commands::Candidate { .. }
+        | Commands::MergeResolution { .. }
+        | Commands::Fail { .. }
+        | Commands::ClassifyFailure { .. }
+        | Commands::RecordTelemetry { .. }
+        | Commands::ClassifyNoOp { .. }
+        | Commands::PiStreamBridge { .. }
+        | Commands::PiStreamObserve { .. }
+        | Commands::ChatRuntimeWrapper { .. }
+        | Commands::Incomplete { .. }
+        | Commands::Doctor
+        | Commands::Cleanup { .. }
+        | Commands::Worktree(..)
+        | Commands::Disk(..)
+        | Commands::Archive { .. }
+        | Commands::Coordinator(..)
+        | Commands::Gc { .. }
+        | Commands::Trace { .. }
+        | Commands::Func { .. }
+        | Commands::Replay { .. }
+        | Commands::Openrouter { .. }
+        | Commands::User { .. }
+        | Commands::Chat { .. }
+        | Commands::Resource { .. }
+        | Commands::Session { .. }
+        | Commands::Skill { .. }
+        | Commands::PiPlugin { .. }
+        | Commands::PiWatchdog { .. }
+        | Commands::Agency { .. }
+        | Commands::Peer { .. }
+        | Commands::Role { .. }
+        | Commands::Tradeoff { .. }
+        | Commands::Exec { .. }
+        | Commands::Agent { .. }
+        | Commands::Spawn { .. }
+        | Commands::Evaluate { .. }
+        | Commands::Evolve { .. }
+        | Commands::Profile { .. }
+        | Commands::Config { .. }
+        | Commands::DeadAgents { .. }
+        | Commands::Sweep { .. }
+        | Commands::Migrate { .. }
+        | Commands::Upgrade { .. }
+        | Commands::Agents { .. }
+        | Commands::Kill { .. }
+        | Commands::Reap { .. }
+        | Commands::Service { .. }
+        | Commands::Tui { .. }
+        | Commands::TuiDump { .. }
+        | Commands::Screencast { .. }
+        | Commands::Server { .. }
+        | Commands::Setup { .. }
+        | Commands::Quickstart
+        | Commands::DevCheck
+        | Commands::AgentGuide
+        | Commands::Notify { .. }
+        | Commands::Watch { .. }
+        | Commands::Telegram { .. }
+        | Commands::Endpoints { .. }
+        | Commands::Endpoint { .. }
+        | Commands::Models { .. }
+        | Commands::ModelScout { .. }
+        | Commands::Model { .. }
+        | Commands::Key { .. }
+        | Commands::Login { .. }
+        | Commands::Secret { .. }
+        | Commands::Identity { .. }
+        | Commands::FedNode { .. }
+        | Commands::Review { .. }
+        | Commands::Provider { .. }
+        | Commands::Pilot { .. }
+        | Commands::Nex(..)
+        | Commands::TuiNex { .. }
+        | Commands::TuiPty { .. }
+        | Commands::SpawnTask { .. }
+        | Commands::WorktreeObserverRun { .. }
+        | Commands::WorktreeObserverReconcile { .. }
+        | Commands::ClaudeHandler { .. }
+        | Commands::CodexHandler { .. }
+        | Commands::OpenCodeHandler { .. }
+        | Commands::PiHandler { .. }
+        | Commands::Executors { .. }
+        | Commands::NativeExec { .. }
+        | Commands::ApplyPlacement { .. } => TrustedCliClass::Privileged,
+    }
+}
+
+fn trusted_cli_passthrough(parsed_command: &Commands) -> Result<Option<()>> {
+    if trusted_cli_class(parsed_command) != TrustedCliClass::Coordination {
+        anyhow::bail!("worker_control.operation_refused: privileged CLI family");
+    }
     let argv: Vec<String> = std::env::args().skip(1).collect();
     if argv
         .iter()
@@ -156,11 +335,6 @@ fn trusted_cli_passthrough() -> Result<Option<()>> {
         .find(|arg| !arg.starts_with('-'))
         .map(String::as_str)
         .unwrap_or("");
-    if !worksgood::worker_control::trusted_coordination_command(command) {
-        anyhow::bail!(
-            "worker_control.operation_refused: {command} is not in the trusted local graph-coordination boundary"
-        );
-    }
     // SAFETY: CLI dispatch is single-threaded at this point. The marker is
     // consumed only by this process's graph commit path.
     unsafe { std::env::set_var("WG_TRUSTED_DIRECT_CLI", command) };
@@ -199,7 +373,7 @@ pub fn maybe_run(command: &Commands, json: bool) -> Result<Option<()>> {
     let operation = match command {
         Commands::Capabilities => Some(WorkerOperation::Capabilities),
         Commands::Show { id } if mode == WorkerControlMode::Trusted && !task_is_own(id) => {
-            return trusted_cli_passthrough();
+            return trusted_cli_passthrough(command);
         }
         Commands::Show { id } => {
             task_matches(id)?;
@@ -208,7 +382,7 @@ pub fn maybe_run(command: &Commands, json: bool) -> Result<Option<()>> {
         Commands::Context { task, dependents }
             if mode == WorkerControlMode::Trusted && (!task_is_own(task) || *dependents) =>
         {
-            return trusted_cli_passthrough();
+            return trusted_cli_passthrough(command);
         }
         Commands::Context { task, dependents } => {
             task_matches(task)?;
@@ -231,7 +405,7 @@ pub fn maybe_run(command: &Commands, json: bool) -> Result<Option<()>> {
                 || *list
                 || actor.is_some()) =>
         {
-            return trusted_cli_passthrough();
+            return trusted_cli_passthrough(command);
         }
         Commands::Log {
             id,
@@ -275,7 +449,7 @@ pub fn maybe_run(command: &Commands, json: bool) -> Result<Option<()>> {
                 }
             } =>
         {
-            return trusted_cli_passthrough();
+            return trusted_cli_passthrough(command);
         }
         Commands::Msg { command } => match command {
             MsgCommands::Read { task_id, .. } => {
@@ -584,7 +758,7 @@ pub fn maybe_run(command: &Commands, json: bool) -> Result<Option<()>> {
             )?;
             return Ok(Some(()));
         }
-        _ if mode == WorkerControlMode::Trusted => return trusted_cli_passthrough(),
+        _ if mode == WorkerControlMode::Trusted => return trusted_cli_passthrough(command),
         _ => anyhow::bail!(
             "worker_control.operation_refused: this command requires operator/graph authority; effective mode={mode}; run `wg capabilities`"
         ),
@@ -594,4 +768,25 @@ pub fn maybe_run(command: &Commands, json: bool) -> Result<Option<()>> {
         send(operation)?;
     }
     Ok(Some(()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trusted_cli_class_is_exhaustive_and_protects_management() {
+        assert_eq!(
+            trusted_cli_class(&Commands::Check),
+            TrustedCliClass::Coordination
+        );
+        assert_eq!(
+            trusted_cli_class(&Commands::Quickstart),
+            TrustedCliClass::Privileged
+        );
+        assert_eq!(
+            trusted_cli_class(&Commands::Stats),
+            TrustedCliClass::Coordination
+        );
+    }
 }

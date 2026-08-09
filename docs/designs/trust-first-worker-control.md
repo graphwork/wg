@@ -63,15 +63,18 @@ Trusted does not mean unfenced or unaudited:
    before replacement.
 3. Every changed task receives a `trusted-graph-mutation` lifecycle event and
    task-log attribution naming command, source, generation, actor, attempt,
-   fence, and lease. The lifecycle ledger is fsynced before graph replacement;
+   fence, and lease. Deleted tasks receive the same event as an append-only
+   tombstone before their compatibility row disappears. The lifecycle ledger is fsynced before graph replacement;
    a second fsynced append-only `trusted-mutation-audit.jsonl` records the exact
    committed task IDs.
 4. Own-task completion stays on typed `completion-object` → immutable manifest
    → `submit` → exact review receipts → `land` (Land only) → derived `done`.
    The direct CLI boundary is the normal project CLI rather than a second
-   coordination allowlist. Explicit privileged families (`trace`, `func`,
-   `replay`, service/admin, migration, federation/provider/review) fail closed
-   and cannot replace immutable completion evidence.
+   operation broker. Every top-level family is exhaustively classified at
+   compile time (so new families cannot fail open): explicit privileged families
+   (`spawn`/worker management, `trace`, `func`, `replay`, service/admin,
+   migration, federation/provider/review) fail closed and cannot replace
+   immutable completion evidence.
 5. Existing command locks/CAS/transactions remain the mutation mechanism; no
    alternate graph writer or permission ceremony is introduced.
 
@@ -86,8 +89,10 @@ optional `.quality-pass-*` with typed provider/local-infrastructure evidence
 an explicitly allowlisted normalized provider signal with route provenance)
 may yield an `AdvisoryQualityBypass`. The common spawn/admission boundary used
 by daemon scheduling, manual `wg spawn`, and future adapters create-once
-snapshots the exact transitive downstream batch for that task generation. Release occurs
-only when current task IDs and serialized metadata match that baseline; a
+snapshots the exact transitive downstream batch for that task generation and seals its
+semantic digest into append-only lifecycle evidence. The JSON cache alone has no
+authority. Release occurs only when the seal, cache, current task IDs, and serialized
+metadata all match; a
 quality worker that changed the batch before failing remains an ordinary
 blocker. The satisfaction boundary itself emits the loud warning, so readiness,
 show/completion, and dispatcher paths cannot silently consume the bypass; the

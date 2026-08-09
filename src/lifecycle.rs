@@ -343,6 +343,14 @@ pub enum TransitionKind {
         source_fence: u64,
         source_lease_epoch: u64,
     },
+    /// Create-once admission seal for an optional quality-pass batch. The
+    /// baseline cache is accepted only when its semantic digest matches this
+    /// append-only lifecycle record for the same generation.
+    QualityBatchBaselined {
+        generation: u64,
+        baseline_digest: String,
+        batch_digest: String,
+    },
     MessageObserved {
         message_id: String,
     },
@@ -411,6 +419,7 @@ impl TransitionKind {
             Self::ReconciliationIssue { .. } => "reconciliation-issue",
             Self::LegacyCompletionQuarantined { .. } => "legacy-completion-quarantined",
             Self::TrustedGraphMutation { .. } => "trusted-graph-mutation",
+            Self::QualityBatchBaselined { .. } => "quality-batch-baselined",
             Self::MessageObserved { .. } => "message-observed",
             Self::LegacyCheckpointImported => "legacy-checkpoint-imported",
             Self::PiContinuationAuthorized { .. } => "pi-continuation-authorized",
@@ -1076,6 +1085,23 @@ impl LifecycleKernel {
                 }
                 // Audit only: metadata was changed by the surrounding normal
                 // CLI transaction; status/ownership projection is unchanged.
+            }
+            TransitionKind::QualityBatchBaselined {
+                generation,
+                baseline_digest,
+                batch_digest,
+            } => {
+                Self::require_actor(&request, &[ActorKind::Dispatcher])?;
+                if *generation != task.lifecycle.generation
+                    || !baseline_digest.starts_with("b3:")
+                    || !batch_digest.starts_with("b3:")
+                {
+                    return Err(TransitionRejection::new(
+                        "quality_baseline_binding_invalid",
+                        "quality baseline must bind this generation and immutable digests",
+                    ));
+                }
+                // Audit-only admission evidence.
             }
             TransitionKind::MessageObserved { .. } => {
                 // Ordinary messages are immutable data, never lifecycle

@@ -49,6 +49,11 @@ if wg service status > protected-service.out 2>&1; then
   exit 92
 fi
 grep -q 'worker_control.operation_refused' protected-service.out
+if wg spawn downstream --executor pi > protected-spawn.out 2>&1; then
+  echo "trusted worker unexpectedly gained worker-management authority" >&2
+  exit 96
+fi
+grep -q 'worker_control.operation_refused' protected-spawn.out
 if wg --dir /tmp list > protected-cross-graph.out 2>&1; then
   echo "trusted worker unexpectedly selected a different graph" >&2
   exit 93
