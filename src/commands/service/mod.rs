@@ -810,8 +810,8 @@ pub(crate) fn admission_capacity_status(
     config: &Config,
     coordinator: &CoordinatorState,
 ) -> AdmissionCapacityStatus {
-    let generation_matches =
-        current_service_birth_identity(dir) == coordinator.service_pid_start_identity;
+    let generation_matches = current_service_birth_identity(dir)
+        .is_some_and(|current| coordinator.service_pid_start_identity.as_ref() == Some(&current));
     let runtime_max_agents = generation_matches
         .then_some(coordinator.runtime_max_agents)
         .flatten();
@@ -845,7 +845,9 @@ pub(crate) fn admission_capacity_status(
 /// suppresses waiting rows unless the PID's OS birth identity still matches the
 /// authenticated service state (plain PID liveness is never enough).
 pub(crate) fn suppress_stale_admission(dir: &Path, coordinator: &mut CoordinatorState) {
-    if current_service_birth_identity(dir) != coordinator.service_pid_start_identity {
+    let generation_matches = current_service_birth_identity(dir)
+        .is_some_and(|current| coordinator.service_pid_start_identity.as_ref() == Some(&current));
+    if !generation_matches {
         coordinator.admission_deferred_tasks = 0;
         coordinator.admission_deferred_reason = None;
         coordinator.admission_deferred.clear();
