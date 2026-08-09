@@ -375,7 +375,7 @@ Prefer deletion, bypass, and reuse of ordinary WG commands over new abstractions
 - Hidden diagnostic completion subcommands remain callable but no longer appear in normal top-level help.
 - Default `wg list --all` task rows now show compact assignment/FLIP/eval state and attempt count parenthetically; review activities remain non-task audit records.
 - The clean `simple_local_recovery` smoke now proves advisory completion, operator recovery, compact parent-row activity, exact strict findings, and bounded strict exhaustion.
-- CLI text/JSON already expose lifecycle audit, attempts, candidates, and immutable review activity; the TUI task inspector now renders the same concepts in a dedicated Completion history section with generation, attempt/fence, candidate digest, review route/verdict, usage, and cost. A focused TUI state test passed.
+- CLI text/JSON expose lifecycle audit, current attempts/candidates, and review activities that successfully project; the TUI task inspector renders those same available concepts in a dedicated Completion history section. A focused TUI state test passed, while the later real run proved superseded semantic-reject projection is still incomplete (Phase 6 remains unchecked above).
 
 ### 2026-08-09 — Golden canary, install, and disposable reconciliation
 
@@ -391,3 +391,4 @@ Prefer deletion, bypass, and reuse of ordinary WG commands over new abstractions
 - The independent-review run exposed two remaining activity-plane facts, so Phase 6 was deliberately recalibrated rather than falsely completed: live semantic review receipts were not projected into `completion_review_activity`, and manual diagnostic resubmission can still invite reviewer-driven iteration. These are visible follow-ups, not completion authorities.
 - Fixed a separate concrete recovery defect observed during that run: after a moved-main/dirty-root landing failure, `wg done` now compares worker HEAD with the reviewed Git commit and snapshots the repaired/rebased HEAD instead of silently reusing a stale accepted candidate.
 - Reverified both external recovery SHA-256 checksums before `wg sweep --reap-targets`; no eligible stale target directories remained.
+- After `99-SYNTHESIS.md` landed, restored the named pre-audit stash exactly as promised; `.gitignore`, `AGENTS.md`, and `CLAUDE.md` are again present as the operator's pre-existing uncommitted edits and were not folded into recovery commits.
