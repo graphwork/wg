@@ -133,59 +133,91 @@ pub fn control_restrictions(mode: WorkerControlMode) -> &'static str {
     }
 }
 
-/// Positive boundary for ordinary trusted-worker CLI coordination. Commands in
-/// this set run through the normal CLI implementation; the list is not an
-/// operation broker. Terminal completion stays on typed capability operations,
-/// while service/config/admin/evidence internals are absent and fail closed.
+/// Ordinary trusted-local CLI boundary. Trusted means the normal project CLI,
+/// not a second coordination allowlist that must be updated for every new graph
+/// verb. Only privileged families stay outside that boundary: project/service
+/// administration, identity/federation/provider/review, replay/trace/function
+/// execution, migration, and immutable completion internals. Typed own-attempt
+/// completion commands are handled before direct CLI dispatch.
 pub fn trusted_coordination_command(command: &str) -> bool {
-    matches!(
+    !matches!(
         command,
-        "show"
-            | "status"
-            | "list"
-            | "ready"
-            | "discover"
-            | "blocked"
-            | "why-blocked"
-            | "context"
-            | "check"
-            | "structure"
-            | "critical-path"
-            | "bottlenecks"
-            | "impact"
-            | "plan"
-            | "forecast"
-            | "workload"
-            | "resources"
-            | "coordinate"
-            | "metrics"
-            | "analyze"
-            | "cost"
-            | "spend"
-            | "stats"
-            | "velocity"
-            | "aging"
-            | "cycles"
-            | "matrix"
-            | "trajectory"
-            | "next"
-            | "which"
-            | "add"
-            | "edit"
-            | "insert"
-            | "add-dep"
-            | "rm-dep"
-            | "assign"
-            | "reprioritize"
-            | "publish"
-            | "pause"
-            | "resume"
-            | "retry"
-            | "requeue"
-            | "reschedule"
-            | "abandon"
-            | "log"
-            | "msg"
+        "" | "init"
+            | "config"
+            | "setup"
+            | "service"
+            | "daemon"
+            | "supervise"
+            | "secret"
+            | "profile"
+            | "pi-plugin"
+            | "agent"
+            | "identity"
+            | "peer"
+            | "fed-node"
+            | "provider"
+            | "review"
+            | "evaluate"
+            | "replay"
+            | "trace"
+            | "func"
+            | "migrate"
+            | "completion-object"
+            | "completion-manifest"
+            | "contract"
+            | "candidate"
+            | "merge-resolution"
+            | "submit"
+            | "land"
+            | "done"
+            | "finalize"
+            | "incomplete"
+            | "doctor"
+            | "cleanup"
+            | "worktree"
+            | "disk"
+            | "archive"
+            | "coordinator"
+            | "gc"
+            | "server"
+            | "user"
+            | "chat"
+            | "resource"
+            | "session"
+            | "skill"
+            | "agency"
+            | "role"
+            | "tradeoff"
+            | "dead-agents"
+            | "sweep"
+            | "upgrade"
+            | "agents"
+            | "kill"
+            | "reap"
+            | "openrouter"
+            | "endpoints"
+            | "endpoint"
+            | "models"
+            | "model-scout"
+            | "model"
+            | "key"
+            | "login"
+            | "pilot"
+            | "nex"
+            | "native-exec"
+            | "apply-placement"
+            | "spawn-task"
+            | "worktree-observer-run"
+            | "worktree-observer-reconcile"
+            | "claude-handler"
+            | "codex-handler"
+            | "opencode-handler"
+            | "pi-handler"
+            | "executors"
+            | "notify"
+            | "watch"
+            | "telegram"
+            | "dev-check"
     )
 }
 
@@ -1554,7 +1586,7 @@ mod tests {
     }
 
     #[test]
-    fn trusted_cli_boundary_is_positive_and_excludes_privileged_families() {
+    fn trusted_cli_boundary_is_normal_cli_with_privileged_families_removed() {
         for allowed in [
             "show",
             "add",
@@ -1563,6 +1595,9 @@ mod tests {
             "reprioritize",
             "publish",
             "msg",
+            // A newly-added ordinary graph command must not require a second
+            // worker-control allowlist update.
+            "future-coordinate",
         ] {
             assert!(trusted_coordination_command(allowed), "{allowed}");
         }
@@ -1572,8 +1607,14 @@ mod tests {
             "replay",
             "service",
             "config",
+            "identity",
+            "provider",
+            "review",
+            "migrate",
             "completion-object",
             "candidate",
+            "merge-resolution",
+            "finalize",
         ] {
             assert!(!trusted_coordination_command(refused), "{refused}");
         }

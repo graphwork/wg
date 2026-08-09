@@ -269,9 +269,9 @@ pub fn maybe_run(command: &Commands, json: bool) -> Result<Option<()>> {
                     task_id,
                     as_identity,
                     ..
-                } => as_identity.is_some() || task_id.as_deref().is_none_or(|id| !task_is_own(id)),
+                } => as_identity.is_none() && task_id.as_deref().is_some_and(|id| !task_is_own(id)),
                 MsgCommands::Send { task_id, to, .. } => {
-                    to.is_some() || task_id.as_deref().is_none_or(|id| !task_is_own(id))
+                    to.is_none() && task_id.as_deref().is_some_and(|id| !task_is_own(id))
                 }
             } =>
         {

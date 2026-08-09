@@ -63,6 +63,11 @@ if [[ $mode == scoped ]]; then
 else
   wg msg list "$WG_TASK_ID" > read-only-messages.out
   grep -q 'operator message for read-only observation' read-only-messages.out
+  if wg msg poll "$WG_TASK_ID" > read-only-poll.out 2>&1; then
+    echo "read-only poll unexpectedly advanced message state" >&2
+    exit 92
+  fi
+  grep -q 'worker_control.read_only_refused' read-only-poll.out
   if wg log "$WG_TASK_ID" "forbidden read-only log" > read-only-log.out 2>&1; then
     echo "read-only graph log unexpectedly allowed" >&2
     exit 90
@@ -74,7 +79,7 @@ else
   fi
   grep -q 'worker_control.read_only_refused' read-only-done.out
   printf 'read-only\n' > read-only.txt
-  git add read-only-show.json read-only-messages.out read-only-log.out read-only-done.out read-only.txt
+  git add read-only-show.json read-only-messages.out read-only-poll.out read-only-log.out read-only-done.out read-only.txt
 fi
 git commit -qm "worker capability evidence: $mode"
 # Keep the owner alive so the scenario can inspect the capability boundary

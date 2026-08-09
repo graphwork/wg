@@ -682,7 +682,8 @@ fn validate_worker_capability(
     if binding.control_mode == worksgood::worker_control::WorkerControlMode::ReadOnly
         && matches!(
             request.operation,
-            WorkerOperation::MessageSend { .. }
+            WorkerOperation::MessagePoll { .. }
+                | WorkerOperation::MessageSend { .. }
                 | WorkerOperation::Log { .. }
                 | WorkerOperation::ArtifactAdd { .. }
                 | WorkerOperation::ArtifactRemove { .. }

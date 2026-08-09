@@ -68,9 +68,10 @@ Trusted does not mean unfenced or unaudited:
    committed task IDs.
 4. Own-task completion stays on typed `completion-object` → immutable manifest
    → `submit` → exact review receipts → `land` (Land only) → derived `done`.
-   The direct CLI boundary positively names ordinary coordination verbs; omitted
-   families (`trace`, `func`, `replay`, service/admin, federation/review) fail
-   closed and cannot replace immutable completion evidence.
+   The direct CLI boundary is the normal project CLI rather than a second
+   coordination allowlist. Explicit privileged families (`trace`, `func`,
+   `replay`, service/admin, migration, federation/provider/review) fail closed
+   and cannot replace immutable completion evidence.
 5. Existing command locks/CAS/transactions remain the mutation mechanism; no
    alternate graph writer or permission ceremony is introduced.
 
