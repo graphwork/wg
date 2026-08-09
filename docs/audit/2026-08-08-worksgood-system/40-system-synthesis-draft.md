@@ -1,12 +1,19 @@
 # WorksGood system audit — comprehensive fractal synthesis (draft)
 
-**Audit date:** 2026-08-08  
-**Status:** review draft; audit findings and proposals, not a product contract  
-**Primary audited snapshot:** `b0892ea7496fd2cc8f641417a3d8e33ca9add369`; later bundle artifacts state their own source-equivalence checks  
-**Evidence checked through:** 2026-08-08  
-**Change boundary:** this file only; no production source, tests, workflows, or pre-existing documentation were changed  
-**Normative audit method:** [`README.md`](README.md)  
-**Detailed contradiction authority:** [`30-contradiction-and-drift-register.md`](30-contradiction-and-drift-register.md)  
+**Audit date:** 2026-08-08
+
+**Status:** review draft; audit findings and proposals, not a product contract
+
+**Primary audited snapshot:** `b0892ea7496fd2cc8f641417a3d8e33ca9add369`; later bundle artifacts state their own source-equivalence checks
+
+**Evidence checked through:** 2026-08-08
+
+**Change boundary:** this file only; no production source, tests, workflows, or pre-existing documentation were changed
+
+**Normative audit method:** [`README.md`](README.md)
+
+**Detailed contradiction authority:** [`30-contradiction-and-drift-register.md`](30-contradiction-and-drift-register.md)
+
 **Synchronization plan:** [`31-documentation-sync-plan.md`](31-documentation-sync-plan.md)
 
 > This draft is deliberately fractal. A reader may stop after §1, after any section abstract, after the findings and risk tables, or continue through direct evidence. Each major section repeats the same shape: **abstract → findings → risks → recommendations → deeper evidence**. It does not resolve contradictions by choosing the newest prose.
