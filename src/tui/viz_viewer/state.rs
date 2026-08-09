@@ -5483,6 +5483,9 @@ fn authenticated_service_context(
         return None;
     }
     let state = observation.state.as_ref()?;
+    if !worksgood::service::is_process_running(state.pid) {
+        return None;
+    }
     let identity = observation.handshake_identity.as_ref()?;
     let client = worksgood::service_identity::os_process_identity();
     let executor = coordinator.executor_override.as_deref().or((!coordinator
@@ -19004,7 +19007,9 @@ impl VizApp {
         self.chat.coordinator_active = ServiceState::load(&self.workgraph_dir)
             .ok()
             .flatten()
-            .is_some_and(|s| is_service_alive(s.pid));
+            .is_some_and(|s| {
+                is_service_alive(s.pid) && worksgood::service::is_process_running(s.pid)
+            });
     }
 
     /// Poll service health: read state files to determine health level,
@@ -19046,6 +19051,7 @@ impl VizApp {
 
         // 2. Check if PID is alive
         if !is_service_alive(state.pid)
+            || !worksgood::service::is_process_running(state.pid)
             || state.pid_start_identity.is_none()
             || state.pid_start_identity
                 != worksgood::service_identity::pid_start_identity(state.pid)
@@ -24375,8 +24381,9 @@ impl VizApp {
         {
             use crate::commands::service::{ServiceState, is_service_alive};
             let ss = ServiceState::load(&self.workgraph_dir).ok().flatten();
-            self.config_panel.service_running =
-                ss.as_ref().is_some_and(|s| is_service_alive(s.pid));
+            self.config_panel.service_running = ss.as_ref().is_some_and(|s| {
+                is_service_alive(s.pid) && worksgood::service::is_process_running(s.pid)
+            });
             self.config_panel.service_pid = ss.as_ref().map(|s| s.pid);
         }
         entries.push(ConfigEntry {
