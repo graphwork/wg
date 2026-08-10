@@ -8,8 +8,8 @@ advisory manifest review and must not be interpreted as this quality score:
 - input is one ordinary reviewed, receipt-backed `Done`;
 - current generation, attempt, fence, immutable candidate/review/output bytes,
   terminal observation, and publication are re-verified;
-- the exact configured `[models.evaluator]` **Pi** route and inherited reasoning
-  are used;
+- the exact effective `models.evaluator` **Pi** route and inherited reasoning
+  are used after applying the task's named-profile overlay (when present);
 - one no-tools, no-session call runs with a bounded prompt, response, notes, and
   timeout;
 - one deterministic create-once evaluation is written to
@@ -36,16 +36,31 @@ calling Pi or writing anything.
 ## One explicit real-model canary
 
 Automated tests use fake Pi. An operator with a configured/login-ready Pi route
-may run **exactly this one live canary command** against a disposable ordinary
-`Done` task:
+may run one canary against an expressly selected ordinary `Done` task. Prefer a
+disposable task. A receipt-backed recovery-graph task is appropriate only when
+validating that graph is itself the canary objective; snapshot its graph bytes and
+status first.
+
+Preflight is read-only and does not count as the live call:
 
 ```bash
 TASK=receipt-backed-disposable-done
-wg --json evaluate run "$TASK" | tee /tmp/wg-scored-evaluation-canary.json
+wg --json evaluate run "$TASK" --dry-run \
+  | tee /tmp/wg-scored-evaluation-canary-dry-run.json
 ```
 
-Do not loop it or run a model matrix. The bounded evidence to retain is the one
-JSON object. Verify locally:
+Confirm `eligible=true`, `already_recorded=false`, the intended effective route,
+and an unchanged graph digest. Then make **one** provider call:
+
+```bash
+wg --json evaluate run "$TASK" \
+  > /tmp/wg-scored-evaluation-canary.json \
+  2> /tmp/wg-scored-evaluation-canary.err
+```
+
+Do not loop it or run a model matrix. Retain both files. If the command fails,
+confirm no evaluation row was created, preserve stderr, and stop without retrying
+or manufacturing a score. On success, verify the one JSON object locally:
 
 ```bash
 python3 - <<'PY'
@@ -69,5 +84,8 @@ print("bounded real-model canary evidence OK")
 PY
 ```
 
-A second `wg --json evaluate run "$TASK"` must report
-`idempotent_replay=true` and must not call the model again.
+After success only, a second `wg --json evaluate run "$TASK"` must report
+`created=false` and `idempotent_replay=true`. The evaluation row count and its
+bytes, plus the source graph bytes/status, must remain unchanged. This is an
+immutable-row replay check, not a second live model canary: it must not call the
+provider again.

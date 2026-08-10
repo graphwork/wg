@@ -410,24 +410,28 @@ Candidate checkpoints for inspection—not automatic merge instructions:
 
 Rule: no branch is merged wholesale merely because later commits claim to close reviewer findings.
 
-## 8. Golden-path canary
+## 8. Golden-path validation matrix
 
-Run in a clean temporary HOME and graph with fake providers and isolated worktrees:
+The recovery text originally described one monolithic canary. The repeatable
+proof is a matrix of isolated, clean temporary HOME/graph scenarios; calling one
+scenario the proof of all fourteen properties overstated the evidence.
 
-1. Configure one local route and start WG.
-2. Create a three-task fan-out from one user request.
-3. Let worker A inspect and improve worker B’s task metadata.
-4. Let worker B create/link a legitimate child task.
-5. Restart the daemon before worker C’s first authorized model turn.
-6. Confirm worker C starts automatically after recovery with no source failure/retry charge.
-7. Complete one task normally.
-8. Inject one deterministic real defect; confirm FLIP/eval produces visible findings and one repair succeeds.
-9. Inject reviewer/provider unavailability; confirm the source does not fail and no worker spins.
-10. Confirm every real task reaches Done or a visible unowned repair state.
-11. Confirm default list/TUI contains one row per real task with parenthetical activity.
-12. Confirm expanded history exposes all attempts/candidates/reviews and separate costs.
-13. Confirm an explicit scoped/remote worker still cannot mutate an unrelated task.
-14. Confirm the operator recovery command works and appends a reasoned audit event.
+| Requirement | Receipt-backed scenario evidence | Status |
+|---|---|---|
+| Configure/start; three-task request fan-out; A improves B; B links a child; restart before dependent C; automatic C completion with zero source retry | `simple_local_fanout_restart.sh` | [x] |
+| Normal completion with authoritative deterministic validation, FLIP Pass, completion Eval, publication, and Done | `completion_validation_evidence.sh` | [x] |
+| Semantic rejection/unavailability chronology, repaired superseding candidate, restart durability, task-row/history visibility, and separate review cost | `pi_done_accounting_review_lane_visibility.sh` | [x] |
+| Reviewer unavailability is lifecycle-neutral; strict disagreement is bounded; operator recovery is reason-bound; terminal observations remain create-once and unscored across migration/replay | `simple_local_recovery.sh` | [x] |
+| Trusted-local cross-task coordination remains broad | `trust_first_local_worker_coordination.sh` | [x] |
+| Explicit scoped/read-only authority stays own-task-only and cannot complete or mutate an unrelated task | `worker_control_capability_broker.sh` | [x] |
+| Remote execution retains scoped UCAN, slice-only, lease/replay, disjoint-verification, and confidential fail-closed bounds | `exec_spark_borrowed_box.sh` | [x] |
+| Unset build capacity inherits worker slots; explicit hot throttle remains visible | `build_admission_inherits_worker_slots.sh` | [x] |
+| Concurrent worker-owned Land/Report/Explore completion remains receipt-backed and replacement-free | `worker_owned_completion_canary.sh` | [x] |
+| Run every independent daemon scenario concurrently in one shared host stress batch | No isolated-scenario contract promises cross-scenario timing; one parallel broker run transiently failed while two subsequent sequential isolated runs passed | [ ] |
+
+The unchecked stress-batch row is not required for the product contract and is
+not silently promoted to evidence. Each checked scenario owns an isolated graph
+and is repeatable on its own.
 
 Required final assertion:
 
@@ -514,3 +518,49 @@ Prefer deletion, bypass, and reuse of ordinary WG commands over new abstractions
 - Fixed a separate concrete recovery defect observed during that run: after a moved-main/dirty-root landing failure, `wg done` now compares worker HEAD with the reviewed Git commit and snapshots the repaired/rebased HEAD instead of silently reusing a stale accepted candidate.
 - Reverified both external recovery SHA-256 checksums before `wg sweep --reap-targets`; no eligible stale target directories remained.
 - After `99-SYNTHESIS.md` landed, restored the named pre-audit stash exactly as promised; `.gitignore`, `AGENTS.md`, and `CLAUDE.md` are again present as the operator's pre-existing uncommitted edits and were not folded into recovery commits.
+
+### 2026-08-09 — Independent stigmergic-loop restabilization
+
+- Built the candidate at `db7edd28` and ran the isolated fake-Pi matrix in §8.
+  The scored-evaluation canary proved ineligible/provider-failure neutrality,
+  one rich create-once score, immutable replay across config change/restart, and
+  no graph-node/lifecycle mutation. The completion canary proved configured
+  deterministic evidence reaches FLIP Pass then completion Eval, while missing,
+  stale, tampered, or failing evidence stops before semantic review.
+- Ran exactly one real provider call against the ordinary receipt-backed Done
+  task `bind-completion-validation-evidence`: score `0.72`, route
+  `pi:openai-codex:gpt-5.6-luna`, reasoning `high`, evidence
+  `b3:91d489926af5daf2a30fe0529850de62a49c81681e699b532e29d4e432b42e52`,
+  completion receipt
+  `b3:c04c68f63a4ab029c4e2c5d7bde267f38fc4844dfd20d9b77c91300836d757e0`,
+  usage `23,763` input / `912` output tokens, and provider-reported cost
+  `$0.005847`. The one allowed replay returned `created=false` and
+  `idempotent_replay=true` in 748 ms; row count remained one, its SHA-256 stayed
+  `9b11601c4e23d764f1dec1141766d67478be72063bdbf2e7e43eff330f0ab94c`,
+  and the graph comparison reported unchanged bytes. `wg show` subsequently
+  gained only the expected read projection of that score; source status stayed
+  Done/Landed with the same candidate and completion receipt.
+- `wg agency stats` now reports one scored evaluation separately from seven
+  terminal observations (`1` scored, `6` unscored, `2` operator accepted).
+  `wg evaluate show` resolves the immutable route/reasoning/dimensions/notes,
+  usage/cost, evidence digest, observation ID, attempt/fence, and receipt.
+  `wg agency migrate` reported no legacy data and terminal backfill
+  `created=0 existing=7 skipped=21 remaining=0 errors=0`.
+- Verified `~/.pi/agent/settings.json` contains exactly one existing, versioned
+  embedded extension path (`worksgood-pi/0.3.0/pi-worksgood/index.js`) and no
+  stale plugin override. Installed all binaries with
+  `cargo install --path . --locked`. A controlled real-graph service restart is
+  delegated to the published human follow-up
+  `restart-validated-stigmergic-service` because worker authority correctly
+  refuses service administration; do not mark this restart proven until that
+  task records the operator receipt.
+- Static gates passed: `cargo fmt --check`, `cargo check --all-targets`,
+  `cargo clippy` (existing warnings), and `git diff --check`.
+- After a fresh fetch, `origin/main` is **not synchronized**: it is an ancestor
+  of local `main` and is two commits behind (`2c1d808d` versus `db7edd28`). The
+  relation is cleanly fast-forwardable; no divergent or behind commit exists.
+- Unsupported claims stay unsupported: the real evaluator succeeded, so real
+  provider-failure behavior was not exercised (the fake-Pi no-row failure proof
+  is the evidence); full deletion of load-only compatibility remains unchecked
+  in Phase 8; and the concurrent cross-scenario stress row in §8 remains
+  unchecked after the recorded transient parallel broker failure.
