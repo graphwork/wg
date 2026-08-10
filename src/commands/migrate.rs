@@ -25,6 +25,59 @@ pub mod completion_repair;
 /// Exact pre-migration bytes and content-addressed classification records are
 /// persisted before the active compatibility projection changes. The archive
 /// itself is read-only. Re-running after a successful migration is a no-op.
+pub fn run_review_identity_repair(
+    dir: &Path,
+    limit: usize,
+    dry_run: bool,
+    json: bool,
+) -> Result<()> {
+    if limit == 0 {
+        anyhow::bail!("review identity repair limit must be at least 1");
+    }
+    let graph_file = graph_path(dir);
+    let mut report = if dry_run {
+        worksgood::parser::preview_review_projections(&graph_file, limit)?
+    } else {
+        worksgood::parser::repair_review_projections(&graph_file, limit)?
+    };
+    report.dry_run = dry_run;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        let mode = if dry_run { "would repair" } else { "repaired" };
+        println!(
+            "Review identity migration: examined={} {mode}={} unchanged={} skipped={} invalid={} remaining={}",
+            report.examined,
+            report.repaired,
+            report.unchanged,
+            report.skipped,
+            report.invalid,
+            report.remaining
+        );
+        for row in &report.rows {
+            println!(
+                "  {}: {}{}{}",
+                row.task_id,
+                row.outcome,
+                row.reason
+                    .as_deref()
+                    .map(|reason| format!(" ({reason})"))
+                    .unwrap_or_default(),
+                if row.activity_ids_restored.is_empty() {
+                    String::new()
+                } else {
+                    format!(" receipts={}", row.activity_ids_restored.join(","))
+                }
+            );
+        }
+        println!(
+            "Only current receipt-backed projections were considered; missing superseded history was not inferred."
+        );
+    }
+    Ok(())
+}
+
 pub fn run_completion_repair(dir: &Path, dry_run: bool, json: bool) -> Result<()> {
     let graph_file = graph_path(dir);
     let archive_file = dir.join("archive.jsonl");

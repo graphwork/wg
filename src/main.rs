@@ -3511,6 +3511,14 @@ fn main() -> Result<()> {
             MigrateCommands::RetireCompactArchive { dry_run } => {
                 commands::migrate::run_retire_compact_archive(&workgraph_dir, dry_run, cli.json)
             }
+            MigrateCommands::ReviewIdentity { limit, dry_run } => {
+                commands::migrate::run_review_identity_repair(
+                    &workgraph_dir,
+                    limit,
+                    dry_run,
+                    cli.json,
+                )
+            }
             MigrateCommands::Config {
                 global,
                 local,

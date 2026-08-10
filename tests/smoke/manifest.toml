@@ -2987,7 +2987,7 @@ timeout_seconds = 180
 [[scenario]]
 name = "worker_owned_completion_canary"
 script = "scenarios/worker_owned_completion_canary.sh"
-owners = ["simple-worker-owned-convergence", "validate-stigmergic-loop"]
+owners = ["simple-worker-owned-convergence", "validate-stigmergic-loop", "preserve-review-identity-across-restart"]
 description = "Candidate-binary credential-free real-daemon exit canary: ten concurrent Pi workers complete Land/Report/Explore; two overlapping Land workers exercise compare/fast-forward and same-worker moved-main reintegration while non-Git workers use isolated attempt workspaces. All snapshot immutable outputs/evidence, build bound manifests through the broker, pass exact FLIP then eval without child tasks, derive Done from publication, create no SaveTransaction/finalization authority, and receive no replacement workers."
 timeout_seconds = 180
 
@@ -2998,6 +2998,7 @@ owners = [
     "isolate-worker-control-plane-filesystem",
     "restore-trust-first-local-worker-control",
     "validate-stigmergic-loop",
+    "preserve-review-identity-across-restart",
 ]
 description = "Candidate-binary credential-free real-daemon worker regression: an explicitly scoped Fake-Pi worker launches without WG_DIR or a candidate .wg entry, uses an opaque attempt capability for own-task show/log over typed IPC, is refused graph enumeration and cross-task reads, persists no bearer token, commits ordinary candidate source, emits allow/reject audit evidence, and reports the filesystem guarantee as degraded rather than falsely equating environment omission/worktree separation with mount isolation."
 timeout_seconds = 180
@@ -3005,7 +3006,7 @@ timeout_seconds = 180
 [[scenario]]
 name = "trust_first_local_worker_coordination"
 script = "scenarios/trust_first_local_worker_coordination.sh"
-owners = ["restore-trust-first-local-worker-control", "validate-stigmergic-loop"]
+owners = ["restore-trust-first-local-worker-control", "validate-stigmergic-loop", "preserve-review-identity-across-restart"]
 description = "Candidate-binary credential-free real-daemon/Fake-Pi end-to-end regression for the historical trust-first local worker contract: omitted policy resolves to trusted before the LLM starts; public wg commands edit downstream description/validation, create/link/assign a subtask, reprioritize, publish and message across tasks; every delegated mutation is append-only audited to the exact actor/attempt/fence; and show/status expose the effective policy. The companion worker_control_capability_broker scenario preserves explicit scoped refusal."
 timeout_seconds = 180
 
@@ -3063,7 +3064,7 @@ timeout_seconds = 90
 [[scenario]]
 name = "pi_done_accounting_review_lane_visibility"
 script = "scenarios/pi_done_accounting_review_lane_visibility.sh"
-owners = ["fix-pi-accounting-review-visibility", "fix-review-activity-projection", "validate-stigmergic-loop"]
+owners = ["fix-pi-accounting-review-visibility", "fix-review-activity-projection", "validate-stigmergic-loop", "preserve-review-identity-across-restart"]
 description = "Credential-free real terminal flow: daemon-authorized dispatch runs a fake Pi worker through the real spawn wrapper, captures native turn_end stdout once, and exercises pi-stream-bridge; advisory unavailable/rejected candidates are superseded by an accepted FLIP+Eval candidate, then landing/Done, raw serialization, and restart preserve every immutable task/generation/attempt/fence-bound activity row. list --all/show/trace expose current-vs-superseded chronology, route/executor, verdict/failure class, usage/cost/timing, and bounded findings as explicit virtual internal-lane rows (not graph tasks), while spend remains separately labeled without estimates."
 timeout_seconds = 180
 
@@ -3084,27 +3085,27 @@ timeout_seconds = 120
 [[scenario]]
 name = "simple_local_recovery"
 script = "scenarios/simple_local_recovery.sh"
-owners = ["simple-local-wg-recovery", "bridge-terminal-outcomes-agency", "prune-dormant-local-lifecycle", "validate-stigmergic-loop"]
+owners = ["simple-local-wg-recovery", "bridge-terminal-outcomes-agency", "prune-dormant-local-lifecycle", "validate-stigmergic-loop", "preserve-review-identity-across-restart"]
 description = "Credential-free trusted-local golden path: one `wg done` snapshots, records visible advisory review activity without creating synthetic assignment/evaluator tasks or PendingEval-style states, publishes the exact Land commit, and derives Done without submit/land ceremony; operator recovery is refused from worker authority and succeeds outside it with a reason-bound immutable receipt; both accepted outcomes project once into unscored Agency observations across replay, migration, and daemon reconciliation."
 timeout_seconds = 90
 
 [[scenario]]
 name = "simple_local_fanout_restart"
 script = "scenarios/simple_local_fanout_restart.sh"
-owners = ["simple-local-wg-recovery", "validate-stigmergic-loop"]
+owners = ["simple-local-wg-recovery", "validate-stigmergic-loop", "preserve-review-identity-across-restart"]
 description = "Clean-graph composed recovery canary: two real fake-Pi workers coordinate across tasks, one completes while the dispatcher is stopped, restart preserves exact state, and a dependent third worker dispatches and completes with no source retry charge."
 timeout_seconds = 120
 
 [[scenario]]
 name = "bounded_scored_terminal_evaluation"
 script = "scenarios/bounded_scored_terminal_evaluation.sh"
-owners = ["restore-bounded-scored-evaluation", "validate-stigmergic-loop"]
-description = "Credential-free real terminal fake-Pi flow for the restored scored authority: Failed/Waiting and missing-observation candidates are refused without graph/evaluation mutation; dry-run re-verifies receipt, generation/attempt/fence, immutable candidate/reviews/publication and prints exact Pi route, xhigh reasoning, terminal observation, receipt and bounded evidence digest without a provider call; one live no-tools scoring call validates the exact seven 0..1 dimensions plus bounded notes and persists one create-once rich Agency evaluation. Explicit rerun, daemon restart, and reload neither re-call Pi nor duplicate/rewrite the row; evaluate show and agency stats expose score, dimensions, route/reasoning, provider usage/cost, receipt, evidence digest, and source terminal observation; no PendingEval or evaluator graph node exists."
+owners = ["restore-bounded-scored-evaluation", "validate-stigmergic-loop", "preserve-review-identity-across-restart"]
+description = "Credential-free real terminal fake-Pi flow for scored authority and restart-safe review identity: Failed/Waiting and missing-observation candidates are refused neutrally; one live no-tools scoring call persists one rich create-once Agency row. It then reproduces the schema-stale TUI overwrite by stripping only current review_binding/activity while immutable candidate/FLIP/completion/observation/evaluation receipts survive; bounded migration dry-run/apply/idempotence, wg log, real service start/reload/stop, and evaluate-entry reconciliation restore only the exact current receipt projection. Replay with a replacement route and a provider that would fail returns the original score without invocation or duplicate, while Agency/observation bytes and lifecycle remain unchanged."
 timeout_seconds = 120
 
 [[scenario]]
 name = "completion_validation_evidence"
 script = "scenarios/completion_validation_evidence.sh"
-owners = ["bind-completion-validation-evidence", "validate-stigmergic-loop"]
+owners = ["bind-completion-validation-evidence", "validate-stigmergic-loop", "preserve-review-identity-across-restart"]
 description = "Credential-free real terminal fake-Pi canary for one-step completion evidence: WG executes an exact configured deterministic command, captures bounded stdout/stderr digests and content, exit/timing, cwd/repository/candidate and task/generation/attempt/fence/requirements binding; valid evidence reaches FLIP Pass then completion Eval and both immutable activity rows survive landing, Done, a pre-Done stale daemon save, and restart. Worker-prose-only, same-size CAS-tampered, stale cross-candidate, and failing-command evidence are visibly refused before review; a semantic FLIP rejection remains advisory and lifecycle-neutral by default."
 timeout_seconds = 120

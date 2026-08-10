@@ -560,6 +560,19 @@ pub fn run(dir: &Path, task_id: &str, dry_run: bool, json_output: bool) -> Resul
     if !graph_path.exists() {
         bail!("WG not initialized. Run `wg init` first.");
     }
+    // Eligibility is deliberately re-verified before the create-once score is
+    // consulted. First converge any receipt-verifiable mutable projection that
+    // a schema-stale long-lived writer stripped; this changes neither lifecycle
+    // nor Agency bytes and cannot reconstruct superseded history. Evaluation
+    // dry-run remains strictly read-only; operators can preview repair through
+    // `wg migrate review-identity --dry-run`.
+    if !dry_run {
+        worksgood::parser::repair_review_projections(
+            &graph_path,
+            worksgood::completion_review::DEFAULT_REVIEW_PROJECTION_REPAIR_LIMIT,
+        )
+        .context("failed to reconcile current completion review projection")?;
+    }
     let evidence = verify_terminal_scoring_evidence(dir, task_id)
         .with_context(|| format!("task '{task_id}' failed scored-evaluation eligibility"))?;
     let (prompt, evidence_digest, material) = render_scoring_prompt(&evidence)?;

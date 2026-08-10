@@ -303,19 +303,62 @@ pub fn load_graph<P: AsRef<Path>>(path: P) -> Result<WorkGraph, ParseError> {
 fn save_graph_inner<P: AsRef<Path>>(graph: &WorkGraph, path: P) -> Result<(), ParseError> {
     let path = path.as_ref();
     let mut durable_graph = graph.clone();
+    let workgraph_dir = path.parent().unwrap_or(Path::new("."));
+
+    // A schema-stale long-lived client (the live incident was a pre-review-lane
+    // TUI process) can deserialize a newer graph, omit fields it does not know,
+    // and later issue a full replacement after a daemon restart wakes it. The
+    // immutable selected candidate/review/completion receipts are the only
+    // bounded authority for restoring those fields; superseded history is
+    // never guessed. Every current writer therefore repairs its outgoing
+    // projection before replacement.
+    crate::completion_review::repair_current_review_projections(
+        workgraph_dir,
+        &mut durable_graph,
+        crate::completion_review::DEFAULT_REVIEW_PROJECTION_REPAIR_LIMIT,
+    );
 
     // A number of compatibility commands still perform a read followed later
     // by a full `save_graph`. The graph lock serializes the write, but cannot
     // make that caller's old in-memory snapshot fresh. Completion-review rows
     // are immutable receipt references and may only grow, so merge the current
-    // on-disk history before replacement. This closes the concrete stale-save
-    // overwrite that used to retain `candidate.flip_receipt` while silently
-    // deleting earlier/superseded `completion_review_activity` rows.
+    // on-disk history before replacement. Candidate identity is retained only
+    // when both snapshots select the same immutable manifest; selecting a new
+    // candidate must still supersede the prior binding.
     if let Ok(current) = load_graph_inner(path) {
         for persisted in current.tasks() {
             let Some(incoming) = durable_graph.get_task_mut(&persisted.id) else {
                 continue;
             };
+            if let (Some(old), Some(new)) = (
+                persisted.completion_candidate.as_ref(),
+                incoming.completion_candidate.as_mut(),
+            ) {
+                let old_flip = old
+                    .flip_receipt
+                    .as_ref()
+                    .map(|receipt| &receipt.content_digest);
+                let new_flip = new
+                    .flip_receipt
+                    .as_ref()
+                    .map(|receipt| &receipt.content_digest);
+                let old_eval = old
+                    .eval_receipt
+                    .as_ref()
+                    .map(|receipt| &receipt.content_digest);
+                let new_eval = new
+                    .eval_receipt
+                    .as_ref()
+                    .map(|receipt| &receipt.content_digest);
+                if old.manifest.content_digest == new.manifest.content_digest
+                    && old_flip.is_some()
+                    && old_flip == new_flip
+                    && old_eval == new_eval
+                    && new.review_binding.is_none()
+                {
+                    new.review_binding.clone_from(&old.review_binding);
+                }
+            }
             let mut merged = persisted.completion_review_activity.clone();
             for activity in &incoming.completion_review_activity {
                 if !merged
@@ -392,6 +435,48 @@ pub fn save_graph<P: AsRef<Path>>(graph: &WorkGraph, path: P) -> Result<(), Pars
     // Lock is automatically released when _lock goes out of scope
 }
 
+/// Preview receipt-backed current review reconciliation under the graph lock
+/// without replaying or writing lifecycle state.
+pub fn preview_review_projections<P: AsRef<Path>>(
+    path: P,
+    limit: usize,
+) -> Result<crate::completion_review::ReviewProjectionRepairReport, ParseError> {
+    let path = path.as_ref();
+    let lock_path = get_lock_path(path);
+    let _lock = FileLock::acquire(&lock_path)?;
+    let mut graph = load_graph_inner(path)?;
+    Ok(crate::completion_review::repair_current_review_projections(
+        path.parent().unwrap_or(Path::new(".")),
+        &mut graph,
+        limit,
+    ))
+}
+
+/// Reconcile receipt-backed current review projections under the graph lock.
+/// This is a migration/repair, not task interaction or lifecycle authority, so
+/// it intentionally leaves last_interaction_at and lifecycle bytes unchanged.
+pub fn repair_review_projections<P: AsRef<Path>>(
+    path: P,
+    limit: usize,
+) -> Result<crate::completion_review::ReviewProjectionRepairReport, ParseError> {
+    let path = path.as_ref();
+    let lock_path = get_lock_path(path);
+    let _lock = FileLock::acquire(&lock_path)?;
+    let mut graph = load_graph_inner(path)?;
+    let report = crate::completion_review::repair_current_review_projections(
+        path.parent().unwrap_or(Path::new(".")),
+        &mut graph,
+        limit,
+    );
+    if report.changed() {
+        // Deliberately do not replay or append lifecycle events here. This
+        // repair has projection authority only; a stale lifecycle projection
+        // fails receipt matching rather than being changed as a side effect.
+        save_graph_inner(&graph, path)?;
+    }
+    Ok(report)
+}
+
 /// Atomically load, modify, and save a graph file.
 ///
 /// The file lock is held for the entire load-modify-save cycle, preventing
@@ -419,8 +504,20 @@ where
     let before_graph = graph.clone();
     let before: HashMap<String, Task> = graph.tasks().map(|t| (t.id.clone(), t.clone())).collect();
     let modified = f(&mut graph);
-    if modified || replayed {
+    if modified {
         bump_interaction_timestamps(&mut graph, &before);
+    }
+    // Repair is an evidence projection, not operator interaction or lifecycle
+    // authority, so it intentionally does not bump last_interaction_at. A
+    // coordinator no-op tick, wg log, Done, cleanup, or any other writer can
+    // converge bytes stripped by a schema-stale long-lived client.
+    let repaired = crate::completion_review::repair_current_review_projections(
+        path.parent().unwrap_or(Path::new(".")),
+        &mut graph,
+        crate::completion_review::DEFAULT_REVIEW_PROJECTION_REPAIR_LIMIT,
+    )
+    .changed();
+    if modified || replayed || repaired {
         // Lifecycle records are fsynced before graph.jsonl is atomically
         // replaced. If the second operation fails, replay converges on restart.
         crate::lifecycle::append_new_events(path, &before_graph, &graph)?;
@@ -628,6 +725,77 @@ mod tests {
                 .unwrap()
                 .candidate_sequence,
             1
+        );
+    }
+
+    #[test]
+    fn stale_full_save_cannot_erase_same_candidate_review_identity() {
+        use crate::completion_manifest::{
+            ArtifactOutput, CompletionManifestRef, ContentDigest, ImmutableLocator,
+        };
+        use crate::completion_review::CompletionReviewBinding;
+        use crate::completion_task::CompletionCandidateRefs;
+
+        fn artifact(bytes: &[u8], media_type: &str) -> ArtifactOutput {
+            let digest = ContentDigest::of_bytes(bytes);
+            ArtifactOutput {
+                content_digest: digest.clone(),
+                immutable_locator: ImmutableLocator::CompletionObject { digest },
+                media_type: media_type.into(),
+                size: bytes.len() as u64,
+                review_projection: None,
+            }
+        }
+
+        let file = NamedTempFile::new().unwrap();
+        let manifest_digest = ContentDigest::of_bytes(b"manifest");
+        let binding = CompletionReviewBinding {
+            task_id: "reviewed".into(),
+            generation: 2,
+            attempt_id: Some("attempt-2-1".into()),
+            attempt_fence: 7,
+            candidate_sequence: 3,
+        };
+        let mut task = make_task("reviewed", "Reviewed");
+        task.completion_candidate = Some(CompletionCandidateRefs {
+            manifest: CompletionManifestRef {
+                content_digest: manifest_digest.clone(),
+                immutable_locator: ImmutableLocator::CompletionObject {
+                    digest: manifest_digest,
+                },
+                size: 8,
+            },
+            requirements: artifact(b"requirements", "application/json"),
+            worker_summary: artifact(b"summary", "text/plain"),
+            dependency_outputs: Vec::new(),
+            review_binding: Some(binding.clone()),
+            flip_receipt: Some(artifact(b"flip-receipt", "application/json")),
+            eval_receipt: None,
+        });
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(task));
+        save_graph(&graph, file.path()).unwrap();
+
+        let mut stale = load_graph(file.path()).unwrap();
+        stale
+            .get_task_mut("reviewed")
+            .unwrap()
+            .completion_candidate
+            .as_mut()
+            .unwrap()
+            .review_binding = None;
+        stale.get_task_mut("reviewed").unwrap().priority = 73;
+        save_graph(&stale, file.path()).unwrap();
+
+        let task = load_graph(file.path())
+            .unwrap()
+            .get_task("reviewed")
+            .unwrap()
+            .clone();
+        assert_eq!(task.priority, 73);
+        assert_eq!(
+            task.completion_candidate.unwrap().review_binding,
+            Some(binding)
         );
     }
 

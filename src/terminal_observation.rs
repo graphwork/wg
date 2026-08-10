@@ -970,7 +970,18 @@ pub fn verify_terminal_scoring_evidence(
             ))
         })?)?;
     verify_observation_identity(&stored)?;
-    if stored != observation || observation_path(workgraph_dir, &stored.observation_id)? != path {
+    // The immutable observation is the terminal-time snapshot for attribution
+    // and execution accounting. Cleanup and schema-stale full writers may
+    // legitimately clear those mutable graph projections later; requiring a
+    // byte-for-byte rebuild would then make an already-recorded score
+    // impossible to replay even though lifecycle, candidate, reviews,
+    // publication, and completion receipts all re-verified above. Permit only
+    // those two snapshot faces to come from the immutable observation; every
+    // authority-bearing field must still exactly match the rebuilt evidence.
+    let mut comparable = observation.clone();
+    comparable.agency_attribution = stored.agency_attribution.clone();
+    comparable.execution = stored.execution.clone();
+    if stored != comparable || observation_path(workgraph_dir, &stored.observation_id)? != path {
         return Err(TerminalObservationError::Ineligible(format!(
             "source terminal observation {} no longer matches terminal evidence",
             observation.observation_id
@@ -979,7 +990,7 @@ pub fn verify_terminal_scoring_evidence(
 
     Ok(VerifiedTerminalScoringEvidence {
         task,
-        observation,
+        observation: stored,
         bundle,
     })
 }

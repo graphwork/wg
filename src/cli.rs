@@ -6499,6 +6499,19 @@ pub enum MigrateCommands {
         dry_run: bool,
     },
 
+    /// Restore receipt-verifiable review identity/activity for current candidates.
+    ///
+    /// This never invents superseded history: only the selected candidate's
+    /// surviving immutable review and completion receipts are eligible.
+    ReviewIdentity {
+        /// Maximum affected current candidates to examine in this batch.
+        #[arg(long, default_value_t = 256)]
+        limit: usize,
+        /// Verify and report without changing graph.jsonl.
+        #[arg(long)]
+        dry_run: bool,
+    },
+
     /// Rewrite a stale `config.toml` to canonical form.
     ///
     /// Strips deprecated keys (`agent.executor`, retired compactor knobs,
@@ -7298,6 +7311,7 @@ pub fn supports_json(cmd: &Commands) -> bool {
             | Commands::DeadAgents { .. }
             | Commands::Html { .. }
             | Commands::Sweep { .. }
+            | Commands::Migrate { .. }
             | Commands::Agents { .. }
             | Commands::Kill { .. }
             | Commands::Reap { .. }

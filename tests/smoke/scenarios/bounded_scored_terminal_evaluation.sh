@@ -69,6 +69,19 @@ wgrun add 'Bounded scored terminal evaluation' --id scored -d $'Produce report.t
 wgrun contract scored report >/dev/null
 wgrun publish scored --only >/dev/null
 wgrun claim scored >/dev/null
+# Seed terminal-time execution attribution so replay also proves that the
+# immutable observation, not a later cleanup-stripped mutable snapshot, owns it.
+python3 - "$G/graph.jsonl" <<'PY'
+import json,sys
+p=sys.argv[1]; rows=[]
+for line in open(p):
+    row=json.loads(line)
+    if row.get('id')=='scored':
+        row['actual_executor']='pi'
+        row['actual_model']='test:completed-work'
+    rows.append(row)
+open(p,'w').write(''.join(json.dumps(row,separators=(',',':'))+'\n' for row in rows))
+PY
 (
   cd "$project"
   printf 'implemented and validated\n' >summary.txt
@@ -118,18 +131,109 @@ eval_file=$(find "$G/agency/evaluations" -type f -name '*.json')
 eval_hash=$(sha256sum "$eval_file" | cut -d' ' -f1)
 [[ "$graph_before" == "$(sha256sum "$G/graph.jsonl" | cut -d' ' -f1)" ]] || loud_fail 'live scoring mutated task graph'
 
-# Explicit rerun, daemon restart, and a changed/reloaded evaluator config preserve
-# the original immutable row without authorizing a second provider call.
-wgrun config --local --set-model evaluator pi:test:replacement \
-  --set-reasoning evaluator low --no-reload >/dev/null
-replay=$(wgrun --json evaluate run scored)
-python3 -c 'import json,sys; x=json.load(sys.stdin); assert x["created"] is False and x["idempotent_replay"] is True,x; e=x["evaluation"]; assert e["evaluator_route"]=="pi:test:fake-score" and e["evaluator_reasoning"]=="xhigh",e' <<<"$replay"
+# Reproduce the live restart corruption exactly: a long-lived TUI built before
+# review_binding/activity existed observed restart graph churn, decoded only its
+# older Task shape, then issued a full replacement. Immutable candidate, FLIP,
+# completion, terminal-observation, and scored-evaluation receipts survived.
+python3 - "$G/graph.jsonl" "$scratch/lifecycle.json" <<'PY'
+import json,sys
+path=sys.argv[1]; rows=[]; found=False
+for line in open(path):
+    row=json.loads(line)
+    if row.get('id')=='scored':
+        found=True
+        candidate=row['completion_candidate']
+        assert candidate.get('review_binding'),candidate
+        assert len(row.get('completion_review_activity',[]))==2,row
+        open(sys.argv[2],'w').write(json.dumps(row['lifecycle'],sort_keys=True,separators=(',',':')))
+        candidate.pop('review_binding')
+        row.pop('completion_review_activity')
+    rows.append(row)
+assert found
+open(path,'w').write(''.join(json.dumps(row,separators=(',',':'))+'\n' for row in rows))
+PY
+corrupt_hash=$(sha256sum "$G/graph.jsonl" | cut -d' ' -f1)
+agency_hash=$(sha256sum "$eval_file" "$observation" | sha256sum | cut -d' ' -f1)
+
+# Dry-run verifies the exact current receipt chain but changes nothing. Apply
+# repairs one row, reports invalid/skipped counts, and a second apply is a no-op.
+repair_dry=$(wgrun --json migrate review-identity --limit 1 --dry-run)
+python3 -c 'import json,sys; x=json.load(sys.stdin); assert (x["affected_candidates"],x["examined"],x["repaired"],x["invalid"],x["remaining"])==(1,1,1,0,0),x' <<<"$repair_dry"
+[[ "$corrupt_hash" == "$(sha256sum "$G/graph.jsonl" | cut -d' ' -f1)" ]] || loud_fail 'review repair dry-run mutated raw graph'
+repair=$(wgrun --json migrate review-identity --limit 1)
+python3 -c 'import json,sys; x=json.load(sys.stdin); assert x["repaired"]==1 and x["rows"][0]["binding_restored"] and len(x["rows"][0]["activity_ids_restored"])==2,x' <<<"$repair"
+repair_again=$(wgrun --json migrate review-identity --limit 1)
+python3 -c 'import json,sys; x=json.load(sys.stdin); assert x["affected_candidates"]==0 and x["repaired"]==0,x' <<<"$repair_again"
+repaired_show=$(wgrun show scored --json)
+python3 -c 'import json,sys; x=json.load(sys.stdin); c=x["completion_candidate"]; a=x["completion_review_activity"]; assert c["review_binding"]["attempt_id"],c; assert [(r["reviewer_kind"],r["verdict"],r["candidate_state"]) for r in a]==[("flip","pass","current"),("eval","pass","current")],a; assert [r["model_route"] for r in a]==["pi:test:fake-review","pi:test:fake-score"] and all(r["usage"]["cost_usd"]==0.0001 for r in a),a' <<<"$repaired_show"
+wgrun log scored 'receipt-backed projection save canary' >/dev/null
+python3 - "$G/graph.jsonl" <<'PY'
+import json,sys
+x=next(json.loads(line) for line in open(sys.argv[1]) if json.loads(line).get('id')=='scored')
+assert x['completion_candidate'].get('review_binding'),x
+assert len(x.get('completion_review_activity',[]))==2,x
+PY
+
+# Strip it once more, then use the real service start/reload/stop path. The
+# first coordinator save repairs from receipts without a model call or a new
+# lifecycle event; this is the restart path that failed in production.
+python3 - "$G/graph.jsonl" <<'PY'
+import json,sys
+p=sys.argv[1]; rows=[]
+for line in open(p):
+    row=json.loads(line)
+    if row.get('id')=='scored':
+        row['completion_candidate'].pop('review_binding')
+        row.pop('completion_review_activity')
+    rows.append(row)
+open(p,'w').write(''.join(json.dumps(row,separators=(',',':'))+'\n' for row in rows))
+PY
 wgrun service start --max-agents 1 --no-coordinator-agent --no-supervise >/dev/null
+for _ in $(seq 1 40); do
+  if python3 - "$G/graph.jsonl" <<'PY'
+import json,sys
+x=next(json.loads(line) for line in open(sys.argv[1]) if json.loads(line).get('id')=='scored')
+raise SystemExit(0 if x['completion_candidate'].get('review_binding') and len(x.get('completion_review_activity',[]))==2 else 1)
+PY
+  then break; fi
+  sleep .1
+done
 wgrun service reload >/dev/null
 wgrun service stop >/dev/null
-[[ "$(eval_count)" == 1 && "$(grep -c SCORE_CALL "$FAKE_EVAL_LOG")" == 2 ]] || loud_fail 'replay/restart/reload duplicated evaluation'
-[[ "$eval_hash" == "$(sha256sum "$eval_file" | cut -d' ' -f1)" ]] || loud_fail 'immutable evaluation changed across replay/restart'
-[[ "$graph_before" == "$(sha256sum "$G/graph.jsonl" | cut -d' ' -f1)" ]] || loud_fail 'replay/restart mutated terminal task'
+
+# Strip it a third time to prove the scored-evaluation entry point itself
+# reconciles before eligibility/replay, not only the running service.
+python3 - "$G/graph.jsonl" <<'PY'
+import json,sys
+p=sys.argv[1]; rows=[]
+for line in open(p):
+    row=json.loads(line)
+    if row.get('id')=='scored':
+        row['completion_candidate'].pop('review_binding')
+        row.pop('completion_review_activity')
+        row.pop('actual_executor')
+        row.pop('actual_model')
+    rows.append(row)
+open(p,'w').write(''.join(json.dumps(row,separators=(',',':'))+'\n' for row in rows))
+PY
+
+# Explicit replay after repair and changed config must return the old row
+# before provider invocation. Immutable evaluation/observation bytes and task
+# lifecycle are unchanged.
+wgrun config --local --set-model evaluator pi:test:replacement \
+  --set-reasoning evaluator low --no-reload >/dev/null
+replay=$(FAKE_EVAL_FAIL=1 wgrun --json evaluate run scored)
+python3 -c 'import json,sys; x=json.load(sys.stdin); assert x["created"] is False and x["idempotent_replay"] is True,x; e=x["evaluation"]; assert e["evaluator_route"]=="pi:test:fake-score" and e["evaluator_reasoning"]=="xhigh",e' <<<"$replay"
+[[ "$(eval_count)" == 1 && "$(grep -c SCORE_CALL "$FAKE_EVAL_LOG")" == 2 ]] || loud_fail 'repair/replay/restart/reload duplicated or re-called evaluation'
+[[ "$eval_hash" == "$(sha256sum "$eval_file" | cut -d' ' -f1)" ]] || loud_fail 'immutable evaluation changed across repair/replay/restart'
+[[ "$agency_hash" == "$(sha256sum "$eval_file" "$observation" | sha256sum | cut -d' ' -f1)" ]] || loud_fail 'immutable evaluation/observation bytes changed'
+python3 - "$G/graph.jsonl" "$scratch/lifecycle.json" <<'PY'
+import json,sys
+x=next(json.loads(line) for line in open(sys.argv[1]) if json.loads(line).get('id')=='scored')
+assert json.dumps(x['lifecycle'],sort_keys=True,separators=(',',':'))==open(sys.argv[2]).read(),x['lifecycle']
+assert x['completion_candidate'].get('review_binding'),x
+assert len(x.get('completion_review_activity',[]))==2,x
+PY
 
 # All requested observation surfaces retain route, reasoning, usage/cost, dimensions, receipt, and source.
 show=$(wgrun --json evaluate show scored)

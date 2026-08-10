@@ -194,10 +194,80 @@ pub struct VerifiedReviewActivityProjection {
     pub invalid_count: usize,
 }
 
+/// One bounded, receipt-verified repair decision. Repair is deliberately
+/// limited to the selected current candidate: immutable receipts can prove
+/// that identity, but cannot prove missing superseded projection history.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct ReviewProjectionRepairRow {
+    pub task_id: String,
+    pub outcome: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub binding_restored: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub activity_ids_restored: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct ReviewProjectionRepairReport {
+    pub dry_run: bool,
+    pub limit: usize,
+    pub affected_candidates: usize,
+    pub examined: usize,
+    pub repaired: usize,
+    pub unchanged: usize,
+    pub skipped: usize,
+    pub invalid: usize,
+    pub remaining: usize,
+    pub rows: Vec<ReviewProjectionRepairRow>,
+}
+
+impl ReviewProjectionRepairReport {
+    pub fn changed(&self) -> bool {
+        self.repaired > 0
+    }
+}
+
+/// Generic writers and the coordinator use a fixed cap so reconciliation can
+/// never turn a graph save into an unbounded object-store scan. Operators may
+/// inspect or repair a larger explicit batch with `wg migrate review-identity`.
+pub const DEFAULT_REVIEW_PROJECTION_REPAIR_LIMIT: usize = 256;
+
+#[derive(Deserialize)]
+struct ReviewedCompletionBindingReceipt {
+    receipt_version: u32,
+    task_id: String,
+    generation: u64,
+    manifest_digest: String,
+    requirements_digest: String,
+    flip_receipt_digest: String,
+    #[serde(default)]
+    eval_receipt_digest: Option<String>,
+}
+
 fn read_content_object(objects: &std::path::Path, digest: &ContentDigest) -> Option<Vec<u8>> {
     let name = digest.as_str().strip_prefix("b3:")?;
     let bytes = std::fs::read(objects.join(name)).ok()?;
     (bytes.len() <= 1024 * 1024 && ContentDigest::of_bytes(&bytes) == *digest).then_some(bytes)
+}
+
+fn activity_from_receipt(receipt_id: String, receipt: &ReviewReceipt) -> CompletionReviewActivity {
+    CompletionReviewActivity {
+        activity_id: receipt_id,
+        reviewer_kind: receipt.reviewer_kind,
+        verdict: receipt.verdict,
+        manifest_digest: receipt.manifest_digest.clone(),
+        requirements_digest: receipt.requirements_digest.clone(),
+        binding: receipt.binding.clone(),
+        findings_digest: Some(receipt.findings_digest.clone()),
+        failure_class: receipt.failure_class,
+        model_route: receipt.model_route.clone(),
+        executor: receipt.executor.clone(),
+        usage: receipt.usage.clone(),
+        duration_ms: receipt.duration_ms,
+        created_at: receipt.created_at.clone(),
+    }
 }
 
 fn candidate_state(
@@ -304,6 +374,278 @@ pub fn verified_review_activities(
         }
     }
     projection
+}
+
+fn exact_current_receipts(
+    workgraph_dir: &std::path::Path,
+    task: &crate::graph::Task,
+) -> Result<Vec<(String, ReviewReceipt)>, String> {
+    let candidate = task
+        .completion_candidate
+        .as_ref()
+        .ok_or_else(|| "no current completion candidate".to_string())?;
+    let refs = candidate
+        .flip_receipt
+        .iter()
+        .chain(candidate.eval_receipt.iter())
+        .collect::<Vec<_>>();
+    if refs.is_empty() {
+        return Err("current candidate has no review receipt references".into());
+    }
+    let store_root = workgraph_dir.join("completion/v3");
+    if !store_root.join("objects").is_dir() {
+        return Err("completion object store is unavailable".into());
+    }
+    let store = CompletionArtifactStore::open(&store_root)
+        .map_err(|error| format!("completion object store is invalid: {error}"))?;
+    let (_, manifest, _, _) = crate::completion_task::load_submission_bytes(&store, task)
+        .map_err(|error| format!("current candidate does not verify: {error}"))?;
+    let manifest_digest = manifest
+        .digest()
+        .map_err(|error| format!("current manifest is invalid: {error}"))?;
+
+    let mut receipts = Vec::with_capacity(refs.len());
+    for reference in refs {
+        let bytes = store
+            .read_artifact(
+                reference,
+                crate::completion_task::MAX_COMPLETION_METADATA_BYTES,
+            )
+            .map_err(|error| format!("review receipt object does not verify: {error}"))?;
+        let receipt: ReviewReceipt = serde_json::from_slice(&bytes)
+            .map_err(|error| format!("review receipt JSON is invalid: {error}"))?;
+        let expected_kind = if candidate
+            .flip_receipt
+            .as_ref()
+            .is_some_and(|flip| flip.content_digest == reference.content_digest)
+        {
+            ReviewerKind::Flip
+        } else {
+            ReviewerKind::Eval
+        };
+        if receipt.receipt_version != COMPLETION_REVIEW_RECEIPT_VERSION
+            || receipt.reviewer_kind != expected_kind
+            || receipt.manifest_digest != manifest_digest
+            || receipt.requirements_digest != manifest.requirements_digest
+        {
+            return Err(format!(
+                "{:?} receipt does not bind the selected manifest and requirements",
+                expected_kind
+            ));
+        }
+        let binding = receipt
+            .binding
+            .as_ref()
+            .ok_or_else(|| format!("{:?} receipt has no attempt-bound identity", expected_kind))?;
+        let current_attempt = task.lifecycle.current_attempt.as_ref();
+        if binding.task_id != task.id
+            || binding.generation != task.lifecycle.generation
+            || binding.attempt_fence != task.lifecycle.fence
+            || binding.candidate_sequence == 0
+            || binding.attempt_id.is_none()
+            || current_attempt.is_none()
+            || binding.attempt_id.as_deref() != current_attempt.map(|attempt| attempt.id.as_str())
+        {
+            return Err(format!(
+                "{:?} receipt binding is stale or cross-task",
+                expected_kind
+            ));
+        }
+        if read_content_object(&store_root.join("objects"), &receipt.findings_digest).is_none() {
+            return Err(format!(
+                "{:?} findings object does not verify",
+                expected_kind
+            ));
+        }
+        receipts.push((reference.content_digest.to_string(), receipt));
+    }
+    if receipts
+        .windows(2)
+        .any(|pair| pair[0].1.binding != pair[1].1.binding)
+    {
+        return Err("current FLIP and Eval receipts disagree on candidate identity".into());
+    }
+    if let Some(projected) = candidate.review_binding.as_ref()
+        && receipts[0].1.binding.as_ref() != Some(projected)
+    {
+        return Err("projected candidate identity conflicts with immutable receipt".into());
+    }
+
+    if task.status == crate::graph::Status::Done {
+        let completion_id = task
+            .completion_receipt
+            .as_deref()
+            .ok_or_else(|| "terminal current candidate has no completion receipt".to_string())?;
+        let completion_digest = ContentDigest::parse(completion_id.to_string())
+            .map_err(|error| format!("completion receipt id is invalid: {error}"))?;
+        let completion_bytes = read_content_object(&store_root.join("objects"), &completion_digest)
+            .ok_or_else(|| "completion receipt object does not verify".to_string())?;
+        let completion: ReviewedCompletionBindingReceipt =
+            serde_json::from_slice(&completion_bytes)
+                .map_err(|error| format!("completion receipt JSON is invalid: {error}"))?;
+        let flip_id = candidate
+            .flip_receipt
+            .as_ref()
+            .map(|reference| reference.content_digest.to_string())
+            .unwrap_or_default();
+        let eval_id = candidate
+            .eval_receipt
+            .as_ref()
+            .map(|reference| reference.content_digest.to_string());
+        if completion.receipt_version != 1
+            || completion.task_id != task.id
+            || completion.generation != task.lifecycle.generation
+            || completion.manifest_digest != manifest_digest.to_string()
+            || completion.requirements_digest != manifest.requirements_digest.to_string()
+            || completion.flip_receipt_digest != flip_id
+            || completion.eval_receipt_digest != eval_id
+        {
+            return Err(
+                "completion receipt does not bind the selected current review receipts".into(),
+            );
+        }
+    }
+    Ok(receipts)
+}
+
+/// Reconstruct only exactly verifiable fields for selected current candidates.
+/// Missing superseded history is intentionally unrecoverable here: without a
+/// surviving candidate/receipt reference, guessing chronology would turn a
+/// mutable projection into false evidence.
+pub fn repair_current_review_projections(
+    workgraph_dir: &std::path::Path,
+    graph: &mut crate::graph::WorkGraph,
+    limit: usize,
+) -> ReviewProjectionRepairReport {
+    let affected = graph
+        .tasks()
+        .filter(|task| {
+            task.completion_candidate.as_ref().is_some_and(|candidate| {
+                let receipt_ids = candidate
+                    .flip_receipt
+                    .iter()
+                    .chain(candidate.eval_receipt.iter())
+                    .map(|reference| reference.content_digest.as_str())
+                    .collect::<Vec<_>>();
+                candidate.review_binding.is_none()
+                    || receipt_ids.iter().any(|id| {
+                        !task
+                            .completion_review_activity
+                            .iter()
+                            .any(|activity| activity.activity_id == *id)
+                    })
+            })
+        })
+        .map(|task| task.id.clone())
+        .collect::<Vec<_>>();
+    let mut report = ReviewProjectionRepairReport {
+        limit,
+        affected_candidates: affected.len(),
+        remaining: affected.len().saturating_sub(limit),
+        ..ReviewProjectionRepairReport::default()
+    };
+    for task_id in affected.into_iter().take(limit) {
+        report.examined += 1;
+        let verification = graph
+            .get_task(&task_id)
+            .ok_or_else(|| "task disappeared during repair".to_string())
+            .and_then(|task| exact_current_receipts(workgraph_dir, task));
+        let receipts = match verification {
+            Ok(receipts) => receipts,
+            Err(reason) => {
+                let outcome = if reason.contains("no review receipt references") {
+                    report.skipped += 1;
+                    "skipped"
+                } else {
+                    report.invalid += 1;
+                    "invalid"
+                };
+                report.rows.push(ReviewProjectionRepairRow {
+                    task_id,
+                    outcome: outcome.into(),
+                    reason: Some(reason),
+                    binding_restored: false,
+                    activity_ids_restored: Vec::new(),
+                });
+                continue;
+            }
+        };
+        let binding = receipts[0]
+            .1
+            .binding
+            .clone()
+            .expect("exact current receipts require a binding");
+        let task = graph
+            .get_task_mut(&task_id)
+            .expect("repair task was selected from this graph");
+        let binding_restored = task.completion_candidate.as_mut().is_some_and(|candidate| {
+            if candidate.review_binding.is_none() {
+                candidate.review_binding = Some(binding.clone());
+                true
+            } else {
+                false
+            }
+        });
+        let mut restored = Vec::new();
+        let mut conflict = None;
+        for (receipt_id, receipt) in receipts {
+            let activity = activity_from_receipt(receipt_id.clone(), &receipt);
+            match task
+                .completion_review_activity
+                .iter()
+                .find(|existing| existing.activity_id == receipt_id)
+            {
+                Some(existing) if existing != &activity => {
+                    conflict = Some(format!(
+                        "projected activity {} conflicts with immutable receipt",
+                        receipt_id
+                    ));
+                    break;
+                }
+                Some(_) => {}
+                None => {
+                    task.completion_review_activity.push(activity);
+                    restored.push(receipt_id);
+                }
+            }
+        }
+        if let Some(reason) = conflict {
+            // Do not partly bless a row set. Undo only fields introduced by
+            // this repair; pre-existing projection/history stays untouched.
+            if binding_restored && let Some(candidate) = task.completion_candidate.as_mut() {
+                candidate.review_binding = None;
+            }
+            task.completion_review_activity
+                .retain(|activity| !restored.contains(&activity.activity_id));
+            report.invalid += 1;
+            report.rows.push(ReviewProjectionRepairRow {
+                task_id,
+                outcome: "invalid".into(),
+                reason: Some(reason),
+                binding_restored: false,
+                activity_ids_restored: Vec::new(),
+            });
+        } else if binding_restored || !restored.is_empty() {
+            report.repaired += 1;
+            report.rows.push(ReviewProjectionRepairRow {
+                task_id,
+                outcome: "repaired".into(),
+                reason: None,
+                binding_restored,
+                activity_ids_restored: restored,
+            });
+        } else {
+            report.unchanged += 1;
+            report.rows.push(ReviewProjectionRepairRow {
+                task_id,
+                outcome: "unchanged".into(),
+                reason: None,
+                binding_restored: false,
+                activity_ids_restored: Vec::new(),
+            });
+        }
+    }
+    report
 }
 
 /// Return historical evaluation records that are not already represented by a
@@ -820,5 +1162,253 @@ mod projection_tests {
             "other-attempt",
             Some("receipt-new"),
         ));
+    }
+
+    struct PassingReviewer(&'static str);
+
+    impl ManifestReviewer for PassingReviewer {
+        fn route(&self) -> &str {
+            self.0
+        }
+
+        fn review(
+            &mut self,
+            _kind: ReviewerKind,
+            _bundle: &ResolvedReviewBundle,
+        ) -> Result<SemanticReview, ReviewerUnavailable> {
+            Ok(SemanticReview {
+                verdict: SemanticVerdict::Pass,
+                findings: Vec::new(),
+            })
+        }
+    }
+
+    fn stripped_terminal_fixture(
+        dir: &std::path::Path,
+    ) -> (
+        crate::graph::WorkGraph,
+        CompletionReviewBinding,
+        Vec<String>,
+    ) {
+        use crate::completion_manifest::{
+            COMPLETION_MANIFEST_VERSION, CompletionManifest, EvidenceRef, OutputRef,
+        };
+        use crate::completion_task::CompletionCandidateRefs;
+        use crate::graph::{CompletionContract, CompletionDisposition, Node, Status, Task};
+        use crate::lifecycle::{AttemptDisposition, AttemptRef};
+        use crate::simple_land::CompletionContract as ManifestContract;
+
+        let store = CompletionArtifactStore::open(dir.join("completion/v3")).unwrap();
+        let mut task = Task {
+            id: "receipt-repair".into(),
+            title: "Receipt repair".into(),
+            status: Status::Done,
+            completion_contract: CompletionContract::Report,
+            completion_disposition: Some(CompletionDisposition::Reported),
+            ..Task::default()
+        };
+        task.lifecycle.generation = 3;
+        task.lifecycle.fence = 9;
+        task.lifecycle.current_attempt = Some(AttemptRef {
+            id: "attempt-3-2".into(),
+            generation: 3,
+            fence: 9,
+            actor_id: "worker".into(),
+            disposition: Some(AttemptDisposition::Succeeded),
+        });
+        let requirements_bytes = crate::completion_task::task_requirements_bytes(&task).unwrap();
+        let requirements = store
+            .put_bytes(
+                &requirements_bytes,
+                "application/vnd.worksgood.requirements+json",
+            )
+            .unwrap();
+        let summary = store.put_bytes(b"summary", "text/plain").unwrap();
+        let output = store.put_bytes(b"result", "text/plain").unwrap();
+        let evidence = store.put_bytes(b"validation", "application/json").unwrap();
+        let manifest = CompletionManifest {
+            manifest_version: COMPLETION_MANIFEST_VERSION,
+            task_id: task.id.clone(),
+            generation: task.lifecycle.generation,
+            completion_contract: ManifestContract::Report,
+            requirements_digest: requirements.content_digest.clone(),
+            source_revision: "fixture-source".into(),
+            outputs: vec![OutputRef::Artifact(output)],
+            validation_evidence: vec![EvidenceRef {
+                content_digest: evidence.content_digest,
+                immutable_locator: evidence.immutable_locator,
+                evidence_kind: "deterministic-validation/baseline/v1".into(),
+                media_type: evidence.media_type,
+                size: evidence.size,
+                review_projection: None,
+            }],
+            worker_summary_digest: summary.content_digest.clone(),
+        };
+        let manifest_ref = store.put_manifest(&manifest).unwrap();
+        let manifest_digest = manifest.digest().unwrap();
+        let binding = CompletionReviewBinding {
+            task_id: task.id.clone(),
+            generation: task.lifecycle.generation,
+            attempt_id: Some("attempt-3-2".into()),
+            attempt_fence: task.lifecycle.fence,
+            candidate_sequence: 4,
+        };
+        let bundle = ResolvedReviewBundle {
+            manifest_digest: manifest_digest.clone(),
+            requirements_digest: requirements.content_digest.clone(),
+            manifest_bytes: manifest.canonical_bytes().unwrap(),
+            requirements_bytes,
+            worker_summary_bytes: b"summary".to_vec(),
+            dependency_outputs: Vec::new(),
+            outputs: Vec::new(),
+            validation_evidence: Vec::new(),
+            inspected_output_digests: Vec::new(),
+        };
+        let outcome = run_review_valve_bound(
+            &store,
+            &manifest_digest,
+            &requirements.content_digest,
+            Ok(bundle),
+            &mut PassingReviewer("pi:test:flip"),
+            &mut PassingReviewer("pi:test:eval"),
+            Some(&binding),
+        )
+        .unwrap();
+        let eval = outcome.eval.unwrap();
+        let receipt_ids = vec![
+            outcome.flip.receipt_object.content_digest.to_string(),
+            eval.receipt_object.content_digest.to_string(),
+        ];
+        task.completion_candidate = Some(CompletionCandidateRefs {
+            manifest: manifest_ref,
+            requirements,
+            worker_summary: summary,
+            dependency_outputs: Vec::new(),
+            review_binding: None,
+            flip_receipt: Some(outcome.flip.receipt_object),
+            eval_receipt: Some(eval.receipt_object),
+        });
+        let completed = serde_json::json!({
+            "receipt_version": 1,
+            "task_id": task.id,
+            "generation": task.lifecycle.generation,
+            "manifest_digest": manifest_digest.to_string(),
+            "requirements_digest": task.completion_candidate.as_ref().unwrap().requirements.content_digest.to_string(),
+            "flip_receipt_digest": receipt_ids[0],
+            "eval_receipt_digest": receipt_ids[1],
+            "review_policy": "strict",
+            "contract": "report",
+            "publication": "artifacts:fixture",
+            "completed_at": "2026-08-10T00:00:00Z"
+        });
+        let completion = store
+            .put_bytes(
+                &canonical_json(&completed),
+                "application/vnd.worksgood.completion-receipt+json",
+            )
+            .unwrap();
+        task.completion_receipt = Some(completion.content_digest.to_string());
+        let mut graph = crate::graph::WorkGraph::new();
+        graph.add_node(Node::Task(task));
+        (graph, binding, receipt_ids)
+    }
+
+    #[test]
+    fn receipt_bounded_repair_restores_only_current_identity_and_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut graph, binding, receipt_ids) = stripped_terminal_fixture(dir.path());
+        let report = repair_current_review_projections(dir.path(), &mut graph, 1);
+        assert_eq!(report.repaired, 1);
+        assert_eq!(report.invalid, 0);
+        let task = graph.get_task("receipt-repair").unwrap();
+        assert_eq!(
+            task.completion_candidate
+                .as_ref()
+                .unwrap()
+                .review_binding
+                .as_ref(),
+            Some(&binding)
+        );
+        assert_eq!(
+            task.completion_review_activity
+                .iter()
+                .map(|activity| activity.activity_id.clone())
+                .collect::<Vec<_>>(),
+            receipt_ids
+        );
+        assert!(
+            task.completion_review_activity
+                .iter()
+                .all(|activity| activity.binding.as_ref() == Some(&binding))
+        );
+
+        let second = repair_current_review_projections(dir.path(), &mut graph, 1);
+        assert!(!second.changed());
+        assert_eq!(second.affected_candidates, 0);
+        assert_eq!(
+            graph
+                .get_task("receipt-repair")
+                .unwrap()
+                .completion_review_activity
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn repair_reports_unreviewed_current_candidate_as_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut graph, _, _) = stripped_terminal_fixture(dir.path());
+        let task = graph.get_task_mut("receipt-repair").unwrap();
+        let candidate = task.completion_candidate.as_mut().unwrap();
+        candidate.flip_receipt = None;
+        candidate.eval_receipt = None;
+        task.completion_receipt = None;
+        task.status = crate::graph::Status::InProgress;
+
+        let report = repair_current_review_projections(dir.path(), &mut graph, 1);
+        assert_eq!(report.skipped, 1);
+        assert_eq!(report.invalid, 0);
+        assert_eq!(report.rows[0].outcome, "skipped");
+        assert!(!report.changed());
+    }
+
+    #[test]
+    fn repair_refuses_cross_task_receipt_and_never_guesses_superseded_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut graph, _, _) = stripped_terminal_fixture(dir.path());
+        let task = graph.get_task_mut("receipt-repair").unwrap();
+        task.lifecycle.current_attempt.as_mut().unwrap().id = "different-attempt".into();
+        task.completion_review_activity
+            .push(CompletionReviewActivity {
+                activity_id: format!("b3:{}", "f".repeat(64)),
+                reviewer_kind: ReviewerKind::Flip,
+                verdict: ReviewVerdict::Reject,
+                manifest_digest: ContentDigest::of_bytes(b"superseded"),
+                requirements_digest: ContentDigest::of_bytes(b"old"),
+                binding: None,
+                findings_digest: None,
+                failure_class: Some(ReviewFailureClass::SemanticRejection),
+                model_route: None,
+                executor: None,
+                usage: None,
+                duration_ms: None,
+                created_at: "2026-08-09T00:00:00Z".into(),
+            });
+        let report = repair_current_review_projections(dir.path(), &mut graph, 1);
+        assert_eq!(report.invalid, 1);
+        let task = graph.get_task("receipt-repair").unwrap();
+        assert!(
+            task.completion_candidate
+                .as_ref()
+                .unwrap()
+                .review_binding
+                .is_none()
+        );
+        assert_eq!(task.completion_review_activity.len(), 1);
+        assert_eq!(
+            task.completion_review_activity[0].created_at,
+            "2026-08-09T00:00:00Z"
+        );
     }
 }
