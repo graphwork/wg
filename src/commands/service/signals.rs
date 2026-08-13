@@ -102,6 +102,44 @@ pub fn disposition_for(sig: i32) -> SignalDisposition {
     }
 }
 
+/// Create the self-pipe with both ends `FD_CLOEXEC` and `O_NONBLOCK`.
+///
+/// `pipe2` does both atomically but is a Linux/BSD extension — macOS has no such
+/// symbol, so calling it directly under a bare `cfg(unix)` breaks the build on
+/// Darwin entirely. Returns 0 on success, -1 on failure, matching `pipe2`.
+#[cfg(all(unix, not(target_os = "macos")))]
+unsafe fn make_signal_pipe(fds: &mut [std::os::unix::io::RawFd; 2]) -> i32 {
+    unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) }
+}
+
+/// Darwin fallback: `pipe()` then set the flags on each end.
+///
+/// NOT atomic — a `fork` racing between `pipe` and the `fcntl` calls could
+/// inherit an un-CLOEXEC'd descriptor. There is no `pipe2` on this platform to
+/// close that window, and the handlers are installed during daemon startup
+/// before any agent is spawned, so the race is not reachable here.
+#[cfg(target_os = "macos")]
+unsafe fn make_signal_pipe(fds: &mut [std::os::unix::io::RawFd; 2]) -> i32 {
+    unsafe {
+        if libc::pipe(fds.as_mut_ptr()) != 0 {
+            return -1;
+        }
+        for &fd in fds.iter() {
+            // Preserve the existing status flags; F_SETFL replaces the whole set.
+            let flags = libc::fcntl(fd, libc::F_GETFL);
+            if flags == -1
+                || libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) == -1
+                || libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) == -1
+            {
+                libc::close(fds[0]);
+                libc::close(fds[1]);
+                return -1;
+            }
+        }
+        0
+    }
+}
+
 /// Install the daemon signal handlers and return the **read** end of the
 /// self-pipe (or `-1` on non-Unix / failure). The write end is stored in a
 /// static for the handler. Both ends are `FD_CLOEXEC` so a forked agent does
@@ -114,8 +152,11 @@ pub fn install_daemon_signal_handlers() -> i32 {
     use std::os::unix::io::RawFd;
 
     let mut fds: [RawFd; 2] = [-1, -1];
-    // pipe2 with CLOEXEC so agent children don't inherit the pipe.
-    let rc = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) };
+    // CLOEXEC + NONBLOCK so agent children don't inherit the pipe and the handler
+    // never blocks. `pipe2` sets both atomically but does not exist on macOS —
+    // this function is `cfg(unix)`, and macOS is unix, so the direct call made the
+    // whole binary fail to compile there (`cannot find function pipe2 in libc`).
+    let rc = unsafe { make_signal_pipe(&mut fds) };
     if rc != 0 {
         return -1;
     }
