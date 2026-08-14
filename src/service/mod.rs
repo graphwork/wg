@@ -101,14 +101,14 @@ pub fn is_process_alive(pid: u32) -> bool {
 
 /// Collect all descendant PIDs of `root_pid` by walking `/proc/*/stat`.
 ///
-/// Returns an empty vec on non-Linux or if `/proc` is unavailable. The root
+/// Returns an empty vec on platforms without a parent-map source. The root
 /// PID itself is NOT included in the returned list.
 ///
 /// This is load-bearing for tree-killing agents: a single `wg kill` used to
 /// signal only the top-level `timeout` wrapper or bash script, leaving the
 /// real `wg native-exec` subprocess alive and still writing to disk. Walking
-/// the full /proc parent-map catches every descendant regardless of whether
-/// the intermediate processes called `setsid()` or changed process groups.
+/// the full parent-map catches every descendant regardless of whether the
+/// intermediate processes called `setsid()` or changed process groups.
 #[cfg(target_os = "linux")]
 pub fn collect_process_descendants(root_pid: u32) -> Vec<u32> {
     use std::collections::HashMap;
@@ -147,11 +147,110 @@ pub fn collect_process_descendants(root_pid: u32) -> Vec<u32> {
         }
     }
 
-    // BFS from root to find all descendants.
+    collect_descendants_from_parent_map(root_pid, &parent_of)
+}
+
+/// macOS implementation of the /proc parent-map walk above, via libproc:
+/// `proc_listallpids` enumerates every visible pid and `proc_pidinfo`
+/// (`PROC_PIDTBSDINFO`) returns a fixed-width record whose `pbi_pid`/
+/// `pbi_ppid` fields carry everything the BFS needs. Each record is
+/// validated (`pbi_pid == queried pid`) so an ABI drift degrades to an
+/// empty map — the process-group signal in the kill helpers still covers
+/// descendants that stayed in the wrapper's group.
+#[cfg(target_os = "macos")]
+pub fn collect_process_descendants(root_pid: u32) -> Vec<u32> {
+    use std::collections::HashMap;
+
+    // `struct proc_bsdinfo` from <libproc.h> (PROC_PIDTBSDINFO = 3).
+    #[repr(C)]
+    struct ProcBsdInfo {
+        pbi_flags: u32,
+        pbi_status: u32,
+        pbi_rfu0: u32,
+        pbi_pid: u32,
+        pbi_ppid: u32,
+        pbi_uid: i32,
+        pbi_gid: i32,
+        pbi_ruid: i32,
+        pbi_rgid: i32,
+        pbi_svuid: i32,
+        pbi_svgid: i32,
+        rfu_1: u32,
+        pbi_comm: [u8; 16],
+        pbi_pcomm: [u8; 32],
+        pbi_nfiles: u32,
+        pbi_pgid: u32,
+        pbi_pjobc: u32,
+        e_tdev: u32,
+        e_tpgid: i32,
+        pbi_nice: i32,
+        pbi_start_tvsec: u64,
+        pbi_start_tvusec: u64,
+    }
+    const PROC_PIDTBSDINFO: libc::c_int = 3;
+
+    #[link(name = "proc")]
+    unsafe extern "C" {
+        fn proc_listallpids(buffer: *mut libc::c_void, buffersize: libc::c_int) -> libc::c_int;
+        fn proc_pidinfo(
+            pid: libc::c_int,
+            flavor: libc::c_int,
+            arg: libc::uint64_t,
+            buffer: *mut libc::c_void,
+            buffersize: libc::c_int,
+        ) -> libc::c_int;
+    }
+
+    // First call with a null buffer returns the process count.
+    let count = unsafe { proc_listallpids(std::ptr::null_mut(), 0) };
+    if count <= 0 {
+        return Vec::new();
+    }
+    // Re-query with headroom: the process table can grow between calls.
+    let mut pids: Vec<libc::c_int> = vec![0; count as usize + 32];
+    let filled = unsafe {
+        proc_listallpids(
+            pids.as_mut_ptr().cast::<libc::c_void>(),
+            (pids.len() * std::mem::size_of::<libc::c_int>()) as libc::c_int,
+        )
+    };
+    if filled <= 0 {
+        return Vec::new();
+    }
+
+    let mut parent_of: HashMap<u32, u32> = HashMap::new();
+    for &pid in &pids[..filled as usize] {
+        if pid <= 0 {
+            continue;
+        }
+        let mut info: ProcBsdInfo = unsafe { std::mem::zeroed() };
+        let got = unsafe {
+            proc_pidinfo(
+                pid,
+                PROC_PIDTBSDINFO,
+                0,
+                &mut info as *mut ProcBsdInfo as *mut libc::c_void,
+                std::mem::size_of::<ProcBsdInfo>() as libc::c_int,
+            )
+        };
+        if got > 0 && info.pbi_pid == pid as u32 {
+            parent_of.insert(info.pbi_pid, info.pbi_ppid);
+        }
+    }
+
+    collect_descendants_from_parent_map(root_pid, &parent_of)
+}
+
+/// BFS over a pid → ppid map collecting every descendant of `root_pid`
+/// (excluding the root itself). Shared by the platform-specific collectors.
+fn collect_descendants_from_parent_map(
+    root_pid: u32,
+    parent_of: &std::collections::HashMap<u32, u32>,
+) -> Vec<u32> {
     let mut descendants: Vec<u32> = Vec::new();
     let mut frontier: Vec<u32> = vec![root_pid];
     while let Some(current) = frontier.pop() {
-        for (&child, &parent) in &parent_of {
+        for (&child, &parent) in parent_of {
             if parent == current && child != root_pid && !descendants.contains(&child) {
                 descendants.push(child);
                 frontier.push(child);
@@ -161,12 +260,11 @@ pub fn collect_process_descendants(root_pid: u32) -> Vec<u32> {
     descendants
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub fn collect_process_descendants(_root_pid: u32) -> Vec<u32> {
-    // /proc-based descendant discovery is Linux-specific. On other Unix
-    // platforms we fall through to signaling just the root PID, which at
-    // least handles the common case where the child is in the same
-    // process group.
+    // No /proc parent-map or sysctl kinfo_proc walk on this platform. The
+    // process-group signal in the kill helpers still covers descendants
+    // that stayed in the wrapper's group.
     Vec::new()
 }
 
@@ -183,6 +281,28 @@ fn signal_pid(pid: u32, signal: libc::c_int) -> anyhow::Result<()> {
         return Err(err).context(format!("Failed to signal PID {}", pid));
     }
     Ok(())
+}
+
+/// Signal the whole process group led by `pid` (kill(-pid)).
+///
+/// Agent wrappers are spawned via `setsid()` (see `spawn/execution.rs`), so
+/// the registered wrapper PID names a process group that contains every
+/// descendant which did not itself detach. Signaling the group reaches them
+/// even when a parent-map walk cannot: on platforms without /proc the walk
+/// is empty, and once the wrapper exits its children reparent to init and
+/// become unreachable by ppid — but they stay in the group.
+///
+/// Best-effort: silently does nothing when `pid` does not lead a group
+/// (kill returns ESRCH), which is expected for non-leader targets. Guards
+/// against the pid<=1 and self special meanings of kill(-1)/kill(-pid).
+#[cfg(unix)]
+fn signal_process_group(pid: u32, signal: libc::c_int) {
+    if pid <= 1 || pid == std::process::id() {
+        return;
+    }
+    unsafe {
+        libc::kill(-(pid as libc::pid_t), signal);
+    }
 }
 
 /// Send SIGTERM to `pid` and all its descendants, wait up to `wait_secs`
@@ -205,6 +325,10 @@ pub fn kill_process_graceful(pid: u32, wait_secs: u64) -> anyhow::Result<()> {
     let descendants = collect_process_descendants(pid);
 
     // SIGTERM the whole tree (root first so the shell can propagate its own).
+    // Group-signal covers in-group descendants (the wrapper is spawned via
+    // setsid(), so its pid names its group), the parent-map walk adds any
+    // descendant that detached into its own session.
+    signal_process_group(pid, libc::SIGTERM);
     signal_pid(pid, libc::SIGTERM)?;
     for child in &descendants {
         let _ = signal_pid(*child, libc::SIGTERM);
@@ -233,6 +357,9 @@ pub fn kill_process_graceful(pid: u32, wait_secs: u64) -> anyhow::Result<()> {
     for p in &remaining {
         let _ = signal_pid(*p, libc::SIGKILL);
     }
+    // Final group sweep: anything still in the wrapper's process group that
+    // the parent-map walk missed (e.g. reparented to init) dies here too.
+    signal_process_group(pid, libc::SIGKILL);
 
     Ok(())
 }
@@ -273,6 +400,10 @@ pub fn kill_process_graceful(pid: u32, wait_secs: u64) -> anyhow::Result<()> {
 /// Send SIGKILL to `pid` and all its descendants.
 #[cfg(unix)]
 pub fn kill_process_force(pid: u32) -> anyhow::Result<()> {
+    // Group-signal first: the wrapper leads its own session/group, so this
+    // reaches every in-group descendant — including ones a parent-map walk
+    // would miss after the root exits and they reparent to init.
+    signal_process_group(pid, libc::SIGKILL);
     if !is_process_alive(pid) {
         // Still walk the tree — the root is gone but descendants may remain
         // (orphaned to init) and need explicit cleanup.
@@ -567,6 +698,111 @@ mod tests {
         outer.wait().ok();
 
         // Give the kernel a beat for init to reap the grandchildren.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        for child in &descendants_before {
+            assert!(
+                !is_process_alive(*child),
+                "descendant PID {} should be dead after tree kill",
+                child
+            );
+        }
+        assert!(
+            !is_process_alive(outer_pid),
+            "root PID {} should be dead after tree kill",
+            outer_pid
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn collect_process_descendants_finds_grandchildren_macos() {
+        // Same shape as the Linux test: spawn bash that backgrounds a sleep,
+        // then collect descendants. Exercises the sysctl(KERN_PROC_ALL) walk.
+        let outer = std::process::Command::new("bash")
+            .arg("-c")
+            .arg("sleep 30 & sleep 30 & wait")
+            .spawn()
+            .expect("spawn bash");
+        let outer_pid = outer.id();
+
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        let descendants = collect_process_descendants(outer_pid);
+        let mut outer = outer;
+        let _ = kill_process_force(outer_pid);
+        outer.wait().ok();
+        assert!(
+            !descendants.is_empty(),
+            "expected at least one descendant of the bash wrapper; got {:?}",
+            descendants
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn kill_process_force_tree_reaps_descendants_macos() {
+        // Reproduction of the orphaned-agent bug: a wrapper-like bash that
+        // backgrounded a long sleep is killed; the inner sleep must die too.
+        // The wrapper is NOT a process-group leader here (plain spawn), so
+        // the group-signal path misses and the sysctl descendant walk must
+        // carry the kill.
+        let mut outer = std::process::Command::new("bash")
+            .arg("-c")
+            .arg("sleep 300 & wait")
+            .spawn()
+            .expect("spawn bash");
+        let outer_pid = outer.id();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        let descendants_before = collect_process_descendants(outer_pid);
+        assert!(!descendants_before.is_empty(), "needs a descendant to test");
+
+        kill_process_force(outer_pid).expect("force kill root");
+
+        outer.wait().ok();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        for child in &descendants_before {
+            assert!(
+                !is_process_alive(*child),
+                "descendant PID {} should be dead after tree kill",
+                child
+            );
+        }
+        assert!(
+            !is_process_alive(outer_pid),
+            "root PID {} should be dead after tree kill",
+            outer_pid
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn kill_process_force_reaps_session_leader_tree_macos() {
+        // The real agent-wrapper spawn path calls setsid() (see
+        // spawn/execution.rs), so the wrapper is a session/process-group
+        // leader. This test mimics that: the group-signal path must reach
+        // descendants even without any /proc-style walk.
+        use std::os::unix::process::CommandExt;
+        let mut cmd = std::process::Command::new("bash");
+        cmd.arg("-c").arg("sleep 300 & wait");
+        unsafe {
+            cmd.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            });
+        }
+        let mut outer = cmd.spawn().expect("spawn bash");
+        let outer_pid = outer.id();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        let descendants_before = collect_process_descendants(outer_pid);
+        assert!(!descendants_before.is_empty(), "needs a descendant to test");
+
+        kill_process_force(outer_pid).expect("force kill root");
+
+        outer.wait().ok();
         std::thread::sleep(std::time::Duration::from_millis(200));
 
         for child in &descendants_before {
