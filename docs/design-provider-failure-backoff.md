@@ -182,12 +182,13 @@ Extend planner state with one bounded retry projection per target series:
 ```text
 RetrySeries {
   retry_id,                 // stable series identity
-  target: Source(TaskKey) | Evaluation(EvaluationKey) | Review(ReviewKey),
+  target: Source(SourceRetryKey) | Evaluation(EvaluationKey) | Review(ReviewKey),
   operation_id,             // minted and persisted before physical I/O
   route_id,
   plan_id,
   progress_id,
   last_failure_id,
+  replay_safety_receipt_id,
   class,
   failures_without_progress,
   base_seconds,
@@ -200,11 +201,17 @@ RetrySeries {
 }
 ```
 
-`EvaluationKey` includes `evaluation_id`, the complete `SourceCandidateRef`,
-policy digest, route digest, and last failed evaluation attempt ID. `ReviewKey`
-includes task/generation/attempt/fence, candidate sequence, manifest and
-requirements digests, reviewer kind, exact route digest, and unavailable receipt
-ID. Mutable prose, API keys, paths, prompts, and candidate bytes are not planner
+`SourceRetryKey` persists graph ID, task ID, goal digest, completion contract,
+failed generation, failed attempt ID, failed attempt fence, and the lifecycle
+revision which accepted the failure. `EvaluationKey` includes `evaluation_id`,
+the complete `SourceCandidateRef`, policy digest, route digest, and last failed
+evaluation attempt ID. `ReviewKey` includes task/generation/attempt/fence,
+candidate sequence, manifest and requirements digests, reviewer kind, exact
+route digest, and unavailable receipt ID. The full target key,
+`operation_id`, `failure_id`, route/plan IDs, progress ID, and replay-safety
+receipt ID are inputs to the retry effect ID. A later failure or generation
+therefore cannot match an old effect even if it uses the same task and route.
+Mutable prose, API keys, paths, prompts, and candidate bytes are not planner
 fields.
 
 The dispatch/evaluation/review adapter mints `operation_id` transactionally
@@ -231,6 +238,53 @@ prose cannot change identity. A new physical retry receives a new
 
 A retry series crosses automatic source generations: `GenerationCreated` alone
 does not reset it. It ends or resets only by the progress rules in §8.
+
+### 6.1 Replay-safety receipt
+
+Automatic source retry requires an immutable, content-addressed
+`ReplaySafetyReceipt`:
+
+```text
+ReplaySafetyReceipt {
+  schema: 1,
+  receipt_id,                 // digest of canonical fields below, excluding this field
+  operation_id,
+  target: SourceRetryKey,
+  route_id,
+  plan_id,
+  failed_execution_id,        // launch receipt or planner effect-execution ID
+  proof: DefinitiveProviderRejection { status, provider_request_id } |
+         PreWriteTransportFailure { connected, bytes_written: 0 } |
+         ProviderIdempotencyBound { idempotency_key, provider_request_id } |
+         ReconciledNoResult { provider_query_receipt_id },
+  external_effect_journal_head,
+  issuer: { adapter_kind, adapter_binary_digest, run_id },
+  evidence_refs,
+  issued_at,
+}
+```
+
+The exact execution adapter which owns `operation_id` is the only issuer. It
+writes the canonical receipt to the immutable completion/evidence object store
+and links its digest to the operation/effect execution journal before reporting
+the failure to `PlannerStore`. Planner input carries only the receipt digest.
+Before effect issuance and again before lifecycle mutation, the verifier reloads
+that object and checks: content digest; schema; registered adapter/run identity;
+exact operation, source, route, plan, and failed launch/effect-execution
+bindings; and the external-effect journal head. `DefinitiveProviderRejection` accepts only an
+actual non-success provider response such as 429/5xx, never a missing response.
+`PreWriteTransportFailure` requires the transport journal to prove zero request
+bytes were written. `ProviderIdempotencyBound` requires the route capability
+snapshot and provider response metadata to prove the key was accepted;
+`ReconciledNoResult` requires a provider query receipt bound to the provider
+request ID. A timeout after any request bytes, an unsupported idempotency key,
+missing journal data, unknown issuer, digest mismatch, or a later external tool
+commit fails closed. “No visible graph result” is not proof.
+
+Evaluation/review retries also carry an operation receipt when their outcome is
+ambiguous; a definitive 429/5xx receipt is sufficient. The receipt authorizes
+only replay safety. It does not classify quality, grant lifecycle authority, or
+prove route health.
 
 ## 7. Exact falloff formula
 
@@ -312,8 +366,54 @@ retry policy” event may start a new policy epoch and is audited.
 
 ## 9. One route probe lease
 
-Every target joins the route projection keyed by `HealthRouteKey`. While a
-route is unavailable:
+Every target joins one durable route projection keyed by `HealthRouteKey`:
+
+```text
+RouteRetryState {
+  route_id,
+  route_epoch,
+  state: Healthy | Unavailable | Probing | AwaitOperatorEvent,
+  consecutive_probe_failures,
+  last_outage_failure_id,
+  retry_after_not_before,
+  next_probe_at,
+  route_probe_base_seconds,
+  route_probe_cap_seconds,
+  jitter_divisor,
+  probe_lease,
+  recovered_at,
+}
+```
+
+The first unique transient failure opens an outage epoch. Concurrent failures
+from operations admitted before the breaker opened join that epoch, update the
+maximum `retry_after_not_before`, and **do not** increment the route exponent.
+Only a failed operation holding `probe_lease` increments
+`consecutive_probe_failures`; duplicate failure IDs are inert. For route ordinal
+`m = consecutive_probe_failures` before the failed probe (the initial outage
+uses `m = 0`):
+
+```text
+route_raw(m) = min(route_probe_cap_seconds,
+                   saturating_mul(route_probe_base_seconds, 2^min(m, 63)))
+route_window = floor(route_raw(m) / jitter_divisor)
+route_jitter = H("wg-route-probe-v1" || route_id || route_epoch || m)
+               mod (route_window + 1)
+route_delay  = min(route_probe_cap_seconds, route_raw(m) + route_jitter)
+next_probe_at = max(failure_observed_at + route_delay,
+                    retry_after_not_before.unwrap_or(0))
+```
+
+After computing a failed leased probe, persist
+`consecutive_probe_failures = m + 1`. The same saturation, little-endian BLAKE3,
+absolute Retry-After lower-bound, and invalid-value rules from §7 apply. Route
+state, ordinal, policy snapshot, epoch, lower bound, deadline, and lease are in
+`PlannerStore` trace/state, so restart neither redraws jitter nor makes a probe
+early. Success persists `Healthy`, increments `route_epoch`, clears the ordinal,
+lower bound, deadline, and lease, and records `recovered_at` before releasing
+waiters. Auth/config/credit changes instead enter the event-gated state below.
+
+While a route is unavailable:
 
 1. all target retry records retain their own stage and exact route;
 2. the earliest due target may acquire the route’s single `probe_lease`;
@@ -363,18 +463,20 @@ The failed attempt is first terminalized normally through
 may the planner schedule retry. At due time its effect adapter must atomically
 re-read and verify:
 
-- task ID, goal digest, completion contract, lifecycle generation, revision,
-  current attempt ID and fence;
+- every persisted `SourceRetryKey` field: graph/task ID, goal digest, completion
+  contract, failed generation, failed attempt ID/fence, and accepted failure
+  revision;
 - current attempt is terminal `Failed` for the same `failure_id` and no owner is
   live;
 - task failure projection still contains the same direct failure and exact
   route/plan binding;
 - no newer candidate, verdict, operator edit, abandonment, or generation exists;
 - the planner effect ID and route probe lease are current; and
-- the failed `operation_id` has a durable replay-safety or reconciled-no-result
-  receipt. A possibly accepted provider result or externally committed tool
-  effect without such a receipt changes the series to
-  `ambiguous-provider-outcome` instead of creating a generation.
+- `replay_safety_receipt_id` resolves and verifies under §6.1 for the exact
+  operation/source/route/plan/effect-execution tuple. A possibly accepted
+  provider result or externally committed tool effect without such a receipt
+  changes the series to `ambiguous-provider-outcome` instead of creating a
+  generation.
 
 The adapter then requests existing lifecycle
 `TransitionKind::GenerationCreated` as `ActorKind::Reconciler`, with full
@@ -587,9 +689,15 @@ the latter restarts `wg service`, not graph/evaluation work.
    increment exactly once.
 5. Prove progress rows in §8 reset the correct scope and heartbeat, token,
    output, spawn, generation creation, and duplicate failure do not.
-6. Prove auth/config/credit and unknown evidence have no timed credential-bearing
+6. Verify every §6.1 receipt proof variant, content/issuer/journal binding, and
+   source key/effect identity; reject post-write timeout, missing or mismatched
+   receipts, a stale source fence/revision, and a later external effect.
+7. Table-test the §9 route formula, initial outage, failed-probe-only exponent,
+   concurrent tail-failure merge, Retry-After floor, cap/overflow, restart, and
+   success reset.
+8. Prove auth/config/credit and unknown evidence have no timed credential-bearing
    effect; a matching operator event enables one same-route probe.
-7. Prove semantic rejection has no deadline and remains inert after arbitrary
+9. Prove semantic rejection has no deadline and remains inert after arbitrary
    fake-clock advancement.
 
 ### 14.2 Fake-clock planner tests
@@ -623,6 +731,9 @@ the latter restarts `wg service`, not graph/evaluation work.
    must find the lifecycle idempotency event and not increment generation.
 5. Prove an already-started probe lease is not replaced on wall-clock expiry
    until its exact owner is terminal/proven dead.
+6. Persist a `SourceRetryKey` and replay-safety receipt, then change generation,
+   attempt, fence, revision, goal, contract, journal head, or adapter identity;
+   every stale/mismatched replay must be inert.
 
 ### 14.4 Credential-free smoke
 
