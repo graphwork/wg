@@ -138,10 +138,17 @@ normalized provider evidence when it has it; its current code/message-only
    create a quality score, accept/reject a candidate, or edit source.
 6. **One physical operation at a time.** An active exact attempt/claim or a
    spawned route-probe lease prevents a second operation for the same target.
-7. **Elapsed time is not semantic evidence.** It may make a transient retry due;
+7. **Ambiguous outcome is fail-closed.** Every physical provider operation gets
+   a stable `operation_id` before network I/O. A timeout/reset may authorize a
+   fresh lifecycle attempt only when the adapter can prove the prior operation
+   is replay-safe: the provider honors that idempotency identity, reconciliation
+   proves no accepted result, or no externally committed tool effect can be
+   duplicated. Otherwise it becomes `ambiguous-provider-outcome` and waits for
+   reconciliation/operator evidence.
+8. **Elapsed time is not semantic evidence.** It may make a transient retry due;
    it can never re-evaluate a consumed rejection or turn transient failure into
    semantic failure.
-8. **Crash safety before execution.** An effect is in both planner trace and
+9. **Crash safety before execution.** An effect is in both planner trace and
    effect journal before an adapter sees it. Adapter execution and
    acknowledgement use the same stable effect ID.
 
@@ -153,13 +160,14 @@ those are exhausted they emit one typed attempt failure into this contract.
 
 | Evidence and locus | Canonical class | Automatic action | Source/candidate consequence | Wake/reset condition |
 |---|---|---|---|---|
-| Source worker: direct HTTP 429, valid `Retry-After`, transient 5xx, typed provider overloaded/unavailable, transport timeout/reset/DNS/connect failure | `transient-provider` | Schedule a fresh lifecycle-authorized generation of the same goal on the exact failed route; coordinate through the route breaker/probe lease | Preserve source/WIP evidence; do not spend semantic/cycle retry budget | Due deadline and route lease; reset only on authoritative provider/source progress |
+| Source worker: direct HTTP 429, valid `Retry-After`, transient 5xx, typed provider overloaded/unavailable, transport timeout/reset/DNS/connect failure, with replay safety proved | `transient-provider` | Schedule a fresh lifecycle-authorized generation of the same goal on the exact failed route; coordinate through the route breaker/probe lease | Preserve source/WIP evidence; do not spend semantic/cycle retry budget | Due deadline and route lease; reset only on authoritative provider/source progress |
 | Evaluator or reviewer: same direct infrastructure evidence | `transient-provider` | Rearm and run the same evaluation record or review binding on the exact route | Never rerun unchanged source; no score/verdict is created for the failed call | Due deadline and route lease; reset on a well-formed result or a new candidate |
 | Evaluator malformed output or insufficient/missing evidence without direct provider evidence | `evaluation-evidence` or `unknown` | No provider automatic retry. Existing evidence-repair/manual policy may act, but not this scheduler | Source remains unchanged and awaiting the correct evidence | New evidence/candidate or explicit operator retry |
 | Semantic evaluator/reviewer reject with a durable verdict/receipt | `semantic-rejection` | None | Keep the rejected immutable candidate; require source repair, waiver, or a genuinely new candidate | New candidate/manifest or audited operator action only; time never requeues it |
 | Source validation/deliverable/source-quality failure, task input 4xx, context limit, agent hard timeout, clean no-op | `source-quality` | None under provider policy | Follow explicit source repair/retry policy; do not call it provider recovery | New source/operator evidence |
 | 401/403, invalid/missing key, missing handler/adapter, invalid endpoint/model, route drift, executor config | `auth-config` | No timed credential-bearing retry. Persist operator/config wait | Keep same goal or record and exact route identity | A new credential/config/route-validation event; then start at base delay or probe once |
 | 402, insufficient credits, exhausted account/project budget | `credit-exhausted` | No aggressive timed retry and no fallback | Keep same goal or record; show credit action needed | A credit/budget event or explicit operator retry; then one same-route probe |
+| Timeout/reset after possible provider acceptance or external tool commit, without idempotency/outcome proof | `ambiguous-provider-outcome` | No automatic retry | Preserve exact session/WIP and fence late results; reconcile by `operation_id` or require operator action | Durable outcome/replay-safety evidence |
 | Text-only inference, generic nonzero exit, contradictory evidence, or `FailureReason::Unknown` | `unknown` | No automatic retry | Preserve evidence and create a typed reconciliation/operator recommendation, no score | Direct evidence arrives or explicit operator action |
 
 A provider’s `Retry-After` on an authentication/credit error does not make that
@@ -175,6 +183,7 @@ Extend planner state with one bounded retry projection per target series:
 RetrySeries {
   retry_id,                 // stable series identity
   target: Source(TaskKey) | Evaluation(EvaluationKey) | Review(ReviewKey),
+  operation_id,             // minted and persisted before physical I/O
   route_id,
   plan_id,
   progress_id,
@@ -184,7 +193,7 @@ RetrySeries {
   base_seconds,
   cap_seconds,
   jitter_divisor,
-  retry_after_deadline,
+  retry_after_not_before,   // canonical absolute Unix-second lower bound
   next_eligible_at,
   pending_effect_id,
   disposition: Backoff | AwaitRouteProbe | AwaitOperatorEvent | Due,
@@ -198,17 +207,27 @@ requirements digests, reviewer kind, exact route digest, and unavailable receipt
 ID. Mutable prose, API keys, paths, prompts, and candidate bytes are not planner
 fields.
 
-`failure_id` is stable for one physical operation:
+The dispatch/evaluation/review adapter mints `operation_id` transactionally
+before the first physical request and puts it in spawn/claim metadata. Provider
+request/event IDs are aliases attached afterward, never alternate identities.
+`failure_id` depends on the canonical operation identity, not on whichever
+observation site saw the error:
 
 ```text
-blake3("wg-provider-failure-v1" || target exact tuple || route_id || plan_id ||
-       provider event/request id if present || typed status/type/code)
+failure_id = blake3("wg-provider-failure-v1" || target exact tuple ||
+                    operation_id || route_id || plan_id)
 ```
 
-When a provider event ID is unavailable, the exact source attempt ID or exact
-evaluation/review attempt ID is the deduplication boundary. Detection time and
-human prose are excluded. Wrapper, task-failure, and telemetry sites can then
-submit the same observation without incrementing the exponent twice.
+A physical operation has one terminal failure observation. Wrapper,
+task-failure, telemetry, and provider-envelope reports for that operation merge
+under the same `failure_id`. The reducer selects evidence by the fixed
+precedence `ProviderEnvelope > HttpResponse > TransportError > ProcessOutcome >
+LegacyText > Unknown`, takes the maximum `retry_after_not_before`, and requires
+all direct reports to agree on the hard/transient class. A conflicting direct
+class becomes `ambiguous-provider-outcome`; it never creates a second failure.
+Detection time, optional provider event ID, status/type/code spelling, and human
+prose cannot change identity. A new physical retry receives a new
+`operation_id`, so it advances the exponent exactly once.
 
 A retry series crosses automatic source generations: `GenerationCreated` alone
 does not reset it. It ends or resets only by the progress rules in §8.
@@ -226,14 +245,18 @@ window(n)    = floor(raw(n) / jitter_divisor)
 jitter(n)    = H("wg-provider-retry-jitter-v1" || retry_id || progress_id || n)
                mod (window(n) + 1)
 computed(n)  = min(cap_seconds, raw(n) + jitter(n))
-retry_after  = ceil(max(0, retry_after_secs))
-               interpreted from the failure's persisted observed_at
 eligible_at  = max(observed_at + computed(n),
-                   observed_at + retry_after)
+                   retry_after_not_before.unwrap_or(0))
 ```
 
-If `retry_after_secs` is absent, `retry_after = 0`. After computing this
-unique failure, persist `failures_without_progress = n + 1`. All arithmetic is
+Before planner observation, the adapter canonicalizes `Retry-After` once. A
+finite nonnegative delta becomes
+`retry_after_not_before = observed_at + ceil(delta_seconds)`; an HTTP date
+becomes its ceiling Unix-second timestamp. Absence or malformed/NaN/infinite/
+negative input becomes `None` plus a diagnostic. Duplicate reports merge with
+`max(existing, incoming)`, so the lower bound can never move earlier. After
+computing this unique failure, persist
+`failures_without_progress = n + 1`. All arithmetic is
 saturating. `H` is the first eight BLAKE3 digest bytes interpreted as a
 little-endian unsigned 64-bit integer. The hash inputs and policy snapshot are
 persisted, so the result is deterministic across restart and machines. The
@@ -248,10 +271,8 @@ local computed-delay cap; silently shortening it would violate the provider’s
 instruction. Thus “24 hour cap” means the maximum delay **generated by WG’s
 falloff**, not permission to ignore a longer provider lower bound.
 
-A malformed, NaN, infinite, or negative `Retry-After` is ignored and retained as
-a diagnostic. An HTTP-date form is normalized by the adapter to an absolute
-lower-bound deadline before entering the planner. A later duplicate signal can
-only move the stored lower bound later, never earlier.
+The raw header form is diagnostic evidence only; planner state and replay use
+only the canonical absolute `retry_after_not_before`.
 
 ## 8. Progress and reset rules
 
@@ -303,6 +324,22 @@ route is unavailable:
 5. success closes the breaker and releases waiting targets with deterministic
    route-epoch/task staggering; failure advances the route outage falloff once.
 
+The recovery staggering formula is exact. Persist `recovered_at` and incremented
+`route_epoch`; for each waiting retry series:
+
+```text
+stagger_window = route_probe_base_seconds
+stagger = H("wg-route-recovery-v1" || route_id || route_epoch || retry_id)
+          mod (stagger_window + 1)
+release_at = max(next_eligible_at, recovered_at + stagger)
+order = (release_at ascending, retry_id lexicographic)
+```
+
+`H` uses the same little-endian BLAKE3 rule as §7. A zero window releases at
+`recovered_at`. The persisted route epoch, recovery time, retry ID, and target
+deadline make the release stable across restart; the lexicographic tie-breaker
+makes collisions deterministic.
+
 A lease binds effect ID, target key, route/plan IDs, lease epoch, and expiry. A
 lease which has not started may expire and be reacquired. Once its physical
 operation is recorded as started/spawned, it has no time-only expiry: the exact
@@ -333,7 +370,11 @@ re-read and verify:
 - task failure projection still contains the same direct failure and exact
   route/plan binding;
 - no newer candidate, verdict, operator edit, abandonment, or generation exists;
-- the planner effect ID and route probe lease are current.
+- the planner effect ID and route probe lease are current; and
+- the failed `operation_id` has a durable replay-safety or reconciled-no-result
+  receipt. A possibly accepted provider result or externally committed tool
+  effect without such a receipt changes the series to
+  `ambiguous-provider-outcome` instead of creating a generation.
 
 The adapter then requests existing lifecycle
 `TransitionKind::GenerationCreated` as `ActorKind::Reconciler`, with full
@@ -419,7 +460,8 @@ RetryRecommendation {
   target: source | evaluation | review,
   disposition: automatic-same-route | await-operator-event | none,
   failure_class: transient-provider | auth-config | credit-exhausted |
-                 semantic-rejection | source-quality | unknown,
+                 ambiguous-provider-outcome | semantic-rejection |
+                 source-quality | unknown,
   reason_code,
   evidence_id,                 // failure_id or immutable receipt id
   exact_route,                 // redacted handler-first route, no credential
@@ -529,15 +571,20 @@ the latter restarts `wg service`, not graph/evaluation work.
 ### 14.1 Unit and property tests
 
 1. Table-test every row in §5, including 429 with and without `Retry-After`,
-   500/503/529, typed timeout/reset, 401/403, 402/credits, invalid config,
-   semantic reject, source-quality reject, and unknown/text-only evidence.
+   500/503/529, typed timeout/reset, ambiguous post-accept reset, 401/403,
+   402/credits, invalid config, semantic reject, source-quality reject, and
+   unknown/text-only evidence.
 2. Prove direct structured evidence wins over contradictory prose and no
-   evaluator/model classifier is called.
+   evaluator/model classifier is called; conflicting direct evidence fails
+   closed as one ambiguous operation.
 3. Table-test the exact formula for `n=0`, growth, saturation/overflow,
-   deterministic jitter, malformed `Retry-After`, a lower bound below the
-   computed delay, and a lower bound beyond 24 hours.
-4. Submit the same `failure_id` from wrapper/task/telemetry paths repeatedly and
-   prove one series increment and one effect.
+   deterministic jitter, delta and HTTP-date normalization, malformed
+   `Retry-After`, duplicate max-merge, a lower bound below the computed delay,
+   and a lower bound beyond 24 hours.
+4. Submit wrapper/task/telemetry observations with different optional provider
+   event/status details but the same `operation_id`; prove one canonical
+   `failure_id`, one series increment, and one effect. A new operation ID must
+   increment exactly once.
 5. Prove progress rows in §8 reset the correct scope and heartbeat, token,
    output, spawn, generation creation, and duplicate failure do not.
 6. Prove auth/config/credit and unknown evidence have no timed credential-bearing
@@ -557,7 +604,8 @@ the latter restarts `wg service`, not graph/evaluation work.
    and assert the record stays live in backoff rather than becoming semantic
    `Failed`.
 5. Seed N targets on one route; assert one probe lease, no parallel physical
-   call, stable release staggering, and no fallback plan ID.
+   call, the exact §9 release times/tie-break order across restart, and no
+   fallback plan ID.
 6. Change candidate, lifecycle fence, route plan, or consumed verdict before a
    due effect and assert `RejectedStale` with no mutation.
 
@@ -583,7 +631,8 @@ the real service event loop and deterministic fake clock without credentials:
 
 1. source route returns 429 + Retry-After; no immediate respawn occurs, restart
    preserves deadline, and exactly one fresh same-route lifecycle attempt runs
-   when due;
+   when due. A separate post-accept reset fixture without idempotency/outcome
+   proof must remain fail-closed and create no generation;
 2. evaluator route then returns 503; unchanged source is not run again and the
    same evaluation record retries when due;
 3. a semantic reject is consumed once and remains inert after a day;
