@@ -594,6 +594,7 @@ pub fn maybe_run(command: &Commands, json: bool) -> Result<Option<()>> {
             executor,
             route,
             json,
+            terminal,
         } => {
             commands::classify_failure::run(
                 raw_stream.as_deref(),
@@ -601,6 +602,7 @@ pub fn maybe_run(command: &Commands, json: bool) -> Result<Option<()>> {
                 executor.as_deref(),
                 route.as_deref(),
                 *json,
+                *terminal,
             )?;
             return Ok(Some(()));
         }

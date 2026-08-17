@@ -3598,7 +3598,7 @@ fi
     };
 
     let pi_exit_reconcile = if executor_type == "pi" {
-        "if [ \"$TASK_STATUS\" = \"in-progress\" ]; then wg pi-watchdog process-exit \"$TASK_ID\" --exit-code \"$EXIT_CODE\" --pid \"$WG_PI_CHILD_PID\" 2>> \"$OUTPUT_FILE\" || wg fail \"$TASK_ID\" --class agent-exit-nonzero --reason \"Pi exited without a policy-valid continuation authorization\" 2>> \"$OUTPUT_FILE\" || true; fi"
+        "if [ \"$TASK_STATUS\" = \"in-progress\" ]; then wg pi-watchdog process-exit \"$TASK_ID\" --exit-code \"$EXIT_CODE\" --pid \"$WG_PI_CHILD_PID\" 2>> \"$OUTPUT_FILE\" || echo \"[wrapper] WARNING: Pi process-exit reconciliation requires explicit review\" >> \"$OUTPUT_FILE\"; fi"
     } else {
         ""
     };
@@ -3649,11 +3649,25 @@ EXIT_CODE=$?
 {session_fallback_block}
 {stream_result}
 
-# Provider telemetry runs independently of process exit. This catches pi's
-# mid-stream trap: an error event can follow initial text and pi may still exit
-# zero. Detect it before the no-work/no-operational-output gates so the typed
-# provider signal wins over a generic no-op classification.
+# Project terminal evidence once from immutable stream bytes. This projection
+# is restart-stable and is the precedence fence for every wrapper path below:
+# exact completed receipts and typed finalization blockers outrank timeout/reset
+# text heuristics, while a genuine structured provider error before completion
+# remains provider-failure.
 if [ -n "$RAW_STREAM" ] && [ -s "$RAW_STREAM" ]; then
+    TERMINAL_JSON=$(wg classify-failure --terminal --raw-stream "$RAW_STREAM" --exit-code "$EXIT_CODE" --executor "{executor_type}" --route "${{WG_MODEL:-}}" --json 2>/dev/null || true)
+else
+    TERMINAL_JSON=$(wg classify-failure --terminal --exit-code "$EXIT_CODE" --executor "{executor_type}" --route "${{WG_MODEL:-}}" --json 2>/dev/null || true)
+fi
+TERMINAL_STATE=$(printf '%s' "$TERMINAL_JSON" | sed -n 's/.*"state":"\([^"]*\)".*/\1/p')
+TERMINAL_REASON=$(printf '%s' "$TERMINAL_JSON" | sed -n 's/.*"reason_code":"\([^"]*\)".*/\1/p')
+if [ -z "$TERMINAL_STATE" ]; then TERMINAL_STATE="unknown"; fi
+
+# Provider telemetry runs independently of process exit, but only an actual
+# provider-failure projection may create provider telemetry/source failure.
+# Completion/finalization/ambiguity evidence must never be rewritten by a later
+# heuristic scan of incidental timeout prose.
+if [ "$TERMINAL_STATE" = "provider-failure" ] && [ -n "$RAW_STREAM" ] && [ -s "$RAW_STREAM" ]; then
     FAILURE_SIGNAL_JSON=$(wg classify-failure --raw-stream "$RAW_STREAM" --exit-code "$EXIT_CODE" --executor "{executor_type}" --route "${{WG_MODEL:-}}" --json 2>/dev/null || true)
     DETECTED_PROVIDER_REASON=$(printf '%s' "$FAILURE_SIGNAL_JSON" | sed -n 's/.*"reason":"\([^"]*\)".*/\1/p')
     if [ "$EXIT_CODE" -eq 0 ] && [ -n "$DETECTED_PROVIDER_REASON" ] && [ "$DETECTED_PROVIDER_REASON" != "unknown" ]; then
@@ -3662,7 +3676,7 @@ if [ -n "$RAW_STREAM" ] && [ -s "$RAW_STREAM" ]; then
         wg record-telemetry --task "$TASK_ID" --raw-stream "$RAW_STREAM" --exit-code "$EXIT_CODE" --executor "{executor_type}" --route "${{WG_MODEL:-}}" 2>> "$OUTPUT_FILE" || true
     fi
 fi
-if [ "$EXIT_CODE" -ne 0 ]; then
+if [ "$EXIT_CODE" -ne 0 ] && {{ [ "$TERMINAL_STATE" = "provider-failure" ] || [ "$TERMINAL_STATE" = "unknown" ]; }}; then
     if [ -n "$RAW_STREAM" ]; then
         wg record-telemetry --task "$TASK_ID" --raw-stream "$RAW_STREAM" --exit-code "$EXIT_CODE" --executor "{executor_type}" --route "${{WG_MODEL:-}}" 2>> "$OUTPUT_FILE" || true
     else
@@ -3670,15 +3684,30 @@ if [ "$EXIT_CODE" -ne 0 ]; then
     fi
 fi
 
-# Check terminal state before any process-exit observer runs. Once reviewed
-# completion clears attempt ownership, its capability is intentionally stale
-# and process telemetry has no authority to reopen or overwrite Done.
-TASK_STATUS=$(wg show "$TASK_ID" --json 2>/dev/null | grep -o '"status": *"[^"]*"' | head -1 | sed 's/.*"status": *"//;s/"//' || echo "unknown")
+# Check authoritative graph state before and after process-exit reconciliation.
+# Completion commands own typed Waiting/NeedsReview/LandingPending projection;
+# the wrapper only suppresses generic failure when that projection already won.
+TASK_JSON=$(wg show "$TASK_ID" --json 2>/dev/null || true)
+TASK_STATUS=$(printf '%s' "$TASK_JSON" | grep -o '"status": *"[^"]*"' | head -1 | sed 's/.*"status": *"//;s/"//' || echo "unknown")
 {pi_exit_reconcile}
+TASK_JSON=$(wg show "$TASK_ID" --json 2>/dev/null || true)
+TASK_STATUS=$(printf '%s' "$TASK_JSON" | grep -o '"status": *"[^"]*"' | head -1 | sed 's/.*"status": *"//;s/"//' || echo "unknown")
+COMPLETION_BLOCKED=false
+if [ "$TASK_STATUS" = "waiting" ] && printf '%s' "$TASK_JSON" | grep -q '"completion_blocker"'; then
+    COMPLETION_BLOCKED=true
+fi
 
-# A still-in-progress process exit becomes one visible failed attempt; it is
-# never a finalizer signal and never authorizes automatic source replacement.
-if [ "$TASK_STATUS" = "in-progress" ] && [ "{executor_type}" = "pi" ]; then
+# Completed/finalization-blocked/ambiguous terminal evidence is semantic-neutral
+# at wrapper authority. Preserve the candidate and name the ambiguity; only the
+# completion finalizer may project typed Waiting. Never invent source rejection.
+if [ "$TASK_STATUS" = "in-progress" ] && {{ [ "$TERMINAL_STATE" = "completed" ] || [ "$TERMINAL_STATE" = "finalization-blocked" ] || [ "$TERMINAL_STATE" = "ambiguous" ]; }}; then
+    wg log "$TASK_ID" "Wrapper preserved terminal candidate: $TERMINAL_REASON; no source/provider failure projected" 2>> "$OUTPUT_FILE" || true
+fi
+
+# A genuine provider failure or an evidence-free exit remains one visible
+# failed source attempt. A typed completion blocker already parked by the
+# finalizer is authoritative and is never overwritten.
+if [ "$TASK_STATUS" = "in-progress" ] && [ "$COMPLETION_BLOCKED" != "true" ] && [ "{executor_type}" = "pi" ] && {{ [ "$TERMINAL_STATE" = "provider-failure" ] || [ "$TERMINAL_STATE" = "unknown" ]; }}; then
     if [ $EXIT_CODE -eq 0 ]; then
         wg fail "$TASK_ID" --reason "Pi worker exited without reviewed publication-derived completion" 2>> "$OUTPUT_FILE" || true
     else
@@ -3687,7 +3716,7 @@ if [ "$TASK_STATUS" = "in-progress" ] && [ "{executor_type}" = "pi" ]; then
     fi
 fi
 
-if [ "$TASK_STATUS" = "in-progress" ] && [ "{executor_type}" != "pi" ]; then
+if [ "$TASK_STATUS" = "in-progress" ] && [ "$COMPLETION_BLOCKED" != "true" ] && [ "{executor_type}" != "pi" ] && {{ [ "$TERMINAL_STATE" = "provider-failure" ] || [ "$TERMINAL_STATE" = "unknown" ]; }}; then
     if [ $EXIT_CODE -eq 124 ]; then
         echo "" >> "$OUTPUT_FILE"
         echo "[wrapper] Agent killed by hard timeout, marking task failed" >> "$OUTPUT_FILE"
@@ -6678,14 +6707,21 @@ mod tests {
             script.contains("Transactional launch gate"),
             "wrapper must not start a handler before the spawn transaction commits"
         );
+        let terminal = script
+            .find("Project terminal evidence once")
+            .expect("terminal evidence precedence");
         let telemetry = script
             .find("Provider telemetry runs independently of process exit")
             .expect("mid-stream provider detector");
         let no_work = script.find("Minimum-work gate").expect("no-work gate");
         assert!(
-            telemetry < no_work,
-            "provider errors must be classified before no-operational-output"
+            terminal < telemetry && telemetry < no_work,
+            "terminal precedence and provider errors must be classified before no-operational-output"
         );
+        assert!(script.contains("classify-failure --terminal"));
+        assert!(script.contains("TERMINAL_STATE=\"unknown\""));
+        assert!(script.contains("COMPLETION_BLOCKED=true"));
+        assert!(script.contains("Wrapper preserved terminal candidate"));
         assert!(script.contains("wg record-telemetry --task \"$TASK_ID\""));
         #[cfg(unix)]
         assert!(

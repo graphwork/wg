@@ -677,9 +677,14 @@ pub enum Commands {
         #[arg(long)]
         route: Option<String>,
 
-        /// Emit the complete normalized FailureSignal as JSON.
+        /// Emit the complete normalized projection as JSON.
         #[arg(long)]
         json: bool,
+
+        /// Project authoritative terminal evidence instead of a failure class.
+        /// Used by the wrapper to fence provider telemetry and source failure.
+        #[arg(long)]
+        terminal: bool,
     },
 
     /// [Internal] Persist one normalized failed-attempt telemetry record.

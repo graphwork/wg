@@ -87,6 +87,29 @@ impl TerminalStreamClassification {
     }
 }
 
+/// Deterministic terminal projection when no stream path exists. Only the
+/// wrapper's explicit hard-timeout exit is typed; every other streamless exit
+/// stays unknown rather than manufacturing semantic evidence.
+pub fn terminal_without_stream(
+    exit_code: i32,
+    executor: ExecutorKind,
+    route: Option<String>,
+) -> TerminalStreamClassification {
+    if exit_code != 124 {
+        return TerminalStreamClassification::unknown();
+    }
+    let signal =
+        failure_signal_from_evidence(None, None, None, None, "hard timeout", executor, route)
+            .with_reason(FailureReason::HardTimeout, 0.8);
+    TerminalStreamClassification {
+        state: TerminalStreamState::ProviderFailure,
+        reason_code: "provider-failure:hard-timeout".into(),
+        receipts: Vec::new(),
+        finalization_code: None,
+        failure_reason: Some(signal.reason),
+    }
+}
+
 /// Classify terminal evidence with explicit precedence.
 ///
 /// Exact completed receipts outrank timeout/reset *text heuristics*. Typed
@@ -132,6 +155,32 @@ pub fn classify_terminal_from_raw_stream(
     }
 
     if has_completed {
+        let last_receipt_line = receipts
+            .iter()
+            .map(|receipt| receipt.line)
+            .max()
+            .unwrap_or(0);
+        // A structured provider error after the last completed turn is not a
+        // timeout-text heuristic: it proves the provider failed before an
+        // authoritative terminal completion. Errors before the receipt are
+        // superseded (for example an internal provider retry that recovered).
+        let provider_failure_after_receipt = raw
+            .lines()
+            .skip(last_receipt_line)
+            .filter_map(|line| signal_from_json_line(line.trim(), executor, route.clone()))
+            .filter(|signal| {
+                signal.reason != FailureReason::Unknown || signal.http_status.is_some()
+            })
+            .last();
+        if let Some(signal) = provider_failure_after_receipt {
+            return TerminalStreamClassification {
+                state: TerminalStreamState::ProviderFailure,
+                reason_code: format!("provider-failure:{}", signal.reason.as_str()),
+                receipts,
+                finalization_code: None,
+                failure_reason: Some(signal.reason),
+            };
+        }
         return TerminalStreamClassification {
             state: TerminalStreamState::Completed,
             reason_code: "exact-agent-turn-completed".into(),
@@ -142,11 +191,7 @@ pub fn classify_terminal_from_raw_stream(
     }
 
     let signal = classify_failure_signal_without_terminal(
-        raw_stream,
-        output_log,
-        exit_code,
-        executor,
-        route,
+        raw_stream, output_log, exit_code, executor, route,
     );
     if signal.reason != FailureReason::Unknown {
         TerminalStreamClassification {
@@ -170,16 +215,14 @@ fn exact_terminal_receipts(raw: &str) -> Vec<ExactTerminalReceipt> {
         let event_type = value.get("type").and_then(|v| v.as_str()).unwrap_or("");
         let message = match event_type {
             "message_end" | "turn_end" => value.get("message"),
-            "agent_end" if value.get("willRetry").and_then(|v| v.as_bool()) != Some(true) => {
-                value
-                    .get("messages")
-                    .and_then(|messages| messages.as_array())
-                    .and_then(|messages| {
-                        messages.iter().rev().find(|message| {
-                            message.get("role").and_then(|v| v.as_str()) == Some("assistant")
-                        })
+            "agent_end" if value.get("willRetry").and_then(|v| v.as_bool()) != Some(true) => value
+                .get("messages")
+                .and_then(|messages| messages.as_array())
+                .and_then(|messages| {
+                    messages.iter().rev().find(|message| {
+                        message.get("role").and_then(|v| v.as_str()) == Some("assistant")
                     })
-            }
+                }),
             _ => None,
         };
         let Some(message) = message else {
@@ -209,15 +252,15 @@ fn exact_terminal_receipts(raw: &str) -> Vec<ExactTerminalReceipt> {
             .unwrap_or_else(|| format!("b3:{}", blake3::hash(message.to_string().as_bytes())));
         // message_end/turn_end/agent_end commonly repeat the same receipt.
         // Deduplicate only identical outcome+id; contradictory outcomes remain.
-        receipts.entry((receipt_id.clone(), normalized.clone())).or_insert(
-            ExactTerminalReceipt {
+        receipts
+            .entry((receipt_id.clone(), normalized.clone()))
+            .or_insert(ExactTerminalReceipt {
                 line: index + 1,
                 event_type: event_type.to_string(),
                 receipt_id,
                 stop_reason: stop_reason.to_string(),
                 completed,
-            },
-        );
+            });
     }
     let mut receipts: Vec<_> = receipts.into_values().collect();
     receipts.sort_by_key(|receipt| receipt.line);
@@ -250,13 +293,16 @@ fn typed_finalization_code(line: &str) -> Option<String> {
 fn canonical_finalization_code(value: &str) -> Option<String> {
     let normalized = normalize_code(value);
     let code = match normalized.as_str() {
-        "needsreview" => "needs-review",
-        "landingpending" => "landing-pending",
-        "evidencerefusal" | "evidencerefused" | "evidenceguardrefusal" => {
-            "evidence-refusal"
+        "needsreview" | "completionneedsreview" => "needs-review",
+        "landingpending" | "completionlandingpending" => "landing-pending",
+        "evidencerefusal"
+        | "evidencerefused"
+        | "evidenceguardrefusal"
+        | "completionevidencerefusal" => "evidence-refusal",
+        "guardrefusal" | "guardrefused" | "finalizationguardrefusal" | "completionguardrefusal" => {
+            "guard-refusal"
         }
-        "guardrefusal" | "guardrefused" | "finalizationguardrefusal" => "guard-refusal",
-        "finalizationblocked" => "finalization-blocked",
+        "finalizationblocked" | "completionfinalizationblocked" => "finalization-blocked",
         _ => return None,
     };
     Some(code.into())
@@ -315,15 +361,7 @@ pub fn classify_signal_from_raw_stream(
             | TerminalStreamState::FinalizationBlocked
             | TerminalStreamState::Ambiguous
     ) {
-        return failure_signal_from_evidence(
-            None,
-            None,
-            None,
-            None,
-            "",
-            executor,
-            route,
-        );
+        return failure_signal_from_evidence(None, None, None, None, "", executor, route);
     }
     classify_failure_signal_without_terminal(raw_stream, output_log, exit_code, executor, route)
 }
@@ -927,25 +965,18 @@ mod tests {
             "{\"type\":\"compaction_end\",\"result\":{\"summary\":\"transport timeout and reset acceptance cases\"}}\n",
         ));
 
-        let terminal = classify_terminal_from_raw_stream(
-            stream.path(),
-            None,
-            124,
-            ExecutorKind::Pi,
-            None,
-        );
+        let terminal =
+            classify_terminal_from_raw_stream(stream.path(), None, 124, ExecutorKind::Pi, None);
         assert_eq!(terminal.state, TerminalStreamState::Completed);
         assert_eq!(terminal.reason_code, "exact-agent-turn-completed");
-        assert_eq!(terminal.receipts.len(), 1, "duplicate receipt must collapse");
         assert_eq!(
-            classify_signal_from_raw_stream(
-                stream.path(),
-                None,
-                124,
-                ExecutorKind::Pi,
-                None,
-            )
-            .reason,
+            terminal.receipts.len(),
+            1,
+            "duplicate receipt must collapse"
+        );
+        assert_eq!(
+            classify_signal_from_raw_stream(stream.path(), None, 124, ExecutorKind::Pi, None,)
+                .reason,
             FailureReason::Unknown,
             "completed turn must not become provider timeout telemetry"
         );
@@ -957,24 +988,12 @@ mod tests {
             "{\"type\":\"turn_end\",\"message\":{\"role\":\"assistant\",\"responseId\":\"resp-1\",\"rawStopReason\":\"completed\"}}\n",
             "{\"type\":\"finalization_blocked\",\"code\":\"NeedsReview\",\"message\":\"review budget exhausted\"}\n",
         ));
-        let terminal = classify_terminal_from_raw_stream(
-            stream.path(),
-            None,
-            1,
-            ExecutorKind::Pi,
-            None,
-        );
+        let terminal =
+            classify_terminal_from_raw_stream(stream.path(), None, 1, ExecutorKind::Pi, None);
         assert_eq!(terminal.state, TerminalStreamState::FinalizationBlocked);
         assert_eq!(terminal.finalization_code.as_deref(), Some("needs-review"));
         assert_eq!(
-            classify_signal_from_raw_stream(
-                stream.path(),
-                None,
-                1,
-                ExecutorKind::Pi,
-                None,
-            )
-            .reason,
+            classify_signal_from_raw_stream(stream.path(), None, 1, ExecutorKind::Pi, None,).reason,
             FailureReason::Unknown
         );
     }
@@ -984,25 +1003,38 @@ mod tests {
         let stream = write_stream(
             r#"{"type":"error","error":{"code":408,"message":"request timed out","metadata":{"error_type":"timeout"}}}"#,
         );
-        let terminal = classify_terminal_from_raw_stream(
-            stream.path(),
-            None,
-            1,
-            ExecutorKind::Pi,
-            None,
-        );
+        let terminal =
+            classify_terminal_from_raw_stream(stream.path(), None, 1, ExecutorKind::Pi, None);
         assert_eq!(terminal.state, TerminalStreamState::ProviderFailure);
         assert_eq!(terminal.failure_reason, Some(FailureReason::Timeout));
         assert_eq!(
-            classify_signal_from_raw_stream(
-                stream.path(),
-                None,
-                1,
-                ExecutorKind::Pi,
-                None,
-            )
-            .reason,
+            classify_signal_from_raw_stream(stream.path(), None, 1, ExecutorKind::Pi, None,).reason,
             FailureReason::Timeout
+        );
+    }
+
+    #[test]
+    fn structured_timeout_after_last_completed_turn_is_provider_failure() {
+        let stream = write_stream(concat!(
+            "{\"type\":\"turn_end\",\"message\":{\"role\":\"assistant\",\"responseId\":\"resp-1\",\"rawStopReason\":\"completed\"}}\n",
+            "{\"type\":\"error\",\"error\":{\"code\":408,\"message\":\"request timed out\",\"metadata\":{\"error_type\":\"timeout\"}}}\n",
+        ));
+        let terminal =
+            classify_terminal_from_raw_stream(stream.path(), None, 1, ExecutorKind::Pi, None);
+        assert_eq!(terminal.state, TerminalStreamState::ProviderFailure);
+        assert_eq!(terminal.failure_reason, Some(FailureReason::Timeout));
+    }
+
+    #[test]
+    fn recovered_timeout_before_completed_turn_is_completed() {
+        let stream = write_stream(concat!(
+            "{\"type\":\"error\",\"error\":{\"code\":408,\"message\":\"request timed out\",\"metadata\":{\"error_type\":\"timeout\"}}}\n",
+            "{\"type\":\"turn_end\",\"message\":{\"role\":\"assistant\",\"responseId\":\"resp-1\",\"rawStopReason\":\"completed\"}}\n",
+        ));
+        assert_eq!(
+            classify_terminal_from_raw_stream(stream.path(), None, 1, ExecutorKind::Pi, None,)
+                .state,
+            TerminalStreamState::Completed
         );
     }
 
@@ -1012,20 +1044,10 @@ mod tests {
             "{\"type\":\"turn_end\",\"message\":{\"role\":\"assistant\",\"responseId\":\"resp-1\",\"rawStopReason\":\"completed\"}}\n",
             "{\"type\":\"turn_end\",\"message\":{\"role\":\"assistant\",\"responseId\":\"resp-2\",\"rawStopReason\":\"failed\"}}\n",
         ));
-        let first = classify_terminal_from_raw_stream(
-            stream.path(),
-            None,
-            1,
-            ExecutorKind::Pi,
-            None,
-        );
-        let replay = classify_terminal_from_raw_stream(
-            stream.path(),
-            None,
-            1,
-            ExecutorKind::Pi,
-            None,
-        );
+        let first =
+            classify_terminal_from_raw_stream(stream.path(), None, 1, ExecutorKind::Pi, None);
+        let replay =
+            classify_terminal_from_raw_stream(stream.path(), None, 1, ExecutorKind::Pi, None);
         assert_eq!(first.state, TerminalStreamState::Ambiguous);
         assert_eq!(first.reason_code, "conflicting-exact-terminal-receipts");
         assert_eq!(first.receipts.len(), 2);
@@ -1035,14 +1057,7 @@ mod tests {
             "projection must be restart-stable"
         );
         assert_eq!(
-            classify_signal_from_raw_stream(
-                stream.path(),
-                None,
-                1,
-                ExecutorKind::Pi,
-                None,
-            )
-            .reason,
+            classify_signal_from_raw_stream(stream.path(), None, 1, ExecutorKind::Pi, None,).reason,
             FailureReason::Unknown,
             "ambiguity must not invent source/provider failure"
         );
@@ -1054,14 +1069,8 @@ mod tests {
             r#"{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"task completed successfully"}],"stopReason":"stop"}}"#,
         );
         assert_eq!(
-            classify_terminal_from_raw_stream(
-                stream.path(),
-                None,
-                0,
-                ExecutorKind::Pi,
-                None,
-            )
-            .state,
+            classify_terminal_from_raw_stream(stream.path(), None, 0, ExecutorKind::Pi, None,)
+                .state,
             TerminalStreamState::Unknown
         );
     }
