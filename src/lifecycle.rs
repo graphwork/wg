@@ -728,8 +728,10 @@ impl LifecycleKernel {
                         )
                     })
                     && projection.current_attempt.as_ref().is_some_and(|attempt| {
-                        attempt.disposition == Some(AttemptDisposition::Parked)
-                            && request.expected.generation == Some(projection.generation)
+                        matches!(
+                            attempt.disposition,
+                            Some(AttemptDisposition::Parked | AttemptDisposition::Succeeded)
+                        ) && request.expected.generation == Some(projection.generation)
                             && request.expected.fence == Some(projection.fence)
                             && request.expected.attempt_id.as_deref() == Some(attempt.id.as_str())
                     });
@@ -862,9 +864,41 @@ impl LifecycleKernel {
                 new_state = Status::Failed;
             }
             TransitionKind::AttemptParked => {
-                Self::require_actor(&request, &[ActorKind::Worker, ActorKind::Operator])?;
-                Self::require_running_attempt(task, &request)?;
-                Self::terminalize_attempt(&mut projection, AttemptDisposition::Parked)?;
+                Self::require_actor(
+                    &request,
+                    &[ActorKind::Worker, ActorKind::Operator, ActorKind::Finalizer],
+                )?;
+                let completion_finalizer_wait = request.actor.kind == ActorKind::Finalizer
+                    && task.completion_candidate.is_some()
+                    && matches!(
+                        request.reason_code.as_str(),
+                        "completion_needs_review" | "completion_landing_pending"
+                    );
+                if completion_finalizer_wait {
+                    let attempt = projection.current_attempt.as_mut().ok_or_else(|| {
+                        TransitionRejection::new(
+                            "attempt_missing",
+                            "completion waiting requires the exact source attempt",
+                        )
+                    })?;
+                    match attempt.disposition {
+                        None => attempt.disposition = Some(AttemptDisposition::Parked),
+                        Some(AttemptDisposition::Parked | AttemptDisposition::Succeeded) => {}
+                        Some(
+                            AttemptDisposition::Failed
+                            | AttemptDisposition::Cancelled
+                            | AttemptDisposition::Lost,
+                        ) => {
+                            return Err(TransitionRejection::new(
+                                "source_attempt_failed",
+                                "failed, cancelled, or lost source attempts cannot be reclassified as completion waiting",
+                            ));
+                        }
+                    }
+                } else {
+                    Self::require_running_attempt(task, &request)?;
+                    Self::terminalize_attempt(&mut projection, AttemptDisposition::Parked)?;
+                }
                 new_state = Status::Waiting;
             }
             TransitionKind::WaitSatisfied { .. } => {

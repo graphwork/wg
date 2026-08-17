@@ -127,18 +127,12 @@ fn park(
             return false;
         }
 
-        let actor_id = task
-            .assigned
-            .clone()
-            .unwrap_or_else(worksgood::current_user);
-        let actor = if task.assigned.is_some() {
-            LifecycleActor::worker(actor_id)
-        } else {
-            LifecycleActor::operator(actor_id)
-        };
         let request = TransitionRequest::new(
             TransitionKind::AttemptParked,
-            actor,
+            LifecycleActor {
+                kind: worksgood::lifecycle::ActorKind::Finalizer,
+                id: "completion-v3".to_string(),
+            },
             match kind {
                 CompletionBlockerKind::NeedsReview => "completion_needs_review",
                 CompletionBlockerKind::LandingPending => "completion_landing_pending",
@@ -303,7 +297,7 @@ mod tests {
             generation: 4,
             fence: 12,
             actor_id: "agent-review".to_string(),
-            disposition: None,
+            disposition: Some(AttemptDisposition::Succeeded),
         });
         // A settled Pi attempt has no resumable process/session authority. The
         // generic interactive wait rejects this, while completion waiting must
@@ -365,7 +359,8 @@ mod tests {
         assert!(task.session_id.is_none());
         assert_eq!(
             task.lifecycle.current_attempt.as_ref().unwrap().disposition,
-            Some(AttemptDisposition::Parked)
+            Some(AttemptDisposition::Succeeded),
+            "completion waiting preserves an already-settled source outcome"
         );
 
         // Restart/read paths preserve the pending finalization bytes exactly.
