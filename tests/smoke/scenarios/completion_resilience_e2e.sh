@@ -119,6 +119,10 @@ printf 'base bytes\n' > base.txt
 git add base.txt && git commit -qm base
 "$WG_BIN" init --no-agency --route pi --model pi:openrouter:fake-worker >/dev/null
 git add .gitignore AGENTS.md CLAUDE.md && git commit -qm init-wg
+# The retained worker checkout is WG-owned orchestration state, not user work.
+# Keep it out of the attached integration checkout's untracked-byte test so the
+# only deliberate dirt below is the unrelated tracked edit under test.
+printf '/.wg-worktrees/\n/daemon.log\n' >>.git/info/exclude
 G="$project/.wg"
 wgrun(){ env -u WG_TASK_ID -u WG_AGENT_ID -u WG_WORKER_CAPABILITY -u WG_WORKER_IPC \
   "$WG_BIN" --dir "$G" "$@"; }
@@ -139,7 +143,19 @@ wgrun config set dispatcher.worktree_isolation true >/dev/null
 wait_file(){
   local path="$1" label="$2"
   for _ in $(seq 1 400); do [[ -e "$path" ]] && return 0; sleep .05; done
-  loud_fail "timed out waiting for $label: $(wgrun list --all 2>&1)"
+  local tasks service daemon
+  tasks=$(wgrun list --all 2>&1)
+  service=$(wgrun service status 2>&1)
+  daemon=$(tail -30 "$project/daemon.log" 2>/dev/null || true)
+  loud_fail "timed out waiting for $label: tasks=$tasks service=$service daemon=$daemon"
+}
+stop_daemon(){
+  wgrun service stop >/dev/null
+  for _ in $(seq 1 100); do
+    [[ ! -e "$G/service/state.json" ]] && return 0
+    sleep .05
+  done
+  loud_fail "daemon state did not clear before restart"
 }
 agent_for(){
   python3 - "$G/service/registry.json" "$1" <<'PY'
@@ -167,8 +183,9 @@ import json,pathlib,sys
 x=json.load(open(sys.argv[1])); objects=pathlib.Path(sys.argv[2])
 ref=x['completion_candidate']['manifest']['content_digest'].removeprefix('b3:')
 m=json.loads((objects/ref).read_text())
-commits=[o['git']['commit_oid'] for o in m['outputs'] if 'git' in o]
+commits=[o['commit_oid'] for o in m['outputs'] if o.get('kind')=='git']
 assert len(commits)==1,(x,m)
+assert m['source_revision']==commits[0],(x,m)
 print(commits[0])
 PY
 }
@@ -182,7 +199,6 @@ wgrun publish land-resilient --only >/dev/null
 main_before=$(git rev-parse refs/heads/main)
 base_before=$(sha256sum base.txt | cut -d' ' -f1)
 start_wg_daemon "$project" --no-chat-agent --interval 1
-rm -f "$project/daemon.log"
 wait_file "$home/land-a-rejected" "candidate A rejection"
 wgrun show land-resilient --json >"$scratch/land-a.json"
 python3 - "$scratch/land-a.json" <<'PY'
@@ -245,13 +261,12 @@ PY
   || loud_fail "Land source was rerun"
 
 # Restart while the checkout is still dirty. The exact candidate, review
-# binding, target-ref CAS and user bytes must survive. Keep the restarted daemon
-# unable to dispatch source work, then stop it before the explicit resume so
-# exactly one operator resume owns publication.
-wgrun service stop >/dev/null
+# binding, target-ref CAS and user bytes must survive. Leave dispatch enabled:
+# the durable wait itself, not a disabled dispatcher, must prevent source replay.
+# Stop it before the explicit resume so exactly one operator resume owns publication.
+stop_daemon
 review_calls_before_restart=$(sha256sum "$scratch/review-state/review-calls" | cut -d' ' -f1)
-start_wg_daemon "$project" --no-chat-agent --max-agents 0 --interval 1
-rm -f "$project/daemon.log"
+start_wg_daemon "$project" --no-chat-agent --max-agents 1 --interval 1
 sleep 1.2
 wgrun show land-resilient --json >"$scratch/land-restarted.json"
 python3 - "$scratch/land-pending.json" "$scratch/land-restarted.json" <<'PY'
@@ -265,20 +280,25 @@ PY
   || loud_fail "restart/finalizer retry changed unrelated user bytes"
 [[ $(sha256sum "$scratch/review-state/review-calls" | cut -d' ' -f1) == "$review_calls_before_restart" ]] \
   || loud_fail "restart repeated semantic review for the same candidate digest"
-wgrun service stop >/dev/null
+stop_daemon
 git restore -- base.txt
 [[ $(sha256sum base.txt | cut -d' ' -f1) == "$base_before" ]] || loud_fail "operator cleanup did not restore base bytes"
-[[ -z $(git status --porcelain) ]] || loud_fail "integration checkout was not clean before resume: $(git status --short)"
+[[ -z $(git status --porcelain) ]] \
+  || loud_fail "integration checkout was not clean before resume: $(git status --short)"
 
 wgrun resume land-resilient --only >"$scratch/land-resume.out" 2>"$scratch/land-resume.err"
 wgrun show land-resilient --json >"$scratch/land-done.json"
-[[ $(git rev-parse refs/heads/main) == "$land_b_oid" ]] || loud_fail "resume did not publish exact candidate B"
+actual_main=$(git rev-parse refs/heads/main)
+resume_stdout=$(tr '\n' ' ' <"$scratch/land-resume.out")
+resume_stderr=$(tr '\n' ' ' <"$scratch/land-resume.err")
+[[ "$actual_main" == "$land_b_oid" ]] \
+  || loud_fail "resume did not publish exact candidate B (expected=$land_b_oid actual=$actual_main stdout=$resume_stdout stderr=$resume_stderr)"
 [[ $(cat resilient.txt) == 'candidate B' ]] || loud_fail "landed worktree does not contain candidate B bytes"
 python3 - "$scratch/land-done.json" <<'PY'
 import json,sys
 x=json.load(open(sys.argv[1])); events=x['lifecycle']['audit']; logs=x['log']
 assert x['status']=='done' and x['completion_disposition']=='landed',x
-assert x['completion_blocker'] is None and x['completion_receipt'].startswith('b3:'),x
+assert x.get('completion_blocker') is None and x['completion_receipt'].startswith('b3:'),x
 assert sum(e['event_kind']=='attempt-succeeded' for e in events)==1,events
 assert sum(e.get('reason_code')=='reviewed_publication_committed' for e in events)==1,events
 assert sum(row.get('actor')=='land' for row in logs)==1,logs
@@ -300,8 +320,7 @@ wgrun config set agency.gate_max_attempts 1 >/dev/null
 wgrun add 'Budget exhaustion is resumable review work' --id budget-resilient --priority 100 \
   -d $'Produce budget.txt.\n\n## Validation\n- [ ] strict budget exhaustion parks NeedsReview' >/dev/null
 wgrun publish budget-resilient --only >/dev/null
-start_wg_daemon "$project" --no-chat-agent --interval 1
-rm -f "$project/daemon.log"
+start_wg_daemon "$project" --no-chat-agent --max-agents 1 --interval 1
 wait_file "$home/budget-a-rejected" "budget candidate A rejection"
 wgrun show budget-resilient --json >"$scratch/budget-a.json"
 budget_a=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["completion_candidate"]["manifest"]["content_digest"])' "$scratch/budget-a.json")
@@ -352,10 +371,9 @@ fi
 
 # Restart the already-settled budget case once more: exact B and NeedsReview
 # remain byte-stable, with no source/review invocation.
-wgrun service stop >/dev/null
+stop_daemon
 calls_before=$(sha256sum "$scratch/review-state/review-calls" "$scratch/review-state/source-calls")
-start_wg_daemon "$project" --no-chat-agent --max-agents 0 --interval 1
-rm -f "$project/daemon.log"
+start_wg_daemon "$project" --no-chat-agent --max-agents 1 --interval 1
 sleep 1
 wgrun show budget-resilient --json >"$scratch/budget-restarted.json"
 python3 - "$scratch/budget-waiting.json" "$scratch/budget-restarted.json" <<'PY'
