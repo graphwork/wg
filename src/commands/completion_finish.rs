@@ -116,33 +116,6 @@ pub fn run(dir: &Path, id: &str, integration_ref: &str) -> Result<()> {
             }
             return super::completion_done::run(dir, id, integration_ref);
         }
-
-        let strict_rejections = task
-            .completion_review_activity
-            .iter()
-            .filter(|activity| {
-                matches!(
-                    activity.verdict,
-                    worksgood::simple_land::ReviewVerdict::Reject
-                        | worksgood::simple_land::ReviewVerdict::Unavailable
-                        | worksgood::simple_land::ReviewVerdict::IncompleteEvidence
-                )
-            })
-            .count() as u32;
-        if strict_rejections >= config.agency.gate_max_attempts.max(1) {
-            super::completion_wait::park_needs_review(
-                dir,
-                id,
-                &format!(
-                    "bounded strict model-review attempts exhausted ({})",
-                    config.agency.gate_max_attempts.max(1)
-                ),
-            )?;
-            eprintln!(
-                "Needs review: strict model-review attempt limit reached; immutable candidate preserved and source worker released"
-            );
-            return Ok(());
-        }
     }
 
     let mut evidence = Vec::new();
