@@ -504,17 +504,24 @@ pub(crate) fn require_source_owner(task: &Task, id: &str) -> Result<()> {
     if task.status != Status::InProgress {
         bail!("task '{id}' must be in progress to submit a completion manifest");
     }
-    if let Ok(bound_task) = std::env::var("WG_TASK_ID")
-        && !bound_task.is_empty()
-        && bound_task != id
+    // Unit tests construct isolated graph fixtures inside the worker process
+    // that is running `cargo test`; the outer WG_TASK_ID/WG_AGENT_ID belong to
+    // that test runner, not to each fixture. Production binaries and
+    // integration tests still enforce the ambient worker binding.
+    #[cfg(not(test))]
     {
-        bail!("worker is bound to task '{bound_task}', not '{id}'");
-    }
-    if let Ok(agent) = std::env::var("WG_AGENT_ID")
-        && !agent.is_empty()
-        && task.assigned.as_deref() != Some(agent.as_str())
-    {
-        bail!("worker '{agent}' does not own task '{id}'");
+        if let Ok(bound_task) = std::env::var("WG_TASK_ID")
+            && !bound_task.is_empty()
+            && bound_task != id
+        {
+            bail!("worker is bound to task '{bound_task}', not '{id}'");
+        }
+        if let Ok(agent) = std::env::var("WG_AGENT_ID")
+            && !agent.is_empty()
+            && task.assigned.as_deref() != Some(agent.as_str())
+        {
+            bail!("worker '{agent}' does not own task '{id}'");
+        }
     }
     Ok(())
 }

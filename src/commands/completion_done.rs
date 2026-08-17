@@ -431,6 +431,10 @@ fn require_completion_actor(task: &worksgood::graph::Task, id: &str) -> Result<(
         && task.completion_blocker.as_ref().is_some_and(|blocker| {
             blocker.kind == worksgood::graph::CompletionBlockerKind::LandingPending
         });
+    // Unit fixtures execute inside the outer WG worker process; its ambient
+    // task binding belongs to the test runner, not to each isolated fixture.
+    // Production binaries and integration tests retain the ownership fence.
+    #[cfg(not(test))]
     if !pending_finalization
         && let Ok(bound_task) = std::env::var("WG_TASK_ID")
         && !bound_task.is_empty()
@@ -444,6 +448,7 @@ fn require_completion_actor(task: &worksgood::graph::Task, id: &str) -> Result<(
     if task.status == Status::Open && task.assigned.is_none() {
         bail!("unowned open task '{id}' cannot become Done");
     }
+    #[cfg(not(test))]
     if !pending_finalization
         && let Ok(agent) = std::env::var("WG_AGENT_ID")
         && !agent.is_empty()
