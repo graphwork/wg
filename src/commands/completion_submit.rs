@@ -890,11 +890,15 @@ fn record_review_outcome(
             refusal = Some("completion candidate changed while review was running".to_string());
             return false;
         }
-        candidate.flip_receipt = Some(outcome.flip.receipt_object.clone());
-        candidate.eval_receipt = outcome
+        let selected_flip = Some(outcome.flip.receipt_object.clone());
+        let selected_eval = outcome
             .eval
             .as_ref()
             .map(|receipt| receipt.receipt_object.clone());
+        let mut changed =
+            candidate.flip_receipt != selected_flip || candidate.eval_receipt != selected_eval;
+        candidate.flip_receipt = selected_flip;
+        candidate.eval_receipt = selected_eval;
         for stored in std::iter::once(&outcome.flip).chain(outcome.eval.iter()) {
             let activity_id = stored.receipt_object.content_digest.to_string();
             if task
@@ -904,6 +908,7 @@ fn record_review_outcome(
             {
                 continue;
             }
+            changed = true;
             task.completion_review_activity.push(
                 worksgood::completion_review::CompletionReviewActivity {
                     activity_id,
@@ -922,16 +927,18 @@ fn record_review_outcome(
                 },
             );
         }
-        task.log.push(LogEntry {
-            timestamp: Utc::now().to_rfc3339(),
-            actor: Some("completion-review".to_string()),
-            user: None,
-            message: format!(
-                "Manifest {} review outcome: {:?}",
-                manifest_digest, outcome.status
-            ),
-        });
-        true
+        if changed {
+            task.log.push(LogEntry {
+                timestamp: Utc::now().to_rfc3339(),
+                actor: Some("completion-review".to_string()),
+                user: None,
+                message: format!(
+                    "Manifest {} review outcome: {:?}",
+                    manifest_digest, outcome.status
+                ),
+            });
+        }
+        changed
     })?;
     if let Some(refusal) = refusal {
         bail!(refusal);
@@ -1211,6 +1218,8 @@ mod tests {
             .receipt_object
             .content_digest
             .clone();
+        let graph_path = fixture.dir.join("graph.jsonl");
+        let first_graph_bytes = std::fs::read(&graph_path).unwrap();
 
         // `run_with_reviewers` reloads the graph and immutable objects. New
         // reviewer instances model a process restart; neither may be called.
@@ -1242,7 +1251,12 @@ mod tests {
             first_eval_id
         );
 
-        let graph = load_graph(fixture.dir.join("graph.jsonl")).unwrap();
+        assert_eq!(
+            std::fs::read(&graph_path).unwrap(),
+            first_graph_bytes,
+            "receipt replay must not grow mutable counters or logs"
+        );
+        let graph = load_graph(&graph_path).unwrap();
         let task = graph.get_task("report").unwrap();
         assert_eq!(task.completion_review_activity.len(), 2);
         assert_eq!(
