@@ -3109,3 +3109,10 @@ script = "scenarios/completion_validation_evidence.sh"
 owners = ["bind-completion-validation-evidence", "validate-stigmergic-loop", "preserve-review-identity-across-restart"]
 description = "Credential-free real terminal fake-Pi canary for one-step completion evidence: WG executes an exact configured deterministic command, captures bounded stdout/stderr digests and content, exit/timing, cwd/repository/candidate and task/generation/attempt/fence/requirements binding; valid evidence reaches FLIP Pass then completion Eval and both immutable activity rows survive landing, Done, a pre-Done stale daemon save, and restart. Worker-prose-only, same-size CAS-tampered, stale cross-candidate, and failing-command evidence are visibly refused before review; a semantic FLIP rejection remains advisory and lifecycle-neutral by default."
 timeout_seconds = 120
+
+[[scenario]]
+name = "terminal_receipt_precedence"
+script = "scenarios/terminal_receipt_precedence.sh"
+owners = ["completion-classification-precedence"]
+description = "Candidate-binary credential-free real terminal classifier regression for the provider-backoff incident: a final completed receipt outranks incidental timeout/reset prose and replays byte-identically; typed NeedsReview remains finalization-blocked; a genuine structured provider timeout and a hard timeout after only an intermediate tool-use turn remain infrastructure failures; conflicting exact terminal receipts remain typed ambiguity without semantic/source failure."
+timeout_seconds = 30
