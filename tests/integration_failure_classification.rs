@@ -309,6 +309,14 @@ fn terminal_classification_cli_precedence_matrix() {
     assert_eq!(provider["state"], "provider-failure");
     assert_eq!(provider["failure_reason"], "timeout");
 
+    let pre_terminal = classify_terminal_cli(
+        "{\"type\":\"turn_end\",\"message\":{\"responseId\":\"tool-turn\",\"stopReason\":\"toolUse\",\"rawStopReason\":\"completed\"}}\n",
+        124,
+    );
+    assert_eq!(pre_terminal["state"], "provider-failure");
+    assert_eq!(pre_terminal["failure_reason"], "hard-timeout");
+    assert!(pre_terminal.get("receipts").is_none());
+
     let ambiguous = classify_terminal_cli(
         concat!(
             "{\"type\":\"turn_end\",\"message\":{\"responseId\":\"r1\",\"stopReason\":\"completed\"}}\n",
