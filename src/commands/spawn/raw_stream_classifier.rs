@@ -228,17 +228,32 @@ fn exact_terminal_receipts(raw: &str) -> Vec<ExactTerminalReceipt> {
         let Some(message) = message else {
             continue;
         };
-        let stop_reason = message
-            .get("rawStopReason")
-            .or_else(|| message.get("stopReason"))
-            .and_then(|v| v.as_str());
-        let Some(stop_reason) = stop_reason else {
+        let raw_stop_reason = message.get("rawStopReason").and_then(|v| v.as_str());
+        let semantic_stop_reason = message.get("stopReason").and_then(|v| v.as_str());
+        let Some(stop_reason) = raw_stop_reason.or(semantic_stop_reason) else {
             continue;
         };
-        let normalized = normalize_code(stop_reason);
-        let completed = normalized == "completed";
+        let raw_normalized = raw_stop_reason.map(normalize_code);
+        let semantic_normalized = semantic_stop_reason.map(normalize_code);
+        // Pi records rawStopReason=completed for every successful provider
+        // response, including intermediate tool-use turns. Such a response is
+        // authoritative terminal evidence only when the semantic stop reason
+        // is final (stop/endTurn/completed), or when agent_end itself supplies
+        // the terminal boundary. This prevents an earlier tool response from
+        // masking a genuine later timeout.
+        let semantic_final = semantic_normalized
+            .as_deref()
+            .is_some_and(|reason| matches!(reason, "stop" | "endturn" | "completed"));
+        let completed = semantic_normalized.as_deref() == Some("completed")
+            || (raw_normalized.as_deref() == Some("completed")
+                && (semantic_final || event_type == "agent_end"));
+        let normalized = raw_normalized
+            .as_deref()
+            .filter(|reason| *reason != "completed")
+            .or(semantic_normalized.as_deref())
+            .unwrap_or_default();
         let exact_non_completed = matches!(
-            normalized.as_str(),
+            normalized,
             "failed" | "error" | "cancelled" | "canceled" | "aborted" | "timeout" | "timedout"
         );
         if !completed && !exact_non_completed {
@@ -252,8 +267,13 @@ fn exact_terminal_receipts(raw: &str) -> Vec<ExactTerminalReceipt> {
             .unwrap_or_else(|| format!("b3:{}", blake3::hash(message.to_string().as_bytes())));
         // message_end/turn_end/agent_end commonly repeat the same receipt.
         // Deduplicate only identical outcome+id; contradictory outcomes remain.
+        let outcome = if completed {
+            "completed".to_string()
+        } else {
+            normalized.to_string()
+        };
         receipts
-            .entry((receipt_id.clone(), normalized.clone()))
+            .entry((receipt_id.clone(), outcome))
             .or_insert(ExactTerminalReceipt {
                 line: index + 1,
                 event_type: event_type.to_string(),
@@ -985,7 +1005,7 @@ mod tests {
     #[test]
     fn completed_receipt_plus_typed_guard_refusal_is_finalization_blocked() {
         let stream = write_stream(concat!(
-            "{\"type\":\"turn_end\",\"message\":{\"role\":\"assistant\",\"responseId\":\"resp-1\",\"rawStopReason\":\"completed\"}}\n",
+            "{\"type\":\"turn_end\",\"message\":{\"role\":\"assistant\",\"responseId\":\"resp-1\",\"stopReason\":\"stop\",\"rawStopReason\":\"completed\"}}\n",
             "{\"type\":\"finalization_blocked\",\"code\":\"NeedsReview\",\"message\":\"review budget exhausted\"}\n",
         ));
         let terminal =
@@ -1014,9 +1034,21 @@ mod tests {
     }
 
     #[test]
+    fn intermediate_completed_tool_turn_does_not_mask_hard_timeout() {
+        let stream = write_stream(
+            "{\"type\":\"turn_end\",\"message\":{\"role\":\"assistant\",\"responseId\":\"tool-turn\",\"stopReason\":\"toolUse\",\"rawStopReason\":\"completed\"}}\n",
+        );
+        let terminal =
+            classify_terminal_from_raw_stream(stream.path(), None, 124, ExecutorKind::Pi, None);
+        assert_eq!(terminal.state, TerminalStreamState::ProviderFailure);
+        assert_eq!(terminal.failure_reason, Some(FailureReason::HardTimeout));
+        assert!(terminal.receipts.is_empty());
+    }
+
+    #[test]
     fn structured_timeout_after_last_completed_turn_is_provider_failure() {
         let stream = write_stream(concat!(
-            "{\"type\":\"turn_end\",\"message\":{\"role\":\"assistant\",\"responseId\":\"resp-1\",\"rawStopReason\":\"completed\"}}\n",
+            "{\"type\":\"turn_end\",\"message\":{\"role\":\"assistant\",\"responseId\":\"resp-1\",\"stopReason\":\"stop\",\"rawStopReason\":\"completed\"}}\n",
             "{\"type\":\"error\",\"error\":{\"code\":408,\"message\":\"request timed out\",\"metadata\":{\"error_type\":\"timeout\"}}}\n",
         ));
         let terminal =
@@ -1029,7 +1061,7 @@ mod tests {
     fn recovered_timeout_before_completed_turn_is_completed() {
         let stream = write_stream(concat!(
             "{\"type\":\"error\",\"error\":{\"code\":408,\"message\":\"request timed out\",\"metadata\":{\"error_type\":\"timeout\"}}}\n",
-            "{\"type\":\"turn_end\",\"message\":{\"role\":\"assistant\",\"responseId\":\"resp-1\",\"rawStopReason\":\"completed\"}}\n",
+            "{\"type\":\"turn_end\",\"message\":{\"role\":\"assistant\",\"responseId\":\"resp-1\",\"stopReason\":\"stop\",\"rawStopReason\":\"completed\"}}\n",
         ));
         assert_eq!(
             classify_terminal_from_raw_stream(stream.path(), None, 1, ExecutorKind::Pi, None,)
@@ -1041,7 +1073,7 @@ mod tests {
     #[test]
     fn conflicting_exact_terminal_receipts_are_typed_ambiguous() {
         let stream = write_stream(concat!(
-            "{\"type\":\"turn_end\",\"message\":{\"role\":\"assistant\",\"responseId\":\"resp-1\",\"rawStopReason\":\"completed\"}}\n",
+            "{\"type\":\"turn_end\",\"message\":{\"role\":\"assistant\",\"responseId\":\"resp-1\",\"stopReason\":\"stop\",\"rawStopReason\":\"completed\"}}\n",
             "{\"type\":\"turn_end\",\"message\":{\"role\":\"assistant\",\"responseId\":\"resp-2\",\"rawStopReason\":\"failed\"}}\n",
         ));
         let first =
