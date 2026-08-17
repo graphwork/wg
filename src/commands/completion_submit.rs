@@ -654,18 +654,38 @@ fn enforce_strict_review_budget(
             verified.invalid_count
         );
     }
+    // A revision is one immutable candidate, not one projected receipt. FLIP
+    // and Eval (or a route change for either) may each produce semantic
+    // receipts for that candidate, but they consume the task-wide revision
+    // allowance only once. Infrastructure receipts remain separately visible
+    // and intentionally do not enter this set.
     let semantic_iterations = verified
         .activities
         .iter()
         .filter(|activity| {
-            activity.reviewer_kind == ReviewerKind::Flip
-                && matches!(
-                    activity.verdict,
-                    worksgood::simple_land::ReviewVerdict::Pass
-                        | worksgood::simple_land::ReviewVerdict::Reject
-                )
+            matches!(
+                activity.verdict,
+                worksgood::simple_land::ReviewVerdict::Pass
+                    | worksgood::simple_land::ReviewVerdict::Reject
+            )
         })
-        .count() as u32;
+        .map(|activity| {
+            (
+                activity.manifest_digest.to_string(),
+                activity
+                    .binding
+                    .as_ref()
+                    .map(|binding| binding.generation)
+                    .unwrap_or_default(),
+                activity
+                    .binding
+                    .as_ref()
+                    .map(|binding| binding.candidate_sequence)
+                    .unwrap_or_default(),
+            )
+        })
+        .collect::<std::collections::HashSet<_>>()
+        .len() as u32;
     if semantic_iterations < max_iterations {
         return Ok(());
     }
@@ -1009,6 +1029,7 @@ mod tests {
         load_exact_review_pair, load_submission_bytes, task_submission,
     };
     use worksgood::graph::{CompletionContract, Node};
+    use worksgood::lifecycle::{AttemptDisposition, AttemptRef};
     use worksgood::parser::save_graph;
 
     struct FakeReviewer {
@@ -1096,6 +1117,356 @@ mod tests {
             manifest_path,
             summary_path,
         }
+    }
+
+    fn configure_strict_review(fixture: &Fixture, max_attempts: u32) {
+        std::fs::write(
+            fixture.dir.join("config.toml"),
+            format!(
+                "[agency]\ncompletion_review_strict = true\ngate_max_attempts = {max_attempts}\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    fn bind_running_attempt(fixture: &Fixture) {
+        let graph_path = fixture.dir.join("graph.jsonl");
+        modify_graph(&graph_path, |graph| {
+            let task = graph.get_task_mut("report").unwrap();
+            task.assigned = Some("review-worker".to_string());
+            task.lifecycle.fence = 1;
+            task.lifecycle.attempt_sequence = 1;
+            task.lifecycle.current_attempt = Some(AttemptRef {
+                id: "attempt-3-1".to_string(),
+                generation: 3,
+                fence: 1,
+                actor_id: "review-worker".to_string(),
+                disposition: None,
+            });
+            true
+        })
+        .unwrap();
+    }
+
+    fn rewrite_candidate(fixture: &Fixture, revision: &str, bytes: &[u8]) {
+        let graph = load_graph(fixture.dir.join("graph.jsonl")).unwrap();
+        let task = graph.get_task("report").unwrap();
+        let summary = std::fs::read(&fixture.summary_path).unwrap();
+        let completion_store = store(&fixture.dir).unwrap();
+        let output = completion_store.put_bytes(bytes, "text/plain").unwrap();
+        let evidence = completion_store
+            .evidence_from_bytes(
+                format!("validation for {revision}\n").as_bytes(),
+                "validation",
+                "text/plain",
+            )
+            .unwrap();
+        let manifest = CompletionManifest {
+            manifest_version: COMPLETION_MANIFEST_VERSION,
+            task_id: task.id.clone(),
+            generation: task.lifecycle.generation,
+            completion_contract: worksgood::simple_land::CompletionContract::Report,
+            requirements_digest: requirements_digest(task).unwrap(),
+            source_revision: revision.to_string(),
+            outputs: vec![OutputRef::Artifact(output)],
+            validation_evidence: vec![evidence],
+            worker_summary_digest: ContentDigest::of_bytes(&summary),
+        };
+        std::fs::write(&fixture.manifest_path, manifest.canonical_bytes().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn same_candidate_reuses_each_route_receipt_across_restart() {
+        let fixture = fixture();
+        let first_calls = Arc::new(Mutex::new(Vec::new()));
+        let mut first_flip = FakeReviewer {
+            route: "pi:test/flip".to_string(),
+            result: Ok(semantic(SemanticVerdict::Pass)),
+            calls: first_calls.clone(),
+        };
+        let mut first_eval = FakeReviewer {
+            route: "pi:test/eval".to_string(),
+            result: Ok(semantic(SemanticVerdict::Pass)),
+            calls: first_calls.clone(),
+        };
+        let first = run_with_reviewers(
+            &fixture.dir,
+            "report",
+            &fixture.manifest_path,
+            &fixture.summary_path,
+            &mut first_flip,
+            &mut first_eval,
+        )
+        .unwrap();
+        assert_eq!(first.status, ReviewValveStatus::Accepted);
+        assert_eq!(
+            *first_calls.lock().unwrap(),
+            vec![ReviewerKind::Flip, ReviewerKind::Eval]
+        );
+        let first_flip_id = first.flip.receipt_object.content_digest.clone();
+        let first_eval_id = first
+            .eval
+            .as_ref()
+            .unwrap()
+            .receipt_object
+            .content_digest
+            .clone();
+
+        // `run_with_reviewers` reloads the graph and immutable objects. New
+        // reviewer instances model a process restart; neither may be called.
+        let replay_calls = Arc::new(Mutex::new(Vec::new()));
+        let mut replay_flip = FakeReviewer {
+            route: "pi:test/flip".to_string(),
+            result: Ok(semantic(SemanticVerdict::Reject)),
+            calls: replay_calls.clone(),
+        };
+        let mut replay_eval = FakeReviewer {
+            route: "pi:test/eval".to_string(),
+            result: Ok(semantic(SemanticVerdict::Reject)),
+            calls: replay_calls.clone(),
+        };
+        let replay = run_with_reviewers(
+            &fixture.dir,
+            "report",
+            &fixture.manifest_path,
+            &fixture.summary_path,
+            &mut replay_flip,
+            &mut replay_eval,
+        )
+        .unwrap();
+        assert_eq!(replay.status, ReviewValveStatus::Accepted);
+        assert!(replay_calls.lock().unwrap().is_empty());
+        assert_eq!(replay.flip.receipt_object.content_digest, first_flip_id);
+        assert_eq!(
+            replay.eval.as_ref().unwrap().receipt_object.content_digest,
+            first_eval_id
+        );
+
+        let graph = load_graph(fixture.dir.join("graph.jsonl")).unwrap();
+        let task = graph.get_task("report").unwrap();
+        assert_eq!(task.completion_review_activity.len(), 2);
+        assert_eq!(
+            task.completion_candidate
+                .as_ref()
+                .unwrap()
+                .review_binding
+                .as_ref()
+                .unwrap()
+                .candidate_sequence,
+            1
+        );
+    }
+
+    #[test]
+    fn strict_revised_candidate_receives_review_after_rejection() {
+        let fixture = fixture();
+        configure_strict_review(&fixture, 2);
+        let first_calls = Arc::new(Mutex::new(Vec::new()));
+        let mut rejected_flip = FakeReviewer {
+            route: "pi:test/flip".to_string(),
+            result: Ok(semantic(SemanticVerdict::Reject)),
+            calls: first_calls.clone(),
+        };
+        let mut skipped_eval = FakeReviewer {
+            route: "pi:test/eval".to_string(),
+            result: Ok(semantic(SemanticVerdict::Pass)),
+            calls: first_calls.clone(),
+        };
+        let rejected = run_with_reviewers(
+            &fixture.dir,
+            "report",
+            &fixture.manifest_path,
+            &fixture.summary_path,
+            &mut rejected_flip,
+            &mut skipped_eval,
+        )
+        .unwrap();
+        assert_eq!(rejected.status, ReviewValveStatus::FlipRejected);
+        assert_eq!(*first_calls.lock().unwrap(), vec![ReviewerKind::Flip]);
+
+        rewrite_candidate(
+            &fixture,
+            "session:repaired",
+            b"materially repaired output\n",
+        );
+        let repaired_calls = Arc::new(Mutex::new(Vec::new()));
+        let mut repaired_flip = FakeReviewer {
+            route: "pi:test/flip".to_string(),
+            result: Ok(semantic(SemanticVerdict::Pass)),
+            calls: repaired_calls.clone(),
+        };
+        let mut repaired_eval = FakeReviewer {
+            route: "pi:test/eval".to_string(),
+            result: Ok(semantic(SemanticVerdict::Pass)),
+            calls: repaired_calls.clone(),
+        };
+        let repaired = run_with_reviewers(
+            &fixture.dir,
+            "report",
+            &fixture.manifest_path,
+            &fixture.summary_path,
+            &mut repaired_flip,
+            &mut repaired_eval,
+        )
+        .unwrap();
+        assert_eq!(repaired.status, ReviewValveStatus::Accepted);
+        assert_eq!(
+            *repaired_calls.lock().unwrap(),
+            vec![ReviewerKind::Flip, ReviewerKind::Eval]
+        );
+
+        let graph = load_graph(fixture.dir.join("graph.jsonl")).unwrap();
+        let task = graph.get_task("report").unwrap();
+        let verified = worksgood::completion_review::verified_review_activities(&fixture.dir, task);
+        assert_eq!(verified.invalid_count, 0);
+        assert_eq!(verified.activities.len(), 3);
+        assert_eq!(
+            verified.activities[0].candidate_state,
+            worksgood::completion_review::ReviewCandidateState::Superseded
+        );
+        assert!(
+            verified.activities[1..]
+                .iter()
+                .all(|activity| activity.candidate_state
+                    == worksgood::completion_review::ReviewCandidateState::Current)
+        );
+    }
+
+    #[test]
+    fn strict_task_ceiling_parks_revised_candidate_without_model_call_or_failure() {
+        let fixture = fixture();
+        configure_strict_review(&fixture, 1);
+        bind_running_attempt(&fixture);
+        let first_calls = Arc::new(Mutex::new(Vec::new()));
+        let mut rejected_flip = FakeReviewer {
+            route: "pi:test/flip".to_string(),
+            result: Ok(semantic(SemanticVerdict::Reject)),
+            calls: first_calls.clone(),
+        };
+        let mut skipped_eval = FakeReviewer {
+            route: "pi:test/eval".to_string(),
+            result: Ok(semantic(SemanticVerdict::Pass)),
+            calls: first_calls,
+        };
+        run_with_reviewers(
+            &fixture.dir,
+            "report",
+            &fixture.manifest_path,
+            &fixture.summary_path,
+            &mut rejected_flip,
+            &mut skipped_eval,
+        )
+        .unwrap();
+
+        rewrite_candidate(
+            &fixture,
+            "session:over-budget",
+            b"another material repair\n",
+        );
+        let blocked_calls = Arc::new(Mutex::new(Vec::new()));
+        let mut blocked_flip = FakeReviewer {
+            route: "pi:test/flip".to_string(),
+            result: Ok(semantic(SemanticVerdict::Pass)),
+            calls: blocked_calls.clone(),
+        };
+        let mut blocked_eval = FakeReviewer {
+            route: "pi:test/eval".to_string(),
+            result: Ok(semantic(SemanticVerdict::Pass)),
+            calls: blocked_calls.clone(),
+        };
+        let error = run_with_reviewers(
+            &fixture.dir,
+            "report",
+            &fixture.manifest_path,
+            &fixture.summary_path,
+            &mut blocked_flip,
+            &mut blocked_eval,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("Needs review"));
+        assert!(blocked_calls.lock().unwrap().is_empty());
+
+        let graph = load_graph(fixture.dir.join("graph.jsonl")).unwrap();
+        let task = graph.get_task("report").unwrap();
+        assert_eq!(task.status, Status::Waiting);
+        assert!(task.assigned.is_none());
+        assert!(task.failure_reason.is_none());
+        assert_eq!(task.completion_review_activity.len(), 1);
+        assert_eq!(
+            task.lifecycle.current_attempt.as_ref().unwrap().disposition,
+            Some(AttemptDisposition::Parked)
+        );
+        assert!(
+            task.log
+                .iter()
+                .any(|entry| entry.message.contains("Needs review"))
+        );
+    }
+
+    #[test]
+    fn infrastructure_retry_does_not_consume_semantic_revision_allowance() {
+        let fixture = fixture();
+        configure_strict_review(&fixture, 1);
+        let outage_calls = Arc::new(Mutex::new(Vec::new()));
+        let mut unavailable_flip = FakeReviewer {
+            route: "pi:test/flip".to_string(),
+            result: Err(ReviewerUnavailable {
+                code: "test.provider_down".to_string(),
+                message: "provider unavailable".to_string(),
+            }),
+            calls: outage_calls.clone(),
+        };
+        let mut skipped_eval = FakeReviewer {
+            route: "pi:test/eval".to_string(),
+            result: Ok(semantic(SemanticVerdict::Pass)),
+            calls: outage_calls.clone(),
+        };
+        let unavailable = run_with_reviewers(
+            &fixture.dir,
+            "report",
+            &fixture.manifest_path,
+            &fixture.summary_path,
+            &mut unavailable_flip,
+            &mut skipped_eval,
+        )
+        .unwrap();
+        assert_eq!(unavailable.status, ReviewValveStatus::ReviewUnavailable);
+        assert_eq!(*outage_calls.lock().unwrap(), vec![ReviewerKind::Flip]);
+
+        let retry_calls = Arc::new(Mutex::new(Vec::new()));
+        let mut retry_flip = FakeReviewer {
+            route: "pi:test/flip".to_string(),
+            result: Ok(semantic(SemanticVerdict::Pass)),
+            calls: retry_calls.clone(),
+        };
+        let mut retry_eval = FakeReviewer {
+            route: "pi:test/eval".to_string(),
+            result: Ok(semantic(SemanticVerdict::Pass)),
+            calls: retry_calls.clone(),
+        };
+        let retried = run_with_reviewers(
+            &fixture.dir,
+            "report",
+            &fixture.manifest_path,
+            &fixture.summary_path,
+            &mut retry_flip,
+            &mut retry_eval,
+        )
+        .unwrap();
+        assert_eq!(retried.status, ReviewValveStatus::Accepted);
+        assert_eq!(
+            *retry_calls.lock().unwrap(),
+            vec![ReviewerKind::Flip, ReviewerKind::Eval]
+        );
+
+        let graph = load_graph(fixture.dir.join("graph.jsonl")).unwrap();
+        let task = graph.get_task("report").unwrap();
+        assert_eq!(task.status, Status::InProgress);
+        assert_eq!(task.completion_review_activity.len(), 3);
+        assert_eq!(
+            task.completion_review_activity[0].failure_class,
+            Some(ReviewFailureClass::ReviewerUnavailable)
+        );
     }
 
     #[test]
