@@ -812,6 +812,33 @@ pub fn load_stored_review_receipt(
     })
 }
 
+/// Reload a historical receipt from its content digest. Mutable task
+/// projections retain only the selected receipt reference for each reviewer;
+/// this helper lets candidate replay recover an older route-specific receipt
+/// without scanning or trusting mutable filenames.
+pub fn load_stored_review_receipt_by_digest(
+    artifact_store: &CompletionArtifactStore,
+    digest: &ContentDigest,
+) -> Result<StoredReviewReceipt, ReviewValveError> {
+    let object_name = digest
+        .as_str()
+        .strip_prefix("b3:")
+        .ok_or_else(|| ReviewValveError::InvalidReceipt("invalid receipt digest".into()))?;
+    let size = std::fs::metadata(artifact_store.root().join("objects").join(object_name))
+        .map_err(ArtifactStoreError::Io)?
+        .len();
+    let receipt_object = ArtifactOutput {
+        content_digest: digest.clone(),
+        immutable_locator: ImmutableLocator::CompletionObject {
+            digest: digest.clone(),
+        },
+        media_type: "application/vnd.worksgood.review-receipt+json".to_string(),
+        size,
+        review_projection: None,
+    };
+    load_stored_review_receipt(artifact_store, &receipt_object)
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ReviewValveStatus {
     Accepted,

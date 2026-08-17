@@ -10,7 +10,8 @@ use worksgood::completion_manifest::{
 use worksgood::completion_review::{
     CompletionReviewBinding, ManifestReviewer, ReviewFailureClass, ReviewValveOutcome,
     ReviewValveStatus, ReviewerKind, ReviewerUnavailable, SemanticReview, StoredReviewReceipt,
-    load_stored_review_receipt, run_review_valve_bound_reusing,
+    load_stored_review_receipt, load_stored_review_receipt_by_digest,
+    run_review_valve_bound_reusing,
 };
 use worksgood::completion_review_model::ExactModelReviewer;
 use worksgood::completion_task::{
@@ -416,16 +417,32 @@ pub fn run_with_reviewers(
         .completion_candidate
         .as_ref()
         .context("selected completion candidate disappeared before review")?;
-    let prior_flip = selected_candidate
-        .flip_receipt
+    let inspected_output_digests = resolved
         .as_ref()
-        .map(|reference| load_stored_review_receipt(&store, reference))
-        .transpose()?;
-    let prior_eval = selected_candidate
-        .eval_receipt
-        .as_ref()
-        .map(|reference| load_stored_review_receipt(&store, reference))
-        .transpose()?;
+        .ok()
+        .map(|bundle| bundle.inspected_output_digests.as_slice());
+    let prior_flip = prior_receipt_for_route(
+        &store,
+        selected_task,
+        selected_candidate.flip_receipt.as_ref(),
+        &manifest_digest,
+        &requirements_digest,
+        &review_binding,
+        ReviewerKind::Flip,
+        flip.route(),
+        inspected_output_digests,
+    )?;
+    let prior_eval = prior_receipt_for_route(
+        &store,
+        selected_task,
+        selected_candidate.eval_receipt.as_ref(),
+        &manifest_digest,
+        &requirements_digest,
+        &review_binding,
+        ReviewerKind::Eval,
+        eval.route(),
+        inspected_output_digests,
+    )?;
 
     if config.agency.completion_review_strict
         && let Ok(bundle) = resolved.as_ref()
@@ -622,6 +639,69 @@ fn select_candidate(
         bail!(refusal);
     }
     selected_binding.context("candidate selection produced no binding")
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prior_receipt_for_route(
+    store: &CompletionArtifactStore,
+    task: &Task,
+    selected_reference: Option<&worksgood::completion_manifest::ArtifactOutput>,
+    manifest_digest: &ContentDigest,
+    requirements_digest: &ContentDigest,
+    binding: &CompletionReviewBinding,
+    kind: ReviewerKind,
+    route: &str,
+    inspected_output_digests: Option<&[String]>,
+) -> Result<Option<StoredReviewReceipt>> {
+    let selected = selected_reference
+        .map(|reference| load_stored_review_receipt(store, reference))
+        .transpose()?;
+    let reusable = |stored: &StoredReviewReceipt| {
+        inspected_output_digests.is_some_and(|outputs| {
+            stored.receipt.is_reusable_semantic(
+                manifest_digest,
+                requirements_digest,
+                kind,
+                route,
+                Some(binding),
+                outputs,
+            )
+        })
+    };
+    if selected.as_ref().is_some_and(reusable) {
+        return Ok(selected);
+    }
+
+    // The selected projection stores one receipt per reviewer kind. If an
+    // operator changes a route and later restores it, the earlier immutable
+    // route-specific receipt remains in activity history and is still the
+    // semantic decision for this exact candidate. Reuse it instead of paying
+    // for the same candidate/reviewer/route twice.
+    for activity in task.completion_review_activity.iter().rev() {
+        if activity.reviewer_kind != kind
+            || &activity.manifest_digest != manifest_digest
+            || &activity.requirements_digest != requirements_digest
+            || activity.binding.as_ref() != Some(binding)
+            || activity.model_route.as_deref() != Some(route)
+            || !matches!(
+                activity.verdict,
+                worksgood::simple_land::ReviewVerdict::Pass
+                    | worksgood::simple_land::ReviewVerdict::Reject
+            )
+        {
+            continue;
+        }
+        let Ok(digest) = ContentDigest::parse(&activity.activity_id) else {
+            continue;
+        };
+        let Ok(stored) = load_stored_review_receipt_by_digest(store, &digest) else {
+            continue;
+        };
+        if reusable(&stored) {
+            return Ok(Some(stored));
+        }
+    }
+    Ok(selected)
 }
 
 fn same_source_tuple(
@@ -1280,6 +1360,92 @@ mod tests {
                 .unwrap()
                 .candidate_sequence,
             1
+        );
+    }
+
+    #[test]
+    fn restored_route_reuses_historical_receipt_for_same_candidate() {
+        let fixture = fixture();
+        let first_calls = Arc::new(Mutex::new(Vec::new()));
+        let mut first_flip = FakeReviewer {
+            route: "pi:test/flip-a".to_string(),
+            result: Ok(semantic(SemanticVerdict::Pass)),
+            calls: first_calls.clone(),
+        };
+        let mut eval = FakeReviewer {
+            route: "pi:test/eval".to_string(),
+            result: Ok(semantic(SemanticVerdict::Pass)),
+            calls: first_calls,
+        };
+        let first = run_with_reviewers(
+            &fixture.dir,
+            "report",
+            &fixture.manifest_path,
+            &fixture.summary_path,
+            &mut first_flip,
+            &mut eval,
+        )
+        .unwrap();
+        let route_a_receipt = first.flip.receipt_object.content_digest.clone();
+
+        let changed_calls = Arc::new(Mutex::new(Vec::new()));
+        let mut changed_flip = FakeReviewer {
+            route: "pi:test/flip-b".to_string(),
+            result: Ok(semantic(SemanticVerdict::Pass)),
+            calls: changed_calls.clone(),
+        };
+        let mut cached_eval = FakeReviewer {
+            route: "pi:test/eval".to_string(),
+            result: Ok(semantic(SemanticVerdict::Reject)),
+            calls: changed_calls.clone(),
+        };
+        run_with_reviewers(
+            &fixture.dir,
+            "report",
+            &fixture.manifest_path,
+            &fixture.summary_path,
+            &mut changed_flip,
+            &mut cached_eval,
+        )
+        .unwrap();
+        assert_eq!(*changed_calls.lock().unwrap(), vec![ReviewerKind::Flip]);
+
+        let restored_calls = Arc::new(Mutex::new(Vec::new()));
+        let mut restored_flip = FakeReviewer {
+            route: "pi:test/flip-a".to_string(),
+            result: Ok(semantic(SemanticVerdict::Reject)),
+            calls: restored_calls.clone(),
+        };
+        let mut still_cached_eval = FakeReviewer {
+            route: "pi:test/eval".to_string(),
+            result: Ok(semantic(SemanticVerdict::Reject)),
+            calls: restored_calls.clone(),
+        };
+        let restored = run_with_reviewers(
+            &fixture.dir,
+            "report",
+            &fixture.manifest_path,
+            &fixture.summary_path,
+            &mut restored_flip,
+            &mut still_cached_eval,
+        )
+        .unwrap();
+        assert!(restored_calls.lock().unwrap().is_empty());
+        assert_eq!(restored.flip.receipt_object.content_digest, route_a_receipt);
+
+        let graph = load_graph(fixture.dir.join("graph.jsonl")).unwrap();
+        let task = graph.get_task("report").unwrap();
+        assert_eq!(task.completion_review_activity.len(), 3);
+        let verified = worksgood::completion_review::verified_review_activities(&fixture.dir, task);
+        assert_eq!(verified.invalid_count, 0);
+        assert_eq!(
+            verified
+                .activities
+                .iter()
+                .filter(|activity| activity.candidate_state
+                    == worksgood::completion_review::ReviewCandidateState::Current)
+                .count(),
+            2
         );
     }
 
