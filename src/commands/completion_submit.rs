@@ -1484,6 +1484,75 @@ mod tests {
     }
 
     #[test]
+    fn evaluator_infrastructure_retry_is_allowed_after_candidate_consumes_ceiling() {
+        let fixture = fixture();
+        configure_strict_review(&fixture, 1);
+        let first_calls = Arc::new(Mutex::new(Vec::new()));
+        let mut passing_flip = FakeReviewer {
+            route: "pi:test/flip".to_string(),
+            result: Ok(semantic(SemanticVerdict::Pass)),
+            calls: first_calls.clone(),
+        };
+        let mut unavailable_eval = FakeReviewer {
+            route: "pi:test/eval".to_string(),
+            result: Err(ReviewerUnavailable {
+                code: "test.evaluator_down".to_string(),
+                message: "evaluator unavailable".to_string(),
+            }),
+            calls: first_calls.clone(),
+        };
+        let unavailable = run_with_reviewers(
+            &fixture.dir,
+            "report",
+            &fixture.manifest_path,
+            &fixture.summary_path,
+            &mut passing_flip,
+            &mut unavailable_eval,
+        )
+        .unwrap();
+        assert_eq!(unavailable.status, ReviewValveStatus::ReviewUnavailable);
+        assert_eq!(
+            *first_calls.lock().unwrap(),
+            vec![ReviewerKind::Flip, ReviewerKind::Eval]
+        );
+
+        let retry_calls = Arc::new(Mutex::new(Vec::new()));
+        let mut cached_flip = FakeReviewer {
+            route: "pi:test/flip".to_string(),
+            result: Ok(semantic(SemanticVerdict::Reject)),
+            calls: retry_calls.clone(),
+        };
+        let mut recovered_eval = FakeReviewer {
+            route: "pi:test/eval".to_string(),
+            result: Ok(semantic(SemanticVerdict::Pass)),
+            calls: retry_calls.clone(),
+        };
+        let recovered = run_with_reviewers(
+            &fixture.dir,
+            "report",
+            &fixture.manifest_path,
+            &fixture.summary_path,
+            &mut cached_flip,
+            &mut recovered_eval,
+        )
+        .unwrap();
+        assert_eq!(recovered.status, ReviewValveStatus::Accepted);
+        assert_eq!(
+            *retry_calls.lock().unwrap(),
+            vec![ReviewerKind::Eval],
+            "the semantic FLIP receipt must be reused while only evaluator infrastructure retries"
+        );
+
+        let graph = load_graph(fixture.dir.join("graph.jsonl")).unwrap();
+        let task = graph.get_task("report").unwrap();
+        assert_eq!(task.completion_review_activity.len(), 3);
+        assert_eq!(
+            task.completion_review_activity[1].failure_class,
+            Some(ReviewFailureClass::ReviewerUnavailable)
+        );
+    }
+
+    #[test]
     fn manifest_builder_supplies_task_bound_fields_from_immutable_refs() {
         let root = tempdir().unwrap();
         let dir = root.path().join(".wg");
