@@ -35,6 +35,40 @@ const OUTPUT_RESERVATION_FILE: &str = ".spawn-reservation";
 const LAUNCH_GATE_FILE: &str = ".launch-permit";
 const WORKTREE_RECLAIM_FILE: &str = "worktree-spawn-reclaims-v1.json";
 
+/// Preparation is not durable ownership until the launch permit is published.
+/// Any earlier failure removes only the exact cache path created for this
+/// attempt, so a claim race cannot strand an unregistered private layer.
+struct UnpublishedCachePath {
+    path: PathBuf,
+    cache_root: Option<PathBuf>,
+    published: bool,
+}
+
+impl UnpublishedCachePath {
+    fn new(path: PathBuf, cache_root: Option<PathBuf>) -> Self {
+        Self {
+            path,
+            cache_root,
+            published: false,
+        }
+    }
+
+    fn publish(&mut self) {
+        self.published = true;
+    }
+}
+
+impl Drop for UnpublishedCachePath {
+    fn drop(&mut self) {
+        if !self.published {
+            let _ = fs::remove_dir_all(&self.path);
+            if let Some(cache_root) = self.cache_root.as_deref() {
+                worksgood::target_cache::prune_empty_layer_parents(cache_root, &self.path);
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct WorktreeSpawnReclaim {
     action_id: String,
@@ -1292,12 +1326,22 @@ pub(crate) fn spawn_agent_inner_authorized(
     // The registry lock serializes the measured projection + reservation with
     // process registration. Without this second, projected check two concurrent
     // spawns could both spend the same free bytes after passing the cheap level
-    // check above.
+    // check above. A retained retry worktree supplies its exact build key;
+    // otherwise the soon-to-be-created worktree starts at the project tree.
     if build_class.is_build_capable() {
-        let admission = worksgood::disk_sentinel::build_admission_reclaiming_owned(
+        let admission_source = locked_registry
+            .all()
+            .filter(|agent| agent.task_id == task_id)
+            .filter_map(|agent| agent.worktree_path.as_deref())
+            .map(PathBuf::from)
+            .find(|path| path.is_dir())
+            .or_else(|| dir.parent().map(Path::to_path_buf))
+            .unwrap_or_else(|| dir.to_path_buf());
+        let admission = worksgood::disk_sentinel::build_admission_reclaiming_owned_for_source(
             dir,
             &config.coordinator.resource_management,
             build_class,
+            &admission_source,
         );
         if !admission.allowed {
             return Err(worksgood::disk_sentinel::AdmissionDeferral::new(format!(
@@ -1418,38 +1462,33 @@ pub(crate) fn spawn_agent_inner_authorized(
     vars.in_worktree = worktree_info.is_some();
 
     let owned_target_path = if build_class.is_build_capable() {
-        worksgood::disk_sentinel::target_path_for_agent(
-            &config.coordinator.resource_management,
-            worktree_info.as_ref().map(|wt| wt.path.as_path()),
-            &temp_agent_id,
+        let source_root = worktree_info
+            .as_ref()
+            .map(|worktree| worktree.path.as_path())
+            .unwrap_or(project_root);
+        Some(
+            worksgood::disk_sentinel::prepare_target_for_agent(
+                dir,
+                &config.coordinator.resource_management,
+                source_root,
+                &temp_agent_id,
+            )
+            .with_context(|| {
+                format!(
+                    "Failed to prepare copy-on-write Cargo target for {}",
+                    temp_agent_id
+                )
+            })?,
         )
-        .map(|path| {
-            if path.is_absolute() {
-                path
-            } else {
-                worktree_info
-                    .as_ref()
-                    .map(|wt| wt.path.join(&path))
-                    .or_else(|| std::env::current_dir().ok().map(|cwd| cwd.join(&path)))
-                    .unwrap_or(path)
-            }
-        })
     } else {
         None
     };
-    if let Some(path) = owned_target_path.as_ref() {
-        fs::create_dir_all(path)
-            .with_context(|| format!("Failed to create owned Cargo target {}", path.display()))?;
-    }
     let owned_tmp_path = if build_class.is_build_capable() {
-        let root = config
-            .coordinator
-            .resource_management
-            .build_tmp_root
-            .as_deref()
-            .map(PathBuf::from)
-            .unwrap_or_else(std::env::temp_dir);
-        Some(root.join(format!("wg-cargo-tmp-{temp_agent_id}")))
+        Some(worksgood::disk_sentinel::build_tmp_path_for_agent(
+            dir,
+            &config.coordinator.resource_management,
+            &temp_agent_id,
+        ))
     } else {
         None
     };
@@ -1457,6 +1496,19 @@ pub(crate) fn spawn_agent_inner_authorized(
         fs::create_dir_all(path)
             .with_context(|| format!("Failed to create owned build scratch {}", path.display()))?;
     }
+    let mut target_publish_guard = owned_target_path.as_ref().cloned().map(|path| {
+        UnpublishedCachePath::new(
+            path,
+            Some(worksgood::disk_sentinel::target_cache_root(
+                dir,
+                &config.coordinator.resource_management,
+            )),
+        )
+    });
+    let mut tmp_publish_guard = owned_tmp_path
+        .as_ref()
+        .cloned()
+        .map(|path| UnpublishedCachePath::new(path, None));
 
     // Apply templates to executor settings (with effective model in vars)
     let mut settings = executor_config.apply_templates(&vars);
@@ -1764,9 +1816,12 @@ pub(crate) fn spawn_agent_inner_authorized(
         cmd.current_dir(wd);
     }
     if let Some(path) = owned_target_path.as_ref() {
-        // Isolate Cargo and make the exact absolute/temporary path explicit in
-        // the ownership registry after the child PID identity is available.
+        // Every attempt writes its private layer. Unchanged artifacts are
+        // read-only hard links to an immutable content-keyed baseline.
         cmd.env("CARGO_TARGET_DIR", path);
+        cmd.env("CARGO_INCREMENTAL", "0");
+        cmd.env("CARGO_PROFILE_DEV_DEBUG", "line-tables-only");
+        cmd.env("CARGO_PROFILE_TEST_DEBUG", "line-tables-only");
     }
     if let Some(path) = owned_tmp_path.as_ref() {
         cmd.env("TMPDIR", path);
@@ -2145,6 +2200,12 @@ pub(crate) fn spawn_agent_inner_authorized(
             &spawn_run_id,
         )?;
         workspace.commit_after_launch();
+        if let Some(guard) = target_publish_guard.as_mut() {
+            guard.publish();
+        }
+        if let Some(guard) = tmp_publish_guard.as_mut() {
+            guard.publish();
+        }
         Ok((agent_id, pid))
     })();
 

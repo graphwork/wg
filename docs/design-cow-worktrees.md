@@ -1,5 +1,10 @@
 # Design: Copy-on-Write Worktrees for Agent Isolation
 
+> **Historical source-worktree survey.** Cargo artifact storage now uses an
+> immutable exact-key baseline plus private attempt layers; a shared writable
+> target is never used across divergent worktrees. See
+> [build-artifact-storage.md](build-artifact-storage.md).
+
 ## 1. Survey of Current Worktree Usage
 
 ### Creation

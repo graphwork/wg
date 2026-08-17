@@ -184,7 +184,8 @@ fn park(
         }
         let _ = registry.save();
     }
-    let _ = worksgood::disk_sentinel::release_owned_cache_leases(dir, id, None);
+    let lease_owner = worksgood::disk_sentinel::caller_agent_for_task(id);
+    let _ = worksgood::disk_sentinel::release_owned_cache_leases(dir, id, lease_owner.as_deref());
     super::notify_graph_changed(dir);
     Ok(())
 }

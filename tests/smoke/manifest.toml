@@ -2625,9 +2625,9 @@ timeout_seconds = 180
 [[scenario]]
 name = "predictive_build_admission_opt_in"
 script = "scenarios/predictive_build_admission_opt_in.sh"
-owners = ["disable-predictive-build"]
-description = "Installed-binary terminal flow proving the availability-first false default ignores an impossible historical build high-water and preserves a dirty source plus warm recovery target; explicit true deterministically refuses the same projection; human/JSON service status names admission-deferred and the five-tick dispatch watchdog never misdiagnoses that intentional opt-in refusal as a wedge."
-timeout_seconds = 45
+owners = ["disable-predictive-build", "land-bounded-worktree-build-storage"]
+description = "Candidate-binary terminal flow proving private-delta admission is enabled by default and refuses an impossible schema-v2 reserve before creating a worktree/attempt; human/JSON service status names admission-deferred without a wedge diagnosis, restored headroom dispatches exactly one attempt, while an explicit emergency disable remains loud in config lint, launches deterministically, and preserves dirty source."
+timeout_seconds = 90
 
 [[scenario]]
 name = "eval_gate_low_score_fail_closed"
@@ -3116,3 +3116,10 @@ script = "scenarios/terminal_receipt_precedence.sh"
 owners = ["completion-classification-precedence"]
 description = "Candidate-binary credential-free real terminal classifier regression for the provider-backoff incident: a final completed receipt outranks incidental timeout/reset prose and replays byte-identically; typed NeedsReview remains finalization-blocked; a genuine structured provider timeout and a hard timeout after only an intermediate tool-use turn remain infrastructure failures; conflicting exact terminal receipts remain typed ambiguity without semantic/source failure."
 timeout_seconds = 30
+
+[[scenario]]
+name = "bounded_worktree_build_storage"
+script = "scenarios/bounded_worktree_build_storage.sh"
+owners = ["land-bounded-worktree-build-storage"]
+description = "Candidate-binary credential-free real-daemon storage regression: a clean warm Cargo worker publishes one exact-key immutable baseline, then three isolated workers overlap (one repeated no-change and two build-input-divergent builds); inode/block accounting reports logical and distinct physical bytes and proves one baseline plus bounded private deltas, outputs cannot mutate the baseline or each other, registered artifacts and dirty source survive, and daemon restart after worker exit automatically reaps/compacts exact terminal layer leases idempotently."
+timeout_seconds = 240
