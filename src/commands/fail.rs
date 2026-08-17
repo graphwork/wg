@@ -20,6 +20,17 @@ use worksgood::lifecycle::ActorKind;
 #[cfg(test)]
 use worksgood::parser::load_graph;
 
+fn has_typed_completion_blocker(task: &worksgood::graph::Task) -> bool {
+    task.status == Status::Waiting
+        && task.lifecycle.audit.iter().rev().any(|event| {
+            event.event_kind == "attempt-parked"
+                && matches!(
+                    event.reason_code.as_str(),
+                    "completion_needs_review" | "completion_landing_pending"
+                )
+        })
+}
+
 fn failure_signal_for_class(
     class: Option<FailureClass>,
     message: Option<&str>,
@@ -63,6 +74,14 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>, class: Option<FailureClas
                 "Task '{}' is already done and its terminal generation cannot be rewritten; use `wg retry` for a new generation",
                 id
             );
+        }
+
+        if has_typed_completion_blocker(task) {
+            println!(
+                "Task '{}' is waiting on an authoritative completion blocker; source failure suppressed",
+                id
+            );
+            return Ok(());
         }
 
         if task.status == Status::Abandoned {
@@ -148,6 +167,7 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>, class: Option<FailureClas
     let mut agent_id_for_archive = None;
     let mut cycle_reactivated = Vec::new();
     let mut already_failed = false;
+    let mut completion_blocker_won = false;
     let mut transition_rejection: Option<String> = None;
     let id_owned = id.to_string();
     let reason_owned = reason.map(String::from);
@@ -157,10 +177,16 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>, class: Option<FailureClas
             None => return false,
         };
 
-        // Re-check status under lock
+        // Re-check status under lock. Typed finalization authority outranks a
+        // racing wrapper/process failure and must never become
+        // source_execution_failed.
         if task.status == Status::Failed {
             already_failed = true;
             retry_count = task.retry_count;
+            return false;
+        }
+        if has_typed_completion_blocker(task) {
+            completion_blocker_won = true;
             return false;
         }
         if task.status == Status::Abandoned {
@@ -254,6 +280,13 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>, class: Option<FailureClas
         println!(
             "Task '{}' is already failed (retry_count: {})",
             id, retry_count
+        );
+        return Ok(());
+    }
+    if completion_blocker_won {
+        println!(
+            "Task '{}' is waiting on an authoritative completion blocker; racing source failure suppressed",
+            id
         );
         return Ok(());
     }
@@ -850,6 +883,38 @@ mod tests {
                 .iter()
                 .any(|event| event.event_kind == "attempt-failed")
         );
+    }
+
+    #[test]
+    fn typed_completion_blocker_outranks_racing_source_failure() {
+        let dir = tempdir().unwrap();
+        let mut task = running_task("blocked-finalization", "agent-blocked");
+        let mut request = TransitionRequest::new(
+            TransitionKind::AttemptParked,
+            LifecycleActor::worker("agent-blocked"),
+            "completion_needs_review",
+            "park-needs-review",
+        );
+        request.expected = FenceExpectation::current(&task);
+        apply_transition(&mut task, request).unwrap();
+        setup_workgraph(dir.path(), vec![task]);
+
+        run(
+            dir.path(),
+            "blocked-finalization",
+            Some("Provider failure detected after streaming: timeout"),
+            Some(FailureClass::AgentHardTimeout),
+        )
+        .unwrap();
+
+        let graph = load_graph(graph_path(dir.path())).unwrap();
+        let task = graph.get_task("blocked-finalization").unwrap();
+        assert_eq!(task.status, Status::Waiting);
+        assert_eq!(task.failure_reason, None);
+        assert_eq!(task.failure_signal, None);
+        assert!(task.lifecycle.audit.iter().all(|event| {
+            event.reason_code != "source_execution_failed" && event.event_kind != "attempt-failed"
+        }));
     }
 
     #[test]
