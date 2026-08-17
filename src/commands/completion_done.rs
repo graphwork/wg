@@ -362,6 +362,7 @@ pub fn operator_accept(dir: &Path, id: &str, reason: &str) -> Result<()> {
             CompletionContract::Deliver => CompletionDisposition::Delivered,
         });
         task.completion_receipt = Some(receipt_digest.clone());
+        task.completion_blocker = None;
         task.completed_at = Some(accepted_at.clone());
         task.last_interaction_at = Some(accepted_at.clone());
         task.assigned = None;
@@ -546,6 +547,7 @@ fn commit_done(
         }
         task.completion_disposition = Some(disposition);
         task.completion_receipt = Some(receipt_digest.to_string());
+        task.completion_blocker = None;
         if accounting.usage.is_some() {
             task.token_usage.clone_from(&accounting.usage);
         }

@@ -9,7 +9,10 @@ use worksgood::completion_task::{
     load_exact_review_pair, load_review_evidence, load_submission_bytes,
 };
 use worksgood::config::Config;
-use worksgood::graph::{CompletionContract, CompletionDisposition, LogEntry};
+use worksgood::graph::{
+    CompletionBlocker, CompletionBlockerKind, CompletionContract, CompletionDisposition, LogEntry,
+    Status,
+};
 use worksgood::identity::canonical_json;
 use worksgood::parser::{load_graph, modify_graph};
 
@@ -42,13 +45,78 @@ pub fn run_at(
     integration_ref: &str,
     worker_worktree: Option<&Path>,
 ) -> Result<()> {
+    run_at_inner(dir, id, integration_ref, worker_worktree, None).map(|_| ())
+}
+
+/// Resume only the landing phase from an exact typed completion wait. No
+/// source execution or model review is repeated.
+pub(crate) fn pending_checkout_is_clean(dir: &Path, id: &str) -> Result<bool> {
+    let graph = load_graph(dir.join("graph.jsonl"))?;
+    let task = graph
+        .get_task(id)
+        .with_context(|| format!("task '{id}' not found"))?;
+    let blocker = task
+        .completion_blocker
+        .as_ref()
+        .context("task has no pending completion finalization")?;
+    if blocker.kind != CompletionBlockerKind::LandingPending || task.status != Status::Waiting {
+        return Ok(false);
+    }
+    super::completion_wait::validate_current(task, blocker)?;
+    let integration_ref = blocker
+        .integration_ref
+        .as_deref()
+        .context("LandingPending has no integration ref")?;
+    root_checkout_dirty_if_attached(
+        dir.parent().context("workgraph directory has no project root")?,
+        integration_ref,
+    )
+    .map(|dirty| !dirty)
+}
+
+pub(crate) fn resume_pending(dir: &Path, id: &str) -> Result<bool> {
+    let graph = load_graph(dir.join("graph.jsonl"))?;
+    let task = graph
+        .get_task(id)
+        .with_context(|| format!("task '{id}' not found"))?;
+    let blocker = task
+        .completion_blocker
+        .clone()
+        .context("task has no pending completion finalization")?;
+    if blocker.kind != CompletionBlockerKind::LandingPending || task.status != Status::Waiting {
+        bail!("task '{id}' is not Waiting/LandingPending");
+    }
+    super::completion_wait::validate_current(task, &blocker)?;
+    let integration_ref = blocker
+        .integration_ref
+        .as_deref()
+        .context("LandingPending has no integration ref")?;
+    let worker = blocker
+        .worker_worktree
+        .as_deref()
+        .map(Path::new)
+        .context("LandingPending has no retained worker worktree")?;
+    run_at_inner(dir, id, integration_ref, Some(worker), Some(&blocker))
+}
+
+fn run_at_inner(
+    dir: &Path,
+    id: &str,
+    integration_ref: &str,
+    worker_worktree: Option<&Path>,
+    pending: Option<&CompletionBlocker>,
+) -> Result<bool> {
     validate_integration_ref(integration_ref)?;
     let graph_path = dir.join("graph.jsonl");
     let graph = load_graph(&graph_path)?;
     let task = graph
         .get_task(id)
         .with_context(|| format!("task '{id}' not found"))?;
-    require_source_owner(task, id)?;
+    if let Some(blocker) = pending {
+        super::completion_wait::validate_current(task, blocker)?;
+    } else {
+        require_source_owner(task, id)?;
+    }
     if task.completion_contract != CompletionContract::Land {
         bail!(
             "wg land applies only to Land tasks; '{}' is {}",
@@ -104,7 +172,48 @@ pub fn run_at(
 
     let _lock = LandingLock::acquire(project_root)?;
     let observed_before = git(project_root, &["rev-parse", integration_ref])?;
+    if let Some(blocker) = pending {
+        let expected = blocker
+            .target_ref_oid
+            .as_deref()
+            .context("LandingPending has no target-ref CAS binding")?;
+        if observed_before != expected && observed_before != git_output.commit_oid {
+            bail!(
+                "pending landing target ref moved: expected {} (or already-published candidate {}), found {}",
+                expected,
+                git_output.commit_oid,
+                observed_before
+            );
+        }
+    }
     let already_published = is_ancestor(project_root, &git_output.commit_oid, &observed_before)?;
+    if !already_published {
+        let worker = worker_worktree.context(
+            "initial landing requires the retained worker worktree; crash recovery may omit it after publication",
+        )?;
+        verify_worker_worktree(worker, &git_output.commit_oid)?;
+    }
+
+    if root_checkout_dirty_if_attached(project_root, integration_ref)? {
+        if pending.is_none() {
+            let worker = worker_worktree
+                .context("landing wait requires the retained worker worktree")?;
+            super::completion_wait::park_landing_pending(
+                dir,
+                id,
+                "attached integration checkout has tracked or index changes; publication deferred without modifying user bytes",
+                super::completion_wait::LandingWait {
+                    integration_ref,
+                    target_ref_oid: &observed_before,
+                    worker_worktree: worker,
+                },
+            )?;
+        }
+        eprintln!(
+            "Landing pending: attached integration checkout is dirty; user bytes were not modified"
+        );
+        return Ok(false);
+    }
 
     let root_checkout_synchronized = if already_published {
         synchronize_root_checkout(project_root, integration_ref, &observed_before, false)?
@@ -116,11 +225,6 @@ pub fn run_at(
                 git_output.integrated_main_oid
             );
         }
-        let worker_worktree = worker_worktree.context(
-            "initial landing requires the retained worker worktree; crash recovery may omit it after publication",
-        )?;
-        verify_worker_worktree(worker_worktree, &git_output.commit_oid)?;
-        ensure_root_checkout_clean_if_attached(project_root, integration_ref)?;
         if !is_ancestor(
             project_root,
             &git_output.integrated_main_oid,
@@ -190,7 +294,7 @@ pub fn run_at(
             ""
         }
     );
-    Ok(())
+    Ok(true)
 }
 
 fn exact_git_output(outputs: &[OutputRef]) -> Result<&GitOutput> {
@@ -233,12 +337,20 @@ fn verify_worker_worktree(worktree: &Path, accepted_commit: &str) -> Result<()> 
     Ok(())
 }
 
+fn root_checkout_dirty_if_attached(project: &Path, integration_ref: &str) -> Result<bool> {
+    if symbolic_head(project).as_deref() != Some(integration_ref) {
+        return Ok(false);
+    }
+    Ok(!git(
+        project,
+        &["status", "--porcelain", "--untracked-files=no"],
+    )?
+    .is_empty())
+}
+
 fn ensure_root_checkout_clean_if_attached(project: &Path, integration_ref: &str) -> Result<()> {
-    if symbolic_head(project).as_deref() == Some(integration_ref) {
-        let status = git(project, &["status", "--porcelain", "--untracked-files=no"])?;
-        if !status.is_empty() {
-            bail!("integration root has tracked or index changes; refusing publication");
-        }
+    if root_checkout_dirty_if_attached(project, integration_ref)? {
+        bail!("integration root has tracked or index changes; refusing publication");
     }
     Ok(())
 }

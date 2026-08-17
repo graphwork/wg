@@ -41,6 +41,7 @@ pub mod completion_done;
 pub mod completion_finish;
 pub mod completion_land;
 pub mod completion_submit;
+pub mod completion_wait;
 pub mod config_cmd;
 pub mod context;
 pub mod coordinate;

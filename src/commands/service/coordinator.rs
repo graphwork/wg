@@ -2489,6 +2489,39 @@ pub fn coordinator_tick(
     // below (max agents, no ready tasks) would skip chat processing otherwise.
     process_chat_inbox(dir);
 
+    // Phase 0.4: a clean attached checkout is authoritative evidence that a
+    // typed LandingPending finalization may be retried. This resumes only the
+    // exact preserved candidate; it never dispatches source work or review.
+    if let Ok(graph) = worksgood::parser::load_graph(graph_path.clone()) {
+        let pending = graph
+            .tasks()
+            .filter(|task| {
+                task.status == Status::Waiting
+                    && task.completion_blocker.as_ref().is_some_and(|blocker| {
+                        blocker.kind == worksgood::graph::CompletionBlockerKind::LandingPending
+                    })
+            })
+            .map(|task| task.id.clone())
+            .collect::<Vec<_>>();
+        for task_id in pending {
+            match super::completion_land::pending_checkout_is_clean(dir, &task_id) {
+                Ok(true) => {
+                    if let Err(error) = super::resume::resume_landing_finalization(dir, &task_id) {
+                        eprintln!(
+                            "[completion-finalizer] '{}' remains LandingPending: {error:#}",
+                            task_id
+                        );
+                    }
+                }
+                Ok(false) => {}
+                Err(error) => eprintln!(
+                    "[completion-finalizer] ignored stale LandingPending '{}': {error:#}",
+                    task_id
+                ),
+            }
+        }
+    }
+
     // Phase 0.5: dedicated bounded evaluation. This precedes ordinary worker
     // cleanup/admission and deliberately does not consume an AgentRegistry
     // slot, allocate a worktree, or enter build admission. Adapter failures are

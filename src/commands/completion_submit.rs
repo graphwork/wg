@@ -552,6 +552,7 @@ fn select_candidate(
         }
         task.completion_disposition = None;
         task.completion_receipt = None;
+        task.completion_blocker = None;
         task.log.push(LogEntry {
             timestamp: Utc::now().to_rfc3339(),
             actor: Some("completion-submit".to_string()),

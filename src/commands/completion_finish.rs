@@ -107,6 +107,12 @@ pub fn run(dir: &Path, id: &str, integration_ref: &str) -> Result<()> {
                     != Some(worksgood::graph::CompletionDisposition::Landed)
             {
                 super::completion_land::run_at(dir, id, integration_ref, Some(&cwd))?;
+                if load_graph(dir.join("graph.jsonl"))?
+                    .get_task(id)
+                    .is_some_and(|task| task.status == worksgood::graph::Status::Waiting)
+                {
+                    return Ok(());
+                }
             }
             return super::completion_done::run(dir, id, integration_ref);
         }
@@ -124,30 +130,18 @@ pub fn run(dir: &Path, id: &str, integration_ref: &str) -> Result<()> {
             })
             .count() as u32;
         if strict_rejections >= config.agency.gate_max_attempts.max(1) {
-            super::wait::run(
+            super::completion_wait::park_needs_review(
                 dir,
                 id,
-                "human-input",
-                Some("Needs review: strict model-review attempt limit reached"),
+                &format!(
+                    "bounded strict model-review attempts exhausted ({})",
+                    config.agency.gate_max_attempts.max(1)
+                ),
             )?;
-            worksgood::parser::modify_graph(dir.join("graph.jsonl"), |graph| {
-                let Some(task) = graph.get_task_mut(id) else {
-                    return false;
-                };
-                task.assigned = None;
-                task.log.push(worksgood::graph::LogEntry {
-                    timestamp: chrono::Utc::now().to_rfc3339(),
-                    actor: Some("completion-review".to_string()),
-                    user: None,
-                    message: "Needs review: bounded strict model-review attempts exhausted; source worker released"
-                        .to_string(),
-                });
-                true
-            })?;
-            bail!(
-                "Needs review: strict model-review attempt limit ({}) reached; worker released for operator accept/reject",
-                config.agency.gate_max_attempts.max(1)
+            eprintln!(
+                "Needs review: strict model-review attempt limit reached; immutable candidate preserved and source worker released"
             );
+            return Ok(());
         }
     }
 
@@ -258,6 +252,12 @@ pub fn run(dir: &Path, id: &str, integration_ref: &str) -> Result<()> {
     super::completion_submit::run(dir, id, &manifest_path, &summary_path)?;
     if task.completion_contract == CompletionContract::Land {
         super::completion_land::run_at(dir, id, integration_ref, Some(&cwd))?;
+        if load_graph(dir.join("graph.jsonl"))?
+            .get_task(id)
+            .is_some_and(|task| task.status == worksgood::graph::Status::Waiting)
+        {
+            return Ok(());
+        }
     }
     super::completion_done::run(dir, id, integration_ref)
 }
