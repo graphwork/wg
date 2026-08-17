@@ -551,7 +551,9 @@ fn select_candidate(
             .completion_candidate
             .as_ref()
             .filter(|current| same_immutable_candidate(current, &candidate))
-            .and_then(|current| current.review_binding.clone())
+            .and_then(|current| current.review_binding.as_ref())
+            .filter(|binding| same_source_tuple(binding, expected_binding))
+            .cloned()
         {
             selected_binding = Some(binding);
             let mut changed = false;
@@ -620,6 +622,16 @@ fn select_candidate(
         bail!(refusal);
     }
     selected_binding.context("candidate selection produced no binding")
+}
+
+fn same_source_tuple(
+    current: &CompletionReviewBinding,
+    expected: &CompletionReviewBinding,
+) -> bool {
+    current.task_id == expected.task_id
+        && current.generation == expected.generation
+        && current.attempt_id == expected.attempt_id
+        && current.attempt_fence == expected.attempt_fence
 }
 
 fn same_immutable_candidate(
