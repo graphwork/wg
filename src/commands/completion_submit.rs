@@ -5,18 +5,25 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use worksgood::completion_manifest::{
     COMPLETION_MANIFEST_VERSION, CompletionArtifactStore, CompletionManifest, ContentDigest,
-    EvidenceRef, GitOutput, OutputRef, ReviewResolver,
+    EvidenceRef, GitOutput, OutputRef, ResolvedReviewBundle, ReviewResolver,
 };
 use worksgood::completion_review::{
-    CompletionReviewBinding, ManifestReviewer, ReviewValveOutcome, ReviewValveStatus, ReviewerKind,
-    ReviewerUnavailable, SemanticReview, run_review_valve_bound,
+    CompletionReviewBinding, ManifestReviewer, ReviewFailureClass, ReviewValveOutcome,
+    ReviewValveStatus, ReviewerKind, ReviewerUnavailable, SemanticReview, StoredReviewReceipt,
+    load_stored_review_receipt, run_review_valve_bound_reusing,
 };
 use worksgood::completion_review_model::ExactModelReviewer;
 use worksgood::completion_task::{
     CompletionCandidateRefs, completion_contract, requirements_digest, task_requirements_bytes,
 };
 use worksgood::config::{Config, DispatchRole};
-use worksgood::graph::{LogEntry, Status, Task, WorkGraph};
+use worksgood::graph::{
+    LogEntry, MessageWaitSelector, MessageWaitSubscription, Status, Task, WaitCondition, WaitSpec,
+    WorkGraph,
+};
+use worksgood::lifecycle::{
+    FenceExpectation, LifecycleActor, TransitionKind, TransitionRequest, apply_transition,
+};
 use worksgood::parser::{load_graph, modify_graph};
 
 const COMPLETION_STORE_DIR: &str = "completion/v3";
@@ -324,22 +331,6 @@ pub fn run_with_reviewers(
         bail!("manifest does not bind the current task id, generation, contract, and requirements");
     }
     let config = Config::load_merged(dir)?;
-    if config.agency.completion_review_strict {
-        let prior_attempts = task
-            .completion_review_activity
-            .iter()
-            .filter(|activity| {
-                activity.reviewer_kind == ReviewerKind::Flip
-                    && activity.requirements_digest == requirements_digest
-            })
-            .count() as u32;
-        if prior_attempts >= config.agency.gate_max_attempts.max(1) {
-            bail!(
-                "strict model review attempt limit reached ({prior_attempts}/{}); no further model call was made. Inspect `wg show {id}` and use operator review rather than looping.",
-                config.agency.gate_max_attempts.max(1)
-            );
-        }
-    }
     let summary_bytes = read_regular_file(summary_path, "worker summary")?;
     if worksgood::completion_manifest::ContentDigest::of_bytes(&summary_bytes)
         != manifest.worker_summary_digest
@@ -417,7 +408,45 @@ pub fn run_with_reviewers(
         Ok(bundle)
     });
     let manifest_digest = manifest.digest().map_err(anyhow::Error::msg)?;
-    let outcome = run_review_valve_bound(
+    let selected_graph = load_graph(&graph_path)?;
+    let selected_task = selected_graph
+        .get_task(id)
+        .with_context(|| format!("task '{id}' disappeared after candidate selection"))?;
+    let selected_candidate = selected_task
+        .completion_candidate
+        .as_ref()
+        .context("selected completion candidate disappeared before review")?;
+    let prior_flip = selected_candidate
+        .flip_receipt
+        .as_ref()
+        .map(|reference| load_stored_review_receipt(&store, reference))
+        .transpose()?;
+    let prior_eval = selected_candidate
+        .eval_receipt
+        .as_ref()
+        .map(|reference| load_stored_review_receipt(&store, reference))
+        .transpose()?;
+
+    if config.agency.completion_review_strict
+        && let Ok(bundle) = resolved.as_ref()
+    {
+        enforce_strict_review_budget(
+            dir,
+            &graph_path,
+            selected_task,
+            &manifest_digest,
+            &requirements_digest,
+            &review_binding,
+            bundle,
+            flip.route(),
+            eval.route(),
+            prior_flip.as_ref(),
+            prior_eval.as_ref(),
+            config.agency.gate_max_attempts.max(1),
+        )?;
+    }
+
+    let outcome = run_review_valve_bound_reusing(
         &store,
         &manifest_digest,
         &requirements_digest,
@@ -425,6 +454,8 @@ pub fn run_with_reviewers(
         flip,
         eval,
         Some(&review_binding),
+        prior_flip,
+        prior_eval,
     )?;
     record_review_outcome(
         &graph_path,
@@ -516,6 +547,30 @@ fn select_candidate(
             refusal = Some("task requirements changed while selecting candidate".into());
             return false;
         }
+        if let Some(binding) = task
+            .completion_candidate
+            .as_ref()
+            .filter(|current| same_immutable_candidate(current, &candidate))
+            .and_then(|current| current.review_binding.clone())
+        {
+            selected_binding = Some(binding);
+            let mut changed = false;
+            if source_accounting.usage.is_some() && task.token_usage != source_accounting.usage {
+                task.token_usage.clone_from(&source_accounting.usage);
+                changed = true;
+            }
+            if source_accounting.executor.is_some()
+                && task.actual_executor != source_accounting.executor
+            {
+                task.actual_executor.clone_from(&source_accounting.executor);
+                changed = true;
+            }
+            if source_accounting.model.is_some() && task.actual_model != source_accounting.model {
+                task.actual_model.clone_from(&source_accounting.model);
+                changed = true;
+            }
+            return changed;
+        }
         let candidate_sequence = task
             .completion_review_activity
             .iter()
@@ -565,6 +620,214 @@ fn select_candidate(
         bail!(refusal);
     }
     selected_binding.context("candidate selection produced no binding")
+}
+
+fn same_immutable_candidate(
+    current: &CompletionCandidateRefs,
+    proposed: &CompletionCandidateRefs,
+) -> bool {
+    current.manifest == proposed.manifest
+        && current.requirements == proposed.requirements
+        && current.worker_summary == proposed.worker_summary
+        && current.dependency_outputs == proposed.dependency_outputs
+}
+
+#[allow(clippy::too_many_arguments)]
+fn enforce_strict_review_budget(
+    dir: &Path,
+    graph_path: &Path,
+    task: &Task,
+    manifest_digest: &ContentDigest,
+    requirements_digest: &ContentDigest,
+    binding: &CompletionReviewBinding,
+    bundle: &ResolvedReviewBundle,
+    flip_route: &str,
+    eval_route: &str,
+    prior_flip: Option<&StoredReviewReceipt>,
+    prior_eval: Option<&StoredReviewReceipt>,
+    max_iterations: u32,
+) -> Result<()> {
+    let verified = worksgood::completion_review::verified_review_activities(dir, task);
+    if verified.invalid_count > 0 {
+        bail!(
+            "strict completion review budget cannot be verified: {} projected receipt(s) are invalid",
+            verified.invalid_count
+        );
+    }
+    let semantic_iterations = verified
+        .activities
+        .iter()
+        .filter(|activity| {
+            activity.reviewer_kind == ReviewerKind::Flip
+                && matches!(
+                    activity.verdict,
+                    worksgood::simple_land::ReviewVerdict::Pass
+                        | worksgood::simple_land::ReviewVerdict::Reject
+                )
+        })
+        .count() as u32;
+    if semantic_iterations < max_iterations {
+        return Ok(());
+    }
+
+    let flip_reusable = prior_flip.is_some_and(|stored| {
+        stored.receipt.is_reusable_semantic(
+            manifest_digest,
+            requirements_digest,
+            ReviewerKind::Flip,
+            flip_route,
+            Some(binding),
+            &bundle.inspected_output_digests,
+        )
+    });
+    let flip_infrastructure_retry = prior_flip.is_some_and(|stored| {
+        receipt_is_exact_infrastructure_retry(
+            stored,
+            manifest_digest,
+            requirements_digest,
+            ReviewerKind::Flip,
+            flip_route,
+            binding,
+            &bundle.inspected_output_digests,
+        )
+    });
+    let eval_reusable = prior_eval.is_some_and(|stored| {
+        stored.receipt.is_reusable_semantic(
+            manifest_digest,
+            requirements_digest,
+            ReviewerKind::Eval,
+            eval_route,
+            Some(binding),
+            &bundle.inspected_output_digests,
+        )
+    });
+    let current_rejected = prior_flip.is_some_and(|stored| {
+        flip_reusable && stored.receipt.verdict == worksgood::simple_land::ReviewVerdict::Reject
+    }) || prior_eval.is_some_and(|stored| {
+        flip_reusable
+            && eval_reusable
+            && stored.receipt.verdict == worksgood::simple_land::ReviewVerdict::Reject
+    });
+
+    // A same-candidate provider failure may be retried separately. It did not
+    // consume a semantic revision. A new candidate/route, or replay of an
+    // already-rejected candidate at the task ceiling, parks without a call.
+    if current_rejected || (!flip_reusable && !flip_infrastructure_retry) {
+        park_for_review_budget(
+            graph_path,
+            task,
+            binding,
+            semantic_iterations,
+            max_iterations,
+        )?;
+        bail!(
+            "Needs review: strict model-review attempt limit ({max_iterations}) reached; no further model call was made and the worker was released for operator accept/reject"
+        );
+    }
+    Ok(())
+}
+
+fn receipt_is_exact_infrastructure_retry(
+    stored: &StoredReviewReceipt,
+    manifest_digest: &ContentDigest,
+    requirements_digest: &ContentDigest,
+    kind: ReviewerKind,
+    route: &str,
+    binding: &CompletionReviewBinding,
+    inspected_output_digests: &[String],
+) -> bool {
+    let receipt = &stored.receipt;
+    receipt.receipt_version == worksgood::completion_review::COMPLETION_REVIEW_RECEIPT_VERSION
+        && &receipt.manifest_digest == manifest_digest
+        && &receipt.requirements_digest == requirements_digest
+        && receipt.reviewer_kind == kind
+        && receipt.verdict == worksgood::simple_land::ReviewVerdict::Unavailable
+        && receipt.failure_class == Some(ReviewFailureClass::ReviewerUnavailable)
+        && receipt.model_route.as_deref() == Some(route)
+        && receipt.binding.as_ref() == Some(binding)
+        && receipt.inspected_output_digests == inspected_output_digests
+}
+
+fn park_for_review_budget(
+    graph_path: &Path,
+    expected: &Task,
+    binding: &CompletionReviewBinding,
+    semantic_iterations: u32,
+    max_iterations: u32,
+) -> Result<()> {
+    let mut refusal = None;
+    modify_graph(graph_path, |graph| {
+        let Some(task) = graph.get_task_mut(&expected.id) else {
+            refusal = Some("task disappeared while parking exhausted review budget".to_string());
+            return false;
+        };
+        if task.status != Status::InProgress
+            || task.lifecycle.generation != binding.generation
+            || task.lifecycle.fence != binding.attempt_fence
+            || task
+                .lifecycle
+                .current_attempt
+                .as_ref()
+                .map(|attempt| attempt.id.as_str())
+                != binding.attempt_id.as_deref()
+            || task
+                .completion_candidate
+                .as_ref()
+                .and_then(|candidate| candidate.review_binding.as_ref())
+                != Some(binding)
+        {
+            refusal = Some(
+                "task or completion candidate changed while parking exhausted review budget"
+                    .to_string(),
+            );
+            return false;
+        }
+        let Some(attempt) = task.lifecycle.current_attempt.clone() else {
+            refusal = Some("review budget exhaustion requires a current source attempt".into());
+            return false;
+        };
+        let request = TransitionRequest::new(
+            TransitionKind::AttemptParked,
+            LifecycleActor::worker(attempt.actor_id.clone()),
+            "completion_review_budget_exhausted",
+            format!(
+                "completion-review-budget:{}:{}:{}",
+                task.id, attempt.id, semantic_iterations
+            ),
+        )
+        .expecting(FenceExpectation::current(task));
+        if let Err(rejection) = apply_transition(task, request) {
+            refusal = Some(rejection.to_string());
+            return false;
+        }
+        task.wait_condition = Some(WaitSpec::All(vec![WaitCondition::HumanInput]));
+        task.message_wait = Some(MessageWaitSubscription {
+            id: format!(
+                "message-wait:{}:{}:{}",
+                task.id, attempt.generation, attempt.id
+            ),
+            attempt_epoch: attempt.generation,
+            attempt_id: attempt.id,
+            selector: MessageWaitSelector::HumanInput,
+            armed: true,
+            consumed_by_message_id: None,
+            resume_request_id: None,
+        });
+        task.assigned = None;
+        task.log.push(LogEntry {
+            timestamp: Utc::now().to_rfc3339(),
+            actor: Some("completion-review".to_string()),
+            user: None,
+            message: format!(
+                "Needs review: task-level semantic review ceiling {semantic_iterations}/{max_iterations} reached; candidate preserved and source worker released"
+            ),
+        });
+        true
+    })?;
+    if let Some(refusal) = refusal {
+        bail!(refusal);
+    }
+    Ok(())
 }
 
 fn record_review_outcome(

@@ -110,45 +110,6 @@ pub fn run(dir: &Path, id: &str, integration_ref: &str) -> Result<()> {
             }
             return super::completion_done::run(dir, id, integration_ref);
         }
-
-        let strict_rejections = task
-            .completion_review_activity
-            .iter()
-            .filter(|activity| {
-                matches!(
-                    activity.verdict,
-                    worksgood::simple_land::ReviewVerdict::Reject
-                        | worksgood::simple_land::ReviewVerdict::Unavailable
-                        | worksgood::simple_land::ReviewVerdict::IncompleteEvidence
-                )
-            })
-            .count() as u32;
-        if strict_rejections >= config.agency.gate_max_attempts.max(1) {
-            super::wait::run(
-                dir,
-                id,
-                "human-input",
-                Some("Needs review: strict model-review attempt limit reached"),
-            )?;
-            worksgood::parser::modify_graph(dir.join("graph.jsonl"), |graph| {
-                let Some(task) = graph.get_task_mut(id) else {
-                    return false;
-                };
-                task.assigned = None;
-                task.log.push(worksgood::graph::LogEntry {
-                    timestamp: chrono::Utc::now().to_rfc3339(),
-                    actor: Some("completion-review".to_string()),
-                    user: None,
-                    message: "Needs review: bounded strict model-review attempts exhausted; source worker released"
-                        .to_string(),
-                });
-                true
-            })?;
-            bail!(
-                "Needs review: strict model-review attempt limit ({}) reached; worker released for operator accept/reject",
-                config.agency.gate_max_attempts.max(1)
-            );
-        }
     }
 
     let mut evidence = Vec::new();

@@ -6,8 +6,8 @@
 //! until FLIP passes the exact manifest and requirements binding.
 
 use crate::completion_manifest::{
-    ArtifactOutput, ArtifactStoreError, CompletionArtifactStore, ContentDigest, IncompleteEvidence,
-    ResolvedReviewBundle,
+    ArtifactOutput, ArtifactStoreError, CompletionArtifactStore, ContentDigest, ImmutableLocator,
+    IncompleteEvidence, ResolvedReviewBundle,
 };
 use crate::identity::canonical_json;
 use crate::simple_land::ReviewVerdict;
@@ -278,8 +278,14 @@ fn candidate_state(
         return ReviewCandidateState::LegacyUnbound;
     };
     let current = task.completion_candidate.as_ref().is_some_and(|candidate| {
+        let selected_receipt = match activity.reviewer_kind {
+            ReviewerKind::Flip => candidate.flip_receipt.as_ref(),
+            ReviewerKind::Eval => candidate.eval_receipt.as_ref(),
+        };
         candidate.manifest.content_digest == activity.manifest_digest
             && candidate.review_binding.as_ref() == Some(binding)
+            && selected_receipt
+                .is_some_and(|reference| reference.content_digest.as_str() == activity.activity_id)
     });
     if current {
         ReviewCandidateState::Current
@@ -727,6 +733,28 @@ impl ReviewReceipt {
             && self.reviewer_kind == kind
             && self.verdict == ReviewVerdict::Pass
     }
+
+    /// Whether this immutable receipt already contains the semantic decision
+    /// for one exact candidate/reviewer route. Infrastructure outcomes are not
+    /// semantic decisions and intentionally remain retryable.
+    pub fn is_reusable_semantic(
+        &self,
+        manifest: &ContentDigest,
+        requirements: &ContentDigest,
+        kind: ReviewerKind,
+        route: &str,
+        binding: Option<&CompletionReviewBinding>,
+        inspected_output_digests: &[String],
+    ) -> bool {
+        self.receipt_version == COMPLETION_REVIEW_RECEIPT_VERSION
+            && &self.manifest_digest == manifest
+            && &self.requirements_digest == requirements
+            && self.reviewer_kind == kind
+            && matches!(self.verdict, ReviewVerdict::Pass | ReviewVerdict::Reject)
+            && self.model_route.as_deref() == Some(route)
+            && self.binding.as_ref() == binding
+            && self.inspected_output_digests == inspected_output_digests
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -734,6 +762,54 @@ pub struct StoredReviewReceipt {
     pub receipt: ReviewReceipt,
     pub receipt_object: ArtifactOutput,
     pub findings_object: ArtifactOutput,
+}
+
+/// Reload and verify a stored review receipt plus its immutable findings.
+/// Candidate replay uses this rather than invoking the same semantic reviewer
+/// again after a lost response or process restart.
+pub fn load_stored_review_receipt(
+    artifact_store: &CompletionArtifactStore,
+    receipt_object: &ArtifactOutput,
+) -> Result<StoredReviewReceipt, ReviewValveError> {
+    let receipt_bytes = artifact_store.read_artifact(
+        receipt_object,
+        crate::completion_task::MAX_COMPLETION_METADATA_BYTES,
+    )?;
+    let receipt: ReviewReceipt = serde_json::from_slice(&receipt_bytes)?;
+    if receipt.receipt_version != COMPLETION_REVIEW_RECEIPT_VERSION {
+        return Err(ReviewValveError::InvalidReceipt(format!(
+            "unsupported receipt version {}",
+            receipt.receipt_version
+        )));
+    }
+    let object_name = receipt
+        .findings_digest
+        .as_str()
+        .strip_prefix("b3:")
+        .ok_or_else(|| ReviewValveError::InvalidReceipt("invalid findings digest".into()))?;
+    let findings_path = artifact_store.root().join("objects").join(object_name);
+    let findings_size = std::fs::metadata(&findings_path)
+        .map_err(ArtifactStoreError::Io)?
+        .len();
+    let findings_object = ArtifactOutput {
+        content_digest: receipt.findings_digest.clone(),
+        immutable_locator: ImmutableLocator::CompletionObject {
+            digest: receipt.findings_digest.clone(),
+        },
+        media_type: "application/vnd.worksgood.review-findings+json".to_string(),
+        size: findings_size,
+        review_projection: None,
+    };
+    let findings_bytes = artifact_store.read_artifact(
+        &findings_object,
+        crate::completion_task::MAX_COMPLETION_METADATA_BYTES,
+    )?;
+    serde_json::from_slice::<Vec<ReviewFinding>>(&findings_bytes)?;
+    Ok(StoredReviewReceipt {
+        receipt,
+        receipt_object: receipt_object.clone(),
+        findings_object,
+    })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -773,6 +849,8 @@ pub enum ReviewValveError {
     BindingMismatch,
     #[error("{0:?} reviewer did not declare an exact model route")]
     MissingExactRoute(ReviewerKind),
+    #[error("invalid immutable review receipt: {0}")]
+    InvalidReceipt(String),
     #[error("persist review receipt: {0}")]
     Store(#[from] ArtifactStoreError),
     #[error("serialize review receipt: {0}")]
@@ -819,6 +897,38 @@ pub fn run_review_valve_bound(
         flip_reviewer,
         eval_reviewer,
         binding,
+        None,
+        None,
+        &Utc::now().to_rfc3339(),
+    )
+}
+
+/// Run the valve while reusing exact semantic receipts selected for this same
+/// immutable candidate. A receipt is reused only when kind, route, candidate
+/// binding, and inspected output digests all match. Unavailable/incomplete
+/// receipts never suppress an infrastructure retry.
+#[allow(clippy::too_many_arguments)]
+pub fn run_review_valve_bound_reusing(
+    artifact_store: &CompletionArtifactStore,
+    manifest_digest: &ContentDigest,
+    requirements_digest: &ContentDigest,
+    resolved: Result<ResolvedReviewBundle, IncompleteEvidence>,
+    flip_reviewer: &mut dyn ManifestReviewer,
+    eval_reviewer: &mut dyn ManifestReviewer,
+    binding: Option<&CompletionReviewBinding>,
+    prior_flip: Option<StoredReviewReceipt>,
+    prior_eval: Option<StoredReviewReceipt>,
+) -> Result<ReviewValveOutcome, ReviewValveError> {
+    run_review_valve_at_bound(
+        artifact_store,
+        manifest_digest,
+        requirements_digest,
+        resolved,
+        flip_reviewer,
+        eval_reviewer,
+        binding,
+        prior_flip,
+        prior_eval,
         &Utc::now().to_rfc3339(),
     )
 }
@@ -841,6 +951,8 @@ pub fn run_review_valve_at(
         flip_reviewer,
         eval_reviewer,
         None,
+        None,
+        None,
         created_at,
     )
 }
@@ -854,6 +966,8 @@ fn run_review_valve_at_bound(
     flip_reviewer: &mut dyn ManifestReviewer,
     eval_reviewer: &mut dyn ManifestReviewer,
     binding: Option<&CompletionReviewBinding>,
+    prior_flip: Option<StoredReviewReceipt>,
+    prior_eval: Option<StoredReviewReceipt>,
     created_at: &str,
 ) -> Result<ReviewValveOutcome, ReviewValveError> {
     let bundle = match resolved {
@@ -897,23 +1011,38 @@ fn run_review_valve_at_bound(
     if flip_reviewer.route().trim().is_empty() {
         return Err(ReviewValveError::MissingExactRoute(ReviewerKind::Flip));
     }
-    let flip_started = std::time::Instant::now();
-    let flip_result = flip_reviewer.review(ReviewerKind::Flip, &bundle);
-    let flip_duration_ms = u64::try_from(flip_started.elapsed().as_millis()).unwrap_or(u64::MAX);
-    let flip_execution = flip_reviewer.take_execution();
-    let flip = receipt_from_reviewer_result(
-        artifact_store,
-        manifest_digest,
-        requirements_digest,
-        ReviewerKind::Flip,
-        &bundle.inspected_output_digests,
-        binding,
-        flip_reviewer.route(),
-        flip_result,
-        flip_execution,
-        Some(flip_duration_ms),
-        created_at,
-    )?;
+    let flip = match prior_flip.filter(|stored| {
+        stored.receipt.is_reusable_semantic(
+            manifest_digest,
+            requirements_digest,
+            ReviewerKind::Flip,
+            flip_reviewer.route(),
+            binding,
+            &bundle.inspected_output_digests,
+        )
+    }) {
+        Some(stored) => stored,
+        None => {
+            let flip_started = std::time::Instant::now();
+            let flip_result = flip_reviewer.review(ReviewerKind::Flip, &bundle);
+            let flip_duration_ms =
+                u64::try_from(flip_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+            let flip_execution = flip_reviewer.take_execution();
+            receipt_from_reviewer_result(
+                artifact_store,
+                manifest_digest,
+                requirements_digest,
+                ReviewerKind::Flip,
+                &bundle.inspected_output_digests,
+                binding,
+                flip_reviewer.route(),
+                flip_result,
+                flip_execution,
+                Some(flip_duration_ms),
+                created_at,
+            )?
+        }
+    };
     match flip.receipt.verdict {
         ReviewVerdict::Reject => {
             return Ok(ReviewValveOutcome {
@@ -947,23 +1076,38 @@ fn run_review_valve_at_bound(
     if eval_reviewer.route().trim().is_empty() {
         return Err(ReviewValveError::MissingExactRoute(ReviewerKind::Eval));
     }
-    let eval_started = std::time::Instant::now();
-    let eval_result = eval_reviewer.review(ReviewerKind::Eval, &bundle);
-    let eval_duration_ms = u64::try_from(eval_started.elapsed().as_millis()).unwrap_or(u64::MAX);
-    let eval_execution = eval_reviewer.take_execution();
-    let eval = receipt_from_reviewer_result(
-        artifact_store,
-        manifest_digest,
-        requirements_digest,
-        ReviewerKind::Eval,
-        &bundle.inspected_output_digests,
-        binding,
-        eval_reviewer.route(),
-        eval_result,
-        eval_execution,
-        Some(eval_duration_ms),
-        created_at,
-    )?;
+    let eval = match prior_eval.filter(|stored| {
+        stored.receipt.is_reusable_semantic(
+            manifest_digest,
+            requirements_digest,
+            ReviewerKind::Eval,
+            eval_reviewer.route(),
+            binding,
+            &bundle.inspected_output_digests,
+        )
+    }) {
+        Some(stored) => stored,
+        None => {
+            let eval_started = std::time::Instant::now();
+            let eval_result = eval_reviewer.review(ReviewerKind::Eval, &bundle);
+            let eval_duration_ms =
+                u64::try_from(eval_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+            let eval_execution = eval_reviewer.take_execution();
+            receipt_from_reviewer_result(
+                artifact_store,
+                manifest_digest,
+                requirements_digest,
+                ReviewerKind::Eval,
+                &bundle.inspected_output_digests,
+                binding,
+                eval_reviewer.route(),
+                eval_result,
+                eval_execution,
+                Some(eval_duration_ms),
+                created_at,
+            )?
+        }
+    };
     let status = match eval.receipt.verdict {
         ReviewVerdict::Pass => ReviewValveStatus::Accepted,
         ReviewVerdict::Reject => ReviewValveStatus::EvalRejected,
