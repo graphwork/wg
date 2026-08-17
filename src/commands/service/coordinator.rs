@@ -1072,6 +1072,7 @@ fn build_separate_verify_tasks(
             completion_candidate: None,
             completion_disposition: None,
             completion_receipt: None,
+            completion_blocker: None,
             tags: vec!["verification".to_string(), "separate-verify".to_string()],
             skills: vec![],
             inputs: vec![],
@@ -1302,6 +1303,7 @@ fn build_auto_evolve_task(
         completion_candidate: None,
         completion_disposition: None,
         completion_receipt: None,
+        completion_blocker: None,
         tags: vec!["evolution".to_string(), "agency".to_string()],
         skills: vec![],
         inputs: vec![],
@@ -1535,6 +1537,7 @@ fn build_auto_create_task(
         completion_candidate: None,
         completion_disposition: None,
         completion_receipt: None,
+        completion_blocker: None,
         tags: vec!["creation".to_string(), "agency".to_string()],
         skills: vec![],
         inputs: vec![],
@@ -2504,9 +2507,11 @@ pub fn coordinator_tick(
             .map(|task| task.id.clone())
             .collect::<Vec<_>>();
         for task_id in pending {
-            match super::completion_land::pending_checkout_is_clean(dir, &task_id) {
+            match crate::commands::completion_land::pending_checkout_is_clean(dir, &task_id) {
                 Ok(true) => {
-                    if let Err(error) = super::resume::resume_landing_finalization(dir, &task_id) {
+                    if let Err(error) =
+                        crate::commands::resume::resume_landing_finalization(dir, &task_id)
+                    {
                         eprintln!(
                             "[completion-finalizer] '{}' remains LandingPending: {error:#}",
                             task_id

@@ -713,9 +713,20 @@ impl LifecycleKernel {
                         ActorKind::Finalizer,
                     ],
                 )?;
-                let finalizing_parked_completion = request.actor.kind == ActorKind::Finalizer
-                    && old_state == Status::Waiting
+                let finalizing_parked_completion = old_state == Status::Waiting
                     && acceptance_ref.is_some()
+                    && task.completion_blocker.as_ref().is_some_and(|blocker| {
+                        matches!(
+                            (request.actor.kind, blocker.kind),
+                            (
+                                ActorKind::Finalizer,
+                                crate::graph::CompletionBlockerKind::LandingPending
+                            ) | (
+                                ActorKind::Operator,
+                                crate::graph::CompletionBlockerKind::NeedsReview
+                            )
+                        )
+                    })
                     && projection.current_attempt.as_ref().is_some_and(|attempt| {
                         attempt.disposition == Some(AttemptDisposition::Parked)
                             && request.expected.generation == Some(projection.generation)

@@ -65,8 +65,7 @@ pub(crate) fn resume_landing_finalization(dir: &Path, id: &str) -> Result<bool> 
     };
     let Some(blocker) = task.completion_blocker.as_ref() else {
         if task.status == Status::Done
-            && task.completion_disposition
-                == Some(worksgood::graph::CompletionDisposition::Landed)
+            && task.completion_disposition == Some(worksgood::graph::CompletionDisposition::Landed)
             && task.log.iter().any(|entry| {
                 entry.actor.as_deref() == Some("completion-done")
                     || entry.actor.as_deref() == Some("land")
@@ -80,8 +79,11 @@ pub(crate) fn resume_landing_finalization(dir: &Path, id: &str) -> Result<bool> 
     if blocker.kind != worksgood::graph::CompletionBlockerKind::LandingPending {
         return Ok(false);
     }
+    super::completion_wait::validate_current(task, blocker)?;
 
-    if !super::completion_land::resume_pending(dir, id)? {
+    if task.completion_disposition != Some(worksgood::graph::CompletionDisposition::Landed)
+        && !super::completion_land::resume_pending(dir, id)?
+    {
         println!(
             "Landing for '{}' remains pending; clean the attached integration checkout and retry",
             id
@@ -93,7 +95,10 @@ pub(crate) fn resume_landing_finalization(dir: &Path, id: &str) -> Result<bool> 
         .as_deref()
         .context("LandingPending has no integration ref")?;
     super::completion_done::run(dir, id, integration_ref)?;
-    println!("Resumed pending landing for '{}' without rerunning source or review", id);
+    println!(
+        "Resumed pending landing for '{}' without rerunning source or review",
+        id
+    );
     Ok(true)
 }
 

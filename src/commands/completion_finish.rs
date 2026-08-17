@@ -250,6 +250,14 @@ pub fn run(dir: &Path, id: &str, integration_ref: &str) -> Result<()> {
     };
 
     super::completion_submit::run(dir, id, &manifest_path, &summary_path)?;
+    if load_graph(dir.join("graph.jsonl"))?
+        .get_task(id)
+        .is_some_and(|task| {
+            task.status == worksgood::graph::Status::Waiting && task.completion_blocker.is_some()
+        })
+    {
+        return Ok(());
+    }
     if task.completion_contract == CompletionContract::Land {
         super::completion_land::run_at(dir, id, integration_ref, Some(&cwd))?;
         if load_graph(dir.join("graph.jsonl"))?
