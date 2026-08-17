@@ -18,13 +18,7 @@ use worksgood::completion_task::{
     CompletionCandidateRefs, completion_contract, requirements_digest, task_requirements_bytes,
 };
 use worksgood::config::{Config, DispatchRole};
-use worksgood::graph::{
-    LogEntry, MessageWaitSelector, MessageWaitSubscription, Status, Task, WaitCondition, WaitSpec,
-    WorkGraph,
-};
-use worksgood::lifecycle::{
-    FenceExpectation, LifecycleActor, TransitionKind, TransitionRequest, apply_transition,
-};
+use worksgood::graph::{CompletionBlockerKind, LogEntry, Status, Task, WorkGraph};
 use worksgood::parser::{load_graph, modify_graph};
 
 const COMPLETION_STORE_DIR: &str = "completion/v3";
@@ -225,14 +219,21 @@ pub fn run(dir: &Path, id: &str, manifest_path: &Path, summary_path: &Path) -> R
             Ok(reviewer) => Box::new(reviewer),
             Err(error) => Box::new(SetupUnavailableReviewer::new("evaluator", error)),
         };
-    let outcome = run_with_reviewers(
+    let outcome = match run_with_reviewers(
         dir,
         id,
         manifest_path,
         summary_path,
         flip.as_mut(),
         eval.as_mut(),
-    )?;
+    ) {
+        Ok(outcome) => outcome,
+        Err(error) if task_is_waiting_for_review(dir, id) => {
+            eprintln!("{error:#}");
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    };
     print_review_findings(dir, &outcome);
     match outcome.status {
         ReviewValveStatus::Accepted => {
@@ -266,6 +267,21 @@ pub fn run(dir: &Path, id: &str, manifest_path: &Path, summary_path: &Path) -> R
             outcome.flip.receipt.manifest_digest
         ),
     }
+}
+
+fn task_is_waiting_for_review(dir: &Path, id: &str) -> bool {
+    load_graph(dir.join("graph.jsonl"))
+        .ok()
+        .and_then(|graph| {
+            graph.get_task(id).map(|task| {
+                task.status == Status::Waiting
+                    && task
+                        .completion_blocker
+                        .as_ref()
+                        .is_some_and(|blocker| blocker.kind == CompletionBlockerKind::NeedsReview)
+            })
+        })
+        .unwrap_or(false)
 }
 
 fn print_review_findings(dir: &Path, outcome: &ReviewValveOutcome) {
@@ -449,7 +465,6 @@ pub fn run_with_reviewers(
     {
         enforce_strict_review_budget(
             dir,
-            &graph_path,
             selected_task,
             &manifest_digest,
             &requirements_digest,
@@ -728,7 +743,6 @@ fn same_immutable_candidate(
 #[allow(clippy::too_many_arguments)]
 fn enforce_strict_review_budget(
     dir: &Path,
-    graph_path: &Path,
     task: &Task,
     manifest_digest: &ContentDigest,
     requirements_digest: &ContentDigest,
@@ -826,13 +840,7 @@ fn enforce_strict_review_budget(
     // consume a semantic revision. A new candidate/route, or replay of an
     // already-rejected candidate at the task ceiling, parks without a call.
     if current_rejected || (!flip_reusable && !flip_infrastructure_retry) {
-        park_for_review_budget(
-            graph_path,
-            task,
-            binding,
-            semantic_iterations,
-            max_iterations,
-        )?;
+        park_for_review_budget(dir, &task.id, semantic_iterations, max_iterations)?;
         bail!(
             "Needs review: strict model-review attempt limit ({max_iterations}) reached; no further model call was made and the worker was released for operator accept/reject"
         );
@@ -862,85 +870,18 @@ fn receipt_is_exact_infrastructure_retry(
 }
 
 fn park_for_review_budget(
-    graph_path: &Path,
-    expected: &Task,
-    binding: &CompletionReviewBinding,
+    dir: &Path,
+    id: &str,
     semantic_iterations: u32,
     max_iterations: u32,
 ) -> Result<()> {
-    let mut refusal = None;
-    modify_graph(graph_path, |graph| {
-        let Some(task) = graph.get_task_mut(&expected.id) else {
-            refusal = Some("task disappeared while parking exhausted review budget".to_string());
-            return false;
-        };
-        if task.status != Status::InProgress
-            || task.lifecycle.generation != binding.generation
-            || task.lifecycle.fence != binding.attempt_fence
-            || task
-                .lifecycle
-                .current_attempt
-                .as_ref()
-                .map(|attempt| attempt.id.as_str())
-                != binding.attempt_id.as_deref()
-            || task
-                .completion_candidate
-                .as_ref()
-                .and_then(|candidate| candidate.review_binding.as_ref())
-                != Some(binding)
-        {
-            refusal = Some(
-                "task or completion candidate changed while parking exhausted review budget"
-                    .to_string(),
-            );
-            return false;
-        }
-        let Some(attempt) = task.lifecycle.current_attempt.clone() else {
-            refusal = Some("review budget exhaustion requires a current source attempt".into());
-            return false;
-        };
-        let request = TransitionRequest::new(
-            TransitionKind::AttemptParked,
-            LifecycleActor::worker(attempt.actor_id.clone()),
-            "completion_review_budget_exhausted",
-            format!(
-                "completion-review-budget:{}:{}:{}",
-                task.id, attempt.id, semantic_iterations
-            ),
-        )
-        .expecting(FenceExpectation::current(task));
-        if let Err(rejection) = apply_transition(task, request) {
-            refusal = Some(rejection.to_string());
-            return false;
-        }
-        task.wait_condition = Some(WaitSpec::All(vec![WaitCondition::HumanInput]));
-        task.message_wait = Some(MessageWaitSubscription {
-            id: format!(
-                "message-wait:{}:{}:{}",
-                task.id, attempt.generation, attempt.id
-            ),
-            attempt_epoch: attempt.generation,
-            attempt_id: attempt.id,
-            selector: MessageWaitSelector::HumanInput,
-            armed: true,
-            consumed_by_message_id: None,
-            resume_request_id: None,
-        });
-        task.assigned = None;
-        task.log.push(LogEntry {
-            timestamp: Utc::now().to_rfc3339(),
-            actor: Some("completion-review".to_string()),
-            user: None,
-            message: format!(
-                "Needs review: task-level semantic review ceiling {semantic_iterations}/{max_iterations} reached; candidate preserved and source worker released"
-            ),
-        });
-        true
-    })?;
-    if let Some(refusal) = refusal {
-        bail!(refusal);
-    }
-    Ok(())
+    super::completion_wait::park_needs_review(
+        dir,
+        id,
+        &format!(
+            "task-level semantic review ceiling {semantic_iterations}/{max_iterations} reached; no further model call was made"
+        ),
+    )
 }
 
 fn record_review_outcome(
@@ -1586,13 +1527,17 @@ mod tests {
         assert!(task.failure_reason.is_none());
         assert_eq!(task.completion_review_activity.len(), 1);
         assert_eq!(
+            task.completion_blocker.as_ref().unwrap().kind,
+            CompletionBlockerKind::NeedsReview
+        );
+        assert_eq!(
             task.lifecycle.current_attempt.as_ref().unwrap().disposition,
             Some(AttemptDisposition::Parked)
         );
         assert!(
             task.log
                 .iter()
-                .any(|entry| entry.message.contains("Needs review"))
+                .any(|entry| entry.message.contains("Completion waiting/NeedsReview"))
         );
     }
 
