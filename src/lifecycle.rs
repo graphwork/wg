@@ -713,8 +713,36 @@ impl LifecycleKernel {
                         ActorKind::Finalizer,
                     ],
                 )?;
-                Self::require_running_attempt(task, &request)?;
-                Self::terminalize_attempt(&mut projection, AttemptDisposition::Succeeded)?;
+                let finalizing_parked_completion = old_state == Status::Waiting
+                    && acceptance_ref.is_some()
+                    && task.completion_blocker.as_ref().is_some_and(|blocker| {
+                        matches!(
+                            (request.actor.kind, blocker.kind),
+                            (
+                                ActorKind::Finalizer,
+                                crate::graph::CompletionBlockerKind::LandingPending
+                            ) | (
+                                ActorKind::Operator,
+                                crate::graph::CompletionBlockerKind::NeedsReview
+                            )
+                        )
+                    })
+                    && projection.current_attempt.as_ref().is_some_and(|attempt| {
+                        attempt.disposition == Some(AttemptDisposition::Parked)
+                            && request.expected.generation == Some(projection.generation)
+                            && request.expected.fence == Some(projection.fence)
+                            && request.expected.attempt_id.as_deref() == Some(attempt.id.as_str())
+                    });
+                if finalizing_parked_completion {
+                    projection
+                        .current_attempt
+                        .as_mut()
+                        .expect("parked completion has an attempt")
+                        .disposition = Some(AttemptDisposition::Succeeded);
+                } else {
+                    Self::require_running_attempt(task, &request)?;
+                    Self::terminalize_attempt(&mut projection, AttemptDisposition::Succeeded)?;
+                }
                 new_state = if acceptance_ref.is_some() {
                     Status::Done
                 } else if *manual_review {

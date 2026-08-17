@@ -2370,6 +2370,7 @@ fn handle_add_task_with_reasoning(
         completion_candidate: None,
         completion_disposition: None,
         completion_receipt: None,
+        completion_blocker: None,
         tags: tags.to_vec(),
         skills: skills.to_vec(),
         inputs: vec![],

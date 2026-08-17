@@ -52,6 +52,8 @@ struct TaskDetails {
     completion_receipt: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     completion_candidate: Option<worksgood::completion_task::CompletionCandidateRefs>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    completion_blocker: Option<worksgood::graph::CompletionBlocker>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     completion_review_activity: Vec<worksgood::completion_review::VerifiedCompletionReviewActivity>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -844,6 +846,7 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         completion_disposition: task.completion_disposition,
         completion_receipt: task.completion_receipt.clone(),
         completion_candidate: task.completion_candidate.clone(),
+        completion_blocker: task.completion_blocker.clone(),
         completion_review_activity: verified_review.activities.clone(),
         // Historical finalization transactions are evidence only. `show` is a
         // read path and must not open (and thereby materialize) that retired
@@ -994,6 +997,25 @@ fn print_human_readable(details: &TaskDetails) {
                 binding.candidate_sequence
             );
         }
+    }
+    if let Some(blocker) = details.completion_blocker.as_ref() {
+        println!("Completion waiting/{:?}: {}", blocker.kind, blocker.reason);
+        println!(
+            "  binding: task={} generation={} attempt={} fence={} candidate={}",
+            blocker.task_id,
+            blocker.generation,
+            blocker.attempt_id.as_deref().unwrap_or("none"),
+            blocker.fence,
+            blocker.candidate.manifest.content_digest
+        );
+        println!(
+            "  session continuity: {}",
+            blocker
+                .session_selector
+                .as_deref()
+                .unwrap_or("not required/attested")
+        );
+        println!("  next: {}", blocker.safe_next);
     }
     if !details.completion_review_activity.is_empty() {
         println!("Completion review lane (immutable activity; not graph tasks):");
@@ -2391,6 +2413,7 @@ mod tests {
             completion_disposition: None,
             completion_receipt: None,
             completion_candidate: None,
+            completion_blocker: None,
             completion_review_activity: Vec::new(),
             finish_phase: None,
             lifecycle: worksgood::lifecycle::LifecycleProjection::default(),

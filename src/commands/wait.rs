@@ -161,7 +161,7 @@ fn parse_wait_spec(s: &str, graph: &worksgood::graph::WorkGraph) -> Result<WaitS
 /// ambient `PI_SESSION_ID` alone is not authority. Bind the two only when the
 /// durable watchdog source/session/process proofs match the lifecycle kernel's
 /// active continuation authorization exactly.
-fn attested_pi_session_id(dir: &Path, task: &Task) -> Result<Option<String>> {
+pub(crate) fn attested_pi_session_id(dir: &Path, task: &Task) -> Result<Option<String>> {
     let Some(authorization) = task.lifecycle.pi_continuation.as_ref() else {
         return Ok(None);
     };
