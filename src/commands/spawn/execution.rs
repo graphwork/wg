@@ -6637,6 +6637,83 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn completed_terminal_wrapper_exit_never_calls_fail_or_provider_telemetry() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let bin_dir = temp_dir.path().join("bin");
+        std::fs::create_dir(&bin_dir).unwrap();
+        let calls = temp_dir.path().join("wg-calls.log");
+        let fake_wg = bin_dir.join("wg");
+        std::fs::write(
+            &fake_wg,
+            format!(
+                r#"#!/bin/bash
+printf '%s\n' "$*" >> '{}'
+case "$1" in
+  classify-failure)
+    if printf '%s\n' "$*" | grep -q -- '--terminal'; then
+      printf '%s\n' '{{"state":"completed","reason_code":"exact-agent-turn-completed"}}'
+    elif printf '%s\n' "$*" | grep -q -- '--json'; then
+      printf '%s\n' '{{"reason":"unknown","confidence":0,"executor":"pi","detected_at_ms":0}}'
+    else
+      printf '%s\n' 'agent-exit-nonzero'
+    fi
+    ;;
+  show) printf '%s\n' '{{"status":"in-progress"}}' ;;
+esac
+"#,
+                calls.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake_wg, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let output_log = temp_dir.path().join("output.log");
+        let command = r#"bash -c 'printf "%s\n" "{\"type\":\"turn_end\",\"message\":{\"responseId\":\"r1\",\"stopReason\":\"completed\"}}"; exit 124'"#;
+        let wrapper = write_wrapper_script(
+            temp_dir.path(),
+            "terminal-precedence",
+            &output_log.to_string_lossy(),
+            command,
+            None,
+            "claude",
+            None,
+        )
+        .unwrap();
+        let path = format!(
+            "{}:{}",
+            bin_dir.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let status = std::process::Command::new("bash")
+            .arg(wrapper)
+            .env("PATH", path)
+            .env("WG_AGENT_ID", "agent-fixture")
+            .status()
+            .unwrap();
+        assert_eq!(status.code(), Some(124));
+
+        let calls = std::fs::read_to_string(calls).unwrap();
+        assert!(calls.contains("classify-failure --terminal"), "{calls}");
+        assert!(
+            calls.contains("log terminal-precedence Wrapper preserved"),
+            "{calls}"
+        );
+        assert!(
+            !calls.lines().any(|line| line.starts_with("fail ")),
+            "completed receipt must fence generic source failure: {calls}"
+        );
+        assert!(
+            !calls
+                .lines()
+                .any(|line| line.starts_with("record-telemetry ")),
+            "completed receipt must fence provider telemetry: {calls}"
+        );
+    }
+
     #[test]
     fn pi_wrapper_binds_parent_and_native_child_as_distinct_terminal_authorities() {
         let temp_dir = tempfile::TempDir::new().unwrap();
