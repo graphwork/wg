@@ -350,6 +350,45 @@ pub enum CompletionDisposition {
     Explored,
 }
 
+/// A non-semantic blocker encountered after an immutable completion candidate
+/// has been selected. These states release the source worker without
+/// classifying its work as failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CompletionBlockerKind {
+    NeedsReview,
+    LandingPending,
+}
+
+/// Exact, restart-safe binding for a resumable completion blocker.
+///
+/// The full candidate projection is copied intentionally. Resumption must
+/// prove byte-for-byte that the candidate and all review receipts are still
+/// the ones that entered the wait.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompletionBlocker {
+    pub kind: CompletionBlockerKind,
+    pub reason: String,
+    pub safe_next: String,
+    pub task_id: String,
+    pub generation: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt_id: Option<String>,
+    pub fence: u64,
+    pub candidate: crate::completion_task::CompletionCandidateRefs,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub integration_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_ref_oid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_worktree: Option<String>,
+    /// Present only when exact live Pi guards were attested while parking.
+    /// Settled source attempts need no session continuity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_selector: Option<String>,
+    pub created_at: String,
+}
+
 impl CompletionDisposition {
     pub fn satisfies(self, contract: CompletionContract) -> bool {
         matches!(
@@ -738,6 +777,10 @@ pub struct Task {
     pub completion_disposition: Option<CompletionDisposition>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completion_receipt: Option<String>,
+    /// Durable, typed finalization wait. Cleared only after receipt-backed
+    /// completion or authoritative candidate replacement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion_blocker: Option<CompletionBlocker>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
     /// Required skills/capabilities for this task
@@ -1075,6 +1118,7 @@ impl Default for Task {
             completion_candidate: None,
             completion_disposition: None,
             completion_receipt: None,
+            completion_blocker: None,
             tags: vec![],
             skills: vec![],
             inputs: vec![],
@@ -2226,6 +2270,8 @@ struct TaskHelper {
     #[serde(default)]
     completion_receipt: Option<String>,
     #[serde(default)]
+    completion_blocker: Option<CompletionBlocker>,
+    #[serde(default)]
     tags: Vec<String>,
     #[serde(default)]
     skills: Vec<String>,
@@ -2446,6 +2492,7 @@ impl<'de> Deserialize<'de> for Task {
             completion_candidate: helper.completion_candidate,
             completion_disposition: helper.completion_disposition,
             completion_receipt: helper.completion_receipt,
+            completion_blocker: helper.completion_blocker,
             tags: helper.tags,
             skills: helper.skills,
             inputs: helper.inputs,
