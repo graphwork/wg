@@ -3,6 +3,8 @@
 //! This is a pure function: no side-effects, no graph I/O. The wrapper invokes
 //! `wg classify-failure` which shells out to this logic.
 
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::Path;
 use worksgood::dispatch::plan::ExecutorKind;
 use worksgood::graph::{FailureClass, FailureReason, FailureSignal};
@@ -15,6 +17,258 @@ use worksgood::telemetry::{
 /// error patterns. Cargo/linker ENOSPC diagnostics can be followed by wrapper
 /// bookkeeping, so retain a bounded 64 KiB rather than the historical 4 KiB.
 const TAIL_BYTES: u64 = 64 * 1024;
+
+/// Stable terminal projection derived only from machine-readable stream
+/// evidence. This is deliberately separate from [`FailureSignal`]: a provider
+/// request can finish authoritatively and then encounter a completion-plane
+/// blocker, which is not a source/provider failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TerminalStreamState {
+    /// An exact agent/turn receipt reports `rawStopReason` or `stopReason` as
+    /// `completed`. This proves provider-turn completion, not task acceptance.
+    Completed,
+    /// A typed completion/finalization refusal was emitted. The candidate must
+    /// be retained and the lifecycle parked by finalization authority.
+    FinalizationBlocked,
+    /// No completion receipt exists and provider evidence is authoritative.
+    ProviderFailure,
+    /// Exact terminal receipts disagree. Never convert this into semantic or
+    /// source failure; retain the candidate for explicit reconciliation.
+    Ambiguous,
+    /// Neither exact terminal nor typed provider evidence was observed.
+    Unknown,
+}
+
+impl TerminalStreamState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::FinalizationBlocked => "finalization-blocked",
+            Self::ProviderFailure => "provider-failure",
+            Self::Ambiguous => "ambiguous",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExactTerminalReceipt {
+    pub line: usize,
+    pub event_type: String,
+    pub receipt_id: String,
+    pub stop_reason: String,
+    pub completed: bool,
+}
+
+/// Restart-stable explanation of the winning terminal evidence. No wall-clock
+/// field is included, so replaying the same bytes produces identical JSON.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalStreamClassification {
+    pub state: TerminalStreamState,
+    pub reason_code: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub receipts: Vec<ExactTerminalReceipt>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finalization_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_reason: Option<FailureReason>,
+}
+
+impl TerminalStreamClassification {
+    fn unknown() -> Self {
+        Self {
+            state: TerminalStreamState::Unknown,
+            reason_code: "no-authoritative-terminal-evidence".into(),
+            receipts: Vec::new(),
+            finalization_code: None,
+            failure_reason: None,
+        }
+    }
+}
+
+/// Classify terminal evidence with explicit precedence.
+///
+/// Exact completed receipts outrank timeout/reset *text heuristics*. Typed
+/// finalization blockers outrank all source-failure projection. Conflicting
+/// exact receipts fail closed as `Ambiguous`. A structured provider error (or
+/// hard-timeout exit) still wins when no authoritative completion exists.
+pub fn classify_terminal_from_raw_stream(
+    raw_stream: &Path,
+    output_log: Option<&Path>,
+    exit_code: i32,
+    executor: ExecutorKind,
+    route: Option<String>,
+) -> TerminalStreamClassification {
+    let raw = read_tail(raw_stream).unwrap_or_default();
+    let output = output_log.and_then(read_tail).unwrap_or_default();
+    let receipts = exact_terminal_receipts(&raw);
+    let has_completed = receipts.iter().any(|receipt| receipt.completed);
+    let has_non_completed = receipts.iter().any(|receipt| !receipt.completed);
+
+    if has_completed && has_non_completed {
+        return TerminalStreamClassification {
+            state: TerminalStreamState::Ambiguous,
+            reason_code: "conflicting-exact-terminal-receipts".into(),
+            receipts,
+            finalization_code: None,
+            failure_reason: None,
+        };
+    }
+
+    let finalization_code = raw
+        .lines()
+        .chain(output.lines())
+        .filter_map(typed_finalization_code)
+        .next_back();
+    if let Some(code) = finalization_code {
+        return TerminalStreamClassification {
+            state: TerminalStreamState::FinalizationBlocked,
+            reason_code: format!("typed-finalization-blocked:{code}"),
+            receipts,
+            finalization_code: Some(code),
+            failure_reason: None,
+        };
+    }
+
+    if has_completed {
+        return TerminalStreamClassification {
+            state: TerminalStreamState::Completed,
+            reason_code: "exact-agent-turn-completed".into(),
+            receipts,
+            finalization_code: None,
+            failure_reason: None,
+        };
+    }
+
+    let signal = classify_failure_signal_without_terminal(
+        raw_stream,
+        output_log,
+        exit_code,
+        executor,
+        route,
+    );
+    if signal.reason != FailureReason::Unknown {
+        TerminalStreamClassification {
+            state: TerminalStreamState::ProviderFailure,
+            reason_code: format!("provider-failure:{}", signal.reason.as_str()),
+            receipts,
+            finalization_code: None,
+            failure_reason: Some(signal.reason),
+        }
+    } else {
+        TerminalStreamClassification::unknown()
+    }
+}
+
+fn exact_terminal_receipts(raw: &str) -> Vec<ExactTerminalReceipt> {
+    let mut receipts: BTreeMap<(String, String), ExactTerminalReceipt> = BTreeMap::new();
+    for (index, line) in raw.lines().enumerate() {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
+            continue;
+        };
+        let event_type = value.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        let message = match event_type {
+            "message_end" | "turn_end" => value.get("message"),
+            "agent_end" if value.get("willRetry").and_then(|v| v.as_bool()) != Some(true) => {
+                value
+                    .get("messages")
+                    .and_then(|messages| messages.as_array())
+                    .and_then(|messages| {
+                        messages.iter().rev().find(|message| {
+                            message.get("role").and_then(|v| v.as_str()) == Some("assistant")
+                        })
+                    })
+            }
+            _ => None,
+        };
+        let Some(message) = message else {
+            continue;
+        };
+        let stop_reason = message
+            .get("rawStopReason")
+            .or_else(|| message.get("stopReason"))
+            .and_then(|v| v.as_str());
+        let Some(stop_reason) = stop_reason else {
+            continue;
+        };
+        let normalized = normalize_code(stop_reason);
+        let completed = normalized == "completed";
+        let exact_non_completed = matches!(
+            normalized.as_str(),
+            "failed" | "error" | "cancelled" | "canceled" | "aborted" | "timeout" | "timedout"
+        );
+        if !completed && !exact_non_completed {
+            continue;
+        }
+        let receipt_id = message
+            .get("responseId")
+            .or_else(|| value.get("turnId"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("b3:{}", blake3::hash(message.to_string().as_bytes())));
+        // message_end/turn_end/agent_end commonly repeat the same receipt.
+        // Deduplicate only identical outcome+id; contradictory outcomes remain.
+        receipts.entry((receipt_id.clone(), normalized.clone())).or_insert(
+            ExactTerminalReceipt {
+                line: index + 1,
+                event_type: event_type.to_string(),
+                receipt_id,
+                stop_reason: stop_reason.to_string(),
+                completed,
+            },
+        );
+    }
+    let mut receipts: Vec<_> = receipts.into_values().collect();
+    receipts.sort_by_key(|receipt| receipt.line);
+    receipts
+}
+
+fn typed_finalization_code(line: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
+    let event_type = value.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    let candidates = [
+        value.get("code"),
+        value.get("state"),
+        value.get("kind"),
+        value.get("error").and_then(|error| error.get("code")),
+        value
+            .get("finalization")
+            .and_then(|finalization| finalization.get("code")),
+        value
+            .get("finalization")
+            .and_then(|finalization| finalization.get("state")),
+    ];
+    for candidate in candidates.into_iter().flatten().filter_map(|v| v.as_str()) {
+        if let Some(code) = canonical_finalization_code(candidate) {
+            return Some(code);
+        }
+    }
+    canonical_finalization_code(event_type)
+}
+
+fn canonical_finalization_code(value: &str) -> Option<String> {
+    let normalized = normalize_code(value);
+    let code = match normalized.as_str() {
+        "needsreview" => "needs-review",
+        "landingpending" => "landing-pending",
+        "evidencerefusal" | "evidencerefused" | "evidenceguardrefusal" => {
+            "evidence-refusal"
+        }
+        "guardrefusal" | "guardrefused" | "finalizationguardrefusal" => "guard-refusal",
+        "finalizationblocked" => "finalization-blocked",
+        _ => return None,
+    };
+    Some(code.into())
+}
+
+fn normalize_code(value: &str) -> String {
+    value
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
 
 /// Classify an agent failure from the raw JSONL stream and exit code.
 ///
@@ -42,6 +296,39 @@ pub fn classify_from_raw_stream(raw_stream: &Path, exit_code: i32) -> FailureCla
 /// in addition to the raw stream because some CLI handlers echo the provider
 /// body only on stderr.
 pub fn classify_signal_from_raw_stream(
+    raw_stream: &Path,
+    output_log: Option<&Path>,
+    exit_code: i32,
+    executor: ExecutorKind,
+    route: Option<String>,
+) -> FailureSignal {
+    let terminal = classify_terminal_from_raw_stream(
+        raw_stream,
+        output_log,
+        exit_code,
+        executor,
+        route.clone(),
+    );
+    if matches!(
+        terminal.state,
+        TerminalStreamState::Completed
+            | TerminalStreamState::FinalizationBlocked
+            | TerminalStreamState::Ambiguous
+    ) {
+        return failure_signal_from_evidence(
+            None,
+            None,
+            None,
+            None,
+            "",
+            executor,
+            route,
+        );
+    }
+    classify_failure_signal_without_terminal(raw_stream, output_log, exit_code, executor, route)
+}
+
+fn classify_failure_signal_without_terminal(
     raw_stream: &Path,
     output_log: Option<&Path>,
     exit_code: i32,
@@ -626,6 +913,157 @@ mod tests {
     #[test]
     fn test_extract_api_error_status_not_found() {
         assert_eq!(extract_api_error_status(r#"{"type":"result"}"#), None);
+    }
+
+    #[test]
+    fn completed_terminal_receipt_outranks_incidental_timeout_text() {
+        // Reduced fixture from provider-backoff-contract: design/tool output
+        // discussed timeouts, but the final provider receipt is exact and says
+        // the turn completed. Assistant prose is intentionally irrelevant.
+        let stream = write_stream(concat!(
+            "{\"type\":\"tool_execution_end\",\"toolCallId\":\"t1\",\"result\":\"provider timeout policy\"}\n",
+            "{\"type\":\"turn_end\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"all done\"}],\"responseId\":\"resp-1\",\"stopReason\":\"stop\",\"rawStopReason\":\"completed\"}}\n",
+            "{\"type\":\"agent_end\",\"messages\":[{\"role\":\"assistant\",\"responseId\":\"resp-1\",\"stopReason\":\"stop\",\"rawStopReason\":\"completed\"}],\"willRetry\":false}\n",
+            "{\"type\":\"compaction_end\",\"result\":{\"summary\":\"transport timeout and reset acceptance cases\"}}\n",
+        ));
+
+        let terminal = classify_terminal_from_raw_stream(
+            stream.path(),
+            None,
+            124,
+            ExecutorKind::Pi,
+            None,
+        );
+        assert_eq!(terminal.state, TerminalStreamState::Completed);
+        assert_eq!(terminal.reason_code, "exact-agent-turn-completed");
+        assert_eq!(terminal.receipts.len(), 1, "duplicate receipt must collapse");
+        assert_eq!(
+            classify_signal_from_raw_stream(
+                stream.path(),
+                None,
+                124,
+                ExecutorKind::Pi,
+                None,
+            )
+            .reason,
+            FailureReason::Unknown,
+            "completed turn must not become provider timeout telemetry"
+        );
+    }
+
+    #[test]
+    fn completed_receipt_plus_typed_guard_refusal_is_finalization_blocked() {
+        let stream = write_stream(concat!(
+            "{\"type\":\"turn_end\",\"message\":{\"role\":\"assistant\",\"responseId\":\"resp-1\",\"rawStopReason\":\"completed\"}}\n",
+            "{\"type\":\"finalization_blocked\",\"code\":\"NeedsReview\",\"message\":\"review budget exhausted\"}\n",
+        ));
+        let terminal = classify_terminal_from_raw_stream(
+            stream.path(),
+            None,
+            1,
+            ExecutorKind::Pi,
+            None,
+        );
+        assert_eq!(terminal.state, TerminalStreamState::FinalizationBlocked);
+        assert_eq!(terminal.finalization_code.as_deref(), Some("needs-review"));
+        assert_eq!(
+            classify_signal_from_raw_stream(
+                stream.path(),
+                None,
+                1,
+                ExecutorKind::Pi,
+                None,
+            )
+            .reason,
+            FailureReason::Unknown
+        );
+    }
+
+    #[test]
+    fn genuine_pre_terminal_transport_timeout_remains_provider_failure() {
+        let stream = write_stream(
+            r#"{"type":"error","error":{"code":408,"message":"request timed out","metadata":{"error_type":"timeout"}}}"#,
+        );
+        let terminal = classify_terminal_from_raw_stream(
+            stream.path(),
+            None,
+            1,
+            ExecutorKind::Pi,
+            None,
+        );
+        assert_eq!(terminal.state, TerminalStreamState::ProviderFailure);
+        assert_eq!(terminal.failure_reason, Some(FailureReason::Timeout));
+        assert_eq!(
+            classify_signal_from_raw_stream(
+                stream.path(),
+                None,
+                1,
+                ExecutorKind::Pi,
+                None,
+            )
+            .reason,
+            FailureReason::Timeout
+        );
+    }
+
+    #[test]
+    fn conflicting_exact_terminal_receipts_are_typed_ambiguous() {
+        let stream = write_stream(concat!(
+            "{\"type\":\"turn_end\",\"message\":{\"role\":\"assistant\",\"responseId\":\"resp-1\",\"rawStopReason\":\"completed\"}}\n",
+            "{\"type\":\"turn_end\",\"message\":{\"role\":\"assistant\",\"responseId\":\"resp-2\",\"rawStopReason\":\"failed\"}}\n",
+        ));
+        let first = classify_terminal_from_raw_stream(
+            stream.path(),
+            None,
+            1,
+            ExecutorKind::Pi,
+            None,
+        );
+        let replay = classify_terminal_from_raw_stream(
+            stream.path(),
+            None,
+            1,
+            ExecutorKind::Pi,
+            None,
+        );
+        assert_eq!(first.state, TerminalStreamState::Ambiguous);
+        assert_eq!(first.reason_code, "conflicting-exact-terminal-receipts");
+        assert_eq!(first.receipts.len(), 2);
+        assert_eq!(
+            serde_json::to_string(&first).unwrap(),
+            serde_json::to_string(&replay).unwrap(),
+            "projection must be restart-stable"
+        );
+        assert_eq!(
+            classify_signal_from_raw_stream(
+                stream.path(),
+                None,
+                1,
+                ExecutorKind::Pi,
+                None,
+            )
+            .reason,
+            FailureReason::Unknown,
+            "ambiguity must not invent source/provider failure"
+        );
+    }
+
+    #[test]
+    fn assistant_prose_alone_never_proves_completion() {
+        let stream = write_stream(
+            r#"{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"task completed successfully"}],"stopReason":"stop"}}"#,
+        );
+        assert_eq!(
+            classify_terminal_from_raw_stream(
+                stream.path(),
+                None,
+                0,
+                ExecutorKind::Pi,
+                None,
+            )
+            .state,
+            TerminalStreamState::Unknown
+        );
     }
 
     #[test]
