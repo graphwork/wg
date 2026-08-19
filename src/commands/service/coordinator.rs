@@ -2109,10 +2109,19 @@ fn spawn_agents_for_ready_tasks(
         }
 
         let build_class = worksgood::disk_sentinel::classify_task(task);
-        let projected = worksgood::disk_sentinel::build_admission(
+        // An explicit task.exec is dispatched by the shell handler, so the
+        // cheap coordinator gate can use the same exact Cargo namespace as
+        // the locked spawn gate. Interactive tasks remain unknown/isolated.
+        let controlled_cargo_command = task
+            .exec
+            .as_deref()
+            .and_then(worksgood::target_cache::controlled_cargo_command);
+        let projected = worksgood::disk_sentinel::build_admission_for_source(
             dir,
             &config.coordinator.resource_management,
             build_class,
+            dir.parent().unwrap_or(dir),
+            controlled_cargo_command.as_deref(),
         );
         let projection_reason;
         let disk_reason = if !projected.allowed {

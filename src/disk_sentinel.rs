@@ -694,7 +694,7 @@ fn projection_for_class(
         cfg.estimated_build_bytes
             .max(high_water.build_capable_delta_bytes)
     };
-    if cold_baseline && class.is_heavy() {
+    if cold_baseline && class.is_build_capable() {
         target = target.max(cfg.estimated_cargo_baseline_bytes);
     }
     target.saturating_add(cfg.build_link_test_safety_bytes)
@@ -709,7 +709,7 @@ pub fn build_admission(
     cfg: &ResourceManagementConfig,
     class: BuildClass,
 ) -> BuildAdmission {
-    build_admission_for_source(dir, cfg, class, dir.parent().unwrap_or(dir))
+    build_admission_for_source(dir, cfg, class, dir.parent().unwrap_or(dir), None)
 }
 
 pub fn build_admission_for_source(
@@ -717,6 +717,7 @@ pub fn build_admission_for_source(
     cfg: &ResourceManagementConfig,
     class: BuildClass,
     source_root: &Path,
+    controlled_command: Option<&str>,
 ) -> BuildAdmission {
     if !cfg.disk_sentinel_enabled || !class.is_build_capable() {
         return BuildAdmission {
@@ -729,8 +730,11 @@ pub fn build_admission_for_source(
     }
     let (level, reason, mounts) = current_admission(dir, cfg);
     let high_water = load_high_water(dir);
-    let cold_baseline =
-        !crate::target_cache::has_ready_baseline(&target_cache_root(dir, cfg), source_root);
+    let cold_baseline = !crate::target_cache::has_ready_baseline(
+        &target_cache_root(dir, cfg),
+        source_root,
+        controlled_command,
+    );
     let candidate = projection_for_class(cfg, &high_water, class, cold_baseline);
     if level.blocks_builds() {
         return BuildAdmission {
@@ -754,10 +758,10 @@ pub fn build_admission_for_source(
                 .and_then(|graph| graph.get_task(&agent.task_id))
                 .map(classify_task)
                 .unwrap_or(BuildClass::BuildCapable)
-                .is_heavy()
+                .is_build_capable()
         })
         .count();
-    if cold_baseline && class.is_heavy() && live_cold_builders > 0 {
+    if cold_baseline && class.is_build_capable() && live_cold_builders > 0 {
         return BuildAdmission {
             allowed: false,
             candidate_bytes: candidate,
@@ -813,7 +817,7 @@ pub fn build_admission_reclaiming_owned(
     cfg: &ResourceManagementConfig,
     class: BuildClass,
 ) -> BuildAdmission {
-    build_admission_reclaiming_owned_for_source(dir, cfg, class, dir.parent().unwrap_or(dir))
+    build_admission_reclaiming_owned_for_source(dir, cfg, class, dir.parent().unwrap_or(dir), None)
 }
 
 pub fn build_admission_reclaiming_owned_for_source(
@@ -821,10 +825,15 @@ pub fn build_admission_reclaiming_owned_for_source(
     cfg: &ResourceManagementConfig,
     class: BuildClass,
     source_root: &Path,
+    controlled_command: Option<&str>,
 ) -> BuildAdmission {
-    let first = build_admission_for_source(dir, cfg, class, source_root);
-    let cold_baseline = class.is_heavy()
-        && !crate::target_cache::has_ready_baseline(&target_cache_root(dir, cfg), source_root);
+    let first = build_admission_for_source(dir, cfg, class, source_root, controlled_command);
+    let cold_baseline = class.is_build_capable()
+        && !crate::target_cache::has_ready_baseline(
+            &target_cache_root(dir, cfg),
+            source_root,
+            controlled_command,
+        );
     if first.allowed && !cold_baseline {
         return first;
     }
@@ -850,7 +859,7 @@ pub fn build_admission_reclaiming_owned_for_source(
         );
     }
     if reclaimed || cold_baseline {
-        build_admission_for_source(dir, cfg, class, source_root)
+        build_admission_for_source(dir, cfg, class, source_root, controlled_command)
     } else {
         first
     }
@@ -2003,7 +2012,7 @@ pub fn target_cache_root(dir: &Path, cfg: &ResourceManagementConfig) -> PathBuf 
 }
 
 /// Resolve the project-keyed scratch namespace so identical agent IDs in two
-/// graphs can never own or mutate the same global `/tmp` directory.
+/// graphs can never own or mutate the same configured absolute root.
 pub fn build_tmp_path_for_agent(
     dir: &Path,
     cfg: &ResourceManagementConfig,
@@ -2014,10 +2023,11 @@ pub fn build_tmp_path_for_agent(
 
 fn build_tmp_root(dir: &Path, cfg: &ResourceManagementConfig) -> PathBuf {
     let project = dir.parent().unwrap_or(dir);
+    let project_key = project_cache_digest(project);
     if let Some(root) = cfg.build_tmp_root.as_deref() {
         let root = PathBuf::from(root);
         return if root.is_absolute() {
-            root
+            root.join(project_key)
         } else {
             project.join(root)
         };
@@ -2025,7 +2035,7 @@ fn build_tmp_root(dir: &Path, cfg: &ResourceManagementConfig) -> PathBuf {
     std::env::temp_dir()
         .join("wg")
         .join("build-tmp")
-        .join(project_cache_digest(project))
+        .join(project_key)
 }
 
 /// Create one private target layer, seeded with hard links from the immutable
@@ -2035,9 +2045,11 @@ pub fn prepare_target_for_agent(
     cfg: &ResourceManagementConfig,
     source_root: &Path,
     agent_id: &str,
+    controlled_command: Option<&str>,
 ) -> Result<PathBuf> {
     let root = target_cache_root(dir, cfg);
-    crate::target_cache::prepare_layer(&root, source_root, agent_id).map(|layer| layer.path)
+    crate::target_cache::prepare_layer(&root, source_root, agent_id, controlled_command)
+        .map(|layer| layer.path)
 }
 
 #[cfg(test)]
@@ -2067,6 +2079,24 @@ mod tests {
         let a = build_tmp_path_for_agent(&first_dir, &cfg, "agent-1");
         let b = build_tmp_path_for_agent(&second_dir, &cfg, "agent-1");
         assert_ne!(a, b);
+        assert_eq!(a.file_name().unwrap(), "agent-1");
+        assert_eq!(b.file_name().unwrap(), "agent-1");
+    }
+
+    #[test]
+    fn configured_absolute_build_scratch_is_project_keyed_before_agent_id() {
+        let first = TempDir::new().unwrap();
+        let second = TempDir::new().unwrap();
+        let shared = TempDir::new().unwrap();
+        let cfg = ResourceManagementConfig {
+            build_tmp_root: Some(shared.path().display().to_string()),
+            ..Default::default()
+        };
+        let a = build_tmp_path_for_agent(&first.path().join(".wg"), &cfg, "agent-1");
+        let b = build_tmp_path_for_agent(&second.path().join(".wg"), &cfg, "agent-1");
+        assert_ne!(a, b);
+        assert_eq!(a.parent().unwrap().parent().unwrap(), shared.path());
+        assert_eq!(b.parent().unwrap().parent().unwrap(), shared.path());
         assert_eq!(a.file_name().unwrap(), "agent-1");
         assert_eq!(b.file_name().unwrap(), "agent-1");
     }
@@ -2234,14 +2264,14 @@ mod tests {
     }
 
     #[test]
-    fn second_heavy_worker_waits_while_exact_baseline_is_cold() {
+    fn second_ordinary_build_capable_worker_waits_while_exact_baseline_is_cold() {
         let root = TempDir::new().unwrap();
         let dir = root.path().join(".wg");
         fs::create_dir_all(&dir).unwrap();
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(Task {
             id: "cold-builder".into(),
-            title: "cargo test cold baseline".into(),
+            title: "ordinary source implementation".into(),
             status: Status::InProgress,
             ..Default::default()
         }));
@@ -2275,7 +2305,13 @@ mod tests {
             build_link_test_safety_bytes: 0,
             ..Default::default()
         };
-        let admission = build_admission_for_source(&dir, &cfg, BuildClass::BuildHeavy, root.path());
+        let admission = build_admission_for_source(
+            &dir,
+            &cfg,
+            BuildClass::BuildCapable,
+            root.path(),
+            Some("cargo check"),
+        );
         assert!(!admission.allowed);
         assert!(admission.reason.contains("single baseline builder"));
     }
@@ -2284,6 +2320,7 @@ mod tests {
     fn cold_baseline_reserve_is_charged_once_before_private_delta_mode() {
         const GIB: u64 = 1024 * 1024 * 1024;
         let cfg = ResourceManagementConfig {
+            estimated_build_bytes: 4 * GIB,
             estimated_build_heavy_bytes: 16 * GIB,
             estimated_cargo_baseline_bytes: 64 * GIB,
             build_link_test_safety_bytes: 4 * GIB,
@@ -2291,8 +2328,8 @@ mod tests {
         };
         let high_water = BuildHighWater {
             schema: HIGH_WATER_SCHEMA,
+            build_capable_delta_bytes: 3 * GIB,
             build_heavy_delta_bytes: 12 * GIB,
-            ..Default::default()
         };
         assert_eq!(
             projection_for_class(&cfg, &high_water, BuildClass::BuildHeavy, true),
@@ -2301,6 +2338,14 @@ mod tests {
         assert_eq!(
             projection_for_class(&cfg, &high_water, BuildClass::BuildHeavy, false),
             20 * GIB
+        );
+        assert_eq!(
+            projection_for_class(&cfg, &high_water, BuildClass::BuildCapable, true),
+            68 * GIB
+        );
+        assert_eq!(
+            projection_for_class(&cfg, &high_water, BuildClass::BuildCapable, false),
+            8 * GIB
         );
     }
 

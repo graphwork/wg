@@ -18,7 +18,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const CACHE_SCHEMA: u32 = 2;
+const CACHE_SCHEMA: u32 = 3;
 const LAYER_MANIFEST: &str = ".wg-target-layer.json";
 const LAYER_OWNED: &str = ".wg-owned-layer";
 const BASELINE_MANIFEST: &str = ".wg-target-baseline.json";
@@ -37,6 +37,14 @@ pub struct TargetCacheKey {
     pub features: String,
     pub profile: String,
     pub flags: String,
+    /// The complete WG-controlled shell command, when it is known exactly.
+    /// This intentionally over-invalidates: two byte-different commands never
+    /// claim an exact shared baseline even if Cargo would treat them alike.
+    pub command_identity: String,
+    /// False when WG launches an interactive agent and therefore cannot know
+    /// which Cargo invocation it will choose. Such a layer is attempt-isolated
+    /// and can neither consume nor publish a shared baseline.
+    pub baseline_reusable: bool,
 }
 
 impl TargetCacheKey {
@@ -104,6 +112,143 @@ fn hash_file(path: &Path) -> String {
         .unwrap_or_else(|_| "missing".to_string())
 }
 
+/// Extract the exact build-like Cargo segments from a WG-controlled shell
+/// command. Non-build bookkeeping after `;`/`&&` is deliberately excluded,
+/// while every byte in each Cargo segment (including inline environment,
+/// profile/target/features/rustflags/config arguments) remains identity input.
+/// Dynamic shell expansion fails closed because WG cannot know its value before
+/// launch. This is a namespace extractor, not an attempt to emulate Cargo CLI.
+pub fn controlled_cargo_command(shell_command: &str) -> Option<String> {
+    let mut segments = Vec::new();
+    let mut current = String::new();
+    let mut quote = None;
+    let mut escaped = false;
+    let chars = shell_command.chars().collect::<Vec<_>>();
+    let mut index = 0;
+    while index < chars.len() {
+        let ch = chars[index];
+        if escaped {
+            current.push(ch);
+            escaped = false;
+            index += 1;
+            continue;
+        }
+        if ch == '\\' && quote != Some('\'') {
+            current.push(ch);
+            escaped = true;
+            index += 1;
+            continue;
+        }
+        if matches!(ch, '\'' | '"') {
+            if quote == Some(ch) {
+                quote = None;
+            } else if quote.is_none() {
+                quote = Some(ch);
+            }
+            current.push(ch);
+            index += 1;
+            continue;
+        }
+        let operator = quote.is_none()
+            && (matches!(ch, ';' | '\n')
+                || (matches!(ch, '&' | '|') && chars.get(index + 1) == Some(&ch)));
+        if operator {
+            if !current.trim().is_empty() {
+                segments.push(current.trim().to_string());
+            }
+            current.clear();
+            index += usize::from(matches!(ch, '&' | '|')) + 1;
+            continue;
+        }
+        current.push(ch);
+        index += 1;
+    }
+    if quote.is_some() || escaped {
+        return None;
+    }
+    if !current.trim().is_empty() {
+        segments.push(current.trim().to_string());
+    }
+
+    let mut build_segments = Vec::new();
+    for segment in segments {
+        let words = segment
+            .split_ascii_whitespace()
+            .map(|word| word.trim_matches(|ch: char| matches!(ch, '(' | ')' | '\'' | '"')))
+            .collect::<Vec<_>>();
+        let is_build = words.iter().enumerate().any(|(index, word)| {
+            *word == "cargo"
+                && words[index + 1..].iter().any(|candidate| {
+                    matches!(*candidate, "build" | "check" | "test" | "clippy" | "doc")
+                })
+        });
+        if is_build {
+            if segment.contains('$') || segment.contains('`') {
+                return None;
+            }
+            build_segments.push(segment);
+        }
+    }
+    (!build_segments.is_empty()).then(|| build_segments.join("\n&&\n"))
+}
+
+fn hash_controlled_command_files(
+    source_root: &Path,
+    controlled_command: Option<&str>,
+    base_inputs: &str,
+) -> String {
+    let Some(command) = controlled_command else {
+        return base_inputs.to_string();
+    };
+    let words = command
+        .split_ascii_whitespace()
+        .map(|word| word.trim_matches(|ch: char| matches!(ch, '\'' | '"')))
+        .collect::<Vec<_>>();
+    let mut referenced = Vec::new();
+    let mut index = 0;
+    while index < words.len() {
+        let word = words[index];
+        let inline = ["--config=", "--manifest-path=", "--target="]
+            .into_iter()
+            .find_map(|prefix| word.strip_prefix(prefix));
+        let separate = matches!(word, "--config" | "--manifest-path" | "--target")
+            .then(|| words.get(index + 1).copied())
+            .flatten();
+        if let Some(value) = inline.or(separate) {
+            let path = PathBuf::from(value);
+            let path = if path.is_absolute() {
+                path
+            } else {
+                source_root.join(path)
+            };
+            // `--config key=value` and named target triples are fully captured
+            // by the command bytes. Existing paths additionally bind content,
+            // closing same-path config/manifest/JSON-target mutation.
+            if path.is_file() {
+                referenced.push(path);
+            }
+        }
+        if separate.is_some() {
+            index += 1;
+        }
+        index += 1;
+    }
+    referenced.sort();
+    referenced.dedup();
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(base_inputs.as_bytes());
+    for path in referenced {
+        hasher.update(b"\0command-file\0");
+        hasher.update(path.to_string_lossy().as_bytes());
+        hasher.update(b"\0");
+        match fs::read(path) {
+            Ok(bytes) => hasher.update(&bytes),
+            Err(_) => hasher.update(b"<unreadable>"),
+        };
+    }
+    hasher.finalize().to_hex().to_string()
+}
+
 fn hash_cargo_inputs(source_root: &Path) -> String {
     let mut paths = command_stdout(source_root, "git", &["ls-files", "*Cargo.toml"])
         .unwrap_or_default()
@@ -151,10 +296,21 @@ fn hash_cargo_inputs(source_root: &Path) -> String {
     hasher.finalize().to_hex().to_string()
 }
 
-/// Compute the immutable warm-layer namespace. Cargo itself still validates
-/// fine-grained fingerprints; this outer key prevents reuse across all inputs
-/// which can change artifact semantics.
-pub fn compute_key(source_root: &Path) -> TargetCacheKey {
+/// Compute a target namespace under WG's honest command-identity contract.
+///
+/// `controlled_command` is present only when WG will execute those exact shell
+/// bytes (currently an explicit shell task). The complete command captures
+/// profile/release, target, feature switches, inline rustflags, and `--config`
+/// arguments without pretending that a partial parser is Cargo. Workspace,
+/// Cargo-home configuration and ambient rustflags are hashed separately below.
+/// When the command is unavailable, `isolation_id` makes a private namespace
+/// and `baseline_reusable=false` prevents both baseline consumption and
+/// promotion. Unknown command identity therefore fails closed, never "exact".
+pub fn compute_key(
+    source_root: &Path,
+    controlled_command: Option<&str>,
+    isolation_id: &str,
+) -> TargetCacheKey {
     let rustc = command_stdout(source_root, "rustc", &["--version", "--verbose"])
         .unwrap_or_else(|| "rustc-unavailable".to_string());
     let target_triple = std::env::var("CARGO_BUILD_TARGET")
@@ -197,16 +353,27 @@ pub fn compute_key(source_root: &Path) -> TargetCacheKey {
     }
     flag_values.sort();
     let flags = flag_values.join("\n");
+    let (command_identity, baseline_reusable) = match controlled_command {
+        Some(command) if !command.trim().is_empty() => (command.to_string(), true),
+        _ => (format!("unknown-isolated:{isolation_id}"), false),
+    };
+    let cargo_inputs = hash_controlled_command_files(
+        source_root,
+        baseline_reusable.then_some(command_identity.as_str()),
+        &hash_cargo_inputs(source_root),
+    );
     TargetCacheKey {
         schema: CACHE_SCHEMA,
         source_baseline,
         cargo_lock: hash_file(&source_root.join("Cargo.lock")),
-        cargo_inputs: hash_cargo_inputs(source_root),
+        cargo_inputs,
         rustc,
         target_triple,
         features,
         profile,
         flags,
+        command_identity,
+        baseline_reusable,
     }
 }
 
@@ -249,14 +416,26 @@ fn target_has_artifacts(target: &Path) -> bool {
 /// Whether the exact current build key already has a published immutable
 /// baseline. `READY` is written last, so this lock-free admission read can only
 /// return false during an in-progress promotion, never observe a partial true.
-pub fn has_ready_baseline(cache_root: &Path, source_root: &Path) -> bool {
-    let key = compute_key(source_root);
-    baseline_is_ready(&baseline_dir(cache_root, &key.digest()), &key)
+pub fn has_ready_baseline(
+    cache_root: &Path,
+    source_root: &Path,
+    controlled_command: Option<&str>,
+) -> bool {
+    let Some(command) = controlled_command.filter(|command| !command.trim().is_empty()) else {
+        return false;
+    };
+    let key = compute_key(source_root, Some(command), "admission");
+    key.baseline_reusable && baseline_is_ready(&baseline_dir(cache_root, &key.digest()), &key)
 }
 
 /// Prepare one private writable target. No mutable directory is shared.
-pub fn prepare_layer(cache_root: &Path, source_root: &Path, agent_id: &str) -> Result<TargetLayer> {
-    let key = compute_key(source_root);
+pub fn prepare_layer(
+    cache_root: &Path,
+    source_root: &Path,
+    agent_id: &str,
+    controlled_command: Option<&str>,
+) -> Result<TargetLayer> {
+    let key = compute_key(source_root, controlled_command, agent_id);
     prepare_layer_with_key(cache_root, source_root, agent_id, key)
 }
 
@@ -290,7 +469,7 @@ fn prepare_layer_with_key(
     let prepared = (|| -> Result<TargetLayer> {
         let baseline = baseline_dir(cache_root, &digest);
         let baseline_target = baseline.join("target");
-        let baseline_path = if baseline_is_ready(&baseline, &key) {
+        let baseline_path = if key.baseline_reusable && baseline_is_ready(&baseline, &key) {
             hardlink_tree(&baseline_target, &target)?;
             Some(baseline_target)
         } else {
@@ -420,13 +599,17 @@ pub fn promote_layer(target: &Path) -> Result<bool> {
     let manifest = validated_layer_manifest(target)
         .ok_or_else(|| anyhow!("invalid target layer manifest/layout: {}", target.display()))?;
     let source_root = PathBuf::from(&manifest.source_root);
-    if source_is_dirty(&source_root) {
+    if !manifest.key.baseline_reusable || source_is_dirty(&source_root) {
         return Ok(false);
     }
     // Publish only the exact key used to prepare the layer. A commit after the
     // last successful build may make the source clean while changing its tree;
     // promoting those old outputs under the new key would poison the baseline.
-    let current_key = compute_key(&source_root);
+    let current_key = compute_key(
+        &source_root,
+        Some(&manifest.key.command_identity),
+        "promotion",
+    );
     if current_key != manifest.key {
         return Ok(false);
     }
@@ -448,7 +631,7 @@ fn source_is_dirty(source_root: &Path) -> bool {
 }
 
 fn promote_layer_validated(target: &Path, key: &TargetCacheKey) -> Result<bool> {
-    if !target_has_artifacts(target) {
+    if !key.baseline_reusable || !target_has_artifacts(target) {
         return Ok(false);
     }
     let digest = key.digest();
@@ -743,6 +926,8 @@ mod tests {
             features: "default".into(),
             profile: "test".into(),
             flags: "incremental=0".into(),
+            command_identity: "cargo test --locked".into(),
+            baseline_reusable: true,
         }
     }
 
@@ -897,7 +1082,8 @@ mod tests {
             .current_dir(&source)
             .status()
             .unwrap();
-        let layer = prepare_layer(temp.path(), &source, "agent").unwrap();
+        let layer =
+            prepare_layer(temp.path(), &source, "agent", Some("cargo test --locked")).unwrap();
         fs::write(layer.path.join("artifact"), "built-before-change").unwrap();
         fs::write(
             source.join("Cargo.toml"),
@@ -992,10 +1178,78 @@ mod tests {
         changed!(features, "telegram");
         changed!(profile, "test-full-debug");
         changed!(flags, "RUSTFLAGS=-Ctarget-cpu=native");
+        changed!(command_identity, "cargo test --release");
         assert!(
             variants
                 .iter()
                 .all(|variant| variant.digest() != original.digest())
         );
+    }
+
+    #[test]
+    fn controlled_command_extracts_build_inputs_and_rejects_dynamic_identity() {
+        assert_eq!(
+            controlled_cargo_command(
+                "printf prep > src/generated.rs && RUSTFLAGS='-C target-cpu=native' cargo build --release --target aarch64-unknown-linux-gnu --features x --config net.offline=true; touch /tmp/done"
+            )
+            .as_deref(),
+            Some("RUSTFLAGS='-C target-cpu=native' cargo build --release --target aarch64-unknown-linux-gnu --features x --config net.offline=true")
+        );
+        assert!(controlled_cargo_command("cargo build --features $FEATURES").is_none());
+        assert!(controlled_cargo_command("echo no-build").is_none());
+    }
+
+    #[test]
+    fn exact_command_identity_separates_profile_target_features_rustflags_and_config() {
+        let temp = TempDir::new().unwrap();
+        let source = temp.path().join("source");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("Cargo.toml"), "[workspace]\n").unwrap();
+        let commands = [
+            "cargo test",
+            "cargo test --release",
+            "cargo test --target aarch64-unknown-linux-gnu",
+            "cargo test --features telegram",
+            "cargo test --no-default-features",
+            "cargo test --all-features",
+            "RUSTFLAGS='-C target-cpu=native' cargo test",
+            "cargo --config net.offline=true test",
+        ];
+        let digests = commands
+            .map(|command| compute_key(&source, Some(command), "unused").digest())
+            .into_iter()
+            .collect::<HashSet<_>>();
+        assert_eq!(digests.len(), commands.len());
+
+        fs::write(source.join("extra-config.toml"), "[net]\noffline=true\n").unwrap();
+        let before = compute_key(
+            &source,
+            Some("cargo --config extra-config.toml test"),
+            "unused",
+        );
+        fs::write(source.join("extra-config.toml"), "[net]\noffline=false\n").unwrap();
+        let after = compute_key(
+            &source,
+            Some("cargo --config extra-config.toml test"),
+            "unused",
+        );
+        assert_ne!(before.digest(), after.digest());
+    }
+
+    #[test]
+    fn unknown_command_identity_is_attempt_isolated_and_never_reusable() {
+        let temp = TempDir::new().unwrap();
+        let source = temp.path().join("source");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("Cargo.toml"), "[workspace]\n").unwrap();
+        let left = compute_key(&source, None, "agent-left");
+        let right = compute_key(&source, None, "agent-right");
+        assert!(!left.baseline_reusable);
+        assert!(!right.baseline_reusable);
+        assert_ne!(left.digest(), right.digest());
+
+        let layer = prepare_layer_with_key(temp.path(), &source, "agent", left).unwrap();
+        fs::write(layer.path.join("artifact"), "private").unwrap();
+        assert!(!promote_layer_validated(&layer.path, &layer.key).unwrap());
     }
 }

@@ -41,16 +41,51 @@ const WORKTREE_RECLAIM_FILE: &str = "worktree-spawn-reclaims-v1.json";
 struct UnpublishedCachePath {
     path: PathBuf,
     cache_root: Option<PathBuf>,
+    /// Construction is the proof that this exact leaf was newly created by
+    /// this attempt. There is intentionally no constructor for an arbitrary
+    /// pre-existing path.
+    newly_created: bool,
     published: bool,
 }
 
 impl UnpublishedCachePath {
-    fn new(path: PathBuf, cache_root: Option<PathBuf>) -> Self {
+    /// The target-cache preparation API returns only after creating a fresh
+    /// leaf (and itself removes partial failures), so ownership can be guarded
+    /// immediately at the return boundary.
+    fn from_prepared_target(path: PathBuf, cache_root: PathBuf) -> Self {
         Self {
             path,
-            cache_root,
+            cache_root: Some(cache_root),
+            newly_created: true,
             published: false,
         }
+    }
+
+    /// Create the exact scratch leaf without ever adopting an existing path.
+    /// Parent creation conveys no deletion authority; Drop removes only `path`.
+    fn create_scratch(path: PathBuf) -> Result<Self> {
+        let parent = path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("build scratch has no parent: {}", path.display()))?;
+        fs::create_dir_all(parent).with_context(|| {
+            format!("Failed to create build scratch parent {}", parent.display())
+        })?;
+        fs::create_dir(&path).with_context(|| {
+            format!(
+                "Failed to create fresh owned build scratch {}; an existing path is never adopted",
+                path.display()
+            )
+        })?;
+        Ok(Self {
+            path,
+            cache_root: None,
+            newly_created: true,
+            published: false,
+        })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
     }
 
     fn publish(&mut self) {
@@ -60,7 +95,7 @@ impl UnpublishedCachePath {
 
 impl Drop for UnpublishedCachePath {
     fn drop(&mut self) {
-        if !self.published {
+        if self.newly_created && !self.published {
             let _ = fs::remove_dir_all(&self.path);
             if let Some(cache_root) = self.cache_root.as_deref() {
                 worksgood::target_cache::prune_empty_layer_parents(cache_root, &self.path);
@@ -1316,6 +1351,13 @@ pub(crate) fn spawn_agent_inner_authorized(
     // class-specific check so it can skip builds and continue evaluators, but
     // process creation repeats it under the registry lock below to close races.
     let build_class = worksgood::disk_sentinel::classify_task(task);
+    // Only an explicit shell task gives WG exact command bytes. Interactive
+    // agents can choose arbitrary Cargo flags later and therefore receive an
+    // attempt-isolated, non-promotable target namespace.
+    let controlled_cargo_command = (resolved_executor_name == "shell")
+        .then_some(task.exec.as_deref())
+        .flatten()
+        .and_then(worksgood::target_cache::controlled_cargo_command);
 
     // Load agent registry with lock for concurrent safety.
     // The lock is held until save() to prevent two concurrent spawns from
@@ -1342,6 +1384,7 @@ pub(crate) fn spawn_agent_inner_authorized(
             &config.coordinator.resource_management,
             build_class,
             &admission_source,
+            controlled_cargo_command.as_deref(),
         );
         if !admission.allowed {
             return Err(worksgood::disk_sentinel::AdmissionDeferral::new(format!(
@@ -1461,54 +1504,54 @@ pub(crate) fn spawn_agent_inner_authorized(
     };
     vars.in_worktree = worktree_info.is_some();
 
-    let owned_target_path = if build_class.is_build_capable() {
+    let mut target_publish_guard = if build_class.is_build_capable() {
         let source_root = worktree_info
             .as_ref()
             .map(|worktree| worktree.path.as_path())
             .unwrap_or(project_root);
-        Some(
-            worksgood::disk_sentinel::prepare_target_for_agent(
-                dir,
-                &config.coordinator.resource_management,
-                source_root,
-                &temp_agent_id,
-            )
-            .with_context(|| {
-                format!(
-                    "Failed to prepare copy-on-write Cargo target for {}",
-                    temp_agent_id
-                )
-            })?,
-        )
-    } else {
-        None
-    };
-    let owned_tmp_path = if build_class.is_build_capable() {
-        Some(worksgood::disk_sentinel::build_tmp_path_for_agent(
+        let path = worksgood::disk_sentinel::prepare_target_for_agent(
             dir,
             &config.coordinator.resource_management,
+            source_root,
             &temp_agent_id,
+            controlled_cargo_command.as_deref(),
+        )
+        .with_context(|| {
+            format!(
+                "Failed to prepare copy-on-write Cargo target for {}",
+                temp_agent_id
+            )
+        })?;
+        // Install rollback authority before the next fallible operation.
+        Some(UnpublishedCachePath::from_prepared_target(
+            path,
+            worksgood::disk_sentinel::target_cache_root(
+                dir,
+                &config.coordinator.resource_management,
+            ),
         ))
     } else {
         None
     };
-    if let Some(path) = owned_tmp_path.as_ref() {
-        fs::create_dir_all(path)
-            .with_context(|| format!("Failed to create owned build scratch {}", path.display()))?;
-    }
-    let mut target_publish_guard = owned_target_path.as_ref().cloned().map(|path| {
-        UnpublishedCachePath::new(
-            path,
-            Some(worksgood::disk_sentinel::target_cache_root(
-                dir,
-                &config.coordinator.resource_management,
-            )),
-        )
-    });
-    let mut tmp_publish_guard = owned_tmp_path
+    let owned_target_path = target_publish_guard
         .as_ref()
-        .cloned()
-        .map(|path| UnpublishedCachePath::new(path, None));
+        .map(|guard| guard.path().to_path_buf());
+    spawn_fault("target-prepared-before-tmp")?;
+    let mut tmp_publish_guard = if build_class.is_build_capable() {
+        let path = worksgood::disk_sentinel::build_tmp_path_for_agent(
+            dir,
+            &config.coordinator.resource_management,
+            &temp_agent_id,
+        );
+        // `create_scratch` refuses pre-existing paths and constructs its guard
+        // at the same boundary as leaf creation.
+        Some(UnpublishedCachePath::create_scratch(path)?)
+    } else {
+        None
+    };
+    let owned_tmp_path = tmp_publish_guard
+        .as_ref()
+        .map(|guard| guard.path().to_path_buf());
 
     // Apply templates to executor settings (with effective model in vars)
     let mut settings = executor_config.apply_templates(&vars);
@@ -4323,7 +4366,9 @@ fn handle_cost_cap_violation(
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use worksgood::config::{CLAUDE_FABLE_MODEL_ID, CLAUDE_OPUS_MODEL_ID};
+    use worksgood::config::{
+        CLAUDE_FABLE_MODEL_ID, CLAUDE_OPUS_MODEL_ID, ResourceManagementConfig,
+    };
     use worksgood::graph::{Node, Task, WorkGraph};
     use worksgood::parser::{load_graph, save_graph};
     use worksgood::service::registry::{AgentRegistry, AgentStatus};
@@ -7240,6 +7285,7 @@ esac
         let _global = GlobalConfigGuard::isolated();
         for boundary in [
             "workspace-prepared",
+            "target-prepared-before-tmp",
             "claim",
             "wrapper-spawned",
             "registry-saved",
@@ -7273,6 +7319,19 @@ esac
                     .caches
                     .is_empty(),
                 "boundary={boundary}"
+            );
+            let cache_root = worksgood::disk_sentinel::target_cache_root(
+                &dir,
+                &ResourceManagementConfig::default(),
+            );
+            assert!(
+                worksgood::target_cache::existing_layer_keys(&cache_root, 16).is_empty()
+                    && !walkdir::WalkDir::new(cache_root.join("layers"))
+                        .follow_links(false)
+                        .into_iter()
+                        .filter_map(|entry| entry.ok())
+                        .any(|entry| entry.file_type().is_dir() && entry.file_name() == "target"),
+                "boundary={boundary}: unregistered target survived rollback"
             );
             assert!(
                 fs::read_dir(dir.join("agents"))
@@ -7312,6 +7371,26 @@ esac
                 );
             }
         }
+    }
+
+    #[test]
+    fn scratch_creation_refuses_and_preserves_a_preexisting_path_byte_identically() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp.path().join("graph-key/agent-1");
+        fs::create_dir_all(&path).unwrap();
+        fs::write(path.join("valuable"), b"pre-existing bytes\n").unwrap();
+        let before = fs::read(path.join("valuable")).unwrap();
+
+        assert!(UnpublishedCachePath::create_scratch(path.clone()).is_err());
+        assert_eq!(fs::read(path.join("valuable")).unwrap(), before);
+
+        let fresh = temp.path().join("graph-key/agent-2");
+        {
+            let _guard = UnpublishedCachePath::create_scratch(fresh.clone()).unwrap();
+            assert!(fresh.is_dir());
+        }
+        assert!(!fresh.exists(), "only the proven-new leaf is rolled back");
+        assert_eq!(fs::read(path.join("valuable")).unwrap(), before);
     }
 
     #[test]

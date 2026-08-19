@@ -3120,8 +3120,8 @@ timeout_seconds = 30
 [[scenario]]
 name = "bounded_worktree_build_storage"
 script = "scenarios/bounded_worktree_build_storage.sh"
-owners = ["land-bounded-worktree-build-storage"]
-description = "Candidate-binary credential-free real-daemon storage regression: a clean warm Cargo worker publishes one exact-key immutable baseline, then three isolated workers overlap (one repeated no-change and two build-input-divergent builds); inode/block accounting reports logical and distinct physical bytes and proves one baseline plus bounded private deltas, outputs cannot mutate the baseline or each other, registered artifacts and dirty source survive, and daemon restart after worker exit automatically reaps/compacts exact terminal layer leases idempotently."
+owners = ["land-bounded-worktree-build-storage", "harden-bounded-worktree-build-storage"]
+description = "Candidate-binary credential-free real-daemon storage regression: a clean warm Cargo worker publishes one exact-command immutable baseline, then three isolated same-invocation workers overlap (one repeated no-change and two dirty-source-divergent builds); inode/block accounting reports logical and distinct physical bytes and proves one baseline plus bounded private deltas, outputs cannot mutate the baseline or each other, registered artifacts and dirty source survive, and daemon restart after worker exit automatically reaps/compacts exact terminal layer leases idempotently."
 timeout_seconds = 240
 
 [[scenario]]

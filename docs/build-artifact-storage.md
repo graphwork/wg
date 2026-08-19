@@ -16,8 +16,17 @@ ${cargo_target_root:-$XDG_CACHE_HOME/wg/build-targets/<project-key>}/
 The build key includes the committed source tree, `Cargo.lock`, workspace Cargo
 manifests, Cargo configuration, Rust toolchain files, full `rustc --version
 --verbose`, target triple, declared features/profile, and relevant Rust/Cargo
-flags. Cargo fingerprints remain a second fine-grained validation layer. Dirty
-source may consume a compatible baseline, but it is never promoted. Promotion
+flags. Its command namespace has an explicit honesty boundary: WG extracts the
+complete build-like Cargo segment only for an explicit shell task whose command
+bytes it controls. The segment retains inline environment and all profile /
+release, target, feature, rustflag and `--config` arguments; byte-different
+segments cannot claim one exact baseline. Dynamic shell expansion or an
+interactive agent has unknown command identity and therefore receives an
+attempt-isolated, non-reusable layer that can neither consume nor publish a
+baseline. It never falls back to a partially keyed “exact” baseline.
+
+Cargo fingerprints remain a second fine-grained validation layer. Dirty source
+may consume a compatible exact baseline, but it is never promoted. Promotion
 also requires the launch key to equal the current clean key, so a commit after a
 stale build cannot publish old outputs under a new key.
 
@@ -51,8 +60,10 @@ Predictive build admission is enabled for new configurations. Operators may set
 `disk_sentinel_enabled = false` only as a visible emergency override; config
 lint labels the override and prints the command that restores the safe default.
 Admission runs before workspace/attempt creation and reserves measured physical
-private deltas plus final-link safety. The immutable baseline is already charged
-once by filesystem free-space measurement and is not reserved again per worker.
+private deltas plus final-link safety. Every build-capable class (not only tasks
+classified build-heavy) reserves and serializes creation of a missing cold
+baseline. Once published, the immutable baseline is already charged by
+filesystem free-space measurement and is not reserved again per worker.
 
 Build high-water schema 2 stores only per-attempt private deltas. Legacy schema
 values measured complete duplicated trees (including historical 70–95 GiB
@@ -65,7 +76,11 @@ from spending the same headroom.
 ## Lease and cleanup lifecycle
 
 `.wg/service/disk/owned-caches.json` remains the sole attempt-layer and scratch
-lease authority. `done`, `fail`, `wait`, incomplete/completion-wait, and owner
+lease authority. Target and scratch rollback guards are installed at the exact
+leaf-creation boundary. A failed scratch preparation therefore reaps a target
+created by that attempt, but never adopts or removes a pre-existing path.
+Configured absolute scratch roots are project-keyed before the agent ID, so two
+graphs cannot collide merely because both allocated `agent-1`. `done`, `fail`, `wait`, incomplete/completion-wait, and owner
 loss make the exact lease reclaimable. Cleanup requires the exact PID identity
 to be gone/recycled, unchanged mount identity, no open file/cwd/root, and no
 registered artifact under the cache. Missing graph tasks, deleted worktrees,

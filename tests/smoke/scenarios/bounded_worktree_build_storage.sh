@@ -3,7 +3,21 @@
 set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/_helpers.sh"
-require_wg
+REPO_ROOT="$(cd "$HERE/../../.." && pwd)"
+WG_BIN="${WG_SMOKE_CANDIDATE_BIN:-${CARGO_TARGET_DIR:-$REPO_ROOT/target}/debug/wg}"
+[ -x "$WG_BIN" ] || loud_fail "fresh candidate wg binary is missing or not executable: $WG_BIN"
+candidate_sha=$(sha256sum "$WG_BIN" | cut -d' ' -f1)
+fakebin=$(mktemp -d "${TMPDIR:-/tmp}/wg-bounded-candidate.XXXXXX")
+register_scratch "$fakebin"
+ln -s "$WG_BIN" "$fakebin/wg"
+export PATH="$fakebin:$PATH"
+# The scenario creates its own graph/daemon and must not inherit the invoking
+# worker's fenced control-plane identity.
+unset WG_AGENT_ID WG_TASK_ID WG_WORKER_CAPABILITY WG_WORKER_CONTROL_PROTOCOL \
+  WG_WORKER_IPC WG_WORKER_CONTROL_MODE WG_WORKER_GENERATION WG_WORKER_ATTEMPT_ID \
+  WG_WORKER_ATTEMPT_FENCE WG_GRAPH_ID WG_SPAWN_RUN_ID WG_SPAWN_EPOCH || true
+[ "$(readlink -f "$(command -v wg)")" = "$(readlink -f "$WG_BIN")" ] \
+  || loud_fail "smoke PATH did not bind to candidate binary $WG_BIN"
 command -v cargo >/dev/null 2>&1 || loud_skip "NO CARGO" "cargo not on PATH"
 command -v python3 >/dev/null 2>&1 || loud_skip "NO PYTHON" "python3 required"
 command -v git >/dev/null 2>&1 || loud_skip "NO GIT" "git required"
@@ -83,6 +97,7 @@ estimated_cargo_baseline_bytes = 0
 build_link_test_safety_bytes = 0
 disk_scan_interval_seconds = 1
 owned_cache_lease_seconds = 3600
+max_build_agents = 3
 EOF
 
 start_wg_daemon "$project" --max-agents 3 --no-chat-agent --interval 1
@@ -131,8 +146,8 @@ for n in 1 2 3; do
   ready="$scratch/ready-$n"
   case "$n" in
     1) build_cmd="cargo build" ;;
-    2) build_cmd="cargo clean -p cow-smoke && WORKER_VARIANT=two cargo build" ;;
-    3) build_cmd="cargo clean -p cow-smoke && WORKER_VARIANT=three cargo build" ;;
+    2) build_cmd="printf 'fn main() { println!(\"2:{}\", base::answer()); }\\n' > src/main.rs && cargo clean -p cow-smoke && cargo build" ;;
+    3) build_cmd="printf 'fn main() { println!(\"3:{}\", base::answer()); }\\n' > src/main.rs && cargo clean -p cow-smoke && cargo build" ;;
   esac
   wg add "isolated cargo build worker $n" --id "cow-build-$n" \
     --exec "$build_cmd --quiet; sha256sum \"\$CARGO_TARGET_DIR/debug/cow-smoke\" > '$artifact'; wg artifact \"\$WG_TASK_ID\" '$artifact'; touch '$ready'; while [ ! -e '$scratch/release' ]; do sleep 0.1; done; wg wait \"\$WG_TASK_ID\" --until message --checkpoint 'storage fixture complete'" >/dev/null
@@ -143,7 +158,7 @@ for _ in $(seq 1 480); do
   sleep 0.25
 done
 [ -e "$scratch/ready-1" ] && [ -e "$scratch/ready-2" ] && [ -e "$scratch/ready-3" ] \
-  || loud_fail "three candidate build workers did not overlap: $(tail -120 .wg/service/daemon.log 2>&1)"
+  || loud_fail "three candidate build workers did not overlap: task=$(wg show cow-build-2 --json 2>&1); daemon=$(tail -120 .wg/service/daemon.log 2>&1)"
 sha256sum "$scratch"/result-*.sha > "$scratch/artifacts.before"
 
 python3 - "$project" "$baseline/target" "$scratch/metrics.json" <<'PY'
@@ -266,4 +281,4 @@ cmp -s "$scratch/artifacts.before" "$scratch/artifacts.after" \
   || loud_fail "divergent workers did not produce independent outputs"
 
 metrics=$(cat "$scratch/metrics.json")
-printf '%s\n' "PASS: candidate launched three isolated Cargo workers; logical/physical metrics=$metrics; one immutable baseline was reused, divergent outputs stayed private, and restart cleanup converged"
+printf '%s\n' "PASS: candidate=$WG_BIN sha256=$candidate_sha launched three isolated Cargo workers; logical/physical metrics=$metrics; one immutable baseline was reused, divergent outputs stayed private, and restart cleanup converged"

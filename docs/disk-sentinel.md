@@ -11,7 +11,7 @@ All keys live under `[dispatcher.resource_management]`:
 disk_sentinel_enabled = true
 disk_paths = ["/mnt/build", "/tmp"]
 cargo_target_root = "/mnt/build/wg"   # optional baseline/layer cache root
-build_tmp_root = "/tmp/wg-build"     # optional; default is project-keyed temp
+build_tmp_root = "/tmp/wg-build"     # optional; absolute roots still append a project key
 
 disk_warning_bytes = 17179869184      # 16 GiB
 disk_pause_build_bytes = 8589934592   # 8 GiB
