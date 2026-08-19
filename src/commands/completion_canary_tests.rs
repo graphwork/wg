@@ -325,7 +325,10 @@ fn ten_concurrent_attempts_use_one_immutable_review_and_done_authority() {
         "legacy_finalization_created": false,
         "legacy_save_transaction_created": false
     });
-    let evidence_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("target/worker-owned-completion-canary.json");
+    let target_root = std::env::var_os("CARGO_TARGET_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target"));
+    std::fs::create_dir_all(&target_root).unwrap();
+    let evidence_path = target_root.join("worker-owned-completion-canary.json");
     std::fs::write(evidence_path, serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();
 }
