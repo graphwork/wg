@@ -325,11 +325,24 @@ pub fn run_with_reviewers(
     }
     let config = Config::load_merged(dir)?;
     if config.agency.completion_review_strict {
+        let current_attempt_id = task
+            .lifecycle
+            .current_attempt
+            .as_ref()
+            .map(|attempt| attempt.id.as_str());
         let prior_attempts = task
             .completion_review_activity
             .iter()
             .filter(|activity| {
-                activity.reviewer_kind == ReviewerKind::Flip
+                // Budget is per source attempt: reviews recorded against a
+                // superseded generation/attempt (before an operator retry)
+                // must not exhaust the current attempt's model-review budget.
+                let foreign_attempt = activity.binding.as_ref().is_some_and(|binding| {
+                    binding.generation != task.lifecycle.generation
+                        || binding.attempt_id.as_deref() != current_attempt_id
+                });
+                !foreign_attempt
+                    && activity.reviewer_kind == ReviewerKind::Flip
                     && activity.requirements_digest == requirements_digest
             })
             .count() as u32;

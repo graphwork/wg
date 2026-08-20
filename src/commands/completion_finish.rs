@@ -111,16 +111,33 @@ pub fn run(dir: &Path, id: &str, integration_ref: &str) -> Result<()> {
             return super::completion_done::run(dir, id, integration_ref);
         }
 
+        let current_attempt_id = task
+            .lifecycle
+            .current_attempt
+            .as_ref()
+            .map(|attempt| attempt.id.as_str());
         let strict_rejections = task
             .completion_review_activity
             .iter()
             .filter(|activity| {
-                matches!(
-                    activity.verdict,
-                    worksgood::simple_land::ReviewVerdict::Reject
-                        | worksgood::simple_land::ReviewVerdict::Unavailable
-                        | worksgood::simple_land::ReviewVerdict::IncompleteEvidence
-                )
+                // The model-review attempt budget is per source attempt.
+                // Rejections recorded against a superseded generation or
+                // attempt (for example before an operator retry reopened
+                // the task) must not consume the current attempt's budget:
+                // that would park every later attempt forever. Rows without
+                // a binding stay counted (fail-closed for unattributable
+                // legacy activity).
+                let foreign_attempt = activity.binding.as_ref().is_some_and(|binding| {
+                    binding.generation != task.lifecycle.generation
+                        || binding.attempt_id.as_deref() != current_attempt_id
+                });
+                !foreign_attempt
+                    && matches!(
+                        activity.verdict,
+                        worksgood::simple_land::ReviewVerdict::Reject
+                            | worksgood::simple_land::ReviewVerdict::Unavailable
+                            | worksgood::simple_land::ReviewVerdict::IncompleteEvidence
+                    )
             })
             .count() as u32;
         if strict_rejections >= config.agency.gate_max_attempts.max(1) {
