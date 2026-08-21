@@ -160,7 +160,7 @@ for _ in $(seq 1 160); do
   [ "$status" = done ] && break
   sleep 0.25
 done
-[ "${status:-}" = done ] || loud_fail "warm exact command did not complete: $(wg show warm-cargo-build --json 2>&1)"
+[ "${status:-}" = done ] || loud_fail "warm exact command did not complete: $(wg show warm-cargo-build --json 2>&1); wrapper=$(tail -60 "$project/daemon.log" 2>&1); daemon=$(tail -120 "$project/.wg/service/daemon.log" 2>&1)"
 wg disk cleanup --execute --json > "$scratch/warm-cleanup.json"
 baseline=$(find "$cache/baselines" -mindepth 1 -maxdepth 1 -type d -print -quit 2>/dev/null || true)
 [ -n "$baseline" ] && [ -f "$baseline/READY" ] \
