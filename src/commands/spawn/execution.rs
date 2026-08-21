@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
@@ -34,6 +34,69 @@ use super::{
 const OUTPUT_RESERVATION_FILE: &str = ".spawn-reservation";
 const LAUNCH_GATE_FILE: &str = ".launch-permit";
 const WORKTREE_RECLAIM_FILE: &str = "worktree-spawn-reclaims-v1.json";
+const UNPUBLISHED_CACHE_OWNER_MARKER: &str = ".wg-unpublished-cache-owner";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FilesystemIdentity {
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+    #[cfg(windows)]
+    volume: Option<u32>,
+    #[cfg(windows)]
+    file_index: Option<u64>,
+    #[cfg(not(any(unix, windows)))]
+    modified: Option<std::time::SystemTime>,
+}
+
+#[cfg(unix)]
+fn filesystem_identity(path: &Path) -> Result<FilesystemIdentity> {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    let directory = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)
+        .with_context(|| format!("re-open owned cache identity {}", path.display()))?;
+    let metadata = directory.metadata()?;
+    Ok(FilesystemIdentity {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    })
+}
+
+#[cfg(windows)]
+fn filesystem_identity(path: &Path) -> Result<FilesystemIdentity> {
+    use std::os::windows::fs::MetadataExt;
+    let metadata = fs::symlink_metadata(path)
+        .with_context(|| format!("inspect owned cache identity {}", path.display()))?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        anyhow::bail!("owned cache is not a real directory: {}", path.display());
+    }
+    Ok(FilesystemIdentity {
+        volume: metadata.volume_serial_number(),
+        file_index: metadata.file_index(),
+    })
+}
+
+#[cfg(not(any(unix, windows)))]
+fn filesystem_identity(path: &Path) -> Result<FilesystemIdentity> {
+    let metadata = fs::symlink_metadata(path)
+        .with_context(|| format!("inspect owned cache identity {}", path.display()))?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        anyhow::bail!("owned cache is not a real directory: {}", path.display());
+    }
+    Ok(FilesystemIdentity {
+        modified: metadata.modified().ok(),
+    })
+}
+
+fn random_cache_token() -> Result<String> {
+    let mut bytes = [0u8; 32];
+    getrandom::getrandom(&mut bytes)
+        .map_err(|error| anyhow::anyhow!("CSPRNG unavailable for cache ownership: {error}"))?;
+    Ok(hex::encode(bytes))
+}
 
 /// Preparation is not durable ownership until the launch permit is published.
 /// Any earlier failure removes only the exact cache path created for this
@@ -41,10 +104,9 @@ const WORKTREE_RECLAIM_FILE: &str = "worktree-spawn-reclaims-v1.json";
 struct UnpublishedCachePath {
     path: PathBuf,
     cache_root: Option<PathBuf>,
-    /// Construction is the proof that this exact leaf was newly created by
-    /// this attempt. There is intentionally no constructor for an arbitrary
-    /// pre-existing path.
-    newly_created: bool,
+    parent_identity: FilesystemIdentity,
+    path_identity: FilesystemIdentity,
+    marker_token: String,
     published: bool,
 }
 
@@ -52,13 +114,8 @@ impl UnpublishedCachePath {
     /// The target-cache preparation API returns only after creating a fresh
     /// leaf (and itself removes partial failures), so ownership can be guarded
     /// immediately at the return boundary.
-    fn from_prepared_target(path: PathBuf, cache_root: PathBuf) -> Self {
-        Self {
-            path,
-            cache_root: Some(cache_root),
-            newly_created: true,
-            published: false,
-        }
+    fn from_prepared_target(path: PathBuf, cache_root: PathBuf) -> Result<Self> {
+        Self::claim(path, Some(cache_root))
     }
 
     /// Create the exact scratch leaf without ever adopting an existing path.
@@ -76,16 +133,100 @@ impl UnpublishedCachePath {
                 path.display()
             )
         })?;
+        Self::claim(path, None)
+    }
+
+    fn claim(path: PathBuf, cache_root: Option<PathBuf>) -> Result<Self> {
+        let parent = path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("owned cache has no parent: {}", path.display()))?;
+        let parent_identity = filesystem_identity(parent)?;
+        let path_identity = filesystem_identity(&path)?;
+        let marker_token = random_cache_token()?;
+        let marker = path.join(UNPUBLISHED_CACHE_OWNER_MARKER);
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&marker)
+            .with_context(|| format!("create rollback ownership marker {}", marker.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        }
+        use std::io::Write as _;
+        file.write_all(marker_token.as_bytes())?;
+        file.sync_all()?;
         Ok(Self {
             path,
-            cache_root: None,
-            newly_created: true,
+            cache_root,
+            parent_identity,
+            path_identity,
+            marker_token,
             published: false,
         })
     }
 
     fn path(&self) -> &Path {
         &self.path
+    }
+
+    fn still_owns(&self, path: &Path) -> bool {
+        #[cfg(unix)]
+        {
+            use std::io::Read as _;
+            use std::os::fd::{AsRawFd, FromRawFd};
+            use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+            let Ok(directory) = OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                .open(path)
+            else {
+                return false;
+            };
+            let Ok(metadata) = directory.metadata() else {
+                return false;
+            };
+            if (metadata.dev(), metadata.ino())
+                != (self.path_identity.device, self.path_identity.inode)
+            {
+                return false;
+            }
+            let Ok(marker_name) = std::ffi::CString::new(UNPUBLISHED_CACHE_OWNER_MARKER) else {
+                return false;
+            };
+            let marker_fd = unsafe {
+                libc::openat(
+                    directory.as_raw_fd(),
+                    marker_name.as_ptr(),
+                    libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                )
+            };
+            if marker_fd < 0 {
+                return false;
+            }
+            let mut marker = unsafe { File::from_raw_fd(marker_fd) };
+            let Ok(marker_metadata) = marker.metadata() else {
+                return false;
+            };
+            let mut token = String::new();
+            marker_metadata.is_file()
+                && marker.read_to_string(&mut token).is_ok()
+                && token == self.marker_token
+        }
+        #[cfg(not(unix))]
+        {
+            if filesystem_identity(path).ok() != Some(self.path_identity) {
+                return false;
+            }
+            let marker = path.join(UNPUBLISHED_CACHE_OWNER_MARKER);
+            let Ok(metadata) = fs::symlink_metadata(&marker) else {
+                return false;
+            };
+            metadata.is_file()
+                && !metadata.file_type().is_symlink()
+                && fs::read_to_string(marker).ok().as_deref() == Some(self.marker_token.as_str())
+        }
     }
 
     fn publish(&mut self) {
@@ -95,11 +236,38 @@ impl UnpublishedCachePath {
 
 impl Drop for UnpublishedCachePath {
     fn drop(&mut self) {
-        if self.newly_created && !self.published {
-            let _ = fs::remove_dir_all(&self.path);
-            if let Some(cache_root) = self.cache_root.as_deref() {
-                worksgood::target_cache::prune_empty_layer_parents(cache_root, &self.path);
+        if self.published {
+            return;
+        }
+        let Some(parent) = self.path.parent() else {
+            return;
+        };
+        // A pathname and a boolean are not deletion authority. Re-open both
+        // filesystem objects and compare their captured identity plus the
+        // random marker immediately before moving anything.
+        if filesystem_identity(parent).ok() != Some(self.parent_identity)
+            || !self.still_owns(&self.path)
+        {
+            return;
+        }
+        let Ok(quarantine_token) = random_cache_token() else {
+            return;
+        };
+        let quarantine = parent.join(format!(".wg-rollback-{quarantine_token}"));
+        if quarantine.exists() || fs::rename(&self.path, &quarantine).is_err() {
+            return;
+        }
+        // Revalidate after the atomic rename and immediately before recursive
+        // removal. A replacement moved in by a race is preserved, never reaped.
+        if !self.still_owns(&quarantine) {
+            if !self.path.exists() {
+                let _ = fs::rename(&quarantine, &self.path);
             }
+            return;
+        }
+        let _ = fs::remove_dir_all(&quarantine);
+        if let Some(cache_root) = self.cache_root.as_deref() {
+            worksgood::target_cache::prune_empty_layer_parents(cache_root, &self.path);
         }
     }
 }
@@ -1529,7 +1697,7 @@ pub(crate) fn spawn_agent_inner_authorized(
                 dir,
                 &config.coordinator.resource_management,
             ),
-        ))
+        )?)
     } else {
         None
     };
@@ -1860,7 +2028,7 @@ pub(crate) fn spawn_agent_inner_authorized(
     }
     if let Some(path) = owned_target_path.as_ref() {
         // Every attempt writes its private layer. Unchanged artifacts are
-        // read-only hard links to an immutable content-keyed baseline.
+        // verified reflinks or private copies of an immutable baseline.
         cmd.env("CARGO_TARGET_DIR", path);
         cmd.env("CARGO_INCREMENTAL", "0");
         cmd.env("CARGO_PROFILE_DEV_DEBUG", "line-tables-only");
@@ -7374,7 +7542,7 @@ esac
     }
 
     #[test]
-    fn scratch_creation_refuses_and_preserves_a_preexisting_path_byte_identically() {
+    fn scratch_creation_and_path_swap_rollback_preserve_preexisting_bytes() {
         let temp = tempfile::TempDir::new().unwrap();
         let path = temp.path().join("graph-key/agent-1");
         fs::create_dir_all(&path).unwrap();
@@ -7389,8 +7557,47 @@ esac
             let _guard = UnpublishedCachePath::create_scratch(fresh.clone()).unwrap();
             assert!(fresh.is_dir());
         }
-        assert!(!fresh.exists(), "only the proven-new leaf is rolled back");
+        assert!(!fresh.exists(), "the genuine owned leaf is rolled back");
         assert_eq!(fs::read(path.join("valuable")).unwrap(), before);
+
+        let attacked = temp.path().join("graph-key/agent-3");
+        let displaced = temp.path().join("graph-key/displaced-owned");
+        let sentinel = temp.path().join("preexisting-sentinel");
+        fs::create_dir_all(sentinel.join("nested")).unwrap();
+        fs::write(
+            sentinel.join("nested/valuable"),
+            b"attacker data\0unchanged",
+        )
+        .unwrap();
+        let sentinel_before = fs::read(sentinel.join("nested/valuable")).unwrap();
+        #[cfg(unix)]
+        let sentinel_inode = {
+            use std::os::unix::fs::MetadataExt;
+            fs::metadata(&sentinel).unwrap().ino()
+        };
+        let guard = UnpublishedCachePath::create_scratch(attacked.clone()).unwrap();
+        let stolen_marker = fs::read(attacked.join(UNPUBLISHED_CACHE_OWNER_MARKER)).unwrap();
+        fs::rename(&attacked, &displaced).unwrap();
+        fs::rename(&sentinel, &attacked).unwrap();
+        // Even copying the visible random marker cannot spoof the captured
+        // directory identity after pathname replacement.
+        fs::write(attacked.join(UNPUBLISHED_CACHE_OWNER_MARKER), stolen_marker).unwrap();
+        drop(guard);
+
+        assert_eq!(
+            fs::read(attacked.join("nested/valuable")).unwrap(),
+            sentinel_before
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            assert_eq!(fs::metadata(&attacked).unwrap().ino(), sentinel_inode);
+        }
+        assert!(
+            displaced.is_dir(),
+            "a renamed genuine inode is never guessed by path"
+        );
+        fs::remove_dir_all(displaced).unwrap();
     }
 
     #[test]

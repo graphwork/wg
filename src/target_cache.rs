@@ -1,12 +1,12 @@
-//! Immutable Cargo-target baselines with private hard-link copy-on-write layers.
+//! Immutable Cargo-target baselines with private copy-on-write layers.
 //!
 //! Cargo must never have two divergent worktrees writing one target directory.
 //! This module instead keeps a content-keyed, read-only baseline and gives each
-//! attempt its own directory tree. On ext4 (where native reflinks are absent),
-//! unchanged regular files are hard-linked into the attempt layer. Baseline
-//! files are read-only; Cargo's normal temp-file + rename publication breaks the
-//! link on write. A direct in-place write fails closed rather than mutating the
-//! shared artifact. Incremental compilation is disabled by the spawn path.
+//! attempt its own directory tree. Regular files are cloned with a verified
+//! filesystem reflink when available and otherwise copied to private inodes.
+//! Mutable build artifacts are never hard-linked. If a baseline cannot be
+//! cloned safely, the attempt starts cold rather than sharing uncertain bytes.
+//! Incremental compilation is disabled by the spawn path.
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
@@ -18,12 +18,15 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const CACHE_SCHEMA: u32 = 3;
+const CACHE_SCHEMA: u32 = 4;
 const LAYER_MANIFEST: &str = ".wg-target-layer.json";
 const LAYER_OWNED: &str = ".wg-owned-layer";
 const BASELINE_MANIFEST: &str = ".wg-target-baseline.json";
 const BASELINE_OWNED: &str = ".wg-owned-baseline";
 const READY: &str = "READY";
+/// Transient rollback marker installed by spawn before durable lease publish.
+/// It must never be promoted as a Cargo artifact.
+const UNPUBLISHED_OWNER_MARKER: &str = ".wg-unpublished-cache-owner";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TargetCacheKey {
@@ -34,6 +37,15 @@ pub struct TargetCacheKey {
     pub cargo_inputs: String,
     pub rustc: String,
     pub target_triple: String,
+    /// Logical Cargo working directory. Managed worktree roots normalize to
+    /// `.` so sibling worktrees can share an otherwise identical key.
+    pub working_directory: String,
+    /// Effective Cargo home, including an accepted inline `CARGO_HOME=...`.
+    pub cargo_home: String,
+    /// Effective rustup/toolchain selector.
+    pub toolchain: String,
+    /// Every accepted leading environment assignment, in source order.
+    pub accepted_environment: String,
     pub features: String,
     pub profile: String,
     pub flags: String,
@@ -41,9 +53,9 @@ pub struct TargetCacheKey {
     /// This intentionally over-invalidates: two byte-different commands never
     /// claim an exact shared baseline even if Cargo would treat them alike.
     pub command_identity: String,
-    /// False when WG launches an interactive agent and therefore cannot know
-    /// which Cargo invocation it will choose. Such a layer is attempt-isolated
-    /// and can neither consume nor publish a shared baseline.
+    /// False when WG launches an interactive agent or the shell command falls
+    /// outside WG's deliberately tiny attested grammar. Such a layer is
+    /// attempt-isolated and can neither consume nor publish a shared baseline.
     pub baseline_reusable: bool,
 }
 
@@ -112,31 +124,40 @@ fn hash_file(path: &Path) -> String {
         .unwrap_or_else(|_| "missing".to_string())
 }
 
-/// Extract the exact build-like Cargo segments from a WG-controlled shell
-/// command. Non-build bookkeeping after `;`/`&&` is deliberately excluded,
-/// while every byte in each Cargo segment (including inline environment,
-/// profile/target/features/rustflags/config arguments) remains identity input.
-/// Dynamic shell expansion fails closed because WG cannot know its value before
-/// launch. This is a namespace extractor, not an attempt to emulate Cargo CLI.
-pub fn controlled_cargo_command(shell_command: &str) -> Option<String> {
-    let mut segments = Vec::new();
-    let mut current = String::new();
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AttestedCargoCommand {
+    original: String,
+    words: Vec<String>,
+    environment: Vec<(String, String)>,
+}
+
+fn valid_env_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|ch| ch == '_' || ch.is_ascii_alphabetic())
+        && chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+}
+
+/// Tokenize one simple shell command. Expansion, redirection, grouping,
+/// pipelines, comments and command substitution are intentionally unsupported:
+/// accepting more shell is much easier than attesting its state transitions.
+fn simple_shell_words(input: &str) -> Option<Vec<String>> {
+    let mut words = Vec::new();
+    let mut word = String::new();
     let mut quote = None;
     let mut escaped = false;
-    let chars = shell_command.chars().collect::<Vec<_>>();
-    let mut index = 0;
-    while index < chars.len() {
-        let ch = chars[index];
+    let mut started = false;
+    for ch in input.chars() {
         if escaped {
-            current.push(ch);
+            word.push(ch);
             escaped = false;
-            index += 1;
+            started = true;
             continue;
         }
         if ch == '\\' && quote != Some('\'') {
-            current.push(ch);
             escaped = true;
-            index += 1;
+            started = true;
             continue;
         }
         if matches!(ch, '\'' | '"') {
@@ -144,75 +165,144 @@ pub fn controlled_cargo_command(shell_command: &str) -> Option<String> {
                 quote = None;
             } else if quote.is_none() {
                 quote = Some(ch);
+            } else {
+                word.push(ch);
             }
-            current.push(ch);
-            index += 1;
+            started = true;
             continue;
         }
-        let operator = quote.is_none()
-            && (matches!(ch, ';' | '\n')
-                || (matches!(ch, '&' | '|') && chars.get(index + 1) == Some(&ch)));
-        if operator {
-            if !current.trim().is_empty() {
-                segments.push(current.trim().to_string());
+        if quote.is_none() && ch.is_ascii_whitespace() {
+            if started {
+                words.push(std::mem::take(&mut word));
+                started = false;
             }
-            current.clear();
-            index += usize::from(matches!(ch, '&' | '|')) + 1;
             continue;
         }
-        current.push(ch);
-        index += 1;
+        if matches!(
+            ch,
+            '$' | '`' | '<' | '>' | '|' | ';' | '&' | '(' | ')' | '{' | '}' | '\n' | '\r'
+        ) {
+            return None;
+        }
+        word.push(ch);
+        started = true;
     }
-    if quote.is_some() || escaped {
+    if escaped || quote.is_some() {
         return None;
     }
-    if !current.trim().is_empty() {
-        segments.push(current.trim().to_string());
+    if started {
+        words.push(word);
+    }
+    Some(words)
+}
+
+fn parse_attested_cargo_command(shell_command: &str) -> Option<AttestedCargoCommand> {
+    let original = shell_command.trim();
+    if original.is_empty() {
+        return None;
     }
 
-    let mut build_segments = Vec::new();
-    for segment in segments {
-        let words = segment
-            .split_ascii_whitespace()
-            .map(|word| word.trim_matches(|ch: char| matches!(ch, '(' | ')' | '\'' | '"')))
-            .collect::<Vec<_>>();
-        let is_build = words.iter().enumerate().any(|(index, word)| {
-            *word == "cargo"
-                && words[index + 1..].iter().any(|candidate| {
-                    matches!(*candidate, "build" | "check" | "test" | "clippy" | "doc")
-                })
-        });
-        if is_build {
-            if segment.contains('$') || segment.contains('`') {
-                return None;
-            }
-            build_segments.push(segment);
+    // The sole accepted compound form is an inert bounded delay used by the
+    // overlap smoke. It cannot prepare or alter Cargo state. Every other shell
+    // operator fails closed to an attempt-isolated namespace.
+    let (cargo_part, suffix) = match original.split_once("&&") {
+        Some((cargo, suffix)) if !cargo.contains("&&") && !suffix.contains("&&") => {
+            (cargo.trim(), Some(suffix.trim()))
+        }
+        Some(_) => return None,
+        None => (original, None),
+    };
+    if let Some(suffix) = suffix {
+        let suffix_words = simple_shell_words(suffix)?;
+        if suffix_words.len() != 2
+            || suffix_words[0] != "sleep"
+            || suffix_words[1]
+                .parse::<u32>()
+                .ok()
+                .filter(|n| *n <= 300)
+                .is_none()
+        {
+            return None;
         }
     }
-    (!build_segments.is_empty()).then(|| build_segments.join("\n&&\n"))
+
+    let words = simple_shell_words(cargo_part)?;
+    let mut cursor = 0;
+    let mut environment = Vec::new();
+    while let Some(word) = words.get(cursor) {
+        let Some((name, value)) = word.split_once('=') else {
+            break;
+        };
+        if !valid_env_name(name) || name == "CARGO_TARGET_DIR" {
+            return None;
+        }
+        environment.push((name.to_string(), value.to_string()));
+        cursor += 1;
+    }
+    if words.get(cursor).map(String::as_str) != Some("cargo") {
+        return None;
+    }
+    let cargo_words = &words[cursor + 1..];
+    let mut cargo_cursor = 0;
+    if cargo_words
+        .get(cargo_cursor)
+        .is_some_and(|word| word.starts_with('+') && word.len() > 1)
+    {
+        cargo_cursor += 1;
+    }
+    while let Some(word) = cargo_words.get(cargo_cursor) {
+        if word.starts_with("--config=") {
+            cargo_cursor += 1;
+        } else if matches!(word.as_str(), "--config" | "-Z")
+            && cargo_words.get(cargo_cursor + 1).is_some()
+        {
+            cargo_cursor += 2;
+        } else {
+            break;
+        }
+    }
+    if !cargo_words
+        .get(cargo_cursor)
+        .is_some_and(|word| matches!(word.as_str(), "build" | "check" | "test" | "clippy" | "doc"))
+        || cargo_words[cargo_cursor + 1..]
+            .iter()
+            .any(|word| word == "cargo")
+    {
+        return None;
+    }
+    Some(AttestedCargoCommand {
+        original: original.to_string(),
+        words,
+        environment,
+    })
+}
+
+/// Return exact command bytes only for WG's deliberately tiny attested Cargo
+/// grammar. Stateful setup (`export`, `cd`, functions/subshells), redirections,
+/// arbitrary compound commands and dynamic expansion all return `None`; their
+/// callers receive an attempt-isolated, non-reusable layer.
+pub fn controlled_cargo_command(shell_command: &str) -> Option<String> {
+    parse_attested_cargo_command(shell_command).map(|command| command.original)
 }
 
 fn hash_controlled_command_files(
     source_root: &Path,
-    controlled_command: Option<&str>,
+    controlled_command: Option<&AttestedCargoCommand>,
     base_inputs: &str,
 ) -> String {
     let Some(command) = controlled_command else {
         return base_inputs.to_string();
     };
-    let words = command
-        .split_ascii_whitespace()
-        .map(|word| word.trim_matches(|ch: char| matches!(ch, '\'' | '"')))
-        .collect::<Vec<_>>();
+    let words = &command.words;
     let mut referenced = Vec::new();
     let mut index = 0;
     while index < words.len() {
-        let word = words[index];
+        let word = words[index].as_str();
         let inline = ["--config=", "--manifest-path=", "--target="]
             .into_iter()
             .find_map(|prefix| word.strip_prefix(prefix));
         let separate = matches!(word, "--config" | "--manifest-path" | "--target")
-            .then(|| words.get(index + 1).copied())
+            .then(|| words.get(index + 1).map(String::as_str))
             .flatten();
         if let Some(value) = inline.or(separate) {
             let path = PathBuf::from(value);
@@ -249,7 +339,7 @@ fn hash_controlled_command_files(
     hasher.finalize().to_hex().to_string()
 }
 
-fn hash_cargo_inputs(source_root: &Path) -> String {
+fn hash_cargo_inputs(source_root: &Path, cargo_home: Option<&Path>) -> String {
     let mut paths = command_stdout(source_root, "git", &["ls-files", "*Cargo.toml"])
         .unwrap_or_default()
         .lines()
@@ -278,9 +368,6 @@ fn hash_cargo_inputs(source_root: &Path) -> String {
         };
         hasher.update(b"\0");
     }
-    let cargo_home = std::env::var_os("CARGO_HOME")
-        .map(PathBuf::from)
-        .or_else(|| dirs::home_dir().map(|home| home.join(".cargo")));
     if let Some(cargo_home) = cargo_home {
         for name in ["config", "config.toml"] {
             let path = cargo_home.join(name);
@@ -311,10 +398,40 @@ pub fn compute_key(
     controlled_command: Option<&str>,
     isolation_id: &str,
 ) -> TargetCacheKey {
-    let rustc = command_stdout(source_root, "rustc", &["--version", "--verbose"])
-        .unwrap_or_else(|| "rustc-unavailable".to_string());
-    let target_triple = std::env::var("CARGO_BUILD_TARGET")
-        .ok()
+    // Re-parse at the authority boundary even when the caller already used
+    // `controlled_cargo_command`. A future call site cannot accidentally mark
+    // arbitrary shell bytes reusable by passing `Some` directly.
+    let attested = controlled_command.and_then(parse_attested_cargo_command);
+    let inline_env = |name: &str| {
+        attested.as_ref().and_then(|command| {
+            command
+                .environment
+                .iter()
+                .rev()
+                .find(|(candidate, _)| candidate == name)
+                .map(|(_, value)| value.clone())
+        })
+    };
+    let toolchain = inline_env("RUSTUP_TOOLCHAIN")
+        .or_else(|| std::env::var("RUSTUP_TOOLCHAIN").ok())
+        .unwrap_or_else(|| "rustup-default".to_string());
+    let rustc = {
+        let mut command = Command::new(inline_env("RUSTC").as_deref().unwrap_or("rustc"));
+        command
+            .args(["--version", "--verbose"])
+            .current_dir(source_root);
+        if toolchain != "rustup-default" {
+            command.env("RUSTUP_TOOLCHAIN", &toolchain);
+        }
+        command
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+            .unwrap_or_else(|| "rustc-unavailable".to_string())
+    };
+    let target_triple = inline_env("CARGO_BUILD_TARGET")
+        .or_else(|| std::env::var("CARGO_BUILD_TARGET").ok())
         .filter(|v| !v.is_empty())
         .or_else(|| {
             rustc
@@ -324,6 +441,45 @@ pub fn compute_key(
         .unwrap_or_else(|| "host-unknown".to_string());
     let source_baseline = command_stdout(source_root, "git", &["rev-parse", "HEAD^{tree}"])
         .unwrap_or_else(|| hash_file(&source_root.join("Cargo.toml")));
+    let working_directory = command_stdout(source_root, "git", &["rev-parse", "--show-prefix"])
+        .filter(|prefix| !prefix.is_empty())
+        .unwrap_or_else(|| {
+            command_stdout(source_root, "git", &["rev-parse", "--show-toplevel"])
+                .map(|_| ".".to_string())
+                .unwrap_or_else(|| {
+                    source_root
+                        .canonicalize()
+                        .unwrap_or_else(|_| source_root.to_path_buf())
+                        .to_string_lossy()
+                        .to_string()
+                })
+        });
+    let cargo_home_path = inline_env("CARGO_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("CARGO_HOME").map(PathBuf::from))
+        .or_else(|| dirs::home_dir().map(|home| home.join(".cargo")));
+    let resolved_cargo_home = cargo_home_path.as_deref().map(|path| {
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            source_root.join(path)
+        }
+    });
+    let cargo_home = resolved_cargo_home
+        .as_deref()
+        .map(|path| path.to_string_lossy().to_string())
+        .unwrap_or_else(|| "cargo-home-unavailable".to_string());
+    let accepted_environment = attested
+        .as_ref()
+        .map(|command| {
+            command
+                .environment
+                .iter()
+                .map(|(name, value)| format!("{name}={value}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default();
     let features = std::env::var("WG_CARGO_FEATURES").unwrap_or_else(|_| "default".to_string());
     let profile = std::env::var("WG_CARGO_PROFILE").unwrap_or_else(|_| "test".to_string());
     let mut flag_values = std::env::vars()
@@ -353,14 +509,14 @@ pub fn compute_key(
     }
     flag_values.sort();
     let flags = flag_values.join("\n");
-    let (command_identity, baseline_reusable) = match controlled_command {
-        Some(command) if !command.trim().is_empty() => (command.to_string(), true),
-        _ => (format!("unknown-isolated:{isolation_id}"), false),
+    let (command_identity, baseline_reusable) = match attested.as_ref() {
+        Some(command) => (command.original.clone(), true),
+        None => (format!("unknown-isolated:{isolation_id}"), false),
     };
     let cargo_inputs = hash_controlled_command_files(
         source_root,
-        baseline_reusable.then_some(command_identity.as_str()),
-        &hash_cargo_inputs(source_root),
+        attested.as_ref(),
+        &hash_cargo_inputs(source_root, resolved_cargo_home.as_deref()),
     );
     TargetCacheKey {
         schema: CACHE_SCHEMA,
@@ -369,6 +525,10 @@ pub fn compute_key(
         cargo_inputs,
         rustc,
         target_triple,
+        working_directory,
+        cargo_home,
+        toolchain,
+        accepted_environment,
         features,
         profile,
         flags,
@@ -408,6 +568,7 @@ fn target_has_artifacts(target: &Path) -> bool {
                     READY,
                     ".cargo-lock",
                     ".rustc_info.json",
+                    UNPUBLISHED_OWNER_MARKER,
                 ]
                 .contains(&name.as_ref())
         })
@@ -470,8 +631,20 @@ fn prepare_layer_with_key(
         let baseline = baseline_dir(cache_root, &digest);
         let baseline_target = baseline.join("target");
         let baseline_path = if key.baseline_reusable && baseline_is_ready(&baseline, &key) {
-            hardlink_tree(&baseline_target, &target)?;
-            Some(baseline_target)
+            match clone_tree_private(&baseline_target, &target) {
+                Ok(()) => Some(baseline_target),
+                Err(error) => {
+                    // A filesystem without a usable reflink is allowed to make
+                    // byte copies. If even private copying fails, discard every
+                    // partial seed and start cold; never keep uncertain sharing.
+                    eprintln!(
+                        "[target-cache] baseline seed failed safely for {}: {error:#}; starting with an empty private layer",
+                        target.display()
+                    );
+                    clear_partial_seed(&target)?;
+                    None
+                }
+            }
         } else {
             None
         };
@@ -506,7 +679,139 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn hardlink_tree(source: &Path, destination: &Path) -> Result<()> {
+fn clone_excluded(relative: &Path, file_name: &std::ffi::OsStr) -> bool {
+    relative == Path::new(LAYER_MANIFEST)
+        || relative == Path::new(LAYER_OWNED)
+        || relative == Path::new(BASELINE_MANIFEST)
+        || relative == Path::new(BASELINE_OWNED)
+        || relative == Path::new(READY)
+        || file_name == ".cargo-lock"
+        || file_name == ".rustc_info.json"
+        || file_name == UNPUBLISHED_OWNER_MARKER
+}
+
+fn relative_link_stays_inside(relative: &Path, link: &Path) -> bool {
+    if link.is_absolute() {
+        return false;
+    }
+    let mut depth = relative
+        .parent()
+        .map_or(0, |parent| parent.components().count());
+    for component in link.components() {
+        match component {
+            std::path::Component::Normal(_) => depth += 1,
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir if depth > 0 => depth -= 1,
+            std::path::Component::ParentDir => return false,
+            std::path::Component::RootDir | std::path::Component::Prefix(_) => return false,
+        }
+    }
+    true
+}
+
+#[cfg(target_os = "linux")]
+fn try_reflink(source: &Path, destination: &Path) -> Result<bool> {
+    use std::os::fd::AsRawFd;
+    const FICLONE: libc::c_ulong = 0x4004_9409;
+    let input = File::open(source)?;
+    let output = OpenOptions::new()
+        .create_new(true)
+        .read(true)
+        .write(true)
+        .open(destination)?;
+    let cloned = unsafe { libc::ioctl(output.as_raw_fd(), FICLONE, input.as_raw_fd()) } == 0;
+    drop(output);
+    if !cloned {
+        let _ = fs::remove_file(destination);
+    }
+    Ok(cloned)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn try_reflink(_source: &Path, _destination: &Path) -> Result<bool> {
+    Ok(false)
+}
+
+fn files_are_identical(source: &Path, destination: &Path) -> bool {
+    let (Ok(left), Ok(right)) = (fs::read(source), fs::read(destination)) else {
+        return false;
+    };
+    left == right
+}
+
+fn make_private_file_writable(source: &Path, destination: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let source_mode = fs::metadata(source)?.permissions().mode();
+        let mode = if source_mode & 0o111 == 0 {
+            0o644
+        } else {
+            0o755
+        };
+        fs::set_permissions(destination, fs::Permissions::from_mode(mode))?;
+    }
+    #[cfg(not(unix))]
+    {
+        let mut permissions = fs::metadata(destination)?.permissions();
+        permissions.set_readonly(false);
+        fs::set_permissions(destination, permissions)?;
+    }
+    Ok(())
+}
+
+fn clone_regular_file_private_with(
+    source: &Path,
+    destination: &Path,
+    try_native_reflink: bool,
+) -> Result<()> {
+    let reflinked = try_native_reflink && try_reflink(source, destination)?;
+    if !reflinked {
+        OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(destination)
+            .and_then(|mut output| {
+                let mut input = File::open(source)?;
+                std::io::copy(&mut input, &mut output)?;
+                output.sync_all()
+            })
+            .with_context(|| {
+                format!(
+                    "private-copy Cargo artifact {} -> {}",
+                    source.display(),
+                    destination.display()
+                )
+            })?;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let source_meta = fs::metadata(source)?;
+        let destination_meta = fs::metadata(destination)?;
+        if source_meta.dev() == destination_meta.dev()
+            && source_meta.ino() == destination_meta.ino()
+        {
+            let _ = fs::remove_file(destination);
+            bail!("mutable Cargo artifact clone unexpectedly reused an inode");
+        }
+    }
+    if !files_are_identical(source, destination) {
+        let _ = fs::remove_file(destination);
+        bail!(
+            "Cargo artifact clone verification failed: {} -> {}",
+            source.display(),
+            destination.display()
+        );
+    }
+    make_private_file_writable(source, destination)
+}
+
+fn clone_regular_file_private(source: &Path, destination: &Path) -> Result<()> {
+    clone_regular_file_private_with(source, destination, true)
+}
+
+fn clone_tree_private(source: &Path, destination: &Path) -> Result<()> {
     if !source.is_dir() {
         return Ok(());
     }
@@ -516,14 +821,7 @@ fn hardlink_tree(source: &Path, destination: &Path) -> Result<()> {
     {
         let entry = entry?;
         let relative = entry.path().strip_prefix(source)?;
-        if relative == Path::new(LAYER_MANIFEST)
-            || relative == Path::new(LAYER_OWNED)
-            || relative == Path::new(BASELINE_MANIFEST)
-            || relative == Path::new(BASELINE_OWNED)
-            || relative == Path::new(READY)
-            || entry.file_name() == ".cargo-lock"
-            || entry.file_name() == ".rustc_info.json"
-        {
+        if clone_excluded(relative, entry.file_name()) {
             continue;
         }
         let output = destination.join(relative);
@@ -531,24 +829,44 @@ fn hardlink_tree(source: &Path, destination: &Path) -> Result<()> {
             fs::create_dir_all(&output)?;
         } else if entry.file_type().is_symlink() {
             let link = fs::read_link(entry.path())?;
+            if !relative_link_stays_inside(relative, &link) {
+                // Absolute/escaping links could retain a mutable path into the
+                // baseline or another layer. Omit them and let Cargo rebuild.
+                continue;
+            }
             #[cfg(unix)]
             std::os::unix::fs::symlink(link, &output)?;
             #[cfg(windows)]
             {
-                if entry.path().is_dir() {
+                let followed = fs::metadata(entry.path())?;
+                if followed.is_dir() {
                     std::os::windows::fs::symlink_dir(link, &output)?;
                 } else {
                     std::os::windows::fs::symlink_file(link, &output)?;
                 }
             }
         } else if entry.file_type().is_file() {
-            fs::hard_link(entry.path(), &output).with_context(|| {
-                format!(
-                    "hard-link immutable target artifact {} -> {}",
-                    entry.path().display(),
-                    output.display()
-                )
-            })?;
+            clone_regular_file_private(entry.path(), &output)?;
+        }
+    }
+    Ok(())
+}
+
+fn clear_partial_seed(target: &Path) -> Result<()> {
+    let mut entries = walkdir::WalkDir::new(target)
+        .follow_links(false)
+        .min_depth(1)
+        .into_iter()
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    entries.sort_by_key(|entry| std::cmp::Reverse(entry.depth()));
+    for entry in entries {
+        if entry.depth() == 1 && entry.file_name() == LAYER_OWNED {
+            continue;
+        }
+        if entry.file_type().is_dir() {
+            fs::remove_dir(entry.path())?;
+        } else {
+            fs::remove_file(entry.path())?;
         }
     }
     Ok(())
@@ -661,7 +979,7 @@ fn promote_layer_validated(target: &Path, key: &TargetCacheKey) -> Result<bool> 
     write_new(&baseline.join(BASELINE_OWNED), b"wg-owned Cargo baseline\n")?;
     let baseline_target = baseline.join("target");
     fs::create_dir_all(&baseline_target)?;
-    hardlink_tree(target, &baseline_target)?;
+    clone_tree_private(target, &baseline_target)?;
     write_new(
         &baseline.join(BASELINE_MANIFEST),
         &serde_json::to_vec_pretty(key)?,
@@ -679,8 +997,8 @@ fn make_tree_writable(root: &Path) -> Result<()> {
     for entry in walkdir::WalkDir::new(root).follow_links(false) {
         let entry = entry?;
         // Removing a read-only tree requires writable directories, not writable
-        // files. Never chmod a file here: it may still be hard-linked into an
-        // independently protected layer after crash recovery.
+        // files. Keeping file modes unchanged also minimizes the authority of
+        // this repair path.
         if entry.file_type().is_dir() {
             fs::set_permissions(entry.path(), fs::Permissions::from_mode(0o755))?;
         }
@@ -749,9 +1067,11 @@ pub fn prune_empty_layer_parents(cache_root: &Path, target: &Path) {
     }
 }
 
-/// Logical bytes in `path` and physical bytes uniquely charged to it. Files
-/// with multiple hard links count logically but not as private physical delta.
-/// Discover valid layer keys, including the short prepare→registry publication
+/// Logical bytes in `path` and a conservative physical charge. Reflink extent
+/// sharing is not safely inferable from inode link counts, so cloned files are
+/// charged to each layer even though the filesystem stores shared extents once.
+/// Cargo-created hard links wholly inside one tree are charged once. Discover
+/// valid layer keys, including the short prepare→registry publication
 /// window. This closes the race where baseline GC could unlink a lower after a
 /// clone completed but before its ownership row was committed.
 pub fn existing_layer_keys(cache_root: &Path, limit: usize) -> HashSet<String> {
@@ -843,16 +1163,9 @@ pub fn layer_bytes(path: &Path) -> (u64, u64) {
     let mut logical = 0u64;
     let mut private = 0u64;
     #[cfg(unix)]
-    let layer_manifest = validated_layer_manifest(path);
-    #[cfg(unix)]
-    let baseline_inodes = layer_manifest
-        .as_ref()
-        .and_then(|manifest| manifest.baseline_path.as_deref())
-        .map(Path::new)
-        .map(inodes_under)
-        .unwrap_or_default();
-    #[cfg(unix)]
-    let root_inode_counts = layer_manifest.is_none().then(|| inode_counts_under(path));
+    let root_inode_counts = validated_layer_manifest(path)
+        .is_none()
+        .then(|| inode_counts_under(path));
     #[cfg(unix)]
     let mut charged_inodes = HashSet::new();
     for entry in walkdir::WalkDir::new(path).follow_links(false) {
@@ -869,15 +1182,12 @@ pub fn layer_bytes(path: &Path) -> (u64, u64) {
             use std::os::unix::fs::MetadataExt;
             let inode = (metadata.dev(), metadata.ino());
             // Cargo may hard-link its own private executable/deps paths. Charge
-            // that inode once unless it is actually present in the immutable
-            // baseline; nlink>1 alone is not evidence of shared-baseline bytes.
+            // that inode once. A link outside an unmanifested root is excluded;
+            // nlink alone is never treated as evidence of reflink sharing.
             let externally_linked = root_inode_counts
                 .as_ref()
                 .is_some_and(|counts| metadata.nlink() > counts.get(&inode).copied().unwrap_or(0));
-            if !baseline_inodes.contains(&inode)
-                && !externally_linked
-                && charged_inodes.insert(inode)
-            {
+            if !externally_linked && charged_inodes.insert(inode) {
                 private = private.saturating_add(metadata.blocks().saturating_mul(512));
             }
         }
@@ -887,11 +1197,6 @@ pub fn layer_bytes(path: &Path) -> (u64, u64) {
         }
     }
     (logical, private)
-}
-
-#[cfg(unix)]
-fn inodes_under(path: &Path) -> HashSet<(u64, u64)> {
-    inode_counts_under(path).into_keys().collect()
 }
 
 #[cfg(unix)]
@@ -923,6 +1228,10 @@ mod tests {
             cargo_inputs: "inputs".into(),
             rustc: "rustc 1.96 host:x86_64-unknown-linux-gnu".into(),
             target_triple: "x86_64-unknown-linux-gnu".into(),
+            working_directory: ".".into(),
+            cargo_home: "/tmp/cargo-home".into(),
+            toolchain: "stable".into(),
+            accepted_environment: String::new(),
             features: "default".into(),
             profile: "test".into(),
             flags: "incremental=0".into(),
@@ -943,7 +1252,75 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn same_baseline_layers_share_physical_artifacts_without_writable_target() {
+    fn forced_reflink_failure_falls_back_to_private_writable_bytes() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let temp = TempDir::new().unwrap();
+        let source = temp.path().join("source");
+        let destination = temp.path().join("destination");
+        fs::write(&source, vec![9u8; 1024 * 1024]).unwrap();
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o444)).unwrap();
+        clone_regular_file_private_with(&source, &destination, false).unwrap();
+        assert!(files_are_identical(&source, &destination));
+        assert_ne!(
+            fs::metadata(&source).unwrap().ino(),
+            fs::metadata(&destination).unwrap().ino()
+        );
+        OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&destination)
+            .unwrap()
+            .write_all(b"private")
+            .unwrap();
+        assert_eq!(fs::metadata(&source).unwrap().len(), 1024 * 1024);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn reflink_capability_uses_shared_extents_without_shared_inodes() {
+        use std::os::unix::fs::MetadataExt;
+        let temp = TempDir::new().unwrap();
+        let source = temp.path().join("large-source");
+        let destination = temp.path().join("large-clone");
+        let mut file = File::create(&source).unwrap();
+        let block = vec![0x5au8; 1024 * 1024];
+        for _ in 0..32 {
+            file.write_all(&block).unwrap();
+        }
+        file.sync_all().unwrap();
+        drop(file);
+        let mut before: libc::statvfs = unsafe { std::mem::zeroed() };
+        let path = std::ffi::CString::new(temp.path().as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::statvfs(path.as_ptr(), &mut before) }, 0);
+
+        if !try_reflink(&source, &destination).unwrap() {
+            // Capability absence exercises the byte-copy fallback elsewhere;
+            // it is safe but intentionally makes no deduplication claim.
+            return;
+        }
+        let output = OpenOptions::new().write(true).open(&destination).unwrap();
+        output.sync_all().unwrap();
+        drop(output);
+        let mut after: libc::statvfs = unsafe { std::mem::zeroed() };
+        assert_eq!(unsafe { libc::statvfs(path.as_ptr(), &mut after) }, 0);
+        let allocated = before
+            .f_bfree
+            .saturating_sub(after.f_bfree)
+            .saturating_mul(after.f_frsize as _);
+        assert!(
+            allocated < 8 * 1024 * 1024,
+            "verified reflink unexpectedly allocated {allocated} bytes"
+        );
+        assert_ne!(
+            fs::metadata(&source).unwrap().ino(),
+            fs::metadata(&destination).unwrap().ino()
+        );
+        assert!(files_are_identical(&source, &destination));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn same_baseline_layers_use_distinct_writable_inodes() {
         use std::os::unix::fs::MetadataExt;
         let temp = TempDir::new().unwrap();
         let source = temp.path().join("source");
@@ -954,76 +1331,141 @@ mod tests {
         assert!(promote_layer_validated(&first.path, &first.key).unwrap());
 
         let second = prepare_layer_with_key(temp.path(), &source, "agent-2", key("a")).unwrap();
+        let third = prepare_layer_with_key(temp.path(), &source, "agent-3", key("a")).unwrap();
         let base = second
             .baseline_path
             .unwrap()
             .join("debug/deps/libsame.rlib");
         let upper = second.path.join("debug/deps/libsame.rlib");
-        assert_eq!(
-            fs::metadata(base).unwrap().ino(),
-            fs::metadata(&upper).unwrap().ino()
-        );
-        assert_eq!(
-            layer_bytes(&second.path).1,
-            [LAYER_MANIFEST, LAYER_OWNED]
-                .into_iter()
-                .map(|name| fs::metadata(second.path.join(name)).unwrap().blocks() * 512)
-                .sum::<u64>()
-        );
-        assert!(
-            OpenOptions::new()
-                .write(true)
-                .truncate(true)
-                .open(&upper)
-                .is_err()
-        );
+        let sibling = third.path.join("debug/deps/libsame.rlib");
+        let inodes = [
+            fs::metadata(&base).unwrap().ino(),
+            fs::metadata(&upper).unwrap().ino(),
+            fs::metadata(&sibling).unwrap().ino(),
+        ];
+        assert_ne!(inodes[0], inodes[1]);
+        assert_ne!(inodes[0], inodes[2]);
+        assert_ne!(inodes[1], inodes[2]);
+        OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&upper)
+            .unwrap()
+            .write_all(b"private")
+            .unwrap();
+        assert_eq!(fs::read(&base).unwrap(), vec![7; 4096]);
+        assert_eq!(fs::read(&sibling).unwrap(), vec![7; 4096]);
     }
 
     #[cfg(unix)]
     #[test]
-    fn two_concurrent_same_baseline_worktrees_share_lower_and_keep_private_writes() {
-        use std::os::unix::fs::MetadataExt;
-        use std::sync::{Arc, Barrier};
+    fn adversarial_mutation_of_every_layer_entry_keeps_baseline_and_sibling_immutable() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
+
+        fn snapshot(root: &Path) -> Vec<(String, String, u64)> {
+            let mut values = walkdir::WalkDir::new(root)
+                .follow_links(false)
+                .min_depth(1)
+                .into_iter()
+                .filter_map(|entry| entry.ok())
+                .filter(|entry| {
+                    !clone_excluded(entry.path().strip_prefix(root).unwrap(), entry.file_name())
+                })
+                .map(|entry| {
+                    let relative = entry
+                        .path()
+                        .strip_prefix(root)
+                        .unwrap()
+                        .display()
+                        .to_string();
+                    if entry.file_type().is_symlink() {
+                        (
+                            relative,
+                            format!("link:{}", fs::read_link(entry.path()).unwrap().display()),
+                            0,
+                        )
+                    } else if entry.file_type().is_dir() {
+                        (
+                            relative,
+                            "directory".to_string(),
+                            entry.metadata().unwrap().ino(),
+                        )
+                    } else {
+                        (
+                            relative,
+                            blake3::hash(&fs::read(entry.path()).unwrap())
+                                .to_hex()
+                                .to_string(),
+                            entry.metadata().unwrap().ino(),
+                        )
+                    }
+                })
+                .collect::<Vec<_>>();
+            values.sort();
+            values
+        }
+
         let temp = TempDir::new().unwrap();
         let source = temp.path().join("source");
         fs::create_dir(&source).unwrap();
         let warm = prepare_layer_with_key(temp.path(), &source, "warm", key("same")).unwrap();
-        fs::write(warm.path.join("artifact"), "baseline").unwrap();
-        promote_layer_validated(&warm.path, &warm.key).unwrap();
+        fs::create_dir_all(warm.path.join("debug/nested")).unwrap();
+        fs::write(warm.path.join("debug/truncate-me"), vec![1; 8192]).unwrap();
+        fs::write(warm.path.join("debug/overwrite-me"), vec![2; 4096]).unwrap();
+        fs::write(warm.path.join("debug/nested/rename-me"), b"nested bytes").unwrap();
+        fs::set_permissions(
+            warm.path.join("debug/overwrite-me"),
+            fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        symlink("truncate-me", warm.path.join("debug/link-me")).unwrap();
+        assert!(promote_layer_validated(&warm.path, &warm.key).unwrap());
 
-        let barrier = Arc::new(Barrier::new(2));
-        let handles = ["agent-a", "agent-b"].map(|agent| {
-            let root = temp.path().to_path_buf();
-            let source = source.clone();
-            let barrier = barrier.clone();
-            std::thread::spawn(move || {
-                barrier.wait();
-                let layer = prepare_layer_with_key(&root, &source, agent, key("same")).unwrap();
-                let inode = fs::metadata(layer.path.join("artifact")).unwrap().ino();
-                let replacement = layer.path.join("replacement");
-                fs::write(&replacement, agent).unwrap();
-                fs::rename(&replacement, layer.path.join("artifact")).unwrap();
-                (layer, inode)
-            })
-        });
-        let [(left, left_inode), (right, right_inode)] =
-            handles.map(|handle| handle.join().unwrap());
-        assert_eq!(
-            left_inode, right_inode,
-            "unchanged bytes must be one physical inode"
-        );
-        assert_eq!(
-            fs::read_to_string(left.path.join("artifact")).unwrap(),
-            "agent-a"
-        );
-        assert_eq!(
-            fs::read_to_string(right.path.join("artifact")).unwrap(),
-            "agent-b"
-        );
-        assert_eq!(
-            fs::read_to_string(left.baseline_path.unwrap().join("artifact")).unwrap(),
-            "baseline"
-        );
+        let victim = prepare_layer_with_key(temp.path(), &source, "victim", key("same")).unwrap();
+        let sibling = prepare_layer_with_key(temp.path(), &source, "sibling", key("same")).unwrap();
+        let baseline = victim.baseline_path.clone().unwrap();
+        let baseline_before = snapshot(&baseline);
+        let sibling_before = snapshot(&sibling.path);
+
+        for relative in [
+            "debug/truncate-me",
+            "debug/overwrite-me",
+            "debug/nested/rename-me",
+        ] {
+            let baseline_inode = fs::metadata(baseline.join(relative)).unwrap().ino();
+            let victim_inode = fs::metadata(victim.path.join(relative)).unwrap().ino();
+            let sibling_inode = fs::metadata(sibling.path.join(relative)).unwrap().ino();
+            assert_ne!(baseline_inode, victim_inode, "{relative}");
+            assert_ne!(baseline_inode, sibling_inode, "{relative}");
+            assert_ne!(victim_inode, sibling_inode, "{relative}");
+        }
+
+        OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(victim.path.join("debug/truncate-me"))
+            .unwrap()
+            .write_all(b"short")
+            .unwrap();
+        fs::write(victim.path.join("debug/overwrite-me"), b"overwritten").unwrap();
+        fs::rename(
+            victim.path.join("debug/nested/rename-me"),
+            victim.path.join("debug/nested/renamed-file"),
+        )
+        .unwrap();
+        fs::rename(
+            victim.path.join("debug/link-me"),
+            victim.path.join("debug/renamed-link"),
+        )
+        .unwrap();
+        fs::rename(
+            victim.path.join("debug/nested"),
+            victim.path.join("debug/renamed-directory"),
+        )
+        .unwrap();
+
+        assert_eq!(snapshot(&baseline), baseline_before);
+        assert_eq!(snapshot(&sibling.path), sibling_before);
     }
 
     #[cfg(unix)]
@@ -1175,6 +1617,10 @@ mod tests {
         changed!(cargo_inputs, "other-inputs");
         changed!(rustc, "other-rustc");
         changed!(target_triple, "aarch64-unknown-linux-gnu");
+        changed!(working_directory, "crates/child");
+        changed!(cargo_home, "/other/cargo-home");
+        changed!(toolchain, "nightly");
+        changed!(accepted_environment, "FOO=bar");
         changed!(features, "telegram");
         changed!(profile, "test-full-debug");
         changed!(flags, "RUSTFLAGS=-Ctarget-cpu=native");
@@ -1187,16 +1633,34 @@ mod tests {
     }
 
     #[test]
-    fn controlled_command_extracts_build_inputs_and_rejects_dynamic_identity() {
+    fn controlled_command_accepts_only_tiny_stateless_grammar() {
         assert_eq!(
             controlled_cargo_command(
-                "printf prep > src/generated.rs && RUSTFLAGS='-C target-cpu=native' cargo build --release --target aarch64-unknown-linux-gnu --features x --config net.offline=true; touch /tmp/done"
+                "CARGO_HOME=/tmp/ch RUSTUP_TOOLCHAIN=nightly RUSTFLAGS='-C target-cpu=native' cargo build --release --target aarch64-unknown-linux-gnu --features x --config net.offline=true && sleep 10"
             )
             .as_deref(),
-            Some("RUSTFLAGS='-C target-cpu=native' cargo build --release --target aarch64-unknown-linux-gnu --features x --config net.offline=true")
+            Some(
+                "CARGO_HOME=/tmp/ch RUSTUP_TOOLCHAIN=nightly RUSTFLAGS='-C target-cpu=native' cargo build --release --target aarch64-unknown-linux-gnu --features x --config net.offline=true && sleep 10"
+            )
         );
-        assert!(controlled_cargo_command("cargo build --features $FEATURES").is_none());
-        assert!(controlled_cargo_command("echo no-build").is_none());
+        for ambiguous in [
+            "export RUSTFLAGS=-Copt-level=3; cargo build",
+            "cd other-dir; cargo build",
+            "(cargo build)",
+            "f() { cargo build; }; f",
+            "cargo build > build.log",
+            "cargo build --features $FEATURES",
+            "cargo build | tee build.log",
+            "cargo build && touch done",
+            "env CARGO_HOME=/tmp/ch cargo build",
+            "CARGO_TARGET_DIR=/tmp/escape cargo build",
+            "echo no-build",
+        ] {
+            assert!(
+                controlled_cargo_command(ambiguous).is_none(),
+                "unexpectedly attested: {ambiguous}"
+            );
+        }
     }
 
     #[test]
@@ -1213,6 +1677,10 @@ mod tests {
             "cargo test --no-default-features",
             "cargo test --all-features",
             "RUSTFLAGS='-C target-cpu=native' cargo test",
+            "CARGO_HOME=/tmp/cargo-home cargo test",
+            "RUSTUP_TOOLCHAIN=nightly cargo test",
+            "FOO=one cargo test",
+            "FOO=two cargo test",
             "cargo --config net.offline=true test",
         ];
         let digests = commands
@@ -1220,6 +1688,11 @@ mod tests {
             .into_iter()
             .collect::<HashSet<_>>();
         assert_eq!(digests.len(), commands.len());
+        assert!(
+            commands
+                .iter()
+                .all(|command| compute_key(&source, Some(command), "unused").baseline_reusable)
+        );
 
         fs::write(source.join("extra-config.toml"), "[net]\noffline=true\n").unwrap();
         let before = compute_key(
@@ -1237,13 +1710,17 @@ mod tests {
     }
 
     #[test]
-    fn unknown_command_identity_is_attempt_isolated_and_never_reusable() {
+    fn unknown_or_ambiguous_command_identity_is_attempt_isolated_and_never_reusable() {
         let temp = TempDir::new().unwrap();
         let source = temp.path().join("source");
         fs::create_dir(&source).unwrap();
         fs::write(source.join("Cargo.toml"), "[workspace]\n").unwrap();
-        let left = compute_key(&source, None, "agent-left");
-        let right = compute_key(&source, None, "agent-right");
+        let left = compute_key(
+            &source,
+            Some("export RUSTFLAGS=-Copt-level=3; cargo build"),
+            "agent-left",
+        );
+        let right = compute_key(&source, Some("cd other-dir; cargo build"), "agent-right");
         assert!(!left.baseline_reusable);
         assert!(!right.baseline_reusable);
         assert_ne!(left.digest(), right.digest());
