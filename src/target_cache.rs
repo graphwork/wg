@@ -36,6 +36,7 @@ pub struct TargetCacheKey {
     /// Hash of workspace manifests, toolchain files, and Cargo configuration.
     pub cargo_inputs: String,
     pub rustc: String,
+    pub cargo: String,
     pub target_triple: String,
     /// Logical Cargo working directory. Managed worktree roots normalize to
     /// `.` so sibling worktrees can share an otherwise identical key.
@@ -435,6 +436,25 @@ pub fn compute_key(
             .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
             .unwrap_or_else(|| "rustc-unavailable".to_string())
     };
+    let cargo = {
+        let mut command = Command::new("cargo");
+        command
+            .args(["--version", "--verbose"])
+            .current_dir(source_root);
+        for (name, value) in attested
+            .as_ref()
+            .into_iter()
+            .flat_map(|command| &command.environment)
+        {
+            command.env(name, value);
+        }
+        command
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+            .unwrap_or_else(|| "cargo-unavailable".to_string())
+    };
     let target_triple = inline_env("CARGO_BUILD_TARGET")
         .or_else(|| std::env::var("CARGO_BUILD_TARGET").ok())
         .filter(|v| !v.is_empty())
@@ -461,6 +481,7 @@ pub fn compute_key(
         });
     let cargo_home_path = inline_env("CARGO_HOME")
         .map(PathBuf::from)
+        .or_else(|| inline_env("HOME").map(|home| PathBuf::from(home).join(".cargo")))
         .or_else(|| std::env::var_os("CARGO_HOME").map(PathBuf::from))
         .or_else(|| dirs::home_dir().map(|home| home.join(".cargo")));
     let resolved_cargo_home = cargo_home_path.as_deref().map(|path| {
@@ -529,6 +550,7 @@ pub fn compute_key(
         cargo_lock: hash_file(&source_root.join("Cargo.lock")),
         cargo_inputs,
         rustc,
+        cargo,
         target_triple,
         working_directory,
         cargo_home,
@@ -1232,6 +1254,7 @@ mod tests {
             cargo_lock: "lock".into(),
             cargo_inputs: "inputs".into(),
             rustc: "rustc 1.96 host:x86_64-unknown-linux-gnu".into(),
+            cargo: "cargo 1.96".into(),
             target_triple: "x86_64-unknown-linux-gnu".into(),
             working_directory: ".".into(),
             cargo_home: "/tmp/cargo-home".into(),
@@ -1621,6 +1644,7 @@ mod tests {
         changed!(cargo_lock, "other-lock");
         changed!(cargo_inputs, "other-inputs");
         changed!(rustc, "other-rustc");
+        changed!(cargo, "other-cargo");
         changed!(target_triple, "aarch64-unknown-linux-gnu");
         changed!(working_directory, "crates/child");
         changed!(cargo_home, "/other/cargo-home");

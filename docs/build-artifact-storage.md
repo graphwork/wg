@@ -21,7 +21,8 @@ shell grammar consisting of leading literal environment assignments, one
 build-like Cargo invocation, and (for the overlap probe) an optional inert
 bounded `sleep` plus one fixed self-task `wg wait` lifecycle suffix. The exact
 command, logical working directory, effective
-`CARGO_HOME`, rustup/toolchain selector, every accepted environment assignment,
+`CARGO_HOME` (including an inline `HOME` fallback), exact Cargo/Rustc versions,
+rustup/toolchain selector, every accepted environment assignment,
 profile/release, target, features, rustflags and `--config` inputs are keyed.
 `export`, `cd`, `env`, functions/subshells, redirections, pipelines, arbitrary
 compound commands and dynamic expansion all fail closed. So do interactive
