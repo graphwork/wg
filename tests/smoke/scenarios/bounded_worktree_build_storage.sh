@@ -2,6 +2,9 @@
 # Exact-HEAD candidate regression for immutable Cargo baselines and private CoW layers.
 set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# Unix-domain sockets have a short fixed path budget; worker TMPDIR can be a
+# deeply nested owned scratch root, so pin this daemon fixture under /tmp.
+export WG_SMOKE_ROOT="${WG_SMOKE_ROOT:-/tmp/wgs-bounded-$$}"
 . "$HERE/_helpers.sh"
 REPO_ROOT="$(cd "$HERE/../../.." && pwd)"
 command -v cargo >/dev/null 2>&1 || loud_skip "NO CARGO" "cargo not on PATH"
