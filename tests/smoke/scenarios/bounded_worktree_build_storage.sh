@@ -155,15 +155,28 @@ start_wg_daemon "$project" --max-agents 3 --no-chat-agent --interval 1
 # The tiny accepted grammar is exactly one Cargo command with an optional inert
 # bounded sleep. Stateful setup, redirection and arbitrary compound commands do
 # not enter this reusable namespace (unit tests pin those fail-closed cases).
-exact_command='cargo build --quiet && sleep 10'
+exact_command='cargo build --quiet && sleep 10 && wg wait "$WG_TASK_ID" --until message --checkpoint '\''storage fixture complete'\'''
 wg add "warm exact cargo build" --id warm-cargo-build --exec "$exact_command" >/dev/null
 wg publish warm-cargo-build --only >/dev/null
 for _ in $(seq 1 160); do
   status=$(wg show warm-cargo-build --json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status",""))' 2>/dev/null || true)
-  [ "$status" = done ] && break
+  { [ "$status" = waiting ] || [ "$status" = done ]; } && break
   sleep 0.25
 done
-[ "${status:-}" = done ] || loud_fail "warm exact command did not complete: $(wg show warm-cargo-build --json 2>&1); wrapper=$(tail -60 "$project/daemon.log" 2>&1); daemon=$(tail -120 "$project/.wg/service/daemon.log" 2>&1)"
+{ [ "${status:-}" = waiting ] || [ "${status:-}" = done ]; } || loud_fail "warm exact command did not complete: $(wg show warm-cargo-build --json 2>&1); wrapper=$(tail -60 "$project/daemon.log" 2>&1); daemon=$(tail -120 "$project/.wg/service/daemon.log" 2>&1)"
+for _ in $(seq 1 80); do
+  warm_live=$(python3 - "$project" <<'PY'
+import json, sys
+from pathlib import Path
+r=json.loads((Path(sys.argv[1])/'.wg/service/registry.json').read_text())
+a=next(a for a in r['agents'].values() if a.get('task_id')=='warm-cargo-build')
+print(int((Path('/proc')/str(a['pid'])).exists()))
+PY
+)
+  [ "$warm_live" = 0 ] && break
+  sleep 0.1
+done
+[ "${warm_live:-1}" = 0 ] || loud_fail "warm wrapper remained live after lifecycle wait"
 wg disk cleanup --execute --json > "$scratch/warm-cleanup.json"
 baseline=$(find "$cache/baselines" -mindepth 1 -maxdepth 1 -type d -print -quit 2>/dev/null || true)
 [ -n "$baseline" ] && [ -f "$baseline/READY" ] \
@@ -239,7 +252,7 @@ for _ in $(seq 1 160); do
   done_count=0
   for n in 1 2 3; do
     state=$(wg show "cow-build-$n" --json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status",""))' 2>/dev/null || true)
-    [ "$state" = done ] && done_count=$((done_count+1))
+    { [ "$state" = waiting ] || [ "$state" = done ]; } && done_count=$((done_count+1))
   done
   [ "$done_count" = 3 ] && break
   sleep 0.25

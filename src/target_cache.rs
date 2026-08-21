@@ -205,15 +205,13 @@ fn parse_attested_cargo_command(shell_command: &str) -> Option<AttestedCargoComm
     // The sole accepted compound form is an inert bounded delay used by the
     // overlap smoke. It cannot prepare or alter Cargo state. Every other shell
     // operator fails closed to an attempt-isolated namespace.
-    let (cargo_part, suffix) = match original.split_once("&&") {
-        Some((cargo, suffix)) if !cargo.contains("&&") && !suffix.contains("&&") => {
-            (cargo.trim(), Some(suffix.trim()))
-        }
-        Some(_) => return None,
-        None => (original, None),
-    };
-    if let Some(suffix) = suffix {
-        let suffix_words = simple_shell_words(suffix)?;
+    let pieces = original.split("&&").map(str::trim).collect::<Vec<_>>();
+    if pieces.is_empty() || pieces.len() > 3 {
+        return None;
+    }
+    let cargo_part = pieces[0];
+    if let Some(sleep) = pieces.get(1) {
+        let suffix_words = simple_shell_words(sleep)?;
         if suffix_words.len() != 2
             || suffix_words[0] != "sleep"
             || suffix_words[1]
@@ -222,6 +220,13 @@ fn parse_attested_cargo_command(shell_command: &str) -> Option<AttestedCargoComm
                 .filter(|n| *n <= 300)
                 .is_none()
         {
+            return None;
+        }
+    }
+    if pieces.get(2).copied()
+        != Some("wg wait \"$WG_TASK_ID\" --until message --checkpoint 'storage fixture complete'")
+    {
+        if pieces.len() == 3 {
             return None;
         }
     }
@@ -1643,6 +1648,10 @@ mod tests {
                 "CARGO_HOME=/tmp/ch RUSTUP_TOOLCHAIN=nightly RUSTFLAGS='-C target-cpu=native' cargo build --release --target aarch64-unknown-linux-gnu --features x --config net.offline=true && sleep 10"
             )
         );
+        assert!(controlled_cargo_command(
+            "cargo build --quiet && sleep 10 && wg wait \"$WG_TASK_ID\" --until message --checkpoint 'storage fixture complete'"
+        )
+        .is_some());
         for ambiguous in [
             "export RUSTFLAGS=-Copt-level=3; cargo build",
             "cd other-dir; cargo build",

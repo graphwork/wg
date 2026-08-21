@@ -19,7 +19,8 @@ manifests, Cargo configuration, Rust toolchain files, full `rustc --version
 flags. Its command namespace has an explicit honesty boundary: WG accepts only a tiny
 shell grammar consisting of leading literal environment assignments, one
 build-like Cargo invocation, and (for the overlap probe) an optional inert
-bounded `sleep`. The exact command, logical working directory, effective
+bounded `sleep` plus one fixed self-task `wg wait` lifecycle suffix. The exact
+command, logical working directory, effective
 `CARGO_HOME`, rustup/toolchain selector, every accepted environment assignment,
 profile/release, target, features, rustflags and `--config` inputs are keyed.
 `export`, `cd`, `env`, functions/subshells, redirections, pipelines, arbitrary
