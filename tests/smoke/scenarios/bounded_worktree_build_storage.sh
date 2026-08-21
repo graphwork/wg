@@ -155,7 +155,7 @@ start_wg_daemon "$project" --max-agents 3 --no-chat-agent --interval 1
 # The tiny accepted grammar is exactly one Cargo command with an optional inert
 # bounded sleep. Stateful setup, redirection and arbitrary compound commands do
 # not enter this reusable namespace (unit tests pin those fail-closed cases).
-exact_command='cargo build --quiet && sleep 10 && wg wait "$WG_TASK_ID" --until message --checkpoint '\''storage fixture complete'\'''
+exact_command='cargo build --quiet && sleep 30 && wg wait "$WG_TASK_ID" --until message --checkpoint '\''storage fixture complete'\'''
 wg add "warm exact cargo build" --id warm-cargo-build --exec "$exact_command" >/dev/null
 wg publish warm-cargo-build --only >/dev/null
 for _ in $(seq 1 160); do
