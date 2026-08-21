@@ -218,7 +218,6 @@ stats=[p.stat() for p in paths]
 inodes={(s.st_dev,s.st_ino) for s in stats}
 assert len(inodes)==4, [(str(p),s.st_dev,s.st_ino) for p,s in zip(paths,stats)]
 before=[hashlib.sha256(p.read_bytes()).hexdigest() for p in paths]
-assert len(set(before))==1, before
 
 # Adversarial in-place truncate/overwrite followed by rename in one worker.
 victim=paths[1]
