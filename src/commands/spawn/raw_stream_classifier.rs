@@ -141,7 +141,12 @@ fn failure_class_for_signal(
         {
             FailureClass::ApiError5xxTransient
         }
-        FailureReason::Hard if signal.http_status == Some(400) => FailureClass::ApiError400Document,
+        FailureReason::Hard
+            if signal.http_status == Some(400)
+                && text.is_some_and(looks_like_document_error) =>
+        {
+            FailureClass::ApiError400Document
+        }
         _ if text.is_some_and(looks_like_executor_tool_model_config_failure) => {
             FailureClass::ExecutorConfig
         }
@@ -395,6 +400,18 @@ pub fn is_disk_resource_failure(raw_stream: &Path, output_log: &Path) -> bool {
         .any(|path| read_tail(path).is_some_and(|tail| looks_like_disk_exhaustion(&tail)))
 }
 
+/// Does this stream tail show the API rejecting a DOCUMENT (the 400 that means "your PDF is
+/// broken"), as opposed to any other 400?
+///
+/// `status_reason` maps 400..=499 to `FailureReason::Hard` and a present status outranks the
+/// message, so every 4xx without a typed error arrives here as Hard + 400 — a malformed PDF and an
+/// exhausted API budget look identical at this point. Only the message tells them apart.
+fn looks_like_document_error(text: &str) -> bool {
+    ["could not process pdf", "could not process document", "could not process image"]
+        .iter()
+        .any(|needle| text.to_ascii_lowercase().contains(needle))
+}
+
 fn looks_like_executor_tool_model_config_failure(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
     lower.contains("param: tools")
@@ -424,6 +441,22 @@ mod tests {
         assert_eq!(
             classify_from_raw_stream(f.path(), 1),
             FailureClass::ApiError400Document
+        );
+    }
+
+    #[test]
+    fn test_classifier_400_usage_limit_is_not_a_document_error() {
+        // A real Anthropic usage-limit payload. `status_reason` maps 400..=499 to
+        // FailureReason::Hard, and the message is never consulted because a present status
+        // outranks it, so this arrives as Hard + 400 — indistinguishable from a bad PDF unless
+        // the document arm asks for document evidence.
+        let f = write_stream(
+            r#"{"type":"result","terminal_reason":"api_error","subtype":"success","is_error":true,"api_error_status":400,"result":"API Error: 400 You have reached your specified API usage limits. You will regain access on 2026-09-01 at 00:00 UTC."}"#,
+        );
+        assert_ne!(
+            classify_from_raw_stream(f.path(), 1),
+            FailureClass::ApiError400Document,
+            "an exhausted API budget is not a malformed document"
         );
     }
 
@@ -590,10 +623,12 @@ mod tests {
     fn test_classifier_truncated_jsonl() {
         // Last line is partial JSON — should fall back, not panic
         let f = write_stream(r#"{"type":"result","api_error_status":400,"mes"#);
-        // Still extracts the status code from partial JSON
+        // The status is still extracted from the partial line. The CLASS changes with this commit:
+        // a stream that stops mid-key carries no evidence of WHY the request was rejected, so it
+        // is no longer reported as a document error. Only a message naming a document earns that.
         assert_eq!(
             classify_from_raw_stream(f.path(), 1),
-            FailureClass::ApiError400Document
+            FailureClass::AgentExitNonzero
         );
     }
 
