@@ -69,7 +69,16 @@ fn setup_workgraph(tmp: &TempDir, tasks: Vec<Task>) -> PathBuf {
     fs::create_dir_all(&wg_dir).unwrap();
     let graph_path = wg_dir.join("graph.jsonl");
     let mut graph = WorkGraph::new();
-    for task in tasks {
+    for mut task in tasks {
+        // These generic lifecycle fixtures exercise status transitions, not
+        // Git publication. Give every task a real report artifact so `wg done`
+        // satisfies completion-v3 instead of depending on a fake repository.
+        if task.completion_contract == worksgood::graph::CompletionContract::Land {
+            let artifact = tmp.path().join(format!("{}.artifact", task.id));
+            fs::write(&artifact, format!("artifact for {}\n", task.id)).unwrap();
+            task.completion_contract = worksgood::graph::CompletionContract::Report;
+            task.artifacts.push(artifact.to_string_lossy().to_string());
+        }
         graph.add_node(Node::Task(task));
     }
     save_graph(&graph, &graph_path).unwrap();
