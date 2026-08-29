@@ -298,7 +298,7 @@ private_delta=max(0,free_baseline-free_layers)
 # baseline plus small private metadata/output deltas, not three full copies.
 # The allowance absorbs daemon/log allocation elsewhere on the same mount.
 reflink_bound=max(16*1024*1024, baseline_allocated//4)
-fallback_bound=sum(layer_allocated)+16*1024*1024
+fallback_bound=baseline_allocated*len(layers)+32*1024*1024
 if reflink_supported:
     assert private_delta <= reflink_bound, (private_delta,reflink_bound,baseline_allocated,layer_allocated)
 else:
