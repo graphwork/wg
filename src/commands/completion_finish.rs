@@ -122,7 +122,9 @@ pub fn run(dir: &Path, id: &str, integration_ref: &str) -> Result<()> {
         // attempt has consumed its semantic-candidate budget. Superseded
         // source attempts do not count, and unavailable FLIP/Eval receipts do
         // not block their candidate-scoped infrastructure retry.
-        if config.agency.completion_review_strict
+        if candidate_matches_head
+            && candidate_matches_source_tuple
+            && config.agency.completion_review_strict
             && let Some(iterations) =
                 super::completion_submit::rejected_current_candidate_at_source_budget(
                     dir,
