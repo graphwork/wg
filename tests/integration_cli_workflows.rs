@@ -73,7 +73,9 @@ fn setup_workgraph(tmp: &TempDir, tasks: Vec<Task>) -> PathBuf {
         // These generic lifecycle fixtures exercise status transitions, not
         // Git publication. Give every task a real report artifact so `wg done`
         // satisfies completion-v3 instead of depending on a fake repository.
-        if task.completion_contract == worksgood::graph::CompletionContract::Land {
+        if task.status != Status::Done
+            && task.completion_contract == worksgood::graph::CompletionContract::Land
+        {
             let artifact = tmp.path().join(format!("{}.artifact", task.id));
             fs::write(&artifact, format!("artifact for {}\n", task.id)).unwrap();
             task.completion_contract = worksgood::graph::CompletionContract::Report;
