@@ -3,6 +3,9 @@
 # candidate-bound waiting states rather than source/provider failures.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# Keep daemon sockets below sockaddr_un limits even when a worker supplies a
+# deeply nested owned TMPDIR.
+export WG_SMOKE_ROOT="${WG_SMOKE_ROOT:-/tmp/wgs-completion-$$}"
 . "$HERE/_helpers.sh"
 command -v git >/dev/null 2>&1 || loud_skip "MISSING GIT" "git is required"
 command -v python3 >/dev/null 2>&1 || loud_skip "MISSING PYTHON3" "python3 is required"
