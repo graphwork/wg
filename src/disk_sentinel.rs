@@ -2038,8 +2038,8 @@ fn build_tmp_root(dir: &Path, cfg: &ResourceManagementConfig) -> PathBuf {
         .join(project_key)
 }
 
-/// Create one private target layer, seeded with hard links from the immutable
-/// exact-key baseline when available.
+/// Create one private target layer, seeded with verified reflinks or private
+/// byte copies from the immutable exact-key baseline when available.
 pub fn prepare_target_for_agent(
     dir: &Path,
     cfg: &ResourceManagementConfig,

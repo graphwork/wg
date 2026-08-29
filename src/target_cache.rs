@@ -151,6 +151,11 @@ fn simple_shell_words(input: &str) -> Option<Vec<String>> {
     let mut started = false;
     for ch in input.chars() {
         if escaped {
+            // Backslash-newline is removed by the shell before argv is built;
+            // retaining either byte here would attest different words.
+            if matches!(ch, '\n' | '\r') {
+                return None;
+            }
             word.push(ch);
             escaped = false;
             started = true;
@@ -172,18 +177,38 @@ fn simple_shell_words(input: &str) -> Option<Vec<String>> {
             started = true;
             continue;
         }
+        // Shell bytes whose executed argv depends on ambient filesystem,
+        // environment, process output, or line parsing are never reusable
+        // identity. Reject them even inside quotes rather than trying to prove
+        // quote/escape equivalence with the shell that will execute the task.
+        if matches!(
+            ch,
+            '$' | '`'
+                | '<'
+                | '>'
+                | '|'
+                | ';'
+                | '&'
+                | '('
+                | ')'
+                | '{'
+                | '}'
+                | '*'
+                | '?'
+                | '['
+                | '~'
+                | '#'
+                | '\n'
+                | '\r'
+        ) {
+            return None;
+        }
         if quote.is_none() && ch.is_ascii_whitespace() {
             if started {
                 words.push(std::mem::take(&mut word));
                 started = false;
             }
             continue;
-        }
-        if matches!(
-            ch,
-            '$' | '`' | '<' | '>' | '|' | ';' | '&' | '(' | ')' | '{' | '}' | '\n' | '\r'
-        ) {
-            return None;
         }
         word.push(ch);
         started = true;
@@ -913,9 +938,7 @@ fn make_baseline_read_only(root: &Path) -> Result<()> {
         }
         let metadata = entry.metadata()?;
         let mode = metadata.permissions().mode();
-        let readonly = if entry.file_type().is_dir() {
-            0o555
-        } else if mode & 0o111 != 0 {
+        let readonly = if entry.file_type().is_dir() || mode & 0o111 != 0 {
             0o555
         } else {
             0o444
@@ -1683,6 +1706,16 @@ mod tests {
             "f() { cargo build; }; f",
             "cargo build > build.log",
             "cargo build --features $FEATURES",
+            "cargo build --features ${FEATURES:-default}",
+            "cargo build --manifest-path *.toml",
+            "cargo build --manifest-path crate?.toml",
+            "cargo build --manifest-path '[ab].toml'",
+            "cargo build --manifest-path ~/crate/Cargo.toml",
+            "CARGO_HOME=~/.cargo cargo build",
+            "cargo build --target-dir $(mktemp -d)",
+            "cargo build --target-dir `mktemp -d`",
+            "cargo build # shell truncates the keyed tail",
+            "cargo build\nprintf injected",
             "cargo build | tee build.log",
             "cargo build && touch done",
             "env CARGO_HOME=/tmp/ch cargo build",

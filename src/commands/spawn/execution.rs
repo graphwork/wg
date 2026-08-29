@@ -104,9 +104,11 @@ fn random_cache_token() -> Result<String> {
 struct UnpublishedCachePath {
     path: PathBuf,
     cache_root: Option<PathBuf>,
-    parent_identity: FilesystemIdentity,
-    path_identity: FilesystemIdentity,
-    marker_token: String,
+    parent_identity: Option<FilesystemIdentity>,
+    path_identity: Option<FilesystemIdentity>,
+    marker_token: Option<String>,
+    quarantine_token: Option<String>,
+    marker_ready: bool,
     published: bool,
 }
 
@@ -137,13 +139,36 @@ impl UnpublishedCachePath {
     }
 
     fn claim(path: PathBuf, cache_root: Option<PathBuf>) -> Result<Self> {
-        let parent = path
+        // Install the Drop owner before identity, entropy, marker creation,
+        // permissions, writes, or fsync. Every fallible initialization step
+        // below therefore unwinds through the same exact-leaf guard.
+        let mut owned = Self {
+            path,
+            cache_root,
+            parent_identity: None,
+            path_identity: None,
+            marker_token: None,
+            quarantine_token: None,
+            marker_ready: false,
+            published: false,
+        };
+        owned.initialize_claim()?;
+        Ok(owned)
+    }
+
+    fn initialize_claim(&mut self) -> Result<()> {
+        let parent = self
+            .path
             .parent()
-            .ok_or_else(|| anyhow::anyhow!("owned cache has no parent: {}", path.display()))?;
-        let parent_identity = filesystem_identity(parent)?;
-        let path_identity = filesystem_identity(&path)?;
-        let marker_token = random_cache_token()?;
-        let marker = path.join(UNPUBLISHED_CACHE_OWNER_MARKER);
+            .ok_or_else(|| anyhow::anyhow!("owned cache has no parent: {}", self.path.display()))?;
+        self.parent_identity = Some(filesystem_identity(parent)?);
+        self.path_identity = Some(filesystem_identity(&self.path)?);
+        self.marker_token = Some(random_cache_token()?);
+        // Keep the quarantine name secret in memory rather than deriving it
+        // from the visible marker. If this second entropy read fails, Drop
+        // still owns the exact inode through the staged identity fields.
+        self.quarantine_token = Some(random_cache_token()?);
+        let marker = self.path.join(UNPUBLISHED_CACHE_OWNER_MARKER);
         let mut file = OpenOptions::new()
             .create_new(true)
             .write(true)
@@ -155,23 +180,36 @@ impl UnpublishedCachePath {
             file.set_permissions(fs::Permissions::from_mode(0o600))?;
         }
         use std::io::Write as _;
-        file.write_all(marker_token.as_bytes())?;
+        file.write_all(
+            self.marker_token
+                .as_deref()
+                .expect("claim token is installed before marker write")
+                .as_bytes(),
+        )?;
         file.sync_all()?;
-        Ok(Self {
-            path,
-            cache_root,
-            parent_identity,
-            path_identity,
-            marker_token,
-            published: false,
-        })
+        self.marker_ready = true;
+        Ok(())
     }
 
     fn path(&self) -> &Path {
         &self.path
     }
 
+    fn still_owns_identity(&self, path: &Path) -> bool {
+        self.path_identity
+            .is_some_and(|identity| filesystem_identity(path).ok() == Some(identity))
+    }
+
     fn still_owns(&self, path: &Path) -> bool {
+        if !self.still_owns_identity(path) {
+            return false;
+        }
+        if !self.marker_ready {
+            return true;
+        }
+        let Some(marker_token) = self.marker_token.as_deref() else {
+            return false;
+        };
         #[cfg(unix)]
         {
             use std::io::Read as _;
@@ -187,9 +225,10 @@ impl UnpublishedCachePath {
             let Ok(metadata) = directory.metadata() else {
                 return false;
             };
-            if (metadata.dev(), metadata.ino())
-                != (self.path_identity.device, self.path_identity.inode)
-            {
+            let Some(path_identity) = self.path_identity else {
+                return false;
+            };
+            if (metadata.dev(), metadata.ino()) != (path_identity.device, path_identity.inode) {
                 return false;
             }
             let Ok(marker_name) = std::ffi::CString::new(UNPUBLISHED_CACHE_OWNER_MARKER) else {
@@ -212,11 +251,14 @@ impl UnpublishedCachePath {
             let mut token = String::new();
             marker_metadata.is_file()
                 && marker.read_to_string(&mut token).is_ok()
-                && token == self.marker_token
+                && token == marker_token
         }
         #[cfg(not(unix))]
         {
-            if filesystem_identity(path).ok() != Some(self.path_identity) {
+            let Some(path_identity) = self.path_identity else {
+                return false;
+            };
+            if filesystem_identity(path).ok() != Some(path_identity) {
                 return false;
             }
             let marker = path.join(UNPUBLISHED_CACHE_OWNER_MARKER);
@@ -225,7 +267,7 @@ impl UnpublishedCachePath {
             };
             metadata.is_file()
                 && !metadata.file_type().is_symlink()
-                && fs::read_to_string(marker).ok().as_deref() == Some(self.marker_token.as_str())
+                && fs::read_to_string(marker).ok().as_deref() == Some(marker_token)
         }
     }
 
@@ -245,14 +287,30 @@ impl Drop for UnpublishedCachePath {
         // A pathname and a boolean are not deletion authority. Re-open both
         // filesystem objects and compare their captured identity plus the
         // random marker immediately before moving anything.
-        if filesystem_identity(parent).ok() != Some(self.parent_identity)
+        if self
+            .parent_identity
+            .is_some_and(|identity| filesystem_identity(parent).ok() != Some(identity))
             || !self.still_owns(&self.path)
         {
+            // Before path identity is captured, the newly-created scratch leaf
+            // can only be removed if it is still empty. Never recursively reap
+            // an unattributed path. Once identity exists, all recursive cleanup
+            // is fenced below by that identity (and by the marker after fsync).
+            if self.path_identity.is_none() {
+                let _ = fs::remove_dir(&self.path);
+            }
             return;
         }
-        let Ok(quarantine_token) = random_cache_token() else {
-            return;
-        };
+        let quarantine_token = self
+            .quarantine_token
+            .as_deref()
+            .or(self.marker_token.as_deref())
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                blake3::hash(self.path.to_string_lossy().as_bytes())
+                    .to_hex()
+                    .to_string()
+            });
         let quarantine = parent.join(format!(".wg-rollback-{quarantine_token}"));
         if quarantine.exists() || fs::rename(&self.path, &quarantine).is_err() {
             return;
@@ -7598,6 +7656,76 @@ esac
             "a renamed genuine inode is never guessed by path"
         );
         fs::remove_dir_all(displaced).unwrap();
+    }
+
+    #[test]
+    fn failed_cache_claim_initialization_is_owned_before_marker_and_swap_safe() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let parent = temp.path().join("scratch");
+        fs::create_dir(&parent).unwrap();
+
+        // Identity acquisition failure has an immediate guard: an untouched
+        // empty leaf is removed non-recursively rather than leaked.
+        let identity_failure = parent.join("identity-failure");
+        fs::create_dir(&identity_failure).unwrap();
+        drop(UnpublishedCachePath {
+            path: identity_failure.clone(),
+            cache_root: None,
+            parent_identity: None,
+            path_identity: None,
+            marker_token: None,
+            quarantine_token: None,
+            marker_ready: false,
+            published: false,
+        });
+        assert!(!identity_failure.exists());
+
+        // CSPRNG/marker/write/fsync failures happen after identities are
+        // captured. The staged guard may recursively remove only that inode.
+        let marker_failure = parent.join("marker-failure");
+        fs::create_dir(&marker_failure).unwrap();
+        fs::write(marker_failure.join("partial-marker"), b"partial").unwrap();
+        let staged = UnpublishedCachePath {
+            path: marker_failure.clone(),
+            cache_root: None,
+            parent_identity: Some(filesystem_identity(&parent).unwrap()),
+            path_identity: Some(filesystem_identity(&marker_failure).unwrap()),
+            marker_token: None,
+            quarantine_token: None,
+            marker_ready: false,
+            published: false,
+        };
+        drop(staged);
+        assert!(!marker_failure.exists());
+
+        // If the pathname is replaced before unwinding, even a marker-stage
+        // failure refuses the replacement and leaves the displaced owned inode
+        // alone rather than guessing where it moved.
+        let attacked = parent.join("attacked");
+        let displaced = parent.join("displaced");
+        let replacement = parent.join("replacement");
+        fs::create_dir(&attacked).unwrap();
+        fs::write(attacked.join("partial-marker"), b"partial").unwrap();
+        fs::create_dir(&replacement).unwrap();
+        fs::write(replacement.join("valuable"), b"replacement bytes").unwrap();
+        let staged = UnpublishedCachePath {
+            path: attacked.clone(),
+            cache_root: None,
+            parent_identity: Some(filesystem_identity(&parent).unwrap()),
+            path_identity: Some(filesystem_identity(&attacked).unwrap()),
+            marker_token: None,
+            quarantine_token: None,
+            marker_ready: false,
+            published: false,
+        };
+        fs::rename(&attacked, &displaced).unwrap();
+        fs::rename(&replacement, &attacked).unwrap();
+        drop(staged);
+        assert_eq!(
+            fs::read(attacked.join("valuable")).unwrap(),
+            b"replacement bytes"
+        );
+        assert!(displaced.is_dir());
     }
 
     #[test]

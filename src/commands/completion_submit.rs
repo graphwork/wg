@@ -747,6 +747,85 @@ fn same_immutable_candidate(
         && current.dependency_outputs == proposed.dependency_outputs
 }
 
+fn review_belongs_to_current_source_attempt(
+    task: &Task,
+    activity: &worksgood::completion_review::CompletionReviewActivity,
+) -> bool {
+    let current_attempt_id = task
+        .lifecycle
+        .current_attempt
+        .as_ref()
+        .map(|attempt| attempt.id.as_str());
+    activity.binding.as_ref().is_none_or(|binding| {
+        binding.generation == task.lifecycle.generation
+            && binding.attempt_id.as_deref() == current_attempt_id
+    })
+}
+
+fn semantic_iterations_for_current_source_attempt(
+    task: &Task,
+    activities: &[worksgood::completion_review::VerifiedCompletionReviewActivity],
+) -> u32 {
+    // One immutable candidate consumes one semantic iteration even though its
+    // FLIP and Eval decisions are separate receipts. Unbound legacy rows stay
+    // counted fail-closed; rows bound to a superseded source attempt do not.
+    activities
+        .iter()
+        .filter(|activity| review_belongs_to_current_source_attempt(task, &activity.activity))
+        .filter(|activity| {
+            matches!(
+                activity.verdict,
+                worksgood::simple_land::ReviewVerdict::Pass
+                    | worksgood::simple_land::ReviewVerdict::Reject
+            )
+        })
+        .map(|activity| {
+            (
+                activity.manifest_digest.to_string(),
+                activity
+                    .binding
+                    .as_ref()
+                    .map(|binding| binding.generation)
+                    .unwrap_or_default(),
+                activity
+                    .binding
+                    .as_ref()
+                    .and_then(|binding| binding.attempt_id.clone()),
+                activity
+                    .binding
+                    .as_ref()
+                    .map(|binding| binding.candidate_sequence)
+                    .unwrap_or_default(),
+            )
+        })
+        .collect::<std::collections::HashSet<_>>()
+        .len() as u32
+}
+
+pub(crate) fn rejected_current_candidate_at_source_budget(
+    dir: &Path,
+    task: &Task,
+    candidate: &CompletionCandidateRefs,
+    max_iterations: u32,
+) -> Result<Option<u32>> {
+    let verified = worksgood::completion_review::verified_review_activities(dir, task);
+    if verified.invalid_count > 0 {
+        bail!(
+            "strict completion review budget cannot be verified: {} projected receipt(s) are invalid",
+            verified.invalid_count
+        );
+    }
+    let semantic_iterations =
+        semantic_iterations_for_current_source_attempt(task, &verified.activities);
+    let current_rejected = verified.activities.iter().any(|activity| {
+        review_belongs_to_current_source_attempt(task, &activity.activity)
+            && activity.manifest_digest == candidate.manifest.content_digest
+            && activity.binding.as_ref() == candidate.review_binding.as_ref()
+            && activity.verdict == worksgood::simple_land::ReviewVerdict::Reject
+    });
+    Ok((semantic_iterations >= max_iterations && current_rejected).then_some(semantic_iterations))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn enforce_strict_review_budget(
     dir: &Path,
@@ -768,38 +847,12 @@ fn enforce_strict_review_budget(
             verified.invalid_count
         );
     }
-    // A revision is one immutable candidate, not one projected receipt. FLIP
-    // and Eval (or a route change for either) may each produce semantic
-    // receipts for that candidate, but they consume the task-wide revision
-    // allowance only once. Infrastructure receipts remain separately visible
-    // and intentionally do not enter this set.
-    let semantic_iterations = verified
-        .activities
-        .iter()
-        .filter(|activity| {
-            matches!(
-                activity.verdict,
-                worksgood::simple_land::ReviewVerdict::Pass
-                    | worksgood::simple_land::ReviewVerdict::Reject
-            )
-        })
-        .map(|activity| {
-            (
-                activity.manifest_digest.to_string(),
-                activity
-                    .binding
-                    .as_ref()
-                    .map(|binding| binding.generation)
-                    .unwrap_or_default(),
-                activity
-                    .binding
-                    .as_ref()
-                    .map(|binding| binding.candidate_sequence)
-                    .unwrap_or_default(),
-            )
-        })
-        .collect::<std::collections::HashSet<_>>()
-        .len() as u32;
+    // Candidate revisions are bounded within one source attempt. An operator
+    // retry gets a fresh budget, while FLIP+Eval and route changes for one
+    // immutable candidate still consume only one semantic iteration.
+    // Infrastructure receipts remain visible but do not consume that budget.
+    let semantic_iterations =
+        semantic_iterations_for_current_source_attempt(task, &verified.activities);
     if semantic_iterations < max_iterations {
         return Ok(());
     }
@@ -876,7 +929,7 @@ fn receipt_is_exact_infrastructure_retry(
         && receipt.inspected_output_digests == inspected_output_digests
 }
 
-fn park_for_review_budget(
+pub(crate) fn park_for_review_budget(
     dir: &Path,
     id: &str,
     semantic_iterations: u32,
@@ -1191,6 +1244,28 @@ mod tests {
                 actor_id: "review-worker".to_string(),
                 disposition: None,
             });
+            true
+        })
+        .unwrap();
+    }
+
+    fn bind_retried_source_attempt(fixture: &Fixture) {
+        let graph_path = fixture.dir.join("graph.jsonl");
+        modify_graph(&graph_path, |graph| {
+            let task = graph.get_task_mut("report").unwrap();
+            task.status = Status::InProgress;
+            task.assigned = Some("retry-worker".to_string());
+            task.lifecycle.generation = 4;
+            task.lifecycle.fence = 2;
+            task.lifecycle.attempt_sequence = 1;
+            task.lifecycle.current_attempt = Some(AttemptRef {
+                id: "attempt-4-1".to_string(),
+                generation: 4,
+                fence: 2,
+                actor_id: "retry-worker".to_string(),
+                disposition: None,
+            });
+            task.completion_blocker = None;
             true
         })
         .unwrap();
@@ -1545,6 +1620,114 @@ mod tests {
             task.log
                 .iter()
                 .any(|entry| entry.message.contains("Completion waiting/NeedsReview"))
+        );
+    }
+
+    #[test]
+    fn source_retry_resets_budget_but_revised_candidates_remain_bounded() {
+        let fixture = fixture();
+        configure_strict_review(&fixture, 1);
+        bind_running_attempt(&fixture);
+
+        let old_calls = Arc::new(Mutex::new(Vec::new()));
+        let mut old_flip = FakeReviewer {
+            route: "pi:test/flip".to_string(),
+            result: Ok(semantic(SemanticVerdict::Reject)),
+            calls: old_calls.clone(),
+        };
+        let mut old_eval = FakeReviewer {
+            route: "pi:test/eval".to_string(),
+            result: Ok(semantic(SemanticVerdict::Pass)),
+            calls: old_calls.clone(),
+        };
+        run_with_reviewers(
+            &fixture.dir,
+            "report",
+            &fixture.manifest_path,
+            &fixture.summary_path,
+            &mut old_flip,
+            &mut old_eval,
+        )
+        .unwrap();
+        assert_eq!(*old_calls.lock().unwrap(), vec![ReviewerKind::Flip]);
+
+        // Operator retry changes the source tuple. The prior rejection stays
+        // immutable history but cannot consume this attempt's one-candidate
+        // semantic budget.
+        bind_retried_source_attempt(&fixture);
+        rewrite_candidate(
+            &fixture,
+            "session:retry-first",
+            b"first candidate from retried source attempt\n",
+        );
+        let retry_calls = Arc::new(Mutex::new(Vec::new()));
+        let mut retry_flip = FakeReviewer {
+            route: "pi:test/flip".to_string(),
+            result: Ok(semantic(SemanticVerdict::Reject)),
+            calls: retry_calls.clone(),
+        };
+        let mut retry_eval = FakeReviewer {
+            route: "pi:test/eval".to_string(),
+            result: Ok(semantic(SemanticVerdict::Pass)),
+            calls: retry_calls.clone(),
+        };
+        run_with_reviewers(
+            &fixture.dir,
+            "report",
+            &fixture.manifest_path,
+            &fixture.summary_path,
+            &mut retry_flip,
+            &mut retry_eval,
+        )
+        .unwrap();
+        assert_eq!(*retry_calls.lock().unwrap(), vec![ReviewerKind::Flip]);
+
+        let graph = load_graph(fixture.dir.join("graph.jsonl")).unwrap();
+        let task = graph.get_task("report").unwrap();
+        let candidate = task.completion_candidate.as_ref().unwrap();
+        assert_eq!(
+            rejected_current_candidate_at_source_budget(&fixture.dir, task, candidate, 1).unwrap(),
+            Some(1),
+            "finish-path accounting must see only the current attempt's rejected candidate"
+        );
+
+        // Candidate scoping still applies inside the retried source attempt:
+        // its second immutable revision parks without a third model call.
+        rewrite_candidate(
+            &fixture,
+            "session:retry-over-budget",
+            b"second candidate from retried source attempt\n",
+        );
+        let blocked_calls = Arc::new(Mutex::new(Vec::new()));
+        let mut blocked_flip = FakeReviewer {
+            route: "pi:test/flip".to_string(),
+            result: Ok(semantic(SemanticVerdict::Pass)),
+            calls: blocked_calls.clone(),
+        };
+        let mut blocked_eval = FakeReviewer {
+            route: "pi:test/eval".to_string(),
+            result: Ok(semantic(SemanticVerdict::Pass)),
+            calls: blocked_calls.clone(),
+        };
+        let error = run_with_reviewers(
+            &fixture.dir,
+            "report",
+            &fixture.manifest_path,
+            &fixture.summary_path,
+            &mut blocked_flip,
+            &mut blocked_eval,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("Needs review"));
+        assert!(blocked_calls.lock().unwrap().is_empty());
+
+        let graph = load_graph(fixture.dir.join("graph.jsonl")).unwrap();
+        let task = graph.get_task("report").unwrap();
+        assert_eq!(task.status, Status::Waiting);
+        assert_eq!(task.completion_review_activity.len(), 2);
+        assert_eq!(
+            task.completion_blocker.as_ref().unwrap().kind,
+            CompletionBlockerKind::NeedsReview
         );
     }
 

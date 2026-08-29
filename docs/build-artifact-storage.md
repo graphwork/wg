@@ -24,8 +24,11 @@ command, logical working directory, effective
 `CARGO_HOME` (including an inline `HOME` fallback), exact Cargo/Rustc versions,
 rustup/toolchain selector, every accepted environment assignment,
 profile/release, target, features, rustflags and `--config` inputs are keyed.
-`export`, `cd`, `env`, functions/subshells, redirections, pipelines, arbitrary
-compound commands and dynamic expansion all fail closed. So do interactive
+`export`, `cd`, `env`, functions/subshells, redirections, pipelines, comments,
+newlines, pathname globs, tilde expansion, parameter/command substitution,
+arbitrary compound commands and every other dynamic shell form all fail closed.
+Literal command bytes are therefore never used as authority for a different
+expanded argv. So do interactive
 agents: each receives an attempt-isolated, non-reusable layer that can neither
 consume nor publish a baseline. A future arbitrary Cargo shell command can
 never fall back to a partially keyed “exact” baseline.
@@ -69,8 +72,16 @@ deduplicated.
 ## Candidate-smoke provenance
 
 The bounded-storage smoke does not trust an inherited `target/debug/wg`. It
-requires a clean submitted `HEAD`, records its commit and tree, runs `cargo
-build --locked --bin wg` from that checkout, and writes a candidate-build
+also records every target/scratch lease path before restart and requires every
+one to be physically absent after restart, rather than treating removed registry
+rows as cleanup proof. At three-worker workload scale it measures filesystem
+free-block deltas before the baseline, after the baseline, and with all layers
+live. A successful same-filesystem `FICLONE` probe selects the one-baseline plus
+bounded-private-delta assertion; unsupported filesystems use a conservative
+baseline-plus-full-private-copy bound while retaining inode isolation.
+
+The smoke requires a clean submitted `HEAD`, records its commit and tree, runs
+`cargo build --locked --bin wg` from that checkout, and writes a candidate-build
 receipt containing the source root/commit/tree, exact executable path, build
 argv and SHA-256 digest. A verifier binds all receipt fields to the live source
 and bytes before invocation. The scenario deliberately substitutes a stale

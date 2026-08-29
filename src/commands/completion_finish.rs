@@ -116,6 +116,32 @@ pub fn run(dir: &Path, id: &str, integration_ref: &str) -> Result<()> {
             }
             return super::completion_done::run(dir, id, integration_ref);
         }
+
+        // A repeated `wg done` for an exact rejected candidate must not rerun
+        // deterministic validation or another model call once this source
+        // attempt has consumed its semantic-candidate budget. Superseded
+        // source attempts do not count, and unavailable FLIP/Eval receipts do
+        // not block their candidate-scoped infrastructure retry.
+        if config.agency.completion_review_strict
+            && let Some(iterations) =
+                super::completion_submit::rejected_current_candidate_at_source_budget(
+                    dir,
+                    &task,
+                    candidate,
+                    config.agency.gate_max_attempts.max(1),
+                )?
+        {
+            super::completion_submit::park_for_review_budget(
+                dir,
+                id,
+                iterations,
+                config.agency.gate_max_attempts.max(1),
+            )?;
+            bail!(
+                "Needs review: strict model-review attempt limit ({}) reached; no further validation or model call was made",
+                config.agency.gate_max_attempts.max(1)
+            );
+        }
     }
 
     let mut evidence = Vec::new();

@@ -150,6 +150,34 @@ disk_scan_interval_seconds = 1
 owned_cache_lease_seconds = 3600
 max_build_agents = 3
 EOF
+mkdir -p "$cache"
+# Probe the same FICLONE primitive used by the candidate. This selects the
+# workload-level physical bound below; unsupported filesystems retain the safe
+# full-private-copy fallback assertion.
+reflink_supported=$(python3 - "$cache" <<'PY'
+import fcntl, os, sys
+from pathlib import Path
+root=Path(sys.argv[1]); src=root/'.reflink-probe-source'; dst=root/'.reflink-probe-dest'
+try:
+    src.write_bytes(b'R' * (8 * 1024 * 1024))
+    with src.open('rb') as source, dst.open('xb') as output:
+        fcntl.ioctl(output.fileno(), 0x40049409, source.fileno())
+        output.flush(); os.fsync(output.fileno())
+    print(1)
+except OSError:
+    print(0)
+finally:
+    for path in (dst,src):
+        try: path.unlink()
+        except FileNotFoundError: pass
+PY
+)
+sync
+physical_free_before=$(python3 - "$cache" <<'PY'
+import os,sys
+v=os.statvfs(sys.argv[1]); print(v.f_bavail*v.f_frsize)
+PY
+)
 start_wg_daemon "$project" --max-agents 3 --no-chat-agent --interval 1
 
 # The tiny accepted grammar is exactly one Cargo command with an optional inert
@@ -182,6 +210,12 @@ baseline=$(find "$cache/baselines" -mindepth 1 -maxdepth 1 -type d -print -quit 
 [ -n "$baseline" ] && [ -f "$baseline/READY" ] \
   || loud_fail "exact command did not publish immutable baseline: $(cat "$scratch/warm-cleanup.json")"
 find "$baseline" -type f -print0 | sort -z | xargs -0 sha256sum > "$scratch/baseline.before"
+sync
+physical_free_after_baseline=$(python3 - "$cache" <<'PY'
+import os,sys
+v=os.statvfs(sys.argv[1]); print(v.f_bavail*v.f_frsize)
+PY
+)
 
 # Three same-command workers overlap while sleeping after Cargo. Their regular
 # artifacts must be private inodes even when the filesystem shares CoW extents.
@@ -205,12 +239,23 @@ PY
 done
 [ "${ready:-0}" = 3 ] || loud_fail "three receipt-candidate workers did not overlap: $(tail -100 .wg/service/daemon.log 2>&1)"
 
-python3 - "$project" "$baseline/target" "$scratch/metrics.json" <<'PY'
+sync
+physical_free_with_layers=$(python3 - "$cache" <<'PY'
+import os,sys
+v=os.statvfs(sys.argv[1]); print(v.f_bavail*v.f_frsize)
+PY
+)
+python3 - "$project" "$baseline/target" "$scratch/metrics.json" "$scratch/owned-paths.json" \
+  "$physical_free_before" "$physical_free_after_baseline" "$physical_free_with_layers" \
+  "$reflink_supported" <<'PY'
 import hashlib, json, os, sys
 from pathlib import Path
-project, baseline, output = map(Path, sys.argv[1:])
+project, baseline, output, owned_output = map(Path, sys.argv[1:5])
+free_before, free_baseline, free_layers = map(int, sys.argv[5:8])
+reflink_supported = bool(int(sys.argv[8]))
 ownership=json.loads((project/'.wg/service/disk/owned-caches.json').read_text())
-layers=[Path(c['path']) for c in ownership['caches'] if c.get('kind')=='cargo-target' and c.get('task_id','').startswith('cow-build-')]
+owned_rows=[c for c in ownership['caches'] if c.get('task_id','').startswith('cow-build-')]
+layers=[Path(c['path']) for c in owned_rows if c.get('kind')=='cargo-target']
 assert len(layers)==3 and all(p.is_dir() for p in layers), layers
 artifact=Path('debug/cow-smoke')
 paths=[baseline/artifact,*[p/artifact for p in layers]]
@@ -237,9 +282,42 @@ assert (paths[0]).exists() and (paths[2]).exists() and (paths[3]).exists()
 
 def logical(root):
     return sum(p.stat().st_size for p in root.rglob('*') if p.is_file() and not p.is_symlink())
+def allocated(root):
+    seen=set(); total=0
+    for p in root.rglob('*'):
+        if not p.is_file() or p.is_symlink(): continue
+        s=p.stat(); identity=(s.st_dev,s.st_ino)
+        if identity in seen: continue
+        seen.add(identity); total += getattr(s,'st_blocks',0)*512
+    return total
+baseline_allocated=allocated(baseline)
+layer_allocated=[allocated(p) for p in layers]
+baseline_delta=max(0,free_before-free_baseline)
+private_delta=max(0,free_baseline-free_layers)
+# FICLONE-capable filesystems must hold the three workload layers as one
+# baseline plus small private metadata/output deltas, not three full copies.
+# The allowance absorbs daemon/log allocation elsewhere on the same mount.
+reflink_bound=max(16*1024*1024, baseline_allocated//4)
+fallback_bound=sum(layer_allocated)+16*1024*1024
+if reflink_supported:
+    assert private_delta <= reflink_bound, (private_delta,reflink_bound,baseline_allocated,layer_allocated)
+else:
+    # Portable safe fallback: private byte copies may cost one complete layer
+    # each, but physical growth remains bounded by those charged bytes.
+    assert private_delta <= fallback_bound, (private_delta,fallback_bound,layer_allocated)
+assert max(0,free_before-free_layers) <= baseline_delta + (reflink_bound if reflink_supported else fallback_bound)
+owned_paths=[str(Path(c['path'])) for c in owned_rows]
+assert len([p for p in owned_paths if Path(p).is_dir()]) == len(owned_paths), owned_paths
+owned_output.write_text(json.dumps(owned_paths,sort_keys=True,indent=2))
 data={'baseline_logical':logical(baseline),'layer_logical':[logical(p) for p in layers],
+      'baseline_allocated':baseline_allocated,'layer_allocated_charged':layer_allocated,
+      'physical_free_before':free_before,'physical_free_after_baseline':free_baseline,
+      'physical_free_with_layers':free_layers,'baseline_physical_delta':baseline_delta,
+      'private_layer_physical_delta':private_delta,'reflink_supported':reflink_supported,
+      'applied_private_delta_bound':reflink_bound if reflink_supported else fallback_bound,
       'baseline_inode':stats[0].st_ino,'layer_inodes':[s.st_ino for s in stats[1:]],
-      'layers':[str(p) for p in layers], 'mutated_layer':str(layers[0])}
+      'layers':[str(p) for p in layers], 'all_owned_paths':owned_paths,
+      'mutated_layer':str(layers[0])}
 output.write_text(json.dumps(data,sort_keys=True,indent=2))
 PY
 find "$baseline" -type f -print0 | sort -z | xargs -0 sha256sum > "$scratch/baseline.after"
@@ -272,6 +350,13 @@ PY
   sleep 0.25
 done
 [ "${remaining:-1}" = 0 ] || loud_fail "restart did not reap terminal private layers"
+python3 - "$scratch/owned-paths.json" <<'PY' || loud_fail "restart removed ownership rows but left physical worker layers"
+import json,sys
+from pathlib import Path
+paths=[Path(p) for p in json.loads(Path(sys.argv[1]).read_text())]
+left=[str(p) for p in paths if p.exists()]
+assert not left, left
+PY
 find "$baseline" -type f -print0 | sort -z | xargs -0 sha256sum > "$scratch/baseline.restart"
 cmp -s "$scratch/baseline.before" "$scratch/baseline.restart" \
   || loud_fail "restart cleanup changed immutable baseline"
