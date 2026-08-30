@@ -553,6 +553,13 @@ pub fn run_with_remote_provider(
     {
         anyhow::bail!("--validation-command exceeds the 16384-byte bound");
     }
+    if !validation_commands.is_empty() {
+        eprintln!(
+            "Warning: --validation-command creates an authoritative hard gate. \
+             Prefer ## Validation for agent-selected checks; use this only when the operator \
+             explicitly requested the exact command or checked-in repository policy names it."
+        );
+    }
     if validator_agent.is_some() || validator_model.is_some() {
         eprintln!(
             "Warning: --validator-agent and --validator-model are deprecated and ignored; \
