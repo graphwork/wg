@@ -132,8 +132,10 @@ assert x["overview"]["total_terminal_observations"] == 2, x["overview"]
 assert len(x["terminal_outcomes"]) == 2, x["terminal_outcomes"]
 PY
 
-# Explicit strict review remains available, but two non-passing model attempts
-# park visibly and release the worker instead of spinning forever.
+# Explicit strict review remains available. Replaying an immutable candidate
+# reuses its receipt, while two materially distinct rejected commits consume
+# the candidate-revision budget; the third revision parks successfully without
+# another model call or source failure.
 mkdir -p "$scratch/fakebin"
 cat >"$scratch/fakebin/pi" <<'SH'
 #!/usr/bin/env bash
@@ -170,11 +172,13 @@ for attempt in 1 2; do
   fi
   grep -q 'strict.test.*repair required' "$scratch/strict-$attempt.err" \
     || loud_fail "strict rejection did not return exact actionable finding: $(cat "$scratch/strict-$attempt.err")"
+  printf 'revision-%s\n' "$attempt" >> strict.txt
+  git add strict.txt && git commit -qm "strict revision $attempt"
 done
-if (cd "$repo" && env -u WG_DIR HOME="$home" PATH="$scratch/fakebin:$PATH" \
+if ! (cd "$repo" && env -u WG_DIR HOME="$home" PATH="$scratch/fakebin:$PATH" \
   WG_TASK_ID=strict-review WG_AGENT_ID=strict-worker "$WG_BIN" --dir "$repo/.wg" \
   done strict-review >"$scratch/strict-3.out" 2>"$scratch/strict-3.err"); then
-  loud_fail "strict review attempt limit unexpectedly completed"
+  loud_fail "strict review ceiling failed source work instead of parking: $(cat "$scratch/strict-3.err")"
 fi
 grep -q 'Needs review: strict model-review attempt limit (2) reached' "$scratch/strict-3.err" \
   || loud_fail "bounded strict exhaustion was not visible"
@@ -185,7 +189,10 @@ x=json.load(open(sys.argv[1]))
 assert x["status"] == "waiting", x
 assert x.get("assigned") is None, x
 assert len(x.get("completion_review_activity", [])) == 2, x
-assert any("Needs review" in row["message"] for row in x["log"]), x
+assert x["completion_blocker"]["kind"] == "needs-review", x
+assert "semantic review ceiling 2/2" in x["completion_blocker"]["reason"], x
+assert not x.get("failure_reason"), x
+assert any("Completion waiting/NeedsReview" in row["message"] for row in x["log"]), x
 PY
 
 echo "PASS: simple local completion, advisory visibility, audited recovery, and bounded strict review"

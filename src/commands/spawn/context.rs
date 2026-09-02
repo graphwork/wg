@@ -775,13 +775,14 @@ Every **code task** description MUST include:
 
 ```markdown
 ## Validation
-- [ ] Failing test written first: test_feature_x_<scenario>
-- [ ] Implementation makes test pass
-- [ ] cargo build + cargo test pass with no regressions
+- [ ] Add a focused regression for <scenario>
+- [ ] Exercise the changed behavior through its real entry point
+- [ ] Run the relevant checks from the repository's checked-in policy
+- [ ] Report failures and whether they reproduce on the base revision
 - [ ] <any additional acceptance criteria>
 ```
 
-The agency evaluator (auto_evaluate + FLIP) reads the `## Validation` section and scores the agent's output against it.
+The `## Validation` prose contract is the default: workers choose and report appropriate checks, and advisory evaluation reads the criteria. Do not add or broaden an authoritative `--validation-command` unless the human explicitly requested that exact command or checked-in repository policy names it. Agent-selected checks belong here, not in a hard completion gate.
 
 ### User-visible behavior fixes require live human-flow validation
 
@@ -810,7 +811,7 @@ Validation checklist for user-visible fixes:
 - [ ] A scenario is added to `tests/smoke/scenarios/` and listed in `owners`
       of `tests/smoke/manifest.toml` so future regressions are caught by the
       smoke gate (the manifest is grow-only)
-- [ ] cargo build + cargo test pass with no regressions
+- [ ] Relevant checks from the repository's checked-in policy are run and reported
 ```
 
 If you are tempted to validate a user-visible fix with only a CLI or unit test "because it exercises the same code", stop. Add the human-flow simulation.

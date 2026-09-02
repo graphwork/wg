@@ -40,12 +40,14 @@ pub fn run(dir: &Path, command: DiskCommand, json: bool) -> Result<()> {
                 );
                 for target in &snapshot.targets {
                     println!(
-                        "  target {} owner={}/{} size={} growth={}/s stale={}",
+                        "  target {} owner={}/{} logical={} private={} growth={}/s key={} stale={}",
                         target.path,
                         target.task_id,
                         target.agent_id,
                         target.bytes,
+                        target.private_bytes,
                         target.growth_bytes_per_sec,
+                        target.cache_key.as_deref().unwrap_or("legacy/unkeyed"),
                         target.stale
                     );
                 }

@@ -2625,9 +2625,9 @@ timeout_seconds = 180
 [[scenario]]
 name = "predictive_build_admission_opt_in"
 script = "scenarios/predictive_build_admission_opt_in.sh"
-owners = ["disable-predictive-build"]
-description = "Installed-binary terminal flow proving the availability-first false default ignores an impossible historical build high-water and preserves a dirty source plus warm recovery target; explicit true deterministically refuses the same projection; human/JSON service status names admission-deferred and the five-tick dispatch watchdog never misdiagnoses that intentional opt-in refusal as a wedge."
-timeout_seconds = 45
+owners = ["disable-predictive-build", "land-bounded-worktree-build-storage"]
+description = "Candidate-binary terminal flow proving private-delta admission is enabled by default and refuses an impossible schema-v2 reserve before creating a worktree/attempt; human/JSON service status names admission-deferred without a wedge diagnosis, restored headroom dispatches exactly one attempt, while an explicit emergency disable remains loud in config lint, launches deterministically, and preserves dirty source."
+timeout_seconds = 90
 
 [[scenario]]
 name = "eval_gate_low_score_fail_closed"
@@ -3085,8 +3085,8 @@ timeout_seconds = 120
 [[scenario]]
 name = "simple_local_recovery"
 script = "scenarios/simple_local_recovery.sh"
-owners = ["simple-local-wg-recovery", "bridge-terminal-outcomes-agency", "prune-dormant-local-lifecycle", "validate-stigmergic-loop", "preserve-review-identity-across-restart"]
-description = "Credential-free trusted-local golden path: one `wg done` snapshots, records visible advisory review activity without creating synthetic assignment/evaluator tasks or PendingEval-style states, publishes the exact Land commit, and derives Done without submit/land ceremony; operator recovery is refused from worker authority and succeeds outside it with a reason-bound immutable receipt; both accepted outcomes project once into unscored Agency observations across replay, migration, and daemon reconciliation."
+owners = ["simple-local-wg-recovery", "bridge-terminal-outcomes-agency", "prune-dormant-local-lifecycle", "validate-stigmergic-loop", "preserve-review-identity-across-restart", "completion-review-candidate-budget"]
+description = "Credential-free trusted-local golden path: one `wg done` snapshots, records visible advisory review activity without creating synthetic assignment/evaluator tasks or PendingEval-style states, publishes the exact Land commit, and derives Done without submit/land ceremony; operator recovery is refused from worker authority and succeeds outside it with a reason-bound immutable receipt; strict review counts materially revised immutable candidates, then parks NeedsReview successfully without another model call or source failure; accepted outcomes project once into unscored Agency observations across replay, migration, and daemon reconciliation."
 timeout_seconds = 90
 
 [[scenario]]
@@ -3109,3 +3109,24 @@ script = "scenarios/completion_validation_evidence.sh"
 owners = ["bind-completion-validation-evidence", "validate-stigmergic-loop", "preserve-review-identity-across-restart"]
 description = "Credential-free real terminal fake-Pi canary for one-step completion evidence: WG executes an exact configured deterministic command, captures bounded stdout/stderr digests and content, exit/timing, cwd/repository/candidate and task/generation/attempt/fence/requirements binding; valid evidence reaches FLIP Pass then completion Eval and both immutable activity rows survive landing, Done, a pre-Done stale daemon save, and restart. Worker-prose-only, same-size CAS-tampered, stale cross-candidate, and failing-command evidence are visibly refused before review; a semantic FLIP rejection remains advisory and lifecycle-neutral by default."
 timeout_seconds = 120
+
+[[scenario]]
+name = "terminal_receipt_precedence"
+script = "scenarios/terminal_receipt_precedence.sh"
+owners = ["completion-classification-precedence"]
+description = "Candidate-binary credential-free real terminal classifier regression for the provider-backoff incident: a final completed receipt outranks incidental timeout/reset prose and replays byte-identically; typed NeedsReview remains finalization-blocked; a genuine structured provider timeout and a hard timeout after only an intermediate tool-use turn remain infrastructure failures; conflicting exact terminal receipts remain typed ambiguity without semantic/source failure."
+timeout_seconds = 30
+
+[[scenario]]
+name = "bounded_worktree_build_storage"
+script = "scenarios/bounded_worktree_build_storage.sh"
+owners = ["land-bounded-worktree-build-storage", "harden-bounded-worktree-build-storage", "finish-bounded-worktree-storage-safety", "prepare-completion-storage-upstream"]
+description = "Exact-submitted-HEAD candidate-binary, credential-free real-daemon storage regression: Cargo builds the invoked wg path and records commit/tree/binary digest in a candidate-build receipt, rejects a stale executable substituted at that path, then a clean warm tiny-Cargo worker publishes one tiny-grammar immutable baseline and three same-command workers overlap. Every baseline/layer regular artifact has a distinct writable inode (reflink or private-copy), adversarial truncate/overwrite/rename leaves baseline and siblings byte-identical, workload-scale physical free-block deltas prove one baseline plus bounded private growth (or a safe full-copy fallback), and restart cleanup physically removes every captured target/scratch path without changing the baseline. Focused unit coverage proves dynamic/stateful shell isolation, all command-key dimensions, every-entry mutation isolation, and staged marker+filesystem-identity rollback refusal."
+timeout_seconds = 240
+
+[[scenario]]
+name = "completion_resilience_e2e"
+script = "scenarios/completion_resilience_e2e.sh"
+owners = ["completion-resilience-e2e", "prepare-completion-storage-upstream"]
+description = "Candidate-binary credential-free real-daemon/Fake-Pi completion regression: a Land source runs once in an isolated retained worker, strict deterministic review rejects immutable candidate A then passes revised candidate B, and an unrelated tracked edit in the attached integration checkout forces durable Waiting/LandingPending without changing user bytes. A daemon restart preserves the exact B manifest, review binding and target-ref CAS; after explicit cleanup, one resume publishes B and records one lifecycle success without rerunning source or review. A second already-settled Pi source exhausts a one-revision strict budget and parks the distinct retained candidate as Waiting/NeedsReview, never Failed/provider-timeout; restart remains source/review-idempotent. Real show/status and terminal classification surfaces are exercised throughout."
+timeout_seconds = 180

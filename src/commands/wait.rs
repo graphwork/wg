@@ -161,7 +161,7 @@ fn parse_wait_spec(s: &str, graph: &worksgood::graph::WorkGraph) -> Result<WaitS
 /// ambient `PI_SESSION_ID` alone is not authority. Bind the two only when the
 /// durable watchdog source/session/process proofs match the lifecycle kernel's
 /// active continuation authorization exactly.
-fn attested_pi_session_id(dir: &Path, task: &Task) -> Result<Option<String>> {
+pub(crate) fn attested_pi_session_id(dir: &Path, task: &Task) -> Result<Option<String>> {
     let Some(authorization) = task.lifecycle.pi_continuation.as_ref() else {
         return Ok(None);
     };
@@ -382,7 +382,10 @@ pub fn run(dir: &Path, id: &str, until: &str, checkpoint: Option<&str>) -> Resul
         }
         let _ = registry.save();
     }
-    if let Err(error) = worksgood::disk_sentinel::release_owned_cache_leases(dir, id, None) {
+    let lease_owner = worksgood::disk_sentinel::caller_agent_for_task(id);
+    if let Err(error) =
+        worksgood::disk_sentinel::release_owned_cache_leases(dir, id, lease_owner.as_deref())
+    {
         eprintln!("Warning: failed to release build-cache lease: {error:#}");
     }
 

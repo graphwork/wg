@@ -1,31 +1,44 @@
 # Deterministic completion-validation evidence
 
-Ordinary `wg done TASK` has two deliberately separate review inputs:
+Ordinary `wg done TASK` uses the task's `## Validation` prose as its default
+acceptance contract. Workers choose relevant checks, report what they ran, and
+can distinguish candidate regressions from pre-existing or environmental
+failures. FLIP and completion Eval are advisory by default.
 
-1. **Deterministic validation is authoritative.** A configured command must exit
+An exact executable command is a separate, optional surface:
+
+1. **An explicitly configured command is authoritative.** It must exit
    successfully on one unchanged candidate before completion can continue.
-2. **FLIP and completion Eval are advisory by default.** Their exact receipts and
-   findings remain visible, but semantic disagreement does not override a valid
-   deterministic result unless `[agency] completion_review_strict = true` was
-   explicitly selected.
+2. **Only the operator or checked-in repository policy should grant that
+   authority.** Agent-selected checks belong in `## Validation`; agents must not
+   invent or broaden a hard gate merely to be “safer” or satisfy model review.
 
 Completion Eval is not an Agency quality score. `wg evaluate run TASK` remains
 that separate, post-`Done`, scored authority.
 
-## Configure an exact command
+## Optional operator-authorized exact command
 
-Put human acceptance criteria in `## Validation`, and configure the executable
-subset explicitly:
+The normal task needs only prose criteria:
+
+```bash
+wg add "Implement parser" --id parser \
+  --description $'Implement the parser.\n\n## Validation\n- [ ] focused parser regression passes\n- [ ] report failures and whether they reproduce on the base revision'
+wg publish parser --only
+```
+
+Use `--validation-command` only when the human explicitly requests the exact
+command or a checked-in project policy declares it authoritative:
 
 ```bash
 wg add "Implement parser" --id parser \
   --description $'Implement the parser.\n\n## Validation\n- [ ] focused tests pass' \
-  --validation-command "cargo test parser::tests && cargo fmt --check"
-wg publish parser --only
+  --validation-command "./scripts/check-parser"
 ```
 
-The command is stored in the task's canonical requirements. Editing it changes
-the requirements digest and invalidates any earlier candidate:
+Do not silently append `--all-features`, `-D warnings`, full-suite scope, or
+similar strengthening to a repository command. A configured command is stored
+in the task's canonical requirements; editing it changes the requirements
+digest and invalidates any earlier candidate:
 
 ```bash
 wg edit parser --validation-command "cargo test parser::tests && cargo clippy"

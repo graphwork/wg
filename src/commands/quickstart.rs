@@ -72,7 +72,10 @@ TASK STATE COMMANDS
   wg resume <task-id> --only  # Explicitly satisfy one Waiting task
 
 VALIDATION (## Validation section in task description)
-  Put concrete checks under `## Validation`; the evaluator reads them.
+  Put required checks under `## Validation`; this prose contract is the default.
+  Workers choose relevant checks and report candidate vs baseline/environment failures.
+  Exact executable hard gates are operator/repository-authorized exceptions.
+  Agents must not invent or broaden them.
 
 MESSAGING
   wg msg send <task-id> "message"
@@ -304,9 +307,9 @@ fn json_output() -> serde_json::Value {
             }
         },
         "validation": {
-            "description": "Validation criteria live in a ## Validation section. Exact executable checks may also be configured on the task; one-step done captures their immutable command/result evidence before advisory completion review.",
+            "description": "Validation criteria live in a ## Validation section. This prose contract is the default: workers choose relevant checks, report results, and distinguish candidate regressions from baseline or environmental failures.",
             "create": "wg add \"task\" -d \"## Validation\\n- [ ] criteria here\"",
-            "note": "Deterministic configured checks are authoritative. Completion FLIP/eval is visible and advisory by default; explicit scored Agency evaluation remains a separate post-Done operation."
+            "note": "Exact executable checks are optional operator/repository-authorized hard gates. Agents must not invent or broaden them. Completion FLIP/eval is visible and advisory by default; explicit scored Agency evaluation remains separate."
         },
         "messaging": {
             "description": "Inter-agent and task-scoped messaging. Agents must check messages before and after working.",

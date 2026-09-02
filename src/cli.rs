@@ -263,9 +263,9 @@ pub enum Commands {
         #[arg(long = "verify-timeout", hide = true)]
         verify_timeout: Option<String>,
 
-        /// Exact deterministic command run by one-step `wg done`. WG captures
-        /// bounded stdout/stderr digests, exit status, timing, and the exact
-        /// repository/attempt binding as immutable completion evidence.
+        /// Optional operator/repository-authorized hard gate run by `wg done`.
+        /// Prefer `## Validation` for agent-selected checks; agents must not
+        /// invent or broaden this command. Failure blocks completion.
         #[arg(long = "validation-command", value_name = "COMMAND")]
         validation: Option<String>,
 
@@ -491,9 +491,9 @@ pub enum Commands {
         #[arg(long = "not-before")]
         not_before: Option<String>,
 
-        /// Set or clear the exact deterministic completion command. An empty
-        /// string clears configured command execution; `## Validation` remains
-        /// the human/model review contract.
+        /// Set or clear an operator/repository-authorized hard completion gate.
+        /// Prefer `## Validation` for agent-selected checks; an empty string
+        /// clears the command. Agents must not invent or broaden this setting.
         #[arg(long = "validation-command", value_name = "COMMAND")]
         verify: Option<String>,
 
@@ -677,9 +677,14 @@ pub enum Commands {
         #[arg(long)]
         route: Option<String>,
 
-        /// Emit the complete normalized FailureSignal as JSON.
+        /// Emit the complete normalized projection as JSON.
         #[arg(long)]
         json: bool,
+
+        /// Project authoritative terminal evidence instead of a failure class.
+        /// Used by the wrapper to fence provider telemetry and source failure.
+        #[arg(long)]
+        terminal: bool,
     },
 
     /// [Internal] Persist one normalized failed-attempt telemetry record.

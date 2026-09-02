@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
@@ -34,6 +34,301 @@ use super::{
 const OUTPUT_RESERVATION_FILE: &str = ".spawn-reservation";
 const LAUNCH_GATE_FILE: &str = ".launch-permit";
 const WORKTREE_RECLAIM_FILE: &str = "worktree-spawn-reclaims-v1.json";
+const UNPUBLISHED_CACHE_OWNER_MARKER: &str = ".wg-unpublished-cache-owner";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FilesystemIdentity {
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+    #[cfg(windows)]
+    volume: Option<u32>,
+    #[cfg(windows)]
+    file_index: Option<u64>,
+    #[cfg(not(any(unix, windows)))]
+    modified: Option<std::time::SystemTime>,
+}
+
+#[cfg(unix)]
+fn filesystem_identity(path: &Path) -> Result<FilesystemIdentity> {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    let directory = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)
+        .with_context(|| format!("re-open owned cache identity {}", path.display()))?;
+    let metadata = directory.metadata()?;
+    Ok(FilesystemIdentity {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    })
+}
+
+#[cfg(windows)]
+fn filesystem_identity(path: &Path) -> Result<FilesystemIdentity> {
+    use std::os::windows::fs::MetadataExt;
+    let metadata = fs::symlink_metadata(path)
+        .with_context(|| format!("inspect owned cache identity {}", path.display()))?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        anyhow::bail!("owned cache is not a real directory: {}", path.display());
+    }
+    Ok(FilesystemIdentity {
+        volume: metadata.volume_serial_number(),
+        file_index: metadata.file_index(),
+    })
+}
+
+#[cfg(not(any(unix, windows)))]
+fn filesystem_identity(path: &Path) -> Result<FilesystemIdentity> {
+    let metadata = fs::symlink_metadata(path)
+        .with_context(|| format!("inspect owned cache identity {}", path.display()))?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        anyhow::bail!("owned cache is not a real directory: {}", path.display());
+    }
+    Ok(FilesystemIdentity {
+        modified: metadata.modified().ok(),
+    })
+}
+
+fn random_cache_token() -> Result<String> {
+    let mut bytes = [0u8; 32];
+    getrandom::getrandom(&mut bytes)
+        .map_err(|error| anyhow::anyhow!("CSPRNG unavailable for cache ownership: {error}"))?;
+    Ok(hex::encode(bytes))
+}
+
+/// Preparation is not durable ownership until the launch permit is published.
+/// Any earlier failure removes only the exact cache path created for this
+/// attempt, so a claim race cannot strand an unregistered private layer.
+struct UnpublishedCachePath {
+    path: PathBuf,
+    cache_root: Option<PathBuf>,
+    parent_identity: Option<FilesystemIdentity>,
+    path_identity: Option<FilesystemIdentity>,
+    marker_token: Option<String>,
+    quarantine_token: Option<String>,
+    marker_ready: bool,
+    published: bool,
+}
+
+impl UnpublishedCachePath {
+    /// The target-cache preparation API returns only after creating a fresh
+    /// leaf (and itself removes partial failures), so ownership can be guarded
+    /// immediately at the return boundary.
+    fn from_prepared_target(path: PathBuf, cache_root: PathBuf) -> Result<Self> {
+        Self::claim(path, Some(cache_root))
+    }
+
+    /// Create the exact scratch leaf without ever adopting an existing path.
+    /// Parent creation conveys no deletion authority; Drop removes only `path`.
+    fn create_scratch(path: PathBuf) -> Result<Self> {
+        let parent = path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("build scratch has no parent: {}", path.display()))?;
+        fs::create_dir_all(parent).with_context(|| {
+            format!("Failed to create build scratch parent {}", parent.display())
+        })?;
+        fs::create_dir(&path).with_context(|| {
+            format!(
+                "Failed to create fresh owned build scratch {}; an existing path is never adopted",
+                path.display()
+            )
+        })?;
+        Self::claim(path, None)
+    }
+
+    fn claim(path: PathBuf, cache_root: Option<PathBuf>) -> Result<Self> {
+        // Install the Drop owner before identity, entropy, marker creation,
+        // permissions, writes, or fsync. Every fallible initialization step
+        // below therefore unwinds through the same exact-leaf guard.
+        let mut owned = Self {
+            path,
+            cache_root,
+            parent_identity: None,
+            path_identity: None,
+            marker_token: None,
+            quarantine_token: None,
+            marker_ready: false,
+            published: false,
+        };
+        owned.initialize_claim()?;
+        Ok(owned)
+    }
+
+    fn initialize_claim(&mut self) -> Result<()> {
+        let parent = self
+            .path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("owned cache has no parent: {}", self.path.display()))?;
+        self.parent_identity = Some(filesystem_identity(parent)?);
+        self.path_identity = Some(filesystem_identity(&self.path)?);
+        self.marker_token = Some(random_cache_token()?);
+        // Keep the quarantine name secret in memory rather than deriving it
+        // from the visible marker. If this second entropy read fails, Drop
+        // still owns the exact inode through the staged identity fields.
+        self.quarantine_token = Some(random_cache_token()?);
+        let marker = self.path.join(UNPUBLISHED_CACHE_OWNER_MARKER);
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&marker)
+            .with_context(|| format!("create rollback ownership marker {}", marker.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        }
+        use std::io::Write as _;
+        file.write_all(
+            self.marker_token
+                .as_deref()
+                .expect("claim token is installed before marker write")
+                .as_bytes(),
+        )?;
+        file.sync_all()?;
+        self.marker_ready = true;
+        Ok(())
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn still_owns_identity(&self, path: &Path) -> bool {
+        self.path_identity
+            .is_some_and(|identity| filesystem_identity(path).ok() == Some(identity))
+    }
+
+    fn still_owns(&self, path: &Path) -> bool {
+        if !self.still_owns_identity(path) {
+            return false;
+        }
+        if !self.marker_ready {
+            return true;
+        }
+        let Some(marker_token) = self.marker_token.as_deref() else {
+            return false;
+        };
+        #[cfg(unix)]
+        {
+            use std::io::Read as _;
+            use std::os::fd::{AsRawFd, FromRawFd};
+            use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+            let Ok(directory) = OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                .open(path)
+            else {
+                return false;
+            };
+            let Ok(metadata) = directory.metadata() else {
+                return false;
+            };
+            let Some(path_identity) = self.path_identity else {
+                return false;
+            };
+            if (metadata.dev(), metadata.ino()) != (path_identity.device, path_identity.inode) {
+                return false;
+            }
+            let Ok(marker_name) = std::ffi::CString::new(UNPUBLISHED_CACHE_OWNER_MARKER) else {
+                return false;
+            };
+            let marker_fd = unsafe {
+                libc::openat(
+                    directory.as_raw_fd(),
+                    marker_name.as_ptr(),
+                    libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                )
+            };
+            if marker_fd < 0 {
+                return false;
+            }
+            let mut marker = unsafe { File::from_raw_fd(marker_fd) };
+            let Ok(marker_metadata) = marker.metadata() else {
+                return false;
+            };
+            let mut token = String::new();
+            marker_metadata.is_file()
+                && marker.read_to_string(&mut token).is_ok()
+                && token == marker_token
+        }
+        #[cfg(not(unix))]
+        {
+            let Some(path_identity) = self.path_identity else {
+                return false;
+            };
+            if filesystem_identity(path).ok() != Some(path_identity) {
+                return false;
+            }
+            let marker = path.join(UNPUBLISHED_CACHE_OWNER_MARKER);
+            let Ok(metadata) = fs::symlink_metadata(&marker) else {
+                return false;
+            };
+            metadata.is_file()
+                && !metadata.file_type().is_symlink()
+                && fs::read_to_string(marker).ok().as_deref() == Some(marker_token)
+        }
+    }
+
+    fn publish(&mut self) {
+        self.published = true;
+    }
+}
+
+impl Drop for UnpublishedCachePath {
+    fn drop(&mut self) {
+        if self.published {
+            return;
+        }
+        let Some(parent) = self.path.parent() else {
+            return;
+        };
+        // A pathname and a boolean are not deletion authority. Re-open both
+        // filesystem objects and compare their captured identity plus the
+        // random marker immediately before moving anything.
+        if self
+            .parent_identity
+            .is_some_and(|identity| filesystem_identity(parent).ok() != Some(identity))
+            || !self.still_owns(&self.path)
+        {
+            // Before path identity is captured, the newly-created scratch leaf
+            // can only be removed if it is still empty. Never recursively reap
+            // an unattributed path. Once identity exists, all recursive cleanup
+            // is fenced below by that identity (and by the marker after fsync).
+            if self.path_identity.is_none() {
+                let _ = fs::remove_dir(&self.path);
+            }
+            return;
+        }
+        let quarantine_token = self
+            .quarantine_token
+            .as_deref()
+            .or(self.marker_token.as_deref())
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                blake3::hash(self.path.to_string_lossy().as_bytes())
+                    .to_hex()
+                    .to_string()
+            });
+        let quarantine = parent.join(format!(".wg-rollback-{quarantine_token}"));
+        if quarantine.exists() || fs::rename(&self.path, &quarantine).is_err() {
+            return;
+        }
+        // Revalidate after the atomic rename and immediately before recursive
+        // removal. A replacement moved in by a race is preserved, never reaped.
+        if !self.still_owns(&quarantine) {
+            if !self.path.exists() {
+                let _ = fs::rename(&quarantine, &self.path);
+            }
+            return;
+        }
+        let _ = fs::remove_dir_all(&quarantine);
+        if let Some(cache_root) = self.cache_root.as_deref() {
+            worksgood::target_cache::prune_empty_layer_parents(cache_root, &self.path);
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct WorktreeSpawnReclaim {
@@ -1282,6 +1577,13 @@ pub(crate) fn spawn_agent_inner_authorized(
     // class-specific check so it can skip builds and continue evaluators, but
     // process creation repeats it under the registry lock below to close races.
     let build_class = worksgood::disk_sentinel::classify_task(task);
+    // Only an explicit shell task gives WG exact command bytes. Interactive
+    // agents can choose arbitrary Cargo flags later and therefore receive an
+    // attempt-isolated, non-promotable target namespace.
+    let controlled_cargo_command = (resolved_executor_name == "shell")
+        .then_some(task.exec.as_deref())
+        .flatten()
+        .and_then(worksgood::target_cache::controlled_cargo_command);
 
     // Load agent registry with lock for concurrent safety.
     // The lock is held until save() to prevent two concurrent spawns from
@@ -1292,12 +1594,23 @@ pub(crate) fn spawn_agent_inner_authorized(
     // The registry lock serializes the measured projection + reservation with
     // process registration. Without this second, projected check two concurrent
     // spawns could both spend the same free bytes after passing the cheap level
-    // check above.
+    // check above. A retained retry worktree supplies its exact build key;
+    // otherwise the soon-to-be-created worktree starts at the project tree.
     if build_class.is_build_capable() {
-        let admission = worksgood::disk_sentinel::build_admission_reclaiming_owned(
+        let admission_source = locked_registry
+            .all()
+            .filter(|agent| agent.task_id == task_id)
+            .filter_map(|agent| agent.worktree_path.as_deref())
+            .map(PathBuf::from)
+            .find(|path| path.is_dir())
+            .or_else(|| dir.parent().map(Path::to_path_buf))
+            .unwrap_or_else(|| dir.to_path_buf());
+        let admission = worksgood::disk_sentinel::build_admission_reclaiming_owned_for_source(
             dir,
             &config.coordinator.resource_management,
             build_class,
+            &admission_source,
+            controlled_cargo_command.as_deref(),
         );
         if !admission.allowed {
             return Err(worksgood::disk_sentinel::AdmissionDeferral::new(format!(
@@ -1417,46 +1730,54 @@ pub(crate) fn spawn_agent_inner_authorized(
     };
     vars.in_worktree = worktree_info.is_some();
 
-    let owned_target_path = if build_class.is_build_capable() {
-        worksgood::disk_sentinel::target_path_for_agent(
+    let mut target_publish_guard = if build_class.is_build_capable() {
+        let source_root = worktree_info
+            .as_ref()
+            .map(|worktree| worktree.path.as_path())
+            .unwrap_or(project_root);
+        let path = worksgood::disk_sentinel::prepare_target_for_agent(
+            dir,
             &config.coordinator.resource_management,
-            worktree_info.as_ref().map(|wt| wt.path.as_path()),
+            source_root,
             &temp_agent_id,
+            controlled_cargo_command.as_deref(),
         )
-        .map(|path| {
-            if path.is_absolute() {
-                path
-            } else {
-                worktree_info
-                    .as_ref()
-                    .map(|wt| wt.path.join(&path))
-                    .or_else(|| std::env::current_dir().ok().map(|cwd| cwd.join(&path)))
-                    .unwrap_or(path)
-            }
-        })
+        .with_context(|| {
+            format!(
+                "Failed to prepare copy-on-write Cargo target for {}",
+                temp_agent_id
+            )
+        })?;
+        // Install rollback authority before the next fallible operation.
+        Some(UnpublishedCachePath::from_prepared_target(
+            path,
+            worksgood::disk_sentinel::target_cache_root(
+                dir,
+                &config.coordinator.resource_management,
+            ),
+        )?)
     } else {
         None
     };
-    if let Some(path) = owned_target_path.as_ref() {
-        fs::create_dir_all(path)
-            .with_context(|| format!("Failed to create owned Cargo target {}", path.display()))?;
-    }
-    let owned_tmp_path = if build_class.is_build_capable() {
-        let root = config
-            .coordinator
-            .resource_management
-            .build_tmp_root
-            .as_deref()
-            .map(PathBuf::from)
-            .unwrap_or_else(std::env::temp_dir);
-        Some(root.join(format!("wg-cargo-tmp-{temp_agent_id}")))
+    let owned_target_path = target_publish_guard
+        .as_ref()
+        .map(|guard| guard.path().to_path_buf());
+    spawn_fault("target-prepared-before-tmp")?;
+    let mut tmp_publish_guard = if build_class.is_build_capable() {
+        let path = worksgood::disk_sentinel::build_tmp_path_for_agent(
+            dir,
+            &config.coordinator.resource_management,
+            &temp_agent_id,
+        );
+        // `create_scratch` refuses pre-existing paths and constructs its guard
+        // at the same boundary as leaf creation.
+        Some(UnpublishedCachePath::create_scratch(path)?)
     } else {
         None
     };
-    if let Some(path) = owned_tmp_path.as_ref() {
-        fs::create_dir_all(path)
-            .with_context(|| format!("Failed to create owned build scratch {}", path.display()))?;
-    }
+    let owned_tmp_path = tmp_publish_guard
+        .as_ref()
+        .map(|guard| guard.path().to_path_buf());
 
     // Apply templates to executor settings (with effective model in vars)
     let mut settings = executor_config.apply_templates(&vars);
@@ -1764,9 +2085,12 @@ pub(crate) fn spawn_agent_inner_authorized(
         cmd.current_dir(wd);
     }
     if let Some(path) = owned_target_path.as_ref() {
-        // Isolate Cargo and make the exact absolute/temporary path explicit in
-        // the ownership registry after the child PID identity is available.
+        // Every attempt writes its private layer. Unchanged artifacts are
+        // verified reflinks or private copies of an immutable baseline.
         cmd.env("CARGO_TARGET_DIR", path);
+        cmd.env("CARGO_INCREMENTAL", "0");
+        cmd.env("CARGO_PROFILE_DEV_DEBUG", "line-tables-only");
+        cmd.env("CARGO_PROFILE_TEST_DEBUG", "line-tables-only");
     }
     if let Some(path) = owned_tmp_path.as_ref() {
         cmd.env("TMPDIR", path);
@@ -2145,6 +2469,12 @@ pub(crate) fn spawn_agent_inner_authorized(
             &spawn_run_id,
         )?;
         workspace.commit_after_launch();
+        if let Some(guard) = target_publish_guard.as_mut() {
+            guard.publish();
+        }
+        if let Some(guard) = tmp_publish_guard.as_mut() {
+            guard.publish();
+        }
         Ok((agent_id, pid))
     })();
 
@@ -3598,7 +3928,7 @@ fi
     };
 
     let pi_exit_reconcile = if executor_type == "pi" {
-        "if [ \"$TASK_STATUS\" = \"in-progress\" ]; then wg pi-watchdog process-exit \"$TASK_ID\" --exit-code \"$EXIT_CODE\" --pid \"$WG_PI_CHILD_PID\" 2>> \"$OUTPUT_FILE\" || wg fail \"$TASK_ID\" --class agent-exit-nonzero --reason \"Pi exited without a policy-valid continuation authorization\" 2>> \"$OUTPUT_FILE\" || true; fi"
+        "if [ \"$TASK_STATUS\" = \"in-progress\" ]; then wg pi-watchdog process-exit \"$TASK_ID\" --exit-code \"$EXIT_CODE\" --pid \"$WG_PI_CHILD_PID\" 2>> \"$OUTPUT_FILE\" || echo \"[wrapper] WARNING: Pi process-exit reconciliation requires explicit review\" >> \"$OUTPUT_FILE\"; fi"
     } else {
         ""
     };
@@ -3649,11 +3979,25 @@ EXIT_CODE=$?
 {session_fallback_block}
 {stream_result}
 
-# Provider telemetry runs independently of process exit. This catches pi's
-# mid-stream trap: an error event can follow initial text and pi may still exit
-# zero. Detect it before the no-work/no-operational-output gates so the typed
-# provider signal wins over a generic no-op classification.
+# Project terminal evidence once from immutable stream bytes. This projection
+# is restart-stable and is the precedence fence for every wrapper path below:
+# exact completed receipts and typed finalization blockers outrank timeout/reset
+# text heuristics, while a genuine structured provider error before completion
+# remains provider-failure.
 if [ -n "$RAW_STREAM" ] && [ -s "$RAW_STREAM" ]; then
+    TERMINAL_JSON=$(wg classify-failure --terminal --raw-stream "$RAW_STREAM" --exit-code "$EXIT_CODE" --executor "{executor_type}" --route "${{WG_MODEL:-}}" --json 2>/dev/null || true)
+else
+    TERMINAL_JSON=$(wg classify-failure --terminal --exit-code "$EXIT_CODE" --executor "{executor_type}" --route "${{WG_MODEL:-}}" --json 2>/dev/null || true)
+fi
+TERMINAL_STATE=$(printf '%s' "$TERMINAL_JSON" | sed -n 's/.*"state":"\([^"]*\)".*/\1/p')
+TERMINAL_REASON=$(printf '%s' "$TERMINAL_JSON" | sed -n 's/.*"reason_code":"\([^"]*\)".*/\1/p')
+if [ -z "$TERMINAL_STATE" ]; then TERMINAL_STATE="unknown"; fi
+
+# Provider telemetry runs independently of process exit, but only an actual
+# provider-failure projection may create provider telemetry/source failure.
+# Completion/finalization/ambiguity evidence must never be rewritten by a later
+# heuristic scan of incidental timeout prose.
+if [ "$TERMINAL_STATE" = "provider-failure" ] && [ -n "$RAW_STREAM" ] && [ -s "$RAW_STREAM" ]; then
     FAILURE_SIGNAL_JSON=$(wg classify-failure --raw-stream "$RAW_STREAM" --exit-code "$EXIT_CODE" --executor "{executor_type}" --route "${{WG_MODEL:-}}" --json 2>/dev/null || true)
     DETECTED_PROVIDER_REASON=$(printf '%s' "$FAILURE_SIGNAL_JSON" | sed -n 's/.*"reason":"\([^"]*\)".*/\1/p')
     if [ "$EXIT_CODE" -eq 0 ] && [ -n "$DETECTED_PROVIDER_REASON" ] && [ "$DETECTED_PROVIDER_REASON" != "unknown" ]; then
@@ -3662,7 +4006,7 @@ if [ -n "$RAW_STREAM" ] && [ -s "$RAW_STREAM" ]; then
         wg record-telemetry --task "$TASK_ID" --raw-stream "$RAW_STREAM" --exit-code "$EXIT_CODE" --executor "{executor_type}" --route "${{WG_MODEL:-}}" 2>> "$OUTPUT_FILE" || true
     fi
 fi
-if [ "$EXIT_CODE" -ne 0 ]; then
+if [ "$EXIT_CODE" -ne 0 ] && {{ [ "$TERMINAL_STATE" = "provider-failure" ] || [ "$TERMINAL_STATE" = "unknown" ]; }}; then
     if [ -n "$RAW_STREAM" ]; then
         wg record-telemetry --task "$TASK_ID" --raw-stream "$RAW_STREAM" --exit-code "$EXIT_CODE" --executor "{executor_type}" --route "${{WG_MODEL:-}}" 2>> "$OUTPUT_FILE" || true
     else
@@ -3670,15 +4014,30 @@ if [ "$EXIT_CODE" -ne 0 ]; then
     fi
 fi
 
-# Check terminal state before any process-exit observer runs. Once reviewed
-# completion clears attempt ownership, its capability is intentionally stale
-# and process telemetry has no authority to reopen or overwrite Done.
-TASK_STATUS=$(wg show "$TASK_ID" --json 2>/dev/null | grep -o '"status": *"[^"]*"' | head -1 | sed 's/.*"status": *"//;s/"//' || echo "unknown")
+# Check authoritative graph state before and after process-exit reconciliation.
+# Completion commands own typed Waiting/NeedsReview/LandingPending projection;
+# the wrapper only suppresses generic failure when that projection already won.
+TASK_JSON=$(wg show "$TASK_ID" --json 2>/dev/null || true)
+TASK_STATUS=$(printf '%s' "$TASK_JSON" | grep -o '"status": *"[^"]*"' | head -1 | sed 's/.*"status": *"//;s/"//' || echo "unknown")
 {pi_exit_reconcile}
+TASK_JSON=$(wg show "$TASK_ID" --json 2>/dev/null || true)
+TASK_STATUS=$(printf '%s' "$TASK_JSON" | grep -o '"status": *"[^"]*"' | head -1 | sed 's/.*"status": *"//;s/"//' || echo "unknown")
+COMPLETION_BLOCKED=false
+if [ "$TASK_STATUS" = "waiting" ] && printf '%s' "$TASK_JSON" | grep -q '"completion_blocker"'; then
+    COMPLETION_BLOCKED=true
+fi
 
-# A still-in-progress process exit becomes one visible failed attempt; it is
-# never a finalizer signal and never authorizes automatic source replacement.
-if [ "$TASK_STATUS" = "in-progress" ] && [ "{executor_type}" = "pi" ]; then
+# Completed/finalization-blocked/ambiguous terminal evidence is semantic-neutral
+# at wrapper authority. Preserve the candidate and name the ambiguity; only the
+# completion finalizer may project typed Waiting. Never invent source rejection.
+if [ "$TASK_STATUS" = "in-progress" ] && {{ [ "$TERMINAL_STATE" = "completed" ] || [ "$TERMINAL_STATE" = "finalization-blocked" ] || [ "$TERMINAL_STATE" = "ambiguous" ]; }}; then
+    wg log "$TASK_ID" "Wrapper preserved terminal candidate: $TERMINAL_REASON; no source/provider failure projected" 2>> "$OUTPUT_FILE" || true
+fi
+
+# A genuine provider failure or an evidence-free exit remains one visible
+# failed source attempt. A typed completion blocker already parked by the
+# finalizer is authoritative and is never overwritten.
+if [ "$TASK_STATUS" = "in-progress" ] && [ "$COMPLETION_BLOCKED" != "true" ] && [ "{executor_type}" = "pi" ] && {{ [ "$TERMINAL_STATE" = "provider-failure" ] || [ "$TERMINAL_STATE" = "unknown" ]; }}; then
     if [ $EXIT_CODE -eq 0 ]; then
         wg fail "$TASK_ID" --reason "Pi worker exited without reviewed publication-derived completion" 2>> "$OUTPUT_FILE" || true
     else
@@ -3687,7 +4046,7 @@ if [ "$TASK_STATUS" = "in-progress" ] && [ "{executor_type}" = "pi" ]; then
     fi
 fi
 
-if [ "$TASK_STATUS" = "in-progress" ] && [ "{executor_type}" != "pi" ]; then
+if [ "$TASK_STATUS" = "in-progress" ] && [ "$COMPLETION_BLOCKED" != "true" ] && [ "{executor_type}" != "pi" ] && {{ [ "$TERMINAL_STATE" = "provider-failure" ] || [ "$TERMINAL_STATE" = "unknown" ]; }}; then
     if [ $EXIT_CODE -eq 124 ]; then
         echo "" >> "$OUTPUT_FILE"
         echo "[wrapper] Agent killed by hard timeout, marking task failed" >> "$OUTPUT_FILE"
@@ -4233,7 +4592,9 @@ fn handle_cost_cap_violation(
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use worksgood::config::{CLAUDE_FABLE_MODEL_ID, CLAUDE_OPUS_MODEL_ID};
+    use worksgood::config::{
+        CLAUDE_FABLE_MODEL_ID, CLAUDE_OPUS_MODEL_ID, ResourceManagementConfig,
+    };
     use worksgood::graph::{Node, Task, WorkGraph};
     use worksgood::parser::{load_graph, save_graph};
     use worksgood::service::registry::{AgentRegistry, AgentStatus};
@@ -6608,6 +6969,83 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn completed_terminal_wrapper_exit_never_calls_fail_or_provider_telemetry() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let bin_dir = temp_dir.path().join("bin");
+        std::fs::create_dir(&bin_dir).unwrap();
+        let calls = temp_dir.path().join("wg-calls.log");
+        let fake_wg = bin_dir.join("wg");
+        std::fs::write(
+            &fake_wg,
+            format!(
+                r#"#!/bin/bash
+printf '%s\n' "$*" >> '{}'
+case "$1" in
+  classify-failure)
+    if printf '%s\n' "$*" | grep -q -- '--terminal'; then
+      printf '%s\n' '{{"state":"completed","reason_code":"exact-agent-turn-completed"}}'
+    elif printf '%s\n' "$*" | grep -q -- '--json'; then
+      printf '%s\n' '{{"reason":"unknown","confidence":0,"executor":"pi","detected_at_ms":0}}'
+    else
+      printf '%s\n' 'agent-exit-nonzero'
+    fi
+    ;;
+  show) printf '%s\n' '{{"status":"in-progress"}}' ;;
+esac
+"#,
+                calls.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake_wg, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let output_log = temp_dir.path().join("output.log");
+        let command = r#"bash -c 'printf "%s\n" "{\"type\":\"turn_end\",\"message\":{\"responseId\":\"r1\",\"stopReason\":\"completed\"}}"; exit 124'"#;
+        let wrapper = write_wrapper_script(
+            temp_dir.path(),
+            "terminal-precedence",
+            &output_log.to_string_lossy(),
+            command,
+            None,
+            "claude",
+            None,
+        )
+        .unwrap();
+        let path = format!(
+            "{}:{}",
+            bin_dir.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let status = std::process::Command::new("bash")
+            .arg(wrapper)
+            .env("PATH", path)
+            .env("WG_AGENT_ID", "agent-fixture")
+            .status()
+            .unwrap();
+        assert_eq!(status.code(), Some(124));
+
+        let calls = std::fs::read_to_string(calls).unwrap();
+        assert!(calls.contains("classify-failure --terminal"), "{calls}");
+        assert!(
+            calls.contains("log terminal-precedence Wrapper preserved"),
+            "{calls}"
+        );
+        assert!(
+            !calls.lines().any(|line| line.starts_with("fail ")),
+            "completed receipt must fence generic source failure: {calls}"
+        );
+        assert!(
+            !calls
+                .lines()
+                .any(|line| line.starts_with("record-telemetry ")),
+            "completed receipt must fence provider telemetry: {calls}"
+        );
+    }
+
     #[test]
     fn pi_wrapper_binds_parent_and_native_child_as_distinct_terminal_authorities() {
         let temp_dir = tempfile::TempDir::new().unwrap();
@@ -6678,14 +7116,21 @@ mod tests {
             script.contains("Transactional launch gate"),
             "wrapper must not start a handler before the spawn transaction commits"
         );
+        let terminal = script
+            .find("Project terminal evidence once")
+            .expect("terminal evidence precedence");
         let telemetry = script
             .find("Provider telemetry runs independently of process exit")
             .expect("mid-stream provider detector");
         let no_work = script.find("Minimum-work gate").expect("no-work gate");
         assert!(
-            telemetry < no_work,
-            "provider errors must be classified before no-operational-output"
+            terminal < telemetry && telemetry < no_work,
+            "terminal precedence and provider errors must be classified before no-operational-output"
         );
+        assert!(script.contains("classify-failure --terminal"));
+        assert!(script.contains("TERMINAL_STATE=\"unknown\""));
+        assert!(script.contains("COMPLETION_BLOCKED=true"));
+        assert!(script.contains("Wrapper preserved terminal candidate"));
         assert!(script.contains("wg record-telemetry --task \"$TASK_ID\""));
         #[cfg(unix)]
         assert!(
@@ -7066,6 +7511,7 @@ mod tests {
         let _global = GlobalConfigGuard::isolated();
         for boundary in [
             "workspace-prepared",
+            "target-prepared-before-tmp",
             "claim",
             "wrapper-spawned",
             "registry-saved",
@@ -7099,6 +7545,19 @@ mod tests {
                     .caches
                     .is_empty(),
                 "boundary={boundary}"
+            );
+            let cache_root = worksgood::disk_sentinel::target_cache_root(
+                &dir,
+                &ResourceManagementConfig::default(),
+            );
+            assert!(
+                worksgood::target_cache::existing_layer_keys(&cache_root, 16).is_empty()
+                    && !walkdir::WalkDir::new(cache_root.join("layers"))
+                        .follow_links(false)
+                        .into_iter()
+                        .filter_map(|entry| entry.ok())
+                        .any(|entry| entry.file_type().is_dir() && entry.file_name() == "target"),
+                "boundary={boundary}: unregistered target survived rollback"
             );
             assert!(
                 fs::read_dir(dir.join("agents"))
@@ -7138,6 +7597,135 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn scratch_creation_and_path_swap_rollback_preserve_preexisting_bytes() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp.path().join("graph-key/agent-1");
+        fs::create_dir_all(&path).unwrap();
+        fs::write(path.join("valuable"), b"pre-existing bytes\n").unwrap();
+        let before = fs::read(path.join("valuable")).unwrap();
+
+        assert!(UnpublishedCachePath::create_scratch(path.clone()).is_err());
+        assert_eq!(fs::read(path.join("valuable")).unwrap(), before);
+
+        let fresh = temp.path().join("graph-key/agent-2");
+        {
+            let _guard = UnpublishedCachePath::create_scratch(fresh.clone()).unwrap();
+            assert!(fresh.is_dir());
+        }
+        assert!(!fresh.exists(), "the genuine owned leaf is rolled back");
+        assert_eq!(fs::read(path.join("valuable")).unwrap(), before);
+
+        let attacked = temp.path().join("graph-key/agent-3");
+        let displaced = temp.path().join("graph-key/displaced-owned");
+        let sentinel = temp.path().join("preexisting-sentinel");
+        fs::create_dir_all(sentinel.join("nested")).unwrap();
+        fs::write(
+            sentinel.join("nested/valuable"),
+            b"attacker data\0unchanged",
+        )
+        .unwrap();
+        let sentinel_before = fs::read(sentinel.join("nested/valuable")).unwrap();
+        #[cfg(unix)]
+        let sentinel_inode = {
+            use std::os::unix::fs::MetadataExt;
+            fs::metadata(&sentinel).unwrap().ino()
+        };
+        let guard = UnpublishedCachePath::create_scratch(attacked.clone()).unwrap();
+        let stolen_marker = fs::read(attacked.join(UNPUBLISHED_CACHE_OWNER_MARKER)).unwrap();
+        fs::rename(&attacked, &displaced).unwrap();
+        fs::rename(&sentinel, &attacked).unwrap();
+        // Even copying the visible random marker cannot spoof the captured
+        // directory identity after pathname replacement.
+        fs::write(attacked.join(UNPUBLISHED_CACHE_OWNER_MARKER), stolen_marker).unwrap();
+        drop(guard);
+
+        assert_eq!(
+            fs::read(attacked.join("nested/valuable")).unwrap(),
+            sentinel_before
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            assert_eq!(fs::metadata(&attacked).unwrap().ino(), sentinel_inode);
+        }
+        assert!(
+            displaced.is_dir(),
+            "a renamed genuine inode is never guessed by path"
+        );
+        fs::remove_dir_all(displaced).unwrap();
+    }
+
+    #[test]
+    fn failed_cache_claim_initialization_is_owned_before_marker_and_swap_safe() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let parent = temp.path().join("scratch");
+        fs::create_dir(&parent).unwrap();
+
+        // Identity acquisition failure has an immediate guard: an untouched
+        // empty leaf is removed non-recursively rather than leaked.
+        let identity_failure = parent.join("identity-failure");
+        fs::create_dir(&identity_failure).unwrap();
+        drop(UnpublishedCachePath {
+            path: identity_failure.clone(),
+            cache_root: None,
+            parent_identity: None,
+            path_identity: None,
+            marker_token: None,
+            quarantine_token: None,
+            marker_ready: false,
+            published: false,
+        });
+        assert!(!identity_failure.exists());
+
+        // CSPRNG/marker/write/fsync failures happen after identities are
+        // captured. The staged guard may recursively remove only that inode.
+        let marker_failure = parent.join("marker-failure");
+        fs::create_dir(&marker_failure).unwrap();
+        fs::write(marker_failure.join("partial-marker"), b"partial").unwrap();
+        let staged = UnpublishedCachePath {
+            path: marker_failure.clone(),
+            cache_root: None,
+            parent_identity: Some(filesystem_identity(&parent).unwrap()),
+            path_identity: Some(filesystem_identity(&marker_failure).unwrap()),
+            marker_token: None,
+            quarantine_token: None,
+            marker_ready: false,
+            published: false,
+        };
+        drop(staged);
+        assert!(!marker_failure.exists());
+
+        // If the pathname is replaced before unwinding, even a marker-stage
+        // failure refuses the replacement and leaves the displaced owned inode
+        // alone rather than guessing where it moved.
+        let attacked = parent.join("attacked");
+        let displaced = parent.join("displaced");
+        let replacement = parent.join("replacement");
+        fs::create_dir(&attacked).unwrap();
+        fs::write(attacked.join("partial-marker"), b"partial").unwrap();
+        fs::create_dir(&replacement).unwrap();
+        fs::write(replacement.join("valuable"), b"replacement bytes").unwrap();
+        let staged = UnpublishedCachePath {
+            path: attacked.clone(),
+            cache_root: None,
+            parent_identity: Some(filesystem_identity(&parent).unwrap()),
+            path_identity: Some(filesystem_identity(&attacked).unwrap()),
+            marker_token: None,
+            quarantine_token: None,
+            marker_ready: false,
+            published: false,
+        };
+        fs::rename(&attacked, &displaced).unwrap();
+        fs::rename(&replacement, &attacked).unwrap();
+        drop(staged);
+        assert_eq!(
+            fs::read(attacked.join("valuable")).unwrap(),
+            b"replacement bytes"
+        );
+        assert!(displaced.is_dir());
     }
 
     #[test]

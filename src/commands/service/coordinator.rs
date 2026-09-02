@@ -1072,6 +1072,7 @@ fn build_separate_verify_tasks(
             completion_candidate: None,
             completion_disposition: None,
             completion_receipt: None,
+            completion_blocker: None,
             tags: vec!["verification".to_string(), "separate-verify".to_string()],
             skills: vec![],
             inputs: vec![],
@@ -1302,6 +1303,7 @@ fn build_auto_evolve_task(
         completion_candidate: None,
         completion_disposition: None,
         completion_receipt: None,
+        completion_blocker: None,
         tags: vec!["evolution".to_string(), "agency".to_string()],
         skills: vec![],
         inputs: vec![],
@@ -1535,6 +1537,7 @@ fn build_auto_create_task(
         completion_candidate: None,
         completion_disposition: None,
         completion_receipt: None,
+        completion_blocker: None,
         tags: vec!["creation".to_string(), "agency".to_string()],
         skills: vec![],
         inputs: vec![],
@@ -2106,10 +2109,19 @@ fn spawn_agents_for_ready_tasks(
         }
 
         let build_class = worksgood::disk_sentinel::classify_task(task);
-        let projected = worksgood::disk_sentinel::build_admission(
+        // An explicit task.exec is dispatched by the shell handler, so the
+        // cheap coordinator gate can use the same exact Cargo namespace as
+        // the locked spawn gate. Interactive tasks remain unknown/isolated.
+        let controlled_cargo_command = task
+            .exec
+            .as_deref()
+            .and_then(worksgood::target_cache::controlled_cargo_command);
+        let projected = worksgood::disk_sentinel::build_admission_for_source(
             dir,
             &config.coordinator.resource_management,
             build_class,
+            dir.parent().unwrap_or(dir),
+            controlled_cargo_command.as_deref(),
         );
         let projection_reason;
         let disk_reason = if !projected.allowed {
@@ -2488,6 +2500,41 @@ pub fn coordinator_tick(
     // be blocked by agent capacity limits or empty task queues. The early returns
     // below (max agents, no ready tasks) would skip chat processing otherwise.
     process_chat_inbox(dir);
+
+    // Phase 0.4: a clean attached checkout is authoritative evidence that a
+    // typed LandingPending finalization may be retried. This resumes only the
+    // exact preserved candidate; it never dispatches source work or review.
+    if let Ok(graph) = worksgood::parser::load_graph(graph_path.clone()) {
+        let pending = graph
+            .tasks()
+            .filter(|task| {
+                task.status == Status::Waiting
+                    && task.completion_blocker.as_ref().is_some_and(|blocker| {
+                        blocker.kind == worksgood::graph::CompletionBlockerKind::LandingPending
+                    })
+            })
+            .map(|task| task.id.clone())
+            .collect::<Vec<_>>();
+        for task_id in pending {
+            match crate::commands::completion_land::pending_checkout_is_clean(dir, &task_id) {
+                Ok(true) => {
+                    if let Err(error) =
+                        crate::commands::resume::resume_landing_finalization(dir, &task_id)
+                    {
+                        eprintln!(
+                            "[completion-finalizer] '{}' remains LandingPending: {error:#}",
+                            task_id
+                        );
+                    }
+                }
+                Ok(false) => {}
+                Err(error) => eprintln!(
+                    "[completion-finalizer] ignored stale LandingPending '{}': {error:#}",
+                    task_id
+                ),
+            }
+        }
+    }
 
     // Phase 0.5: dedicated bounded evaluation. This precedes ordinary worker
     // cleanup/admission and deliberately does not consume an AgentRegistry

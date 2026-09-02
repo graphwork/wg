@@ -3547,9 +3547,9 @@ pub fn lint_config(workgraph_dir: &Path, target: LintTarget, json: bool) -> Resu
         .then_some("legacy WG model/provider data is retained for migration only and has no Pi dispatch authority");
     let predictive_admission_enabled = merged.coordinator.resource_management.disk_sentinel_enabled;
     let predictive_admission_guidance = if predictive_admission_enabled {
-        "advanced explicit opt-in: historical build high-water projections may intentionally defer launches; set dispatcher.resource_management.disk_sentinel_enabled = false (or remove the key) to use the availability-first default"
+        "enabled (default): admission accounts one immutable shared baseline plus measured per-attempt physical deltas and refuses before reserve is exhausted"
     } else {
-        "disabled (default): dispatch/recovery is not blocked by hypothetical cold-build reservations; explicit cleanup and preservation safeguards remain available"
+        "WARNING: explicitly disabled emergency override; build headroom is unverified and disk status will not report Healthy"
     };
     let max_build_agents = merged.coordinator.effective_max_build_agents();
     let max_build_agents_source = merged.coordinator.max_build_agents_source();
@@ -3579,8 +3579,11 @@ pub fn lint_config(workgraph_dir: &Path, target: LintTarget, json: bool) -> Resu
             "legacy_model_plane_warning": legacy_model_plane,
             "predictive_build_admission": {
                 "enabled": predictive_admission_enabled,
-                "mode": if predictive_admission_enabled { "advanced-opt-in" } else { "disabled-default" },
+                "mode": if predictive_admission_enabled { "enabled-default" } else { "explicitly-disabled-warning" },
                 "guidance": predictive_admission_guidance,
+                "remediation_command": (!predictive_admission_enabled).then_some(
+                    "wg config set dispatcher.resource_management.disk_sentinel_enabled true"
+                ),
             },
             "build_heavy_capacity": {
                 "max": max_build_agents,
@@ -3627,12 +3630,18 @@ pub fn lint_config(workgraph_dir: &Path, target: LintTarget, json: bool) -> Resu
     println!(
         "  state: {}",
         if predictive_admission_enabled {
-            "enabled (advanced explicit opt-in)"
+            "enabled (safe default)"
         } else {
-            "disabled (default)"
+            "disabled (explicit emergency override)"
         }
     );
     println!("  {predictive_admission_guidance}");
+    if !predictive_admission_enabled {
+        println!(
+            "  restore safe default: wg config set dispatcher.resource_management.disk_sentinel_enabled true"
+        );
+        total_findings += 1;
+    }
     println!();
     println!("build-heavy-capacity:");
     println!("  max: {max_build_agents} ({max_build_agents_source})");

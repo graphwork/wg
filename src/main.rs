@@ -1417,12 +1417,14 @@ fn main() -> Result<()> {
             executor,
             route,
             json,
+            terminal,
         } => commands::classify_failure::run(
             raw_stream.as_deref(),
             exit_code,
             executor.as_deref(),
             route.as_deref(),
             json,
+            terminal,
         ),
         Commands::RecordTelemetry {
             task,

@@ -10,8 +10,8 @@ use worksgood::dispatch::plan::ExecutorKind;
 use worksgood::graph::{FailureClass, FailureReason, FailureSignal};
 
 use super::spawn::raw_stream_classifier::{
-    classify_from_raw_stream, classify_no_operational_output, classify_signal_from_raw_stream,
-    infer_executor,
+    TerminalStreamState, classify_from_raw_stream, classify_no_operational_output,
+    classify_signal_from_raw_stream, classify_terminal_from_raw_stream, infer_executor,
 };
 
 pub fn run(
@@ -20,7 +20,41 @@ pub fn run(
     executor: Option<&str>,
     route: Option<&str>,
     json: bool,
+    terminal: bool,
 ) -> Result<()> {
+    let executor = executor
+        .and_then(ExecutorKind::from_str)
+        .or_else(|| raw_stream.map(Path::new).map(infer_executor))
+        .unwrap_or_default();
+    if terminal {
+        let projection = raw_stream
+            .map(|path| {
+                classify_terminal_from_raw_stream(
+                    Path::new(path),
+                    Path::new(path)
+                        .parent()
+                        .map(|parent| parent.join("output.log"))
+                        .as_deref(),
+                    exit_code,
+                    executor,
+                    route.map(str::to_string),
+                )
+            })
+            .unwrap_or_else(|| {
+                super::spawn::raw_stream_classifier::terminal_without_stream(
+                    exit_code,
+                    executor,
+                    route.map(str::to_string),
+                )
+            });
+        if json {
+            println!("{}", serde_json::to_string(&projection)?);
+        } else {
+            println!("{}", projection.state.as_str());
+        }
+        return Ok(());
+    }
+
     let class = raw_stream
         .map(|path| classify_from_raw_stream(Path::new(path), exit_code))
         .unwrap_or_else(|| {
@@ -31,10 +65,6 @@ pub fn run(
             }
         });
     if json {
-        let executor = executor
-            .and_then(ExecutorKind::from_str)
-            .or_else(|| raw_stream.map(Path::new).map(infer_executor))
-            .unwrap_or_default();
         let signal = raw_stream
             .map(|path| {
                 classify_signal_from_raw_stream(
@@ -108,6 +138,17 @@ pub fn run_record(
     let route = route
         .map(str::to_string)
         .or_else(|| agent.and_then(|agent| agent.model.clone()));
+    let terminal = raw_path.as_deref().map(|raw| {
+        classify_terminal_from_raw_stream(
+            raw,
+            raw.parent()
+                .map(|parent| parent.join("output.log"))
+                .as_deref(),
+            exit_code,
+            executor,
+            route.clone(),
+        )
+    });
     let signal = raw_path
         .as_deref()
         .map(|raw| {
@@ -133,8 +174,18 @@ pub fn run_record(
             )
         });
 
-    // An exit-0 stream with no provider evidence is not a failed attempt.
-    if exit_code == 0 && signal.reason == FailureReason::Unknown {
+    // Completed, finalization-blocked, and ambiguous receipts are not failed
+    // attempts. In particular a non-zero wrapper exit after finalization must
+    // not manufacture provider telemetry from incidental timeout prose.
+    if terminal.as_ref().is_some_and(|projection| {
+        matches!(
+            projection.state,
+            TerminalStreamState::Completed
+                | TerminalStreamState::FinalizationBlocked
+                | TerminalStreamState::Ambiguous
+        )
+    }) || (exit_code == 0 && signal.reason == FailureReason::Unknown)
+    {
         if json {
             println!("{}", serde_json::to_string(&signal)?);
         }

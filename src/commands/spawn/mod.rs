@@ -823,8 +823,10 @@ args = ["-lc", "true"]
         let wrapper_path = agent_output_dir(&workgraph_dir, "agent-1").join("run.sh");
         let script = fs::read_to_string(&wrapper_path).unwrap();
 
-        // Should check task status with wg show
-        assert!(script.contains("TASK_STATUS=$(wg show \"$TASK_ID\" --json"));
+        // Should retain the authoritative JSON so typed completion blockers
+        // and status are classified from the same graph snapshot.
+        assert!(script.contains("TASK_JSON=$(wg show \"$TASK_ID\" --json"));
+        assert!(script.contains("TASK_STATUS=$(printf '%s' \"$TASK_JSON\""));
 
         // Should only auto-complete if still in_progress
         assert!(script.contains("if [ \"$TASK_STATUS\" = \"in-progress\" ]"));

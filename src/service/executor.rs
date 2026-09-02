@@ -45,14 +45,11 @@ You MUST use these commands to track your work:
    ```
 
 3. **Validate your work** before marking done:
-   - **Check task-specific criteria first:** Run `wg show {{task_id}}` and look for a **Verification Required** section or a **## Validation** section in the description. Those criteria are your primary acceptance test — address every item.
-   - **Code tasks:** Run `cargo build` and `cargo test` (or the project's equivalent). Fix any failures.
+   - **Check task-specific criteria first:** Run `wg show {{task_id}}` and use the **## Validation** prose as the primary acceptance contract.
+   - **Code tasks:** Run targeted checks and the relevant commands from checked-in repository policy. Do not broaden them with extra features, warning denial, full-suite scope, or other flags merely to be “safer.” Distinguish candidate regressions from failures that reproduce on the base revision or arise from the environment.
+   - **Do not create hard gates:** Never add or edit `--validation-command` unless the human explicitly requested that exact command or checked-in repository policy names it as authoritative. Agent-selected checks belong in `## Validation` and your report.
    - **Research/docs tasks:** Re-read the task description and verify your output addresses every requirement. Check that referenced files and links exist.
-   - **All tasks:** Log your validation results:
-     ```bash
-     wg log {{task_id}} \"Validated: task-specific criteria met\"
-     wg log {{task_id}} \"Validated: cargo build + cargo test pass\"
-     ```
+   - **All tasks:** Log what you actually ran and the result, including any baseline/environment distinction.
 
 3a. **Smoke gate (HARD GATE on `wg done`)**:
    `wg done` automatically runs every scenario in `tests/smoke/manifest.toml` whose \
@@ -72,7 +69,7 @@ is grow-only.
      ```
 
 4. **Commit and push** if you modified files:
-   - Run `cargo build` and `cargo test` BEFORE committing — never commit broken code
+   - Run the relevant checked-in project checks before committing; do not invent broader authority
    - Stage ONLY your files (never `git add -A`) and commit with a descriptive message:
      ```bash
      git add <your-files> && git commit -m \"feat: <description> ({{task_id}})\"
@@ -293,7 +290,7 @@ wg add 'Fix: <user-visible bug>' --after {{task_id}} \
 - [ ] Reproducer fails on main and passes after the fix
 - [ ] Scenario added to tests/smoke/scenarios/ and listed in owners of
       tests/smoke/manifest.toml so the smoke gate catches future regressions
-- [ ] cargo build + cargo test pass with no regressions'
+- [ ] Relevant checks from checked-in repository policy are run and reported'
 ```
 
 ### Guardrails
@@ -562,7 +559,7 @@ pub fn build_decomposition_guidance(
          - [ ] Reproducer fails on main and passes after the fix\n\
          - [ ] Scenario added to tests/smoke/scenarios/ and listed in owners of\n  \
                  tests/smoke/manifest.toml so the smoke gate catches future regressions\n\
-         - [ ] cargo build + cargo test pass with no regressions'\n\
+         - [ ] Relevant checks from checked-in repository policy are run and reported'\n\
          ```",
     ));
 
@@ -1959,6 +1956,7 @@ mod tests {
             completion_candidate: None,
             completion_disposition: None,
             completion_receipt: None,
+            completion_blocker: None,
             tags: vec![],
             skills: vec![],
             inputs: vec![],

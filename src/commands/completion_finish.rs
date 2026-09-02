@@ -107,62 +107,40 @@ pub fn run(dir: &Path, id: &str, integration_ref: &str) -> Result<()> {
                     != Some(worksgood::graph::CompletionDisposition::Landed)
             {
                 super::completion_land::run_at(dir, id, integration_ref, Some(&cwd))?;
+                if load_graph(dir.join("graph.jsonl"))?
+                    .get_task(id)
+                    .is_some_and(|task| task.status == worksgood::graph::Status::Waiting)
+                {
+                    return Ok(());
+                }
             }
             return super::completion_done::run(dir, id, integration_ref);
         }
 
-        let current_attempt_id = task
-            .lifecycle
-            .current_attempt
-            .as_ref()
-            .map(|attempt| attempt.id.as_str());
-        let strict_rejections = task
-            .completion_review_activity
-            .iter()
-            .filter(|activity| {
-                // The model-review attempt budget is per source attempt.
-                // Rejections recorded against a superseded generation or
-                // attempt (for example before an operator retry reopened
-                // the task) must not consume the current attempt's budget:
-                // that would park every later attempt forever. Rows without
-                // a binding stay counted (fail-closed for unattributable
-                // legacy activity).
-                let foreign_attempt = activity.binding.as_ref().is_some_and(|binding| {
-                    binding.generation != task.lifecycle.generation
-                        || binding.attempt_id.as_deref() != current_attempt_id
-                });
-                !foreign_attempt
-                    && matches!(
-                        activity.verdict,
-                        worksgood::simple_land::ReviewVerdict::Reject
-                            | worksgood::simple_land::ReviewVerdict::Unavailable
-                            | worksgood::simple_land::ReviewVerdict::IncompleteEvidence
-                    )
-            })
-            .count() as u32;
-        if strict_rejections >= config.agency.gate_max_attempts.max(1) {
-            super::wait::run(
+        // A repeated `wg done` for an exact rejected candidate must not rerun
+        // deterministic validation or another model call once this source
+        // attempt has consumed its semantic-candidate budget. Superseded
+        // source attempts do not count, and unavailable FLIP/Eval receipts do
+        // not block their candidate-scoped infrastructure retry.
+        if candidate_matches_head
+            && candidate_matches_source_tuple
+            && config.agency.completion_review_strict
+            && let Some(iterations) =
+                super::completion_submit::rejected_current_candidate_at_source_budget(
+                    dir,
+                    &task,
+                    candidate,
+                    config.agency.gate_max_attempts.max(1),
+                )?
+        {
+            super::completion_submit::park_for_review_budget(
                 dir,
                 id,
-                "human-input",
-                Some("Needs review: strict model-review attempt limit reached"),
+                iterations,
+                config.agency.gate_max_attempts.max(1),
             )?;
-            worksgood::parser::modify_graph(dir.join("graph.jsonl"), |graph| {
-                let Some(task) = graph.get_task_mut(id) else {
-                    return false;
-                };
-                task.assigned = None;
-                task.log.push(worksgood::graph::LogEntry {
-                    timestamp: chrono::Utc::now().to_rfc3339(),
-                    actor: Some("completion-review".to_string()),
-                    user: None,
-                    message: "Needs review: bounded strict model-review attempts exhausted; source worker released"
-                        .to_string(),
-                });
-                true
-            })?;
             bail!(
-                "Needs review: strict model-review attempt limit ({}) reached; worker released for operator accept/reject",
+                "Needs review: strict model-review attempt limit ({}) reached; no further validation or model call was made",
                 config.agency.gate_max_attempts.max(1)
             );
         }
@@ -273,8 +251,22 @@ pub fn run(dir: &Path, id: &str, integration_ref: &str) -> Result<()> {
     };
 
     super::completion_submit::run(dir, id, &manifest_path, &summary_path)?;
+    if load_graph(dir.join("graph.jsonl"))?
+        .get_task(id)
+        .is_some_and(|task| {
+            task.status == worksgood::graph::Status::Waiting && task.completion_blocker.is_some()
+        })
+    {
+        return Ok(());
+    }
     if task.completion_contract == CompletionContract::Land {
         super::completion_land::run_at(dir, id, integration_ref, Some(&cwd))?;
+        if load_graph(dir.join("graph.jsonl"))?
+            .get_task(id)
+            .is_some_and(|task| task.status == worksgood::graph::Status::Waiting)
+        {
+            return Ok(());
+        }
     }
     super::completion_done::run(dir, id, integration_ref)
 }

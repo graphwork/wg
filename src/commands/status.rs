@@ -137,6 +137,15 @@ struct ReopenHeldTask {
     source_fence: u64,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+struct CompletionWaitingTask {
+    task_id: String,
+    kind: worksgood::graph::CompletionBlockerKind,
+    reason: String,
+    safe_next: String,
+    candidate: String,
+}
+
 /// Active cycle timing info
 #[derive(Debug, Clone, serde::Serialize)]
 struct CycleTimingInfo {
@@ -170,6 +179,9 @@ struct StatusOutput {
     /// exact prior owner releases.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     waiting_for_owner_release: Vec<ReopenHeldTask>,
+    /// Accepted immutable candidates waiting only on review/finalization.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    completion_waiting: Vec<CompletionWaitingTask>,
     /// Cached periodic sentinel snapshot. `wg status` never walks the
     /// filesystem; the daemon/doctor refreshes this bounded snapshot off the
     /// input/render path.
@@ -280,6 +292,23 @@ fn gather_status(dir: &Path, show_all: bool) -> Result<StatusOutput> {
     let verify_failing = gather_verify_failing(dir, show_all);
 
     let waiting_for_owner_release = gather_reopen_holds(dir, show_all);
+    let completion_waiting = load_graph(graph_path(dir))
+        .map(|graph| {
+            graph
+                .tasks()
+                .filter_map(|task| {
+                    let blocker = task.completion_blocker.as_ref()?;
+                    Some(CompletionWaitingTask {
+                        task_id: task.id.clone(),
+                        kind: blocker.kind,
+                        reason: blocker.reason.clone(),
+                        safe_next: blocker.safe_next.clone(),
+                        candidate: blocker.candidate.manifest.content_digest.to_string(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
 
     // 9. Disk state is meaningful only while predictive admission is enabled.
     // A stale/absent snapshot while disabled is not a healthy zero-headroom
@@ -299,6 +328,7 @@ fn gather_status(dir: &Path, show_all: bool) -> Result<StatusOutput> {
         dangling_deps,
         verify_failing,
         waiting_for_owner_release,
+        completion_waiting,
         disk,
     })
 }
@@ -1190,6 +1220,21 @@ fn print_status(status: &StatusOutput) {
                 held.source_attempt.as_deref().unwrap_or("none"),
                 held.source_fence
             );
+        }
+    }
+
+    if !status.completion_waiting.is_empty() {
+        println!();
+        println!(
+            "Completion waiting: {} accepted candidate(s) need finalization action:",
+            status.completion_waiting.len()
+        );
+        for waiting in &status.completion_waiting {
+            println!(
+                "  {} — {:?}: {} (candidate={})",
+                waiting.task_id, waiting.kind, waiting.reason, waiting.candidate
+            );
+            println!("    next: {}", waiting.safe_next);
         }
     }
 
