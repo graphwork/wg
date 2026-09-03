@@ -82,6 +82,35 @@ struct LandingReconciliationRecord {
     updated_at: String,
 }
 
+#[cfg(test)]
+thread_local! {
+    static AFTER_LANDING_LOCK_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+    static RECONCILIATION_FAULT: std::cell::RefCell<Option<&'static str>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn run_after_landing_lock_hook() {
+    #[cfg(test)]
+    AFTER_LANDING_LOCK_HOOK.with(|hook| {
+        if let Some(hook) = hook.borrow_mut().take() {
+            hook();
+        }
+    });
+}
+
+fn reconciliation_fault(boundary: &str) -> Result<()> {
+    #[cfg(test)]
+    RECONCILIATION_FAULT.with(|fault| {
+        if *fault.borrow() == Some(boundary) {
+            bail!("injected landing reconciliation failure at {boundary}");
+        }
+        Ok(())
+    })?;
+    let _ = boundary;
+    Ok(())
+}
+
 pub fn run(dir: &Path, id: &str, integration_ref: &str) -> Result<()> {
     let cwd = std::env::current_dir().context("determine worker working directory")?;
     run_at(dir, id, integration_ref, Some(&cwd))
@@ -138,7 +167,10 @@ pub(crate) fn resume_pending(dir: &Path, id: &str) -> Result<bool> {
     if blocker.kind != CompletionBlockerKind::LandingPending || task.status != Status::Waiting {
         bail!("task '{id}' is not Waiting/LandingPending");
     }
-    super::completion_wait::validate_current(task, &blocker)?;
+    if let Err(error) = super::completion_wait::validate_current(task, &blocker) {
+        super::completion_wait::mark_stale_binding_blocked(dir, task, &blocker)?;
+        return Err(error);
+    }
     let integration_ref = blocker
         .integration_ref
         .as_deref()
@@ -177,8 +209,42 @@ fn run_at_inner(
         );
     }
     let completion_store = store(dir)?;
-    let (submission, manifest, requirements, summary) =
-        load_submission_bytes(&completion_store, task)?;
+    let project_root = dir
+        .parent()
+        .context("workgraph directory has no project root")?;
+    let (submission, manifest, requirements, summary) = match load_submission_bytes(
+        &completion_store,
+        task,
+    ) {
+        Ok(loaded) => loaded,
+        Err(error) => {
+            if let Some(blocker) = pending {
+                let retained = completion_store.read_manifest(
+                    &blocker.candidate.manifest,
+                    worksgood::completion_task::MAX_COMPLETION_METADATA_BYTES,
+                )?;
+                let retained_git = exact_git_output(&retained.outputs)?;
+                let observed = git(project_root, &["rev-parse", integration_ref])?;
+                let reason = format!(
+                    "selected candidate authority no longer resolves against current task inputs: {error}"
+                );
+                record_reconciliation_blocked(
+                    dir,
+                    task,
+                    blocker,
+                    &retained,
+                    retained_git,
+                    &observed,
+                    &reason,
+                )?;
+                bail!(
+                    "landing reconciliation refused changed candidate/validation inputs; immutable candidate retained. Inspect `wg merge-resolution status {id}`; restore the exact reviewed inputs and run `wg resume {id} --only`, or use `wg reset {id}` to start an authorized new generation"
+                );
+            }
+            return Err(error.into());
+        }
+    };
+    let git_output = exact_git_output(&manifest.outputs)?;
     let current_dependencies = collect_dependency_outputs(&completion_store, &graph, task)?;
     let selected_dependencies = task
         .completion_candidate
@@ -187,11 +253,23 @@ fn run_at_inner(
         .dependency_outputs
         .clone();
     if current_dependencies != selected_dependencies {
+        if let Some(blocker) = pending {
+            let observed = git(project_root, &["rev-parse", integration_ref])?;
+            record_reconciliation_blocked(
+                dir,
+                task,
+                blocker,
+                &manifest,
+                git_output,
+                &observed,
+                "dependency outputs changed after review",
+            )?;
+            bail!(
+                "landing reconciliation refused changed dependency inputs; immutable candidate retained. Inspect `wg merge-resolution status {id}`; restore the exact reviewed dependency outputs and run `wg resume {id} --only`, or use `wg reset {id}` to start an authorized new generation"
+            );
+        }
         bail!("dependency outputs changed after review; submit a new manifest");
     }
-    let project_root = dir
-        .parent()
-        .context("workgraph directory has no project root")?;
     let resolved = ReviewResolver::new(&completion_store)
         .repository(project_root)
         .resolve_submission(
@@ -216,7 +294,6 @@ fn run_at_inner(
             );
         }
     }
-    let git_output = exact_git_output(&manifest.outputs)?;
     worksgood::control_plane::assert_tree_has_no_control_plane(
         project_root,
         &git_output.commit_oid,
@@ -242,6 +319,7 @@ fn run_at_inner(
                     // blocker to it would make that new target look validated.
                     target_ref_oid: &git_output.integrated_main_oid,
                     worker_worktree: worker,
+                    recovery: super::completion_wait::LandingRecovery::CleanCheckout,
                 },
             )?;
         }
@@ -252,9 +330,25 @@ fn run_at_inner(
     }
 
     let _lock = LandingLock::acquire(project_root)?;
+    run_after_landing_lock_hook();
     if root_checkout_dirty_if_attached(project_root, integration_ref)? {
+        if pending.is_none() {
+            let worker =
+                worker_worktree.context("landing wait requires the retained worker worktree")?;
+            super::completion_wait::park_landing_pending(
+                dir,
+                id,
+                "attached integration checkout changed while finalization acquired its lock; candidate and user bytes were preserved",
+                super::completion_wait::LandingWait {
+                    integration_ref,
+                    target_ref_oid: &git_output.integrated_main_oid,
+                    worker_worktree: worker,
+                    recovery: super::completion_wait::LandingRecovery::CleanCheckout,
+                },
+            )?;
+        }
         eprintln!(
-            "Landing pending: checkout changed while finalization was locking; preserve user bytes and run `wg resume {id} --only` after cleaning"
+            "Landing pending: checkout changed while finalization was locking; preserve user bytes, clean the checkout, then run `wg resume {id} --only`"
         );
         return Ok(false);
     }
@@ -279,6 +373,7 @@ fn run_at_inner(
                     integration_ref,
                     target_ref_oid: &git_output.integrated_main_oid,
                     worker_worktree: worker,
+                    recovery: super::completion_wait::LandingRecovery::ReconcileTarget,
                 },
             )?;
             eprintln!(
@@ -375,6 +470,7 @@ fn run_at_inner(
                     integration_ref,
                     target_ref_oid: &git_output.integrated_main_oid,
                     worker_worktree: worker,
+                    recovery: super::completion_wait::LandingRecovery::ReconcileTarget,
                 },
             )?;
             eprintln!(
@@ -428,6 +524,7 @@ fn run_at_inner(
                                 integration_ref,
                                 target_ref_oid: &observed_before,
                                 worker_worktree: worker,
+                                recovery: super::completion_wait::LandingRecovery::CleanCheckout,
                             },
                         )?;
                     }
@@ -477,6 +574,7 @@ fn run_at_inner(
                     integration_ref,
                     target_ref_oid: &observed_before,
                     worker_worktree: worker,
+                    recovery: super::completion_wait::LandingRecovery::ReconcileTarget,
                 },
             )?;
         }
@@ -848,7 +946,8 @@ fn reconcile_descendant_target(
         "application/vnd.worksgood.landing-reconciliation+json",
     )?;
     let ready_reason = "descendant target integrated; target-dependent validation renewed";
-    let ready_next = format!("land:{}:{}", task.id, receipt_ref.content_digest);
+    let ready_idempotency = format!("land:{}:{}", task.id, receipt_ref.content_digest);
+    let ready_next = format!("wg resume {} --only", task.id);
     // The durable authority record is written before its graph projection. A
     // crash may leave an orphan record (safe to recompute), but can never leave
     // ReadyToLand pointing at authority bytes that were not made durable.
@@ -881,8 +980,9 @@ fn reconcile_descendant_target(
         Some(receipt_ref.content_digest.to_string()),
         Some(integration_commit.clone()),
         Some(observed_target.to_string()),
-        Some(&ready_next),
+        Some(&ready_idempotency),
     )?;
+    reconciliation_fault("ready-projected")?;
     Ok(integration_commit)
 }
 
@@ -1202,6 +1302,17 @@ fn verify_ready_reconciliation(
         || (receipt.refreshed_target_oid != observed_target && commit != observed_target)
         || receipt.integration_commit_oid != commit
         || record.state != LandingReconciliationState::ReadyToLand
+        || record.task_id != receipt.task_id
+        || record.generation != receipt.generation
+        || record.fence != receipt.fence
+        || record.manifest_digest != receipt.manifest_digest
+        || record.source_candidate_commit_oid != receipt.source_candidate_commit_oid
+        || record.expected_target_oid != receipt.expected_target_oid
+        || record.observed_target_oid != receipt.refreshed_target_oid
+        || record.integration_commit_oid.as_deref() != Some(receipt.integration_commit_oid.as_str())
+        || record.validation_inputs_digest.as_deref()
+            != Some(receipt.validation_inputs_digest.as_str())
+        || record.validation_evidence != receipt.validation_evidence
     {
         bail!("landing reconciliation receipt binding is stale or invalid");
     }
@@ -1214,7 +1325,28 @@ fn verify_ready_reconciliation(
     let project = dir
         .parent()
         .context("workgraph directory has no project root")?;
+    // The renewed receipt is authority only for this exact target snapshot
+    // and derived integration tree. Rechecking both target ancestry and its
+    // tree prevents a content-addressed receipt from becoming a waiver for a
+    // different descendant, even when the source candidate is still reachable.
     if git(project, &["rev-parse", &format!("{commit}^{{tree}}")])? != receipt.integration_tree_oid
+        || git(
+            project,
+            &[
+                "rev-parse",
+                &format!("{}^{{tree}}", receipt.refreshed_target_oid),
+            ],
+        )? != receipt.refreshed_target_tree_oid
+        || !is_ancestor(
+            project,
+            &git_output.integrated_main_oid,
+            &receipt.expected_target_oid,
+        )?
+        || !is_ancestor(
+            project,
+            &receipt.expected_target_oid,
+            &receipt.refreshed_target_oid,
+        )?
         || !is_ancestor(project, &receipt.refreshed_target_oid, commit)?
         || !is_ancestor(project, &git_output.commit_oid, commit)?
         || (observed_target != receipt.refreshed_target_oid
@@ -1379,6 +1511,12 @@ fn root_checkout_dirty_if_attached(project: &Path, integration_ref: &str) -> Res
     if symbolic_head(project).as_deref() != Some(integration_ref) {
         return Ok(false);
     }
+    // Audit administrative exclusions before trusting Git status. Otherwise a
+    // once-valid exact rule could hide a replaced directory or symlink without
+    // the status parser ever receiving a path to classify.
+    if !super::spawn::worktree::audit_wg_runtime_exclusions(project)? {
+        return Ok(true);
+    }
     let output = Command::new("git")
         .args(["status", "--porcelain=v1", "-z", "--untracked-files=all"])
         .current_dir(project)
@@ -1418,53 +1556,46 @@ fn managed_wg_runtime_status_path(project: &Path, relative: &str) -> Result<bool
         return Ok(false);
     }
     let runtime_root = project.join(".wg-worktrees");
-    if !runtime_root.is_dir() {
-        return Ok(false);
-    }
-    let runtime_root = runtime_root.canonicalize()?;
-    let listed = Command::new("git")
-        .args(["worktree", "list", "--porcelain"])
-        .current_dir(project)
-        .output()?;
-    if !listed.status.success() {
-        return Ok(false);
-    }
-    let registered = String::from_utf8_lossy(&listed.stdout)
-        .lines()
-        .filter_map(|line| line.strip_prefix("worktree "))
-        .filter_map(|path| Path::new(path).canonicalize().ok())
-        .filter(|path| path.starts_with(&runtime_root))
-        .collect::<BTreeSet<_>>();
-    if registered.is_empty() {
+    let metadata = match fs::symlink_metadata(&runtime_root) {
+        Ok(metadata) => metadata,
+        Err(_) => return Ok(false),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
         return Ok(false);
     }
     if normalized == ".wg-worktrees" {
+        let mut found = false;
         for entry in fs::read_dir(&runtime_root)? {
             let entry = entry?;
-            let path = entry.path();
-            if entry.file_type()?.is_symlink() || !registered.contains(&path) {
+            found = true;
+            if entry.file_type()?.is_symlink()
+                || !super::spawn::worktree::is_registered_wg_runtime_worktree(
+                    project,
+                    &entry.path(),
+                )?
+            {
                 return Ok(false);
             }
         }
-        return Ok(true);
+        return Ok(found);
     }
     let suffix = normalized
         .strip_prefix(".wg-worktrees/")
         .context("checked runtime prefix disappeared")?;
-    let candidate = runtime_root.join(suffix);
-    if fs::symlink_metadata(&candidate).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
-        return Ok(false);
-    }
-    // Lexical membership is mandatory before canonicalization. Otherwise an
-    // untracked user symlink sibling resolving into a registered worktree
-    // would be mistaken for WG-owned runtime state.
-    let Some(registered_root) = registered.iter().find(|root| candidate.starts_with(root)) else {
+    let Some(agent) = Path::new(suffix).components().next() else {
         return Ok(false);
     };
-    Ok(candidate
-        .canonicalize()
-        .ok()
-        .is_some_and(|path| path.starts_with(registered_root)))
+    let registered_root = runtime_root.join(agent.as_os_str());
+    if !super::spawn::worktree::is_registered_wg_runtime_worktree(project, &registered_root)? {
+        return Ok(false);
+    }
+    let candidate = runtime_root.join(suffix);
+    if !candidate.starts_with(&registered_root)
+        || fs::symlink_metadata(&candidate).is_ok_and(|metadata| metadata.file_type().is_symlink())
+    {
+        return Ok(false);
+    }
+    Ok(true)
 }
 
 fn symbolic_head(project: &Path) -> Option<String> {
@@ -1696,6 +1827,29 @@ mod tests {
         String::from_utf8(output.stdout).unwrap().trim().to_string()
     }
 
+    fn write_runtime_owner(root: &Path, runtime: &Path, agent: &str, task: &str, branch: &str) {
+        let gitdir = PathBuf::from(command(runtime, &["rev-parse", "--git-dir"]));
+        let gitdir = if gitdir.is_absolute() {
+            gitdir
+        } else {
+            runtime.join(gitdir)
+        };
+        fs::write(
+            gitdir.join("wg-spawn-owner.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "schema": 1,
+                "token": "test-owner-token",
+                "agent_id": agent,
+                "task_id": task,
+                "branch": branch,
+                "path": runtime.canonicalize().unwrap().to_string_lossy(),
+                "base_oid": command(root, &["rev-parse", "main"]),
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
     fn fixture() -> Fixture {
         fixture_with_validation(None)
     }
@@ -1893,14 +2047,29 @@ mod tests {
                 "main",
             ],
         );
-        fs::write(
-            fixture.root.join(".git/info/exclude"),
-            "# BEGIN worksgood managed runtime\n/.wg-worktrees/agent-runtime/\n# END worksgood managed runtime\n",
-        )
-        .unwrap();
+        let exclusion = "# BEGIN worksgood managed runtime\n/.wg-worktrees/agent-runtime/\n# END worksgood managed runtime\n";
+        fs::write(fixture.root.join(".git/info/exclude"), exclusion).unwrap();
+        assert!(
+            root_checkout_dirty_if_attached(&fixture.root, "refs/heads/main").unwrap(),
+            "Git registration alone must not turn a user worktree into WG runtime"
+        );
+        assert!(
+            !fs::read_to_string(fixture.root.join(".git/info/exclude"))
+                .unwrap()
+                .contains("/.wg-worktrees/agent-runtime/"),
+            "invalid managed exclusion must be retired before status is trusted"
+        );
+        write_runtime_owner(
+            &fixture.root,
+            &runtime,
+            "agent-runtime",
+            "runtime-test",
+            "wg/agent-runtime/runtime-test",
+        );
+        fs::write(fixture.root.join(".git/info/exclude"), exclusion).unwrap();
         assert!(
             !root_checkout_dirty_if_attached(&fixture.root, "refs/heads/main").unwrap(),
-            "a registered WG runtime path is not user dirtiness"
+            "a registered, privately-owned WG runtime path is not user dirtiness"
         );
         fs::write(
             fixture.root.join(".wg-worktrees/user-owned.txt"),
@@ -1922,6 +2091,26 @@ mod tests {
             );
             fs::remove_file(user_link).unwrap();
         }
+
+        // An exact rule must not remain trusted if the registered path is
+        // replaced while Git still names it. Audit retires the rule before
+        // status, making the replacement visible and blocking this attempt.
+        let parked_runtime = fixture.root.join(".wg-worktrees/agent-runtime-parked");
+        fs::rename(&runtime, &parked_runtime).unwrap();
+        fs::create_dir(&runtime).unwrap();
+        fs::write(runtime.join("user.txt"), "replacement user bytes\n").unwrap();
+        assert!(
+            root_checkout_dirty_if_attached(&fixture.root, "refs/heads/main").unwrap(),
+            "replacement bytes at an exactly excluded path must block landing"
+        );
+        assert!(
+            !fs::read_to_string(fixture.root.join(".git/info/exclude"))
+                .unwrap()
+                .contains("/.wg-worktrees/agent-runtime/"),
+            "replaced runtime exclusion must be retired"
+        );
+        fs::remove_dir_all(&runtime).unwrap();
+        fs::rename(&parked_runtime, &runtime).unwrap();
         command(
             &fixture.root,
             &["worktree", "remove", "--force", runtime.to_str().unwrap()],
@@ -2165,6 +2354,45 @@ mod tests {
     }
 
     #[test]
+    fn dirtiness_race_after_landing_lock_parks_with_a_real_resume_path() {
+        let fixture = fixture();
+        let dirty_path = fixture.root.join("user-race.txt");
+        AFTER_LANDING_LOCK_HOOK.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new({
+                let dirty_path = dirty_path.clone();
+                move || fs::write(dirty_path, "user bytes arriving during finalization\n").unwrap()
+            }));
+        });
+
+        run_at(
+            &fixture.dir,
+            &fixture.task_id,
+            "refs/heads/main",
+            Some(&fixture.worker),
+        )
+        .unwrap();
+        let graph = load_graph(fixture.dir.join("graph.jsonl")).unwrap();
+        let task = graph.get_task(&fixture.task_id).unwrap();
+        assert_eq!(task.status, Status::Waiting);
+        assert!(task.assigned.is_none());
+        let blocker = task.completion_blocker.as_ref().unwrap();
+        assert_eq!(blocker.kind, CompletionBlockerKind::LandingPending);
+        assert!(blocker.safe_next.contains("wg resume"));
+        assert_eq!(
+            command(&fixture.root, &["rev-parse", "main"]),
+            fixture.integrated
+        );
+        drop(graph);
+
+        fs::remove_file(dirty_path).unwrap();
+        assert!(resume_pending(&fixture.dir, &fixture.task_id).unwrap());
+        assert_eq!(
+            command(&fixture.root, &["rev-parse", "main"]),
+            fixture.candidate
+        );
+    }
+
+    #[test]
     fn completion_blockers_stale_candidate_fence_and_moved_target_fail_closed() {
         let park = |fixture: &Fixture| {
             fs::write(fixture.root.join("base.txt"), "dirty\n").unwrap();
@@ -2192,7 +2420,20 @@ mod tests {
         let before = command(&stale_fence.root, &["rev-parse", "main"]);
         let error = resume_pending(&stale_fence.dir, &stale_fence.task_id).unwrap_err();
         assert!(error.to_string().contains("binding is stale"));
+        assert!(error.to_string().contains("wg reset"));
         assert_eq!(command(&stale_fence.root, &["rev-parse", "main"]), before);
+        let graph = load_graph(stale_fence.dir.join("graph.jsonl")).unwrap();
+        let blocker = graph
+            .get_task(&stale_fence.task_id)
+            .unwrap()
+            .completion_blocker
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            blocker.reconciliation_state,
+            LandingReconciliationState::Blocked
+        );
+        assert!(blocker.safe_next.contains("wg reset"));
 
         let stale_candidate = fixture();
         park(&stale_candidate);
@@ -2327,6 +2568,58 @@ mod tests {
     }
 
     #[test]
+    fn ready_receipt_survives_restart_and_names_the_supported_resume() {
+        let fixture = fixture_with_validation(Some("test -f result.txt"));
+        fs::write(fixture.root.join("base.txt"), "dirty\n").unwrap();
+        run_at(
+            &fixture.dir,
+            &fixture.task_id,
+            "refs/heads/main",
+            Some(&fixture.worker),
+        )
+        .unwrap();
+        command(&fixture.root, &["restore", "base.txt"]);
+        fs::write(fixture.root.join("advance.txt"), "advance\n").unwrap();
+        command(&fixture.root, &["add", "advance.txt"]);
+        command(&fixture.root, &["commit", "-m", "advance"]);
+
+        RECONCILIATION_FAULT.with(|fault| *fault.borrow_mut() = Some("ready-projected"));
+        let error = resume_pending(&fixture.dir, &fixture.task_id).unwrap_err();
+        assert!(error.to_string().contains("ready-projected"));
+        RECONCILIATION_FAULT.with(|fault| *fault.borrow_mut() = None);
+
+        let graph = load_graph(fixture.dir.join("graph.jsonl")).unwrap();
+        let task = graph.get_task(&fixture.task_id).unwrap();
+        let blocker = task.completion_blocker.as_ref().unwrap();
+        assert_eq!(
+            blocker.reconciliation_state,
+            LandingReconciliationState::ReadyToLand
+        );
+        assert!(blocker.safe_next.contains("wg resume"));
+        let record = load_reconciliation_record(&fixture.dir, &fixture.task_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.state, LandingReconciliationState::ReadyToLand);
+        assert!(record.safe_next.contains("wg resume"));
+        assert!(!record.safe_next.starts_with("land:"));
+        let receipt = record.receipt_ref.clone().unwrap();
+        let integration = record.integration_commit_oid.clone().unwrap();
+        drop(graph);
+
+        assert!(resume_pending(&fixture.dir, &fixture.task_id).unwrap());
+        let landed = load_reconciliation_record(&fixture.dir, &fixture.task_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(landed.state, LandingReconciliationState::Landed);
+        assert_eq!(landed.receipt_ref, Some(receipt));
+        assert_eq!(
+            landed.integration_commit_oid.as_deref(),
+            Some(integration.as_str())
+        );
+        assert_eq!(command(&fixture.root, &["rev-parse", "main"]), integration);
+    }
+
+    #[test]
     fn divergence_and_conflict_are_audited_and_keep_candidate_bytes() {
         let park = |fixture: &Fixture| {
             fs::write(fixture.root.join("base.txt"), "dirty\n").unwrap();
@@ -2436,6 +2729,12 @@ mod tests {
             .completion_candidate
             .clone()
             .unwrap();
+        let original_description = load_graph(changed.dir.join("graph.jsonl"))
+            .unwrap()
+            .get_task(&changed.task_id)
+            .unwrap()
+            .description
+            .clone();
         modify_graph(changed.dir.join("graph.jsonl"), |graph| {
             graph.get_task_mut(&changed.task_id).unwrap().description =
                 Some("changed required input\n\n## Validation\nDifferent".into());
@@ -2447,7 +2746,10 @@ mod tests {
             error
                 .to_string()
                 .contains("validation evidence no longer resolves")
-                || error.to_string().contains("requirements"),
+                || error.to_string().contains("requirements")
+                || error
+                    .to_string()
+                    .contains("refused changed candidate/validation inputs"),
             "unexpected changed-input refusal: {error:#}"
         );
         let graph = load_graph(changed.dir.join("graph.jsonl")).unwrap();
@@ -2460,6 +2762,33 @@ mod tests {
             Some(&selected)
         );
         assert_eq!(command(&changed.root, &["rev-parse", "main"]), target);
+        let blocker = graph
+            .get_task(&changed.task_id)
+            .unwrap()
+            .completion_blocker
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            blocker.reconciliation_state,
+            LandingReconciliationState::Blocked
+        );
+        assert!(blocker.safe_next.contains("merge-resolution status"));
+        drop(graph);
+        modify_graph(changed.dir.join("graph.jsonl"), |graph| {
+            graph.get_task_mut(&changed.task_id).unwrap().description =
+                original_description.clone();
+            true
+        })
+        .unwrap();
+        assert!(resume_pending(&changed.dir, &changed.task_id).unwrap());
+        assert!(
+            is_ancestor(
+                &changed.root,
+                &changed.candidate,
+                &command(&changed.root, &["rev-parse", "main"]),
+            )
+            .unwrap()
+        );
 
         let failed = fixture_with_validation(Some("test ! -f target-blocks-validation"));
         fs::write(failed.root.join("base.txt"), "dirty\n").unwrap();

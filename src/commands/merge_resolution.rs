@@ -31,11 +31,14 @@ pub fn run(dir: &Path, command: MergeResolutionCommands, json: bool) -> Result<(
             print_record(&record, json)
         }
         MergeResolutionCommands::Status { id } => {
-            if let Some(record) = ResolutionStore::open(dir)?.load_task(&id)? {
-                print_record(&record, json)
-            } else if crate::commands::completion_land::print_reconciliation_status(dir, &id, json)?
-            {
+            // A task may have an older source merge-resolution record and a
+            // newer finalizer reconciliation. Prefer the active landing record
+            // so the operator sees the recovery action named by the blocker,
+            // not stale guidance from the source-resolution phase.
+            if crate::commands::completion_land::print_reconciliation_status(dir, &id, json)? {
                 Ok(())
+            } else if let Some(record) = ResolutionStore::open(dir)?.load_task(&id)? {
+                print_record(&record, json)
             } else {
                 bail!("no merge resolution or landing reconciliation record for '{id}'")
             }

@@ -724,6 +724,132 @@ fn git_worktree_entries(project_root: &Path) -> Result<Vec<GitWorktreeEntry>> {
     Ok(entries)
 }
 
+/// Prove that an exact path is a worktree created by WG, rather than merely a
+/// Git worktree a user happened to place in WG's historical directory. Git
+/// registration is necessary but not sufficient: the private create-once
+/// owner record binds path, agent, task and branch outside candidate source.
+///
+/// This proof is shared by the root-checkout finalizer. Weakening it there can
+/// hide user bytes from the landing dirtiness fence.
+pub(crate) fn is_registered_wg_runtime_worktree(
+    project_root: &Path,
+    worktree: &Path,
+) -> Result<bool> {
+    let runtime_root = project_root.join(".wg-worktrees");
+    let root_metadata = match fs::symlink_metadata(&runtime_root) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
+        return Ok(false);
+    }
+    let metadata = match fs::symlink_metadata(worktree) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Ok(false);
+    }
+    let Some(agent) = worktree
+        .strip_prefix(&runtime_root)
+        .ok()
+        .and_then(|relative| {
+            let mut components = relative.components();
+            let agent = components.next()?.as_os_str().to_str()?;
+            (components.next().is_none() && !agent.is_empty()).then_some(agent)
+        })
+    else {
+        return Ok(false);
+    };
+    let Some(entry) = git_worktree_entries(project_root)?
+        .into_iter()
+        .find(|entry| same_canonical_path(&entry.path, worktree))
+    else {
+        return Ok(false);
+    };
+    let Some(branch) = entry.branch else {
+        return Ok(false);
+    };
+    let prefix = format!("wg/{agent}/");
+    let Some(task_id) = branch.strip_prefix(&prefix).filter(|task| !task.is_empty()) else {
+        return Ok(false);
+    };
+    let gitdir = match gitdir_from_pointer(worktree) {
+        Ok(path) => path,
+        Err(_) => return Ok(false),
+    };
+    let owner_file = gitdir.join(OWNER_FILE);
+    let owner: WorktreeOwner = match fs::read(&owner_file)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+    {
+        Some(owner) => owner,
+        None => return Ok(false),
+    };
+    let canonical = match worktree.canonicalize() {
+        Ok(path) => path,
+        Err(_) => return Ok(false),
+    };
+    Ok(owner.schema == OWNER_SCHEMA
+        && !owner.token.is_empty()
+        && owner.agent_id == agent
+        && owner.task_id == task_id
+        && owner.branch == branch
+        && Path::new(&owner.path) == canonical
+        && owner.base_oid.is_some())
+}
+
+/// Audit every exclusion WG claims to manage. Invalid or stale claims are
+/// retired before the caller asks Git for status, so an exact exclusion can
+/// never keep replaced user bytes invisible. Returning `false` deliberately
+/// blocks the current landing attempt; a subsequent explicit resume observes
+/// the now-unhidden path and names the real cleanup condition.
+pub(crate) fn audit_wg_runtime_exclusions(project_root: &Path) -> Result<bool> {
+    let common = PathBuf::from(git_stdout(
+        project_root,
+        &["rev-parse", "--git-common-dir"],
+    )?);
+    let common = if common.is_absolute() {
+        common
+    } else {
+        project_root.join(common)
+    };
+    let exclude = common.join("info/exclude");
+    let existing = match fs::read_to_string(&exclude) {
+        Ok(value) => value,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(true),
+        Err(error) => return Err(error).with_context(|| format!("read {}", exclude.display())),
+    };
+    let lines = existing.lines().collect::<Vec<_>>();
+    let mut managed = Vec::new();
+    let mut index = 0;
+    while index + 2 < lines.len() {
+        if lines[index].trim() == RUNTIME_EXCLUDE_BEGIN
+            && lines[index + 2].trim() == RUNTIME_EXCLUDE_END
+            && let Some(agent) = lines[index + 1]
+                .trim()
+                .strip_prefix("/.wg-worktrees/")
+                .and_then(|value| value.strip_suffix('/'))
+                .filter(|value| !value.is_empty() && !value.contains('/'))
+        {
+            managed.push(project_root.join(".wg-worktrees").join(agent));
+            index += 3;
+        } else {
+            index += 1;
+        }
+    }
+    let mut valid = true;
+    for path in managed {
+        if !is_registered_wg_runtime_worktree(project_root, &path)? {
+            remove_wg_runtime_exclusion(project_root, &path)?;
+            valid = false;
+        }
+    }
+    Ok(valid)
+}
+
 fn same_canonical_path(left: &Path, right: &Path) -> bool {
     match (left.canonicalize(), right.canonicalize()) {
         (Ok(left), Ok(right)) => left == right,

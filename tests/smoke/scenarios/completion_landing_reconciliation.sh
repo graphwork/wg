@@ -112,6 +112,16 @@ for _ in $(seq 1 200); do
   sleep .05
 done
 [[ "$status" == waiting ]] || loud_fail "candidate did not park in Waiting/LandingPending"
+wgrun show landing-reconcile --json >"$scratch/pending.json"
+python3 - "$scratch/pending.json" <<'PY'
+import json,sys
+x=json.load(open(sys.argv[1])); blocker=x.get('completion_blocker') or {}
+assert x.get('assigned') is None,x
+assert blocker.get('kind')=='landing-pending',blocker
+next_action=blocker.get('safe_next','')
+assert 'wg resume landing-reconcile --only' in next_action,next_action
+assert 'git reset' not in next_action and 'wg retry' not in next_action,next_action
+PY
 wgrun service stop >/dev/null || true
 
 # Only the deliberate tracked edit is dirty. The self-created runtime tree is

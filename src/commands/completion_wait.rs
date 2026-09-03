@@ -13,11 +13,18 @@ use worksgood::lifecycle::{
 use worksgood::parser::{load_graph, modify_graph};
 use worksgood::service::registry::{AgentRegistry, AgentStatus};
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum LandingRecovery {
+    CleanCheckout,
+    ReconcileTarget,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct LandingWait<'a> {
     pub integration_ref: &'a str,
     pub target_ref_oid: &'a str,
     pub worker_worktree: &'a Path,
+    pub recovery: LandingRecovery,
 }
 
 pub(crate) fn park_needs_review(dir: &Path, id: &str, reason: &str) -> Result<()> {
@@ -72,9 +79,18 @@ fn park(
         CompletionBlockerKind::NeedsReview => format!(
             "inspect immutable review activity with `wg show {id}`; then use `wg done {id} --operator-accept --reason <WHY>` or retry a new candidate"
         ),
-        CompletionBlockerKind::LandingPending => format!(
-            "preserve user changes, clean the attached integration checkout, then run `wg resume {id} --only`; the coordinator also retries after observing a clean checkout"
-        ),
+        CompletionBlockerKind::LandingPending => match landing
+            .as_ref()
+            .map(|wait| wait.recovery)
+            .expect("LandingPending carries landing recovery")
+        {
+            LandingRecovery::CleanCheckout => format!(
+                "preserve user changes, clean the attached integration checkout, then run `wg resume {id} --only`; the coordinator also retries after observing a clean checkout"
+            ),
+            LandingRecovery::ReconcileTarget => format!(
+                "run `wg resume {id} --only` to reconcile the descendant target, renew target-bound validation evidence, and land the retained candidate"
+            ),
+        },
     };
     let blocker = CompletionBlocker {
         kind,
@@ -193,6 +209,52 @@ fn park(
     Ok(())
 }
 
+pub(crate) fn mark_stale_binding_blocked(
+    dir: &Path,
+    expected_task: &Task,
+    expected_blocker: &CompletionBlocker,
+) -> Result<()> {
+    let mut refusal = None;
+    modify_graph(dir.join("graph.jsonl"), |graph| {
+        let Some(task) = graph.get_task_mut(&expected_task.id) else {
+            refusal = Some("task disappeared while recording stale landing binding".to_string());
+            return false;
+        };
+        if task.lifecycle.generation != expected_task.lifecycle.generation
+            || task.lifecycle.fence != expected_task.lifecycle.fence
+            || task.lifecycle.current_attempt != expected_task.lifecycle.current_attempt
+            || task.completion_candidate != expected_task.completion_candidate
+            || task.completion_blocker.as_ref() != Some(expected_blocker)
+        {
+            refusal = Some("task changed again while recording stale landing binding".to_string());
+            return false;
+        }
+        let blocker = task.completion_blocker.as_mut().expect("checked blocker");
+        blocker.reconciliation_state = worksgood::graph::LandingReconciliationState::Blocked;
+        blocker.reason =
+            "task/generation/attempt/fence/candidate authority changed after landing was parked"
+                .to_string();
+        blocker.safe_next = format!(
+            "inspect `wg show {}` and use `wg reset {}` to start an authorized new generation; do not retry/requeue/unclaim or rewrite Git history",
+            task.id, task.id
+        );
+        task.log.push(LogEntry {
+            timestamp: Utc::now().to_rfc3339(),
+            actor: Some("completion-finalizer-reconciler".to_string()),
+            user: None,
+            message: format!(
+                "Landing reconciliation Blocked: stale lifecycle/candidate binding. Next: {}",
+                blocker.safe_next
+            ),
+        });
+        true
+    })?;
+    if let Some(error) = refusal {
+        bail!(error);
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_current(task: &Task, blocker: &CompletionBlocker) -> Result<()> {
     if task.id != blocker.task_id
         || task.lifecycle.generation != blocker.generation
@@ -207,7 +269,9 @@ pub(crate) fn validate_current(task: &Task, blocker: &CompletionBlocker) -> Resu
         || task.completion_blocker.as_ref() != Some(blocker)
     {
         bail!(
-            "pending completion binding is stale: task/generation/attempt/fence/candidate changed"
+            "pending completion binding is stale: task/generation/attempt/fence/candidate changed. The retained candidate cannot be landed under different authority; inspect `wg show {}` and use `wg reset {}` to start an authorized new generation (never retry/requeue/unclaim or rewrite Git history)",
+            task.id,
+            task.id
         );
     }
     Ok(())
