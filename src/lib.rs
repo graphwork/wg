@@ -46,6 +46,7 @@ pub mod disk_sentinel;
 pub mod dispatch;
 pub mod eval_lifecycle;
 pub mod evaluation;
+pub mod evaluation_cutover;
 pub mod execution_selection;
 pub mod executor;
 pub mod executor_discovery;

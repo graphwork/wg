@@ -97,6 +97,7 @@ struct TaskSummaryInfo {
     historical_gate_audit_alerts: usize,
     evaluation_migration_required: usize,
     evaluation_migrated_rearmed: usize,
+    legacy_evaluation_cutover_required: usize,
     flip_queued_or_running: usize,
     flip_rejected_repair_needed: usize,
     flip_infrastructure_unavailable: usize,
@@ -596,6 +597,7 @@ fn gather_task_summary(dir: &Path, show_all: bool) -> Result<TaskSummaryInfo> {
             historical_gate_audit_alerts: 0,
             evaluation_migration_required: 0,
             evaluation_migrated_rearmed: 0,
+            legacy_evaluation_cutover_required: 0,
             flip_queued_or_running: 0,
             flip_rejected_repair_needed: 0,
             flip_infrastructure_unavailable: 0,
@@ -604,6 +606,8 @@ fn gather_task_summary(dir: &Path, show_all: bool) -> Result<TaskSummaryInfo> {
     }
 
     let graph = load_graph(&path).context("Failed to load graph")?;
+    let legacy_evaluation_cutover_required =
+        worksgood::evaluation_cutover::pending_cutover_count(&graph);
     let config = worksgood::config::Config::load_or_default(dir);
     let durable_verdicts = worksgood::eval_lifecycle::load_durable_verdicts(dir);
     let durable_error = durable_verdicts
@@ -759,6 +763,7 @@ fn gather_task_summary(dir: &Path, show_all: bool) -> Result<TaskSummaryInfo> {
         historical_gate_audit_alerts,
         evaluation_migration_required,
         evaluation_migrated_rearmed,
+        legacy_evaluation_cutover_required,
         flip_queued_or_running,
         flip_rejected_repair_needed,
         flip_infrastructure_unavailable,
@@ -1126,6 +1131,12 @@ fn print_status(status: &StatusOutput) {
             status.tasks.flip_rejected_repair_needed,
             status.tasks.flip_infrastructure_unavailable,
             status.tasks.flip_passed_merging
+        );
+    }
+    if status.tasks.legacy_evaluation_cutover_required > 0 {
+        println!(
+            "Legacy evaluation cutover: \x1b[33m{} condition(s) require migration\x1b[0m — run `wg migrate evaluation-cutover --dry-run`, then `wg migrate evaluation-cutover`; ordinary `wg evaluate record` scores cannot accept an exact candidate",
+            status.tasks.legacy_evaluation_cutover_required
         );
     }
     if status.tasks.historical_gate_audit_alerts > 0 {

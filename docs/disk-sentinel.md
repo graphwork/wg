@@ -9,9 +9,11 @@ All keys live under `[dispatcher.resource_management]`:
 ```toml
 # Safe default. False is a visible emergency override.
 disk_sentinel_enabled = true
-disk_paths = ["/mnt/build", "/tmp"]
+disk_paths = ["/mnt/build"]
 cargo_target_root = "/mnt/build/wg"   # optional baseline/layer cache root
-build_tmp_root = "/tmp/wg-build"     # optional; absolute roots still append a project key
+# Optional scratch override. Relative paths are project-relative; absolute
+# roots remain absolute and append a project key. The default is .wg/build-tmp.
+build_tmp_root = "/mnt/build/wg-tmp"
 
 disk_warning_bytes = 17179869184      # 16 GiB
 disk_pause_build_bytes = 8589934592   # 8 GiB
@@ -36,7 +38,7 @@ terminal_stream_max_bytes = 67108864
 terminal_output_tail_bytes = 2097152
 ```
 
-Both byte and percentage thresholds are enforced for the graph/project-worktree mount and every distinct configured target/tmp mount. A paused state clears only after every mount exceeds the pause threshold plus the configured hysteresis.
+Both byte and percentage thresholds are enforced for the graph/project-worktree mount and every distinct configured target/scratch mount. The OS temporary directory is not probed merely because it is the daemon's ambient temp directory: the default scratch is on the selected project's filesystem. Explicit cache/scratch overrides on other mounts remain measured. A paused state clears only after every mount exceeds the pause threshold plus the configured hysteresis.
 
 Build admission is projected, not just reactive. When an exact build key has no published baseline, WG admits only one cold builder and reserves the cold-baseline floor (96 GiB by default); subsequent candidates wait for its promotion or exit instead of materializing duplicate cold targets. With a baseline, WG persists schema-2 physical private-delta high-water and uses the larger of that measurement or the class-specific delta floor, then adds final-link/test safety and the unmaterialized reservation for every concurrent live build. A legacy schema that counted complete 70–95 GiB duplicated targets is reset during migration. The projection must remain above the **warning** floor. Before returning a pressure refusal, admission runs one idempotent cleanup of eligible explicitly-owned caches/terminal streams and reassesses; unknown, dirty-source, live/open and artifact guards remain unchanged. Spawn admission is serialized through the agent registry lock, so two large builds cannot both spend the same free bytes; heavy builds are additionally bounded by the effective build capacity (`max_build_agents` when explicit, otherwise `dispatcher.max_agents`).
 
@@ -44,7 +46,9 @@ Admission runs before workspace and lifecycle-attempt creation. A refusal is sch
 
 ## Ownership and cleanup safety
 
-A build-capable spawn writes `.wg/service/disk/owned-caches.json` before it is allowed to continue untracked. Each lease records the exact path, cache kind, task, agent, PID and `/proc` start identity, mount device, creation time, expiry, and owning worktree. Absolute and `/tmp` targets are first-class; cleanup never searches by a `wg-target-*` filename. Every build-capable spawn also receives an isolated, project-keyed `TMPDIR` (`$TMPDIR/wg/build-tmp/<project-key>/<agent>`) so identical agent IDs in different graphs cannot collide and Cargo-install scratch is owned and reapable rather than orphaned.
+A build-capable spawn writes `.wg/service/disk/owned-caches.json` before it is allowed to continue untracked. Each lease records the exact path, cache kind, task, agent, PID and `/proc` start identity, mount device, creation time, expiry, and owning worktree. Absolute and `/tmp` targets are first-class; cleanup never searches by a `wg-target-*` filename. Every build-capable spawn receives an isolated `TMPDIR` at the selected graph's `.wg/build-tmp/<agent>` by default, so project selection (`--dir`/`WG_DIR`/discovery), rather than the daemon's launch cwd, determines its filesystem. This scratch is owned and reapable rather than orphaned. A configured relative `build_tmp_root` stays project-relative; a configured absolute root stays absolute and adds a project key before the agent ID to prevent cross-graph collisions.
+
+Upgrading does not relocate or forget an already-owned legacy `$TMPDIR/wg/build-tmp/<project-key>/<agent>` allocation. While that path exists in the ownership registry, disk admission reports its mount as `legacy-owned-build-scratch` and guarded cleanup preserves it while its owner is active or inconclusive. Once the existing stale-cache guards prove it safe, normal `wg disk cleanup --execute` removes the directory and retires the row. New default allocations never use that legacy root.
 
 Automatic cache removal requires all recorded owners of a path to satisfy every guard:
 
@@ -72,7 +76,7 @@ wg status                      # cached disk summary
 wg status --json               # full cached snapshot under `disk`
 ```
 
-The daemon refreshes a bounded cached snapshot off the TUI input/render thread. It reports mount space, target logical bytes, private physical bytes, cache key, private growth/staleness, `.wg-worktrees`, `.wg/agents`, `.wg/log`, active build counts, and projected headroom. The TUI asynchronously reads only this small cache. When admission is explicitly disabled, doctor/config surfaces warn and projected headroom is unavailable rather than treating disabled observation as healthy. CLI, `worksgood status`, and TUI surfaces report build-heavy active/max capacity, inherited-vs-explicit cap source, admission-deferred task count, and per-task waiting reasons without turning a deferral into an attempt.
+The daemon refreshes a bounded cached snapshot off the TUI input/render thread. It reports each distinct filesystem once and includes its logical `probes` (`path` + `source`), making project scratch, target cache, configured overrides, and legacy owned scratch distinguishable in both human and JSON doctor output. It also reports target logical bytes, private physical bytes, cache key, private growth/staleness, `.wg-worktrees`, `.wg/agents`, `.wg/log`, active build counts, and projected headroom. The TUI asynchronously reads only this small cache. When admission is explicitly disabled, doctor/config surfaces warn and projected headroom is unavailable rather than treating disabled observation as healthy. CLI, `worksgood status`, and TUI surfaces report build-heavy active/max capacity, inherited-vs-explicit cap source, admission-deferred task count, and per-task waiting reasons without turning a deferral into an attempt.
 
 Terminal raw/canonical streams are zstd-compressed after the explicit retention window **or immediately on crossing the per-file byte budget**; a bounded final JSONL tail remains at the original path so TUI structured history stays readable. Large `output.log` is retained once as `output.log.zst`; a bounded final plain-text tail remains at both `output.log` and the historical `output.txt` hard-link so `wg show`/TUI history stays readable. The full raw evidence remains decodable, while canonical task result, final assistant response, usage/cost, failure/recovery reason, session summaries, evaluation evidence, task logs and registered artifacts remain available. Live streams are never compacted.
 

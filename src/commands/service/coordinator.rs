@@ -2,6 +2,7 @@
 
 use anyhow::{Context, Result};
 use chrono::Utc;
+use std::io::Write;
 use std::path::Path;
 use worksgood::agency;
 use worksgood::agency::evolver::{self, EvolutionTrigger, EvolverState};
@@ -197,9 +198,34 @@ fn is_daemon_managed(task: &worksgood::graph::Task) -> bool {
 }
 
 fn is_retired_agency_task(task_id: &str) -> bool {
-    task_id.starts_with(".assign-")
-        || task_id.starts_with(".flip-")
-        || task_id.starts_with(".evaluate-")
+    worksgood::evaluation_cutover::is_retired_agency_task_id(task_id)
+}
+
+/// Emit at most one dispatcher notice for each retained row. The marker lives
+/// outside graph/history bytes so observing an old graph cannot rewrite the
+/// evidence an operator is about to back up.
+fn note_retired_agency_row_once(dir: &Path, task_id: &str) {
+    let notices = dir
+        .join(worksgood::evaluation_cutover::EVALUATION_CUTOVER_DIR)
+        .join("dispatcher-notices");
+    if std::fs::create_dir_all(&notices).is_err() {
+        return;
+    }
+    let name = blake3::hash(task_id.as_bytes()).to_hex().to_string();
+    let path = notices.join(format!("{name}.notice"));
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(path)
+    else {
+        return;
+    };
+    let message = format!(
+        "retired synthetic agency row {task_id} was excluded before priority ordering; run `wg migrate evaluation-cutover`\n"
+    );
+    let _ = file.write_all(message.as_bytes());
+    let _ = file.sync_all();
+    eprintln!("[dispatcher] {}", message.trim_end());
 }
 
 fn active_build_heavy_count(dir: &Path, graph: &worksgood::graph::WorkGraph) -> usize {
@@ -244,6 +270,14 @@ fn check_ready_or_return(
     alive_count: usize,
     dir: &Path,
 ) -> Option<TickResult> {
+    // This check precedes both the no-ready early return and every priority
+    // calculation, so an otherwise-empty legacy graph still gets exactly one
+    // actionable notice rather than an endless promote/list/ignore loop.
+    for task in graph.tasks().filter(|task| {
+        is_retired_agency_task(&task.id) && matches!(task.status, Status::Open | Status::Incomplete)
+    }) {
+        note_retired_agency_row_once(dir, &task.id);
+    }
     let cycle_analysis = graph.compute_cycle_analysis();
     let ready = ready_tasks_with_peers_cycle_aware(graph, dir, &cycle_analysis);
     // Only count tasks that are spawnable (exclude daemon-managed loop tasks)
@@ -2060,6 +2094,13 @@ fn spawn_agents_for_ready_tasks(
 ) -> SpawnSummary {
     let graph_file = graph_path(dir);
     warn_released_advisory_quality_passes(&graph_file, graph);
+    // Diagnose retained rows before readiness/ranking, then keep them wholly
+    // outside starvation promotion, priority inheritance, and dispatch order.
+    for task in graph.tasks().filter(|task| {
+        is_retired_agency_task(&task.id) && matches!(task.status, Status::Open | Status::Incomplete)
+    }) {
+        note_retired_agency_row_once(dir, &task.id);
+    }
     let cycle_analysis = graph.compute_cycle_analysis();
     let ready_tasks = ready_tasks_with_peers_cycle_aware(graph, dir, &cycle_analysis);
     let final_ready = sort_tasks_by_priority_with_features(graph, ready_tasks, config);
@@ -2086,11 +2127,9 @@ fn spawn_agents_for_ready_tasks(
         if task.assigned.is_some() || is_daemon_managed(task) {
             continue;
         }
+        // Readiness filters retired rows before priority ordering. Keep this
+        // silent defensive check for callers that construct a custom ready set.
         if is_retired_agency_task(&task.id) {
-            eprintln!(
-                "[dispatcher] Ignoring retired synthetic agency task '{}'; migrate its source task",
-                task.id
-            );
             continue;
         }
 
@@ -2610,32 +2649,10 @@ pub fn coordinator_tick(
 
     let slots_available = max_agents.saturating_sub(alive_count);
 
-    // Verdict files are immutable evidence. Read them before taking the graph
-    // writer lock, then link/consume them in the one atomic graph transaction.
-    let legacy_migration = worksgood::eval_lifecycle::migrate_unambiguous_legacy_verdicts(dir);
-    if let Ok(count) = legacy_migration.as_ref()
-        && *count > 0
-    {
-        eprintln!(
-            "[dispatcher] linked {} unambiguous historical evaluation verdict(s)",
-            count
-        );
-    }
-    let (durable_eval_verdicts, eval_evidence_usable) = match legacy_migration {
-        Err(error) => {
-            eprintln!("[dispatcher] eval lifecycle evidence unavailable (fail-closed): {error:#}");
-            (Vec::new(), false)
-        }
-        Ok(_) => match worksgood::eval_lifecycle::load_durable_verdicts(dir) {
-            Ok(verdicts) => (verdicts, true),
-            Err(error) => {
-                eprintln!(
-                    "[dispatcher] eval lifecycle evidence unavailable (fail-closed): {error:#}"
-                );
-                (Vec::new(), false)
-            }
-        },
-    };
+    // Legacy scored-evaluation files are historical/advisory evidence only.
+    // Coordinator ticks must never upgrade them into candidate acceptance or
+    // mutate retired graph rows. `wg migrate evaluation-cutover` is the sole,
+    // versioned transition surface for these compatibility states.
 
     // Phases 2.5–2.9: Graph maintenance (atomic load-modify-save).
     //
@@ -2654,32 +2671,11 @@ pub fn coordinator_tick(
         // they would have run `wg reject` already."
         modified |= migrate_pending_validation_tasks(graph);
 
-        // Phase 2.46: explicit pre-Pi reasoning migration. This is deliberately
-        // before ordinary lifecycle repair: invalid missing-reasoning bytes are
-        // never replayed against the bounded repair budget. The transaction
-        // atomically re-identifies source + satellites or changes nothing.
-        modified |= worksgood::eval_lifecycle::migrate_missing_pi_reasoning(graph, &config);
-
-        // Phases 2.47–2.48: load-only legacy verdict migration and
-        // verdict-required parent resolution. A terminal/missing evaluator is
-        // never treated as a score, and no historical row is rearmed.
-        if eval_evidence_usable {
-            modified |= worksgood::eval_lifecycle::reconcile_durable_verdicts(
-                graph,
-                &durable_eval_verdicts,
-                config.agency.eval_gate_threshold.unwrap_or(0.7),
-                config.agency.auto_rescue_on_eval_fail,
-                config.coordinator.max_verify_failures,
-                |task| {
-                    config.agency.eval_gate_all
-                        || task
-                            .description
-                            .as_deref()
-                            .map(crate::commands::deliverables::parse_deliverables)
-                            .is_some_and(|deliverables| !deliverables.is_empty())
-                },
-            );
-        }
+        // Pre-receipt PendingEval/FailedPendingEval and their synthetic rows
+        // are deliberately not repaired here. Automatic linkage of a generic
+        // `wg evaluate record` score was the retired cutover contradiction.
+        // The explicit migration backs up exact bytes, consumes only modern
+        // completion receipts, and otherwise prints one candidate-bound action.
 
         // Phase 2.5: Cycle iteration — reactivate cycles where all members are Done.
         {
@@ -4399,6 +4395,19 @@ mod tests {
         }
         assert!(!is_retired_agency_task("work"));
         assert!(!is_retired_agency_task(".verify-work"));
+    }
+
+    #[test]
+    fn retired_agency_diagnostic_is_once_per_row() {
+        let dir = tempdir().unwrap();
+        note_retired_agency_row_once(dir.path(), ".evaluate-work");
+        note_retired_agency_row_once(dir.path(), ".evaluate-work");
+        note_retired_agency_row_once(dir.path(), ".flip-work");
+        let notices = dir
+            .path()
+            .join(worksgood::evaluation_cutover::EVALUATION_CUTOVER_DIR)
+            .join("dispatcher-notices");
+        assert_eq!(std::fs::read_dir(notices).unwrap().count(), 2);
     }
 
     #[test]
