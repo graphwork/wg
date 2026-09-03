@@ -591,6 +591,11 @@ fn run_at_inner(
             "landing postcondition failed: refreshed integration and immutable candidate are not both reachable from integration ref"
         );
     }
+    // The target CAS may commit before the graph/terminal projection. A retry
+    // must recognize the exact ReadyToLand commit, verify its durable renewed
+    // receipt, and finish without minting different candidate or integration
+    // bytes.
+    reconciliation_fault("target-published")?;
     let manifest_digest = manifest.digest().map_err(anyhow::Error::msg)?;
     let receipt = LandingReceipt {
         receipt_version: 1,
@@ -2607,6 +2612,70 @@ mod tests {
         drop(graph);
 
         assert!(resume_pending(&fixture.dir, &fixture.task_id).unwrap());
+        let landed = load_reconciliation_record(&fixture.dir, &fixture.task_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(landed.state, LandingReconciliationState::Landed);
+        assert_eq!(landed.receipt_ref, Some(receipt));
+        assert_eq!(
+            landed.integration_commit_oid.as_deref(),
+            Some(integration.as_str())
+        );
+        assert_eq!(command(&fixture.root, &["rev-parse", "main"]), integration);
+    }
+
+    #[test]
+    fn published_target_survives_restart_before_terminal_projection() {
+        let fixture = fixture();
+        fs::write(fixture.root.join("base.txt"), "dirty\n").unwrap();
+        run_at(
+            &fixture.dir,
+            &fixture.task_id,
+            "refs/heads/main",
+            Some(&fixture.worker),
+        )
+        .unwrap();
+        command(&fixture.root, &["restore", "base.txt"]);
+        fs::write(fixture.root.join("advance.txt"), "advance\n").unwrap();
+        command(&fixture.root, &["add", "advance.txt"]);
+        command(&fixture.root, &["commit", "-m", "advance"]);
+
+        RECONCILIATION_FAULT.with(|fault| *fault.borrow_mut() = Some("target-published"));
+        let error =
+            super::super::resume::resume_landing_finalization(&fixture.dir, &fixture.task_id)
+                .unwrap_err();
+        assert!(error.to_string().contains("target-published"));
+        RECONCILIATION_FAULT.with(|fault| *fault.borrow_mut() = None);
+
+        let graph = load_graph(fixture.dir.join("graph.jsonl")).unwrap();
+        let task = graph.get_task(&fixture.task_id).unwrap();
+        assert_eq!(task.status, Status::Waiting);
+        let blocker = task.completion_blocker.as_ref().unwrap();
+        assert_eq!(
+            blocker.reconciliation_state,
+            LandingReconciliationState::ReadyToLand
+        );
+        let record = load_reconciliation_record(&fixture.dir, &fixture.task_id)
+            .unwrap()
+            .unwrap();
+        let receipt = record.receipt_ref.clone().unwrap();
+        let integration = record.integration_commit_oid.clone().unwrap();
+        assert_eq!(command(&fixture.root, &["rev-parse", "main"]), integration);
+        assert_eq!(
+            fs::read(fixture.worker.join("result.txt")).unwrap(),
+            b"accepted\n"
+        );
+        drop(graph);
+
+        assert!(
+            super::super::resume::resume_landing_finalization(&fixture.dir, &fixture.task_id)
+                .unwrap()
+        );
+        let graph = load_graph(fixture.dir.join("graph.jsonl")).unwrap();
+        assert_eq!(
+            graph.get_task(&fixture.task_id).unwrap().status,
+            Status::Done
+        );
         let landed = load_reconciliation_record(&fixture.dir, &fixture.task_id)
             .unwrap()
             .unwrap();
