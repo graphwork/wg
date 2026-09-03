@@ -24,9 +24,16 @@ pub fn run(dir: &Path, command: DiskCommand, json: bool) -> Result<()> {
                 println!("  {}", snapshot.reason);
                 for mount in &snapshot.mounts {
                     println!(
-                        "  mount {} [{}]: {:.1}% free ({} bytes)",
-                        mount.path, mount.mount_id, mount.free_percent, mount.free_bytes
+                        "  mount {}: {:.1}% free ({} bytes)",
+                        mount.mount_id, mount.free_percent, mount.free_bytes
                     );
+                    if mount.probes.is_empty() {
+                        println!("    probe unknown: {}", mount.path);
+                    } else {
+                        for probe in &mount.probes {
+                            println!("    probe {}: {}", probe.source, probe.path);
+                        }
+                    }
                 }
                 println!(
                     "  projected headroom: {} bytes; active targets: {} (heavy: {})",

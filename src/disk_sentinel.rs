@@ -130,13 +130,26 @@ pub struct OwnershipRegistry {
     pub caches: Vec<OwnedCache>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MountProbe {
+    /// Logical path whose writes make this filesystem relevant to admission.
+    pub path: String,
+    /// Stable reason for probing the path (project scratch, target cache, etc.).
+    pub source: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MountSpace {
+    /// First logical path associated with this distinct filesystem. Kept for
+    /// backward-compatible human and JSON consumers; `probes` is authoritative.
     pub path: String,
     pub mount_id: String,
     pub free_bytes: u64,
     pub total_bytes: u64,
     pub free_percent: f64,
+    /// Every configured write path sharing this filesystem, with its source.
+    #[serde(default)]
+    pub probes: Vec<MountProbe>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -494,12 +507,18 @@ pub fn probe_mount(path: &Path) -> Result<MountSpace> {
     } else {
         free as f64 * 100.0 / total as f64
     };
+    let id = mount_id(path);
+    let path = path.to_string_lossy().to_string();
     Ok(MountSpace {
-        path: path.to_string_lossy().to_string(),
-        mount_id: mount_id(path),
+        path: path.clone(),
+        mount_id: id,
         free_bytes: free,
         total_bytes: total,
         free_percent: pct,
+        probes: vec![MountProbe {
+            path,
+            source: "direct-probe".into(),
+        }],
     })
 }
 #[cfg(not(unix))]
@@ -585,22 +604,111 @@ pub fn assess_mounts(
     )
 }
 
-pub fn configured_paths(dir: &Path, cfg: &ResourceManagementConfig) -> Vec<PathBuf> {
-    let mut paths = vec![dir.to_path_buf()];
-    if let Some(parent) = dir.parent() {
-        paths.push(parent.to_path_buf());
-        paths.push(parent.join(".wg-worktrees"));
-    }
-    paths.push(std::env::temp_dir());
+fn configured_path_probes(dir: &Path, cfg: &ResourceManagementConfig) -> Vec<MountProbe> {
+    let project = dir.parent().unwrap_or(dir);
+    let mut probes = vec![
+        MountProbe {
+            path: dir.to_string_lossy().to_string(),
+            source: "project-state".into(),
+        },
+        MountProbe {
+            path: project.to_string_lossy().to_string(),
+            source: "project-root".into(),
+        },
+        MountProbe {
+            path: project.join(".wg-worktrees").to_string_lossy().to_string(),
+            source: "project-worktrees".into(),
+        },
+    ];
     if let Some(inherited) = std::env::var_os("CARGO_TARGET_DIR") {
-        paths.push(PathBuf::from(inherited));
+        probes.push(MountProbe {
+            path: PathBuf::from(inherited).to_string_lossy().to_string(),
+            source: "inherited-cargo-target".into(),
+        });
     }
-    paths.extend(cfg.disk_paths.iter().map(PathBuf::from));
-    paths.push(target_cache_root(dir, cfg));
-    paths.push(build_tmp_root(dir, cfg));
+    probes.extend(cfg.disk_paths.iter().map(|path| MountProbe {
+        path: path.clone(),
+        source: "configured-disk-path".into(),
+    }));
+    probes.push(MountProbe {
+        path: target_cache_root(dir, cfg).to_string_lossy().to_string(),
+        source: if cfg.cargo_target_root.is_some() {
+            "configured-cargo-target-cache".into()
+        } else {
+            "default-cargo-target-cache".into()
+        },
+    });
+    probes.push(MountProbe {
+        path: build_tmp_root(dir, cfg).to_string_lossy().to_string(),
+        source: if cfg.build_tmp_root.is_some() {
+            "configured-build-scratch".into()
+        } else {
+            "project-build-scratch".into()
+        },
+    });
+
+    // Before the project-local default, WG allocated owned scratch below the
+    // OS temp directory. Existing leases remain an actual write/protection
+    // surface until their guarded cleanup retires them; merely upgrading must
+    // neither hide nor abandon an active legacy allocation.
+    let legacy_root = legacy_build_tmp_root();
+    if let Ok(ownership) = load_ownership(dir) {
+        probes.extend(
+            ownership
+                .caches
+                .iter()
+                .filter(|cache| cache.kind == CacheKind::CargoInstallScratch)
+                .map(|cache| PathBuf::from(&cache.path))
+                .filter(|path| path.exists() && path.starts_with(&legacy_root))
+                .map(|path| MountProbe {
+                    path: path.to_string_lossy().to_string(),
+                    source: "legacy-owned-build-scratch".into(),
+                }),
+        );
+    }
+    probes
+}
+
+pub fn configured_paths(dir: &Path, cfg: &ResourceManagementConfig) -> Vec<PathBuf> {
+    let mut paths = configured_path_probes(dir, cfg)
+        .into_iter()
+        .map(|probe| PathBuf::from(probe.path))
+        .collect::<Vec<_>>();
     let mut seen = HashSet::new();
-    paths.retain(|p| seen.insert(mount_id(p)));
+    paths.retain(|path| seen.insert(mount_id(path)));
     paths
+}
+
+fn probe_configured_mounts_with<F>(
+    dir: &Path,
+    cfg: &ResourceManagementConfig,
+    mut probe: F,
+) -> Vec<MountSpace>
+where
+    F: FnMut(&Path) -> Result<MountSpace>,
+{
+    let mut mounts = Vec::<MountSpace>::new();
+    let mut by_mount = BTreeMap::<String, usize>::new();
+    for logical in configured_path_probes(dir, cfg) {
+        let Ok(mut measured) = probe(Path::new(&logical.path)) else {
+            continue;
+        };
+        if let Some(index) = by_mount.get(&measured.mount_id).copied() {
+            if !mounts[index].probes.contains(&logical) {
+                mounts[index].probes.push(logical);
+            }
+            continue;
+        }
+        measured.path = logical.path.clone();
+        measured.probes = vec![logical];
+        by_mount.insert(measured.mount_id.clone(), mounts.len());
+        mounts.push(measured);
+    }
+    mounts
+}
+
+fn probe_configured_mounts(dir: &Path, cfg: &ResourceManagementConfig) -> Vec<MountSpace> {
+    probe_configured_mounts_with(dir, cfg, probe_mount)
 }
 
 pub fn current_admission(
@@ -614,10 +722,7 @@ pub fn current_admission(
             Vec::new(),
         );
     }
-    let mounts: Vec<_> = configured_paths(dir, cfg)
-        .into_iter()
-        .filter_map(|p| probe_mount(&p).ok())
-        .collect();
+    let mounts = probe_configured_mounts(dir, cfg);
     let previous = load_snapshot(dir).ok().flatten().map(|s| s.level);
     let (level, reason) = assess_mounts(&mounts, cfg, previous);
     (level, reason, mounts)
@@ -2011,8 +2116,10 @@ pub fn target_cache_root(dir: &Path, cfg: &ResourceManagementConfig) -> PathBuf 
         .join(project_cache_digest(project))
 }
 
-/// Resolve the project-keyed scratch namespace so identical agent IDs in two
-/// graphs can never own or mutate the same configured absolute root.
+/// Resolve per-agent build scratch. The default belongs to the selected WG
+/// state directory, never the daemon's process cwd or OS temp filesystem.
+/// Explicit absolute roots retain a project-key namespace so separate graphs
+/// cannot collide; relative overrides remain relative to the project root.
 pub fn build_tmp_path_for_agent(
     dir: &Path,
     cfg: &ResourceManagementConfig,
@@ -2021,21 +2128,21 @@ pub fn build_tmp_path_for_agent(
     build_tmp_root(dir, cfg).join(agent_id)
 }
 
+fn legacy_build_tmp_root() -> PathBuf {
+    std::env::temp_dir().join("wg").join("build-tmp")
+}
+
 fn build_tmp_root(dir: &Path, cfg: &ResourceManagementConfig) -> PathBuf {
     let project = dir.parent().unwrap_or(dir);
-    let project_key = project_cache_digest(project);
     if let Some(root) = cfg.build_tmp_root.as_deref() {
         let root = PathBuf::from(root);
         return if root.is_absolute() {
-            root.join(project_key)
+            root.join(project_cache_digest(project))
         } else {
             project.join(root)
         };
     }
-    std::env::temp_dir()
-        .join("wg")
-        .join("build-tmp")
-        .join(project_key)
+    dir.join("build-tmp")
 }
 
 /// Create one private target layer, seeded with verified reflinks or private
@@ -2066,11 +2173,12 @@ mod tests {
             free_bytes: free,
             total_bytes: 1_000,
             free_percent: pct,
+            probes: Vec::new(),
         }
     }
 
     #[test]
-    fn default_build_scratch_is_project_keyed_before_agent_id() {
+    fn default_build_scratch_is_selected_project_local() {
         let first = TempDir::new().unwrap();
         let second = TempDir::new().unwrap();
         let first_dir = first.path().join(".wg");
@@ -2078,9 +2186,55 @@ mod tests {
         let cfg = ResourceManagementConfig::default();
         let a = build_tmp_path_for_agent(&first_dir, &cfg, "agent-1");
         let b = build_tmp_path_for_agent(&second_dir, &cfg, "agent-1");
+        assert_eq!(a, first_dir.join("build-tmp/agent-1"));
+        assert_eq!(b, second_dir.join("build-tmp/agent-1"));
         assert_ne!(a, b);
-        assert_eq!(a.file_name().unwrap(), "agent-1");
-        assert_eq!(b.file_name().unwrap(), "agent-1");
+        assert!(!a.starts_with(legacy_build_tmp_root()));
+        assert!(!b.starts_with(legacy_build_tmp_root()));
+    }
+
+    #[test]
+    fn configured_relative_build_scratch_is_project_relative() {
+        let project = TempDir::new().unwrap();
+        let cfg = ResourceManagementConfig {
+            build_tmp_root: Some("runtime/scratch".into()),
+            ..Default::default()
+        };
+        let dir = project.path().join(".wg");
+        assert_eq!(
+            build_tmp_path_for_agent(&dir, &cfg, "agent-r"),
+            project.path().join("runtime/scratch/agent-r")
+        );
+        assert!(configured_path_probes(&dir, &cfg).iter().any(|probe| {
+            probe.source == "configured-build-scratch"
+                && probe.path == project.path().join("runtime/scratch").display().to_string()
+        }));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn selected_project_controls_scratch_when_daemon_cwd_is_elsewhere() {
+        struct RestoreCwd(PathBuf);
+        impl Drop for RestoreCwd {
+            fn drop(&mut self) {
+                let _ = std::env::set_current_dir(&self.0);
+            }
+        }
+
+        let selected = TempDir::new().unwrap();
+        let launcher = TempDir::new().unwrap();
+        let original = std::env::current_dir().unwrap();
+        let _restore = RestoreCwd(original);
+        std::env::set_current_dir(launcher.path()).unwrap();
+        let selected_wg = selected.path().join(".wg");
+        let path = build_tmp_path_for_agent(
+            &selected_wg,
+            &ResourceManagementConfig::default(),
+            "agent-daemon",
+        );
+        assert_eq!(path, selected_wg.join("build-tmp/agent-daemon"));
+        assert!(!path.starts_with(launcher.path()));
+        assert!(!path.starts_with(legacy_build_tmp_root()));
     }
 
     #[test]
@@ -2099,6 +2253,128 @@ mod tests {
         assert_eq!(b.parent().unwrap().parent().unwrap(), shared.path());
         assert_eq!(a.file_name().unwrap(), "agent-1");
         assert_eq!(b.file_name().unwrap(), "agent-1");
+        let configured_root = a.parent().unwrap();
+        assert!(
+            configured_path_probes(&first.path().join(".wg"), &cfg)
+                .iter()
+                .any(|probe| {
+                    probe.source == "configured-build-scratch"
+                        && probe.path == configured_root.display().to_string()
+                })
+        );
+    }
+
+    #[test]
+    fn selected_mounts_ignore_unused_os_tmp_but_block_actual_scratch_and_target() {
+        let dir = Path::new("/modeled/project/.wg");
+        let scratch = dir.join("build-tmp");
+        let target = PathBuf::from("/modeled/target-cache");
+        let unused_tmp = PathBuf::from("/modeled/os-tmp");
+        let cfg = ResourceManagementConfig {
+            cargo_target_root: Some(target.display().to_string()),
+            disk_warning_bytes: 300,
+            disk_pause_build_bytes: 200,
+            disk_hard_refuse_bytes: 100,
+            disk_warning_percent: 0.0,
+            disk_pause_build_percent: 0.0,
+            disk_hard_refuse_percent: 0.0,
+            ..Default::default()
+        };
+
+        let modeled = |scratch_free: u64, target_free: u64| {
+            probe_configured_mounts_with(dir, &cfg, |path| {
+                assert_ne!(path, unused_tmp, "unused OS tmp must not be selected");
+                let (id, free) = if path == scratch {
+                    ("scratch", scratch_free)
+                } else if path == target {
+                    ("target", target_free)
+                } else {
+                    ("project", 500)
+                };
+                let mut measured = mount(path.to_string_lossy().as_ref(), free, 50.0);
+                measured.mount_id = id.into();
+                Ok(measured)
+            })
+        };
+
+        let healthy = modeled(500, 500);
+        assert_eq!(assess_mounts(&healthy, &cfg, None).0, DiskLevel::Healthy);
+        assert!(healthy.iter().any(|mount| {
+            mount.probes.iter().any(|probe| {
+                probe.source == "project-build-scratch"
+                    && probe.path == scratch.display().to_string()
+            })
+        }));
+        assert!(healthy.iter().any(|mount| {
+            mount.probes.iter().any(|probe| {
+                probe.source == "configured-cargo-target-cache"
+                    && probe.path == target.display().to_string()
+            })
+        }));
+
+        assert_eq!(
+            assess_mounts(&modeled(150, 500), &cfg, None).0,
+            DiskLevel::PauseBuilds,
+            "low space on the actual scratch filesystem must block"
+        );
+        assert_eq!(
+            assess_mounts(&modeled(500, 150), &cfg, None).0,
+            DiskLevel::PauseBuilds,
+            "low space on the configured target-cache filesystem must block"
+        );
+    }
+
+    #[test]
+    fn active_legacy_tmp_scratch_stays_visible_until_guarded_cleanup_is_safe() {
+        let project = TempDir::new().unwrap();
+        let dir = project.path().join(".wg");
+        fs::create_dir_all(&dir).unwrap();
+        save_graph(&WorkGraph::new(), dir.join("graph.jsonl")).unwrap();
+        let legacy = legacy_build_tmp_root().join(format!(
+            "compat-test-{}-{}",
+            std::process::id(),
+            project.path().file_name().unwrap().to_string_lossy()
+        ));
+        fs::create_dir_all(&legacy).unwrap();
+        fs::write(legacy.join("still-live"), b"owned").unwrap();
+
+        let mut cache = make_owned_cache(
+            &legacy,
+            CacheKind::CargoInstallScratch,
+            "legacy-build",
+            "legacy-agent",
+            std::process::id(),
+            None,
+            3_600,
+        );
+        register_owned_cache(&dir, cache.clone()).unwrap();
+        let probes = configured_path_probes(&dir, &ResourceManagementConfig::default());
+        assert!(probes.iter().any(|probe| {
+            probe.source == "legacy-owned-build-scratch"
+                && probe.path == legacy.display().to_string()
+        }));
+
+        let active = cleanup_owned(&dir, &ResourceManagementConfig::default(), true).unwrap();
+        assert!(legacy.exists());
+        assert!(
+            active
+                .preserved
+                .iter()
+                .any(|item| item.path == legacy.display().to_string())
+        );
+
+        cache.pid = 999_999_999;
+        cache.pid_start_epoch = None;
+        cache.lease_expires_at = "2020-01-01T00:00:00Z".into();
+        register_owned_cache(&dir, cache).unwrap();
+        let stale = cleanup_owned(&dir, &ResourceManagementConfig::default(), true).unwrap();
+        assert!(!legacy.exists());
+        assert!(
+            stale
+                .reaped_paths
+                .iter()
+                .any(|item| item.path == legacy.display().to_string())
+        );
     }
 
     #[test]
@@ -2370,6 +2646,7 @@ mod tests {
                 free_bytes: 48 * GIB,
                 total_bytes: 400 * GIB,
                 free_percent: 12.0,
+                probes: Vec::new(),
             }],
             &cfg,
             candidate,
@@ -2383,6 +2660,7 @@ mod tests {
             free_bytes: 144 * GIB,
             total_bytes: 400 * GIB,
             free_percent: 36.0,
+            probes: Vec::new(),
         };
         assert!(assess_projected_build(&[after_mount.clone()], &cfg, candidate, 0).allowed);
         let concurrent = assess_projected_build(&[after_mount], &cfg, candidate, candidate);
