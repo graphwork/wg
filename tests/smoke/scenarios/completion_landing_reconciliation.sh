@@ -96,7 +96,16 @@ wgrun add 'Landing reconciliation human flow' --id landing-reconcile --priority 
 wgrun publish landing-reconcile --only >/dev/null
 start_wg_daemon "$project" --no-chat-agent --interval 1
 for _ in $(seq 1 400); do [[ -e "$home/worker-finished" ]] && break; sleep .05; done
-[[ -e "$home/worker-finished" ]] || loud_fail "worker did not reach LandingPending"
+if [[ ! -e "$home/worker-finished" ]]; then
+  tasks=$(wgrun list --all 2>&1 || true)
+  service=$(wgrun service status 2>&1 || true)
+  daemon=$(tail -40 "$project/daemon.log" 2>/dev/null || true)
+  calls=$(cat "$state/calls" 2>/dev/null || true)
+  done_out=$(cat "$home/worker-done.out" 2>/dev/null || true)
+  done_err=$(cat "$home/worker-done.err" 2>/dev/null || true)
+  detail=$(wgrun show landing-reconcile --json 2>&1 || true)
+  loud_fail "worker did not reach LandingPending: tasks=$tasks service=$service calls=$calls done_out=$done_out done_err=$done_err detail=$detail daemon=$daemon"
+fi
 for _ in $(seq 1 200); do
   status=$(wgrun show landing-reconcile --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])')
   [[ "$status" == waiting ]] && break

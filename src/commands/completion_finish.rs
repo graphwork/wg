@@ -241,7 +241,22 @@ pub fn run(dir: &Path, id: &str, integration_ref: &str) -> Result<()> {
         Some(&cwd),
     )?;
     let nonce = uuid::Uuid::now_v7();
-    let temp = std::env::temp_dir();
+    let configured_temp = std::env::temp_dir();
+    let project_root = dir
+        .parent()
+        .context("workgraph directory has no project root")?;
+    // Project-local build scratch may intentionally place TMPDIR under .wg.
+    // Completion submission correctly refuses control-plane-sourced manifests,
+    // so keep these small transient handoff files outside the repository rather
+    // than weakening that provenance boundary.
+    let temp = if configured_temp.starts_with(project_root) {
+        project_root
+            .parent()
+            .context("project-local TMPDIR has no safe parent")?
+            .to_path_buf()
+    } else {
+        configured_temp
+    };
     let summary_path = temp.join(format!("wg-completion-{nonce}.summary.txt"));
     let manifest_path = temp.join(format!("wg-completion-{nonce}.manifest.json"));
     fs::write(&summary_path, summary.as_bytes())?;
