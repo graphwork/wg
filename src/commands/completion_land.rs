@@ -1421,6 +1421,7 @@ fn managed_wg_runtime_status_path(project: &Path, relative: &str) -> Result<bool
     if !runtime_root.is_dir() {
         return Ok(false);
     }
+    let runtime_root = runtime_root.canonicalize()?;
     let listed = Command::new("git")
         .args(["worktree", "list", "--porcelain"])
         .current_dir(project)
@@ -1439,21 +1440,31 @@ fn managed_wg_runtime_status_path(project: &Path, relative: &str) -> Result<bool
     }
     if normalized == ".wg-worktrees" {
         for entry in fs::read_dir(&runtime_root)? {
-            let path = entry?.path();
-            let Ok(canonical) = path.canonicalize() else {
-                return Ok(false);
-            };
-            if !registered.contains(&canonical) {
+            let entry = entry?;
+            let path = entry.path();
+            if entry.file_type()?.is_symlink() || !registered.contains(&path) {
                 return Ok(false);
             }
         }
         return Ok(true);
     }
-    let candidate = project.join(normalized);
+    let suffix = normalized
+        .strip_prefix(".wg-worktrees/")
+        .context("checked runtime prefix disappeared")?;
+    let candidate = runtime_root.join(suffix);
+    if fs::symlink_metadata(&candidate).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        return Ok(false);
+    }
+    // Lexical membership is mandatory before canonicalization. Otherwise an
+    // untracked user symlink sibling resolving into a registered worktree
+    // would be mistaken for WG-owned runtime state.
+    let Some(registered_root) = registered.iter().find(|root| candidate.starts_with(root)) else {
+        return Ok(false);
+    };
     Ok(candidate
         .canonicalize()
         .ok()
-        .is_some_and(|path| registered.iter().any(|root| path.starts_with(root))))
+        .is_some_and(|path| path.starts_with(registered_root)))
 }
 
 fn symbolic_head(project: &Path) -> Option<String> {
@@ -1901,6 +1912,16 @@ mod tests {
             "similarly named user bytes must remain authoritative dirtiness"
         );
         fs::remove_file(fixture.root.join(".wg-worktrees/user-owned.txt")).unwrap();
+        #[cfg(unix)]
+        {
+            let user_link = fixture.root.join(".wg-worktrees/user-link");
+            std::os::unix::fs::symlink(&runtime, &user_link).unwrap();
+            assert!(
+                root_checkout_dirty_if_attached(&fixture.root, "refs/heads/main").unwrap(),
+                "a user symlink resolving into registered runtime must remain dirtiness"
+            );
+            fs::remove_file(user_link).unwrap();
+        }
         command(
             &fixture.root,
             &["worktree", "remove", "--force", runtime.to_str().unwrap()],
