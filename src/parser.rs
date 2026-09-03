@@ -527,6 +527,95 @@ where
     // Lock is automatically released when _lock goes out of scope
 }
 
+/// Exact pre-mutation snapshot written by [`modify_graph_with_exact_backup`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExactGraphBackup {
+    pub path: PathBuf,
+    pub content_digest: String,
+    pub created: bool,
+}
+
+/// Atomically modify a graph while first preserving its exact on-disk bytes.
+///
+/// The same exclusive graph lock covers the read, create-once backup, lifecycle
+/// projection, and graph replacement. The backup is written and fsynced before
+/// any lifecycle or graph byte changes. A no-op creates no backup.
+pub fn modify_graph_with_exact_backup<P, Q, F>(
+    path: P,
+    backup_dir: Q,
+    f: F,
+) -> Result<(WorkGraph, Option<ExactGraphBackup>), ParseError>
+where
+    P: AsRef<Path>,
+    Q: AsRef<Path>,
+    F: FnOnce(&mut WorkGraph) -> bool,
+{
+    let path = path.as_ref();
+    let backup_dir = backup_dir.as_ref();
+    let lock_path = get_lock_path(path);
+    let _lock = FileLock::acquire(&lock_path)?;
+    let exact_bytes =
+        std::fs::read(path).map_err(|error| io_at("read graph backup source", path, error))?;
+    let mut graph = load_graph_inner(path)?;
+    let replayed = crate::lifecycle::replay_ledger(path, &mut graph)?;
+    let before_graph = graph.clone();
+    let before: HashMap<String, Task> = graph.tasks().map(|t| (t.id.clone(), t.clone())).collect();
+    let modified = f(&mut graph);
+    let backup = if modified {
+        std::fs::create_dir_all(backup_dir)
+            .map_err(|error| io_at("create graph backup directory", backup_dir, error))?;
+        let hash = blake3::hash(&exact_bytes).to_hex().to_string();
+        let content_digest = format!("b3:{hash}");
+        let backup_path = backup_dir.join(format!("graph-{hash}.jsonl"));
+        let created = match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&backup_path)
+        {
+            Ok(mut file) => {
+                file.write_all(&exact_bytes)
+                    .map_err(|error| io_at("write graph backup", &backup_path, error))?;
+                file.sync_all()
+                    .map_err(|error| io_at("fsync graph backup", &backup_path, error))?;
+                true
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                let existing = std::fs::read(&backup_path)
+                    .map_err(|error| io_at("read existing graph backup", &backup_path, error))?;
+                if existing != exact_bytes {
+                    return Err(ParseError::Lock(format!(
+                        "graph backup collision at {}",
+                        backup_path.display()
+                    )));
+                }
+                false
+            }
+            Err(error) => return Err(io_at("create graph backup", &backup_path, error)),
+        };
+        Some(ExactGraphBackup {
+            path: backup_path,
+            content_digest,
+            created,
+        })
+    } else {
+        None
+    };
+    if modified {
+        bump_interaction_timestamps(&mut graph, &before);
+    }
+    let repaired = crate::completion_review::repair_current_review_projections(
+        path.parent().unwrap_or(Path::new(".")),
+        &mut graph,
+        crate::completion_review::DEFAULT_REVIEW_PROJECTION_REPAIR_LIMIT,
+    )
+    .changed();
+    if modified || replayed || repaired {
+        crate::lifecycle::append_new_events(path, &before_graph, &graph)?;
+        save_graph_inner(&graph, path)?;
+    }
+    Ok((graph, backup))
+}
+
 /// For every task whose persistent fields changed (other than
 /// `last_interaction_at` itself), set `last_interaction_at` to now.
 /// New tasks created in the closure are bumped if they don't already have

@@ -3139,3 +3139,10 @@ script = "scenarios/completion_resilience_e2e.sh"
 owners = ["completion-resilience-e2e", "prepare-completion-storage-upstream"]
 description = "Candidate-binary credential-free real-daemon/Fake-Pi completion regression: a Land source runs once in an isolated retained worker, strict deterministic review rejects immutable candidate A then passes revised candidate B, and an unrelated tracked edit in the attached integration checkout forces durable Waiting/LandingPending without changing user bytes. A daemon restart preserves the exact B manifest, review binding and target-ref CAS; after explicit cleanup, one resume publishes B and records one lifecycle success without rerunning source or review. A second already-settled Pi source exhausts a one-revision strict budget and parks the distinct retained candidate as Waiting/NeedsReview, never Failed/provider-timeout; restart remains source/review-idempotent. Real show/status and terminal classification surfaces are exercised throughout."
 timeout_seconds = 180
+
+[[scenario]]
+name = "evaluation_cutover_migration"
+script = "scenarios/evaluation_cutover_migration.sh"
+owners = ["fix-retired-evaluation-cutover"]
+description = "Candidate-binary credential-free terminal/daemon regression for the retired evaluation cutover: a Done reviewed source plus stale Open .evaluate row reproduces the permanent downstream blocker; an unrelated score=1.0 `wg evaluate record` cannot clear it; repeated service ticks filter the retired row before promotion and emit only one notice; dry-run is write-free; apply creates an exact-byte graph backup, preserves every row/log/evaluation byte, tags the row inert, and is idempotent; then the real shell dispatcher runs downstream without rm-dep or graph editing."
+timeout_seconds = 90
