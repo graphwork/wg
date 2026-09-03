@@ -94,6 +94,22 @@ pub(crate) fn resume_landing_finalization(dir: &Path, id: &str) -> Result<bool> 
         .integration_ref
         .as_deref()
         .context("LandingPending has no integration ref")?;
+    // Converge the audit projection after a crash between the landing CAS and
+    // the record update. This runs only after durable Landed disposition and
+    // cannot grant publication authority.
+    let after_landing = worksgood::parser::load_graph(super::graph_path(dir))?;
+    let landed = after_landing
+        .get_task(id)
+        .context("task disappeared after landing")?;
+    if landed.completion_disposition == Some(worksgood::graph::CompletionDisposition::Landed) {
+        if let Some(commit) = landed
+            .completion_blocker
+            .as_ref()
+            .and_then(|current| current.reconciled_commit_oid.as_deref())
+        {
+            super::completion_land::mark_reconciliation_landed(dir, id, commit, commit)?;
+        }
+    }
     super::completion_done::run(dir, id, integration_ref)?;
     println!(
         "Resumed pending landing for '{}' without rerunning source or review",

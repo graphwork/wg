@@ -3130,3 +3130,10 @@ script = "scenarios/completion_resilience_e2e.sh"
 owners = ["completion-resilience-e2e", "prepare-completion-storage-upstream"]
 description = "Candidate-binary credential-free real-daemon/Fake-Pi completion regression: a Land source runs once in an isolated retained worker, strict deterministic review rejects immutable candidate A then passes revised candidate B, and an unrelated tracked edit in the attached integration checkout forces durable Waiting/LandingPending without changing user bytes. A daemon restart preserves the exact B manifest, review binding and target-ref CAS; after explicit cleanup, one resume publishes B and records one lifecycle success without rerunning source or review. A second already-settled Pi source exhausts a one-revision strict budget and parks the distinct retained candidate as Waiting/NeedsReview, never Failed/provider-timeout; restart remains source/review-idempotent. Real show/status and terminal classification surfaces are exercised throughout."
 timeout_seconds = 180
+
+[[scenario]]
+name = "completion_landing_reconciliation"
+script = "scenarios/completion_landing_reconciliation.sh"
+owners = ["fix-completion-landing-maze"]
+description = "Candidate-binary credential-free terminal/Fake-Pi regression for the supported completion recovery flow: WG creates its isolated .wg-worktrees runtime without requiring a committed .gitignore entry; a reviewed candidate parks on real user dirtiness and releases its worker; main then advances by one independent descendant commit; explicit wg resume performs a deterministic merge, reruns configured plus baseline target-dependent validation, records immutable renewed target-binding evidence and a merge-resolution status record, then lands and completes without reset/retry/requeue/unclaim or another source/reviewer invocation."
+timeout_seconds = 120

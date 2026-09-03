@@ -886,7 +886,7 @@ fn verify_output_shape(
     Ok(())
 }
 
-fn verify_capture_authority(
+pub fn verify_capture_authority(
     workgraph_dir: &Path,
     evidence_digest: &ContentDigest,
     evidence: &DeterministicValidationEvidence,

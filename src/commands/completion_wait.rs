@@ -92,6 +92,9 @@ fn park(
         worker_worktree: landing
             .as_ref()
             .map(|wait| wait.worker_worktree.to_string_lossy().into_owned()),
+        reconciliation_state: worksgood::graph::LandingReconciliationState::Waiting,
+        reconciliation_receipt: None,
+        reconciled_commit_oid: None,
         session_selector: session_selector.clone(),
         created_at: Utc::now().to_rfc3339(),
     };

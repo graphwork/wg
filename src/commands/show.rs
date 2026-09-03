@@ -1009,6 +1009,12 @@ fn print_human_readable(details: &TaskDetails) {
             blocker.candidate.manifest.content_digest
         );
         println!(
+            "  landing reconciliation: {:?} commit={} receipt={}",
+            blocker.reconciliation_state,
+            blocker.reconciled_commit_oid.as_deref().unwrap_or("none"),
+            blocker.reconciliation_receipt.as_deref().unwrap_or("none")
+        );
+        println!(
             "  session continuity: {}",
             blocker
                 .session_selector

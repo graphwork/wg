@@ -360,6 +360,19 @@ pub enum CompletionBlockerKind {
     LandingPending,
 }
 
+/// Auditable finalizer-only recovery phases for an immutable Land candidate.
+/// These states never reopen source execution or weaken the target CAS fence.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LandingReconciliationState {
+    #[default]
+    Waiting,
+    Reconciling,
+    ReadyToLand,
+    Landed,
+    Blocked,
+}
+
 /// Exact, restart-safe binding for a resumable completion blocker.
 ///
 /// The full candidate projection is copied intentionally. Resumption must
@@ -382,6 +395,15 @@ pub struct CompletionBlocker {
     pub target_ref_oid: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker_worktree: Option<String>,
+    /// Finalizer-owned recovery projection. The immutable selected candidate
+    /// above is never replaced; renewed evidence binds a derived integration
+    /// commit to the descendant target snapshot.
+    #[serde(default)]
+    pub reconciliation_state: LandingReconciliationState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reconciliation_receipt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reconciled_commit_oid: Option<String>,
     /// Present only when exact live Pi guards were attested while parking.
     /// Settled source attempts need no session continuity.
     #[serde(default, skip_serializing_if = "Option::is_none")]

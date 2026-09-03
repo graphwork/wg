@@ -123,6 +123,10 @@ pub fn create_worktree(
     let worktrees_dir = project_root.join(".wg-worktrees");
     let worktree_dir = worktrees_dir.join(agent_id);
 
+    // Migrate only WG's historical broad managed rule before path
+    // reservation. Every currently registered WG checkout receives an exact
+    // replacement, while an unregistered user collision becomes visible.
+    migrate_legacy_wg_runtime_exclusion(project_root, &worktree_dir)?;
     fs::create_dir_all(&worktrees_dir).with_context(|| {
         format!(
             "failed to create isolated-worktree parent {}",
@@ -382,7 +386,21 @@ pub fn create_worktree(
     }
 
     match verify_worktree_info(&info) {
-        Ok(verified) => Ok(verified),
+        Ok(verified) => {
+            // Install the exact exclusion only after Git registration,
+            // ownership recording, setup, and verification all succeeded. A
+            // colliding/user-owned path is therefore never hidden.
+            if let Err(error) = ensure_wg_runtime_exclusion(project_root, &verified.path) {
+                let cleanup = rollback_created_worktree(&verified);
+                return Err(error).with_context(|| {
+                    format!(
+                        "failed to install exact runtime exclusion; rollback={:?}",
+                        cleanup
+                    )
+                });
+            }
+            Ok(verified)
+        }
         Err(error) => {
             let cleanup = rollback_created_worktree(&info);
             Err(error).with_context(|| {
@@ -393,6 +411,157 @@ pub fn create_worktree(
             })
         }
     }
+}
+
+const RUNTIME_EXCLUDE_BEGIN: &str = "# BEGIN worksgood managed runtime";
+const RUNTIME_EXCLUDE_END: &str = "# END worksgood managed runtime";
+
+fn ensure_wg_runtime_exclusion(project_root: &Path, worktree: &Path) -> Result<()> {
+    update_wg_runtime_exclusion(project_root, worktree, Some(true))
+}
+
+fn remove_wg_runtime_exclusion(project_root: &Path, worktree: &Path) -> Result<()> {
+    update_wg_runtime_exclusion(project_root, worktree, Some(false))
+}
+
+fn migrate_legacy_wg_runtime_exclusion(project_root: &Path, worktree: &Path) -> Result<()> {
+    update_wg_runtime_exclusion(project_root, worktree, None)
+}
+
+fn runtime_exclude_pattern(project_root: &Path, worktree: &Path) -> Result<String> {
+    let relative = worktree.strip_prefix(project_root).with_context(|| {
+        format!(
+            "WG worktree {} is outside project root {}",
+            worktree.display(),
+            project_root.display()
+        )
+    })?;
+    let relative = relative.to_string_lossy().replace('\\', "/");
+    Ok(format!("/{}/", relative.trim_matches('/')))
+}
+
+fn update_wg_runtime_exclusion(
+    project_root: &Path,
+    worktree: &Path,
+    exact_action: Option<bool>,
+) -> Result<()> {
+    let exact_pattern = runtime_exclude_pattern(project_root, worktree)?;
+    let common = PathBuf::from(git_stdout(
+        project_root,
+        &["rev-parse", "--git-common-dir"],
+    )?);
+    let common = if common.is_absolute() {
+        common
+    } else {
+        project_root.join(common)
+    };
+    let info = common.join("info");
+    fs::create_dir_all(&info).with_context(|| format!("create Git info dir {}", info.display()))?;
+    let exclude = info.join("exclude");
+    let lock_path = info.join("worksgood-runtime-exclude.lock");
+    let lock = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .with_context(|| format!("open {}", lock_path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+        let fd = lock.as_raw_fd();
+        worksgood::lock::retry_acquire(
+            &worksgood::lock::RetryPolicy::default(),
+            worksgood::lock::is_transient_blocking,
+            || {
+                let result = unsafe { libc::flock(fd, libc::LOCK_EX) };
+                if result == 0 {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::last_os_error())
+                }
+            },
+        )?;
+    }
+    let existing = match fs::read_to_string(&exclude) {
+        Ok(value) => value,
+        Err(error) if error.kind() == ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(error).with_context(|| format!("read {}", exclude.display())),
+    };
+    let lines = existing.lines().collect::<Vec<_>>();
+    let mut kept = Vec::new();
+    let mut index = 0;
+    let mut exact_already_owned_elsewhere = false;
+    let mut migrated_broad = false;
+    while index < lines.len() {
+        if index + 2 < lines.len()
+            && lines[index].trim() == RUNTIME_EXCLUDE_BEGIN
+            && lines[index + 2].trim() == RUNTIME_EXCLUDE_END
+        {
+            let managed_pattern = lines[index + 1].trim();
+            // Migrate the earlier WG-managed broad namespace rule. It could
+            // hide arbitrary future user bytes and is replaced by exact paths.
+            if managed_pattern == "/.wg-worktrees/" {
+                migrated_broad = true;
+                index += 3;
+                continue;
+            }
+            if exact_action == Some(false) && managed_pattern == exact_pattern {
+                index += 3;
+                continue;
+            }
+        }
+        if lines[index].trim() == exact_pattern {
+            exact_already_owned_elsewhere = true;
+        }
+        kept.push(lines[index]);
+        index += 1;
+    }
+    let mut append_patterns = Vec::new();
+    if migrated_broad {
+        for entry in git_worktree_entries(project_root)? {
+            if !entry
+                .branch
+                .as_deref()
+                .is_some_and(|branch| branch.starts_with("wg/"))
+            {
+                continue;
+            }
+            let Ok(pattern) = runtime_exclude_pattern(project_root, &entry.path) else {
+                continue;
+            };
+            if !kept.iter().any(|line| line.trim() == pattern)
+                && !append_patterns.contains(&pattern)
+            {
+                append_patterns.push(pattern);
+            }
+        }
+    }
+    if exact_action == Some(true)
+        && !exact_already_owned_elsewhere
+        && !append_patterns.contains(&exact_pattern)
+    {
+        append_patterns.push(exact_pattern);
+    }
+    let mut updated = kept.join("\n");
+    if !updated.is_empty() {
+        updated.push('\n');
+    }
+    for pattern in append_patterns {
+        updated.push_str(RUNTIME_EXCLUDE_BEGIN);
+        updated.push('\n');
+        updated.push_str(&pattern);
+        updated.push('\n');
+        updated.push_str(RUNTIME_EXCLUDE_END);
+        updated.push('\n');
+    }
+    if updated != existing {
+        worksgood::atomic_file::write_atomic(&exclude, updated.as_bytes())
+            .with_context(|| format!("update {}", exclude.display()))?;
+    }
+    // `lock` stays live through the atomic rename; the sidecar lock path has a
+    // stable inode unlike the replaced exclude file.
+    drop(lock);
+    Ok(())
 }
 
 fn git_stdout(project_root: &Path, args: &[&str]) -> Result<String> {
@@ -778,6 +947,10 @@ pub fn rollback_created_worktree(info: &WorktreeInfo) -> Result<()> {
             String::from_utf8_lossy(&output.stderr).trim()
         );
     }
+    // Git has proven the checkout unregistered. Retire the exact exclusion
+    // before branch cleanup so a later failure cannot leave residual or
+    // recreated user bytes hidden.
+    remove_wg_runtime_exclusion(&info.project_root, &info.path)?;
     let output = Command::new("git")
         .args(["branch", "-D", &info.branch])
         .current_dir(strip_verbatim_prefix(&info.project_root))
@@ -980,6 +1153,15 @@ pub fn remove_worktree(project_root: &Path, worktree_path: &Path, branch: &str) 
     // Global prune can remove metadata for other agents' worktrees that are
     // temporarily missing during concurrent cleanup, causing data loss.
 
+    let still_registered = git_worktree_entries(project_root)?
+        .into_iter()
+        .any(|entry| same_canonical_path(&entry.path, worktree_path));
+    if !still_registered {
+        // Remove only WG's exact marked stanza as soon as Git no longer owns
+        // the checkout. Residual or concurrently recreated bytes are user
+        // dirtiness and must be visible regardless of filesystem presence.
+        remove_wg_runtime_exclusion(project_root, worktree_path)?;
+    }
     Ok(())
 }
 
@@ -987,6 +1169,20 @@ pub fn remove_worktree(project_root: &Path, worktree_path: &Path, branch: &str) 
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    fn command_ok(path: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(path)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {}: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 
     fn init_git_repo(path: &Path) {
         Command::new("git")
@@ -1031,18 +1227,52 @@ mod tests {
         let wg_dir = project.join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
 
+        assert!(!project.join(".gitignore").exists());
         let info = create_worktree(&project, &wg_dir, "agent-1", "task-foo").unwrap();
         assert!(info.path.exists());
         assert_eq!(info.branch, "wg/agent-1/task-foo");
+        assert!(
+            !project.join(".gitignore").exists(),
+            "WG must never edit the project's tracked ignore policy"
+        );
+        assert_eq!(
+            git_stdout(
+                &project,
+                &["status", "--porcelain", "--untracked-files=all"]
+            )
+            .unwrap(),
+            "",
+            "WG-created runtime worktrees must leave the root checkout landable"
+        );
+        let exclude = fs::read_to_string(project.join(".git/info/exclude")).unwrap();
+        assert!(
+            exclude
+                .lines()
+                .any(|line| line == "/.wg-worktrees/agent-1/")
+        );
+        assert!(!exclude.lines().any(|line| line == "/.wg-worktrees/"));
         assert!(
             !info.path.join(".wg").exists(),
             "control plane must stay outside candidate source"
         );
         assert!(info.path.join("file.txt").exists()); // source checked out
 
-        // Cleanup
+        // Cleanup must retire only WG's exact stanza so later user bytes at
+        // the old path become visible to landing dirtiness checks.
         remove_worktree(&project, &info.path, &info.branch).unwrap();
         assert!(!info.path.exists());
+        let exclude = fs::read_to_string(project.join(".git/info/exclude")).unwrap();
+        assert!(!exclude.contains("/.wg-worktrees/agent-1/"));
+        fs::create_dir_all(&info.path).unwrap();
+        fs::write(info.path.join("now-user-owned.txt"), "visible\n").unwrap();
+        assert!(
+            git_stdout(
+                &project,
+                &["status", "--porcelain", "--untracked-files=all"]
+            )
+            .unwrap()
+            .contains(".wg-worktrees/agent-1/now-user-owned.txt")
+        );
     }
 
     #[test]
@@ -1081,6 +1311,95 @@ mod tests {
         assert!(
             !temp.path().join(".wg-worktrees/agent-1").exists(),
             "failed creation must roll back the reserved target path"
+        );
+    }
+
+    #[test]
+    fn legacy_managed_broad_exclusion_is_migrated_to_exact_runtime_path() {
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        init_git_repo(&project);
+        let runtime = project.join(".wg-worktrees");
+        fs::create_dir_all(&runtime).unwrap();
+        let old_a = runtime.join("agent-old-a");
+        let old_b = runtime.join("agent-old-b");
+        command_ok(
+            &project,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "wg/agent-old-a/task",
+                old_a.to_str().unwrap(),
+            ],
+        );
+        command_ok(
+            &project,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "wg/agent-old-b/task",
+                old_b.to_str().unwrap(),
+            ],
+        );
+        fs::write(
+            project.join(".git/info/exclude"),
+            "operator-rule\n# BEGIN worksgood managed runtime\n/.wg-worktrees/\n# END worksgood managed runtime\n",
+        )
+        .unwrap();
+        migrate_legacy_wg_runtime_exclusion(
+            &project,
+            &project.join(".wg-worktrees/unregistered-collision"),
+        )
+        .unwrap();
+        let exclude = fs::read_to_string(project.join(".git/info/exclude")).unwrap();
+        assert!(exclude.contains("operator-rule"));
+        assert!(!exclude.lines().any(|line| line == "/.wg-worktrees/"));
+        assert!(
+            exclude
+                .lines()
+                .any(|line| line == "/.wg-worktrees/agent-old-a/")
+        );
+        assert!(
+            exclude
+                .lines()
+                .any(|line| line == "/.wg-worktrees/agent-old-b/")
+        );
+        assert!(!exclude.contains("unregistered-collision"));
+        command_ok(
+            &project,
+            &["worktree", "remove", "--force", old_a.to_str().unwrap()],
+        );
+        command_ok(
+            &project,
+            &["worktree", "remove", "--force", old_b.to_str().unwrap()],
+        );
+    }
+
+    #[test]
+    fn user_owned_collision_is_never_hidden_by_runtime_exclusion() {
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        init_git_repo(&project);
+        let wg_dir = project.join(".wg");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+        let collision = project.join(".wg-worktrees/user-owned");
+        std::fs::create_dir_all(&collision).unwrap();
+        fs::write(collision.join("keep.txt"), "operator bytes\n").unwrap();
+
+        assert!(create_worktree(&project, &wg_dir, "user-owned", "task").is_err());
+        let exclude = fs::read_to_string(project.join(".git/info/exclude")).unwrap();
+        assert!(!exclude.contains("/.wg-worktrees/user-owned/"));
+        assert!(
+            git_stdout(
+                &project,
+                &["status", "--porcelain", "--untracked-files=all"]
+            )
+            .unwrap()
+            .contains(".wg-worktrees/user-owned/keep.txt")
         );
     }
 

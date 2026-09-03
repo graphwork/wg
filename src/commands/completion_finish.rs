@@ -271,7 +271,7 @@ pub fn run(dir: &Path, id: &str, integration_ref: &str) -> Result<()> {
     super::completion_done::run(dir, id, integration_ref)
 }
 
-fn store_validation_evidence(
+pub(crate) fn store_validation_evidence(
     dir: &Path,
     captured: &DeterministicValidationEvidence,
     evidence_kind: &str,
@@ -289,7 +289,7 @@ fn store_validation_evidence(
     Ok(evidence_ref(artifact, evidence_kind))
 }
 
-fn record_validation_result(
+pub(crate) fn record_validation_result(
     dir: &Path,
     expected: &worksgood::graph::Task,
     captured: &DeterministicValidationEvidence,
