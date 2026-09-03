@@ -86,6 +86,8 @@ struct LandingReconciliationRecord {
 thread_local! {
     static AFTER_LANDING_LOCK_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         std::cell::RefCell::new(None);
+    static AFTER_PUBLICATION_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
     static RECONCILIATION_FAULT: std::cell::RefCell<Option<&'static str>> =
         const { std::cell::RefCell::new(None) };
 }
@@ -93,6 +95,15 @@ thread_local! {
 fn run_after_landing_lock_hook() {
     #[cfg(test)]
     AFTER_LANDING_LOCK_HOOK.with(|hook| {
+        if let Some(hook) = hook.borrow_mut().take() {
+            hook();
+        }
+    });
+}
+
+fn run_after_publication_hook() {
+    #[cfg(test)]
+    AFTER_PUBLICATION_HOOK.with(|hook| {
         if let Some(hook) = hook.borrow_mut().take() {
             hook();
         }
@@ -405,7 +416,7 @@ fn run_at_inner(
                 && (*commit == observed_before || observed_before == expected)
         });
         if let Some(commit) = ready_commit {
-            verify_ready_reconciliation(
+            if let Err(error) = verify_ready_reconciliation(
                 dir,
                 task,
                 blocker,
@@ -413,11 +424,18 @@ fn run_at_inner(
                 git_output,
                 &observed_before,
                 commit,
-            )?;
+            ) {
+                let reason = format!("ReadyToLand authority is stale or invalid: {error:#}");
+                record_invalid_ready_reconciliation(dir, task, blocker, &reason)?;
+                return Err(error).context(format!(
+                    "landing reconciliation refused stale ReadyToLand authority; inspect `wg merge-resolution status {id}` and use `wg reset {id}` for a new authorized generation"
+                ));
+            }
             publication_commit = commit.to_string();
             already_published = is_ancestor(project_root, commit, &observed_before)?;
-        } else if observed_before != expected
-            || (candidate_reachable && observed_before != git_output.commit_oid)
+        } else if observed_before != git_output.commit_oid
+            && (observed_before != expected
+                || (candidate_reachable && observed_before != git_output.commit_oid))
         {
             if observed_before == expected || is_ancestor(project_root, expected, &observed_before)?
             {
@@ -591,6 +609,31 @@ fn run_at_inner(
             "landing postcondition failed: refreshed integration and immutable candidate are not both reachable from integration ref"
         );
     }
+    // Git permits unrelated untracked paths during a fast-forward. Re-audit
+    // after publication and before writing any landing/terminal projection so
+    // user dirt that raced the earlier status fences remains authoritative.
+    run_after_publication_hook();
+    if root_checkout_dirty_if_attached(project_root, integration_ref)? {
+        if pending.is_none() {
+            let worker = worker_worktree
+                .context("post-publication landing wait requires the retained worker worktree")?;
+            super::completion_wait::park_landing_pending(
+                dir,
+                id,
+                "attached integration checkout changed during publication; target contains the exact candidate but completion remains deferred until user bytes are handled",
+                super::completion_wait::LandingWait {
+                    integration_ref,
+                    target_ref_oid: &git_output.integrated_main_oid,
+                    worker_worktree: worker,
+                    recovery: super::completion_wait::LandingRecovery::CleanCheckout,
+                },
+            )?;
+        }
+        eprintln!(
+            "Landing pending: checkout became dirty during publication; candidate is retained, user bytes were preserved, and completion remains deferred. Clean the checkout, then run `wg resume {id} --only`"
+        );
+        return Ok(false);
+    }
     // The target CAS may commit before the graph/terminal projection. A retry
     // must recognize the exact ReadyToLand commit, verify its durable renewed
     // receipt, and finish without minting different candidate or integration
@@ -680,6 +723,7 @@ fn reconcile_descendant_target(
         blocker,
         LandingReconciliationState::Reconciling,
         "descendant target advance is being integrated and revalidated",
+        None,
         None,
         None,
         None,
@@ -985,6 +1029,7 @@ fn reconcile_descendant_target(
         Some(receipt_ref.content_digest.to_string()),
         Some(integration_commit.clone()),
         Some(observed_target.to_string()),
+        None,
         Some(&ready_idempotency),
     )?;
     reconciliation_fault("ready-projected")?;
@@ -1101,6 +1146,7 @@ fn update_reconciliation_projection(
     receipt: Option<String>,
     commit: Option<String>,
     target: Option<String>,
+    safe_next_override: Option<String>,
     idempotency: Option<&str>,
 ) -> Result<CompletionBlocker> {
     let mut updated = None;
@@ -1128,7 +1174,7 @@ fn update_reconciliation_projection(
         let blocker = task.completion_blocker.as_mut().expect("checked blocker");
         blocker.reconciliation_state = state;
         blocker.reason = reason.to_string();
-        blocker.safe_next = match state {
+        blocker.safe_next = safe_next_override.unwrap_or_else(|| match state {
             LandingReconciliationState::Waiting | LandingReconciliationState::Reconciling => {
                 format!("wg resume {} --only", task.id)
             }
@@ -1140,7 +1186,7 @@ fn update_reconciliation_projection(
                     task.id, task.id
                 )
             }
-        };
+        });
         if let Some(value) = receipt {
             blocker.reconciliation_receipt = Some(value);
         }
@@ -1187,6 +1233,7 @@ fn record_reconciliation_blocked(
         None,
         None,
         None,
+        None,
         Some(format!("blocked:{}:{}", task.id, observed_target).as_str()),
     )?;
     save_reconciliation_record(
@@ -1210,6 +1257,38 @@ fn record_reconciliation_blocked(
             updated_at: Utc::now().to_rfc3339(),
         },
     )
+}
+
+fn record_invalid_ready_reconciliation(
+    dir: &Path,
+    task: &worksgood::graph::Task,
+    blocker: &CompletionBlocker,
+    reason: &str,
+) -> Result<()> {
+    let safe_next = format!(
+        "inspect `wg merge-resolution status {}` and use `wg reset {}` to start an authorized new generation; do not retry/requeue/unclaim or rewrite Git history",
+        task.id, task.id
+    );
+    let blocked = update_reconciliation_projection(
+        dir,
+        blocker,
+        LandingReconciliationState::Blocked,
+        reason,
+        None,
+        None,
+        None,
+        Some(safe_next),
+        Some(format!("blocked-ready-authority:{}", task.id).as_str()),
+    )?;
+    let mut record = load_reconciliation_record(dir, &task.id)?
+        .context("invalid ReadyToLand authority has no reconciliation record")?;
+    record.state = LandingReconciliationState::Blocked;
+    record.reason = reason.to_string();
+    record.safe_next = blocked.safe_next;
+    record.updated_at = Utc::now().to_rfc3339();
+    // Preserve the immutable receipt/evidence fields in the blocked record so
+    // the failed authority comparison remains fully auditable.
+    save_reconciliation_record(dir, &record)
 }
 
 fn attach_blocked_validation_evidence(
@@ -1304,6 +1383,7 @@ fn verify_ready_reconciliation(
         || receipt.manifest_digest != manifest.digest().map_err(anyhow::Error::msg)?.to_string()
         || receipt.source_candidate_commit_oid != git_output.commit_oid
         || receipt.source_candidate_tree_oid != git_output.tree_oid
+        || blocker.target_ref_oid.as_deref() != Some(receipt.refreshed_target_oid.as_str())
         || (receipt.refreshed_target_oid != observed_target && commit != observed_target)
         || receipt.integration_commit_oid != commit
         || record.state != LandingReconciliationState::ReadyToLand
@@ -2398,6 +2478,60 @@ mod tests {
     }
 
     #[test]
+    fn dirtiness_race_after_publication_defers_terminalization_and_resumes() {
+        let fixture = fixture();
+        let dirty_path = fixture.root.join("late-user.txt");
+        AFTER_PUBLICATION_HOOK.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new({
+                let dirty_path = dirty_path.clone();
+                move || {
+                    fs::write(dirty_path, "unrelated user bytes after Git publication\n").unwrap()
+                }
+            }));
+        });
+
+        run_at(
+            &fixture.dir,
+            &fixture.task_id,
+            "refs/heads/main",
+            Some(&fixture.worker),
+        )
+        .unwrap();
+        assert_eq!(
+            command(&fixture.root, &["rev-parse", "main"]),
+            fixture.candidate,
+            "the exact candidate CAS may precede the deferred terminal projection"
+        );
+        assert_eq!(
+            fs::read(&dirty_path).unwrap(),
+            b"unrelated user bytes after Git publication\n"
+        );
+        let graph = load_graph(fixture.dir.join("graph.jsonl")).unwrap();
+        let task = graph.get_task(&fixture.task_id).unwrap();
+        assert_eq!(task.status, Status::Waiting);
+        assert!(task.assigned.is_none());
+        let blocker = task.completion_blocker.as_ref().unwrap();
+        assert_eq!(blocker.kind, CompletionBlockerKind::LandingPending);
+        assert!(blocker.safe_next.contains("wg resume"));
+        drop(graph);
+
+        fs::remove_file(dirty_path).unwrap();
+        assert!(
+            super::super::resume::resume_landing_finalization(&fixture.dir, &fixture.task_id)
+                .unwrap()
+        );
+        let graph = load_graph(fixture.dir.join("graph.jsonl")).unwrap();
+        assert_eq!(
+            graph.get_task(&fixture.task_id).unwrap().status,
+            Status::Done
+        );
+        assert_eq!(
+            command(&fixture.root, &["rev-parse", "main"]),
+            fixture.candidate
+        );
+    }
+
+    #[test]
     fn completion_blockers_stale_candidate_fence_and_moved_target_fail_closed() {
         let park = |fixture: &Fixture| {
             fs::write(fixture.root.join("base.txt"), "dirty\n").unwrap();
@@ -2686,6 +2820,76 @@ mod tests {
             Some(integration.as_str())
         );
         assert_eq!(command(&fixture.root, &["rev-parse", "main"]), integration);
+    }
+
+    #[test]
+    fn ready_receipt_rejects_a_mutated_blocker_target_binding() {
+        let fixture = fixture();
+        fs::write(fixture.root.join("base.txt"), "dirty\n").unwrap();
+        run_at(
+            &fixture.dir,
+            &fixture.task_id,
+            "refs/heads/main",
+            Some(&fixture.worker),
+        )
+        .unwrap();
+        command(&fixture.root, &["restore", "base.txt"]);
+        fs::write(fixture.root.join("advance.txt"), "advance\n").unwrap();
+        command(&fixture.root, &["add", "advance.txt"]);
+        command(&fixture.root, &["commit", "-m", "advance"]);
+
+        RECONCILIATION_FAULT.with(|fault| *fault.borrow_mut() = Some("target-published"));
+        let error = resume_pending(&fixture.dir, &fixture.task_id).unwrap_err();
+        assert!(error.to_string().contains("target-published"));
+        RECONCILIATION_FAULT.with(|fault| *fault.borrow_mut() = None);
+        let record = load_reconciliation_record(&fixture.dir, &fixture.task_id)
+            .unwrap()
+            .unwrap();
+        let receipt = record.receipt_ref.clone().unwrap();
+        let integration = record.integration_commit_oid.clone().unwrap();
+        assert_eq!(command(&fixture.root, &["rev-parse", "main"]), integration);
+
+        modify_graph(fixture.dir.join("graph.jsonl"), |graph| {
+            graph
+                .get_task_mut(&fixture.task_id)
+                .unwrap()
+                .completion_blocker
+                .as_mut()
+                .unwrap()
+                .target_ref_oid = Some(fixture.candidate.clone());
+            true
+        })
+        .unwrap();
+        let error = resume_pending(&fixture.dir, &fixture.task_id).unwrap_err();
+        assert!(error.to_string().contains("stale ReadyToLand authority"));
+        let graph = load_graph(fixture.dir.join("graph.jsonl")).unwrap();
+        let task = graph.get_task(&fixture.task_id).unwrap();
+        assert_eq!(task.status, Status::Waiting);
+        assert_eq!(
+            task.completion_blocker
+                .as_ref()
+                .unwrap()
+                .reconciliation_state,
+            LandingReconciliationState::Blocked
+        );
+        assert!(
+            task.completion_blocker
+                .as_ref()
+                .unwrap()
+                .safe_next
+                .contains("wg reset")
+        );
+        assert!(task.completion_candidate.is_some());
+        let blocked = load_reconciliation_record(&fixture.dir, &fixture.task_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(blocked.state, LandingReconciliationState::Blocked);
+        assert_eq!(blocked.receipt_ref, Some(receipt));
+        assert_eq!(command(&fixture.root, &["rev-parse", "main"]), integration);
+        assert_eq!(
+            fs::read(fixture.worker.join("result.txt")).unwrap(),
+            b"accepted\n"
+        );
     }
 
     #[test]
