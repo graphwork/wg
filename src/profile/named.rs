@@ -1906,14 +1906,13 @@ assigner_agent = "local-agent"
                 cleaned
             );
 
+            // Clearing project-local routing now returns this graph to
+            // route-less mode. The reusable/global profile remains available
+            // as migration data, but is not inherited by project execution.
             let merged = Config::load_merged(&wg_dir).unwrap();
-            assert_eq!(merged.agent.model, "codex:gpt-5.6-sol");
-            assert_eq!(
-                merged.coordinator.model.as_deref(),
-                Some("codex:gpt-5.6-sol")
-            );
-            assert_eq!(merged.coordinator.effective_executor(), "codex");
-            assert_eq!(merged.tiers.fast.as_deref(), Some("codex:gpt-5.6-luna"));
+            assert!(merged.agent.model.is_empty());
+            assert_eq!(merged.coordinator.model, None);
+            assert_eq!(merged.tiers.fast, None);
             assert_eq!(merged.coordinator.max_agents, 3);
             assert_eq!(merged.agent.interval, 13);
             assert!(!merged.agency.auto_assign);

@@ -276,6 +276,16 @@ pub fn build_id(executable_sha256: &str) -> String {
 }
 
 pub fn selected_profile_identity(dir: &Path) -> Result<(Option<String>, Option<String>)> {
+    // A source-owned project document disables the legacy association
+    // completely. Its materialized origin is copy-by-value runtime identity;
+    // never reopen or authenticate the inactive profile-selection.json.
+    if let Some(document) = crate::project_config::load_for_graph(dir)? {
+        return Ok(match document.profile_origin {
+            Some(origin) => (Some(origin.name), Some(origin.projection_fingerprint)),
+            None => (None, None),
+        });
+    }
+
     let association = crate::profile::project::read_association(dir)?;
     Ok(match association {
         Some(association) => (

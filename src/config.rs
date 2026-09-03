@@ -5489,24 +5489,37 @@ impl MatrixConfig {
     }
 }
 
-/// Indicates where a configuration value came from
+/// Indicates where a configuration value came from.
+///
+/// `Global`, `Local`, and `ProjectProfile` are retained for compatibility
+/// inspection of legacy files. Project execution never reports `Global` as an
+/// effective source. New source-owned projects use `ProjectFile` or
+/// `ProjectProfileImport`; absent leaves use `Default` (`builtin-default`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
 pub enum ConfigSource {
+    #[serde(rename = "legacy-global")]
     Global,
+    #[serde(rename = "legacy-project-source")]
     Local,
-    #[serde(rename = "project-profile")]
+    #[serde(rename = "legacy-project-profile")]
     ProjectProfile,
+    #[serde(rename = "project-file")]
+    ProjectFile,
+    #[serde(rename = "project-profile-import")]
+    ProjectProfileImport,
+    #[serde(rename = "builtin-default")]
     Default,
 }
 
 impl std::fmt::Display for ConfigSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ConfigSource::Global => write!(f, "global"),
-            ConfigSource::Local => write!(f, "local"),
-            ConfigSource::ProjectProfile => write!(f, "project-profile"),
-            ConfigSource::Default => write!(f, "default"),
+            ConfigSource::Global => write!(f, "legacy-global"),
+            ConfigSource::Local => write!(f, "legacy-project-source"),
+            ConfigSource::ProjectProfile => write!(f, "legacy-project-profile"),
+            ConfigSource::ProjectFile => write!(f, "project-file"),
+            ConfigSource::ProjectProfileImport => write!(f, "project-profile-import"),
+            ConfigSource::Default => write!(f, "builtin-default"),
         }
     }
 }
@@ -5597,6 +5610,7 @@ fn collect_legacy_warnings(diag: &mut ConfigLoadDiagnostics, warnings: &[String]
 /// `[llm_endpoints]` table when local hasn't opted in. Call this BEFORE
 /// `merge_toml` so the deep-merge sees an effectively-empty global endpoints
 /// list and the merged config reflects only what local declared.
+#[cfg(test)]
 fn apply_endpoint_inheritance_policy(
     global_val: &mut toml::Value,
     local_val: &toml::Value,
@@ -5645,6 +5659,7 @@ pub fn merge_toml(global: toml::Value, local: toml::Value) -> toml::Value {
 
 /// When local config explicitly sets `agent.model`, strip any `models.<role>.model`
 /// entries that exist only in the global config (not overridden locally).
+#[cfg(test)]
 fn strip_global_only_model_roles(
     merged: &mut toml::Value,
     global_val: &toml::Value,
@@ -5842,6 +5857,96 @@ fn leaves_equal(a: &toml::Value, b: &toml::Value) -> bool {
     a == b
 }
 
+#[derive(Debug)]
+enum EffectiveProjectAuthority {
+    ProjectFile(crate::project_config::LoadedProjectConfig),
+    LegacyProject {
+        local: toml::Value,
+        selected_profile: Option<toml::Value>,
+    },
+}
+
+impl EffectiveProjectAuthority {
+    fn merged_value(&self) -> toml::Value {
+        match self {
+            Self::ProjectFile(document) => document.value.clone(),
+            Self::LegacyProject {
+                local,
+                selected_profile,
+            } => selected_profile.as_ref().map_or_else(
+                || local.clone(),
+                |profile| crate::profile::named::overlay_project_profile(local.clone(), profile),
+            ),
+        }
+    }
+
+    fn agent_model_is_project_explicit(&self) -> bool {
+        let value = match self {
+            Self::ProjectFile(document) => &document.value,
+            Self::LegacyProject { local, .. } => local,
+        };
+        value
+            .get("agent")
+            .and_then(|agent| agent.get("model"))
+            .and_then(toml::Value::as_str)
+            .is_some()
+    }
+}
+
+/// Select exactly one project configuration authority. Machine-global Config
+/// is intentionally not read here. `worksgood.toml` wins exclusively; only
+/// when it is absent do we consult the one-release graph-local compatibility
+/// inputs.
+fn load_effective_project_authority(
+    workgraph_dir: &Path,
+    diagnostics: &mut ConfigLoadDiagnostics,
+) -> anyhow::Result<EffectiveProjectAuthority> {
+    if let Some(document) = crate::project_config::load_for_graph(workgraph_dir)? {
+        return Ok(EffectiveProjectAuthority::ProjectFile(document));
+    }
+
+    let local_path = workgraph_dir.join("config.toml");
+    let mut local = Config::load_toml_value(&local_path)?;
+    let mut warnings = Vec::new();
+    normalize_legacy_tables(&mut local, &local_path.display().to_string(), &mut warnings);
+    collect_legacy_warnings(diagnostics, &warnings);
+    if let Ok(content) = fs::read_to_string(&local_path) {
+        diagnostics.push_warnings(
+            "deprecated-executor-key",
+            &deprecated_executor_warnings_for_toml(&content),
+        );
+        diagnostics.push_warnings(
+            "deprecated-model-prefix",
+            &deprecated_model_prefix_warnings_for_toml(&content),
+        );
+    }
+
+    // Presence of any association is authoritative in compatibility mode:
+    // selected_profile_toml performs binding/fingerprint/definition checks and
+    // returns an error on drift instead of falling through to local or global.
+    let mut selected_profile = crate::profile::project::selected_profile_toml(workgraph_dir)?;
+    if let Some(profile) = selected_profile.as_mut() {
+        let mut profile_warnings = Vec::new();
+        normalize_legacy_tables(
+            profile,
+            "selected legacy project profile",
+            &mut profile_warnings,
+        );
+        collect_legacy_warnings(diagnostics, &profile_warnings);
+    }
+    if local_path.exists() || selected_profile.is_some() {
+        diagnostics.push_warning(
+            "legacy-project-source",
+            "Legacy graph-local configuration is active only because worksgood.toml is absent; run `wg migrate project-local-pi` to create the authoritative project document.",
+        );
+    }
+
+    Ok(EffectiveProjectAuthority::LegacyProject {
+        local,
+        selected_profile,
+    })
+}
+
 impl Config {
     /// Return the global WG directory.
     ///
@@ -5856,9 +5961,9 @@ impl Config {
     ///    without perturbing `HOME` for sibling tests that shell out to git.
     /// 1. `~/.wg` (canonical for every new write).
     ///
-    /// The old global config is handled separately by
-    /// [`Config::global_config_read_path`], so a compatibility read can never
-    /// silently turn into another write at the retired location.
+    /// The old global config is handled separately by the read-only legacy
+    /// inspection path, so a compatibility read can never silently turn into
+    /// another write at the retired location.
     pub fn global_dir() -> anyhow::Result<PathBuf> {
         if let Some(dir) = std::env::var_os("WG_GLOBAL_DIR") {
             let dir = PathBuf::from(dir);
@@ -5869,10 +5974,6 @@ impl Config {
         let home = dirs::home_dir()
             .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
         Ok(home.join(".wg"))
-    }
-
-    fn global_config_read_path() -> anyhow::Result<PathBuf> {
-        Ok(Self::global_config_read_path_with_notice()?.0)
     }
 
     /// Like [`global_config_read_path`] but also returns a structured
@@ -5990,32 +6091,13 @@ impl Config {
         workgraph_dir: &Path,
         mut profile: toml::Value,
     ) -> anyhow::Result<Self> {
-        let (global_path, legacy_notice) = Self::global_config_read_path_with_notice()?;
-        let local_path = workgraph_dir.join("config.toml");
-        let mut global_val = Self::load_toml_value(&global_path)?;
-        let mut local_val = Self::load_toml_value(&local_path)?;
-        let mut warnings = Vec::new();
-        normalize_legacy_tables(
-            &mut global_val,
-            &global_path.display().to_string(),
-            &mut warnings,
-        );
-        normalize_legacy_tables(
-            &mut local_val,
-            &local_path.display().to_string(),
-            &mut warnings,
-        );
-        normalize_legacy_tables(&mut profile, "planned project profile", &mut warnings);
         let mut diag = ConfigLoadDiagnostics::new();
+        let authority = load_effective_project_authority(workgraph_dir, &mut diag)?;
+        let base = authority.merged_value();
+        let mut warnings = Vec::new();
+        normalize_legacy_tables(&mut profile, "planned project profile", &mut warnings);
         collect_legacy_warnings(&mut diag, &warnings);
-        if let Some(notice) = legacy_notice {
-            diag.push(notice);
-        }
-        apply_endpoint_inheritance_policy(&mut global_val, &local_val, true);
-        let merged = crate::profile::named::overlay_project_profile(
-            merge_toml(global_val, local_val),
-            &profile,
-        );
+        let merged = crate::profile::named::overlay_project_profile(base, &profile);
         let mut config: Self = merged.try_into().map_err(|error| {
             anyhow::anyhow!("Failed to parse config with planned project profile: {error}")
         })?;
@@ -6025,41 +6107,8 @@ impl Config {
     }
 
     pub fn load_merged_toml_value(workgraph_dir: &Path) -> anyhow::Result<toml::Value> {
-        let global_path = Self::global_config_read_path()?;
-        let local_path = workgraph_dir.join("config.toml");
-        let mut global_val = Self::load_toml_value(&global_path)?;
-        let mut local_val = Self::load_toml_value(&local_path)?;
-        let mut _legacy_warnings = Vec::new();
-        normalize_legacy_tables(
-            &mut global_val,
-            &global_path.display().to_string(),
-            &mut _legacy_warnings,
-        );
-        normalize_legacy_tables(
-            &mut local_val,
-            &local_path.display().to_string(),
-            &mut _legacy_warnings,
-        );
-        let mut project_profile = crate::profile::project::selected_profile_toml(workgraph_dir)?;
-        if let Some(profile) = project_profile.as_mut() {
-            normalize_legacy_tables(profile, "selected project profile", &mut _legacy_warnings);
-        }
-        // Side-effect-free: the legacy tables are still migrated in `merged`,
-        // but the warning is surfaced by the `Config`-returning loaders
-        // (`load_merged` / `load_with_sources`) that user-facing commands use.
-        // This helper returns a raw TOML value for key resolution, not display.
-        let active_named_profile =
-            crate::profile::named::active().ok().flatten().is_some() || project_profile.is_some();
-        apply_endpoint_inheritance_policy(&mut global_val, &local_val, active_named_profile);
-        let mut merged = merge_toml(global_val, local_val);
-        if let Some(profile) = project_profile.as_ref() {
-            // An explicit project association is authoritative for routing.
-            // Overlay it after the ordinary global/local merge so a later
-            // local route edit cannot silently masquerade as the selected
-            // reusable profile. Non-routing local settings remain intact.
-            merged = crate::profile::named::overlay_project_profile(merged, profile);
-        }
-        Ok(merged)
+        let mut diagnostics = ConfigLoadDiagnostics::new();
+        Ok(load_effective_project_authority(workgraph_dir, &mut diagnostics)?.merged_value())
     }
 
     fn profile_selection_blocked_config(_reason: &str) -> Self {
@@ -6092,87 +6141,24 @@ impl Config {
         config
     }
 
-    /// Load merged configuration: global config deep-merged with local config.
-    /// Local keys override global keys. Missing files are treated as empty.
+    /// Load the project's exclusive configuration authority.
+    ///
+    /// `worksgood.toml` is authoritative when present. Otherwise the
+    /// graph-local `config.toml` plus an optional fingerprint-checked project
+    /// profile association are read as a one-release compatibility source.
+    /// Machine-global WG config and the active-profile pointer are never merged.
     pub fn load_merged(workgraph_dir: &Path) -> anyhow::Result<Self> {
-        let (global_path, legacy_notice) = Self::global_config_read_path_with_notice()?;
-        let local_path = workgraph_dir.join("config.toml");
-
-        let mut global_val = Self::load_toml_value(&global_path)?;
-        let mut local_val = Self::load_toml_value(&local_path)?;
-
-        // Migrate legacy section names (e.g. `[coordinator]` → `[dispatcher]`)
-        // BEFORE merging, so callers don't end up with both keys in the merged
-        // value and serde isn't forced to pick one. (rename + alias on the
-        // field doesn't help when both keys are simultaneously present.)
-        let mut warnings = Vec::new();
-        normalize_legacy_tables(
-            &mut global_val,
-            &global_path.display().to_string(),
-            &mut warnings,
-        );
-        normalize_legacy_tables(
-            &mut local_val,
-            &local_path.display().to_string(),
-            &mut warnings,
-        );
-        let mut project_profile = crate::profile::project::selected_profile_toml(workgraph_dir)?;
-        if let Some(profile) = project_profile.as_mut() {
-            normalize_legacy_tables(profile, "selected project profile", &mut warnings);
-        }
         let mut diag = ConfigLoadDiagnostics::new();
-        collect_legacy_warnings(&mut diag, &warnings);
-        if let Some(notice) = legacy_notice {
-            diag.push(notice);
-        }
-
-        // Surface deprecated `executor` keys regardless of which file
-        // they live in. Read each file's raw content directly (we already
-        // have it as TOML values, but `deprecated_executor_warnings_for_toml`
-        // takes the raw string for symmetry with `Config::load`). Collected
-        // into `diag` (side-effect-free) rather than printed on every load.
-        for (label, path) in [("global", &global_path), ("local", &local_path)] {
-            if let Ok(content) = fs::read_to_string(path) {
-                for w in deprecated_executor_warnings_for_toml(&content) {
-                    diag.push_warning("deprecated-executor-key", format!("({label}) {w}"));
-                }
-                for w in deprecated_model_prefix_warnings_for_toml(&content) {
-                    diag.push_warning("deprecated-model-prefix", format!("({label}) {w}"));
-                }
-            }
-        }
-
-        let agent_model_is_local = project_profile.is_none()
-            && local_val
-                .get("agent")
-                .and_then(|a| a.get("model"))
-                .and_then(|m| m.as_str())
-                .is_some();
-
-        let active_named_profile =
-            crate::profile::named::active().ok().flatten().is_some() || project_profile.is_some();
-        apply_endpoint_inheritance_policy(&mut global_val, &local_val, active_named_profile);
-        let mut merged = merge_toml(global_val.clone(), local_val.clone());
-        if let Some(profile) = project_profile.as_ref() {
-            merged = crate::profile::named::overlay_project_profile(merged, profile);
-        } else {
-            strip_global_only_model_roles(&mut merged, &global_val, &local_val);
-        }
+        let authority = load_effective_project_authority(workgraph_dir, &mut diag)?;
+        let agent_model_is_local = authority.agent_model_is_project_explicit();
+        let merged = authority.merged_value();
         let mut config: Config = merged
             .try_into()
-            .map_err(|e| anyhow::anyhow!("Failed to deserialize merged config: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to deserialize project config: {e}"))?;
         config.agent_model_is_local = agent_model_is_local;
-
-        // Legacy/global `wg profile use <name>` remains a materialized global
-        // overlay plus `~/.wg/active-profile`. The newer project association
-        // is separate: when present, its fingerprint-verified reusable
-        // definition is overlaid in-memory after global/local config. It never
-        // mutates global state, and drift/missing definitions fail closed.
-
         config.validate_model_format()?;
         crate::evaluation::rollout::validate_managed_config(workgraph_dir, &config)?;
         config.load_diagnostics = diag;
-
         Ok(config)
     }
 
@@ -6336,12 +6322,15 @@ impl Config {
     pub fn load_or_default(workgraph_dir: &Path) -> Self {
         match Self::load_merged(workgraph_dir) {
             Ok(config) => config,
-            Err(e) if crate::profile::project::association_path(workgraph_dir).exists() => {
+            Err(e)
+                if crate::profile::project::association_path(workgraph_dir).exists()
+                    || crate::project_config::exists_for_graph(workgraph_dir) =>
+            {
                 let mut config = Self::profile_selection_blocked_config(&e.to_string());
                 config.load_diagnostics.push(ConfigLoadDiagnostic::error(
                     "config-load-error",
                     format!(
-                        "{e}. Explicit project profile selection is invalid; execution is disabled (no global/provider fallback)."
+                        "{e}. Explicit project configuration is invalid; execution is disabled (no machine-global/provider fallback)."
                     ),
                 ));
                 config
@@ -6766,96 +6755,55 @@ impl Config {
         Ok(true)
     }
 
-    /// Load merged config and record where each leaf key came from.
+    /// Load the exclusive project authority and record where each effective
+    /// leaf came from. Machine-global config is never represented in this map.
     pub fn load_with_sources(
         workgraph_dir: &Path,
     ) -> anyhow::Result<(Self, BTreeMap<String, ConfigSource>)> {
-        let (global_path, legacy_notice) = Self::global_config_read_path_with_notice()?;
-        let local_path = workgraph_dir.join("config.toml");
-
-        let mut global_val = Self::load_toml_value(&global_path)?;
-        let mut local_val = Self::load_toml_value(&local_path)?;
-
-        // Migrate legacy section names BEFORE recording sources, so the source
-        // map keys match the canonical field paths emitted by the merged
-        // serializer. Without this, a `[coordinator].executor = "native"` in
-        // global vs `[dispatcher].executor = "claude"` in local would land
-        // under two unrelated keys, and the merged display would only show
-        // one of them.
-        let mut warnings = Vec::new();
-        normalize_legacy_tables(
-            &mut global_val,
-            &global_path.display().to_string(),
-            &mut warnings,
-        );
-        normalize_legacy_tables(
-            &mut local_val,
-            &local_path.display().to_string(),
-            &mut warnings,
-        );
-        let mut project_profile = crate::profile::project::selected_profile_toml(workgraph_dir)?;
-        if let Some(profile) = project_profile.as_mut() {
-            normalize_legacy_tables(profile, "selected project profile", &mut warnings);
-        }
         let mut diag = ConfigLoadDiagnostics::new();
-        collect_legacy_warnings(&mut diag, &warnings);
-        if let Some(notice) = legacy_notice {
-            diag.push(notice);
-        }
-        // Collect (do NOT print) deprecated executor/model-prefix findings so
-        // `wg config --list` / `--show` (the surfaces that use this loader)
-        // can surface them once per invocation via [`Config::emit_load_diagnostics`].
-        for (label, path) in [("global", &global_path), ("local", &local_path)] {
-            if let Ok(content) = fs::read_to_string(path) {
-                for w in deprecated_executor_warnings_for_toml(&content) {
-                    diag.push_warning("deprecated-executor-key", format!("({label}) {w}"));
+        let authority = load_effective_project_authority(workgraph_dir, &mut diag)?;
+        let agent_model_is_local = authority.agent_model_is_project_explicit();
+        let merged = authority.merged_value();
+        let mut sources = BTreeMap::new();
+
+        match &authority {
+            EffectiveProjectAuthority::ProjectFile(document) => {
+                record_sources(
+                    &document.value,
+                    "",
+                    &ConfigSource::ProjectFile,
+                    &mut sources,
+                );
+                if document.profile_origin.is_some() {
+                    for (key, source) in &mut sources {
+                        if crate::project_config::is_profile_projection_key(key) {
+                            *source = ConfigSource::ProjectProfileImport;
+                        }
+                    }
                 }
-                for w in deprecated_model_prefix_warnings_for_toml(&content) {
-                    diag.push_warning("deprecated-model-prefix", format!("({label}) {w}"));
+            }
+            EffectiveProjectAuthority::LegacyProject {
+                local,
+                selected_profile,
+            } => {
+                record_sources(local, "", &ConfigSource::Local, &mut sources);
+                if let Some(profile) = selected_profile {
+                    record_sources(profile, "", &ConfigSource::ProjectProfile, &mut sources);
+                    // The compatibility overlay preserves explicit local
+                    // non-routing values. Repair those labels after recording
+                    // the profile last.
+                    refine_sources_by_value(&merged, local, ConfigSource::Local, &mut sources);
                 }
             }
         }
 
-        // Apply endpoint inheritance policy BEFORE recording sources, so the
-        // source map reflects the effective merged config: a global endpoint
-        // entry that's been suppressed because local opted out should not
-        // appear as "from global" in `wg config --list`.
-        let active_named_profile =
-            crate::profile::named::active().ok().flatten().is_some() || project_profile.is_some();
-        apply_endpoint_inheritance_policy(&mut global_val, &local_val, active_named_profile);
-
-        // Record sources: global first, local next, explicit project profile last.
-        let mut sources = BTreeMap::new();
-        record_sources(&global_val, "", &ConfigSource::Global, &mut sources);
-        record_sources(&local_val, "", &ConfigSource::Local, &mut sources);
-        if let Some(profile) = project_profile.as_ref() {
-            record_sources(profile, "", &ConfigSource::ProjectProfile, &mut sources);
-        }
-
-        let agent_model_is_local = project_profile.is_none()
-            && local_val
-                .get("agent")
-                .and_then(|a| a.get("model"))
-                .and_then(|m| m.as_str())
-                .is_some();
-
-        // Merge and deserialize
-        let mut merged = merge_toml(global_val.clone(), local_val.clone());
-        if let Some(profile) = project_profile.as_ref() {
-            merged = crate::profile::named::overlay_project_profile(merged, profile);
-        } else {
-            strip_global_only_model_roles(&mut merged, &global_val, &local_val);
-        }
-        // Source-label accuracy: re-derive labels by value-matching BEFORE
-        // `merged` is consumed by deserialization (see `refine_sources_by_value`).
-        refine_sources_by_value(&merged, &local_val, ConfigSource::Local, &mut sources);
-        refine_sources_by_value(&merged, &global_val, ConfigSource::Global, &mut sources);
         let mut config: Config = merged
             .try_into()
-            .map_err(|e| anyhow::anyhow!("Failed to deserialize merged config: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to deserialize project config: {e}"))?;
         config.agent_model_is_local = agent_model_is_local;
+        config.validate_model_format()?;
+        crate::evaluation::rollout::validate_managed_config(workgraph_dir, &config)?;
 
-        // Fill in defaults for keys not present in either file
         let default_config = Config::default();
         let default_val: toml::Value = toml::Value::try_from(&default_config)
             .unwrap_or(toml::Value::Table(toml::map::Map::new()));
@@ -6866,11 +6814,10 @@ impl Config {
             &ConfigSource::Default,
             &mut default_sources,
         );
-        for (key, src) in default_sources {
-            sources.entry(key).or_insert(src);
+        for (key, source) in default_sources {
+            sources.entry(key).or_insert(source);
         }
         config.load_diagnostics = diag;
-
         Ok((config, sources))
     }
 
@@ -8230,10 +8177,18 @@ model = "claude:haiku"
 
     #[test]
     fn test_config_source_display() {
-        assert_eq!(ConfigSource::Global.to_string(), "global");
-        assert_eq!(ConfigSource::Local.to_string(), "local");
-        assert_eq!(ConfigSource::ProjectProfile.to_string(), "project-profile");
-        assert_eq!(ConfigSource::Default.to_string(), "default");
+        assert_eq!(ConfigSource::Global.to_string(), "legacy-global");
+        assert_eq!(ConfigSource::Local.to_string(), "legacy-project-source");
+        assert_eq!(
+            ConfigSource::ProjectProfile.to_string(),
+            "legacy-project-profile"
+        );
+        assert_eq!(ConfigSource::ProjectFile.to_string(), "project-file");
+        assert_eq!(
+            ConfigSource::ProjectProfileImport.to_string(),
+            "project-profile-import"
+        );
+        assert_eq!(ConfigSource::Default.to_string(), "builtin-default");
     }
 
     #[test]

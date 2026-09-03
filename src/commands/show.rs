@@ -215,6 +215,8 @@ struct TaskDetails {
     #[serde(skip_serializing_if = "Option::is_none")]
     evaluation_health: Option<worksgood::eval_lifecycle::EvaluationHealth>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    legacy_evaluation_cutover: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     evaluation_gate: Option<worksgood::eval_lifecycle::EvaluationGateDiagnostics>,
     #[serde(skip_serializing_if = "Option::is_none")]
     evaluation_job_note: Option<String>,
@@ -937,6 +939,7 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         ),
         flip_gate: worksgood::evaluation::flip_gate_projection(task),
         evaluation_health: worksgood::eval_lifecycle::evaluation_health(&graph, id),
+        legacy_evaluation_cutover: worksgood::evaluation_cutover::condition_for(&graph, id),
         evaluation_gate,
         evaluation_job_note,
         worktree_state: gather_worktree_state(dir, id),
@@ -1528,6 +1531,9 @@ fn print_human_readable(details: &TaskDetails) {
             health.state, health.pipeline_id, health.source_attempt
         );
         println!("  {}", health.diagnostic);
+    }
+    if let Some(condition) = details.legacy_evaluation_cutover.as_deref() {
+        println!("legacy_evaluation_cutover: {condition}");
     }
     if details.meta_eval_attempts > 0 {
         println!("meta_eval_attempts: {}", details.meta_eval_attempts);
@@ -2526,6 +2532,7 @@ mod tests {
             evaluation_records: vec![],
             flip_gate: None,
             evaluation_health: None,
+            legacy_evaluation_cutover: None,
             evaluation_gate: None,
             evaluation_job_note: None,
             worktree_state: None,

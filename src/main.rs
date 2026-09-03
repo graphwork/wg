@@ -3513,6 +3513,19 @@ fn main() -> Result<()> {
             MigrateCommands::RetireCompactArchive { dry_run } => {
                 commands::migrate::run_retire_compact_archive(&workgraph_dir, dry_run, cli.json)
             }
+            MigrateCommands::EvaluationCutover {
+                dry_run,
+                accept,
+                candidate,
+                reason,
+            } => commands::migrate::run_evaluation_cutover(
+                &workgraph_dir,
+                dry_run,
+                accept.as_deref(),
+                candidate.as_deref(),
+                reason.as_deref(),
+                cli.json,
+            ),
             MigrateCommands::ReviewIdentity { limit, dry_run } => {
                 commands::migrate::run_review_identity_repair(
                     &workgraph_dir,
