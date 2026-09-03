@@ -87,6 +87,7 @@ pub mod plan_validator;
 pub mod platform_bash;
 pub mod platform_timeout;
 pub mod profile;
+pub mod project_config;
 pub mod provenance;
 pub mod providers;
 pub mod query;

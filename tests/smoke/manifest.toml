@@ -3130,3 +3130,10 @@ script = "scenarios/completion_resilience_e2e.sh"
 owners = ["completion-resilience-e2e", "prepare-completion-storage-upstream"]
 description = "Candidate-binary credential-free real-daemon/Fake-Pi completion regression: a Land source runs once in an isolated retained worker, strict deterministic review rejects immutable candidate A then passes revised candidate B, and an unrelated tracked edit in the attached integration checkout forces durable Waiting/LandingPending without changing user bytes. A daemon restart preserves the exact B manifest, review binding and target-ref CAS; after explicit cleanup, one resume publishes B and records one lifecycle success without rerunning source or review. A second already-settled Pi source exhausts a one-revision strict budget and parks the distinct retained candidate as Waiting/NeedsReview, never Failed/provider-timeout; restart remains source/review-idempotent. Real show/status and terminal classification surfaces are exercised throughout."
 timeout_seconds = 180
+
+[[scenario]]
+name = "project_local_pi_core"
+script = "scenarios/project_local_pi_core.sh"
+owners = ["project-local-pi-core"]
+description = "Real terminal regression for project-local Pi authority: graph CRUD remains credential-free while stale ~/.wg/config.toml routing, capacity, and active-profile stay inactive; service start fails with WG-EXEC-UNSELECTED before daemon/agent state and source-aware config reports builtin-default rather than global inheritance."
+timeout_seconds = 45

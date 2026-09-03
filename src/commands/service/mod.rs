@@ -1302,6 +1302,16 @@ pub fn run_tick(
     let executor = executor
         .map(std::string::ToString::to_string)
         .unwrap_or_else(|| config.effective_dispatcher_executor());
+    // Tick is a debugging entry point but still reaches real evaluator/chat
+    // lanes. Refuse route-less LLM work before coordinator_tick can claim or
+    // persist anything. Explicit shell execution remains orthogonal.
+    if executor != "shell" {
+        worksgood::execution_selection::require(
+            dir,
+            model.map(|route| (route, false)),
+            "wg service tick",
+        )?;
+    }
 
     let graph_path = graph_path(dir);
     if !graph_path.exists() {
@@ -1471,9 +1481,7 @@ pub fn run_start(
                         "selection": "unselected",
                         "setup_commands": [
                             "wg setup --route pi --yes --model pi:<provider>:<model>",
-                            "wg profile select pi",
-                            "wg profile select claude",
-                            "wg profile select codex"
+                            "wg profile select pi"
                         ]
                     }))?
                 );
@@ -1481,7 +1489,7 @@ pub fn run_start(
             }
             anyhow::bail!(
                 "{}",
-                worksgood::execution_selection::unselected_message("wg service start")
+                worksgood::execution_selection::unselected_message_for(dir, "wg service start")
             );
         }
     }
