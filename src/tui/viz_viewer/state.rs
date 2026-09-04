@@ -8638,9 +8638,8 @@ fn append_verified_review_activity(
             .map(|duration| format!(" · {duration}ms"))
             .unwrap_or_default();
         lines.push(format!(
-            "  {:?} {:?} · {:?} · {} · {} · {}{}{}{}",
-            activity.reviewer_kind,
-            activity.verdict,
+            "  {} · {:?} · {} · {} · {}{}{}{}",
+            activity.display_state(),
             activity.candidate_state,
             activity.manifest_digest,
             route,
@@ -8728,7 +8727,10 @@ fn tui_review_activity_exposes_current_binding_route_failure_usage_timing_and_fi
     let mut lines = Vec::new();
     append_verified_review_activity(&mut lines, &[activity]);
     let rendered = lines.join("\n");
-    assert!(rendered.contains("Flip Reject · Current"), "{rendered}");
+    assert!(
+        rendered.contains("FLIP-compat single-call reviewer rejected · Current"),
+        "{rendered}"
+    );
     assert!(rendered.contains("pi:test:reviewer · pi"), "{rendered}");
     assert!(rendered.contains("failure=SemanticRejection"), "{rendered}");
     assert!(

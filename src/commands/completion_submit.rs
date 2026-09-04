@@ -1960,17 +1960,63 @@ mod tests {
             .unwrap();
         load_exact_review_pair(&completion_store, &submission, &manifest, &resolved).unwrap();
         assert_eq!(task.completion_review_activity.len(), 2);
+        let candidate = task.completion_candidate.as_ref().unwrap();
+        let binding = candidate.review_binding.as_ref().unwrap();
+        assert_eq!(binding.task_id, "report");
+        assert_eq!(binding.generation, 3);
+        assert_eq!(binding.attempt_fence, task.lifecycle.fence);
+        assert_eq!(
+            binding.attempt_id.as_deref(),
+            task.lifecycle
+                .current_attempt
+                .as_ref()
+                .map(|attempt| attempt.id.as_str())
+        );
         assert_eq!(
             task.completion_review_activity
                 .iter()
-                .map(|activity| activity.reviewer_kind)
+                .map(|activity| (
+                    activity.reviewer_kind,
+                    activity.verdict,
+                    activity.display_state()
+                ))
                 .collect::<Vec<_>>(),
-            vec![ReviewerKind::Flip, ReviewerKind::Eval]
+            vec![
+                (
+                    ReviewerKind::Flip,
+                    worksgood::simple_land::ReviewVerdict::Pass,
+                    "FLIP-compat single-call reviewer pass"
+                ),
+                (
+                    ReviewerKind::Eval,
+                    worksgood::simple_land::ReviewVerdict::Pass,
+                    "Eval reviewer pass"
+                ),
+            ]
         );
-        assert!(
-            task.completion_review_activity
-                .iter()
-                .all(|activity| !activity.activity_id.is_empty())
+        assert!(task.completion_review_activity.iter().all(|activity| {
+            activity.binding.as_ref() == Some(binding)
+                && activity.manifest_digest == manifest.digest().unwrap()
+                && activity.requirements_digest == manifest.requirements_digest
+                && !activity.activity_id.is_empty()
+        }));
+        assert_eq!(
+            candidate
+                .flip_receipt
+                .as_ref()
+                .unwrap()
+                .content_digest
+                .as_str(),
+            task.completion_review_activity[0].activity_id
+        );
+        assert_eq!(
+            candidate
+                .eval_receipt
+                .as_ref()
+                .unwrap()
+                .content_digest
+                .as_str(),
+            task.completion_review_activity[1].activity_id
         );
 
         super::super::completion_done::run(&fixture.dir, "report", "refs/heads/main").unwrap();
@@ -2199,6 +2245,10 @@ mod tests {
         assert_eq!(
             task.completion_review_activity[0].failure_class,
             Some(worksgood::completion_review::ReviewFailureClass::ReviewerUnavailable)
+        );
+        assert_eq!(
+            task.completion_review_activity[0].display_state(),
+            "FLIP-compat single-call reviewer attempted+failed"
         );
         let verified = worksgood::completion_review::verified_review_activities(&fixture.dir, task);
         assert_eq!(verified.invalid_count, 0);

@@ -1042,9 +1042,8 @@ fn print_human_readable(details: &TaskDetails) {
         println!("Completion review lane (immutable activity; not graph tasks):");
         for activity in &details.completion_review_activity {
             println!(
-                "  {:?}: {:?} candidate={:?} receipt={} route={} executor={} failure={} duration={}",
-                activity.reviewer_kind,
-                activity.verdict,
+                "  {} candidate={:?} receipt={} route={} executor={} failure={} duration={}",
+                activity.display_state(),
                 activity.candidate_state,
                 activity.activity_id,
                 activity.model_route.as_deref().unwrap_or("unavailable"),

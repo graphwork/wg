@@ -170,6 +170,37 @@ pub struct CompletionReviewActivity {
     pub created_at: String,
 }
 
+impl CompletionReviewActivity {
+    /// Concise state for human activity surfaces. `ReviewerKind::Flip` is
+    /// named as the current single-call compatibility reviewer, not genuine
+    /// blind inference + reveal/comparison FLIP. An unavailable verdict proves
+    /// an invocation was attempted and failed; it is not absent/skipped.
+    pub fn display_state(&self) -> &'static str {
+        match (self.reviewer_kind, self.verdict) {
+            (ReviewerKind::Flip, ReviewVerdict::Pass) => "FLIP-compat single-call reviewer pass",
+            (ReviewerKind::Eval, ReviewVerdict::Pass) => "Eval reviewer pass",
+            (ReviewerKind::Flip, ReviewVerdict::Reject) => {
+                "FLIP-compat single-call reviewer rejected"
+            }
+            (ReviewerKind::Eval, ReviewVerdict::Reject) => "Eval reviewer rejected",
+            (ReviewerKind::Flip, ReviewVerdict::Unavailable) => {
+                "FLIP-compat single-call reviewer attempted+failed"
+            }
+            (ReviewerKind::Eval, ReviewVerdict::Unavailable) => "Eval reviewer attempted+failed",
+            (ReviewerKind::Flip, ReviewVerdict::IncompleteEvidence) => {
+                "FLIP-compat single-call reviewer incomplete evidence"
+            }
+            (ReviewerKind::Eval, ReviewVerdict::IncompleteEvidence) => {
+                "Eval reviewer incomplete evidence"
+            }
+            (ReviewerKind::Flip, ReviewVerdict::Absent) => {
+                "FLIP-compat single-call reviewer not attempted"
+            }
+            (ReviewerKind::Eval, ReviewVerdict::Absent) => "Eval reviewer not attempted",
+        }
+    }
+}
+
 fn legacy_attempt_is_projected(
     activity_ids: &std::collections::HashSet<&str>,
     attempt_id: &str,

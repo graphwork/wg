@@ -881,6 +881,7 @@ fn execute_claimed(
         "json".into(),
         "--print".into(),
         "--no-builtin-tools".into(),
+        "--no-context-files".into(),
         "-ne".into(),
         "--no-session".into(),
         "-e".into(),

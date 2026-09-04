@@ -2145,6 +2145,19 @@ template = "Work on {{task_id}}"
         assert_eq!(codex_config.executor.executor_type, "codex");
         assert_eq!(codex_config.executor.command, "codex");
 
+        let pi_config = registry.load_config("pi").unwrap();
+        assert_eq!(pi_config.executor.executor_type, "pi");
+        assert_eq!(pi_config.executor.command, "pi");
+        assert!(
+            !pi_config
+                .executor
+                .args
+                .iter()
+                .any(|arg| arg == "--no-context-files" || arg == "-nc"),
+            "full Pi workers must retain repository context files: {:?}",
+            pi_config.executor.args
+        );
+
         let opencode_config = registry.load_config("opencode").unwrap();
         assert_eq!(opencode_config.executor.executor_type, "opencode");
         assert_eq!(opencode_config.executor.command, "opencode");

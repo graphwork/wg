@@ -890,6 +890,7 @@ fn pi_one_shot_command_args(
         "--print".to_string(),
         "-ne".to_string(),
         "--no-tools".to_string(),
+        "--no-context-files".to_string(),
         "--no-session".to_string(),
         "--provider".to_string(),
         marg.provider.clone(),
@@ -975,9 +976,10 @@ fn pi_one_shot_model_arg(raw_spec: &str) -> Option<PiOneShotModelArg> {
 /// one-shot — NOT the long-lived `--mode rpc` worker used for chat/task agents.
 /// We parse the NDJSON `--mode json` stream with `translate_pi_stream` to
 /// recover the final assistant text and the summed per-turn usage. Tools are
-/// disabled (`--no-tools`), extension discovery is disabled (`-ne`), and the
-/// session is not persisted (`--no-session`), making the call hermetic with
-/// respect to user-installed Pi extensions.
+/// disabled (`--no-tools`), ambient repository context files are disabled
+/// (`--no-context-files`), extension discovery is disabled (`-ne`), and the
+/// session is not persisted (`--no-session`). WG supplies the complete bounded
+/// prompt, so AGENTS.md/CLAUDE.md must not silently consume the model window.
 ///
 /// WG supplies no credential or endpoint environment. Pi resolves provider
 /// authentication, endpoint details, availability, and model support itself.
@@ -1020,19 +1022,26 @@ fn call_pi_cli(
         .wait_with_output()
         .context("Failed to wait for pi CLI output")?;
 
+    let stdout_str = String::from_utf8_lossy(&output.stdout);
+    let translation =
+        crate::stream_event::translate_pi_stream(&stdout_str, None, output.status.success());
+    if let Some(error) = translation.terminal_error.as_ref() {
+        anyhow::bail!(
+            "Pi upstream terminal error (category={}): {}",
+            error.category,
+            error.message
+        );
+    }
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
         anyhow::bail!(
             "Pi CLI call failed (exit {:?}): stderr={:?} stdout={:?}",
             output.status.code(),
             stderr.chars().take(500).collect::<String>(),
-            stdout.chars().take(500).collect::<String>(),
+            stdout_str.chars().take(500).collect::<String>(),
         );
     }
 
-    let stdout_str = String::from_utf8_lossy(&output.stdout);
-    let translation = crate::stream_event::translate_pi_stream(&stdout_str, None, true);
     let text = translation
         .final_text
         .map(|s| s.trim().to_string())
@@ -2177,11 +2186,55 @@ mod tests {
         assert_eq!(max[tidx + 1], "max");
 
         let omitted = pi_one_shot_command_args(&marg, None);
-        assert!(omitted.contains(&"-ne".to_string()));
+        for required in ["-ne", "--no-tools", "--no-context-files", "--no-session"] {
+            assert!(
+                omitted.contains(&required.to_string()),
+                "Pi one-shot omitted {required}: {omitted:?}"
+            );
+        }
         assert!(
             !omitted.contains(&"--thinking".to_string()),
             "omitted reasoning must not emit --thinking: {:?}",
             omitted
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn test_pi_terminal_context_error_is_specific_not_empty_response() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let bin = temp.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let pi = bin.join("pi");
+        std::fs::write(
+            &pi,
+            r#"#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"type":"turn_end","message":{"role":"assistant","provider":"openrouter","model":"deepseek/deepseek-chat","content":[],"stopReason":"error","errorMessage":"This endpoint rejects 37800 input tokens: max_num_tokens is 32768","usage":{"input":37800,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":37800,"cost":{"total":0.0}}}}'
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&pi, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let old_path = std::env::var("PATH").unwrap_or_default();
+        let _path = EnvGuard::set("PATH", Some(&format!("{}:{old_path}", bin.display())));
+
+        let error = call_pi_cli(
+            &Config::default(),
+            "pi:openrouter:deepseek/deepseek-chat",
+            Some(ReasoningLevel::Low),
+            "two words",
+            10,
+        )
+        .unwrap_err();
+        let rendered = format!("{error:#}");
+        assert!(rendered.contains("category=error"), "{rendered}");
+        assert!(rendered.contains("max_num_tokens is 32768"), "{rendered}");
+        assert!(
+            !rendered.contains("Empty response from pi CLI"),
+            "{rendered}"
         );
     }
 

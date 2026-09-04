@@ -318,6 +318,15 @@ fn bounded_pi_lane_uses_no_worker_or_worktree() {
     let _env = test_env(&home);
     let dir = tmp.path().join("wg");
     make_graph(&dir, "fake-valid", EvaluationGateApplicability::Advisory);
+    let ambient_marker = "AMBIENT_CONTEXT_MUST_NOT_REACH_BOUNDED_PI";
+    fs::write(
+        tmp.path().join("AGENTS.md"),
+        format!(
+            "{ambient_marker}\n{}",
+            "large ambient instructions\n".repeat(8_000)
+        ),
+    )
+    .unwrap();
 
     let tick = run_one_pending(&dir, &config(5)).unwrap();
     assert!(tick.ran);
@@ -351,11 +360,21 @@ fn bounded_pi_lane_uses_no_worker_or_worktree() {
         "--mode json",
         "--print",
         "--no-tools",
+        "--no-context-files",
         "-ne",
         "--no-session",
     ] {
         assert!(args.contains(flag), "missing {flag}: {args}");
     }
+    let effective_prompt = fs::read_to_string(home.join("fake-pi-effective-prompt.log")).unwrap();
+    assert!(
+        effective_prompt.contains("Evidence manifest CID: wgcid:v1:blake3:"),
+        "the explicit reviewer prompt was not delivered"
+    );
+    assert!(
+        !effective_prompt.contains(ambient_marker),
+        "ambient AGENTS.md leaked into the bounded reviewer prompt"
+    );
 }
 
 #[test]
@@ -588,6 +607,11 @@ fn fake_pi_failure_matrix_captures_timeout_process_route_usage_and_unavailabilit
             "WG-EVAL-PI-REPORTED-ERROR",
         ),
         (
+            "fake-context-window-error",
+            EvaluationState::RetryBackoff,
+            "WG-EVAL-PI-REPORTED-ERROR",
+        ),
+        (
             "codex:fake-unavailable",
             EvaluationState::Unavailable,
             "WG-EVAL-ADAPTER-UNAVAILABLE",
@@ -622,6 +646,29 @@ fn fake_pi_failure_matrix_captures_timeout_process_route_usage_and_unavailabilit
                 .as_ref()
                 .expect("Pi-reported usage survives a reported error");
             assert_eq!(usage.input_tokens, 17);
+            assert_eq!(failure.reported_usage.as_ref(), Some(usage));
+        }
+        if model == "fake-context-window-error" {
+            assert!(
+                failure.message.contains("category=error"),
+                "terminal category was lost: {}",
+                failure.message
+            );
+            assert!(
+                failure.message.contains("max_num_tokens is 32768"),
+                "upstream context error was lost: {}",
+                failure.message
+            );
+            assert!(
+                !failure.message.contains("empty response"),
+                "terminal error collapsed to an empty response: {}",
+                failure.message
+            );
+            let usage = failed.attempts[0]
+                .usage
+                .as_ref()
+                .expect("Pi-reported usage survives terminal context error");
+            assert_eq!(usage.input_tokens, 37_800);
             assert_eq!(failure.reported_usage.as_ref(), Some(usage));
         }
         assert_eq!(
