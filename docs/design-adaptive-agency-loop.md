@@ -65,7 +65,7 @@ The missing piece is one coherent authority and identity model joining those sto
 
 Two external adjudication scopes are deliberately different:
 
-- `acceptance`: `wg done --operator-accept --reason ...` and the legacy `wg migrate evaluation-cutover --accept ...` escape hatch. It is accepted only by the lifecycle controller. The normal escape is generation/attempt/fence-bound and binds a candidate when one is verifiable; when bookkeeping is unavailable it records that evidence gap rather than inventing a candidate. The legacy cutover escape remains exact-candidate-bound.
+- `acceptance`: `wg done --operator-accept --reason ...`. It is accepted only by the lifecycle controller, is generation/attempt/fence-bound, and binds a candidate when one is verifiable; when bookkeeping is unavailable it records that evidence gap rather than inventing a candidate. `wg migrate evaluation-cutover` is historical marking/edge normalization only and cannot adjudicate lifecycle state.
 - `outcome`: `wg evaluate record ...`. It attaches independent ground truth or a human score to a terminal episode and cannot complete, fail, retry, reopen, or publish the task.
 
 The CLI and JSON schemas must always print `operation_kind` / `adjudication_scope`; the word “evaluation” alone is insufficient.
@@ -749,7 +749,7 @@ The graph canvas may render virtual review chips attached visually to the source
 | `wg evolve review list|approve|reject`; `wg agency deferred|approve|reject` | **Retain aliases for one release, then canonicalize under `wg evolve review`.** Human review concerns agency proposals only. |
 | current coordinator-created `.evolve-*` | **Retire.** `auto_evolve` invokes the non-graph observer/proposal lane. |
 | `.assign-*`, `.flip-*`, `.evaluate-*` rows | **Retired historical evidence.** Never schedulable. Virtual aliases are computed from ledgers and cannot satisfy/block dependencies. |
-| `wg migrate evaluation-cutover` | **Retain permanently for v1 graphs.** Its operator `--accept` stays a narrowly scoped legacy acceptance adjudication. |
+| `wg migrate evaluation-cutover` | **Retain permanently for v1 graphs.** It produces an exact backup, marks retired rows, and normalizes explicit edges; it never adjudicates source lifecycle. |
 | `wg migrate review-identity` | **Retain through dual-write.** Then make it a read-only verification/import command; never infer missing superseded history. |
 | `wg agency migrate` | **Extend.** Idempotently import terminal observations, scored envelopes, assignments, and legacy performance under §14 confidence classes. |
 | `wg agency stats` | **Retain.** Default to distinct episodes/effective scores; add reviewer calibration and route reliability sections. Legacy file counts are labeled legacy. |
@@ -870,7 +870,7 @@ Migration is additive and replayable. It stores `raw_digest`, `schema_origin`, o
 | `TerminalOutcomeObservation` | learning episode seed | exact for verified receipt-bound terminal generation |
 | `ScoredEvaluationEnvelope` | outcome assessment | exact when terminal observation binding verifies; otherwise legacy/unbound |
 | legacy `.wg/agency/evaluations/*.json` | external legacy assessment/adjudication | visible, excluded from modern automatic ranking by default |
-| evaluation-cutover/operator acceptance receipt | acceptance adjudication provenance in terminal episode | episode visible; ordinary-publication quality remains distinct |
+| historical evaluation-cutover/operator acceptance receipt | legacy acceptance-adjudication provenance only | preserve and display the episode; migration never infers current lifecycle from it |
 | evolver state/history | legacy evolution run manifests | historical; old file counts do not trigger new evolution |
 
 Binding classes are `exact-candidate`, `attempt-bound-no-manifest`, `task-bound`, `unbound`, and `invalid/quarantined`. Migration never upgrades confidence by inference, never rewrites original files, and never converts historical rows back into tasks. Deterministic import IDs make reruns no-ops.
