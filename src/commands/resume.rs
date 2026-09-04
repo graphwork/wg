@@ -85,8 +85,8 @@ pub(crate) fn resume_landing_finalization(dir: &Path, id: &str) -> Result<bool> 
         && !super::completion_land::resume_pending(dir, id)?
     {
         println!(
-            "Landing for '{}' remains pending; clean the attached integration checkout and retry",
-            id
+            "Landing for '{}' remains pending; preserve user changes, clean the attached integration checkout, then run `wg resume {} --only` again",
+            id, id
         );
         return Ok(true);
     }

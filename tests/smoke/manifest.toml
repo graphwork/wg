@@ -3143,8 +3143,8 @@ timeout_seconds = 180
 [[scenario]]
 name = "completion_landing_reconciliation"
 script = "scenarios/completion_landing_reconciliation.sh"
-owners = ["fix-completion-landing-maze"]
-description = "Candidate-binary credential-free terminal/Fake-Pi regression for the supported completion recovery flow: WG creates its isolated .wg-worktrees runtime without requiring a committed .gitignore entry; a reviewed candidate parks on real user dirtiness and releases its worker; main then advances by one independent descendant commit; explicit wg resume performs a deterministic merge, reruns configured plus baseline target-dependent validation, records immutable renewed target-binding evidence and a merge-resolution status record, then lands and completes without reset/retry/requeue/unclaim or another source/reviewer invocation."
+owners = ["fix-completion-landing-maze", "integrate-maze-free-recovery"]
+description = "Candidate-binary credential-free terminal/Fake-Pi regression for the supported composed recovery flow: WG creates its isolated .wg-worktrees runtime without requiring a committed .gitignore entry; a reviewed candidate parks on real user dirtiness and releases its worker; a PTY drives an immediate service stop/start and requires readiness-confirmed success while that exact candidate remains parked; main then advances by one independent descendant commit; explicit wg resume (idempotent with the replacement finalizer) performs a deterministic merge, reruns configured plus baseline target-dependent validation, records immutable renewed target-binding evidence and a merge-resolution status record, then lands and completes without reset/retry/requeue/unclaim, Git history surgery, or another source/reviewer invocation."
 timeout_seconds = 120
 
 [[scenario]]
@@ -3191,8 +3191,8 @@ timeout_seconds = 180
 [[scenario]]
 name = "service_start_readiness_pty"
 script = "scenarios/service_start_readiness_pty.sh"
-owners = ["fix-service-start-readiness"]
-description = "Candidate-binary terminal regression for service startup truthfulness: a real PTY repeatedly drives the exact human `wg service stop --force` -> immediate `wg service start` flow, and every printed success is independently challenged against the state nonce, daemon PID, and live socket. A forced readiness timeout must exit nonzero and emit an unmistakable reason, bounded daemon-log tail, and concrete recovery command on stderr even with stdout redirected; JSON failure stdout remains one parseable document."
+owners = ["fix-service-start-readiness", "integrate-maze-free-recovery"]
+description = "Candidate-binary terminal regression for service startup truthfulness: a real PTY repeatedly drives the exact human `wg service stop --force` -> immediate `wg service start` flow, and every printed success is independently challenged against the state nonce, daemon PID, and live socket. A forced readiness timeout must exit nonzero and emit an unmistakable reason, bounded daemon-log tail, and concrete recovery command on stderr even with stdout redirected; JSON failure stdout remains one parseable document. The integration owner runs this against the same freshly built binary as the composed landing-reconciliation flow."
 timeout_seconds = 90
 
 [[scenario]]

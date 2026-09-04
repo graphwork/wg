@@ -625,7 +625,7 @@ pub enum Commands {
         command: CandidateCommands,
     },
 
-    /// Classify and resolve immutable candidate integration conflicts
+    /// Inspect immutable completion landing and reconciliation evidence
     MergeResolution {
         #[command(subcommand)]
         command: MergeResolutionCommands,
@@ -931,7 +931,10 @@ pub enum Commands {
         id: String,
     },
 
-    /// Resume one Waiting task, or a paused draft/subgraph
+    /// Resume one Waiting task, including finalizer-owned landing recovery, or a paused draft/subgraph
+    #[command(
+        after_help = "Landing recovery:\n  wg show <TASK>\n  wg merge-resolution status <TASK>\n  wg resume <TASK> --only\n\nFor Waiting/LandingPending, preserve user changes and clean the attached checkout first. WG retains the reviewed candidate, renews target-bound validation after a descendant target advance, and completes without the source worker. Do not use retry/requeue/unclaim or rewrite Git history."
+    )]
     Resume {
         /// Task ID to resume. Waiting tasks always use named-task-only operator authority.
         #[arg(value_name = "TASK")]
@@ -3080,7 +3083,8 @@ pub enum FinalizeCommands {
 
 #[derive(Subcommand)]
 pub enum MergeResolutionCommands {
-    /// Classify and, only when required, invoke one exact strong merger
+    /// Retired mutation retained only for compatibility diagnostics
+    #[command(hide = true)]
     Run {
         id: String,
         /// Credential-free strong-merger adapter executable
@@ -3099,21 +3103,20 @@ pub enum MergeResolutionCommands {
         #[arg(long)]
         ambiguous_intent: bool,
     },
-    Status {
-        id: String,
-    },
+    /// Show immutable landing-reconciliation state, receipt, fence, and next action
+    Status { id: String },
+    /// Inspect immutable reconciliation evidence; optionally materialize read-only content
     Inspect {
         id: String,
         #[arg(long)]
         materialize: Option<PathBuf>,
     },
-    Retry {
-        id: String,
-    },
-    /// Resume after a bound human decision as a new audited generation
-    Resume {
-        id: String,
-    },
+    #[command(hide = true)]
+    Retry { id: String },
+    /// Retired mutation retained only for compatibility diagnostics
+    #[command(hide = true)]
+    Resume { id: String },
+    #[command(hide = true)]
     ChangeRoute {
         id: String,
         #[arg(long)]
@@ -3121,6 +3124,7 @@ pub enum MergeResolutionCommands {
         #[arg(long)]
         reasoning: String,
     },
+    #[command(hide = true)]
     Decide {
         id: String,
         #[arg(long)]
@@ -3128,26 +3132,22 @@ pub enum MergeResolutionCommands {
         #[arg(long)]
         constraints: Option<String>,
     },
+    #[command(hide = true)]
     Reject {
         id: String,
         #[arg(long)]
         reason: Option<String>,
     },
-    RefreshTarget {
-        id: String,
-    },
-    RepairSource {
-        id: String,
-    },
-    EscalateHuman {
-        id: String,
-    },
-    Abort {
-        id: String,
-    },
-    Rollback {
-        receipt: String,
-    },
+    #[command(hide = true)]
+    RefreshTarget { id: String },
+    #[command(hide = true)]
+    RepairSource { id: String },
+    #[command(hide = true)]
+    EscalateHuman { id: String },
+    #[command(hide = true)]
+    Abort { id: String },
+    #[command(hide = true)]
+    Rollback { receipt: String },
 }
 
 #[derive(Subcommand)]

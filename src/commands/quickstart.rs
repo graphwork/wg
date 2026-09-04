@@ -98,9 +98,18 @@ DISCOVERY & PUBLISHING
   wg reclaim <task-id> --from <actor> --to <actor>
 
 RECOVERY
-  Hung worker agent: wg agents kill <agent-id>
-  wg retry <task-id> --reason "stalled"
-  wg recover --yes
+  Service start succeeds only after readiness; on a loud timeout:
+    wg service start --force
+  Failed/stalled source attempt:
+    wg agents kill <agent-id> --force
+    wg retry <task-id> --reason "stalled"
+  Waiting/LandingPending after the source worker was released:
+    wg show <task-id>
+    wg merge-resolution status <task-id>
+    # preserve user changes and clean the attached checkout, then:
+    wg resume <task-id> --only
+  Batch operator recovery: wg recover --yes
+  Never retry/requeue/unclaim a retained landing candidate or rewrite Git history.
 
 HOUSEKEEPING
   wg archive --older 7d

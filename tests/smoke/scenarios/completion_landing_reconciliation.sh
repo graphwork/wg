@@ -8,6 +8,7 @@ export WG_SMOKE_ROOT="${WG_SMOKE_ROOT:-/tmp/wgs-land-reconcile-$$}"
 . "$HERE/_helpers.sh"
 command -v git >/dev/null 2>&1 || loud_skip "MISSING GIT" "git is required"
 command -v python3 >/dev/null 2>&1 || loud_skip "MISSING PYTHON3" "python3 is required"
+command -v script >/dev/null 2>&1 || loud_skip "MISSING PTY DRIVER" "script(1) is required"
 
 scratch=$(make_scratch)
 project="$scratch/project"; home="$scratch/home"; fakebin="$scratch/fakebin"; state="$scratch/state"
@@ -66,19 +67,12 @@ git config user.email land-reconcile@test.invalid
 git config user.name LandReconcile
 printf 'base bytes\n' >base.txt
 git add base.txt && git commit -qm base
-"$WG_BIN" init --no-agency --route pi --model pi:openrouter:fake-worker >/dev/null
-# Prove the project does not have to commit WG's worktree runtime exclusion.
-if [[ -f .gitignore ]]; then
-  grep -v '\.wg-worktrees' .gitignore >.gitignore.tmp || true
-  mv .gitignore.tmp .gitignore
-fi
-git add AGENTS.md CLAUDE.md
-[[ ! -f .gitignore ]] || git add .gitignore
-git commit -qm init-wg
-! git show HEAD:.gitignore 2>/dev/null | grep -q '\.wg-worktrees' \
-  || loud_fail "test fixture unexpectedly committed a .wg-worktrees ignore"
+"$WG_BIN" init --no-agency >/dev/null
 G="$project/.wg"
 wgrun(){ env -u WG_TASK_ID -u WG_AGENT_ID -u WG_WORKER_CAPABILITY -u WG_WORKER_IPC "$WG_BIN" --dir "$G" "$@"; }
+# Project-local routing is the only dispatch authority. Configure every fixture
+# knob before committing so operational config never masquerades as user dirt.
+wgrun setup --route pi --model pi:openrouter:fake-worker --yes >/dev/null
 wgrun config set models.reviewer.model pi:openrouter:fake-review >/dev/null
 wgrun config set models.reviewer.reasoning low >/dev/null
 wgrun config set models.evaluator.model pi:openrouter:fake-review >/dev/null
@@ -90,6 +84,16 @@ wgrun config set dispatcher.max_agents 1 >/dev/null
 wgrun config set dispatcher.poll_interval 1 >/dev/null
 wgrun config set dispatcher.settling_delay_ms 0 >/dev/null
 wgrun config set dispatcher.worktree_isolation true >/dev/null
+# Prove the project does not have to commit WG's worktree runtime exclusion.
+if [[ -f .gitignore ]]; then
+  grep -v '\.wg-worktrees' .gitignore >.gitignore.tmp || true
+  mv .gitignore.tmp .gitignore
+fi
+git add AGENTS.md CLAUDE.md worksgood.toml
+[[ ! -f .gitignore ]] || git add .gitignore
+git commit -qm init-wg
+! git show HEAD:.gitignore 2>/dev/null | grep -q '\.wg-worktrees' \
+  || loud_fail "test fixture unexpectedly committed a .wg-worktrees ignore"
 wgrun add 'Landing reconciliation human flow' --id landing-reconcile --priority 100 \
   --validation-command 'test -f candidate.txt' \
   -d $'Create candidate.txt.\n\n## Validation\n- [ ] candidate is retained and target-bound evidence is renewed' >/dev/null
@@ -112,7 +116,12 @@ for _ in $(seq 1 200); do
   sleep .05
 done
 [[ "$status" == waiting ]] || loud_fail "candidate did not park in Waiting/LandingPending"
+wgrun show landing-reconcile >"$scratch/pending.show"
 wgrun show landing-reconcile --json >"$scratch/pending.json"
+grep -q 'source worker: released' "$scratch/pending.show" \
+  || loud_fail "human status did not expose released source ownership: $(cat "$scratch/pending.show")"
+grep -q 'recovery authority: finalizer' "$scratch/pending.show" \
+  || loud_fail "human status did not expose finalizer recovery authority: $(cat "$scratch/pending.show")"
 python3 - "$scratch/pending.json" <<'PY'
 import json,sys
 x=json.load(open(sys.argv[1])); blocker=x.get('completion_blocker') or {}
@@ -122,7 +131,26 @@ next_action=blocker.get('safe_next','')
 assert 'wg resume landing-reconcile --only' in next_action,next_action
 assert 'git reset' not in next_action and 'wg retry' not in next_action,next_action
 PY
-wgrun service stop >/dev/null || true
+# Compose the service-readiness fix with landing recovery through the exact
+# attended terminal sequence. The reviewed candidate stays parked while the
+# old daemon stops and the replacement proves ready; no source worker returns.
+script -qefc \
+  "'$WG_BIN' --dir '$G' service stop --force && '$WG_BIN' --dir '$G' service start --no-chat-agent --force" \
+  "$scratch/stop-start.pty" </dev/null \
+  || loud_fail "readiness-confirmed stop/start failed: $(cat "$scratch/stop-start.pty" 2>/dev/null)"
+grep -q 'Service stopped' "$scratch/stop-start.pty" \
+  || loud_fail "composed flow omitted service stop: $(cat "$scratch/stop-start.pty")"
+grep -q 'Service started and ready' "$scratch/stop-start.pty" \
+  || loud_fail "composed flow returned before replacement readiness: $(cat "$scratch/stop-start.pty")"
+restarted_pid=$(python3 - "$G/service/state.json" <<'PY'
+import json,sys
+print(json.load(open(sys.argv[1], encoding='utf-8'))['pid'])
+PY
+)
+register_wg_daemon "$restarted_pid" "$G"
+wgrun service status >"$scratch/restarted.status"
+grep -qi 'running' "$scratch/restarted.status" \
+  || loud_fail "replacement daemon was not live after readiness success: $(cat "$scratch/restarted.status")"
 
 # Only the deliberate tracked edit is dirty. The self-created runtime tree is
 # excluded through Git administrative state, not a committed project policy.
@@ -134,14 +162,18 @@ grep -Eq '^/.wg-worktrees/[^/]+/$' .git/info/exclude || loud_fail "exact reposit
 printf '/daemon.log\n' >>.git/info/exclude
 
 candidate=$(cat "$home/candidate-oid")
-git restore -- base.txt
+# Stage the independent target change before restoring the deliberate dirt so
+# the restarted daemon never observes an accidentally-clean pre-advance gap.
 printf 'independent target advance\n' >target.txt
-git add target.txt && git commit -qm 'advance landing target'
+git add target.txt
+git restore -- base.txt
+git commit -qm 'advance landing target'
 target=$(git rev-parse HEAD)
 [[ -z $(git status --porcelain --untracked-files=all) ]] || loud_fail "root not clean before recovery"
 
-# This is the supported operator action. The worker is released and the daemon
-# is stopped, proving no live source process participates.
+# This is the supported operator action. The source worker is released; only
+# the readiness-confirmed replacement daemon/finalizer may race this idempotent
+# resume, and neither path may rerun or resubmit source work.
 wgrun resume landing-reconcile --only >"$scratch/resume.out" 2>"$scratch/resume.err"
 wgrun show landing-reconcile --json >"$scratch/done.json"
 wgrun merge-resolution status landing-reconcile >"$scratch/reconcile.status"
@@ -166,4 +198,4 @@ grep -q 'renewed validation: 2' "$scratch/reconcile.status" \
   || loud_fail "reconciled checkout lost candidate or target bytes"
 [[ -z $(git status --porcelain --untracked-files=all) ]] || loud_fail "landed root checkout is dirty"
 
-echo "PASS: WG runtime stayed administratively excluded; Waiting/LandingPending survived worker release; descendant target advance received renewed configured+baseline validation and an immutable target-binding receipt; supported resume landed the retained candidate without reset/retry/requeue/unclaim"
+echo "PASS: readiness-confirmed PTY stop/start preserved released-worker LandingPending state; WG runtime stayed administratively excluded; descendant target advance received renewed configured+baseline validation and an immutable target-binding receipt; supported resume landed the retained candidate without reset/retry/requeue/unclaim or Git history surgery"

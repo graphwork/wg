@@ -1027,6 +1027,15 @@ fn print_human_readable(details: &TaskDetails) {
                 .as_deref()
                 .unwrap_or("not required/attested")
         );
+        if blocker.kind == worksgood::graph::CompletionBlockerKind::LandingPending {
+            println!(
+                "  source worker: {}",
+                details.assigned.as_deref().unwrap_or("released")
+            );
+            println!(
+                "  recovery authority: finalizer (retained candidate; no source resubmission)"
+            );
+        }
         println!("  next: {}", blocker.safe_next);
     }
     if !details.completion_review_activity.is_empty() {

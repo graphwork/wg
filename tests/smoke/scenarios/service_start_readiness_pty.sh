@@ -10,6 +10,8 @@ set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/_helpers.sh"
 require_wg
+WG_BIN="${WG_SMOKE_CANDIDATE_BIN:-$(command -v wg)}"
+[[ -x "$WG_BIN" ]] || loud_fail "candidate binary missing: $WG_BIN"
 command -v script >/dev/null 2>&1 \
     || loud_skip "MISSING PTY DRIVER" "the script(1) command is required"
 command -v python3 >/dev/null 2>&1 \
@@ -24,7 +26,6 @@ scratch=$(make_scratch)
 export HOME="$scratch/home"
 mkdir -p "$HOME"
 wg_dir="$scratch/.wg"
-WG_BIN=$(command -v wg)
 
 "$WG_BIN" --dir "$wg_dir" init --no-agency >"$scratch/init.log" 2>&1 \
     || loud_fail "wg init failed: $(cat "$scratch/init.log")"

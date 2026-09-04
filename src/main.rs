@@ -1449,7 +1449,7 @@ fn main() -> Result<()> {
                 commands::merge_resolution::run(&workgraph_dir, command, cli.json)
             } else {
                 anyhow::bail!(
-                    "legacy merge-resolution mutation is retired; repair and resubmit from the same worker"
+                    "legacy merge-resolution mutation is retired; inspect retained evidence with `wg merge-resolution status <TASK>`. For Waiting/LandingPending, preserve user changes, clean the attached checkout, then run `wg resume <TASK> --only`; do not retry/requeue/unclaim or rewrite Git history"
                 )
             }
         }

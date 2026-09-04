@@ -134,7 +134,7 @@ When a task transitions from `Incomplete` → `Open` (via retry) and is re-dispa
 | **Complexity** | Low: just don't delete the worktree | Medium: rsync logic, temp dir management, cleanup of source worktree |
 | **Git state** | Prior agent's uncommitted changes visible in `git status` | Clean checkout (rsync copies only `target/`, not git state) |
 
-**Why A wins:** The primary cost driver is cargo `target/` (33GB). With warm reuse, the retry agent inherits the full build cache at zero cost. The stale-state concern is manageable: the retry agent sees any prior uncommitted changes in `git status` and can choose to `git reset --hard HEAD` for a clean start or build on the prior diff. This is strictly more information than Option B provides, at lower cost.
+**Why A wins:** The primary cost driver is cargo `target/` (33GB). With warm reuse, the retry agent inherits the full build cache at zero cost. The stale-state concern is manageable because the retry agent sees prior uncommitted changes in `git status` and must preserve them as potential user/source work. It may build on that diff or use the supported fresh-attempt path; it must not run `git reset --hard` and silently discard bytes. This is strictly more information than Option B provides, at lower cost.
 
 **Stale-state mitigation:** The agent wrapper can prepend a `git status` summary to the retry agent's context, showing what the prior attempt left behind. The agent guide already instructs agents to check `git status` before working.
 

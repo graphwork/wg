@@ -521,7 +521,7 @@ wg pause implement-api
 
 ### `wg resume`
 
-Explicitly resume a Waiting task, or resume a paused draft. Waiting tasks are always resumed one named task at a time with operator authority; paused drafts retain the historical downstream-subgraph default.
+Explicitly resume a Waiting task, including finalizer-owned landing recovery, or resume a paused draft. Waiting tasks are always resumed one named task at a time with operator authority; paused drafts retain the historical downstream-subgraph default.
 
 ```bash
 wg resume <ID> [OPTIONS]
@@ -542,7 +542,22 @@ wg resume implement-api --only
 
 wg resume waiting-for-operator --only
 # Explicitly satisfy this task's wait, clear its stale assignment, and kick dispatch
+
+wg show landing-task
+wg merge-resolution status landing-task
+wg resume landing-task --only
+# For Waiting/LandingPending: retain the reviewed candidate, renew target-bound
+# validation after a descendant target advance, and finish without the source worker.
 ```
+
+For landing recovery, first preserve any user changes and clean the attached integration
+checkout. `wg show` exposes the exact `(task, generation, attempt, fence, candidate)`
+binding, reconciliation receipt, source-worker release, finalizer authority, and the next
+supported command. Do **not** use `wg retry`, `wg requeue`, or `wg unclaim` for a retained
+landing candidate, and do not reset/rebase/cherry-pick its history. If reconciliation is
+blocked by divergence, conflict, or changed required inputs, follow the exact status action;
+`wg reset <task>` starts an authorized new generation when status names that fallback while
+retaining immutable evidence.
 
 ---
 

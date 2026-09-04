@@ -1182,8 +1182,8 @@ fn update_reconciliation_projection(
             LandingReconciliationState::Landed => format!("wg show {}", task.id),
             LandingReconciliationState::Blocked => {
                 format!(
-                    "wg merge-resolution status {}; then wg resume {} --only after resolving the named condition",
-                    task.id, task.id
+                    "wg merge-resolution status {}; after correcting a transient named condition run wg resume {} --only, or use wg reset {} to start an authorized new generation when the retained candidate cannot reconcile; do not retry/requeue/unclaim or rewrite Git history",
+                    task.id, task.id, task.id
                 )
             }
         });
