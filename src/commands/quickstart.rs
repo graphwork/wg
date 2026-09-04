@@ -404,11 +404,11 @@ fn json_output() -> serde_json::Value {
             "Confused which graph wg is talking to? Run 'wg which'"
         ],
         "named_profiles": {
-            "description": "Reusable global profile definitions with explicit fingerprint-pinned per-project selection; legacy global activation remains separate.",
-            "select": "wg profile select <name> (current project only; never rewrites global config)",
-            "select_clear": "wg profile select --clear (current project only)",
+            "description": "Reusable machine-global definitions materialize a closed Pi projection into this project's authoritative worksgood.toml.",
+            "select": "wg profile select <name> (canonical project operation; preserves guardrails; never rewrites global config/Pi settings)",
+            "select_clear": "wg profile select --clear (removes origin metadata; keeps explicit project routes)",
             "history": "wg profile history [--clear] (privacy-bounded local successful-event records)",
-            "use": "wg profile use <name> (legacy GLOBAL activation; writes ~/.wg/active-profile and ~/.wg/config.toml)",
+            "use": "wg profile use <name> (DEPRECATED alias for project-local select; warns before applying)",
             "show": "wg profile show",
             "list": "wg profile list",
             "create": "wg profile create <name>",

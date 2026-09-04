@@ -491,28 +491,16 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
 /// Initialize default config file
 pub fn init(dir: &Path, scope: Option<ConfigScope>) -> Result<()> {
     if scope == Some(ConfigScope::Global) {
-        if Config::init_global()? {
-            let path = Config::global_config_path()?;
-            println!("Created default global configuration at {}", path.display());
-        } else {
-            let path = Config::global_config_path()?;
-            println!("Global configuration already exists at {}", path.display());
-        }
-    } else if Config::init(dir)? {
-        println!("Created default configuration at .wg/config.toml");
-    } else {
-        println!("Configuration already exists at .wg/config.toml");
+        reject_global_project_write(ConfigScope::Global)?;
     }
-    Ok(())
+    init_graph_only(dir, ConfigScope::Local, false)
 }
 
 /// Write a graph-only config with no model route. This is intentionally
 /// available only through `wg config init --bare`.
 pub fn init_graph_only(workgraph_dir: &Path, scope: ConfigScope, force: bool) -> Result<()> {
-    let path = match scope {
-        ConfigScope::Global => Config::global_config_path()?,
-        ConfigScope::Local => workgraph_dir.join("config.toml"),
-    };
+    reject_global_project_write(scope)?;
+    let path = scope_config_path(workgraph_dir, scope)?;
     if path.exists()
         && !force
         && !std::fs::read_to_string(&path)
@@ -531,12 +519,7 @@ pub fn init_graph_only(workgraph_dir: &Path, scope: ConfigScope, force: bool) ->
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let body = match scope {
-        ConfigScope::Global => "# WG graph-only configuration; no LLM execution route selected.\n",
-        ConfigScope::Local => {
-            "# WG graph-only configuration; no LLM execution route selected.\n[project]\n"
-        }
-    };
+    let body = "# Authoritative project configuration; no LLM execution route selected.\nschema_version = 1\n";
     std::fs::write(&path, body)?;
     println!("Created graph-only configuration at {}", path.display());
     Ok(())
@@ -557,14 +540,41 @@ pub fn init_minimal(
     bare: bool,
     force: bool,
 ) -> Result<()> {
+    reject_global_project_write(scope)?;
     let route_enum = worksgood::config_defaults::SetupRoute::from_name(route)
         .ok_or_else(|| anyhow::anyhow!("unknown route '{}'. The supported route is: pi", route,))?;
 
-    let path = match scope {
-        ConfigScope::Global => Config::global_config_path()?,
-        ConfigScope::Local => workgraph_dir.join("config.toml"),
-    };
+    let path = scope_config_path(workgraph_dir, scope)?;
 
+    if bare {
+        return init_graph_only(workgraph_dir, scope, force);
+    }
+    if path.exists()
+        && !force
+        && !std::fs::read_to_string(&path)
+            .unwrap_or_default()
+            .trim()
+            .is_empty()
+    {
+        anyhow::bail!(
+            "{} already exists; pass --force to replace its route projection",
+            path.display()
+        );
+    }
+    let config = worksgood::config_defaults::config_for_route(
+        route_enum,
+        worksgood::config_defaults::RouteParams::default(),
+    );
+    let report =
+        worksgood::project_config::materialize_for_graph(workgraph_dir, &config, None, false)?;
+    println!(
+        "Wrote minimal project config at {} (route: {}, winning source: project-file)",
+        report.path.display(),
+        route_enum.as_name()
+    );
+    return Ok(());
+
+    #[allow(unreachable_code)]
     let body = render_minimal_config(route_enum, scope, bare);
 
     if path.exists() && !force {
@@ -941,9 +951,10 @@ pub fn update_with_reasoning(
     flip_model: Option<&str>,
     no_reload: bool,
 ) -> Result<()> {
+    reject_global_project_write(scope)?;
     let mut config = match scope {
-        ConfigScope::Global => Config::load_global()?.unwrap_or_default(),
-        ConfigScope::Local => Config::load(dir)?,
+        ConfigScope::Global => unreachable!("global writes rejected"),
+        ConfigScope::Local => Config::load_merged(dir)?,
     };
     let mut changed = false;
 
@@ -1368,26 +1379,6 @@ pub fn update_with_reasoning(
         );
     }
 
-    let direct_global_routing_change = matches!(scope, ConfigScope::Global)
-        && (model.is_some()
-            || endpoint.is_some()
-            || coordinator_model.is_some()
-            || !tier_specs.is_empty()
-            || !set_models.is_empty()
-            || !set_reasoning.is_empty()
-            || !set_providers.is_empty()
-            || !set_endpoints.is_empty()
-            || !role_models.is_empty()
-            || !role_providers.is_empty()
-            || flip_inference_model.is_some()
-            || flip_comparison_model.is_some()
-            || flip_model.is_some());
-    let active_profile_to_clear = if direct_global_routing_change {
-        worksgood::profile::named::active().unwrap_or(None)
-    } else {
-        None
-    };
-
     if changed {
         // A managed evaluation rollout owns these safety flags. Validate
         // before backup/write so a direct config command cannot bypass the
@@ -1395,30 +1386,14 @@ pub fn update_with_reasoning(
         if matches!(scope, ConfigScope::Local) {
             worksgood::evaluation::rollout::validate_managed_config(dir, &config)?;
         }
-        // Snapshot local config.toml before overwriting — only after all
-        // validation has passed, so a failed `wg config` run doesn't leave
-        // stray backup files behind.
-        if matches!(scope, ConfigScope::Local)
-            && let Some(backup) = Config::backup_on_disk(dir)?
-        {
-            println!("Backed up previous config → {}", backup.display());
-        }
         match scope {
-            ConfigScope::Global => {
-                config.save_global()?;
-                let path = Config::global_config_path()?;
-                println!("Global configuration saved to {}", path.display());
-                if let Some(prev) = active_profile_to_clear {
-                    worksgood::profile::named::set_active(None)?;
-                    println!(
-                        "Active profile cleared (was: {}) because global model routing was edited directly.",
-                        prev
-                    );
-                }
-            }
+            ConfigScope::Global => unreachable!("global writes rejected"),
             ConfigScope::Local => {
-                config.save(dir)?;
-                println!("Configuration saved.");
+                let path = worksgood::project_config::write_config_for_graph(dir, &config)?;
+                println!(
+                    "Project configuration saved to {} (winning source: project-file).",
+                    path.display()
+                );
             }
         }
         let _ = worksgood::profile::project::record_successful_event(
@@ -2649,6 +2624,7 @@ pub fn reset_to_route(
 ) -> Result<()> {
     use worksgood::config_defaults::{RouteParams, SetupRoute, config_for_route};
 
+    reject_global_project_write(scope)?;
     // Resolve the target path + load the existing config (if any).
     let (target_path, existing) = match scope {
         ConfigScope::Global => {
@@ -3047,6 +3023,7 @@ pub fn set_dotted(
     no_reload: bool,
     json: bool,
 ) -> Result<()> {
+    reject_global_project_write(scope)?;
     if key.trim().is_empty() {
         anyhow::bail!("config set: <key> must not be empty");
     }
@@ -3085,6 +3062,20 @@ pub fn set_dotted(
 
     // 3. Apply the dotted key to the tree, creating intermediate tables.
     set_dotted_value(&mut doc, &normalized_key, typed_value.clone());
+    if scope == ConfigScope::Local {
+        let root = doc
+            .as_table_mut()
+            .ok_or_else(|| anyhow::anyhow!("project config must be a TOML table"))?;
+        root.insert("schema_version".to_string(), toml::Value::Integer(1));
+        if worksgood::project_config::is_profile_projection_key(&normalized_key) {
+            root.remove("profile_origin");
+        }
+        let mut payload = doc.clone();
+        let payload_root = payload.as_table_mut().expect("validated table");
+        payload_root.remove("schema_version");
+        payload_root.remove("profile_origin");
+        worksgood::project_config::validate_project_payload(&payload, &path)?;
+    }
 
     // 4. Validate the whole document still deserializes (catches type errors
     //    on known fields, e.g. setting max_agents to a non-integer).
@@ -3196,8 +3187,19 @@ pub fn get_dotted(workgraph_dir: &Path, key: &str, json: bool) -> Result<()> {
 fn scope_config_path(workgraph_dir: &Path, scope: ConfigScope) -> Result<std::path::PathBuf> {
     Ok(match scope {
         ConfigScope::Global => Config::global_config_path()?,
-        ConfigScope::Local => workgraph_dir.join("config.toml"),
+        ConfigScope::Local => worksgood::project_config::path_for_graph(workgraph_dir).ok_or_else(|| {
+            anyhow::anyhow!("error[WG-PROJECT-ROOT-REQUIRED]: config writes need an ordinary project .wg directory")
+        })?,
     })
+}
+
+fn reject_global_project_write(scope: ConfigScope) -> Result<()> {
+    if scope == ConfigScope::Global {
+        anyhow::bail!(
+            "error[WG-GLOBAL-CONFIG-WRITE-REFUSED]: machine-global project configuration is legacy and inactive. Write this project's worksgood.toml (omit --global), or edit a reusable definition with `wg profile edit`."
+        );
+    }
+    Ok(())
 }
 
 fn scope_label(scope: ConfigScope) -> &'static str {

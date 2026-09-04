@@ -3194,3 +3194,10 @@ script = "scenarios/service_start_readiness_pty.sh"
 owners = ["fix-service-start-readiness"]
 description = "Candidate-binary terminal regression for service startup truthfulness: a real PTY repeatedly drives the exact human `wg service stop --force` -> immediate `wg service start` flow, and every printed success is independently challenged against the state nonce, daemon PID, and live socket. A forced readiness timeout must exit nonzero and emit an unmistakable reason, bounded daemon-log tail, and concrete recovery command on stderr even with stdout redirected; JSON failure stdout remains one parseable document."
 timeout_seconds = 90
+
+[[scenario]]
+name = "project_local_pi_cli"
+script = "scenarios/project_local_pi_cli.sh"
+owners = ["project-local-pi-cli"]
+description = "Real terminal regression for project-local setup/profile selection: writes worksgood.toml only, preserves resource guardrails, warns on deprecated profile use, and refuses global setup mutation before touching machine state."
+timeout_seconds = 45

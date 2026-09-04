@@ -1882,11 +1882,11 @@ pub enum Commands {
         #[arg(long)]
         init: bool,
 
-        /// Target global config (~/.wg/config.toml) instead of local
+        /// Inspect legacy global config. Project-behavior writes are refused.
         #[arg(long, conflicts_with = "local")]
         global: bool,
 
-        /// Explicitly target local config (default for writes)
+        /// Explicitly target authoritative project worksgood.toml (default for writes)
         #[arg(long, conflicts_with = "global")]
         local: bool,
 
@@ -2473,10 +2473,8 @@ pub enum Commands {
         /// [DEPRECATED/UNSUPPORTED] WG no longer selects providers; use Pi.
         #[arg(long, hide = true)]
         provider: Option<String>,
-        /// Where to write the config: `global` (~/.wg/config.toml),
-        /// `local` (./.wg/config.toml), or `both`. When omitted, the
-        /// interactive wizard prompts; non-interactive routes default to
-        /// `global`.
+        /// Deprecated scope compatibility: `local`/`project` mean the default
+        /// project worksgood.toml. `global` and `both` are refused before mutation.
         #[arg(long)]
         scope: Option<String>,
         /// [DEPRECATED/UNSUPPORTED] Configure provider credentials in Pi.
@@ -4834,10 +4832,10 @@ pub enum ProfileCommands {
         #[arg(long)]
         premium: Option<String>,
     },
-    /// Activate a named profile globally (legacy/global scope; rewrites ~/.wg/config.toml)
+    /// [DEPRECATED] Alias for project-local `wg profile select`
     ///
-    /// This intentionally remains machine-global. For an isolated reusable
-    /// project association use `wg profile select <name>` instead.
+    /// Warns before applying and never rewrites ~/.wg/config.toml,
+    /// ~/.wg/active-profile, or Pi console settings.
     Use {
         /// Profile name to activate, or provider:model to activate that profile with an exact default route
         name: Option<String>,
@@ -4850,10 +4848,10 @@ pub enum ProfileCommands {
         #[arg(long)]
         clear: bool,
     },
-    /// Select a reusable named profile for only the current project
+    /// Select a reusable Pi profile for only the current project
     ///
-    /// Writes an explicit fingerprint-pinned association under the current
-    /// WG directory. It never changes ~/.wg/config.toml or active-profile.
+    /// Materializes exact routes/reasoning into authoritative worksgood.toml,
+    /// preserving project guardrails. Never changes global config or Pi settings.
     Select {
         /// Installed profile name (built-in starters are installed once on apply)
         name: Option<String>,

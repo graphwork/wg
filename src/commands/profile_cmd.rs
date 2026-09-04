@@ -5,76 +5,10 @@ use std::path::Path;
 use worksgood::config::{
     Config, DispatchRole, ReasoningLevel, ReasoningProvenance, ResolvedReasoning,
 };
-use worksgood::dispatch::ExecutorKind;
 use worksgood::model_benchmarks::{self, BenchmarkRegistry, RankedTiers};
 use worksgood::profile;
 use worksgood::profile::named as named_profile;
 use worksgood::profile::project as project_profile;
-
-struct ProfileUseTarget {
-    profile_name: String,
-    pinned_model: Option<String>,
-}
-
-fn parse_profile_use_target(name: &str) -> Result<ProfileUseTarget> {
-    if !name.contains(':') {
-        return Ok(ProfileUseTarget {
-            profile_name: name.to_string(),
-            pinned_model: None,
-        });
-    }
-
-    // External CLI executors (`opencode`, `aider`, `goose`, …) are addressed
-    // by *executor* name, not a model provider prefix, so they are
-    // intentionally absent from `KNOWN_PROVIDERS` and would be rejected by the
-    // strict model-spec parser below. Map an `opencode:<route>` activation to
-    // the matching starter profile and pin the literal route so the spawn
-    // path's `parse_executor_model_route` fires unchanged. Guarded on
-    // `is_external_cli` so aider/goose/… compose without new arms.
-    if let Some((prefix, rest)) = name.split_once(':') {
-        if !rest.trim().is_empty() {
-            if let Some(kind) = ExecutorKind::from_str(prefix) {
-                if kind.is_external_cli() {
-                    return Ok(ProfileUseTarget {
-                        profile_name: kind.as_str().to_string(),
-                        pinned_model: Some(name.to_string()),
-                    });
-                }
-            }
-        }
-    }
-
-    let spec = worksgood::config::parse_model_spec_strict(name).map_err(|e| {
-        anyhow::anyhow!(
-            "Profile '{}' was parsed as a model-qualified profile activation, but the model spec is invalid: {}",
-            name,
-            e
-        )
-    })?;
-    let provider = spec.provider.as_deref().unwrap_or_default();
-    let profile_name = match provider {
-        "claude" | "anthropic" => "claude",
-        "codex" => "codex",
-        "nex" | "local" | "oai-compat" => "nex",
-        _ => {
-            anyhow::bail!(
-                "Model-qualified profile activation supports claude:<model>, codex:<model>, or nex:<model>; got '{}'.",
-                name
-            );
-        }
-    };
-
-    let pinned_model = if provider == "anthropic" {
-        format!("claude:{}", spec.model_id)
-    } else {
-        name.to_string()
-    };
-
-    Ok(ProfileUseTarget {
-        profile_name: profile_name.to_string(),
-        pinned_model: Some(pinned_model),
-    })
-}
 
 /// File name for the cached ranked tiers (inside .wg/).
 /// Note: `profile::load_ranked_tiers()` provides the public read path;
@@ -714,153 +648,102 @@ pub fn select_project_profile(
     json: bool,
 ) -> Result<()> {
     if clear {
-        let plan = project_profile::plan_clear_project_selection(dir)?;
-        if dry_run {
-            if json {
-                println!("{}", serde_json::to_string_pretty(&plan)?);
-            } else {
-                println!("Project profile clear plan (READ ONLY)");
-                println!("  Project: {}", plan.project_digest);
-                println!(
-                    "  Selected: {}",
-                    if plan.had_selection { "yes" } else { "no" }
-                );
-                println!("  Would write: nothing (--dry-run)");
-            }
-            return Ok(());
-        }
-        project_profile::apply_clear_project_selection(dir, &plan)?;
-        if json {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&serde_json::json!({
-                    "cleared": plan.had_selection,
-                    "project_digest": plan.project_digest,
-                    "scope": "project",
-                }))?
-            );
-        } else if plan.had_selection {
-            println!("Project profile selection cleared.");
-            println!("  Global `wg profile use` state was not changed.");
+        let path = worksgood::project_config::path_for_graph(dir).ok_or_else(|| {
+            anyhow::anyhow!("error[WG-PROJECT-ROOT-REQUIRED]: profile selection needs an ordinary project .wg directory")
+        })?;
+        let mut document: toml::Value = if path.exists() {
+            std::fs::read_to_string(&path)?.parse()?
         } else {
-            println!("No project profile selection was set. Nothing changed.");
+            toml::Value::Table(toml::map::Map::new())
+        };
+        let had_origin = document
+            .as_table_mut()
+            .is_some_and(|root| root.remove("profile_origin").is_some());
+        if !dry_run && had_origin {
+            worksgood::atomic_file::write_atomic(
+                &path,
+                toml::to_string_pretty(&document)?.as_bytes(),
+            )?;
         }
-        if !no_reload {
+        let output = serde_json::json!({
+            "scope": "project",
+            "path": path,
+            "cleared": had_origin,
+            "routes_preserved": true,
+            "global_config_changed": false,
+            "global_active_profile_changed": false,
+            "console_plugin_changed": false,
+            "dry_run": dry_run,
+        });
+        if json {
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        } else {
+            println!(
+                "Project profile origin {}. Explicit project routes were preserved.",
+                if had_origin { "cleared" } else { "was not set" }
+            );
+            println!("  Scope: project worksgood.toml only");
+            println!("  Global config, active-profile, and Pi console settings were not changed.");
+        }
+        if !dry_run && !no_reload {
             trigger_daemon_reload(dir, None);
         }
         return Ok(());
     }
 
     let name = name.ok_or_else(|| {
-        anyhow::anyhow!(
-            "Choose the recommended Pi profile or an explicit Claude/Codex worker profile, or pass --clear. See `wg profile list`."
-        )
+        anyhow::anyhow!("Choose a Pi profile or pass --clear. See `wg profile list`.")
     })?;
-    named_profile::load(name)?
-        .config
-        .validate_execution_model_plane()
-        .with_context(|| {
-            format!("profile {name:?} is not a supported Pi/Claude/Codex worker profile")
-        })?;
-    let plan = project_profile::plan_project_selection(dir, name)?;
-    if dry_run {
-        if json {
-            println!("{}", serde_json::to_string_pretty(&plan)?);
-        } else {
-            println!("Project profile selection plan (READ ONLY)");
-            println!("  Project:     {}", plan.project_digest);
-            println!(
-                "  Profile:     {} ({:?})",
-                plan.profile, plan.profile_source
-            );
-            println!("  Fingerprint: {}", plan.profile_fingerprint);
-            println!(
-                "  Definition:  {}",
-                if plan.materializes_global_profile_definition {
-                    "install built-in once as a reusable global definition"
-                } else {
-                    "reuse installed global definition"
-                }
-            );
-            println!(
-                "  Worker/chat: {} · {} [{}]",
-                plan.readiness.strong_route,
-                plan.readiness
-                    .strong_reasoning
-                    .map(ReasoningLevel::as_str)
-                    .unwrap_or("(omit)"),
-                plan.readiness.strong_reasoning_provenance,
-            );
-            println!(
-                "  Agency:      {} · {} [{}]",
-                plan.readiness.weak_route,
-                plan.readiness
-                    .weak_reasoning
-                    .map(ReasoningLevel::as_str)
-                    .unwrap_or("(omit)"),
-                plan.readiness.weak_reasoning_provenance,
-            );
-            println!("  Readiness:   {}", plan.readiness.annotation);
-            println!("  Would write: nothing (--dry-run)");
-        }
-        return Ok(());
-    }
-
-    let association = project_profile::apply_project_selection(dir, &plan)?;
-    if let Err(e) = project_profile::record_successful_event(
-        dir,
-        project_profile::UsageEventCategory::ProfileSelected,
-    ) {
-        eprintln!(
-            "Warning: project selection succeeded but local usage history was not recorded: {e}"
-        );
-    }
-    if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "association": association,
-                "scope": "project",
-                "readiness": plan.readiness,
-                "global_active_profile_changed": false,
-                "global_config_changed": false,
-            }))?
-        );
+    let profile = named_profile::load(name)?;
+    profile.config.validate_pi_model_plane().with_context(|| {
+        format!("profile {name:?} is not Pi-only; project selection requires exact `pi:<provider>:<model>` routes")
+    })?;
+    let definition_path = named_profile::profile_path(name)?;
+    let definition = if definition_path.is_file() {
+        std::fs::read_to_string(&definition_path)?
     } else {
-        println!("Project profile selected: {}", association.profile);
+        named_profile::starter_template(name)
+            .ok_or_else(|| anyhow::anyhow!("profile {name:?} has no reusable definition"))?
+            .to_string()
+    };
+    let report = worksgood::project_config::materialize_for_graph(
+        dir,
+        &profile.config,
+        Some((name, &definition)),
+        dry_run,
+    )?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
         println!(
-            "  Scope:       this canonical project only ({})",
-            association.project_digest
+            "Project profile {}: {}",
+            if dry_run {
+                "selection plan"
+            } else {
+                "selected"
+            },
+            name
         );
-        println!("  Fingerprint: {}", association.profile_fingerprint);
-        if plan.materializes_global_profile_definition {
-            println!("  Definition:  installed reusable built-in profile definition globally");
-        } else {
-            println!("  Definition:  reused existing global profile definition");
-        }
+        println!("  Scope: project only ({})", report.path.display());
+        println!("  Winning source: project-profile-import");
         println!(
-            "  Worker/chat: {} · {} [{}]",
-            plan.readiness.strong_route,
-            plan.readiness
-                .strong_reasoning
-                .map(ReasoningLevel::as_str)
-                .unwrap_or("(omit)"),
-            plan.readiness.strong_reasoning_provenance,
+            "  Definition fingerprint: {}",
+            report.definition_fingerprint.as_deref().unwrap_or("(none)")
         );
         println!(
-            "  Agency:      {} · {} [{}]",
-            plan.readiness.weak_route,
-            plan.readiness
-                .weak_reasoning
-                .map(ReasoningLevel::as_str)
-                .unwrap_or("(omit)"),
-            plan.readiness.weak_reasoning_provenance,
+            "  Projection fingerprint: {}",
+            report.projection_fingerprint
         );
-        println!("  Readiness:   {}", plan.readiness.annotation);
-        println!("  Global ~/.wg/config.toml and active-profile were not changed.");
+        println!(
+            "  Changed: {}{}",
+            report.changed,
+            if dry_run { " (dry-run; no write)" } else { "" }
+        );
+        println!("  Preserved: existing non-profile project guardrails/resources/archive policy");
+        println!("  Global config, active-profile, and Pi console settings changed: false");
     }
-    if !no_reload {
-        trigger_daemon_reload(dir, Some(&association.profile));
+    if !dry_run && !no_reload {
+        trigger_daemon_reload(dir, Some(name));
     }
     Ok(())
 }
@@ -1045,151 +928,10 @@ pub fn list(dir: &Path, json: bool, installed_only: bool) -> Result<()> {
 /// removed compaction/verify keys are (re)introduced. Local non-routing
 /// settings are preserved.
 pub fn use_profile(dir: &Path, name: Option<&str>, no_reload: bool, clear: bool) -> Result<()> {
-    if clear || name.is_none() {
-        let prev = named_profile::active().unwrap_or(None);
-        named_profile::set_active(None)?;
-        match prev.as_deref() {
-            Some(p) => println!(
-                "Active profile cleared (was: {}). ~/.wg/config.toml left as-is — edit or `wg config init` to change.",
-                p
-            ),
-            None => println!("No active profile was set. Nothing changed."),
-        }
-        println!(
-            "  Scope: global active-profile only; explicit project selections were not changed."
-        );
-        if !no_reload {
-            trigger_daemon_reload(dir, None);
-        }
-        return Ok(());
-    }
-
-    let target = parse_profile_use_target(name.unwrap())?;
-    let profile_name = target.profile_name.as_str();
-    let prof = named_profile::load(profile_name)?;
-    prof.config
-        .validate_execution_model_plane()
-        .with_context(|| {
-            format!("profile {profile_name:?} is not a supported Pi/Claude/Codex worker profile")
-        })?;
-
-    // Legacy endpoint references remain readable but never participate in Pi dispatch.
-    let secrets_cfg = worksgood::secret::SecretsConfig::load_global();
-    for ep in &prof.config.llm_endpoints.endpoints {
-        if let Some(ref r) = ep.api_key_ref {
-            match worksgood::secret::check_ref_reachable(r, &secrets_cfg) {
-                Ok(true) => {}
-                Ok(false) => {
-                    let hint = if let Some(n) = r.strip_prefix("keyring:") {
-                        format!("Run: wg secret set {}", n)
-                    } else if let Some(n) = r.strip_prefix("plain:") {
-                        format!("Run: wg secret set {} --backend plaintext", n)
-                    } else {
-                        String::new()
-                    };
-                    eprintln!(
-                        "Warning: profile '{}' references secret '{}' but no entry found.\n  {}",
-                        profile_name, r, hint
-                    );
-                }
-                Err(e) => {
-                    eprintln!(
-                        "Warning: profile '{}' secret check failed for '{}': {}",
-                        profile_name, r, e
-                    );
-                }
-            }
-        }
-    }
-
-    let prev = named_profile::active().unwrap_or(None);
-    let written = named_profile::apply_profile_as_global_config(profile_name)?;
-    if let Some(ref pinned_model) = target.pinned_model {
-        // Patch the pinned default-route model into the freshly-written global
-        // config TOML directly (comment-preserving), then re-canonicalize. This
-        // avoids a `Config::load_global` + `save_global` round-trip, which
-        // re-serializes every field and re-emits deprecated field names like
-        // `dispatcher.poll_interval` and removed compaction/verify keys with
-        // their serde defaults — undoing the canonical form
-        // `apply_profile_as_global_config` just wrote.
-        named_profile::patch_global_pinned_model(pinned_model)?;
-    }
-    let local_cleanup = named_profile::clear_local_profile_routing_overrides(dir)?;
-    named_profile::set_active(Some(profile_name))?;
-
-    match prev.as_deref() {
-        Some(p) if p != profile_name => println!(
-            "Active profile: {} (was: {}). Wrote {}. Next worker will use {} models.",
-            profile_name,
-            p,
-            written.display(),
-            profile_name
-        ),
-        Some(_) => println!(
-            "Active profile: {} (re-applied). Wrote {}.",
-            profile_name,
-            written.display()
-        ),
-        None => println!(
-            "Active profile: {}. Wrote {}. Next worker will use {} models.",
-            profile_name,
-            written.display(),
-            profile_name
-        ),
-    }
-    println!(
-        "  Scope: GLOBAL legacy profile activation. Explicit `wg profile select` project associations were not changed."
+    eprintln!(
+        "Warning: `wg profile use` is deprecated; it now means project-local `wg profile select` and never mutates ~/.wg/config.toml or ~/.wg/active-profile."
     );
-    if let Some(ref pinned_model) = target.pinned_model {
-        println!(
-            "  Default/task-agent route pinned to {} via model-qualified profile activation.",
-            pinned_model
-        );
-    }
-
-    if let Some(cleanup) = local_cleanup {
-        println!(
-            "  Cleared local routing overrides from {}: {}",
-            cleanup.path.display(),
-            cleanup.removed_keys.join(", ")
-        );
-        println!("  Local config backup: {}", cleanup.backup_path.display());
-    } else {
-        println!("  No local routing overrides needed clearing.");
-    }
-
-    // Wiring point #2 (activation): if the activated profile resolves any `pi:`
-    // route, place the version-locked plugin + wire the global pi settings entry
-    // as the idempotent side effect of "I want pi". The next spawned worker is
-    // then guaranteed a matching plugin. Best-effort: a failure warns but does
-    // not abort activation (the JIT pre-spawn ensure is the safety net).
-    if crate::commands::config_cmd::config_has_pi_route(&prof.config) {
-        match worksgood::pi_plugin::ensure_pi_plugin(worksgood::pi_plugin::EnsureMode::Console) {
-            Ok(p) => {
-                println!(
-                    "  Ensured pi-worksgood (compat {}): {}",
-                    p.compat,
-                    p.dist_entry.display()
-                );
-                if p.legacy_package_accepted {
-                    println!(
-                        "  Retained the legacy @worksgood/wg-pi-plugin package record with extension loading disabled; remove it after verification with `pi remove npm:@worksgood/wg-pi-plugin`."
-                    );
-                } else if p.legacy_settings_migrated {
-                    println!("  Migrated the legacy managed extension path to pi-worksgood.");
-                }
-            }
-            Err(e) => eprintln!(
-                "  Warning: could not ensure pi-worksgood ({e}); run `wg pi-plugin install`."
-            ),
-        }
-    }
-
-    if !no_reload {
-        trigger_daemon_reload(dir, Some(profile_name));
-    }
-
-    Ok(())
+    select_project_profile(dir, name, clear || name.is_none(), false, no_reload, false)
 }
 
 /// Send a Reconfigure IPC to the running daemon (if any). Setup uses this
