@@ -3167,3 +3167,10 @@ script = "scenarios/adaptive_agency_terminal_flow.sh"
 owners = ["implement-adaptive-agency-ledger"]
 description = "Candidate-binary credential-free real terminal/Fake-Pi flow for the adaptive agency ledger: a live FLIP infrastructure timeout is retried on the exact route, candidate A is semantically rejected, candidate B supersedes it then passes FLIP+Eval, provider usage/cost and bounded findings remain visible under stable virtual non-schedulable aliases, mutation through an alias is refused without graph-byte drift, and terminal Done projects exactly one generation learning episode without synthetic .flip/.evaluate tasks or dependency edges."
 timeout_seconds = 120
+
+[[scenario]]
+name = "adaptive_assignment_learning_loop"
+script = "scenarios/adaptive_assignment_learning_loop.sh"
+owners = ["restore-adaptive-assignment-loop"]
+description = "Candidate-binary credential-free terminal/Fake-Pi adaptive loop: deterministic automatic baseline, explicit attempt-bound composition receipt, real completion FLIP/Eval, independent terminal score, delayed assignment reward and evolver input, then a changed next deterministic assignment from compatible prior learning; verifies zero synthetic agency task rows."
+timeout_seconds = 120

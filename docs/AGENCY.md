@@ -412,7 +412,7 @@ wg evolve run --single-shot                       # force legacy single-shot mod
 
 ```bash
 wg assign <task-id> <agent-hash>    # assign agent to task
-wg assign <task-id> --auto          # automatically select an agent using LLM
+wg assign <task-id> --auto          # deterministically rank receipt-backed delayed rewards
 wg assign <task-id> --clear         # remove assignment
 ```
 

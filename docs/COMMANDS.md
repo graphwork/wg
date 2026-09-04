@@ -480,7 +480,7 @@ When the service spawns that task, the agent's role and tradeoff are injected in
 | Option | Description |
 |--------|-------------|
 | `--clear` | Clear the agent assignment from the task |
-| `--auto` | Automatically select an agent using LLM |
+| `--auto` | Deterministically rank eligible agents from receipt-backed delayed rewards (legacy verified history is bootstrap-only) |
 
 **Example:**
 ```bash

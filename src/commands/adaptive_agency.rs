@@ -647,7 +647,32 @@ pub fn run_learning_show(dir: &Path, target: &str, json: bool) -> Result<()> {
             episode.infrastructure_summary.attempts
         );
         println!("Source quality: {:?}", episode.source_quality_eligibility);
-        println!("Outcome score: pending/unscored unless an independent assessment exists");
+        let adaptive = AdaptiveStore::open_existing(dir).expect("episode requires adaptive store");
+        let rewards = adaptive.reader().active_assignment_rewards()?;
+        if let Some(reward) = rewards
+            .iter()
+            .find(|reward| reward.episode_id == episode.episode_id)
+        {
+            println!(
+                "Delayed assignment reward: {:.3} receipt={} outcome={}",
+                reward.reward, reward.assignment_receipt_id, reward.effective_outcome_id
+            );
+            let manifests = adaptive.reader().evolution_inputs()?;
+            println!(
+                "Evolver input: projected={} manifest={}",
+                manifests
+                    .iter()
+                    .any(|manifest| manifest.assignment_reward_ids.contains(&reward.reward_id)),
+                manifests
+                    .iter()
+                    .find(|manifest| manifest.assignment_reward_ids.contains(&reward.reward_id))
+                    .map(|manifest| manifest.manifest_id.as_str())
+                    .unwrap_or("pending")
+            );
+        } else {
+            println!("Delayed assignment reward: pending/unscored independent outcome");
+            println!("Evolver input: pending");
+        }
         println!(
             "Policy: {} (one episode per terminal generation)",
             ADAPTIVE_POLICY_VERSION
@@ -709,6 +734,137 @@ fn load_bounded_findings(dir: &Path, digest: &str) -> Vec<ReviewFinding> {
     serde_json::from_slice::<Vec<ReviewFinding>>(&bytes).unwrap_or_default()
 }
 
+pub(crate) fn composition_snapshot(
+    dir: &Path,
+    agent: &worksgood::agency::Agent,
+) -> Result<worksgood::adaptive_agency::CompositionSnapshotV1> {
+    let role =
+        worksgood::agency::find_role_by_prefix(&dir.join("agency/cache/roles"), &agent.role_id)?;
+    let composition_digest = digest_json(&(
+        &agent.id,
+        &agent.role_id,
+        &agent.tradeoff_id,
+        &role.component_ids,
+        &role.outcome_id,
+    ))?;
+    Ok(worksgood::adaptive_agency::CompositionSnapshotV1 {
+        agent_id: agent.id.clone(),
+        role_id: agent.role_id.clone(),
+        tradeoff_id: agent.tradeoff_id.clone(),
+        component_ids: role.component_ids,
+        outcome_id: role.outcome_id,
+        composition_digest,
+    })
+}
+
+/// Persist the attempt-bound assignment evidence before reservation. The
+/// caller includes the returned receipt ID in the lifecycle reservation.
+/// This lane writes only adaptive evidence and never creates an edge/task.
+pub(crate) fn prepare_next_attempt_assignment(
+    dir: &Path,
+    task: &Task,
+) -> Result<worksgood::adaptive_agency::AssignmentReceiptV1> {
+    use worksgood::adaptive_agency::{
+        AssignmentDecisionV1, AssignmentReceiptInputV1, AssignmentSelectorSnapshotV1,
+    };
+    let graph_identity = worksgood::worker_control::load_or_create_graph_identity(dir)?;
+    let attempt_id = format!(
+        "attempt-{}-{}",
+        task.lifecycle.generation,
+        task.lifecycle.attempt_sequence.saturating_add(1)
+    );
+    let attempt_fence = task.lifecycle.fence.saturating_add(1);
+    let admission_snapshot_digest = digest_json(&(
+        &graph_identity,
+        &task.id,
+        task.lifecycle.generation,
+        task.lifecycle.revision,
+        task.lifecycle.fence,
+        task.lifecycle.attempt_sequence,
+        task.status,
+        &task.agent,
+    ))?;
+    let adaptive = AdaptiveStore::open(dir)?;
+    let intent = adaptive.assignment_intent(&task.id)?;
+    let (decision, selector, candidate_scores, selected_composition, failure) =
+        if let Some(intent) = intent {
+            let intent_matches = match (&intent.selected_composition, &task.agent) {
+                (Some(composition), Some(agent)) => composition.agent_id == *agent,
+                (None, None) => true,
+                _ => false,
+            };
+            if intent_matches {
+                (
+                    intent.decision,
+                    intent.selector,
+                    intent.candidate_scores,
+                    intent.selected_composition,
+                    intent.failure,
+                )
+            } else {
+                (
+                    AssignmentDecisionV1::Uncomposed {
+                        reason: "assignment intent no longer matches the admitted task".to_string(),
+                    },
+                    AssignmentSelectorSnapshotV1::direct(),
+                    std::collections::BTreeMap::new(),
+                    None,
+                    None,
+                )
+            }
+        } else if let Some(agent_id) = task.agent.as_deref() {
+            let agent = worksgood::agency::find_agent_by_prefix(
+                &dir.join("agency/cache/agents"),
+                agent_id,
+            )?;
+            let composition = composition_snapshot(dir, &agent)?;
+            (
+                AssignmentDecisionV1::Explicit {
+                    composition_digest: composition.composition_digest.clone(),
+                },
+                AssignmentSelectorSnapshotV1 {
+                    kind: "explicit-task-intent".to_string(),
+                    principal: worksgood::current_user(),
+                    policy_digest: "explicit-assignment-v1".to_string(),
+                    exact_route: None,
+                },
+                std::collections::BTreeMap::new(),
+                Some(composition),
+                None,
+            )
+        } else {
+            (
+                AssignmentDecisionV1::Uncomposed {
+                    reason: "direct dispatch without agency composition".to_string(),
+                },
+                AssignmentSelectorSnapshotV1::direct(),
+                std::collections::BTreeMap::new(),
+                None,
+                None,
+            )
+        };
+    let history_class = crate::commands::service::assignment::history_class_for_assignment(task);
+    let now = Utc::now().to_rfc3339();
+    Ok(
+        adaptive.record_attempt_assignment(AssignmentReceiptInputV1 {
+            graph_identity,
+            task_id: task.id.clone(),
+            generation: task.lifecycle.generation,
+            attempt_id,
+            attempt_fence,
+            admission_snapshot_digest,
+            context_partition: history_class.label().to_string(),
+            decision,
+            selector,
+            candidate_scores,
+            selected_composition,
+            started_at: now.clone(),
+            completed_at: now,
+            failure,
+        })?,
+    )
+}
+
 fn candidate_binding(dir: &Path, task: &Task) -> Result<Option<CandidateBindingV1>> {
     let Some(candidate) = task.completion_candidate.as_ref() else {
         return Ok(None);
@@ -727,14 +883,26 @@ fn candidate_binding(dir: &Path, task: &Task) -> Result<Option<CandidateBindingV
         .clone()
         .unwrap_or_else(|| "no-attempt".to_string());
     let adaptive = AdaptiveStore::open(dir)?;
-    let assignment = adaptive.ensure_uncomposed_assignment(
-        &graph_identity,
-        &task.id,
-        review_binding.generation,
-        &attempt_id,
-        review_binding.attempt_fence,
-        "attempt predates adaptive assignment admission receipt",
-    )?;
+    let assignment = adaptive
+        .reader()
+        .assignment_for_attempt(
+            &graph_identity,
+            &task.id,
+            review_binding.generation,
+            &attempt_id,
+            review_binding.attempt_fence,
+        )?
+        .map(Ok)
+        .unwrap_or_else(|| {
+            adaptive.ensure_uncomposed_assignment(
+                &graph_identity,
+                &task.id,
+                review_binding.generation,
+                &attempt_id,
+                review_binding.attempt_fence,
+                "attempt predates adaptive assignment admission receipt",
+            )
+        })?;
     let output_digests = manifest
         .outputs
         .iter()

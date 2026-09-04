@@ -1691,7 +1691,7 @@ pub enum Commands {
         #[arg(long)]
         clear: bool,
 
-        /// Automatically select an agent using LLM
+        /// Deterministically rank eligible agents using receipt-backed delayed rewards
         #[arg(long)]
         auto: bool,
     },

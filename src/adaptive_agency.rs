@@ -393,11 +393,15 @@ impl AdaptiveStore {
         let root = workgraph_dir.join(ROOT);
         fs::create_dir_all(root.join("candidate-ledger/events"))?;
         fs::create_dir_all(root.join("candidate-ledger/locks"))?;
+        fs::create_dir_all(root.join("assignment-selection"))?;
+        fs::create_dir_all(root.join("assignment-intents"))?;
         fs::create_dir_all(root.join("assignment-receipts"))?;
+        fs::create_dir_all(root.join("assignment-rewards"))?;
         fs::create_dir_all(root.join("trajectory-seals"))?;
         fs::create_dir_all(root.join("terminal-episodes"))?;
         fs::create_dir_all(root.join("outcome-assessments"))?;
         fs::create_dir_all(root.join("performance-projections"))?;
+        fs::create_dir_all(root.join("evolution-runs"))?;
         Ok(Self { root })
     }
 
@@ -441,6 +445,154 @@ impl AdaptiveStore {
         }
     }
 
+    pub fn record_assignment_intent(
+        &self,
+        intent: AssignmentIntentV1,
+    ) -> Result<(), AdaptiveError> {
+        if intent.task_id.trim().is_empty() {
+            return Err(AdaptiveError::Binding(
+                "assignment intent has no task".to_string(),
+            ));
+        }
+        write_replace_atomic(
+            &self.root.join("assignment-intents").join(format!(
+                "{}.json",
+                safe_hash(&identity("wg-assignment-intent-key-v1", &intent.task_id)?)
+            )),
+            &intent,
+        )
+    }
+
+    pub fn clear_assignment_intent(&self, task_id: &str) -> Result<(), AdaptiveError> {
+        let path = self.root.join("assignment-intents").join(format!(
+            "{}.json",
+            safe_hash(&identity("wg-assignment-intent-key-v1", &task_id)?)
+        ));
+        match fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    pub fn assignment_intent(
+        &self,
+        task_id: &str,
+    ) -> Result<Option<AssignmentIntentV1>, AdaptiveError> {
+        let path = self.root.join("assignment-intents").join(format!(
+            "{}.json",
+            safe_hash(&identity("wg-assignment-intent-key-v1", &task_id)?)
+        ));
+        if !path.exists() {
+            return Ok(None);
+        }
+        let intent: AssignmentIntentV1 = serde_json::from_slice(&fs::read(path)?)?;
+        if intent.task_id != task_id {
+            return Err(AdaptiveError::Collision(task_id.to_string()));
+        }
+        Ok(Some(intent))
+    }
+
+    pub fn record_attempt_assignment(
+        &self,
+        input: AssignmentReceiptInputV1,
+    ) -> Result<AssignmentReceiptV1, AdaptiveError> {
+        let receipt_id = identity(
+            "wg-assignment-receipt-v1",
+            &(
+                &input.graph_identity,
+                &input.task_id,
+                input.generation,
+                &input.attempt_id,
+                input.attempt_fence,
+                &input.admission_snapshot_digest,
+            ),
+        )?;
+        let receipt_path = self
+            .root
+            .join("assignment-receipts")
+            .join(file_id(&receipt_id));
+        if receipt_path.exists() {
+            let existing: AssignmentReceiptV1 = serde_json::from_slice(&fs::read(&receipt_path)?)?;
+            let same_binding = existing.receipt_id == receipt_id
+                && existing.graph_identity == input.graph_identity
+                && existing.task_id == input.task_id
+                && existing.generation == input.generation
+                && existing.attempt_id == input.attempt_id
+                && existing.attempt_fence == input.attempt_fence
+                && existing.admission_snapshot_digest == input.admission_snapshot_digest
+                && existing.context_partition == input.context_partition
+                && existing.decision == input.decision
+                && existing.selector == input.selector
+                && existing.candidate_scores == input.candidate_scores
+                && existing.selected_composition == input.selected_composition
+                && existing.failure == input.failure;
+            if same_binding {
+                return Ok(existing);
+            }
+            return Err(AdaptiveError::Collision(receipt_path.display().to_string()));
+        }
+        let selection_id = if matches!(input.decision, AssignmentDecisionV1::Automatic { .. }) {
+            let selection_id = identity(
+                "wg-assignment-selection-v1",
+                &(
+                    &input.graph_identity,
+                    &input.task_id,
+                    input.generation,
+                    &input.attempt_id,
+                    input.attempt_fence,
+                    &input.admission_snapshot_digest,
+                    &input.selector.policy_digest,
+                ),
+            )?;
+            let started = AssignmentSelectionStartedV1 {
+                schema: ADAPTIVE_SCHEMA_VERSION,
+                selection_id: selection_id.clone(),
+                graph_identity: input.graph_identity.clone(),
+                task_id: input.task_id.clone(),
+                generation: input.generation,
+                proposed_attempt_id: input.attempt_id.clone(),
+                proposed_attempt_fence: input.attempt_fence,
+                admission_snapshot_digest: input.admission_snapshot_digest.clone(),
+                selector_policy_digest: input.selector.policy_digest.clone(),
+                started_at: input.started_at.clone(),
+                absolute_deadline: input.completed_at.clone(),
+            };
+            write_create_once(
+                &self
+                    .root
+                    .join("assignment-selection")
+                    .join(file_id(&selection_id)),
+                &started,
+                |existing| existing == &started,
+            )?;
+            Some(selection_id)
+        } else {
+            None
+        };
+        let receipt = AssignmentReceiptV1 {
+            schema: ADAPTIVE_SCHEMA_VERSION,
+            receipt_id: receipt_id.clone(),
+            selection_id,
+            graph_identity: input.graph_identity,
+            task_id: input.task_id,
+            generation: input.generation,
+            attempt_id: input.attempt_id,
+            attempt_fence: input.attempt_fence,
+            admission_snapshot_digest: input.admission_snapshot_digest,
+            context_partition: input.context_partition,
+            decision: input.decision,
+            selector: input.selector,
+            candidate_scores: input.candidate_scores,
+            selected_composition: input.selected_composition,
+            started_at: input.started_at,
+            completed_at: input.completed_at,
+            failure: input.failure,
+        };
+        write_create_once(&receipt_path, &receipt, |existing| existing == &receipt)?;
+        Ok(receipt)
+    }
+
     pub fn ensure_uncomposed_assignment(
         &self,
         graph_identity: &str,
@@ -450,51 +602,153 @@ impl AdaptiveStore {
         attempt_fence: u64,
         reason: &str,
     ) -> Result<AssignmentReceiptV1, AdaptiveError> {
-        let material = (
+        if let Some(existing) = self.reader().assignment_for_attempt(
             graph_identity,
             task_id,
             generation,
             attempt_id,
             attempt_fence,
-            "compatibility-uncomposed",
-        );
-        let receipt_id = identity("wg-assignment-receipt-v1", &material)?;
-        let receipt = AssignmentReceiptV1 {
-            schema: ADAPTIVE_SCHEMA_VERSION,
-            receipt_id: receipt_id.clone(),
+        )? {
+            return Ok(existing);
+        }
+        self.record_attempt_assignment(AssignmentReceiptInputV1 {
             graph_identity: graph_identity.to_string(),
             task_id: task_id.to_string(),
             generation,
             attempt_id: attempt_id.to_string(),
             attempt_fence,
+            admission_snapshot_digest: identity(
+                "wg-legacy-admission-snapshot-v1",
+                &(
+                    graph_identity,
+                    task_id,
+                    generation,
+                    attempt_id,
+                    attempt_fence,
+                ),
+            )?,
+            context_partition: "legacy-uncomposed".to_string(),
             decision: AssignmentDecisionV1::Uncomposed {
                 reason: reason.to_string(),
             },
-            created_at: "unknown-legacy".to_string(),
-        };
-        write_create_once(
-            &self
-                .root
-                .join("assignment-receipts")
-                .join(file_id(&receipt_id)),
-            &receipt,
-            |existing| existing.receipt_id == receipt_id,
-        )?;
-        Ok(receipt)
+            selector: AssignmentSelectorSnapshotV1::direct(),
+            candidate_scores: BTreeMap::new(),
+            selected_composition: None,
+            started_at: "unknown-legacy".to_string(),
+            completed_at: "unknown-legacy".to_string(),
+            failure: None,
+        })
     }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct AssignmentReceiptV1 {
+pub struct AssignmentSelectionStartedV1 {
     pub schema: u16,
-    pub receipt_id: String,
+    pub selection_id: String,
+    pub graph_identity: String,
+    pub task_id: String,
+    pub generation: u64,
+    pub proposed_attempt_id: String,
+    pub proposed_attempt_fence: u64,
+    pub admission_snapshot_digest: String,
+    pub selector_policy_digest: String,
+    pub started_at: String,
+    pub absolute_deadline: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CompositionSnapshotV1 {
+    pub agent_id: String,
+    pub role_id: String,
+    pub tradeoff_id: String,
+    #[serde(default)]
+    pub component_ids: Vec<String>,
+    pub outcome_id: String,
+    pub composition_digest: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct AssignmentSelectorSnapshotV1 {
+    pub kind: String,
+    pub principal: String,
+    pub policy_digest: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exact_route: Option<String>,
+}
+
+impl AssignmentSelectorSnapshotV1 {
+    pub fn direct() -> Self {
+        Self {
+            kind: "direct-uncomposed".to_string(),
+            principal: "dispatcher".to_string(),
+            policy_digest: "direct-dispatch-v1".to_string(),
+            exact_route: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct AssignmentInfrastructureFailureV1 {
+    pub class: String,
+    pub message_digest: String,
+    pub fallback: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct AssignmentIntentV1 {
+    pub task_id: String,
+    pub decision: AssignmentDecisionV1,
+    pub selector: AssignmentSelectorSnapshotV1,
+    #[serde(default)]
+    pub candidate_scores: BTreeMap<String, f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_composition: Option<CompositionSnapshotV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<AssignmentInfrastructureFailureV1>,
+    pub created_at: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct AssignmentReceiptInputV1 {
     pub graph_identity: String,
     pub task_id: String,
     pub generation: u64,
     pub attempt_id: String,
     pub attempt_fence: u64,
+    pub admission_snapshot_digest: String,
+    pub context_partition: String,
     pub decision: AssignmentDecisionV1,
-    pub created_at: String,
+    pub selector: AssignmentSelectorSnapshotV1,
+    pub candidate_scores: BTreeMap<String, f64>,
+    pub selected_composition: Option<CompositionSnapshotV1>,
+    pub started_at: String,
+    pub completed_at: String,
+    pub failure: Option<AssignmentInfrastructureFailureV1>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct AssignmentReceiptV1 {
+    pub schema: u16,
+    pub receipt_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection_id: Option<String>,
+    pub graph_identity: String,
+    pub task_id: String,
+    pub generation: u64,
+    pub attempt_id: String,
+    pub attempt_fence: u64,
+    pub admission_snapshot_digest: String,
+    pub context_partition: String,
+    pub decision: AssignmentDecisionV1,
+    pub selector: AssignmentSelectorSnapshotV1,
+    #[serde(default)]
+    pub candidate_scores: BTreeMap<String, f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_composition: Option<CompositionSnapshotV1>,
+    pub started_at: String,
+    pub completed_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<AssignmentInfrastructureFailureV1>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1210,7 +1464,119 @@ impl LearningProjector {
             &assessment,
             |existing| existing == &assessment,
         )?;
+        // Reward/evolver projection is delayed until an independent outcome is
+        // durable. Replaying the assessment re-folds the same immutable IDs.
+        self.project_assignment_rewards()?;
         Ok(assessment)
+    }
+
+    pub fn project_assignment_rewards(&self) -> Result<EvolutionInputManifestV1, AdaptiveError> {
+        let reader = AdaptiveReadStore {
+            root: self.root.clone(),
+        };
+        let receipts = reader
+            .assignment_receipts()?
+            .into_iter()
+            .map(|receipt| (receipt.receipt_id.clone(), receipt))
+            .collect::<BTreeMap<_, _>>();
+        let active = reader.active_independent_assessments()?;
+        let mut reward_ids = BTreeSet::new();
+        let mut episode_ids = BTreeSet::new();
+        let mut outcome_ids = BTreeSet::new();
+        for episode in reader.episodes()? {
+            if episode.source_quality_eligibility != SourceQualityEligibilityV1::Eligible {
+                continue;
+            }
+            let AssignmentProvenanceV1::BoundReceipt(receipt_id) = &episode.assignment_provenance
+            else {
+                continue;
+            };
+            let Some(receipt) = receipts.get(receipt_id) else {
+                continue;
+            };
+            if receipt.selected_composition.is_none()
+                || matches!(receipt.decision, AssignmentDecisionV1::Uncomposed { .. })
+            {
+                continue;
+            }
+            let Some(assessment) = active.get(&episode.episode_id) else {
+                continue;
+            };
+            let reward_id = identity(
+                "wg-assignment-reward-v1",
+                &(
+                    receipt_id,
+                    &episode.episode_id,
+                    &assessment.assessment_id,
+                    "assignment-reward-v1",
+                ),
+            )?;
+            let supersedes = reader
+                .assignment_rewards()?
+                .into_iter()
+                .filter(|prior| {
+                    prior.assignment_receipt_id == *receipt_id
+                        && prior.episode_id == episode.episode_id
+                        && prior.effective_outcome_id != assessment.assessment_id
+                })
+                .max_by(|left, right| {
+                    (&left.created_at, &left.reward_id).cmp(&(&right.created_at, &right.reward_id))
+                })
+                .map(|prior| prior.reward_id);
+            let reward = AssignmentRewardV1 {
+                schema: ADAPTIVE_SCHEMA_VERSION,
+                reward_id: reward_id.clone(),
+                assignment_receipt_id: receipt_id.clone(),
+                episode_id: episode.episode_id.clone(),
+                effective_outcome_id: assessment.assessment_id.clone(),
+                reward_policy_version: "assignment-reward-v1".to_string(),
+                context_partition: receipt.context_partition.clone(),
+                propensity: None,
+                reward: assessment.score,
+                eligible: true,
+                exclusion_reason: None,
+                supersedes,
+                created_at: assessment.created_at.clone(),
+            };
+            write_create_once(
+                &self
+                    .root
+                    .join("assignment-rewards")
+                    .join(file_id(&reward_id)),
+                &reward,
+                |existing| existing == &reward,
+            )?;
+            reward_ids.insert(reward_id);
+            episode_ids.insert(episode.episode_id);
+            outcome_ids.insert(assessment.assessment_id.clone());
+        }
+        let input_digest = identity(
+            "wg-evolver-input-v1",
+            &(&episode_ids, &outcome_ids, &reward_ids),
+        )?;
+        let manifest = EvolutionInputManifestV1 {
+            schema: ADAPTIVE_SCHEMA_VERSION,
+            manifest_id: input_digest.clone(),
+            policy_version: "adaptive-evolver-input-v1".to_string(),
+            input_digest,
+            episode_ids: episode_ids.into_iter().collect(),
+            effective_outcome_ids: outcome_ids.into_iter().collect(),
+            assignment_reward_ids: reward_ids.into_iter().collect(),
+        };
+        // An empty fold is not an evolver input. Return the deterministic
+        // empty view to callers, but do not claim that an evolver run consumed
+        // anything until at least one independently-scored reward exists.
+        if !manifest.assignment_reward_ids.is_empty() {
+            write_create_once(
+                &self
+                    .root
+                    .join("evolution-runs")
+                    .join(file_id(&manifest.manifest_id)),
+                &manifest,
+                |existing| existing == &manifest,
+            )?;
+        }
+        Ok(manifest)
     }
 
     pub fn performance_projection(&self) -> Result<PerformanceProjectionV1, AdaptiveError> {
@@ -1324,6 +1690,37 @@ pub struct PerformanceProjectionV1 {
     pub avg_score: Option<f64>,
     pub episode_ids: Vec<String>,
     pub input_digest: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct AssignmentRewardV1 {
+    pub schema: u16,
+    pub reward_id: String,
+    pub assignment_receipt_id: String,
+    pub episode_id: String,
+    pub effective_outcome_id: String,
+    pub reward_policy_version: String,
+    pub context_partition: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub propensity: Option<f64>,
+    pub reward: f64,
+    pub eligible: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exclusion_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supersedes: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct EvolutionInputManifestV1 {
+    pub schema: u16,
+    pub manifest_id: String,
+    pub policy_version: String,
+    pub input_digest: String,
+    pub episode_ids: Vec<String>,
+    pub effective_outcome_ids: Vec<String>,
+    pub assignment_reward_ids: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
@@ -1562,6 +1959,118 @@ impl AdaptiveReadStore {
                 .then(left.ordinal.cmp(&right.ordinal))
         });
         Ok(views)
+    }
+
+    pub fn assignment_receipts(&self) -> Result<Vec<AssignmentReceiptV1>, AdaptiveError> {
+        load_objects(&self.root.join("assignment-receipts"))
+    }
+
+    pub fn assignment_for_attempt(
+        &self,
+        graph_identity: &str,
+        task_id: &str,
+        generation: u64,
+        attempt_id: &str,
+        attempt_fence: u64,
+    ) -> Result<Option<AssignmentReceiptV1>, AdaptiveError> {
+        let mut matches = self
+            .assignment_receipts()?
+            .into_iter()
+            .filter(|receipt| {
+                receipt.graph_identity == graph_identity
+                    && receipt.task_id == task_id
+                    && receipt.generation == generation
+                    && receipt.attempt_id == attempt_id
+                    && receipt.attempt_fence == attempt_fence
+            })
+            .collect::<Vec<_>>();
+        if matches.len() > 1 {
+            return Err(AdaptiveError::Collision(format!(
+                "multiple assignment receipts bind {task_id}/{attempt_id}"
+            )));
+        }
+        Ok(matches.pop())
+    }
+
+    pub fn assignment_rewards(&self) -> Result<Vec<AssignmentRewardV1>, AdaptiveError> {
+        load_objects(&self.root.join("assignment-rewards"))
+    }
+
+    fn active_independent_assessments(
+        &self,
+    ) -> Result<BTreeMap<String, OutcomeAssessmentV1>, AdaptiveError> {
+        let mut assessments = self
+            .assessments()?
+            .into_iter()
+            .filter(|assessment| assessment.independence == AssessmentIndependenceV1::Independent)
+            .collect::<Vec<_>>();
+        // RFC3339 timestamps sort chronologically for the normalized UTC
+        // values produced by the command path. The ID is the deterministic
+        // tie-breaker, so filesystem enumeration order can never choose a
+        // different effective outcome.
+        assessments.sort_by(|left, right| {
+            (&left.created_at, &left.assessment_id).cmp(&(&right.created_at, &right.assessment_id))
+        });
+        Ok(assessments.into_iter().fold(
+            BTreeMap::<String, OutcomeAssessmentV1>::new(),
+            |mut active, assessment| {
+                active.insert(assessment.episode_id.clone(), assessment);
+                active
+            },
+        ))
+    }
+
+    pub fn active_assignment_rewards(&self) -> Result<Vec<AssignmentRewardV1>, AdaptiveError> {
+        let active_outcomes = self
+            .active_independent_assessments()?
+            .into_iter()
+            .map(|(episode_id, assessment)| (episode_id, assessment.assessment_id))
+            .collect::<BTreeMap<_, _>>();
+        Ok(self
+            .assignment_rewards()?
+            .into_iter()
+            .filter(|reward| {
+                active_outcomes
+                    .get(&reward.episode_id)
+                    .is_some_and(|outcome| *outcome == reward.effective_outcome_id)
+            })
+            .collect())
+    }
+
+    pub fn mean_reward_for_composition(
+        &self,
+        composition_digest: &str,
+        context_partition: &str,
+    ) -> Result<Option<f64>, AdaptiveError> {
+        let receipts = self
+            .assignment_receipts()?
+            .into_iter()
+            .filter_map(|receipt| {
+                receipt
+                    .selected_composition
+                    .as_ref()
+                    .and_then(|composition| {
+                        (composition.composition_digest == composition_digest)
+                            .then_some((receipt.receipt_id, receipt.context_partition))
+                    })
+            })
+            .collect::<BTreeMap<_, _>>();
+        let values = self
+            .active_assignment_rewards()?
+            .into_iter()
+            .filter(|reward| reward.eligible && reward.context_partition == context_partition)
+            .filter_map(|reward| {
+                receipts
+                    .get(&reward.assignment_receipt_id)
+                    .is_some_and(|partition| partition == context_partition)
+                    .then_some(reward.reward)
+            })
+            .collect::<Vec<_>>();
+        Ok((!values.is_empty()).then(|| values.iter().sum::<f64>() / values.len() as f64))
+    }
+
+    pub fn evolution_inputs(&self) -> Result<Vec<EvolutionInputManifestV1>, AdaptiveError> {
+        load_objects(&self.root.join("evolution-runs"))
     }
 
     pub fn episodes(&self) -> Result<Vec<LearningEpisodeV1>, AdaptiveError> {

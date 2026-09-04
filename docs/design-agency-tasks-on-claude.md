@@ -35,10 +35,12 @@ The actual code path:
    - Registers the spawned process in the agent registry with
      `executor="eval"` (or `"assign"`).
 
-3. The `wg evaluate run` / `wg evaluate flip` / `wg assign --auto` commands
-   in turn dispatch their actual LLM call via
+3. **Historical note:** the old `wg evaluate run` / `wg evaluate flip` /
+   `wg assign --auto` pipeline dispatched LLM calls through
    `workgraph::service::llm::run_lightweight_llm_call` (`src/service/llm.rs`).
-   This function:
+   Current evaluation uses its receipt-bound exact dispatch path, while current
+   `wg assign --auto` does deterministic receipt-backed reward ranking and does
+   not claim or perform an LLM selection. The historical function:
    - Resolves the model + provider for the dispatch role (Evaluator,
      FlipInference, FlipComparison, Assigner) via
      `Config::resolve_model_for_role`.

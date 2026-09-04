@@ -4116,10 +4116,10 @@ pub struct AgencyConfig {
     #[serde(default)]
     pub auto_evaluate: bool,
 
-    /// Load/write compatibility flag for pre-receipt configs. It has no
-    /// dispatch authority: synthetic auto-assignment tasks are retired and
-    /// assignment is direct admission metadata. Remove after a versioned config
-    /// migration rewrites the key and older binaries are outside support.
+    /// Optional bounded admission selector. When enabled it performs the same
+    /// deterministic reward ranking as `wg assign --auto`, records an
+    /// attempt-bound receipt (or direct-uncomposed failure marker), and never
+    /// creates a graph task/edge or persistent readiness blocker.
     #[serde(default)]
     pub auto_assign: bool,
 

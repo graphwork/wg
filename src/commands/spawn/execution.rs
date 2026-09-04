@@ -875,6 +875,7 @@ fn claim_task_for_spawn(
     task_id: &str,
     agent_id: &str,
 ) -> Result<TaskClaimSnapshot> {
+    let dir = graph_path.parent().unwrap_or(graph_path);
     let mut snapshot = None;
     let mut claim_error = None;
     modify_graph(graph_path, |graph| {
@@ -909,6 +910,18 @@ fn claim_task_for_spawn(
         let prior_status = task.status;
         let prior_started_at = task.started_at.clone();
         let prior_assigned = task.assigned.clone();
+        // Bind assignment evidence only after dispatchability is revalidated
+        // under the graph lock. This prevents a stale composition snapshot
+        // from being attached to a concurrently changed attempt.
+        let expected_admission = FenceExpectation::current(task);
+        let assignment_receipt =
+            match crate::commands::adaptive_agency::prepare_next_attempt_assignment(dir, task) {
+                Ok(receipt) => receipt,
+                Err(error) => {
+                    claim_error = Some(error);
+                    return false;
+                }
+            };
         let generation = task.lifecycle.generation;
         // A failed spawn rolls its reservation back but intentionally retains
         // the append-only lifecycle audit. The registry may then reuse the
@@ -929,7 +942,9 @@ fn claim_task_for_spawn(
             format!(
                 "spawn-claim:{task_id}:{generation}:{reservation_sequence}:{agent_id}"
             ),
-        );
+        )
+        .expecting(expected_admission.clone())
+        .with_evidence(assignment_receipt.receipt_id.clone());
         if let Err(rejection) = apply_transition(task, request) {
             claim_error = Some(anyhow::anyhow!(rejection));
             return false;
@@ -1193,6 +1208,10 @@ pub(crate) fn spawn_agent_inner_authorized(
     if !graph_path.exists() {
         anyhow::bail!("WG not initialized. Run 'wg init' first.");
     }
+
+    // Optional automatic assignment runs in its bounded evidence lane before
+    // route planning/reservation. Failure records direct-uncomposed fallback.
+    crate::commands::assign::prepare_automatic_intent_if_configured(dir, task_id)?;
 
     // Load the graph and get task info
     let graph = load_graph(&graph_path).context("Failed to load graph")?;

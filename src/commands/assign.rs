@@ -1,10 +1,15 @@
 use anyhow::{Context, Result};
 use std::path::Path;
+use worksgood::adaptive_agency::{
+    AdaptiveStore, AssignmentDecisionV1, AssignmentInfrastructureFailureV1, AssignmentIntentV1,
+    AssignmentSelectorSnapshotV1,
+};
 use worksgood::agency;
 use worksgood::agency::composition_rules::{
     CompositionRulesOverlay, default_overlay_path, load_composition_rules,
 };
 use worksgood::config::Config;
+use worksgood::identity::canonical_json;
 use worksgood::parser::{load_graph, modify_graph};
 
 use super::graph_path;
@@ -104,69 +109,48 @@ fn apply_caps(
     filtered
 }
 
-/// Record an evaluation against the assigner special agent's performance.
-///
-/// When auto_evaluate is enabled and an assigner_agent is configured, this
-/// creates an evaluation entry for the assignment itself (source = "system"),
-/// recording against the assigner agent entity so it accumulates performance
-/// history. The actual quality signal comes later from the agent's task
-/// evaluation, but recording the event here lets the system attribute
-/// downstream scores back to the assignment decision via the 6-step cascade.
-fn record_assigner_evaluation(
-    agency_dir: &Path,
-    task_id: &str,
-    _assigned_agent: &agency::Agent,
-    config: &Config,
-) {
-    if !config.agency.auto_evaluate {
-        return;
-    }
-
-    // Resolve the assigner special agent from config
-    let assigner_agent = match config.agency.assigner_agent {
-        Some(ref hash) => {
-            let agents_dir = agency_dir.join("cache/agents");
-            match agency::find_agent_by_prefix(&agents_dir, hash) {
-                Ok(agent) => agent,
-                Err(_) => return, // No assigner agent found — skip recording
-            }
-        }
-        None => return, // No assigner agent configured
-    };
-
-    let assign_task_id = format!(".assign-{}", task_id);
-    let eval = agency::Evaluation {
-        id: format!("eval-assign-{}", task_id),
-        task_id: assign_task_id,
-        agent_id: assigner_agent.id.clone(),
-        role_id: assigner_agent.role_id.clone(),
-        tradeoff_id: assigner_agent.tradeoff_id.clone(),
-        // Placeholder score — actual quality will be determined by downstream
-        // evaluation. The assigner's "score" is updated
-        // retrospectively when the assigned agent's task completes.
-        score: 0.5,
-        dimensions: std::collections::HashMap::new(),
-        notes: format!(
-            "Assignment recorded for task '{}'. Awaiting downstream evaluation.",
-            task_id
-        ),
-        evaluator: "system".to_string(),
-        timestamp: chrono::Utc::now().to_rfc3339(),
-        model: None,
-        source: "system".to_string(),
-        loop_iteration: 0,
-    };
-
-    if let Err(e) = agency::record_evaluation(&eval, agency_dir) {
-        eprintln!(
-            "Warning: failed to record assigner evaluation for '{}': {}",
-            task_id, e
-        );
-    }
+fn digest<T: serde::Serialize>(value: &T) -> String {
+    format!(
+        "b3:{}",
+        blake3::hash(&canonical_json(
+            &serde_json::to_value(value).unwrap_or_default()
+        ))
+        .to_hex()
+    )
 }
 
-/// `wg assign <task-id> <agent-hash>`  — explicitly assign agent to task
-/// `wg assign <task-id> --auto`        — automatically select an agent using LLM
+fn record_uncomposed_auto_intent(
+    dir: &Path,
+    task_id: &str,
+    class: &str,
+    message: &str,
+    selector_route: Option<String>,
+) -> Result<()> {
+    AdaptiveStore::open(dir)?.record_assignment_intent(AssignmentIntentV1 {
+        task_id: task_id.to_string(),
+        decision: AssignmentDecisionV1::Uncomposed {
+            reason: format!("automatic selector failed: {class}"),
+        },
+        selector: AssignmentSelectorSnapshotV1 {
+            kind: "agency-provider".to_string(),
+            principal: "configured-assignment-provider".to_string(),
+            policy_digest: digest(&("agency-provider-v1", selector_route.as_deref())),
+            exact_route: selector_route,
+        },
+        candidate_scores: std::collections::BTreeMap::new(),
+        selected_composition: None,
+        failure: Some(AssignmentInfrastructureFailureV1 {
+            class: class.to_string(),
+            message_digest: digest(&message),
+            fallback: "direct-uncomposed-dispatch".to_string(),
+        }),
+        created_at: chrono::Utc::now().to_rfc3339(),
+    })?;
+    Ok(())
+}
+
+/// `wg assign <task-id> <agent-hash>`  — explicitly bind the next attempt
+/// `wg assign <task-id> --auto`        — deterministically rank receipt-backed history
 /// `wg assign <task-id> --clear`       — remove agent assignment
 pub fn run(
     dir: &Path,
@@ -190,7 +174,7 @@ pub fn run(
     }
 
     match agent_hash {
-        Some(hash) => run_explicit_assign(dir, &path, task_id, hash),
+        Some(hash) => run_explicit_assign(dir, &path, task_id, hash, None),
         None => {
             anyhow::bail!(
                 "Usage: wg assign <task-id> <agent-hash>\n\
@@ -201,7 +185,41 @@ pub fn run(
     }
 }
 
-/// Automatically select and assign an agent using LLM.
+/// Admission hook for the optional automatic mode. It runs before attempt
+/// reservation in this bounded assignment state domain. Any selector failure
+/// must already have written an explicit uncomposed intent; admission then
+/// continues without an invented identity or route.
+pub(crate) fn prepare_automatic_intent_if_configured(dir: &Path, task_id: &str) -> Result<()> {
+    let config = Config::load_merged(dir)?;
+    if !config.agency.auto_assign {
+        return Ok(());
+    }
+    let path = graph_path(dir);
+    let graph = load_graph(&path)?;
+    let task = graph.get_task_or_err(task_id)?;
+    if task.agent.is_some()
+        || AdaptiveStore::open(dir)?
+            .assignment_intent(task_id)?
+            .is_some()
+    {
+        return Ok(());
+    }
+    if let Err(error) = run_auto_assign(dir, &path, task_id) {
+        let adaptive = AdaptiveStore::open(dir)?;
+        let explicit_uncomposed = adaptive.assignment_intent(task_id)?.is_some_and(|intent| {
+            matches!(intent.decision, AssignmentDecisionV1::Uncomposed { .. })
+        });
+        if !explicit_uncomposed {
+            return Err(error);
+        }
+        eprintln!(
+            "[assign] automatic selector failed visibly; continuing under recorded direct-uncomposed fallback: {error:#}"
+        );
+    }
+    Ok(())
+}
+
+/// Deterministically rank the eligible roster. No model call is claimed.
 fn run_auto_assign(dir: &Path, path: &Path, task_id: &str) -> Result<()> {
     let agency_dir = dir.join("agency");
     let agents_dir = agency_dir.join("cache/agents");
@@ -218,50 +236,36 @@ fn run_auto_assign(dir: &Path, path: &Path, task_id: &str) -> Result<()> {
     {
         let task_title = &task.title;
         let task_desc = task.description.as_deref().unwrap_or("");
+        let route = config.agency.agency_server_url.clone();
         match agency::request_agency_assignment(task_title, task_desc, &config.agency) {
             Ok(response) => {
-                eprintln!(
-                    "[assign] Agency assignment for '{}': agency_task_id={}",
-                    task_id, response.agency_task_id,
+                let message = format!(
+                    "provider returned agency_task_id={} but no receipt-bound composition",
+                    response.agency_task_id
                 );
-
-                // Save assignment record with Agency source
-                let assignments_dir = agency_dir.join("assignments");
-                let record = agency::TaskAssignmentRecord {
-                    task_id: task_id.to_string(),
-                    agent_id: String::new(),
-                    composition_id: String::new(),
-                    timestamp: chrono::Utc::now().to_rfc3339(),
-                    mode: agency::AssignmentMode::Learning(agency::AssignmentExperiment {
-                        base_composition: None,
-                        dimension: agency::ExperimentDimension::NovelComposition,
-                        bizarre_ideation: false,
-                        ucb_scores: std::collections::HashMap::new(),
-                    }),
-                    agency_task_id: Some(response.agency_task_id.clone()),
-                    assignment_source: agency::AssignmentSource::Agency {
-                        agency_task_id: response.agency_task_id,
-                    },
-                };
-                if let Err(e) = agency::save_assignment_record(&record, &assignments_dir) {
-                    eprintln!(
-                        "Warning: failed to save assignment record for '{}': {}",
-                        task_id, e
-                    );
-                }
-
-                println!(
-                    "Assigned task '{}' via Agency (prompt rendered externally)",
-                    task_id
+                record_uncomposed_auto_intent(
+                    dir,
+                    task_id,
+                    "malformed_or_unbound_output",
+                    &message,
+                    route,
+                )?;
+                anyhow::bail!(
+                    "error[WG-ASSIGNMENT-PROVIDER-UNCOMPOSED]: {message}; no identity or route was fabricated. Explicit fallback policy is direct-uncomposed dispatch on the next claim"
                 );
-                return Ok(());
             }
-            Err(e) => {
-                eprintln!(
-                    "Warning: Agency assignment failed ({}), falling back to native",
-                    e
+            Err(error) => {
+                let message = format!("{error:#}");
+                record_uncomposed_auto_intent(
+                    dir,
+                    task_id,
+                    "provider_unavailable",
+                    &message,
+                    route,
+                )?;
+                anyhow::bail!(
+                    "error[WG-ASSIGNMENT-PROVIDER-UNAVAILABLE]: configured assignment provider failed; no silent native reroute occurred. Explicit fallback policy is direct-uncomposed dispatch on the next claim: {message}"
                 );
-                // Fall through to native assignment
             }
         }
     }
@@ -270,9 +274,15 @@ fn run_auto_assign(dir: &Path, path: &Path, task_id: &str) -> Result<()> {
     let all_agents = agency::load_all_agents_or_warn(&agents_dir);
 
     if all_agents.is_empty() {
+        record_uncomposed_auto_intent(
+            dir,
+            task_id,
+            "no_eligible_composition",
+            "no agents available for deterministic ranking",
+            None,
+        )?;
         anyhow::bail!(
-            "No agents available for automatic assignment. \
-             Use 'wg agent create' to create agents first."
+            "No agents available for deterministic automatic assignment. The next claim may proceed with an explicit direct-uncomposed receipt; use 'wg agent create' to create agents first."
         );
     }
 
@@ -357,43 +367,67 @@ fn run_auto_assign(dir: &Path, path: &Path, task_id: &str) -> Result<()> {
         history_class.label(),
         task_id
     );
-    let selected_agent = pool
+    let adaptive = AdaptiveStore::open(dir)?;
+    let mut ranked = pool
         .iter()
-        .max_by(|a, b| {
-            let a_score = crate::commands::service::assignment::scoped_performance_for_agent(
-                a,
+        .map(|agent| {
+            let composition = super::adaptive_agency::composition_snapshot(dir, agent)?;
+            let delayed_reward = adaptive.reader().mean_reward_for_composition(
+                &composition.composition_digest,
+                history_class.label(),
+            )?;
+            let legacy = crate::commands::service::assignment::scoped_performance_for_agent(
+                agent,
                 Some(&graph),
                 history_class,
             )
             .avg_score
             .unwrap_or(0.0);
-            let b_score = crate::commands::service::assignment::scoped_performance_for_agent(
-                b,
-                Some(&graph),
-                history_class,
-            )
-            .avg_score
-            .unwrap_or(0.0);
-            a_score
-                .partial_cmp(&b_score)
-                .unwrap_or(std::cmp::Ordering::Equal)
+            Ok((agent, composition, delayed_reward.unwrap_or(legacy)))
         })
-        .ok_or_else(|| anyhow::anyhow!("No agents found"))?
-        .id
-        .clone();
+        .collect::<Result<Vec<_>>>()?;
+    ranked.sort_by(|left, right| {
+        right
+            .2
+            .partial_cmp(&left.2)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.0.id.cmp(&right.0.id))
+    });
+    let (selected, selected_composition, _) = ranked
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("No agents found"))?;
+    let candidate_scores = ranked
+        .iter()
+        .map(|(_, composition, score)| (composition.composition_digest.clone(), *score))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let selected_agent = selected.id.clone();
 
     eprintln!(
-        "[assign] Auto-selecting agent: {} for task '{}'",
+        "[assign] Deterministic receipt-backed ranking selected agent: {} for task '{}'",
         agency::short_hash(&selected_agent),
         task_id
     );
 
-    // Perform the explicit assignment with the selected agent
-    run_explicit_assign(dir, path, task_id, &selected_agent)
+    run_explicit_assign(
+        dir,
+        path,
+        task_id,
+        &selected_agent,
+        Some((selected_composition.clone(), candidate_scores)),
+    )
 }
 
 /// Explicitly assign an agent (by hash or prefix) to a task.
-fn run_explicit_assign(dir: &Path, path: &Path, task_id: &str, agent_hash: &str) -> Result<()> {
+fn run_explicit_assign(
+    dir: &Path,
+    path: &Path,
+    task_id: &str,
+    agent_hash: &str,
+    automatic: Option<(
+        worksgood::adaptive_agency::CompositionSnapshotV1,
+        std::collections::BTreeMap<String, f64>,
+    )>,
+) -> Result<()> {
     let agency_dir = dir.join("agency");
     let agents_dir = agency_dir.join("cache/agents");
 
@@ -510,8 +544,55 @@ fn run_explicit_assign(dir: &Path, path: &Path, task_id: &str, agent_hash: &str)
         );
     }
 
-    // Record assigner evaluation for downstream attribution
-    record_assigner_evaluation(&agency_dir, task_id, &agent, &config);
+    // Preserve the next-attempt intent. The dispatcher/claim path turns it
+    // into an attempt-bound immutable receipt; no synthetic assignment task or
+    // placeholder quality evaluation is created here.
+    let (decision, selector, candidate_scores, selected_composition) =
+        if let Some((composition, candidate_scores)) = automatic {
+            (
+                AssignmentDecisionV1::Automatic {
+                    composition_digest: composition.composition_digest.clone(),
+                },
+                AssignmentSelectorSnapshotV1 {
+                    kind: "deterministic-reward-ranking".to_string(),
+                    principal: "wg-native-selector".to_string(),
+                    policy_digest: digest(&(
+                        "deterministic-reward-ranking-v1",
+                        crate::commands::service::assignment::history_class_for_assignment(
+                            load_graph(path)?.get_task_or_err(task_id)?,
+                        )
+                        .label(),
+                    )),
+                    exact_route: None,
+                },
+                candidate_scores,
+                composition,
+            )
+        } else {
+            let composition = super::adaptive_agency::composition_snapshot(dir, &agent)?;
+            (
+                AssignmentDecisionV1::Explicit {
+                    composition_digest: composition.composition_digest.clone(),
+                },
+                AssignmentSelectorSnapshotV1 {
+                    kind: "explicit-task-intent".to_string(),
+                    principal: worksgood::current_user(),
+                    policy_digest: "explicit-assignment-v1".to_string(),
+                    exact_route: None,
+                },
+                std::collections::BTreeMap::new(),
+                composition,
+            )
+        };
+    AdaptiveStore::open(dir)?.record_assignment_intent(AssignmentIntentV1 {
+        task_id: task_id.to_string(),
+        decision,
+        selector,
+        candidate_scores,
+        selected_composition: Some(selected_composition),
+        failure: None,
+        created_at: chrono::Utc::now().to_rfc3339(),
+    })?;
 
     // Resolve role/tradeoff names for display
     let roles_dir = agency_dir.join("cache/roles");
@@ -566,6 +647,7 @@ fn run_clear(dir: &Path, path: &Path, task_id: &str) -> Result<()> {
         return Err(e);
     }
     super::notify_graph_changed(dir);
+    AdaptiveStore::open(dir)?.clear_assignment_intent(task_id)?;
 
     // Record operation
     let config = worksgood::config::Config::load_or_default(dir);
@@ -606,7 +688,6 @@ fn list_available_agent_ids(dir: &Path) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serial_test::serial;
     use std::fs;
     use tempfile::tempdir;
     use worksgood::agency::{Lineage, PerformanceRecord};
@@ -721,6 +802,76 @@ mod tests {
     }
 
     #[test]
+    fn assignment_records_intent_without_placeholder_evaluation() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+        setup_workgraph(dir_path, vec![make_task("t1", "Test task")]);
+        let (agent_id, _, _) = setup_agency(dir_path);
+        let mut config = Config::load_or_default(dir_path);
+        config.agency.auto_evaluate = true;
+        config.save(dir_path).unwrap();
+
+        run(dir_path, "t1", Some(&agent_id), false, false).unwrap();
+        let intent = AdaptiveStore::open(dir_path)
+            .unwrap()
+            .assignment_intent("t1")
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            intent.decision,
+            AssignmentDecisionV1::Explicit { .. }
+        ));
+        assert_eq!(
+            std::fs::read_dir(dir_path.join("agency/evaluations"))
+                .map(|entries| entries.filter_map(Result::ok).count())
+                .unwrap_or(0),
+            0,
+            "assignment must not manufacture a placeholder quality score"
+        );
+    }
+
+    #[test]
+    fn provider_failure_records_visible_direct_uncomposed_fallback() {
+        let dir = tempdir().unwrap();
+        record_uncomposed_auto_intent(
+            dir.path(),
+            "t1",
+            "provider_unavailable",
+            "connection refused",
+            Some("https://selector.invalid".into()),
+        )
+        .unwrap();
+        let intent = AdaptiveStore::open(dir.path())
+            .unwrap()
+            .assignment_intent("t1")
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            intent.decision,
+            AssignmentDecisionV1::Uncomposed { .. }
+        ));
+        assert_eq!(
+            intent.failure.as_ref().unwrap().fallback,
+            "direct-uncomposed-dispatch"
+        );
+        assert!(intent.selected_composition.is_none());
+
+        setup_workgraph(dir.path(), vec![make_task("t1", "Provider fallback")]);
+        let graph = load_graph(&graph_path(dir.path())).unwrap();
+        let receipt = crate::commands::adaptive_agency::prepare_next_attempt_assignment(
+            dir.path(),
+            graph.get_task("t1").unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(
+            receipt.decision,
+            AssignmentDecisionV1::Uncomposed { .. }
+        ));
+        assert_eq!(receipt.attempt_id, "attempt-0-1");
+        assert_eq!(receipt.failure.unwrap().class, "provider_unavailable");
+    }
+
+    #[test]
     fn test_assign_clear() {
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
@@ -783,425 +934,8 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    // -----------------------------------------------------------------------
-    // Special agent evaluation recording tests
-    // -----------------------------------------------------------------------
-
-    /// Set up a full agency with the assigner special agent composed from
-    /// real starters, matching the `wg agency init` pathway. Returns
-    /// (actor_agent_id, assigner_agent_id).
-    fn setup_agency_with_assigner(dir: &Path) -> (String, String) {
-        let agency_dir = dir.join("agency");
-        agency::seed_starters(&agency_dir).unwrap();
-
-        let agents_dir = agency_dir.join("cache/agents");
-        fs::create_dir_all(&agents_dir).unwrap();
-
-        // Create the actor agent (assigned to the task)
-        let (actor_id, _role_id, _tradeoff_id) = setup_agency(dir);
-
-        // Compose the assigner special agent from starter primitives
-        let special_roles = agency::special_agent_roles();
-        let special_tradeoffs = agency::special_agent_tradeoffs();
-        let assigner_role = special_roles.iter().find(|r| r.name == "Assigner").unwrap();
-        let assigner_tradeoff = special_tradeoffs
-            .iter()
-            .find(|t| t.name == "Assigner Balanced")
-            .unwrap();
-
-        let assigner_id = agency::content_hash_agent(&assigner_role.id, &assigner_tradeoff.id);
-        let assigner_path = agents_dir.join(format!("{}.yaml", assigner_id));
-        if !assigner_path.exists() {
-            let assigner_agent = agency::Agent {
-                id: assigner_id.clone(),
-                role_id: assigner_role.id.clone(),
-                tradeoff_id: assigner_tradeoff.id.clone(),
-                name: "Default Assigner".to_string(),
-                performance: PerformanceRecord::default(),
-                lineage: Lineage::default(),
-                capabilities: vec![],
-                rate: None,
-                capacity: None,
-                trust_level: Default::default(),
-                contact: None,
-                executor: "claude".to_string(),
-                preferred_model: None,
-                preferred_provider: None,
-                attractor_weight: 0.5,
-                deployment_history: vec![],
-                staleness_flags: vec![],
-            };
-            agency::save_agent(&assigner_agent, &agents_dir).unwrap();
-        }
-
-        // Configure the assigner_agent in config with auto_evaluate enabled
-        let mut config = Config::load_or_default(dir);
-        config.agency.auto_evaluate = true;
-        config.agency.assigner_agent = Some(assigner_id.clone());
-        config.save(dir).unwrap();
-
-        (actor_id, assigner_id)
-    }
-
-    /// (1) Simulate an inline assign execution and verify it succeeds.
-    #[test]
-    fn test_assign_records_assigner_evaluation() {
-        let dir = tempdir().unwrap();
-        let dir_path = dir.path();
-        setup_workgraph(dir_path, vec![make_task("t1", "Test task")]);
-        let (actor_id, assigner_id) = setup_agency_with_assigner(dir_path);
-
-        // Run assign — this triggers record_assigner_evaluation internally
-        let result = run(dir_path, "t1", Some(&actor_id), false, false);
-        assert!(result.is_ok(), "assign failed: {:?}", result.err());
-
-        // Verify the evaluation JSON file was created
-        let evals_dir = dir_path.join("agency/evaluations");
-        let eval_files: Vec<_> = fs::read_dir(&evals_dir)
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.path()
-                    .file_name()
-                    .unwrap()
-                    .to_str()
-                    .unwrap()
-                    .starts_with("eval-.assign-t1-")
-            })
-            .collect();
-        assert_eq!(
-            eval_files.len(),
-            1,
-            "Expected exactly one evaluation file for assign-t1, got {}",
-            eval_files.len()
-        );
-
-        // Load and verify the evaluation contents
-        let eval = agency::load_evaluation(&eval_files[0].path()).unwrap();
-        assert_eq!(eval.task_id, ".assign-t1");
-        assert_eq!(
-            eval.agent_id, assigner_id,
-            "Evaluation should be recorded against the assigner agent"
-        );
-        assert_eq!(eval.source, "system");
-        assert_eq!(eval.score, 0.5, "Placeholder score should be 0.5");
-    }
-
-    /// (2) Verify the Evaluation is recorded against the assigner agent hash,
-    /// not the actor agent.
-    #[test]
-    fn test_evaluation_recorded_against_assigner_not_actor() {
-        let dir = tempdir().unwrap();
-        let dir_path = dir.path();
-        setup_workgraph(dir_path, vec![make_task("t1", "Test task")]);
-        let (actor_id, assigner_id) = setup_agency_with_assigner(dir_path);
-
-        run(dir_path, "t1", Some(&actor_id), false, false).unwrap();
-
-        // Load the assigner agent and verify it has the evaluation
-        let agents_dir = dir_path.join("agency/cache/agents");
-        let assigner = agency::find_agent_by_prefix(&agents_dir, &assigner_id).unwrap();
-        assert_eq!(
-            assigner.performance.evaluations.len(),
-            1,
-            "Assigner agent should have exactly 1 evaluation"
-        );
-        assert_eq!(assigner.performance.evaluations[0].task_id, ".assign-t1");
-
-        // The actor agent should NOT have any evaluation from this assignment
-        let actor = agency::find_agent_by_prefix(&agents_dir, &actor_id).unwrap();
-        assert_eq!(
-            actor.performance.evaluations.len(),
-            0,
-            "Actor agent should NOT have evaluations from assigner recording"
-        );
-    }
-
-    /// (3) Verify the assigner's PerformanceRecord.task_count increments.
-    #[test]
-    fn test_assigner_task_count_increments() {
-        let dir = tempdir().unwrap();
-        let dir_path = dir.path();
-        setup_workgraph(
-            dir_path,
-            vec![
-                make_task("t1", "First task"),
-                make_task("t2", "Second task"),
-                make_task("t3", "Third task"),
-            ],
-        );
-        let (actor_id, assigner_id) = setup_agency_with_assigner(dir_path);
-
-        let agents_dir = dir_path.join("agency/cache/agents");
-
-        // Before any assignments
-        let assigner = agency::find_agent_by_prefix(&agents_dir, &assigner_id).unwrap();
-        assert_eq!(assigner.performance.task_count, 0);
-
-        // First assignment
-        run(dir_path, "t1", Some(&actor_id), false, false).unwrap();
-        let assigner = agency::find_agent_by_prefix(&agents_dir, &assigner_id).unwrap();
-        assert_eq!(
-            assigner.performance.task_count, 1,
-            "task_count should be 1 after first assign"
-        );
-
-        // Second assignment
-        run(dir_path, "t2", Some(&actor_id), false, false).unwrap();
-        let assigner = agency::find_agent_by_prefix(&agents_dir, &assigner_id).unwrap();
-        assert_eq!(
-            assigner.performance.task_count, 2,
-            "task_count should be 2 after second assign"
-        );
-
-        // Third assignment
-        run(dir_path, "t3", Some(&actor_id), false, false).unwrap();
-        let assigner = agency::find_agent_by_prefix(&agents_dir, &assigner_id).unwrap();
-        assert_eq!(
-            assigner.performance.task_count, 3,
-            "task_count should be 3 after third assign"
-        );
-
-        // Verify avg_score is 0.5 (all assignments use placeholder score 0.5)
-        assert!(
-            (assigner.performance.avg_score.unwrap() - 0.5).abs() < 1e-10,
-            "All assignments use placeholder 0.5, avg should be 0.5"
-        );
-    }
-
-    /// (4) Verify score propagates through the 6-step cascade to the
-    /// assigner's role components.
-    ///
-    /// The 6-step cascade in record_evaluation:
-    ///   1. Save evaluation JSON
-    ///   2. Update agent performance
-    ///   3. Update role performance
-    ///   4. Update tradeoff performance
-    ///   5. Propagate to each role component
-    ///   6. Propagate to the role's desired outcome
-    #[test]
-    fn test_score_propagates_through_cascade_to_components() {
-        let dir = tempdir().unwrap();
-        let dir_path = dir.path();
-        setup_workgraph(dir_path, vec![make_task("t1", "Test task")]);
-        let (actor_id, assigner_id) = setup_agency_with_assigner(dir_path);
-
-        // Run assign to trigger the cascade
-        run(dir_path, "t1", Some(&actor_id), false, false).unwrap();
-
-        let agency_dir = dir_path.join("agency");
-        let agents_dir = agency_dir.join("cache/agents");
-        let roles_dir = agency_dir.join("cache/roles");
-        let tradeoffs_dir = agency_dir.join("primitives/tradeoffs");
-        let components_dir = agency_dir.join("primitives/components");
-        let outcomes_dir = agency_dir.join("primitives/outcomes");
-
-        // Step 2: Agent performance updated
-        let assigner = agency::find_agent_by_prefix(&agents_dir, &assigner_id).unwrap();
-        assert_eq!(assigner.performance.task_count, 1);
-        assert!((assigner.performance.avg_score.unwrap() - 0.5).abs() < 1e-10);
-
-        // Step 3: Role performance updated
-        let role = agency::find_role_by_prefix(&roles_dir, &assigner.role_id).unwrap();
-        assert_eq!(
-            role.performance.task_count, 1,
-            "Role should have task_count=1 after cascade"
-        );
-        assert!((role.performance.avg_score.unwrap() - 0.5).abs() < 1e-10);
-        // Role's context_id should be the tradeoff_id
-        assert_eq!(
-            role.performance.evaluations[0].context_id, assigner.tradeoff_id,
-            "Role eval context_id should be tradeoff_id"
-        );
-
-        // Step 4: Tradeoff performance updated
-        let tradeoff =
-            agency::find_tradeoff_by_prefix(&tradeoffs_dir, &assigner.tradeoff_id).unwrap();
-        assert_eq!(
-            tradeoff.performance.task_count, 1,
-            "Tradeoff should have task_count=1 after cascade"
-        );
-        assert!((tradeoff.performance.avg_score.unwrap() - 0.5).abs() < 1e-10);
-        // Tradeoff's context_id should be the role_id
-        assert_eq!(
-            tradeoff.performance.evaluations[0].context_id, assigner.role_id,
-            "Tradeoff eval context_id should be role_id"
-        );
-
-        // Step 5: Each role component's performance updated
-        let assigner_comps = agency::assigner_components();
-        assert!(
-            !role.component_ids.is_empty(),
-            "Assigner role should have components"
-        );
-        for comp_id in &role.component_ids {
-            let component = agency::find_component_by_prefix(&components_dir, comp_id).unwrap();
-            assert_eq!(
-                component.performance.task_count,
-                1,
-                "Component '{}' ({}) should have task_count=1 after cascade",
-                component.name,
-                agency::short_hash(&component.id)
-            );
-            assert!(
-                (component.performance.avg_score.unwrap() - 0.5).abs() < 1e-10,
-                "Component '{}' avg_score should be 0.5",
-                component.name
-            );
-            // Component's context_id should be the role_id
-            assert_eq!(
-                component.performance.evaluations[0].context_id, assigner.role_id,
-                "Component '{}' context_id should be role_id",
-                component.name
-            );
-        }
-        // Verify all expected assigner components were touched
-        assert_eq!(
-            role.component_ids.len(),
-            assigner_comps.len(),
-            "Role should reference all {} assigner components",
-            assigner_comps.len()
-        );
-
-        // Step 6: Desired outcome performance updated
-        assert!(
-            !role.outcome_id.is_empty(),
-            "Assigner role should have an outcome_id"
-        );
-        let outcome = agency::find_outcome_by_prefix(&outcomes_dir, &role.outcome_id).unwrap();
-        assert_eq!(
-            outcome.performance.task_count, 1,
-            "Outcome should have task_count=1 after cascade"
-        );
-        assert!(
-            (outcome.performance.avg_score.unwrap() - 0.5).abs() < 1e-10,
-            "Outcome avg_score should be 0.5"
-        );
-        // Outcome's context_id should be the agent_id
-        assert_eq!(
-            outcome.performance.evaluations[0].context_id, assigner.id,
-            "Outcome eval context_id should be agent_id"
-        );
-    }
-
-    /// Verify no evaluation is recorded when auto_evaluate is disabled.
-    #[test]
-    fn test_no_evaluation_when_auto_evaluate_disabled() {
-        let dir = tempdir().unwrap();
-        let dir_path = dir.path();
-        setup_workgraph(dir_path, vec![make_task("t1", "Test task")]);
-        let (actor_id, assigner_id) = setup_agency_with_assigner(dir_path);
-
-        // Disable auto_evaluate
-        let mut config = Config::load_or_default(dir_path);
-        config.agency.auto_evaluate = false;
-        config.save(dir_path).unwrap();
-
-        run(dir_path, "t1", Some(&actor_id), false, false).unwrap();
-
-        // Assigner should have no evaluations
-        let agents_dir = dir_path.join("agency/cache/agents");
-        let assigner = agency::find_agent_by_prefix(&agents_dir, &assigner_id).unwrap();
-        assert_eq!(
-            assigner.performance.task_count, 0,
-            "No evaluation should be recorded when auto_evaluate is disabled"
-        );
-    }
-
-    /// Verify no evaluation is recorded when no assigner_agent is configured.
-    #[test]
-    #[serial]
-    fn test_no_evaluation_when_no_assigner_configured() {
-        // Isolate from global config (~/.wg/config.toml) which may
-        // set assigner_agent — that value leaks through config merge when
-        // the local config omits it (skip_serializing_if on Option::None).
-        let saved_home = std::env::var("HOME").ok();
-        let dir = tempdir().unwrap();
-        let dir_path = dir.path();
-        unsafe { std::env::set_var("HOME", dir_path) };
-        setup_workgraph(dir_path, vec![make_task("t1", "Test task")]);
-        let (actor_id, _assigner_id) = setup_agency_with_assigner(dir_path);
-
-        // Remove assigner_agent from config
-        let mut config = Config::load_or_default(dir_path);
-        config.agency.assigner_agent = None;
-        config.save(dir_path).unwrap();
-
-        run(dir_path, "t1", Some(&actor_id), false, false).unwrap();
-        if let Some(h) = saved_home {
-            unsafe { std::env::set_var("HOME", h) };
-        }
-
-        // No evaluation files should be created for assign-t1
-        let evals_dir = dir_path.join("agency/evaluations");
-        let eval_files: Vec<_> = fs::read_dir(&evals_dir)
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.path()
-                    .file_name()
-                    .unwrap()
-                    .to_str()
-                    .unwrap()
-                    .starts_with("eval-.assign-t1-")
-            })
-            .collect();
-        assert_eq!(
-            eval_files.len(),
-            0,
-            "No evaluation should be recorded when assigner_agent is not configured"
-        );
-    }
-
-    /// Verify multiple assignments accumulate correctly with the cascade.
-    #[test]
-    fn test_multiple_assignments_cascade_accumulates() {
-        let dir = tempdir().unwrap();
-        let dir_path = dir.path();
-        setup_workgraph(
-            dir_path,
-            vec![make_task("t1", "Task one"), make_task("t2", "Task two")],
-        );
-        let (actor_id, assigner_id) = setup_agency_with_assigner(dir_path);
-
-        run(dir_path, "t1", Some(&actor_id), false, false).unwrap();
-        run(dir_path, "t2", Some(&actor_id), false, false).unwrap();
-
-        let agency_dir = dir_path.join("agency");
-
-        // Agent should have 2 evaluations
-        let assigner =
-            agency::find_agent_by_prefix(&agency_dir.join("cache/agents"), &assigner_id).unwrap();
-        assert_eq!(assigner.performance.task_count, 2);
-        assert_eq!(assigner.performance.evaluations.len(), 2);
-
-        // Role should also have 2
-        let role = agency::find_role_by_prefix(&agency_dir.join("cache/roles"), &assigner.role_id)
-            .unwrap();
-        assert_eq!(role.performance.task_count, 2);
-
-        // Each component should have 2
-        for comp_id in &role.component_ids {
-            let comp = agency::find_component_by_prefix(
-                &agency_dir.join("primitives/components"),
-                comp_id,
-            )
-            .unwrap();
-            assert_eq!(
-                comp.performance.task_count, 2,
-                "Component '{}' should have task_count=2 after 2 assignments",
-                comp.name
-            );
-        }
-
-        // Outcome should have 2
-        let outcome = agency::find_outcome_by_prefix(
-            &agency_dir.join("primitives/outcomes"),
-            &role.outcome_id,
-        )
-        .unwrap();
-        assert_eq!(outcome.performance.task_count, 2);
-    }
+    // Assignment no longer creates synthetic `.assign-*` evaluations.
+    // Quality arrives only as delayed reward from an independent terminal outcome.
 
     // -----------------------------------------------------------------------
     // Pool-separation regression tests (make-evaluator-and; supersedes the
