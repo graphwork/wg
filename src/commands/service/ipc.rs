@@ -47,6 +47,10 @@ pub enum IpcRequest {
     Heartbeat { agent_id: String },
     /// Get service status
     Status,
+    /// Prove that this exact daemon instance has completed startup and is
+    /// servicing requests. The caller supplies the nonce minted before spawn;
+    /// a stale socket or an older daemon instance cannot echo it successfully.
+    Readiness { instance_nonce: String },
     /// Shutdown the service
     Shutdown {
         #[serde(default)]
@@ -1350,6 +1354,7 @@ fn handle_request(
         }
         IpcRequest::Heartbeat { agent_id } => handle_heartbeat(dir, &agent_id),
         IpcRequest::Status => handle_status(dir),
+        IpcRequest::Readiness { instance_nonce } => handle_readiness(&instance_nonce),
         IpcRequest::Shutdown { force, kill_agents } => {
             logger.info(&format!(
                 "IPC Shutdown: force={}, kill_agents={}",
@@ -1815,6 +1820,26 @@ fn handle_heartbeat(dir: &Path, agent_id: &str) -> IpcResponse {
     }
 }
 
+/// Handle the startup readiness challenge using process-local launch state.
+///
+/// Deliberately do not read the nonce from `state.json`: a newly spawned
+/// supervisor may have replaced that file while a delayed old daemon still
+/// owns an already-open socket connection. Only the environment inherited by
+/// this daemon process is authoritative for this challenge.
+fn handle_readiness(challenge: &str) -> IpcResponse {
+    let actual = std::env::var(super::SERVICE_INSTANCE_NONCE_ENV).ok();
+    if actual.as_deref() != Some(challenge) || challenge.is_empty() {
+        return IpcResponse::error("service instance nonce mismatch");
+    }
+    let pid = std::process::id();
+    IpcResponse::success(serde_json::json!({
+        "status": "ready",
+        "instance_nonce": challenge,
+        "pid": pid,
+        "pid_start_identity": worksgood::service_identity::pid_start_identity(pid),
+    }))
+}
+
 /// Handle status request
 fn handle_status(dir: &Path) -> IpcResponse {
     let state = match ServiceState::load(dir) {
@@ -1859,6 +1884,7 @@ fn handle_status(dir: &Path) -> IpcResponse {
         "pid": state.pid,
         "socket": state.socket_path,
         "started_at": state.started_at,
+        "instance_nonce": state.instance_nonce,
         "pid_start_identity": state.pid_start_identity,
         "identity": state.identity,
         "worker_control": {

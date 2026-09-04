@@ -145,6 +145,8 @@ pub struct PersistedServiceState {
     pub socket_path: String,
     pub started_at: String,
     #[serde(default)]
+    pub instance_nonce: Option<String>,
+    #[serde(default)]
     pub pid_start_identity: Option<String>,
     #[serde(default)]
     pub identity: Option<ServiceIdentity>,

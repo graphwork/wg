@@ -646,12 +646,27 @@ pub fn state_file_path(dir: &Path) -> PathBuf {
     dir.join("service").join("state.json")
 }
 
+/// Process-local launch challenge inherited only by the supervisor/new daemon.
+/// The value is persisted for client comparison, but a daemon answers the
+/// readiness challenge from its own environment so a delayed old instance
+/// cannot authenticate using a newly overwritten state file.
+pub(crate) const SERVICE_INSTANCE_NONCE_ENV: &str = "WG_SERVICE_INSTANCE_NONCE";
+
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(8);
+const STARTUP_PROBE_TIMEOUT: Duration = Duration::from_millis(350);
+const STARTUP_LOG_TAIL_LINES: usize = 20;
+const STARTUP_LOG_LINE_CHARS: usize = 2_000;
+
 /// Service state stored on disk
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceState {
     pub pid: u32,
     pub socket_path: String,
     pub started_at: String,
+    /// Opaque per-launch challenge used by `wg service start` to prove that
+    /// the process answering IPC is the instance it just spawned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance_nonce: Option<String>,
     /// OS birth identity protects against PID reuse during reconcile.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid_start_identity: Option<String>,
@@ -1441,6 +1456,249 @@ pub fn find_orphan_supervisor_pids(_dir: &Path, _exclude_pid: Option<u32>) -> Ve
     Vec::new()
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReadyInstance {
+    pid: u32,
+}
+
+fn validate_readiness_response(
+    expected_nonce: &str,
+    expected_socket: &Path,
+    state: &ServiceState,
+    response: &IpcResponse,
+) -> Result<ReadyInstance> {
+    if state.instance_nonce.as_deref() != Some(expected_nonce) {
+        anyhow::bail!("state belongs to a different service instance");
+    }
+    if Path::new(&state.socket_path) != expected_socket {
+        anyhow::bail!(
+            "state socket {} does not match launch socket {}",
+            state.socket_path,
+            expected_socket.display()
+        );
+    }
+    if !response.ok {
+        anyhow::bail!(
+            "daemon rejected readiness challenge: {}",
+            response.error.as_deref().unwrap_or("unknown error")
+        );
+    }
+    let data = response
+        .data
+        .as_ref()
+        .context("readiness response omitted proof fields")?;
+    if data.get("status").and_then(serde_json::Value::as_str) != Some("ready") {
+        anyhow::bail!("readiness response did not report ready");
+    }
+    if data
+        .get("instance_nonce")
+        .and_then(serde_json::Value::as_str)
+        != Some(expected_nonce)
+    {
+        anyhow::bail!("readiness response came from a different service instance");
+    }
+    let response_pid = data
+        .get("pid")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|pid| u32::try_from(pid).ok())
+        .context("readiness response omitted a valid daemon PID")?;
+    if response_pid != state.pid {
+        anyhow::bail!(
+            "readiness responder PID {} does not match state PID {}",
+            response_pid,
+            state.pid
+        );
+    }
+    let response_birth = data
+        .get("pid_start_identity")
+        .and_then(serde_json::Value::as_str);
+    if state.pid_start_identity.as_deref() != response_birth {
+        anyhow::bail!("readiness responder process-birth identity does not match state");
+    }
+    if !is_process_alive(state.pid) {
+        anyhow::bail!("readiness responder exited before confirmation");
+    }
+    Ok(ReadyInstance { pid: response_pid })
+}
+
+fn probe_readiness(socket: &Path, nonce: &str, state: &ServiceState) -> Result<ReadyInstance> {
+    let response = send_request_to_socket_with_timeout(
+        socket,
+        &IpcRequest::Readiness {
+            instance_nonce: nonce.to_string(),
+        },
+        STARTUP_PROBE_TIMEOUT,
+    )?;
+    validate_readiness_response(nonce, socket, state, &response)
+}
+
+fn startup_timeout() -> Duration {
+    std::env::var("WG_TEST_SERVICE_START_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(STARTUP_TIMEOUT)
+}
+
+fn wait_for_spawned_readiness(
+    dir: &Path,
+    socket: &Path,
+    nonce: &str,
+    child: &mut process::Child,
+    render_spinner: bool,
+) -> Result<ReadyInstance> {
+    const BOLT: &str = "↯";
+    const NUM_BOLTS: usize = 5;
+    const FRAME_MS: u64 = 120;
+    const SPECTRAL_BRIGHT: [u8; NUM_BOLTS] = [196, 214, 46, 33, 129];
+    const SPECTRAL_DIM: [u8; NUM_BOLTS] = [52, 94, 22, 17, 53];
+
+    let timeout = startup_timeout();
+    let started = Instant::now();
+    let mut last_reason = "daemon has not published state".to_string();
+    let mut stdout = std::io::stdout();
+    while started.elapsed() < timeout {
+        if let Some(status) = child
+            .try_wait()
+            .context("failed to inspect spawned service process")?
+        {
+            if render_spinner {
+                print!("\r\x1b[2K");
+                let _ = stdout.flush();
+            }
+            anyhow::bail!("spawned service process exited before readiness ({status})");
+        }
+
+        if render_spinner {
+            let elapsed_ms = started.elapsed().as_millis() as usize;
+            let wave_pos = (elapsed_ms / FRAME_MS as usize) % NUM_BOLTS;
+            let mut line = String::with_capacity(80);
+            line.push_str("  ");
+            for i in 0..NUM_BOLTS {
+                let dist = (i as isize - wave_pos as isize).unsigned_abs();
+                let color = if dist <= 1 {
+                    SPECTRAL_BRIGHT[i]
+                } else {
+                    SPECTRAL_DIM[i]
+                };
+                if dist == 0 {
+                    line.push_str(&format!("\x1b[1;38;5;{}m{}\x1b[0m", color, BOLT));
+                } else {
+                    line.push_str(&format!("\x1b[38;5;{}m{}\x1b[0m", color, BOLT));
+                }
+            }
+            line.push_str(" Starting service...");
+            print!("\r\x1b[2K{}", line);
+            let _ = stdout.flush();
+        }
+
+        match ServiceState::load(dir) {
+            Ok(Some(state)) => {
+                if state.instance_nonce.as_deref() != Some(nonce) {
+                    last_reason = "state belongs to an older service instance".to_string();
+                } else if !is_process_alive(state.pid) {
+                    last_reason = format!("daemon PID {} exited before readiness", state.pid);
+                } else {
+                    // Probe the endpoint directly. On Unix this also covers a
+                    // stale filesystem socket; on Windows named pipes have no
+                    // corresponding filesystem entry, so `Path::exists()` is
+                    // not a readiness signal at all.
+                    match probe_readiness(socket, nonce, &state) {
+                        Ok(ready) => {
+                            if render_spinner {
+                                print!("\r\x1b[2K");
+                                let _ = stdout.flush();
+                            }
+                            return Ok(ready);
+                        }
+                        Err(error) => last_reason = error.to_string(),
+                    }
+                }
+            }
+            Ok(None) => last_reason = "daemon has not published state".to_string(),
+            Err(error) => last_reason = format!("cannot read daemon state: {error:#}"),
+        }
+        std::thread::sleep(Duration::from_millis(if render_spinner {
+            FRAME_MS
+        } else {
+            50
+        }));
+    }
+    if render_spinner {
+        print!("\r\x1b[2K");
+        let _ = stdout.flush();
+    }
+    anyhow::bail!(
+        "readiness timeout after {}ms: {}",
+        timeout.as_millis(),
+        last_reason
+    )
+}
+
+fn cleanup_failed_launch(dir: &Path, socket: &Path, nonce: &str, child: &mut process::Child) {
+    // The still-owned Child handle is stronger than a numeric PID lookup: if
+    // it has not exited, this is exactly the process we spawned. Kill its tree
+    // before dropping the handle so a timed-out supervisor cannot later
+    // publish a daemon after `start` has returned failure.
+    if child.try_wait().ok().flatten().is_none() {
+        let _ = kill_process_force(child.id());
+        let _ = child.wait();
+    }
+
+    let owns_state = ServiceState::load(dir)
+        .ok()
+        .flatten()
+        .is_some_and(|state| state.instance_nonce.as_deref() == Some(nonce));
+    if owns_state {
+        let _ = ServiceState::remove(dir);
+        let _ = fs::remove_file(socket);
+        let _ = fs::remove_file(chat_control_socket_path(socket));
+    }
+}
+
+fn startup_failure(dir: &Path, reason: &str, json: bool) -> anyhow::Error {
+    let log_path = log_file_path(dir);
+    eprintln!("WG SERVICE START FAILED: {reason}");
+    eprintln!(
+        "Daemon log (last {STARTUP_LOG_TAIL_LINES} lines): {}",
+        log_path.display()
+    );
+    let tail = tail_log(dir, STARTUP_LOG_TAIL_LINES, None);
+    if tail.is_empty() {
+        eprintln!("  <no daemon log output>");
+    } else {
+        for line in &tail {
+            let mut chars = line.chars();
+            let bounded = chars
+                .by_ref()
+                .take(STARTUP_LOG_LINE_CHARS)
+                .collect::<String>();
+            if chars.next().is_some() {
+                eprintln!("  {bounded}… <line truncated>");
+            } else {
+                eprintln!("  {bounded}");
+            }
+        }
+    }
+    eprintln!("Recovery: wg service start --force");
+    if json {
+        let output = serde_json::json!({
+            "status": "failed",
+            "error": reason,
+            "log": log_path,
+            "recovery_command": "wg service start --force",
+        });
+        // Keep stdout a single machine-readable JSON document. Human evidence
+        // is always emitted independently on stderr, including when stdout is
+        // redirected.
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&output).unwrap_or_default()
+        );
+    }
+    anyhow::anyhow!("service start failed: {reason}")
+}
+
 /// Start the service daemon
 #[allow(clippy::too_many_arguments)]
 pub fn run_start(
@@ -1556,16 +1814,45 @@ pub fn run_start(
                 }
                 ServiceState::remove(dir)?;
             } else {
+                // "Already running" is success only when the live daemon can
+                // authenticate its own persisted launch nonce. Legacy state
+                // falls back to the older graph/build identity handshake for
+                // one compatibility window.
+                let ready = if let Some(nonce) = state.instance_nonce.as_deref() {
+                    probe_readiness(Path::new(&state.socket_path), nonce, &state).map(|_| ())
+                } else {
+                    let observation = worksgood::service_identity::observe_service(dir);
+                    if observation.health == worksgood::service_identity::ServiceHealth::Healthy {
+                        Ok(())
+                    } else {
+                        Err(anyhow::anyhow!(
+                            "existing service did not pass its identity handshake: {:?}: {}",
+                            observation.health,
+                            observation.detail
+                        ))
+                    }
+                };
+                if let Err(error) = ready {
+                    return Err(startup_failure(
+                        dir,
+                        &format!(
+                            "state names live PID {}, but readiness could not be confirmed: {error:#}",
+                            state.pid
+                        ),
+                        json,
+                    ));
+                }
                 if json {
                     let output = serde_json::json!({
-                        "error": "Service already running",
+                        "status": "already_running",
                         "pid": state.pid,
                         "socket": state.socket_path,
+                        "instance_nonce": state.instance_nonce,
                     });
                     println!("{}", serde_json::to_string_pretty(&output)?);
                 } else {
                     println!(
-                        "Service already running (PID {}). Use 'wg service stop' first or 'wg service start --force'.",
+                        "Service already running and ready (PID {}). Use 'wg service stop' first or 'wg service start --force'.",
                         state.pid
                     );
                     println!("Socket: {}", state.socket_path);
@@ -1593,20 +1880,14 @@ pub fn run_start(
             }
         } else {
             let pids: Vec<String> = orphans.iter().map(|p| p.to_string()).collect();
-            if json {
-                let output = serde_json::json!({
-                    "error": "Orphan daemon processes found",
-                    "orphan_pids": orphans,
-                });
-                println!("{}", serde_json::to_string_pretty(&output)?);
-            } else {
-                println!(
-                    "Found orphan daemon process(es) for this WG project: PID {}",
+            return Err(startup_failure(
+                dir,
+                &format!(
+                    "orphan daemon process(es) found for this project: PID {}",
                     pids.join(", ")
-                );
-                println!("Use 'wg service start --force' to kill them and start fresh.");
-            }
-            return Ok(());
+                ),
+                json,
+            ));
         }
     }
 
@@ -1625,6 +1906,7 @@ pub fn run_start(
     let current_exe = std::env::current_exe().context("Failed to get current executable path")?;
     let service_identity =
         worksgood::service_identity::expected_identity(dir, &current_exe, &config)?;
+    let instance_nonce = uuid::Uuid::new_v4().to_string();
 
     let dir_str = dir.to_string_lossy().to_string();
     let socket_str = socket.to_string_lossy().to_string();
@@ -1685,6 +1967,7 @@ pub fn run_start(
     daemon_command
         .args(&args)
         .env("WG_DIR", dir)
+        .env(SERVICE_INSTANCE_NONCE_ENV, &instance_nonce)
         .stdin(process::Stdio::null())
         .stdout(process::Stdio::null())
         .stderr(stderr_file);
@@ -1712,7 +1995,7 @@ pub fn run_start(
         }
     }
 
-    let child = daemon_command
+    let mut child = daemon_command
         .spawn()
         .context("Failed to spawn detached daemon process")?;
 
@@ -1726,6 +2009,7 @@ pub fn run_start(
             pid,
             socket_path: socket_str.clone(),
             started_at: chrono::Utc::now().to_rfc3339(),
+            instance_nonce: Some(instance_nonce.clone()),
             pid_start_identity: worksgood::service_identity::pid_start_identity(pid),
             identity: Some(service_identity),
             supervisor_pid: None,
@@ -1737,108 +2021,19 @@ pub fn run_start(
         let _ = service_identity;
     }
 
-    // Wait for daemon to start, showing an animated spinner on TTYs
-    let daemon_alive = if !json && std::io::stdout().is_terminal() {
-        use std::io::Write as _;
-        // Wave spinner constants
-        const BOLT: &str = "↯";
-        const NUM_BOLTS: usize = 5;
-        const FRAME_MS: u64 = 120;
-        // Fixed rainbow spectrum: Red, Orange, Green, Cyan, Violet
-        const SPECTRAL_BRIGHT: [u8; NUM_BOLTS] = [196, 214, 46, 33, 129];
-        const SPECTRAL_DIM: [u8; NUM_BOLTS] = [52, 94, 22, 17, 53];
-
-        let start = Instant::now();
-        let mut stdout = std::io::stdout();
-        let mut alive = false;
-
-        // Animate for at least 600ms so the wave is visible, up to 5s max.
-        // 5s gives cold starts on Windows (antivirus scan, disk cache miss)
-        // enough headroom to bind the socket without tripping the timeout.
-        while start.elapsed() < Duration::from_millis(5000) {
-            let elapsed_ms = start.elapsed().as_millis() as usize;
-            let wave_pos = (elapsed_ms / FRAME_MS as usize) % NUM_BOLTS;
-
-            // Build the colored bolt string — peak bolt is bright, others dimmed
-            let mut line = String::with_capacity(80);
-            line.push_str("  ");
-            for i in 0..NUM_BOLTS {
-                let dist = (i as isize - wave_pos as isize).unsigned_abs();
-                let color = if dist <= 1 {
-                    SPECTRAL_BRIGHT[i]
-                } else {
-                    SPECTRAL_DIM[i]
-                };
-                if dist == 0 {
-                    // Bold the peak bolt for extra pop
-                    line.push_str(&format!("\x1b[1;38;5;{}m{}\x1b[0m", color, BOLT));
-                } else {
-                    line.push_str(&format!("\x1b[38;5;{}m{}\x1b[0m", color, BOLT));
-                }
+    // Success is gated on a challenge/response from the exact instance minted
+    // above. Process creation, a socket pathname, or a response from an old
+    // daemon are all insufficient.
+    let render_spinner = !json && std::io::stdout().is_terminal();
+    let ready =
+        match wait_for_spawned_readiness(dir, &socket, &instance_nonce, &mut child, render_spinner)
+        {
+            Ok(ready) => ready,
+            Err(error) => {
+                cleanup_failed_launch(dir, &socket, &instance_nonce, &mut child);
+                return Err(startup_failure(dir, &format!("{error:#}"), json));
             }
-            line.push_str(" Starting service...");
-
-            // Overwrite current line
-            print!("\r\x1b[2K{}", line);
-            let _ = stdout.flush();
-
-            std::thread::sleep(Duration::from_millis(FRAME_MS));
-
-            // Check if daemon is alive and socket is accepting connections
-            // after minimum animation time
-            if start.elapsed() >= Duration::from_millis(600)
-                && is_process_alive(pid)
-                && socket_accepting(&socket)
-                && (!supervise || state_file_path(dir).exists())
-            {
-                alive = true;
-                break;
-            }
-        }
-
-        // Clear the spinner line
-        print!("\r\x1b[2K");
-        let _ = stdout.flush();
-        alive
-    } else {
-        // Non-TTY or JSON mode: wait for process alive + socket accepting.
-        // 8s budget matches the TTY path's 5s plus extra headroom for
-        // batch/CI environments where cold-start latency can be higher.
-        let start = Instant::now();
-        let mut alive = false;
-        while start.elapsed() < Duration::from_millis(8000) {
-            std::thread::sleep(Duration::from_millis(100));
-            if is_process_alive(pid)
-                && socket_accepting(&socket)
-                && (!supervise || state_file_path(dir).exists())
-            {
-                alive = true;
-                break;
-            }
-        }
-        alive
-    };
-
-    // Distinguish "process dead" from "process alive but socket not yet
-    // accepting". Only the former is a real failure. In the latter case
-    // the daemon is still binding — on Windows this happens under cold
-    // start (antivirus scan, disk cache miss) — and state.json must stay
-    // so subsequent `wg service status` / `wg service stop` can find the
-    // daemon. Previously both cases removed state.json, leaving a live
-    // but unreachable daemon that blocked the next `wg service start`.
-    if !daemon_alive {
-        if !is_process_alive(pid) {
-            ServiceState::remove(dir)?;
-            anyhow::bail!("Daemon process exited immediately. Check logs.");
-        }
-        eprintln!(
-            "warning: daemon PID {} is alive but socket was not accepting \
-             connections within the startup budget. state.json has been kept; \
-             run `wg service status` shortly to confirm readiness, or \
-             `wg service stop` if the daemon is stuck.",
-            pid
-        );
-    }
+        };
 
     // Resolve effective config for display (CLI flags override config.toml)
     let eff_max_agents = max_agents.unwrap_or(config.coordinator.max_agents);
@@ -1859,8 +2054,9 @@ pub fn run_start(
     if json {
         let output = serde_json::json!({
             "status": "started",
-            "pid": pid,
+            "pid": ready.pid,
             "socket": socket_str,
+            "instance_nonce": instance_nonce,
             "log": log_path_str,
             "coordinator": {
                 "max_agents": eff_max_agents,
@@ -1871,7 +2067,7 @@ pub fn run_start(
         });
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
-        println!("Service started (PID {})", pid);
+        println!("Service started and ready (PID {})", ready.pid);
         println!("Socket: {}", socket_str);
         println!("Log: {}", log_path_str);
         let model_str = eff_model.as_deref().unwrap_or("default");
@@ -2708,6 +2904,21 @@ pub fn run_daemon(
     // --- Persistent logging setup ---
     let logger = DaemonLogger::open(dir).context("Failed to initialise daemon logger")?;
     logger.install_panic_hook();
+
+    // Deterministic subprocess boundaries for readiness regression tests. They
+    // are inherited only when explicitly set by the test harness and execute
+    // before the socket can satisfy the startup handshake.
+    if std::env::var_os("WG_TEST_SERVICE_EXIT_BEFORE_READY").is_some() {
+        logger.error("Test hook: exiting before readiness");
+        anyhow::bail!("test hook requested exit before readiness");
+    }
+    if let Ok(delay) = std::env::var("WG_TEST_SERVICE_START_DELAY_MS")
+        && let Ok(delay) = delay.parse::<u64>()
+        && delay > 0
+    {
+        logger.info(&format!("Test hook: delaying readiness by {delay}ms"));
+        std::thread::sleep(Duration::from_millis(delay));
+    }
 
     // Log collected config-load diagnostics ONCE at startup (not per tick).
     // The daemon does not reload the full config each tick, so this is the
@@ -4160,6 +4371,7 @@ fn run_stop_inner(dir: &Path, force: bool, kill_agents: bool, json: bool) -> Res
         let state_agrees = observation.state.as_ref().is_some_and(|observed| {
             observed.pid == state.pid
                 && observed.socket_path == state.socket_path
+                && observed.instance_nonce == state.instance_nonce
                 && observed.pid_start_identity == state.pid_start_identity
                 && observed.identity == state.identity
         });
@@ -4530,6 +4742,7 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
             "pid": state.pid,
             "socket": state.socket_path,
             "started_at": state.started_at,
+            "instance_nonce": state.instance_nonce,
             "pid_start_identity": state.pid_start_identity,
             "identity": state.identity,
             "worker_control": {
@@ -6325,6 +6538,7 @@ mod tests {
             pid: std::process::id(),
             socket_path: socket.display().to_string(),
             started_at: chrono::Utc::now().to_rfc3339(),
+            instance_nonce: None,
             pid_start_identity: None,
             identity: None,
             supervisor_pid: None,
@@ -6356,6 +6570,7 @@ mod tests {
             pid: 12345,
             socket_path: "/tmp/test.sock".to_string(),
             started_at: chrono::Utc::now().to_rfc3339(),
+            instance_nonce: Some("test-nonce".to_string()),
             pid_start_identity: None,
             identity: None,
             supervisor_pid: None,
@@ -6367,9 +6582,88 @@ mod tests {
         let loaded = ServiceState::load(temp_dir.path()).unwrap().unwrap();
         assert_eq!(loaded.pid, 12345);
         assert_eq!(loaded.socket_path, "/tmp/test.sock");
+        assert_eq!(loaded.instance_nonce.as_deref(), Some("test-nonce"));
 
         ServiceState::remove(temp_dir.path()).unwrap();
         assert!(ServiceState::load(temp_dir.path()).unwrap().is_none());
+    }
+
+    fn readiness_test_state(socket: &Path, nonce: &str) -> ServiceState {
+        let pid = std::process::id();
+        ServiceState {
+            pid,
+            socket_path: socket.display().to_string(),
+            started_at: chrono::Utc::now().to_rfc3339(),
+            instance_nonce: Some(nonce.to_string()),
+            pid_start_identity: worksgood::service_identity::pid_start_identity(pid),
+            identity: None,
+            supervisor_pid: None,
+            supervisor_pid_start_identity: None,
+        }
+    }
+
+    fn readiness_test_response(pid: u32, nonce: &str) -> IpcResponse {
+        IpcResponse::success(serde_json::json!({
+            "status": "ready",
+            "instance_nonce": nonce,
+            "pid": pid,
+            "pid_start_identity": worksgood::service_identity::pid_start_identity(pid),
+        }))
+    }
+
+    #[test]
+    fn fresh_instance_readiness_proof_is_accepted() {
+        let temp = TempDir::new().unwrap();
+        let socket = default_socket_path(temp.path());
+        let state = readiness_test_state(&socket, "fresh-nonce");
+        let response = readiness_test_response(state.pid, "fresh-nonce");
+        let ready = validate_readiness_response("fresh-nonce", &socket, &state, &response)
+            .expect("matching process-local proof must be accepted");
+        assert_eq!(ready.pid, state.pid);
+    }
+
+    #[test]
+    fn stale_socket_readiness_proof_is_rejected() {
+        let temp = TempDir::new().unwrap();
+        let socket = default_socket_path(temp.path());
+        let state = readiness_test_state(&socket, "new-nonce");
+        let stale = readiness_test_response(state.pid, "stale-nonce");
+        let error = validate_readiness_response("new-nonce", &socket, &state, &stale)
+            .expect_err("a stale socket must not satisfy readiness")
+            .to_string();
+        assert!(error.contains("different service instance"), "{error}");
+    }
+
+    #[test]
+    fn delayed_old_instance_response_cannot_satisfy_new_launch() {
+        let temp = TempDir::new().unwrap();
+        let socket = default_socket_path(temp.path());
+        // Model the race after a new supervisor has replaced state.json while
+        // an old daemon finally answers an already-open connection.
+        let new_state = readiness_test_state(&socket, "epoch-new");
+        let delayed_old_response = readiness_test_response(new_state.pid, "epoch-old");
+        assert!(
+            validate_readiness_response("epoch-new", &socket, &new_state, &delayed_old_response,)
+                .is_err(),
+            "an old instance's delayed response must never authenticate the new epoch"
+        );
+    }
+
+    #[test]
+    fn readiness_responder_pid_must_match_persisted_daemon() {
+        let temp = TempDir::new().unwrap();
+        let socket = default_socket_path(temp.path());
+        let state = readiness_test_state(&socket, "nonce");
+        let response = IpcResponse::success(serde_json::json!({
+            "status": "ready",
+            "instance_nonce": "nonce",
+            "pid": state.pid.saturating_add(1),
+            "pid_start_identity": state.pid_start_identity.clone(),
+        }));
+        let error = validate_readiness_response("nonce", &socket, &state, &response)
+            .expect_err("a response from another PID must be rejected")
+            .to_string();
+        assert!(error.contains("does not match state PID"), "{error}");
     }
 
     #[test]
@@ -6478,6 +6772,7 @@ mod tests {
                 .to_string_lossy()
                 .to_string(),
             started_at: chrono::Utc::now().to_rfc3339(),
+            instance_nonce: Some("not-this-process".to_string()),
             pid_start_identity: None,
             identity: None,
             supervisor_pid: None,
@@ -6494,7 +6789,7 @@ mod tests {
         let result = run_start(
             dir, None, None, None, None, None, None, false, false, false, false, false,
         );
-        assert!(result.is_ok()); // returns Ok but prints "already running"
+        assert!(result.is_err()); // a live PID without a matching readiness proof is not success
 
         // State should be unchanged (same PID)
         let loaded = ServiceState::load(dir).unwrap().unwrap();
@@ -6517,6 +6812,7 @@ mod tests {
                 .to_string_lossy()
                 .to_string(),
             started_at: chrono::Utc::now().to_rfc3339(),
+            instance_nonce: None,
             pid_start_identity: None,
             identity: None,
             supervisor_pid: None,
@@ -6642,6 +6938,7 @@ mod tests {
                 .to_string_lossy()
                 .to_string(),
             started_at: chrono::Utc::now().to_rfc3339(),
+            instance_nonce: None,
             pid_start_identity: None,
             identity: None,
             supervisor_pid: None,
@@ -6819,6 +7116,7 @@ mod tests {
             pid: std::process::id(),
             socket_path: default_socket_path(dir).display().to_string(),
             started_at: chrono::Utc::now().to_rfc3339(),
+            instance_nonce: None,
             pid_start_identity: Some("proc-start:definitely-not-this-process".to_string()),
             identity: None,
             supervisor_pid: None,

@@ -844,6 +844,200 @@ fn test_service_start_fails_on_invalid_config_instead_of_using_defaults() {
     );
 }
 
+fn short_service_tempdir() -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix("wg-ready-")
+        .tempdir_in("/tmp")
+        .expect("create short-path service fixture")
+}
+
+fn assert_matching_daemon_readiness(wg_dir: &Path) -> serde_json::Value {
+    let state: serde_json::Value = serde_json::from_slice(
+        &fs::read(wg_dir.join("service/state.json")).expect("service state must exist"),
+    )
+    .unwrap();
+    let nonce = state["instance_nonce"]
+        .as_str()
+        .expect("new service state must carry an instance nonce");
+    let socket = state["socket_path"].as_str().unwrap();
+    let mut stream = std::os::unix::net::UnixStream::connect(socket).unwrap();
+    writeln!(
+        stream,
+        "{}",
+        serde_json::json!({"cmd": "readiness", "instance_nonce": nonce})
+    )
+    .unwrap();
+    stream.flush().unwrap();
+    let mut line = String::new();
+    BufReader::new(&stream).read_line(&mut line).unwrap();
+    let response: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(response["ok"], true, "readiness rejected: {response}");
+    assert_eq!(response["status"], "ready");
+    assert_eq!(response["instance_nonce"], nonce);
+    assert_eq!(response["pid"], state["pid"]);
+    state
+}
+
+fn start_readiness_fixture(wg_dir: &Path) -> std::process::Output {
+    wg_cmd(
+        wg_dir,
+        &["service", "start", "--no-coordinator-agent", "--force"],
+    )
+}
+
+#[test]
+#[serial]
+fn test_service_start_fresh_waits_for_matching_readiness() {
+    let tmp = short_service_tempdir();
+    let wg_dir = setup_workgraph(tmp.path());
+    let _guard = ServiceGuard::new(&wg_dir);
+
+    let output = start_readiness_fixture(&wg_dir);
+    assert!(
+        output.status.success(),
+        "fresh start failed:\nstdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("started and ready"),
+        "success must state readiness explicitly"
+    );
+    assert_matching_daemon_readiness(&wg_dir);
+}
+
+#[test]
+#[serial]
+fn test_service_start_already_running_rechecks_same_instance() {
+    let tmp = short_service_tempdir();
+    let wg_dir = setup_workgraph(tmp.path());
+    let _guard = ServiceGuard::new(&wg_dir);
+    assert!(start_readiness_fixture(&wg_dir).status.success());
+    let before = assert_matching_daemon_readiness(&wg_dir);
+
+    let output = wg_cmd(&wg_dir, &["service", "start", "--no-coordinator-agent"]);
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("already running and ready"));
+    let after = assert_matching_daemon_readiness(&wg_dir);
+    assert_eq!(before["pid"], after["pid"]);
+    assert_eq!(before["instance_nonce"], after["instance_nonce"]);
+}
+
+#[test]
+#[serial]
+fn test_service_immediate_stop_start_has_new_ready_instance() {
+    let tmp = short_service_tempdir();
+    let wg_dir = setup_workgraph(tmp.path());
+    let _guard = ServiceGuard::new(&wg_dir);
+    assert!(start_readiness_fixture(&wg_dir).status.success());
+    let first = assert_matching_daemon_readiness(&wg_dir);
+
+    let stopped = wg_cmd(&wg_dir, &["service", "stop", "--force"]);
+    assert!(stopped.status.success());
+    let restarted = wg_cmd(
+        &wg_dir,
+        &["service", "start", "--no-coordinator-agent", "--force"],
+    );
+    assert!(
+        restarted.status.success(),
+        "immediate restart failed: {}",
+        String::from_utf8_lossy(&restarted.stderr)
+    );
+    let second = assert_matching_daemon_readiness(&wg_dir);
+    assert_ne!(first["instance_nonce"], second["instance_nonce"]);
+}
+
+#[cfg(unix)]
+#[test]
+#[serial]
+fn test_service_start_replaces_stale_socket_and_requires_readiness() {
+    let tmp = short_service_tempdir();
+    let wg_dir = setup_workgraph(tmp.path());
+    let _guard = ServiceGuard::new(&wg_dir);
+    fs::create_dir_all(wg_dir.join("service")).unwrap();
+    let socket = wg_dir.join("service/daemon.sock");
+    let stale = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    drop(stale); // leaves the stale filesystem socket behind
+
+    let output = start_readiness_fixture(&wg_dir);
+    assert!(
+        output.status.success(),
+        "stale socket recovery failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_matching_daemon_readiness(&wg_dir);
+}
+
+#[test]
+#[serial]
+fn test_service_start_child_exit_before_readiness_is_nonzero_and_loud() {
+    let tmp = short_service_tempdir();
+    let wg_dir = setup_workgraph(tmp.path());
+    let output = Command::new(wg_binary())
+        .arg("--dir")
+        .arg(&wg_dir)
+        .args([
+            "service",
+            "start",
+            "--no-coordinator-agent",
+            "--no-supervise",
+        ])
+        .env("HOME", fake_home_for(&wg_dir))
+        .env("WG_TEST_SERVICE_EXIT_BEFORE_READY", "1")
+        .env("WG_TEST_SERVICE_START_TIMEOUT_MS", "2000")
+        .env_remove("WG_DIR")
+        .env_remove("WG_TASK_ID")
+        .env_remove("WG_AGENT_ID")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("WG SERVICE START FAILED"), "{stderr}");
+    assert!(stderr.contains("exited before readiness"), "{stderr}");
+    assert!(stderr.contains("Daemon log (last 20 lines)"), "{stderr}");
+    assert!(
+        stderr.contains("Recovery: wg service start --force"),
+        "{stderr}"
+    );
+}
+
+#[test]
+#[serial]
+fn test_service_start_readiness_timeout_is_nonzero_and_loud() {
+    let tmp = short_service_tempdir();
+    let wg_dir = setup_workgraph(tmp.path());
+    let output = Command::new(wg_binary())
+        .arg("--dir")
+        .arg(&wg_dir)
+        .args([
+            "service",
+            "start",
+            "--no-coordinator-agent",
+            "--no-supervise",
+        ])
+        .env("HOME", fake_home_for(&wg_dir))
+        .env("WG_TEST_SERVICE_START_DELAY_MS", "1500")
+        .env("WG_TEST_SERVICE_START_TIMEOUT_MS", "150")
+        .env_remove("WG_DIR")
+        .env_remove("WG_TASK_ID")
+        .env_remove("WG_AGENT_ID")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("WG SERVICE START FAILED"), "{stderr}");
+    assert!(stderr.contains("readiness timeout"), "{stderr}");
+    assert!(stderr.contains("Test hook: delaying readiness"), "{stderr}");
+    assert!(
+        stderr.contains("Recovery: wg service start --force"),
+        "{stderr}"
+    );
+    assert!(
+        !wg_dir.join("service/state.json").exists(),
+        "failed launch must not leave authoritative state"
+    );
+}
+
 #[test]
 #[serial]
 fn test_service_start_rejects_implicit_coordinator_config() {

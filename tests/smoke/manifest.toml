@@ -3160,3 +3160,10 @@ script = "scenarios/evaluation_cutover_migration.sh"
 owners = ["fix-retired-evaluation-cutover"]
 description = "Candidate-binary credential-free terminal/daemon regression for the retired evaluation cutover: a Done reviewed source plus stale Open .evaluate row reproduces the permanent downstream blocker; an unrelated score=1.0 `wg evaluate record` cannot clear it; repeated service ticks filter the retired row before promotion and emit only one notice; dry-run is write-free; apply creates an exact-byte graph backup, preserves every row/log/evaluation byte, tags the row inert, and is idempotent; then the real shell dispatcher runs downstream without rm-dep or graph editing."
 timeout_seconds = 90
+
+[[scenario]]
+name = "service_start_readiness_pty"
+script = "scenarios/service_start_readiness_pty.sh"
+owners = ["fix-service-start-readiness"]
+description = "Candidate-binary terminal regression for service startup truthfulness: a real PTY repeatedly drives the exact human `wg service stop --force` -> immediate `wg service start` flow, and every printed success is independently challenged against the state nonce, daemon PID, and live socket. A forced readiness timeout must exit nonzero and emit an unmistakable reason, bounded daemon-log tail, and concrete recovery command on stderr even with stdout redirected; JSON failure stdout remains one parseable document."
+timeout_seconds = 90
