@@ -617,6 +617,9 @@ fn gather_worktree_state(dir: &Path, task_id: &str) -> Option<WorktreeStateInfo>
 }
 
 pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
+    if super::adaptive_agency::show_virtual_if_present(dir, id, json)? {
+        return Ok(());
+    }
     let (graph, _path) = super::load_workgraph(dir)?;
 
     let task = graph.get_task_or_err(id)?;

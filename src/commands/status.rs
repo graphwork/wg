@@ -147,6 +147,14 @@ struct CompletionWaitingTask {
     candidate: String,
 }
 
+#[derive(Debug, Clone, Default, serde::Serialize)]
+struct AdaptiveStatusInfo {
+    review_attempts: usize,
+    terminal_episodes: usize,
+    expired_unsettled_attempts: usize,
+    reported_agency_cost: f64,
+}
+
 /// Active cycle timing info
 #[derive(Debug, Clone, serde::Serialize)]
 struct CycleTimingInfo {
@@ -183,6 +191,9 @@ struct StatusOutput {
     /// Accepted immutable candidates waiting only on review/finalization.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     completion_waiting: Vec<CompletionWaitingTask>,
+    /// Append-only adaptive review/learning health. A backlog never blocks a
+    /// source or its dependents.
+    adaptive: AdaptiveStatusInfo,
     /// Cached periodic sentinel snapshot. `wg status` never walks the
     /// filesystem; the daemon/doctor refreshes this bounded snapshot off the
     /// input/render path.
@@ -319,6 +330,21 @@ fn gather_status(dir: &Path, show_all: bool) -> Result<StatusOutput> {
         .then(|| worksgood::disk_sentinel::load_snapshot(dir).ok().flatten())
         .flatten();
 
+    let adaptive = worksgood::adaptive_agency::AdaptiveStore::open_existing(dir)
+        .and_then(|store| {
+            let reader = store.reader();
+            Some(AdaptiveStatusInfo {
+                review_attempts: reader.review_attempts().ok()?.len(),
+                terminal_episodes: reader.episodes().ok()?.len(),
+                expired_unsettled_attempts: reader
+                    .backlog(&Utc::now().to_rfc3339())
+                    .ok()?
+                    .expired_unsettled_attempts,
+                reported_agency_cost: reader.accounting().ok()?.all_agency_provider_cost,
+            })
+        })
+        .unwrap_or_default();
+
     Ok(StatusOutput {
         service,
         coordinator,
@@ -330,6 +356,7 @@ fn gather_status(dir: &Path, show_all: bool) -> Result<StatusOutput> {
         verify_failing,
         waiting_for_owner_release,
         completion_waiting,
+        adaptive,
         disk,
     })
 }
@@ -1143,6 +1170,19 @@ fn print_status(status: &StatusOutput) {
         println!(
             "Evaluation audit: \x1b[31m{} immutable historical below-threshold/ambiguous outcome(s)\x1b[0m — inspect with `wg show <task>`",
             status.tasks.historical_gate_audit_alerts
+        );
+    }
+
+    if status.adaptive.review_attempts > 0
+        || status.adaptive.terminal_episodes > 0
+        || status.adaptive.expired_unsettled_attempts > 0
+    {
+        println!(
+            "Adaptive agency: {} review attempts, {} terminal episodes, {} expired/unsettled, reported cost=${:.4} (never blocks source lifecycle)",
+            status.adaptive.review_attempts,
+            status.adaptive.terminal_episodes,
+            status.adaptive.expired_unsettled_attempts,
+            status.adaptive.reported_agency_cost
         );
     }
 

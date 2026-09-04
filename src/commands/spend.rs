@@ -30,6 +30,9 @@ pub fn run(dir: &Path, today_only: bool, json: bool) -> Result<()> {
     let mut review_attempts_with_usage = 0usize;
     let today = chrono::Utc::now().date_naive();
     let mut accounted_review_receipts = HashSet::new();
+    let adaptive_accounting = worksgood::adaptive_agency::AdaptiveStore::open_existing(dir)
+        .and_then(|store| store.reader().accounting().ok())
+        .unwrap_or_default();
 
     // Source-worker totals and internal review-lane totals are deliberately
     // separate. A review call is not charged to the source task. Exact stable
@@ -143,7 +146,8 @@ pub fn run(dir: &Path, today_only: bool, json: bool) -> Result<()> {
                             "total_output_tokens": review_output_tokens,
                             "attempt_count": review_attempts_with_usage,
                             "accounting_scope": "internal-review-calls-only-not-task-usage"
-                        }
+                        },
+                        "adaptive_agency": adaptive_accounting
                     })
                 })
                 .unwrap_or(serde_json::json!({
@@ -159,7 +163,8 @@ pub fn run(dir: &Path, today_only: bool, json: bool) -> Result<()> {
                         "total_output_tokens": review_output_tokens,
                         "attempt_count": review_attempts_with_usage,
                         "accounting_scope": "internal-review-calls-only-not-task-usage"
-                    }
+                    },
+                    "adaptive_agency": adaptive_accounting
                 }))
         } else {
             serde_json::json!({
@@ -175,7 +180,8 @@ pub fn run(dir: &Path, today_only: bool, json: bool) -> Result<()> {
                     "total_output_tokens": review_output_tokens,
                     "attempt_count": review_attempts_with_usage,
                     "accounting_scope": "internal-review-calls-only-not-task-usage"
-                }
+                },
+                "adaptive_agency": adaptive_accounting
             })
         };
         println!("{}", serde_json::to_string_pretty(&summary)?);
@@ -230,6 +236,30 @@ pub fn run(dir: &Path, today_only: bool, json: bool) -> Result<()> {
             format_number(review_input_tokens),
             format_number(review_output_tokens),
             review_attempts_with_usage
+        );
+        println!();
+        println!("Adaptive agency lanes (append-only, deduplicated):");
+        println!(
+            "  completion FLIP: ${:.4}, {} attempts ({} unknown cost)",
+            adaptive_accounting.completion_flip.provider_cost,
+            adaptive_accounting.completion_flip.attempt_count,
+            adaptive_accounting.completion_flip.unknown_cost_attempts
+        );
+        println!(
+            "  completion eval: ${:.4}, {} attempts ({} unknown cost)",
+            adaptive_accounting.completion_eval.provider_cost,
+            adaptive_accounting.completion_eval.attempt_count,
+            adaptive_accounting.completion_eval.unknown_cost_attempts
+        );
+        println!(
+            "  outcome scorer: ${:.4}, {} attempts ({} unknown cost)",
+            adaptive_accounting.outcome_scorer.provider_cost,
+            adaptive_accounting.outcome_scorer.attempt_count,
+            adaptive_accounting.outcome_scorer.unknown_cost_attempts
+        );
+        println!(
+            "  all-agency reported total: ${:.4}",
+            adaptive_accounting.all_agency_provider_cost
         );
         println!();
         println!("Daily breakdown:");

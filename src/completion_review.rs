@@ -85,6 +85,23 @@ pub trait ManifestReviewer {
     ) -> Result<SemanticReview, ReviewerUnavailable>;
 }
 
+/// Narrow append-only observer for a live review invocation. It receives no
+/// graph/task/lifecycle/publication handle. A start is recorded before the
+/// external call; a finish is linked only after the immutable receipt exists.
+pub trait ReviewAttemptObserver {
+    fn attempt_started(
+        &mut self,
+        reviewer_kind: ReviewerKind,
+        exact_route: &str,
+    ) -> Result<String, String>;
+
+    fn attempt_finished(
+        &mut self,
+        observer_token: &str,
+        receipt: &StoredReviewReceipt,
+    ) -> Result<(), String>;
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct ReviewUsage {
     pub input_tokens: u64,
@@ -882,6 +899,8 @@ pub enum ReviewValveError {
     Store(#[from] ArtifactStoreError),
     #[error("serialize review receipt: {0}")]
     Serialize(#[from] serde_json::Error),
+    #[error("append adaptive review attempt: {0}")]
+    Observer(String),
 }
 
 /// Run FLIP then eval over one exact resolved bundle.
@@ -927,6 +946,7 @@ pub fn run_review_valve_bound(
         None,
         None,
         &Utc::now().to_rfc3339(),
+        None,
     )
 }
 
@@ -957,6 +977,37 @@ pub fn run_review_valve_bound_reusing(
         prior_flip,
         prior_eval,
         &Utc::now().to_rfc3339(),
+        None,
+    )
+}
+
+/// Production variant that records a create-once attempt start before each
+/// external invocation and links its immutable terminal receipt afterward.
+#[allow(clippy::too_many_arguments)]
+pub fn run_review_valve_bound_reusing_observed(
+    artifact_store: &CompletionArtifactStore,
+    manifest_digest: &ContentDigest,
+    requirements_digest: &ContentDigest,
+    resolved: Result<ResolvedReviewBundle, IncompleteEvidence>,
+    flip_reviewer: &mut dyn ManifestReviewer,
+    eval_reviewer: &mut dyn ManifestReviewer,
+    binding: Option<&CompletionReviewBinding>,
+    prior_flip: Option<StoredReviewReceipt>,
+    prior_eval: Option<StoredReviewReceipt>,
+    observer: &mut dyn ReviewAttemptObserver,
+) -> Result<ReviewValveOutcome, ReviewValveError> {
+    run_review_valve_at_bound(
+        artifact_store,
+        manifest_digest,
+        requirements_digest,
+        resolved,
+        flip_reviewer,
+        eval_reviewer,
+        binding,
+        prior_flip,
+        prior_eval,
+        &Utc::now().to_rfc3339(),
+        Some(observer),
     )
 }
 
@@ -981,6 +1032,7 @@ pub fn run_review_valve_at(
         None,
         None,
         created_at,
+        None,
     )
 }
 
@@ -996,6 +1048,7 @@ fn run_review_valve_at_bound(
     prior_flip: Option<StoredReviewReceipt>,
     prior_eval: Option<StoredReviewReceipt>,
     created_at: &str,
+    mut observer: Option<&mut dyn ReviewAttemptObserver>,
 ) -> Result<ReviewValveOutcome, ReviewValveError> {
     let bundle = match resolved {
         Ok(bundle) => bundle,
@@ -1050,12 +1103,17 @@ fn run_review_valve_at_bound(
     }) {
         Some(stored) => stored,
         None => {
+            let observer_token = observer
+                .as_deref_mut()
+                .map(|observer| observer.attempt_started(ReviewerKind::Flip, flip_reviewer.route()))
+                .transpose()
+                .map_err(ReviewValveError::Observer)?;
             let flip_started = std::time::Instant::now();
             let flip_result = flip_reviewer.review(ReviewerKind::Flip, &bundle);
             let flip_duration_ms =
                 u64::try_from(flip_started.elapsed().as_millis()).unwrap_or(u64::MAX);
             let flip_execution = flip_reviewer.take_execution();
-            receipt_from_reviewer_result(
+            let stored = receipt_from_reviewer_result(
                 artifact_store,
                 manifest_digest,
                 requirements_digest,
@@ -1067,7 +1125,15 @@ fn run_review_valve_at_bound(
                 flip_execution,
                 Some(flip_duration_ms),
                 created_at,
-            )?
+            )?;
+            if let Some(token) = observer_token.as_deref()
+                && let Some(observer) = observer.as_mut()
+            {
+                observer
+                    .attempt_finished(token, &stored)
+                    .map_err(ReviewValveError::Observer)?;
+            }
+            stored
         }
     };
     match flip.receipt.verdict {
@@ -1115,12 +1181,17 @@ fn run_review_valve_at_bound(
     }) {
         Some(stored) => stored,
         None => {
+            let observer_token = observer
+                .as_deref_mut()
+                .map(|observer| observer.attempt_started(ReviewerKind::Eval, eval_reviewer.route()))
+                .transpose()
+                .map_err(ReviewValveError::Observer)?;
             let eval_started = std::time::Instant::now();
             let eval_result = eval_reviewer.review(ReviewerKind::Eval, &bundle);
             let eval_duration_ms =
                 u64::try_from(eval_started.elapsed().as_millis()).unwrap_or(u64::MAX);
             let eval_execution = eval_reviewer.take_execution();
-            receipt_from_reviewer_result(
+            let stored = receipt_from_reviewer_result(
                 artifact_store,
                 manifest_digest,
                 requirements_digest,
@@ -1132,7 +1203,15 @@ fn run_review_valve_at_bound(
                 eval_execution,
                 Some(eval_duration_ms),
                 created_at,
-            )?
+            )?;
+            if let Some(token) = observer_token.as_deref()
+                && let Some(observer) = observer.as_mut()
+            {
+                observer
+                    .attempt_finished(token, &stored)
+                    .map_err(ReviewValveError::Observer)?;
+            }
+            stored
         }
     };
     let status = match eval.receipt.verdict {

@@ -3160,3 +3160,10 @@ script = "scenarios/evaluation_cutover_migration.sh"
 owners = ["fix-retired-evaluation-cutover"]
 description = "Candidate-binary credential-free terminal/daemon regression for the retired evaluation cutover: a Done reviewed source plus stale Open .evaluate row reproduces the permanent downstream blocker; an unrelated score=1.0 `wg evaluate record` cannot clear it; repeated service ticks filter the retired row before promotion and emit only one notice; dry-run is write-free; apply creates an exact-byte graph backup, preserves every row/log/evaluation byte, tags the row inert, and is idempotent; then the real shell dispatcher runs downstream without rm-dep or graph editing."
 timeout_seconds = 90
+
+[[scenario]]
+name = "adaptive_agency_terminal_flow"
+script = "scenarios/adaptive_agency_terminal_flow.sh"
+owners = ["implement-adaptive-agency-ledger"]
+description = "Candidate-binary credential-free real terminal/Fake-Pi flow for the adaptive agency ledger: a live FLIP infrastructure timeout is retried on the exact route, candidate A is semantically rejected, candidate B supersedes it then passes FLIP+Eval, provider usage/cost and bounded findings remain visible under stable virtual non-schedulable aliases, mutation through an alias is refused without graph-byte drift, and terminal Done projects exactly one generation learning episode without synthetic .flip/.evaluate tasks or dependency edges."
+timeout_seconds = 120

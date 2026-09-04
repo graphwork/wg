@@ -74,6 +74,11 @@ fn project_outcome_advisory(dir: &Path, id: &str) {
             "Warning: terminal outcome for '{id}' is Done but its Agency observation is pending reconciliation: {error}"
         ),
     }
+    if let Err(error) = super::adaptive_agency::project_terminal_episode(dir, id) {
+        eprintln!(
+            "Warning: terminal outcome for '{id}' is committed but its adaptive learning episode is pending reconciliation: {error:#}"
+        );
+    }
 }
 
 /// Derive Done from exact immutable review plus current publication truth.
@@ -153,6 +158,12 @@ pub fn run(dir: &Path, id: &str, integration_ref: &str) -> Result<()> {
     )?;
     let manifest_digest = manifest.digest().map_err(anyhow::Error::msg)?;
     if task.status == Status::Done {
+        if let Err(error) = super::adaptive_agency::consume_current_reviews(dir, id, review_policy)
+        {
+            eprintln!(
+                "Warning: adaptive consumption receipt for already-Done '{id}' is pending reconciliation: {error:#}"
+            );
+        }
         project_outcome_advisory(dir, id);
         println!(
             "Done '{}': exact reviewed manifest {} and publication remain verified",
@@ -208,6 +219,14 @@ pub fn run(dir: &Path, id: &str, integration_ref: &str) -> Result<()> {
         &completed_at,
         &accounting,
     )?;
+    // Only this completion-controller path receives the consumption sink. The
+    // append records the exact current evidence after it was applied, but
+    // cannot itself transition or block the task.
+    if let Err(error) = super::adaptive_agency::consume_current_reviews(dir, id, review_policy) {
+        eprintln!(
+            "Warning: Done for '{id}' is committed but its adaptive consumption receipt is pending reconciliation: {error:#}"
+        );
+    }
     project_outcome_advisory(dir, id);
     println!(
         "Done '{}': {} review evidence bound manifest {} and publication is verified",

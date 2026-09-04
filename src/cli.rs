@@ -1465,6 +1465,19 @@ pub enum Commands {
         json: bool,
     },
 
+    /// Inspect append-only completion FLIP/eval attempts. These are virtual,
+    /// non-schedulable projections, never graph tasks or lifecycle authority.
+    Reviews {
+        #[command(subcommand)]
+        command: ReviewsCommands,
+    },
+
+    /// Inspect exactly-once terminal generation learning episodes.
+    Learning {
+        #[command(subcommand)]
+        command: LearningCommands,
+    },
+
     /// [DEPRECATED] Legacy provider-specific cost monitor; Pi reports supported costs.
     #[command(hide = true)]
     Openrouter {
@@ -4000,6 +4013,31 @@ pub enum PilotCommands {
         #[arg(long = "wipe-identities")]
         wipe_identities: bool,
     },
+}
+
+#[derive(Subcommand)]
+pub enum ReviewsCommands {
+    /// List immutable candidate-review attempts and their stable virtual aliases.
+    List {
+        /// Optional source task filter.
+        task: Option<String>,
+        /// Candidate history: current or all.
+        #[arg(long, default_value = "all")]
+        candidate: String,
+        /// Reviewer kind: flip or eval.
+        #[arg(long)]
+        kind: Option<String>,
+    },
+    /// Show one review attempt by stable attempt ID, run ID, or virtual alias.
+    Show { target: String },
+}
+
+#[derive(Subcommand)]
+pub enum LearningCommands {
+    /// Show the exactly-once terminal generation episode for a task or episode ID.
+    Show { target: String },
+    /// Show loud projector/review recovery backlog without touching source state.
+    Backlog,
 }
 
 #[derive(Subcommand)]
@@ -7267,6 +7305,8 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Which { .. } => "which",
         Commands::Executors { .. } => "executors",
         Commands::Spend { .. } => "spend",
+        Commands::Reviews { .. } => "reviews",
+        Commands::Learning { .. } => "learning",
         Commands::Openrouter { .. } => "openrouter",
         Commands::ApplyPlacement { .. } => "apply-placement",
         Commands::Session { .. } => "session",
@@ -7349,6 +7389,8 @@ pub fn supports_json(cmd: &Commands) -> bool {
             | Commands::Screencast { .. }
             | Commands::Cost { .. }
             | Commands::Spend { .. }
+            | Commands::Reviews { .. }
+            | Commands::Learning { .. }
             | Commands::Check
             | Commands::Doctor
             | Commands::Cleanup { .. }
