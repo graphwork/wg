@@ -3201,3 +3201,10 @@ script = "scenarios/project_local_pi_cli.sh"
 owners = ["project-local-pi-cli"]
 description = "Real terminal regression for project-local setup/profile selection: writes worksgood.toml only, preserves resource guardrails, warns on deprecated profile use, and refuses global setup mutation before touching machine state."
 timeout_seconds = 45
+
+[[scenario]]
+name = "project_local_pi_migrate"
+script = "scenarios/project_local_pi_migrate.sh"
+owners = ["project-local-pi-migrate"]
+description = "Real terminal regression for `wg migrate project-local-pi --cleanup-global-routing`: removes only stale machine-global model-routing selectors + the active-profile pointer while preserving every reusable profile definition, secret, keystore, identity, federation, and Pi-settings byte (BLAKE3-proven); config lint reports stale global routing before migrating; dry-run writes nothing; apply writes a mode-0700 receipt + mode-0600 backups with no secret values; a second run is a no-op (no new receipt, no mtime change); CAS rollback restores exact bytes and refuses after a user edit; malformed global config fails closed with no writes."
+timeout_seconds = 60

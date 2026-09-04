@@ -3561,6 +3561,25 @@ pub fn lint_config(workgraph_dir: &Path, target: LintTarget, json: bool) -> Resu
         || !merged.llm_endpoints.endpoints.is_empty()
         || merged.openrouter.is_some())
         .then_some("legacy WG model/provider data is retained for migration only and has no Pi dispatch authority");
+    // Stale machine-global routing that `wg migrate project-local-pi
+    // --cleanup-global-routing` would remove. Read-only scan; a malformed
+    // global config is surfaced as a lint finding string rather than
+    // aborting the whole lint.
+    let stale_global_routing =
+        match worksgood::migrate_project_local_pi::scan_stale_global_routing() {
+            Ok((keys, removed_active, config_exists)) => Some(serde_json::json!({
+                "global_config_exists": config_exists,
+                "removed_routing_keys": keys.iter().map(|k| serde_json::json!({
+                    "key": k.key,
+                    "category": k.category,
+                })).collect::<Vec<_>>(),
+                "removed_active_profile": removed_active,
+                "count": keys.len(),
+            })),
+            Err(error) => Some(serde_json::json!({
+                "error": format!("{error:#}"),
+            })),
+        };
     let predictive_admission_enabled = merged.coordinator.resource_management.disk_sentinel_enabled;
     let predictive_admission_guidance = if predictive_admission_enabled {
         "enabled (default): admission accounts one immutable shared baseline plus measured per-attempt physical deltas and refuses before reserve is exhausted"
@@ -3593,6 +3612,7 @@ pub fn lint_config(workgraph_dir: &Path, target: LintTarget, json: bool) -> Resu
             "pi_route_warning": pi_warning,
             "pi_model_plane_error": pi_plane_error,
             "legacy_model_plane_warning": legacy_model_plane,
+            "stale_global_routing": stale_global_routing,
             "predictive_build_admission": {
                 "enabled": predictive_admission_enabled,
                 "mode": if predictive_admission_enabled { "enabled-default" } else { "explicitly-disabled-warning" },
@@ -3688,6 +3708,41 @@ pub fn lint_config(workgraph_dir: &Path, target: LintTarget, json: bool) -> Resu
         println!();
         println!("warning: {warning}");
         total_findings += 1;
+    }
+    // Stale machine-global routing (project-local-Pi cutover leftover).
+    if let Some(payload) = &stale_global_routing {
+        println!();
+        if let Some(error) = payload.get("error").and_then(|v| v.as_str()) {
+            println!("warning: could not scan stale global routing: {error}");
+            total_findings += 1;
+        } else {
+            let count = payload.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
+            let removed_active = payload
+                .get("removed_active_profile")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if count > 0 || removed_active {
+                println!(
+                    "stale machine-global routing (inactive for projects; removed by `wg migrate project-local-pi --cleanup-global-routing`):"
+                );
+                if let Some(keys) = payload
+                    .get("removed_routing_keys")
+                    .and_then(|v| v.as_array())
+                {
+                    for k in keys {
+                        let key = k.get("key").and_then(|v| v.as_str()).unwrap_or("?");
+                        let cat = k.get("category").and_then(|v| v.as_str()).unwrap_or("");
+                        println!("  - {key} ({cat})");
+                    }
+                }
+                if removed_active {
+                    println!("  - ~/.wg/active-profile pointer (file would be removed)");
+                }
+                total_findings += count as usize + removed_active as usize;
+            } else {
+                println!("stale machine-global routing: none found.");
+            }
+        }
     }
 
     if total_findings == 0 {

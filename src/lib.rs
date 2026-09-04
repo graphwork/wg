@@ -73,6 +73,7 @@ pub mod matrix_lite;
 pub mod merge_resolution;
 pub mod messages;
 pub mod metrics;
+pub mod migrate_project_local_pi;
 pub mod model_benchmarks;
 pub mod model_scout;
 pub mod models;

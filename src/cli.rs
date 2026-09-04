@@ -6619,6 +6619,41 @@ pub enum MigrateCommands {
         #[arg(long)]
         no_copy: bool,
     },
+
+    /// Remove stale machine-global model-routing and active-profile state left
+    /// behind by the project-local-Pi cutover
+    /// (`docs/design-project-local-pi-config.md` §9.2). Preserves every
+    /// reusable profile definition, every identity/federation/secret datum,
+    /// and every other non-routing byte. Provider credentials stay where they
+    /// are (preserved inactive); WG does not adopt Pi provider authentication.
+    ///
+    /// Without `--cleanup-global-routing` the command is informational: it
+    /// reports what *would* be removed/preserved and writes nothing.
+    ///
+    /// Safe to run multiple times — the second run is a byte-for-byte no-op
+    /// that creates no backup and changes no mtime. Malformed global config
+    /// TOML refuses before any write.
+    ProjectLocalPi {
+        /// Print the plan (removed/preserved sets, backup paths, receipt) but
+        /// don't write anything. Default when invoked without `--yes`.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Skip the interactive confirmation prompt.
+        #[arg(long)]
+        yes: bool,
+
+        /// Actually perform the machine-global routing cleanup. Without this
+        /// flag the command only reports the plan.
+        #[arg(long)]
+        cleanup_global_routing: bool,
+
+        /// Restore a prior cleanup from its receipt id. Uses compare-and-swap:
+        /// a file is restored only when its current bytes still equal the
+        /// receipt's postimage, so a later user edit is never overwritten.
+        #[arg(long, conflicts_with_all = ["dry_run", "yes", "cleanup_global_routing"])]
+        rollback: Option<String>,
+    },
 }
 
 /// Subcommand variants for `wg config`.

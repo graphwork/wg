@@ -3635,6 +3635,21 @@ fn main() -> Result<()> {
                 local,
                 no_copy,
             ),
+            MigrateCommands::ProjectLocalPi {
+                dry_run,
+                yes,
+                cleanup_global_routing,
+                rollback,
+            } => worksgood::migrate_project_local_pi::run_project_local_pi_migrate(
+                &workgraph_dir,
+                worksgood::migrate_project_local_pi::ProjectLocalPiMigrateArgs {
+                    dry_run,
+                    yes,
+                    cleanup_global_routing,
+                    rollback,
+                },
+                cli.json,
+            ),
         },
         Commands::Upgrade {
             dry_run,
