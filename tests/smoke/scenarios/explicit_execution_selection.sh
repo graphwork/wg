@@ -68,12 +68,19 @@ fi
 grep -q 'WG-EXEC-UNSELECTED' "$scratch/chat-unselected.out"
 ! run_wg list | grep -q 'unselected-chat'
 
-# 6. Drive the real interactive terminal wizard. Enter accepts the scope prompt;
-#    setup intentionally recommends Pi on a fresh graph, so Up moves to the
-#    adjacent graph-only choice and Enter explicitly declines execution.
-printf '\n\033[A\n' | script -qec \
+# 6. Drive the real interactive terminal wizard. The project-local cutover
+#    removed the old scope prompt, so the route picker is now first and
+#    defaults to Pi (recommended). Up moves to the adjacent graph-only
+#    choice and Enter explicitly declines execution — no leading Enter,
+#    which would otherwise accept the Pi default and descend into the model
+#    wizard. A bounded `timeout` wrapper turns any future prompt drift into
+#    a hard FAIL instead of an indefinite hang on exhausted stdin.
+if ! printf '\033[A\n' | timeout 30s script -qec \
   "cd '$scratch/project' && env -u WG_DIR -u WG_TASK_ID -u WG_AGENT_ID -u WG_AGENT_ROLE HOME='$scratch/home' WG_GLOBAL_DIR='$scratch/global' wg --dir '$scratch/project/.wg' setup" \
-  "$scratch/setup-interactive.typescript" >/dev/null
+  "$scratch/setup-interactive.typescript" >/dev/null; then
+  echo 'FAIL: interactive setup wizard did not return within 30s (prompt drift / stale key sequence)' >&2
+  exit 1
+fi
 grep -q 'pi.*Pi (recommended)' "$scratch/setup-interactive.typescript"
 grep -q 'Not now.*keep this WG graph-only' "$scratch/setup-interactive.typescript"
 grep -q 'WG remains graph-only' "$scratch/setup-interactive.typescript"
@@ -89,15 +96,17 @@ fi
 grep -q 'route' "$scratch/setup-no-route.out"
 
 # 8. Explicit Pi selection writes ONLY handler-first Pi routing. No implicit
-#    Claude/Codex route may appear anywhere in the written config.
+#    Claude/Codex route may appear anywhere in the written config. The
+#    project-local cutover moved the project config from `.wg/config.toml`
+#    to `worksgood.toml` at the project root.
 run_wg setup --route pi --scope local --yes \
   >"$scratch/setup-pi.out" 2>"$scratch/setup-pi.err"
-grep -q 'model = "pi:openrouter:' "$scratch/project/.wg/config.toml"
-if grep -q 'model = "claude:' "$scratch/project/.wg/config.toml"; then
+grep -q 'model = "pi:openrouter:' "$scratch/project/worksgood.toml"
+if grep -q 'model = "claude:' "$scratch/project/worksgood.toml"; then
   echo 'FAIL: explicit Pi setup wrote an implicit Claude route' >&2
   exit 1
 fi
-if grep -q 'model = "codex:' "$scratch/project/.wg/config.toml"; then
+if grep -q 'model = "codex:' "$scratch/project/worksgood.toml"; then
   echo 'FAIL: explicit Pi setup wrote an implicit Codex route' >&2
   exit 1
 fi
