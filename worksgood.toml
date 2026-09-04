@@ -7,19 +7,19 @@ model = "pi:openrouter:z-ai/glm-5.2"
 model = "pi:openrouter:z-ai/glm-5.2"
 
 [models.assigner]
-model = "pi:openrouter:deepseek/deepseek-chat"
+model = "pi:openai-codex:gpt-5.6-luna"
 reasoning = "low"
 
 [models.chat_compactor]
-model = "pi:openrouter:deepseek/deepseek-chat"
+model = "pi:openai-codex:gpt-5.6-luna"
 reasoning = "low"
 
 [models.compactor]
-model = "pi:openrouter:deepseek/deepseek-chat"
+model = "pi:openai-codex:gpt-5.6-luna"
 reasoning = "low"
 
 [models.coordinator_eval]
-model = "pi:openrouter:deepseek/deepseek-chat"
+model = "pi:openai-codex:gpt-5.6-luna"
 reasoning = "low"
 
 [models.creator]
@@ -31,7 +31,7 @@ model = "pi:openrouter:z-ai/glm-5.2"
 reasoning = "high"
 
 [models.evaluator]
-model = "pi:openrouter:deepseek/deepseek-chat"
+model = "pi:openai-codex:gpt-5.6-luna"
 reasoning = "low"
 
 [models.evolver]
@@ -39,11 +39,11 @@ model = "pi:openrouter:z-ai/glm-5.2"
 reasoning = "xhigh"
 
 [models.flip_comparison]
-model = "pi:openrouter:deepseek/deepseek-chat"
+model = "pi:openai-codex:gpt-5.6-luna"
 reasoning = "low"
 
 [models.flip_inference]
-model = "pi:openrouter:deepseek/deepseek-chat"
+model = "pi:openai-codex:gpt-5.6-luna"
 reasoning = "low"
 
 [models.merger]
@@ -51,11 +51,11 @@ model = "pi:openrouter:z-ai/glm-5.2"
 reasoning = "xhigh"
 
 [models.placer]
-model = "pi:openrouter:deepseek/deepseek-chat"
+model = "pi:openai-codex:gpt-5.6-luna"
 reasoning = "low"
 
 [models.reviewer]
-model = "pi:openrouter:deepseek/deepseek-chat"
+model = "pi:openai-codex:gpt-5.6-luna"
 reasoning = "low"
 
 [models.task_agent]
@@ -63,14 +63,9 @@ model = "pi:openrouter:z-ai/glm-5.2"
 reasoning = "high"
 
 [models.triage]
-model = "pi:openrouter:deepseek/deepseek-chat"
+model = "pi:openai-codex:gpt-5.6-luna"
 reasoning = "low"
 
 [models.verification]
 model = "pi:openrouter:z-ai/glm-5.2"
 reasoning = "xhigh"
-
-[profile_origin]
-definition_fingerprint = "b3:45f38756707b1ac2d8ad34a7c768d63cb06a31a5957d9962914bcc89c3c7c1a8"
-name = "pi"
-projection_fingerprint = "b3:96472611739c4e15fa52bf05228b7d8d6399683074b263ab5812454387b6179e"
