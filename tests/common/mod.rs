@@ -4,6 +4,8 @@
 
 #![allow(dead_code)]
 
+pub mod adaptive;
+
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::{Duration, Instant};

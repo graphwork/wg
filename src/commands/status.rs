@@ -147,6 +147,17 @@ struct CompletionWaitingTask {
     candidate: String,
 }
 
+#[derive(Debug, Clone, Default, serde::Serialize)]
+struct AdaptiveStatusInfo {
+    assignment_receipts: usize,
+    review_attempts: usize,
+    terminal_episodes: usize,
+    outcome_assessments: usize,
+    active_assignment_rewards: usize,
+    expired_unsettled_attempts: usize,
+    reported_agency_cost: f64,
+}
+
 /// Active cycle timing info
 #[derive(Debug, Clone, serde::Serialize)]
 struct CycleTimingInfo {
@@ -183,6 +194,12 @@ struct StatusOutput {
     /// Accepted immutable candidates waiting only on review/finalization.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     completion_waiting: Vec<CompletionWaitingTask>,
+    /// One explicit authority map for completion review, candidate review,
+    /// scored outcomes, external scores, and legacy migration.
+    agency_authority: super::adaptive_agency::AgencyAuthorityMap,
+    /// Append-only adaptive review/learning health. A backlog never blocks a
+    /// source or its dependents.
+    adaptive: AdaptiveStatusInfo,
     /// Cached periodic sentinel snapshot. `wg status` never walks the
     /// filesystem; the daemon/doctor refreshes this bounded snapshot off the
     /// input/render path.
@@ -319,6 +336,24 @@ fn gather_status(dir: &Path, show_all: bool) -> Result<StatusOutput> {
         .then(|| worksgood::disk_sentinel::load_snapshot(dir).ok().flatten())
         .flatten();
 
+    let adaptive = worksgood::adaptive_agency::AdaptiveStore::open_existing(dir)
+        .and_then(|store| {
+            let reader = store.reader();
+            Some(AdaptiveStatusInfo {
+                assignment_receipts: reader.assignment_receipts().ok()?.len(),
+                review_attempts: reader.review_attempts().ok()?.len(),
+                terminal_episodes: reader.episodes().ok()?.len(),
+                outcome_assessments: reader.assessments().ok()?.len(),
+                active_assignment_rewards: reader.active_assignment_rewards().ok()?.len(),
+                expired_unsettled_attempts: reader
+                    .backlog(&Utc::now().to_rfc3339())
+                    .ok()?
+                    .expired_unsettled_attempts,
+                reported_agency_cost: reader.accounting().ok()?.all_agency_provider_cost,
+            })
+        })
+        .unwrap_or_default();
+
     Ok(StatusOutput {
         service,
         coordinator,
@@ -330,6 +365,8 @@ fn gather_status(dir: &Path, show_all: bool) -> Result<StatusOutput> {
         verify_failing,
         waiting_for_owner_release,
         completion_waiting,
+        agency_authority: super::adaptive_agency::authority_map(),
+        adaptive,
         disk,
     })
 }
@@ -1027,7 +1064,7 @@ fn print_status(status: &StatusOutput) {
         }
     }
     println!(
-        "Evaluation gate: completion-review={}, applicability={}, evaluator-threshold={}, FLIP-policy={}, FLIP-threshold={} (model review is non-blocking unless strict)",
+        "Completion review policy: mode={}, applicability={}, evaluator-threshold={}, FLIP-policy={}, FLIP-threshold={} (only the completion controller applies lifecycle policy)",
         status.coordinator.completion_review_policy,
         status.coordinator.eval_gate_applicability,
         status
@@ -1040,6 +1077,8 @@ fn print_status(status: &StatusOutput) {
             .flip_threshold
             .map_or_else(|| "n/a".to_string(), |value| format!("{value:.2}")),
     );
+    println!("Agency authority map:");
+    super::adaptive_agency::print_authority_map("  ");
 
     // Line 4+: Agent summary
     println!();
@@ -1143,6 +1182,24 @@ fn print_status(status: &StatusOutput) {
         println!(
             "Evaluation audit: \x1b[31m{} immutable historical below-threshold/ambiguous outcome(s)\x1b[0m — inspect with `wg show <task>`",
             status.tasks.historical_gate_audit_alerts
+        );
+    }
+
+    if status.adaptive.assignment_receipts > 0
+        || status.adaptive.review_attempts > 0
+        || status.adaptive.terminal_episodes > 0
+        || status.adaptive.outcome_assessments > 0
+        || status.adaptive.expired_unsettled_attempts > 0
+    {
+        println!(
+            "Adaptive agency: {} assignment receipts, {} candidate-review attempts, {} terminal episodes, {} outcome assessments, {} active delayed rewards, {} expired/unsettled, reported cost=${:.4} (projection backlog never blocks source lifecycle)",
+            status.adaptive.assignment_receipts,
+            status.adaptive.review_attempts,
+            status.adaptive.terminal_episodes,
+            status.adaptive.outcome_assessments,
+            status.adaptive.active_assignment_rewards,
+            status.adaptive.expired_unsettled_attempts,
+            status.adaptive.reported_agency_cost
         );
     }
 

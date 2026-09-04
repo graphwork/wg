@@ -1707,6 +1707,9 @@ fn sort_tasks_by_priority_with_features<'a>(
 
     let mut task_priorities: Vec<_> = tasks
         .into_iter()
+        // Defensive boundary for callers that bypass the ordinary ready-set
+        // query: evidence-only rows never reach promotion or ordering.
+        .filter(|task| !is_retired_agency_task(&task.id))
         .map(|task| {
             let mut effective_priority = task.priority;
 
@@ -1785,11 +1788,12 @@ fn compute_priority_inheritance(
 ) -> Priority {
     let mut highest_inherited = task.priority;
 
-    for dependent_task in graph.tasks() {
-        if dependent_task.after.contains(&task.id) {
-            if dependent_task.priority > highest_inherited {
-                highest_inherited = dependent_task.priority;
-            }
+    for dependent_task in graph
+        .tasks()
+        .filter(|dependent| !is_retired_agency_task(&dependent.id))
+    {
+        if dependent_task.after.contains(&task.id) && dependent_task.priority > highest_inherited {
+            highest_inherited = dependent_task.priority;
         }
     }
 
@@ -2649,10 +2653,32 @@ pub fn coordinator_tick(
 
     let slots_available = max_agents.saturating_sub(alive_count);
 
-    // Legacy scored-evaluation files are historical/advisory evidence only.
-    // Coordinator ticks must never upgrade them into candidate acceptance or
-    // mutate retired graph rows. `wg migrate evaluation-cutover` is the sole,
-    // versioned transition surface for these compatibility states.
+    // Verdict files are immutable evidence. Read them before taking the graph
+    // writer lock, then link/consume them in the one atomic graph transaction.
+    let legacy_migration = worksgood::eval_lifecycle::migrate_unambiguous_legacy_verdicts(dir);
+    if let Ok(count) = legacy_migration.as_ref()
+        && *count > 0
+    {
+        eprintln!(
+            "[dispatcher] linked {} unambiguous historical evaluation verdict(s)",
+            count
+        );
+    }
+    let (durable_eval_verdicts, eval_evidence_usable) = match legacy_migration {
+        Err(error) => {
+            eprintln!("[dispatcher] eval lifecycle evidence unavailable (fail-closed): {error:#}");
+            (Vec::new(), false)
+        }
+        Ok(_) => match worksgood::eval_lifecycle::load_durable_verdicts(dir) {
+            Ok(verdicts) => (verdicts, true),
+            Err(error) => {
+                eprintln!(
+                    "[dispatcher] eval lifecycle evidence unavailable (fail-closed): {error:#}"
+                );
+                (Vec::new(), false)
+            }
+        },
+    };
 
     // Phases 2.5–2.9: Graph maintenance (atomic load-modify-save).
     //
@@ -2671,11 +2697,32 @@ pub fn coordinator_tick(
         // they would have run `wg reject` already."
         modified |= migrate_pending_validation_tasks(graph);
 
-        // Pre-receipt PendingEval/FailedPendingEval and their synthetic rows
-        // are deliberately not repaired here. Automatic linkage of a generic
-        // `wg evaluate record` score was the retired cutover contradiction.
-        // The explicit migration backs up exact bytes, consumes only modern
-        // completion receipts, and otherwise prints one candidate-bound action.
+        // Phase 2.46: explicit pre-Pi reasoning migration. This is deliberately
+        // before ordinary lifecycle repair: invalid missing-reasoning bytes are
+        // never replayed against the bounded repair budget. The transaction
+        // atomically re-identifies source + satellites or changes nothing.
+        modified |= worksgood::eval_lifecycle::migrate_missing_pi_reasoning(graph, &config);
+
+        // Phases 2.47–2.48: load-only legacy verdict migration and
+        // verdict-required parent resolution. A terminal/missing evaluator is
+        // never treated as a score, and no historical row is rearmed.
+        if eval_evidence_usable {
+            modified |= worksgood::eval_lifecycle::reconcile_durable_verdicts(
+                graph,
+                &durable_eval_verdicts,
+                config.agency.eval_gate_threshold.unwrap_or(0.7),
+                config.agency.auto_rescue_on_eval_fail,
+                config.coordinator.max_verify_failures,
+                |task| {
+                    config.agency.eval_gate_all
+                        || task
+                            .description
+                            .as_deref()
+                            .map(crate::commands::deliverables::parse_deliverables)
+                            .is_some_and(|deliverables| !deliverables.is_empty())
+                },
+            );
+        }
 
         // Phase 2.5: Cycle iteration — reactivate cycles where all members are Done.
         {
@@ -4408,6 +4455,38 @@ mod tests {
             .join(worksgood::evaluation_cutover::EVALUATION_CUTOVER_DIR)
             .join("dispatcher-notices");
         assert_eq!(std::fs::read_dir(notices).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn retired_rows_never_enter_priority_or_inheritance_accounting() {
+        let config = Config::default();
+        let mut graph = WorkGraph::new();
+        let mut source = task_with_tags("work", &[]);
+        source.priority = worksgood::graph::PRIORITY_LOW;
+        let mut retired = task_with_tags(".evaluate-work", &[]);
+        retired.priority = worksgood::graph::PRIORITY_CRITICAL;
+        retired.after = vec!["work".into()];
+        graph.add_node(Node::Task(source));
+        graph.add_node(Node::Task(retired));
+
+        let source = graph.get_task("work").unwrap();
+        assert_eq!(
+            compute_priority_inheritance(source, &graph),
+            worksgood::graph::PRIORITY_LOW,
+            "retired dependent must not boost its source"
+        );
+        let sorted = sort_tasks_by_priority_with_features(
+            &graph,
+            vec![source, graph.get_task(".evaluate-work").unwrap()],
+            &config,
+        );
+        assert_eq!(
+            sorted
+                .iter()
+                .map(|task| task.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["work"]
+        );
     }
 
     #[test]

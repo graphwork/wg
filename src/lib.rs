@@ -17,6 +17,7 @@
 #[cfg(feature = "test-support")]
 extern crate self as worksgood;
 
+pub mod adaptive_agency;
 pub mod agency;
 pub mod assignment_eligibility;
 pub mod atomic_file;

@@ -480,7 +480,7 @@ When the service spawns that task, the agent's role and tradeoff are injected in
 | Option | Description |
 |--------|-------------|
 | `--clear` | Clear the agent assignment from the task |
-| `--auto` | Automatically select an agent using LLM |
+| `--auto` | Deterministically rank eligible agents from receipt-backed delayed rewards (legacy verified history is bootstrap-only) |
 
 **Example:**
 ```bash
@@ -1205,7 +1205,7 @@ Supports two modes:
 | `--generative` | Multi-trace mode: compare multiple traces to produce a version 2 (generative) function |
 | `--output <PATH>` | Write to specific path instead of `.wg/functions/` |
 | `--force` | Overwrite existing function with same name |
-| `--include-evaluations` | Include coordinator-generated evaluation and assignment tasks (`evaluate-*`, `assign-*`) that are normally filtered out |
+| `--include-evaluations` | Include retained historical synthetic evaluation/assignment rows; current candidate reviews are virtual evidence, not function tasks |
 
 **Examples:**
 ```bash
@@ -1944,9 +1944,26 @@ wg agent create "Erik" \
 
 ---
 
+### Agency review, outcome, and migration authority map
+
+| Operation | Commands | Authority |
+|---|---|---|
+| Completion review | `wg submit`, `wg done`, `wg show <task>` | Exact candidate receipts are lifecycle inputs; only the completion controller applies policy |
+| Candidate review | `wg reviews list [TASK]`, `wg reviews show <ATTEMPT-OR-ALIAS>` | Immutable virtual evidence; no graph task, edge, worker slot, retry, or lifecycle authority |
+| Terminal learning | `wg learning show <TASK-OR-EPISODE>`, `wg learning backlog` | Exactly-once episode/reward projection; backlog never blocks source work or dependents |
+| Scored outcome | `wg evaluate run/show` | Post-terminal learning score only; cannot complete, fail, reopen, retry, or publish a task |
+| External outcome | `wg evaluate record` | Outcome-scoped assertion only; cannot accept a candidate |
+| Legacy cutover | `wg migrate evaluation-cutover [--dry-run]` | Preserves old rows/logs/scores, marks obsolete rows inert, and releases only supported stale blockers |
+
+`wg --json reviews ...`, `wg --json learning ...`, and `wg --json evaluate ...`
+include an explicit `operation_kind`; external scores also include
+`adjudication_scope: "outcome"`. The legacy migration never treats an arbitrary
+score as candidate acceptance.
+
 ### `wg evaluate`
 
-Score verified terminal tasks, record external scores, or view evaluation history.
+Score already-terminal outcomes for learning, record external outcome scores, or
+view score history. This command is never completion authority.
 
 ```bash
 wg evaluate <SUBCOMMAND>
@@ -1956,8 +1973,8 @@ wg evaluate <SUBCOMMAND>
 | Subcommand | Description |
 |------------|-------------|
 | `run` | Score one receipt-backed ordinary `Done` through the exact configured Pi evaluator |
-| `record` | Record an evaluation from an external source |
-| `show` | Show evaluation history |
+| `record` | Record an outcome-scoped score from an external source; cannot accept a candidate |
+| `show` | Show scored-outcome history |
 
 ---
 
@@ -1998,7 +2015,8 @@ wg --json evaluate show my-task
 
 #### `wg evaluate record`
 
-Record an evaluation from an external source (human review, CI metrics, outcome signals).
+Record an outcome-scoped score from an external source (human review, CI metrics,
+outcome signals). It cannot accept, complete, fail, reopen, retry, or publish the task.
 
 ```bash
 wg evaluate record --task <TASK> --score <SCORE> --source <SOURCE> [OPTIONS]
@@ -2023,7 +2041,7 @@ wg evaluate record --task deploy-prod --score 0.85 --source "manual" \
 
 #### `wg evaluate show`
 
-Show evaluation history with optional filters. Rich receipt-backed records include evaluator route/reasoning, usage/cost, evidence digest, completion receipt, and source terminal observation.
+Show scored-outcome history with optional filters. Rich receipt-backed records include evaluator route/reasoning, usage/cost, evidence digest, completion receipt, and source terminal observation.
 
 ```bash
 wg evaluate show [TASK] [OPTIONS]
@@ -2238,11 +2256,10 @@ wg exec run-tests --dry-run
 
 **Failure semantics:** `wg exec --shell` runs the task command and
 transitions `open → in-progress → done` (exit 0) or `→ failed` (non-zero).
-Shell tasks are exempt from the agency pipeline (no `.assign-*`, `.flip-*`,
-or `.evaluate-*` siblings) and from LLM evaluation. They never enter
-`failed-pending-eval` — that intermediate state applies only to LLM agent
-tasks (`full` / `light` / `bare` exec modes) where an evaluator can score
-the output and rescue the task.
+Shell tasks create no synthetic `.assign-*`, `.flip-*`, or `.evaluate-*`
+siblings. Like every current task, they never enter the migration-only
+`failed-pending-eval` state. Post-terminal outcome scoring is explicit and
+cannot rescue or mutate source lifecycle.
 
 ---
 
@@ -3676,7 +3693,7 @@ wg viz [OPTIONS] [TASK_ID]...
 | `--mermaid` | Output Mermaid diagram format |
 | `--graph` | Output 2D spatial graph with box-drawing characters |
 | `-o, --output <FILE>` | Render directly to file (requires graphviz) |
-| `--show-internal` | Show internal tasks (`assign-*`, `evaluate-*`) normally hidden |
+| `--show-internal` | Show retained internal/historical rows; current review attempts remain virtual evidence |
 | `--tui` | Launch interactive TUI mode instead of static output |
 | `--no-tui` | Force static output even when stdout is an interactive terminal |
 | `--no-mouse` | Disable mouse capture in TUI mode (useful in tmux) |
@@ -3851,8 +3868,8 @@ and registry flags are hidden migration compatibility.
 | `--poll-interval <SECS>` | Set service daemon background poll interval |
 | `--coordinator-model <MODEL>` | Set exact dispatcher Pi route |
 | `--max-coordinators <N>` | Set max concurrent coordinator agents (LLM sessions). Default: 4 |
-| `--auto-evaluate <BOOL>` | Pre-receipt compatibility setting; does not create scored-evaluation graph tasks |
-| `--auto-assign <BOOL>` | Enable/disable automatic identity assignment |
+| `--auto-evaluate <BOOL>` | Candidate-observation compatibility policy; not post-terminal scoring |
+| `--auto-assign <BOOL>` | Enable bounded pre-claim ranking; the real attempt gets a receipt and no assignment graph task is created |
 | `--auto-place <BOOL>` | Enable/disable automatic placement analysis on new tasks |
 | `--auto-create <BOOL>` | Enable/disable automatic creator agent invocation |
 | `--flip-model <MODEL>` | Set both FLIP roles to the same exact Pi route |
@@ -3867,9 +3884,9 @@ and registry flags are hidden migration compatibility.
 | `--triage-model <MODEL>` | **[DEPRECATED]** Use `--set-model triage <MODEL>` instead |
 | `--triage-timeout <SECS>` | Set timeout for triage calls (default: 30) |
 | `--triage-max-log-bytes <N>` | Set max bytes for triage log reading (default: 50000) |
-| `--eval-gate-threshold <N>` | Historical persisted-pipeline compatibility threshold; it does not govern `wg evaluate run` or current completion authority |
-| `--eval-gate-all <BOOL>` | Historical persisted-pipeline compatibility switch; current scored evaluation never gates task lifecycle |
-| `--flip-enabled <BOOL>` | Enable or disable FLIP (roundtrip intent fidelity) evaluation |
+| `--eval-gate-threshold <N>` | Candidate-policy compatibility threshold; never a threshold over `wg evaluate run` outcome scores |
+| `--eval-gate-all <BOOL>` | Scope persisted candidate policy; current scored outcome never gates task lifecycle |
+| `--flip-enabled <BOOL>` | Enable/disable candidate FLIP observation policy; not outcome scoring |
 | `--flip-inference-model <MODEL>` | Model for FLIP inference phase (reconstructing prompt from output) |
 | `--flip-comparison-model <MODEL>` | Model for FLIP comparison phase (scoring similarity) |
 | `--flip-verification-threshold <N>` | Explicit finite FLIP threshold (0.0–1.0). In hard-gated persisted FLIP pipelines it is a required independent threshold; when omitted FLIP inherits `eval_gate_threshold`. Advisory pipelines retain the legacy verification trigger. |

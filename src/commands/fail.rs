@@ -353,6 +353,11 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>, class: Option<FailureClas
         "Marked '{}' as failed{} (retry #{})",
         id, reason_msg, retry_count
     );
+    if let Err(error) = super::adaptive_agency::project_terminal_episode(dir, id) {
+        eprintln!(
+            "Warning: terminal failure for '{id}' is committed but its adaptive learning episode is pending reconciliation: {error:#}"
+        );
+    }
 
     // Show retry info if max_retries is set
     if let Some(max) = max_retries {

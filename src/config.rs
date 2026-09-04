@@ -4112,18 +4112,20 @@ impl EvaluationConfig {
 /// Agency (evolutionary identity system) configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgencyConfig {
-    /// Automatically trigger evaluation when a task completes
+    /// Compatibility switch for bounded candidate observation policy. This is
+    /// separate from receipt-backed completion review and never triggers the
+    /// post-terminal scored-outcome command (`wg evaluate run`).
     #[serde(default)]
     pub auto_evaluate: bool,
 
-    /// Load/write compatibility flag for pre-receipt configs. It has no
-    /// dispatch authority: synthetic auto-assignment tasks are retired and
-    /// assignment is direct admission metadata. Remove after a versioned config
-    /// migration rewrites the key and older binaries are outside support.
+    /// Optional bounded admission selector. When enabled it performs the same
+    /// deterministic reward ranking as `wg assign --auto`, records an
+    /// attempt-bound receipt (or direct-uncomposed failure marker), and never
+    /// creates a graph task/edge or persistent readiness blocker.
     #[serde(default)]
     pub auto_assign: bool,
 
-    /// Content-hash of agent to use as assigner (None = use default pipeline)
+    /// Historical assigner principal metadata (None = deterministic selector).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assigner_agent: Option<String>,
 
@@ -4146,10 +4148,8 @@ pub struct AgencyConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placer_agent: Option<String>,
 
-    /// Include placement (dependency edge decisions) in the assignment step.
-    /// When enabled, the assignment LLM call also decides dependency edges
-    /// for the source task based on active tasks in the graph.
-    /// Default: false.
+    /// Enable the separate placement subsystem for dependency-edge proposals.
+    /// It is independent of attempt-bound identity selection. Default: false.
     #[serde(default)]
     pub auto_place: bool,
 
@@ -4218,37 +4218,26 @@ pub struct AgencyConfig {
     #[serde(default = "default_bizarre_ideation_interval")]
     pub bizarre_ideation_interval: u32,
 
-    /// Global evaluation gate threshold. When set, evaluations that score
-    /// below this threshold can reject (fail) the original task, blocking
-    /// its dependents. The gate applies to tasks with parsed deliverables,
-    /// or to all tasks when `eval_gate_all` is true. Range: 0.0–1.0.
-    /// Default: 0.7 (enabled).
+    /// Compatibility threshold for candidate-bound evaluation policy. This is
+    /// not a threshold over post-terminal Agency outcome scores. Range: 0.0–1.0.
     #[serde(
         default = "default_eval_gate_threshold",
         skip_serializing_if = "Option::is_none"
     )]
     pub eval_gate_threshold: Option<f64>,
 
-    /// When true, apply the eval gate threshold to ALL evaluated tasks,
-    /// not just tasks with parsed deliverables. Default: false.
+    /// Compatibility scope for candidate-evaluation policy. It never makes
+    /// post-terminal outcome scores authoritative. Default: false.
     #[serde(default)]
     pub eval_gate_all: bool,
 
-    /// When the eval gate rejects a task (score below threshold), also
-    /// invoke `wg rescue` automatically — creating a first-class
-    /// replacement task at the failed task's graph slot, using the
-    /// evaluator's notes as the rescue brief. The replacement inherits
-    /// the failed task's predecessors + successors; successors are
-    /// rerouted to unblock from the rescue only. This is the
-    /// "evaluation drives remediation" loop the rescue-proxy design
-    /// is built for (see docs/design/nex-as-coordinator.md and the
-    /// rescue / insert command docs). Default: true (enabled).
+    /// Load/write compatibility for the retired evaluator-authored rescue
+    /// path. Current review/scoring code never invokes graph surgery.
     #[serde(default = "default_auto_rescue_on_eval_fail")]
     pub auto_rescue_on_eval_fail: bool,
 
-    /// Enable FLIP (Fidelity via Latent Intent Probing) evaluation.
-    /// When enabled, completed tasks can be evaluated using roundtrip
-    /// intent fidelity: infer the prompt from output, then compare to actual.
+    /// Enable candidate FLIP observation policy. This is distinct from the
+    /// post-terminal scored outcome and cannot mutate task lifecycle directly.
     #[serde(default)]
     pub flip_enabled: bool,
 

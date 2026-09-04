@@ -798,7 +798,7 @@ working on one task in this graph. Other agents work on other tasks concurrently
 
 ### Task Lifecycle
 `wg add` creates a visible paused draft. `wg publish <id> --only` releases it, then tasks move through: `open` → `in-progress` → `done` / `failed` / `abandoned`.
-Some tasks have a `pending-validation` step before `done` when the agency evaluator (auto_evaluate + FLIP) routes the work for human or LLM review.
+Ordinary completion is receipt-backed: exact candidate review evidence is consumed only by the completion controller. `wg reviews` is read-only candidate evidence; `wg evaluate` scores an already-terminal outcome for learning and never changes task lifecycle. Historical `pending-eval` rows are migration-only (`wg migrate evaluation-cutover`).
 
 ### Core Commands
 
@@ -838,7 +838,7 @@ wg publish child-id --only
 
 ### Validation
 Include a `## Validation` section in task descriptions with concrete acceptance criteria. \
-The agency evaluator (auto_evaluate + FLIP) reads this section and scores the agent's output against it:
+The completion controller binds validation evidence and model review to the exact candidate; any later `wg evaluate run` score is a separate post-terminal learning signal:
 
 ```bash
 wg add \"Implement feature\" -d \"## Validation

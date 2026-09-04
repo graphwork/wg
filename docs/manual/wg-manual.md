@@ -890,7 +890,7 @@ Two configuration options streamline the agency pipeline for projects that want 
 - `auto_create` (set via `wg config --auto-create`) tells the coordinator to automatically create agent identities for new tasks based on the available roles and motivations. Without it, agents must be explicitly created and assigned.
 - `auto_place` (set via `wg config --auto-place`) enables automatic placement of newly added tasks in the dependency graph. The coordinator uses heuristics to position the task near related work, respecting any placement hints (`--place-near`, `--place-before`) provided at creation time.
 
-Both options interact with the existing `auto_assign` pipeline after release: `wg add` stages a visible draft, and `wg publish <task-id> --only` deliberately starts placement, assignment, and dispatch. No user add dispatches by itself.
+These options are separate from receipt-backed identity selection. `wg add` stages a visible draft and `wg publish <task-id> --only` releases it. If `agency.auto_assign=true`, the bounded deterministic selector runs immediately before claim and its decision is bound to the real attempt receipt; it creates no `assign-*` task or dependency edge. Selector failure records an explicit `uncomposed` decision so dispatch stays live. `auto_place` remains the distinct placement subsystem.
 
 ## Configuration: Creator Identity
 
@@ -900,7 +900,7 @@ The agency configuration supports two settings that control the identity recorde
 
 The agency model described here is the *identity layer* of the system. How these identities are dispatched to tasks—the claim-before-spawn protocol, the wrapper script, the coordinator’s tick loop—is detailed in *Section 4*. How agents are evaluated after completing work, and how evaluation data feeds back into evolution, is detailed in *Section 5*.
 
-One detail bridges the agency model and the evaluation system: every evaluation carries a `source` field. Receipt-backed Pi scoring uses `"llm:terminal-observation"`; external signals use tags such as `"outcome:sharpe"`, `"ci:test-suite"`, or `"vx:peer-id"`. The source is freeform, so performance records can retain both bounded internal assessment and deliberate external outcome data.
+One detail bridges the agency model and the evaluation system: only a scored *outcome* carries a `source` field. `wg evaluate run` writes `"llm:terminal-observation"`; explicit external signals use tags such as `"outcome:sharpe"`, `"ci:test-suite"`, or `"vx:peer-id"`. Completion review and candidate-review history are separately bound evidence and are never silently converted into those scores. Future receipt-backed assignment ranks one delayed reward from an independent terminal outcome, not a reviewer’s own candidate verdict.
 
 ---
 
@@ -930,7 +930,7 @@ Each tick has six phases:
 
 2. **Clean up dead agents and count slots.** The coordinator walks the agent registry and checks each alive agent's PID. If the process is gone, the agent is dead. Dead agents have their tasks unclaimed—the task status reverts to open, ready for re-dispatch. The coordinator then counts truly alive agents (not just registry entries, but processes with running PIDs) and compares against `max_agents`. If all slots are full, the tick ends early.
 
-3. **Build auto-assign meta-tasks.** If `auto_assign` is enabled in the agency configuration, the coordinator scans for ready tasks that have no agent identity bound to them. For each, it creates an `assign-{task-id}` meta-task that the original task is after. This meta-task, when dispatched, will spawn an assigner agent that inspects the agency's roster and picks the best fit. The meta-task is tagged `"assignment"` to prevent recursive auto-assignment—the coordinator never creates an assignment task for an assignment task.
+3. **Reconcile retired evaluation rows.** The coordinator recognizes pre-receipt `.assign-*`, `.flip-*`, `.evaluate-*`, `PendingEval`, and `FailedPendingEval` only as load/migration compatibility. It creates, rearms, and dispatches none of them. A stale condition is diagnosed once and points to `wg migrate evaluation-cutover`; arbitrary outcome scores cannot clear it.
 
 4. **Reconcile terminal observations.** The coordinator performs bounded create-once backfill for missing receipt-backed terminal observations. It does not create evaluator/FLIP graph tasks and does not call a scoring model. Scoring is an explicit post-terminal `wg evaluate run <done-task>` observation, outside task lifecycle authority.
 
@@ -957,9 +957,9 @@ Each tick has six phases:
 │  2.6 cycle_failure_restart                            │
 │  2.7 wait_resume_evaluation                           │
 │  2.8 message_triggered_resurrection                   │
-│  3.  build_auto_assign_tasks       (if enabled)       │
-│  4.  build_auto_evaluate_tasks     (if enabled)       │
-│  4.5 build_flip_verification_tasks (if enabled)       │
+│  3.  reconcile retired evaluation compatibility      │
+│  4.  project receipt-backed terminal observations     │
+│  4.5 preserve historical verdict compatibility        │
 │  4.6 auto_evolve                   (if enabled)       │
 │  4.7 auto_create                   (if enabled)       │
 │  5.  save graph → find ready tasks                    │
@@ -1066,19 +1066,25 @@ Parallelism in wg arises naturally from the graph structure. A *fan-out* (map) p
 
 These patterns are not built-in primitives. They emerge from dependency edges. A project plan that says "write five sections, then compile the manual" naturally produces a fan-out of five writer tasks followed by a fan-in to a compiler task. The coordinator handles this without any special configuration—`max_agents` determines how many of the five writers run concurrently.
 
-## Auto-Assign
+## Receipt-Backed Assignment
 
-When the agency system is active and `auto_assign` is enabled in configuration, the coordinator automates the binding of agent identities to tasks. Without auto-assign, a human must run `wg assign <task-id> <agent-hash>` for each task. With it, the coordinator handles matching.
+`wg assign <task-id> <agent-hash>` sets an explicit identity intent for the next attempt. `wg assign <task-id> --auto` deterministically ranks eligible compositions using compatible prior delayed rewards. With `agency.auto_assign=true`, the same bounded selector runs immediately before claim when no intent exists.
 
-The mechanism is indirect. The coordinator does not contain matching logic itself. Instead, it creates a blocking `assign-{task-id}` meta-task for each unassigned ready task. This meta-task is dispatched like any other—an assigner agent (itself an agency entity with its own role and motivation) is spawned to evaluate the available agents and pick the best fit. The assigner reads the agency roster via `wg agent list`, compares capabilities to task requirements, considers performance history, and calls `wg assign <task-id> <agent-hash>` followed by `wg done assign-{task-id}`.
+Claim/reservation is the commit boundary: it writes an immutable receipt binding the selected composition (or explicit `uncomposed` fallback) to the real generation, attempt ID, fence, and admission snapshot. The receipt is created before the attempt is reserved and its ID is included in lifecycle evidence. Selector failure records why dispatch is uncomposed and work proceeds; it never creates a persistent blocker.
 
-The result is a two-phase dispatch: first the assigner runs, binding an identity to the task. The assignment task completes, unblocking the original task. On the next tick, the original task is ready again—now with an agent identity attached—and the coordinator dispatches it normally.
+There is no `.assign-*` task, assignment edge, evaluator worker slot, or recursive assignment. A score affects later assignment only after an independent terminal outcome creates one active delayed reward for the one terminal episode.
 
-Meta-tasks tagged `"assignment"`, `"evaluation"`, or `"evolution"` are excluded from auto-assignment. This prevents the coordinator from creating an assignment task for an assignment task, which would recurse infinitely.
+## One Review and Outcome Authority Map
 
-## Explicit scored evaluation
+- **Completion review:** `wg submit` / `wg done` produce and consume exact candidate receipts. Only the completion controller may apply them to lifecycle/publication.
+- **Candidate review:** `wg reviews list/show` exposes immutable virtual attempts with no task status, edge, worker slot, retry, or lifecycle authority.
+- **Scored outcome:** `wg evaluate run/show` observes an already-terminal generation for learning and cannot mutate the source.
+- **External outcome:** `wg evaluate record` is outcome-scoped and cannot accept a candidate.
+- **Legacy cutover:** `wg migrate evaluation-cutover --dry-run`, then apply, preserves exact graph/history bytes, marks obsolete rows inert, and releases only supported stale blockers.
 
-The `auto_evaluate` setting is retained only for pre-receipt configuration compatibility. The current coordinator creates no evaluation meta-tasks. Normal ordinary completion projects one immutable, unscored terminal observation.
+## Explicit scored outcome
+
+The `auto_evaluate` setting names a candidate-observation compatibility policy, not the post-terminal scorer. The current coordinator creates no evaluation meta-tasks. Normal ordinary completion projects one immutable, unscored terminal observation.
 
 An operator or workflow may explicitly run `wg evaluate run <done-task>`. The command re-verifies the persisted observation, receipt-bound lifecycle event, current generation/attempt/fence, immutable candidate/reviews/output bytes, and publication. It then invokes the exact configured Pi evaluator route/reasoning once with bounded no-tools context and create-once records the seven-dimension score. Failed, Waiting, operator-accepted, unlanded, missing, stale, or unverifiable evidence is refused without changing the task.
 
@@ -1250,11 +1256,9 @@ Here is what happens, end to end, when a human operator types `wg service start 
 
 The daemon forks into the background. It opens a Unix socket, reads `config.toml` for coordinator settings, and writes its PID to the state file. Its first tick runs immediately.
 
-The tick reaps zombies (there are none yet), checks the agent registry (empty), and counts zero alive agents out of a maximum of five. If `auto_assign` is enabled, it scans for ready tasks without agent identities and creates assignment meta-tasks. If `auto_evaluate` is enabled, it creates evaluation tasks for work tasks. It saves the graph if modified, then finds ready tasks.
+The tick reaps zombies (there are none yet), checks the agent registry (empty), counts zero alive agents out of a maximum of five, reconciles retired compatibility rows and receipt-backed terminal projections, then finds ready tasks. Neither `auto_assign` nor `auto_evaluate` creates graph tasks.
 
-Suppose three tasks are ready: two assignment meta-tasks and one task that was already assigned. The coordinator spawns three agents (five slots available, three tasks ready). Each spawn follows the dispatch cycle: resolve executor, resolve model, build context, render prompt, write wrapper script, claim task, fork process, register agent.
-
-The three agents run concurrently. The two assigners examine the agency roster and bind identities. They call `wg done assign-{task-id}`, which triggers `graph_changed` IPC. The daemon wakes for an immediate tick. Now the two originally-unassigned tasks are ready (their assignment predecessors are done). The coordinator spawns two more agents. All five slots are full.
+Suppose three tasks are ready and two have no explicit identity. For each unassigned task, bounded pre-claim selection records either a deterministic composition intent or an explicit uncomposed fallback. Claim then binds that decision to the real attempt receipt before reservation. No assignment task, edge, or worker slot is created, so all three source tasks can use the available worker slots immediately.
 
 Work proceeds. Agents call `wg log` to record progress, `wg artifact` to register output files, and `wg done` when finished. Each `wg done` triggers another tick. Completed tasks unblock their dependents. The coordinator spawns new agents as slots open. If an agent crashes, the next tick detects the dead PID, triages the output, and either marks the task done, injects recovery context and reopens it, or restarts it cleanly.
 
@@ -1270,7 +1274,9 @@ The agency does not merely execute work. It learns from it.
 
 Every ordinary receipt-backed completion generates an immutable **unscored terminal observation**. A separate explicit scored evaluation may measure how well the agent performed against the task’s requirements and declared standards. Those scores accumulate into performance records on agents, roles, and motivations; observations preserve outcome evidence without inventing a score. When enough scored data exists, evolution can read the aggregate picture without confusing completion review with ground-truth scoring.
 
-This is the autopoietic core of the agency system—a structured feedback loop where work produces the data that drives its own improvement.
+This is the autopoietic core of the agency system—a structured feedback loop where work produces the data that drives its own improvement. The receipt-backed path is concrete: selection intent → attempt-bound assignment receipt → exact candidate completion review → one terminal generation episode → one independent outcome assessment → one active delayed assignment reward and evolver input. `wg learning show <task>` exposes the join. Projection failure is a loud backlog, never a source-lifecycle blocker.
+
+Section 4's authority map is normative: completion review may influence lifecycle only through the controller; candidate review is virtual evidence; scored outcome evaluation is post-terminal learning; `wg evaluate record` is outcome-scoped external input; and legacy evaluation rows are migration-only.
 
 ## Evaluation
 
@@ -1290,7 +1296,7 @@ Evaluation is the act of scoring a completed task. It answers a concrete questio
 
 The create-once envelope also records evaluator route/reasoning, Pi usage/cost, evidence digest, completion receipt, and source terminal observation.
 
-The four dimension scores are combined into a single weighted score between 0.0 and 1.0. This score is the fundamental unit of evolutionary pressure.
+The seven dimension scores accompany one finite overall score between 0.0 and 1.0. An independent receipt-backed overall score may become the delayed reward for exactly one terminal episode.
 
 ### Three-level propagation
 
@@ -1306,9 +1312,9 @@ This three-level, cross-referenced propagation creates the data structure that m
 
 ### What gets evaluated
 
-Both done and failed tasks can be evaluated. This is intentional—there is useful signal in failure. Which agents fail on which kinds of tasks reveals mismatches between identity and work that evolution can address.
+`wg evaluate run` accepts only an ordinary reviewed, receipt-backed `Done` whose publication still verifies. Failed, waiting, operator-accepted, unlanded, stale, missing, and unverifiable candidates are refused without task or score mutation. External systems may explicitly record their own outcome signal through `wg evaluate record`, but that outcome scope never becomes candidate acceptance.
 
-Human agents are tracked by the same evaluation machinery, but their evaluations are excluded from the evolution signal. The system does not attempt to “improve” humans. Human evaluation data exists for reporting and trend analysis, not for evolutionary pressure.
+Historical `PendingEval`, evaluator rejection/retry, and synthetic `.assign-*`/`.flip-*`/`.evaluate-*` rows remain load-only compatibility. Upgrade with `wg migrate evaluation-cutover --dry-run`, inspect the plan and any exact candidate-bound operator action, then apply. The replay-safe migration preserves original rows, logs, verdicts, score files, and an exact graph backup while retiring obsolete graph authority; ambiguous sources remain fail-closed.
 
 ### External evaluation sources
 
@@ -1322,7 +1328,7 @@ External evaluations enter the system through `wg evaluate record`:
       --source "outcome:sharpe" --score 0.72 \
       --notes "Realized Sharpe below target"
 
-The command requires a task in done or failed status, resolves the agent identity from the task’s assignment, and writes the evaluation to the same store as internal evaluations. It propagates to the same three levels—agent, role with context, motivation with context. From the perspective of the performance records, an external evaluation is indistinguishable from an internal one except for the source tag.
+The command requires an existing task, validates the score, resolves assignment identity when present, and writes the outcome to the Agency store. It is visibly labeled `adjudication_scope=outcome`; it cannot accept, complete, fail, reopen, retry, or publish the task. The source tag preserves its distinction from a receipt-backed model score.
 
 This is where the evolutionary signal becomes rich. Consider an agent that scores 0.91 internally (clean code, complete deliverables, good style) but 0.72 on outcome (the code it wrote performed poorly in production). The evolver sees both scores in the performance summary. The gap between internal quality and external outcome is itself a signal—it suggests the role’s desired outcome or the motivation’s trade-offs need to account for domain-specific success criteria, not just code quality. The evolver can propose a mutation that sharpens the role toward outcomes the internal evaluator cannot see.
 

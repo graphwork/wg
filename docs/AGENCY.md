@@ -72,34 +72,56 @@ Every role, tradeoff, and agent is identified by a **SHA-256 content hash** of i
 
 For display, IDs are shown as 8-character prefixes (e.g. `a3f7c21d`). All commands accept unique prefixes.
 
-## The Current Agency Loop
+## The Current Receipt-Backed Agency Loop
 
-The live loop is: explicitly bind an identity → execute the source task → record
-source-bound completion/review evidence → optionally evolve. Assignment may be
-selected explicitly with `wg assign --auto`, but the coordinator does not create
-blocking assignment or evaluator graph satellites.
+The live loop is **select composition → reserve a real attempt with its receipt →
+execute → completion-review the exact candidate → project one terminal episode →
+attach an independent outcome score → deliver delayed reward to future assignment
+and evolution**. None of those evidence records is a task or dependency edge.
 
 ```bash
-# 1. Bind identity directly (or rank the roster explicitly with --auto)
-wg assign my-task a3f7c21d
+# 0. Upgrade an old graph without deleting historical rows, logs, or scores
+wg migrate evaluation-cutover --dry-run
+wg migrate evaluation-cutover
 
-# 2. Execute and produce receipt-bound completion evidence
+# 1. Select the next-attempt identity explicitly or by deterministic reward rank
+wg assign my-task a3f7c21d
+# wg assign my-task --auto
+# wg config --auto-assign true       # same bounded selection before each claim
+
+# 2. Publish and execute; claim/reservation creates the attempt-bound receipt
+wg publish my-task --only
 wg service start
 
-# 3. Optionally attach one receipt-bound score, inspect, then evolve
+# 3. Inspect candidate evidence and the exactly-once terminal episode
+wg reviews list my-task --candidate all
+wg learning show my-task
+
+# 4. Attach one independent post-terminal score; reward/evolver input then project
 wg evaluate run my-task --dry-run
 wg evaluate run my-task
 wg evaluate show my-task
+wg learning show my-task
 wg evolve run
 ```
 
-`wg evaluate run` is a bounded observation-only Pi call over a verified `Done`
-task. It re-verifies the terminal observation, generation/attempt/fence,
-immutable completion candidate and current publication, then stores one
-create-once Agency score. It never changes the task or creates evaluator graph
-work. `wg evaluate record` remains the explicit external/manual score path.
-`auto_assign`, pre-receipt soft statuses, and synthetic evaluator/FLIP lifecycle
-fields remain compatibility-only.
+### One authority map
+
+| Operation | Command/read surface | Authority | Learning effect |
+|---|---|---|---|
+| Completion review | `wg submit`, `wg done`, source `wg show` | Exact candidate receipts are inputs; **only the completion controller** may apply them to lifecycle/publication | Trajectory evidence, never an automatic quality score |
+| Candidate review | `wg reviews list/show` and virtual `.flip-*` / `.evaluate-*` aliases | Immutable read-only evidence; no task, edge, worker slot, retry, or lifecycle authority | Review trajectory and route reliability |
+| Scored outcome | `wg evaluate run/show` | One bounded score over an already-terminal, receipt-verified generation; cannot complete, fail, reopen, retry, or publish | Independent score drives one delayed reward |
+| External outcome | `wg evaluate record` | Outcome-scoped assertion only; cannot accept a candidate | May supply an explicit external score |
+| Legacy cutover | `wg migrate evaluation-cutover` | Migration-only: preserves exact history, marks obsolete synthetic rows inert, and releases only supported stale blockers | Historical evidence stays readable but is not invented or promoted |
+
+`agency.auto_assign=true` runs the same deterministic receipt-backed ranking as
+`wg assign --auto` immediately before claim. Selector failure records an explicit
+`uncomposed` decision and dispatch remains live; it never creates `.assign-*`
+work. `agency.auto_evaluate` is a compatibility switch for candidate-observation
+policy, not the post-terminal scorer. Pre-receipt `PendingEval` /
+`FailedPendingEval` and synthetic review rows are load-only until the explicit
+cutover migration; arbitrary `wg evaluate record` scores cannot clear them.
 
 Additional automation options:
 
@@ -412,7 +434,7 @@ wg evolve run --single-shot                       # force legacy single-shot mod
 
 ```bash
 wg assign <task-id> <agent-hash>    # assign agent to task
-wg assign <task-id> --auto          # automatically select an agent using LLM
+wg assign <task-id> --auto          # deterministically rank receipt-backed delayed rewards
 wg assign <task-id> --clear         # remove assignment
 ```
 
@@ -846,31 +868,31 @@ For example, with an OpenRouter profile active, `evaluator_model = "haiku"` reso
 
 ```toml
 [agency]
-auto_evaluate = false              # enable source-bound completion review/observation
-auto_assign = false                # legacy inert key; synthetic assignment tasks are retired
-auto_place = false                 # placement policy for explicit `wg assign --auto`
+auto_evaluate = false              # candidate-observation compatibility policy; not outcome scoring
+auto_assign = false                # bounded pre-claim selection; receipt on the real attempt, no graph task
+auto_place = false                 # separate dependency-placement policy
 auto_create = false                # auto-invoke creator agent for new primitives
 auto_create_threshold = 20         # completed tasks before triggering creator again
 auto_triage = false                # auto-triage dead agents before respawning
-assigner_model = "haiku"           # model for assigner agents
-evaluator_model = "haiku"          # model for evaluator agents
+assigner_model = "haiku"           # compatibility selector route; deterministic rank needs no call
+evaluator_model = "haiku"          # compatibility route; prefer [models.evaluator] exact Pi route
 evolver_model = "opus"             # model for evolver agents
 creator_model = ""                 # model for agent-creator meta-tasks
 triage_model = "haiku"             # model for triage (default: haiku)
-assigner_agent = ""                # content-hash of assigner agent
-evaluator_agent = ""               # content-hash of evaluator agent
+assigner_agent = ""                # historical selector principal metadata
+evaluator_agent = ""               # historical evaluator principal metadata; no lifecycle authority
 evolver_agent = ""                 # content-hash of evolver agent
 creator_agent = ""                 # content-hash of agent-creator agent
 placer_agent = ""                  # content-hash of placer agent
 retention_heuristics = ""          # prose policy for retirement decisions
 triage_timeout = 30                # timeout in seconds for triage calls
 triage_max_log_bytes = 50000       # max bytes of agent log to read for triage
-# Evaluation gate settings
-eval_gate_threshold = 0.7         # evaluations below this score reject the task (None = disabled)
-eval_gate_all = false             # apply eval gate to ALL tasks, not just those tagged 'eval-gate'
+# Candidate-evaluation compatibility policy (never post-terminal outcome scores)
+eval_gate_threshold = 0.7          # threshold for candidate-bound policy (None = disabled)
+eval_gate_all = false              # scope candidate policy to every applicable task
 
-# FLIP settings
-flip_enabled = true                # enable FLIP fidelity evaluation (default: true)
+# Candidate FLIP observation policy
+flip_enabled = true                # enable candidate FLIP observation (default: true)
 flip_inference_model = "sonnet"   # model for FLIP inference phase (reconstructing prompt)
 flip_comparison_model = "haiku"   # model for FLIP comparison phase (scoring similarity)
 flip_verification_threshold = 0.7  # FLIP score below this triggers verification

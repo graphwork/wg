@@ -11,7 +11,7 @@ use worksgood::completion_review::{
     CompletionReviewBinding, ManifestReviewer, ReviewFailureClass, ReviewValveOutcome,
     ReviewValveStatus, ReviewerKind, ReviewerUnavailable, SemanticReview, StoredReviewReceipt,
     load_stored_review_receipt, load_stored_review_receipt_by_digest,
-    run_review_valve_bound_reusing,
+    run_review_valve_bound_reusing_observed,
 };
 use worksgood::completion_review_model::ExactModelReviewer;
 use worksgood::completion_task::{
@@ -393,6 +393,10 @@ pub fn run_with_reviewers(
         candidate,
         &source_accounting,
     )?;
+    // Candidate selection is durably appended before any external reviewer
+    // call. A crash can therefore recover the exact immutable candidate
+    // without fabricating a schedulable `.flip-*`/`.evaluate-*` task.
+    super::adaptive_agency::prepare_candidate(dir, id)?;
 
     let project_root = dir
         .parent()
@@ -478,7 +482,8 @@ pub fn run_with_reviewers(
         )?;
     }
 
-    let outcome = run_review_valve_bound_reusing(
+    let mut adaptive_observer = super::adaptive_agency::live_review_observer(dir, id)?;
+    let outcome = run_review_valve_bound_reusing_observed(
         &store,
         &manifest_digest,
         &requirements_digest,
@@ -488,6 +493,7 @@ pub fn run_with_reviewers(
         Some(&review_binding),
         prior_flip,
         prior_eval,
+        &mut adaptive_observer,
     )?;
     record_review_outcome(
         &graph_path,
@@ -497,6 +503,10 @@ pub fn run_with_reviewers(
         &requirements_digest,
         &outcome,
     )?;
+    // Dual-write the immutable adaptive candidate/attempt ledger. This is an
+    // observation append only: it has no graph, retry, publication, or
+    // lifecycle capability, and therefore cannot apply the verdict it records.
+    super::adaptive_agency::sync_candidate_and_reviews(dir, id)?;
     Ok(outcome)
 }
 

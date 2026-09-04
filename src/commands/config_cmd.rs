@@ -246,8 +246,14 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
         println!("  WG stores exact per-role routes + reasoning only; each CLI owns auth/models");
         println!();
         println!("[agency]");
-        println!("  auto_evaluate = {}", config.agency.auto_evaluate);
-        println!("  auto_assign = {}", config.agency.auto_assign);
+        println!(
+            "  auto_evaluate = {}  # candidate observation policy; not post-terminal scoring",
+            config.agency.auto_evaluate
+        );
+        println!(
+            "  auto_assign = {}  # bounded pre-claim selection with an attempt receipt; never a graph task",
+            config.agency.auto_assign
+        );
         println!("  auto_create = {}", config.agency.auto_create);
         if let Some(ref agent) = config.agency.assigner_agent {
             println!("  assigner_agent = \"{}\"", agent);
@@ -329,6 +335,9 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
             );
         }
         println!();
+        println!("[agency authority]");
+        super::adaptive_agency::print_authority_map("  ");
+        println!();
 
         // Unified agency agents display
         {
@@ -343,9 +352,14 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
                     } else {
                         "off"
                     }),
-                    DispatchRole::Assigner | DispatchRole::Evaluator => Some("legacy-inert"),
+                    DispatchRole::Assigner => Some(if config.agency.auto_assign {
+                        "bounded-attempt-selection"
+                    } else {
+                        "explicit-only"
+                    }),
+                    DispatchRole::Evaluator => Some("explicit-outcome-score"),
                     DispatchRole::CoordinatorEval => Some(if config.agency.auto_evaluate {
-                        "source-review"
+                        "candidate-observation"
                     } else {
                         "off"
                     }),
