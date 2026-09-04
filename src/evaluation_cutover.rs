@@ -1,9 +1,9 @@
 //! Versioned retirement boundary for pre-receipt synthetic agency graph rows.
 //!
 //! `.assign-*`, `.flip-*`, and `.evaluate-*` rows remain readable historical
-//! evidence, but a row carrying [`EVALUATION_CUTOVER_TAG`] has no scheduling or
-//! dependency authority.  The explicit migration is the only writer of the
-//! tag; merely loading an old graph never changes its meaning.
+//! evidence, but have no scheduling or dependency authority. The source task's
+//! lifecycle is authoritative even before the explicit migration adds
+//! [`EVALUATION_CUTOVER_TAG`] and normalizes legacy edges.
 
 use crate::graph::{Node, Status, Task, WorkGraph};
 use crate::identity::canonical_json;
@@ -59,9 +59,9 @@ pub fn condition_for(graph: &WorkGraph, task_id: &str) -> Option<String> {
     let task = graph.get_task(task_id)?;
     if is_retired_agency_task_id(task_id) {
         return Some(if is_cutover_inert(task) {
-            "retired synthetic agency row retained as inert historical evidence by evaluation-cutover v1; it cannot schedule work or satisfy/block dependencies".to_string()
+            "retired synthetic agency row retained as inert historical evidence by evaluation-cutover v1; its source lifecycle is authoritative".to_string()
         } else {
-            "legacy synthetic agency row still has compatibility authority; run `wg migrate evaluation-cutover`".to_string()
+            "retired synthetic agency row is already non-authoritative; run `wg migrate evaluation-cutover` to mark its history and normalize explicit edges".to_string()
         });
     }
     if matches!(task.status, Status::PendingEval | Status::FailedPendingEval) {
@@ -79,7 +79,7 @@ pub fn condition_for(graph: &WorkGraph, task_id: &str) -> Option<String> {
             )
         } else {
             format!(
-                "legacy evaluator {eval_id} can still block downstream work; run `wg migrate evaluation-cutover`; ordinary `wg evaluate record` scores cannot accept an exact candidate"
+                "legacy evaluator {eval_id} is already non-authoritative; run `wg migrate evaluation-cutover` to mark its history; ordinary `wg evaluate record` scores cannot accept an exact candidate"
             )
         }
     })

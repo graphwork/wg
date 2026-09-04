@@ -6545,25 +6545,13 @@ pub enum MigrateCommands {
     /// Retire legacy `.assign-*`, `.flip-*`, and `.evaluate-*` graph authority.
     ///
     /// Preserves exact graph bytes before mutation, retains every historical
-    /// row/log/verdict, and normalizes PendingEval states only from exact
-    /// evidence. Ambiguous sources remain fail-closed with a candidate-bound
-    /// operator action. Safe to replay.
+    /// row/log/verdict, and rewrites explicit dependencies through retired rows
+    /// to their authoritative source. Source lifecycles remain unchanged and
+    /// ambiguous soft states use the ordinary retry/recovery path. Safe to replay.
     EvaluationCutover {
-        /// Report the plan without writing a backup, receipt, or graph change.
+        /// Report the plan without writing a backup or graph change.
         #[arg(long)]
         dry_run: bool,
-
-        /// Operator-only acceptance of one ambiguous PendingEval source.
-        #[arg(long, requires_all = ["candidate", "reason"])]
-        accept: Option<String>,
-
-        /// Exact candidate printed by the dry-run/operator action.
-        #[arg(long, requires_all = ["accept", "reason"])]
-        candidate: Option<String>,
-
-        /// Auditable reason for accepting that exact candidate.
-        #[arg(long, requires_all = ["accept", "candidate"])]
-        reason: Option<String>,
     },
 
     /// Restore receipt-verifiable review identity/activity for current candidates.

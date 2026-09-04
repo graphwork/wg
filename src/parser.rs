@@ -537,9 +537,11 @@ pub struct ExactGraphBackup {
 
 /// Atomically modify a graph while first preserving its exact on-disk bytes.
 ///
-/// The same exclusive graph lock covers the read, create-once backup, lifecycle
-/// projection, and graph replacement. The backup is written and fsynced before
-/// any lifecycle or graph byte changes. A no-op creates no backup.
+/// The same exclusive graph lock covers the read, create-once backup, requested
+/// mutation, and graph replacement. The backup is written and fsynced before
+/// any graph byte changes. Unlike the generic writer, this path deliberately
+/// does not fold unrelated rebuildable projections into a historical migration.
+/// A no-op creates no backup.
 pub fn modify_graph_with_exact_backup<P, Q, F>(
     path: P,
     backup_dir: Q,
@@ -557,7 +559,8 @@ where
     let exact_bytes =
         std::fs::read(path).map_err(|error| io_at("read graph backup source", path, error))?;
     let mut graph = load_graph_inner(path)?;
-    let replayed = crate::lifecycle::replay_ledger(path, &mut graph)?;
+    // Historical migrations are intentionally projection-exact: lifecycle
+    // replay belongs to normal controllers, not to a metadata/edge rewrite.
     let before_graph = graph.clone();
     let before: HashMap<String, Task> = graph.tasks().map(|t| (t.id.clone(), t.clone())).collect();
     let modified = f(&mut graph);
@@ -603,13 +606,7 @@ where
     if modified {
         bump_interaction_timestamps(&mut graph, &before);
     }
-    let repaired = crate::completion_review::repair_current_review_projections(
-        path.parent().unwrap_or(Path::new(".")),
-        &mut graph,
-        crate::completion_review::DEFAULT_REVIEW_PROJECTION_REPAIR_LIMIT,
-    )
-    .changed();
-    if modified || replayed || repaired {
+    if modified {
         crate::lifecycle::append_new_events(path, &before_graph, &graph)?;
         save_graph_inner(&graph, path)?;
     }

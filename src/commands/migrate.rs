@@ -3,15 +3,16 @@
 //! after-edges, renames `coordinator-loop` tags to `chat-loop`, and
 //! rewrites `Coordinator: <name>` / `Coordinator N` titles.
 
-use anyhow::{Context, Result, bail};
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use anyhow::{Result, bail};
+use serde::Serialize;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::process::Command;
 
 use worksgood::chat_id::{
     CHAT_LOOP_TAG, CHAT_PREFIX, LEGACY_COORDINATOR_LOOP_TAG, LEGACY_COORDINATOR_PREFIX,
 };
-use worksgood::graph::{CompletionDisposition, LogEntry, Status, Task};
+use worksgood::graph::{LogEntry, Status, Task};
 use worksgood::parser::{load_graph, modify_graph, modify_graph_with_exact_backup};
 
 use super::graph_path;
@@ -161,17 +162,27 @@ pub fn run_completion_repair(dir: &Path, dry_run: bool, json: bool) -> Result<()
     Ok(())
 }
 
-const CUTOVER_RECEIPT_MEDIA_TYPE: &str =
-    "application/vnd.worksgood.evaluation-cutover-adjudication+json";
-
 #[derive(Debug, Clone, Serialize)]
 pub struct EvaluationCutoverSource {
     pub task_id: String,
-    pub from: String,
-    pub to: Option<String>,
+    pub status: String,
     pub evidence: String,
     pub candidate: String,
-    pub operator_action: Option<String>,
+    pub recovery_action: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct EvaluationCutoverEdgeRewrite {
+    pub task_id: String,
+    pub retired_dependency: String,
+    pub source_dependency: String,
+}
+
+#[derive(Debug, Clone)]
+struct PlannedEdgeNormalization {
+    task_id: String,
+    before: Vec<String>,
+    after: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -181,34 +192,12 @@ pub struct EvaluationCutoverReport {
     pub dry_run: bool,
     pub retired_rows: Vec<String>,
     pub newly_inert_rows: Vec<String>,
+    pub edge_rewrites: Vec<EvaluationCutoverEdgeRewrite>,
     pub sources: Vec<EvaluationCutoverSource>,
     pub preserved_verdict_files: usize,
     pub backup_path: Option<String>,
     pub backup_digest: Option<String>,
     pub changed: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct CutoverAdjudicationReceipt {
-    receipt_version: u32,
-    cutover_version: u32,
-    task_id: String,
-    generation: u64,
-    status_before: String,
-    candidate: String,
-    decision: String,
-    reason: String,
-    operator: String,
-    accepted_at: String,
-}
-
-fn completion_disposition(task: &Task) -> CompletionDisposition {
-    match task.completion_contract {
-        worksgood::graph::CompletionContract::Land => CompletionDisposition::Landed,
-        worksgood::graph::CompletionContract::Deliver => CompletionDisposition::Delivered,
-        worksgood::graph::CompletionContract::Report => CompletionDisposition::Reported,
-        worksgood::graph::CompletionContract::Explore => CompletionDisposition::Explored,
-    }
 }
 
 fn count_preserved_verdict_files(dir: &Path) -> usize {
@@ -227,74 +216,177 @@ fn count_preserved_verdict_files(dir: &Path) -> usize {
     .sum()
 }
 
-/// Return exact, receipt-backed completion evidence. Ordinary scored
-/// evaluations are intentionally not consulted here.
-fn exact_completion_evidence(dir: &Path, task: &Task) -> Option<String> {
-    let candidate = task.completion_candidate.as_ref()?;
-    let receipt = task.completion_receipt.as_deref()?;
-    let disposition = task.completion_disposition?;
+fn completion_output_identity(output: &worksgood::completion_manifest::OutputRef) -> String {
+    match output {
+        worksgood::completion_manifest::OutputRef::Git(git) => git.commit_oid.clone(),
+        worksgood::completion_manifest::OutputRef::Artifact(artifact) => {
+            artifact.content_digest.to_string()
+        }
+        worksgood::completion_manifest::OutputRef::External(external) => {
+            external.after_digest.to_string()
+        }
+    }
+}
+
+fn verify_receipt_publication(
+    dir: &Path,
+    task: &Task,
+    manifest: &worksgood::completion_manifest::CompletionManifest,
+    observed: &str,
+) -> Result<(), String> {
+    use worksgood::graph::CompletionContract;
+
+    match task.completion_contract {
+        CompletionContract::Land => {
+            let mut commits = manifest.outputs.iter().filter_map(|output| match output {
+                worksgood::completion_manifest::OutputRef::Git(git) => {
+                    Some(git.commit_oid.as_str())
+                }
+                _ => None,
+            });
+            let commit = commits
+                .next()
+                .ok_or_else(|| "Land receipt has no candidate Git output".to_string())?;
+            if commits.next().is_some() {
+                return Err("Land receipt candidate has multiple Git outputs".to_string());
+            }
+            let encoded = observed
+                .strip_prefix("git:")
+                .ok_or_else(|| "Land receipt publication is not typed as git".to_string())?;
+            let (target_ref, published_commit) = encoded
+                .rsplit_once(':')
+                .ok_or_else(|| "Land receipt publication omits target ref or commit".to_string())?;
+            if target_ref.is_empty() || published_commit != commit {
+                return Err("Land receipt publication does not bind the selected candidate".into());
+            }
+            let project = dir
+                .parent()
+                .ok_or_else(|| "workgraph directory has no project root".to_string())?;
+            let status = Command::new("git")
+                .args(["merge-base", "--is-ancestor", commit, target_ref])
+                .current_dir(project)
+                .status()
+                .map_err(|error| format!("could not verify Land publication: {error}"))?;
+            if !status.success() {
+                return Err("Land receipt publication is no longer true".to_string());
+            }
+        }
+        CompletionContract::Report | CompletionContract::Explore => {
+            let prefix = if task.completion_contract == CompletionContract::Report {
+                "artifacts:"
+            } else {
+                "exploration:"
+            };
+            let expected = format!(
+                "{}{}",
+                prefix,
+                manifest
+                    .outputs
+                    .iter()
+                    .map(completion_output_identity)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            );
+            if observed != expected {
+                return Err("receipt publication does not bind the selected outputs".to_string());
+            }
+        }
+        CompletionContract::Deliver => {
+            return Err("legacy Deliver cannot use publication-derived Done".to_string());
+        }
+    }
+    Ok(())
+}
+
+/// Parse and verify the typed historical completion receipt without applying a
+/// lifecycle transition. The migration reports this evidence, but the normal
+/// completion/retry controller remains the only authority that may consume it.
+fn verify_typed_completion_receipt(dir: &Path, task: &Task) -> Result<String, String> {
+    let candidate = task
+        .completion_candidate
+        .as_ref()
+        .ok_or_else(|| "no selected completion candidate".to_string())?;
+    let receipt_id = task
+        .completion_receipt
+        .as_deref()
+        .ok_or_else(|| "no completion receipt reference".to_string())?;
+    let disposition = task
+        .completion_disposition
+        .ok_or_else(|| "no completion disposition".to_string())?;
     if !disposition.satisfies(task.completion_contract) {
-        return None;
+        return Err("completion disposition does not satisfy the task contract".to_string());
     }
+
     let store_root = dir.join("completion/v3");
-    if !store_root.is_dir() {
-        return None;
-    }
-    let store = worksgood::completion_manifest::CompletionArtifactStore::open(&store_root).ok()?;
-    worksgood::completion_task::load_submission_bytes(&store, task).ok()?;
-    let digest = worksgood::completion_manifest::ContentDigest::parse(receipt).ok()?;
-    let receipt_path = store_root.join("objects").join(
-        digest
-            .as_str()
-            .strip_prefix("b3:")
-            .expect("parsed digest has prefix"),
-    );
-    let bytes = std::fs::read(receipt_path).ok()?;
+    let store = worksgood::completion_manifest::CompletionArtifactStore::open(&store_root)
+        .map_err(|error| format!("completion store unavailable: {error}"))?;
+    let (_, manifest, _, _) = worksgood::completion_task::load_submission_bytes(&store, task)
+        .map_err(|error| format!("selected candidate does not verify: {error}"))?;
+    let digest = worksgood::completion_manifest::ContentDigest::parse(receipt_id)
+        .map_err(|error| format!("completion receipt id is invalid: {error}"))?;
+    let object_name = digest
+        .as_str()
+        .strip_prefix("b3:")
+        .expect("parsed b3 digest has prefix");
+    let bytes = std::fs::read(store_root.join("objects").join(object_name))
+        .map_err(|error| format!("completion receipt object is unavailable: {error}"))?;
     if worksgood::completion_manifest::ContentDigest::of_bytes(&bytes) != digest {
-        return None;
+        return Err("completion receipt object digest mismatch".to_string());
     }
-    Some(format!(
-        "exact completion candidate {} with immutable acceptance receipt {}",
-        candidate.manifest.content_digest, receipt
+    let receipt: worksgood::terminal_observation::ReviewedCompletionReceipt =
+        serde_json::from_slice(&bytes)
+            .map_err(|error| format!("completion receipt is not the typed receipt: {error}"))?;
+    let manifest_digest = manifest.digest().map_err(|error| error.to_string())?;
+    let expected_flip = candidate
+        .flip_receipt
+        .as_ref()
+        .ok_or_else(|| "selected candidate has no FLIP receipt".to_string())?
+        .content_digest
+        .to_string();
+    let expected_eval = candidate
+        .eval_receipt
+        .as_ref()
+        .map(|reference| reference.content_digest.to_string());
+    if receipt.receipt_version != 1
+        || receipt.task_id != task.id
+        || receipt.generation != task.lifecycle.generation
+        || receipt.manifest_digest != manifest_digest.to_string()
+        || receipt.requirements_digest != manifest.requirements_digest.to_string()
+        || receipt.flip_receipt_digest != expected_flip
+        || receipt.eval_receipt_digest != expected_eval
+        || receipt.contract != task.completion_contract.to_string()
+        || !matches!(receipt.review_policy.as_str(), "strict" | "advisory")
+        || chrono::DateTime::parse_from_rfc3339(&receipt.completed_at).is_err()
+    {
+        return Err(
+            "typed completion receipt is stale or disagrees on task, generation, candidate, contract, or review evidence"
+                .to_string(),
+        );
+    }
+    verify_receipt_publication(dir, task, &manifest, &receipt.publication)?;
+    Ok(format!(
+        "typed receipt {receipt_id} verifies candidate {}, contract {}, disposition {:?}, and publication; lifecycle remains unchanged",
+        candidate.manifest.content_digest, task.completion_contract, disposition
     ))
 }
 
 fn source_plan(dir: &Path, task: &Task) -> EvaluationCutoverSource {
     let candidate = worksgood::evaluation_cutover::candidate_binding(task);
-    match task.status {
-        Status::PendingEval => {
-            if let Some(evidence) = exact_completion_evidence(dir, task) {
-                EvaluationCutoverSource {
-                    task_id: task.id.clone(),
-                    from: task.status.to_string(),
-                    to: Some(Status::Done.to_string()),
-                    evidence,
-                    candidate,
-                    operator_action: None,
-                }
-            } else {
-                EvaluationCutoverSource {
-                    task_id: task.id.clone(),
-                    from: task.status.to_string(),
-                    to: None,
-                    evidence: "ambiguous: no exact candidate-bound completion acceptance; manual/external quality scores do not satisfy this gate".to_string(),
-                    candidate: candidate.clone(),
-                    operator_action: Some(format!(
-                        "wg migrate evaluation-cutover --accept {} --candidate {} --reason '<why this exact candidate is accepted>'",
-                        task.id, candidate
-                    )),
-                }
-            }
+    let evidence = match verify_typed_completion_receipt(dir, task) {
+        Ok(verified) => verified,
+        Err(reason) => {
+            format!("fail-closed: {reason}; no score or content-addressed bytes imply acceptance")
         }
-        Status::FailedPendingEval => EvaluationCutoverSource {
-            task_id: task.id.clone(),
-            from: task.status.to_string(),
-            to: Some(Status::Failed.to_string()),
-            evidence: "legacy state is exact failure evidence; fail closed without interpreting any score as a pass".to_string(),
-            candidate,
-            operator_action: None,
-        },
-        _ => unreachable!("source_plan only receives legacy soft states"),
+    };
+    EvaluationCutoverSource {
+        task_id: task.id.clone(),
+        status: task.status.to_string(),
+        evidence,
+        candidate,
+        recovery_action: format!(
+            "wg retry {} --reason 'recover retired evaluation state without inferring acceptance'",
+            task.id
+        ),
     }
 }
 
@@ -305,11 +397,12 @@ fn print_evaluation_cutover_report(report: &EvaluationCutoverReport, json: bool)
     }
     println!("Operation kind: legacy_evaluation_cutover (migration-only; history preserved)");
     println!(
-        "Evaluation cutover v{}{}: retired_rows={} newly_inert={} sources={} verdict_files_preserved={} changed={}",
+        "Evaluation cutover v{}{}: retired_rows={} newly_inert={} edge_rewrites={} sources={} verdict_files_preserved={} changed={}",
         report.cutover_version,
         if report.dry_run { " dry-run" } else { "" },
         report.retired_rows.len(),
         report.newly_inert_rows.len(),
+        report.edge_rewrites.len(),
         report.sources.len(),
         report.preserved_verdict_files,
         report.changed
@@ -321,18 +414,18 @@ fn print_evaluation_cutover_report(report: &EvaluationCutoverReport, json: bool)
             report.backup_digest.as_deref().unwrap_or("unknown")
         );
     }
+    for rewrite in &report.edge_rewrites {
+        println!(
+            "  edge {}: {} -> {}",
+            rewrite.task_id, rewrite.retired_dependency, rewrite.source_dependency
+        );
+    }
     for source in &report.sources {
         println!(
-            "  {}: {} -> {} [{}] candidate={}",
-            source.task_id,
-            source.from,
-            source.to.as_deref().unwrap_or("UNCHANGED (fail-closed)"),
-            source.evidence,
-            source.candidate
+            "  {}: {} -> UNCHANGED (fail-closed) [{}] candidate={}",
+            source.task_id, source.status, source.evidence, source.candidate
         );
-        if let Some(action) = source.operator_action.as_deref() {
-            println!("    operator action: {action}");
-        }
+        println!("    recovery action: {}", source.recovery_action);
     }
     println!(
         "  legacy rows/logs remain in the graph and exact backup; evaluation/verdict files were not rewritten"
@@ -340,21 +433,9 @@ fn print_evaluation_cutover_report(report: &EvaluationCutoverReport, json: bool)
     Ok(())
 }
 
-/// Retire synthetic graph rows without deleting history and normalize legacy
-/// source soft states. `--accept/--candidate/--reason` is the explicit,
-/// immutable, candidate-bound operator adjudication for an ambiguous source.
-pub fn run_evaluation_cutover(
-    dir: &Path,
-    dry_run: bool,
-    accept: Option<&str>,
-    candidate: Option<&str>,
-    reason: Option<&str>,
-    json: bool,
-) -> Result<()> {
-    #[cfg(not(test))]
-    if accept.is_some() && std::env::var_os("WG_AGENT_ID").is_some() {
-        bail!("evaluation-cutover adjudication is refused inside a worker process");
-    }
+/// Mark retired rows as historical and normalize explicit dependencies to the
+/// corresponding source. No source lifecycle is inferred or changed.
+pub fn run_evaluation_cutover(dir: &Path, dry_run: bool, json: bool) -> Result<()> {
     let graph_file = graph_path(dir);
     let graph = load_graph(&graph_file)?;
     let mut report = EvaluationCutoverReport {
@@ -386,71 +467,47 @@ pub fn run_evaluation_cutover(
         .collect();
     report.sources.sort_by(|a, b| a.task_id.cmp(&b.task_id));
 
-    let adjudication = match (accept, candidate, reason) {
-        (None, None, None) => None,
-        (Some(task_id), Some(candidate), Some(reason)) => {
-            let reason = reason.trim();
-            if reason.is_empty() {
-                bail!("--accept requires a non-empty --reason");
+    let mut edge_plans = Vec::new();
+    for task in graph.tasks() {
+        let before = task.after.clone();
+        let mut after = Vec::with_capacity(before.len());
+        let mut seen = HashSet::new();
+        for dependency in &before {
+            let normalized = graph
+                .get_task(dependency)
+                .filter(|row| worksgood::evaluation_cutover::is_retired_agency_task_id(&row.id))
+                .and_then(|row| worksgood::evaluation_cutover::source_id(&row.id))
+                .filter(|source| !source.is_empty())
+                .unwrap_or(dependency)
+                .to_string();
+            if normalized != *dependency {
+                report.edge_rewrites.push(EvaluationCutoverEdgeRewrite {
+                    task_id: task.id.clone(),
+                    retired_dependency: dependency.clone(),
+                    source_dependency: normalized.clone(),
+                });
             }
-            let task = graph
-                .get_task(task_id)
-                .with_context(|| format!("task '{task_id}' not found"))?;
-            if task.status != Status::PendingEval {
-                bail!("task '{task_id}' is not pending-eval");
+            if seen.insert(normalized.clone()) {
+                after.push(normalized);
             }
-            let expected = worksgood::evaluation_cutover::candidate_binding(task);
-            if candidate != expected {
-                bail!(
-                    "candidate mismatch for '{task_id}': expected current exact candidate {expected}, got {candidate}"
-                );
-            }
-            Some((
-                task_id.to_string(),
-                candidate.to_string(),
-                reason.to_string(),
-            ))
         }
-        _ => bail!("--accept, --candidate, and --reason must be supplied together"),
-    };
-
-    report.changed = !report.newly_inert_rows.is_empty()
-        || report.sources.iter().any(|source| source.to.is_some())
-        || adjudication.is_some();
+        if after != before {
+            edge_plans.push(PlannedEdgeNormalization {
+                task_id: task.id.clone(),
+                before,
+                after,
+            });
+        }
+    }
+    report.edge_rewrites.sort_by(|a, b| {
+        (&a.task_id, &a.retired_dependency).cmp(&(&b.task_id, &b.retired_dependency))
+    });
+    report.changed = !report.newly_inert_rows.is_empty() || !edge_plans.is_empty();
     if dry_run || !report.changed {
         return print_evaluation_cutover_report(&report, json);
     }
 
-    let now = chrono::Utc::now().to_rfc3339();
-    let mut adjudication_receipt = None;
-    if let Some((task_id, candidate, reason)) = adjudication.as_ref() {
-        let task = graph
-            .get_task(task_id)
-            .expect("validated adjudication task");
-        let receipt = CutoverAdjudicationReceipt {
-            receipt_version: 1,
-            cutover_version: worksgood::evaluation_cutover::EVALUATION_CUTOVER_VERSION,
-            task_id: task_id.clone(),
-            generation: task.lifecycle.generation,
-            status_before: task.status.to_string(),
-            candidate: candidate.clone(),
-            decision: "accept".to_string(),
-            reason: reason.clone(),
-            operator: worksgood::current_user(),
-            accepted_at: now.clone(),
-        };
-        let bytes = worksgood::identity::canonical_json(&serde_json::to_value(&receipt)?);
-        let store = worksgood::completion_manifest::CompletionArtifactStore::open(
-            dir.join("completion/v3"),
-        )?;
-        let reference = store.put_bytes(&bytes, CUTOVER_RECEIPT_MEDIA_TYPE)?;
-        adjudication_receipt = Some(reference.content_digest.to_string());
-    }
-
-    let planned_sources = report.sources.clone();
     let inert_ids = report.newly_inert_rows.clone();
-    let adjudication_for_apply = adjudication.clone();
-    let receipt_for_apply = adjudication_receipt.clone();
     let mut refusal = None;
     let backup_dir = dir
         .join(worksgood::evaluation_cutover::EVALUATION_CUTOVER_DIR)
@@ -470,88 +527,22 @@ pub fn run_evaluation_cutover(
                     .push(worksgood::evaluation_cutover::EVALUATION_CUTOVER_TAG.to_string());
             }
         }
-        for planned in &planned_sources {
-            let Some(target) = planned.to.as_deref() else {
-                continue;
-            };
-            if adjudication_for_apply
-                .as_ref()
-                .is_some_and(|(task_id, _, _)| task_id == &planned.task_id)
-            {
-                continue;
-            }
-            let Some(task) = current.get_task_mut(&planned.task_id) else {
+        for plan in &edge_plans {
+            let Some(task) = current.get_task_mut(&plan.task_id) else {
                 refusal = Some(format!(
-                    "source '{}' disappeared during migration",
-                    planned.task_id
+                    "dependent '{}' disappeared during migration",
+                    plan.task_id
                 ));
                 return false;
             };
-            if worksgood::evaluation_cutover::candidate_binding(task) != planned.candidate
-                || task.status.to_string() != planned.from
-            {
+            if task.after != plan.before {
                 refusal = Some(format!(
-                    "source '{}' changed during migration; rerun the command",
-                    planned.task_id
+                    "dependencies for '{}' changed during migration; rerun the command",
+                    plan.task_id
                 ));
                 return false;
             }
-            match target {
-                "done" => {
-                    task.status = Status::Done;
-                    task.completion_disposition = Some(completion_disposition(task));
-                    task.completed_at.get_or_insert_with(|| now.clone());
-                }
-                "failed" => {
-                    task.status = Status::Failed;
-                    task.failure_reason.get_or_insert_with(|| {
-                        "evaluation-cutover v1 finalized legacy FailedPendingEval fail-closed"
-                            .to_string()
-                    });
-                }
-                _ => unreachable!("planned target is a status label"),
-            }
-            task.log.push(LogEntry {
-                timestamp: now.clone(),
-                actor: Some("migration:evaluation-cutover-v1".to_string()),
-                user: Some(worksgood::current_user()),
-                message: format!(
-                    "{}; preserved candidate {}",
-                    planned.evidence, planned.candidate
-                ),
-            });
-        }
-        if let Some((task_id, candidate, reason)) = adjudication_for_apply.as_ref() {
-            let Some(task) = current.get_task_mut(task_id) else {
-                refusal = Some(format!(
-                    "source '{task_id}' disappeared during adjudication"
-                ));
-                return false;
-            };
-            if task.status != Status::PendingEval
-                || worksgood::evaluation_cutover::candidate_binding(task) != *candidate
-            {
-                refusal = Some(format!(
-                    "source '{task_id}' changed before adjudication; rerun dry-run and bind the current candidate"
-                ));
-                return false;
-            }
-            let receipt = receipt_for_apply
-                .as_ref()
-                .expect("adjudication receipt created");
-            task.status = Status::Done;
-            task.completion_disposition = Some(completion_disposition(task));
-            task.completion_receipt = Some(receipt.clone());
-            task.completed_at = Some(now.clone());
-            task.failure_reason = None;
-            task.log.push(LogEntry {
-                timestamp: now.clone(),
-                actor: Some(format!("operator:{}", worksgood::current_user())),
-                user: Some(worksgood::current_user()),
-                message: format!(
-                    "Evaluation-cutover v1 operator accepted exact candidate {candidate} with immutable receipt {receipt}: {reason}"
-                ),
-            });
+            task.after.clone_from(&plan.after);
         }
         true
     })?;
@@ -878,7 +869,7 @@ mod tests {
     }
 
     #[test]
-    fn evaluation_cutover_dry_run_backup_replay_and_preservation() {
+    fn evaluation_cutover_dry_run_backup_edge_rewrite_and_preservation() {
         let tmp = TempDir::new().unwrap();
         let wg = tmp.path().join(".wg");
         let source = Task {
@@ -906,7 +897,33 @@ mod tests {
             }],
             ..Task::default()
         };
-        write_graph(tmp.path(), vec![source, evaluator]);
+        let assigner = Task {
+            id: ".assign-source".into(),
+            title: "legacy assigner".into(),
+            status: Status::Failed,
+            ..Task::default()
+        };
+        let flipper = Task {
+            id: ".flip-source".into(),
+            title: "legacy flipper".into(),
+            status: Status::Done,
+            ..Task::default()
+        };
+        let downstream = Task {
+            id: "downstream".into(),
+            title: "downstream".into(),
+            status: Status::Open,
+            after: vec![
+                ".assign-source".into(),
+                ".flip-source".into(),
+                ".evaluate-source".into(),
+            ],
+            ..Task::default()
+        };
+        write_graph(
+            tmp.path(),
+            vec![source, evaluator, assigner, flipper, downstream],
+        );
         std::fs::create_dir_all(wg.join("agency/evaluations")).unwrap();
         let verdict_path = wg.join("agency/evaluations/original.json");
         let verdict_bytes = br#"{"task_id":"source","score":1.0,"foreign":"keep exact"}"#;
@@ -914,11 +931,11 @@ mod tests {
         let graph_path = wg.join("graph.jsonl");
         let original = std::fs::read(&graph_path).unwrap();
 
-        run_evaluation_cutover(&wg, true, None, None, None, true).unwrap();
+        run_evaluation_cutover(&wg, true, true).unwrap();
         assert_eq!(std::fs::read(&graph_path).unwrap(), original);
         assert!(!wg.join("migrations/evaluation-cutover-v1").exists());
 
-        run_evaluation_cutover(&wg, false, None, None, None, true).unwrap();
+        run_evaluation_cutover(&wg, false, true).unwrap();
         let backups: Vec<_> =
             std::fs::read_dir(wg.join("migrations/evaluation-cutover-v1/backups"))
                 .unwrap()
@@ -930,16 +947,29 @@ mod tests {
         );
         assert_eq!(std::fs::read(&verdict_path).unwrap(), verdict_bytes);
         let migrated = load_graph(&graph_path).unwrap();
+        for retired in [".assign-source", ".flip-source", ".evaluate-source"] {
+            assert!(worksgood::evaluation_cutover::is_cutover_inert(
+                migrated.get_task(retired).unwrap()
+            ));
+        }
         let eval = migrated.get_task(".evaluate-source").unwrap();
-        assert!(worksgood::evaluation_cutover::is_cutover_inert(eval));
+        assert_eq!(eval.status, Status::Open);
         assert_eq!(eval.log[0].message, "original evaluator log");
         let pending = migrated.get_task("source").unwrap();
         assert_eq!(pending.status, Status::PendingEval);
         assert_eq!(pending.log[0].message, "original source log");
-        assert!(source_plan(&wg, pending).operator_action.is_some());
+        assert!(
+            source_plan(&wg, pending)
+                .recovery_action
+                .contains("wg retry")
+        );
+        assert_eq!(
+            migrated.get_task("downstream").unwrap().after,
+            vec!["source".to_string()]
+        );
 
         let once = std::fs::read(&graph_path).unwrap();
-        run_evaluation_cutover(&wg, false, None, None, None, true).unwrap();
+        run_evaluation_cutover(&wg, false, true).unwrap();
         assert_eq!(std::fs::read(&graph_path).unwrap(), once);
         assert_eq!(
             std::fs::read_dir(wg.join("migrations/evaluation-cutover-v1/backups"))
@@ -949,15 +979,19 @@ mod tests {
         );
     }
 
-    #[test]
-    fn evaluation_cutover_converts_exact_completion_receipt_to_done() {
+    fn receipt_fixture(
+        tmp: &TempDir,
+    ) -> (
+        Task,
+        worksgood::terminal_observation::ReviewedCompletionReceipt,
+    ) {
         use worksgood::completion_manifest::{
             COMPLETION_MANIFEST_VERSION, CompletionArtifactStore, CompletionManifest,
             CompletionManifestRef, EvidenceRef, OutputRef,
         };
         use worksgood::completion_task::CompletionCandidateRefs;
+        use worksgood::graph::CompletionDisposition;
 
-        let tmp = TempDir::new().unwrap();
         let wg = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg).unwrap();
         let mut source = Task {
@@ -976,6 +1010,8 @@ mod tests {
         let summary = store.put_bytes(b"summary", "text/plain").unwrap();
         let output = store.put_bytes(b"report", "text/plain").unwrap();
         let validation = store.put_bytes(b"tests passed", "text/plain").unwrap();
+        let flip = store.put_bytes(b"typed flip", "application/json").unwrap();
+        let publication = format!("artifacts:{}", output.content_digest);
         let manifest = CompletionManifest {
             manifest_version: COMPLETION_MANIFEST_VERSION,
             task_id: source.id.clone(),
@@ -994,9 +1030,9 @@ mod tests {
             }],
             worker_summary_digest: summary.content_digest.clone(),
         };
-        let manifest_bytes = manifest.canonical_bytes().unwrap();
+        let manifest_digest = manifest.digest().unwrap();
         let manifest_object = store
-            .put_bytes(&manifest_bytes, "application/json")
+            .put_bytes(&manifest.canonical_bytes().unwrap(), "application/json")
             .unwrap();
         source.completion_candidate = Some(CompletionCandidateRefs {
             manifest: CompletionManifestRef {
@@ -1008,30 +1044,112 @@ mod tests {
             worker_summary: summary,
             dependency_outputs: Vec::new(),
             review_binding: None,
-            flip_receipt: None,
+            flip_receipt: Some(flip.clone()),
             eval_receipt: None,
         });
-        let receipt = store
-            .put_bytes(b"immutable candidate acceptance", "application/json")
-            .unwrap();
-        source.completion_receipt = Some(receipt.content_digest.to_string());
         source.completion_disposition = Some(CompletionDisposition::Reported);
-        write_graph(tmp.path(), vec![source]);
+        let receipt = worksgood::terminal_observation::ReviewedCompletionReceipt {
+            receipt_version: 1,
+            task_id: source.id.clone(),
+            generation: source.lifecycle.generation,
+            manifest_digest: manifest_digest.to_string(),
+            requirements_digest: manifest.requirements_digest.to_string(),
+            flip_receipt_digest: flip.content_digest.to_string(),
+            eval_receipt_digest: None,
+            review_policy: "strict".into(),
+            contract: source.completion_contract.to_string(),
+            publication,
+            completed_at: "2026-01-01T00:00:00Z".into(),
+        };
+        (source, receipt)
+    }
 
-        run_evaluation_cutover(&wg, false, None, None, None, true).unwrap();
-        let graph = load_graph(wg.join("graph.jsonl")).unwrap();
-        let source = graph.get_task("exact-source").unwrap();
-        assert_eq!(source.status, Status::Done);
-        assert!(
-            source
-                .log
-                .iter()
-                .any(|entry| { entry.message.contains("exact completion candidate") })
+    fn attach_receipt(
+        wg: &Path,
+        task: &mut Task,
+        receipt: &worksgood::terminal_observation::ReviewedCompletionReceipt,
+    ) {
+        let store =
+            worksgood::completion_manifest::CompletionArtifactStore::open(wg.join("completion/v3"))
+                .unwrap();
+        let bytes = worksgood::identity::canonical_json(&serde_json::to_value(receipt).unwrap());
+        task.completion_receipt = Some(
+            store
+                .put_bytes(&bytes, "application/vnd.worksgood.completion-receipt+json")
+                .unwrap()
+                .content_digest
+                .to_string(),
         );
     }
 
     #[test]
-    fn evaluation_cutover_failed_state_and_candidate_bound_adjudication() {
+    fn typed_receipt_binding_rejects_arbitrary_and_every_mismatched_field() {
+        let tmp = TempDir::new().unwrap();
+        let wg = tmp.path().join(".wg");
+        let (mut source, receipt) = receipt_fixture(&tmp);
+        attach_receipt(&wg, &mut source, &receipt);
+        assert!(verify_typed_completion_receipt(&wg, &source).is_ok());
+
+        let store =
+            worksgood::completion_manifest::CompletionArtifactStore::open(wg.join("completion/v3"))
+                .unwrap();
+        let arbitrary = store
+            .put_bytes(b"arbitrary CAS bytes", "application/json")
+            .unwrap();
+        let mut arbitrary_source = source.clone();
+        arbitrary_source.completion_receipt = Some(arbitrary.content_digest.to_string());
+        assert!(verify_typed_completion_receipt(&wg, &arbitrary_source).is_err());
+
+        for (label, mutate) in [
+            ("task", 0_u8),
+            ("generation", 1),
+            ("candidate", 2),
+            ("contract", 3),
+            ("publication", 4),
+            ("stale", 5),
+        ] {
+            let mut bad = receipt.clone();
+            match mutate {
+                0 => bad.task_id = "other-task".into(),
+                1 => bad.generation += 1,
+                2 => bad.manifest_digest = format!("b3:{}", "0".repeat(64)),
+                3 => bad.contract = "land".into(),
+                4 => bad.publication = format!("artifacts:b3:{}", "1".repeat(64)),
+                5 => {
+                    bad.generation = source.lifecycle.generation + 2;
+                    bad.completed_at = "2020-01-01T00:00:00Z".into();
+                }
+                _ => unreachable!(),
+            }
+            let mut candidate = source.clone();
+            attach_receipt(&wg, &mut candidate, &bad);
+            assert!(
+                verify_typed_completion_receipt(&wg, &candidate).is_err(),
+                "{label} mismatch was accepted"
+            );
+        }
+
+        let mut wrong_disposition = source.clone();
+        wrong_disposition.completion_disposition =
+            Some(worksgood::graph::CompletionDisposition::Landed);
+        assert!(verify_typed_completion_receipt(&wg, &wrong_disposition).is_err());
+
+        // Even a fully verified dangling receipt is evidence only here: the
+        // cutover never invents the lifecycle transition that consumes it.
+        write_graph(tmp.path(), vec![source]);
+        run_evaluation_cutover(&wg, false, true).unwrap();
+        assert_eq!(
+            load_graph(wg.join("graph.jsonl"))
+                .unwrap()
+                .get_task("exact-source")
+                .unwrap()
+                .status,
+            Status::PendingEval
+        );
+    }
+
+    #[test]
+    fn evaluation_cutover_never_adjudicates_pending_or_failed_pending_sources() {
         let tmp = TempDir::new().unwrap();
         let wg = tmp.path().join(".wg");
         let failed = Task {
@@ -1047,46 +1165,36 @@ mod tests {
             status: Status::PendingEval,
             ..Task::default()
         };
-        write_graph(tmp.path(), vec![failed, pending]);
-        run_evaluation_cutover(&wg, false, None, None, None, true).unwrap();
+        let evaluator = Task {
+            id: ".evaluate-pending-source".into(),
+            title: "retired".into(),
+            status: Status::Open,
+            ..Task::default()
+        };
+        write_graph(tmp.path(), vec![failed, pending, evaluator]);
+        run_evaluation_cutover(&wg, false, true).unwrap();
         let graph = load_graph(wg.join("graph.jsonl")).unwrap();
         assert_eq!(
             graph.get_task("failed-source").unwrap().status,
-            Status::Failed
+            Status::FailedPendingEval
         );
         assert_eq!(
             graph.get_task("pending-source").unwrap().status,
             Status::PendingEval
         );
-        let candidate = worksgood::evaluation_cutover::candidate_binding(
-            graph.get_task("pending-source").unwrap(),
+        assert_eq!(
+            graph
+                .get_task("failed-source")
+                .unwrap()
+                .failure_reason
+                .as_deref(),
+            Some("worker exited 9")
         );
-        let wrong = run_evaluation_cutover(
-            &wg,
-            false,
-            Some("pending-source"),
-            Some("b3:0000000000000000000000000000000000000000000000000000000000000000"),
-            Some("reviewed exact legacy bytes"),
-            true,
-        )
-        .unwrap_err();
-        assert!(format!("{wrong:#}").contains("candidate mismatch"));
-        run_evaluation_cutover(
-            &wg,
-            false,
-            Some("pending-source"),
-            Some(&candidate),
-            Some("reviewed exact legacy bytes"),
-            true,
-        )
-        .unwrap();
-        let accepted = load_graph(wg.join("graph.jsonl")).unwrap();
-        let accepted = accepted.get_task("pending-source").unwrap();
-        assert_eq!(accepted.status, Status::Done);
-        let receipt = accepted.completion_receipt.as_deref().unwrap();
-        assert!(accepted.log.iter().any(|entry| {
-            entry.message.contains(&candidate) && entry.message.contains(receipt)
-        }));
+        assert!(
+            source_plan(&wg, graph.get_task("pending-source").unwrap())
+                .recovery_action
+                .contains("wg retry")
+        );
     }
 
     #[test]
