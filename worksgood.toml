@@ -1,10 +1,10 @@
 schema_version = 1
 
 [agent]
-model = "pi:openrouter:z-ai/glm-5.2"
+model = "pi:openai-codex:gpt-5.6-sol"
 
 [dispatcher]
-model = "pi:openrouter:z-ai/glm-5.2"
+model = "pi:openai-codex:gpt-5.6-sol"
 
 [models.assigner]
 model = "pi:openai-codex:gpt-5.6-luna"
@@ -23,11 +23,11 @@ model = "pi:openai-codex:gpt-5.6-luna"
 reasoning = "low"
 
 [models.creator]
-model = "pi:openrouter:z-ai/glm-5.2"
+model = "pi:openai-codex:gpt-5.6-sol"
 reasoning = "xhigh"
 
 [models.default]
-model = "pi:openrouter:z-ai/glm-5.2"
+model = "pi:openai-codex:gpt-5.6-sol"
 reasoning = "high"
 
 [models.evaluator]
@@ -35,7 +35,7 @@ model = "pi:openai-codex:gpt-5.6-luna"
 reasoning = "low"
 
 [models.evolver]
-model = "pi:openrouter:z-ai/glm-5.2"
+model = "pi:openai-codex:gpt-5.6-sol"
 reasoning = "xhigh"
 
 [models.flip_comparison]
@@ -47,7 +47,7 @@ model = "pi:openai-codex:gpt-5.6-luna"
 reasoning = "low"
 
 [models.merger]
-model = "pi:openrouter:z-ai/glm-5.2"
+model = "pi:openai-codex:gpt-5.6-sol"
 reasoning = "xhigh"
 
 [models.placer]
@@ -59,7 +59,7 @@ model = "pi:openai-codex:gpt-5.6-luna"
 reasoning = "low"
 
 [models.task_agent]
-model = "pi:openrouter:z-ai/glm-5.2"
+model = "pi:openai-codex:gpt-5.6-sol"
 reasoning = "high"
 
 [models.triage]
@@ -67,5 +67,5 @@ model = "pi:openai-codex:gpt-5.6-luna"
 reasoning = "low"
 
 [models.verification]
-model = "pi:openrouter:z-ai/glm-5.2"
+model = "pi:openai-codex:gpt-5.6-sol"
 reasoning = "xhigh"
