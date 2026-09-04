@@ -24737,7 +24737,7 @@ impl VizApp {
         // ── 6. Agency ──
         entries.push(ConfigEntry {
             key: "agency.auto_assign".into(),
-            label: "Auto-assign".into(),
+            label: "Auto-assign (attempt receipt)".into(),
             value: if config.agency.auto_assign {
                 "on".into()
             } else {
@@ -24748,7 +24748,7 @@ impl VizApp {
         });
         entries.push(ConfigEntry {
             key: "agency.auto_evaluate".into(),
-            label: "Auto-evaluate".into(),
+            label: "Candidate observation policy".into(),
             value: if config.agency.auto_evaluate {
                 "on".into()
             } else {
@@ -24781,7 +24781,7 @@ impl VizApp {
         });
         entries.push(ConfigEntry {
             key: "agency.assigner_agent".into(),
-            label: "Assigner agent".into(),
+            label: "Assigner principal (legacy metadata)".into(),
             value: config
                 .agency
                 .assigner_agent
@@ -24792,7 +24792,7 @@ impl VizApp {
         });
         entries.push(ConfigEntry {
             key: "agency.evaluator_agent".into(),
-            label: "Evaluator agent".into(),
+            label: "Evaluator principal (legacy metadata)".into(),
             value: config
                 .agency
                 .evaluator_agent
@@ -24865,7 +24865,7 @@ impl VizApp {
         });
         entries.push(ConfigEntry {
             key: "agency.flip_enabled".into(),
-            label: "FLIP enabled".into(),
+            label: "Candidate FLIP policy".into(),
             value: if config.agency.flip_enabled {
                 "on".into()
             } else {
@@ -24887,7 +24887,7 @@ impl VizApp {
         });
         entries.push(ConfigEntry {
             key: "agency.eval_gate_threshold".into(),
-            label: "Eval gate threshold".into(),
+            label: "Candidate eval threshold".into(),
             value: config
                 .agency
                 .eval_gate_threshold
@@ -24898,7 +24898,7 @@ impl VizApp {
         });
         entries.push(ConfigEntry {
             key: "agency.eval_gate_all".into(),
-            label: "Eval gate all".into(),
+            label: "Candidate eval all".into(),
             value: if config.agency.eval_gate_all {
                 "on".into()
             } else {

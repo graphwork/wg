@@ -1465,14 +1465,14 @@ pub enum Commands {
         json: bool,
     },
 
-    /// Inspect append-only completion FLIP/eval attempts. These are virtual,
-    /// non-schedulable projections, never graph tasks or lifecycle authority.
+    /// Inspect immutable candidate reviews. Virtual evidence only: never graph
+    /// tasks or lifecycle authority (completion controller remains authoritative).
     Reviews {
         #[command(subcommand)]
         command: ReviewsCommands,
     },
 
-    /// Inspect exactly-once terminal generation learning episodes.
+    /// Inspect terminal learning episodes, outcome assessments, and delayed rewards.
     Learning {
         #[command(subcommand)]
         command: LearningCommands,
@@ -1679,7 +1679,7 @@ pub enum Commands {
         command: TradeoffCommands,
     },
 
-    /// Assign an agent to a task
+    /// Set the next-attempt identity intent; --auto uses receipt-backed reward ranking
     Assign {
         /// Task ID to assign agent to
         task: String,
@@ -1842,7 +1842,7 @@ pub enum Commands {
         reasoning: Option<String>,
     },
 
-    /// Score verified terminal tasks, record external scores, and view history
+    /// Score already-terminal outcomes for learning; never changes task lifecycle
     Evaluate {
         #[command(subcommand)]
         command: EvaluateCommands,
@@ -1982,19 +1982,20 @@ pub enum Commands {
         #[arg(long)]
         room: Option<String>,
 
-        /// Enable/disable automatic evaluation on task completion
+        /// Enable/disable automatic candidate observation (not post-terminal scoring)
         #[arg(long)]
         auto_evaluate: Option<bool>,
 
-        /// Enable/disable automatic identity assignment when spawning agents
+        /// Enable/disable bounded pre-claim identity selection. The decision is
+        /// recorded in the real attempt receipt; no assignment graph task is created.
         #[arg(long)]
         auto_assign: Option<bool>,
 
-        /// Set assigner agent (content-hash)
+        /// Set historical assigner identity metadata (content-hash)
         #[arg(long)]
         assigner_agent: Option<String>,
 
-        /// Set evaluator agent (content-hash)
+        /// Set historical evaluator identity metadata (content-hash)
         #[arg(long)]
         evaluator_agent: Option<String>,
 
@@ -2042,17 +2043,16 @@ pub enum Commands {
         #[arg(long, name = "viz-edge-color")]
         viz_edge_color: Option<String>,
 
-        /// Set the evaluation gate threshold (0.0–1.0). Evaluations below this
-        /// score can reject tasks with parsed deliverables, or all tasks when
-        /// --eval-gate-all is set. Tags are labels only.
+        /// Compatibility threshold for persisted candidate-evaluation policy
+        /// (0.0–1.0). It never governs post-terminal `wg evaluate run` scores.
         #[arg(long, name = "eval-gate-threshold")]
         eval_gate_threshold: Option<f64>,
 
-        /// Apply eval gate to ALL evaluated tasks, not just tasks with deliverables
+        /// Apply persisted candidate-evaluation policy to all applicable candidates
         #[arg(long, name = "eval-gate-all")]
         eval_gate_all: Option<bool>,
 
-        /// Enable or disable FLIP (roundtrip intent fidelity) evaluation
+        /// Enable/disable candidate FLIP observation policy; not outcome scoring
         #[arg(long, name = "flip-enabled")]
         flip_enabled: Option<bool>,
 
@@ -4017,7 +4017,7 @@ pub enum PilotCommands {
 
 #[derive(Subcommand)]
 pub enum ReviewsCommands {
-    /// List immutable candidate-review attempts and their stable virtual aliases.
+    /// List immutable candidate-review evidence and stable virtual aliases.
     List {
         /// Optional source task filter.
         task: Option<String>,
@@ -4731,7 +4731,7 @@ pub enum UserCommands {
 
 #[derive(Subcommand)]
 pub enum EvaluateCommands {
-    /// Score one receipt-backed Done task through the exact configured Pi evaluator
+    /// Attach one receipt-backed scored outcome to an already-Done task
     Run {
         /// Done task whose terminal observation and publication evidence will be scored
         task: String,
@@ -4740,7 +4740,7 @@ pub enum EvaluateCommands {
         dry_run: bool,
     },
 
-    /// Record an evaluation from an external source
+    /// Record an external outcome-scoped score; it cannot accept a candidate
     Record {
         /// Task ID
         #[arg(long)]
@@ -4765,7 +4765,7 @@ pub enum EvaluateCommands {
         command: EvaluationRolloutCommands,
     },
 
-    /// Show scored evaluation history, including route, usage, and terminal evidence
+    /// Show scored outcomes, including route, usage, and terminal evidence
     Show {
         /// Show both task-level and org-level scores side by side for this task
         #[arg(value_name = "TASK")]
@@ -6683,7 +6683,7 @@ pub enum ConfigSubcommand {
     ///   wg config set coordinator.max_agents 4
     ///   wg config set coordinator.registry_refresh_interval 0
     ///   wg config set worker_control.mode scoped   # opt into own-task-only local workers
-    ///   wg config set agency.auto_evaluate true --global
+    ///   wg config set agency.auto_assign true --global  # receipt-backed admission selection
     ///   wg config set tiers.fast "pi:openrouter:deepseek/deepseek-chat"
     Set {
         /// Dotted TOML key (e.g. `coordinator.max_agents`, `agency.auto_assign`).

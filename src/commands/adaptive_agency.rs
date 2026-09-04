@@ -1,5 +1,7 @@
 use anyhow::{Context, Result, bail};
 use chrono::{Duration, Utc};
+use serde::Serialize;
+use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
 use worksgood::adaptive_agency::{
@@ -18,6 +20,47 @@ use worksgood::graph::{Status, Task};
 use worksgood::identity::canonical_json;
 use worksgood::parser::load_graph;
 use worksgood::simple_land::ReviewVerdict;
+
+/// One read-side map for the similarly named agency/review surfaces. The
+/// completion controller remains the sole writer of ordinary source lifecycle.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub(crate) struct AgencyAuthorityMap {
+    pub completion_review: &'static str,
+    pub candidate_review: &'static str,
+    pub scored_outcome: &'static str,
+    pub external_outcome: &'static str,
+    pub legacy_evaluation: &'static str,
+}
+
+pub(crate) fn authority_map() -> AgencyAuthorityMap {
+    AgencyAuthorityMap {
+        completion_review: "exact candidate receipts; completion controller alone applies lifecycle policy",
+        candidate_review: "wg reviews; immutable virtual evidence with no task/lifecycle authority",
+        scored_outcome: "wg evaluate run/show; post-terminal learning signal with no task/lifecycle authority",
+        external_outcome: "wg evaluate record; outcome-scoped score that cannot accept a candidate",
+        legacy_evaluation: "wg migrate evaluation-cutover; preserves history and retires obsolete graph authority",
+    }
+}
+
+pub(crate) fn print_authority_map(indent: &str) {
+    let map = authority_map();
+    println!("{indent}completion_review = {}", map.completion_review);
+    println!("{indent}candidate_review = {}", map.candidate_review);
+    println!("{indent}scored_outcome = {}", map.scored_outcome);
+    println!("{indent}external_outcome = {}", map.external_outcome);
+    println!("{indent}legacy_evaluation = {}", map.legacy_evaluation);
+}
+
+fn operation_value<T: Serialize>(value: &T, operation_kind: &str) -> Result<Value> {
+    let mut value = serde_json::to_value(value)?;
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "operation_kind".to_string(),
+            Value::String(operation_kind.to_string()),
+        );
+    }
+    Ok(value)
+}
 
 pub(crate) struct LiveReviewObserver {
     adaptive: AdaptiveStore,
@@ -483,6 +526,10 @@ pub fn run_reviews_list(
         attempts.retain(|attempt| attempt.reviewer_kind == expected);
     }
     if json {
+        let attempts = attempts
+            .iter()
+            .map(|attempt| operation_value(attempt, "candidate_review"))
+            .collect::<Result<Vec<_>>>()?;
         println!("{}", serde_json::to_string_pretty(&attempts)?);
         return Ok(());
     }
@@ -535,11 +582,15 @@ pub fn run_reviews_show(dir: &Path, target: &str, json: bool) -> Result<()> {
         })
         .with_context(|| format!("adaptive review '{target}' not found"))?;
     if json {
-        println!("{}", serde_json::to_string_pretty(&attempt)?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&operation_value(&attempt, "candidate_review")?)?
+        );
     } else {
         println!(
             "VIRTUAL REVIEW — not a graph task; no status, edge, worker slot, or lifecycle authority"
         );
+        println!("Operation kind: candidate_review");
         println!("Alias: {}", attempt.alias);
         println!(
             "Attempt: {} ordinal={}",
@@ -632,8 +683,12 @@ pub fn run_learning_show(dir: &Path, target: &str, json: bool) -> Result<()> {
         .max_by_key(|episode| episode.generation)
         .with_context(|| format!("learning episode for '{target}' not found"))?;
     if json {
-        println!("{}", serde_json::to_string_pretty(&episode)?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&operation_value(&episode, "terminal_learning_episode")?)?
+        );
     } else {
+        println!("Operation kind: terminal_learning_episode");
         println!("Learning episode: {}", episode.episode_id);
         println!(
             "Terminal generation observation: task={} generation={} disposition={:?}",
@@ -687,7 +742,10 @@ pub fn run_learning_backlog(dir: &Path, json: bool) -> Result<()> {
         .transpose()?
         .unwrap_or_default();
     if json {
-        println!("{}", serde_json::to_string_pretty(&backlog)?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&operation_value(&backlog, "adaptive_learning_backlog")?)?
+        );
     } else {
         println!("Adaptive learning backlog:");
         println!(

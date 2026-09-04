@@ -176,6 +176,7 @@ pub struct EvaluationCutoverSource {
 
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct EvaluationCutoverReport {
+    pub operation_kind: String,
     pub cutover_version: u32,
     pub dry_run: bool,
     pub retired_rows: Vec<String>,
@@ -302,6 +303,7 @@ fn print_evaluation_cutover_report(report: &EvaluationCutoverReport, json: bool)
         println!("{}", serde_json::to_string_pretty(report)?);
         return Ok(());
     }
+    println!("Operation kind: legacy_evaluation_cutover (migration-only; history preserved)");
     println!(
         "Evaluation cutover v{}{}: retired_rows={} newly_inert={} sources={} verdict_files_preserved={} changed={}",
         report.cutover_version,
@@ -356,6 +358,7 @@ pub fn run_evaluation_cutover(
     let graph_file = graph_path(dir);
     let graph = load_graph(&graph_file)?;
     let mut report = EvaluationCutoverReport {
+        operation_kind: "legacy_evaluation_cutover".to_string(),
         cutover_version: worksgood::evaluation_cutover::EVALUATION_CUTOVER_VERSION,
         dry_run,
         preserved_verdict_files: count_preserved_verdict_files(dir),

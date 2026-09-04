@@ -615,6 +615,23 @@ fn project_adaptive_outcome(
     Ok(())
 }
 
+fn scored_outcome_value(envelope: &ScoredEvaluationEnvelope) -> Result<Value> {
+    let mut value = serde_json::to_value(envelope)?;
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "operation_kind".to_string(),
+            Value::String("scored_outcome_evaluation".to_string()),
+        );
+        if envelope.evaluation.source != "llm:terminal-observation" {
+            object.insert(
+                "adjudication_scope".to_string(),
+                Value::String("outcome".to_string()),
+            );
+        }
+    }
+    Ok(value)
+}
+
 fn output_run_result(
     envelope: &ScoredEvaluationEnvelope,
     path: &Path,
@@ -625,15 +642,19 @@ fn output_run_result(
         println!(
             "{}",
             serde_json::to_string_pretty(&json!({
+                "operation_kind": "scored_outcome_evaluation",
                 "created": created,
                 "idempotent_replay": !created,
                 "path": path,
-                "evaluation": envelope,
+                "evaluation": scored_outcome_value(envelope)?,
             }))?
         );
     } else {
         println!(
-            "=== Scored Evaluation {} ===",
+            "Operation kind: scored_outcome_evaluation (post-terminal; no lifecycle authority)"
+        );
+        println!(
+            "=== Scored Outcome {} ===",
             if created {
                 "Recorded"
             } else {
@@ -719,6 +740,7 @@ pub fn run(dir: &Path, task_id: &str, dry_run: bool, json_output: bool) -> Resul
             println!(
                 "{}",
                 serde_json::to_string_pretty(&json!({
+                    "operation_kind": "scored_outcome_evaluation",
                     "eligible": true,
                     "mutated": false,
                     "task_id": task_id,
@@ -738,7 +760,10 @@ pub fn run(dir: &Path, task_id: &str, dry_run: bool, json_output: bool) -> Resul
                 }))?
             );
         } else {
-            println!("=== Dry Run: scored evaluation ===");
+            println!(
+                "Operation kind: scored_outcome_evaluation (post-terminal; no lifecycle authority)"
+            );
+            println!("=== Dry Run: scored outcome ===");
             println!("Eligible:              yes (receipt/publication re-verified)");
             println!("Task:                  {}", task_id);
             println!("Evaluation ID:         {}", id);
@@ -948,6 +973,8 @@ pub fn run_record(
         println!(
             "{}",
             serde_json::to_string_pretty(&json!({
+                "operation_kind": "external_outcome_evaluation",
+                "adjudication_scope": "outcome",
                 "task_id": task_id,
                 "evaluation_id": evaluation.id,
                 "score": evaluation.score,
@@ -957,7 +984,9 @@ pub fn run_record(
             }))?
         );
     } else {
-        println!("Recorded external evaluation for task '{task_id}'");
+        println!("Operation kind: external_outcome_evaluation");
+        println!("Adjudication scope: outcome (cannot accept or transition a candidate)");
+        println!("Recorded external outcome score for task '{task_id}'");
         println!("  Score:  {:.3}", evaluation.score);
         println!("  Source: {}", evaluation.source);
         println!("  Saved:  {}", path.display());
@@ -1007,8 +1036,16 @@ pub fn run_show(
     }
 
     if json_output {
+        let evaluations = evaluations
+            .iter()
+            .map(scored_outcome_value)
+            .collect::<Result<Vec<_>>>()?;
         let output = if let Some(task) = task_detail {
-            json!({"task_id": task, "evaluations": evaluations})
+            json!({
+                "operation_kind": "scored_outcome_evaluation_history",
+                "task_id": task,
+                "evaluations": evaluations,
+            })
         } else {
             serde_json::to_value(&evaluations)?
         };
@@ -1025,10 +1062,15 @@ pub fn run_show(
     for envelope in &evaluations {
         let evaluation = &envelope.evaluation;
         println!(
-            "{}  score={:.3} source={} agent={} at={}",
+            "{}  operation=scored_outcome_evaluation score={:.3} source={}{} agent={} at={}",
             evaluation.task_id,
             evaluation.score,
             evaluation.source,
+            if evaluation.source == "llm:terminal-observation" {
+                " "
+            } else {
+                " adjudication_scope=outcome "
+            },
             if evaluation.agent_id.is_empty() {
                 "-"
             } else {

@@ -176,8 +176,15 @@ WG-FED IDENTITY & CROSS-GRAPH FEDERATION
 CONTENT-SAFETY REVIEW GATE
   wg review check --class IC1 --content-file <file>
 
-EVALUATION & MONITORING
-  wg evaluate run <task-id>
+AGENCY FEEDBACK & MIGRATION
+  wg assign <task-id> --auto           # next-attempt intent; receipt on claim
+  wg reviews list <task-id>            # immutable candidate evidence (read-only)
+  wg evaluate run <done-task>          # post-terminal learning score only
+  wg learning show <task-id>           # episode + delayed reward/evolver input
+  wg migrate evaluation-cutover --dry-run  # retire obsolete graph authority
+  Only the completion controller applies candidate receipts to task lifecycle.
+
+MONITORING
   wg watch --task <id>
 
 NOTIFICATION & COMMUNICATION
@@ -232,10 +239,17 @@ fn json_output() -> serde_json::Value {
                 "wg role add \"Name\" --outcome \"...\" --skill name",
                 "wg tradeoff add \"Name\" --accept \"...\" --reject \"...\"",
                 "wg agent create \"Name\" --role <hash> --tradeoff <hash>",
-                "wg config --auto-assign true --auto-evaluate true"
+                "wg config --auto-assign true"
             ],
+            "authority": {
+                "completion_review": "Exact candidate receipts; completion controller alone applies lifecycle policy",
+                "candidate_review": "wg reviews; immutable virtual evidence, never a graph task",
+                "scored_outcome": "wg evaluate run/show; post-terminal learning only",
+                "external_outcome": "wg evaluate record; outcome score that cannot accept a candidate",
+                "legacy_evaluation": "wg migrate evaluation-cutover; preserve history and retire obsolete graph authority"
+            },
             "placement": {
-                "description": "When auto_place is enabled, the assignment step also decides dependency edges for each task (merged into the .assign-* LLM call).",
+                "description": "auto_place is a separate placement subsystem; assignment selection only binds identity to a real attempt receipt.",
                 "enable": "wg config --auto-place true"
             },
             "auto_create": {
@@ -309,7 +323,7 @@ fn json_output() -> serde_json::Value {
         "validation": {
             "description": "Validation criteria live in a ## Validation section. This prose contract is the default: workers choose relevant checks, report results, and distinguish candidate regressions from baseline or environmental failures.",
             "create": "wg add \"task\" -d \"## Validation\\n- [ ] criteria here\"",
-            "note": "Exact executable checks are optional operator/repository-authorized hard gates. Agents must not invent or broaden them. Completion FLIP/eval is visible and advisory by default; explicit scored Agency evaluation remains separate."
+            "note": "Exact executable checks are optional operator/repository-authorized hard gates. Agents must not invent or broaden them. Completion review is candidate-bound lifecycle input consumed by the controller; candidate-review history is read-only; scored Agency outcomes are separate post-terminal learning signals."
         },
         "messaging": {
             "description": "Inter-agent and task-scoped messaging. Agents must check messages before and after working.",
@@ -576,8 +590,13 @@ fn json_output() -> serde_json::Value {
             "revoke": "wg review revoke --cid <b3:…>"
         },
         "evaluation_and_monitoring": {
-            "evaluate_run": "wg evaluate run <task-id>",
+            "description": "Candidate review, terminal outcome scoring, and legacy migration have separate authority; only the completion controller applies candidate receipts to lifecycle.",
+            "assign_auto": "wg assign <task-id> --auto",
+            "reviews": "wg reviews list <task-id>",
+            "evaluate_run": "wg evaluate run <done-task>",
             "evaluate_show": "wg evaluate show",
+            "learning": "wg learning show <task-id>",
+            "legacy_migration": "wg migrate evaluation-cutover --dry-run",
             "watch": "wg watch",
             "watch_task": "wg watch --task <id>"
         },
@@ -787,9 +806,13 @@ mod tests {
     }
 
     #[test]
-    fn test_quickstart_text_contains_evaluation_and_monitoring() {
-        assert!(QUICKSTART_TEXT.contains("EVALUATION & MONITORING"));
+    fn test_quickstart_text_contains_agency_feedback_and_monitoring() {
+        assert!(QUICKSTART_TEXT.contains("AGENCY FEEDBACK & MIGRATION"));
+        assert!(QUICKSTART_TEXT.contains("wg reviews list"));
         assert!(QUICKSTART_TEXT.contains("wg evaluate run"));
+        assert!(QUICKSTART_TEXT.contains("wg learning show"));
+        assert!(QUICKSTART_TEXT.contains("wg migrate evaluation-cutover"));
+        assert!(QUICKSTART_TEXT.contains("MONITORING"));
         assert!(QUICKSTART_TEXT.contains("wg watch"));
     }
 
@@ -952,7 +975,8 @@ mod tests {
             "PEER WG PROJECTS",
             "WG-FED IDENTITY & CROSS-GRAPH FEDERATION",
             "CONTENT-SAFETY REVIEW GATE",
-            "EVALUATION & MONITORING",
+            "AGENCY FEEDBACK & MIGRATION",
+            "MONITORING",
             "NOTIFICATION & COMMUNICATION",
             "RESOURCE MANAGEMENT",
             "PROVIDER PROFILES",
