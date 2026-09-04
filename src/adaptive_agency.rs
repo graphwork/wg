@@ -676,6 +676,12 @@ pub struct AssignmentSelectorSnapshotV1 {
     pub exact_route: Option<String>,
 }
 
+impl Default for AssignmentSelectorSnapshotV1 {
+    fn default() -> Self {
+        Self::direct()
+    }
+}
+
 impl AssignmentSelectorSnapshotV1 {
     pub fn direct() -> Self {
         Self {
@@ -737,15 +743,24 @@ pub struct AssignmentReceiptV1 {
     pub generation: u64,
     pub attempt_id: String,
     pub attempt_fence: u64,
+    /// Empty only for receipts written by the pre-admission-snapshot format.
+    #[serde(default)]
     pub admission_snapshot_digest: String,
+    /// Empty only for receipts written by the pre-partition format.
+    #[serde(default)]
     pub context_partition: String,
     pub decision: AssignmentDecisionV1,
+    /// Legacy uncomposed receipts had no selector snapshot; deserialize them
+    /// as the explicit direct-dispatch marker rather than inventing a model.
+    #[serde(default)]
     pub selector: AssignmentSelectorSnapshotV1,
     #[serde(default)]
     pub candidate_scores: BTreeMap<String, f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selected_composition: Option<CompositionSnapshotV1>,
+    #[serde(default)]
     pub started_at: String,
+    #[serde(default)]
     pub completed_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure: Option<AssignmentInfrastructureFailureV1>,

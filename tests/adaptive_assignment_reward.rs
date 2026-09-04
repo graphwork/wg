@@ -71,6 +71,26 @@ fn episode_for(store: &AdaptiveStore, receipt: &AssignmentReceiptV1) -> Learning
 }
 
 #[test]
+fn legacy_uncomposed_receipt_remains_readable_as_direct_dispatch() {
+    let legacy = r#"{
+        "schema":1,
+        "receipt_id":"b3:legacy",
+        "graph_identity":"graph-test",
+        "task_id":"task-a",
+        "generation":0,
+        "attempt_id":"attempt-0-1",
+        "attempt_fence":1,
+        "decision":{"kind":"uncomposed","reason":"predates admission receipts"},
+        "created_at":"unknown-legacy"
+    }"#;
+    let receipt: AssignmentReceiptV1 = serde_json::from_str(legacy).unwrap();
+    assert!(receipt.admission_snapshot_digest.is_empty());
+    assert!(receipt.context_partition.is_empty());
+    assert_eq!(receipt.selector, AssignmentSelectorSnapshotV1::direct());
+    assert!(receipt.started_at.is_empty() && receipt.completed_at.is_empty());
+}
+
+#[test]
 fn assignment_receipt_is_attempt_bound_and_replay_idempotent() {
     let dir = tempfile::tempdir().unwrap();
     let store = AdaptiveStore::open(dir.path()).unwrap();
