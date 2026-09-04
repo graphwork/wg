@@ -608,6 +608,15 @@ pub enum Commands {
         integration_ref: String,
     },
 
+    /// Worker-owned landing-turn protocol: serialize landings against a shared
+    /// integration ref so the source agent that understands its change owns
+    /// conflict resolution, renewed validation, and resubmission. WG owns the
+    /// lease, queue, fencing, and final compare-and-fast-forward.
+    LandingTurn {
+        #[command(subcommand)]
+        command: crate::commands::landing_turn::LandingTurnCommand,
+    },
+
     /// Set the task's completion contract: land, report, or explore
     Contract { id: String, contract: String },
 
@@ -7183,6 +7192,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::CompletionManifest { .. } => "completion-manifest",
         Commands::Submit { .. } => "submit",
         Commands::Land { .. } => "land",
+        Commands::LandingTurn { .. } => "landing-turn",
         Commands::Contract { .. } => "contract",
         Commands::Finalize { .. } => "finalize",
         Commands::Candidate { .. } => "candidate",

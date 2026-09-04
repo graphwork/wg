@@ -369,15 +369,16 @@ fn evaluate_condition_with_message(
         }
         WaitCondition::LandingTurn {
             integration_ref,
-            task_id: wait_task_id,
-        } => {
-            // The wait is satisfied (the source agent should be resumed to take
-            // its turn) when its ticket is at the head and the lease is free.
-            match worksgood::landing_turn::status(dir, integration_ref, Some(wait_task_id)) {
-                Ok(st) => st.position == Some(1) && st.lease.is_none(),
-                Err(_) => false,
-            }
-        }
+            ticket_id,
+        } => worksgood::landing_turn::ticket_ready(dir, integration_ref, ticket_id).unwrap_or_else(
+            |error| {
+                eprintln!(
+                    "[dispatcher] landing-turn readiness failed for task '{}': {error:#}",
+                    task_id
+                );
+                false
+            },
+        ),
     }
 }
 
@@ -563,6 +564,15 @@ fn build_resume_delta(graph: &worksgood::graph::WorkGraph, task: &Task, dir: &Pa
 
         // Show status of referenced tasks
         for cond in conditions {
+            if let WaitCondition::LandingTurn {
+                integration_ref,
+                ticket_id,
+            } = cond
+            {
+                delta.push_str(&format!(
+                    "- Landing turn {ticket_id} is the FIFO head for {integration_ref}. Resume this exact session/worktree, request the turn to acquire its renewable lease, synchronize the current target here, resolve conflicts yourself, rerun target-dependent validation, and submit a renewed candidate if bytes changed. Use `wg landing-turn renew` with changed progress tokens during long work. Never edit another worker's worktree.\n"
+                ));
+            }
             if let WaitCondition::TaskStatus { task_id, status } = cond
                 && let Some(dep) = graph.get_task(task_id)
             {

@@ -701,6 +701,7 @@ fn validate_worker_capability(
                 | WorkerOperation::ArtifactRemove { .. }
                 | WorkerOperation::Checkpoint { .. }
                 | WorkerOperation::Wait { .. }
+                | WorkerOperation::LandingTurn { .. }
                 | WorkerOperation::CompletionObject { .. }
                 | WorkerOperation::CompletionManifest { .. }
                 | WorkerOperation::SubmitCompletion { .. }
@@ -1063,6 +1064,115 @@ fn execute_worker_operation(
                     &summary,
                 )?;
                 Ok(serde_json::json!({"submission": "accepted"}))
+            }
+            WorkerOperation::LandingTurn {
+                action,
+                integration_ref,
+                progress,
+                checkpoint,
+                source_session,
+            } => {
+                use worksgood::worker_control::LandingTurnAction;
+                let graph = load_graph(graph_path(dir))?;
+                let task = graph
+                    .get_task(&binding.task_id)
+                    .context("worker_control.landing_task_missing")?
+                    .clone();
+                if task.lifecycle.generation != binding.generation
+                    || task.lifecycle.fence != binding.fence
+                    || task
+                        .lifecycle
+                        .current_attempt
+                        .as_ref()
+                        .is_none_or(|attempt| attempt.id != binding.attempt_id)
+                {
+                    anyhow::bail!("worker_control.landing_binding_stale");
+                }
+                if let Some(claimed) = source_session.as_deref()
+                    && task
+                        .session_id
+                        .as_deref()
+                        .is_some_and(|actual| actual != claimed)
+                {
+                    anyhow::bail!("worker_control.landing_source_session_mismatch");
+                }
+                if action == LandingTurnAction::Status {
+                    return Ok(serde_json::to_value(worksgood::landing_turn::status(
+                        dir,
+                        &integration_ref,
+                        Some(&binding.task_id),
+                    )?)?);
+                }
+                let observed_target = if action == LandingTurnAction::Request {
+                    None
+                } else {
+                    let status = worksgood::landing_turn::status(
+                        dir,
+                        &integration_ref,
+                        Some(&binding.task_id),
+                    )?;
+                    Some(
+                        status
+                            .lease
+                            .as_ref()
+                            .filter(|lease| lease.task_id == binding.task_id)
+                            .map(|lease| lease.target_oid.clone())
+                            .or_else(|| {
+                                status
+                                    .ticket
+                                    .as_ref()
+                                    .map(|ticket| ticket.observed_target_oid.clone())
+                            })
+                            .context("worker_control.landing_ticket_missing")?,
+                    )
+                };
+                let turn_binding = crate::commands::landing_turn::binding_from_authority(
+                    dir,
+                    &task,
+                    &integration_ref,
+                    observed_target.as_deref(),
+                    binding.agent_id.clone(),
+                    source_session.clone().or_else(|| task.session_id.clone()),
+                )?;
+                let value = match action {
+                    LandingTurnAction::Request => {
+                        let outcome = worksgood::landing_turn::request_turn(dir, &turn_binding)?;
+                        if let worksgood::landing_turn::RequestOutcome::Parked {
+                            ticket_id, ..
+                        } = &outcome
+                        {
+                            crate::commands::landing_turn::park_landing_turn(
+                                dir,
+                                &binding.task_id,
+                                &integration_ref,
+                                ticket_id,
+                                checkpoint.as_deref(),
+                                source_session.as_deref(),
+                            )?;
+                        }
+                        serde_json::to_value(outcome)?
+                    }
+                    LandingTurnAction::Renew => {
+                        serde_json::to_value(worksgood::landing_turn::renew_turn(
+                            dir,
+                            &integration_ref,
+                            &turn_binding,
+                            progress.as_deref(),
+                        )?)?
+                    }
+                    LandingTurnAction::Release => {
+                        serde_json::to_value(worksgood::landing_turn::release_turn(
+                            dir,
+                            &integration_ref,
+                            &turn_binding,
+                        )?)?
+                    }
+                    LandingTurnAction::Cancel => serde_json::to_value(
+                        worksgood::landing_turn::cancel_turn(dir, &integration_ref, &turn_binding)?,
+                    )?,
+                    LandingTurnAction::Status => unreachable!(),
+                };
+                Ok(value)
             }
             WorkerOperation::Land { integration_ref } => {
                 let worktree = if binding.worktree_path.trim().is_empty() {

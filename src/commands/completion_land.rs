@@ -340,6 +340,44 @@ fn run_at_inner(
         return Ok(false);
     }
 
+    // A worker requests a landing turn only after its immutable candidate and
+    // review evidence are ready and user-owned checkout dirtiness has been
+    // ruled out. Ordinary implementation never holds this lease.
+    let landing_binding = if pending.is_none() {
+        let binding = super::landing_turn::binding_from_authority(
+            dir,
+            task,
+            integration_ref,
+            None,
+            task.assigned
+                .clone()
+                .context("landing source task has no assigned agent")?,
+            task.session_id.clone(),
+        )?;
+        match worksgood::landing_turn::request_turn(dir, &binding)? {
+            worksgood::landing_turn::RequestOutcome::Acquired { .. }
+            | worksgood::landing_turn::RequestOutcome::AlreadyOwner { .. } => Some(binding),
+            worksgood::landing_turn::RequestOutcome::Parked { ticket_id, .. } => {
+                super::landing_turn::park_landing_turn(
+                    dir,
+                    id,
+                    integration_ref,
+                    &ticket_id,
+                    Some(
+                        "Candidate ready and queued. Retain this exact source session/worktree; when resumed, synchronize the current target here, resolve conflicts, rerun target-dependent validation, and resubmit when bytes change.",
+                    ),
+                    binding.source_session.as_deref(),
+                )?;
+                eprintln!(
+                    "Landing turn queued for '{id}'; source session/worktree retained and will resume automatically at the FIFO head"
+                );
+                return Ok(false);
+            }
+        }
+    } else {
+        None
+    };
+
     let _lock = LandingLock::acquire(project_root)?;
     run_after_landing_lock_hook();
     if root_checkout_dirty_if_attached(project_root, integration_ref)? {
@@ -478,6 +516,13 @@ fn run_at_inner(
             &git_output.integrated_main_oid,
             &observed_before,
         )? {
+            if landing_binding.is_some() {
+                bail!(
+                    "landing target advanced from {} to {} while this source owns the turn; synchronize that target in the retained source worktree, resolve any content conflicts here, rerun target-dependent validation, and resubmit the renewed candidate (the FIFO turn is retained)",
+                    git_output.integrated_main_oid,
+                    observed_before
+                );
+            }
             let worker = worker_worktree
                 .context("stale target wait requires the retained worker worktree")?;
             super::completion_wait::park_landing_pending(
@@ -526,10 +571,19 @@ fn run_at_inner(
             // protects local tracked, staged, and obstructing untracked bytes.
             // Unlike reset --hard it refuses rather than overwriting a user
             // race. Its ref transaction is locked against the observed HEAD.
-            if let Err(error) = git(
-                project_root,
-                &["merge", "--ff-only", "--no-edit", &publication_commit],
-            ) {
+            let publish = || {
+                git(
+                    project_root,
+                    &["merge", "--ff-only", "--no-edit", &publication_commit],
+                )
+                .map(|_| ())
+            };
+            let publication_result = if let Some(binding) = landing_binding.as_ref() {
+                worksgood::landing_turn::with_lease_owner(dir, integration_ref, binding, publish)
+            } else {
+                publish()
+            };
+            if let Err(error) = publication_result {
                 if root_checkout_dirty_if_attached(project_root, integration_ref)? {
                     if pending.is_none() {
                         let worker = worker_worktree
@@ -557,15 +611,23 @@ fn run_at_inner(
             }
             true
         } else {
-            git(
-                project_root,
-                &[
-                    "update-ref",
-                    integration_ref,
-                    &publication_commit,
-                    &observed_before,
-                ],
-            )
+            let publish = || {
+                git(
+                    project_root,
+                    &[
+                        "update-ref",
+                        integration_ref,
+                        &publication_commit,
+                        &observed_before,
+                    ],
+                )
+                .map(|_| ())
+            };
+            if let Some(binding) = landing_binding.as_ref() {
+                worksgood::landing_turn::with_lease_owner(dir, integration_ref, binding, publish)
+            } else {
+                publish()
+            }
             .context("atomic compare-and-fast-forward failed; no fallback was attempted")?;
             false
         }
@@ -673,6 +735,15 @@ fn run_at_inner(
     )?;
     if publication_commit != git_output.commit_oid {
         mark_reconciliation_landed(dir, id, &publication_commit, &observed_after)?;
+    }
+
+    if let Some(binding) = landing_binding.as_ref() {
+        match worksgood::landing_turn::release_turn(dir, integration_ref, binding)? {
+            worksgood::landing_turn::ReleaseOutcome::Released { .. } => {}
+            other => bail!(
+                "landing published and recorded, but exact lease release was fenced: {other:?}; retry completion recovery before accepting more publication work"
+            ),
+        }
     }
 
     if !root_checkout_synchronized {

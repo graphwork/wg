@@ -37,17 +37,17 @@
 //!   rather than stranding a released worker or invoking an unrelated generic
 //!   merger by default.
 
+use crate::lock::{RetryPolicy, is_transient_blocking, retry_acquire};
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use crate::lock::{RetryPolicy, is_transient_blocking, retry_acquire};
 
 /// Schema version for the persisted landing-turn state. Bumped on incompatible
 /// changes to [`LandingTurnState`] / [`LandingTicket`] / [`LandingLease`].
-pub const LANDING_TURN_SCHEMA_VERSION: u32 = 1;
+pub const LANDING_TURN_SCHEMA_VERSION: u32 = 2;
 
 /// Default bound on a single lease term (wall-clock). Renewal may extend it,
 /// but only against proven progress.
@@ -74,6 +74,7 @@ pub struct LandingTicket {
     /// Candidate sequence within the attempt (defends against a resubmitted
     /// manifest that changes integration bytes).
     pub candidate_sequence: u64,
+    pub candidate_oid: String,
     /// Source agent id bound at request time (the managed worker capability).
     pub source_agent: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -82,10 +83,54 @@ pub struct LandingTicket {
     /// Target OID observed by the source agent when it requested the turn.
     pub observed_target_oid: String,
     pub created_at: String,
-    /// Marked `true` once this ticket has been auto-resumed at the head at least
-    /// once. Used by crash/restart recovery to avoid double-waking.
+    /// Diagnostic acknowledgement that the daemon observed this ticket ready.
+    /// Readiness remains retryable until the continuation reacquires it.
     #[serde(default)]
     pub resumed_once: bool,
+}
+
+impl LandingTicket {
+    fn matches_binding(&self, binding: &TicketBinding) -> bool {
+        self.task_id == binding.task_id
+            && self.generation == binding.generation
+            && self.attempt_id == binding.attempt_id
+            && self.fence == binding.fence
+            && self.candidate_sequence == binding.candidate_sequence
+            && self.candidate_oid == binding.candidate_oid
+            && self.source_agent == binding.source_agent
+            && self.source_session == binding.source_session
+            && self.integration_ref == binding.integration_ref
+            && self.observed_target_oid == binding.observed_target_oid
+    }
+
+    fn matches_owner_epoch(&self, binding: &TicketBinding) -> bool {
+        self.task_id == binding.task_id
+            && self.generation == binding.generation
+            && self.attempt_id == binding.attempt_id
+            && self.fence == binding.fence
+            && self.source_agent == binding.source_agent
+            && self.source_session == binding.source_session
+            && self.integration_ref == binding.integration_ref
+    }
+
+    fn matches_continuation(&self, binding: &TicketBinding) -> bool {
+        self.task_id == binding.task_id
+            && self.generation == binding.generation
+            && self.integration_ref == binding.integration_ref
+            && self.source_session.is_some()
+            && self.source_session == binding.source_session
+    }
+
+    fn rebind(&mut self, binding: &TicketBinding) {
+        self.attempt_id.clone_from(&binding.attempt_id);
+        self.fence = binding.fence;
+        self.candidate_sequence = binding.candidate_sequence;
+        self.candidate_oid.clone_from(&binding.candidate_oid);
+        self.source_agent.clone_from(&binding.source_agent);
+        self.source_session.clone_from(&binding.source_session);
+        self.observed_target_oid
+            .clone_from(&binding.observed_target_oid);
+    }
 }
 
 /// The active lease. The lease is the authority; the OS lock only guards short
@@ -97,12 +142,15 @@ pub struct LandingLease {
     pub ticket_id: String,
     pub seq: u64,
     pub owner_agent: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_session: Option<String>,
     pub task_id: String,
     pub generation: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attempt_id: Option<String>,
     pub fence: u64,
     pub candidate_sequence: u64,
+    pub candidate_oid: String,
     pub integration_ref: String,
     pub target_oid: String,
     pub acquired_at: String,
@@ -122,13 +170,36 @@ pub struct LandingLease {
 }
 
 impl LandingLease {
-    fn matches_binding(&self, b: &TicketBinding) -> bool {
-        self.task_id == b.task_id
-            && self.generation == b.generation
-            && self.attempt_id == b.attempt_id
-            && self.fence == b.fence
-            && self.candidate_sequence == b.candidate_sequence
-            && self.owner_agent == b.source_agent
+    fn matches_binding(&self, binding: &TicketBinding) -> bool {
+        self.task_id == binding.task_id
+            && self.generation == binding.generation
+            && self.attempt_id == binding.attempt_id
+            && self.fence == binding.fence
+            && self.candidate_sequence == binding.candidate_sequence
+            && self.candidate_oid == binding.candidate_oid
+            && self.owner_agent == binding.source_agent
+            && self.source_session == binding.source_session
+            && self.integration_ref == binding.integration_ref
+            && self.target_oid == binding.observed_target_oid
+    }
+
+    fn matches_owner_epoch(&self, binding: &TicketBinding) -> bool {
+        self.task_id == binding.task_id
+            && self.generation == binding.generation
+            && self.attempt_id == binding.attempt_id
+            && self.fence == binding.fence
+            && self.owner_agent == binding.source_agent
+            && self.source_session == binding.source_session
+            && self.integration_ref == binding.integration_ref
+    }
+
+    fn rebind(&mut self, binding: &TicketBinding, lease_term: u64) {
+        self.candidate_sequence = binding.candidate_sequence;
+        self.candidate_oid.clone_from(&binding.candidate_oid);
+        self.target_oid.clone_from(&binding.observed_target_oid);
+        self.expires_at = now_plus(lease_term);
+        self.progress_token = Some(format!("candidate:{}", binding.candidate_sequence));
+        self.renewals_without_progress = 0;
     }
 }
 
@@ -178,6 +249,7 @@ pub struct TicketBinding {
     pub attempt_id: Option<String>,
     pub fence: u64,
     pub candidate_sequence: u64,
+    pub candidate_oid: String,
     pub source_agent: String,
     pub source_session: Option<String>,
     pub integration_ref: String,
@@ -283,22 +355,26 @@ pub struct LandingTurnStatus {
 /// the integration ref so different refs (e.g. `refs/heads/main` vs an
 /// alternate integration branch) get independent queues.
 pub fn state_path(dir: &Path, integration_ref: &str) -> PathBuf {
-    dir.join("landing-turns").join(format!("{}.json", slug(integration_ref)))
+    dir.join("landing-turns")
+        .join(format!("{}.json", slug(integration_ref)))
 }
 
 fn lock_path(dir: &Path, integration_ref: &str) -> PathBuf {
-    dir.join("landing-turns").join(format!("{}.lock", slug(integration_ref)))
+    dir.join("landing-turns")
+        .join(format!("{}.lock", slug(integration_ref)))
 }
 
 fn slug(integration_ref: &str) -> String {
-    // Keep it filesystem-safe and stable. Slashes/colons -> '-'.
-    integration_ref
+    let prefix: String = integration_ref
         .chars()
         .map(|c| match c {
             'a'..='z' | 'A'..='Z' | '0'..='9' | '.' | '_' | '-' => c,
             _ => '-',
         })
-        .collect()
+        .take(80)
+        .collect();
+    let digest = blake3::hash(integration_ref.as_bytes()).to_hex();
+    format!("{prefix}-{}", &digest[..16])
 }
 
 /// A short OS lock held only across a bounded mutation. Never held across a
@@ -318,6 +394,7 @@ impl QueueLock {
             .create(true)
             .read(true)
             .write(true)
+            .truncate(false)
             .open(&lock)
             .with_context(|| format!("open landing-turn lock {}", lock.display()))?;
         #[cfg(unix)]
@@ -353,7 +430,9 @@ fn load_state(dir: &Path, integration_ref: &str) -> Result<Option<LandingTurnSta
     let mut file = match OpenOptions::new().read(true).open(&path) {
         Ok(f) => f,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(e).with_context(|| format!("open landing-turn state {}", path.display())),
+        Err(e) => {
+            return Err(e).with_context(|| format!("open landing-turn state {}", path.display()));
+        }
     };
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)
@@ -369,6 +448,13 @@ fn load_state(dir: &Path, integration_ref: &str) -> Result<Option<LandingTurnSta
             LANDING_TURN_SCHEMA_VERSION,
             state.schema_version,
             integration_ref
+        );
+    }
+    if state.integration_ref != integration_ref {
+        bail!(
+            "landing-turn state/ref mismatch: locked {:?}, found {:?}",
+            integration_ref,
+            state.integration_ref
         );
     }
     Ok(Some(state))
@@ -394,24 +480,76 @@ fn now_plus(seconds: u64) -> String {
 }
 
 fn is_expired(lease: &LandingLease, now: &DateTime<Utc>) -> bool {
-    parse_ts(&lease.expires_at).map(|exp| &exp < now).unwrap_or(true)
+    parse_ts(&lease.expires_at)
+        .map(|exp| &exp < now)
+        .unwrap_or(true)
 }
 
 /// Remove any ticket for this exact binding (used on release after landing).
 fn remove_ticket(state: &mut LandingTurnState, binding: &TicketBinding) -> Option<LandingTicket> {
-    let pos = state.tickets.iter().position(|t| {
-        t.task_id == binding.task_id
-            && t.generation == binding.generation
-            && t.attempt_id == binding.attempt_id
-            && t.fence == binding.fence
-            && t.candidate_sequence == binding.candidate_sequence
-            && t.source_agent == binding.source_agent
-    })?;
+    let pos = state
+        .tickets
+        .iter()
+        .position(|ticket| ticket.matches_binding(binding))?;
     Some(state.tickets.remove(pos))
 }
 
 fn head_ticket(state: &LandingTurnState) -> Option<&LandingTicket> {
     state.tickets.first()
+}
+
+fn lease_for_ticket(ticket: &LandingTicket, lease_term: u64, now: &DateTime<Utc>) -> LandingLease {
+    LandingLease {
+        ticket_id: ticket.ticket_id.clone(),
+        seq: ticket.seq,
+        owner_agent: ticket.source_agent.clone(),
+        source_session: ticket.source_session.clone(),
+        task_id: ticket.task_id.clone(),
+        generation: ticket.generation,
+        attempt_id: ticket.attempt_id.clone(),
+        fence: ticket.fence,
+        candidate_sequence: ticket.candidate_sequence,
+        candidate_oid: ticket.candidate_oid.clone(),
+        integration_ref: ticket.integration_ref.clone(),
+        target_oid: ticket.observed_target_oid.clone(),
+        acquired_at: now.to_rfc3339(),
+        expires_at: now_plus(lease_term),
+        last_renewed_at: None,
+        renewals: 0,
+        renewals_without_progress: 0,
+        progress_token: None,
+    }
+}
+
+fn prune_non_live_tickets(dir: &Path, state: &mut LandingTurnState) -> Result<bool> {
+    let graph_path = dir.join("graph.jsonl");
+    if !graph_path.exists() {
+        return Ok(false);
+    }
+    let graph = crate::parser::load_graph(&graph_path)?;
+    let before = state.tickets.len();
+    state.tickets.retain(|ticket| {
+        graph.get_task(&ticket.task_id).is_some_and(|task| {
+            task.lifecycle.generation == ticket.generation
+                && matches!(
+                    task.status,
+                    crate::graph::Status::Open
+                        | crate::graph::Status::InProgress
+                        | crate::graph::Status::Waiting
+                )
+        })
+    });
+    let mut removed = before != state.tickets.len();
+    if state.lease.as_ref().is_some_and(|lease| {
+        !state
+            .tickets
+            .iter()
+            .any(|ticket| ticket.ticket_id == lease.ticket_id)
+    }) {
+        state.lease = None;
+        removed = true;
+    }
+    Ok(removed)
 }
 
 /// Auto-fence an expired lease (if any) and return the reclaim outcome so the
@@ -434,7 +572,9 @@ fn fence_if_expired(state: &mut LandingTurnState, now: &DateTime<Utc>) -> Option
         fenced_owner,
         reason: format!(
             "lease expired at {} (seq {}); auto-fenced at {}",
-            expires_at, fenced_seq, now.to_rfc3339()
+            expires_at,
+            fenced_seq,
+            now.to_rfc3339()
         ),
         next,
     })
@@ -447,8 +587,8 @@ fn fence_if_expired(state: &mut LandingTurnState, now: &DateTime<Utc>) -> Option
 /// binding already holds the lease, returns [`RequestOutcome::AlreadyOwner`].
 pub fn request_turn(dir: &Path, binding: &TicketBinding) -> Result<RequestOutcome> {
     let _lock = QueueLock::acquire(dir, &binding.integration_ref)?;
-    let mut state = load_state(dir, &binding.integration_ref)?
-        .unwrap_or_else(|| LandingTurnState {
+    let mut state =
+        load_state(dir, &binding.integration_ref)?.unwrap_or_else(|| LandingTurnState {
             schema_version: LANDING_TURN_SCHEMA_VERSION,
             integration_ref: binding.integration_ref.clone(),
             tickets: Vec::new(),
@@ -458,7 +598,68 @@ pub fn request_turn(dir: &Path, binding: &TicketBinding) -> Result<RequestOutcom
             max_renewals_without_progress: 0,
         });
     let now = Utc::now();
-    let _ = fence_if_expired(&mut state, &now);
+    let expired =
+        prune_non_live_tickets(dir, &mut state)? | fence_if_expired(&mut state, &now).is_some();
+
+    // A source owner that resolved a conflict may bind a newer reviewed
+    // candidate without losing its FIFO position. Rebinding the same sequence
+    // to a changed target is forbidden: changed integration bytes require new
+    // validation/review evidence.
+    if let Some(lease) = state.lease.as_ref()
+        && lease.matches_owner_epoch(binding)
+        && binding.candidate_sequence > lease.candidate_sequence
+    {
+        let ticket_id = lease.ticket_id.clone();
+        let lease_term = state.lease_term();
+        state
+            .tickets
+            .iter_mut()
+            .find(|ticket| ticket.ticket_id == ticket_id)
+            .context("landing lease has no queue ticket")?
+            .rebind(binding);
+        let lease = state.lease.as_mut().expect("lease checked above");
+        lease.rebind(binding, lease_term);
+        let outcome = RequestOutcome::AlreadyOwner {
+            ticket_id: lease.ticket_id.clone(),
+            seq: lease.seq,
+            expires_at: lease.expires_at.clone(),
+        };
+        save_state(&state, dir)?;
+        return Ok(outcome);
+    }
+
+    // WaitSatisfied may start a replacement process/capability. Transfer only
+    // a coordinator-acknowledged FIFO head, and only across the exact attested
+    // Pi session/task/generation/ref with a newly reviewed candidate.
+    if state.lease.is_none()
+        && let Some(index) = state
+            .tickets
+            .iter()
+            .position(|ticket| ticket.resumed_once && ticket.matches_continuation(binding))
+    {
+        if index != 0 {
+            bail!("landing continuation ticket is not the FIFO head");
+        }
+        let old_sequence = state.tickets[index].candidate_sequence;
+        if binding.candidate_sequence <= old_sequence {
+            bail!(
+                "landing continuation requires a newly validated candidate sequence (old {}, new {})",
+                old_sequence,
+                binding.candidate_sequence
+            );
+        }
+        state.tickets[index].rebind(binding);
+        let ticket = state.tickets[index].clone();
+        let lease = lease_for_ticket(&ticket, state.lease_term(), &now);
+        let outcome = RequestOutcome::Acquired {
+            ticket_id: lease.ticket_id.clone(),
+            seq: lease.seq,
+            expires_at: lease.expires_at.clone(),
+        };
+        state.lease = Some(lease);
+        save_state(&state, dir)?;
+        return Ok(outcome);
+    }
 
     // Idempotent: already the lease owner?
     if let Some(lease) = state.lease.as_ref()
@@ -475,14 +676,7 @@ pub fn request_turn(dir: &Path, binding: &TicketBinding) -> Result<RequestOutcom
     if let Some(existing) = state
         .tickets
         .iter()
-        .find(|t| {
-            t.task_id == binding.task_id
-                && t.generation == binding.generation
-                && t.attempt_id == binding.attempt_id
-                && t.fence == binding.fence
-                && t.candidate_sequence == binding.candidate_sequence
-                && t.source_agent == binding.source_agent
-        })
+        .find(|ticket| ticket.matches_binding(binding))
         .cloned()
     {
         // The ticket is already queued. If it is now at the head and the lease
@@ -493,24 +687,7 @@ pub fn request_turn(dir: &Path, binding: &TicketBinding) -> Result<RequestOutcom
             .first()
             .is_some_and(|head| head.ticket_id == existing.ticket_id);
         if is_head && state.lease.is_none() {
-            let lease = LandingLease {
-                ticket_id: existing.ticket_id.clone(),
-                seq: existing.seq,
-                owner_agent: binding.source_agent.clone(),
-                task_id: binding.task_id.clone(),
-                generation: binding.generation,
-                attempt_id: binding.attempt_id.clone(),
-                fence: binding.fence,
-                candidate_sequence: binding.candidate_sequence,
-                integration_ref: binding.integration_ref.clone(),
-                target_oid: binding.observed_target_oid.clone(),
-                acquired_at: now.to_rfc3339(),
-                expires_at: now_plus(state.lease_term()),
-                last_renewed_at: None,
-                renewals: 0,
-                renewals_without_progress: 0,
-                progress_token: None,
-            };
+            let lease = lease_for_ticket(&existing, state.lease_term(), &now);
             let expires_at = lease.expires_at.clone();
             let ticket_id = lease.ticket_id.clone();
             let seq = lease.seq;
@@ -533,6 +710,9 @@ pub fn request_turn(dir: &Path, binding: &TicketBinding) -> Result<RequestOutcom
             .as_ref()
             .map(|l| (Some(l.owner_agent.clone()), Some(l.expires_at.clone())))
             .unwrap_or((None, None));
+        if expired {
+            save_state(&state, dir)?;
+        }
         return Ok(RequestOutcome::Parked {
             ticket_id: existing.ticket_id,
             seq: existing.seq,
@@ -540,6 +720,19 @@ pub fn request_turn(dir: &Path, binding: &TicketBinding) -> Result<RequestOutcom
             owner,
             owner_expires_at: owner_expires,
         });
+    }
+
+    if state
+        .tickets
+        .iter()
+        .any(|ticket| ticket.matches_owner_epoch(binding) || ticket.matches_continuation(binding))
+    {
+        if expired {
+            save_state(&state, dir)?;
+        }
+        bail!(
+            "landing ticket binding changed without a newer continuation candidate; retain the existing ticket and renew source validation"
+        );
     }
 
     let seq = state.next_seq;
@@ -552,6 +745,7 @@ pub fn request_turn(dir: &Path, binding: &TicketBinding) -> Result<RequestOutcom
         attempt_id: binding.attempt_id.clone(),
         fence: binding.fence,
         candidate_sequence: binding.candidate_sequence,
+        candidate_oid: binding.candidate_oid.clone(),
         source_agent: binding.source_agent.clone(),
         source_session: binding.source_session.clone(),
         integration_ref: binding.integration_ref.clone(),
@@ -562,24 +756,7 @@ pub fn request_turn(dir: &Path, binding: &TicketBinding) -> Result<RequestOutcom
 
     // If the lease is free and this is the head, acquire immediately.
     if state.lease.is_none() && state.tickets.is_empty() {
-        let lease = LandingLease {
-            ticket_id: ticket.ticket_id.clone(),
-            seq: ticket.seq,
-            owner_agent: binding.source_agent.clone(),
-            task_id: binding.task_id.clone(),
-            generation: binding.generation,
-            attempt_id: binding.attempt_id.clone(),
-            fence: binding.fence,
-            candidate_sequence: binding.candidate_sequence,
-            integration_ref: binding.integration_ref.clone(),
-            target_oid: binding.observed_target_oid.clone(),
-            acquired_at: now.to_rfc3339(),
-            expires_at: now_plus(state.lease_term()),
-            last_renewed_at: None,
-            renewals: 0,
-            renewals_without_progress: 0,
-            progress_token: None,
-        };
+        let lease = lease_for_ticket(&ticket, state.lease_term(), &now);
         state.lease = Some(lease.clone());
         state.tickets.push(ticket);
         save_state(&state, dir)?;
@@ -611,25 +788,35 @@ pub fn request_turn(dir: &Path, binding: &TicketBinding) -> Result<RequestOutcom
 /// Release the lease after a successful landing (or on giving up). Only the
 /// current lease owner with an exact binding may release. Pops the head ticket
 /// and returns the next ticket id to wake (if any).
-pub fn release_turn(dir: &Path, integration_ref: &str, binding: &TicketBinding) -> Result<ReleaseOutcome> {
+pub fn release_turn(
+    dir: &Path,
+    integration_ref: &str,
+    binding: &TicketBinding,
+) -> Result<ReleaseOutcome> {
     let _lock = QueueLock::acquire(dir, integration_ref)?;
     let mut state = match load_state(dir, integration_ref)? {
         Some(s) => s,
         None => return Ok(ReleaseOutcome::NotFound),
     };
     let now = Utc::now();
-    let _ = fence_if_expired(&mut state, &now);
+    let expired = fence_if_expired(&mut state, &now).is_some();
 
     let Some(lease) = state.lease.as_ref() else {
-        // No lease: drop the matching ticket if queued.
-        if remove_ticket(&mut state, binding).is_some() {
+        if expired {
             save_state(&state, dir)?;
-            return Ok(ReleaseOutcome::Released {
-                ticket_id: format!("released-{}", binding.task_id),
-                next: head_ticket(&state).map(|t| t.ticket_id.clone()),
-            });
         }
-        return Ok(ReleaseOutcome::NotFound);
+        return if state
+            .tickets
+            .iter()
+            .any(|ticket| ticket.matches_binding(binding))
+        {
+            Ok(ReleaseOutcome::NotOwner {
+                ticket_id: None,
+                owner: None,
+            })
+        } else {
+            Ok(ReleaseOutcome::NotFound)
+        };
     };
 
     if !lease.matches_binding(binding) {
@@ -690,7 +877,6 @@ pub fn renew_turn(
         lease.renewals_without_progress = lease.renewals_without_progress.saturating_add(1);
         if lease.renewals_without_progress > max_no_progress {
             let fenced_ticket_id = lease.ticket_id.clone();
-            drop(lease);
             state.tickets.retain(|t| t.ticket_id != fenced_ticket_id);
             state.lease = None;
             let next = head_ticket(&state).map(|t| t.ticket_id.clone());
@@ -706,7 +892,6 @@ pub fn renew_turn(
     let expires_at = lease.expires_at.clone();
     let renewals = lease.renewals;
     let ticket_id = lease.ticket_id.clone();
-    drop(lease);
     save_state(&state, dir)?;
     Ok(RenewOutcome::Renewed {
         ticket_id,
@@ -756,7 +941,11 @@ pub fn reclaim_turn(
 /// Snapshot status for a given integration ref, optionally scoped to a task.
 /// Auto-fences an expired lease first (so `status` never reports a dead owner
 /// as live).
-pub fn status(dir: &Path, integration_ref: &str, task_id: Option<&str>) -> Result<LandingTurnStatus> {
+pub fn status(
+    dir: &Path,
+    integration_ref: &str,
+    task_id: Option<&str>,
+) -> Result<LandingTurnStatus> {
     let _lock = QueueLock::acquire(dir, integration_ref)?;
     let mut state = match load_state(dir, integration_ref)? {
         Some(s) => s,
@@ -768,16 +957,17 @@ pub fn status(dir: &Path, integration_ref: &str, task_id: Option<&str>) -> Resul
                 ticket: None,
                 lease: None,
                 expired: false,
-            })
+            });
         }
     };
     let now = Utc::now();
-    let _ = fence_if_expired(&mut state, &now);
-    if state.lease.is_none() && !state.tickets.is_empty() {
+    let fenced =
+        prune_non_live_tickets(dir, &mut state)? | fence_if_expired(&mut state, &now).is_some();
+    if fenced {
         save_state(&state, dir)?;
     }
     let lease = state.lease.clone();
-    let expired = lease.as_ref().is_some_and(|l| is_expired(l, &now));
+    let expired = false;
     let ticket = match task_id {
         Some(id) => state.tickets.iter().find(|t| t.task_id == id).cloned(),
         None => state.tickets.first().cloned(),
@@ -800,9 +990,38 @@ pub fn status(dir: &Path, integration_ref: &str, task_id: Option<&str>) -> Resul
     })
 }
 
-/// Mark the head ticket as auto-resumed (crash/restart recovery). Returns the
-/// head ticket to resume, or `None` if the queue is empty / the lease is still
-/// held live. Idempotent via `resumed_once`.
+/// Atomically test whether an exact ticket is the resumable FIFO head.
+/// Readiness remains true until the continuation reacquires the ticket, so a
+/// crash between queue observation and graph persistence is restart-safe.
+pub fn ticket_ready(dir: &Path, integration_ref: &str, ticket_id: &str) -> Result<bool> {
+    let _lock = QueueLock::acquire(dir, integration_ref)?;
+    let mut state = match load_state(dir, integration_ref)? {
+        Some(state) => state,
+        None => return Ok(false),
+    };
+    let now = Utc::now();
+    let fenced =
+        prune_non_live_tickets(dir, &mut state)? | fence_if_expired(&mut state, &now).is_some();
+    if state.lease.is_some() {
+        if fenced {
+            save_state(&state, dir)?;
+        }
+        return Ok(false);
+    }
+    let ready = state
+        .tickets
+        .first()
+        .is_some_and(|ticket| ticket.ticket_id == ticket_id);
+    if ready {
+        state.tickets[0].resumed_once = true;
+    }
+    if ready || fenced {
+        save_state(&state, dir)?;
+    }
+    Ok(ready)
+}
+
+/// Legacy state-machine helper. Production uses retryable [`ticket_ready`].
 pub fn take_resumable_head(dir: &Path, integration_ref: &str) -> Result<Option<LandingTicket>> {
     let _lock = QueueLock::acquire(dir, integration_ref)?;
     let mut state = match load_state(dir, integration_ref)? {
@@ -810,13 +1029,19 @@ pub fn take_resumable_head(dir: &Path, integration_ref: &str) -> Result<Option<L
         None => return Ok(None),
     };
     let now = Utc::now();
-    let _ = fence_if_expired(&mut state, &now);
+    let fenced = fence_if_expired(&mut state, &now).is_some();
     // Only resume the head if the lease is free (a live lease belongs to its
     // owner, who is presumed still integrating).
     if state.lease.is_some() {
+        if fenced {
+            save_state(&state, dir)?;
+        }
         return Ok(None);
     }
     let Some(head) = state.tickets.first_mut() else {
+        if fenced {
+            save_state(&state, dir)?;
+        }
         return Ok(None);
     };
     if head.resumed_once {
@@ -862,6 +1087,36 @@ pub fn cancel_turn(
     }
 }
 
+/// Execute one short, bounded publication mutation while holding the queue
+/// lock after validating the exact live lease binding. This is the final
+/// compare-and-fast-forward fence; callers must not perform model work or
+/// unbounded validation in the closure.
+pub fn with_lease_owner<T>(
+    dir: &Path,
+    integration_ref: &str,
+    binding: &TicketBinding,
+    publish: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    let _lock = QueueLock::acquire(dir, integration_ref)?;
+    let mut state =
+        load_state(dir, integration_ref)?.context("no landing-turn state for publication")?;
+    let now = Utc::now();
+    if fence_if_expired(&mut state, &now).is_some() {
+        save_state(&state, dir)?;
+        bail!("landing-turn lease expired before publication; old owner fenced");
+    }
+    let lease = state
+        .lease
+        .as_ref()
+        .context("landing-turn publication requires an active lease")?;
+    if !lease.matches_binding(binding) {
+        bail!(
+            "landing-turn publication refused: task/candidate/target/fence/source binding is not the current lease owner"
+        );
+    }
+    publish()
+}
+
 /// Read-only: is this exact binding the current lease owner?
 pub fn is_lease_owner(dir: &Path, integration_ref: &str, binding: &TicketBinding) -> Result<bool> {
     let _lock = QueueLock::acquire(dir, integration_ref)?;
@@ -870,8 +1125,15 @@ pub fn is_lease_owner(dir: &Path, integration_ref: &str, binding: &TicketBinding
         None => return Ok(false),
     };
     let now = Utc::now();
-    let _ = fence_if_expired(&mut state, &now);
-    Ok(state.lease.as_ref().is_some_and(|l| l.matches_binding(binding)))
+    let fenced = fence_if_expired(&mut state, &now).is_some();
+    let owner = state
+        .lease
+        .as_ref()
+        .is_some_and(|lease| lease.matches_binding(binding));
+    if fenced {
+        save_state(&state, dir)?;
+    }
+    Ok(owner)
 }
 
 #[cfg(test)]
@@ -886,6 +1148,7 @@ mod tests {
             attempt_id: Some(format!("attempt-1-{seq}")),
             fence: 1,
             candidate_sequence: seq,
+            candidate_oid: format!("candidate-{seq}"),
             source_agent: agent.to_string(),
             source_session: Some("session-x".to_string()),
             integration_ref: "refs/heads/main".to_string(),
@@ -911,13 +1174,21 @@ mod tests {
         // Second and third park in FIFO order.
         let park_b = request_turn(d, &b).unwrap();
         let (b_ticket, b_pos) = match park_b {
-            RequestOutcome::Parked { ticket_id, position, .. } => (ticket_id, position),
+            RequestOutcome::Parked {
+                ticket_id,
+                position,
+                ..
+            } => (ticket_id, position),
             other => panic!("expected Parked, got {other:?}"),
         };
         assert_eq!(b_pos, 2);
         let park_c = request_turn(d, &c).unwrap();
         let (c_ticket, c_pos) = match park_c {
-            RequestOutcome::Parked { ticket_id, position, .. } => (ticket_id, position),
+            RequestOutcome::Parked {
+                ticket_id,
+                position,
+                ..
+            } => (ticket_id, position),
             other => panic!("expected Parked, got {other:?}"),
         };
         assert_eq!(c_pos, 3);
@@ -941,7 +1212,9 @@ mod tests {
         // Owner releases; the next ticket (b) should be woken.
         let rel = release_turn(d, "refs/heads/main", &a).unwrap();
         match rel {
-            ReleaseOutcome::Released { next, .. } => assert_eq!(next.as_deref(), Some(b_ticket.as_str())),
+            ReleaseOutcome::Released { next, .. } => {
+                assert_eq!(next.as_deref(), Some(b_ticket.as_str()))
+            }
             other => panic!("expected Released, got {other:?}"),
         }
         // b is now at the head but the lease is NOT auto-acquired (the source
@@ -978,7 +1251,18 @@ mod tests {
         let second = request_turn(d, &b).unwrap();
         // Both must report the same ticket/seq (idempotent), not enqueue twice.
         let (s1, s2) = match (&first, &second) {
-            (RequestOutcome::Parked { ticket_id: t1, seq: s1, .. }, RequestOutcome::Parked { ticket_id: t2, seq: s2, .. }) => {
+            (
+                RequestOutcome::Parked {
+                    ticket_id: t1,
+                    seq: s1,
+                    ..
+                },
+                RequestOutcome::Parked {
+                    ticket_id: t2,
+                    seq: s2,
+                    ..
+                },
+            ) => {
                 assert_eq!(t1, t2);
                 (s1, s2)
             }
@@ -1001,7 +1285,8 @@ mod tests {
         // Force the lease into the past.
         let _lock = QueueLock::acquire(d, "refs/heads/main").unwrap();
         let mut state = load_state(d, "refs/heads/main").unwrap().unwrap();
-        state.lease.as_mut().unwrap().expires_at = (Utc::now() - chrono::Duration::seconds(1)).to_rfc3339();
+        state.lease.as_mut().unwrap().expires_at =
+            (Utc::now() - chrono::Duration::seconds(1)).to_rfc3339();
         save_state(&state, d).unwrap();
         drop(_lock);
 
@@ -1031,7 +1316,9 @@ mod tests {
         }
         // With force, a is fenced and b becomes the woken next.
         match reclaim_turn(d, "refs/heads/main", "operator reclaim", true).unwrap() {
-            ReclaimOutcome::Fenced { fenced_owner, next, .. } => {
+            ReclaimOutcome::Fenced {
+                fenced_owner, next, ..
+            } => {
                 assert_eq!(fenced_owner, "agent-a");
                 assert!(next.is_some());
             }
@@ -1146,6 +1433,34 @@ mod tests {
     }
 
     #[test]
+    fn exact_session_continuation_reacquires_parked_head_after_resume() {
+        let dir = tempdir().unwrap();
+        let d = dir.path();
+        let owner = binding("owner", "agent-owner", 1, "oid-0");
+        let parked = binding("source", "agent-old", 2, "oid-0");
+        request_turn(d, &owner).unwrap();
+        let ticket_id = match request_turn(d, &parked).unwrap() {
+            RequestOutcome::Parked { ticket_id, .. } => ticket_id,
+            other => panic!("expected parked source, got {other:?}"),
+        };
+        release_turn(d, "refs/heads/main", &owner).unwrap();
+        assert!(ticket_ready(d, "refs/heads/main", &ticket_id).unwrap());
+        let resumed = TicketBinding {
+            attempt_id: Some("attempt-1-9".to_string()),
+            fence: 9,
+            candidate_sequence: 9,
+            candidate_oid: "candidate-resumed".to_string(),
+            source_agent: "agent-replacement-process".to_string(),
+            ..parked
+        };
+        assert!(matches!(
+            request_turn(d, &resumed).unwrap(),
+            RequestOutcome::Acquired { .. }
+        ));
+        assert!(is_lease_owner(d, "refs/heads/main", &resumed).unwrap());
+    }
+
+    #[test]
     fn independent_refs_get_independent_queues() {
         let dir = tempdir().unwrap();
         let d = dir.path();
@@ -1178,7 +1493,14 @@ mod tests {
         request_turn(d, &owner).unwrap();
         // Queue 5 tickets.
         let queued: Vec<_> = (1..=5)
-            .map(|i| binding(&format!("t-{i}"), &format!("agent-{i}"), (i + 1) as u64, "oid-0"))
+            .map(|i| {
+                binding(
+                    &format!("t-{i}"),
+                    &format!("agent-{i}"),
+                    (i + 1) as u64,
+                    "oid-0",
+                )
+            })
             .collect();
         for q in &queued {
             request_turn(d, q).unwrap();
@@ -1196,6 +1518,33 @@ mod tests {
         }
         let st = status(d, "refs/heads/main", None).unwrap();
         assert_eq!(st.queue_len, 0);
+    }
+
+    #[test]
+    fn retained_source_rebinds_new_candidate_and_fences_old_publication() {
+        let dir = tempdir().unwrap();
+        let d = dir.path();
+        let old = binding("t-a", "agent-a", 1, "oid-0");
+        assert!(matches!(
+            request_turn(d, &old).unwrap(),
+            RequestOutcome::Acquired { .. }
+        ));
+        let renewed = TicketBinding {
+            candidate_sequence: 2,
+            candidate_oid: "candidate-2".to_string(),
+            observed_target_oid: "oid-1".to_string(),
+            ..old.clone()
+        };
+        assert!(matches!(
+            request_turn(d, &renewed).unwrap(),
+            RequestOutcome::AlreadyOwner { .. }
+        ));
+        let old_publish = with_lease_owner(d, "refs/heads/main", &old, || Ok(()));
+        assert!(
+            old_publish.is_err(),
+            "old candidate/target/fence must be stale"
+        );
+        with_lease_owner(d, "refs/heads/main", &renewed, || Ok(())).unwrap();
     }
 
     #[test]

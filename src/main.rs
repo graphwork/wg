@@ -142,6 +142,13 @@ fn virtual_review_mutation_target(command: &Commands) -> Option<&str> {
         | Commands::CompletionManifest { id, .. }
         | Commands::Submit { id, .. }
         | Commands::Land { id, .. } => vec![id],
+        Commands::LandingTurn {
+            command:
+                crate::commands::landing_turn::LandingTurnCommand::Request { id, .. }
+                | crate::commands::landing_turn::LandingTurnCommand::Renew { id, .. }
+                | crate::commands::landing_turn::LandingTurnCommand::Release { id, .. }
+                | crate::commands::landing_turn::LandingTurnCommand::Cancel { id, .. },
+        } => vec![id],
         Commands::Assign { task, .. } => vec![task],
         Commands::AddDep { task, dependency } | Commands::RmDep { task, dependency } => {
             vec![task, dependency]
@@ -1411,6 +1418,7 @@ fn main() -> Result<()> {
             id,
             integration_ref,
         } => commands::completion_land::run(&workgraph_dir, &id, &integration_ref),
+        Commands::LandingTurn { command } => commands::landing_turn::run(&workgraph_dir, command),
         Commands::Contract { id, contract } => {
             commands::finalize::set_contract(&workgraph_dir, &id, &contract)
         }

@@ -124,26 +124,28 @@ fn parse_condition_for(
     }
 
     if let Some(rest) = s.strip_prefix("landing-turn:") {
-        // Format: landing-turn:<integration-ref>
-        let integration_ref = rest.trim();
-        if integration_ref.is_empty() {
-            anyhow::bail!("Empty integration ref in landing-turn condition");
+        // Format: landing-turn:<integration-ref>#<exact-ticket-id>.
+        // Naming only a task/ref is insufficient because a stale generation
+        // could otherwise satisfy a newer wait.
+        let (integration_ref, ticket_id) = rest.split_once('#').ok_or_else(|| {
+            anyhow::anyhow!(
+                "Invalid landing-turn condition '{}'. Expected landing-turn:<ref>#<ticket>",
+                s
+            )
+        })?;
+        if integration_ref.trim().is_empty() || ticket_id.trim().is_empty() {
+            anyhow::bail!("landing-turn condition requires both ref and exact ticket id");
         }
-        let task_id = parked_task_id
-            .map(|id| id.to_string())
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "landing-turn condition requires the parked task id"
-                )
-            })?;
+        let _ = parked_task_id
+            .ok_or_else(|| anyhow::anyhow!("landing-turn condition requires the parked task id"))?;
         return Ok(WaitCondition::LandingTurn {
             integration_ref: integration_ref.to_string(),
-            task_id,
+            ticket_id: ticket_id.to_string(),
         });
     }
 
     anyhow::bail!(
-        "Unknown condition '{}'. Supported: task:<id>=<status>, timer:<dur>, human-input, message, file:<path>",
+        "Unknown condition '{}'. Supported: task:<id>=<status>, timer:<dur>, human-input, message, file:<path>, landing-turn:<ref>#<ticket>",
         s
     );
 }

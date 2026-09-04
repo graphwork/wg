@@ -116,6 +116,26 @@ export class WgBackend {
     log(id, message, opts = {}) {
         return this.run(["log", id, message], opts);
     }
+    wait(until, checkpoint, opts = {}) {
+        if (!this.env.taskId)
+            throw new Error("wg_wait requires a managed WG task");
+        const args = ["wait", this.env.taskId, "--until", until];
+        if (checkpoint)
+            args.push("--checkpoint", checkpoint);
+        return this.run(args, opts);
+    }
+    landingTurn(action, integrationRef, progress, checkpoint, opts = {}) {
+        if (!this.env.taskId)
+            throw new Error("wg_landing_turn requires a managed WG task");
+        const args = action === "status"
+            ? ["landing-turn", "status", integrationRef, "--task", this.env.taskId]
+            : ["landing-turn", action, this.env.taskId, "--integration-ref", integrationRef];
+        if (progress)
+            args.push("--progress", progress);
+        if (checkpoint)
+            args.push("--checkpoint", checkpoint);
+        return this.run(args, opts);
+    }
     // ── messaging verbs ─────────────────────────────────────────────────────
     msgSend(target, message, opts = {}) {
         return this.run(["msg", "send", target, message], opts);

@@ -3215,3 +3215,10 @@ script = "scenarios/project_local_pi_e2e.sh"
 owners = ["project-local-pi-e2e"]
 description = "End-to-end terminal regression for the project-local-by-default Pi configuration cutover. Two repositories share one $HOME (one machine-global ~/.wg + one custody keystore): selecting a Pi route in repo A writes only worksgood.toml and never touches repo B or machine-global state; repo B with no project route fails WG-EXEC-UNSELECTED at service start and service tick despite a stale valid global route + active-profile pointer (ignored legacy routing named inactive, no service/session/claim/worktree state created, dispatcher.max_agents is builtin-default not the stale 99); cloning repo A's checked-in worksgood.toml into a clean repo B with no global config, no reusable profiles, and no WG credentials reproduces the exact Pi route, per-role reasoning, resource guardrail, and archive policy all with source=project-file; and `wg migrate project-local-pi --cleanup-global-routing` removes only the stale global routing selectors + active-profile pointer while preserving every reusable profile definition, secret, keystore sentinel, real WG-Fed identity record, custody keystore, and federation peer registry byte-for-byte, with a no-op second run and the repo A project route still working."
 timeout_seconds = 90
+
+[[scenario]]
+name = "worker_owned_landing_turns"
+script = "scenarios/worker_owned_landing_turns.sh"
+owners = ["worker-owned-landing-turns"]
+description = "Candidate-binary landing-turn CLI proof plus the ref-scoped persistent FIFO state-machine gate: three exact source bindings queue and advance in order, restart reload preserves candidates, an expired/crashed owner is fenced, stale bindings cannot publish/release, and starvation-freedom leaves no queued landing pending."
+timeout_seconds = 180

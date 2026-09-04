@@ -9,11 +9,13 @@
 
 use crate::cli::{Commands, MsgCommands, PiWatchdogCommands};
 use crate::commands;
+use crate::commands::landing_turn::LandingTurnCommand;
 use anyhow::{Context, Result};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use worksgood::worker_control::{
-    WORKER_CONTROL_PROTOCOL, WorkerControlMode, WorkerOperation, WorkerRequestEnvelope,
+    LandingTurnAction, WORKER_CONTROL_PROTOCOL, WorkerControlMode, WorkerOperation,
+    WorkerRequestEnvelope,
 };
 
 fn control_mode() -> WorkerControlMode {
@@ -415,6 +417,61 @@ pub fn maybe_run(command: &Commands, json: bool) -> Result<Option<()>> {
             Some(WorkerOperation::Wait {
                 until: until.clone(),
                 checkpoint: checkpoint.clone(),
+            })
+        }
+        Commands::LandingTurn { command } => {
+            let (action, id, integration_ref, progress, checkpoint) = match command {
+                LandingTurnCommand::Request {
+                    id,
+                    integration_ref,
+                    checkpoint,
+                    ..
+                } => (
+                    LandingTurnAction::Request,
+                    id,
+                    integration_ref,
+                    None,
+                    checkpoint.clone(),
+                ),
+                LandingTurnCommand::Status {
+                    task: Some(id),
+                    integration_ref,
+                } => (LandingTurnAction::Status, id, integration_ref, None, None),
+                LandingTurnCommand::Status { task: None, .. } => {
+                    anyhow::bail!("worker_control.landing_turn_status_requires_own_task")
+                }
+                LandingTurnCommand::Renew {
+                    id,
+                    integration_ref,
+                    progress,
+                } => (
+                    LandingTurnAction::Renew,
+                    id,
+                    integration_ref,
+                    progress.clone(),
+                    None,
+                ),
+                LandingTurnCommand::Release {
+                    id,
+                    integration_ref,
+                } => (LandingTurnAction::Release, id, integration_ref, None, None),
+                LandingTurnCommand::Cancel {
+                    id,
+                    integration_ref,
+                } => (LandingTurnAction::Cancel, id, integration_ref, None, None),
+                LandingTurnCommand::Reclaim { .. } => {
+                    anyhow::bail!("worker_control.landing_turn_reclaim_operator_only")
+                }
+            };
+            task_matches(id)?;
+            Some(WorkerOperation::LandingTurn {
+                action,
+                integration_ref: integration_ref.clone(),
+                progress,
+                checkpoint,
+                source_session: std::env::var("PI_SESSION_ID")
+                    .ok()
+                    .filter(|session| !session.trim().is_empty()),
             })
         }
         Commands::CompletionObject {

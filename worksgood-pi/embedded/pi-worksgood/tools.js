@@ -44,7 +44,8 @@ async function fromExec(command, r) {
  * Register the wg tool family on a pi extension API.
  *
  * Tool names (the task's contract): `wg_capabilities`, `wg_ready`, `wg_show`,
- * `wg_add`, `wg_publish`, `wg_done`, `wg_fail`, `wg_msg_send`, `wg_msg_read`, `wg_run`.
+ * `wg_add`, `wg_publish`, `wg_done`, `wg_fail`, `wg_wait`, `wg_landing_turn`,
+ * `wg_msg_send`, `wg_msg_read`, `wg_run`.
  */
 export function registerWgTools(pi, backend) {
     pi.registerTool({
@@ -126,6 +127,40 @@ export function registerWgTools(pi, backend) {
         }),
         async execute(_id, params, signal) {
             return fromExec("fail", await backend.fail(params.id, params.reason, { signal }));
+        },
+    });
+    pi.registerTool({
+        name: "wg_wait",
+        label: "WG: wait / park task",
+        description: "Atomically park this managed task on a typed wait condition while retaining its checkpoint and resumable session.",
+        parameters: Type.Object({
+            until: Type.String({
+                description: "Typed condition such as task:<id>=done, timer:<duration>, message, or landing-turn:<ref>#<ticket>.",
+            }),
+            checkpoint: Type.Optional(Type.String({ description: "Bounded checkpoint for resumption." })),
+        }),
+        async execute(_id, params, signal) {
+            return fromExec("wait", await backend.wait(params.until, params.checkpoint, { signal }));
+        },
+    });
+    pi.registerTool({
+        name: "wg_landing_turn",
+        label: "WG: landing turn",
+        description: "Request, inspect, renew, release, or cancel this source task's exact ref-scoped FIFO landing lease. A parked request resumes automatically at the head.",
+        parameters: Type.Object({
+            action: Type.Union([
+                Type.Literal("request"),
+                Type.Literal("status"),
+                Type.Literal("renew"),
+                Type.Literal("release"),
+                Type.Literal("cancel"),
+            ]),
+            integration_ref: Type.Optional(Type.String({ description: "Integration ref (default refs/heads/main)." })),
+            progress: Type.Optional(Type.String({ description: "Changed proof-of-progress token for lease renewal." })),
+            checkpoint: Type.Optional(Type.String({ description: "Checkpoint recorded if request must park." })),
+        }),
+        async execute(_id, params, signal) {
+            return fromExec(`landing-turn ${params.action}`, await backend.landingTurn(params.action, params.integration_ref ?? "refs/heads/main", params.progress, params.checkpoint, { signal }));
         },
     });
     pi.registerTool({

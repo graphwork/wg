@@ -120,7 +120,7 @@ pub enum WaitCondition {
     /// available.
     LandingTurn {
         integration_ref: String,
-        task_id: String,
+        ticket_id: String,
     },
 }
 
