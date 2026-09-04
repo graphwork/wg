@@ -3188,7 +3188,7 @@ fn main() -> Result<()> {
 
             // Handle --reset (also reachable as positional `wg config reset`)
             if reset {
-                let reset_scope = scope.unwrap_or(commands::config_cmd::ConfigScope::Global);
+                let reset_scope = scope.unwrap_or(commands::config_cmd::ConfigScope::Local);
                 return commands::config_cmd::reset_to_route(
                     &workgraph_dir,
                     reset_scope,

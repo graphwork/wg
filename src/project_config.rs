@@ -10,6 +10,8 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+use crate::config::{Config, DispatchRole};
+
 pub const PROJECT_CONFIG_FILE: &str = "worksgood.toml";
 pub const PROJECT_CONFIG_SCHEMA_VERSION: u32 = 1;
 
@@ -29,6 +31,199 @@ pub struct LoadedProjectConfig {
     pub path: PathBuf,
     pub fingerprint: String,
     pub profile_origin: Option<ProfileOrigin>,
+}
+
+/// Result of a project-local route/profile materialization.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectMaterialization {
+    pub scope: &'static str,
+    pub path: PathBuf,
+    pub changed: bool,
+    pub profile: Option<String>,
+    pub definition_fingerprint: Option<String>,
+    pub projection_fingerprint: String,
+    pub global_config_changed: bool,
+    pub global_active_profile_changed: bool,
+    pub console_plugin_changed: bool,
+}
+
+/// Materialize only the closed Pi route/reasoning projection from `config`.
+/// Existing project-owned guardrails and resource/archive policy are retained.
+/// When `profile` is supplied its semantic definition fingerprint is recorded;
+/// runtime never reopens that definition.
+pub fn materialize_for_graph(
+    workgraph_dir: &Path,
+    config: &Config,
+    profile: Option<(&str, &str)>,
+    dry_run: bool,
+) -> Result<ProjectMaterialization> {
+    let path = path_for_graph(workgraph_dir).ok_or_else(|| {
+        anyhow::anyhow!(
+            "error[WG-PROJECT-ROOT-REQUIRED]: cannot locate worksgood.toml for graph {}; run this command in an ordinary project with a .wg directory",
+            workgraph_dir.display()
+        )
+    })?;
+    let mut document: toml::Value = if path.exists() {
+        std::fs::read_to_string(&path)
+            .with_context(|| format!("Failed to read {}", path.display()))?
+            .parse()
+            .with_context(|| format!("Failed to parse {}", path.display()))?
+    } else {
+        toml::Value::Table(toml::map::Map::new())
+    };
+    let root = document
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("project config {} must be a TOML table", path.display()))?;
+    root.insert(
+        "schema_version".to_string(),
+        toml::Value::Integer(i64::from(PROJECT_CONFIG_SCHEMA_VERSION)),
+    );
+    root.remove("profile_origin");
+
+    let task_route = exact_route_for(config, DispatchRole::TaskAgent)?;
+    set_nested_string(root, &["agent", "model"], &task_route);
+    set_nested_string(root, &["dispatcher", "model"], &task_route);
+
+    let models = root
+        .entry("models".to_string())
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("models in {} must be a table", path.display()))?;
+    for role in std::iter::once(DispatchRole::Default).chain(DispatchRole::ALL.iter().copied()) {
+        let route = exact_route_for(config, role)?;
+        let mut entry = toml::map::Map::new();
+        entry.insert("model".to_string(), toml::Value::String(route));
+        match config.resolve_reasoning_detail(role).level {
+            Some(level) => {
+                entry.insert(
+                    "reasoning".to_string(),
+                    toml::Value::String(level.as_str().to_string()),
+                );
+            }
+            None => {
+                entry.insert(
+                    "reasoning_mode".to_string(),
+                    toml::Value::String("provider-default".to_string()),
+                );
+            }
+        }
+        models.insert(role.to_string(), toml::Value::Table(entry));
+    }
+
+    let _ = root;
+    let projection_fingerprint = projection_fingerprint(&document);
+    let (profile_name, definition_fingerprint) = if let Some((name, content)) = profile {
+        let definition_fingerprint = crate::profile::project::profile_content_fingerprint(content)?;
+        let origin = ProfileOrigin {
+            name: name.to_string(),
+            definition_fingerprint: definition_fingerprint.clone(),
+            projection_fingerprint: projection_fingerprint.clone(),
+        };
+        document
+            .as_table_mut()
+            .expect("checked table")
+            .insert("profile_origin".to_string(), toml::Value::try_from(origin)?);
+        (Some(name.to_string()), Some(definition_fingerprint))
+    } else {
+        (None, None)
+    };
+
+    // Validate the exact payload shape before any write.
+    let mut payload = document.clone();
+    let payload_root = payload.as_table_mut().expect("checked table");
+    payload_root.remove("schema_version");
+    payload_root.remove("profile_origin");
+    validate_project_payload(&payload, &path)?;
+    let rendered = toml::to_string_pretty(&document)?;
+    let current = std::fs::read_to_string(&path).ok();
+    let changed = current.as_deref() != Some(rendered.as_str());
+    if changed && !dry_run {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        crate::atomic_file::write_atomic(&path, rendered.as_bytes())
+            .with_context(|| format!("Failed to write {}", path.display()))?;
+    }
+    Ok(ProjectMaterialization {
+        scope: "project",
+        path,
+        changed,
+        profile: profile_name,
+        definition_fingerprint,
+        projection_fingerprint,
+        global_config_changed: false,
+        global_active_profile_changed: false,
+        console_plugin_changed: false,
+    })
+}
+
+/// Persist a typed configuration as the authoritative project document while
+/// removing machine-owned and legacy routing namespaces. This is used by
+/// ordinary `wg config` flag writes; direct route edits intentionally clear
+/// profile origin metadata.
+pub fn write_config_for_graph(workgraph_dir: &Path, config: &Config) -> Result<PathBuf> {
+    let path = path_for_graph(workgraph_dir).ok_or_else(|| {
+        anyhow::anyhow!(
+            "error[WG-PROJECT-ROOT-REQUIRED]: config writes need an ordinary project .wg directory"
+        )
+    })?;
+    let mut document = toml::Value::try_from(config)?;
+    let root = document
+        .as_table_mut()
+        .expect("Config serializes as a table");
+    for key in [
+        "auth",
+        "secrets",
+        "llm_endpoints",
+        "native_executor",
+        "openrouter",
+        "model_registry",
+        "tag_routing",
+        "tiers",
+        "profile",
+        "description",
+    ] {
+        root.remove(key);
+    }
+    for section in ["agent", "dispatcher"] {
+        if let Some(table) = root.get_mut(section).and_then(toml::Value::as_table_mut) {
+            table.remove("executor");
+            table.remove("provider");
+        }
+    }
+    root.insert(
+        "schema_version".to_string(),
+        toml::Value::Integer(i64::from(PROJECT_CONFIG_SCHEMA_VERSION)),
+    );
+    let mut payload = document.clone();
+    payload
+        .as_table_mut()
+        .expect("checked table")
+        .remove("schema_version");
+    validate_project_payload(&payload, &path)?;
+    let rendered = toml::to_string_pretty(&document)?;
+    crate::atomic_file::write_atomic(&path, rendered.as_bytes())
+        .with_context(|| format!("Failed to write {}", path.display()))?;
+    Ok(path)
+}
+
+fn exact_route_for(config: &Config, role: DispatchRole) -> Result<String> {
+    let route = config.resolve_model_for_role(role).spawn_model_spec();
+    crate::config::parse_exact_pi_route(&route).with_context(|| {
+        format!(
+            "error[WG-PI-ROUTE-REQUIRED]: profile role {role} resolved to {route:?}; project profiles require exact `pi:<provider>:<model>` routes"
+        )
+    })?;
+    Ok(route)
+}
+
+fn set_nested_string(root: &mut toml::map::Map<String, toml::Value>, path: &[&str], value: &str) {
+    let table = root
+        .entry(path[0].to_string())
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+        .as_table_mut()
+        .expect("validated project section must be a table");
+    table.insert(path[1].to_string(), toml::Value::String(value.to_string()));
 }
 
 /// Resolve the source-owned config path for an ordinary WG graph layout.

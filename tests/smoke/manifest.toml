@@ -3160,3 +3160,10 @@ script = "scenarios/evaluation_cutover_migration.sh"
 owners = ["fix-retired-evaluation-cutover"]
 description = "Candidate-binary credential-free terminal/daemon regression for the retired evaluation cutover: a Done reviewed source plus stale Open .evaluate row reproduces the permanent downstream blocker; an unrelated score=1.0 `wg evaluate record` cannot clear it; repeated service ticks filter the retired row before promotion and emit only one notice; dry-run is write-free; apply creates an exact-byte graph backup, preserves every row/log/evaluation byte, tags the row inert, and is idempotent; then the real shell dispatcher runs downstream without rm-dep or graph editing."
 timeout_seconds = 90
+
+[[scenario]]
+name = "project_local_pi_cli"
+script = "scenarios/project_local_pi_cli.sh"
+owners = ["project-local-pi-cli"]
+description = "Real terminal regression for project-local setup/profile selection: writes worksgood.toml only, preserves resource guardrails, warns on deprecated profile use, and refuses global setup mutation before touching machine state."
+timeout_seconds = 45
