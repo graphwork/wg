@@ -367,6 +367,17 @@ fn evaluate_condition_with_message(
                 false
             }
         }
+        WaitCondition::LandingTurn {
+            integration_ref,
+            task_id: wait_task_id,
+        } => {
+            // The wait is satisfied (the source agent should be resumed to take
+            // its turn) when its ticket is at the head and the lease is free.
+            match worksgood::landing_turn::status(dir, integration_ref, Some(wait_task_id)) {
+                Ok(st) => st.position == Some(1) && st.lease.is_none(),
+                Err(_) => false,
+            }
+        }
     }
 }
 

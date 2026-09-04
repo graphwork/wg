@@ -41,6 +41,16 @@ fn message_selector(spec: &WaitSpec) -> Option<MessageWaitSelector> {
 }
 
 fn parse_condition(s: &str, graph: &worksgood::graph::WorkGraph) -> Result<WaitCondition> {
+    parse_condition_for(s, graph, None)
+}
+
+/// Like [`parse_condition`] but binds a `landing-turn` condition to the parked
+/// task `id` (so the coordinator can resume the exact task at the head).
+fn parse_condition_for(
+    s: &str,
+    graph: &worksgood::graph::WorkGraph,
+    parked_task_id: Option<&str>,
+) -> Result<WaitCondition> {
     let s = s.trim();
 
     if s == "human-input" {
@@ -113,6 +123,25 @@ fn parse_condition(s: &str, graph: &worksgood::graph::WorkGraph) -> Result<WaitC
         });
     }
 
+    if let Some(rest) = s.strip_prefix("landing-turn:") {
+        // Format: landing-turn:<integration-ref>
+        let integration_ref = rest.trim();
+        if integration_ref.is_empty() {
+            anyhow::bail!("Empty integration ref in landing-turn condition");
+        }
+        let task_id = parked_task_id
+            .map(|id| id.to_string())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "landing-turn condition requires the parked task id"
+                )
+            })?;
+        return Ok(WaitCondition::LandingTurn {
+            integration_ref: integration_ref.to_string(),
+            task_id,
+        });
+    }
+
     anyhow::bail!(
         "Unknown condition '{}'. Supported: task:<id>=<status>, timer:<dur>, human-input, message, file:<path>",
         s
@@ -124,6 +153,14 @@ fn parse_condition(s: &str, graph: &worksgood::graph::WorkGraph) -> Result<WaitC
 /// Comma-separated = AND (All), pipe-separated = OR (Any).
 /// Cannot mix AND and OR in one expression.
 fn parse_wait_spec(s: &str, graph: &worksgood::graph::WorkGraph) -> Result<WaitSpec> {
+    parse_wait_spec_for(s, graph, None)
+}
+
+fn parse_wait_spec_for(
+    s: &str,
+    graph: &worksgood::graph::WorkGraph,
+    parked_task_id: Option<&str>,
+) -> Result<WaitSpec> {
     let has_comma = s.contains(',');
     let has_pipe = s.contains('|');
 
@@ -137,18 +174,18 @@ fn parse_wait_spec(s: &str, graph: &worksgood::graph::WorkGraph) -> Result<WaitS
     if has_pipe {
         let conditions: Vec<WaitCondition> = s
             .split('|')
-            .map(|part| parse_condition(part, graph))
+            .map(|part| parse_condition_for(part, graph, parked_task_id))
             .collect::<Result<Vec<_>>>()?;
         Ok(WaitSpec::Any(conditions))
     } else if has_comma {
         let conditions: Vec<WaitCondition> = s
             .split(',')
-            .map(|part| parse_condition(part, graph))
+            .map(|part| parse_condition_for(part, graph, parked_task_id))
             .collect::<Result<Vec<_>>>()?;
         Ok(WaitSpec::All(conditions))
     } else {
         // Single condition — wrap as All with one element
-        let condition = parse_condition(s, graph)?;
+        let condition = parse_condition_for(s, graph, parked_task_id)?;
         Ok(WaitSpec::All(vec![condition]))
     }
 }
@@ -274,7 +311,7 @@ pub fn run(dir: &Path, id: &str, until: &str, checkpoint: Option<&str>) -> Resul
         };
 
         // Parse and validate the condition
-        let wait_spec = match parse_wait_spec(until, graph) {
+        let wait_spec = match parse_wait_spec_for(until, graph, Some(id)) {
             Ok(ws) => ws,
             Err(e) => {
                 error = Some(e);

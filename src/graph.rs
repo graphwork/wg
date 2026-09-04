@@ -113,6 +113,15 @@ pub enum WaitCondition {
     Message,
     /// Wait for a file to change (mtime check)
     FileChanged { path: String, mtime_at_wait: u64 },
+    /// Wait for this task's landing turn against an integration ref to reach
+    /// the head of the persistent FIFO landing-turn queue (see
+    /// [`crate::landing_turn`]). The source agent parks through `AttemptParked`
+    /// and is auto-resumed when its ticket reaches the head and the lease is
+    /// available.
+    LandingTurn {
+        integration_ref: String,
+        task_id: String,
+    },
 }
 
 /// Composite wait specification: AND (All) or OR (Any) of conditions.
