@@ -258,10 +258,12 @@ Creates `.wg/` (task graph as JSONL, config, agency, service state). A fresh
 project is **graph-only** — it has no LLM route and needs no credentials. You
 can open the TUI at this point, but dispatching LLM work requires step 8.
 
-> **Existing users:** the commands below **select** a profile/route; they do
-> not delete or overwrite profiles you already configured. Project-scoped
-> selection (`wg profile select`) leaves your global `~/.wg/config.toml` and
-> `active-profile` untouched.
+> **Existing users:** the commands below **select** a profile/route for this
+project only. Project-scoped selection (`wg profile select`) and `wg setup`
+write the checked-in project document `worksgood.toml` and leave your
+machine-global `~/.wg/config.toml` and `~/.wg/active-profile` untouched
+(those are ignored for project resolution today; run
+`wg migrate project-local-pi --cleanup-global-routing` to remove them).
 
 ---
 
@@ -270,27 +272,28 @@ can open the TUI at this point, but dispatching LLM work requires step 8.
 Pick **one** of these equivalent paths. For a zero-cost smoke test, set **both**
 the strong (worker) and weak (agency one-shots) tiers to the free model.
 
-### Path A — project-scoped (recommended; does not change global state)
+### Path A — project-scoped (recommended; writes only worksgood.toml)
 
 ```bash
-wg profile init-starters                                              # writes the `pi` starter profile
+wg profile init-starters                                              # writes the `pi` starter profile definition
 wg profile pi --strong "pi:openrouter/nvidia/nemotron-3-ultra-550b-a55b:free" \
                   --weak   "pi:openrouter/nvidia/nemotron-3-ultra-550b-a55b:free"
-wg profile select pi                                                   # this project only
+wg profile select pi                                                   # materializes the closed Pi projection into worksgood.toml
 ```
 
-`wg profile select pi` is project-scoped and explicitly does **not** touch
-`~/.wg/config.toml` or `active-profile`.
+`wg profile select pi` is project-scoped: it writes **only** `worksgood.toml`
+and does **not** touch `~/.wg/config.toml`, `~/.wg/active-profile`, or `~/.pi`.
 
-### Path B — global (make Pi your default everywhere)
-
-Same first two lines, then activate globally:
+### Path B — deprecated global alias (still project-scoped)
 
 ```bash
-wg profile use pi     # rewrites ~/.wg/config.toml, ensures the plugin, hot-reloads the daemon
+wg profile use pi     # [DEPRECATED] alias for project-local `profile select`; warns, writes worksgood.toml only
 ```
 
-### Path C — one explicit route (writes global config directly)
+`profile use` is a one-release deprecated alias for `profile select`; it no
+longer rewrites `~/.wg/config.toml` or `~/.wg/active-profile`.
+
+### Path C — one explicit route (writes the project document directly)
 
 ```bash
 wg setup --route pi --yes --model "pi:openrouter/nvidia/nemotron-3-ultra-550b-a55b:free"
@@ -344,7 +347,7 @@ wg publish <task-id> --only
 Watch the graph evolve in the TUI. Restart after config/package changes:
 
 ```bash
-wg service reload       # pick up config.toml edits without a full restart
+wg service reload       # pick up worksgood.toml edits without a full restart
 wg service stop         # full stop
 wg service start
 ```
