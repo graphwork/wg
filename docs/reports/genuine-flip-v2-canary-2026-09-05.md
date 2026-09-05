@@ -172,6 +172,35 @@ The immediately following installed `wg show --json` had empty stderr, reported
 `status: in-progress`, one current FLIP rejection, no completion receipt, and no
 Eval activity. Thus the rejected candidate remained Not Done and unlanded.
 
+## Task-local installed FLIP Pass and causal Eval boundary
+
+After the bootstrap-sequencing clarification, this task's candidate sequence 4
+produced a genuine v2 FLIP **Pass** before Eval. Its exact objects were:
+
+| Object | CID / value |
+|---|---|
+| candidate manifest | `b3:cb7e0dc7d4bf2464353bfcbb2f2d149e519476869b779380981c31460edfc2ef` |
+| FLIP receipt v2 (Pass) | `b3:152a7583acc0e9f3efdb83c13bf1ca969632ec90071079118a21840b36367886` |
+| FLIP proof chain | `b3:03b654f0acc733dd1aa6e6da7548ce216ffd1742defc3898dfbc953eb2ce50cb` |
+| phase-I record / input | `b3:c20810a5902b8ff5c2793787c919bfeda3d744ee3179ddd87712f01af6fe3c65` / `b3:5d9455bc52bf108825e6539b367174b981129413229868556a38ca22ef017bba` |
+| phase-I prompt / raw / latent | `b3:26268022d5f474593847f931ede54d741f8c80d3c534bf1cf03a2c70fa10bc3f` / `b3:da1cd902f16500ed1cecd2d83c058bf3686064cf2e20ed245b85c1fb65e5305f` / `b3:1b71c751385330811fb857be779789d14fe8f0bc3567ac1345437e0e565ca88f` |
+| phase-II record / input | `b3:970641fd09437e559a55e62e91c47e75d2997182d936e2e9c0bb2b9d46b80b81` / `b3:3a2a8bd4aaee6ebf3f433fc33c075b742e614c904f2ae46bd815f9064074eb7a` |
+| phase-II prompt / raw | `b3:bbafc9c3c11ea9c35616facb207d70cef61ca8bef1bbfa45f80419e6a0be15b6` / `b3:166a4f1700cff8d750d189de1dc8eb23f0abcc81d92b419ab532ad2f3dffc90d` |
+| Eval receipt v2 (semantic reject) | `b3:8266dc5e60e3cf0e080614ff62b699fea3df9122fe4d2d68daf53a68bcc9cdb6` |
+
+Inference execution
+`flip-inference:01a06fc2-6e79-7340-a578-29f75f636855` completed before
+comparison execution
+`flip-comparison:01a06fc2-a9aa-7f32-b52d-acad5cc3e0d0`; both used the exact
+Luna route and the comparison named the inference record above. The following
+Eval ran (8310 ms) but rejected only because its own future Pass receipt was not
+already inside its input. Publication and Done remained refused. A fresh
+installed `wg show --json` again returned zero stderr bytes and showed the FLIP
+Pass then Eval rejection, both current and bound to candidate sequence 4. The
+final requirements clarify that this causally future controller postcondition is
+not candidate content; the next Eval is still exact and may pass only after the
+preceding genuine FLIP Pass.
+
 ## Successful installed bootstrap seed (Pass → Eval Pass)
 
 The ordinary documentation prerequisite `genuine-flip-v2-seed` broke the causal
