@@ -547,6 +547,22 @@ fn genuine_flip_proof_rejects_every_broken_execution_binding() {
         !broken.has_genuine_flip_proof(&fixture.store),
         "mutated decision evidence"
     );
+
+    let missing_input = valid
+        .flip_proof
+        .as_ref()
+        .unwrap()
+        .comparison
+        .input
+        .content_digest
+        .as_str()
+        .strip_prefix("b3:")
+        .unwrap();
+    std::fs::remove_file(fixture.store.root().join("objects").join(missing_input)).unwrap();
+    assert!(
+        load_stored_review_receipt(&fixture.store, &valid_stored.receipt_object).is_err(),
+        "missing phase-input CAS object must fail closed"
+    );
 }
 
 #[test]
