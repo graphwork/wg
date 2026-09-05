@@ -14,8 +14,8 @@ semantic omission, the task remained `in-progress` and unlanded, and no Eval
 receipt or call was created. Candidate sequence 2 contained the concrete reject
 chain but correctly could not pre-prove its own future pass. A minimal ordinary
 documentation seed then completed under the same installed image and supplied
-the first concrete v2 FLIP Pass→Eval Pass chain. Candidate sequence 3 is this
-repaired final report; its terminal call produces the required task-local
+the first concrete v2 FLIP Pass→Eval Pass chain. The next repaired candidate is
+this final report; its terminal call produces the required task-local
 current-candidate FLIP→Eval postcondition. Final current-candidate receipt CIDs
 cannot be embedded in the Git tree they hash, so they are retained in immutable
 completion objects/task logs and checked after reload with `wg show --json`.
