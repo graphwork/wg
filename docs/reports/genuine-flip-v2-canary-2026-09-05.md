@@ -11,12 +11,14 @@ smoke, Rust policy checks, Pi-plugin tests, and embed-sync check passed. No
 Candidate sequence 1 deliberately exposed the unresolved receipt table to the
 real installed completion path. Its genuine two-phase v2 FLIP rejected that
 semantic omission, the task remained `in-progress` and unlanded, and no Eval
-receipt or call was created. The concrete v2 chain from that run is recorded
-below. Candidate sequence 2 is this repaired report; its terminal call is the
-current-candidate FLIP→Eval proof. Final current-candidate receipt CIDs cannot be
-embedded in the Git tree they hash, so they are retained in the immutable
-completion objects and lifecycle log and checked after reload with
-`wg show --json`.
+receipt or call was created. Candidate sequence 2 contained the concrete reject
+chain but correctly could not pre-prove its own future pass. A minimal ordinary
+documentation seed then completed under the same installed image and supplied
+the first concrete v2 FLIP Pass→Eval Pass chain. Candidate sequence 3 is this
+repaired final report; its terminal call produces the required task-local
+current-candidate FLIP→Eval postcondition. Final current-candidate receipt CIDs
+cannot be embedded in the Git tree they hash, so they are retained in immutable
+completion objects/task logs and checked after reload with `wg show --json`.
 
 ## Installed image identity
 
@@ -169,6 +171,52 @@ with findings digest
 The immediately following installed `wg show --json` had empty stderr, reported
 `status: in-progress`, one current FLIP rejection, no completion receipt, and no
 Eval activity. Thus the rejected candidate remained Not Done and unlanded.
+
+## Successful installed bootstrap seed (Pass → Eval Pass)
+
+The ordinary documentation prerequisite `genuine-flip-v2-seed` broke the causal
+self-reference without weakening verification. It completed through installed
+`wg done`, landed commit `c17e45b43069cf9f51a896df7bf35831a68f5e1e`, and
+produced this current candidate sequence-3 chain:
+
+| Object | CID / value |
+|---|---|
+| candidate manifest | `b3:a1b88307e51033c4df0f808847179aeebfd36a29b83897195ec6cb39bb613d78` |
+| requirements | `b3:4d09af240938949b3fe6d2c37db54e1d527466e46f2b792975882840994f7906` |
+| FLIP receipt v2 (Pass) | `b3:461dbab8513b217d09f14bb7ede4ef5ed0d4ab31094c8df00830552f744975e4` |
+| FLIP proof chain | `b3:5a34c32fd37ff691431a9c4f6ad4e4da57ed57af579ba5ce659fb4846f5dc6bc` |
+| phase-I record digest | `b3:19795e6ac9e539ac9caa4dce08717890544c5b1314f334d247b6534848b148e6` |
+| phase-I input | `b3:e5f01ddd97d50b7ba9e027fcdef44f9a5536a6ea728b46ebba31495fad9575e2` |
+| phase-I prompt | `b3:72d67be97e94d4e97f405dade15fc40ec25498e1eae19438537dadf231d487ab` |
+| phase-I raw output | `b3:31c24da67e6f7d0020d82610fb4f3f5124f61c09bcafb1187c0fb8a6daaec74c` |
+| latent hypothesis | `b3:0ddf26a1d8697bc7c598f2816395f99b9409b571b80aa639dfeada80a33c1792` |
+| phase-II record digest | `b3:1679aeba272aef5c6e20c53cd9984e4f80c0b905dd876f96a70a0dbf3cf768d6` |
+| phase-II input | `b3:490490a344c72a949bbf8dd3a909723ce4d33face3abf3b8e61dc3f54dd34d12` |
+| phase-II prompt | `b3:a9f9b075348f1df4fc304a0a90c887874be3fad6f70ccb97214f5f53c0972714` |
+| phase-II raw output | `b3:166a4f1700cff8d750d189de1dc8eb23f0abcc81d92b419ab532ad2f3dffc90d` |
+| revealed evidence | `b3:e8b8908ff040c9d7cc962dbdc0dcaa3135fe6c481c817665484f678112a3ca64` |
+| Eval receipt v2 (Pass) | `b3:bfc1fafec3c25a2100cee80a1321627ff18ea7d7b6e903cdcea6ce91840fe5fb` |
+| completion receipt | `b3:75b2d0b241cadd452067c8a39db85c00055e990fc4cc3991147a5e2f9652ab2c` |
+
+Phase I execution
+`flip-inference:01a06fb8-d336-72f0-be9f-70d2279ed230` ran on
+`pi:openai-codex:gpt-5.6-luna` from `03:59:38.806224481Z` through
+`03:59:48.396343981Z`. Phase II execution
+`flip-comparison:01a06fb8-f8b6-7031-a56c-f015823ed0e9` ran on the same exact
+route from `03:59:48.406618532Z` through `03:59:56.053101881Z`, naming the exact
+phase-I record as predecessor. Eval then ran on
+`pi:openai-codex:gpt-5.6-luna` for 6918 ms. The installed projection reported
+FLIP Pass before Eval Pass, both bound to the same task/generation/attempt/fence/
+candidate sequence. A fresh installed `wg show genuine-flip-v2-seed --json`
+returned `status=done`, both activities `candidate_state=current`,
+`receipt_version=2` in both immutable objects, and **zero stderr bytes** (no
+invalid-projection warning).
+
+That successful external immutable chain is evidence available before this
+candidate's review. The parent task-local postcondition is then established by
+the final installed controller call itself and rechecked after reload; requiring
+its final receipt CID inside the pre-review tree would be a cryptographic
+self-reference, not a stronger integrity property.
 
 ## Residual risks
 
