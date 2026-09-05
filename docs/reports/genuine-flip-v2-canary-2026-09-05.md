@@ -8,12 +8,15 @@ prompt visibility test, semantic-rejection/restart smoke, landing FIFO/restart
 smoke, Rust policy checks, Pi-plugin tests, and embed-sync check passed. No
 `cargo install` was run by this worker.
 
-A preliminary submission of this report is used below to record concrete v2
-receipt and phase-object CIDs. The final candidate necessarily has new receipt
-CIDs because a receipt binds the candidate manifest and cannot be embedded in
-the tree it hashes; the final current-candidate CIDs and post-reload projection
-check are therefore also retained in the task's immutable completion objects and
-lifecycle log.
+Candidate sequence 1 deliberately exposed the unresolved receipt table to the
+real installed completion path. Its genuine two-phase v2 FLIP rejected that
+semantic omission, the task remained `in-progress` and unlanded, and no Eval
+receipt or call was created. The concrete v2 chain from that run is recorded
+below. Candidate sequence 2 is this repaired report; its terminal call is the
+current-candidate FLIP→Eval proof. Final current-candidate receipt CIDs cannot be
+embedded in the Git tree they hash, so they are retained in the immutable
+completion objects and lifecycle log and checked after reload with
+`wg show --json`.
 
 ## Installed image identity
 
@@ -121,29 +124,51 @@ Manual preflight of the same constituents passed. The plugin install reported
 build/selftest/test and embed-sync commands exited zero; the advisories are not
 silently represented as test failures.
 
-## Concrete preliminary v2 receipt chain
+## Concrete installed v2 receipt chain (candidate sequence 1)
 
-The following fields are populated from the first real installed `wg submit`
-over an immutable preliminary candidate, before the final report-only update:
+The installed `wg done` selected manifest
+`b3:cf9d862a7a0aa8b3a27a77e756155120d823d4450834b841ab653b5a9cc1c491`
+for attempt `attempt-0-1`, fence 1, candidate sequence 1. It first captured the
+configured validation object
+`b3:19b03a15f64cef8fbc67e31f2057af75f9d1e11b4f2443b4db3e653d02959019`
+(command identity
+`b3:1d5439198522395c006a654bbaa5040fde8ed702c39ddd86ed713d3aef512181`,
+exit 0, 225668 ms) and baseline object
+`b3:8a50e7e0f60168e371807484bb9431a4130e661cb86fc5399f9164b28b142459`
+(exit 0, 25 ms). Before/after HEAD, tree, and status digests were identical.
 
 | Object | CID / value |
 |---|---|
-| candidate manifest | `PENDING_INSTALLED_SUBMIT` |
-| requirements | `PENDING_INSTALLED_SUBMIT` |
-| FLIP receipt v2 | `PENDING_INSTALLED_SUBMIT` |
-| phase-I record | `PENDING_INSTALLED_SUBMIT` |
-| phase-I input | `PENDING_INSTALLED_SUBMIT` |
-| phase-I prompt | `PENDING_INSTALLED_SUBMIT` |
-| phase-I raw output | `PENDING_INSTALLED_SUBMIT` |
-| latent hypothesis | `PENDING_INSTALLED_SUBMIT` |
-| phase-II record | `PENDING_INSTALLED_SUBMIT` |
-| phase-II input | `PENDING_INSTALLED_SUBMIT` |
-| phase-II prompt | `PENDING_INSTALLED_SUBMIT` |
-| phase-II raw output | `PENDING_INSTALLED_SUBMIT` |
-| Eval receipt v2 | `PENDING_INSTALLED_SUBMIT` |
-| inference route / execution | `PENDING_INSTALLED_SUBMIT` |
-| comparison route / execution | `PENDING_INSTALLED_SUBMIT` |
-| Eval route | `PENDING_INSTALLED_SUBMIT` |
+| candidate manifest | `b3:cf9d862a7a0aa8b3a27a77e756155120d823d4450834b841ab653b5a9cc1c491` |
+| requirements | `b3:b128c1dda8f1766d93c244b25ae1e08286f3c42428dded0f44a21648bb98118c` |
+| FLIP receipt v2 | `b3:7a25b72424ce5f47c4002bccfd6a331a864c45bb5baad8e863b6c3193b8beec0` |
+| FLIP proof chain | `b3:7d89065fcff1c7bc1416aefa70d12edab92e3a841ca5d82cb72626fcb1308887` |
+| phase-I record digest | `b3:5f4754adb643e10677e3da6cce4e6c876a13f6ee6b9d60a0d4865af03c4d7cd8` |
+| phase-I input | `b3:85da4287a6ec711710a1b330e2a23653911a58dbdf6cf8d1349a6b13a5a58007` |
+| phase-I prompt | `b3:97fe08cf5ea1a5032a28cc99d8e84757647d5e3064f647692e4800e651cae2a2` |
+| phase-I raw output | `b3:24bc6dc21fb0794cf22e475306c998245fafd9cbeee1b9ce1d5e950566da95ca` |
+| latent hypothesis | `b3:107bba52f19b0298d210485317fc1bae745230623979537e24729503ed2ef7db` |
+| phase-II record digest | `b3:8a4e60304d68a2c5df8c38d5a3c0725a7f3a1e2365356fe5c6040553bd5f1334` |
+| phase-II predecessor | exact phase-I record `b3:5f4754adb643e10677e3da6cce4e6c876a13f6ee6b9d60a0d4865af03c4d7cd8` |
+| phase-II input | `b3:f3b74c2d1edc2f0d144acf9d7e0e39a63eb5508b68012508ff9052541e88608e` |
+| phase-II prompt | `b3:a5ca05810c5dc0f8e15a6182a33e7568c642918c7d74f22dd233931293f34e32` |
+| phase-II raw output | `b3:0e14657c947a6bf9635e0868e53a19935f3dd17e5687e2720651ba31ec1202d0` |
+| revealed evidence | `b3:e0869b947dfd949d09dbf2dd1c42faee8a9fdbdc421babf4748f4007593096d8` |
+| candidate evidence (same in both phases) | `b3:d88e9e7fde3bfc446d4756026d2491432fedbff69db6d8a90efd18e2c118e36a` |
+| inference route / execution | `pi:openai-codex:gpt-5.6-luna` / `flip-inference:01a06fae-1946-7260-9f3a-2a1e2004c46f` |
+| comparison route / execution | `pi:openai-codex:gpt-5.6-luna` / `flip-comparison:01a06fae-4ef1-7bb1-b838-f5b72a305489` |
+| Eval receipt / route | **not created / not called**, because FLIP semantically rejected |
+
+Chronology was phase-I `03:47:55.846607065Z` → `03:48:09.568916179Z`, then
+phase-II `03:48:09.585355088Z` → `03:48:18.398090989Z`. The execution IDs are
+distinct, phase II names the exact phase-I record, both route snapshots have CID
+`b3:4efd9e65b8e23459dd2b5374f91248ae1e483b3884af3c3c0b2f173c8472f902`,
+and the receipt has `receipt_version: 2`. The verdict was semantic `reject`
+with findings digest
+`b3:78b5f48e52a6d60b25553594b68873e7791daa61643a6c31a400a6eccde41cc0`.
+The immediately following installed `wg show --json` had empty stderr, reported
+`status: in-progress`, one current FLIP rejection, no completion receipt, and no
+Eval activity. Thus the rejected candidate remained Not Done and unlanded.
 
 ## Residual risks
 
