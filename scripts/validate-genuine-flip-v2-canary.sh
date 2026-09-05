@@ -21,6 +21,20 @@ WG_SMOKE_CANDIDATE_BIN="$candidate_bin" \
 WG_SMOKE_CANDIDATE_BIN="$candidate_bin" \
   bash tests/smoke/scenarios/worker_owned_landing_turns.sh
 
+# Repeat the completion/restart paths with the exact installed image and prove
+# that the invoked CLI and live daemon are the coordinated post-88e79dc9 bytes.
+installed_wg=$(command -v wg)
+expected_installed_sha=d6d416c870e5ae7714b518cc56a7025b9359985fdc9eb5f58c0393b26674c806
+test "$(sha256sum "$installed_wg" | awk '{print $1}')" = "$expected_installed_sha"
+daemon_pid=$($installed_wg status | sed -n 's/Service: running (PID \([0-9]*\).*/\1/p')
+test -n "$daemon_pid"
+test "$(sha256sum "/proc/$daemon_pid/exe" | awk '{print $1}')" = "$expected_installed_sha"
+test "$(stat -Lc %i "/proc/$daemon_pid/exe")" = "$(stat -Lc %i "$installed_wg")"
+WG_SMOKE_CANDIDATE_BIN="$installed_wg" \
+  bash tests/smoke/scenarios/completion_resilience_e2e.sh
+WG_SMOKE_CANDIDATE_BIN="$installed_wg" \
+  bash tests/smoke/scenarios/worker_owned_landing_turns.sh
+
 # Checked-in Rust and Pi-plugin policy.
 cargo fmt --check
 cargo clippy

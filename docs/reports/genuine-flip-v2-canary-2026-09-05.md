@@ -113,7 +113,9 @@ bash scripts/validate-genuine-flip-v2-canary.sh
 ```
 
 The checked-in script runs the focused proof/visibility/rejection tests; builds
-and passes the exact candidate binary into both live smokes; runs
+and passes the exact candidate binary into both live smokes; then hash- and
+inode-verifies the installed CLI against the live daemon and repeats both
+completion/restart smokes with that exact installed image. It runs
 `cargo fmt --check` and `cargo clippy`; runs the Pi plugin build, self-tests,
 forced compat-mismatch tripwire, and 29 Vitest tests; re-embeds with
 `--no-install`; and requires an empty embed diff. This avoids treating worker
