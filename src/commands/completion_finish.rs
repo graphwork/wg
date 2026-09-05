@@ -8,7 +8,8 @@ use anyhow::{Context, Result, bail};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use worksgood::completion_manifest::{EvidenceRef, OutputRef};
+use worksgood::completion_manifest::{EvidenceRef, OutputRef, ReviewResolver};
+use worksgood::completion_task::{load_review_evidence, load_submission_bytes};
 use worksgood::completion_validation::{
     BASELINE_VALIDATION_EVIDENCE_KIND, CONFIGURED_VALIDATION_EVIDENCE_KIND,
     DETERMINISTIC_VALIDATION_MEDIA_TYPE, DeterministicValidationEvidence, ValidationPurpose,
@@ -66,28 +67,52 @@ pub fn run(dir: &Path, id: &str, integration_ref: &str) -> Result<()> {
         } else {
             true
         };
-        let current_activity = task
-            .completion_review_activity
-            .iter()
-            .filter(|activity| {
-                activity.manifest_digest == candidate.manifest.content_digest
-                    && match (&candidate.review_binding, &activity.binding) {
-                        (Some(candidate), Some(activity)) => candidate == activity,
-                        (None, None) => true,
-                        _ => false,
-                    }
-            })
-            .collect::<Vec<_>>();
-        let strict_passed = current_activity.iter().any(|activity| {
-            activity.reviewer_kind == worksgood::completion_review::ReviewerKind::Flip
-                && activity.verdict == worksgood::simple_land::ReviewVerdict::Pass
-        }) && current_activity.iter().any(|activity| {
-            activity.reviewer_kind == worksgood::completion_review::ReviewerKind::Eval
-                && activity.verdict == worksgood::simple_land::ReviewVerdict::Pass
+        // The mutable activity projection is display-only. Lost-response
+        // recovery must reload the selected candidate plus its immutable FLIP
+        // chain before it can skip directly to landing/Done.
+        let verified_review = (|| -> Result<_> {
+            let completion_store = super::completion_submit::store(dir)?;
+            let (submission, manifest, requirements, summary) =
+                load_submission_bytes(&completion_store, &task)?;
+            let resolver = ReviewResolver::new(&completion_store);
+            let resolved = if task.completion_contract == CompletionContract::Land {
+                resolver.repository(&cwd).resolve_submission(
+                    &submission.manifest_ref,
+                    &requirements,
+                    &summary,
+                    &candidate.dependency_outputs,
+                )?
+            } else {
+                resolver.resolve_submission(
+                    &submission.manifest_ref,
+                    &requirements,
+                    &summary,
+                    &candidate.dependency_outputs,
+                )?
+            };
+            load_review_evidence(&completion_store, &submission, &manifest, &resolved)
+                .map_err(Into::into)
+        })()
+        .ok();
+        let strict_passed = verified_review.as_ref().is_some_and(|evidence| {
+            evidence.flip.verdict == worksgood::simple_land::ReviewVerdict::Pass
+                && evidence
+                    .eval
+                    .as_ref()
+                    .is_some_and(|eval| eval.verdict == worksgood::simple_land::ReviewVerdict::Pass)
         });
-        let semantic_rejection = current_activity
-            .iter()
-            .any(|activity| activity.verdict == worksgood::simple_land::ReviewVerdict::Reject);
+        let semantic_rejection = verified_review.as_ref().is_some_and(|evidence| {
+            evidence.flip.verdict == worksgood::simple_land::ReviewVerdict::Reject
+                || evidence.eval.as_ref().is_some_and(|eval| {
+                    eval.verdict == worksgood::simple_land::ReviewVerdict::Reject
+                })
+        });
+        let incomplete_review = verified_review.as_ref().is_none_or(|evidence| {
+            evidence.flip.verdict == worksgood::simple_land::ReviewVerdict::IncompleteEvidence
+                || evidence.eval.as_ref().is_some_and(|eval| {
+                    eval.verdict == worksgood::simple_land::ReviewVerdict::IncompleteEvidence
+                })
+        });
         let candidate_matches_source_tuple = candidate.requirements.content_digest
             == worksgood::completion_task::requirements_digest(&task)?
             && candidate.review_binding.as_ref().is_some_and(|binding| {
@@ -109,6 +134,7 @@ pub fn run(dir: &Path, id: &str, integration_ref: &str) -> Result<()> {
         if candidate_matches_head
             && candidate_matches_source_tuple
             && !semantic_rejection
+            && !incomplete_review
             && (!config.agency.completion_review_strict || strict_passed)
         {
             if task.completion_contract == CompletionContract::Land

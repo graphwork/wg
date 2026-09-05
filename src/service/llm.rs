@@ -23,7 +23,11 @@ use crate::graph::TokenUsage;
 /// Result of a lightweight LLM call, including both the text response and token usage.
 #[derive(Debug, Clone)]
 pub struct LlmCallResult {
+    /// Trimmed semantic text retained for existing lightweight callers.
     pub text: String,
+    /// Exact final-assistant text extracted from the provider response, before
+    /// any whitespace normalization. Content-bound review persists these bytes.
+    pub raw_text: String,
     pub token_usage: Option<TokenUsage>,
 }
 
@@ -720,18 +724,22 @@ fn call_claude_cli(model: &str, prompt: &str, timeout_secs: u64) -> Result<LlmCa
     let stdout = String::from_utf8_lossy(&output.stdout);
     let val: serde_json::Value = serde_json::from_str(stdout.trim())
         .context("Failed to parse JSON output from claude CLI")?;
-    let text = val
+    let raw_text = val
         .get("result")
         .and_then(|v| v.as_str())
         .unwrap_or("")
-        .trim()
         .to_string();
+    let text = raw_text.trim().to_string();
     let token_usage = extract_json_usage(&val);
 
     if text.is_empty() {
         anyhow::bail!("Empty response from claude CLI");
     }
-    Ok(LlmCallResult { text, token_usage })
+    Ok(LlmCallResult {
+        text,
+        raw_text,
+        token_usage,
+    })
 }
 
 /// One-shot LLM call via the Codex CLI (`codex exec --json`).
@@ -865,13 +873,16 @@ fn call_codex_cli(
         );
     }
 
-    let text = last_agent_text
-        .map(|s| s.trim().to_string())
-        .unwrap_or_default();
+    let raw_text = last_agent_text.unwrap_or_default();
+    let text = raw_text.trim().to_string();
     if text.is_empty() {
         anyhow::bail!("Empty response from codex CLI");
     }
-    Ok(LlmCallResult { text, token_usage })
+    Ok(LlmCallResult {
+        text,
+        raw_text,
+        token_usage,
+    })
 }
 
 /// The `--provider`/`--model` argv pair pi expects for a one-shot agency call.
@@ -983,6 +994,41 @@ fn pi_one_shot_model_arg(raw_spec: &str) -> Option<PiOneShotModelArg> {
 ///
 /// WG supplies no credential or endpoint environment. Pi resolves provider
 /// authentication, endpoint details, availability, and model support itself.
+fn exact_pi_final_text(content: &str) -> Option<String> {
+    let mut final_text = None;
+    for line in content.lines() {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
+            continue;
+        };
+        if value.get("type").and_then(|value| value.as_str()) != Some("turn_end") {
+            continue;
+        }
+        let Some(blocks) = value
+            .get("message")
+            .and_then(|message| message.get("content"))
+            .and_then(|content| content.as_array())
+        else {
+            continue;
+        };
+        let mut turn_text = String::new();
+        let mut saw_text_block = false;
+        for block in blocks {
+            if block.get("type").and_then(|value| value.as_str()) == Some("text")
+                && let Some(text) = block.get("text").and_then(|value| value.as_str())
+            {
+                saw_text_block = true;
+                turn_text.push_str(text);
+            }
+        }
+        if saw_text_block {
+            // Replace the previous turn as a whole, but preserve and concatenate
+            // every byte-bearing text block within this final assistant turn.
+            final_text = Some(turn_text);
+        }
+    }
+    final_text
+}
+
 fn call_pi_cli(
     _config: &Config,
     raw_spec: &str,
@@ -1042,10 +1088,10 @@ fn call_pi_cli(
         );
     }
 
-    let text = translation
-        .final_text
-        .map(|s| s.trim().to_string())
+    let raw_text = exact_pi_final_text(&stdout_str)
+        .or(translation.final_text)
         .unwrap_or_default();
+    let text = raw_text.trim().to_string();
     if text.is_empty() {
         anyhow::bail!("Empty response from pi CLI");
     }
@@ -1058,6 +1104,7 @@ fn call_pi_cli(
     };
     Ok(LlmCallResult {
         text,
+        raw_text,
         token_usage: Some(token_usage),
     })
 }
@@ -1270,7 +1317,7 @@ fn call_anthropic_native(
     }
     let token_usage = Some(usage);
 
-    let text: String = response
+    let raw_text: String = response
         .content
         .iter()
         .filter_map(|block| match block {
@@ -1280,11 +1327,15 @@ fn call_anthropic_native(
         .collect::<Vec<_>>()
         .join("");
 
-    let text = text.trim().to_string();
+    let text = raw_text.trim().to_string();
     if text.is_empty() {
         anyhow::bail!("Empty response from native Anthropic call");
     }
-    Ok(LlmCallResult { text, token_usage })
+    Ok(LlmCallResult {
+        text,
+        raw_text,
+        token_usage,
+    })
 }
 
 fn call_openai_native(
@@ -1381,7 +1432,7 @@ fn call_openai_native(
     }
     let token_usage = Some(usage);
 
-    let text: String = response
+    let raw_text: String = response
         .content
         .iter()
         .filter_map(|block| match block {
@@ -1391,11 +1442,15 @@ fn call_openai_native(
         .collect::<Vec<_>>()
         .join("");
 
-    let text = text.trim().to_string();
+    let text = raw_text.trim().to_string();
     if text.is_empty() {
         anyhow::bail!("Empty response from native OpenAI call");
     }
-    Ok(LlmCallResult { text, token_usage })
+    Ok(LlmCallResult {
+        text,
+        raw_text,
+        token_usage,
+    })
 }
 
 #[cfg(test)]
@@ -2238,6 +2293,40 @@ printf '%s\n' '{"type":"turn_end","message":{"role":"assistant","provider":"open
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn test_pi_call_preserves_exact_final_response_text() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let bin = temp.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let pi = bin.join("pi");
+        std::fs::write(
+            &pi,
+            r#"#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"type":"turn_end","message":{"role":"assistant","provider":"openrouter","model":"fixture","content":[{"type":"text","text":"  response"},{"type":"text","text":" "},{"type":"text","text":"\n"}],"stopReason":"stop","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0.0}}}}'
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&pi, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let old_path = std::env::var("PATH").unwrap_or_default();
+        let _path = EnvGuard::set("PATH", Some(&format!("{}:{old_path}", bin.display())));
+
+        let result = call_pi_cli(
+            &Config::default(),
+            "pi:openrouter:fixture",
+            Some(ReasoningLevel::Low),
+            "prompt",
+            10,
+        )
+        .unwrap();
+        assert_eq!(result.text, "response");
+        assert_eq!(result.raw_text, "  response \n");
+    }
+
     #[test]
     #[serial_test::serial]
     fn test_resolve_agency_dispatch_weak_tier_pi_routes_to_pi_handler() {
@@ -2310,6 +2399,7 @@ printf '%s\n' '{"type":"turn_end","message":{"role":"assistant","provider":"open
     fn fake_success(text: &str) -> LlmCallResult {
         LlmCallResult {
             text: text.to_string(),
+            raw_text: text.to_string(),
             token_usage: None,
         }
     }

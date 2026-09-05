@@ -446,10 +446,7 @@ pub fn run_with_reviewers(
         .completion_candidate
         .as_ref()
         .context("selected completion candidate disappeared before review")?;
-    let inspected_output_digests = resolved
-        .as_ref()
-        .ok()
-        .map(|bundle| bundle.inspected_output_digests.as_slice());
+    let resolved_bundle = resolved.as_ref().ok();
     let prior_flip = prior_receipt_for_route(
         &store,
         selected_task,
@@ -459,7 +456,7 @@ pub fn run_with_reviewers(
         &review_binding,
         ReviewerKind::Flip,
         flip.route(),
-        inspected_output_digests,
+        resolved_bundle,
     )?;
     let prior_eval = prior_receipt_for_route(
         &store,
@@ -470,7 +467,7 @@ pub fn run_with_reviewers(
         &review_binding,
         ReviewerKind::Eval,
         eval.route(),
-        inspected_output_digests,
+        resolved_bundle,
     )?;
 
     if config.agency.completion_review_strict
@@ -693,21 +690,30 @@ fn prior_receipt_for_route(
     binding: &CompletionReviewBinding,
     kind: ReviewerKind,
     route: &str,
-    inspected_output_digests: Option<&[String]>,
+    resolved_bundle: Option<&ResolvedReviewBundle>,
 ) -> Result<Option<StoredReviewReceipt>> {
     let selected = selected_reference
         .map(|reference| load_stored_review_receipt(store, reference))
         .transpose()?;
+    if kind == ReviewerKind::Flip
+        && let (Some(stored), Some(bundle)) = (selected.as_ref(), resolved_bundle)
+    {
+        worksgood::completion_review::validate_stored_flip_against_bundle(store, stored, bundle)?;
+    }
     let reusable = |stored: &StoredReviewReceipt| {
-        inspected_output_digests.is_some_and(|outputs| {
+        resolved_bundle.is_some_and(|bundle| {
             stored.receipt.is_reusable_semantic(
                 manifest_digest,
                 requirements_digest,
                 kind,
                 route,
                 Some(binding),
-                outputs,
-            )
+                &bundle.inspected_output_digests,
+            ) && (kind != ReviewerKind::Flip
+                || worksgood::completion_review::validate_stored_flip_against_bundle(
+                    store, stored, bundle,
+                )
+                .is_ok())
         })
     };
     if selected.as_ref().is_some_and(reusable) {
@@ -1130,6 +1136,8 @@ impl ManifestReviewer for SetupUnavailableReviewer {
         &mut self,
         _kind: ReviewerKind,
         _bundle: &worksgood::completion_manifest::ResolvedReviewBundle,
+        _binding: Option<&CompletionReviewBinding>,
+        _artifact_store: &CompletionArtifactStore,
     ) -> std::result::Result<SemanticReview, ReviewerUnavailable> {
         Err(ReviewerUnavailable {
             code: "reviewer.configuration_unavailable".to_string(),
@@ -1167,26 +1175,21 @@ mod tests {
             &mut self,
             kind: ReviewerKind,
             bundle: &worksgood::completion_manifest::ResolvedReviewBundle,
+            binding: Option<&CompletionReviewBinding>,
+            artifact_store: &CompletionArtifactStore,
         ) -> std::result::Result<SemanticReview, ReviewerUnavailable> {
             self.calls.lock().unwrap().push(kind);
             self.result.clone().map(|mut review| {
                 if kind == ReviewerKind::Flip {
-                    review.flip_proof = Some(worksgood::completion_review::FlipProof {
-                        protocol: "prompt-reconstruction-two-phase-v1".into(),
-                        latent_hypothesis: worksgood::completion_manifest::ArtifactOutput {
-                            content_digest: bundle.manifest_digest.clone(),
-                            immutable_locator:
-                                worksgood::completion_manifest::ImmutableLocator::CompletionObject {
-                                    digest: bundle.manifest_digest.clone(),
-                                },
-                            media_type: "application/vnd.worksgood.flip-latent-hypothesis+json"
-                                .into(),
-                            size: bundle.manifest_bytes.len() as u64,
-                            review_projection: None,
-                        },
-                        inference_route: self.route.clone(),
-                        comparison_route: self.route.clone(),
-                    });
+                    review.flip_proof =
+                        Some(crate::commands::completion_test_support::test_flip_proof(
+                            artifact_store,
+                            bundle,
+                            binding.expect("FLIP submission fixture binding"),
+                            &self.route,
+                            review.verdict,
+                            &review.findings,
+                        ));
                 }
                 review
             })

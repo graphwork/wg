@@ -197,7 +197,11 @@ pub fn load_review_evidence(
         .flip_receipt_ref
         .as_ref()
         .ok_or(CompletionTaskError::Missing("FLIP receipt"))?;
-    let flip = read_receipt(store, flip_ref)?;
+    let stored_flip = crate::completion_review::load_stored_review_receipt(store, flip_ref)
+        .map_err(|error| CompletionTaskError::InvalidReceipt(error.to_string()))?;
+    crate::completion_review::validate_stored_flip_against_bundle(store, &stored_flip, resolved)
+        .map_err(|error| CompletionTaskError::InvalidReceipt(error.to_string()))?;
+    let flip = stored_flip.receipt;
     validate_review_binding(submission, &flip)?;
     validate_bound_receipt(
         store,
@@ -210,7 +214,11 @@ pub fn load_review_evidence(
     let eval = submission
         .eval_receipt_ref
         .as_ref()
-        .map(|reference| read_receipt(store, reference))
+        .map(|reference| {
+            crate::completion_review::load_stored_review_receipt(store, reference)
+                .map(|stored| stored.receipt)
+                .map_err(|error| CompletionTaskError::InvalidReceipt(error.to_string()))
+        })
         .transpose()?;
     if let Some(eval) = eval.as_ref() {
         validate_review_binding(submission, eval)?;
@@ -263,15 +271,6 @@ pub fn load_exact_review_pair(
         flip: evidence.flip,
         eval,
     })
-}
-
-fn read_receipt(
-    store: &CompletionArtifactStore,
-    reference: &ArtifactOutput,
-) -> Result<ReviewReceipt, CompletionTaskError> {
-    let bytes = store.read_artifact(reference, MAX_COMPLETION_METADATA_BYTES)?;
-    serde_json::from_slice(&bytes)
-        .map_err(|error| CompletionTaskError::InvalidReceipt(error.to_string()))
 }
 
 fn validate_review_binding(
@@ -327,13 +326,14 @@ fn validate_bound_receipt(
             crate::simple_land::ReviewVerdict::Pass | crate::simple_land::ReviewVerdict::Reject
         )
     {
-        if !receipt.has_genuine_flip_proof() {
+        if !receipt.has_genuine_flip_proof(store) {
             return Err(CompletionTaskError::InvalidReceipt(
                 "FLIP receipt lacks a genuine two-phase prompt-reconstruction proof".into(),
             ));
         }
-        let proof = receipt.flip_proof.as_ref().expect("proof checked above");
-        store.read_artifact(&proof.latent_hypothesis, MAX_COMPLETION_METADATA_BYTES)?;
+        // `load_stored_review_receipt` already reloaded and verified every
+        // phase input/prompt/hypothesis object before lifecycle authority
+        // reaches this exact-binding check.
     }
     Ok(())
 }

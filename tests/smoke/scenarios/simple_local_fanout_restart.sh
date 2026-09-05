@@ -3,6 +3,8 @@
 # ordered exact landing, and dependent dispatch without source-failure charge.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# Keep daemon sockets below sockaddr_un limits in deeply nested worker checkouts.
+export WG_SMOKE_ROOT="${WG_SMOKE_ROOT:-/tmp/wgs-fanout-$$}"
 . "$HERE/_helpers.sh"
 command -v git >/dev/null 2>&1 || loud_skip "MISSING GIT" "git is required"
 

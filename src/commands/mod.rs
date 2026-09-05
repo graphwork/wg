@@ -42,6 +42,8 @@ pub mod completion_done;
 pub mod completion_finish;
 pub mod completion_land;
 pub mod completion_submit;
+#[cfg(test)]
+mod completion_test_support;
 pub mod completion_wait;
 pub mod config_cmd;
 pub mod context;

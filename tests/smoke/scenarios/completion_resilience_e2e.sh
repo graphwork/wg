@@ -40,6 +40,9 @@ task="${WG_TASK_ID:-unbound}"
 case "$model" in
   fake-review|openrouter:fake-review)
     if grep -q 'worksgood-flip-blind-inference-v1' <<<"$prompt"; then
+      if grep -q 'Produce resilient.txt\|exact candidate B is reviewed\|worker_summary\|requirements_digest' <<<"$(sed -n '/BEGIN BLIND CANDIDATE EVIDENCE/,/END BLIND CANDIDATE EVIDENCE/p' <<<"$prompt")"; then
+        echo "phase-I canonical input leaked forbidden original-intent fields" >&2; exit 96
+      fi
       printf '%s|inference|%s\n' "$task" "$model" >>"$state/review-calls"
       python3 - <<'PY'
 import json
@@ -55,7 +58,9 @@ PY
     count_file="$state/$task.review-count"
     n=$(($(cat "$count_file" 2>/dev/null || echo 0) + 1))
     printf '%s\n' "$n" >"$count_file"
-    printf '%s|%s|%s\n' "$task" "$n" "$model" >>"$state/review-calls"
+    phase=eval
+    grep -q 'worksgood-flip-comparison-v1' <<<"$prompt" && phase=comparison
+    printf '%s|%s|%s|%s\n' "$task" "$phase" "$n" "$model" >>"$state/review-calls"
     verdict=pass; code=""; message=""
     if [[ "$task" == land-resilient && "$n" == 1 ]]; then
       verdict=reject; code=fixture.candidate_a; message="revise candidate A"
@@ -279,6 +284,14 @@ assert c['manifest']['content_digest']==a[-1]['manifest_digest'],(c,a)
 PY
 [[ $(cat "$scratch/review-state/land-resilient.review-count") == 3 ]] \
   || loud_fail "candidate A/B did not make exactly reject, FLIP pass, Eval pass review calls"
+python3 - "$scratch/review-state/review-calls" <<'PY'
+import sys
+rows=[line.strip().split('|') for line in open(sys.argv[1]) if line.startswith('land-resilient|')]
+assert [r[1] for r in rows]==['inference','comparison','inference','comparison','eval'],rows
+assert rows[0][2]==rows[2][2]=='fake-review',rows
+assert [r[2] for r in (rows[1],rows[3],rows[4])]==['1','2','3'],rows
+assert [r[3] for r in (rows[1],rows[3],rows[4])]==['fake-review']*3,rows
+PY
 [[ $(cat "$scratch/review-state/land-resilient.source-count") == 1 ]] \
   || loud_fail "Land source was rerun"
 

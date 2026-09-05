@@ -2109,13 +2109,23 @@ mod tests {
             &mut self,
             kind: ReviewerKind,
             bundle: &worksgood::completion_manifest::ResolvedReviewBundle,
+            binding: Option<&worksgood::completion_review::CompletionReviewBinding>,
+            artifact_store: &worksgood::completion_manifest::CompletionArtifactStore,
         ) -> std::result::Result<SemanticReview, ReviewerUnavailable> {
             self.calls.lock().unwrap().push(kind);
             Ok(SemanticReview {
                 verdict: SemanticVerdict::Pass,
                 findings: Vec::<ReviewFinding>::new(),
-                flip_proof: (kind == ReviewerKind::Flip)
-                    .then(|| test_flip_proof(bundle, self.route)),
+                flip_proof: (kind == ReviewerKind::Flip).then(|| {
+                    crate::commands::completion_test_support::test_flip_proof(
+                        artifact_store,
+                        bundle,
+                        binding.expect("FLIP landing fixture binding"),
+                        self.route,
+                        SemanticVerdict::Pass,
+                        &[],
+                    )
+                }),
             })
         }
     }
@@ -2128,38 +2138,28 @@ mod tests {
             &mut self,
             kind: ReviewerKind,
             bundle: &worksgood::completion_manifest::ResolvedReviewBundle,
+            binding: Option<&worksgood::completion_review::CompletionReviewBinding>,
+            artifact_store: &worksgood::completion_manifest::CompletionArtifactStore,
         ) -> std::result::Result<SemanticReview, ReviewerUnavailable> {
             self.calls.lock().unwrap().push(kind);
+            let findings = vec![ReviewFinding::new(
+                "advisory.fixture",
+                "bounded actionable finding",
+            )];
             Ok(SemanticReview {
                 verdict: SemanticVerdict::Reject,
-                findings: vec![ReviewFinding::new(
-                    "advisory.fixture",
-                    "bounded actionable finding",
-                )],
-                flip_proof: (kind == ReviewerKind::Flip)
-                    .then(|| test_flip_proof(bundle, self.route)),
+                flip_proof: (kind == ReviewerKind::Flip).then(|| {
+                    crate::commands::completion_test_support::test_flip_proof(
+                        artifact_store,
+                        bundle,
+                        binding.expect("FLIP landing fixture binding"),
+                        self.route,
+                        SemanticVerdict::Reject,
+                        &findings,
+                    )
+                }),
+                findings,
             })
-        }
-    }
-
-    fn test_flip_proof(
-        bundle: &worksgood::completion_manifest::ResolvedReviewBundle,
-        route: &str,
-    ) -> worksgood::completion_review::FlipProof {
-        worksgood::completion_review::FlipProof {
-            protocol: "prompt-reconstruction-two-phase-v1".into(),
-            latent_hypothesis: ArtifactOutput {
-                content_digest: bundle.manifest_digest.clone(),
-                immutable_locator:
-                    worksgood::completion_manifest::ImmutableLocator::CompletionObject {
-                        digest: bundle.manifest_digest.clone(),
-                    },
-                media_type: "application/vnd.worksgood.flip-latent-hypothesis+json".into(),
-                size: bundle.manifest_bytes.len() as u64,
-                review_projection: None,
-            },
-            inference_route: route.into(),
-            comparison_route: route.into(),
         }
     }
 

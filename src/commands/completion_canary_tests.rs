@@ -43,35 +43,44 @@ impl ManifestReviewer for ScriptedReviewer {
         &mut self,
         kind: ReviewerKind,
         bundle: &worksgood::completion_manifest::ResolvedReviewBundle,
+        binding: Option<&worksgood::completion_review::CompletionReviewBinding>,
+        artifact_store: &worksgood::completion_manifest::CompletionArtifactStore,
     ) -> Result<SemanticReview, ReviewerUnavailable> {
-        let proof = || worksgood::completion_review::FlipProof {
-            protocol: "prompt-reconstruction-two-phase-v1".into(),
-            latent_hypothesis: ArtifactOutput {
-                content_digest: bundle.manifest_digest.clone(),
-                immutable_locator: ImmutableLocator::CompletionObject {
-                    digest: bundle.manifest_digest.clone(),
-                },
-                media_type: "application/vnd.worksgood.flip-latent-hypothesis+json".into(),
-                size: bundle.manifest_bytes.len() as u64,
-                review_projection: None,
-            },
-            inference_route: self.route.clone(),
-            comparison_route: self.route.clone(),
-        };
         match self.script {
             Script::Pass => Ok(SemanticReview {
                 verdict: SemanticVerdict::Pass,
                 findings: Vec::new(),
-                flip_proof: (kind == ReviewerKind::Flip).then(proof),
+                flip_proof: (kind == ReviewerKind::Flip).then(|| {
+                    super::completion_test_support::test_flip_proof(
+                        artifact_store,
+                        bundle,
+                        binding.expect("FLIP canary binding"),
+                        &self.route,
+                        SemanticVerdict::Pass,
+                        &[],
+                    )
+                }),
             }),
-            Script::Reject => Ok(SemanticReview {
-                verdict: SemanticVerdict::Reject,
-                findings: vec![worksgood::completion_review::ReviewFinding::new(
+            Script::Reject => {
+                let findings = vec![worksgood::completion_review::ReviewFinding::new(
                     "canary.rejected",
                     "scripted semantic rejection",
-                )],
-                flip_proof: (kind == ReviewerKind::Flip).then(proof),
-            }),
+                )];
+                Ok(SemanticReview {
+                    verdict: SemanticVerdict::Reject,
+                    flip_proof: (kind == ReviewerKind::Flip).then(|| {
+                        super::completion_test_support::test_flip_proof(
+                            artifact_store,
+                            bundle,
+                            binding.expect("FLIP canary binding"),
+                            &self.route,
+                            SemanticVerdict::Reject,
+                            &findings,
+                        )
+                    }),
+                    findings,
+                })
+            }
             Script::Unavailable => Err(ReviewerUnavailable {
                 code: "canary.unavailable".to_string(),
                 message: "scripted reviewer outage".to_string(),

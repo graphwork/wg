@@ -3101,7 +3101,7 @@ timeout_seconds = 90
 [[scenario]]
 name = "simple_local_fanout_restart"
 script = "scenarios/simple_local_fanout_restart.sh"
-owners = ["simple-local-wg-recovery", "validate-stigmergic-loop", "preserve-review-identity-across-restart"]
+owners = ["simple-local-wg-recovery", "validate-stigmergic-loop", "preserve-review-identity-across-restart", "bind-genuine-flip"]
 description = "Clean-graph composed recovery canary: two real fake-Pi workers coordinate across tasks, one completes while the dispatcher is stopped, restart preserves exact state, and a dependent third worker dispatches and completes with no source retry charge."
 timeout_seconds = 120
 
@@ -3136,7 +3136,7 @@ timeout_seconds = 240
 [[scenario]]
 name = "completion_resilience_e2e"
 script = "scenarios/completion_resilience_e2e.sh"
-owners = ["completion-resilience-e2e", "prepare-completion-storage-upstream"]
+owners = ["completion-resilience-e2e", "prepare-completion-storage-upstream", "bind-genuine-flip"]
 description = "Candidate-binary credential-free real-daemon/Fake-Pi completion regression: a Land source runs once in an isolated retained worker, strict deterministic review rejects immutable candidate A then passes revised candidate B, and an unrelated tracked edit in the attached integration checkout forces durable Waiting/LandingPending without changing user bytes. A daemon restart preserves the exact B manifest, review binding and target-ref CAS; after explicit cleanup, one resume publishes B and records one lifecycle success without rerunning source or review. A second already-settled Pi source exhausts a one-revision strict budget and parks the distinct retained candidate as Waiting/NeedsReview, never Failed/provider-timeout; restart remains source/review-idempotent. Real show/status and terminal classification surfaces are exercised throughout."
 timeout_seconds = 180
 
