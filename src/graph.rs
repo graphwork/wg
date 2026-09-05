@@ -404,6 +404,17 @@ pub struct CompletionBlocker {
     pub target_ref_oid: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker_worktree: Option<String>,
+    /// Exact worker identity/session copied before finalizer parking clears
+    /// `task.assigned`. These fields reconstruct a lease binding; they are not
+    /// themselves authority without the persisted queue ticket/lease.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub landing_source_agent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub landing_source_session: Option<String>,
+    /// Once a landing turn has been requested, retries must find this exact
+    /// ticket. An expired/fenced ticket cannot be silently replaced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub landing_ticket_id: Option<String>,
     /// Finalizer-owned recovery projection. The immutable selected candidate
     /// above is never replaced; renewed evidence binds a derived integration
     /// commit to the descendant target snapshot.

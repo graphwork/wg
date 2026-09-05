@@ -200,6 +200,7 @@ pub fn load_review_evidence(
     let flip = read_receipt(store, flip_ref)?;
     validate_review_binding(submission, &flip)?;
     validate_bound_receipt(
+        store,
         &flip,
         ReviewerKind::Flip,
         &manifest_digest,
@@ -216,6 +217,7 @@ pub fn load_review_evidence(
     }
     if let Some(eval) = eval.as_ref() {
         validate_bound_receipt(
+            store,
             eval,
             ReviewerKind::Eval,
             &manifest_digest,
@@ -285,6 +287,7 @@ fn validate_review_binding(
 }
 
 fn validate_bound_receipt(
+    store: &CompletionArtifactStore,
     receipt: &ReviewReceipt,
     kind: ReviewerKind,
     manifest: &ContentDigest,
@@ -317,6 +320,20 @@ fn validate_bound_receipt(
         return Err(CompletionTaskError::InvalidReceipt(format!(
             "{kind:?} receipt inspected different outputs"
         )));
+    }
+    if kind == ReviewerKind::Flip
+        && matches!(
+            receipt.verdict,
+            crate::simple_land::ReviewVerdict::Pass | crate::simple_land::ReviewVerdict::Reject
+        )
+    {
+        if !receipt.has_genuine_flip_proof() {
+            return Err(CompletionTaskError::InvalidReceipt(
+                "FLIP receipt lacks a genuine two-phase prompt-reconstruction proof".into(),
+            ));
+        }
+        let proof = receipt.flip_proof.as_ref().expect("proof checked above");
+        store.read_artifact(&proof.latent_hypothesis, MAX_COMPLETION_METADATA_BYTES)?;
     }
     Ok(())
 }

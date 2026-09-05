@@ -52,6 +52,17 @@ impl ReviewFinding {
 pub struct SemanticReview {
     pub verdict: SemanticVerdict,
     pub findings: Vec<ReviewFinding>,
+    /// Required for a semantic FLIP result. The latent hypothesis was written
+    /// to immutable CAS before the fresh comparison call began.
+    pub flip_proof: Option<FlipProof>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct FlipProof {
+    pub protocol: String,
+    pub latent_hypothesis: ArtifactOutput,
+    pub inference_route: String,
+    pub comparison_route: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -171,32 +182,27 @@ pub struct CompletionReviewActivity {
 }
 
 impl CompletionReviewActivity {
-    /// Concise state for human activity surfaces. `ReviewerKind::Flip` is
-    /// named as the current single-call compatibility reviewer, not genuine
-    /// blind inference + reveal/comparison FLIP. An unavailable verdict proves
-    /// an invocation was attempted and failed; it is not absent/skipped.
+    /// Concise state for human activity surfaces. Reviewer unavailability is
+    /// deliberately distinct from semantic rejection and never rendered as an
+    /// acceptance.
     pub fn display_state(&self) -> &'static str {
         match (self.reviewer_kind, self.verdict) {
-            (ReviewerKind::Flip, ReviewVerdict::Pass) => "FLIP-compat single-call reviewer pass",
-            (ReviewerKind::Eval, ReviewVerdict::Pass) => "Eval reviewer pass",
-            (ReviewerKind::Flip, ReviewVerdict::Reject) => {
-                "FLIP-compat single-call reviewer rejected"
-            }
-            (ReviewerKind::Eval, ReviewVerdict::Reject) => "Eval reviewer rejected",
+            (ReviewerKind::Flip, ReviewVerdict::Pass) => "Two-phase FLIP pass",
+            (ReviewerKind::Eval, ReviewVerdict::Pass) => "Eval pass",
+            (ReviewerKind::Flip, ReviewVerdict::Reject) => "Two-phase FLIP semantic rejection",
+            (ReviewerKind::Eval, ReviewVerdict::Reject) => "Eval semantic rejection",
             (ReviewerKind::Flip, ReviewVerdict::Unavailable) => {
-                "FLIP-compat single-call reviewer attempted+failed"
+                "Two-phase FLIP unavailable (no semantic verdict)"
             }
-            (ReviewerKind::Eval, ReviewVerdict::Unavailable) => "Eval reviewer attempted+failed",
+            (ReviewerKind::Eval, ReviewVerdict::Unavailable) => {
+                "Eval unavailable (no semantic verdict)"
+            }
             (ReviewerKind::Flip, ReviewVerdict::IncompleteEvidence) => {
-                "FLIP-compat single-call reviewer incomplete evidence"
+                "Two-phase FLIP incomplete evidence"
             }
-            (ReviewerKind::Eval, ReviewVerdict::IncompleteEvidence) => {
-                "Eval reviewer incomplete evidence"
-            }
-            (ReviewerKind::Flip, ReviewVerdict::Absent) => {
-                "FLIP-compat single-call reviewer not attempted"
-            }
-            (ReviewerKind::Eval, ReviewVerdict::Absent) => "Eval reviewer not attempted",
+            (ReviewerKind::Eval, ReviewVerdict::IncompleteEvidence) => "Eval incomplete evidence",
+            (ReviewerKind::Flip, ReviewVerdict::Absent) => "Two-phase FLIP not attempted",
+            (ReviewerKind::Eval, ReviewVerdict::Absent) => "Eval not attempted",
         }
     }
 }
@@ -765,6 +771,8 @@ pub struct ReviewReceipt {
     pub usage: Option<ReviewUsage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flip_proof: Option<FlipProof>,
     pub created_at: String,
 }
 
@@ -780,6 +788,7 @@ impl ReviewReceipt {
             && &self.requirements_digest == requirements
             && self.reviewer_kind == kind
             && self.verdict == ReviewVerdict::Pass
+            && (kind != ReviewerKind::Flip || self.has_genuine_flip_proof())
     }
 
     /// Whether this immutable receipt already contains the semantic decision
@@ -799,9 +808,18 @@ impl ReviewReceipt {
             && &self.requirements_digest == requirements
             && self.reviewer_kind == kind
             && matches!(self.verdict, ReviewVerdict::Pass | ReviewVerdict::Reject)
+            && (kind != ReviewerKind::Flip || self.has_genuine_flip_proof())
             && self.model_route.as_deref() == Some(route)
             && self.binding.as_ref() == binding
             && self.inspected_output_digests == inspected_output_digests
+    }
+
+    pub fn has_genuine_flip_proof(&self) -> bool {
+        self.flip_proof.as_ref().is_some_and(|proof| {
+            proof.protocol == "prompt-reconstruction-two-phase-v1"
+                && !proof.inference_route.trim().is_empty()
+                && !proof.comparison_route.trim().is_empty()
+        })
     }
 }
 
@@ -853,6 +871,17 @@ pub fn load_stored_review_receipt(
         crate::completion_task::MAX_COMPLETION_METADATA_BYTES,
     )?;
     serde_json::from_slice::<Vec<ReviewFinding>>(&findings_bytes)?;
+    if let Some(proof) = receipt.flip_proof.as_ref() {
+        if proof.protocol != "prompt-reconstruction-two-phase-v1" {
+            return Err(ReviewValveError::InvalidReceipt(
+                "unsupported FLIP protocol proof".into(),
+            ));
+        }
+        artifact_store.read_artifact(
+            &proof.latent_hypothesis,
+            crate::completion_task::MAX_COMPLETION_METADATA_BYTES,
+        )?;
+    }
     Ok(StoredReviewReceipt {
         receipt,
         receipt_object: receipt_object.clone(),
@@ -1102,6 +1131,7 @@ fn run_review_valve_at_bound(
                     model_route: None,
                     execution: None,
                     duration_ms: Some(0),
+                    flip_proof: None,
                     created_at,
                 },
             )?;
@@ -1274,7 +1304,7 @@ fn receipt_from_reviewer_result(
     duration_ms: Option<u64>,
     created_at: &str,
 ) -> Result<StoredReviewReceipt, ReviewValveError> {
-    let (verdict, findings) = match result {
+    let (verdict, findings, flip_proof) = match result {
         Ok(review) => {
             let verdict = match review.verdict {
                 SemanticVerdict::Pass => ReviewVerdict::Pass,
@@ -1288,13 +1318,39 @@ fn receipt_from_reviewer_result(
             } else {
                 review.findings
             };
-            (verdict, findings)
+            (verdict, findings, review.flip_proof)
         }
         Err(unavailable) => (
             ReviewVerdict::Unavailable,
             vec![ReviewFinding::new(unavailable.code, unavailable.message)],
+            None,
         ),
     };
+    if reviewer_kind == ReviewerKind::Flip
+        && matches!(verdict, ReviewVerdict::Pass | ReviewVerdict::Reject)
+        && flip_proof.as_ref().is_none_or(|proof| {
+            proof.protocol != "prompt-reconstruction-two-phase-v1"
+                || proof.inference_route.trim().is_empty()
+                || proof.comparison_route.trim().is_empty()
+        })
+    {
+        return receipt_from_reviewer_result(
+            artifact_store,
+            manifest_digest,
+            requirements_digest,
+            reviewer_kind,
+            inspected_output_digests,
+            binding,
+            model_route,
+            Err(ReviewerUnavailable {
+                code: "reviewer.invalid_flip_protocol".into(),
+                message: "semantic FLIP requires blind prompt reconstruction, an immutable latent hypothesis, and a fresh comparison call".into(),
+            }),
+            execution,
+            duration_ms,
+            created_at,
+        );
+    }
     persist_receipt(
         artifact_store,
         ReceiptMaterial {
@@ -1308,6 +1364,7 @@ fn receipt_from_reviewer_result(
             model_route: Some(model_route.to_string()),
             execution,
             duration_ms,
+            flip_proof,
             created_at,
         },
     )
@@ -1324,6 +1381,7 @@ struct ReceiptMaterial<'a> {
     model_route: Option<String>,
     execution: Option<ReviewExecution>,
     duration_ms: Option<u64>,
+    flip_proof: Option<FlipProof>,
     created_at: &'a str,
 }
 
@@ -1360,6 +1418,7 @@ fn persist_receipt(
             .map(|value| value.executor.clone()),
         usage: material.execution.and_then(|value| value.usage),
         duration_ms: material.duration_ms,
+        flip_proof: material.flip_proof,
         created_at: material.created_at.to_string(),
     };
     let receipt_bytes = canonical_json(&serde_json::to_value(&receipt)?);
@@ -1447,6 +1506,23 @@ mod projection_tests {
 
     struct PassingReviewer(&'static str);
 
+    fn test_flip_proof(bundle: &ResolvedReviewBundle, route: &str) -> FlipProof {
+        FlipProof {
+            protocol: "prompt-reconstruction-two-phase-v1".into(),
+            latent_hypothesis: ArtifactOutput {
+                content_digest: bundle.manifest_digest.clone(),
+                immutable_locator: ImmutableLocator::CompletionObject {
+                    digest: bundle.manifest_digest.clone(),
+                },
+                media_type: "application/vnd.worksgood.flip-latent-hypothesis+json".into(),
+                size: bundle.manifest_bytes.len() as u64,
+                review_projection: None,
+            },
+            inference_route: route.into(),
+            comparison_route: route.into(),
+        }
+    }
+
     impl ManifestReviewer for PassingReviewer {
         fn route(&self) -> &str {
             self.0
@@ -1454,12 +1530,13 @@ mod projection_tests {
 
         fn review(
             &mut self,
-            _kind: ReviewerKind,
-            _bundle: &ResolvedReviewBundle,
+            kind: ReviewerKind,
+            bundle: &ResolvedReviewBundle,
         ) -> Result<SemanticReview, ReviewerUnavailable> {
             Ok(SemanticReview {
                 verdict: SemanticVerdict::Pass,
                 findings: Vec::new(),
+                flip_proof: (kind == ReviewerKind::Flip).then(|| test_flip_proof(bundle, self.0)),
             })
         }
     }

@@ -123,6 +123,35 @@ fn reconciliation_fault(boundary: &str) -> Result<()> {
 }
 
 pub fn run(dir: &Path, id: &str, integration_ref: &str) -> Result<()> {
+    let bound_task = std::env::var("WG_TASK_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .context("direct landing publication requires WG_TASK_ID or an opaque worker capability")?;
+    let bound_agent = std::env::var("WG_AGENT_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .context(
+            "direct landing publication requires WG_AGENT_ID or an opaque worker capability",
+        )?;
+    if bound_task != id {
+        bail!("direct landing caller is bound to task '{bound_task}', not '{id}'");
+    }
+    let graph = load_graph(dir.join("graph.jsonl"))?;
+    let task = graph
+        .get_task(id)
+        .with_context(|| format!("task '{id}' not found"))?;
+    let attempt = task
+        .lifecycle
+        .current_attempt
+        .as_ref()
+        .context("direct landing requires a current source attempt")?;
+    if attempt.actor_id != bound_agent
+        || attempt.generation != task.lifecycle.generation
+        || attempt.fence != task.lifecycle.fence
+        || task.assigned.as_deref() != Some(bound_agent.as_str())
+    {
+        bail!("direct landing caller does not own the exact current generation/attempt/fence");
+    }
     let cwd = std::env::current_dir().context("determine worker working directory")?;
     run_at(dir, id, integration_ref, Some(&cwd))
 }
@@ -192,6 +221,127 @@ pub(crate) fn resume_pending(dir: &Path, id: &str) -> Result<bool> {
         .map(Path::new)
         .context("LandingPending has no retained worker worktree")?;
     run_at_inner(dir, id, integration_ref, Some(worker), Some(&blocker))
+}
+
+fn pending_landing_binding(
+    dir: &Path,
+    task: &worksgood::graph::Task,
+    blocker: &CompletionBlocker,
+    integration_ref: &str,
+) -> Result<worksgood::landing_turn::TicketBinding> {
+    let status = worksgood::landing_turn::status(dir, integration_ref, Some(&task.id))?;
+    let ticket = status.ticket.as_ref();
+    if let Some(expected) = blocker.landing_ticket_id.as_deref() {
+        let current = ticket.with_context(|| {
+            format!(
+                "LandingPending expected ticket {expected}, but the exact persisted ticket no longer exists"
+            )
+        })?;
+        if current.ticket_id != expected {
+            bail!(
+                "LandingPending expected ticket {}, found {}; exact lease binding refused",
+                expected,
+                current.ticket_id
+            );
+        }
+    }
+    let source_agent = blocker
+        .landing_source_agent
+        .clone()
+        .or_else(|| ticket.map(|ticket| ticket.source_agent.clone()))
+        .or_else(|| {
+            task.lifecycle
+                .current_attempt
+                .as_ref()
+                .map(|attempt| attempt.actor_id.clone())
+        })
+        .context("LandingPending has no exact source-agent binding")?;
+    let source_session = blocker
+        .landing_source_session
+        .clone()
+        .or_else(|| ticket.and_then(|ticket| ticket.source_session.clone()))
+        .or_else(|| blocker.session_selector.clone());
+    let target = blocker
+        .target_ref_oid
+        .as_deref()
+        .context("LandingPending has no target-ref CAS binding")?;
+    let binding = super::landing_turn::binding_from_authority(
+        dir,
+        task,
+        integration_ref,
+        Some(target),
+        source_agent,
+        source_session,
+    )?;
+    if let Some(ticket) = ticket
+        && (ticket.task_id != binding.task_id
+            || ticket.generation != binding.generation
+            || ticket.attempt_id != binding.attempt_id
+            || ticket.fence != binding.fence
+            || ticket.candidate_sequence != binding.candidate_sequence
+            || ticket.candidate_oid != binding.candidate_oid
+            || ticket.source_agent != binding.source_agent
+            || ticket.source_session != binding.source_session
+            || ticket.integration_ref != binding.integration_ref
+            || ticket.observed_target_oid != binding.observed_target_oid)
+    {
+        bail!(
+            "LandingPending ticket does not match the exact candidate/source/target/fence binding"
+        );
+    }
+    Ok(binding)
+}
+
+fn same_pending_blocker_with_ticket(
+    current: &CompletionBlocker,
+    expected: &CompletionBlocker,
+) -> bool {
+    if current == expected {
+        return true;
+    }
+    let mut normalized = current.clone();
+    normalized.landing_ticket_id = expected.landing_ticket_id.clone();
+    normalized == *expected
+}
+
+fn persist_pending_ticket(
+    dir: &Path,
+    expected_task: &worksgood::graph::Task,
+    expected_blocker: &CompletionBlocker,
+    ticket_id: &str,
+) -> Result<()> {
+    let mut refusal = None;
+    modify_graph(dir.join("graph.jsonl"), |graph| {
+        let Some(task) = graph.get_task_mut(&expected_task.id) else {
+            refusal = Some("task disappeared while persisting LandingPending ticket".to_string());
+            return false;
+        };
+        if task.lifecycle.generation != expected_task.lifecycle.generation
+            || task.lifecycle.fence != expected_task.lifecycle.fence
+            || task.lifecycle.current_attempt != expected_task.lifecycle.current_attempt
+            || task.completion_candidate != expected_task.completion_candidate
+        {
+            refusal = Some("task authority changed while persisting LandingPending ticket".into());
+            return false;
+        }
+        let Some(blocker) = task.completion_blocker.as_mut() else {
+            refusal = Some("LandingPending blocker disappeared while persisting ticket".into());
+            return false;
+        };
+        if blocker != expected_blocker {
+            if blocker.landing_ticket_id.as_deref() == Some(ticket_id) {
+                return false;
+            }
+            refusal = Some("LandingPending blocker changed while persisting ticket".into());
+            return false;
+        }
+        blocker.landing_ticket_id = Some(ticket_id.to_string());
+        true
+    })?;
+    if let Some(refusal) = refusal {
+        bail!(refusal);
+    }
+    Ok(())
 }
 
 fn run_at_inner(
@@ -295,13 +445,23 @@ fn run_at_inner(
         load_exact_review_pair(&completion_store, &submission, &manifest, &resolved)?;
     } else {
         let evidence = load_review_evidence(&completion_store, &submission, &manifest, &resolved)?;
+        if evidence.flip.verdict == worksgood::simple_land::ReviewVerdict::Reject
+            || evidence.eval.as_ref().is_some_and(|receipt| {
+                receipt.verdict == worksgood::simple_land::ReviewVerdict::Reject
+            })
+        {
+            bail!(
+                "semantic completion rejection is authoritative: publication of manifest {} is refused and the exact source attempt remains retained for repair",
+                manifest.digest().map_err(anyhow::Error::msg)?
+            );
+        }
         if evidence.flip.verdict != worksgood::simple_land::ReviewVerdict::Pass
             || evidence.eval.as_ref().is_some_and(|receipt| {
                 receipt.verdict != worksgood::simple_land::ReviewVerdict::Pass
             })
         {
             eprintln!(
-                "Advisory model review did not pass; deterministic publication continues. Inspect `wg show {id}` for findings."
+                "WARNING: model review was unavailable (not semantically rejected). Advisory availability policy permits deterministic publication; inspect `wg show {id}` for the separate infrastructure finding."
             );
         }
     }
@@ -340,11 +500,14 @@ fn run_at_inner(
         return Ok(false);
     }
 
-    // A worker requests a landing turn only after its immutable candidate and
-    // review evidence are ready and user-owned checkout dirtiness has been
-    // ruled out. Ordinary implementation never holds this lease.
-    let landing_binding = if pending.is_none() {
-        let binding = super::landing_turn::binding_from_authority(
+    // Every publication attempt, including finalizer-owned LandingPending
+    // recovery, must acquire/reconstruct one exact persisted lease binding.
+    // The graph blocker is only a restart checkpoint; the queue lease remains
+    // the publication authority.
+    let binding = if let Some(blocker) = pending {
+        pending_landing_binding(dir, task, blocker, integration_ref)?
+    } else {
+        super::landing_turn::binding_from_authority(
             dir,
             task,
             integration_ref,
@@ -353,29 +516,58 @@ fn run_at_inner(
                 .clone()
                 .context("landing source task has no assigned agent")?,
             task.session_id.clone(),
-        )?;
-        match worksgood::landing_turn::request_turn(dir, &binding)? {
-            worksgood::landing_turn::RequestOutcome::Acquired { .. }
-            | worksgood::landing_turn::RequestOutcome::AlreadyOwner { .. } => Some(binding),
-            worksgood::landing_turn::RequestOutcome::Parked { ticket_id, .. } => {
-                super::landing_turn::park_landing_turn(
-                    dir,
-                    id,
-                    integration_ref,
-                    &ticket_id,
-                    Some(
-                        "Candidate ready and queued. Retain this exact source session/worktree; when resumed, synchronize the current target here, resolve conflicts, rerun target-dependent validation, and resubmit when bytes change.",
-                    ),
-                    binding.source_session.as_deref(),
-                )?;
+        )?
+    };
+    let expected_ticket = pending.and_then(|blocker| blocker.landing_ticket_id.as_deref());
+    if let Some(expected_ticket) = expected_ticket {
+        let status = worksgood::landing_turn::status(dir, integration_ref, Some(id))?;
+        let persisted = status.ticket.as_ref().with_context(|| {
+            format!(
+                "LandingPending expected ticket {expected_ticket}, but it was expired, fenced, cancelled, or removed; operator recovery must explicitly re-authorize a new turn"
+            )
+        })?;
+        if persisted.ticket_id != expected_ticket {
+            bail!(
+                "LandingPending ticket changed: expected {}, found {}; publication refused",
+                expected_ticket,
+                persisted.ticket_id
+            );
+        }
+    }
+    let turn = worksgood::landing_turn::request_turn(dir, &binding)?;
+    let ticket_id = match &turn {
+        worksgood::landing_turn::RequestOutcome::Acquired { ticket_id, .. }
+        | worksgood::landing_turn::RequestOutcome::AlreadyOwner { ticket_id, .. }
+        | worksgood::landing_turn::RequestOutcome::Parked { ticket_id, .. } => ticket_id.clone(),
+    };
+    if let Some(blocker) = pending {
+        persist_pending_ticket(dir, task, blocker, &ticket_id)?;
+    }
+    let landing_binding = match turn {
+        worksgood::landing_turn::RequestOutcome::Acquired { .. }
+        | worksgood::landing_turn::RequestOutcome::AlreadyOwner { .. } => binding,
+        worksgood::landing_turn::RequestOutcome::Parked { ticket_id, .. } => {
+            if pending.is_some() {
                 eprintln!(
-                    "Landing turn queued for '{id}'; source session/worktree retained and will resume automatically at the FIFO head"
+                    "Landing pending: exact ticket {ticket_id} remains queued; publication will retry only when it owns the FIFO lease"
                 );
                 return Ok(false);
             }
+            super::landing_turn::park_landing_turn(
+                dir,
+                id,
+                integration_ref,
+                &ticket_id,
+                Some(
+                    "Candidate ready and queued. Retain this exact source session/worktree; when resumed, synchronize the current target here, resolve conflicts, rerun target-dependent validation, and resubmit when bytes change.",
+                ),
+                binding.source_session.as_deref(),
+            )?;
+            eprintln!(
+                "Landing turn queued for '{id}'; source session/worktree retained and will resume automatically at the FIFO head"
+            );
+            return Ok(false);
         }
-    } else {
-        None
     };
 
     let _lock = LandingLock::acquire(project_root)?;
@@ -516,30 +708,11 @@ fn run_at_inner(
             &git_output.integrated_main_oid,
             &observed_before,
         )? {
-            if landing_binding.is_some() {
-                bail!(
-                    "landing target advanced from {} to {} while this source owns the turn; synchronize that target in the retained source worktree, resolve any content conflicts here, rerun target-dependent validation, and resubmit the renewed candidate (the FIFO turn is retained)",
-                    git_output.integrated_main_oid,
-                    observed_before
-                );
-            }
-            let worker = worker_worktree
-                .context("stale target wait requires the retained worker worktree")?;
-            super::completion_wait::park_landing_pending(
-                dir,
-                id,
-                "finalizer target expectation advanced after review; immutable candidate retained for target reconciliation",
-                super::completion_wait::LandingWait {
-                    integration_ref,
-                    target_ref_oid: &git_output.integrated_main_oid,
-                    worker_worktree: worker,
-                    recovery: super::completion_wait::LandingRecovery::ReconcileTarget,
-                },
-            )?;
-            eprintln!(
-                "Landing pending: target advanced after review; run `wg resume {id} --only` to reconcile, refresh validation, and land without the source worker"
+            bail!(
+                "landing target advanced from {} to {} while this source owns the turn; synchronize that target in the retained source worktree, resolve any content conflicts here, rerun target-dependent validation, and resubmit the renewed candidate (the FIFO turn is retained)",
+                git_output.integrated_main_oid,
+                observed_before
             );
-            return Ok(false);
         }
         bail!(
             "landing target diverged from reviewed base {}; candidate retained. Supported recovery: inspect `wg show {id}`; do not reset history",
@@ -578,11 +751,12 @@ fn run_at_inner(
                 )
                 .map(|_| ())
             };
-            let publication_result = if let Some(binding) = landing_binding.as_ref() {
-                worksgood::landing_turn::with_lease_owner(dir, integration_ref, binding, publish)
-            } else {
-                publish()
-            };
+            let publication_result = worksgood::landing_turn::with_lease_owner(
+                dir,
+                integration_ref,
+                &landing_binding,
+                publish,
+            );
             if let Err(error) = publication_result {
                 if root_checkout_dirty_if_attached(project_root, integration_ref)? {
                     if pending.is_none() {
@@ -623,16 +797,24 @@ fn run_at_inner(
                 )
                 .map(|_| ())
             };
-            if let Some(binding) = landing_binding.as_ref() {
-                worksgood::landing_turn::with_lease_owner(dir, integration_ref, binding, publish)
-            } else {
-                publish()
-            }
+            worksgood::landing_turn::with_lease_owner(
+                dir,
+                integration_ref,
+                &landing_binding,
+                publish,
+            )
             .context("atomic compare-and-fast-forward failed; no fallback was attempted")?;
             false
         }
     };
 
+    if already_published {
+        // Crash replay has no ref mutation left to perform, but terminal
+        // projection is still fenced by the exact current lease owner.
+        worksgood::landing_turn::with_lease_owner(dir, integration_ref, &landing_binding, || {
+            Ok(())
+        })?;
+    }
     let observed_after = git(project_root, &["rev-parse", integration_ref])?;
     if let Err(fence_error) = require_exact_publication(&publication_commit, &observed_after) {
         if let Some(blocker) = pending {
@@ -737,13 +919,11 @@ fn run_at_inner(
         mark_reconciliation_landed(dir, id, &publication_commit, &observed_after)?;
     }
 
-    if let Some(binding) = landing_binding.as_ref() {
-        match worksgood::landing_turn::release_turn(dir, integration_ref, binding)? {
-            worksgood::landing_turn::ReleaseOutcome::Released { .. } => {}
-            other => bail!(
-                "landing published and recorded, but exact lease release was fenced: {other:?}; retry completion recovery before accepting more publication work"
-            ),
-        }
+    match worksgood::landing_turn::release_turn(dir, integration_ref, &landing_binding)? {
+        worksgood::landing_turn::ReleaseOutcome::Released { .. } => {}
+        other => bail!(
+            "landing published and recorded, but exact lease release was fenced: {other:?}; retry completion recovery before accepting more publication work"
+        ),
     }
 
     if !root_checkout_synchronized {
@@ -1228,7 +1408,10 @@ fn update_reconciliation_projection(
             return false;
         };
         if task.status != Status::Waiting
-            || task.completion_blocker.as_ref() != Some(expected)
+            || !task
+                .completion_blocker
+                .as_ref()
+                .is_some_and(|current| same_pending_blocker_with_ticket(current, expected))
             || task.completion_candidate.as_ref() != Some(&expected.candidate)
             || task.lifecycle.generation != expected.generation
             || task.lifecycle.fence != expected.fence
@@ -1925,12 +2108,14 @@ mod tests {
         fn review(
             &mut self,
             kind: ReviewerKind,
-            _bundle: &worksgood::completion_manifest::ResolvedReviewBundle,
+            bundle: &worksgood::completion_manifest::ResolvedReviewBundle,
         ) -> std::result::Result<SemanticReview, ReviewerUnavailable> {
             self.calls.lock().unwrap().push(kind);
             Ok(SemanticReview {
                 verdict: SemanticVerdict::Pass,
                 findings: Vec::<ReviewFinding>::new(),
+                flip_proof: (kind == ReviewerKind::Flip)
+                    .then(|| test_flip_proof(bundle, self.route)),
             })
         }
     }
@@ -1942,7 +2127,7 @@ mod tests {
         fn review(
             &mut self,
             kind: ReviewerKind,
-            _bundle: &worksgood::completion_manifest::ResolvedReviewBundle,
+            bundle: &worksgood::completion_manifest::ResolvedReviewBundle,
         ) -> std::result::Result<SemanticReview, ReviewerUnavailable> {
             self.calls.lock().unwrap().push(kind);
             Ok(SemanticReview {
@@ -1951,7 +2136,30 @@ mod tests {
                     "advisory.fixture",
                     "bounded actionable finding",
                 )],
+                flip_proof: (kind == ReviewerKind::Flip)
+                    .then(|| test_flip_proof(bundle, self.route)),
             })
+        }
+    }
+
+    fn test_flip_proof(
+        bundle: &worksgood::completion_manifest::ResolvedReviewBundle,
+        route: &str,
+    ) -> worksgood::completion_review::FlipProof {
+        worksgood::completion_review::FlipProof {
+            protocol: "prompt-reconstruction-two-phase-v1".into(),
+            latent_hypothesis: ArtifactOutput {
+                content_digest: bundle.manifest_digest.clone(),
+                immutable_locator:
+                    worksgood::completion_manifest::ImmutableLocator::CompletionObject {
+                        digest: bundle.manifest_digest.clone(),
+                    },
+                media_type: "application/vnd.worksgood.flip-latent-hypothesis+json".into(),
+                size: bundle.manifest_bytes.len() as u64,
+                review_projection: None,
+            },
+            inference_route: route.into(),
+            comparison_route: route.into(),
         }
     }
 
@@ -2319,7 +2527,7 @@ mod tests {
     }
 
     #[test]
-    fn advisory_flip_rejection_survives_landing_and_done() {
+    fn flip_rejection_is_authoritative_and_retains_source_attempt() {
         let fixture = fixture();
         let calls = Arc::new(Mutex::new(Vec::new()));
         let mut flip = RejectReviewer {
@@ -2345,19 +2553,45 @@ mod tests {
         );
         assert_eq!(*calls.lock().unwrap(), vec![ReviewerKind::Flip]);
 
-        run_at(
+        let agent_before = load_graph(fixture.dir.join("graph.jsonl"))
+            .unwrap()
+            .get_task(&fixture.task_id)
+            .unwrap()
+            .assigned
+            .clone();
+        let land_error = run_at(
             &fixture.dir,
             &fixture.task_id,
             "refs/heads/main",
             Some(&fixture.worker),
         )
-        .unwrap();
-        super::super::completion_done::run(&fixture.dir, &fixture.task_id, "refs/heads/main")
-            .unwrap();
+        .unwrap_err();
+        assert!(
+            land_error
+                .to_string()
+                .contains("rejection is authoritative")
+        );
+        let done_error =
+            super::super::completion_done::run(&fixture.dir, &fixture.task_id, "refs/heads/main")
+                .unwrap_err();
+        assert!(
+            done_error
+                .to_string()
+                .contains("rejection is authoritative")
+        );
 
         let graph = load_graph(fixture.dir.join("graph.jsonl")).unwrap();
         let task = graph.get_task(&fixture.task_id).unwrap();
-        assert_eq!(task.status, Status::Done);
+        assert_eq!(task.status, Status::InProgress);
+        assert_eq!(task.assigned, agent_before);
+        assert_eq!(
+            task.lifecycle.current_attempt.as_ref().unwrap().id,
+            "attempt-2-1"
+        );
+        assert_eq!(
+            command(&fixture.root, &["rev-parse", "main"]),
+            fixture.integrated
+        );
         assert_eq!(task.completion_review_activity.len(), 3);
         let verified = worksgood::completion_review::verified_review_activities(&fixture.dir, task);
         assert_eq!(verified.invalid_count, 0);
@@ -2372,6 +2606,62 @@ mod tests {
         assert_eq!(
             verified.activities.last().unwrap().findings[0].code,
             "advisory.fixture"
+        );
+    }
+
+    #[test]
+    fn eval_rejection_is_authoritative_after_exact_flip_pass() {
+        let fixture = fixture();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let mut flip = PassReviewer {
+            route: "pi:test-flip",
+            calls: calls.clone(),
+        };
+        let mut eval = RejectReviewer {
+            route: "pi:test-eval-reject",
+            calls: calls.clone(),
+        };
+        let outcome = super::super::completion_submit::run_with_reviewers(
+            &fixture.dir,
+            &fixture.task_id,
+            &fixture.manifest_path,
+            &fixture.summary_path,
+            &mut flip,
+            &mut eval,
+        )
+        .unwrap();
+        assert_eq!(
+            outcome.status,
+            worksgood::completion_review::ReviewValveStatus::EvalRejected
+        );
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![ReviewerKind::Flip, ReviewerKind::Eval]
+        );
+        assert!(
+            run_at(
+                &fixture.dir,
+                &fixture.task_id,
+                "refs/heads/main",
+                Some(&fixture.worker),
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("rejection is authoritative")
+        );
+        assert!(
+            super::super::completion_done::run(&fixture.dir, &fixture.task_id, "refs/heads/main",)
+                .unwrap_err()
+                .to_string()
+                .contains("rejection is authoritative")
+        );
+        let graph = load_graph(fixture.dir.join("graph.jsonl")).unwrap();
+        let task = graph.get_task(&fixture.task_id).unwrap();
+        assert_eq!(task.status, Status::InProgress);
+        assert!(task.assigned.is_some());
+        assert_eq!(
+            command(&fixture.root, &["rev-parse", "main"]),
+            fixture.integrated
         );
     }
 
@@ -2545,6 +2835,55 @@ mod tests {
         assert_eq!(
             command(&fixture.root, &["rev-parse", "main"]),
             fixture.candidate
+        );
+    }
+
+    #[test]
+    fn pending_resume_refuses_publication_after_exact_ticket_is_removed() {
+        let fixture = fixture();
+        let dirty_path = fixture.root.join("user-race.txt");
+        AFTER_LANDING_LOCK_HOOK.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new({
+                let dirty_path = dirty_path.clone();
+                move || fs::write(dirty_path, "force pending after lease acquisition\n").unwrap()
+            }));
+        });
+        run_at(
+            &fixture.dir,
+            &fixture.task_id,
+            "refs/heads/main",
+            Some(&fixture.worker),
+        )
+        .unwrap();
+        fs::remove_file(dirty_path).unwrap();
+        let graph = load_graph(fixture.dir.join("graph.jsonl")).unwrap();
+        let blocker = graph
+            .get_task(&fixture.task_id)
+            .unwrap()
+            .completion_blocker
+            .as_ref()
+            .unwrap();
+        assert!(blocker.landing_ticket_id.is_some());
+        drop(graph);
+        fs::remove_file(worksgood::landing_turn::state_path(
+            &fixture.dir,
+            "refs/heads/main",
+        ))
+        .unwrap();
+        let error = resume_pending(&fixture.dir, &fixture.task_id).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("exact persisted ticket no longer exists")
+        );
+        assert_eq!(
+            command(&fixture.root, &["rev-parse", "main"]),
+            fixture.integrated
+        );
+        let graph = load_graph(fixture.dir.join("graph.jsonl")).unwrap();
+        assert_eq!(
+            graph.get_task(&fixture.task_id).unwrap().status,
+            Status::Waiting
         );
     }
 

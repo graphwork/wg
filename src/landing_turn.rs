@@ -785,6 +785,30 @@ pub fn request_turn(dir: &Path, binding: &TicketBinding) -> Result<RequestOutcom
     })
 }
 
+/// Relinquish an exact live lease while retaining its FIFO ticket at the
+/// queue head. Durable `LandingPending` uses this before releasing the source
+/// worker: restart may reacquire this exact ticket, but no later ticket can
+/// overtake it. A forged or stale binding has no effect.
+pub fn park_owned_turn(dir: &Path, integration_ref: &str, binding: &TicketBinding) -> Result<bool> {
+    let _lock = QueueLock::acquire(dir, integration_ref)?;
+    let Some(mut state) = load_state(dir, integration_ref)? else {
+        return Ok(false);
+    };
+    let expired = fence_if_expired(&mut state, &Utc::now()).is_some();
+    let Some(lease) = state.lease.as_ref() else {
+        if expired {
+            save_state(&state, dir)?;
+        }
+        return Ok(false);
+    };
+    if !lease.matches_binding(binding) {
+        return Ok(false);
+    }
+    state.lease = None;
+    save_state(&state, dir)?;
+    Ok(true)
+}
+
 /// Release the lease after a successful landing (or on giving up). Only the
 /// current lease owner with an exact binding may release. Pops the head ticket
 /// and returns the next ticket id to wake (if any).
@@ -1414,6 +1438,56 @@ mod tests {
     }
 
     #[test]
+    fn forged_or_stale_binding_cannot_renew_release_cancel_or_publish() {
+        let dir = tempdir().unwrap();
+        let d = dir.path();
+        let owner = binding("t-a", "agent-a", 1, "oid-0");
+        request_turn(d, &owner).unwrap();
+        let mutations = [
+            TicketBinding {
+                source_agent: "forged-agent".into(),
+                ..owner.clone()
+            },
+            TicketBinding {
+                attempt_id: Some("stale-attempt".into()),
+                ..owner.clone()
+            },
+            TicketBinding {
+                fence: owner.fence + 1,
+                ..owner.clone()
+            },
+            TicketBinding {
+                candidate_oid: "changed-bytes".into(),
+                ..owner.clone()
+            },
+        ];
+        for forged in mutations {
+            assert!(matches!(
+                renew_turn(d, "refs/heads/main", &forged, Some("progress")).unwrap(),
+                RenewOutcome::NotOwner
+            ));
+            assert!(matches!(
+                release_turn(d, "refs/heads/main", &forged).unwrap(),
+                ReleaseOutcome::NotOwner { .. }
+            ));
+            assert!(matches!(
+                cancel_turn(d, "refs/heads/main", &forged).unwrap(),
+                ReleaseOutcome::NotFound
+            ));
+            let mut called = false;
+            assert!(
+                with_lease_owner(d, "refs/heads/main", &forged, || {
+                    called = true;
+                    Ok(())
+                })
+                .is_err()
+            );
+            assert!(!called, "publication closure ran for forged authority");
+        }
+        assert!(is_lease_owner(d, "refs/heads/main", &owner).unwrap());
+    }
+
+    #[test]
     fn restart_recovery_resumes_head_only_when_lease_free() {
         let dir = tempdir().unwrap();
         let d = dir.path();
@@ -1423,11 +1497,11 @@ mod tests {
         request_turn(d, &b).unwrap();
         // a holds the lease: nothing resumable.
         assert!(take_resumable_head(d, "refs/heads/main").unwrap().is_none());
-        // a releases (simulating a crash that left no live lease + restart).
-        release_turn(d, "refs/heads/main", &a).unwrap();
-        // The head (b) is now resumable exactly once.
+        // a durably parks its exact head ticket before restart.
+        assert!(park_owned_turn(d, "refs/heads/main", &a).unwrap());
+        // The same head (a), not a later waiter, is resumable exactly once.
         let head = take_resumable_head(d, "refs/heads/main").unwrap().unwrap();
-        assert_eq!(head.task_id, "t-b");
+        assert_eq!(head.task_id, "t-a");
         // Idempotent: a second take does not re-wake.
         assert!(take_resumable_head(d, "refs/heads/main").unwrap().is_none());
     }

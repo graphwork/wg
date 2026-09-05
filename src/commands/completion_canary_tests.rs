@@ -2,7 +2,8 @@ use super::{completion_done, completion_submit};
 use std::sync::{Arc, Barrier};
 use tempfile::tempdir;
 use worksgood::completion_manifest::{
-    COMPLETION_MANIFEST_VERSION, CompletionManifest, ContentDigest, OutputRef,
+    ArtifactOutput, COMPLETION_MANIFEST_VERSION, CompletionManifest, ContentDigest,
+    ImmutableLocator, OutputRef,
 };
 use worksgood::completion_review::{
     ManifestReviewer, ReviewerKind, ReviewerUnavailable, SemanticReview, SemanticVerdict,
@@ -40,13 +41,28 @@ impl ManifestReviewer for ScriptedReviewer {
 
     fn review(
         &mut self,
-        _kind: ReviewerKind,
-        _bundle: &worksgood::completion_manifest::ResolvedReviewBundle,
+        kind: ReviewerKind,
+        bundle: &worksgood::completion_manifest::ResolvedReviewBundle,
     ) -> Result<SemanticReview, ReviewerUnavailable> {
+        let proof = || worksgood::completion_review::FlipProof {
+            protocol: "prompt-reconstruction-two-phase-v1".into(),
+            latent_hypothesis: ArtifactOutput {
+                content_digest: bundle.manifest_digest.clone(),
+                immutable_locator: ImmutableLocator::CompletionObject {
+                    digest: bundle.manifest_digest.clone(),
+                },
+                media_type: "application/vnd.worksgood.flip-latent-hypothesis+json".into(),
+                size: bundle.manifest_bytes.len() as u64,
+                review_projection: None,
+            },
+            inference_route: self.route.clone(),
+            comparison_route: self.route.clone(),
+        };
         match self.script {
             Script::Pass => Ok(SemanticReview {
                 verdict: SemanticVerdict::Pass,
                 findings: Vec::new(),
+                flip_proof: (kind == ReviewerKind::Flip).then(proof),
             }),
             Script::Reject => Ok(SemanticReview {
                 verdict: SemanticVerdict::Reject,
@@ -54,6 +70,7 @@ impl ManifestReviewer for ScriptedReviewer {
                     "canary.rejected",
                     "scripted semantic rejection",
                 )],
+                flip_proof: (kind == ReviewerKind::Flip).then(proof),
             }),
             Script::Unavailable => Err(ReviewerUnavailable {
                 code: "canary.unavailable".to_string(),

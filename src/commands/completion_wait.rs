@@ -75,6 +75,63 @@ fn park(
         .current_attempt
         .as_ref()
         .map(|attempt| attempt.id.clone());
+    // A LandingPending checkpoint is not publication authority by itself.
+    // Materialize its exact FIFO ticket while source authority is still live,
+    // then persist that ticket before clearing assignment. If this process
+    // crashes, restart can only reacquire these exact bytes/attempt/fence.
+    let mut landing_binding = None;
+    let landing_ticket = if let Some(wait) = landing.as_ref() {
+        let source_agent = expected
+            .lifecycle
+            .current_attempt
+            .as_ref()
+            .map(|attempt| attempt.actor_id.clone())
+            .context("LandingPending requires an exact source attempt actor")?;
+        let source_session = session_selector
+            .clone()
+            .or_else(|| expected.session_id.clone());
+        let binding = super::landing_turn::binding_from_authority(
+            dir,
+            &expected,
+            wait.integration_ref,
+            Some(wait.target_ref_oid),
+            source_agent,
+            source_session,
+        )?;
+        let outcome = worksgood::landing_turn::request_turn(dir, &binding)?;
+        let ticket_id = match outcome {
+            worksgood::landing_turn::RequestOutcome::Acquired { ticket_id, .. }
+            | worksgood::landing_turn::RequestOutcome::AlreadyOwner { ticket_id, .. }
+            | worksgood::landing_turn::RequestOutcome::Parked { ticket_id, .. } => ticket_id,
+        };
+        let ticket = worksgood::landing_turn::status(dir, wait.integration_ref, Some(id))?
+            .ticket
+            .with_context(|| format!("newly requested landing ticket {ticket_id} disappeared"))?;
+        if ticket.ticket_id != ticket_id {
+            bail!("landing queue returned a different ticket than the one requested");
+        }
+        landing_binding = Some(binding);
+        Some(ticket)
+    } else {
+        None
+    };
+    if let (Some(ticket), Some(review_binding)) =
+        (landing_ticket.as_ref(), candidate.review_binding.as_ref())
+        && (ticket.task_id != id
+            || ticket.generation != expected.lifecycle.generation
+            || ticket.attempt_id.as_deref() != attempt_id.as_deref()
+            || ticket.fence != expected.lifecycle.fence
+            || ticket.candidate_sequence != review_binding.candidate_sequence
+            || ticket.candidate_oid != candidate.manifest.content_digest.to_string())
+    {
+        bail!("persisted landing ticket does not match the exact candidate/source blocker");
+    }
+    let landing_source_agent = landing_ticket
+        .as_ref()
+        .map(|ticket| ticket.source_agent.clone());
+    let landing_source_session = landing_ticket
+        .as_ref()
+        .and_then(|ticket| ticket.source_session.clone());
     let safe_next = match kind {
         CompletionBlockerKind::NeedsReview => format!(
             "inspect immutable review activity with `wg show {id}`; then use `wg done {id} --operator-accept --reason <WHY>` or retry a new candidate"
@@ -108,6 +165,9 @@ fn park(
         worker_worktree: landing
             .as_ref()
             .map(|wait| wait.worker_worktree.to_string_lossy().into_owned()),
+        landing_source_agent,
+        landing_source_session,
+        landing_ticket_id: landing_ticket.map(|ticket| ticket.ticket_id),
         reconciliation_state: worksgood::graph::LandingReconciliationState::Waiting,
         reconciliation_receipt: None,
         reconciled_commit_oid: None,
@@ -191,7 +251,13 @@ fn park(
         true
     })?;
     if let Some(error) = error {
+        if let (Some(wait), Some(binding)) = (landing.as_ref(), landing_binding.as_ref()) {
+            let _ = worksgood::landing_turn::cancel_turn(dir, wait.integration_ref, binding);
+        }
         return Err(error);
+    }
+    if let (Some(wait), Some(binding)) = (landing.as_ref(), landing_binding.as_ref()) {
+        let _ = worksgood::landing_turn::park_owned_turn(dir, wait.integration_ref, binding)?;
     }
 
     if let Some(agent_id) = released_agent

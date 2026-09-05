@@ -33,12 +33,25 @@ while (($#)); do
     *) shift ;;
   esac
 done
-cat >/dev/null || true
+prompt=$(cat || true)
 state="${FAKE_REVIEW_STATE:?}"
 task="${WG_TASK_ID:-unbound}"
 
 case "$model" in
   fake-review|openrouter:fake-review)
+    if grep -q 'worksgood-flip-blind-inference-v1' <<<"$prompt"; then
+      printf '%s|inference|%s\n' "$task" "$model" >>"$state/review-calls"
+      python3 - <<'PY'
+import json
+text=json.dumps({'goal':'reconstructed fixture goal','constraints':[],'invariants':[],'failure_modes':[]},separators=(',',':'))
+event={'type':'turn_end','message':{'role':'assistant','content':[{'type':'text','text':text}],
+       'provider':'test','model':'fake-review','stopReason':'stop','rawStopReason':'completed',
+       'usage':{'input':1,'output':1,'cacheRead':0,'cacheWrite':0,'totalTokens':2,
+                'cost':{'total':0}}}}
+print(json.dumps(event,separators=(',',':')))
+PY
+      exit 0
+    fi
     count_file="$state/$task.review-count"
     n=$(($(cat "$count_file" 2>/dev/null || echo 0) + 1))
     printf '%s\n' "$n" >"$count_file"
@@ -120,8 +133,7 @@ git config user.email completion-resilience@test.invalid
 git config user.name CompletionResilience
 printf 'base bytes\n' > base.txt
 git add base.txt && git commit -qm base
-"$WG_BIN" init --no-agency --route pi --model pi:openrouter:fake-worker >/dev/null
-git add .gitignore AGENTS.md CLAUDE.md && git commit -qm init-wg
+"$WG_BIN" init --no-agency >/dev/null
 # The retained worker checkout is WG-owned orchestration state, not user work.
 # Keep it out of the attached integration checkout's untracked-byte test so the
 # only deliberate dirt below is the unrelated tracked edit under test.
@@ -130,8 +142,13 @@ G="$project/.wg"
 wgrun(){ env -u WG_TASK_ID -u WG_AGENT_ID -u WG_WORKER_CAPABILITY -u WG_WORKER_IPC \
   "$WG_BIN" --dir "$G" "$@"; }
 
+wgrun setup --route pi --model pi:openrouter:fake-worker --yes >/dev/null
 wgrun config set models.reviewer.model pi:openrouter:fake-review >/dev/null
 wgrun config set models.reviewer.reasoning low >/dev/null
+wgrun config set models.flip_inference.model pi:openrouter:fake-review >/dev/null
+wgrun config set models.flip_inference.reasoning low >/dev/null
+wgrun config set models.flip_comparison.model pi:openrouter:fake-review >/dev/null
+wgrun config set models.flip_comparison.reasoning low >/dev/null
 wgrun config set models.evaluator.model pi:openrouter:fake-review >/dev/null
 wgrun config set models.evaluator.reasoning low >/dev/null
 wgrun config set agency.auto_assign false >/dev/null
@@ -142,6 +159,8 @@ wgrun config set dispatcher.max_agents 1 >/dev/null
 wgrun config set dispatcher.poll_interval 1 >/dev/null
 wgrun config set dispatcher.settling_delay_ms 0 >/dev/null
 wgrun config set dispatcher.worktree_isolation true >/dev/null
+wgrun config set dispatcher.resource_management.disk_sentinel_enabled false >/dev/null
+git add .gitignore AGENTS.md CLAUDE.md worksgood.toml && git commit -qm init-wg
 
 wait_file(){
   local path="$1" label="$2"

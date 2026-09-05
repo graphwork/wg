@@ -139,13 +139,23 @@ pub fn run(dir: &Path, id: &str, integration_ref: &str) -> Result<()> {
         "strict"
     } else {
         let evidence = load_review_evidence(&completion_store, &submission, &manifest, &resolved)?;
+        if evidence.flip.verdict == worksgood::simple_land::ReviewVerdict::Reject
+            || evidence.eval.as_ref().is_some_and(|receipt| {
+                receipt.verdict == worksgood::simple_land::ReviewVerdict::Reject
+            })
+        {
+            bail!(
+                "semantic completion rejection is authoritative: Done is refused for manifest {} and the exact source attempt remains retained for repair",
+                manifest.digest().map_err(anyhow::Error::msg)?
+            );
+        }
         if evidence.flip.verdict != worksgood::simple_land::ReviewVerdict::Pass
             || evidence.eval.as_ref().is_some_and(|receipt| {
                 receipt.verdict != worksgood::simple_land::ReviewVerdict::Pass
             })
         {
             eprintln!(
-                "Advisory model review did not pass; deterministic completion continues. Inspect `wg show {id}` for findings."
+                "WARNING: model review was unavailable (not semantically rejected). Advisory availability policy permits deterministic completion; inspect `wg show {id}` for the separate infrastructure finding."
             );
         }
         "advisory"
@@ -446,6 +456,7 @@ pub fn operator_accept(dir: &Path, id: &str, reason: &str) -> Result<()> {
 }
 
 fn require_completion_actor(task: &worksgood::graph::Task, id: &str) -> Result<()> {
+    #[cfg(not(test))]
     let pending_finalization = task.status == Status::Waiting
         && task.completion_blocker.as_ref().is_some_and(|blocker| {
             blocker.kind == worksgood::graph::CompletionBlockerKind::LandingPending

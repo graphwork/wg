@@ -3219,6 +3219,6 @@ timeout_seconds = 90
 [[scenario]]
 name = "worker_owned_landing_turns"
 script = "scenarios/worker_owned_landing_turns.sh"
-owners = ["worker-owned-landing-turns"]
-description = "Candidate-binary landing-turn CLI proof plus the ref-scoped persistent FIFO state-machine gate: three exact source bindings queue and advance in order, restart reload preserves candidates, an expired/crashed owner is fenced, stale bindings cannot publish/release, and starvation-freedom leaves no queued landing pending."
+owners = ["worker-owned-landing-turns", "repair-landing-review-rejection"]
+description = "Candidate-binary landing-turn CLI proof plus the ref-scoped persistent FIFO state-machine gate: three exact source bindings queue and advance in order, restart reload preserves candidates, an expired/crashed owner is fenced, stale bindings cannot publish/release, changed candidate bytes invalidate receipts, and starvation-freedom leaves no queued landing pending."
 timeout_seconds = 180

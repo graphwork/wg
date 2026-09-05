@@ -85,6 +85,9 @@ pub fn run(dir: &Path, id: &str, integration_ref: &str) -> Result<()> {
             activity.reviewer_kind == worksgood::completion_review::ReviewerKind::Eval
                 && activity.verdict == worksgood::simple_land::ReviewVerdict::Pass
         });
+        let semantic_rejection = current_activity
+            .iter()
+            .any(|activity| activity.verdict == worksgood::simple_land::ReviewVerdict::Reject);
         let candidate_matches_source_tuple = candidate.requirements.content_digest
             == worksgood::completion_task::requirements_digest(&task)?
             && candidate.review_binding.as_ref().is_some_and(|binding| {
@@ -98,8 +101,14 @@ pub fn run(dir: &Path, id: &str, integration_ref: &str) -> Result<()> {
                             .as_ref()
                             .map(|attempt| attempt.id.as_str())
             });
+        if candidate_matches_head && candidate_matches_source_tuple && semantic_rejection {
+            bail!(
+                "current completion candidate was semantically rejected; publication and Done are refused. The same source attempt/worktree/session is retained: repair the candidate bytes, rerun the declared validation, then run `wg done {id}` again"
+            );
+        }
         if candidate_matches_head
             && candidate_matches_source_tuple
+            && !semantic_rejection
             && (!config.agency.completion_review_strict || strict_passed)
         {
             if task.completion_contract == CompletionContract::Land

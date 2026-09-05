@@ -212,6 +212,10 @@ pub struct DeepObservation {
 pub struct DeepFlipReport {
     pub schema_version: u16,
     pub report_id: String,
+    /// Proof that the report came from two isolated Pi calls: a blind
+    /// candidate-only reconstruction persisted before the revealed comparison.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flip_proof: Option<DeepFlipProof>,
     pub score: f64,
     pub outcome: BoundedVerdictOutcome,
     pub summary_code: String,
@@ -279,12 +283,21 @@ struct DeepReportWire {
     counterfactual_probe_codes: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeepFlipProof {
+    pub protocol: String,
+    pub latent_hypothesis_id: String,
+    pub inference_route: String,
+    pub comparison_route: String,
+}
+
 #[derive(Debug)]
 struct DeepAdapterResponse {
     report: DeepReportWire,
     usage: EvaluationUsage,
     response_digest: String,
     observations: Vec<DeepObservation>,
+    flip_proof: Option<DeepFlipProof>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -405,7 +418,8 @@ pub fn reconcile_required_passes(dir: &Path) -> Result<usize> {
                     && super::source_candidate_is_current(task, &record.source)
                     && record.consumed_verdict_id.as_deref() == Some(report.report_id.as_str())
                     && report.outcome == BoundedVerdictOutcome::Pass
-                    && report.score >= record.policy.threshold.unwrap_or(1.0))
+                    && report.score >= record.policy.threshold.unwrap_or(1.0)
+                    && deep_flip_proof_valid(dir, record, report))
                 .then(|| (task.id.clone(), record.evaluation_id.clone()))
             })
         })
@@ -665,14 +679,19 @@ pub fn run_one_pending(dir: &Path, config: &Config) -> Result<DeepLaneTick> {
         .find(|record| record.evaluation_id == evaluation_id)
         .context("selected deep record disappeared")?
         .clone();
-    let call = sole_call(&record_snapshot)?.clone();
+    let (inference_call, comparison_call) = exact_calls(&record_snapshot)?;
+    let inference_call = inference_call.clone();
+    let comparison_call = comparison_call.clone();
     let now = Utc::now();
     let attempt_id = format!("deep-attempt-1-{}", now.timestamp_millis());
     let attempt = EvaluationAttempt {
         attempt_id: attempt_id.clone(),
-        executor: call.handler.clone(),
-        exact_route: call.exact_route.clone(),
-        reasoning: call.reasoning,
+        executor: "pi-two-phase".into(),
+        exact_route: format!(
+            "prompt-reconstruction-two-phase-v1[inference={};comparison={}]",
+            inference_call.exact_route, comparison_call.exact_route
+        ),
+        reasoning: comparison_call.reasoning,
         renderer_version: DEEP_RENDERER_VERSION,
         verdict_schema_version: DEEP_REPORT_SCHEMA,
         started_at: now.to_rfc3339(),
@@ -725,7 +744,8 @@ pub fn run_one_pending(dir: &Path, config: &Config) -> Result<DeepLaneTick> {
         config,
         &task_snapshot,
         &record_snapshot,
-        &call,
+        &inference_call,
+        &comparison_call,
         &attempt_id,
     );
     let finalized = match result {
@@ -756,24 +776,49 @@ pub fn run_one_pending(dir: &Path, config: &Config) -> Result<DeepLaneTick> {
     })
 }
 
-fn sole_call(record: &EvaluationRecord) -> Result<&EvaluationRouteCall> {
+fn deep_flip_proof_valid(dir: &Path, record: &EvaluationRecord, report: &DeepFlipReport) -> bool {
+    let Some(proof) = report.flip_proof.as_ref() else {
+        return false;
+    };
+    let Ok((inference, comparison)) = exact_calls(record) else {
+        return false;
+    };
+    if proof.protocol != "prompt-reconstruction-two-phase-v1"
+        || proof.inference_route != inference.exact_route
+        || proof.comparison_route != comparison.exact_route
+    {
+        return false;
+    }
+    let Ok(bytes) = fs::read(
+        dir.join("evaluation/evidence")
+            .join(proof.latent_hypothesis_id.replace(':', "_")),
+    ) else {
+        return false;
+    };
+    proof.latent_hypothesis_id == format!("wgcid:v1:blake3:{}", blake3::hash(&bytes).to_hex())
+}
+
+fn exact_calls(record: &EvaluationRecord) -> Result<(&EvaluationRouteCall, &EvaluationRouteCall)> {
     let route = record
         .route
         .as_ref()
         .context("deep FLIP route unavailable")?;
-    // Legacy FLIP planning snapshots inference + comparison calls. Deep FLIP
-    // is one persistent evidence session, so it deterministically uses the
-    // final comparison route while retaining the full plan digest for audit.
-    let call = route
+    let inference = route
+        .calls
+        .iter()
+        .find(|call| call.stage == crate::eval_lifecycle::AgencyStage::FlipInference)
+        .context("deep FLIP route contains no inference call")?;
+    let comparison = route
         .calls
         .iter()
         .find(|call| call.stage == crate::eval_lifecycle::AgencyStage::FlipComparison)
-        .or_else(|| route.calls.last())
-        .context("deep FLIP route contains no calls")?;
-    if call.handler != "pi" {
-        bail!("deep FLIP supports only its dedicated Pi adapter; cross-executor fallback refused");
+        .context("deep FLIP route contains no comparison call")?;
+    if inference.handler != "pi" || comparison.handler != "pi" {
+        bail!(
+            "deep FLIP requires exact isolated Pi inference and comparison calls; cross-executor fallback refused"
+        );
     }
-    Ok(call)
+    Ok((inference, comparison))
 }
 
 fn execute_claimed(
@@ -781,7 +826,8 @@ fn execute_claimed(
     config: &Config,
     task: &Task,
     record: &EvaluationRecord,
-    call: &EvaluationRouteCall,
+    inference_call: &EvaluationRouteCall,
+    comparison_call: &EvaluationRouteCall,
     attempt_id: &str,
 ) -> std::result::Result<(DeepAdapterResponse, String, DeepEvidenceIndex), EvaluationFailure> {
     let runtime = dir
@@ -846,6 +892,101 @@ fn execute_claimed(
     // Rewrite only an in-memory projection; the content-addressed index is
     // already complete because bundle_id is deliberately not self-referential.
     index.evaluation_id = record.evaluation_id.clone();
+
+    // Phase I is a separate exact Pi invocation with no tools, no context
+    // files, and no original-intent/requirements/worker-summary bytes. It sees
+    // only the immutable candidate diff plus repository path/digest metadata.
+    let candidate_evidence = index
+        .evidence
+        .iter()
+        .find(|entry| entry.kind == "artifacts-diff")
+        .and_then(|entry| fs::read(bundle_root.join(&entry.relative_path)).ok())
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|value| {
+            value
+                .get("source_diff")
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned)
+        })
+        .map(|diff| bounded_utf8(diff.as_bytes(), 12 * 1024))
+        .unwrap_or_default();
+    let blind_prompt = format!(
+        "DEEP FLIP PHASE I — BLIND PROMPT RECONSTRUCTION. Infer the likely goal, constraints, invariants, and failure modes from candidate output only. Original task intent, requirements, conversation, worker summary, messages, validation commands, graph context, config, and credentials are unavailable. Return exactly one JSON object and no prose.\n---BEGIN CANDIDATE OUTPUT---\n{}\n---END CANDIDATE OUTPUT---\nrepository_paths_and_digests={} ",
+        candidate_evidence,
+        serde_json::to_string(&index.repository).unwrap_or_else(|_| "[]".into())
+    );
+    let inference_dispatch = crate::service::llm::AgencyDispatch {
+        handler: crate::dispatch::ExecutorKind::Pi,
+        raw_spec: inference_call.exact_route.clone(),
+        model_id: inference_call
+            .exact_route
+            .strip_prefix("pi:")
+            .unwrap_or(&inference_call.exact_route)
+            .to_string(),
+        reasoning: inference_call.reasoning,
+    };
+    let inference = crate::service::llm::run_exact_agency_dispatch_call(
+        &effective,
+        &inference_dispatch,
+        &blind_prompt,
+        timeout,
+    )
+    .map_err(|error| {
+        failure(
+            EvaluationFailureKind::AdapterUnavailable,
+            "WG-DEEP-FLIP-INFERENCE",
+            format!("exact blind inference call failed without fallback: {error:#}"),
+            None,
+            None,
+        )
+    })?;
+    if inference.text.len() > 8 * 1024 {
+        return Err(failure(
+            EvaluationFailureKind::MalformedOutput,
+            "WG-DEEP-FLIP-HYPOTHESIS",
+            "blind inference hypothesis exceeded 8 KiB".into(),
+            None,
+            None,
+        ));
+    }
+    let hypothesis_value: serde_json::Value =
+        serde_json::from_str(inference.text.trim()).map_err(|error| {
+            failure(
+                EvaluationFailureKind::MalformedOutput,
+                "WG-DEEP-FLIP-HYPOTHESIS",
+                format!("blind inference did not return one JSON hypothesis: {error}"),
+                None,
+                None,
+            )
+        })?;
+    if !hypothesis_value.is_object() {
+        return Err(failure(
+            EvaluationFailureKind::MalformedOutput,
+            "WG-DEEP-FLIP-HYPOTHESIS",
+            "blind inference hypothesis must be a JSON object".into(),
+            None,
+            None,
+        ));
+    }
+    let hypothesis_bytes = crate::identity::canonical_json(&hypothesis_value);
+    let hypothesis_id = format!(
+        "wgcid:v1:blake3:{}",
+        blake3::hash(&hypothesis_bytes).to_hex()
+    );
+    atomic_write(
+        &evidence_root.join(hypothesis_id.replace(':', "_")),
+        &hypothesis_bytes,
+    )
+    .map_err(|error| {
+        failure(
+            EvaluationFailureKind::EvidenceUnavailable,
+            "WG-DEEP-FLIP-HYPOTHESIS-PERSIST",
+            error.to_string(),
+            None,
+            None,
+        )
+    })?;
+
     let extension = bundle_root.join("deep-readonly-tools.ts");
     fs::write(&extension, extension_source()).map_err(|error| {
         failure(
@@ -856,17 +997,33 @@ fn execute_claimed(
             None,
         )
     })?;
-    let prompt = render_prompt(&index, &bundle_id).map_err(|error| {
-        failure(
+    let prompt = render_prompt(&index, &bundle_id)
+        .map(|base| {
+            format!(
+                "{base}\n\nFLIP PHASE II — REVEALED COMPARISON. The immutable blind hypothesis was persisted before this fresh process started. Compare it against the original-intent evidence now available through the observation-only tools. hypothesis_id={hypothesis_id} hypothesis={} ",
+                String::from_utf8_lossy(&hypothesis_bytes)
+            )
+        })
+        .map_err(|error| {
+            failure(
+                EvaluationFailureKind::EvidenceUnavailable,
+                "WG-DEEP-RENDER",
+                format!("{error:#}"),
+                None,
+                None,
+            )
+        })?;
+    if prompt.len() > MAX_PROMPT_BYTES {
+        return Err(failure(
             EvaluationFailureKind::EvidenceUnavailable,
             "WG-DEEP-RENDER",
-            format!("{error:#}"),
+            format!("two-phase deep prompt exceeds {MAX_PROMPT_BYTES} bytes"),
             None,
             None,
-        )
-    })?;
-    let (provider, model) =
-        crate::config::parse_exact_pi_route(&call.exact_route).map_err(|error| {
+        ));
+    }
+    let (provider, model) = crate::config::parse_exact_pi_route(&comparison_call.exact_route)
+        .map_err(|error| {
             failure(
                 EvaluationFailureKind::AdapterUnavailable,
                 "WG-DEEP-PI-ROUTE",
@@ -893,7 +1050,7 @@ fn execute_claimed(
         "--model".into(),
         model.clone(),
     ];
-    if let Some(reasoning) = call.reasoning {
+    if let Some(reasoning) = comparison_call.reasoning {
         args.extend(["--thinking".into(), reasoning.as_str().into()]);
     }
     let started = Instant::now();
@@ -963,7 +1120,7 @@ fn execute_claimed(
             Some(stdout_digest),
         ));
     }
-    let response = parse_response(
+    let mut response = parse_response(
         &output.stdout,
         &audit_path,
         &provider,
@@ -976,6 +1133,39 @@ fn execute_claimed(
         error.stdout_digest = Some(stdout_digest);
         error
     })?;
+    if let Some(usage) = inference.token_usage.as_ref() {
+        response.usage.input_tokens = response
+            .usage
+            .input_tokens
+            .saturating_add(usage.input_tokens);
+        response.usage.output_tokens = response
+            .usage
+            .output_tokens
+            .saturating_add(usage.output_tokens);
+        response.usage.cache_read_input_tokens = response
+            .usage
+            .cache_read_input_tokens
+            .saturating_add(usage.cache_read_input_tokens);
+        response.usage.cache_creation_input_tokens = response
+            .usage
+            .cache_creation_input_tokens
+            .saturating_add(usage.cache_creation_input_tokens);
+        response.usage.cost_usd += usage.cost_usd;
+    }
+    response.response_digest = digest(
+        format!(
+            "{}:{}",
+            digest(inference.text.as_bytes()),
+            response.response_digest
+        )
+        .as_bytes(),
+    );
+    response.flip_proof = Some(DeepFlipProof {
+        protocol: "prompt-reconstruction-two-phase-v1".into(),
+        latent_hypothesis_id: hypothesis_id,
+        inference_route: inference_call.exact_route.clone(),
+        comparison_route: comparison_call.exact_route.clone(),
+    });
     Ok((response, bundle_id, index))
 }
 
@@ -1595,6 +1785,7 @@ fn parse_response(
         usage,
         response_digest: digest(stdout),
         observations,
+        flip_proof: None,
     })
 }
 
@@ -1802,6 +1993,7 @@ fn finalize_success(
     let report = DeepFlipReport {
         schema_version: DEEP_REPORT_SCHEMA,
         report_id: report_id.clone(),
+        flip_proof: response.flip_proof,
         score: response.report.score,
         outcome: response.report.outcome,
         summary_code: response.report.summary_code,

@@ -26,13 +26,16 @@ model=""
 while (($#)); do
   case "$1" in --model) model="$2"; shift 2;; *) shift;; esac
 done
-cat >/dev/null || true
+prompt=$(cat || true)
 case "$model" in
   fake-review|openrouter:fake-review)
     printf 'review\n' >>"${FAKE_STATE:?}/calls"
-    python3 - <<'PY'
-import json
-text=json.dumps({'verdict':'pass','findings':[]},separators=(',',':'))
+    FAKE_PROMPT="$prompt" python3 - <<'PY'
+import json,os
+if 'worksgood-flip-blind-inference-v1' in os.environ.get('FAKE_PROMPT',''):
+    text=json.dumps({'goal':'reconstructed fixture goal','constraints':[],'invariants':[],'failure_modes':[]},separators=(',',':'))
+else:
+    text=json.dumps({'verdict':'pass','findings':[]},separators=(',',':'))
 print(json.dumps({'type':'turn_end','message':{'role':'assistant','content':[{'type':'text','text':text}],
 'provider':'test','model':'fake-review','stopReason':'stop','rawStopReason':'completed',
 'usage':{'input':1,'output':1,'cacheRead':0,'cacheWrite':0,'totalTokens':2,'cost':{'total':0}}}},separators=(',',':')))
@@ -75,6 +78,10 @@ wgrun(){ env -u WG_TASK_ID -u WG_AGENT_ID -u WG_WORKER_CAPABILITY -u WG_WORKER_I
 wgrun setup --route pi --model pi:openrouter:fake-worker --yes >/dev/null
 wgrun config set models.reviewer.model pi:openrouter:fake-review >/dev/null
 wgrun config set models.reviewer.reasoning low >/dev/null
+wgrun config set models.flip_inference.model pi:openrouter:fake-review >/dev/null
+wgrun config set models.flip_inference.reasoning low >/dev/null
+wgrun config set models.flip_comparison.model pi:openrouter:fake-review >/dev/null
+wgrun config set models.flip_comparison.reasoning low >/dev/null
 wgrun config set models.evaluator.model pi:openrouter:fake-review >/dev/null
 wgrun config set models.evaluator.reasoning low >/dev/null
 wgrun config set agency.completion_review_strict true >/dev/null
@@ -84,6 +91,7 @@ wgrun config set dispatcher.max_agents 1 >/dev/null
 wgrun config set dispatcher.poll_interval 1 >/dev/null
 wgrun config set dispatcher.settling_delay_ms 0 >/dev/null
 wgrun config set dispatcher.worktree_isolation true >/dev/null
+wgrun config set dispatcher.resource_management.disk_sentinel_enabled false >/dev/null
 # Prove the project does not have to commit WG's worktree runtime exclusion.
 if [[ -f .gitignore ]]; then
   grep -v '\.wg-worktrees' .gitignore >.gitignore.tmp || true
@@ -193,7 +201,7 @@ grep -q 'Landing reconciliation Landed' "$scratch/reconcile.status" \
 grep -q 'renewed validation: 2' "$scratch/reconcile.status" \
   || loud_fail "configured+baseline refreshed evidence missing: $(cat "$scratch/reconcile.status")"
 [[ $(grep -c '^worker$' "$state/calls") == 1 ]] || loud_fail "source worker was rerun"
-[[ $(grep -c '^review$' "$state/calls") == 2 ]] || loud_fail "semantic review was rerun or skipped"
+[[ $(grep -c '^review$' "$state/calls") == 3 ]] || loud_fail "two-phase FLIP or Eval was rerun/skipped"
 [[ $(cat candidate.txt) == 'candidate bytes' && $(cat target.txt) == 'independent target advance' ]] \
   || loud_fail "reconciled checkout lost candidate or target bytes"
 [[ -z $(git status --porcelain --untracked-files=all) ]] || loud_fail "landed root checkout is dirty"

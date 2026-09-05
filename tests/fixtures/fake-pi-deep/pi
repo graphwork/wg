@@ -10,19 +10,35 @@ for required in ("--mode", "--print", "--no-context-files", "-ne", "--no-session
     if required not in args:
         print(f"missing hermetic Pi one-shot flag: {required}", file=sys.stderr)
         raise SystemExit(89)
-expected_tools_flag = "--no-builtin-tools" if model != "bounded-miss" else "--no-tools"
+prompt = sys.stdin.read()
+is_inference = "DEEP FLIP PHASE I" in prompt
+expected_tools_flag = "--no-tools" if model == "bounded-miss" or is_inference else "--no-builtin-tools"
 if expected_tools_flag not in args:
     print(f"missing hermetic Pi one-shot flag: {expected_tools_flag}", file=sys.stderr)
     raise SystemExit(89)
 home=pathlib.Path(os.environ.get("HOME",".")); home.mkdir(parents=True,exist_ok=True)
 with (home/"fake-pi-deep-invocations.log").open("a") as f: f.write(" ".join(args)+"\n")
-_ = sys.stdin.read()
 
 def turn(text, inp=31, out=17):
     print(json.dumps({"type":"turn_end","message":{"role":"assistant","content":[{"type":"text","text":json.dumps(text,separators=(",",":"))}],"provider":provider,"model":model,"stopReason":"stop","usage":{"input":inp,"output":out,"cacheRead":3,"cacheWrite":1,"totalTokens":inp+out,"cost":{"total":0.0071}}}}))
 
 if model=="bounded-miss":
     turn({"schema_version":2,"score":0.94,"outcome":"pass","dimensions":{"correctness":0.94,"completeness":0.91},"summary":"Visible candidate summary satisfies the declared API change."},17,9)
+    raise SystemExit(0)
+
+if is_inference:
+    forbidden_payloads = [
+        "Original user intent:",
+        "Counterfactual: a caller selecting deep through registry lookup must succeed",
+        "API and registry agree",
+    ]
+    if any(term in prompt for term in forbidden_payloads):
+        print("blind inference prompt leaked original task evidence", file=sys.stderr)
+        raise SystemExit(87)
+    if "WG_DEEP_BUNDLE_ROOT" in os.environ or "WG_DEEP_AUDIT_PATH" in os.environ:
+        print("blind inference inherited deep evidence environment", file=sys.stderr)
+        raise SystemExit(87)
+    turn({"schema_version":1,"likely_goal":"update the mode consistently across repository consumers","constraints":["registry and API must agree"],"failure_modes":["cross-component omission"]},13,7)
     raise SystemExit(0)
 
 root=pathlib.Path(os.environ["WG_DEEP_BUNDLE_ROOT"])

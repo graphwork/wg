@@ -209,16 +209,25 @@ pub(crate) fn put_object_value(
 
 pub fn run(dir: &Path, id: &str, manifest_path: &Path, summary_path: &Path) -> Result<()> {
     let config = Config::load_merged(dir)?;
-    let mut flip: Box<dyn ManifestReviewer + '_> =
-        match ExactModelReviewer::for_role(&config, ReviewerKind::Flip, DispatchRole::Reviewer) {
-            Ok(reviewer) => Box::new(reviewer),
-            Err(error) => Box::new(SetupUnavailableReviewer::new("reviewer", error)),
-        };
-    let mut eval: Box<dyn ManifestReviewer + '_> =
-        match ExactModelReviewer::for_role(&config, ReviewerKind::Eval, DispatchRole::Evaluator) {
-            Ok(reviewer) => Box::new(reviewer),
-            Err(error) => Box::new(SetupUnavailableReviewer::new("evaluator", error)),
-        };
+    let review_store = store(dir)?;
+    let mut flip: Box<dyn ManifestReviewer + '_> = match ExactModelReviewer::for_role(
+        &config,
+        ReviewerKind::Flip,
+        DispatchRole::FlipInference,
+        review_store.clone(),
+    ) {
+        Ok(reviewer) => Box::new(reviewer),
+        Err(error) => Box::new(SetupUnavailableReviewer::new("reviewer", error)),
+    };
+    let mut eval: Box<dyn ManifestReviewer + '_> = match ExactModelReviewer::for_role(
+        &config,
+        ReviewerKind::Eval,
+        DispatchRole::Evaluator,
+        review_store,
+    ) {
+        Ok(reviewer) => Box::new(reviewer),
+        Err(error) => Box::new(SetupUnavailableReviewer::new("evaluator", error)),
+    };
     let outcome = match run_with_reviewers(
         dir,
         id,
@@ -247,23 +256,23 @@ pub fn run(dir: &Path, id: &str, manifest_path: &Path, summary_path: &Path) -> R
             "incomplete deterministic evidence for manifest {}; repair the immutable evidence and submit a new manifest",
             outcome.flip.receipt.manifest_digest
         ),
-        status if !config.agency.completion_review_strict => {
-            println!(
-                "Completion candidate recorded with advisory model review status={status:?}: manifest={}. Deterministic publication may continue; inspect `wg show {id}` for history.",
+        ReviewValveStatus::FlipRejected => bail!(
+            "FLIP semantically rejected manifest {}; publication and Done are refused. The exact candidate, source attempt, session, and worktree remain selected for repair; inspect the findings above, change the candidate bytes, revalidate, and run `wg done {id}` again",
+            outcome.flip.receipt.manifest_digest
+        ),
+        ReviewValveStatus::EvalRejected => bail!(
+            "Eval semantically rejected manifest {}; publication and Done are refused. The exact candidate, source attempt, session, and worktree remain selected for repair; inspect the findings above, change the candidate bytes, revalidate, and run `wg done {id}` again",
+            outcome.flip.receipt.manifest_digest
+        ),
+        ReviewValveStatus::ReviewUnavailable if !config.agency.completion_review_strict => {
+            eprintln!(
+                "WARNING: semantic review was UNAVAILABLE (not accepted and not rejected) for manifest {}. Advisory availability policy permits deterministic publication; inspect `wg show {id}` for the separate infrastructure finding.",
                 outcome.flip.receipt.manifest_digest
             );
             Ok(())
         }
-        ReviewValveStatus::FlipRejected => bail!(
-            "strict FLIP rejected manifest {}; repair using the findings above (bounded by agency.gate_max_attempts) or request operator review",
-            outcome.flip.receipt.manifest_digest
-        ),
-        ReviewValveStatus::EvalRejected => bail!(
-            "strict eval rejected manifest {}; repair using the findings above (bounded by agency.gate_max_attempts) or request operator review",
-            outcome.flip.receipt.manifest_digest
-        ),
         ReviewValveStatus::ReviewUnavailable => bail!(
-            "strict review unavailable for manifest {}; the candidate is preserved and no source quality failure was recorded",
+            "strict review unavailable for manifest {}; the candidate is preserved, no semantic acceptance was recorded, and no source quality failure was inferred",
             outcome.flip.receipt.manifest_digest
         ),
     }
@@ -1157,10 +1166,30 @@ mod tests {
         fn review(
             &mut self,
             kind: ReviewerKind,
-            _bundle: &worksgood::completion_manifest::ResolvedReviewBundle,
+            bundle: &worksgood::completion_manifest::ResolvedReviewBundle,
         ) -> std::result::Result<SemanticReview, ReviewerUnavailable> {
             self.calls.lock().unwrap().push(kind);
-            self.result.clone()
+            self.result.clone().map(|mut review| {
+                if kind == ReviewerKind::Flip {
+                    review.flip_proof = Some(worksgood::completion_review::FlipProof {
+                        protocol: "prompt-reconstruction-two-phase-v1".into(),
+                        latent_hypothesis: worksgood::completion_manifest::ArtifactOutput {
+                            content_digest: bundle.manifest_digest.clone(),
+                            immutable_locator:
+                                worksgood::completion_manifest::ImmutableLocator::CompletionObject {
+                                    digest: bundle.manifest_digest.clone(),
+                                },
+                            media_type: "application/vnd.worksgood.flip-latent-hypothesis+json"
+                                .into(),
+                            size: bundle.manifest_bytes.len() as u64,
+                            review_projection: None,
+                        },
+                        inference_route: self.route.clone(),
+                        comparison_route: self.route.clone(),
+                    });
+                }
+                review
+            })
         }
     }
 
@@ -1172,6 +1201,7 @@ mod tests {
             } else {
                 Vec::new()
             },
+            flip_proof: None,
         }
     }
 
@@ -1985,7 +2015,7 @@ mod tests {
                 (
                     ReviewerKind::Flip,
                     worksgood::simple_land::ReviewVerdict::Pass,
-                    "FLIP-compat single-call reviewer pass"
+                    "Two-phase FLIP pass"
                 ),
                 (
                     ReviewerKind::Eval,
@@ -2248,7 +2278,7 @@ mod tests {
         );
         assert_eq!(
             task.completion_review_activity[0].display_state(),
-            "FLIP-compat single-call reviewer attempted+failed"
+            "Two-phase FLIP unavailable (no semantic verdict)"
         );
         let verified = worksgood::completion_review::verified_review_activities(&fixture.dir, task);
         assert_eq!(verified.invalid_count, 0);

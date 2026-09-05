@@ -1,11 +1,11 @@
 use tempfile::TempDir;
 use worksgood::completion_manifest::{
     ArtifactOutput, COMPLETION_MANIFEST_VERSION, CompletionArtifactStore, CompletionManifest,
-    ContentDigest, EvidenceRef, IncompleteEvidence, IncompleteEvidenceKind, OutputRef,
-    ResolvedReviewBundle, ReviewResolver,
+    ContentDigest, EvidenceRef, ImmutableLocator, IncompleteEvidence, IncompleteEvidenceKind,
+    OutputRef, ResolvedReviewBundle, ReviewResolver,
 };
 use worksgood::completion_review::{
-    ManifestReviewer, ReviewFinding, ReviewValveError, ReviewValveStatus, ReviewerKind,
+    FlipProof, ManifestReviewer, ReviewFinding, ReviewValveError, ReviewValveStatus, ReviewerKind,
     ReviewerUnavailable, SemanticReview, SemanticVerdict, run_review_valve_at,
 };
 use worksgood::identity::canonical_json;
@@ -71,6 +71,7 @@ impl FakeReviewer {
             result: Ok(SemanticReview {
                 verdict: SemanticVerdict::Pass,
                 findings: Vec::new(),
+                flip_proof: None,
             }),
             calls: Vec::new(),
         }
@@ -82,6 +83,7 @@ impl FakeReviewer {
             result: Ok(SemanticReview {
                 verdict: SemanticVerdict::Reject,
                 findings: vec![ReviewFinding::new(code, "repair this exact output")],
+                flip_proof: None,
             }),
             calls: Vec::new(),
         }
@@ -107,10 +109,28 @@ impl ManifestReviewer for FakeReviewer {
     fn review(
         &mut self,
         kind: ReviewerKind,
-        _bundle: &ResolvedReviewBundle,
+        bundle: &ResolvedReviewBundle,
     ) -> Result<SemanticReview, ReviewerUnavailable> {
         self.calls.push(kind);
-        self.result.clone()
+        self.result.clone().map(|mut review| {
+            if kind == ReviewerKind::Flip {
+                review.flip_proof = Some(FlipProof {
+                    protocol: "prompt-reconstruction-two-phase-v1".into(),
+                    latent_hypothesis: ArtifactOutput {
+                        content_digest: bundle.manifest_digest.clone(),
+                        immutable_locator: ImmutableLocator::CompletionObject {
+                            digest: bundle.manifest_digest.clone(),
+                        },
+                        media_type: "application/vnd.worksgood.flip-latent-hypothesis+json".into(),
+                        size: bundle.manifest_bytes.len() as u64,
+                        review_projection: None,
+                    },
+                    inference_route: self.route.clone(),
+                    comparison_route: self.route.clone(),
+                });
+            }
+            review
+        })
     }
 }
 

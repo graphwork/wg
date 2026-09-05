@@ -100,40 +100,56 @@ pub enum LandingTurnCommand {
 /// Bind the request to the managed task/capability rather than trusting an
 /// arbitrary task id. The calling agent must be the one assigned to the task,
 /// and the task must be live (`InProgress`) so the park transition is legal.
-fn require_live_owned_task(dir: &Path, id: &str) -> Result<Task> {
+fn require_exact_worker_authority(dir: &Path, id: &str, require_in_progress: bool) -> Result<Task> {
     let graph = load_graph(dir.join("graph.jsonl"))?;
     let task = graph
         .get_task(id)
         .with_context(|| format!("task '{id}' not found"))?
         .clone();
-    if task.status != Status::InProgress {
+    if require_in_progress && task.status != Status::InProgress {
         bail!(
-            "task '{id}' is not in-progress (status: {}); only a live source agent may request a landing turn",
+            "task '{id}' is not in-progress (status: {}); only a live source agent may request or renew a landing turn",
             task.status
         );
     }
-    // Bind to the managed capability: the calling process must identify as the
-    // task's assigned agent (WG_AGENT_ID) or, when WG_TASK_ID matches, trust the
-    // env-supplied agent id. Operators may use `reclaim` for recovery instead.
-    let env_task = std::env::var("WG_TASK_ID").ok();
-    let env_agent = std::env::var("WG_AGENT_ID").ok();
-    if env_task.as_deref() != Some(id) {
+    let env_task = std::env::var("WG_TASK_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .context(
+            "landing-turn worker mutation requires WG_TASK_ID or an opaque worker capability",
+        )?;
+    let env_agent = std::env::var("WG_AGENT_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .context(
+            "landing-turn worker mutation requires WG_AGENT_ID or an opaque worker capability",
+        )?;
+    if env_task != id {
         bail!("landing turn requires the exact managed WG_TASK_ID capability binding");
     }
-    let assigned = task.assigned.as_deref();
-    match (assigned, env_agent.as_deref()) {
-        (Some(a), Some(b)) if a == b => {}
-        (Some(a), None) => bail!(
-            "task '{id}' is assigned to '{a}', but no managed agent id (WG_AGENT_ID) is present; refusing to trust an arbitrary task id"
-        ),
-        (Some(a), Some(b)) => bail!(
-            "task '{id}' is assigned to '{a}', not the calling agent '{b}'; only the exact source agent may take its landing turn"
-        ),
-        (None, _) => bail!(
-            "task '{id}' has no assigned agent; a landing turn requires a live source agent (use `wg claim` first or `wg landing-turn reclaim` for recovery)"
-        ),
+    let attempt = task
+        .lifecycle
+        .current_attempt
+        .as_ref()
+        .context("landing turn requires the exact current source attempt")?;
+    if attempt.generation != task.lifecycle.generation
+        || attempt.fence != task.lifecycle.fence
+        || attempt.actor_id != env_agent
+    {
+        bail!("landing-turn caller does not own the exact current generation/attempt/fence");
+    }
+    if let Some(assigned) = task.assigned.as_deref()
+        && assigned != env_agent
+    {
+        bail!(
+            "task '{id}' is assigned to '{assigned}', not the calling agent '{env_agent}'; only the exact source agent may mutate its landing turn"
+        );
     }
     Ok(task)
+}
+
+fn require_live_owned_task(dir: &Path, id: &str) -> Result<Task> {
+    require_exact_worker_authority(dir, id, true)
 }
 
 pub(crate) fn binding_from_task(
@@ -142,10 +158,31 @@ pub(crate) fn binding_from_task(
     integration_ref: &str,
     observed_target: Option<&str>,
 ) -> Result<TicketBinding> {
+    let bound_task = std::env::var("WG_TASK_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .context("no WG_TASK_ID worker authority is present")?;
+    if bound_task != task.id {
+        bail!(
+            "landing-turn caller is bound to task '{bound_task}', not '{}'",
+            task.id
+        );
+    }
     let source_agent = std::env::var("WG_AGENT_ID")
         .ok()
-        .or_else(|| task.assigned.clone())
-        .context("no source agent id (WG_AGENT_ID) to bind the landing turn to")?;
+        .filter(|value| !value.trim().is_empty())
+        .context("no source agent capability (WG_AGENT_ID) is present")?;
+    let attempt = task
+        .lifecycle
+        .current_attempt
+        .as_ref()
+        .context("landing turn requires a current source attempt")?;
+    if attempt.actor_id != source_agent
+        || attempt.generation != task.lifecycle.generation
+        || attempt.fence != task.lifecycle.fence
+    {
+        bail!("source agent does not own the exact current attempt/fence");
+    }
     let source_session = std::env::var("PI_SESSION_ID")
         .ok()
         .filter(|session| !session.trim().is_empty())
@@ -499,10 +536,7 @@ pub fn run(dir: &Path, command: LandingTurnCommand) -> Result<()> {
             id,
             integration_ref,
         } => {
-            let task = load_graph(dir.join("graph.jsonl"))?
-                .get_task(&id)
-                .with_context(|| format!("task '{id}' not found"))?
-                .clone();
+            let task = require_exact_worker_authority(dir, &id, false)?;
             let binding = binding_for_existing_ticket(dir, &task, &integration_ref)?;
             match landing_turn::release_turn(dir, &integration_ref, &binding)? {
                 ReleaseOutcome::Released { ticket_id, next } => {
@@ -554,10 +588,7 @@ pub fn run(dir: &Path, command: LandingTurnCommand) -> Result<()> {
             id,
             integration_ref,
         } => {
-            let task = load_graph(dir.join("graph.jsonl"))?
-                .get_task(&id)
-                .with_context(|| format!("task '{id}' not found"))?
-                .clone();
+            let task = require_exact_worker_authority(dir, &id, false)?;
             let binding = binding_for_existing_ticket(dir, &task, &integration_ref)?;
             match landing_turn::cancel_turn(dir, &integration_ref, &binding)? {
                 ReleaseOutcome::Released { ticket_id, next } => {

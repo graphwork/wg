@@ -8728,7 +8728,7 @@ fn tui_review_activity_exposes_current_binding_route_failure_usage_timing_and_fi
     append_verified_review_activity(&mut lines, &[activity]);
     let rendered = lines.join("\n");
     assert!(
-        rendered.contains("FLIP-compat single-call reviewer rejected · Current"),
+        rendered.contains("Two-phase FLIP semantic rejection · Current"),
         "{rendered}"
     );
     assert!(rendered.contains("pi:test:reviewer · pi"), "{rendered}");

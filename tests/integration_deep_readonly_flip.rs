@@ -94,19 +94,25 @@ fn record(
     model: &str,
     source: &SourceCandidateRef,
 ) -> EvaluationRecord {
+    let stages = match product {
+        EvaluationProduct::Bounded => vec![AgencyStage::Evaluate],
+        EvaluationProduct::DeepReadonlyFlip => {
+            vec![AgencyStage::FlipInference, AgencyStage::FlipComparison]
+        }
+    };
     let route = EvaluationRouteSnapshot {
         adapter: "pi-evaluation-v1".into(),
-        calls: vec![EvaluationRouteCall {
-            stage: match product {
-                EvaluationProduct::Bounded => AgencyStage::Evaluate,
-                EvaluationProduct::DeepReadonlyFlip => AgencyStage::FlipComparison,
-            },
-            exact_route: format!("pi:test:{model}"),
-            endpoint: None,
-            reasoning: Some(ReasoningLevel::High),
-            handler: "pi".into(),
-            provider: "test".into(),
-        }],
+        calls: stages
+            .into_iter()
+            .map(|stage| EvaluationRouteCall {
+                stage,
+                exact_route: format!("pi:test:{model}"),
+                endpoint: None,
+                reasoning: Some(ReasoningLevel::High),
+                handler: "pi".into(),
+                provider: "test".into(),
+            })
+            .collect(),
         digest: format!("b3:route-{model}"),
     };
     EvaluationRecord {
@@ -492,6 +498,25 @@ fn deep_flip_finds_cross_component_omission_bounded_summary_misses() {
         .deep_report
         .as_ref()
         .expect("evidence-linked deep report");
+    let proof = report
+        .flip_proof
+        .as_ref()
+        .expect("two-call FLIP proof must bind the deep report");
+    assert_eq!(proof.protocol, "prompt-reconstruction-two-phase-v1");
+    assert_eq!(proof.inference_route, "pi:test:deep-find");
+    assert_eq!(proof.comparison_route, "pi:test:deep-find");
+    assert!(
+        dir.join("evaluation/evidence")
+            .join(proof.latent_hypothesis_id.replace(':', "_"))
+            .is_file(),
+        "immutable blind hypothesis must remain content-addressed"
+    );
+    let invocations = fs::read_to_string(home.join("fake-pi-deep-invocations.log")).unwrap();
+    let calls: Vec<_> = invocations.lines().collect();
+    assert_eq!(calls.len(), 3, "bounded + blind inference + comparison");
+    assert!(calls[1].contains("--no-tools"));
+    assert!(!calls[1].contains("--tools deep_read_evidence"));
+    assert!(calls[2].contains("--tools deep_read_evidence"));
     assert!(report.findings.iter().any(|finding| {
         finding.category == DeepFindingCategory::CrossComponentOmission
             && finding.evidence.iter().any(|e| e.locator == "src/api.rs:1")
@@ -867,11 +892,10 @@ fn deep_flip_explicit_retry_is_same_record_bounded_and_restart_inert() {
         .find(|record| record.evaluation_id == evaluation_id)
         .unwrap();
     assert_eq!(deep.attempts.len(), 2);
-    assert!(
-        deep.attempts
-            .iter()
-            .all(|attempt| attempt.exact_route == "pi:test:deep-overbudget")
-    );
+    assert!(deep.attempts.iter().all(|attempt| {
+        attempt.exact_route
+            == "prompt-reconstruction-two-phase-v1[inference=pi:test:deep-overbudget;comparison=pi:test:deep-overbudget]"
+    }));
     assert_eq!(deep.state, EvaluationState::Malformed);
 }
 
