@@ -79,6 +79,29 @@ re-resolves the exact candidate bundle, and requires the comparison predecessor
 to equal the phase-I record digest. It also requires phase-I finish not later
 than phase-II start and distinct execution IDs.
 
+## Remaining mismatch found and repaired
+
+The installed v2 verifier correctly authenticated every phase, but this canary
+exposed a semantic bootstrap mismatch in the model prompts: phase II and Eval
+were told to check “every requirement” without being told that their own receipt
+and downstream lifecycle facts cannot yet exist. The real task reached a
+task-local FLIP Pass, then Eval rejected solely because its future Pass receipt
+was absent; later retries could likewise ask FLIP to pre-prove itself.
+
+The candidate repairs both prompts with an explicit temporal boundary. A
+reviewer must not demand its own current receipt, later Eval, publication, Done,
+reload, or projection as pre-review candidate evidence and must not reject
+solely because those causally future facts are absent. Historical receipts and
+other already-possible deliverables remain required, so this is not a missing-
+evidence bypass. The completion controller still requires the exact current
+FLIP Pass before invoking Eval and both exact passes before publication/Done.
+Focused prompt tests pin the rule in both phase-II and Eval renderings.
+
+Because this changes the executable after the initial `88e79dc9` coordinated
+install, the worker did not run `cargo install` against the live daemon. Final
+installed-image/daemon equality and the terminal receipt run occur only after
+the operator's coordinated install/restart of this candidate.
+
 ## Negative and semantic-rejection proofs
 
 `genuine_flip_proof_rejects_every_broken_execution_binding` exercises and fails
