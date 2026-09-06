@@ -55,11 +55,30 @@ print(json.dumps(event,separators=(',',':')))
 PY
       exit 0
     fi
+    # A candidate cannot contain the receipt for this in-flight review or its
+    # later controller effects. Require both real prompt paths to state that
+    # causal boundary while retaining strict review of evidence already due.
+    if grep -q 'worksgood-flip-comparison-v1' <<<"$prompt"; then
+      grep -q 'before its current FLIP receipt exists' <<<"$prompt" \
+        || { echo "phase-II prompt can bootstrap on its future FLIP receipt" >&2; exit 97; }
+      phase=comparison
+    else
+      grep -q 'before its own current review receipt' <<<"$prompt" \
+        || { echo "Eval prompt can bootstrap on its future review receipt" >&2; exit 97; }
+      phase=eval
+    fi
+    grep -q 'subsequent Eval' <<<"$prompt" \
+      || { echo "review prompt omits later Eval from the causal boundary" >&2; exit 97; }
+    grep -q 'publication, Done transition, reload verification, or user-facing projection' <<<"$prompt" \
+      || { echo "review prompt omits later controller effects from the causal boundary" >&2; exit 97; }
+    grep -q 'reject solely because they are absent' <<<"$prompt" \
+      || { echo "review prompt may reject solely for causally future facts" >&2; exit 97; }
+    grep -q 'missing historical receipt, requested deliverable, validation output' <<<"$prompt" \
+      || { echo "review prompt weakened already-possible candidate evidence" >&2; exit 97; }
+
     count_file="$state/$task.review-count"
     n=$(($(cat "$count_file" 2>/dev/null || echo 0) + 1))
     printf '%s\n' "$n" >"$count_file"
-    phase=eval
-    grep -q 'worksgood-flip-comparison-v1' <<<"$prompt" && phase=comparison
     printf '%s|%s|%s|%s\n' "$task" "$phase" "$n" "$model" >>"$state/review-calls"
     verdict=pass; code=""; message=""
     if [[ "$task" == land-resilient && "$n" == 1 ]]; then
