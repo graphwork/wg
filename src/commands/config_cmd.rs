@@ -3031,7 +3031,10 @@ pub fn set_dotted(
     let normalized_key = normalize_dotted_key(key);
     let path = scope_config_path(workgraph_dir, scope)?;
     if scope == ConfigScope::Global {
-        if is_project_routing_key(&normalized_key) {
+        // Check both spellings explicitly. `normalize_dotted_key` maps the
+        // legacy coordinator alias to dispatcher, but keeping the raw check
+        // makes the routing refusal obvious and fail-closed to inspection.
+        if is_project_routing_key(key) || is_project_routing_key(&normalized_key) {
             reject_global_project_write(scope)?;
         }
         eprintln!(
@@ -3246,13 +3249,27 @@ fn reject_global_project_write(scope: ConfigScope) -> Result<()> {
 }
 
 fn is_project_routing_key(key: &str) -> bool {
-    matches!(key, "agent.model" | "dispatcher.model")
-        || key.starts_with("models.")
-        || key.starts_with("tiers.")
-        || matches!(
-            key,
-            "agent.executor" | "dispatcher.executor" | "dispatcher.provider"
-        )
+    matches!(
+        key,
+        "agent.model"
+            | "agent.executor"
+            | "dispatcher.model"
+            | "dispatcher.executor"
+            | "dispatcher.provider"
+            | "coordinator.model"
+            | "coordinator.executor"
+            | "coordinator.provider"
+    ) || [
+        "models.",
+        "tiers.",
+        "endpoints.",
+        "llm_endpoints.",
+        "native.",
+        "openrouter.",
+        "openai.",
+    ]
+    .iter()
+    .any(|prefix| key.starts_with(prefix))
 }
 
 /// Set the project-wide default model route everywhere a closed profile/setup

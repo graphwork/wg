@@ -209,6 +209,20 @@ fn explicit_global_non_routing_write_warns_and_routing_rewrites_are_refused() {
     for args in [
         vec!["config", "set", "agent.model", "pi:test:model", "--global"],
         vec![
+            "config",
+            "set",
+            "coordinator.model",
+            "pi:test:model",
+            "--global",
+        ],
+        vec![
+            "config",
+            "set",
+            "openrouter.default_model",
+            "pi:test:model",
+            "--global",
+        ],
+        vec![
             "setup",
             "--route",
             "pi",

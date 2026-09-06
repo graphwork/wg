@@ -44,7 +44,10 @@ configuration layers.
    mutation if either planned file changed.
 5. Profile/setup materialization now rechecks the project document preimage
    immediately before atomic replacement, refusing a concurrent guardrail edit.
-6. CLI help and configuration documentation now consistently name
+6. The routing-write refusal explicitly covers both canonical `dispatcher.*`
+   and compatibility `coordinator.*` selectors plus model/tier/endpoint
+   namespaces, before any global file mutation.
+7. CLI help and configuration documentation now consistently name
    `worksgood.toml`, the closed schema, the inactive global layer, and the
    attended compatibility/materialization rule.
 
@@ -61,12 +64,21 @@ configuration layers.
   inert by definition and accepting it would create a plausible but ineffective
   configuration.
 
-## Validation commands
+## Validation evidence
 
-The authoritative command evidence is recorded in the WG task log. Focused
-coverage is in:
+The following candidate-tree commands ran consecutively in one fail-fast shell
+and exited `0`. The complete 211,580-byte combined stdout/stderr capture had
+SHA-256 `420aaad464c40c54d73203617e035786f71d924cc900a0699c7803f862a1f1cb`.
 
-- `tests/integration_project_local_pi_cli.rs`
-- `tests/integration_project_local_pi_config.rs`
-- `tests/integration_project_local_pi_migrate.rs`
-- `tests/smoke/scenarios/project_local_pi_e2e.sh`
+| Command | Result |
+|---|---|
+| `cargo test --test integration_project_local_pi_cli --test integration_project_local_pi_config --test integration_project_local_pi_migrate` | PASS: 5 + 7 + 9 tests |
+| `cargo test --lib migrate_project_local_pi::tests` | PASS: 10 tests |
+| `cargo fmt --check` | PASS |
+| `cargo clippy` | PASS; repository-existing warnings only |
+| `PATH=<candidate-target>/debug:$PATH WG_SMOKE_SCENARIO=project_local_pi_e2e bash tests/smoke/scenarios/project_local_pi_e2e.sh` | PASS: two-repo isolation, stale-global fail-loud, fresh-HOME credential-free clone, migration preservation |
+
+The focused source coverage is in `tests/integration_project_local_pi_cli.rs`,
+`tests/integration_project_local_pi_config.rs`,
+`tests/integration_project_local_pi_migrate.rs`, and
+`tests/smoke/scenarios/project_local_pi_e2e.sh`.
