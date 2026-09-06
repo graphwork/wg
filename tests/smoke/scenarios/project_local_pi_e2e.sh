@@ -96,6 +96,18 @@ grep -q '^schema_version = 1' "$repoA/worksgood.toml"
 # Exact Pi route for the strong roles.
 grep -q 'model = "pi:test:worker"' "$repoA/worksgood.toml"
 
+# An explicit non-routing global write warns BEFORE mutation with its exact
+# path/scope and changes only the inactive machine layer, never either repo.
+run_wg "$repoA" config set guardrails.max_child_tasks_per_agent 17 --global --no-reload \
+  >"$scratch/global_set.out" 2>"$scratch/global_set.err"
+grep -q 'explicit --global' "$scratch/global_set.err"
+grep -q "$global/config.toml" "$scratch/global_set.err"
+grep -q 'inactive for project behavior' "$scratch/global_set.err"
+grep -q 'legacy-global-inactive' "$scratch/global_set.out"
+grep -q 'max_child_tasks_per_agent = 17' "$global/config.toml"
+! grep -q 'max_child_tasks_per_agent = 17' "$repoA/worksgood.toml"
+[[ ! -f "$repoB/worksgood.toml" ]]
+
 # Add project-owned resource guardrail + archive policy via the config surface
 # (these are non-routing project bytes that must survive a clone).
 run_wg "$repoA" config set dispatcher.resource_management.disk_sentinel_enabled false --no-reload >/dev/null
@@ -164,9 +176,14 @@ grep -q 'builtin-default' "$scratch/B_maxagents.json"
 
 # Change repo A's route. repo B must remain route-less and fail-loud.
 run_wg "$repoA" config set agent.model pi:test:worker-v2 --no-reload >/dev/null
-# A direct setter clears any profile-origin metadata; route stays project-file.
+# A direct default-route setter clears any profile-origin metadata and updates
+# the complete closed model projection, including the route execution actually
+# selects (dispatcher/task_agent), rather than only the display leaf.
 run_wg "$repoA" config get agent.model --json | grep -q '"source": "project-file"'
 run_wg "$repoA" config get agent.model --json | grep -q 'pi:test:worker-v2'
+run_wg "$repoA" config get dispatcher.model --json | grep -q 'pi:test:worker-v2'
+run_wg "$repoA" config get models.task_agent.model --json | grep -q 'pi:test:worker-v2'
+run_wg "$repoA" config --models | grep 'task_agent' | grep -q 'pi:test:worker-v2'
 # repo B unchanged: still no project document, still fails.
 [[ ! -f "$repoB/worksgood.toml" ]]
 if run_wg "$repoB" service start --no-coordinator-agent >"$scratch/B_start2.out" 2>&1; then

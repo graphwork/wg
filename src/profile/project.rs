@@ -1,12 +1,12 @@
 //! Project-scoped named-profile selection and local profile-usage history.
 //!
 //! Named profile definitions stay reusable machine-global files under
-//! `~/.wg/profiles/`. A project selection is a small, explicit association at
-//! `<graph>/profile-selection.json`; it never rewrites the global config or the
-//! legacy `~/.wg/active-profile` pointer. The association pins the selected
-//! definition's content fingerprint. If that definition is edited, renamed, or
-//! deleted, config resolution fails closed until the project explicitly
-//! re-selects a profile.
+//! `~/.wg/profiles/`. Current selection materializes a closed route/reasoning
+//! projection plus fingerprinted `profile_origin` into project
+//! `worksgood.toml`; it never rewrites global config or the legacy
+//! `~/.wg/active-profile` pointer and runtime never reopens the definition.
+//! `<graph>/profile-selection.json` remains an exclusive one-release
+//! compatibility input only when `worksgood.toml` is absent.
 //!
 //! Usage history is local-only JSONL under `~/.wg/profile-usage.jsonl`. Records
 //! contain only a profile name, profile fingerprint, timestamp, canonical-path
@@ -144,7 +144,10 @@ pub struct ProfileCatalogEntry {
     pub name: String,
     pub source: ProfileSource,
     pub selected_for_project: bool,
+    /// Legacy machine pointer presence, exposed for migration inspection only.
     pub global_active: bool,
+    /// Always false: the legacy global pointer never selects a project.
+    pub global_active_effective: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1168,10 +1171,22 @@ fn unavailable_readiness() -> ProfileReadiness {
 /// history, profile, plugin, or config file is created or changed.
 pub fn catalog_at(workgraph_dir: &Path, now: DateTime<Utc>) -> Result<Vec<ProfileCatalogEntry>> {
     let inspection = inspect_association(workgraph_dir);
-    let selected_name = inspection
-        .association
+    let materialized_origin = crate::project_config::load_for_graph(workgraph_dir)?
+        .and_then(|document| document.profile_origin);
+    let selected_name = materialized_origin
         .as_ref()
-        .map(|association| association.profile.clone());
+        .map(|origin| origin.name.clone())
+        .or_else(|| {
+            inspection
+                .association
+                .as_ref()
+                .map(|association| association.profile.clone())
+        });
+    let selected_state = if materialized_origin.is_some() {
+        AssociationState::Ready
+    } else {
+        inspection.state.clone()
+    };
     let global_active = named::active().unwrap_or(None);
     let installed = named::list_installed().unwrap_or_default();
     let installed_set: HashSet<String> = installed.iter().cloned().collect();
@@ -1275,7 +1290,7 @@ pub fn catalog_at(workgraph_dir: &Path, now: DateTime<Utc>) -> Result<Vec<Profil
     if let Some(selected) = selected_name.as_ref()
         && remaining.contains(selected)
         && !installed_names.contains(selected)
-        && inspection.state == AssociationState::Unavailable
+        && selected_state == AssociationState::Unavailable
     {
         remaining.retain(|name| name != selected);
         installed_names.insert(0, selected.clone());
@@ -1286,8 +1301,8 @@ pub fn catalog_at(workgraph_dir: &Path, now: DateTime<Utc>) -> Result<Vec<Profil
     let mut result = Vec::new();
     for name in ordered {
         let selected = selected_name.as_deref() == Some(name.as_str());
-        let unavailable_selection = selected && inspection.state == AssociationState::Unavailable;
-        let unready_selection = selected && inspection.state != AssociationState::Ready;
+        let unavailable_selection = selected && selected_state == AssociationState::Unavailable;
+        let unready_selection = selected && selected_state != AssociationState::Ready;
         let source = if unavailable_selection {
             ProfileSource::Unavailable
         } else {
@@ -1321,6 +1336,7 @@ pub fn catalog_at(workgraph_dir: &Path, now: DateTime<Utc>) -> Result<Vec<Profil
             source,
             selected_for_project: selected,
             global_active: global_active.as_deref() == Some(name.as_str()),
+            global_active_effective: false,
             description: if unavailable_selection {
                 None
             } else {
@@ -1332,7 +1348,7 @@ pub fn catalog_at(workgraph_dir: &Path, now: DateTime<Utc>) -> Result<Vec<Profil
                 fingerprint_by_name.get(&name).cloned()
             },
             association_state: if selected {
-                inspection.state.clone()
+                selected_state.clone()
             } else {
                 AssociationState::None
             },

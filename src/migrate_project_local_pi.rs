@@ -239,13 +239,13 @@ pub fn run_project_local_pi_migrate(
 /// Informational report: scan global routing state, print what would be
 /// removed/preserved, write nothing.
 fn run_report_only(json: bool) -> Result<()> {
-    let (report, _applied) = plan_global_cleanup()?;
+    let (report, _applied, _config_preimage, _active_preimage) = plan_global_cleanup()?;
     emit_report(&report, json, true)
 }
 
 /// Plan + apply the global routing cleanup.
 fn run_global_cleanup(dry_run: bool, yes: bool, json: bool) -> Result<()> {
-    let (mut report, applied_doc) = plan_global_cleanup()?;
+    let (mut report, applied_doc, config_preimage, active_preimage) = plan_global_cleanup()?;
 
     // Fail-closed: nothing to do → no backup, no receipt, no mtime change.
     let nothing_to_do = report.removed_routing_keys.is_empty() && !report.removed_active_profile;
@@ -282,14 +282,19 @@ fn run_global_cleanup(dry_run: bool, yes: bool, json: bool) -> Result<()> {
         }
     }
 
-    apply_global_cleanup(&mut report, applied_doc)?;
+    apply_global_cleanup(&mut report, applied_doc, config_preimage, active_preimage)?;
     emit_report(&report, json, false)
 }
 
 /// Read the global config + active-profile, compute the removal plan, and
 /// return the post-removal TOML document (ready to serialize). Performs no
 /// writes.
-fn plan_global_cleanup() -> Result<(ProjectLocalPiCleanupReport, toml::Value)> {
+fn plan_global_cleanup() -> Result<(
+    ProjectLocalPiCleanupReport,
+    toml::Value,
+    Option<Vec<u8>>,
+    Option<Vec<u8>>,
+)> {
     let global_config_path = Config::global_config_path()?;
     let active_profile_path = named::active_pointer_path()?;
 
@@ -298,17 +303,24 @@ fn plan_global_cleanup() -> Result<(ProjectLocalPiCleanupReport, toml::Value)> {
     // Parse the global config. Missing file → treat as an empty table (there
     // may still be an active-profile pointer to remove). Malformed TOML →
     // fail closed before any write.
-    let content = if global_config_path.exists() {
-        fs::read_to_string(&global_config_path).with_context(|| {
-            format!(
-                "failed to read {}: {}",
-                global_config_path.display(),
-                "read error"
-            )
-        })?
-    } else {
-        String::new()
-    };
+    let config_preimage = read_optional_bytes(&global_config_path).with_context(|| {
+        format!(
+            "failed to read {} while planning cleanup",
+            global_config_path.display()
+        )
+    })?;
+    let active_preimage = read_optional_bytes(&active_profile_path).with_context(|| {
+        format!(
+            "failed to read {} while planning cleanup",
+            active_profile_path.display()
+        )
+    })?;
+    let content = config_preimage
+        .as_deref()
+        .map(std::str::from_utf8)
+        .transpose()
+        .with_context(|| format!("{} is not UTF-8", global_config_path.display()))?
+        .unwrap_or("");
     let mut doc: toml::Value = if content.trim().is_empty() {
         toml::Value::Table(toml::value::Table::new())
     } else {
@@ -330,14 +342,22 @@ fn plan_global_cleanup() -> Result<(ProjectLocalPiCleanupReport, toml::Value)> {
     apply_routing_removals(&mut doc, &mut report);
 
     // Active-profile pointer: the file itself is removed if present.
-    if active_profile_path.exists() {
+    if active_preimage.is_some() {
         report.removed_active_profile = true;
     }
 
     // Set no_op based on whether anything was found to remove.
     report.no_op = report.removed_routing_keys.is_empty() && !report.removed_active_profile;
 
-    Ok((report, doc))
+    Ok((report, doc, config_preimage, active_preimage))
+}
+
+fn read_optional_bytes(path: &Path) -> Result<Option<Vec<u8>>> {
+    match fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
 }
 
 /// Remove every routing selector from `doc`, recording each removal in
@@ -491,53 +511,25 @@ fn stat_metadata(path: &Path) -> (bool, Option<u32>, Option<String>) {
 fn apply_global_cleanup(
     report: &mut ProjectLocalPiCleanupReport,
     applied_doc: toml::Value,
+    config_preimage: Option<Vec<u8>>,
+    active_preimage: Option<Vec<u8>>,
 ) -> Result<()> {
     let global_config_path = Config::global_config_path()?;
     let active_profile_path = named::active_pointer_path()?;
     let global_dir = Config::global_dir()?;
     let migrations_root = global_dir.join(MIGRATIONS_DIR);
 
-    // Preimage bytes + digests.
-    let config_preimage: Vec<u8> = if global_config_path.exists() {
-        fs::read(&global_config_path).with_context(|| {
-            format!(
-                "failed to read preimage {}: read error",
-                global_config_path.display()
-            )
-        })?
-    } else {
-        Vec::new()
-    };
-    let active_preimage: Vec<u8> = if active_profile_path.exists() {
-        fs::read(&active_profile_path).with_context(|| {
-            format!(
-                "failed to read preimage {}: read error",
-                active_profile_path.display()
-            )
-        })?
-    } else {
-        Vec::new()
-    };
-
-    // Revalidate the preimage immediately before each atomic replace: re-read
-    // and compare to the bytes we planned against. A concurrent writer changes
-    // the preimage and causes the entire global phase to refuse.
-    let config_recheck = if global_config_path.exists() {
-        fs::read(&global_config_path).unwrap_or_default()
-    } else {
-        Vec::new()
-    };
+    // Revalidate against the exact bytes captured by plan_global_cleanup,
+    // rather than taking a new "preimage" here. A concurrent writer between
+    // plan and apply therefore causes the entire global phase to refuse.
+    let config_recheck = read_optional_bytes(&global_config_path)?;
     if config_recheck != config_preimage {
         bail!(
             "aborted: {} changed during planning (concurrent writer). Re-run the command.",
             global_config_path.display()
         );
     }
-    let active_recheck = if active_profile_path.exists() {
-        fs::read(&active_profile_path).unwrap_or_default()
-    } else {
-        Vec::new()
-    };
+    let active_recheck = read_optional_bytes(&active_profile_path)?;
     if active_recheck != active_preimage {
         bail!(
             "aborted: {} changed during planning (concurrent writer). Re-run the command.",
@@ -557,13 +549,13 @@ fn apply_global_cleanup(
     // Backup the global config preimage (even if absent → record an absent
     // backup so rollback can restore "absent"). We only write a backup file
     // when the source existed.
-    if global_config_path.exists() {
+    if let Some(config_preimage) = config_preimage.as_deref() {
         let backup_path = receipt_dir.join("config.toml.pre");
-        write_backup(&backup_path, &config_preimage)?;
+        write_backup(&backup_path, config_preimage)?;
         report.backups.push(BackupRecord {
             source: global_config_path.display().to_string(),
             backup: backup_path.display().to_string(),
-            preimage_digest: Some(digest_b3(&config_preimage)),
+            preimage_digest: Some(digest_b3(config_preimage)),
             preimage_size: config_preimage.len() as u64,
         });
     } else {
@@ -576,13 +568,13 @@ fn apply_global_cleanup(
     }
 
     // Backup the active-profile preimage if it existed.
-    if active_profile_path.exists() {
+    if let Some(active_preimage) = active_preimage.as_deref() {
         let backup_path = receipt_dir.join("active-profile.pre");
-        write_backup(&backup_path, &active_preimage)?;
+        write_backup(&backup_path, active_preimage)?;
         report.backups.push(BackupRecord {
             source: active_profile_path.display().to_string(),
             backup: backup_path.display().to_string(),
-            preimage_digest: Some(digest_b3(&active_preimage)),
+            preimage_digest: Some(digest_b3(active_preimage)),
             preimage_size: active_preimage.len() as u64,
         });
     } else {
@@ -1093,7 +1085,7 @@ allow_plaintext = true
         let before_usage = sha(&global.join("profile-usage.jsonl"));
         let before_active = sha(&global.join("active-profile"));
 
-        let (report, _doc) = plan_global_cleanup().unwrap();
+        let (report, _doc, _config_preimage, _active_preimage) = plan_global_cleanup().unwrap();
         assert!(!report.no_op);
         assert!(
             report
@@ -1224,8 +1216,8 @@ foo = "preserved"
         let before_keystore = sha(&global.join("keystore/root.key"));
         let before_usage = sha(&global.join("profile-usage.jsonl"));
 
-        let (mut report, doc) = plan_global_cleanup().unwrap();
-        apply_global_cleanup(&mut report, doc).unwrap();
+        let (mut report, doc, config_preimage, active_preimage) = plan_global_cleanup().unwrap();
+        apply_global_cleanup(&mut report, doc, config_preimage, active_preimage).unwrap();
         assert_eq!(report.journal_state, "complete");
         assert!(!report.receipt_id.is_empty());
 
@@ -1287,8 +1279,8 @@ max_agents = 3
         );
         fs::write(global.join("active-profile"), "pi\n").unwrap();
 
-        let (mut r1, doc1) = plan_global_cleanup().unwrap();
-        apply_global_cleanup(&mut r1, doc1).unwrap();
+        let (mut r1, doc1, config_preimage, active_preimage) = plan_global_cleanup().unwrap();
+        apply_global_cleanup(&mut r1, doc1, config_preimage, active_preimage).unwrap();
         assert!(!r1.no_op);
 
         let config_mtime = fs::metadata(global.join("config.toml"))
@@ -1296,7 +1288,7 @@ max_agents = 3
             .modified()
             .unwrap();
 
-        let (r2, _doc2) = plan_global_cleanup().unwrap();
+        let (r2, _doc2, _config_preimage, _active_preimage) = plan_global_cleanup().unwrap();
         assert!(
             r2.no_op,
             "second run must be no-op: {:?}",
@@ -1314,6 +1306,36 @@ max_agents = 3
             .modified()
             .unwrap();
         assert_eq!(config_mtime, after);
+    }
+
+    #[test]
+    #[serial]
+    fn apply_refuses_when_global_preimage_changes_after_planning() {
+        let (_tmp, global, _r) = isolated_global();
+        write_global(
+            &global,
+            "[agent]\nmodel = 'pi:global:stale'\n[dispatcher]\nmax_agents = 3\n",
+        );
+        fs::write(global.join("active-profile"), "pi\n").unwrap();
+
+        let (mut report, doc, config_preimage, active_preimage) = plan_global_cleanup().unwrap();
+        fs::write(
+            global.join("config.toml"),
+            "[agent]\nmodel = 'pi:global:stale'\n[dispatcher]\nmax_agents = 42\n",
+        )
+        .unwrap();
+
+        let error = apply_global_cleanup(&mut report, doc, config_preimage, active_preimage)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("changed during planning"), "{error}");
+        assert!(
+            fs::read_to_string(global.join("config.toml"))
+                .unwrap()
+                .contains("max_agents = 42")
+        );
+        assert!(global.join("active-profile").exists());
+        assert!(!global.join("migrations").exists());
     }
 
     #[test]
@@ -1358,8 +1380,8 @@ max_agents = 3
         let original_config = sha(&global.join("config.toml"));
         let original_active = sha(&global.join("active-profile"));
 
-        let (mut r, doc) = plan_global_cleanup().unwrap();
-        apply_global_cleanup(&mut r, doc).unwrap();
+        let (mut r, doc, config_preimage, active_preimage) = plan_global_cleanup().unwrap();
+        apply_global_cleanup(&mut r, doc, config_preimage, active_preimage).unwrap();
         let receipt_id = r.receipt_id.clone();
 
         // After apply, routing is gone.
@@ -1391,8 +1413,8 @@ model = "pi:global:stale"
         );
         fs::write(global.join("active-profile"), "pi\n").unwrap();
 
-        let (mut r, doc) = plan_global_cleanup().unwrap();
-        apply_global_cleanup(&mut r, doc).unwrap();
+        let (mut r, doc, config_preimage, active_preimage) = plan_global_cleanup().unwrap();
+        apply_global_cleanup(&mut r, doc, config_preimage, active_preimage).unwrap();
         let receipt_id = r.receipt_id.clone();
 
         // User edits the cleaned config after migration.
@@ -1420,10 +1442,10 @@ model = "pi:global:stale"
         fs::write(global.join("active-profile"), "pi\n").unwrap();
         write_sentinels(&global);
 
-        let (mut r, doc) = plan_global_cleanup().unwrap();
+        let (mut r, doc, config_preimage, active_preimage) = plan_global_cleanup().unwrap();
         assert!(r.removed_routing_keys.is_empty());
         assert!(r.removed_active_profile);
-        apply_global_cleanup(&mut r, doc).unwrap();
+        apply_global_cleanup(&mut r, doc, config_preimage, active_preimage).unwrap();
 
         assert!(!global.join("active-profile").exists());
         assert!(!global.join("config.toml").exists());
@@ -1448,8 +1470,8 @@ model = "pi:global:stale"
 fallback_model = "openrouter:anthropic/claude-opus-4-7"
 "#,
         );
-        let (mut r, doc) = plan_global_cleanup().unwrap();
-        apply_global_cleanup(&mut r, doc).unwrap();
+        let (mut r, doc, config_preimage, active_preimage) = plan_global_cleanup().unwrap();
+        apply_global_cleanup(&mut r, doc, config_preimage, active_preimage).unwrap();
         // The cleaned config is empty → file removed.
         assert!(!global.join("config.toml").exists());
     }
@@ -1467,8 +1489,8 @@ monthly_budget_usd = 50
 request_timeout_secs = 30
 "#,
         );
-        let (mut r, doc) = plan_global_cleanup().unwrap();
-        apply_global_cleanup(&mut r, doc).unwrap();
+        let (mut r, doc, config_preimage, active_preimage) = plan_global_cleanup().unwrap();
+        apply_global_cleanup(&mut r, doc, config_preimage, active_preimage).unwrap();
         let after = fs::read_to_string(global.join("config.toml")).unwrap();
         assert!(after.contains("monthly_budget_usd = 50"));
         assert!(after.contains("request_timeout_secs = 30"));

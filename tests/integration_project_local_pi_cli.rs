@@ -135,6 +135,25 @@ fn profile_select_and_deprecated_use_preserve_project_guardrails() {
     assert!(!home.join(".wg/config.toml").exists());
     assert!(!home.join(".wg/active-profile").exists());
 
+    let shown = wg(&home, &graph, &["profile", "show"]);
+    assert!(shown.status.success());
+    let shown = String::from_utf8_lossy(&shown.stdout);
+    assert!(shown.contains("Project selected profile: pi"), "{shown}");
+    assert!(shown.contains("Source: project-profile-import"), "{shown}");
+    assert!(
+        shown.contains("project worksgood.toml is authoritative"),
+        "{shown}"
+    );
+    assert!(!shown.contains("global config is authoritative"), "{shown}");
+
+    let listed = wg(&home, &graph, &["profile", "list"]);
+    assert!(listed.status.success());
+    let listed = String::from_utf8_lossy(&listed.stdout);
+    assert!(
+        listed.contains("Project selection: pi (materialized)"),
+        "{listed}"
+    );
+
     let used = wg(&home, &graph, &["profile", "use", "pi", "--no-reload"]);
     assert!(used.status.success());
     assert!(String::from_utf8_lossy(&used.stderr).contains("deprecated"));
@@ -147,11 +166,46 @@ fn profile_select_and_deprecated_use_preserve_project_guardrails() {
 }
 
 #[test]
-fn every_exposed_global_route_rewrite_is_refused_before_mutation() {
+fn explicit_global_non_routing_write_warns_and_routing_rewrites_are_refused() {
     let tmp = TempDir::new().unwrap();
     let home = tmp.path().join("home");
     fs::create_dir_all(&home).unwrap();
-    let (_root, graph) = project(&tmp);
+    let (root, graph) = project(&tmp);
+
+    let global = wg(
+        &home,
+        &graph,
+        &[
+            "config",
+            "set",
+            "dispatcher.max_agents",
+            "23",
+            "--global",
+            "--no-reload",
+        ],
+    );
+    assert!(
+        global.status.success(),
+        "{}",
+        String::from_utf8_lossy(&global.stderr)
+    );
+    let warning = String::from_utf8_lossy(&global.stderr);
+    assert!(warning.contains("explicit --global"), "{warning}");
+    assert!(warning.contains(".wg/config.toml"), "{warning}");
+    assert!(
+        warning.contains("inactive for project behavior"),
+        "{warning}"
+    );
+    let report = String::from_utf8_lossy(&global.stdout);
+    assert!(report.contains("legacy-global-inactive"), "{report}");
+    assert!(
+        fs::read_to_string(home.join(".wg/config.toml"))
+            .unwrap()
+            .contains("max_agents = 23")
+    );
+    assert!(!root.join("worksgood.toml").exists());
+
+    let global_before = fs::read(home.join(".wg/config.toml")).unwrap();
     for args in [
         vec!["config", "set", "agent.model", "pi:test:model", "--global"],
         vec![
@@ -178,7 +232,60 @@ fn every_exposed_global_route_rewrite_is_refused_before_mutation() {
         let output = wg(&home, &graph, &args);
         assert!(!output.status.success(), "unexpected success for {args:?}");
         assert!(String::from_utf8_lossy(&output.stderr).contains("WG-GLOBAL-CONFIG-WRITE-REFUSED"));
-        assert!(!home.join(".wg/config.toml").exists());
+        assert_eq!(
+            fs::read(home.join(".wg/config.toml")).unwrap(),
+            global_before
+        );
         assert!(!home.join(".wg/active-profile").exists());
     }
+}
+
+#[test]
+fn project_default_route_setter_updates_the_effective_closed_projection() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().join("home");
+    fs::create_dir_all(&home).unwrap();
+    let (_root, graph) = project(&tmp);
+    let setup = wg(
+        &home,
+        &graph,
+        &[
+            "setup",
+            "--route",
+            "pi",
+            "--model",
+            "pi:test:before",
+            "--yes",
+        ],
+    );
+    assert!(setup.status.success());
+
+    let changed = wg(
+        &home,
+        &graph,
+        &[
+            "config",
+            "set",
+            "agent.model",
+            "pi:test:after",
+            "--no-reload",
+        ],
+    );
+    assert!(
+        changed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&changed.stderr)
+    );
+    let selected = worksgood::execution_selection::resolve(&graph, None).unwrap();
+    assert_eq!(selected.route.as_deref(), Some("pi:test:after"));
+    let config = worksgood::config::Config::load_merged(&graph).unwrap();
+    assert_eq!(config.coordinator.model.as_deref(), Some("pi:test:after"));
+    assert_eq!(
+        config
+            .models
+            .task_agent
+            .as_ref()
+            .and_then(|role| role.model.as_deref()),
+        Some("pi:test:after")
+    );
 }

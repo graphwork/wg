@@ -6676,11 +6676,11 @@ pub enum ConfigSubcommand {
     /// This is the modern replacement for `wg config --init`, which
     /// continues to work for one release as a deprecated alias.
     Init {
-        /// Target the global config (~/.wg/config.toml).
+        /// Legacy compatibility only; global project-config initialization is refused.
         #[arg(long, conflicts_with = "local")]
         global: bool,
 
-        /// Target the local project config (.wg/config.toml).
+        /// Target the authoritative project config (worksgood.toml).
         ///
         /// Default when neither --global nor --local is given.
         #[arg(long, conflicts_with = "global")]
@@ -6703,17 +6703,17 @@ pub enum ConfigSubcommand {
 
     /// Set any config key by dotted TOML path, project-scoped by default.
     ///
-    /// Writes the value into the local `.wg/config.toml` (`--global` writes
-    /// `~/.wg/config.toml`). Known typed keys are validated; unknown paths are
-    /// written as raw TOML so every knob is reachable without hand-editing.
-    /// Reloads the running daemon and prints the resolved effective value +
-    /// its source.
+    /// Writes the value into project `worksgood.toml`. An explicit `--global`
+    /// may update only non-routing legacy machine state after an advance path/
+    /// scope warning; that layer is inactive for project behavior. Known typed
+    /// keys and the closed project schema are validated. Project writes reload
+    /// the daemon and print the resolved effective value + its source.
     ///
     /// Examples:
     ///   wg config set coordinator.max_agents 4
     ///   wg config set coordinator.registry_refresh_interval 0
     ///   wg config set worker_control.mode scoped   # opt into own-task-only local workers
-    ///   wg config set agency.auto_assign true --global  # receipt-backed admission selection
+    ///   wg config set agency.auto_assign true --global  # legacy machine layer; inactive for projects
     ///   wg config set tiers.fast "pi:openrouter:deepseek/deepseek-chat"
     Set {
         /// Dotted TOML key (e.g. `coordinator.max_agents`, `agency.auto_assign`).
@@ -6722,11 +6722,11 @@ pub enum ConfigSubcommand {
         /// Value as a string; parsed to bool/int/float/string by the setter.
         value: String,
 
-        /// Write to the global config (`~/.wg/config.toml`).
+        /// Explicitly write non-routing legacy machine state to `~/.wg/config.toml`.
         #[arg(long, conflicts_with = "local")]
         global: bool,
 
-        /// Write to the local project config (`.wg/config.toml`) — the default.
+        /// Write to project `worksgood.toml` — the default.
         #[arg(long, conflicts_with = "global")]
         local: bool,
 

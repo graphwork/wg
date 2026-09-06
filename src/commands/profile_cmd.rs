@@ -353,10 +353,16 @@ pub fn show(
         return Ok(());
     }
 
-    // Default: show current project association first. Drift/unavailable state
-    // is inspectable without pretending a global route is the project's route.
+    // Default: `worksgood.toml` profile_origin is the canonical project
+    // association. The older profile-selection.json is consulted only when
+    // the authoritative document is absent.
+    let project_document = worksgood::project_config::load_for_graph(dir)?;
+    let project_origin = project_document
+        .as_ref()
+        .and_then(|document| document.profile_origin.clone());
     let project_selection = project_profile::inspect_association(dir);
-    if project_selection.association.is_some()
+    if project_document.is_none()
+        && project_selection.association.is_some()
         && project_selection.state != project_profile::AssociationState::Ready
     {
         if json {
@@ -399,8 +405,12 @@ pub fn show(
 
     if json {
         let mut val = serde_json::json!({
-            "active_named_profile": active,
-            "project_selection": project_selection,
+            "active_named_profile": active.clone(),
+            "active_named_profile_effective": false,
+            "legacy_global_active_profile_inactive": active,
+            "project_selection": project_selection.clone(),
+            "project_profile_origin": project_origin,
+            "legacy_project_selection": project_selection,
             "profile": config.profile,
             "agent_model": config.agent.model,
             "dispatcher_model": config.coordinator.model,
@@ -423,51 +433,41 @@ pub fn show(
         return Ok(());
     }
 
-    // Header: project selection is authoritative and distinct from the global
-    // active pointer. The latter remains visible as context only.
-    if let Some(association) = project_selection.association.as_ref() {
-        println!("Project selected profile: {} *", association.profile);
+    // Header: the materialized origin is project authority. The machine-global
+    // pointer is displayed only as explicitly inactive migration state.
+    if let Some(origin) = project_origin.as_ref() {
+        println!("Project selected profile: {} *", origin.name);
+        println!(
+            "  Definition fingerprint: {}",
+            origin.definition_fingerprint
+        );
+        println!(
+            "  Projection fingerprint: {}",
+            origin.projection_fingerprint
+        );
+        println!(
+            "  Source: project-profile-import ({})",
+            project_document.as_ref().unwrap().path.display()
+        );
+    } else if project_document.is_none()
+        && let Some(association) = project_selection.association.as_ref()
+    {
+        println!("Legacy project selected profile: {} *", association.profile);
         println!("  Fingerprint: {}", association.profile_fingerprint);
-        if let Some(global) = active.as_deref() {
-            println!("  Global active (separate): {}", global);
-        }
+        println!("  Source: legacy profile-selection.json compatibility");
     } else {
-        match active.as_deref() {
-            Some(name) => {
-                println!("Active named profile: {} *", name);
-                if let Ok(prof) = named_profile::load(name) {
-                    if let Some(ref desc) = prof.description {
-                        println!("  {}", desc);
-                    }
-                }
-            }
-            None => match config.profile.as_deref() {
-                Some(name) => {
-                    if let Some(prof) = profile::get_profile(name) {
-                        println!("Profile: {} ({})", name, prof.strategy_label());
-                        println!("  {}", prof.description);
-                    } else {
-                        println!("Profile: {} (unknown — not a built-in profile)", name);
-                    }
-                }
-                None => {
-                    println!("Profile: (none)");
-                    println!(
-                        "  Using default config. Run `wg profile init-starters` and `wg profile use <name>`."
-                    );
-                }
-            },
-        }
+        println!("Project selected profile: (none)");
+        println!("  Manual project routes, if present, come from worksgood.toml.");
+    }
+    if let Some(global) = active.as_deref() {
+        println!(
+            "  Legacy global active (inactive for this project): {}",
+            global
+        );
     }
 
     println!();
-    if active.is_some() {
-        println!(
-            "  Active config (active named profile/global config is authoritative for routing):"
-        );
-    } else {
-        println!("  Active config (global/local config is authoritative for routing):");
-    }
+    println!("  Active config (project worksgood.toml is authoritative):");
     println!("    agent.model      = {}", config.agent.model);
     println!(
         "    dispatcher.model = {}",
@@ -847,7 +847,7 @@ pub fn list(dir: &Path, json: bool, installed_only: bool) -> Result<()> {
             labels.push("current project".to_string());
         }
         if entry.global_active {
-            labels.push("global active".to_string());
+            labels.push("legacy global active (inactive)".to_string());
         }
         if let Some(label) = entry.usage_label.as_ref() {
             labels.push(label.clone());
@@ -884,21 +884,35 @@ pub fn list(dir: &Path, json: bool, installed_only: bool) -> Result<()> {
         );
     }
 
-    let inspection = project_profile::inspect_association(dir);
+    let project_document = worksgood::project_config::load_for_graph(dir)?;
+    let legacy_inspection = project_profile::inspect_association(dir);
     println!();
-    match inspection.association.as_ref() {
-        Some(association) => println!(
-            "Project selection: {} ({:?}) — {}",
-            association.profile, inspection.state, inspection.message
-        ),
-        None => println!("Project selection: (none) — {}", inspection.message),
+    if let Some(origin) = project_document
+        .as_ref()
+        .and_then(|document| document.profile_origin.as_ref())
+    {
+        println!(
+            "Project selection: {} (materialized) — source project-profile-import in {}",
+            origin.name,
+            project_document.as_ref().unwrap().path.display()
+        );
+    } else if project_document.is_none() {
+        match legacy_inspection.association.as_ref() {
+            Some(association) => println!(
+                "Project selection: {} ({:?}) — legacy compatibility: {}",
+                association.profile, legacy_inspection.state, legacy_inspection.message
+            ),
+            None => println!("Project selection: (none) — no materialized profile origin"),
+        }
+    } else {
+        println!("Project selection: (none) — manual project-file routing");
     }
     match named_profile::active().unwrap_or(None) {
         Some(name) => println!(
-            "Global active: {} (legacy/global scope; separate from project selection)",
+            "Legacy global active: {} (inactive migration state; never selects this project)",
             name
         ),
-        None => println!("Global active: (none; `wg profile use` remains available globally)"),
+        None => println!("Legacy global active: (none)"),
     }
 
     if installed_only {

@@ -54,14 +54,19 @@ wg config set <dotted.toml.key> <value> [--no-reload]
 wg config get <dotted.toml.key> [--json]
 ```
 
-- `set` writes the value into `worksgood.toml` as a **raw TOML tree edit**
-  (not a `Config::save` round-trip), so unrelated keys, comments, and unknown
-  sections are preserved. Known typed keys (model specs, integer fields) are
-  validated up front; the whole document is re-deserialized to confirm it is
-  still valid before the write lands. Unknown paths are written as raw TOML so
-  **every** knob is reachable without hand-editing files. Global writes
-  (`--global`) are refused before mutation with project/profile-definition
-  guidance.
+- `set` writes the value into `worksgood.toml` as a TOML tree edit (not a
+  `Config::save` round-trip), so unrelated **supported values** are preserved.
+  Serialization may normalize formatting/comments. Known typed keys (model
+  specs, integer fields) are validated up front; the whole closed project
+  schema is validated and re-deserialized before the write lands. Unknown
+  top-level sections fail closed so a newer authority surface cannot silently
+  affect execution on an older WG.
+- `wg config set … --global` is an explicit legacy-machine-layer escape hatch
+  for **non-routing** data only. Before mutation it warns on stderr with the
+  exact `~/.wg/config.toml` path and states that the layer is inactive for
+  project behavior; the result names `legacy-global-inactive`, does not reload
+  any project daemon, and cannot change another repository. Global routing,
+  setup, and profile selection remain refused.
 - `get` reads the **effective project** value and annotates the winning source
   (`project-file` / `project-profile-import` / `builtin-default` / `unset`, or
   `task` / `command` for override-scope reads).
@@ -118,7 +123,8 @@ are never described as project-effective.
 | You want to… | Command |
 |--------------|---------|
 | Tune a non-routing knob for this repo | `wg config set <key> <value>` |
-| Set a routing model for this repo (no profile) | `wg config set agent.model pi:...` or `wg setup --route pi --model pi:...` |
+| Deliberately edit inactive legacy machine state | `wg config set <non-routing-key> <value> --global` (advance path/scope warning) |
+| Set the project-wide routing model (no profile) | `wg config set agent.model pi:...` (atomically updates the closed per-role model projection) or `wg setup --route pi --model pi:...` |
 | Change routing under a profile import | `wg profile select <name>` / `wg profile select --clear` |
 | Disable the OpenRouter registry refresh | `wg config set coordinator.registry_refresh_interval 0` |
 | Inspect what won and from where | `wg config get <key>` / `wg config --list` |

@@ -1,6 +1,6 @@
 # Project-local-by-default Pi configuration
 
-**Status:** Proposed clean cutover
+**Status:** Implemented clean cutover (legacy project inputs remain one-release read compatibility; explicit setup/profile selection performs project materialization)
 
 **Owner task:** `project-local-pi-design`
 
@@ -419,13 +419,14 @@ exact Pi route. Shell task execution is orthogonal and remains allowed.
 | `wg profile use --clear` | Deprecated alias for `profile select --clear`; it must not silently resurrect the old active-pointer semantics. | Remove with `profile use`. |
 | `wg profile create/edit/pi/init-starters` | Continue managing reusable global definitions. Output says “definition only; no project selected.” | Permanent. |
 | `wg config --global --show`, `wg config lint --global` | Read-only legacy inspection. Project-behavior values are labeled `legacy-global (inactive)`; retained subsystem namespaces such as `[secrets]` are labeled `machine-setting` and are never described as project-effective. | Keep through migration window. |
-| Any global config write (`config set --global`, `config --global --model`, setup scope `global` or `both`) | Hard error before write. Guidance points to project config or profile-definition editing. Do not accept a command that exits success while having no current effect. | Remove obsolete flags after one release. |
+| Global config writes | Routing writes (`config set agent.model --global`, `config --global --model`, setup scope `global`/`both`) hard-error before mutation. An explicit `config set <non-routing-key> --global` remains as a legacy-machine-layer escape hatch: it warns in advance with the exact path/scope, reports that the layer is inactive, and reloads no project daemon. | Remove obsolete routing flags after one release; retain the narrowly labeled machine-data escape hatch while needed. |
 | `wg setup` without scope | Project scope. `--scope local` warns but behaves identically. `global` and `both` fail before plugin/config mutation. | Make `--scope` unnecessary after one release. |
 | Existing `~/.wg/active-profile` | Ignored for project resolution; surfaced only as legacy inactive state and migration input. | Removed by explicit global cleanup. |
 
 This preserves the intent of common `profile use` scripts—select this project's
-profile—without preserving cross-project mutation. Explicit global write
-scripts fail loudly rather than producing plausible but inert state.
+profile—without preserving cross-project mutation. Explicit global routing
+scripts fail loudly rather than producing plausible but inert state; explicit
+non-routing legacy writes are unmistakably labeled inactive.
 
 ## 8. Pi plugin behavior
 
@@ -455,37 +456,27 @@ wg migrate project-local-pi --rollback <receipt>
 Dry-run is the default when invoked interactively without `--yes`; JSON carries
 all preimages and proposed paths but no secret values.
 
-### 9.1 Project migration algorithm
+### 9.1 Project compatibility/materialization rule
 
-1. Lock the project config transition and hash `worksgood.toml` (or absence),
-   `<graph>/config.toml`, and `<graph>/profile-selection.json`.
-2. If `worksgood.toml` exists, validate it and return no-op. Never merge legacy
-   files into it implicitly.
-3. Read explicit keys from legacy `<graph>/config.toml` only. Do not fill
-   omitted keys from global config.
-4. If a valid project association exists, resolve its selected definition once
-   and generate the closed Pi projection. If it is missing/drifted, stop and
-   require an explicit profile/model choice; do not use global routing.
-5. If the only project route is native Claude/Codex or a bare provider route,
-   stop with a redacted report. Never manufacture a Pi provider/model identity.
-6. Refuse to copy inline credentials, credential paths, `[auth]`, endpoint
-   secrets, `[secrets]`, or nonempty `mcp.servers[*].env` values into the
-   checked-in document. Tell the operator to move provider auth to Pi and MCP
-   environment material to typed machine secret references, naming keys but not
-   values.
-7. Canonicalize the remaining explicit project settings, overlay only the
-   closed Pi projection, validate, write a backup/receipt under
-   `<graph>/migrations/project-local-pi/`, then atomically create
-   `worksgood.toml`.
-8. Leave legacy `<graph>/config.toml` and `profile-selection.json` in place as
-   inactive rollback inputs. The new file's presence makes them non-authority.
-9. Re-read through the real loader, compare every effective project leaf and
-   route with the plan, then mark the receipt complete. A second run is a
-   byte-for-byte no-op and creates no new backup.
+Project conversion is intentionally attended rather than an implicit merge:
 
-The migration must not auto-edit `.gitignore`; `worksgood.toml` is outside the
-ignored/protected `.wg` component and appears as ordinary source for the user to
-stage. Output explicitly reports `git: untracked|tracked|not-a-repository`.
+1. If `worksgood.toml` exists, it is the sole authority. Legacy
+   `<graph>/config.toml` and `<graph>/profile-selection.json` are inactive and
+   never compete with it.
+2. If it is absent, the exclusive one-release compatibility reader described
+   in §6.3 may read those legacy project inputs, but never global config.
+3. `wg setup --route pi --model ...` or `wg profile select <name>` is the
+   canonical conversion action. It materializes exact Pi routes/reasoning into
+   `worksgood.toml`, preserves supported project guardrails/resources/archive
+   policy, and leaves legacy inputs in place as inactive rollback evidence.
+4. `wg migrate project-local-pi` without `--cleanup-global-routing` reports
+   this rule and the attended conversion commands; it does not silently adopt
+   a route or copy machine/credential material into checked-in source.
+
+This deliberate rule prevents an unattended migration from manufacturing a Pi
+provider identity or copying `[auth]`, endpoints, `[secrets]`, credential paths,
+or inline MCP environment values. `worksgood.toml` remains outside `.wg`, so it
+appears as ordinary project source for the user to review and check in.
 
 ### 9.2 Optional global routing cleanup
 
@@ -725,16 +716,16 @@ profile definitions, migration backups, or inactive user data automatically.
 | A11 | Hand edit changes projection but leaves origin | Inspection reports origin drift and LLM execution fails without global fallback; graph-only commands work. | `tests/integration_project_local_pi_config.rs`. |
 | A12 | `profile select --dry-run` with missing built-in definition | No config/profile/history/cache/plugin/lock file changes; plan discloses prospective definition creation and exact project delta. | `project_profile_history.sh`. |
 | A13 | `profile use pi` in a project | Warns once, applies project selection, does not write global config/active pointer, exits success. | new compatibility section in `project_profile_history.sh`. |
-| A14 | Global config write command | Fails before write with project/profile-definition guidance; no inert-success behavior. | new `tests/smoke/scenarios/project_local_pi_global_write_refused.sh`. |
+| A14 | Explicit global config write command | Non-routing write warns first with exact path/scope, changes only inactive global bytes, and reloads no project daemon; routing writes fail before mutation. | `tests/integration_project_local_pi_cli.rs`; `project_local_pi_e2e.sh`. |
 | A15 | Setup without scope, interactive and `--yes` | Writes/updates `worksgood.toml`, never global config/active pointer. | `worksgood_one_model_setup.sh`; PTY setup flow. |
 | A16 | Project selection without Console plugin install | Selection succeeds; `~/.pi` remains byte-identical; Hermetic JIT prepares compatible cache at spawn. | `pi_plugin_install_hermetic.sh`, `pi_handler_plugin_transports.sh`. |
-| A17 | Migrate legacy local project profile | Closed projection and explicit local non-routing keys enter `worksgood.toml`; no global omitted key is copied. | `project_local_pi_migration.sh`. |
-| A18 | Migrate global-only route | Project remains unselected unless user explicitly confirms a Pi route; dry-run offers but does not adopt. | `project_local_pi_migration.sh`. |
-| A19 | Migration sees native Claude/Codex or bare-provider route | Fails with actionable route guidance; no automatic Pi conversion and no partial write. | migration integration tests. |
-| A20 | Migration sees inline credential/path | Refuses checked-in copy and redacts value; no file changes. | migration integration tests; secret smoke tests. |
+| A17 | Convert a legacy local project/profile | Compatibility read is exclusive; attended `setup`/`profile select` writes the closed projection and preserves supported non-routing project policy. | project-local CLI/config integration tests. |
+| A18 | Legacy/global-only route | Project remains unselected until the user explicitly selects a Pi route; global route is reported inactive, never adopted. | `project_local_pi_core.sh`; `project_local_pi_e2e.sh`. |
+| A19 | Legacy project has native Claude/Codex or bare-provider route | No automatic Pi conversion; attended setup/profile selection requires an exact Pi route. | loader/config validation tests. |
+| A20 | Checked-in document contains credential/path authority | Project validation refuses machine auth/endpoints/secrets and inline environment values, redacting values from errors. | `src/project_config.rs` tests; secret smoke tests. |
 | A21 | Global cleanup with profiles, `[secrets]`, endpoints, keystore, identity, federation, Pi settings/cache | Removes only enumerated selectors and active pointer; allowlisted write-set/path-identity evidence proves protected roots were unopened and unchanged without reading secret values. | `project_local_pi_migration.sh`; federation and secret scenario owners added to the new scenario only where relevant. |
 | A22 | Run migration/cleanup twice | Second run is no-op, creates no backup, changes no mtime. | migration integration tests and smoke. |
-| A23 | Rollback immediately | Exact project/global bytes and active pointer restored; generated manifest removed only by matching postimage. | migration integration tests. |
+| A23 | Roll back global cleanup immediately | Exact global config and active-pointer bytes are restored from the receipt. Project materialization remains an explicit reviewed source change. | migration integration tests. |
 | A24 | Edit a migrated file, then rollback | CAS refusal; user edit is not overwritten; manual backup path printed. | migration integration tests. |
 | A25 | Every config/profile/status/service/TUI JSON surface | Same effective route/reasoning/source/origin; global appears only as `effective=false`; no credentials leak. | provenance snapshot tests in `config_cmd`, `status`, service, and TUI modules. |
 | A26 | Attempt to track `.wg/config.toml` or any `.wg` child | Existing control-plane rejection remains unchanged; `worksgood.toml` is trackable as ordinary source. | `src/control_plane.rs` tests plus a project-config Git integration test. |
@@ -755,8 +746,8 @@ profile definitions, migration backups, or inactive user data automatically.
 | Decide project-owned vs globally inherited settings | Sections 4.1-4.3: every effective `Config` field is project/default; no global routing or non-routing inheritance; machine capabilities are not layers. | `src/project_config.rs`, `src/config.rs`; A2-A3. |
 | Apply reusable profile deterministically without erasing guardrails/importing unrelated settings | Sections 5.1-5.3: isolated closed Pi allowlist, apply-time materialization, preserve all non-projection project keys, no runtime profile read. | `src/profile/project.rs`, `src/profile/named.rs`, `profile_cmd.rs`; A4-A12. |
 | Existing route-less project under stale global routing | Section 6.2: unselected, global ignored, no side effects/fallback. | `src/execution_selection.rs`; A1/A18. |
-| Compatibility/deprecation for `profile use` and explicit global operations | Section 7: warned project alias; global reads inactive; global writes hard-error; setup project-default. | `src/commands/profile_cmd.rs`, `config_cmd.rs`, `setup.rs`, `cli.rs`; A13-A15. |
-| Safe migration removing only stale global routing/activation | Section 9: two-phase project migration plus explicit surgical cleanup; exact removal/preservation sets. | `src/commands/migrate.rs`, `src/config_migrate.rs`; A17-A24. |
+| Compatibility/deprecation for `profile use` and explicit global operations | Section 7: warned project alias; global reads inactive; global routing writes hard-error; explicit non-routing global writes warn with path/scope and remain inactive; setup project-default. | `src/commands/profile_cmd.rs`, `config_cmd.rs`, `setup.rs`, `cli.rs`; A13-A15. |
+| Safe migration removing only stale global routing/activation | Section 9: attended project materialization plus explicit surgical global cleanup; exact removal/preservation sets. | `src/migrate_project_local_pi.rs`, `src/project_config.rs`; A17-A24. |
 | Preserve profiles, unrelated secrets, identity/federation | Sections 4.2-4.3 and 9.2: immutable preservation set and before/after hashes. | `src/secret.rs`, `identity_cmd.rs`, `federation.rs`; A21. |
 | Source/provenance on every effective-setting surface | Section 10 shared schema and complete surface inventory. | `config_cmd.rs`, `status.rs`, `execution_selection.rs`, service/TUI models; A25. |
 | Checked-in project determinism | Sections 1 and 5: checked-in `worksgood.toml`; `.wg` stays protected; no path-bound runtime association. | `src/project_config.rs`, `src/control_plane.rs`; A8-A9/A26. |

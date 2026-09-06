@@ -3010,11 +3010,13 @@ fn infer_toml_scalar(value: &str) -> toml::Value {
 }
 
 /// Set a dotted TOML key on the chosen scope's config file. Known typed keys
-/// are validated (model specs, bool/int fields); unknown paths are written as
-/// raw TOML so EVERY knob is reachable without hand-editing files. The file is
-/// edited as a TOML tree (not via `Config::save`) so unrelated keys, comments,
-/// and unknown sections are preserved. Reloads the running daemon and prints
-/// the resolved effective value + its source.
+/// are validated (model specs, bool/int fields), and the closed project schema
+/// rejects unknown authority surfaces. The file is edited as a TOML tree (not
+/// via `Config::save`) so unrelated supported keys
+/// are preserved. Reloads the running daemon and prints the resolved effective
+/// value + its source. An explicit non-routing `--global` write updates only
+/// legacy machine state, after warning with the exact path; routing remains
+/// project-only.
 pub fn set_dotted(
     workgraph_dir: &Path,
     scope: ConfigScope,
@@ -3023,11 +3025,20 @@ pub fn set_dotted(
     no_reload: bool,
     json: bool,
 ) -> Result<()> {
-    reject_global_project_write(scope)?;
     if key.trim().is_empty() {
         anyhow::bail!("config set: <key> must not be empty");
     }
     let normalized_key = normalize_dotted_key(key);
+    let path = scope_config_path(workgraph_dir, scope)?;
+    if scope == ConfigScope::Global {
+        if is_project_routing_key(&normalized_key) {
+            reject_global_project_write(scope)?;
+        }
+        eprintln!(
+            "Warning: explicit --global write targets the legacy machine-global layer at {}. This layer is inactive for project behavior; no worksgood.toml in any repository will be changed.",
+            path.display()
+        );
+    }
     if worksgood::evaluation::rollout::evidence_path(workgraph_dir).exists()
         && matches!(
             normalized_key.as_str(),
@@ -3049,8 +3060,7 @@ pub fn set_dotted(
     let typed_value = infer_toml_scalar(value);
     validate_dotted_value(&normalized_key, value, &typed_value)?;
 
-    // 2. Load the scope file as a raw TOML tree (preserves everything).
-    let path = scope_config_path(workgraph_dir, scope)?;
+    // 2. Load the scope file as a raw TOML tree (preserves supported values).
     let mut doc = Config::load_toml_value(&path)?;
     if !path.exists() {
         if let Some(parent) = path.parent() {
@@ -3061,7 +3071,16 @@ pub fn set_dotted(
     }
 
     // 3. Apply the dotted key to the tree, creating intermediate tables.
-    set_dotted_value(&mut doc, &normalized_key, typed_value.clone());
+    // `agent.model` is the documented project-default route setter. A
+    // materialized setup/profile is deliberately closed over every dispatch
+    // role, so changing only this leaf would otherwise leave actual task
+    // dispatch on the old dispatcher/task_agent route. Update the complete
+    // model projection atomically while retaining each role's reasoning.
+    if scope == ConfigScope::Local && normalized_key == "agent.model" {
+        set_complete_project_model_projection(&mut doc, value);
+    } else {
+        set_dotted_value(&mut doc, &normalized_key, typed_value.clone());
+    }
     if scope == ConfigScope::Local {
         let root = doc
             .as_table_mut()
@@ -3096,14 +3115,38 @@ pub fn set_dotted(
     worksgood::atomic_file::write_atomic(&path, body.as_bytes())
         .map_err(|e| anyhow::anyhow!("Failed to write {}: {}", path.display(), e))?;
 
-    // 6. Reload the daemon (soft Reconfigure re-reads config.toml) unless
-    //    the change needs a full restart (model/endpoint edits respawn the
-    //    coordinator). `--no-reload` skips both.
-    let restart = !no_reload && needs_restart(&normalized_key) && scope == ConfigScope::Local;
+    // 6. Reload only project writes. The global layer is deliberately
+    // inactive and therefore cannot require a project daemon reload.
+    if scope == ConfigScope::Global {
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "key": normalized_key,
+                    "written_value": value,
+                    "scope": "legacy-global-inactive",
+                    "path": path,
+                    "project_effective": false,
+                    "reload": "not applicable (inactive global layer)",
+                }))?
+            );
+        } else {
+            println!(
+                "Set {} = {} in {} [scope: legacy-global-inactive]",
+                normalized_key,
+                value,
+                path.display()
+            );
+            println!("  Project effective value was not changed; no daemon was reloaded.");
+        }
+        return Ok(());
+    }
+
+    let restart = !no_reload && needs_restart(&normalized_key);
     let soft_reload = !no_reload && !restart;
     let reload_note = reload_after_write(workgraph_dir, restart, soft_reload)?;
 
-    // 7. Print the resolved effective value + source (from the merged config).
+    // 7. Print the resolved effective value + source (from the project config).
     print_effective_value(
         workgraph_dir,
         &normalized_key,
@@ -3196,10 +3239,44 @@ fn scope_config_path(workgraph_dir: &Path, scope: ConfigScope) -> Result<std::pa
 fn reject_global_project_write(scope: ConfigScope) -> Result<()> {
     if scope == ConfigScope::Global {
         anyhow::bail!(
-            "error[WG-GLOBAL-CONFIG-WRITE-REFUSED]: machine-global project configuration is legacy and inactive. Write this project's worksgood.toml (omit --global), or edit a reusable definition with `wg profile edit`."
+            "error[WG-GLOBAL-CONFIG-WRITE-REFUSED]: machine-global routing is legacy and inactive. Write this project's worksgood.toml (omit --global), or edit a reusable definition with `wg profile edit`."
         );
     }
     Ok(())
+}
+
+fn is_project_routing_key(key: &str) -> bool {
+    matches!(key, "agent.model" | "dispatcher.model")
+        || key.starts_with("models.")
+        || key.starts_with("tiers.")
+        || matches!(
+            key,
+            "agent.executor" | "dispatcher.executor" | "dispatcher.provider"
+        )
+}
+
+/// Set the project-wide default model route everywhere a closed profile/setup
+/// projection may have pinned it. This makes `wg config set agent.model ...`
+/// change the route that execution selection actually uses.
+fn set_complete_project_model_projection(doc: &mut toml::Value, route: &str) {
+    set_dotted_value(doc, "agent.model", toml::Value::String(route.to_string()));
+    set_dotted_value(
+        doc,
+        "dispatcher.model",
+        toml::Value::String(route.to_string()),
+    );
+    set_dotted_value(
+        doc,
+        "models.default.model",
+        toml::Value::String(route.to_string()),
+    );
+    for role in worksgood::config::DispatchRole::ALL {
+        set_dotted_value(
+            doc,
+            &format!("models.{role}.model"),
+            toml::Value::String(route.to_string()),
+        );
+    }
 }
 
 fn scope_label(scope: ConfigScope) -> &'static str {

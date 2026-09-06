@@ -63,9 +63,16 @@ pub fn materialize_for_graph(
             workgraph_dir.display()
         )
     })?;
-    let mut document: toml::Value = if path.exists() {
-        std::fs::read_to_string(&path)
-            .with_context(|| format!("Failed to read {}", path.display()))?
+    let original_bytes = match std::fs::read(&path) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(error).with_context(|| format!("Failed to read {}", path.display()));
+        }
+    };
+    let mut document: toml::Value = if let Some(bytes) = original_bytes.as_deref() {
+        std::str::from_utf8(bytes)
+            .with_context(|| format!("{} is not UTF-8", path.display()))?
             .parse()
             .with_context(|| format!("Failed to parse {}", path.display()))?
     } else {
@@ -135,9 +142,24 @@ pub fn materialize_for_graph(
     payload_root.remove("profile_origin");
     validate_project_payload(&payload, &path)?;
     let rendered = toml::to_string_pretty(&document)?;
-    let current = std::fs::read_to_string(&path).ok();
-    let changed = current.as_deref() != Some(rendered.as_str());
+    let changed = original_bytes.as_deref() != Some(rendered.as_bytes());
     if changed && !dry_run {
+        // Compare against the bytes read for planning immediately before the
+        // atomic replace. A concurrent guardrail/policy edit must never be
+        // overwritten by profile/setup materialization.
+        let current_bytes = match std::fs::read(&path) {
+            Ok(bytes) => Some(bytes),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => {
+                return Err(error).with_context(|| format!("Failed to re-read {}", path.display()));
+            }
+        };
+        if current_bytes != original_bytes {
+            bail!(
+                "error[WG-PROJECT-CONFIG-CONCURRENT-WRITE]: {} changed while profile/setup materialization was being planned; no project bytes were written. Re-run the command.",
+                path.display()
+            );
+        }
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
