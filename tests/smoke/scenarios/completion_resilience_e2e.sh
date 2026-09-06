@@ -249,10 +249,12 @@ wait_file "$home/land-a-rejected" "candidate A rejection"
 wgrun show land-resilient --json >"$scratch/land-a.json"
 python3 - "$scratch/land-a.json" <<'PY'
 import json,sys
-x=json.load(open(sys.argv[1])); a=x['completion_review_activity']
+x=json.load(open(sys.argv[1])); a=x['completion_review_activity']; c=x['completion_candidate']
 assert x['status']=='in-progress',x
 assert len(a)==1 and a[0]['reviewer_kind']=='flip' and a[0]['verdict']=='reject',a
+assert c.get('flip_receipt') and c.get('eval_receipt') is None,(c,a)
 assert a[0]['findings'][0]['code']=='fixture.candidate_a',a
+assert not x.get('completion_receipt'),x
 assert not x.get('failure_reason') and x.get('retry_count',0)==0,x
 PY
 candidate_a=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["completion_candidate"]["manifest"]["content_digest"])' "$scratch/land-a.json")
@@ -350,9 +352,10 @@ resume_stderr=$(tr '\n' ' ' <"$scratch/land-resume.err")
 [[ $(cat resilient.txt) == 'candidate B' ]] || loud_fail "landed worktree does not contain candidate B bytes"
 python3 - "$scratch/land-done.json" <<'PY'
 import json,sys
-x=json.load(open(sys.argv[1])); events=x['lifecycle']['audit']; logs=x['log']
+x=json.load(open(sys.argv[1])); events=x['lifecycle']['audit']; logs=x['log']; c=x['completion_candidate']
 assert x['status']=='done' and x['completion_disposition']=='landed',x
 assert x.get('completion_blocker') is None and x['completion_receipt'].startswith('b3:'),x
+assert c.get('flip_receipt') and c.get('eval_receipt'),c
 assert sum(e['event_kind']=='attempt-succeeded' for e in events)==1,events
 assert sum(e.get('reason_code')=='reviewed_publication_committed' for e in events)==1,events
 assert sum(row.get('actor')=='land' for row in logs)==1,logs

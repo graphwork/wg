@@ -15,7 +15,9 @@ use worksgood::completion_review::{
     register_flip_execution_authority, render_flip_comparison_prompt, render_flip_inference_prompt,
     run_review_valve_at, validate_stored_flip_against_bundle,
 };
-use worksgood::completion_review_model::{build_flip_blind_input, build_flip_comparison_input};
+use worksgood::completion_review_model::{
+    build_flip_blind_input, build_flip_comparison_input, render_review_prompt,
+};
 use worksgood::identity::canonical_json;
 use worksgood::simple_land::{CompletionContract, ReviewVerdict};
 
@@ -350,8 +352,138 @@ impl ManifestReviewer for FakeReviewer {
     }
 }
 
+/// Deterministic stand-in for a semantic reviewer that follows the production
+/// prompt's temporal policy. An in-flight candidate cannot contain this call's
+/// future receipt, but already-produced validation remains required.
+struct CausalBoundaryReviewer {
+    route: String,
+    calls: Vec<ReviewerKind>,
+}
+
+impl CausalBoundaryReviewer {
+    fn new(route: &str) -> Self {
+        Self {
+            route: route.into(),
+            calls: Vec::new(),
+        }
+    }
+}
+
+impl ManifestReviewer for CausalBoundaryReviewer {
+    fn route(&self) -> &str {
+        &self.route
+    }
+
+    fn review(
+        &mut self,
+        kind: ReviewerKind,
+        bundle: &ResolvedReviewBundle,
+        binding: Option<&CompletionReviewBinding>,
+        artifact_store: &CompletionArtifactStore,
+    ) -> Result<SemanticReview, ReviewerUnavailable> {
+        self.calls.push(kind);
+        let prompt = match kind {
+            ReviewerKind::Flip => render_flip_comparison_prompt(&build_flip_comparison_input(
+                bundle,
+                ContentDigest::of_bytes(b"causal-boundary-hypothesis"),
+                FlipLatentHypothesis {
+                    goal: "review the currently available candidate evidence".into(),
+                    constraints: Vec::new(),
+                    invariants: Vec::new(),
+                    failure_modes: Vec::new(),
+                },
+            )),
+            ReviewerKind::Eval => render_review_prompt(kind, bundle),
+        };
+        assert!(prompt.contains("reject solely because they are absent"));
+        assert!(prompt.contains("historical receipt"));
+        assert!(prompt.contains("validation output"));
+
+        let missing_present_evidence = bundle.validation_evidence.is_empty();
+        let verdict = if missing_present_evidence {
+            SemanticVerdict::Reject
+        } else {
+            SemanticVerdict::Pass
+        };
+        let findings = missing_present_evidence
+            .then(|| {
+                vec![ReviewFinding::new(
+                    "candidate.validation_output_missing",
+                    "required validation output could exist before review but is absent",
+                )]
+            })
+            .unwrap_or_default();
+        Ok(SemanticReview {
+            verdict,
+            flip_proof: (kind == ReviewerKind::Flip).then(|| {
+                fixture_flip_proof(
+                    artifact_store,
+                    bundle,
+                    binding.expect("FLIP fixture binding"),
+                    &self.route,
+                    verdict,
+                    &findings,
+                )
+            }),
+            findings,
+        })
+    }
+}
+
 #[test]
-fn flip_then_eval_pass_opens_the_exact_manifest_valve() {
+fn absent_future_receipts_pass_while_missing_present_validation_rejects() {
+    let complete = fixture();
+    let mut flip = CausalBoundaryReviewer::new("pi:causal-boundary-flip");
+    let mut eval = CausalBoundaryReviewer::new("pi:causal-boundary-eval");
+    let outcome = run_review_valve_at(
+        &complete.store,
+        &complete.manifest_digest,
+        &complete.requirements_digest,
+        Ok(complete.bundle),
+        &mut flip,
+        &mut eval,
+        NOW,
+    )
+    .unwrap();
+
+    assert_eq!(outcome.status, ReviewValveStatus::Accepted);
+    assert_eq!(flip.calls, vec![ReviewerKind::Flip]);
+    assert_eq!(eval.calls, vec![ReviewerKind::Eval]);
+
+    let mut missing_present = fixture();
+    missing_present.bundle.validation_evidence.clear();
+    let mut flip = CausalBoundaryReviewer::new("pi:causal-boundary-flip");
+    let mut eval = CausalBoundaryReviewer::new("pi:must-not-run");
+    let outcome = run_review_valve_at(
+        &missing_present.store,
+        &missing_present.manifest_digest,
+        &missing_present.requirements_digest,
+        Ok(missing_present.bundle),
+        &mut flip,
+        &mut eval,
+        NOW,
+    )
+    .unwrap();
+
+    assert_eq!(outcome.status, ReviewValveStatus::FlipRejected);
+    assert_eq!(outcome.flip.receipt.verdict, ReviewVerdict::Reject);
+    let findings: Vec<ReviewFinding> = serde_json::from_slice(
+        &missing_present
+            .store
+            .read_artifact(&outcome.flip.findings_object, 64 * 1024)
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(findings[0].code, "candidate.validation_output_missing");
+    assert!(outcome.eval.is_none());
+    assert!(
+        eval.calls.is_empty(),
+        "Eval must remain ordered after FLIP pass"
+    );
+}
+
+#[test]
+fn genuine_v2_flip_then_eval_pass_opens_the_exact_manifest_valve() {
     let fixture = fixture();
     let mut flip = FakeReviewer::pass("pi:openrouter:anthropic/claude-opus-4.7");
     let mut eval = FakeReviewer::pass("codex:gpt-5.5");
