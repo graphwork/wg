@@ -2236,53 +2236,62 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_profile_use_target_bare_name() {
-        let t = parse_profile_use_target("opencode").unwrap();
-        assert_eq!(t.profile_name, "opencode");
-        assert_eq!(t.pinned_model, None);
+    fn test_project_profile_materialization_is_local_and_closed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("project");
+        let graph = root.join(".wg");
+        std::fs::create_dir_all(&graph).unwrap();
+        let config: Config = toml::from_str(named_profile::STARTER_PI).unwrap();
+
+        let report = worksgood::project_config::materialize_for_graph(
+            &graph,
+            &config,
+            Some(("pi", named_profile::STARTER_PI)),
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(report.path, root.join("worksgood.toml"));
+        assert!(!report.global_config_changed);
+        assert!(!report.global_active_profile_changed);
+        assert!(!report.console_plugin_changed);
+        let document = worksgood::project_config::load_for_graph(&graph)
+            .unwrap()
+            .unwrap();
+        assert_eq!(document.profile_origin.unwrap().name, "pi");
+        config.validate_pi_model_plane().unwrap();
     }
 
     #[test]
-    fn test_parse_profile_use_target_opencode_model_qualified() {
-        // `wg profile use opencode:openrouter/stepfun/step-3.7-flash` selects
-        // the opencode starter and pins the literal route verbatim so the
-        // spawn path's parse_executor_model_route still fires.
-        let route = "opencode:openrouter/stepfun/step-3.7-flash";
-        let t = parse_profile_use_target(route).unwrap();
-        assert_eq!(t.profile_name, "opencode");
-        assert_eq!(t.pinned_model.as_deref(), Some(route));
+    fn test_project_profile_selection_rejects_explicit_non_pi_routes() {
+        for (name, definition) in [
+            ("claude", named_profile::STARTER_CLAUDE),
+            ("codex", named_profile::STARTER_CODEX),
+            ("opencode", named_profile::STARTER_OPENCODE),
+        ] {
+            let config: Config = toml::from_str(definition).unwrap();
+            assert!(
+                config.validate_pi_model_plane().is_err(),
+                "{name} must not be accepted as a closed Pi profile"
+            );
+        }
     }
 
     #[test]
-    fn test_parse_profile_use_target_worker_only_externals_compose() {
-        // Generic over worker-only externals — aider/goose resolve to their
-        // own profile name without bespoke arms.
-        let t = parse_profile_use_target("aider:openrouter/x").unwrap();
-        assert_eq!(t.profile_name, "aider");
-        assert_eq!(t.pinned_model.as_deref(), Some("aider:openrouter/x"));
+    fn test_project_profile_names_are_literal_not_model_qualified_targets() {
+        let name = "pi:openai-codex:gpt-5.6-sol";
+        named_profile::validate_profile_name(name).unwrap();
+        assert!(named_profile::starter_template(name).is_none());
     }
 
     #[test]
-    fn test_parse_profile_use_target_known_providers_still_work() {
-        // Regression guard: existing claude/codex/nex activation is unchanged.
-        let c = parse_profile_use_target("claude:opus").unwrap();
-        assert_eq!(c.profile_name, "claude");
-        assert_eq!(c.pinned_model.as_deref(), Some("claude:opus"));
-
-        let x = parse_profile_use_target("codex:gpt-5.5").unwrap();
-        assert_eq!(x.profile_name, "codex");
-        assert_eq!(x.pinned_model.as_deref(), Some("codex:gpt-5.5"));
-
-        let n = parse_profile_use_target("nex:qwen3-coder").unwrap();
-        assert_eq!(n.profile_name, "nex");
-        assert_eq!(n.pinned_model.as_deref(), Some("nex:qwen3-coder"));
-    }
-
-    #[test]
-    fn test_parse_profile_use_target_unknown_prefix_still_rejected() {
-        // A colon-qualified name that is neither a known provider nor a
-        // worker-only external must still be rejected, not silently accepted.
-        assert!(parse_profile_use_target("foobar:baz").is_err());
+    fn test_project_profile_selection_rejects_invalid_names() {
+        for name in ["", ".", "..", "../pi", "pi/model", "pi\\model", "pi\nmodel"] {
+            assert!(
+                named_profile::validate_profile_name(name).is_err(),
+                "invalid profile name {name:?} was accepted"
+            );
+        }
     }
 
     // ── wg profile pi grammar + helpers ──────────────────────────────────────

@@ -166,6 +166,51 @@ fn profile_select_and_deprecated_use_preserve_project_guardrails() {
 }
 
 #[test]
+fn profile_select_rejects_non_pi_qualified_and_invalid_inputs_without_writing() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().join("home");
+    fs::create_dir_all(&home).unwrap();
+    let (root, graph) = project(&tmp);
+
+    for (args, expected) in [
+        (
+            vec!["profile", "select"],
+            "Choose a Pi profile or pass --clear",
+        ),
+        (
+            vec!["profile", "select", "codex", "--no-reload"],
+            "not Pi-only",
+        ),
+        (
+            vec![
+                "profile",
+                "select",
+                "pi:openai-codex:gpt-5.6-sol",
+                "--no-reload",
+            ],
+            "Profile 'pi:openai-codex:gpt-5.6-sol' not found",
+        ),
+        (
+            vec!["profile", "select", "opencode:openrouter/x", "--no-reload"],
+            "Invalid profile name",
+        ),
+        (
+            vec!["profile", "select", "../pi", "--no-reload"],
+            "Invalid profile name",
+        ),
+    ] {
+        let output = wg(&home, &graph, &args);
+        assert!(!output.status.success(), "unexpected success for {args:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(expected), "{args:?}: {stderr}");
+        assert!(!root.join("worksgood.toml").exists());
+        assert!(!home.join(".wg/config.toml").exists());
+        assert!(!home.join(".wg/active-profile").exists());
+        assert!(!home.join(".pi").exists());
+    }
+}
+
+#[test]
 fn explicit_global_non_routing_write_warns_and_routing_rewrites_are_refused() {
     let tmp = TempDir::new().unwrap();
     let home = tmp.path().join("home");

@@ -2,14 +2,14 @@ use super::{completion_done, completion_submit};
 use std::sync::{Arc, Barrier};
 use tempfile::tempdir;
 use worksgood::completion_manifest::{
-    ArtifactOutput, COMPLETION_MANIFEST_VERSION, CompletionManifest, ContentDigest,
-    ImmutableLocator, OutputRef,
+    COMPLETION_MANIFEST_VERSION, CompletionManifest, ContentDigest, OutputRef,
 };
 use worksgood::completion_review::{
     ManifestReviewer, ReviewerKind, ReviewerUnavailable, SemanticReview, SemanticVerdict,
 };
 use worksgood::completion_task::requirements_digest;
 use worksgood::graph::{CompletionContract, Node, Status, Task, WorkGraph};
+use worksgood::lifecycle::AttemptRef;
 use worksgood::parser::{load_graph, save_graph};
 use worksgood::simple_land::CompletionContract as ManifestContract;
 
@@ -194,6 +194,10 @@ fn ten_concurrent_attempts_use_one_immutable_review_and_done_authority() {
     let candidate_dir = project.join("candidates");
     std::fs::create_dir_all(&wg_dir).unwrap();
     std::fs::create_dir_all(&candidate_dir).unwrap();
+    // Real projects establish one graph identity before concurrent review
+    // attempts. Pin it here so the canary exercises review concurrency rather
+    // than racing first-use graph bootstrap.
+    worksgood::worker_control::load_or_create_graph_identity(&wg_dir).unwrap();
 
     let store = completion_submit::store(&wg_dir).unwrap();
     let mut graph = WorkGraph::new();
@@ -202,17 +206,27 @@ fn ten_concurrent_attempts_use_one_immutable_review_and_done_authority() {
     for index in 0..10 {
         let id = format!("canary-{index}");
         let contract = contract_for(index);
-        let task = Task {
+        let actor_id = format!("agent-{index}");
+        let mut task = Task {
             id: id.clone(),
             title: format!("Canary attempt {index}"),
             description: Some(format!(
                 "Produce immutable output {index}.\n\n## Validation\nResolve and review exact bytes."
             )),
             status: Status::InProgress,
-            assigned: Some(format!("agent-{index}")),
+            assigned: Some(actor_id.clone()),
             completion_contract: contract,
             ..Task::default()
         };
+        task.lifecycle.fence = index as u64 + 1;
+        task.lifecycle.attempt_sequence = 1;
+        task.lifecycle.current_attempt = Some(AttemptRef {
+            id: format!("attempt-0-{}", index + 1),
+            generation: 0,
+            fence: task.lifecycle.fence,
+            actor_id,
+            disposition: None,
+        });
         let requirements = requirements_digest(&task).unwrap();
         let summary_bytes = format!("completed canary attempt {index}\n").into_bytes();
         let output = store
@@ -307,7 +321,17 @@ fn ten_concurrent_attempts_use_one_immutable_review_and_done_authority() {
                 &mut eval,
             )
             .unwrap();
-            assert_eq!(outcome.status, candidate.expected);
+            let findings = completion_submit::store(&wg_dir)
+                .unwrap()
+                .read_artifact(&outcome.flip.findings_object, 16 * 1024)
+                .unwrap();
+            assert_eq!(
+                outcome.status,
+                candidate.expected,
+                "unexpected review outcome for {}: {}\n{outcome:#?}",
+                candidate.id,
+                String::from_utf8_lossy(&findings)
+            );
             if outcome.status == worksgood::completion_review::ReviewValveStatus::Accepted {
                 completion_done::run(&wg_dir, &candidate.id, "refs/heads/main").unwrap();
             }
