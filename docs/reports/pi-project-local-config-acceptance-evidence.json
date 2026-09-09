@@ -2,7 +2,8 @@
   "task": "close-pi-config-acceptance",
   "evidence_version": 1,
   "base_revision": "70ef064ffbb4ad4a5260e0409c78cd5bdeb569b0",
-  "validated_source_revision": "d1bb3721ddfe86836326d4fb08e0b15c70a1d8cb",
+  "implementation_revision": "d1bb3721ddfe86836326d4fb08e0b15c70a1d8cb",
+  "scope": "implementation-bearing ancestor; exact submitted HEAD is bound by manifest-attached validation evidence",
   "candidate_binary": {
     "derivation": "$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)[\"target_directory\"])')/debug/wg",
     "sha256": "a1c8579e3f1b458b4b13f2e5108631e4f051551dcd4830cf0dde7b2aa2e1e35f"

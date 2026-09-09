@@ -2,9 +2,12 @@
 
 Task: `close-pi-config-acceptance`
 
-Validated implementation base: `70ef064ffbb4ad4a5260e0409c78cd5bdeb569b0`
+Audited implementation base: `70ef064ffbb4ad4a5260e0409c78cd5bdeb569b0`
 (current `main` when this audit began, including `9b994291` and `4890d7d6`).
-Validated repair revision: `d1bb3721ddfe86836326d4fb08e0b15c70a1d8cb`.
+Implementation-bearing repair commit: `d1bb3721ddfe86836326d4fb08e0b15c70a1d8cb`.
+This is an ancestor identifier, not a claim about the eventual submitted
+candidate. Exact-candidate validation is captured after the report is committed
+and must be attached directly to that candidate's completion manifest.
 
 ## Review status of the historical implementation
 
@@ -98,8 +101,10 @@ replacing this architecture:
 
 ## Exact reproducible validation
 
-From the repository root at validated source revision
-`d1bb3721ddfe86836326d4fb08e0b15c70a1d8cb`:
+The implementation-bearing repair commit was first exercised with the commands
+below. They are also rerun at the exact submitted HEAD; the manifest-attached
+transcript, rather than a future hash guessed in this report, is authoritative
+for candidate identity.
 
 ```bash
 TARGET="$(cargo metadata --format-version 1 --no-deps \
@@ -135,8 +140,9 @@ SHA-256 was
 
 ## Immutable evidence available before review
 
-The exact combined 303,768-byte validation transcript was captured through the
-supported `wg completion-object` API before this report was committed:
+The first exact combined 303,768-byte implementation validation transcript was
+captured through the supported `wg completion-object` API before this report was
+committed:
 
 - content/locator digest:
   `b3:21bba0f1160355ff5070fba457b3bf1ff123406b3db2fddef79f6f703730e1e2`
