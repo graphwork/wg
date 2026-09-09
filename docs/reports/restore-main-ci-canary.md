@@ -12,7 +12,7 @@ cargo test --locked --bin wg commands::completion_canary_tests
 
 exited 101 during compilation with seven `E0425` diagnostics at `src/commands/profile_cmd.rs:2240-2285`, all for `parse_profile_use_target`. Commit `27e802d9` intentionally removed that global/model-qualified activation parser when `profile use` became an alias of the project-local, copy-by-value profile API, but five tests originating in `657a3d6c` still called the deleted helper (three of those tests made seven calls total).
 
-Baseline reproduction log SHA-256: `cfd13d82697e73477e31426ae529d31393d6121497d9495667f98432b468b8fa` (`/tmp/restore-main-ci-canary-base-repro.log` in the attended validation workspace).
+Baseline reproduction log SHA-256: `cfd13d82697e73477e31426ae529d31393d6121497d9495667f98432b468b8fa`. The exact seven compiler diagnostics and capture identity are preserved in `docs/reports/restore-main-ci-canary-base-repro.log`.
 
 ## Focused repair
 
@@ -42,6 +42,6 @@ All commands used the pinned toolchain, the checkout's explicit Cargo candidate 
 | `cargo clippy` | PASS (exit 0; pre-existing warnings remain advisory) |
 | `git diff --check` | PASS |
 
-The exact canary wrote `worker-owned-completion-canary.json`; the checked-in copy is `docs/reports/restore-main-ci-canary-evidence.json`, SHA-256 `048a27c5c6a7d99a885c962e244424c4a1a414345e81e3e7bb08ff190312107e`. It records all ten asserted outcomes: six accepted and Done, one FLIP rejection, one eval rejection, one unavailable review, one incomplete-evidence refusal, and no legacy finalization/save-transaction authority.
+The exact canary wrote `worker-owned-completion-canary.json`; the checked-in byte-for-byte copy is `docs/reports/restore-main-ci-canary-evidence.json`, SHA-256 `048a27c5c6a7d99a885c962e244424c4a1a414345e81e3e7bb08ff190312107e`. It records all ten asserted outcomes: six accepted and Done, one FLIP rejection, one eval rejection, one unavailable review, one incomplete-evidence refusal, and no legacy finalization/save-transaction authority. Exact command identities, exit codes, capture hashes, and terminal result lines for every requested candidate check are preserved in `docs/reports/restore-main-ci-canary-validation.log`.
 
 Actual GitHub CI for the integrated commit remains the attended operator's post-publication check.
