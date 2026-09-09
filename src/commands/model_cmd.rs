@@ -139,6 +139,7 @@ pub fn run_set_default(dir: &Path, alias: &str, global: bool) -> Result<()> {
     } else {
         ConfigScope::Local
     };
+    config_cmd::reject_global_project_write(scope)?;
 
     // Parse provider:model format for registry lookup
     let spec = parse_model_spec(alias);

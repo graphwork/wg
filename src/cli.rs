@@ -2197,7 +2197,7 @@ pub enum Commands {
         #[arg(long, name = "check-key", hide = true)]
         check_key: bool,
 
-        /// Install project config as global default (~/.wg/config.toml)
+        /// Deprecated compatibility flag; global project/routing installation is refused
         #[arg(long, name = "install-global")]
         install_global: bool,
 

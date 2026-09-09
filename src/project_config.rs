@@ -57,6 +57,37 @@ pub fn materialize_for_graph(
     profile: Option<(&str, &str)>,
     dry_run: bool,
 ) -> Result<ProjectMaterialization> {
+    materialize_for_graph_checked(workgraph_dir, config, profile, None, dry_run)
+}
+
+/// Materialize a profile projection while binding the apply to the exact
+/// reusable-definition file preimage used to parse `config`. An absent path
+/// (the embedded starter case) is also a preimage: a concurrently-created
+/// definition must not be silently mixed with the starter projection.
+pub fn materialize_profile_for_graph(
+    workgraph_dir: &Path,
+    config: &Config,
+    profile: (&str, &str),
+    definition_path: &Path,
+    expected_definition_preimage: Option<&[u8]>,
+    dry_run: bool,
+) -> Result<ProjectMaterialization> {
+    materialize_for_graph_checked(
+        workgraph_dir,
+        config,
+        Some(profile),
+        Some((definition_path, expected_definition_preimage)),
+        dry_run,
+    )
+}
+
+fn materialize_for_graph_checked(
+    workgraph_dir: &Path,
+    config: &Config,
+    profile: Option<(&str, &str)>,
+    definition_guard: Option<(&Path, Option<&[u8]>)>,
+    dry_run: bool,
+) -> Result<ProjectMaterialization> {
     let path = path_for_graph(workgraph_dir).ok_or_else(|| {
         anyhow::anyhow!(
             "error[WG-PROJECT-ROOT-REQUIRED]: cannot locate worksgood.toml for graph {}; run this command in an ordinary project with a .wg directory",
@@ -144,6 +175,28 @@ pub fn materialize_for_graph(
     let rendered = toml::to_string_pretty(&document)?;
     let changed = original_bytes.as_deref() != Some(rendered.as_bytes());
     if changed && !dry_run {
+        // A profile projection and its origin fingerprint must come from the
+        // same exact reusable-definition bytes. Recheck the file (including
+        // the embedded-starter "absent" preimage) immediately before the
+        // project document CAS.
+        if let Some((definition_path, expected_preimage)) = definition_guard {
+            let current_preimage = match std::fs::read(definition_path) {
+                Ok(bytes) => Some(bytes),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!("Failed to re-read {}", definition_path.display())
+                    });
+                }
+            };
+            if current_preimage.as_deref() != expected_preimage {
+                bail!(
+                    "error[WG-PROFILE-DEFINITION-CONCURRENT-WRITE]: {} changed while profile materialization was being planned; no project bytes were written. Re-run the command.",
+                    definition_path.display()
+                );
+            }
+        }
+
         // Compare against the bytes read for planning immediately before the
         // atomic replace. A concurrent guardrail/policy edit must never be
         // overwritten by profile/setup materialization.
@@ -838,5 +891,40 @@ mod tests {
         let b: toml::Value =
             toml::from_str("[agent]\nmodel='pi:test:one'\n[dispatcher]\nmax_agents=99\n").unwrap();
         assert_eq!(projection_fingerprint(&a), projection_fingerprint(&b));
+    }
+
+    #[test]
+    fn profile_materialization_rejects_changed_definition_preimage() {
+        let project = tempfile::tempdir().unwrap();
+        let graph = project.path().join(".wg");
+        std::fs::create_dir(&graph).unwrap();
+        let definition_path = project.path().join("pi.toml");
+        let expected = crate::profile::named::STARTER_PI.as_bytes().to_vec();
+        std::fs::write(&definition_path, &expected).unwrap();
+        let config: Config = toml::from_str(crate::profile::named::STARTER_PI).unwrap();
+
+        std::fs::write(
+            &definition_path,
+            format!(
+                "# concurrent edit after planning\n{}",
+                crate::profile::named::STARTER_PI
+            ),
+        )
+        .unwrap();
+        let error = materialize_profile_for_graph(
+            &graph,
+            &config,
+            ("pi", crate::profile::named::STARTER_PI),
+            &definition_path,
+            Some(&expected),
+            false,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("WG-PROFILE-DEFINITION-CONCURRENT-WRITE"),
+            "{error}"
+        );
+        assert!(!project.path().join(PROJECT_CONFIG_FILE).exists());
     }
 }

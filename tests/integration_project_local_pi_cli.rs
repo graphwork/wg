@@ -253,6 +253,7 @@ fn explicit_global_non_routing_write_warns_and_routing_rewrites_are_refused() {
     let global_before = fs::read(home.join(".wg/config.toml")).unwrap();
     for args in [
         vec!["config", "set", "agent.model", "pi:test:model", "--global"],
+        vec!["config", "set", "profile", "pi", "--global"],
         vec![
             "config",
             "set",
@@ -263,10 +264,19 @@ fn explicit_global_non_routing_write_warns_and_routing_rewrites_are_refused() {
         vec![
             "config",
             "set",
+            "execution.fallbacks",
+            "pi:test:model",
+            "--global",
+        ],
+        vec![
+            "config",
+            "set",
             "openrouter.default_model",
             "pi:test:model",
             "--global",
         ],
+        vec!["model", "set-default", "anything", "--global"],
+        vec!["model", "set", "task_agent", "pi:test:model", "--global"],
         vec![
             "setup",
             "--route",
@@ -297,6 +307,22 @@ fn explicit_global_non_routing_write_warns_and_routing_rewrites_are_refused() {
         );
         assert!(!home.join(".wg/active-profile").exists());
     }
+
+    // The legacy whole-file shortcut is another global routing write. It must
+    // refuse even with --force, rather than copying an old graph-local route
+    // into the inactive machine layer under a misleading "default" label.
+    fs::write(
+        graph.join("config.toml"),
+        "[agent]\nmodel = 'pi:test:must-not-copy'\n",
+    )
+    .unwrap();
+    let install = wg(&home, &graph, &["config", "--install-global", "--force"]);
+    assert!(!install.status.success());
+    assert!(String::from_utf8_lossy(&install.stderr).contains("WG-GLOBAL-CONFIG-WRITE-REFUSED"));
+    assert_eq!(
+        fs::read(home.join(".wg/config.toml")).unwrap(),
+        global_before
+    );
 }
 
 #[test]

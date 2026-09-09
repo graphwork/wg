@@ -694,22 +694,46 @@ pub fn select_project_profile(
     let name = name.ok_or_else(|| {
         anyhow::anyhow!("Choose a Pi profile or pass --clear. See `wg profile list`.")
     })?;
-    let profile = named_profile::load(name)?;
-    profile.config.validate_pi_model_plane().with_context(|| {
-        format!("profile {name:?} is not Pi-only; project selection requires exact `pi:<provider>:<model>` routes")
-    })?;
+    // Resolve once for the established validation/suggestion behavior, then
+    // parse the exact definition bytes whose preimage is bound to the project
+    // write. Reading config and origin metadata through separate file reads
+    // could otherwise materialize one revision while fingerprinting another.
+    let _resolved = named_profile::load(name)?;
     let definition_path = named_profile::profile_path(name)?;
-    let definition = if definition_path.is_file() {
-        std::fs::read_to_string(&definition_path)?
+    let definition_preimage = match std::fs::read(&definition_path) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error.into()),
+    };
+    let definition = if let Some(bytes) = definition_preimage.as_deref() {
+        std::str::from_utf8(bytes)
+            .with_context(|| {
+                format!(
+                    "profile definition {} is not UTF-8",
+                    definition_path.display()
+                )
+            })?
+            .to_string()
     } else {
         named_profile::starter_template(name)
             .ok_or_else(|| anyhow::anyhow!("profile {name:?} has no reusable definition"))?
             .to_string()
     };
-    let report = worksgood::project_config::materialize_for_graph(
+    let profile_config: Config = toml::from_str(&definition).with_context(|| {
+        format!(
+            "Failed to parse profile {name:?} ({}) from its selected preimage",
+            definition_path.display()
+        )
+    })?;
+    profile_config.validate_pi_model_plane().with_context(|| {
+        format!("profile {name:?} is not Pi-only; project selection requires exact `pi:<provider>:<model>` routes")
+    })?;
+    let report = worksgood::project_config::materialize_profile_for_graph(
         dir,
-        &profile.config,
-        Some((name, &definition)),
+        &profile_config,
+        (name, &definition),
+        &definition_path,
+        definition_preimage.as_deref(),
         dry_run,
     )?;
     if json {

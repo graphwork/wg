@@ -71,7 +71,19 @@ printf 'stale-pi\n' >"$global/active-profile"
 # Reusable profile definition + secret material + a custody keystore sentinel.
 # These MUST survive the cleanup migration byte-for-byte.
 mkdir -p "$global/profiles" "$global/secrets" "$global/keystore"
-printf '# reusable profile definition (machine-global input, not project authority)\n[agent]\nmodel = "pi:provider:model"\n' >"$global/profiles/pi.toml"
+cat >"$global/profiles/pi.toml" <<'TOML'
+# reusable profile definition (machine-global input, not project authority)
+[agent]
+model = "pi:provider:model"
+
+[tiers]
+fast = "pi:provider:model"
+fast_reasoning = "low"
+standard = "pi:provider:model"
+standard_reasoning = "high"
+premium = "pi:provider:model"
+premium_reasoning = "xhigh"
+TOML
 printf 'secret-bytes-alpha\n' >"$global/secrets/alpha"
 printf 'keystore-sentinel-bytes\n' >"$global/keystore/sentinel.key"
 
@@ -109,9 +121,34 @@ grep -q 'max_child_tasks_per_agent = 17' "$global/config.toml"
 [[ ! -f "$repoB/worksgood.toml" ]]
 
 # Add project-owned resource guardrail + archive policy via the config surface
-# (these are non-routing project bytes that must survive a clone).
+# (these are non-routing project bytes that must survive both profile selection
+# and a clone).
 run_wg "$repoA" config set dispatcher.resource_management.disk_sentinel_enabled false --no-reload >/dev/null
 run_wg "$repoA" config set dispatcher.archive_retention_days 31 --no-reload >/dev/null
+
+# Exercise the actual project profile flow against the reusable definition.
+# Selection may append its documented redacted usage record, but must not alter
+# the definition, global routing/config pointer, repo B, Pi console state, or
+# either project guardrail. Runtime provenance comes from the materialized
+# project bytes, never by reopening the definition.
+profile_global_before=$(sha "$global/config.toml")
+profile_active_before=$(sha "$global/active-profile")
+profile_definition_before=$(sha "$global/profiles/pi.toml")
+run_wg "$repoA" profile select pi --no-reload >"$scratch/A_profile_select.out"
+run_wg "$repoA" config get agent.model --json | grep -q 'pi:provider:model'
+run_wg "$repoA" config get agent.model --json | grep -q 'project-profile-import'
+run_wg "$repoA" config get dispatcher.resource_management.disk_sentinel_enabled --json | grep -q 'false'
+run_wg "$repoA" config get dispatcher.archive_retention_days --json | grep -q '31'
+[[ "$(sha "$global/config.toml")" == "$profile_global_before" ]]
+[[ "$(sha "$global/active-profile")" == "$profile_active_before" ]]
+[[ "$(sha "$global/profiles/pi.toml")" == "$profile_definition_before" ]]
+[[ ! -f "$repoB/worksgood.toml" ]]
+[[ ! -e "$home/.pi/agent/settings.json" ]]
+
+# A supported direct route edit clears profile origin and restores a manual
+# project-file projection without touching the machine or repo B.
+run_wg "$repoA" config set agent.model pi:test:worker --no-reload >/dev/null
+! grep -q '^\[profile_origin\]' "$repoA/worksgood.toml"
 
 # Capture repo A's authoritative route/reasoning/resource/archive leaves.
 A_agent_model=$(run_wg "$repoA" config get agent.model --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["value"])')
@@ -264,7 +301,19 @@ TOML
 printf 'stale-pi\n' >"$global/active-profile"
 # Restore + extend the reusable profile definition and secret/keystore sentinels.
 mkdir -p "$global/profiles" "$global/secrets" "$global/keystore"
-printf '# reusable profile definition (machine-global input, not project authority)\n[agent]\nmodel = "pi:provider:model"\n' >"$global/profiles/pi.toml"
+cat >"$global/profiles/pi.toml" <<'TOML'
+# reusable profile definition (machine-global input, not project authority)
+[agent]
+model = "pi:provider:model"
+
+[tiers]
+fast = "pi:provider:model"
+fast_reasoning = "low"
+standard = "pi:provider:model"
+standard_reasoning = "high"
+premium = "pi:provider:model"
+premium_reasoning = "xhigh"
+TOML
 printf 'secret-bytes-alpha\n' >"$global/secrets/alpha"
 printf 'keystore-sentinel-bytes\n' >"$global/keystore/sentinel.key"
 
@@ -289,10 +338,20 @@ grep -q 'wg migrate project-local-pi --cleanup-global-routing' "$scratch/lint_be
 # Secret values never leak into lint output.
 ! grep -q 'secret-bytes-alpha' "$scratch/lint_before.out"
 
-# Dry-run writes nothing.
+# Dry-run writes nothing, including every preserved fixture.
+dry_global_before=$(sha "$global/config.toml")
+dry_active_before=$(sha "$global/active-profile")
 run_wg "$repoA" migrate project-local-pi --cleanup-global-routing --dry-run --yes >"$scratch/migrate_dry.out"
-[[ "$(sha "$global/config.toml")" == "$(sha "$global/config.toml")" ]]
-[[ -e "$global/active-profile" ]]
+[[ "$(sha "$global/config.toml")" == "$dry_global_before" ]]
+[[ "$(sha "$global/active-profile")" == "$dry_active_before" ]]
+[[ "$(sha "$global/profiles/pi.toml")" == "$before_profile_def" ]]
+[[ "$(sha "$global/secrets/alpha")" == "$before_secret" ]]
+[[ "$(sha "$global/keystore/sentinel.key")" == "$before_keystore_sentinel" ]]
+[[ "$(sha "$repoA/.wg/identity/alice.json")" == "$before_identity_record" ]]
+[[ "$(sha "$repoA/.wg/federation.yaml")" == "$before_federation" ]]
+[[ "$(sha "$repoA/worksgood.toml")" == "$before_repoA_cfg" ]]
+keystore_manifest_dry=$(find "$home/.wg/keystore" -type f -printf '%P\n' 2>/dev/null | sort | xargs -I{} sha256sum "$home/.wg/keystore/{}")
+[[ "$keystore_manifest_before" == "$keystore_manifest_dry" ]]
 grep -q 'dry-run' "$scratch/migrate_dry.out"
 
 # Apply: remove only routing selectors + active-profile pointer.

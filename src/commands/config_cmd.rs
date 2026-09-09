@@ -2109,6 +2109,7 @@ pub fn update_model_routing(
     set_provider: Option<&[String]>,
     set_endpoint: Option<&[String]>,
 ) -> Result<()> {
+    reject_global_project_write(scope)?;
     if set_provider.is_some_and(|values| !values.is_empty())
         || set_endpoint.is_some_and(|values| !values.is_empty())
     {
@@ -2546,12 +2547,15 @@ fn mask_token(token: &str) -> String {
     }
 }
 
-/// Install the current project's config as the global default.
+/// Refuse the retired whole-project global-install shortcut.
 ///
-/// Copies `.wg/config.toml` → `~/.wg/config.toml`.
-/// If the global config already exists and `--force` is not set, shows a diff
-/// summary and asks for confirmation on stdin.
+/// The helper below remains for one-release test/migration compatibility, but
+/// the public CLI may not copy route-bearing project bytes into machine state.
 pub fn install_global(workgraph_dir: &Path, force: bool) -> Result<()> {
+    // This legacy shortcut copies an entire project document, including route
+    // selectors, into machine-global state. The project-local cutover permits
+    // only explicitly warned non-routing `config set --global` writes.
+    reject_global_project_write(ConfigScope::Global)?;
     let global_path = Config::global_config_path()?;
     let global_dir = Config::global_dir()?;
     install_global_to(workgraph_dir, &global_path, &global_dir, force)
@@ -2821,6 +2825,12 @@ pub fn set_setting_value(
     key: &str,
     value: &str,
 ) -> Result<()> {
+    let normalized_key = normalize_dotted_key(key);
+    if scope == ConfigScope::Global
+        && (is_project_routing_key(key) || is_project_routing_key(&normalized_key))
+    {
+        reject_global_project_write(scope)?;
+    }
     let mut config = match scope {
         ConfigScope::Global => Config::load_global()?.unwrap_or_default(),
         ConfigScope::Local => Config::load(workgraph_dir)?,
@@ -3239,7 +3249,7 @@ fn scope_config_path(workgraph_dir: &Path, scope: ConfigScope) -> Result<std::pa
     })
 }
 
-fn reject_global_project_write(scope: ConfigScope) -> Result<()> {
+pub(crate) fn reject_global_project_write(scope: ConfigScope) -> Result<()> {
     if scope == ConfigScope::Global {
         anyhow::bail!(
             "error[WG-GLOBAL-CONFIG-WRITE-REFUSED]: machine-global routing is legacy and inactive. Write this project's worksgood.toml (omit --global), or edit a reusable definition with `wg profile edit`."
@@ -3251,7 +3261,8 @@ fn reject_global_project_write(scope: ConfigScope) -> Result<()> {
 fn is_project_routing_key(key: &str) -> bool {
     matches!(
         key,
-        "agent.model"
+        "profile"
+            | "agent.model"
             | "agent.executor"
             | "dispatcher.model"
             | "dispatcher.executor"
@@ -3260,16 +3271,20 @@ fn is_project_routing_key(key: &str) -> bool {
             | "coordinator.executor"
             | "coordinator.provider"
     ) || [
-        "models.",
-        "tiers.",
-        "endpoints.",
-        "llm_endpoints.",
-        "native.",
-        "openrouter.",
-        "openai.",
+        "models",
+        "tiers",
+        "execution",
+        "endpoints",
+        "llm_endpoints",
+        "native",
+        "openrouter",
+        "openai",
     ]
     .iter()
-    .any(|prefix| key.starts_with(prefix))
+    .any(|namespace| {
+        key.strip_prefix(namespace)
+            .is_some_and(|suffix| suffix.is_empty() || suffix.starts_with('.'))
+    })
 }
 
 /// Set the project-wide default model route everywhere a closed profile/setup
