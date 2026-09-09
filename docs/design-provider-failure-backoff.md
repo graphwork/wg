@@ -1,777 +1,779 @@
-# Provider-failure retry and falloff contract
+# Minimal bounded source-provider recovery contract
 
-**Status:** accepted design for `provider-backoff-planner`,
-`provider-backoff-evaluation`, and `provider-backoff-ux`
+**Status:** accepted V1 design for `provider-backoff-planner` and its direct
+real-entry-point verification
 
-## 1. Decision
+## 1. Decision and scope
 
-WorksGood will retry only failures proven to be provider or transport
-infrastructure failures. One durable `PlannerStore` retry series owns the next
-eligible time and emits one idempotent, exact-route effect. A source failure may
-create a fresh lifecycle generation for the same goal; an evaluator or reviewer
-failure retries the same immutable candidate record. Neither path changes route,
-invents a score, or asks another model to classify the failure.
+V1 adds a small, explicitly enabled recovery path to the **current direct
+source dispatcher**. It automatically retries only an unambiguously classified,
+transient **source-provider** failure:
 
-Transient retry count is unbounded. Its delay is bounded by configurable
-exponential falloff with a **24 hour default computed-delay cap**. Reaching that
-cap keeps the work live; it never converts infrastructure failure into semantic
-`Failed`.
+- direct HTTP 429 / provider rate limit;
+- a direct temporary server/provider outage such as eligible 5xx, overloaded,
+  or unavailable; or
+- a typed transport failure whose execution outcome is proven safe to replay or
+  has been reconciled as not committed.
 
-This is deliberately a scheduler contract, not an LLM controller task and not a
-revival of `ConvergenceState`.
+The default is off:
 
-## 2. Repository reality and the activation boundary
+```toml
+[coordinator.source_provider_retry]
+enabled = false
+```
 
-There is an important current-source contradiction which the implementation
-must resolve explicitly rather than hiding behind documentation:
+With the policy off, the existing fail-stop behavior is unchanged: the exact
+source attempt remains `Failed`, its worktree and evidence remain available,
+and only an explicit operator action can create another generation. Enabling
+the policy is prospective; it does not backfill old failures.
 
-- `PlannerStore` calls its decision trace the scheduling authority, its effect
-  journal the execution/acknowledgement authority, and its state file a
-  rebuildable cache (`src/service/planner.rs:1988-1997`). It already allocates
-  monotonic sequence/logical time, persists the trace before returning effects,
-  reconstructs issued effects after a crash, and exposes the earliest durable
-  deadline (`src/service/planner.rs:2148-2255`, `:2386-2404`).
-- The current service says the opposite: startup does not open `PlannerStore`
-  and enables direct fail-stop dispatch (`src/commands/service/mod.rs:3034-3040`);
-  `coordinator_tick` treats historical planner effects as evidence only
-  (`src/commands/service/coordinator.rs:2438-2447`).
+The V1 budget is deliberately small:
 
-The provider-backoff implementation is therefore a narrow, visible cutover:
-`PlannerStore` becomes the **only authority for automatic provider-failure retry
-eligibility, route probing, and retry effects**. It need not become a semantic
-controller or replace ordinary first-attempt readiness. Direct dispatch may
-continue for an ordinary open task, but it cannot see a provider-failed source
-as open until the due planner effect has passed the lifecycle fence. Evaluation
-lanes cannot claim a retry-backoff record until the due planner effect has
-rearmed that exact record.
+- at most **3 automatic retries**;
+- all automatic retry starts must occur within **15 minutes of the first
+  failure** in the episode;
+- deterministic exponential delay starts at 30 seconds and is capped at 5
+  minutes; and
+- provider `Retry-After` is a lower bound. If it falls after the episode
+  deadline, recovery becomes `NeedsAttention` rather than retrying early.
 
-If this cutover is not wired, this design is not implemented. Merely adding a
-second timestamp beside direct polling would create two schedulers.
+Attempt count and elapsed time are independent budgets. The delay cap does not
+create more attempts and reaching it is not semantic failure. Exhausting either
+budget yields a visible `NeedsAttention / recovery-exhausted` projection with
+saved work and one safe next action; it does not assign a quality score or claim
+the source is bad.
 
-## 3. Existing seams to preserve
+V1 does **not** add evaluator/reviewer retries, Agency learning/projection,
+hour/day unattended recovery, route-wide probe/breaker architecture, rich TUI
+controls, a new scheduler, or an LLM controller. Those are deferred explicitly
+in section 11.
 
-### 3.1 Typed failure and telemetry seam
+## 2. Current authority: extend it, do not replace it
 
-`FailureSignal` already separates a machine reason from human failure prose and
-carries HTTP status, provider type/code, `retry_after_secs`, executor, exact
-route, and detection time (`src/graph.rs:233-311`). The shared telemetry
-normalizer maps structured HTTP/provider evidence before falling back to text
-and assigns lower confidence to text/unknown inference
-(`src/telemetry/mod.rs:240-299`). Wrapper/raw-stream classification and native
-HTTP execution share that normalizer (`src/commands/spawn/raw_stream_classifier.rs:1-109`).
+### 2.1 Production dispatcher
 
-The task failure path persists the signal on the exact task attempt and appends
-rolling telemetry; duplicate append sites currently converge by
-`(task, attempt, executor, bucket)` (`src/commands/fail.rs:93-140`, `:185-269`;
-`src/telemetry/mod.rs:310-337`, `:401-433`). Rolling telemetry and its
-`cooled_until_ms` aggregate are useful projections, but are not restart-stable
-scheduling authority (`src/telemetry/mod.rs:447-500`).
+The deployed service announces:
 
-The implementation must add a bounded provenance discriminator to normalized
-failure evidence, for example:
+```text
+Direct fail-stop dispatch enabled; PlannerStore is not an authority
+```
+
+and reports `dispatch_authority = "direct-fail-stop"`
+(`src/commands/service/mod.rs:3259`, `:4804`). `coordinator_tick` does not open,
+replay, acknowledge, or migrate planner effects. It derives ordinary work from
+graph readiness and capacity, resolves one canonical `SpawnPlan`, and invokes
+`spawn_agent_with_binding` with exact route and plan bindings
+(`src/commands/service/coordinator.rs:2243-2289`). Global outage/backoff
+controllers are retired (`src/commands/service/coordinator.rs:2874`).
+
+A route-selection or process-launch error is terminalized by
+`record_direct_dispatch_failure`; it says that the coordinator will not retry
+implicitly (`src/commands/service/coordinator.rs:1835-1929`). A running source
+provider failure flows through raw-stream terminal classification, `wg fail`,
+and the lifecycle `AttemptFailed` transition (`src/commands/spawn/raw_stream_classifier.rs:16-177`,
+`src/commands/fail.rs:93-278`). A `Failed` task is not ordinary ready work.
+
+V1 adds one more **admission case inside that direct dispatcher**: a failed task
+with a due, valid `SourceProviderRecoveryV1` record may receive one fenced
+`GenerationCreated` transition and then use the same direct spawn path. There
+is no background retry thread and no generic effect planner. Existing
+coordinator capacity, task ordering, graph locking, claim/reservation, and
+process launch remain authoritative.
+
+### 2.2 Lifecycle and completion authority
+
+`GenerationCreated` already requires an Operator or Reconciler, increments the
+generation, clears the current attempt, and returns the task to `Open`
+(`src/lifecycle.rs:959-982`). V1 requests this existing transition with exact
+expectations; it never writes source status directly.
+
+The completion controller remains the sole ordinary authority which derives
+`Done` from immutable candidate bytes, deterministic validation, exact review
+receipts, and publication truth (`src/commands/completion_done.rs:75-238`). A
+selected completion candidate, completion blocker, review rejection,
+publication refusal, or integrity error is not a source-provider retry signal.
+The current raw-stream precedence already protects completed turns and typed
+finalization blockers from being rewritten as heuristic provider failures
+(`src/commands/spawn/raw_stream_classifier.rs:16-177`). V1 preserves and
+strengthens that precedence.
+
+A late result from a superseded source attempt remains fenced by task,
+generation, attempt ID, owner, and fence. Provider recovery receives no
+publication or completion capability.
+
+### 2.3 Typed failure and exact route seams
+
+`FailureSignal` currently carries a normalized reason, confidence, HTTP status,
+provider code/type, relative Retry-After, executor, route, and detection time
+(`src/graph.rs:305-323`). Shared telemetry maps structured status/provider data
+before falling back to text (`src/telemetry/mod.rs:1-299`). Rolling telemetry
+and `ProviderHealth.cooled_until_ms` are diagnostic projections only
+(`src/telemetry/mod.rs:311-337`, `:447-503`); they are not restart-stable retry
+authority.
+
+The direct spawn path already computes a redacted `HealthRouteKey`, a stable
+route binding, and a complete plan binding (`src/service/provider_health.rs:25-84`,
+`src/dispatch/plan.rs:344-385`). `spawn_agent_with_binding` recomputes the plan
+and refuses mismatch without fallback (`src/commands/spawn/execution.rs:1204`,
+`:1325-1338`). V1 persists and reuses those bindings.
+
+### 2.4 Authorities which remain inactive
+
+`src/service/planner.rs`, `src/service/convergence.rs`, and
+`[coordinator.convergence]` still compile, but production never opens
+`PlannerStore`. Comments in those inactive modules are not dispatch authority.
+V1 must not:
+
+- open, migrate, or replay `PlannerStore`;
+- revive `ConvergenceState` or `converge_failed_prerequisites`;
+- create a general retry/effect store or a second scheduler;
+- use telemetry cooldown as an admission clock;
+- recreate `.evaluate-*`, `.flip-*`, probe, retry, or controller graph tasks; or
+- invoke a model to classify a provider error.
+
+## 3. V1 persistence on the existing task record
+
+V1 reuses the atomically persisted graph. It adds one optional projection to
+`Task`, serialized in `graph.jsonl` and mutated in the same `modify_graph`
+transaction as the relevant lifecycle event:
+
+```text
+SourceProviderRecoveryV1 {
+  schema: 1,
+  episode_id,
+  state: Backoff | Authorized | Running | Recovered |
+         NeedsAttention | Paused | Cancelled,
+
+  goal_requirements_digest,
+  completion_contract,
+  origin: SourceAttemptRef,
+  last_failed: SourceAttemptRef,
+  current_failure_id,
+  failure_evidence_digest,
+  execution_outcome: DefinitiveFailure | NotSent | ReconciledNoCommit,
+
+  exact_route,                 // redacted handler-first route
+  route_id,
+  plan_id,
+
+  first_failure_at,
+  latest_failure_at,
+  recovery_deadline_at,
+  retry_after_not_before,
+  automatic_retries_used,
+  automatic_retry_limit,
+  next_retry_at,
+  policy_snapshot,
+
+  authorization_id,
+  authorized_generation,
+  reason_code,
+  next_action,
+}
+```
+
+`SourceAttemptRef` contains graph/task ID, generation, attempt ID, attempt fence,
+owner/run identity, process epoch where applicable, and the lifecycle revision
+which accepted `AttemptFailed`.
+
+The episode record is retry admission state, not a second task lifecycle. The
+task remains canonically `Failed` while in Backoff or NeedsAttention. Human
+views render the typed recovery substate so `Failed` is not misread as a
+semantic quality judgment.
+
+The stable episode identity is:
+
+```text
+episode_id = BLAKE3(
+  "wg-source-provider-recovery-episode-v1" || graph_id || task_id ||
+  goal_requirements_digest || completion_contract || route_id || plan_id ||
+  first_failure_id
+)
+```
+
+The existing graph writer lock and atomic save make deadlines, counters, route
+bindings, authorization, and lifecycle change restart-stable together. No new
+retry file, timer service, journal, planner, or route probe store is introduced.
+The coordinator's existing periodic/event tick checks `next_retry_at`.
+
+The task lifecycle audit receives stable recovery event IDs for durable history.
+Closed episode details may later be compacted from the projection only after the
+same episode/authorization IDs are present in lifecycle audit and attempt
+metadata; no active Backoff, Authorized, Running, Paused, or NeedsAttention
+record may be discarded.
+
+## 4. Eligibility and decision table
+
+An automatic retry requires every positive condition in the table and all
+fences in section 7. Direct evidence means a structured HTTP response/provider
+envelope or a typed transport result from the execution adapter—not a phrase in
+stderr and not model inference.
+
+| Failure evidence and state | V1 classification | Automatic source action | Visible result / next authority |
+|---|---|---|---|
+| Direct 429 or provider rate-limit envelope; execution definitively rejected | `transient-source-provider` | Schedule within both budgets; honor Retry-After | Backoff, then one exact-route source retry |
+| Direct eligible 500/502/503/504/529 or typed provider overloaded/unavailable | `transient-source-provider` | Schedule within both budgets | Backoff, then one exact-route source retry |
+| Typed connect/DNS failure before request bytes were sent | `transient-source-transport` | Schedule within both budgets | Backoff, then one exact-route source retry |
+| Typed reset/timeout after request start, with provider idempotency or reconciliation proving no committed execution/result | `transient-source-transport` | Schedule within both budgets | Backoff, then one exact-route source retry |
+| Reset/timeout where provider acceptance, tool effects, or final result may have occurred and are not reconciled | `ambiguous-execution` | **Never** | NeedsAttention; reconcile the exact run before any explicit retry |
+| Text-only “429”, “timeout”, “unavailable”, generic nonzero exit, contradictory direct reports, or unknown reason | `unknown` | **Never** | Preserve evidence; operator inspection/reconciliation |
+| Whole-agent hard timeout without nested direct provider evidence | `source-timeout` | **Never** under this policy | Existing source/operator recovery policy |
+| 401/403, missing/invalid key, missing handler, invalid endpoint/model, route/config drift | `auth-config` | **Never** | Fix/authenticate configuration, then explicit operator retry |
+| 402, insufficient credits, account/project budget exhausted | `credit-exhausted` | **Never** | Add credit/raise budget, then explicit operator retry |
+| Input/document 4xx, context/token limit, bad request | `source-input` | **Never** | Correct source/configuration explicitly |
+| Semantic validation failure or FLIP/Eval/reviewer rejection | `semantic-rejection` | **Never** | Existing exact-candidate repair/waiver path; elapsed time is inert |
+| Reviewer/evaluator provider or process failure | out of V1 | **Never by source recovery** | Existing reviewer/evaluator policy; unchanged source |
+| Completion-controller, evidence-integrity, publication, landing, or guard failure | `completion-authority` | **Never** | Existing retained-candidate completion recovery |
+| Task is manually paused, cancelled, abandoned, or has a newer operator generation | `operator-state` | **Never while/after that state** | Manual authority is preserved |
+
+A Retry-After value does not make a 401/402/403 retryable. Conversely, an
+eligible class without safe execution-state evidence is ambiguous, not
+transient. The implementation uses direct typed evidence whenever available and
+never asks an evaluator to rediscover it.
+
+## 5. Direct evidence, safe replay, and deduplication
+
+### 5.1 Evidence additions
+
+The shared source failure boundary must add the minimum fields currently
+missing from `FailureSignal`/attempt metadata:
 
 ```text
 FailureEvidenceKind = HttpResponse | ProviderEnvelope | TransportError |
                       ProcessOutcome | LegacyText | Unknown
-```
 
-Automatic retry requires direct evidence: a structured HTTP/provider envelope,
-a typed transport timeout/reset, or a typed process outcome whose category is
-provider infrastructure. `LegacyText` and `Unknown` can remain visible but
-cannot alone authorize automatic work. A model evaluator must never be invoked
-to turn untyped prose into provider evidence.
-
-### 3.2 Exact route and route health seam
-
-`HealthRouteKey` already derives a non-secret handler + provider + endpoint
-fingerprint from the canonical `SpawnPlan`; credential values are excluded
-(`src/service/provider_health.rs:14-82`). `PlannerStore` already has a safe
-`DispatchEffectBinding { route_id, plan_id, ... }`, explicitly making route or
-model fallback unrepresentable (`src/service/planner.rs:209-223`). It also has a
-route projection and one probe lease (`src/service/planner.rs:267-353`) plus
-same-route outage/probe/recovery logic (`src/service/planner.rs:1178-1453`).
-
-The retry contract reuses those identities. The raw handler-first route remains
-in the domain projection shown to the user; the planner trace carries only the
-safe `route_id` and digest of the exact resolved plan.
-
-### 3.3 Evaluation and completion-review seams
-
-An `EvaluationRecord` is already bound to source task, generation, source
-attempt/fence, finalization round, candidate and manifest digests, validation
-result, policy, and an exact route snapshot (`src/evaluation/mod.rs:123-218`).
-An evaluation attempt separately records its exact route, usage, response
-digest, and typed infrastructure failure (`src/evaluation/mod.rs:82-121`).
-
-The bounded lane currently computes its own 15-second exponential timer and a
-three-process-attempt limit in `is_claimable`
-(`src/evaluation/bounded.rs:39-40`, `:568-605`). Its finalizer correctly keeps
-infrastructure failure separate from semantic rejection and leaves source
-lifecycle unchanged (`src/evaluation/bounded.rs:984-1050`), while semantic
-verdict consumption is candidate/route CAS-bound and idempotent
-(`src/evaluation/bounded.rs:775-978`). The local retry timer must be retired for
-typed provider failures; the exact record/CAS and verdict authority remain.
-
-Completion review likewise has an exact manifest/requirements/source binding
-and represents `SemanticRejection`, `ReviewerUnavailable`, and
-`IncompleteEvidence` separately (`src/completion_review.rs:90-145`). A reviewer
-unavailable result becomes an immutable unavailable receipt, not a rejection
-(`src/completion_review.rs:991-1081`). The reviewer adapter must attach direct
-normalized provider evidence when it has it; its current code/message-only
-`ReviewerUnavailable` is insufficient to authorize automatic retry.
-
-## 4. Non-negotiable invariants
-
-1. **Direct evidence first.** Structured provider/transport evidence wins.
-   No model call exists solely to rediscover a 429, timeout, reset, or 5xx.
-2. **Same route.** Every automatic retry uses the exact handler, provider,
-   model, endpoint fingerprint, reasoning, and route generation captured by the
-   failed operation. There is no implicit profile, tier, model, endpoint, or
-   executor fallback.
-3. **Same work identity.** Source retry retains the same goal and completion
-   contract. Evaluation/review retry retains the exact candidate, manifest,
-   policy, reviewer kind, and evaluation/review binding.
-4. **One scheduler.** `PlannerStore` owns `next_eligible_at`, retry ordinal,
-   route breaker, probe lease, and effect issuance.
-5. **Domain authority remains.** A planner effect requests an existing
-   lifecycle/evaluation/review transition. It cannot write source status,
-   create a quality score, accept/reject a candidate, or edit source.
-6. **One physical operation at a time.** An active exact attempt/claim or a
-   spawned route-probe lease prevents a second operation for the same target.
-7. **Ambiguous outcome is fail-closed.** Every physical provider operation gets
-   a stable `operation_id` before network I/O. A timeout/reset may authorize a
-   fresh lifecycle attempt only when the adapter can prove the prior operation
-   is replay-safe: the provider honors that idempotency identity, reconciliation
-   proves no accepted result, or no externally committed tool effect can be
-   duplicated. Otherwise it becomes `ambiguous-provider-outcome` and waits for
-   reconciliation/operator evidence.
-8. **Elapsed time is not semantic evidence.** It may make a transient retry due;
-   it can never re-evaluate a consumed rejection or turn transient failure into
-   semantic failure.
-9. **Crash safety before execution.** An effect is in both planner trace and
-   effect journal before an adapter sees it. Adapter execution and
-   acknowledgement use the same stable effect ID.
-
-## 5. Failure-class decision table
-
-“Automatic” below means planner-authorized after falloff, not an in-process HTTP
-client retry. Request-local retries inside one executor call may remain; after
-those are exhausted they emit one typed attempt failure into this contract.
-
-| Evidence and locus | Canonical class | Automatic action | Source/candidate consequence | Wake/reset condition |
-|---|---|---|---|---|
-| Source worker: direct HTTP 429, valid `Retry-After`, transient 5xx, typed provider overloaded/unavailable, transport timeout/reset/DNS/connect failure, with replay safety proved | `transient-provider` | Schedule a fresh lifecycle-authorized generation of the same goal on the exact failed route; coordinate through the route breaker/probe lease | Preserve source/WIP evidence; do not spend semantic/cycle retry budget | Due deadline and route lease; reset only on authoritative provider/source progress |
-| Evaluator or reviewer: same direct infrastructure evidence | `transient-provider` | Rearm and run the same evaluation record or review binding on the exact route | Never rerun unchanged source; no score/verdict is created for the failed call | Due deadline and route lease; reset on a well-formed result or a new candidate |
-| Evaluator malformed output or insufficient/missing evidence without direct provider evidence | `evaluation-evidence` or `unknown` | No provider automatic retry. Existing evidence-repair/manual policy may act, but not this scheduler | Source remains unchanged and awaiting the correct evidence | New evidence/candidate or explicit operator retry |
-| Semantic evaluator/reviewer reject with a durable verdict/receipt | `semantic-rejection` | None | Keep the rejected immutable candidate; require source repair, waiver, or a genuinely new candidate | New candidate/manifest or audited operator action only; time never requeues it |
-| Source validation/deliverable/source-quality failure, task input 4xx, context limit, agent hard timeout, clean no-op | `source-quality` | None under provider policy | Follow explicit source repair/retry policy; do not call it provider recovery | New source/operator evidence |
-| 401/403, invalid/missing key, missing handler/adapter, invalid endpoint/model, route drift, executor config | `auth-config` | No timed credential-bearing retry. Persist operator/config wait | Keep same goal or record and exact route identity | A new credential/config/route-validation event; then start at base delay or probe once |
-| 402, insufficient credits, exhausted account/project budget | `credit-exhausted` | No aggressive timed retry and no fallback | Keep same goal or record; show credit action needed | A credit/budget event or explicit operator retry; then one same-route probe |
-| Timeout/reset after possible provider acceptance or external tool commit, without idempotency/outcome proof | `ambiguous-provider-outcome` | No automatic retry | Preserve exact session/WIP and fence late results; reconcile by `operation_id` or require operator action | Durable outcome/replay-safety evidence |
-| Text-only inference, generic nonzero exit, contradictory evidence, or `FailureReason::Unknown` | `unknown` | No automatic retry | Preserve evidence and create a typed reconciliation/operator recommendation, no score | Direct evidence arrives or explicit operator action |
-
-A provider’s `Retry-After` on an authentication/credit error does not make that
-hard class transient. Conversely, a transport timeout is transient only when it
-is the provider request/stream transport; a whole-agent hard timeout remains a
-source/task failure unless direct nested provider evidence proves otherwise.
-
-## 6. Durable retry model
-
-Extend planner state with one bounded retry projection per target series:
-
-```text
-RetrySeries {
-  retry_id,                 // stable series identity
-  target: Source(SourceRetryKey) | Evaluation(EvaluationKey) | Review(ReviewKey),
-  operation_id,             // minted and persisted before physical I/O
-  route_id,
-  plan_id,
-  progress_id,
-  last_failure_id,
-  replay_safety_receipt_id,
-  class,
-  failures_without_progress,
-  base_seconds,
-  cap_seconds,
-  jitter_divisor,
-  retry_after_not_before,   // canonical absolute Unix-second lower bound
-  next_eligible_at,
-  pending_effect_id,
-  disposition: Backoff | AwaitRouteProbe | AwaitOperatorEvent | Due,
-}
-```
-
-`SourceRetryKey` persists graph ID, task ID, goal digest, completion contract,
-failed generation, failed attempt ID, failed attempt fence, and the lifecycle
-revision which accepted the failure. `EvaluationKey` includes `evaluation_id`,
-the complete `SourceCandidateRef`, policy digest, route digest, and last failed
-evaluation attempt ID. `ReviewKey` includes task/generation/attempt/fence,
-candidate sequence, manifest and requirements digests, reviewer kind, exact
-route digest, and unavailable receipt ID. The full target key,
-`operation_id`, `failure_id`, route/plan IDs, progress ID, and replay-safety
-receipt ID are inputs to the retry effect ID. A later failure or generation
-therefore cannot match an old effect even if it uses the same task and route.
-Mutable prose, API keys, paths, prompts, and candidate bytes are not planner
-fields.
-
-The dispatch/evaluation/review adapter mints `operation_id` transactionally
-before the first physical request and puts it in spawn/claim metadata. Provider
-request/event IDs are aliases attached afterward, never alternate identities.
-`failure_id` depends on the canonical operation identity, not on whichever
-observation site saw the error:
-
-```text
-failure_id = blake3("wg-provider-failure-v1" || target exact tuple ||
-                    operation_id || route_id || plan_id)
-```
-
-A physical operation has one terminal failure observation. Wrapper,
-task-failure, telemetry, and provider-envelope reports for that operation merge
-under the same `failure_id`. The reducer selects evidence by the fixed
-precedence `ProviderEnvelope > HttpResponse > TransportError > ProcessOutcome >
-LegacyText > Unknown`, takes the maximum `retry_after_not_before`, and requires
-all direct reports to agree on the hard/transient class. A conflicting direct
-class becomes `ambiguous-provider-outcome`; it never creates a second failure.
-Detection time, optional provider event ID, status/type/code spelling, and human
-prose cannot change identity. A new physical retry receives a new
-`operation_id`, so it advances the exponent exactly once.
-
-A retry series crosses automatic source generations: `GenerationCreated` alone
-does not reset it. It ends or resets only by the progress rules in §8.
-
-### 6.1 Replay-safety receipt
-
-Automatic source retry requires an immutable, content-addressed
-`ReplaySafetyReceipt`:
-
-```text
-ReplaySafetyReceipt {
-  schema: 1,
-  receipt_id,                 // digest of canonical fields below, excluding this field
+SourceProviderFailureEvidence {
+  evidence_kind,
   operation_id,
-  target: SourceRetryKey,
+  provider_request_id,
   route_id,
   plan_id,
-  failed_execution_id,        // launch receipt or planner effect-execution ID
-  proof: DefinitiveProviderRejection { status, provider_request_id } |
-         PreWriteTransportFailure { connected, bytes_written: 0 } |
-         ProviderIdempotencyBound { idempotency_key, provider_request_id } |
-         ReconciledNoResult { provider_query_receipt_id },
-  external_effect_journal_head,
-  issuer: { adapter_kind, adapter_binary_digest, run_id },
-  evidence_refs,
-  issued_at,
-}
-```
-
-The exact execution adapter which owns `operation_id` is the only issuer. It
-writes the canonical receipt to the immutable completion/evidence object store
-and links its digest to the operation/effect execution journal before reporting
-the failure to `PlannerStore`. Planner input carries only the receipt digest.
-Before effect issuance and again before lifecycle mutation, the verifier reloads
-that object and checks: content digest; schema; registered adapter/run identity;
-exact operation, source, route, plan, and failed launch/effect-execution
-bindings; and the external-effect journal head. `DefinitiveProviderRejection` accepts only an
-actual non-success provider response such as 429/5xx, never a missing response.
-`PreWriteTransportFailure` requires the transport journal to prove zero request
-bytes were written. `ProviderIdempotencyBound` requires the route capability
-snapshot and provider response metadata to prove the key was accepted;
-`ReconciledNoResult` requires a provider query receipt bound to the provider
-request ID. A timeout after any request bytes, an unsupported idempotency key,
-missing journal data, unknown issuer, digest mismatch, or a later external tool
-commit fails closed. “No visible graph result” is not proof.
-
-Evaluation/review retries also carry an operation receipt when their outcome is
-ambiguous; a definitive 429/5xx receipt is sufficient. The receipt authorizes
-only replay safety. It does not classify quality, grant lifecycle authority, or
-prove route health.
-
-## 7. Exact falloff formula
-
-For failure ordinal `n = failures_without_progress` before recording the new
-unique failure (first failure uses `n = 0`), with normalized
-`1 <= base_seconds <= cap_seconds`, and `jitter_divisor >= 1`:
-
-```text
-raw(n)       = min(cap_seconds,
-                   saturating_mul(base_seconds, 2^min(n, 63)))
-window(n)    = floor(raw(n) / jitter_divisor)
-jitter(n)    = H("wg-provider-retry-jitter-v1" || retry_id || progress_id || n)
-               mod (window(n) + 1)
-computed(n)  = min(cap_seconds, raw(n) + jitter(n))
-eligible_at  = max(observed_at + computed(n),
-                   retry_after_not_before.unwrap_or(0))
-```
-
-Before planner observation, the adapter canonicalizes `Retry-After` once. A
-finite nonnegative delta becomes
-`retry_after_not_before = observed_at + ceil(delta_seconds)`; an HTTP date
-becomes its ceiling Unix-second timestamp. Absence or malformed/NaN/infinite/
-negative input becomes `None` plus a diagnostic. Duplicate reports merge with
-`max(existing, incoming)`, so the lower bound can never move earlier. After
-computing this unique failure, persist
-`failures_without_progress = n + 1`. All arithmetic is
-saturating. `H` is the first eight BLAKE3 digest bytes interpreted as a
-little-endian unsigned 64-bit integer. The hash inputs and policy snapshot are
-persisted, so the result is deterministic across restart and machines. The
-positive jitter is in
-`[0, floor(raw/jitter_divisor)]`; `computed` never exceeds the configured cap.
-At the cap, positive jitter may saturate to the cap, which is acceptable because
-the route breaker still admits only one probe and recovery release is separately
-staggered per target.
-
-`Retry-After` is a protocol lower bound. It may extend `eligible_at` beyond the
-local computed-delay cap; silently shortening it would violate the provider’s
-instruction. Thus “24 hour cap” means the maximum delay **generated by WG’s
-falloff**, not permission to ignore a longer provider lower bound.
-
-The raw header form is diagnostic evidence only; planner state and replay use
-only the canonical absolute `retry_after_not_before`.
-
-## 8. Progress and reset rules
-
-There are two related scopes.
-
-### 8.1 Route scope
-
-A route outage count resets only on a durable success receipt from a
-credential-bearing operation on the exact `route_id`/`plan_id`: the leased real
-source/evaluation/review operation or an explicit route probe. Config reload,
-time passage, a new task, an attempted spawn, or an unverified health guess does
-not mark the route healthy.
-
-### 8.2 Target scope
-
-The target series resets when its stage-aware `progress_id` advances:
-
-- source: a new exact candidate/manifest plus validation result, a completed
-  source result, or a durable non-provider semantic disposition;
-- evaluation: a well-formed semantic verdict or a genuinely new candidate,
-  policy, or explicit route generation;
-- review: a well-formed bound review receipt or a new candidate/manifest/
-  requirements binding;
-- hard wait: an explicit credential, config, or credit event starts a new
-  eligibility epoch, without silently changing route.
-
-The following never reset falloff: `GenerationCreated`, reservation, spawn,
-claim, heartbeat, PID liveness, output bytes, tokens, logs, duplicate telemetry,
-an identical failure, coordinator restart, or status rendering. A successful
-provider response followed by semantic validation failure resets provider
-health, then follows semantic/source policy; it does not continue a provider
-retry loop.
-
-Policy changes do not rewrite an already persisted deadline, exponent, or
-jitter. New defaults apply to a new series; an explicit operator “recompute
-retry policy” event may start a new policy epoch and is audited.
-
-## 9. One route probe lease
-
-Every target joins one durable route projection keyed by `HealthRouteKey`:
-
-```text
-RouteRetryState {
-  route_id,
-  route_epoch,
-  state: Healthy | Unavailable | Probing | AwaitOperatorEvent,
-  consecutive_probe_failures,
-  last_outage_failure_id,
+  exact_route,
+  http_status,
+  provider_type_or_code,
+  transport_code,
   retry_after_not_before,
-  next_probe_at,
-  route_probe_base_seconds,
-  route_probe_cap_seconds,
-  jitter_divisor,
-  probe_lease,
-  recovered_at,
+  execution_outcome,
+  evidence_digest,
 }
 ```
 
-The first unique transient failure opens an outage epoch. Concurrent failures
-from operations admitted before the breaker opened join that epoch, update the
-maximum `retry_after_not_before`, and **do not** increment the route exponent.
-Only a failed operation holding `probe_lease` increments
-`consecutive_probe_failures`; duplicate failure IDs are inert. For route ordinal
-`m = consecutive_probe_failures` before the failed probe (the initial outage
-uses `m = 0`):
+`operation_id` is minted before physical source execution; the current durable
+spawn/run identity may be used when bound to the exact attempt. Provider request
+IDs are aliases learned later. Attempt metadata must add `plan_id` and the
+stable recovery authorization ID; the existing health route and lifecycle tuple
+are retained.
+
+An HTTP/provider response which definitively refused work is safe. A transport
+failure is safe only when the adapter proves `NotSent` or persists a
+`ReconciledNoCommit` result using provider idempotency/request identity. “No
+graph result appeared” and “the process died” are not proof. Any possible
+external tool or publication effect makes the outcome ambiguous until
+reconciled.
+
+### 5.2 Failure identity and precedence
 
 ```text
-route_raw(m) = min(route_probe_cap_seconds,
-                   saturating_mul(route_probe_base_seconds, 2^min(m, 63)))
-route_window = floor(route_raw(m) / jitter_divisor)
-route_jitter = H("wg-route-probe-v1" || route_id || route_epoch || m)
-               mod (route_window + 1)
-route_delay  = min(route_probe_cap_seconds, route_raw(m) + route_jitter)
-next_probe_at = max(failure_observed_at + route_delay,
-                    retry_after_not_before.unwrap_or(0))
+failure_id = BLAKE3(
+  "wg-source-provider-failure-v1" || graph_id || task_id || generation ||
+  attempt_id || fence || operation_id || route_id || plan_id
+)
 ```
 
-After computing a failed leased probe, persist
-`consecutive_probe_failures = m + 1`. The same saturation, little-endian BLAKE3,
-absolute Retry-After lower-bound, and invalid-value rules from §7 apply. Route
-state, ordinal, policy snapshot, epoch, lower bound, deadline, and lease are in
-`PlannerStore` trace/state, so restart neither redraws jitter nor makes a probe
-early. Success persists `Healthy`, increments `route_epoch`, clears the ordinal,
-lower bound, deadline, and lease, and records `recovered_at` before releasing
-waiters. Auth/config/credit changes instead enter the event-gated state below.
-
-While a route is unavailable:
-
-1. all target retry records retain their own stage and exact route;
-2. the earliest due target may acquire the route’s single `probe_lease`;
-3. that lease authorizes one real, exact waiting operation as the probe whenever
-   possible—source retry, evaluation retry, or review retry—rather than creating
-   a synthetic graph task or LLM controller;
-4. other targets remain `AwaitRouteProbe` even if their local deadlines pass;
-5. success closes the breaker and releases waiting targets with deterministic
-   route-epoch/task staggering; failure advances the route outage falloff once.
-
-The recovery staggering formula is exact. Persist `recovered_at` and incremented
-`route_epoch`; for each waiting retry series:
+Wrapper, `wg fail`, raw-stream, telemetry, and process-observer reports for that
+operation fold under the same `failure_id`. Evidence selection precedence is:
 
 ```text
-stagger_window = route_probe_base_seconds
-stagger = H("wg-route-recovery-v1" || route_id || route_epoch || retry_id)
-          mod (stagger_window + 1)
-release_at = max(next_eligible_at, recovered_at + stagger)
-order = (release_at ascending, retry_id lexicographic)
+ProviderEnvelope > HttpResponse > TransportError > ProcessOutcome >
+LegacyText > Unknown
 ```
 
-`H` uses the same little-endian BLAKE3 rule as §7. A zero window releases at
-`recovered_at`. The persisted route epoch, recovery time, retry ID, and target
-deadline make the release stable across restart; the lexicographic tie-breaker
-makes collisions deterministic.
+The first accepted direct terminal observation fixes `latest_failure_at` for
+that failure. Duplicate observations:
 
-A lease binds effect ID, target key, route/plan IDs, lease epoch, and expiry. A
-lease which has not started may expire and be reacquired. Once its physical
-operation is recorded as started/spawned, it has no time-only expiry: the exact
-owner/claim must finish or be proven dead and fenced before another probe can
-run. This matches the existing planner distinction between an unspawned lease
-with `expires_at` and a spawned lease with no expiry
-(`src/service/planner.rs:1318-1354`, `:1651-1674`).
+- do not create a new episode;
+- do not increment `automatic_retries_used`;
+- do not recompute jitter or replenish the elapsed window;
+- do not move a deadline earlier; and
+- may only attach stronger direct evidence or increase an authoritative
+  Retry-After lower bound.
 
-Authentication, configuration, and credit exhaustion put the route in
-`AwaitOperatorEvent`, not ordinary timed probing. A slow 24-hour safety wake may
-refresh non-credential diagnostics, but it cannot invoke the provider or rearm
-work. A qualifying operator/config/credit event can authorize one probe at base
-delay. It cannot select a fallback.
+Conflicting direct hard/transient classifications move the episode to
+`NeedsAttention(reason=ambiguous-execution)` and cancel an unstarted
+authorization. A new physical retry always receives a new `operation_id` and,
+if it fails before authoritative recovery, becomes the next unique failure in
+the same episode.
 
-## 10. Automatic transition and idempotency fences
+### 5.3 Completion and late-result fences
 
-### 10.1 Source worker failure
+Source recovery is ineligible once the failed attempt has selected an immutable
+completion candidate or entered a typed completion/finalization blocker. The
+completion authority wins over incidental provider-looking text.
 
-The failed attempt is first terminalized normally through
-`AttemptFailed` with the exact generation/attempt/fence expectation. Only then
-may the planner schedule retry. At due time its effect adapter must atomically
-re-read and verify:
+When a retry generation is created, the old attempt/fence is superseded. Any
+late `wg done`, manifest, provider terminal receipt, or publication request from
+the old owner fails the existing generation/attempt/fence/owner checks. A
+recovery record never copies a candidate forward, accepts review, or publishes.
+Partial source work remains only in the retained managed worktree/branch for the
+fresh worker attempt to inspect and continue.
 
-- every persisted `SourceRetryKey` field: graph/task ID, goal digest, completion
-  contract, failed generation, failed attempt ID/fence, and accepted failure
-  revision;
-- current attempt is terminal `Failed` for the same `failure_id` and no owner is
-  live;
-- task failure projection still contains the same direct failure and exact
-  route/plan binding;
-- no newer candidate, verdict, operator edit, abandonment, or generation exists;
-- the planner effect ID and route probe lease are current; and
-- `replay_safety_receipt_id` resolves and verifies under §6.1 for the exact
-  operation/source/route/plan/effect-execution tuple. A possibly accepted
-  provider result or externally committed tool effect without such a receipt
-  changes the series to `ambiguous-provider-outcome` instead of creating a
-  generation.
+## 6. Exact bounded delay and budgets
 
-The adapter then requests existing lifecycle
-`TransitionKind::GenerationCreated` as `ActorKind::Reconciler`, with full
-`FenceExpectation`, evidence refs containing `failure_id` and effect ID, and:
+Each episode snapshots this V1 policy:
 
 ```text
-idempotency_key = "provider-source-retry:" + failure_id
-reason_code     = "provider_failure_retry_due"
-```
-
-`GenerationCreated` is already the lifecycle-authorized transition which
-increments generation, clears the current attempt, and returns a terminal
-source to `Open` (`src/lifecycle.rs:897-918`). The planner does not write status.
-A normal dispatcher reservation then creates a fresh attempt/fence. That
-attempt must recompute the canonical plan and match the persisted `plan_id`; a
-mismatch becomes `auth-config`/route-drift wait, never fallback.
-
-A crash before lifecycle commit leaves the effect replayable. A crash after
-commit finds the lifecycle idempotency key and returns the same event; it cannot
-increment generation twice. The planner acknowledges success only after that
-event is durable. Existing `retry_count`, `max_retries`, rescue count, and cycle
-`restart_on_failure` are not consumed or triggered by this infrastructure
-retry.
-
-If failure is observed while an exact owner is still live, use the existing
-fenced reopen/owner-release protocol before generation creation; never create a
-concurrent generation from time alone.
-
-### 10.2 Evaluator failure
-
-The planner effect does **not** call `GenerationCreated` and does not mutate
-source status. Its adapter CAS-checks the same `evaluation_id`, complete
-`SourceCandidateRef`, policy/route digests, last failed attempt ID, failure ID,
-`RetryBackoff` state, and absence of a consumed verdict. It then re-arms that
-same record for the dedicated lane:
-
-```text
-idempotency_key = "provider-evaluation-retry:" + failure_id
-transition      = RetryBackoff -> Queued (same record)
-```
-
-The lane claims it once and appends a new `EvaluationAttempt`; it may not mint a
-new `EvaluationRecord`, change route, or rerender from changed source. A stale
-candidate, changed route digest, consumed verdict, or different last attempt
-rejects the effect as stale. A stale rejection is terminal acknowledgement, not
-a reason to rerun source.
-
-### 10.3 Reviewer failure
-
-The planner re-invokes the same reviewer kind against the exact immutable
-manifest/requirements/source binding and route. The unavailable receipt remains
-immutable audit evidence; a new attempt produces a new receipt linked to the
-same retry series. The effect is fenced by candidate sequence, generation,
-attempt/fence, manifest and requirements digests, reviewer kind, failed receipt
-ID, and route digest:
-
-```text
-idempotency_key = "provider-review-retry:" + failure_id
-```
-
-If FLIP was unavailable, eval remains uncalled because the valve ordering still
-applies. If eval was unavailable after a passing FLIP, the existing passing FLIP
-receipt may be reused only when every binding digest is unchanged. Neither case
-restarts source.
-
-### 10.4 Semantic result
-
-A real verdict continues through the existing evaluation/review acceptance
-owner. Provider-retry effects have no `AcceptanceSatisfied` or
-`AcceptanceRejected` capability. A consumed reject has no deadline and is never
-rearmed because wall time advanced. Only a new candidate or explicit audited
-operator retry can create new semantic work.
-
-## 11. User-visible retry recommendation
-
-`wg show --json`, `wg service status --json`, and evaluation/review projections
-should expose a joined planner read model, not mutate an immutable verdict or
-receipt:
-
-```text
-RetryRecommendation {
-  schema: 1,
-  target: source | evaluation | review,
-  disposition: automatic-same-route | await-operator-event | none,
-  failure_class: transient-provider | auth-config | credit-exhausted |
-                 ambiguous-provider-outcome | semantic-rejection |
-                 source-quality | unknown,
-  reason_code,
-  evidence_id,                 // failure_id or immutable receipt id
-  exact_route,                 // redacted handler-first route, no credential
-  route_id,
-  same_route: true,
-  failures_without_progress,
-  computed_delay_seconds,
-  retry_after_lower_bound_seconds,
-  next_eligible_at,
-  pending_effect_id,
-  probe_lease_state,
-  operator_event_required,
-}
-```
-
-Nullable timing/effect fields are omitted for `await-operator-event` and
-`none`. Semantic rejection may be rendered as `disposition=none,
-reason_code=semantic_rejection_requires_changed_candidate`; it has no
-`next_eligible_at`.
-
-A recommendation is not a verdict and contains no `score`, `outcome`,
-`dimensions`, or synthetic finding. Human output should be direct, for example:
-
-```text
-Retry: automatic evaluator retry on the same route
-Reason: provider rate limit (direct HTTP 429)
-Eligible: 2026-08-17T03:04:05Z (failure 4; Retry-After lower bound honored)
-Candidate: unchanged eval-… / wgcid:…
-```
-
-Hard classes instead show the exact event needed: authenticate/configure the
-same route, add credits/raise budget, or request operator classification.
-
-## 12. Configuration and migration
-
-Use the existing durable convergence policy surface rather than a second retry
-configuration namespace:
-
-```toml
-[convergence]
+max_automatic_retries = 3
+recovery_window_seconds = 900
 base_seconds = 30
-cap_seconds = 86400
-route_probe_base_seconds = 30
-route_probe_cap_seconds = 86400
-action_lease_seconds = 300
+delay_cap_seconds = 300
 jitter_divisor = 4
 ```
 
-The fields already exist in `ConvergenceConfig`
-(`src/config.rs:4470-4508`). Current defaults are 5 seconds and 6 hours for the
-general falloff, and 30 seconds/1 hour for route probes
-(`src/config.rs:4926-4955`). The accepted provider-retry defaults change both
-caps to **86,400 seconds (24 hours)** and use 30 seconds as the first new-series
-delay. There is no compatibility evidence requiring a staged 6h→24h migration.
+`first_failure_at` is the integer Unix second when the first unique eligible
+failure is accepted. It never changes within the episode:
 
-Durations are integer seconds, permitting second/minute initial delays and
-hour/day-order caps without a new duration parser. Validation rejects zero,
-`base > cap`, or values which cannot be represented safely. Existing persisted
-series retain their snapshotted policy and deadline byte-for-byte; new defaults
-apply only to a new series. A one-time import may copy legacy state into planner
-migration evidence, but may not execute or recompute it.
+```text
+recovery_deadline_at = first_failure_at + recovery_window_seconds
+```
 
-The cap limits delay, not retries. There is no `max_attempts` for direct transient
-provider failures. Existing evaluation `MAX_PROCESS_ATTEMPTS` may continue for
-non-provider malformed/evidence policy if desired, but it cannot terminate or
-suppress this typed transient-provider series.
+Let `r = automatic_retries_used` before authorizing the next retry. The first
+retry has `r = 0`:
 
-## 13. Duplicate authorities that must remain disabled
+```text
+raw(r) = min(
+  delay_cap_seconds,
+  saturating_mul(base_seconds, 2^min(r, 63))
+)
 
-The implementation must delete, bypass, or reduce to read-only projection every
-competing scheduler for this condition:
+jitter_window(r) = floor(raw(r) / jitter_divisor)
 
-- **`ConvergenceState` dispatch/route scheduling.** It remains one-time readable
-  migration evidence only; its module already says its dispatch claim reducer
-  is unreachable (`src/service/convergence.rs:1-6`). Do not call
-  `reconcile_dir`, `admit_goal_action`, or `admit_route_action` for provider
-  retry.
-- **Ephemeral failed-prerequisite planner.** `converge_failed_prerequisites`
-  currently constructs a fresh `PlannerState` and can apply a bounded source
-  retry (`src/service/convergence.rs:973-1211`). It must not independently
-  retry typed provider failures after this cutover.
-- **Evaluation lane timer.** `bounded::is_claimable` must not compute a second
-  retry deadline from `completed_at`; it may claim only `Queued` records rearmed
-  by a due planner effect.
-- **Telemetry cooldown.** `ProviderHealth.cooled_until_ms` is status evidence,
-  not dispatch admission or a wake timer.
-- **Provider/global pause.** `provider_health.service_paused`, auto-resume,
-  threshold pause scheduling, and zero-output global backoff remain retired as
-  scheduling authority. Route evidence feeds the planner only.
-- **Cycle and generic retry.** `evaluate_cycle_on_failure`, `wg retry`, rescue
-  counters, rapid-respawn throttles, and `max_retries` cannot automatically
-  reopen a task for a direct provider failure. An operator may still explicitly
-  retry through its normal audited path.
-- **Direct coordinator polling.** It cannot open/rearm provider-failed work or
-  replay an effect that is not due. It executes only the planner effect or
-  ordinary first-attempt work.
-- **Synthetic agency/controller tasks.** No `.evaluate-*`, `.review-*`, route
-  probe, retry, supervisor, or controller graph task is created. Evaluation and
-  review remain hidden attempt-bound records/receipts.
+jitter(r) = u64_le_first_8_bytes(BLAKE3(
+  "wg-source-provider-retry-jitter-v1" || episode_id ||
+  current_failure_id || r
+)) mod (jitter_window(r) + 1)
 
-Request-local HTTP client backoff and the daemon **process** supervisor are not
-duplicate lifecycle schedulers: the former stays within one physical attempt;
-the latter restarts `wg service`, not graph/evaluation work.
+computed_delay(r) = min(delay_cap_seconds, raw(r) + jitter(r))
 
-## 14. Acceptance tests
+candidate_retry_at = max(
+  latest_failure_at + computed_delay(r),
+  retry_after_not_before.unwrap_or(0)
+)
+```
 
-### 14.1 Unit and property tests
+All arithmetic is saturating and all timestamps/delays are integer seconds.
+BLAKE3 byte order and inputs above are normative. With defaults, the three local
+delays begin at 30, 60, and 120 seconds (plus deterministic positive jitter,
+each capped at 300 seconds).
 
-1. Table-test every row in §5, including 429 with and without `Retry-After`,
-   500/503/529, typed timeout/reset, ambiguous post-accept reset, 401/403,
-   402/credits, invalid config, semantic reject, source-quality reject, and
-   unknown/text-only evidence.
-2. Prove direct structured evidence wins over contradictory prose and no
-   evaluator/model classifier is called; conflicting direct evidence fails
-   closed as one ambiguous operation.
-3. Table-test the exact formula for `n=0`, growth, saturation/overflow,
-   deterministic jitter, delta and HTTP-date normalization, malformed
-   `Retry-After`, duplicate max-merge, a lower bound below the computed delay,
-   and a lower bound beyond 24 hours.
-4. Submit wrapper/task/telemetry observations with different optional provider
-   event/status details but the same `operation_id`; prove one canonical
-   `failure_id`, one series increment, and one effect. A new operation ID must
-   increment exactly once.
-5. Prove progress rows in §8 reset the correct scope and heartbeat, token,
-   output, spawn, generation creation, and duplicate failure do not.
-6. Verify every §6.1 receipt proof variant, content/issuer/journal binding, and
-   source key/effect identity; reject post-write timeout, missing or mismatched
-   receipts, a stale source fence/revision, and a later external effect.
-7. Table-test the §9 route formula, initial outage, failed-probe-only exponent,
-   concurrent tail-failure merge, Retry-After floor, cap/overflow, restart, and
-   success reset.
-8. Prove auth/config/credit and unknown evidence have no timed credential-bearing
-   effect; a matching operator event enables one same-route probe.
-9. Prove semantic rejection has no deadline and remains inert after arbitrary
-   fake-clock advancement.
+The next automatic retry is admitted only if all are true:
 
-### 14.2 Fake-clock planner tests
+```text
+automatic_retries_used < max_automatic_retries
+candidate_retry_at <= recovery_deadline_at
+coordinator_now >= candidate_retry_at
+coordinator_now <= recovery_deadline_at
+```
 
-1. Source 429: observe the exact terminal attempt, advance to one second before
-   eligibility (no effect), then to eligibility (one source-retry effect).
-2. Evaluation 503: keep source/candidate unchanged, advance clock, and assert
-   only the exact evaluation record is rearmed.
-3. Review timeout: assert the same manifest/requirements/reviewer binding is
-   invoked and source is not reopened.
-4. Drive failures to the 24-hour computed cap, advance several more ordinals,
-   and assert the record stays live in backoff rather than becoming semantic
-   `Failed`.
-5. Seed N targets on one route; assert one probe lease, no parallel physical
-   call, the exact §9 release times/tie-break order across restart, and no
-   fallback plan ID.
-6. Change candidate, lifecycle fence, route plan, or consumed verdict before a
-   due effect and assert `RejectedStale` with no mutation.
+If the count is already 3, state becomes
+`NeedsAttention(reason=automatic-retries-exhausted)`. If current time or
+`candidate_retry_at` is later than the 15-minute deadline, state becomes
+`NeedsAttention(reason=recovery-window-expired)`. If an authoritative
+Retry-After specifically causes that result, use
+`reason=retry-after-exceeds-window`. WG never violates the lower bound by
+retrying early.
 
-### 14.3 Restart and crash-order tests
+A retry which started within the window is not killed when the deadline passes.
+It may finish. Success closes the episode; failure becomes NeedsAttention if no
+budget remains. The elapsed window limits **starts**, while the existing worker
+timeout governs a started attempt.
 
-1. Persist a long deadline, counter, policy, progress/failure IDs, Retry-After
-   bound, and probe lease; reopen `PlannerStore` and compare them byte-for-byte.
-2. Restart before deadline and prove it is not recomputed from restart time.
-   Restart after deadline and prove exactly one effect becomes replayable—no
-   catch-up loop.
-3. Crash at each boundary: trace write, journal issue, execution-start, lifecycle
-   or record CAS, physical outcome, and acknowledgement. Replay must create at
-   most one source generation or evaluation/review attempt.
-4. Crash after `GenerationCreated` but before planner acknowledgement; replay
-   must find the lifecycle idempotency event and not increment generation.
-5. Prove an already-started probe lease is not replaced on wall-clock expiry
-   until its exact owner is terminal/proven dead.
-6. Persist a `SourceRetryKey` and replay-safety receipt, then change generation,
-   attempt, fence, revision, goal, contract, journal head, or adapter identity;
-   every stale/mismatched replay must be inert.
+The delay cap is only a single-delay cap. The independent count and elapsed
+window are the retry budgets.
 
-### 14.4 Credential-free smoke
+### 6.1 Retry-After normalization
 
-Add one fake-provider scenario owned by the implementation task. It must drive
-the real service event loop and deterministic fake clock without credentials:
+Only an actual response header or structured provider envelope supplies an
+authoritative lower bound:
 
-1. source route returns 429 + Retry-After; no immediate respawn occurs, restart
-   preserves deadline, and exactly one fresh same-route lifecycle attempt runs
-   when due. A separate post-accept reset fixture without idempotency/outcome
-   proof must remain fail-closed and create no generation;
-2. evaluator route then returns 503; unchanged source is not run again and the
-   same evaluation record retries when due;
-3. a semantic reject is consumed once and remains inert after a day;
-4. auth, config, and credit fixtures show operator-event waits with zero timed
-   calls;
-5. multiple tasks on the failed route yield one probe, no fallback, no storm,
-   then recover after one probe success;
-6. repeated transient failures reach the 24-hour cap while remaining visible
-   and nonsemantic;
-7. service/status JSON exposes the §11 recommendation fields with no quality
-   score; and
-8. graph inspection proves no controller/evaluator/reviewer/probe/retry task was
-   created.
+- a finite nonnegative delta becomes
+  `failure_observed_at + ceil(delta_seconds)`;
+- an HTTP date becomes its ceiling Unix second;
+- malformed, negative, NaN, or infinite values are diagnostic and ignored;
+- duplicates merge by `max(existing, incoming)`; and
+- a prose-extracted number is never authoritative.
 
-## 15. Implementation order
+The normalized absolute timestamp is persisted. Restart never reparses a header
+or shifts a delta relative to restart time.
 
-1. Add direct-evidence provenance and a stable failure ID at the shared
-   classifier/telemetry boundary.
-2. Add retry observations/series/effects to the pure planner and replay tests.
-3. Wire the service event loop to `PlannerStore` for this narrow authority and
-   include `read_earliest_deadline` in wake calculation.
-4. Implement the fenced source lifecycle adapter and same-plan check.
-5. Replace evaluation’s local timer with exact-record planner rearm; add the
-   equivalent immutable review binding.
-6. Join planner retry recommendations into status/show JSON and human output.
-7. Remove or assert-unreachable duplicate authorities in §13, then enable the
-   credential-free smoke.
+## 7. Automatic transition and idempotency fences
 
-At every step, provider retry remains a deterministic consequence of typed
-evidence. Evaluation observes quality; it never owns time, source lifecycle, or
-provider-error discovery.
+### 7.1 Enrolling the first failure
+
+The source attempt first terminalizes normally through `AttemptFailed` with the
+exact current `FenceExpectation`. In the same graph transaction, the policy may
+create an episode only when:
+
+1. the policy is enabled;
+2. table 4 classifies direct eligible evidence;
+3. execution outcome is safe;
+4. task, generation, attempt, fence, owner/run, goal/requirements, completion
+   contract, route, and plan all bind;
+5. no candidate, completion blocker, newer generation, manual pause/cancel, or
+   reopen intent exists; and
+6. this `failure_id` is not already folded.
+
+An ineligible failure still persists its normal typed evidence but creates no
+automatic deadline.
+
+### 7.2 Authorizing one retry
+
+The coordinator considers due recovery only when an ordinary agent slot is
+available. Capacity delay does not consume an attempt, but if capacity pushes
+current time past the episode deadline the episode needs attention.
+
+Inside one `modify_graph` transaction it rechecks the entire enrollment tuple,
+current state `Failed + Backoff`, budgets, pause/cancel state, and direct
+evidence. It recomputes the current canonical `SpawnPlan` and requires the exact
+persisted handler/model/reasoning/endpoint fingerprint, `route_id`, and
+`plan_id`. Any drift is
+`NeedsAttention(reason=exact-route-changed)`; automatic fallback is forbidden.
+
+For retry number `q = automatic_retries_used + 1`:
+
+```text
+authorization_id = BLAKE3(
+  "wg-source-provider-retry-authorization-v1" || episode_id ||
+  current_failure_id || q
+)
+
+lifecycle idempotency key = "source-provider-retry:" + authorization_id
+reason_code = "transient_source_provider_retry_due"
+actor = Reconciler("source-provider-retry")
+transition = GenerationCreated
+expected = exact current FenceExpectation
+```
+
+The same graph save applies `GenerationCreated`, increments
+`automatic_retries_used`, records `Authorized`, records the new generation, and
+persists `authorization_id`. The count is consumed at lifecycle authorization,
+not at a later log line; a crash cannot receive a free fourth generation.
+
+The ordinary ready selector must admit an `Open` recovery generation only when
+its `Authorized` record matches that exact generation and authorization, the
+policy is still enabled, and coordinator time has not passed
+`recovery_deadline_at`. The existing direct spawn path receives the persisted
+route/plan binding and checks it again. Its claim/reservation and launch permit
+remain the one physical ownership boundary. Attempt and agent metadata persist
+`episode_id`, `authorization_id`, and exact route/plan before state becomes
+`Running`.
+
+### 7.3 Crash and duplicate matrix
+
+- **Crash before graph save:** no lifecycle generation or consumed retry exists;
+  the same due state can be reconsidered.
+- **Crash after graph save, before spawn:** lifecycle audit contains the
+  idempotency key and the task is the exact authorized Open generation. Restart
+  may spawn that generation only if the policy is enabled and the original
+  recovery deadline has not passed; otherwise it remains held and becomes
+  NeedsAttention. It never calls `GenerationCreated` again.
+- **Crash during spawn preparation before launch permit:** existing spawn
+  rollback applies. The same authorization remains consumed and may reattempt
+  preparation only while route, window, and state still validate. A hard
+  configuration error moves to NeedsAttention.
+- **Crash after claim/launch permit:** assignment, attempt metadata, and
+  authorization prove Running. Restart must not spawn another owner.
+- **Duplicate failure evidence:** same `failure_id`, no counter or deadline
+  reset.
+- **Late old-owner result:** rejected by generation/attempt/fence/owner checks.
+- **New retry attempt fails:** its new operation/failure ID updates the same
+  episode; schedule the next retry only if both budgets remain.
+- **New retry attempt succeeds authoritatively:** close Recovered exactly once.
+
+Neither `retry_count`, cycle failure restart, rescue logic, `max_retries`, nor a
+legacy convergence effect may create an additional automatic generation for an
+enrolled provider failure. In particular, `wg fail` currently calls
+`evaluate_cycle_on_failure` (`src/commands/fail.rs:273`); eligible V1 provider
+failures must bypass that duplicate restart. With the V1 policy disabled they
+remain fail-stop; with it enabled only the episode authorization may reopen.
+
+## 8. Restart, pause, cancellation, and reset
+
+### 8.1 Restart stability
+
+The graph record is authoritative. Daemon/coordinator restart:
+
+- does not change `first_failure_at` or `recovery_deadline_at`;
+- does not replenish retries;
+- does not recompute jitter or Retry-After;
+- does not treat partial output as success;
+- does not recreate `GenerationCreated` after its idempotency event; and
+- performs at most one overdue authorization, never one catch-up retry per
+  missed interval.
+
+If restart occurs after the deadline, an unstarted episode moves to
+NeedsAttention without provider I/O.
+
+### 8.2 Manual pause and cancellation
+
+A task-level user pause or global dispatch pause blocks automatic authorization.
+Pause does **not** freeze or extend the 15-minute window and does not reset
+attempts. Unpausing resumes the same episode only if both budgets still permit;
+otherwise it becomes NeedsAttention.
+
+Cancellation/abandonment closes the episode as `Cancelled`. It never reopens
+automatically. Runtime disabling of the policy behaves like a pause for an
+unstarted Backoff/Authorized record: no new provider call is made and no budget
+is reset. A call already past its launch permit is allowed to finish under its
+existing lifecycle/timeout fence; disabling is not a kill operation.
+
+### 8.3 What resets an episode
+
+Only either of these resets/closes the episode:
+
+1. **Authoritative successful recovery:** an exact terminal provider/agent
+   success receipt bound to the current retry operation, or a completion
+   candidate durably selected from that operation. This records `Recovered`.
+2. **Explicit operator retry/reset:** the existing audited operator action
+   intentionally closes the old episode. A later eligible provider failure may
+   start a new episode from zero.
+
+Incidental stream bytes, tokens, tool logs, heartbeats, PID liveness, claim,
+spawn, generation creation, restart, config reload, elapsed time, duplicate
+failure evidence, success on a different task/route, or unpause never reset an
+episode.
+
+A successful provider operation followed by semantic, validation, completion,
+or publication failure closes provider recovery and follows that other
+failure's existing authority. It does not spend the remaining provider retries.
+
+## 9. Minimal truthful status and next action
+
+`wg show` / `wg show --json` and ordinary service status join the task's embedded
+record without mutating it:
+
+```text
+source_provider_recovery: {
+  schema,
+  state,
+  reason_code,
+  episode_id,
+  failure_id,
+  evidence_digest,
+  exact_route,
+  route_id,
+  plan_id,
+  attempts_used,
+  attempts_limit,
+  attempts_remaining,
+  first_failure_at,
+  recovery_deadline_at,
+  next_retry_at,
+  retry_after_not_before,
+  next_action
+}
+```
+
+Secrets and raw provider bodies are never printed. `next_retry_at` is present
+only for Backoff. Authorized/Running identifies the exact retry number.
+NeedsAttention omits a retry time and provides exactly one action.
+
+Example Backoff output:
+
+```text
+Source recovery: Backoff (retry 2 of 3, exact route; no fallback)
+Reason: direct provider HTTP 429; evidence=b3:...
+Next retry: 2026-09-09T21:04:05Z (window ends 2026-09-09T21:15:00Z)
+```
+
+Example exhaustion output:
+
+```text
+Source recovery: NeedsAttention (recovery-exhausted; 3 of 3 retries used)
+Saved work: retained; failure evidence=b3:...
+Next action: inspect `wg show TASK`, then explicitly run `wg retry TASK --reason <WHY>` if replay is safe
+```
+
+This is a provider-availability result, not a quality score. The projection must
+not use `score`, `semantic failure`, `rejected`, or `accepted`. For an ambiguous
+outcome, the single action is to inspect/reconcile the named operation; it must
+not recommend blind retry.
+
+A compact state in existing list/TUI rows is sufficient if those surfaces
+already render task detail. New dashboards, controls, and rich TUI workflows are
+out of V1. The implementation still requires a scripted terminal human-flow
+check of the actual `wg show`/status output.
+
+## 10. Minimal configuration
+
+V1 exposes only the narrow source policy:
+
+```toml
+[coordinator.source_provider_retry]
+enabled = false
+max_automatic_retries = 3
+recovery_window_seconds = 900
+base_seconds = 30
+delay_cap_seconds = 300
+```
+
+`jitter_divisor = 4` is a V1 protocol constant, not another operator dial.
+Validation is intentionally restrictive:
+
+```text
+0 <= max_automatic_retries <= 3
+1 <= recovery_window_seconds <= 3_600
+1 <= base_seconds <= delay_cap_seconds <= recovery_window_seconds
+```
+
+`max_automatic_retries = 0` is equivalent to no automatic retry even when the
+section is enabled. Existing episodes retain their policy snapshot; config edits
+do not rewrite deadlines or counters. A lower time setting is useful for
+credential-free smoke tests, while the production defaults remain 3 retries and
+15 minutes.
+
+V1 deliberately rejects hour/day windows and more than three automatic retries.
+The earlier 24-hour falloff proposal is superseded by this bounded attended
+recovery contract.
+
+## 11. Implementation seams and deferred work
+
+### 11.1 Required V1 seams
+
+1. **Classifier/metadata:** add direct evidence provenance, absolute
+   Retry-After, operation/failure IDs, execution-outcome safety, and exact
+   route/plan IDs to source failure evidence.
+2. **`wg fail` transaction:** after exact `AttemptFailed`, create/update the
+   embedded episode only for eligible source evidence; bypass cycle restart for
+   that condition.
+3. **Direct coordinator:** include due failed-source episodes in existing
+   capacity/order selection, apply one atomic authorization +
+   `GenerationCreated`, and feed its exact binding to the normal spawn path.
+4. **Spawn/attempt metadata:** persist episode/authorization/route/plan IDs and
+   recover Authorized/Running across restart.
+5. **Completion boundary:** refuse enrollment when candidate/finalization
+   authority already exists, and preserve late-result publication fences.
+6. **Show/status:** render Backoff, Running, Recovered, Paused, and
+   NeedsAttention with attempts/window/evidence and one next action.
+
+No required V1 seam needs `src/service/planner.rs`, a new service-owned state
+file, an evaluation record transition, or an Agency event.
+
+### 11.2 Explicitly deferred
+
+- automatic evaluator, FLIP, reviewer, or completion-review provider retries;
+- changing the existing bounded evaluator's own policy;
+- evaluation or Agency retry recommendations, learning, reward, or projections;
+- route-wide health aggregation, circuit breakers, probe leases, recovery
+  staggering, or fleet storm control beyond existing capacity limits;
+- cross-route/model/provider fallback;
+- hour/day unattended retry windows or unbounded transient retries;
+- generalized durable scheduler/effect architecture;
+- synthetic controller/retry graph tasks;
+- rich TUI configuration, dashboards, interactive controls, or notification
+  routing; and
+- automatic remediation for auth, configuration, credit, ambiguous execution,
+  semantic rejection, or completion-authority failure.
+
+Request-local HTTP retry may remain inside one provider operation. It emits one
+terminal source failure only after its local policy is exhausted and does not
+consume multiple V1 lifecycle retries.
+
+## 12. Acceptance cases
+
+### 12.1 Unit tests
+
+1. Table-test every section 4 row, including 429, 500/502/503/504/529,
+   unavailable/overloaded, pre-write transport failure, reconciled reset,
+   ambiguous reset, 401/402/403, input 4xx, hard timeout, semantic rejection,
+   reviewer failure, completion blocker, pause/cancel, text-only, and unknown.
+2. Prove direct structured evidence wins over prose and no model/evaluator
+   classifier is called.
+3. Test the exact formula for retries 1-3, deterministic BLAKE3 byte order,
+   jitter bounds, saturation, configured cap, and candidate time at/beyond the
+   15-minute boundary.
+4. Normalize Retry-After delta/date/malformed values. Prove it is a lower bound,
+   duplicate values merge by maximum, and a value beyond the remaining window
+   yields NeedsAttention with zero early call.
+5. Fold wrapper/fail/telemetry observations with the same `operation_id`; prove
+   one `failure_id`, one episode, no budget reset, and no new jitter. A new
+   physical operation gets a new failure ID.
+6. Test every reset/non-reset event in section 8, especially output bytes,
+   restart, generation creation, duplicate failure, and unpause.
+7. Prove route/plan mismatch, candidate selection, a completion blocker, and a
+   stale lifecycle fence prevent authorization.
+8. Prove count and elapsed budgets are independent, and exhaustion never writes
+   a score or semantic rejection.
+
+### 12.2 Fake-clock integration tests
+
+These exercise graph persistence, lifecycle, and `coordinator_tick`; they are
+integration tests rather than unit mocks unless an existing harness seam
+explicitly permits otherwise.
+
+1. With policy disabled, fail a source with direct 429 and prove it remains
+   Failed with no automatic episode/generation.
+2. Enable policy; at one second before `next_retry_at`, tick with capacity and
+   prove no mutation. At eligibility, prove exactly one lifecycle
+   `GenerationCreated`, one consumed retry, and one exact-binding spawn.
+3. Fail retries 1-3 without authoritative success. Prove no fourth generation,
+   NeedsAttention, saved WIP/evidence, and the exact manual next action.
+4. Advance beyond 15 minutes with attempts remaining. Prove window exhaustion,
+   not a late retry.
+5. Supply Retry-After at the deadline and just after it. The first may start at
+   the boundary if the coordinator is on time; the second becomes attention.
+6. Restart during Backoff, after authorization/before spawn, and after launch
+   permit. Prove the same timestamps/counters and at most one owner/generation.
+7. Pause across the deadline, unpause, cancel, and disable/re-enable policy.
+   Prove no reset or hidden call and manual authority wins.
+8. Persist incidental stream output/heartbeats between failures. Prove neither
+   budget resets; then persist an exact successful terminal receipt and prove
+   the episode closes Recovered.
+9. Change handler, model, reasoning, endpoint fingerprint, route ID, plan ID,
+   generation, attempt, fence, goal/requirements, candidate, or completion
+   blocker before due. Every case is inert/NeedsAttention and never falls back.
+10. Deliver a late completion from the superseded attempt and prove existing
+    publication/lifecycle fences reject it.
+
+### 12.3 Credential-free real-entry-point smoke
+
+Add a grow-only smoke scenario owned by the implementation/E2E task. It must use
+an explicit project-local candidate `wg` binary, the real service/coordinator
+entry point, project-local scratch, and a scripted local fake provider—never WG
+credentials, a global install, or a root-checkout daemon.
+
+The scenario configures short test-safe values (for example 1-second base,
+2-second cap, 30-second window) and proves:
+
+1. disabled policy performs zero automatic retries;
+2. direct source 429 plus Retry-After is visible, does not run early, survives a
+   service process restart, and runs once on the identical handler/model/route;
+3. three failed authorized retries yield NeedsAttention and the fake provider
+   receives no fourth request;
+4. Retry-After beyond the remaining window yields attention immediately;
+5. a reconciled pre-write/reset case retries, while an ambiguous post-write
+   reset never does;
+6. partial work remains in the retained worktree and the fresh attempt can
+   continue it;
+7. auth/config/credit, semantic rejection, completion blocker, user pause, and
+   evaluator/reviewer failure trigger no source retry;
+8. exact route drift and a late old-owner completion are refused by existing
+   bindings/fences;
+9. graph inspection finds no planner/controller/retry/evaluator task and no new
+   scheduler state file; and
+10. a scripted human terminal flow runs real `wg show` and service status,
+    observes Backoff and NeedsAttention with attempts/window/evidence, follows
+    the single explicit recovery instruction, and sees a new operator episode
+    rather than a silently reset automatic budget.
+
+The smoke must follow the repository's existing process cleanup contract and
+leave no daemon, worker, fake-provider, or Pi process group behind.
+
+## 13. Summary invariant
+
+V1 is one bounded exception to direct fail-stop: exact, direct, safely replayable
+source-provider failure may authorize at most three fresh source generations on
+the same route within fifteen minutes. The graph and lifecycle remain the
+persistence and mutation authority. Everything semantic, ambiguous,
+credential/configuration/credit-related, completion-related, paused/cancelled,
+evaluator/reviewer-related, fleet-wide, or long-running stays outside automatic
+recovery and requires its existing explicit authority.
