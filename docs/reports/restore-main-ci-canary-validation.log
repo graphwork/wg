@@ -1,5 +1,5 @@
 restore-main-ci-canary candidate validation transcript
-candidate_commit=00dde819
+validated_source_revision=00dde819 (subsequent commits add validation evidence only)
 pinned_toolchain=1.96.0
 
 $ cargo test --locked --bin wg commands::completion_canary_tests
