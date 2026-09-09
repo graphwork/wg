@@ -135,8 +135,10 @@ human's request.
 ## Task Description Requirements
 
 Every **code task** description MUST include a `## Validation` section
-with concrete test criteria. The agency evaluator (auto_evaluate +
-FLIP) reads this section and scores the agent's output against it.
+with concrete test criteria. This prose contract is the default validation
+surface: workers choose and report appropriate checks, and the advisory agency
+evaluator reads the criteria. Do not turn agent-selected checks into an
+authoritative executable gate.
 
 Template:
 
@@ -146,9 +148,10 @@ wg add "Implement feature X" --after <dep> \
 <what to implement>
 
 ## Validation
-- [ ] Failing test written first (TDD): test_feature_x_<scenario>
-- [ ] Implementation makes the test pass
-- [ ] cargo build + cargo test pass with no regressions
+- [ ] Add a focused regression for <scenario>
+- [ ] Exercise the changed behavior through its real entry point
+- [ ] Run the relevant checks from the repository's checked-in policy
+- [ ] Report any failure and whether it reproduces on the base revision
 - [ ] <any additional acceptance criteria>"
 ```
 
@@ -214,16 +217,26 @@ model review is advisory unless the operator explicitly selected strict mode.
 
 ## Simple Completion
 
-The normal worker operation is `wg done <task-id>`. Configure an exact
-executable check at task creation with `--validation-command "COMMAND"` (or
-edit it before completion). WG executes that command itself, captures bounded
+The normal worker operation is `wg done <task-id>`. By default, put required
+checks only in `## Validation`; workers run the relevant checks, report results,
+and retain autonomy to distinguish candidate regressions from pre-existing or
+environmental failures.
+
+`--validation-command "COMMAND"` is an optional **operator/repository-authorized
+hard gate**, not an agent quality suggestion. Agents and attended chat MUST NOT
+invent, broaden, or edit one merely to be “safer” or to satisfy model review.
+Use it only when the human explicitly requested that exact command or a
+checked-in repository policy names it as authoritative. Never strengthen a
+canonical command with extra features, warning denial, full-suite scope, or
+other flags unless that stronger form is itself authorized. Agent-selected
+checks belong in `## Validation` and the completion report.
+
+When an authorized command is configured, WG executes it and captures bounded
 stdout/stderr digests, exit/timing, cwd/repository and candidate/attempt/fence
-binding as immutable evidence, snapshots the exact candidate, records FLIP/eval
-activity, lands Land work, and derives Done. `## Validation` remains the human
-acceptance contract; worker prose or a validation log is not command-result
-evidence. Model review is visible and attributed but advisory by default;
-`[agency] completion_review_strict = true` is an explicit hardened opt-in.
-Internal completion-object, manifest, submit, and land commands remain
+binding as immutable evidence. Its failure blocks completion, so scope and
+provenance matter. Model review is visible and attributed but advisory by
+default; `[agency] completion_review_strict = true` is an explicit hardened
+opt-in. Internal completion-object, manifest, submit, and land commands remain
 diagnostic/compatibility tools, not required worker ceremony.
 
 ### Smoke Gate

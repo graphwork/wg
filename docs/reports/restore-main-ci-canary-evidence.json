@@ -1,0 +1,11 @@
+{
+  "accepted_and_done": 6,
+  "attempts": 10,
+  "canary_version": 1,
+  "eval_rejected": 1,
+  "flip_rejected": 1,
+  "incomplete_evidence": 1,
+  "legacy_finalization_created": false,
+  "legacy_save_transaction_created": false,
+  "review_unavailable": 1
+}

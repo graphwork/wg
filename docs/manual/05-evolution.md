@@ -4,7 +4,9 @@ The agency does not merely execute work. It learns from it.
 
 Every verified, receipt-backed terminal completion generates an **unscored terminal observation**. A separate explicit evaluation may attach a quality score measuring how well the agent performed against the task’s requirements and declared standards. Scored evaluations accumulate into performance records on agents, roles, and motivations (called *tradeoffs* in the CLI—`wg tradeoff`); terminal observations preserve outcome evidence without inventing a score. When enough scored data exists, an evolution cycle reads the aggregate picture and proposes structural changes: sharpen a role’s description, tighten a motivation’s constraints, combine two high-performers into something new, retire what consistently underperforms. The changed entities receive new content-hash IDs, linked to their parents by lineage metadata. Better identities produce better work. Better work can produce sharper evaluations. The loop closes without confusing completion review with ground-truth scoring.
 
-This is the autopoietic core of the agency system—a structured feedback loop where work produces the data that drives its own improvement.
+This is the autopoietic core of the agency system—a structured feedback loop where work produces the data that drives its own improvement. The receipt-backed path is concrete: selection intent → attempt-bound assignment receipt → exact candidate completion review → one terminal generation episode → one independent outcome assessment → one active delayed assignment reward and evolver input. `wg learning show <task>` exposes the join. Projection failure is a loud backlog, never a source-lifecycle blocker.
+
+Section 4's authority map is normative: completion review may influence lifecycle only through the controller; candidate review is virtual evidence; scored outcome evaluation is post-terminal learning; `wg evaluate record` is outcome-scoped external input; and legacy evaluation rows are migration-only.
 
 ## Evaluation
 
@@ -55,12 +57,7 @@ through `wg evaluate record`; that explicit source remains distinguishable from
 
 ### Completion review is separate from scoring
 
-Manifest-bound completion FLIP/eval receipts are produced before `Done` by the
-completion protocol. They authorize or advise completion according to that
-protocol; they are not converted into the post-terminal Agency score. Historical
-synthetic `.flip-*`/`.evaluate-*`, `PendingEval`, evaluator rejection/retry, and
-automatic eval-gate lifecycle remain load-only compatibility. `wg evaluate run`
-observes `Done` and can never fail, complete, reopen, retry, or publish a task.
+Manifest-bound completion FLIP/eval receipts are produced before `Done` by the completion protocol. They are inputs consumed by the completion controller, not the post-terminal Agency score. Historical `PendingEval`, evaluator rejection/retry, and synthetic `.assign-*`/`.flip-*`/`.evaluate-*` lifecycle remain load-only compatibility. Upgrade with `wg migrate evaluation-cutover --dry-run`, inspect the exact plan/candidate action, then apply without deleting historical rows, logs, verdicts, or score files. The migration is replay-safe and releases only supported stale blockers; ambiguous sources remain fail-closed. `wg evaluate run` observes `Done` and can never fail, complete, reopen, retry, or publish a task.
 
 ### External evaluation sources
 

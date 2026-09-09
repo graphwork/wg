@@ -246,8 +246,14 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
         println!("  WG stores exact per-role routes + reasoning only; each CLI owns auth/models");
         println!();
         println!("[agency]");
-        println!("  auto_evaluate = {}", config.agency.auto_evaluate);
-        println!("  auto_assign = {}", config.agency.auto_assign);
+        println!(
+            "  auto_evaluate = {}  # candidate observation policy; not post-terminal scoring",
+            config.agency.auto_evaluate
+        );
+        println!(
+            "  auto_assign = {}  # bounded pre-claim selection with an attempt receipt; never a graph task",
+            config.agency.auto_assign
+        );
         println!("  auto_create = {}", config.agency.auto_create);
         if let Some(ref agent) = config.agency.assigner_agent {
             println!("  assigner_agent = \"{}\"", agent);
@@ -329,6 +335,9 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
             );
         }
         println!();
+        println!("[agency authority]");
+        super::adaptive_agency::print_authority_map("  ");
+        println!();
 
         // Unified agency agents display
         {
@@ -343,9 +352,14 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
                     } else {
                         "off"
                     }),
-                    DispatchRole::Assigner | DispatchRole::Evaluator => Some("legacy-inert"),
+                    DispatchRole::Assigner => Some(if config.agency.auto_assign {
+                        "bounded-attempt-selection"
+                    } else {
+                        "explicit-only"
+                    }),
+                    DispatchRole::Evaluator => Some("explicit-outcome-score"),
                     DispatchRole::CoordinatorEval => Some(if config.agency.auto_evaluate {
-                        "source-review"
+                        "candidate-observation"
                     } else {
                         "off"
                     }),
@@ -477,28 +491,16 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
 /// Initialize default config file
 pub fn init(dir: &Path, scope: Option<ConfigScope>) -> Result<()> {
     if scope == Some(ConfigScope::Global) {
-        if Config::init_global()? {
-            let path = Config::global_config_path()?;
-            println!("Created default global configuration at {}", path.display());
-        } else {
-            let path = Config::global_config_path()?;
-            println!("Global configuration already exists at {}", path.display());
-        }
-    } else if Config::init(dir)? {
-        println!("Created default configuration at .wg/config.toml");
-    } else {
-        println!("Configuration already exists at .wg/config.toml");
+        reject_global_project_write(ConfigScope::Global)?;
     }
-    Ok(())
+    init_graph_only(dir, ConfigScope::Local, false)
 }
 
 /// Write a graph-only config with no model route. This is intentionally
 /// available only through `wg config init --bare`.
 pub fn init_graph_only(workgraph_dir: &Path, scope: ConfigScope, force: bool) -> Result<()> {
-    let path = match scope {
-        ConfigScope::Global => Config::global_config_path()?,
-        ConfigScope::Local => workgraph_dir.join("config.toml"),
-    };
+    reject_global_project_write(scope)?;
+    let path = scope_config_path(workgraph_dir, scope)?;
     if path.exists()
         && !force
         && !std::fs::read_to_string(&path)
@@ -517,12 +519,7 @@ pub fn init_graph_only(workgraph_dir: &Path, scope: ConfigScope, force: bool) ->
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let body = match scope {
-        ConfigScope::Global => "# WG graph-only configuration; no LLM execution route selected.\n",
-        ConfigScope::Local => {
-            "# WG graph-only configuration; no LLM execution route selected.\n[project]\n"
-        }
-    };
+    let body = "# Authoritative project configuration; no LLM execution route selected.\nschema_version = 1\n";
     std::fs::write(&path, body)?;
     println!("Created graph-only configuration at {}", path.display());
     Ok(())
@@ -543,14 +540,41 @@ pub fn init_minimal(
     bare: bool,
     force: bool,
 ) -> Result<()> {
+    reject_global_project_write(scope)?;
     let route_enum = worksgood::config_defaults::SetupRoute::from_name(route)
         .ok_or_else(|| anyhow::anyhow!("unknown route '{}'. The supported route is: pi", route,))?;
 
-    let path = match scope {
-        ConfigScope::Global => Config::global_config_path()?,
-        ConfigScope::Local => workgraph_dir.join("config.toml"),
-    };
+    let path = scope_config_path(workgraph_dir, scope)?;
 
+    if bare {
+        return init_graph_only(workgraph_dir, scope, force);
+    }
+    if path.exists()
+        && !force
+        && !std::fs::read_to_string(&path)
+            .unwrap_or_default()
+            .trim()
+            .is_empty()
+    {
+        anyhow::bail!(
+            "{} already exists; pass --force to replace its route projection",
+            path.display()
+        );
+    }
+    let config = worksgood::config_defaults::config_for_route(
+        route_enum,
+        worksgood::config_defaults::RouteParams::default(),
+    );
+    let report =
+        worksgood::project_config::materialize_for_graph(workgraph_dir, &config, None, false)?;
+    println!(
+        "Wrote minimal project config at {} (route: {}, winning source: project-file)",
+        report.path.display(),
+        route_enum.as_name()
+    );
+    return Ok(());
+
+    #[allow(unreachable_code)]
     let body = render_minimal_config(route_enum, scope, bare);
 
     if path.exists() && !force {
@@ -927,9 +951,10 @@ pub fn update_with_reasoning(
     flip_model: Option<&str>,
     no_reload: bool,
 ) -> Result<()> {
+    reject_global_project_write(scope)?;
     let mut config = match scope {
-        ConfigScope::Global => Config::load_global()?.unwrap_or_default(),
-        ConfigScope::Local => Config::load(dir)?,
+        ConfigScope::Global => unreachable!("global writes rejected"),
+        ConfigScope::Local => Config::load_merged(dir)?,
     };
     let mut changed = false;
 
@@ -1354,26 +1379,6 @@ pub fn update_with_reasoning(
         );
     }
 
-    let direct_global_routing_change = matches!(scope, ConfigScope::Global)
-        && (model.is_some()
-            || endpoint.is_some()
-            || coordinator_model.is_some()
-            || !tier_specs.is_empty()
-            || !set_models.is_empty()
-            || !set_reasoning.is_empty()
-            || !set_providers.is_empty()
-            || !set_endpoints.is_empty()
-            || !role_models.is_empty()
-            || !role_providers.is_empty()
-            || flip_inference_model.is_some()
-            || flip_comparison_model.is_some()
-            || flip_model.is_some());
-    let active_profile_to_clear = if direct_global_routing_change {
-        worksgood::profile::named::active().unwrap_or(None)
-    } else {
-        None
-    };
-
     if changed {
         // A managed evaluation rollout owns these safety flags. Validate
         // before backup/write so a direct config command cannot bypass the
@@ -1381,30 +1386,14 @@ pub fn update_with_reasoning(
         if matches!(scope, ConfigScope::Local) {
             worksgood::evaluation::rollout::validate_managed_config(dir, &config)?;
         }
-        // Snapshot local config.toml before overwriting — only after all
-        // validation has passed, so a failed `wg config` run doesn't leave
-        // stray backup files behind.
-        if matches!(scope, ConfigScope::Local)
-            && let Some(backup) = Config::backup_on_disk(dir)?
-        {
-            println!("Backed up previous config → {}", backup.display());
-        }
         match scope {
-            ConfigScope::Global => {
-                config.save_global()?;
-                let path = Config::global_config_path()?;
-                println!("Global configuration saved to {}", path.display());
-                if let Some(prev) = active_profile_to_clear {
-                    worksgood::profile::named::set_active(None)?;
-                    println!(
-                        "Active profile cleared (was: {}) because global model routing was edited directly.",
-                        prev
-                    );
-                }
-            }
+            ConfigScope::Global => unreachable!("global writes rejected"),
             ConfigScope::Local => {
-                config.save(dir)?;
-                println!("Configuration saved.");
+                let path = worksgood::project_config::write_config_for_graph(dir, &config)?;
+                println!(
+                    "Project configuration saved to {} (winning source: project-file).",
+                    path.display()
+                );
             }
         }
         let _ = worksgood::profile::project::record_successful_event(
@@ -2120,6 +2109,7 @@ pub fn update_model_routing(
     set_provider: Option<&[String]>,
     set_endpoint: Option<&[String]>,
 ) -> Result<()> {
+    reject_global_project_write(scope)?;
     if set_provider.is_some_and(|values| !values.is_empty())
         || set_endpoint.is_some_and(|values| !values.is_empty())
     {
@@ -2557,12 +2547,15 @@ fn mask_token(token: &str) -> String {
     }
 }
 
-/// Install the current project's config as the global default.
+/// Refuse the retired whole-project global-install shortcut.
 ///
-/// Copies `.wg/config.toml` → `~/.wg/config.toml`.
-/// If the global config already exists and `--force` is not set, shows a diff
-/// summary and asks for confirmation on stdin.
+/// The helper below remains for one-release test/migration compatibility, but
+/// the public CLI may not copy route-bearing project bytes into machine state.
 pub fn install_global(workgraph_dir: &Path, force: bool) -> Result<()> {
+    // This legacy shortcut copies an entire project document, including route
+    // selectors, into machine-global state. The project-local cutover permits
+    // only explicitly warned non-routing `config set --global` writes.
+    reject_global_project_write(ConfigScope::Global)?;
     let global_path = Config::global_config_path()?;
     let global_dir = Config::global_dir()?;
     install_global_to(workgraph_dir, &global_path, &global_dir, force)
@@ -2635,6 +2628,7 @@ pub fn reset_to_route(
 ) -> Result<()> {
     use worksgood::config_defaults::{RouteParams, SetupRoute, config_for_route};
 
+    reject_global_project_write(scope)?;
     // Resolve the target path + load the existing config (if any).
     let (target_path, existing) = match scope {
         ConfigScope::Global => {
@@ -2831,6 +2825,12 @@ pub fn set_setting_value(
     key: &str,
     value: &str,
 ) -> Result<()> {
+    let normalized_key = normalize_dotted_key(key);
+    if scope == ConfigScope::Global
+        && (is_project_routing_key(key) || is_project_routing_key(&normalized_key))
+    {
+        reject_global_project_write(scope)?;
+    }
     let mut config = match scope {
         ConfigScope::Global => Config::load_global()?.unwrap_or_default(),
         ConfigScope::Local => Config::load(workgraph_dir)?,
@@ -3020,11 +3020,13 @@ fn infer_toml_scalar(value: &str) -> toml::Value {
 }
 
 /// Set a dotted TOML key on the chosen scope's config file. Known typed keys
-/// are validated (model specs, bool/int fields); unknown paths are written as
-/// raw TOML so EVERY knob is reachable without hand-editing files. The file is
-/// edited as a TOML tree (not via `Config::save`) so unrelated keys, comments,
-/// and unknown sections are preserved. Reloads the running daemon and prints
-/// the resolved effective value + its source.
+/// are validated (model specs, bool/int fields), and the closed project schema
+/// rejects unknown authority surfaces. The file is edited as a TOML tree (not
+/// via `Config::save`) so unrelated supported keys
+/// are preserved. Reloads the running daemon and prints the resolved effective
+/// value + its source. An explicit non-routing `--global` write updates only
+/// legacy machine state, after warning with the exact path; routing remains
+/// project-only.
 pub fn set_dotted(
     workgraph_dir: &Path,
     scope: ConfigScope,
@@ -3037,6 +3039,19 @@ pub fn set_dotted(
         anyhow::bail!("config set: <key> must not be empty");
     }
     let normalized_key = normalize_dotted_key(key);
+    let path = scope_config_path(workgraph_dir, scope)?;
+    if scope == ConfigScope::Global {
+        // Check both spellings explicitly. `normalize_dotted_key` maps the
+        // legacy coordinator alias to dispatcher, but keeping the raw check
+        // makes the routing refusal obvious and fail-closed to inspection.
+        if is_project_routing_key(key) || is_project_routing_key(&normalized_key) {
+            reject_global_project_write(scope)?;
+        }
+        eprintln!(
+            "Warning: explicit --global write targets the legacy machine-global layer at {}. This layer is inactive for project behavior; no worksgood.toml in any repository will be changed.",
+            path.display()
+        );
+    }
     if worksgood::evaluation::rollout::evidence_path(workgraph_dir).exists()
         && matches!(
             normalized_key.as_str(),
@@ -3058,8 +3073,7 @@ pub fn set_dotted(
     let typed_value = infer_toml_scalar(value);
     validate_dotted_value(&normalized_key, value, &typed_value)?;
 
-    // 2. Load the scope file as a raw TOML tree (preserves everything).
-    let path = scope_config_path(workgraph_dir, scope)?;
+    // 2. Load the scope file as a raw TOML tree (preserves supported values).
     let mut doc = Config::load_toml_value(&path)?;
     if !path.exists() {
         if let Some(parent) = path.parent() {
@@ -3070,7 +3084,30 @@ pub fn set_dotted(
     }
 
     // 3. Apply the dotted key to the tree, creating intermediate tables.
-    set_dotted_value(&mut doc, &normalized_key, typed_value.clone());
+    // `agent.model` is the documented project-default route setter. A
+    // materialized setup/profile is deliberately closed over every dispatch
+    // role, so changing only this leaf would otherwise leave actual task
+    // dispatch on the old dispatcher/task_agent route. Update the complete
+    // model projection atomically while retaining each role's reasoning.
+    if scope == ConfigScope::Local && normalized_key == "agent.model" {
+        set_complete_project_model_projection(&mut doc, value);
+    } else {
+        set_dotted_value(&mut doc, &normalized_key, typed_value.clone());
+    }
+    if scope == ConfigScope::Local {
+        let root = doc
+            .as_table_mut()
+            .ok_or_else(|| anyhow::anyhow!("project config must be a TOML table"))?;
+        root.insert("schema_version".to_string(), toml::Value::Integer(1));
+        if worksgood::project_config::is_profile_projection_key(&normalized_key) {
+            root.remove("profile_origin");
+        }
+        let mut payload = doc.clone();
+        let payload_root = payload.as_table_mut().expect("validated table");
+        payload_root.remove("schema_version");
+        payload_root.remove("profile_origin");
+        worksgood::project_config::validate_project_payload(&payload, &path)?;
+    }
 
     // 4. Validate the whole document still deserializes (catches type errors
     //    on known fields, e.g. setting max_agents to a non-integer).
@@ -3091,14 +3128,38 @@ pub fn set_dotted(
     worksgood::atomic_file::write_atomic(&path, body.as_bytes())
         .map_err(|e| anyhow::anyhow!("Failed to write {}: {}", path.display(), e))?;
 
-    // 6. Reload the daemon (soft Reconfigure re-reads config.toml) unless
-    //    the change needs a full restart (model/endpoint edits respawn the
-    //    coordinator). `--no-reload` skips both.
-    let restart = !no_reload && needs_restart(&normalized_key) && scope == ConfigScope::Local;
+    // 6. Reload only project writes. The global layer is deliberately
+    // inactive and therefore cannot require a project daemon reload.
+    if scope == ConfigScope::Global {
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "key": normalized_key,
+                    "written_value": value,
+                    "scope": "legacy-global-inactive",
+                    "path": path,
+                    "project_effective": false,
+                    "reload": "not applicable (inactive global layer)",
+                }))?
+            );
+        } else {
+            println!(
+                "Set {} = {} in {} [scope: legacy-global-inactive]",
+                normalized_key,
+                value,
+                path.display()
+            );
+            println!("  Project effective value was not changed; no daemon was reloaded.");
+        }
+        return Ok(());
+    }
+
+    let restart = !no_reload && needs_restart(&normalized_key);
     let soft_reload = !no_reload && !restart;
     let reload_note = reload_after_write(workgraph_dir, restart, soft_reload)?;
 
-    // 7. Print the resolved effective value + source (from the merged config).
+    // 7. Print the resolved effective value + source (from the project config).
     print_effective_value(
         workgraph_dir,
         &normalized_key,
@@ -3182,8 +3243,72 @@ pub fn get_dotted(workgraph_dir: &Path, key: &str, json: bool) -> Result<()> {
 fn scope_config_path(workgraph_dir: &Path, scope: ConfigScope) -> Result<std::path::PathBuf> {
     Ok(match scope {
         ConfigScope::Global => Config::global_config_path()?,
-        ConfigScope::Local => workgraph_dir.join("config.toml"),
+        ConfigScope::Local => worksgood::project_config::path_for_graph(workgraph_dir).ok_or_else(|| {
+            anyhow::anyhow!("error[WG-PROJECT-ROOT-REQUIRED]: config writes need an ordinary project .wg directory")
+        })?,
     })
+}
+
+pub(crate) fn reject_global_project_write(scope: ConfigScope) -> Result<()> {
+    if scope == ConfigScope::Global {
+        anyhow::bail!(
+            "error[WG-GLOBAL-CONFIG-WRITE-REFUSED]: machine-global routing is legacy and inactive. Write this project's worksgood.toml (omit --global), or edit a reusable definition with `wg profile edit`."
+        );
+    }
+    Ok(())
+}
+
+fn is_project_routing_key(key: &str) -> bool {
+    matches!(
+        key,
+        "profile"
+            | "agent.model"
+            | "agent.executor"
+            | "dispatcher.model"
+            | "dispatcher.executor"
+            | "dispatcher.provider"
+            | "coordinator.model"
+            | "coordinator.executor"
+            | "coordinator.provider"
+    ) || [
+        "models",
+        "tiers",
+        "execution",
+        "endpoints",
+        "llm_endpoints",
+        "native",
+        "openrouter",
+        "openai",
+    ]
+    .iter()
+    .any(|namespace| {
+        key.strip_prefix(namespace)
+            .is_some_and(|suffix| suffix.is_empty() || suffix.starts_with('.'))
+    })
+}
+
+/// Set the project-wide default model route everywhere a closed profile/setup
+/// projection may have pinned it. This makes `wg config set agent.model ...`
+/// change the route that execution selection actually uses.
+fn set_complete_project_model_projection(doc: &mut toml::Value, route: &str) {
+    set_dotted_value(doc, "agent.model", toml::Value::String(route.to_string()));
+    set_dotted_value(
+        doc,
+        "dispatcher.model",
+        toml::Value::String(route.to_string()),
+    );
+    set_dotted_value(
+        doc,
+        "models.default.model",
+        toml::Value::String(route.to_string()),
+    );
+    for role in worksgood::config::DispatchRole::ALL {
+        set_dotted_value(
+            doc,
+            &format!("models.{role}.model"),
+            toml::Value::String(route.to_string()),
+        );
+    }
 }
 
 fn scope_label(scope: ConfigScope) -> &'static str {
@@ -3545,11 +3670,30 @@ pub fn lint_config(workgraph_dir: &Path, target: LintTarget, json: bool) -> Resu
         || !merged.llm_endpoints.endpoints.is_empty()
         || merged.openrouter.is_some())
         .then_some("legacy WG model/provider data is retained for migration only and has no Pi dispatch authority");
+    // Stale machine-global routing that `wg migrate project-local-pi
+    // --cleanup-global-routing` would remove. Read-only scan; a malformed
+    // global config is surfaced as a lint finding string rather than
+    // aborting the whole lint.
+    let stale_global_routing =
+        match worksgood::migrate_project_local_pi::scan_stale_global_routing() {
+            Ok((keys, removed_active, config_exists)) => Some(serde_json::json!({
+                "global_config_exists": config_exists,
+                "removed_routing_keys": keys.iter().map(|k| serde_json::json!({
+                    "key": k.key,
+                    "category": k.category,
+                })).collect::<Vec<_>>(),
+                "removed_active_profile": removed_active,
+                "count": keys.len(),
+            })),
+            Err(error) => Some(serde_json::json!({
+                "error": format!("{error:#}"),
+            })),
+        };
     let predictive_admission_enabled = merged.coordinator.resource_management.disk_sentinel_enabled;
     let predictive_admission_guidance = if predictive_admission_enabled {
-        "advanced explicit opt-in: historical build high-water projections may intentionally defer launches; set dispatcher.resource_management.disk_sentinel_enabled = false (or remove the key) to use the availability-first default"
+        "enabled (default): admission accounts one immutable shared baseline plus measured per-attempt physical deltas and refuses before reserve is exhausted"
     } else {
-        "disabled (default): dispatch/recovery is not blocked by hypothetical cold-build reservations; explicit cleanup and preservation safeguards remain available"
+        "WARNING: explicitly disabled emergency override; build headroom is unverified and disk status will not report Healthy"
     };
     let max_build_agents = merged.coordinator.effective_max_build_agents();
     let max_build_agents_source = merged.coordinator.max_build_agents_source();
@@ -3577,10 +3721,14 @@ pub fn lint_config(workgraph_dir: &Path, target: LintTarget, json: bool) -> Resu
             "pi_route_warning": pi_warning,
             "pi_model_plane_error": pi_plane_error,
             "legacy_model_plane_warning": legacy_model_plane,
+            "stale_global_routing": stale_global_routing,
             "predictive_build_admission": {
                 "enabled": predictive_admission_enabled,
-                "mode": if predictive_admission_enabled { "advanced-opt-in" } else { "disabled-default" },
+                "mode": if predictive_admission_enabled { "enabled-default" } else { "explicitly-disabled-warning" },
                 "guidance": predictive_admission_guidance,
+                "remediation_command": (!predictive_admission_enabled).then_some(
+                    "wg config set dispatcher.resource_management.disk_sentinel_enabled true"
+                ),
             },
             "build_heavy_capacity": {
                 "max": max_build_agents,
@@ -3627,12 +3775,18 @@ pub fn lint_config(workgraph_dir: &Path, target: LintTarget, json: bool) -> Resu
     println!(
         "  state: {}",
         if predictive_admission_enabled {
-            "enabled (advanced explicit opt-in)"
+            "enabled (safe default)"
         } else {
-            "disabled (default)"
+            "disabled (explicit emergency override)"
         }
     );
     println!("  {predictive_admission_guidance}");
+    if !predictive_admission_enabled {
+        println!(
+            "  restore safe default: wg config set dispatcher.resource_management.disk_sentinel_enabled true"
+        );
+        total_findings += 1;
+    }
     println!();
     println!("build-heavy-capacity:");
     println!("  max: {max_build_agents} ({max_build_agents_source})");
@@ -3663,6 +3817,41 @@ pub fn lint_config(workgraph_dir: &Path, target: LintTarget, json: bool) -> Resu
         println!();
         println!("warning: {warning}");
         total_findings += 1;
+    }
+    // Stale machine-global routing (project-local-Pi cutover leftover).
+    if let Some(payload) = &stale_global_routing {
+        println!();
+        if let Some(error) = payload.get("error").and_then(|v| v.as_str()) {
+            println!("warning: could not scan stale global routing: {error}");
+            total_findings += 1;
+        } else {
+            let count = payload.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
+            let removed_active = payload
+                .get("removed_active_profile")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if count > 0 || removed_active {
+                println!(
+                    "stale machine-global routing (inactive for projects; removed by `wg migrate project-local-pi --cleanup-global-routing`):"
+                );
+                if let Some(keys) = payload
+                    .get("removed_routing_keys")
+                    .and_then(|v| v.as_array())
+                {
+                    for k in keys {
+                        let key = k.get("key").and_then(|v| v.as_str()).unwrap_or("?");
+                        let cat = k.get("category").and_then(|v| v.as_str()).unwrap_or("");
+                        println!("  - {key} ({cat})");
+                    }
+                }
+                if removed_active {
+                    println!("  - ~/.wg/active-profile pointer (file would be removed)");
+                }
+                total_findings += count as usize + removed_active as usize;
+            } else {
+                println!("stale machine-global routing: none found.");
+            }
+        }
     }
 
     if total_findings == 0 {

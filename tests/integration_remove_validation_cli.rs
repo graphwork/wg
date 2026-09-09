@@ -55,6 +55,10 @@ fn test_cli_add_no_validation_flag() {
         help
     );
     assert!(
+        help.contains("operator/repository-authorized hard gate"),
+        "help must make the exceptional authority explicit, got:\n{help}"
+    );
+    assert!(
         !help.contains("--validator-agent"),
         "wg add --help must not mention --validator-agent flag"
     );
@@ -85,6 +89,10 @@ fn test_cli_edit_no_validation_flag() {
         "wg edit --help must not mention retired --validation policy flag"
     );
     assert!(help.contains("--validation-command"), "{help}");
+    assert!(
+        help.contains("operator/repository-authorized hard completion gate"),
+        "{help}"
+    );
 }
 
 /// Quickstart output must mention the `## Validation` section convention but
@@ -113,6 +121,10 @@ fn test_quickstart_no_validation_flag() {
         text.contains("## Validation") || text.contains("Validation section"),
         "wg quickstart must still mention the ## Validation section convention; got:\n{}",
         text
+    );
+    assert!(
+        text.contains("Agents must not invent or broaden"),
+        "quickstart must keep agent-selected checks out of hard gates; got:\n{text}"
     );
 }
 
@@ -171,6 +183,11 @@ fn test_validation_command_round_trips_and_can_be_cleared() {
     assert!(
         add.status.success(),
         "{}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&add.stderr).contains("authoritative hard gate"),
+        "setting the exceptional gate must warn about its authority: {}",
         String::from_utf8_lossy(&add.stderr)
     );
 

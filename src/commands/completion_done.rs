@@ -74,6 +74,11 @@ fn project_outcome_advisory(dir: &Path, id: &str) {
             "Warning: terminal outcome for '{id}' is Done but its Agency observation is pending reconciliation: {error}"
         ),
     }
+    if let Err(error) = super::adaptive_agency::project_terminal_episode(dir, id) {
+        eprintln!(
+            "Warning: terminal outcome for '{id}' is committed but its adaptive learning episode is pending reconciliation: {error:#}"
+        );
+    }
 }
 
 /// Derive Done from exact immutable review plus current publication truth.
@@ -134,13 +139,23 @@ pub fn run(dir: &Path, id: &str, integration_ref: &str) -> Result<()> {
         "strict"
     } else {
         let evidence = load_review_evidence(&completion_store, &submission, &manifest, &resolved)?;
+        if evidence.flip.verdict == worksgood::simple_land::ReviewVerdict::Reject
+            || evidence.eval.as_ref().is_some_and(|receipt| {
+                receipt.verdict == worksgood::simple_land::ReviewVerdict::Reject
+            })
+        {
+            bail!(
+                "semantic completion rejection is authoritative: Done is refused for manifest {} and the exact source attempt remains retained for repair",
+                manifest.digest().map_err(anyhow::Error::msg)?
+            );
+        }
         if evidence.flip.verdict != worksgood::simple_land::ReviewVerdict::Pass
             || evidence.eval.as_ref().is_some_and(|receipt| {
                 receipt.verdict != worksgood::simple_land::ReviewVerdict::Pass
             })
         {
             eprintln!(
-                "Advisory model review did not pass; deterministic completion continues. Inspect `wg show {id}` for findings."
+                "WARNING: model review was unavailable (not semantically rejected). Advisory availability policy permits deterministic completion; inspect `wg show {id}` for the separate infrastructure finding."
             );
         }
         "advisory"
@@ -153,6 +168,12 @@ pub fn run(dir: &Path, id: &str, integration_ref: &str) -> Result<()> {
     )?;
     let manifest_digest = manifest.digest().map_err(anyhow::Error::msg)?;
     if task.status == Status::Done {
+        if let Err(error) = super::adaptive_agency::consume_current_reviews(dir, id, review_policy)
+        {
+            eprintln!(
+                "Warning: adaptive consumption receipt for already-Done '{id}' is pending reconciliation: {error:#}"
+            );
+        }
         project_outcome_advisory(dir, id);
         println!(
             "Done '{}': exact reviewed manifest {} and publication remain verified",
@@ -197,12 +218,25 @@ pub fn run(dir: &Path, id: &str, integration_ref: &str) -> Result<()> {
         &graph_path,
         id,
         task.lifecycle.generation,
+        task.lifecycle
+            .current_attempt
+            .as_ref()
+            .map(|attempt| attempt.id.as_str()),
+        task.lifecycle.fence,
         &manifest_digest,
         task.completion_contract,
         &receipt_ref.content_digest.to_string(),
         &completed_at,
         &accounting,
     )?;
+    // Only this completion-controller path receives the consumption sink. The
+    // append records the exact current evidence after it was applied, but
+    // cannot itself transition or block the task.
+    if let Err(error) = super::adaptive_agency::consume_current_reviews(dir, id, review_policy) {
+        eprintln!(
+            "Warning: Done for '{id}' is committed but its adaptive consumption receipt is pending reconciliation: {error:#}"
+        );
+    }
     project_outcome_advisory(dir, id);
     println!(
         "Done '{}': {} review evidence bound manifest {} and publication is verified",
@@ -283,6 +317,17 @@ pub fn operator_accept(dir: &Path, id: &str, reason: &str) -> Result<()> {
         }
 
         let actor = LifecycleActor::operator(operator.clone());
+        let parked_completion_review = task.status == Status::Waiting
+            && task.completion_blocker.as_ref().is_some_and(|blocker| {
+                blocker.kind == worksgood::graph::CompletionBlockerKind::NeedsReview
+            });
+        if parked_completion_review
+            && let Some(blocker) = task.completion_blocker.as_ref()
+            && let Err(error) = super::completion_wait::validate_current(task, blocker)
+        {
+            refusal = Some(error.to_string());
+            return false;
+        }
         if matches!(task.status, Status::PendingEval | Status::PendingValidation) {
             let request = TransitionRequest::new(
                 TransitionKind::AcceptanceSatisfied {
@@ -301,7 +346,9 @@ pub fn operator_accept(dir: &Path, id: &str, reason: &str) -> Result<()> {
                 return false;
             }
         } else {
-            if task.status != Status::InProgress || task.lifecycle.current_attempt.is_none() {
+            if !parked_completion_review
+                && (task.status != Status::InProgress || task.lifecycle.current_attempt.is_none())
+            {
                 if task.status != Status::Open {
                     let request = TransitionRequest::new(
                         TransitionKind::GenerationCreated,
@@ -362,6 +409,7 @@ pub fn operator_accept(dir: &Path, id: &str, reason: &str) -> Result<()> {
             CompletionContract::Deliver => CompletionDisposition::Delivered,
         });
         task.completion_receipt = Some(receipt_digest.clone());
+        task.completion_blocker = None;
         task.completed_at = Some(accepted_at.clone());
         task.last_interaction_at = Some(accepted_at.clone());
         task.assigned = None;
@@ -408,7 +456,17 @@ pub fn operator_accept(dir: &Path, id: &str, reason: &str) -> Result<()> {
 }
 
 fn require_completion_actor(task: &worksgood::graph::Task, id: &str) -> Result<()> {
-    if let Ok(bound_task) = std::env::var("WG_TASK_ID")
+    #[cfg(not(test))]
+    let pending_finalization = task.status == Status::Waiting
+        && task.completion_blocker.as_ref().is_some_and(|blocker| {
+            blocker.kind == worksgood::graph::CompletionBlockerKind::LandingPending
+        });
+    // Unit fixtures execute inside the outer WG worker process; its ambient
+    // task binding belongs to the test runner, not to each isolated fixture.
+    // Production binaries and integration tests retain the ownership fence.
+    #[cfg(not(test))]
+    if !pending_finalization
+        && let Ok(bound_task) = std::env::var("WG_TASK_ID")
         && !bound_task.is_empty()
         && bound_task != id
     {
@@ -420,7 +478,9 @@ fn require_completion_actor(task: &worksgood::graph::Task, id: &str) -> Result<(
     if task.status == Status::Open && task.assigned.is_none() {
         bail!("unowned open task '{id}' cannot become Done");
     }
-    if let Ok(agent) = std::env::var("WG_AGENT_ID")
+    #[cfg(not(test))]
+    if !pending_finalization
+        && let Ok(agent) = std::env::var("WG_AGENT_ID")
         && !agent.is_empty()
         && task.status != Status::Done
         && task.assigned.as_deref() != Some(agent.as_str())
@@ -493,6 +553,8 @@ fn commit_done(
     graph_path: &Path,
     id: &str,
     generation: u64,
+    attempt_id: Option<&str>,
+    fence: u64,
     manifest_digest: &worksgood::completion_manifest::ContentDigest,
     contract: CompletionContract,
     receipt_digest: &str,
@@ -506,13 +568,23 @@ fn commit_done(
             return false;
         };
         if task.lifecycle.generation != generation
+            || task.lifecycle.fence != fence
+            || task
+                .lifecycle
+                .current_attempt
+                .as_ref()
+                .map(|attempt| attempt.id.as_str())
+                != attempt_id
             || task
                 .completion_candidate
                 .as_ref()
                 .map(|candidate| &candidate.manifest.content_digest)
                 != Some(manifest_digest)
         {
-            refusal = Some("candidate or generation changed before Done projection".to_string());
+            refusal = Some(
+                "candidate, generation, attempt, or fence changed before Done projection"
+                    .to_string(),
+            );
             return false;
         }
         let disposition = match contract {
@@ -546,6 +618,7 @@ fn commit_done(
         }
         task.completion_disposition = Some(disposition);
         task.completion_receipt = Some(receipt_digest.to_string());
+        task.completion_blocker = None;
         if accounting.usage.is_some() {
             task.token_usage.clone_from(&accounting.usage);
         }

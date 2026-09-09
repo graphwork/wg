@@ -13,41 +13,52 @@ command reference, see [COMMANDS.md](COMMANDS.md).
 
 ## Setup
 
-### Global config (once, after install)
+### Project-local config (per repository)
 
 A fresh install is graph-only and has **no executable LLM default**. Pi is the
-sole supported model plane. Select exact `pi:<provider>:<model>` identities and
-reasoning before starting a service or spawning an LLM-backed role:
+sole supported model plane. Each project selects its own exact
+`pi:<provider>:<model>` identity and reasoning into the checked-in project
+document `<project-root>/worksgood.toml` — the single authoritative
+configuration layer for project execution. `~/.wg/config.toml` is **not**
+merged into a project, and `~/.wg/active-profile` is **ignored** for project
+resolution (it is legacy inactive state only). See
+`docs/config-precedence.md` and `docs/design-project-local-pi-config.md`.
 
 ```bash
 wg setup --route pi --yes --model pi:<provider>:<model>
-# or activate the shipped complete global profile instead of supplying a custom route
-wg profile use pi
+# or materialize a reusable profile definition into worksgood.toml
+wg profile select pi
 ```
 
-A global (the default) or `both` setup writes `~/.wg/active-profile = pi` as
-part of the same operation, reloads a running project daemon, and preserves the
-exact configured default/task-agent route. A second `wg profile use pi` is not
-required. `--scope local` intentionally does not mutate that machine-global
-pointer; its project config is already the effective route.
+Both commands write **only** `worksgood.toml` (plus a redacted usage record).
+They never rewrite `~/.wg/config.toml`, `~/.wg/active-profile`, or `~/.pi`.
+`--scope global` and `--scope both` are refused before mutation; `--scope
+local`/`--scope project` are accepted as deprecated synonyms for the default
+project scope. `wg profile use <name>` is a one-release **deprecated alias**
+for `profile select` and performs the same project-local write (it never
+performs the old global mutation).
 
-Setup idempotently prepares the compatible `pi-worksgood` plugin, then performs
-a bounded readiness preflight: it reports whether the `pi` handler is present
-and whether the plugin build/console wiring is ready. Pi owns provider authentication, endpoint configuration, model
-discovery, availability checks, usage, and cost, so setup explicitly reports
-auth/model access as **not verified** and makes no provider request. Follow its
-`pi` → `/login` → test-prompt action before relying on unattended work. WG
-stores orchestration policy only: exact strong/weak or per-role Pi routes plus
-inherited reasoning. WG does not accept provider API keys or endpoint URLs
-during setup and never chooses a cross-provider fallback.
+Setup idempotently prepares the compatible `pi-worksgood` plugin in
+**Hermetic** mode (cache only, never touches `~/.pi`), then performs a bounded
+readiness preflight: it reports whether the `pi` handler is present and whether
+the plugin build is ready. Console wiring of `~/.pi` remains a separate,
+explicit `wg pi-plugin install` step. Pi owns provider authentication, endpoint
+configuration, model discovery, availability checks, usage, and cost, so setup
+explicitly reports auth/model access as **not verified** and makes no provider
+request. Follow its `pi` → `/login` → test-prompt action before relying on
+unattended work. WG stores orchestration policy only: exact strong/weak or
+per-role Pi routes plus inherited reasoning. WG does not accept provider API
+keys or endpoint URLs during setup and never chooses a cross-provider
+fallback.
 
-**Scope boundary / open product question:** a local setup with a custom model
-cannot truthfully fingerprint-select the shipped `pi` profile because that
-profile may contain different route IDs. It therefore keeps local config as
-the authority instead of inventing a generated project profile. Whether the
-expert `wg setup --scope local` flow should eventually adopt the generated,
-fingerprint-pinned profile transaction used by `worksgood setup --model ...`
-is intentionally left for product adjudication.
+**Scope boundary:** `wg setup` always writes the project `worksgood.toml`.
+A checked-in project document is deterministic across clones — a fresh
+checkout reproduces the exact route/reasoning/resource/archive behavior
+without the original machine's profiles or WG credentials. Host authority
+(MCP servers, filesystem roots, network, `bash.path`, elevated worker-control)
+is **requested** by the document but granted only by the operator ceiling in
+protected `<graph>/authorization.toml`; a clone remains deterministic about
+what it requests but safely needs local authorization for host access.
 
 Use Pi's own configuration/login flow to choose a provider and model, then copy
 the exact identity into WG. Preview without writing:
@@ -82,8 +93,9 @@ cd your-project
 wg init
 ```
 
-Creates `.wg/` with your task graph. Inherits global config; override
-per-project with `wg config --local`.
+Creates `.wg/` with your task graph. The project stays graph-only until you
+select a Pi route into `worksgood.toml`. Override per-project with
+`wg config set <key> <value>` (writes `worksgood.toml`).
 
 ---
 

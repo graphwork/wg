@@ -279,24 +279,13 @@ pub fn build_reverse_index(graph: &WorkGraph) -> HashMap<String, Vec<String>> {
     index
 }
 
-/// Load-only compatibility for a pre-receipt `.evaluate-{blocker_id}` edge.
+/// Retired synthetic evaluator rows never gate a source task.
 ///
-/// Current completion never creates this row. When an old graph contains one,
-/// downstream work remains fail-closed until the historical row is exactly
-/// `Done`; terminal evaluator failure is not acceptance evidence. Dot-prefixed
-/// dependents remain exempt to avoid recursive historical gates.
-///
-/// Removal condition: the supported graph-input floor no longer includes
-/// synthetic evaluator rows.
-pub fn is_eval_gate_pending(blocker_id: &str, graph: &WorkGraph) -> bool {
-    if blocker_id.starts_with('.') {
-        return false;
-    }
-    let eval_id = format!(".evaluate-{}", blocker_id);
-    match graph.get_task(&eval_id) {
-        Some(eval_task) => eval_task.status != Status::Done,
-        None => false,
-    }
+/// Kept as a compatibility query for diagnostics and older callers. The
+/// source's receipt-backed lifecycle is authoritative whether or not an
+/// operator has run the historical-marking migration.
+pub fn is_eval_gate_pending(_blocker_id: &str, _graph: &WorkGraph) -> bool {
+    false
 }
 
 /// Find all tasks that are ready to work on (no open blockers, past not_before)
@@ -304,6 +293,12 @@ pub fn ready_tasks(graph: &WorkGraph) -> Vec<&Task> {
     graph
         .tasks()
         .filter(|task| {
+            // Retired synthetic agency rows are historical evidence, never
+            // runnable work. Exclude them before any caller ranks/promotes the
+            // ready set; the dispatcher emits one bounded migration notice.
+            if crate::evaluation_cutover::is_retired_agency_task_id(&task.id) {
+                return false;
+            }
             // Must be open or incomplete (retryable)
             if !matches!(task.status, Status::Open | Status::Incomplete) {
                 return false;
@@ -323,10 +318,8 @@ pub fn ready_tasks(graph: &WorkGraph) -> Vec<&Task> {
             // reference dependencies that haven't been created yet during
             // burst graph construction.
             //
-            // Legacy eval gate: even when the source is terminal, an existing
-            // `.evaluate-X` must be exactly Done before ordinary downstream
-            // work unblocks. Current completion never creates this row.
-            // System tasks (dot-prefixed) are exempt from recursive gating.
+            // Retired synthetic rows never add a second gate: source lifecycle
+            // and typed completion evidence are authoritative.
             task.after.iter().all(|blocker_id| {
                 dependency_disposition(blocker_id, &task.id, graph, None).is_satisfied()
             })
@@ -449,6 +442,13 @@ pub fn dependency_disposition(
             },
         };
     };
+    // Every retired row is evidence-only before and after migration. An
+    // explicit edge through one resolves to the associated source lifecycle;
+    // a stale Open evaluator therefore cannot weaken a PendingEval/Failed
+    // source or deadlock a receipt-backed Done/Landed source.
+    if let Some(source_id) = crate::evaluation_cutover::source_id(&blocker.id) {
+        return dependency_disposition(source_id, dependent_id, graph, workgraph_dir);
+    }
     // A retained owning `.flip-X` / `.evaluate-X` row historically consumed a
     // post-work source state, so preserve that one relation for lossless graph
     // loading and evidence migration. This query-level bypass does not grant
@@ -577,6 +577,9 @@ pub fn ready_tasks_with_peers<'a>(graph: &'a WorkGraph, workgraph_dir: &Path) ->
     graph
         .tasks()
         .filter(|task| {
+            if crate::evaluation_cutover::is_retired_agency_task_id(&task.id) {
+                return false;
+            }
             if !matches!(task.status, Status::Open | Status::Incomplete) {
                 return false;
             }
@@ -611,6 +614,9 @@ pub fn ready_tasks_cycle_aware<'a>(
     let mut ready_tasks: Vec<&'a Task> = graph
         .tasks()
         .filter(|task| {
+            if crate::evaluation_cutover::is_retired_agency_task_id(&task.id) {
+                return false;
+            }
             if !matches!(task.status, Status::Open | Status::Incomplete) {
                 return false;
             }
@@ -669,7 +675,8 @@ pub fn ready_tasks_cycle_aware<'a>(
             .iter()
             .filter_map(|member_id| graph.get_task(member_id))
             .filter(|task| {
-                matches!(task.status, Status::Open | Status::Incomplete)
+                !crate::evaluation_cutover::is_retired_agency_task_id(&task.id)
+                    && matches!(task.status, Status::Open | Status::Incomplete)
                     && !task.paused
                     && is_time_ready(task)
             })
@@ -794,6 +801,9 @@ pub fn ready_tasks_with_peers_cycle_aware<'a>(
     graph
         .tasks()
         .filter(|task| {
+            if crate::evaluation_cutover::is_retired_agency_task_id(&task.id) {
+                return false;
+            }
             if !matches!(task.status, Status::Open | Status::Incomplete) {
                 return false;
             }
@@ -2184,31 +2194,27 @@ mod tests {
     }
 
     #[test]
-    fn eval_satellite_ready_when_source_failed() {
-        // Regression core: `.evaluate-X` with after=[X] is READY when X is
-        // Failed (eval of failed tasks must proceed, §4.3), without stripping
-        // the after edge.
+    fn retired_evaluator_is_filtered_before_dispatch_ordering() {
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_source("X", Status::Failed)));
         graph.add_node(Node::Task(make_satellite(".evaluate-X", "X")));
-        let ready = ready_tasks(&graph);
-        assert_eq!(ready.len(), 1);
-        assert_eq!(ready[0].id, ".evaluate-X");
-        // after edge preserved — not destructively stripped
+        assert!(
+            ready_tasks(&graph).is_empty(),
+            "a retired evaluator must never enter the ready set that is priority-ranked"
+        );
         assert_eq!(
             graph.get_task(".evaluate-X").unwrap().after,
-            vec!["X".to_string()]
+            vec!["X".to_string()],
+            "historical evidence is retained"
         );
     }
 
     #[test]
-    fn flip_satellite_ready_when_source_failed_pending_eval() {
+    fn retired_flip_is_filtered_even_for_failed_pending_source() {
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_source("X", Status::FailedPendingEval)));
         graph.add_node(Node::Task(make_satellite(".flip-X", "X")));
-        let ready = ready_tasks(&graph);
-        assert_eq!(ready.len(), 1);
-        assert_eq!(ready[0].id, ".flip-X");
+        assert!(ready_tasks(&graph).is_empty());
     }
 
     #[test]
@@ -2258,8 +2264,8 @@ mod tests {
         graph.add_node(Node::Task(make_source("X", Status::FailedPendingEval)));
         graph.add_node(Node::Task(make_satellite(".evaluate-X", "X")));
         assert!(
-            ready_tasks(&graph).iter().any(|t| t.id == ".evaluate-X"),
-            "satellite is ready while source is FailedPendingEval"
+            ready_tasks(&graph).iter().all(|t| t.id != ".evaluate-X"),
+            "retired satellite is never dispatchable"
         );
         // bulk-retry / wg recover resets X to Open
         graph.get_task_mut("X").unwrap().status = Status::Open;
@@ -2272,6 +2278,80 @@ mod tests {
             vec!["X".to_string()],
             "after edge preserved across the reset"
         );
+    }
+
+    #[test]
+    fn stale_evaluator_cannot_block_done_source_before_migration() {
+        let mut graph = WorkGraph::new();
+        let mut source = make_source("X", Status::Done);
+        source.completion_disposition = Some(crate::graph::CompletionDisposition::Landed);
+        source.completion_receipt = Some(format!("wgcid:v2:blake3:{}", "1".repeat(64)));
+        graph.add_node(Node::Task(source));
+        graph.add_node(Node::Task(make_satellite(".evaluate-X", "X")));
+        let mut downstream = make_task("downstream", "downstream");
+        downstream.after = vec!["X".to_string()];
+        graph.add_node(Node::Task(downstream));
+
+        assert!(!is_eval_gate_pending("X", &graph));
+        assert!(
+            ready_tasks(&graph)
+                .iter()
+                .any(|task| task.id == "downstream"),
+            "source Done/Landed is authoritative without graph surgery"
+        );
+        assert!(
+            ready_tasks(&graph)
+                .iter()
+                .all(|task| task.id != ".evaluate-X"),
+            "retired evaluator itself never dispatches"
+        );
+    }
+
+    #[test]
+    fn explicit_edges_through_every_retired_row_follow_source_semantics() {
+        for prefix in [".assign-", ".flip-", ".evaluate-"] {
+            for status in [
+                Status::Open,
+                Status::InProgress,
+                Status::PendingEval,
+                Status::FailedPendingEval,
+                Status::Failed,
+            ] {
+                let mut graph = WorkGraph::new();
+                graph.add_node(Node::Task(make_source("X", status)));
+                let retired_id = format!("{prefix}X");
+                graph.add_node(Node::Task(make_satellite(&retired_id, "X")));
+                let mut downstream = make_task("downstream", "downstream");
+                downstream.after = vec![retired_id.clone()];
+                graph.add_node(Node::Task(downstream));
+                assert!(
+                    ready_tasks(&graph)
+                        .iter()
+                        .all(|task| task.id != "downstream"),
+                    "{retired_id} weakened non-Done source status {status:?}"
+                );
+                assert!(matches!(
+                    dependency_disposition(&retired_id, "downstream", &graph, None),
+                    DependencyDisposition::Blocked { .. }
+                ));
+            }
+
+            let mut graph = WorkGraph::new();
+            let mut source = make_source("X", Status::Done);
+            source.completion_disposition = Some(crate::graph::CompletionDisposition::Landed);
+            graph.add_node(Node::Task(source));
+            let retired_id = format!("{prefix}X");
+            graph.add_node(Node::Task(make_satellite(&retired_id, "X")));
+            let mut downstream = make_task("downstream", "downstream");
+            downstream.after = vec![retired_id.clone()];
+            graph.add_node(Node::Task(downstream));
+            assert!(
+                ready_tasks(&graph)
+                    .iter()
+                    .any(|task| task.id == "downstream"),
+                "{retired_id} failed to resolve through Done/Landed source"
+            );
+        }
     }
 
     #[test]

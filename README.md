@@ -173,6 +173,11 @@ wg tui
 
 The loop: declare work, let the service dispatch it, watch the graph evolve.
 
+If a readiness-confirmed daemon restart meets a reviewed candidate waiting to land, use
+the supported [`wg show` → `wg merge-resolution status` → `wg resume --only` recovery
+flow](docs/ops/maze-free-recovery.md). It retains immutable candidate/receipt/fence
+evidence and never requires source-worker resubmission or manual Git history surgery.
+
 ## Review this project in 10 minutes
 
 1. Read the [Poietic mission](https://poietic.life/): why legible human/AI

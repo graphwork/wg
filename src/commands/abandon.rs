@@ -190,6 +190,11 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>, superseded_by: &[String])
 
     let reason_msg = reason.map(|r| format!(" ({})", r)).unwrap_or_default();
     println!("Marked '{}' as abandoned{}", id, reason_msg);
+    if let Err(error) = super::adaptive_agency::project_terminal_episode(dir, id) {
+        eprintln!(
+            "Warning: terminal abandonment for '{id}' is committed but its adaptive learning episode is pending reconciliation: {error:#}"
+        );
+    }
     for target in &cascade_targets {
         println!("  Auto-abandoned: {}", target);
     }

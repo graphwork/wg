@@ -11,45 +11,56 @@ wg --dir /repo/a/.wg profile show
 wg --dir /repo/a/.wg profile select --clear
 ```
 
-For an already-installed definition, `profile select` writes only
-`<graph>/profile-selection.json` (plus a local, redacted successful-event usage
-record). If a built-in starter is not installed yet, apply first materializes
-that starter once as the reusable `~/.wg/profiles/<name>.toml` definition with
-atomic no-replace semantics; the redacted dry-run plan reports this explicitly.
-It does **not** rewrite `~/.wg/config.toml` or `~/.wg/active-profile`. Config
-resolution verifies the canonical-project digest and the selected definition's
-semantic BLAKE3 fingerprint, then overlays that definition in memory as the
-routing authority. The profile is not reconstructed on each run.
+`profile select` is a **project-local, copy-by-value** operation. It resolves
+an isolated, closed Pi projection (model + reasoning for every dispatch
+role) from one definition — with no global/local config inputs — and writes
+that projection into `<project-root>/worksgood.toml`, the single authoritative
+project document. It writes **only** `worksgood.toml` (plus a redacted
+successful-event usage record in `~/.wg/profile-usage.jsonl`). If a built-in
+starter is not installed yet, apply first materializes that starter once as
+the reusable `~/.wg/profiles/<name>.toml` definition with atomic no-replace
+semantics; the redacted dry-run plan reports this explicitly. It does **not**
+rewrite `~/.wg/config.toml` or `~/.wg/active-profile`, never edits `~/.pi`,
+and never re-reads the definition at runtime. A later edit, rename, or
+deletion of the reusable definition therefore cannot change or disable an
+already-configured project; re-running `profile select` is the explicit update
+operation.
 
-The older command remains deliberately global:
+The older global verb is a deprecated alias:
 
 ```sh
-wg profile use claude
+wg profile use claude     # [DEPRECATED] alias for project-local `profile select`
 ```
 
-`profile use` still overlays `~/.wg/config.toml`, updates
-`~/.wg/active-profile`, and can hot-reload the current daemon. Its output calls
-this global scope out. A global active profile is context only when a project
-has an explicit `profile select` association; it is never migrated or presented
-as that project's selection.
+`profile use` now performs the same project-local materialization into
+`worksgood.toml` when a project root is available (it warns once and never
+performs the old global mutation). Without project context it fails with
+actionable guidance. `~/.wg/active-profile` is **ignored** for project
+resolution — it is surfaced only as legacy inactive state and a migration
+input, never as a project's selected route.
 
 ## Drift and recovery
 
-The association pins profile content. Editing a selected reusable definition
-leaves the association explicit but marks it drifted; execution/config loading
-fails closed and does not use a global/provider fallback. Inspect and
-acknowledge the new routes:
+The materialized projection records `profile_origin` with the definition and
+projection fingerprints. Editing a selected reusable definition does **not**
+affect the project at runtime (the bytes are already in `worksgood.toml`);
+however, `profile show` reports the definition as unavailable/drifted. To
+adopt a changed definition's new routes, re-run `wg profile select <name>`.
 
-```sh
-wg profile show <name>
-wg profile select <name>
-```
+A hand edit that changes a managed route but leaves stale `profile_origin`
+metadata is detected by the projection fingerprint: inspection reports
+`profile-origin-drift` and LLM execution fails without a global fallback.
+Recover by running `wg profile select <name>` (re-materialize) or
+`wg profile select --clear` (keep the current routes, drop only origin
+metadata, source becomes `project-file (manual)`).
 
-Deleting or renaming a definition likewise leaves existing project
-associations unavailable rather than inventing a replacement. Restore the old
-definition, select its new name in each project, or clear the association.
-Canonical path aliases share one identity; moving a graph requires explicit
-re-selection at the new location.
+Deleting or renaming a definition likewise leaves `profile show` reporting the
+definition unavailable; the project route itself keeps working because the
+projection is copy-by-value. Re-select at the new name, or clear the origin.
+Clone portability comes from the relative project-root binding and the
+checked-in `worksgood.toml`, not a canonical-path digest: a clone reproduces
+the exact route/reasoning without the original machine's profiles or
+credentials.
 
 ## Read-only catalog and plan APIs
 

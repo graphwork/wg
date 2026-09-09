@@ -136,7 +136,10 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>) -> Result<()> {
         }
         let _ = registry.save_ref();
     }
-    if let Err(error) = worksgood::disk_sentinel::release_owned_cache_leases(dir, id, None) {
+    let lease_owner = worksgood::disk_sentinel::caller_agent_for_task(id);
+    if let Err(error) =
+        worksgood::disk_sentinel::release_owned_cache_leases(dir, id, lease_owner.as_deref())
+    {
         eprintln!("Warning: failed to release build-cache lease: {error:#}");
     }
 

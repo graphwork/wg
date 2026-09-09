@@ -8,7 +8,7 @@ use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-use crate::config::{Config, ConfigSource, parse_supported_execution_route};
+use crate::config::{Config, ConfigSource, parse_exact_pi_route, parse_supported_execution_route};
 use crate::dispatch::handler_for_model;
 
 pub const UNSELECTED_CODE: &str = "WG-EXEC-UNSELECTED";
@@ -174,49 +174,55 @@ fn resolve_config_sources(
         let Some(source) = sources.get(key) else {
             continue;
         };
-        if *source == ConfigSource::Default {
+        // A global label is compatibility-inspection data only. Even a caller
+        // that constructs an old source map cannot turn it into authority.
+        if matches!(source, ConfigSource::Default | ConfigSource::Global) {
             continue;
         }
-        let Some(route) = canonical_explicit_route(raw) else {
-            anyhow::bail!(
-                "error[WG-EXEC-ROUTE-REQUIRED]: {key} selects unsupported route {raw:?}; worker roles require explicit `pi:<provider>:<model>`, `claude:<native-model>`, or `codex:<native-model>` and never fall back"
-            );
-        };
+        let route = raw.trim().to_string();
+        parse_exact_pi_route(&route).map_err(|error| {
+            anyhow::anyhow!(
+                "error[WG-PI-ROUTE-REQUIRED]: {key} selects non-Pi project route {raw:?}: {error}. Select an exact `pi:<provider>:<model>` route; no machine-global or cross-system fallback was attempted"
+            )
+        })?;
         let path = match source {
-            ConfigSource::Global => Config::global_config_path()?,
+            ConfigSource::ProjectFile | ConfigSource::ProjectProfileImport => {
+                crate::project_config::path_for_graph(dir).ok_or_else(|| {
+                    anyhow::anyhow!("project-file source has no bound project path")
+                })?
+            }
             ConfigSource::Local => dir.join("config.toml"),
-            ConfigSource::ProjectProfile => crate::profile::project::read_association(dir)?
-                .map(|association| crate::profile::named::profile_path(&association.profile))
-                .transpose()?
-                .unwrap_or_else(|| crate::profile::project::association_path(dir)),
-            ConfigSource::Default => continue,
+            ConfigSource::ProjectProfile => crate::profile::project::association_path(dir),
+            ConfigSource::Global | ConfigSource::Default => continue,
         };
-        let selection_source = if *source == ConfigSource::ProjectProfile {
-            let association = crate::profile::project::read_association(dir)?
-                .ok_or_else(|| anyhow::anyhow!("project-profile source has no association"))?;
-            ExecutionSelectionSource::Profile {
-                name: association.profile,
-                path,
-            }
-        } else if *source == ConfigSource::Global {
-            if let Ok(Some(name)) = crate::profile::named::active() {
+        let selection_source = match source {
+            ConfigSource::ProjectProfile => {
+                let association =
+                    crate::profile::project::read_association(dir)?.ok_or_else(|| {
+                        anyhow::anyhow!("legacy project-profile source has no association")
+                    })?;
                 ExecutionSelectionSource::Profile {
-                    name: name.clone(),
-                    path: crate::profile::named::profile_path(&name)?,
-                }
-            } else {
-                ExecutionSelectionSource::Config {
-                    scope: source.clone(),
+                    name: association.profile,
                     path,
-                    key: key.into(),
                 }
             }
-        } else {
-            ExecutionSelectionSource::Config {
-                scope: source.clone(),
+            ConfigSource::ProjectProfileImport => {
+                let document = crate::project_config::load_for_graph(dir)?.ok_or_else(|| {
+                    anyhow::anyhow!("project-profile-import source has no project document")
+                })?;
+                let origin = document.profile_origin.ok_or_else(|| {
+                    anyhow::anyhow!("project-profile-import source has no profile_origin")
+                })?;
+                ExecutionSelectionSource::Profile {
+                    name: origin.name,
+                    path,
+                }
+            }
+            _ => ExecutionSelectionSource::Config {
+                scope: *source,
                 path,
                 key: key.into(),
-            }
+            },
         };
         return Ok(ExecutionSelection {
             state: SelectionState::Selected,
@@ -230,8 +236,69 @@ fn resolve_config_sources(
 
 pub fn unselected_message(operation: &str) -> String {
     format!(
-        "error[{UNSELECTED_CODE}]: no LLM execution system has been selected.\nThis WG is available for graph-only use, but `{operation}` requires an LLM route.\n\nChoose Pi explicitly (recommended):\n  wg setup --route pi --yes --model pi:<provider>:<model>\n  wg profile select pi\n  wg config --global --model pi:<provider>:<model>\n  wg config --local  --model pi:<provider>:<model>\n\nOr opt into a native CLI:\n  wg profile select claude\n  wg config --local --model claude:<native-model>\n  wg profile select codex\n  wg config --local --model codex:<native-model>\n\nPi owns its providers and authentication; the Claude and Codex CLIs own login and accept native model IDs unchanged. Explicit handler-first Claude/Codex routes support workers and live chat without cross-system fallback. `wg init`, graph reads, graph edits, and the TUI remain credential-free and do not create a route."
+        "error[{UNSELECTED_CODE}]: No project Pi route is selected.\nThis WG is available for graph-only use, but `{operation}` requires an LLM route.\n\nSelect the route for this project explicitly:\n  wg profile select pi\n  wg setup --route pi --yes --model pi:<provider>:<model>\n\nPi owns provider authentication, endpoints, and model discovery. WG global config, WG secrets, and ~/.wg/active-profile never select a project route. `wg init`, graph reads, graph edits, and the setup-neutral TUI remain credential-free and do not create a route."
     )
+}
+
+fn ignored_legacy_machine_routing(dir: &Path) -> Vec<String> {
+    // A source-owned project file makes legacy project inputs inactive too;
+    // mention them without reading values.
+    let mut ignored = Vec::new();
+    if crate::project_config::exists_for_graph(dir) {
+        let local = dir.join("config.toml");
+        if local.exists() {
+            ignored.push(format!("{} (legacy project config)", local.display()));
+        }
+        let association = crate::profile::project::association_path(dir);
+        if association.exists() {
+            ignored.push(format!(
+                "{} (legacy profile association)",
+                association.display()
+            ));
+        }
+    }
+
+    if let Ok(path) = Config::global_config_path()
+        && let Ok(text) = std::fs::read_to_string(&path)
+        && let Ok(value) = text.parse::<toml::Value>()
+    {
+        let has_route = value
+            .get("agent")
+            .and_then(|table| table.get("model"))
+            .is_some()
+            || value
+                .get("dispatcher")
+                .or_else(|| value.get("coordinator"))
+                .and_then(|table| table.get("model"))
+                .is_some()
+            || value.get("models").is_some()
+            || value.get("tiers").is_some()
+            || value.get("profile").is_some();
+        if has_route {
+            ignored.push(format!("{} (legacy machine routing)", path.display()));
+        }
+    }
+    if let Ok(path) = crate::profile::named::active_pointer_path()
+        && let Ok(name) = std::fs::read_to_string(&path)
+    {
+        let name = name.trim();
+        if !name.is_empty() {
+            ignored.push(format!("{} ({name})", path.display()));
+        }
+    }
+    ignored
+}
+
+pub fn unselected_message_for(dir: &Path, operation: &str) -> String {
+    let mut message = unselected_message(operation);
+    let ignored = ignored_legacy_machine_routing(dir);
+    if !ignored.is_empty() {
+        message.push_str(
+            "\n\nIgnored legacy routing (inactive; it does not configure this project):\n  ",
+        );
+        message.push_str(&ignored.join("\n  "));
+    }
+    message
 }
 
 pub fn require(
@@ -241,7 +308,7 @@ pub fn require(
 ) -> Result<ExecutionSelection> {
     let selection = resolve(dir, model)?;
     if selection.state == SelectionState::Unselected {
-        bail!(unselected_message(operation));
+        bail!(unselected_message_for(dir, operation));
     }
     Ok(selection)
 }

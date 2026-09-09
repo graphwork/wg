@@ -253,6 +253,85 @@ fn test_classify_failure_subcommand_codex_unavailable_optional_tool_model() {
     );
 }
 
+fn classify_terminal_cli(raw: &str, exit_code: i32) -> serde_json::Value {
+    let tmp = TempDir::new().unwrap();
+    let raw_stream = tmp.path().join("raw_stream.jsonl");
+    fs::write(&raw_stream, raw).unwrap();
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_wg"));
+    cmd.current_dir(tmp.path()).args([
+        "classify-failure",
+        "--terminal",
+        "--json",
+        "--executor",
+        "pi",
+        "--raw-stream",
+        &raw_stream.to_string_lossy(),
+        "--exit-code",
+        &exit_code.to_string(),
+    ]);
+    cmd.env_remove("WG_DIR");
+    cmd.env_remove("WG_TASK_ID");
+    cmd.env_remove("WG_AGENT_ID");
+    let output = cmd.output().expect("Failed to run wg binary");
+    assert!(
+        output.status.success(),
+        "terminal classifier failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+/// Exercise the actual wrapper-facing CLI contract, including restart-stable
+/// JSON and evidence precedence across all terminal classes.
+#[test]
+fn terminal_classification_cli_precedence_matrix() {
+    let completed = concat!(
+        "{\"type\":\"tool_execution_end\",\"result\":\"timeout policy text\"}\n",
+        "{\"type\":\"turn_end\",\"message\":{\"role\":\"assistant\",\"responseId\":\"r1\",\"stopReason\":\"completed\"}}\n",
+    );
+    let first = classify_terminal_cli(completed, 124);
+    let replay = classify_terminal_cli(completed, 124);
+    assert_eq!(first, replay, "same bytes must replay identically");
+    assert_eq!(first["state"], "completed");
+    assert!(first.get("failure_reason").is_none());
+
+    let blocked = format!(
+        "{completed}{{\"type\":\"finalization_blocked\",\"code\":\"completion_needs_review\"}}\n"
+    );
+    let blocked = classify_terminal_cli(&blocked, 1);
+    assert_eq!(blocked["state"], "finalization-blocked");
+    assert_eq!(blocked["finalization_code"], "needs-review");
+
+    let provider = classify_terminal_cli(
+        "{\"type\":\"error\",\"error\":{\"code\":408,\"message\":\"request timed out\",\"metadata\":{\"error_type\":\"timeout\"}}}\n",
+        1,
+    );
+    assert_eq!(provider["state"], "provider-failure");
+    assert_eq!(provider["failure_reason"], "timeout");
+
+    let pre_terminal = classify_terminal_cli(
+        "{\"type\":\"turn_end\",\"message\":{\"responseId\":\"tool-turn\",\"stopReason\":\"toolUse\",\"rawStopReason\":\"completed\"}}\n",
+        124,
+    );
+    assert_eq!(pre_terminal["state"], "provider-failure");
+    assert_eq!(pre_terminal["failure_reason"], "hard-timeout");
+    assert!(pre_terminal.get("receipts").is_none());
+
+    let ambiguous = classify_terminal_cli(
+        concat!(
+            "{\"type\":\"turn_end\",\"message\":{\"responseId\":\"r1\",\"stopReason\":\"completed\"}}\n",
+            "{\"type\":\"agent_end\",\"messages\":[{\"role\":\"assistant\",\"responseId\":\"r2\",\"stopReason\":\"failed\"}]}\n",
+        ),
+        1,
+    );
+    assert_eq!(ambiguous["state"], "ambiguous");
+    assert_eq!(
+        ambiguous["reason_code"],
+        "conflicting-exact-terminal-receipts"
+    );
+    assert!(ambiguous.get("failure_reason").is_none());
+}
+
 /// Verify `wg classify-failure` outputs agent-hard-timeout for exit code 124.
 #[test]
 fn test_classify_failure_subcommand_hard_timeout() {

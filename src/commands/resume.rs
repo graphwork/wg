@@ -17,6 +17,9 @@ use super::graph_path;
 use worksgood::parser::load_graph;
 
 pub fn run(dir: &Path, id: &str, only: bool) -> Result<()> {
+    if resume_landing_finalization(dir, id)? {
+        return Ok(());
+    }
     match resume_waiting_task(dir, id)? {
         WaitingResume::Resumed => {
             // A Waiting resume is deliberately single-task operator authority,
@@ -51,6 +54,68 @@ enum WaitingResume {
     Resumed,
     AlreadyResumed(Status),
     NotWaiting,
+}
+
+/// Resume a typed LandingPending state without dispatching source work or
+/// invoking model review. Returns true when the command was fully handled.
+pub(crate) fn resume_landing_finalization(dir: &Path, id: &str) -> Result<bool> {
+    let graph = worksgood::parser::load_graph(super::graph_path(dir))?;
+    let Some(task) = graph.get_task(id) else {
+        return Ok(false);
+    };
+    let Some(blocker) = task.completion_blocker.as_ref() else {
+        if task.status == Status::Done
+            && task.completion_disposition == Some(worksgood::graph::CompletionDisposition::Landed)
+            && task.log.iter().any(|entry| {
+                entry.actor.as_deref() == Some("completion-done")
+                    || entry.actor.as_deref() == Some("land")
+            })
+        {
+            println!("Landing for '{}' is already complete", id);
+            return Ok(true);
+        }
+        return Ok(false);
+    };
+    if blocker.kind != worksgood::graph::CompletionBlockerKind::LandingPending {
+        return Ok(false);
+    }
+    super::completion_wait::validate_current(task, blocker)?;
+
+    if task.completion_disposition != Some(worksgood::graph::CompletionDisposition::Landed)
+        && !super::completion_land::resume_pending(dir, id)?
+    {
+        println!(
+            "Landing for '{}' remains pending; preserve user changes, clean the attached integration checkout, then run `wg resume {} --only` again",
+            id, id
+        );
+        return Ok(true);
+    }
+    let integration_ref = blocker
+        .integration_ref
+        .as_deref()
+        .context("LandingPending has no integration ref")?;
+    // Converge the audit projection after a crash between the landing CAS and
+    // the record update. This runs only after durable Landed disposition and
+    // cannot grant publication authority.
+    let after_landing = worksgood::parser::load_graph(super::graph_path(dir))?;
+    let landed = after_landing
+        .get_task(id)
+        .context("task disappeared after landing")?;
+    if landed.completion_disposition == Some(worksgood::graph::CompletionDisposition::Landed) {
+        if let Some(commit) = landed
+            .completion_blocker
+            .as_ref()
+            .and_then(|current| current.reconciled_commit_oid.as_deref())
+        {
+            super::completion_land::mark_reconciliation_landed(dir, id, commit, commit)?;
+        }
+    }
+    super::completion_done::run(dir, id, integration_ref)?;
+    println!(
+        "Resumed pending landing for '{}' without rerunning source or review",
+        id
+    );
+    Ok(true)
 }
 
 /// Atomically exercise explicit operator authority over one Waiting task.

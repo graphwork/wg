@@ -264,10 +264,12 @@ start_wg_daemon() {
         loud_fail "no .wg/.wg dir under $scratch — run 'wg init' before start_wg_daemon"
     fi
     local wrap_log="$scratch/daemon.log"
+    local launch_cwd="${WG_SMOKE_DAEMON_LAUNCH_CWD:-$scratch}"
     # Pass --dir explicitly so the daemon binds to the scratch fixture
-    # regardless of any leaked WG_DIR / discovery context. The cd is
-    # belt-and-braces in case a child invocation uses cwd-discovery.
-    ( cd "$scratch" && wg --dir "$wg_dir" service start "$@" >"$wrap_log" 2>&1 ) &
+    # regardless of any leaked WG_DIR / discovery context. Most scenarios use
+    # the project as cwd for belt-and-braces discovery; a scenario may set
+    # WG_SMOKE_DAEMON_LAUNCH_CWD to prove --dir authority from another cwd.
+    ( cd "$launch_cwd" && wg --dir "$wg_dir" service start "$@" >"$wrap_log" 2>&1 ) &
     local wrap_pid=$!
     local pid
     if ! pid=$(wait_for_daemon_pid "$wg_dir" 30); then

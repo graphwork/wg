@@ -3,7 +3,8 @@ use chrono::Utc;
 use std::path::Path;
 use worksgood::graph::{LogEntry, Status};
 use worksgood::lifecycle::{
-    ActorKind, LifecycleActor, TransitionKind, TransitionRequest, apply_transition,
+    ActorKind, FenceExpectation, LifecycleActor, TransitionKind, TransitionRequest,
+    apply_transition,
 };
 use worksgood::parser::modify_graph;
 
@@ -18,6 +19,8 @@ pub fn claim(dir: &Path, id: &str, actor: Option<&str>) -> Result<()> {
     if !path.exists() {
         anyhow::bail!("WG not initialized. Run 'wg init' first.");
     }
+
+    super::assign::prepare_automatic_intent_if_configured(dir, id)?;
 
     let mut error: Option<anyhow::Error> = None;
     let mut prev_status = String::new();
@@ -157,6 +160,18 @@ pub fn claim(dir: &Path, id: &str, actor: Option<&str>) -> Result<()> {
         prev_status = format!("{:?}", task.status);
         prev_assigned = task.assigned.clone();
 
+        // Resolve the exact next-attempt receipt while the graph admission
+        // lock is held. A stale pre-lock snapshot must never become lifecycle
+        // evidence for a different composition or fence.
+        let expected_admission = FenceExpectation::current(task);
+        let assignment_receipt =
+            match super::adaptive_agency::prepare_next_attempt_assignment(dir, task) {
+                Ok(receipt) => receipt,
+                Err(receipt_error) => {
+                    error = Some(receipt_error);
+                    return false;
+                }
+            };
         let generation = task.lifecycle.generation;
         let request = TransitionRequest::new(
             TransitionKind::AttemptReserved {
@@ -172,7 +187,9 @@ pub fn claim(dir: &Path, id: &str, actor: Option<&str>) -> Result<()> {
             },
             "claim",
             format!("claim:{id}:{generation}:{}", actor.unwrap_or("operator")),
-        );
+        )
+        .expecting(expected_admission.clone())
+        .with_evidence(assignment_receipt.receipt_id.clone());
         if let Err(rejection) = apply_transition(task, request) {
             error = Some(anyhow::anyhow!(rejection));
             return false;

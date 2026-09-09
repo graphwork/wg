@@ -689,6 +689,11 @@ pub fn run_with_reasoning_and_route_clear(
             task.validation_commands = if command.is_empty() {
                 Vec::new()
             } else {
+                eprintln!(
+                    "Warning: --validation-command creates an authoritative hard gate. \
+                     Prefer ## Validation for agent-selected checks; use this only when the operator \
+                     explicitly requested the exact command or checked-in repository policy names it."
+                );
                 vec![command.to_string()]
             };
             field_changes.push(serde_json::json!({
@@ -697,7 +702,7 @@ pub fn run_with_reasoning_and_route_clear(
                 "new": task.validation_commands,
             }));
             println!(
-                "{} deterministic validation command",
+                "{} authoritative validation command",
                 if command.is_empty() { "Cleared" } else { "Set" }
             );
             changed = true;

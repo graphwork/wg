@@ -727,11 +727,11 @@ model = "claude:opus"  # provider:model — handler is implied (claude CLI)
 heartbeat_timeout = 5   # minutes before agent is considered dead
 
 [agency]
-auto_evaluate = false       # source-bound completion review/observation
-auto_assign = false         # inert compatibility key; no synthetic assignment tasks
-auto_place = false          # placement policy used by explicit assignment
+auto_evaluate = false       # candidate-observation policy; not post-terminal scoring
+auto_assign = false         # bounded pre-claim selection; receipt on the real attempt
+auto_place = false          # separate dependency-placement policy
 auto_create = false         # auto-invoke creator agent for primitive store expansion
-assigner_model = "haiku"    # optional explicit assignment metadata route
+assigner_model = "haiku"    # compatibility selector-route metadata
 ```
 
 ### Model selection

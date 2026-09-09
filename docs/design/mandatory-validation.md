@@ -1,5 +1,11 @@
 # Mandatory Validation Architecture
 
+> **Historical design — superseded.** WG now defaults to acceptance criteria in
+> `## Validation`, with worker-selected checks reported as evidence rather than
+> silently promoted to completion authority. `--validation-command` remains an
+> explicit operator/repository-authorized hard gate only. Agents must not invent
+> or broaden one. See `docs/ops/completion-validation-evidence.md`.
+
 ## Problem
 
 Agents frequently complete tasks without proper validation. Prompting alone is insufficient — the same agent that wrote code is biased toward thinking it works. We need structural enforcement: the system should make it impossible to consider a task "truly done" without independent verification.

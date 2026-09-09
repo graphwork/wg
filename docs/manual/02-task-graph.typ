@@ -292,6 +292,12 @@ Sometimes you need to stop a cycle—or any task—without destroying its state.
 
 Pausing is orthogonal to status. You can pause an open task to hold it. You can pause a task mid-cycle to halt iteration without losing state. When you resume, the cycle picks up where it left off.
 
+=== Finalizer-owned landing recovery
+
+A `Waiting/LandingPending` task is different from a failed source attempt. Its reviewed candidate and exact `(task, generation, attempt, fence)` binding are retained even after the source worker is released. Inspect it with `wg show <task>` and `wg merge-resolution status <task>`. Preserve user changes, clean the attached integration checkout, then run `wg resume <task> --only`. If the integration target advanced as a descendant, WG deterministically integrates the retained candidate, renews configured and baseline target-bound validation evidence, and lands through the exact ref fence.
+
+Do not use `wg retry`, `wg requeue`, or `wg unclaim` for this state, and do not reset/rebase/cherry-pick the retained candidate. Divergence, conflicts, changed required inputs, failed validation, or a stale fence remain fail-closed with candidate bytes intact; follow the exact next action printed by status. `wg reset <task>` begins an authorized new generation only when status names that fallback.
+
 == Placement Hints
 
 When a visible draft is published, the coordinator can automatically position it in the dependency graph through _placement_—an optional feature controlled by `wg config --auto-place`. Set `agency.auto_place=false` to preserve only explicit dependencies and hints. Placement hints on `wg add` guide this positioning:

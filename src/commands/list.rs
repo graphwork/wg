@@ -185,6 +185,29 @@ pub fn run(
                 }
             }
         }
+        if show_all
+            && let Some(store) = worksgood::adaptive_agency::AdaptiveStore::open_existing(dir)
+            && let Ok(attempts) = store.reader().review_attempts()
+        {
+            let visible = tasks
+                .iter()
+                .map(|task| task.id.as_str())
+                .collect::<std::collections::HashSet<_>>();
+            for attempt in attempts
+                .into_iter()
+                .filter(|attempt| visible.contains(attempt.binding.source.task_id.as_str()))
+            {
+                output.push(serde_json::json!({
+                    "kind": "adaptive-review-attempt",
+                    "virtual": true,
+                    "graph_task": false,
+                    "non_schedulable": true,
+                    "id": attempt.alias,
+                    "source_task": attempt.binding.source.task_id,
+                    "attempt": attempt,
+                }));
+            }
+        }
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else if tasks.is_empty() {
         println!("No tasks found");
@@ -338,6 +361,42 @@ pub fn run(
                             usage
                         );
                     }
+                }
+            }
+            if let Some(store) = worksgood::adaptive_agency::AdaptiveStore::open_existing(dir)
+                && let Ok(attempts) = store.reader().review_attempts()
+            {
+                let visible = tasks
+                    .iter()
+                    .map(|task| task.id.as_str())
+                    .collect::<std::collections::HashSet<_>>();
+                let attempts = attempts
+                    .into_iter()
+                    .filter(|attempt| visible.contains(attempt.binding.source.task_id.as_str()))
+                    .collect::<Vec<_>>();
+                if !attempts.is_empty() {
+                    println!(
+                        "-- adaptive virtual reviews (non-schedulable; no graph edges or lifecycle authority) --"
+                    );
+                }
+                for attempt in attempts {
+                    println!(
+                        "[R] {} - {:?} candidate={} route={} cost={}",
+                        attempt.alias,
+                        attempt.outcome,
+                        if attempt.current_candidate {
+                            "current"
+                        } else {
+                            "superseded"
+                        },
+                        attempt.route.exact_route,
+                        attempt
+                            .usage
+                            .as_ref()
+                            .and_then(|usage| usage.provider_cost)
+                            .map(|cost| format!("${cost:.6}"))
+                            .unwrap_or_else(|| "unknown".to_string())
+                    );
                 }
             }
         }

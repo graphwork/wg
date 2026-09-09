@@ -2437,6 +2437,15 @@ description = "Real CLI + tmux/TUI disk-pressure regression: synthesizes warn/pa
 timeout_seconds = 45
 
 [[scenario]]
+name = "project_local_build_scratch"
+script = "scenarios/project_local_build_scratch.sh"
+owners = [
+    "project-local-build-scratch",
+]
+description = "Candidate-binary terminal regression for project-local build scratch: launches a real daemon from a cwd outside an explicitly selected --dir project, dispatches a build-capable shell task, verifies its spawned TMPDIR is .wg/build-tmp/<agent> rather than the legacy OS-temp root, and checks disk doctor --json names project-build-scratch on the actual admission mount without an unconditional OS-temp probe."
+timeout_seconds = 60
+
+[[scenario]]
 name = "casa_wgfed_adapter_e2e"
 script = "scenarios/casa_wgfed_adapter_e2e.sh"
 owners = [
@@ -2625,9 +2634,9 @@ timeout_seconds = 180
 [[scenario]]
 name = "predictive_build_admission_opt_in"
 script = "scenarios/predictive_build_admission_opt_in.sh"
-owners = ["disable-predictive-build"]
-description = "Installed-binary terminal flow proving the availability-first false default ignores an impossible historical build high-water and preserves a dirty source plus warm recovery target; explicit true deterministically refuses the same projection; human/JSON service status names admission-deferred and the five-tick dispatch watchdog never misdiagnoses that intentional opt-in refusal as a wedge."
-timeout_seconds = 45
+owners = ["disable-predictive-build", "land-bounded-worktree-build-storage"]
+description = "Candidate-binary terminal flow proving private-delta admission is enabled by default and refuses an impossible schema-v2 reserve before creating a worktree/attempt; human/JSON service status names admission-deferred without a wedge diagnosis, restored headroom dispatches exactly one attempt, while an explicit emergency disable remains loud in config lint, launches deterministically, and preserves dirty source."
+timeout_seconds = 90
 
 [[scenario]]
 name = "eval_gate_low_score_fail_closed"
@@ -3085,14 +3094,14 @@ timeout_seconds = 120
 [[scenario]]
 name = "simple_local_recovery"
 script = "scenarios/simple_local_recovery.sh"
-owners = ["simple-local-wg-recovery", "bridge-terminal-outcomes-agency", "prune-dormant-local-lifecycle", "validate-stigmergic-loop", "preserve-review-identity-across-restart"]
-description = "Credential-free trusted-local golden path: one `wg done` snapshots, records visible advisory review activity without creating synthetic assignment/evaluator tasks or PendingEval-style states, publishes the exact Land commit, and derives Done without submit/land ceremony; operator recovery is refused from worker authority and succeeds outside it with a reason-bound immutable receipt; both accepted outcomes project once into unscored Agency observations across replay, migration, and daemon reconciliation."
+owners = ["simple-local-wg-recovery", "bridge-terminal-outcomes-agency", "prune-dormant-local-lifecycle", "validate-stigmergic-loop", "preserve-review-identity-across-restart", "completion-review-candidate-budget"]
+description = "Credential-free trusted-local golden path: one `wg done` snapshots, records visible advisory review activity without creating synthetic assignment/evaluator tasks or PendingEval-style states, publishes the exact Land commit, and derives Done without submit/land ceremony; operator recovery is refused from worker authority and succeeds outside it with a reason-bound immutable receipt; strict review counts materially revised immutable candidates, then parks NeedsReview successfully without another model call or source failure; accepted outcomes project once into unscored Agency observations across replay, migration, and daemon reconciliation."
 timeout_seconds = 90
 
 [[scenario]]
 name = "simple_local_fanout_restart"
 script = "scenarios/simple_local_fanout_restart.sh"
-owners = ["simple-local-wg-recovery", "validate-stigmergic-loop", "preserve-review-identity-across-restart"]
+owners = ["simple-local-wg-recovery", "validate-stigmergic-loop", "preserve-review-identity-across-restart", "bind-genuine-flip"]
 description = "Clean-graph composed recovery canary: two real fake-Pi workers coordinate across tasks, one completes while the dispatcher is stopped, restart preserves exact state, and a dependent third worker dispatches and completes with no source retry charge."
 timeout_seconds = 120
 
@@ -3109,3 +3118,107 @@ script = "scenarios/completion_validation_evidence.sh"
 owners = ["bind-completion-validation-evidence", "validate-stigmergic-loop", "preserve-review-identity-across-restart"]
 description = "Credential-free real terminal fake-Pi canary for one-step completion evidence: WG executes an exact configured deterministic command, captures bounded stdout/stderr digests and content, exit/timing, cwd/repository/candidate and task/generation/attempt/fence/requirements binding; valid evidence reaches FLIP Pass then completion Eval and both immutable activity rows survive landing, Done, a pre-Done stale daemon save, and restart. Worker-prose-only, same-size CAS-tampered, stale cross-candidate, and failing-command evidence are visibly refused before review; a semantic FLIP rejection remains advisory and lifecycle-neutral by default."
 timeout_seconds = 120
+
+[[scenario]]
+name = "terminal_receipt_precedence"
+script = "scenarios/terminal_receipt_precedence.sh"
+owners = ["completion-classification-precedence"]
+description = "Candidate-binary credential-free real terminal classifier regression for the provider-backoff incident: a final completed receipt outranks incidental timeout/reset prose and replays byte-identically; typed NeedsReview remains finalization-blocked; a genuine structured provider timeout and a hard timeout after only an intermediate tool-use turn remain infrastructure failures; conflicting exact terminal receipts remain typed ambiguity without semantic/source failure."
+timeout_seconds = 30
+
+[[scenario]]
+name = "bounded_worktree_build_storage"
+script = "scenarios/bounded_worktree_build_storage.sh"
+owners = ["land-bounded-worktree-build-storage", "harden-bounded-worktree-build-storage", "finish-bounded-worktree-storage-safety", "prepare-completion-storage-upstream"]
+description = "Exact-submitted-HEAD candidate-binary, credential-free real-daemon storage regression: Cargo builds the invoked wg path and records commit/tree/binary digest in a candidate-build receipt, rejects a stale executable substituted at that path, then a clean warm tiny-Cargo worker publishes one tiny-grammar immutable baseline and three same-command workers overlap. Every baseline/layer regular artifact has a distinct writable inode (reflink or private-copy), adversarial truncate/overwrite/rename leaves baseline and siblings byte-identical, workload-scale physical free-block deltas prove one baseline plus bounded private growth (or a safe full-copy fallback), and restart cleanup physically removes every captured target/scratch path without changing the baseline. Focused unit coverage proves dynamic/stateful shell isolation, all command-key dimensions, every-entry mutation isolation, and staged marker+filesystem-identity rollback refusal."
+timeout_seconds = 240
+
+[[scenario]]
+name = "completion_resilience_e2e"
+script = "scenarios/completion_resilience_e2e.sh"
+owners = ["completion-resilience-e2e", "prepare-completion-storage-upstream", "bind-genuine-flip", "review-causal-evidence-boundary"]
+description = "Candidate-binary credential-free real-daemon/Fake-Pi completion regression: a Land source runs once in an isolated retained worker, strict deterministic review rejects immutable candidate A then passes revised candidate B without demanding its causally-future FLIP/Eval receipts or later controller effects, and an unrelated tracked edit in the attached integration checkout forces durable Waiting/LandingPending without changing user bytes. Both real model prompt paths must preserve that temporal boundary while retaining strict review of historical receipts, requested deliverables, and validation outputs. A daemon restart preserves the exact B manifest, review binding and target-ref CAS; after explicit cleanup, one resume publishes B and records one lifecycle success without rerunning source or review. A second already-settled Pi source exhausts a one-revision strict budget and parks the distinct retained candidate as Waiting/NeedsReview, never Failed/provider-timeout; restart remains source/review-idempotent. Real show/status and terminal classification surfaces are exercised throughout."
+timeout_seconds = 180
+
+[[scenario]]
+name = "completion_landing_reconciliation"
+script = "scenarios/completion_landing_reconciliation.sh"
+owners = ["fix-completion-landing-maze", "integrate-maze-free-recovery"]
+description = "Candidate-binary credential-free terminal/Fake-Pi regression for the supported composed recovery flow: WG creates its isolated .wg-worktrees runtime without requiring a committed .gitignore entry; a reviewed candidate parks on real user dirtiness and releases its worker; a PTY drives an immediate service stop/start and requires readiness-confirmed success while that exact candidate remains parked; main then advances by one independent descendant commit; explicit wg resume (idempotent with the replacement finalizer) performs a deterministic merge, reruns configured plus baseline target-dependent validation, records immutable renewed target-binding evidence and a merge-resolution status record, then lands and completes without reset/retry/requeue/unclaim, Git history surgery, or another source/reviewer invocation."
+timeout_seconds = 120
+
+[[scenario]]
+name = "project_local_pi_core"
+script = "scenarios/project_local_pi_core.sh"
+owners = ["project-local-pi-core"]
+description = "Real terminal regression for project-local Pi authority: graph CRUD remains credential-free while stale ~/.wg/config.toml routing, capacity, and active-profile stay inactive; service start fails with WG-EXEC-UNSELECTED before daemon/agent state and source-aware config reports builtin-default rather than global inheritance."
+timeout_seconds = 45
+
+[[scenario]]
+name = "evaluation_cutover_migration"
+script = "scenarios/evaluation_cutover_migration.sh"
+owners = ["fix-retired-evaluation-cutover", "adaptive-agency-loop-e2e", "harden-retired-evaluation-cutover"]
+description = "Candidate-binary credential-free terminal regression for the retired evaluation cutover: a typed receipt-backed Done/Landed source remains authoritative despite a stale Open .evaluate row before migration; unrelated scores do not restore obsolete authority; caller-controlled worker environment cannot authorize the removed adjudication escape hatch; repeated service ticks exclude the retired row before promotion and emit at most one notice; dry-run is write-free; apply creates an exact-byte graph backup, preserves every row/log/evaluation byte, tags the row inert, and is idempotent."
+timeout_seconds = 90
+
+[[scenario]]
+name = "evaluation_cutover_legacy_done_self_heal"
+script = "scenarios/evaluation_cutover_legacy_done_self_heal.sh"
+owners = ["harden-retired-evaluation-cutover"]
+description = "Real terminal/daemon no-migration upgrade regression: an operator-receipt-backed Done/Landed source plus stale non-Done .evaluate row immediately releases and dispatches ordinary downstream shell work without rm-dep, manual scoring, migration, or source/dependency surgery; the retired row remains visible but never enters priority/order/dispatch accounting or emits per-tick spam."
+timeout_seconds = 90
+
+[[scenario]]
+name = "adaptive_agency_terminal_flow"
+script = "scenarios/adaptive_agency_terminal_flow.sh"
+owners = ["implement-adaptive-agency-ledger", "adaptive-agency-loop-e2e"]
+description = "Candidate-binary credential-free real terminal/Fake-Pi flow for the adaptive agency ledger: a live FLIP infrastructure timeout is retried on the exact route, candidate A is semantically rejected, candidate B supersedes it then passes FLIP+Eval, provider usage/cost and bounded findings remain visible under stable virtual non-schedulable aliases, mutation through an alias is refused without graph-byte drift, and terminal Done projects exactly one generation learning episode without synthetic .flip/.evaluate tasks or dependency edges."
+timeout_seconds = 120
+
+[[scenario]]
+name = "adaptive_assignment_learning_loop"
+script = "scenarios/adaptive_assignment_learning_loop.sh"
+owners = ["restore-adaptive-assignment-loop", "adaptive-agency-loop-e2e"]
+description = "Candidate-binary credential-free terminal/Fake-Pi adaptive loop: deterministic automatic baseline, explicit attempt-bound composition receipt, real completion FLIP/Eval, independent terminal score, delayed assignment reward and evolver input, then a changed next deterministic assignment from compatible prior learning; verifies zero synthetic agency task rows."
+timeout_seconds = 120
+
+[[scenario]]
+name = "adaptive_agency_migration_cycle"
+script = "scenarios/adaptive_agency_migration_cycle.sh"
+owners = ["adaptive-agency-loop-e2e"]
+description = "Single candidate-binary upgraded-graph terminal flow: preserve and retire a stale synthetic evaluator row through the versioned cutover (dry-run/apply/replay), prove downstream liveness without post-migration graph surgery, then complete assignment receipt -> candidate review -> terminal episode -> independent outcome -> delayed reward/evolver input -> changed deterministic and automatic next assignment. Help, config, status, and JSON operation kinds expose one authority map; no new synthetic agency row appears."
+timeout_seconds = 180
+[[scenario]]
+name = "service_start_readiness_pty"
+script = "scenarios/service_start_readiness_pty.sh"
+owners = ["fix-service-start-readiness", "integrate-maze-free-recovery"]
+description = "Candidate-binary terminal regression for service startup truthfulness: a real PTY repeatedly drives the exact human `wg service stop --force` -> immediate `wg service start` flow, and every printed success is independently challenged against the state nonce, daemon PID, and live socket. A forced readiness timeout must exit nonzero and emit an unmistakable reason, bounded daemon-log tail, and concrete recovery command on stderr even with stdout redirected; JSON failure stdout remains one parseable document. The integration owner runs this against the same freshly built binary as the composed landing-reconciliation flow."
+timeout_seconds = 90
+
+[[scenario]]
+name = "project_local_pi_cli"
+script = "scenarios/project_local_pi_cli.sh"
+owners = ["project-local-pi-cli"]
+description = "Real terminal regression for project-local setup/profile selection: writes worksgood.toml only, preserves resource guardrails, warns on deprecated profile use, and refuses global setup mutation before touching machine state."
+timeout_seconds = 45
+
+[[scenario]]
+name = "project_local_pi_migrate"
+script = "scenarios/project_local_pi_migrate.sh"
+owners = ["project-local-pi-migrate"]
+description = "Real terminal regression for `wg migrate project-local-pi --cleanup-global-routing`: removes only stale machine-global model-routing selectors + the active-profile pointer while preserving every reusable profile definition, secret, keystore, identity, federation, and Pi-settings byte (BLAKE3-proven); config lint reports stale global routing before migrating; dry-run writes nothing; apply writes a mode-0700 receipt + mode-0600 backups with no secret values; a second run is a no-op (no new receipt, no mtime change); CAS rollback restores exact bytes and refuses after a user edit; malformed global config fails closed with no writes."
+timeout_seconds = 60
+
+[[scenario]]
+name = "project_local_pi_e2e"
+script = "scenarios/project_local_pi_e2e.sh"
+owners = ["project-local-pi-e2e", "finish-pi-project-local-config", "close-pi-config-acceptance"]
+description = "End-to-end terminal regression for the project-local-by-default Pi configuration cutover. Two repositories share one $HOME (one machine-global ~/.wg + one custody keystore): selecting a Pi route in repo A writes only worksgood.toml and never touches repo B or machine-global state; repo B with no project route fails WG-EXEC-UNSELECTED at service start and service tick despite a stale valid global route + active-profile pointer (ignored legacy routing named inactive, no service/session/claim/worktree state created, dispatcher.max_agents is builtin-default not the stale 99); cloning repo A's checked-in worksgood.toml into a clean repo B with no global config, no reusable profiles, and no WG credentials reproduces the exact Pi route, per-role reasoning, resource guardrail, and archive policy all with source=project-file; and `wg migrate project-local-pi --cleanup-global-routing` removes only the stale global routing selectors + active-profile pointer while preserving every reusable profile definition, secret, keystore sentinel, real WG-Fed identity record, custody keystore, and federation peer registry byte-for-byte, with a no-op second run and the repo A project route still working."
+timeout_seconds = 90
+
+[[scenario]]
+name = "worker_owned_landing_turns"
+script = "scenarios/worker_owned_landing_turns.sh"
+owners = ["worker-owned-landing-turns", "repair-landing-review-rejection"]
+description = "Candidate-binary landing-turn CLI proof plus the ref-scoped persistent FIFO state-machine gate: three exact source bindings queue and advance in order, restart reload preserves candidates, an expired/crashed owner is fenced, stale bindings cannot publish/release, changed candidate bytes invalidate receipts, and starvation-freedom leaves no queued landing pending."
+timeout_seconds = 180

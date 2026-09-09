@@ -1,0 +1,52 @@
+restore-main-ci-canary baseline reproduction
+base_revision=4890d7d63681e9a863b6826e9242648c762feb9e
+command=cargo test --locked --bin wg commands::completion_canary_tests
+exit_code=101
+error_count_E0425=7
+full_capture_sha256=cfd13d82697e73477e31426ae529d31393d6121497d9495667f98432b468b8fa
+
+error[E0425]: cannot find function `parse_profile_use_target` in this scope
+    --> src/commands/profile_cmd.rs:2240:17
+     |
+2240 |         let t = parse_profile_use_target("opencode").unwrap();
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find function `parse_profile_use_target` in this scope
+    --> src/commands/profile_cmd.rs:2251:17
+     |
+2251 |         let t = parse_profile_use_target(route).unwrap();
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find function `parse_profile_use_target` in this scope
+    --> src/commands/profile_cmd.rs:2260:17
+     |
+2260 |         let t = parse_profile_use_target("aider:openrouter/x").unwrap();
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find function `parse_profile_use_target` in this scope
+    --> src/commands/profile_cmd.rs:2268:17
+     |
+2268 |         let c = parse_profile_use_target("claude:opus").unwrap();
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find function `parse_profile_use_target` in this scope
+    --> src/commands/profile_cmd.rs:2272:17
+     |
+2272 |         let x = parse_profile_use_target("codex:gpt-5.5").unwrap();
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find function `parse_profile_use_target` in this scope
+    --> src/commands/profile_cmd.rs:2276:17
+     |
+2276 |         let n = parse_profile_use_target("nex:qwen3-coder").unwrap();
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find function `parse_profile_use_target` in this scope
+    --> src/commands/profile_cmd.rs:2285:17
+     |
+2285 |         assert!(parse_profile_use_target("foobar:baz").is_err());
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+For more information about this error, try `rustc --explain E0425`.
+warning: `worksgood` (bin "wg" test) generated 11 warnings
+error: could not compile `worksgood` (bin "wg" test) due to 7 previous errors; 11 warnings emitted

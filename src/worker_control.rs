@@ -20,7 +20,7 @@ use crate::save_transaction::{
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
-pub const WORKER_CONTROL_PROTOCOL: &str = "worksgood-worker-control-v3";
+pub const WORKER_CONTROL_PROTOCOL: &str = "worksgood-worker-control-v4";
 
 /// Graph-authority policy for a spawned worker.
 ///
@@ -200,6 +200,7 @@ pub enum WorkerOperationKind {
     DependencyArtifactRead,
     Checkpoint,
     Wait,
+    LandingTurn,
     CompletionObject,
     CompletionManifest,
     SubmitCompletion,
@@ -229,6 +230,7 @@ impl WorkerOperationKind {
             Self::DependencyArtifactRead,
             Self::Checkpoint,
             Self::Wait,
+            Self::LandingTurn,
             Self::CompletionObject,
             Self::CompletionManifest,
             Self::SubmitCompletion,
@@ -303,6 +305,13 @@ pub enum WorkerOperation {
         until: String,
         checkpoint: Option<String>,
     },
+    LandingTurn {
+        action: LandingTurnAction,
+        integration_ref: String,
+        progress: Option<String>,
+        checkpoint: Option<String>,
+        source_session: Option<String>,
+    },
     CompletionObject {
         path: String,
         media_type: String,
@@ -375,6 +384,7 @@ impl WorkerOperation {
             Self::DependencyArtifactRead { .. } => WorkerOperationKind::DependencyArtifactRead,
             Self::Checkpoint { .. } => WorkerOperationKind::Checkpoint,
             Self::Wait { .. } => WorkerOperationKind::Wait,
+            Self::LandingTurn { .. } => WorkerOperationKind::LandingTurn,
             Self::CompletionObject { .. } => WorkerOperationKind::CompletionObject,
             Self::CompletionManifest { .. } => WorkerOperationKind::CompletionManifest,
             Self::SubmitCompletion { .. } => WorkerOperationKind::SubmitCompletion,
@@ -391,6 +401,16 @@ impl WorkerOperation {
             Self::GraphCli { .. } => WorkerOperationKind::GraphCli,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LandingTurnAction {
+    Request,
+    Status,
+    Renew,
+    Release,
+    Cancel,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

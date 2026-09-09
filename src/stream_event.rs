@@ -446,6 +446,17 @@ pub fn pi_usage_cost(usage: &serde_json::Value) -> f64 {
         .unwrap_or(0.0)
 }
 
+/// A terminal failure reported inside Pi's NDJSON stream. Pi may exit zero
+/// after emitting an assistant message with `stopReason=error`, so callers
+/// must inspect this independently from the process exit status.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PiTerminalError {
+    /// Pi's bounded terminal category (`stopReason`, `error_type`, or `error`).
+    pub category: String,
+    /// The bounded upstream provider message, preserved verbatim when it fits.
+    pub message: String,
+}
+
 /// Outcome of translating a pi NDJSON event stream into canonical events.
 pub struct PiTranslation {
     /// Canonical stream events in order: `Init`, per-step events, final `Result`.
@@ -457,6 +468,8 @@ pub struct PiTranslation {
     pub turn_count: u32,
     /// Final assistant text — used for the agent's `session-summary.md`.
     pub final_text: Option<String>,
+    /// Terminal upstream error carried by an otherwise well-formed stream.
+    pub terminal_error: Option<PiTerminalError>,
 }
 
 fn json_u16(value: &serde_json::Value) -> Option<u16> {
@@ -479,6 +492,62 @@ fn status_from_message(message: &str) -> Option<u16> {
         }
     }
     None
+}
+
+const MAX_PI_ERROR_CATEGORY_CHARS: usize = 128;
+const MAX_PI_ERROR_MESSAGE_CHARS: usize = 2_000;
+
+fn bounded_pi_error_field(value: &str, max_chars: usize) -> String {
+    let mut chars = value.chars();
+    let bounded = chars.by_ref().take(max_chars).collect::<String>();
+    if chars.next().is_some() {
+        format!("{bounded}…")
+    } else {
+        bounded
+    }
+}
+
+fn pi_terminal_error(value: &serde_json::Value) -> Option<PiTerminalError> {
+    let message = value.get("message").filter(|message| message.is_object());
+    let terminal = message.unwrap_or(value);
+    if terminal.get("stopReason").and_then(|value| value.as_str()) == Some("error") {
+        return Some(PiTerminalError {
+            category: "error".to_string(),
+            message: bounded_pi_error_field(
+                terminal
+                    .get("errorMessage")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("Pi reported stopReason=error without an errorMessage"),
+                MAX_PI_ERROR_MESSAGE_CHARS,
+            ),
+        });
+    }
+
+    if value.get("type").and_then(|value| value.as_str()) != Some("error")
+        && !(value.get("type").and_then(|value| value.as_str()) == Some("response")
+            && value.get("success").and_then(|value| value.as_bool()) == Some(false))
+    {
+        return None;
+    }
+    let raw_error = value.get("error").or_else(|| value.get("message"));
+    let raw_message = raw_error
+        .and_then(|error| error.as_str().map(str::to_string))
+        .or_else(|| raw_error.map(serde_json::Value::to_string))
+        .unwrap_or_else(|| "pi request failed".to_string());
+    let category = value
+        .get("error_type")
+        .or_else(|| value.get("code"))
+        .and_then(|value| {
+            value
+                .as_str()
+                .map(str::to_string)
+                .or_else(|| value.as_u64().map(|number| number.to_string()))
+        })
+        .unwrap_or_else(|| "error".to_string());
+    Some(PiTerminalError {
+        category: bounded_pi_error_field(&category, MAX_PI_ERROR_CATEGORY_CHARS),
+        message: bounded_pi_error_field(&raw_message, MAX_PI_ERROR_MESSAGE_CHARS),
+    })
 }
 
 /// Translate a pi `--mode json` NDJSON event stream into canonical
@@ -506,6 +575,7 @@ pub fn translate_pi_stream(
     let mut session_id: Option<String> = None;
     let mut stream_model: Option<String> = None;
     let mut final_text: Option<String> = None;
+    let mut terminal_error: Option<PiTerminalError> = None;
 
     for line in content.lines() {
         let line = line.trim();
@@ -516,6 +586,9 @@ pub fn translate_pi_stream(
             Ok(v) => v,
             Err(_) => continue,
         };
+        if let Some(error) = pi_terminal_error(&val) {
+            terminal_error = Some(error);
+        }
         match val.get("type").and_then(|v| v.as_str()) {
             Some("session") => {
                 if let Some(id) = val.get("id").and_then(|v| v.as_str()) {
@@ -697,6 +770,7 @@ pub fn translate_pi_stream(
         total,
         turn_count,
         final_text,
+        terminal_error,
     }
 }
 
@@ -1212,6 +1286,44 @@ not json
             .join("\n");
         assert!(canonical.contains(r#""type":"error""#));
         assert!(canonical.contains(r#""status":402"#));
+        assert_eq!(
+            translated.terminal_error,
+            Some(PiTerminalError {
+                category: "error".to_string(),
+                message: "API error 402: Insufficient credits".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn test_translate_pi_stream_surfaces_bounded_terminal_message_error() {
+        let oversized = format!("context window exceeded: {}", "x".repeat(2_100));
+        let raw = serde_json::json!({
+            "type": "turn_end",
+            "message": {
+                "role": "assistant",
+                "provider": "openrouter",
+                "model": "deepseek/deepseek-chat",
+                "content": [],
+                "stopReason": "error",
+                "errorMessage": oversized,
+                "usage": {"input": 37_800, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 37_800}
+            }
+        })
+        .to_string();
+        let translated = translate_pi_stream(&raw, None, true);
+        let error = translated
+            .terminal_error
+            .expect("stopReason=error must not collapse to empty response");
+        assert_eq!(error.category, "error");
+        assert!(error.message.starts_with("context window exceeded:"));
+        assert!(error.message.ends_with('…'));
+        assert_eq!(
+            error.message.chars().count(),
+            MAX_PI_ERROR_MESSAGE_CHARS + 1
+        );
+        assert!(translated.final_text.is_none());
+        assert_eq!(translated.total.input_tokens, 37_800);
     }
 
     #[test]

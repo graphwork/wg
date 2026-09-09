@@ -129,6 +129,17 @@ mod tests {
         assert!(AGENT_GUIDE_TEXT.contains("wg evaluate run"));
     }
 
+    #[test]
+    fn guide_defaults_to_prose_validation_without_agent_invented_hard_gates() {
+        assert!(AGENT_GUIDE_TEXT.contains("prose contract is the default"));
+        assert!(
+            AGENT_GUIDE_TEXT.contains("Agents and attended chat MUST NOT")
+                && AGENT_GUIDE_TEXT.contains("invent, broaden, or edit")
+        );
+        assert!(AGENT_GUIDE_TEXT.contains("operator/repository-authorized"));
+        assert!(!AGENT_GUIDE_TEXT.contains("Configure an exact\nexecutable check"));
+    }
+
     /// Regression lock: AGENTS.md and CLAUDE.md must stay in lock-step.
     /// Pre-fix, AGENTS.md had inline universal-role-contract content while
     /// CLAUDE.md was layer-2-only — codex chat agents (which read AGENTS.md)

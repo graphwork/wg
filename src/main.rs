@@ -121,6 +121,63 @@ fn resolve_workgraph_dir(
 ///     WG dir even if its basename is unusual — this preserves
 ///     the legacy "WG_DIR points at the actual graph dir" behavior for
 ///     users who already do that).
+fn virtual_review_mutation_target(command: &Commands) -> Option<&str> {
+    let candidates: Vec<&str> = match command {
+        Commands::Done { id, .. }
+        | Commands::Fail { id, .. }
+        | Commands::Incomplete { id, .. }
+        | Commands::Abandon { id, .. }
+        | Commands::Retry { id, .. }
+        | Commands::Requeue { id, .. }
+        | Commands::Approve { id, .. }
+        | Commands::Reject { id, .. }
+        | Commands::Claim { id, .. }
+        | Commands::Unclaim { id, .. }
+        | Commands::Pause { id, .. }
+        | Commands::Resume { id, .. }
+        | Commands::Publish { id, .. }
+        | Commands::Wait { id, .. }
+        | Commands::Reclaim { id, .. }
+        | Commands::Contract { id, .. }
+        | Commands::CompletionManifest { id, .. }
+        | Commands::Submit { id, .. }
+        | Commands::Land { id, .. } => vec![id],
+        Commands::LandingTurn {
+            command:
+                crate::commands::landing_turn::LandingTurnCommand::Request { id, .. }
+                | crate::commands::landing_turn::LandingTurnCommand::Renew { id, .. }
+                | crate::commands::landing_turn::LandingTurnCommand::Release { id, .. }
+                | crate::commands::landing_turn::LandingTurnCommand::Cancel { id, .. },
+        } => vec![id],
+        Commands::Assign { task, .. } => vec![task],
+        Commands::AddDep { task, dependency } | Commands::RmDep { task, dependency } => {
+            vec![task, dependency]
+        }
+        Commands::Msg {
+            command:
+                MsgCommands::Send {
+                    task_id: Some(task),
+                    to: None,
+                    ..
+                }
+                | MsgCommands::List { task_id: task }
+                | MsgCommands::Read { task_id: task, .. },
+        } => vec![task],
+        Commands::Msg {
+            command:
+                MsgCommands::Poll {
+                    task_id: Some(task),
+                    as_identity: None,
+                    ..
+                },
+        } => vec![task],
+        _ => Vec::new(),
+    };
+    candidates
+        .into_iter()
+        .find(|value| worksgood::adaptive_agency::is_virtual_review_alias(value))
+}
+
 fn descend_into_wg_subdir_if_project_root(p: PathBuf) -> PathBuf {
     let basename = p.file_name().and_then(|n| n.to_str());
     if matches!(basename, Some(".wg") | Some(".workgraph")) {
@@ -812,6 +869,13 @@ fn main() -> Result<()> {
         worksgood::worker_control::validate_trusted_local_environment(&workgraph_dir)?;
     }
 
+    // Virtual review aliases are read-only projections. Reject them before any
+    // graph/task command can interpret the string as a missing or synthetic
+    // node, and before command usage logging writes unrelated state.
+    if let Some(alias) = virtual_review_mutation_target(&command) {
+        anyhow::bail!(worksgood::adaptive_agency::non_authoritative_error(alias));
+    }
+
     // Warn if --json is passed to a command that doesn't support it
     if cli.json && !supports_json(&command) {
         eprintln!(
@@ -1354,6 +1418,7 @@ fn main() -> Result<()> {
             id,
             integration_ref,
         } => commands::completion_land::run(&workgraph_dir, &id, &integration_ref),
+        Commands::LandingTurn { command } => commands::landing_turn::run(&workgraph_dir, command),
         Commands::Contract { id, contract } => {
             commands::finalize::set_contract(&workgraph_dir, &id, &contract)
         }
@@ -1392,7 +1457,7 @@ fn main() -> Result<()> {
                 commands::merge_resolution::run(&workgraph_dir, command, cli.json)
             } else {
                 anyhow::bail!(
-                    "legacy merge-resolution mutation is retired; repair and resubmit from the same worker"
+                    "legacy merge-resolution mutation is retired; inspect retained evidence with `wg merge-resolution status <TASK>`. For Waiting/LandingPending, preserve user changes, clean the attached checkout, then run `wg resume <TASK> --only`; do not retry/requeue/unclaim or rewrite Git history"
                 )
             }
         }
@@ -1417,12 +1482,14 @@ fn main() -> Result<()> {
             executor,
             route,
             json,
+            terminal,
         } => commands::classify_failure::run(
             raw_stream.as_deref(),
             exit_code,
             executor.as_deref(),
             route.as_deref(),
             json,
+            terminal,
         ),
         Commands::RecordTelemetry {
             task,
@@ -2107,6 +2174,30 @@ fn main() -> Result<()> {
         }
         Commands::Tokens { id, json } => commands::tokens::run(&workgraph_dir, &id, &json),
         Commands::Spend { today, json } => commands::spend::run(&workgraph_dir, today, json),
+        Commands::Reviews { command } => match command {
+            ReviewsCommands::List {
+                task,
+                candidate,
+                kind,
+            } => commands::adaptive_agency::run_reviews_list(
+                &workgraph_dir,
+                task.as_deref(),
+                &candidate,
+                kind.as_deref(),
+                cli.json,
+            ),
+            ReviewsCommands::Show { target } => {
+                commands::adaptive_agency::run_reviews_show(&workgraph_dir, &target, cli.json)
+            }
+        },
+        Commands::Learning { command } => match command {
+            LearningCommands::Show { target } => {
+                commands::adaptive_agency::run_learning_show(&workgraph_dir, &target, cli.json)
+            }
+            LearningCommands::Backlog => {
+                commands::adaptive_agency::run_learning_backlog(&workgraph_dir, cli.json)
+            }
+        },
         Commands::Msg { command } => {
             let agent_id_from_env = std::env::var("WG_AGENT_ID").ok();
             match command {
@@ -3186,7 +3277,7 @@ fn main() -> Result<()> {
 
             // Handle --reset (also reachable as positional `wg config reset`)
             if reset {
-                let reset_scope = scope.unwrap_or(commands::config_cmd::ConfigScope::Global);
+                let reset_scope = scope.unwrap_or(commands::config_cmd::ConfigScope::Local);
                 return commands::config_cmd::reset_to_route(
                     &workgraph_dir,
                     reset_scope,
@@ -3511,6 +3602,9 @@ fn main() -> Result<()> {
             MigrateCommands::RetireCompactArchive { dry_run } => {
                 commands::migrate::run_retire_compact_archive(&workgraph_dir, dry_run, cli.json)
             }
+            MigrateCommands::EvaluationCutover { dry_run } => {
+                commands::migrate::run_evaluation_cutover(&workgraph_dir, dry_run, cli.json)
+            }
             MigrateCommands::ReviewIdentity { limit, dry_run } => {
                 commands::migrate::run_review_identity_repair(
                     &workgraph_dir,
@@ -3548,6 +3642,21 @@ fn main() -> Result<()> {
                 global,
                 local,
                 no_copy,
+            ),
+            MigrateCommands::ProjectLocalPi {
+                dry_run,
+                yes,
+                cleanup_global_routing,
+                rollback,
+            } => worksgood::migrate_project_local_pi::run_project_local_pi_migrate(
+                &workgraph_dir,
+                worksgood::migrate_project_local_pi::ProjectLocalPiMigrateArgs {
+                    dry_run,
+                    yes,
+                    cleanup_global_routing,
+                    rollback,
+                },
+                cli.json,
             ),
         },
         Commands::Upgrade {

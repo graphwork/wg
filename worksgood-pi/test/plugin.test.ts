@@ -54,6 +54,8 @@ const EXPECTED_TOOLS = [
   "wg_publish",
   "wg_done",
   "wg_fail",
+  "wg_wait",
+  "wg_landing_turn",
   "wg_msg_send",
   "wg_msg_read",
   "wg_run",

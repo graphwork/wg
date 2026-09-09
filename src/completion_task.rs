@@ -197,9 +197,14 @@ pub fn load_review_evidence(
         .flip_receipt_ref
         .as_ref()
         .ok_or(CompletionTaskError::Missing("FLIP receipt"))?;
-    let flip = read_receipt(store, flip_ref)?;
+    let stored_flip = crate::completion_review::load_stored_review_receipt(store, flip_ref)
+        .map_err(|error| CompletionTaskError::InvalidReceipt(error.to_string()))?;
+    crate::completion_review::validate_stored_flip_against_bundle(store, &stored_flip, resolved)
+        .map_err(|error| CompletionTaskError::InvalidReceipt(error.to_string()))?;
+    let flip = stored_flip.receipt;
     validate_review_binding(submission, &flip)?;
     validate_bound_receipt(
+        store,
         &flip,
         ReviewerKind::Flip,
         &manifest_digest,
@@ -209,13 +214,18 @@ pub fn load_review_evidence(
     let eval = submission
         .eval_receipt_ref
         .as_ref()
-        .map(|reference| read_receipt(store, reference))
+        .map(|reference| {
+            crate::completion_review::load_stored_review_receipt(store, reference)
+                .map(|stored| stored.receipt)
+                .map_err(|error| CompletionTaskError::InvalidReceipt(error.to_string()))
+        })
         .transpose()?;
     if let Some(eval) = eval.as_ref() {
         validate_review_binding(submission, eval)?;
     }
     if let Some(eval) = eval.as_ref() {
         validate_bound_receipt(
+            store,
             eval,
             ReviewerKind::Eval,
             &manifest_digest,
@@ -263,15 +273,6 @@ pub fn load_exact_review_pair(
     })
 }
 
-fn read_receipt(
-    store: &CompletionArtifactStore,
-    reference: &ArtifactOutput,
-) -> Result<ReviewReceipt, CompletionTaskError> {
-    let bytes = store.read_artifact(reference, MAX_COMPLETION_METADATA_BYTES)?;
-    serde_json::from_slice(&bytes)
-        .map_err(|error| CompletionTaskError::InvalidReceipt(error.to_string()))
-}
-
 fn validate_review_binding(
     submission: &TaskSubmission,
     receipt: &ReviewReceipt,
@@ -285,6 +286,7 @@ fn validate_review_binding(
 }
 
 fn validate_bound_receipt(
+    store: &CompletionArtifactStore,
     receipt: &ReviewReceipt,
     kind: ReviewerKind,
     manifest: &ContentDigest,
@@ -317,6 +319,21 @@ fn validate_bound_receipt(
         return Err(CompletionTaskError::InvalidReceipt(format!(
             "{kind:?} receipt inspected different outputs"
         )));
+    }
+    if kind == ReviewerKind::Flip
+        && matches!(
+            receipt.verdict,
+            crate::simple_land::ReviewVerdict::Pass | crate::simple_land::ReviewVerdict::Reject
+        )
+    {
+        if !receipt.has_genuine_flip_proof(store) {
+            return Err(CompletionTaskError::InvalidReceipt(
+                "FLIP receipt lacks a genuine two-phase prompt-reconstruction proof".into(),
+            ));
+        }
+        // `load_stored_review_receipt` already reloaded and verified every
+        // phase input/prompt/hypothesis object before lifecycle authority
+        // reaches this exact-binding check.
     }
     Ok(())
 }

@@ -200,9 +200,11 @@ Rules:
   finalizers.
 - The valve opens only for `(flip = pass) ∧ (eval = pass)` on the same manifest.
 
-### 4. Worker-owned landing
+### 4. Worker-owned candidate, finalizer-owned recovery
 
-After all required reviews pass, the same worker runs `wg land <task>`.
+After all required reviews pass, the live worker normally runs `wg land <task>`. If the
+candidate parks as `Waiting/LandingPending`, the worker may be released and the supported
+operator path is `wg show` → `wg merge-resolution status` → `wg resume <task> --only`.
 
 The command:
 
@@ -216,9 +218,12 @@ The command:
 8. releases the lock;
 9. records a compact Git-derived landing receipt.
 
-If step 6 fails, no state becomes successful. The worker merges the new main, resolves,
-revalidates, obtains reviews for the new commit, and retries. With 8–10 workers this may
-cause bounded collision retries, but it cannot create a deadlock or hidden replacement.
+If step 6 fails after review because main advanced as a descendant, no stale state becomes
+successful. The immutable candidate parks, and the finalizer deterministically integrates
+it, renews configured plus baseline target-bound validation, and rechecks the ref fence
+before landing. Divergence, conflicts, input drift, validation failure, and fence drift
+remain blocked with candidate bytes intact. They never require resubmission from a worker
+that may be gone or manual reset/rebase/cherry-pick surgery.
 
 Git owns ref atomicity. The landing lock only serializes root-checkout synchronization
 and the compare/fast-forward critical section.
@@ -255,8 +260,10 @@ cannot undo Done. Cleanup is queued as best effort and is not a dependency truth
   `BlockedReview` with findings and retain the branch/worktree.
 - Review unavailable: record `ReviewUnavailable`; no semantic failure and no source
   replacement.
-- Main moved: return `NeedsRebase` to the same worker; no daemon-created repair task.
-- Merge conflict: worker resolves it in place or explicitly fails.
+- Main moved after review: park `Waiting/LandingPending`; a descendant advance is
+  finalizer-reconciled after `wg resume <task> --only` and renewed evidence.
+- Merge conflict/divergence: remain fail-closed with immutable evidence; follow status and
+  use an authorized new generation when named, rather than requiring a released worker.
 - Explicit retry resumes the retained branch/worktree; it never silently creates a new
   source generation while the old owner is live.
 - Failed dependencies visibly block descendants. No automatic prerequisite repair.
@@ -458,7 +465,8 @@ non-overlapping files. Assert:
 - every Done task has FLIP and eval passes for the same manifest and requirements digest;
 - every successful code task is in main;
 - every successful Report/Explore task has reviewed, digest-matching published output;
-- conflicts return to the same worker;
+- post-review descendant target advances reconcile without a source worker, while
+  conflicts/divergence remain fail-closed with candidate bytes intact;
 - stale candidates cannot land;
 - FLIP/eval failures visibly block the universal valve;
 - reviewer outage or incomplete evidence blocks without semantic rejection or source

@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 use walkdir::WalkDir;
 
-pub const SNAPSHOT_SCHEMA: u32 = 1;
+pub const SNAPSHOT_SCHEMA: u32 = 2;
 pub const OWNERSHIP_SCHEMA: u32 = 1;
 const SNAPSHOT_FILE: &str = "disk-sentinel.json";
 const OWNERSHIP_FILE: &str = "owned-caches.json";
@@ -130,13 +130,26 @@ pub struct OwnershipRegistry {
     pub caches: Vec<OwnedCache>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MountProbe {
+    /// Logical path whose writes make this filesystem relevant to admission.
+    pub path: String,
+    /// Stable reason for probing the path (project scratch, target cache, etc.).
+    pub source: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MountSpace {
+    /// First logical path associated with this distinct filesystem. Kept for
+    /// backward-compatible human and JSON consumers; `probes` is authoritative.
     pub path: String,
     pub mount_id: String,
     pub free_bytes: u64,
     pub total_bytes: u64,
     pub free_percent: f64,
+    /// Every configured write path sharing this filesystem, with its source.
+    #[serde(default)]
+    pub probes: Vec<MountProbe>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -151,7 +164,13 @@ pub struct TargetUsage {
     pub path: String,
     pub task_id: String,
     pub agent_id: String,
+    /// Logical tree bytes, including immutable baseline hard links.
     pub bytes: u64,
+    /// Physical blocks uniquely charged to this writable attempt layer.
+    #[serde(default)]
+    pub private_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_key: Option<String>,
     pub growth_bytes_per_sec: i64,
     pub stale: bool,
 }
@@ -200,12 +219,18 @@ pub struct PreservedPath {
     pub reason: String,
 }
 
+const HIGH_WATER_SCHEMA: u32 = 2;
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct BuildHighWater {
     #[serde(default)]
-    build_capable_bytes: u64,
+    schema: u32,
+    /// Peak physical per-attempt delta. The immutable baseline is already
+    /// charged once in measured filesystem free space.
     #[serde(default)]
-    build_heavy_bytes: u64,
+    build_capable_delta_bytes: u64,
+    #[serde(default)]
+    build_heavy_delta_bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -317,10 +342,21 @@ fn save_ownership(dir: &Path, registry: &OwnershipRegistry) -> Result<()> {
 }
 
 fn load_high_water(dir: &Path) -> BuildHighWater {
-    fs::read(high_water_path(dir))
+    let loaded: BuildHighWater = fs::read(high_water_path(dir))
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    if loaded.schema == HIGH_WATER_SCHEMA {
+        loaded
+    } else {
+        // Legacy values measured complete duplicated target trees (including
+        // the incident's ~95 GiB value). They are not valid private deltas and
+        // must never be carried into the new reservation model.
+        BuildHighWater {
+            schema: HIGH_WATER_SCHEMA,
+            ..BuildHighWater::default()
+        }
+    }
 }
 
 fn save_high_water(dir: &Path, high_water: &BuildHighWater) -> Result<()> {
@@ -334,6 +370,16 @@ fn save_high_water(dir: &Path, high_water: &BuildHighWater) -> Result<()> {
 /// registry state. The cache is still protected by exact PID identity and
 /// open-file checks, so an agent finishing its final `wg done` bookkeeping
 /// cannot race deletion out from under itself.
+/// Resolve the exact worker lease owner only when the caller's task binding
+/// matches. Operator/service calls intentionally return `None` and may release
+/// every terminal attempt for the source task.
+pub fn caller_agent_for_task(task_id: &str) -> Option<String> {
+    (std::env::var("WG_TASK_ID").ok().as_deref() == Some(task_id))
+        .then(|| std::env::var("WG_AGENT_ID").ok())
+        .flatten()
+        .filter(|agent| !agent.is_empty())
+}
+
 pub fn release_owned_cache_leases(
     dir: &Path,
     task_id: &str,
@@ -461,12 +507,18 @@ pub fn probe_mount(path: &Path) -> Result<MountSpace> {
     } else {
         free as f64 * 100.0 / total as f64
     };
+    let id = mount_id(path);
+    let path = path.to_string_lossy().to_string();
     Ok(MountSpace {
-        path: path.to_string_lossy().to_string(),
-        mount_id: mount_id(path),
+        path: path.clone(),
+        mount_id: id,
         free_bytes: free,
         total_bytes: total,
         free_percent: pct,
+        probes: vec![MountProbe {
+            path,
+            source: "direct-probe".into(),
+        }],
     })
 }
 #[cfg(not(unix))]
@@ -552,26 +604,111 @@ pub fn assess_mounts(
     )
 }
 
-pub fn configured_paths(dir: &Path, cfg: &ResourceManagementConfig) -> Vec<PathBuf> {
-    let mut paths = vec![dir.to_path_buf()];
-    if let Some(parent) = dir.parent() {
-        paths.push(parent.to_path_buf());
-        paths.push(parent.join(".wg-worktrees"));
-    }
-    paths.push(std::env::temp_dir());
+fn configured_path_probes(dir: &Path, cfg: &ResourceManagementConfig) -> Vec<MountProbe> {
+    let project = dir.parent().unwrap_or(dir);
+    let mut probes = vec![
+        MountProbe {
+            path: dir.to_string_lossy().to_string(),
+            source: "project-state".into(),
+        },
+        MountProbe {
+            path: project.to_string_lossy().to_string(),
+            source: "project-root".into(),
+        },
+        MountProbe {
+            path: project.join(".wg-worktrees").to_string_lossy().to_string(),
+            source: "project-worktrees".into(),
+        },
+    ];
     if let Some(inherited) = std::env::var_os("CARGO_TARGET_DIR") {
-        paths.push(PathBuf::from(inherited));
+        probes.push(MountProbe {
+            path: PathBuf::from(inherited).to_string_lossy().to_string(),
+            source: "inherited-cargo-target".into(),
+        });
     }
-    paths.extend(cfg.disk_paths.iter().map(PathBuf::from));
-    if let Some(root) = cfg.cargo_target_root.as_deref() {
-        paths.push(PathBuf::from(root));
+    probes.extend(cfg.disk_paths.iter().map(|path| MountProbe {
+        path: path.clone(),
+        source: "configured-disk-path".into(),
+    }));
+    probes.push(MountProbe {
+        path: target_cache_root(dir, cfg).to_string_lossy().to_string(),
+        source: if cfg.cargo_target_root.is_some() {
+            "configured-cargo-target-cache".into()
+        } else {
+            "default-cargo-target-cache".into()
+        },
+    });
+    probes.push(MountProbe {
+        path: build_tmp_root(dir, cfg).to_string_lossy().to_string(),
+        source: if cfg.build_tmp_root.is_some() {
+            "configured-build-scratch".into()
+        } else {
+            "project-build-scratch".into()
+        },
+    });
+
+    // Before the project-local default, WG allocated owned scratch below the
+    // OS temp directory. Existing leases remain an actual write/protection
+    // surface until their guarded cleanup retires them; merely upgrading must
+    // neither hide nor abandon an active legacy allocation.
+    let legacy_root = legacy_build_tmp_root();
+    if let Ok(ownership) = load_ownership(dir) {
+        probes.extend(
+            ownership
+                .caches
+                .iter()
+                .filter(|cache| cache.kind == CacheKind::CargoInstallScratch)
+                .map(|cache| PathBuf::from(&cache.path))
+                .filter(|path| path.exists() && path.starts_with(&legacy_root))
+                .map(|path| MountProbe {
+                    path: path.to_string_lossy().to_string(),
+                    source: "legacy-owned-build-scratch".into(),
+                }),
+        );
     }
-    if let Some(root) = cfg.build_tmp_root.as_deref() {
-        paths.push(PathBuf::from(root));
-    }
+    probes
+}
+
+pub fn configured_paths(dir: &Path, cfg: &ResourceManagementConfig) -> Vec<PathBuf> {
+    let mut paths = configured_path_probes(dir, cfg)
+        .into_iter()
+        .map(|probe| PathBuf::from(probe.path))
+        .collect::<Vec<_>>();
     let mut seen = HashSet::new();
-    paths.retain(|p| seen.insert(mount_id(p)));
+    paths.retain(|path| seen.insert(mount_id(path)));
     paths
+}
+
+fn probe_configured_mounts_with<F>(
+    dir: &Path,
+    cfg: &ResourceManagementConfig,
+    mut probe: F,
+) -> Vec<MountSpace>
+where
+    F: FnMut(&Path) -> Result<MountSpace>,
+{
+    let mut mounts = Vec::<MountSpace>::new();
+    let mut by_mount = BTreeMap::<String, usize>::new();
+    for logical in configured_path_probes(dir, cfg) {
+        let Ok(mut measured) = probe(Path::new(&logical.path)) else {
+            continue;
+        };
+        if let Some(index) = by_mount.get(&measured.mount_id).copied() {
+            if !mounts[index].probes.contains(&logical) {
+                mounts[index].probes.push(logical);
+            }
+            continue;
+        }
+        measured.path = logical.path.clone();
+        measured.probes = vec![logical];
+        by_mount.insert(measured.mount_id.clone(), mounts.len());
+        mounts.push(measured);
+    }
+    mounts
+}
+
+fn probe_configured_mounts(dir: &Path, cfg: &ResourceManagementConfig) -> Vec<MountSpace> {
+    probe_configured_mounts_with(dir, cfg, probe_mount)
 }
 
 pub fn current_admission(
@@ -580,15 +717,12 @@ pub fn current_admission(
 ) -> (DiskLevel, String, Vec<MountSpace>) {
     if !cfg.disk_sentinel_enabled {
         return (
-            DiskLevel::Healthy,
-            "disk sentinel disabled".into(),
+            DiskLevel::Warning,
+            "disk sentinel explicitly disabled; build headroom is unverified".into(),
             Vec::new(),
         );
     }
-    let mounts: Vec<_> = configured_paths(dir, cfg)
-        .into_iter()
-        .filter_map(|p| probe_mount(&p).ok())
-        .collect();
+    let mounts = probe_configured_mounts(dir, cfg);
     let previous = load_snapshot(dir).ok().flatten().map(|s| s.level);
     let (level, reason) = assess_mounts(&mounts, cfg, previous);
     (level, reason, mounts)
@@ -655,15 +789,19 @@ fn projection_for_class(
     cfg: &ResourceManagementConfig,
     high_water: &BuildHighWater,
     class: BuildClass,
+    cold_baseline: bool,
 ) -> u64 {
-    let target = if class.is_heavy() {
+    let mut target = if class.is_heavy() {
         cfg.estimated_build_heavy_bytes
-            .max(high_water.build_heavy_bytes)
-            .max(high_water.build_capable_bytes)
+            .max(high_water.build_heavy_delta_bytes)
+            .max(high_water.build_capable_delta_bytes)
     } else {
         cfg.estimated_build_bytes
-            .max(high_water.build_capable_bytes)
+            .max(high_water.build_capable_delta_bytes)
     };
+    if cold_baseline && class.is_build_capable() {
+        target = target.max(cfg.estimated_cargo_baseline_bytes);
+    }
     target.saturating_add(cfg.build_link_test_safety_bytes)
 }
 
@@ -676,6 +814,16 @@ pub fn build_admission(
     cfg: &ResourceManagementConfig,
     class: BuildClass,
 ) -> BuildAdmission {
+    build_admission_for_source(dir, cfg, class, dir.parent().unwrap_or(dir), None)
+}
+
+pub fn build_admission_for_source(
+    dir: &Path,
+    cfg: &ResourceManagementConfig,
+    class: BuildClass,
+    source_root: &Path,
+    controlled_command: Option<&str>,
+) -> BuildAdmission {
     if !cfg.disk_sentinel_enabled || !class.is_build_capable() {
         return BuildAdmission {
             allowed: true,
@@ -687,7 +835,12 @@ pub fn build_admission(
     }
     let (level, reason, mounts) = current_admission(dir, cfg);
     let high_water = load_high_water(dir);
-    let candidate = projection_for_class(cfg, &high_water, class);
+    let cold_baseline = !crate::target_cache::has_ready_baseline(
+        &target_cache_root(dir, cfg),
+        source_root,
+        controlled_command,
+    );
+    let candidate = projection_for_class(cfg, &high_water, class, cold_baseline);
     if level.blocks_builds() {
         return BuildAdmission {
             allowed: false,
@@ -701,6 +854,27 @@ pub fn build_admission(
     let registry = AgentRegistry::load(dir).unwrap_or_default();
     let graph = load_graph(dir.join("graph.jsonl")).ok();
     let ownership = load_ownership(dir).unwrap_or_default();
+    let live_cold_builders = registry
+        .all()
+        .filter(|agent| agent.is_live(cfg.disk_agent_heartbeat_seconds))
+        .filter(|agent| {
+            graph
+                .as_ref()
+                .and_then(|graph| graph.get_task(&agent.task_id))
+                .map(classify_task)
+                .unwrap_or(BuildClass::BuildCapable)
+                .is_build_capable()
+        })
+        .count();
+    if cold_baseline && class.is_build_capable() && live_cold_builders > 0 {
+        return BuildAdmission {
+            allowed: false,
+            candidate_bytes: candidate,
+            concurrent_reserved_bytes: 0,
+            projected_free_bytes: mounts.iter().map(|mount| mount.free_bytes).min().unwrap_or(0),
+            reason: "exact Cargo baseline is cold; waiting for the single baseline builder to publish or exit".into(),
+        };
+    }
     let mut concurrent_reserved = 0u64;
     let mut seen = HashSet::new();
     for agent in registry
@@ -718,12 +892,20 @@ pub fn build_admission(
         if !active_class.is_build_capable() {
             continue;
         }
-        let projection = projection_for_class(cfg, &high_water, active_class);
+        let active_targets = ownership
+            .caches
+            .iter()
+            .filter(|cache| cache.agent_id == agent.id && cache.kind == CacheKind::CargoTarget)
+            .collect::<Vec<_>>();
+        let active_cold = !active_targets.iter().any(|cache| {
+            crate::target_cache::layer_was_seeded_from_baseline(Path::new(&cache.path))
+        });
+        let projection = projection_for_class(cfg, &high_water, active_class, active_cold);
         let materialized = ownership
             .caches
             .iter()
             .filter(|cache| cache.agent_id == agent.id && cache.kind == CacheKind::CargoTarget)
-            .map(|cache| bounded_size(Path::new(&cache.path), cfg.disk_scan_max_entries).bytes)
+            .map(|cache| private_cache_bytes(cache, cfg.disk_scan_max_entries))
             .sum::<u64>();
         concurrent_reserved =
             concurrent_reserved.saturating_add(projection.saturating_sub(materialized));
@@ -740,8 +922,24 @@ pub fn build_admission_reclaiming_owned(
     cfg: &ResourceManagementConfig,
     class: BuildClass,
 ) -> BuildAdmission {
-    let first = build_admission(dir, cfg, class);
-    if first.allowed {
+    build_admission_reclaiming_owned_for_source(dir, cfg, class, dir.parent().unwrap_or(dir), None)
+}
+
+pub fn build_admission_reclaiming_owned_for_source(
+    dir: &Path,
+    cfg: &ResourceManagementConfig,
+    class: BuildClass,
+    source_root: &Path,
+    controlled_command: Option<&str>,
+) -> BuildAdmission {
+    let first = build_admission_for_source(dir, cfg, class, source_root, controlled_command);
+    let cold_baseline = class.is_build_capable()
+        && !crate::target_cache::has_ready_baseline(
+            &target_cache_root(dir, cfg),
+            source_root,
+            controlled_command,
+        );
+    if first.allowed && !cold_baseline {
         return first;
     }
     let cleanup = match cleanup_owned(dir, cfg, true) {
@@ -765,8 +963,8 @@ pub fn build_admission_reclaiming_owned(
             report.deduplication_bytes_saved
         );
     }
-    if reclaimed {
-        build_admission(dir, cfg, class)
+    if reclaimed || cold_baseline {
+        build_admission_for_source(dir, cfg, class, source_root, controlled_command)
     } else {
         first
     }
@@ -779,6 +977,48 @@ pub fn load_snapshot(dir: &Path) -> Result<Option<DiskSnapshot>> {
     }
     let bytes = fs::read(&path)?;
     Ok(Some(serde_json::from_slice(&bytes)?))
+}
+
+fn private_cache_bytes(cache: &OwnedCache, max_entries: usize) -> u64 {
+    if cache.kind == CacheKind::CargoTarget
+        && crate::target_cache::layer_key_from_path(Path::new(&cache.path)).is_some()
+    {
+        crate::target_cache::layer_bytes(Path::new(&cache.path)).1
+    } else {
+        bounded_physical_size(Path::new(&cache.path), max_entries)
+    }
+}
+
+fn bounded_physical_size(path: &Path, max_entries: usize) -> u64 {
+    let mut bytes = 0u64;
+    let mut count = 0usize;
+    #[cfg(unix)]
+    let mut seen = HashSet::new();
+    for entry in WalkDir::new(path).follow_links(false).max_depth(16) {
+        if count >= max_entries {
+            break;
+        }
+        let Ok(entry) = entry else { continue };
+        count += 1;
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if seen.insert((metadata.dev(), metadata.ino())) {
+                bytes = bytes.saturating_add(metadata.blocks().saturating_mul(512));
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            bytes = bytes.saturating_add(metadata.len());
+        }
+    }
+    bytes
 }
 
 fn bounded_size(path: &Path, max_entries: usize) -> AreaUsage {
@@ -818,24 +1058,25 @@ fn owner_is_stale(
     registry: &AgentRegistry,
     graph: Option<&crate::graph::WorkGraph>,
 ) -> bool {
-    let agent_terminal = registry
+    let owner_terminal_or_purged = registry
         .get_agent(&cache.agent_id)
-        .map(|a| {
+        .map(|agent| {
             matches!(
-                a.status,
+                agent.status,
                 AgentStatus::Done | AgentStatus::Failed | AgentStatus::Dead | AgentStatus::Parked
             )
         })
-        .unwrap_or(false);
+        // A missing registry row is a purged owner, not permanent activity.
+        // Exact PID identity below remains the destructive safety boundary.
+        .unwrap_or(true);
     // The execution lease belongs to an attempt, not to the source task's
-    // semantic lifecycle. Pending-eval, resource-retry and interrupted tasks
-    // intentionally keep their source worktree while their rebuildable cache
-    // becomes reclaimable once the exact attempt is terminal.
-    let task_known = graph.and_then(|g| g.get_task(&cache.task_id)).is_some();
+    // semantic lifecycle. A missing graph task/worktree is not evidence of a
+    // live owner and must not strand an exact owned-cache row forever.
+    let _ = graph;
     let lease_expired = DateTime::parse_from_rfc3339(&cache.lease_expires_at)
-        .map(|t| t.with_timezone(&Utc) <= Utc::now())
+        .map(|time| time.with_timezone(&Utc) <= Utc::now())
         .unwrap_or(false);
-    agent_terminal && task_known && lease_expired && pid_identity_stale(cache)
+    (owner_terminal_or_purged || lease_expired) && pid_identity_stale(cache)
 }
 
 fn pid_identity_stale(cache: &OwnedCache) -> bool {
@@ -865,42 +1106,49 @@ pub fn refresh_snapshot(dir: &Path, cfg: &ResourceManagementConfig) -> Result<Di
         .and_then(|p| DateTime::parse_from_rfc3339(&p.generated_at).ok())
         .map(|t| (Utc::now() - t.with_timezone(&Utc)).num_seconds().max(1))
         .unwrap_or(1);
-    let old_sizes: BTreeMap<&str, u64> = previous
-        .as_ref()
-        .map(|p| {
-            p.targets
-                .iter()
-                .map(|t| (t.path.as_str(), t.bytes))
-                .collect()
-        })
-        .unwrap_or_default();
     let mut targets = Vec::new();
     // Both target count and entries-per-target are bounded so a corrupt or
     // adversarial registry cannot turn a status refresh into an unbounded walk.
     for cache in ownership.caches.iter().take(512) {
         let usage = bounded_size(Path::new(&cache.path), cfg.disk_scan_max_entries);
-        let old = old_sizes
-            .get(cache.path.as_str())
-            .copied()
-            .unwrap_or(usage.bytes);
+        let cache_key = (cache.kind == CacheKind::CargoTarget)
+            .then(|| crate::target_cache::layer_key_from_path(Path::new(&cache.path)))
+            .flatten();
+        let (logical_bytes, private_bytes) = if cache_key.is_some() {
+            crate::target_cache::layer_bytes(Path::new(&cache.path))
+        } else {
+            (
+                usage.bytes,
+                bounded_physical_size(Path::new(&cache.path), cfg.disk_scan_max_entries),
+            )
+        };
+        let old = previous
+            .as_ref()
+            .and_then(|snapshot| snapshot.targets.iter().find(|old| old.path == cache.path))
+            .map(|old| old.private_bytes)
+            .unwrap_or(private_bytes);
         let class = graph
             .as_ref()
             .and_then(|graph| graph.get_task(&cache.task_id))
             .map(classify_task)
             .unwrap_or(BuildClass::BuildCapable);
-        if cache.kind == CacheKind::CargoTarget {
+        if cache.kind == CacheKind::CargoTarget && cache_key.is_some() {
             if class.is_heavy() {
-                high_water.build_heavy_bytes = high_water.build_heavy_bytes.max(usage.bytes);
+                high_water.build_heavy_delta_bytes =
+                    high_water.build_heavy_delta_bytes.max(private_bytes);
             } else {
-                high_water.build_capable_bytes = high_water.build_capable_bytes.max(usage.bytes);
+                high_water.build_capable_delta_bytes =
+                    high_water.build_capable_delta_bytes.max(private_bytes);
             }
         }
         targets.push(TargetUsage {
             path: cache.path.clone(),
             task_id: cache.task_id.clone(),
             agent_id: cache.agent_id.clone(),
-            bytes: usage.bytes,
-            growth_bytes_per_sec: (usage.bytes as i128 - old as i128)
+            bytes: logical_bytes,
+            private_bytes,
+            cache_key,
+            growth_bytes_per_sec: (private_bytes as i128 - old as i128)
                 .clamp(i64::MIN as i128, i64::MAX as i128) as i64
                 / elapsed,
             stale: owner_is_stale(cache, &registry, graph.as_ref()),
@@ -942,14 +1190,21 @@ pub fn refresh_snapshot(dir: &Path, cfg: &ResourceManagementConfig) -> Result<Di
         if !class.is_build_capable() {
             continue;
         }
-        let materialized = ownership
+        let active_targets = ownership
             .caches
             .iter()
             .filter(|cache| cache.agent_id == agent.id && cache.kind == CacheKind::CargoTarget)
-            .map(|cache| bounded_size(Path::new(&cache.path), cfg.disk_scan_max_entries).bytes)
+            .collect::<Vec<_>>();
+        let cold_baseline = !active_targets.iter().any(|cache| {
+            crate::target_cache::layer_was_seeded_from_baseline(Path::new(&cache.path))
+        });
+        let materialized = active_targets
+            .iter()
+            .map(|cache| private_cache_bytes(cache, cfg.disk_scan_max_entries))
             .sum::<u64>();
         reserved = reserved.saturating_add(
-            projection_for_class(cfg, &high_water, class).saturating_sub(materialized),
+            projection_for_class(cfg, &high_water, class, cold_baseline)
+                .saturating_sub(materialized),
         );
     }
     let project_root = dir.parent().unwrap_or(dir);
@@ -1142,6 +1397,13 @@ fn guard_owned_path(
     if path_contains_registered_artifact(cache, graph, project_root) {
         return Err("path contains a registered artifact".into());
     }
+    if cache
+        .worktree_path
+        .as_deref()
+        .is_some_and(|worktree| has_open_files(Path::new(worktree)))
+    {
+        return Err("owning worktree still has a live process/cwd/open file".into());
+    }
     if has_open_files(path) {
         return Err("path has open files".into());
     }
@@ -1159,9 +1421,9 @@ fn safe_remove_owned_path(
     if !path.exists() {
         return Ok(0);
     }
-    let usage = bounded_size(path, usize::MAX);
+    let physical_bytes = private_cache_bytes(cache, usize::MAX);
     fs::remove_dir_all(path).map_err(|e| format!("remove failed: {e}"))?;
-    Ok(usage.bytes)
+    Ok(physical_bytes)
 }
 
 fn terminal_agent_ids(registry: &AgentRegistry) -> HashSet<String> {
@@ -1671,18 +1933,21 @@ pub fn cleanup_owned(
     // forget the very 40–60 GiB high-water needed for the next admission.
     let mut high_water = load_high_water(dir);
     for cache in &ownership.caches {
-        if cache.kind != CacheKind::CargoTarget || !owner_is_stale(cache, &registry, Some(&graph)) {
+        if cache.kind != CacheKind::CargoTarget
+            || !owner_is_stale(cache, &registry, Some(&graph))
+            || crate::target_cache::layer_key_from_path(Path::new(&cache.path)).is_none()
+        {
             continue;
         }
-        let bytes = bounded_size(Path::new(&cache.path), cfg.disk_scan_max_entries).bytes;
+        let bytes = private_cache_bytes(cache, cfg.disk_scan_max_entries);
         let class = graph
             .get_task(&cache.task_id)
             .map(classify_task)
             .unwrap_or(BuildClass::BuildCapable);
         if class.is_heavy() {
-            high_water.build_heavy_bytes = high_water.build_heavy_bytes.max(bytes);
+            high_water.build_heavy_delta_bytes = high_water.build_heavy_delta_bytes.max(bytes);
         } else {
-            high_water.build_capable_bytes = high_water.build_capable_bytes.max(bytes);
+            high_water.build_capable_delta_bytes = high_water.build_capable_delta_bytes.max(bytes);
         }
     }
     if execute {
@@ -1720,7 +1985,26 @@ pub fn cleanup_owned(
         }
         let representative = &owners[0];
         if execute {
-            let existed = Path::new(&path).exists();
+            let cache_path = Path::new(&path);
+            if representative.kind == CacheKind::CargoTarget
+                && crate::target_cache::layer_key_from_path(cache_path).is_some()
+            {
+                match crate::target_cache::promote_layer(cache_path) {
+                    Ok(true) => report.ignored.push(PreservedPath {
+                        path: path.clone(),
+                        reason: "promoted clean completed layer to immutable shared baseline"
+                            .into(),
+                    }),
+                    Ok(false) => {}
+                    Err(error) => report.ignored.push(PreservedPath {
+                        path: path.clone(),
+                        reason: format!(
+                            "baseline promotion failed closed; private rebuildable layer remains eligible for cleanup: {error:#}"
+                        ),
+                    }),
+                }
+            }
+            let existed = cache_path.exists();
             match safe_remove_owned_path(representative, &registry, &graph, project_root) {
                 Ok(bytes) => {
                     if existed {
@@ -1728,8 +2012,16 @@ pub fn cleanup_owned(
                         report.bytes_freed = report.bytes_freed.saturating_add(bytes);
                         report.reaped_paths.push(PreservedPath {
                             path: path.clone(),
-                            reason: format!("removed explicitly-owned stale cache ({bytes} bytes)"),
+                            reason: format!(
+                                "removed explicitly-owned stale cache ({bytes} private physical bytes)"
+                            ),
                         });
+                        if representative.kind == CacheKind::CargoTarget {
+                            crate::target_cache::prune_empty_layer_parents(
+                                &target_cache_root(dir, cfg),
+                                Path::new(&path),
+                            );
+                        }
                     } else {
                         report.ignored.push(PreservedPath {
                             path: path.clone(),
@@ -1758,6 +2050,38 @@ pub fn cleanup_owned(
     ownership.caches = keep;
     if execute {
         save_ownership(dir, &ownership)?;
+        let cache_root = target_cache_root(dir, cfg);
+        let mut active_keys = ownership
+            .caches
+            .iter()
+            .filter_map(|cache| crate::target_cache::layer_key_from_path(Path::new(&cache.path)))
+            .collect::<HashSet<_>>();
+        active_keys.extend(crate::target_cache::existing_layer_keys(&cache_root, 4096));
+        active_keys.extend(
+            registered_artifact_paths(&graph, project_root)
+                .iter()
+                .filter_map(|artifact| {
+                    crate::target_cache::baseline_key_containing(&cache_root, artifact)
+                }),
+        );
+        for (path, bytes) in crate::target_cache::gc_superseded_baselines(&cache_root, &active_keys)
+            .unwrap_or_else(|error| {
+                report.preserved.push(PreservedPath {
+                    path: target_cache_root(dir, cfg).display().to_string(),
+                    reason: format!("shared baseline GC failed closed: {error:#}"),
+                });
+                Vec::new()
+            })
+        {
+            report.reaped += 1;
+            report.bytes_freed = report.bytes_freed.saturating_add(bytes);
+            report.reaped_paths.push(PreservedPath {
+                path: path.display().to_string(),
+                reason: format!(
+                    "removed superseded inactive shared baseline ({bytes} physical bytes)"
+                ),
+            });
+        }
     }
     compress_terminal_streams(dir, cfg, &registry, &graph, execute, &mut report);
     deduplicate_terminal_outputs(dir, cfg, &registry, &graph, execute, &mut report);
@@ -1766,23 +2090,73 @@ pub fn cleanup_owned(
     Ok(report)
 }
 
-pub fn target_path_for_agent(
-    cfg: &ResourceManagementConfig,
-    worktree: Option<&Path>,
-    agent_id: &str,
-) -> Option<PathBuf> {
+/// The one owned Cargo artifact store. `cargo_target_root` selects the cache as
+/// a whole (immutable baselines plus private layers), not a mutable worker path.
+fn project_cache_digest(project: &Path) -> String {
+    let identity = fs::canonicalize(project).unwrap_or_else(|_| project.to_path_buf());
+    blake3::hash(identity.to_string_lossy().as_bytes())
+        .to_hex()
+        .to_string()
+}
+
+pub fn target_cache_root(dir: &Path, cfg: &ResourceManagementConfig) -> PathBuf {
+    let project = dir.parent().unwrap_or(dir);
     if let Some(root) = cfg.cargo_target_root.as_deref() {
-        Some(PathBuf::from(root).join(format!("wg-target-{agent_id}")))
-    } else if let Some(worktree) = worktree {
-        Some(worktree.join("target"))
-    } else if let Some(inherited) = std::env::var_os("CARGO_TARGET_DIR") {
-        Some(PathBuf::from(inherited))
-    } else {
-        // A failed/disabled worktree must not fall back to an unowned shared
-        // `<project>/target`. Give the worker an explicit external target that
-        // remains visible to the ownership registry across worktree GC.
-        Some(std::env::temp_dir().join(format!("wg-target-{agent_id}")))
+        let root = PathBuf::from(root);
+        return if root.is_absolute() {
+            root
+        } else {
+            project.join(root)
+        };
     }
+    dirs::cache_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("wg")
+        .join("build-targets")
+        .join(project_cache_digest(project))
+}
+
+/// Resolve per-agent build scratch. The default belongs to the selected WG
+/// state directory, never the daemon's process cwd or OS temp filesystem.
+/// Explicit absolute roots retain a project-key namespace so separate graphs
+/// cannot collide; relative overrides remain relative to the project root.
+pub fn build_tmp_path_for_agent(
+    dir: &Path,
+    cfg: &ResourceManagementConfig,
+    agent_id: &str,
+) -> PathBuf {
+    build_tmp_root(dir, cfg).join(agent_id)
+}
+
+fn legacy_build_tmp_root() -> PathBuf {
+    std::env::temp_dir().join("wg").join("build-tmp")
+}
+
+fn build_tmp_root(dir: &Path, cfg: &ResourceManagementConfig) -> PathBuf {
+    let project = dir.parent().unwrap_or(dir);
+    if let Some(root) = cfg.build_tmp_root.as_deref() {
+        let root = PathBuf::from(root);
+        return if root.is_absolute() {
+            root.join(project_cache_digest(project))
+        } else {
+            project.join(root)
+        };
+    }
+    dir.join("build-tmp")
+}
+
+/// Create one private target layer, seeded with verified reflinks or private
+/// byte copies from the immutable exact-key baseline when available.
+pub fn prepare_target_for_agent(
+    dir: &Path,
+    cfg: &ResourceManagementConfig,
+    source_root: &Path,
+    agent_id: &str,
+    controlled_command: Option<&str>,
+) -> Result<PathBuf> {
+    let root = target_cache_root(dir, cfg);
+    crate::target_cache::prepare_layer(&root, source_root, agent_id, controlled_command)
+        .map(|layer| layer.path)
 }
 
 #[cfg(test)]
@@ -1799,7 +2173,208 @@ mod tests {
             free_bytes: free,
             total_bytes: 1_000,
             free_percent: pct,
+            probes: Vec::new(),
         }
+    }
+
+    #[test]
+    fn default_build_scratch_is_selected_project_local() {
+        let first = TempDir::new().unwrap();
+        let second = TempDir::new().unwrap();
+        let first_dir = first.path().join(".wg");
+        let second_dir = second.path().join(".wg");
+        let cfg = ResourceManagementConfig::default();
+        let a = build_tmp_path_for_agent(&first_dir, &cfg, "agent-1");
+        let b = build_tmp_path_for_agent(&second_dir, &cfg, "agent-1");
+        assert_eq!(a, first_dir.join("build-tmp/agent-1"));
+        assert_eq!(b, second_dir.join("build-tmp/agent-1"));
+        assert_ne!(a, b);
+        assert!(!a.starts_with(legacy_build_tmp_root()));
+        assert!(!b.starts_with(legacy_build_tmp_root()));
+    }
+
+    #[test]
+    fn configured_relative_build_scratch_is_project_relative() {
+        let project = TempDir::new().unwrap();
+        let cfg = ResourceManagementConfig {
+            build_tmp_root: Some("runtime/scratch".into()),
+            ..Default::default()
+        };
+        let dir = project.path().join(".wg");
+        assert_eq!(
+            build_tmp_path_for_agent(&dir, &cfg, "agent-r"),
+            project.path().join("runtime/scratch/agent-r")
+        );
+        assert!(configured_path_probes(&dir, &cfg).iter().any(|probe| {
+            probe.source == "configured-build-scratch"
+                && probe.path == project.path().join("runtime/scratch").display().to_string()
+        }));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn selected_project_controls_scratch_when_daemon_cwd_is_elsewhere() {
+        struct RestoreCwd(PathBuf);
+        impl Drop for RestoreCwd {
+            fn drop(&mut self) {
+                let _ = std::env::set_current_dir(&self.0);
+            }
+        }
+
+        let selected = TempDir::new().unwrap();
+        let launcher = TempDir::new().unwrap();
+        let original = std::env::current_dir().unwrap();
+        let _restore = RestoreCwd(original);
+        std::env::set_current_dir(launcher.path()).unwrap();
+        let selected_wg = selected.path().join(".wg");
+        let path = build_tmp_path_for_agent(
+            &selected_wg,
+            &ResourceManagementConfig::default(),
+            "agent-daemon",
+        );
+        assert_eq!(path, selected_wg.join("build-tmp/agent-daemon"));
+        assert!(!path.starts_with(launcher.path()));
+        assert!(!path.starts_with(legacy_build_tmp_root()));
+    }
+
+    #[test]
+    fn configured_absolute_build_scratch_is_project_keyed_before_agent_id() {
+        let first = TempDir::new().unwrap();
+        let second = TempDir::new().unwrap();
+        let shared = TempDir::new().unwrap();
+        let cfg = ResourceManagementConfig {
+            build_tmp_root: Some(shared.path().display().to_string()),
+            ..Default::default()
+        };
+        let a = build_tmp_path_for_agent(&first.path().join(".wg"), &cfg, "agent-1");
+        let b = build_tmp_path_for_agent(&second.path().join(".wg"), &cfg, "agent-1");
+        assert_ne!(a, b);
+        assert_eq!(a.parent().unwrap().parent().unwrap(), shared.path());
+        assert_eq!(b.parent().unwrap().parent().unwrap(), shared.path());
+        assert_eq!(a.file_name().unwrap(), "agent-1");
+        assert_eq!(b.file_name().unwrap(), "agent-1");
+        let configured_root = a.parent().unwrap();
+        assert!(
+            configured_path_probes(&first.path().join(".wg"), &cfg)
+                .iter()
+                .any(|probe| {
+                    probe.source == "configured-build-scratch"
+                        && probe.path == configured_root.display().to_string()
+                })
+        );
+    }
+
+    #[test]
+    fn selected_mounts_ignore_unused_os_tmp_but_block_actual_scratch_and_target() {
+        let dir = Path::new("/modeled/project/.wg");
+        let scratch = dir.join("build-tmp");
+        let target = PathBuf::from("/modeled/target-cache");
+        let unused_tmp = PathBuf::from("/modeled/os-tmp");
+        let cfg = ResourceManagementConfig {
+            cargo_target_root: Some(target.display().to_string()),
+            disk_warning_bytes: 300,
+            disk_pause_build_bytes: 200,
+            disk_hard_refuse_bytes: 100,
+            disk_warning_percent: 0.0,
+            disk_pause_build_percent: 0.0,
+            disk_hard_refuse_percent: 0.0,
+            ..Default::default()
+        };
+
+        let modeled = |scratch_free: u64, target_free: u64| {
+            probe_configured_mounts_with(dir, &cfg, |path| {
+                assert_ne!(path, unused_tmp, "unused OS tmp must not be selected");
+                let (id, free) = if path == scratch {
+                    ("scratch", scratch_free)
+                } else if path == target {
+                    ("target", target_free)
+                } else {
+                    ("project", 500)
+                };
+                let mut measured = mount(path.to_string_lossy().as_ref(), free, 50.0);
+                measured.mount_id = id.into();
+                Ok(measured)
+            })
+        };
+
+        let healthy = modeled(500, 500);
+        assert_eq!(assess_mounts(&healthy, &cfg, None).0, DiskLevel::Healthy);
+        assert!(healthy.iter().any(|mount| {
+            mount.probes.iter().any(|probe| {
+                probe.source == "project-build-scratch"
+                    && probe.path == scratch.display().to_string()
+            })
+        }));
+        assert!(healthy.iter().any(|mount| {
+            mount.probes.iter().any(|probe| {
+                probe.source == "configured-cargo-target-cache"
+                    && probe.path == target.display().to_string()
+            })
+        }));
+
+        assert_eq!(
+            assess_mounts(&modeled(150, 500), &cfg, None).0,
+            DiskLevel::PauseBuilds,
+            "low space on the actual scratch filesystem must block"
+        );
+        assert_eq!(
+            assess_mounts(&modeled(500, 150), &cfg, None).0,
+            DiskLevel::PauseBuilds,
+            "low space on the configured target-cache filesystem must block"
+        );
+    }
+
+    #[test]
+    fn active_legacy_tmp_scratch_stays_visible_until_guarded_cleanup_is_safe() {
+        let project = TempDir::new().unwrap();
+        let dir = project.path().join(".wg");
+        fs::create_dir_all(&dir).unwrap();
+        save_graph(&WorkGraph::new(), dir.join("graph.jsonl")).unwrap();
+        let legacy = legacy_build_tmp_root().join(format!(
+            "compat-test-{}-{}",
+            std::process::id(),
+            project.path().file_name().unwrap().to_string_lossy()
+        ));
+        fs::create_dir_all(&legacy).unwrap();
+        fs::write(legacy.join("still-live"), b"owned").unwrap();
+
+        let mut cache = make_owned_cache(
+            &legacy,
+            CacheKind::CargoInstallScratch,
+            "legacy-build",
+            "legacy-agent",
+            std::process::id(),
+            None,
+            3_600,
+        );
+        register_owned_cache(&dir, cache.clone()).unwrap();
+        let probes = configured_path_probes(&dir, &ResourceManagementConfig::default());
+        assert!(probes.iter().any(|probe| {
+            probe.source == "legacy-owned-build-scratch"
+                && probe.path == legacy.display().to_string()
+        }));
+
+        let active = cleanup_owned(&dir, &ResourceManagementConfig::default(), true).unwrap();
+        assert!(legacy.exists());
+        assert!(
+            active
+                .preserved
+                .iter()
+                .any(|item| item.path == legacy.display().to_string())
+        );
+
+        cache.pid = 999_999_999;
+        cache.pid_start_epoch = None;
+        cache.lease_expires_at = "2020-01-01T00:00:00Z".into();
+        register_owned_cache(&dir, cache).unwrap();
+        let stale = cleanup_owned(&dir, &ResourceManagementConfig::default(), true).unwrap();
+        assert!(!legacy.exists());
+        assert!(
+            stale
+                .reaped_paths
+                .iter()
+                .any(|item| item.path == legacy.display().to_string())
+        );
     }
 
     #[test]
@@ -1879,43 +2454,75 @@ mod tests {
     }
 
     #[test]
-    fn default_admission_ignores_historical_cold_build_high_water() {
+    fn default_admission_is_enabled_and_legacy_full_tree_high_water_is_migrated() {
         let root = TempDir::new().unwrap();
         let dir = root.path().join(".wg");
         fs::create_dir_all(sentinel_dir(&dir)).unwrap();
-        save_high_water(
-            &dir,
-            &BuildHighWater {
-                build_capable_bytes: u64::MAX,
-                build_heavy_bytes: u64::MAX,
-            },
+        // Schema 1 values represented duplicated full trees, including the
+        // incident's ~95 GiB high-water, and must not become private reserve.
+        fs::write(
+            high_water_path(&dir),
+            r#"{"build_capable_bytes":102005473280,"build_heavy_bytes":102005473280}"#,
         )
         .unwrap();
 
         let cfg = ResourceManagementConfig::default();
-        assert!(!cfg.disk_sentinel_enabled);
-        let admission = build_admission(&dir, &cfg, BuildClass::BuildHeavy);
-        assert!(admission.allowed);
-        assert_eq!(admission.candidate_bytes, 0);
-        assert_eq!(admission.concurrent_reserved_bytes, 0);
-        assert_eq!(admission.reason, "disk admission not required");
+        assert!(cfg.disk_sentinel_enabled);
+        let migrated = load_high_water(&dir);
+        assert_eq!(migrated.schema, HIGH_WATER_SCHEMA);
+        assert_eq!(migrated.build_capable_delta_bytes, 0);
+        assert_eq!(migrated.build_heavy_delta_bytes, 0);
+        save_high_water(&dir, &migrated).unwrap();
+        let recorded: serde_json::Value =
+            serde_json::from_slice(&fs::read(high_water_path(&dir)).unwrap()).unwrap();
+        assert_eq!(recorded["schema"], HIGH_WATER_SCHEMA);
+        assert!(recorded.get("build_heavy_bytes").is_none());
     }
 
     #[test]
-    fn explicit_opt_in_still_enforces_predictive_admission() {
+    fn explicitly_disabled_sentinel_never_reports_healthy() {
+        let cfg = ResourceManagementConfig {
+            disk_sentinel_enabled: false,
+            ..Default::default()
+        };
+        let (level, reason, mounts) = current_admission(Path::new("."), &cfg);
+        assert_eq!(level, DiskLevel::Warning);
+        assert!(reason.contains("explicitly disabled"));
+        assert!(mounts.is_empty());
+    }
+
+    #[test]
+    fn zero_headroom_never_reports_healthy_even_with_zero_thresholds() {
+        let cfg = ResourceManagementConfig {
+            disk_warning_bytes: 0,
+            disk_pause_build_bytes: 0,
+            disk_hard_refuse_bytes: 0,
+            disk_warning_percent: 0.0,
+            disk_pause_build_percent: 0.0,
+            disk_hard_refuse_percent: 0.0,
+            ..Default::default()
+        };
+        assert_eq!(
+            assess_mounts(&[mount("full", 0, 0.0)], &cfg, None).0,
+            DiskLevel::HardRefuse
+        );
+    }
+
+    #[test]
+    fn enabled_sentinel_enforces_predictive_delta_admission() {
         let root = TempDir::new().unwrap();
         let dir = root.path().join(".wg");
         fs::create_dir_all(sentinel_dir(&dir)).unwrap();
         save_high_water(
             &dir,
             &BuildHighWater {
-                build_capable_bytes: u64::MAX,
-                build_heavy_bytes: u64::MAX,
+                schema: HIGH_WATER_SCHEMA,
+                build_capable_delta_bytes: u64::MAX,
+                build_heavy_delta_bytes: u64::MAX,
             },
         )
         .unwrap();
         let cfg = ResourceManagementConfig {
-            disk_sentinel_enabled: true,
             disk_warning_bytes: 0,
             disk_pause_build_bytes: 0,
             disk_hard_refuse_bytes: 0,
@@ -1933,28 +2540,113 @@ mod tests {
     }
 
     #[test]
-    fn incident_scale_projection_refuses_then_allows_after_cleanup_and_serializes() {
+    fn second_ordinary_build_capable_worker_waits_while_exact_baseline_is_cold() {
+        let root = TempDir::new().unwrap();
+        let dir = root.path().join(".wg");
+        fs::create_dir_all(&dir).unwrap();
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(Task {
+            id: "cold-builder".into(),
+            title: "ordinary source implementation".into(),
+            status: Status::InProgress,
+            ..Default::default()
+        }));
+        save_graph(&graph, dir.join("graph.jsonl")).unwrap();
+        let mut registry = AgentRegistry::new();
+        registry.agents.insert(
+            "agent-cold".into(),
+            crate::service::registry::AgentEntry {
+                id: "agent-cold".into(),
+                pid: std::process::id(),
+                task_id: "cold-builder".into(),
+                executor: "shell".into(),
+                started_at: Utc::now().to_rfc3339(),
+                last_heartbeat: Utc::now().to_rfc3339(),
+                status: AgentStatus::Working,
+                output_file: dir.join("cold.log").display().to_string(),
+                model: None,
+                completed_at: None,
+                worktree_path: None,
+            },
+        );
+        registry.save(&dir).unwrap();
+        let cfg = ResourceManagementConfig {
+            disk_warning_bytes: 0,
+            disk_pause_build_bytes: 0,
+            disk_hard_refuse_bytes: 0,
+            disk_warning_percent: 0.0,
+            disk_pause_build_percent: 0.0,
+            disk_hard_refuse_percent: 0.0,
+            estimated_cargo_baseline_bytes: 1,
+            build_link_test_safety_bytes: 0,
+            ..Default::default()
+        };
+        let admission = build_admission_for_source(
+            &dir,
+            &cfg,
+            BuildClass::BuildCapable,
+            root.path(),
+            Some("cargo check"),
+        );
+        assert!(!admission.allowed);
+        assert!(admission.reason.contains("single baseline builder"));
+    }
+
+    #[test]
+    fn cold_baseline_reserve_is_charged_once_before_private_delta_mode() {
+        const GIB: u64 = 1024 * 1024 * 1024;
+        let cfg = ResourceManagementConfig {
+            estimated_build_bytes: 4 * GIB,
+            estimated_build_heavy_bytes: 16 * GIB,
+            estimated_cargo_baseline_bytes: 64 * GIB,
+            build_link_test_safety_bytes: 4 * GIB,
+            ..Default::default()
+        };
+        let high_water = BuildHighWater {
+            schema: HIGH_WATER_SCHEMA,
+            build_capable_delta_bytes: 3 * GIB,
+            build_heavy_delta_bytes: 12 * GIB,
+        };
+        assert_eq!(
+            projection_for_class(&cfg, &high_water, BuildClass::BuildHeavy, true),
+            68 * GIB
+        );
+        assert_eq!(
+            projection_for_class(&cfg, &high_water, BuildClass::BuildHeavy, false),
+            20 * GIB
+        );
+        assert_eq!(
+            projection_for_class(&cfg, &high_water, BuildClass::BuildCapable, true),
+            68 * GIB
+        );
+        assert_eq!(
+            projection_for_class(&cfg, &high_water, BuildClass::BuildCapable, false),
+            8 * GIB
+        );
+    }
+
+    #[test]
+    fn delta_projection_refuses_enospc_but_allows_bounded_concurrent_builds() {
         const GIB: u64 = 1024 * 1024 * 1024;
         let cfg = ResourceManagementConfig {
             disk_warning_bytes: 32 * GIB,
             disk_warning_percent: 0.0,
-            estimated_build_heavy_bytes: 56 * GIB,
-            build_link_test_safety_bytes: 8 * GIB,
+            estimated_build_heavy_bytes: 16 * GIB,
+            build_link_test_safety_bytes: 4 * GIB,
             ..Default::default()
         };
         let candidate = cfg
             .estimated_build_heavy_bytes
             .saturating_add(cfg.build_link_test_safety_bytes);
 
-        // Incident-like 80 GiB free: a 56 GiB target plus 8 GiB final-link
-        // safety would cross the 32 GiB warning floor.
         let before = assess_projected_build(
             &[MountSpace {
                 path: "/synthetic".into(),
                 mount_id: "synthetic".into(),
-                free_bytes: 80 * GIB,
+                free_bytes: 48 * GIB,
                 total_bytes: 400 * GIB,
-                free_percent: 20.0,
+                free_percent: 12.0,
+                probes: Vec::new(),
             }],
             &cfg,
             candidate,
@@ -1962,20 +2654,17 @@ mod tests {
         );
         assert!(!before.allowed);
 
-        // Sparse/synthetic cleanup frees 64 GiB; the same projection is safe.
         let after_mount = MountSpace {
             path: "/synthetic".into(),
             mount_id: "synthetic".into(),
             free_bytes: 144 * GIB,
             total_bytes: 400 * GIB,
             free_percent: 36.0,
+            probes: Vec::new(),
         };
         assert!(assess_projected_build(&[after_mount.clone()], &cfg, candidate, 0).allowed);
-
-        // One concurrent build reserves the same unmaterialized growth, so a
-        // second cannot overcommit the mount even though each alone fits.
         let concurrent = assess_projected_build(&[after_mount], &cfg, candidate, candidate);
-        assert!(!concurrent.allowed);
+        assert!(concurrent.allowed);
         assert_eq!(concurrent.concurrent_reserved_bytes, candidate);
     }
 
@@ -2067,6 +2756,46 @@ mod tests {
         assert!(!owned.exists());
         assert!(unknown.exists());
         let second = cleanup_owned(&owned_dir, &cfg, true).unwrap();
+        assert_eq!(second.considered, 0);
+        assert_eq!(second.reaped, 0);
+    }
+
+    #[test]
+    fn deleted_paths_and_purged_registry_owners_compact_idempotently() {
+        let root = TempDir::new().unwrap();
+        let dir = root.path().join(".wg");
+        fs::create_dir_all(&dir).unwrap();
+        save_graph(&WorkGraph::new(), dir.join("graph.jsonl")).unwrap();
+        AgentRegistry::new().save(&dir).unwrap();
+
+        let missing = root.path().join("already-deleted-target");
+        let existing = root.path().join("orphaned-target");
+        fs::create_dir_all(&existing).unwrap();
+        fs::write(existing.join("private"), vec![3u8; 4096]).unwrap();
+        for path in [&missing, &existing] {
+            let mut cache = make_owned_cache(
+                path,
+                CacheKind::CargoTarget,
+                "purged-task",
+                "agent-purged",
+                999_999,
+                Some(&root.path().join("deleted-worktree")),
+                0,
+            );
+            cache.lease_expires_at = (Utc::now() - chrono::Duration::seconds(5)).to_rfc3339();
+            register_owned_cache(&dir, cache).unwrap();
+        }
+
+        let cfg = ResourceManagementConfig {
+            compress_terminal_streams: false,
+            ..Default::default()
+        };
+        let report = cleanup_owned(&dir, &cfg, true).unwrap();
+        assert_eq!(report.considered, 2);
+        assert_eq!(report.reaped, 1);
+        assert!(!existing.exists());
+        assert!(load_ownership(&dir).unwrap().caches.is_empty());
+        let second = cleanup_owned(&dir, &cfg, true).unwrap();
         assert_eq!(second.considered, 0);
         assert_eq!(second.reaped, 0);
     }

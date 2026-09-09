@@ -47,6 +47,10 @@ pub enum IpcRequest {
     Heartbeat { agent_id: String },
     /// Get service status
     Status,
+    /// Prove that this exact daemon instance has completed startup and is
+    /// servicing requests. The caller supplies the nonce minted before spawn;
+    /// a stale socket or an older daemon instance cannot echo it successfully.
+    Readiness { instance_nonce: String },
     /// Shutdown the service
     Shutdown {
         #[serde(default)]
@@ -697,6 +701,7 @@ fn validate_worker_capability(
                 | WorkerOperation::ArtifactRemove { .. }
                 | WorkerOperation::Checkpoint { .. }
                 | WorkerOperation::Wait { .. }
+                | WorkerOperation::LandingTurn { .. }
                 | WorkerOperation::CompletionObject { .. }
                 | WorkerOperation::CompletionManifest { .. }
                 | WorkerOperation::SubmitCompletion { .. }
@@ -1060,6 +1065,115 @@ fn execute_worker_operation(
                 )?;
                 Ok(serde_json::json!({"submission": "accepted"}))
             }
+            WorkerOperation::LandingTurn {
+                action,
+                integration_ref,
+                progress,
+                checkpoint,
+                source_session,
+            } => {
+                use worksgood::worker_control::LandingTurnAction;
+                let graph = load_graph(graph_path(dir))?;
+                let task = graph
+                    .get_task(&binding.task_id)
+                    .context("worker_control.landing_task_missing")?
+                    .clone();
+                if task.lifecycle.generation != binding.generation
+                    || task.lifecycle.fence != binding.fence
+                    || task
+                        .lifecycle
+                        .current_attempt
+                        .as_ref()
+                        .is_none_or(|attempt| attempt.id != binding.attempt_id)
+                {
+                    anyhow::bail!("worker_control.landing_binding_stale");
+                }
+                if let Some(claimed) = source_session.as_deref()
+                    && task
+                        .session_id
+                        .as_deref()
+                        .is_some_and(|actual| actual != claimed)
+                {
+                    anyhow::bail!("worker_control.landing_source_session_mismatch");
+                }
+                if action == LandingTurnAction::Status {
+                    return Ok(serde_json::to_value(worksgood::landing_turn::status(
+                        dir,
+                        &integration_ref,
+                        Some(&binding.task_id),
+                    )?)?);
+                }
+                let observed_target = if action == LandingTurnAction::Request {
+                    None
+                } else {
+                    let status = worksgood::landing_turn::status(
+                        dir,
+                        &integration_ref,
+                        Some(&binding.task_id),
+                    )?;
+                    Some(
+                        status
+                            .lease
+                            .as_ref()
+                            .filter(|lease| lease.task_id == binding.task_id)
+                            .map(|lease| lease.target_oid.clone())
+                            .or_else(|| {
+                                status
+                                    .ticket
+                                    .as_ref()
+                                    .map(|ticket| ticket.observed_target_oid.clone())
+                            })
+                            .context("worker_control.landing_ticket_missing")?,
+                    )
+                };
+                let turn_binding = crate::commands::landing_turn::binding_from_authority(
+                    dir,
+                    &task,
+                    &integration_ref,
+                    observed_target.as_deref(),
+                    binding.agent_id.clone(),
+                    source_session.clone().or_else(|| task.session_id.clone()),
+                )?;
+                let value = match action {
+                    LandingTurnAction::Request => {
+                        let outcome = worksgood::landing_turn::request_turn(dir, &turn_binding)?;
+                        if let worksgood::landing_turn::RequestOutcome::Parked {
+                            ticket_id, ..
+                        } = &outcome
+                        {
+                            crate::commands::landing_turn::park_landing_turn(
+                                dir,
+                                &binding.task_id,
+                                &integration_ref,
+                                ticket_id,
+                                checkpoint.as_deref(),
+                                source_session.as_deref(),
+                            )?;
+                        }
+                        serde_json::to_value(outcome)?
+                    }
+                    LandingTurnAction::Renew => {
+                        serde_json::to_value(worksgood::landing_turn::renew_turn(
+                            dir,
+                            &integration_ref,
+                            &turn_binding,
+                            progress.as_deref(),
+                        )?)?
+                    }
+                    LandingTurnAction::Release => {
+                        serde_json::to_value(worksgood::landing_turn::release_turn(
+                            dir,
+                            &integration_ref,
+                            &turn_binding,
+                        )?)?
+                    }
+                    LandingTurnAction::Cancel => serde_json::to_value(
+                        worksgood::landing_turn::cancel_turn(dir, &integration_ref, &turn_binding)?,
+                    )?,
+                    LandingTurnAction::Status => unreachable!(),
+                };
+                Ok(value)
+            }
             WorkerOperation::Land { integration_ref } => {
                 let worktree = if binding.worktree_path.trim().is_empty() {
                     None
@@ -1350,6 +1464,7 @@ fn handle_request(
         }
         IpcRequest::Heartbeat { agent_id } => handle_heartbeat(dir, &agent_id),
         IpcRequest::Status => handle_status(dir),
+        IpcRequest::Readiness { instance_nonce } => handle_readiness(&instance_nonce),
         IpcRequest::Shutdown { force, kill_agents } => {
             logger.info(&format!(
                 "IPC Shutdown: force={}, kill_agents={}",
@@ -1815,6 +1930,26 @@ fn handle_heartbeat(dir: &Path, agent_id: &str) -> IpcResponse {
     }
 }
 
+/// Handle the startup readiness challenge using process-local launch state.
+///
+/// Deliberately do not read the nonce from `state.json`: a newly spawned
+/// supervisor may have replaced that file while a delayed old daemon still
+/// owns an already-open socket connection. Only the environment inherited by
+/// this daemon process is authoritative for this challenge.
+fn handle_readiness(challenge: &str) -> IpcResponse {
+    let actual = std::env::var(super::SERVICE_INSTANCE_NONCE_ENV).ok();
+    if actual.as_deref() != Some(challenge) || challenge.is_empty() {
+        return IpcResponse::error("service instance nonce mismatch");
+    }
+    let pid = std::process::id();
+    IpcResponse::success(serde_json::json!({
+        "status": "ready",
+        "instance_nonce": challenge,
+        "pid": pid,
+        "pid_start_identity": worksgood::service_identity::pid_start_identity(pid),
+    }))
+}
+
 /// Handle status request
 fn handle_status(dir: &Path) -> IpcResponse {
     let state = match ServiceState::load(dir) {
@@ -1859,6 +1994,7 @@ fn handle_status(dir: &Path) -> IpcResponse {
         "pid": state.pid,
         "socket": state.socket_path,
         "started_at": state.started_at,
+        "instance_nonce": state.instance_nonce,
         "pid_start_identity": state.pid_start_identity,
         "identity": state.identity,
         "worker_control": {
@@ -2370,6 +2506,7 @@ fn handle_add_task_with_reasoning(
         completion_candidate: None,
         completion_disposition: None,
         completion_receipt: None,
+        completion_blocker: None,
         tags: tags.to_vec(),
         skills: skills.to_vec(),
         inputs: vec![],

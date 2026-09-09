@@ -104,6 +104,37 @@ describe("expert backend boundary", () => {
     expect(calls[0].args).toEqual(["--dir", "/proj", "ready", "--json"]);
   });
 
+  it("binds wait and landing-turn operations to the managed task", async () => {
+    const { host, calls } = fakeHost({ code: 0 });
+    const backend = new WgBackend(host, { taskId: "task-1" });
+
+    await backend.wait("message", "checkpoint");
+    await backend.landingTurn("request", "refs/heads/main", undefined, "ready");
+    await backend.landingTurn("status", "refs/heads/main");
+    expect(calls.map((call) => call.args)).toEqual([
+      ["wait", "task-1", "--until", "message", "--checkpoint", "checkpoint"],
+      [
+        "landing-turn",
+        "request",
+        "task-1",
+        "--integration-ref",
+        "refs/heads/main",
+        "--checkpoint",
+        "ready",
+      ],
+      ["landing-turn", "status", "refs/heads/main", "--task", "task-1"],
+    ]);
+  });
+
+  it("refuses wait and landing-turn calls outside a managed task", async () => {
+    const { host } = fakeHost({ code: 0 });
+    const backend = new WgBackend(host, {});
+    expect(() => backend.wait("message")).toThrow(/managed WG task/);
+    expect(() => backend.landingTurn("request", "refs\/heads\/main")).toThrow(
+      /managed WG task/,
+    );
+  });
+
   it("publishes exactly one staged task", async () => {
     const { host, calls } = fakeHost({ stdout: "published", code: 0 });
     const backend = new WgBackend(host, { dir: "/proj" });

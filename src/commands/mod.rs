@@ -1,4 +1,5 @@
 pub mod abandon;
+pub mod adaptive_agency;
 pub mod add;
 pub mod agency_create;
 pub mod agency_human;
@@ -41,6 +42,9 @@ pub mod completion_done;
 pub mod completion_finish;
 pub mod completion_land;
 pub mod completion_submit;
+#[cfg(test)]
+mod completion_test_support;
+pub mod completion_wait;
 pub mod config_cmd;
 pub mod context;
 pub mod coordinate;
@@ -81,6 +85,7 @@ pub mod init;
 pub mod insert;
 pub mod key;
 pub mod kill;
+pub mod landing_turn;
 pub mod legacy_eval_compat;
 pub mod link;
 pub mod list;

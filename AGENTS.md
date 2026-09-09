@@ -111,13 +111,23 @@ See `docs/config-ux-design.md` for full details.
 ### Named profiles and secrets
 
 Three starter profiles ship in the binary: `claude` (opus worker), `codex`
-(gpt-5.5), `nex` (in-process endpoint). Activate one with `wg profile use
-<name>`; use `wg profile use codex:gpt-5.5` or `wg profile use claude:opus`
-to select a profile and pin the exact default/task-agent route in one step.
-This writes `~/.wg/active-profile` and hot-reloads the daemon.
-`wg profile show` / `list` / `create` / `edit` / `diff` / `init-starters`
-cover the rest of the management surface. Profiles overlay onto the
-global+local merge but never clobber project-local config.
+(gpt-5.5), `nex` (in-process endpoint). Reusable profile **definitions** live
+at `~/.wg/profiles/<name>.toml` and are managed with `wg profile show` /
+`list` / `create` / `edit` / `diff` / `init-starters`. A definition is
+machine-global input only; it is never a project's selected route by itself.
+
+Project selection is **project-local and copy-by-value**: `wg profile select
+<name>` (and the deprecated `wg profile use <name>` alias) resolves an isolated,
+closed Pi projection (model + reasoning for every dispatch role) from one
+definition and writes it into the checked-in project document
+`<project-root>/worksgood.toml`. It writes **only** `worksgood.toml` (plus a
+redacted usage record) — it never rewrites `~/.wg/config.toml`, never writes
+`~/.wg/active-profile`, never edits `~/.pi`, and never re-reads the definition
+at runtime. `~/.wg/active-profile` is **ignored** for project resolution today
+(it is legacy inactive state + a migration input). `wg profile use` is a
+one-release deprecated alias for `profile select` and warns; without a project
+root it fails with actionable guidance. See `docs/config-precedence.md` and
+`docs/design-project-local-pi-config.md`.
 
 #### Structured Pi reasoning (`--reasoning` → `--thinking`)
 
@@ -230,67 +240,45 @@ Note: `wg show`'s "in" figure is `input_tokens − cache_read_input_tokens`
 (claude included) show `0` novel-in even though tokens/cost are accounted in
 full; the JSON (`wg show --json`) and `wg spend` carry the real `input_tokens`.
 
-#### Flipping the active profile and reverting (the round-trip)
+#### Selecting the project profile (per-repo, no global round-trip)
 
-The active profile is global state in `~/.wg/active-profile`. The chat agent
-flips it to run a batch of tasks on Anthropic credits, then reverts to hand work
-back to the in-process handler:
+Project route selection is per-repo and writes only `worksgood.toml`; there is
+no machine-global active-profile to flip. To run a batch of tasks on a given
+provider's credits in one repo, select that profile for that repo; other repos
+are unaffected:
 
 ```
-wg profile use claude     # flip: next workers run the claude profile (opus worker)
-# ... dispatch / run a batch on Anthropic credits ...
-wg profile use nex        # revert: back to the in-process localhost endpoint
+wg profile select claude   # this repo's workers run the claude profile (opus worker)
+# ... dispatch / run a batch on Anthropic credits in THIS repo ...
+wg profile select nex      # switch this repo back to the in-process localhost endpoint
 ```
 
-`wg profile use codex` is the third flip target. Every `wg profile use` writes
-`~/.wg/active-profile` and **hot-reloads the running daemon** — already-spawned
-workers keep their model; the *next* worker the daemon spawns picks up the new
-profile (no daemon restart). Pass `--no-reload` to stage the switch without
-poking the daemon. Activation overlays on the global+local merge and never edits
-project-local config.
+`wg profile select codex` is the third target. Every `profile select` writes
+the closed Pi projection into `worksgood.toml` and reloads this project's
+daemon — already-spawned workers keep their model; the *next* worker the
+daemon spawns picks up the new projection (no daemon restart). Pass
+`--no-reload` to stage the switch without poking the daemon. `wg profile use
+<name>` is the deprecated alias for the same operation and warns once. Two
+repos sharing one `$HOME` are fully isolated: selecting a route in repo A
+never alters repo B, and repo B with no `worksgood.toml` route fails
+`WG-EXEC-UNSELECTED` even if a stale global route + `~/.wg/active-profile`
+are present. To remove stale machine-global routing left by an older install,
+run `wg migrate project-local-pi --cleanup-global-routing`.
 
-#### `<name>:<route>` pins a model, it does not select an endpoint
+#### `<name>` selects a profile definition; `<name>:<route>` is not a form
 
-The optional `:<suffix>` in `wg profile use <name>:<suffix>` is a **model spec**,
-not an endpoint/route selector. It activates profile `<name>` and pins `<suffix>`
-as the default + task-agent route in one step (`models.default`,
-`models.task_agent`, `agent.model`, `dispatcher.model`, and the standard/premium
-tiers all become `<name>:<suffix>`):
+`wg profile select <name>` (and the deprecated `wg profile use <name>` alias)
+takes a **profile name** only — the optional `<name>:<suffix>` form from older
+releases is gone. `wg profile use codex:gpt-5.5` now looks for a profile
+literally named `codex:gpt-5.5` (i.e. `~/.wg/profiles/codex:gpt-5.5.toml`),
+not "the codex profile with route gpt-5.5". To pin an exact route for this
+project, edit the reusable definition (`wg profile edit <name>`) and then
+`wg profile select <name>`, or set the route directly with `wg setup --route
+pi --model pi:<provider>:<model>` / `wg config set agent.model pi:...`.
 
-- `wg profile use claude:opus` → claude profile, default route pinned to `claude:opus`.
-- `wg profile use codex:gpt-5.5` → codex profile, default route pinned to `codex:gpt-5.5`.
-
-Because the suffix is a model id, **`nex:openrouter` is NOT the same as plain
-`nex`, and does NOT route to OpenRouter.** Plain `wg profile use nex` uses the
-profile's own default model (`nex:qwen3-coder-30b`) at the localhost endpoint
-`http://127.0.0.1:8088`. `wg profile use nex:openrouter` instead pins the literal
-model id `nex:openrouter` — i.e. it tells the in-process nex handler to send a
-model named `openrouter` to that same localhost endpoint (the endpoint is
-unchanged). That is almost never what you want.
-
-To actually run through OpenRouter, use the `openrouter:` provider prefix (the
-nex/native handler serves it), e.g. `wg config -m openrouter:anthropic/claude-opus-4-7`;
-a bare `vendor/model` route launched on the nex handler with no endpoint is
-auto-normalized to `openrouter:vendor/model`. There is no `wg profile use
-openrouter:…` form — `openrouter` is a provider prefix, not a profile name, and
-the model-qualified activation rejects it.
-
-**Decision — nex's default route is left on localhost (unchanged).** We
-deliberately do not repoint the `nex` profile's default to OpenRouter, because it
-is not low-risk:
-
-- The `nex` profile is by definition the in-process handler at a **localhost**
-  endpoint (it mirrors the `wg nex` subcommand); repointing the default would
-  change its identity and the local-endpoint contract the rest of these docs
-  build on.
-- The localhost endpoint needs no credential. An OpenRouter default would require
-  an `OPENROUTER_API_KEY` and reintroduce the "openrouter configured but no key"
-  silent failures the agency-pinning section below calls out.
-- There is no single canonical OpenRouter model to adopt as the default.
-- Even if set, `nex` and `nex:openrouter` would still differ: the suffix pins the
-  bogus model id `openrouter`, not an `openrouter:`-prefixed route. The premise
-  that the two could be made identical rests on reading the suffix as a route, so
-  the fix is this documentation, not a config change.
+To run through OpenRouter, use the `openrouter:` provider prefix inside a
+`pi:` route, e.g. `wg setup --route pi --model pi:openrouter:anthropic/claude-opus-4-7`.
+`openrouter` is a provider prefix, not a profile name.
 
 API keys live in a credential store managed by `wg secret`. Endpoints
 should reference keys via `api_key_ref = "keyring:<name>"` (preferred);

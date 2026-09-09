@@ -36,7 +36,7 @@ Each tick proceeds through a series of phases. A preliminary phase zero processe
 
 2.8. **Message-triggered resurrection.** Done tasks that have unread messages from whitelisted senders (the user, the coordinator, or dependent-task agents) are reopened so the next agent can address the message. Rate-limited to a maximum of three resurrections per task with a cooldown period.
 
-3. **Reconcile legacy lifecycle compatibility.** The coordinator may retire only unclaimed, unstarted, evidence-free historical `assign`/`evaluate`/`flip` rows. Verdict-bearing rows remain loadable and exact historical evidence may be migrated, but no satellite is created, rearmed, or dispatched.
+3. **Reconcile retired evaluation rows.** The coordinator recognizes pre-receipt `.assign-*`, `.flip-*`, `.evaluate-*`, `PendingEval`, and `FailedPendingEval` only as load/migration compatibility. It creates, rearms, and dispatches none of them. A stale condition is diagnosed once and points to `wg migrate evaluation-cutover`; arbitrary outcome scores cannot clear it.
 
 4. **Reconcile source-bound completion review.** Ordinary trusted-local completion validates and publishes one exact candidate and derives `done` from its receipts. Review observations are bound to that source attempt; the coordinator does not place the source in `pending-eval` or create an evaluator prerequisite.
 
@@ -63,9 +63,9 @@ Each tick proceeds through a series of phases. A preliminary phase zero processe
 │  2.6 cycle_failure_restart                            │
 │  2.7 wait_resume_evaluation                           │
 │  2.8 message_triggered_resurrection                   │
-│  3.  build_auto_assign_tasks       (if enabled)       │
-│  4.  build_auto_evaluate_tasks     (if enabled)       │
-│  4.5 build_flip_verification_tasks (if enabled)       │
+│  3.  reconcile retired evaluation compatibility      │
+│  4.  project receipt-backed terminal observations     │
+│  4.5 preserve historical verdict compatibility        │
 │  4.6 auto_evolve                   (if enabled)       │
 │  4.7 auto_create                   (if enabled)       │
 │  5.  save graph → find ready tasks                    │
@@ -172,25 +172,30 @@ Parallelism in wg arises naturally from the graph structure. A *fan-out* (map) p
 
 These patterns are not built-in primitives. They emerge from dependency edges. A project plan that says "write five sections, then compile the manual" naturally produces a fan-out of five writer tasks followed by a fan-in to a compiler task. The coordinator handles this without any special configuration—`max_agents` determines how many of the five writers run concurrently.
 
-## Assignment
+## Receipt-Backed Assignment
 
-Agent identity binding is explicit. Use `wg assign <task-id> <agent-hash>` or
-`wg assign --auto <task-id>` to rank the roster and record an assignment
-observation directly. The `auto_assign` config key remains load/write
-compatibility for older configs but has no authority to create blocking
-`assign-*` graph tasks.
+`wg assign <task-id> <agent-hash>` sets an explicit identity intent for the next attempt. `wg assign <task-id> --auto` deterministically ranks eligible compositions using compatible prior delayed rewards. With `agency.auto_assign=true`, the same bounded selector runs immediately before claim when no intent exists.
 
-## Completion review and scored evaluation
+Claim/reservation is the commit boundary: it writes an immutable receipt binding the selected composition (or explicit `uncomposed` fallback) to the real generation, attempt ID, fence, and admission snapshot. The receipt is created before the attempt is reserved and its ID is included in lifecycle evidence. A crash can replay that exact binding; a changed admission snapshot cannot reuse it. Selector failure never creates a persistent blocker: it records why dispatch is uncomposed and work proceeds.
+
+There is no `.assign-*` task, assignment edge, evaluator worker slot, or recursive assignment. `wg match` remains a read-only preview. A score affects later assignment only after an independent terminal outcome creates one active delayed reward for the one terminal episode.
+
+## One Review and Outcome Authority Map
+
+- **Completion review:** `wg submit` / `wg done` produce and consume exact candidate receipts. Only the completion controller may apply them to lifecycle/publication.
+- **Candidate review:** `wg reviews list/show` exposes immutable virtual attempts. They have no task status, edge, worker slot, retry, or lifecycle authority.
+- **Scored outcome:** `wg evaluate run/show` observes an already-terminal generation for learning. It cannot complete, fail, reopen, retry, or publish the source.
+- **External outcome:** `wg evaluate record` is outcome-scoped and cannot accept a candidate.
+- **Legacy cutover:** `wg migrate evaluation-cutover --dry-run`, then the apply command, preserves exact graph/history bytes and marks obsolete synthetic rows inert. It releases only supported stale blockers; ambiguous sources remain fail-closed.
+
+## Completion review and scored outcome
 
 Ordinary `wg done` records review activity on the exact source attempt and
 completes from immutable candidate/publication receipts. It does not create
 `evaluate-*` or `.flip-*` graph work, and a current source failure terminalizes
 without `FailedPendingEval`.
 
-A separate explicit `wg evaluate run <done-task>` re-verifies that receipt-backed
-terminal observation and current publication, resolves the exact configured Pi
-evaluator route/reasoning, makes one bounded no-tools call, and writes one
-create-once Agency score. `--dry-run` performs the eligibility/evidence check
+`agency.auto_evaluate` names a compatibility candidate-observation policy; it does not invoke the post-terminal scorer. A separate explicit `wg evaluate run <done-task>` re-verifies that receipt-backed terminal observation and current publication, resolves the exact configured Pi evaluator route/reasoning, makes one bounded no-tools call, and writes one create-once Agency score. `--dry-run` performs the eligibility/evidence check
 without mutation. The evaluator can neither fail/reopen/retry/publish the source
 nor create graph nodes. `wg evaluate record` remains external/manual score
 ingestion; `wg evaluate show` exposes both legacy and rich receipt-bound records.
@@ -363,9 +368,9 @@ Here is what happens, end to end, when a human operator types `wg service start 
 
 The daemon forks into the background. It opens a Unix socket, reads `config.toml` for coordinator settings, and writes its PID to the state file. Its first tick runs immediately.
 
-The tick reaps zombies (there are none yet), checks the agent registry, retires only safe evidence-free legacy lifecycle rows, and finds ordinary ready source tasks. It creates no assignment or evaluator prerequisites.
+The tick reaps zombies (there are none yet), checks the agent registry, reconciles retired compatibility rows and receipt-backed terminal projections, then finds ordinary ready source tasks. It creates no assignment or evaluator prerequisites.
 
-Suppose three source tasks are ready. The coordinator spawns three agents (five slots available). Each spawn follows the dispatch cycle: resolve handler and model, build context, render the prompt, claim the task, fork the process, and register the agent. Operators may bind agency identities beforehand with `wg assign` or `wg assign --auto`; that explicit command does not add a graph blocker.
+Suppose three source tasks are ready and two have no explicit identity. If automatic assignment is enabled, bounded selection records a composition intent (or uncomposed fallback) before claim; reservation binds it to the real attempt receipt. Operators may instead set intent with `wg assign <task> <agent>` or `wg assign <task> --auto`. No path adds a graph blocker or consumes a worker slot.
 
 Work proceeds. Agents call `wg log` to record progress, `wg artifact` to register output files, and `wg done` when finished. Each `wg done` triggers another tick. Completed tasks unblock their dependents. The coordinator spawns new agents as slots open. If an agent crashes, the next tick detects the dead PID, triages the output, and either marks the task done, injects recovery context and reopens it, or restarts it cleanly.
 

@@ -1,0 +1,55 @@
+restore-main-ci-canary candidate validation transcript
+validated_source_revision=00dde819 (subsequent commits add validation evidence only)
+pinned_toolchain=1.96.0
+
+$ cargo test --locked --bin wg commands::completion_canary_tests
+exit_code=0
+capture_sha256=83536891acddb12507d45dd592a885cab5b3f4331c05a011007dfd9cd636a52c
+running 2 tests
+test commands::completion_canary_tests::real_pi_reviews_one_isolated_report_without_fallback ... ignored, opt-in real Pi adapter smoke; run explicitly with PI_PROVIDER and PI_MODEL
+test commands::completion_canary_tests::ten_concurrent_attempts_use_one_immutable_review_and_done_authority ... ok
+test result: ok. 1 passed; 0 failed; 1 ignored; 0 measured; 3835 filtered out; finished in 0.47s
+
+$ cargo test --locked --bin wg commands::profile_cmd::tests::test_project_profile
+exit_code=0
+capture_sha256=ebb7d758c54ecc96edbc8721c23e8fb65ed130681a4f4586d1a519be3bbc69cc
+running 4 tests
+test commands::profile_cmd::tests::test_project_profile_selection_rejects_invalid_names ... ok
+test commands::profile_cmd::tests::test_project_profile_names_are_literal_not_model_qualified_targets ... ok
+test commands::profile_cmd::tests::test_project_profile_selection_rejects_explicit_non_pi_routes ... ok
+test commands::profile_cmd::tests::test_project_profile_materialization_is_local_and_closed ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 3833 filtered out; finished in 0.01s
+
+$ cargo test --locked --test integration_project_local_pi_cli
+exit_code=0
+capture_sha256=c477a60a6bbd7c4a4392c2fd35a742db3006bcbda6188220ae72ecba2767fd40
+running 6 tests
+test setup_defaults_to_authoritative_project_file_without_machine_state ... ok
+test project_default_route_setter_updates_the_effective_closed_projection ... ok
+test profile_select_rejects_non_pi_qualified_and_invalid_inputs_without_writing ... ok
+test profile_select_and_deprecated_use_preserve_project_guardrails ... ok
+test explicit_global_non_routing_write_warns_and_routing_rewrites_are_refused ... ok
+test interactive_setup_announces_project_default_before_first_prompt ... ok
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.27s
+
+$ cargo fmt
+exit_code=0
+capture_sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+output_bytes=0
+
+$ cargo fmt --check
+exit_code=0
+capture_sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+output_bytes=0
+
+$ cargo clippy
+exit_code=0
+capture_sha256=7140ac33bf2cf2c31bffe668c47cf30d17bb22a4b4c111eb17658115d3283cdc
+warning: `worksgood` (bin "wg") generated 267 warnings (run `cargo clippy --fix --bin "wg" -p worksgood -- ` to apply 56 suggestions)
+Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 15s
+
+$ git diff --check
+exit_code=0
+output_bytes=0
+
+No global binary install, service restart, or origin/main push was performed.

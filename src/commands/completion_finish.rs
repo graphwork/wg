@@ -8,7 +8,8 @@ use anyhow::{Context, Result, bail};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use worksgood::completion_manifest::{EvidenceRef, OutputRef};
+use worksgood::completion_manifest::{EvidenceRef, OutputRef, ReviewResolver};
+use worksgood::completion_task::{load_review_evidence, load_submission_bytes};
 use worksgood::completion_validation::{
     BASELINE_VALIDATION_EVIDENCE_KIND, CONFIGURED_VALIDATION_EVIDENCE_KIND,
     DETERMINISTIC_VALIDATION_MEDIA_TYPE, DeterministicValidationEvidence, ValidationPurpose,
@@ -66,24 +67,51 @@ pub fn run(dir: &Path, id: &str, integration_ref: &str) -> Result<()> {
         } else {
             true
         };
-        let current_activity = task
-            .completion_review_activity
-            .iter()
-            .filter(|activity| {
-                activity.manifest_digest == candidate.manifest.content_digest
-                    && match (&candidate.review_binding, &activity.binding) {
-                        (Some(candidate), Some(activity)) => candidate == activity,
-                        (None, None) => true,
-                        _ => false,
-                    }
-            })
-            .collect::<Vec<_>>();
-        let strict_passed = current_activity.iter().any(|activity| {
-            activity.reviewer_kind == worksgood::completion_review::ReviewerKind::Flip
-                && activity.verdict == worksgood::simple_land::ReviewVerdict::Pass
-        }) && current_activity.iter().any(|activity| {
-            activity.reviewer_kind == worksgood::completion_review::ReviewerKind::Eval
-                && activity.verdict == worksgood::simple_land::ReviewVerdict::Pass
+        // The mutable activity projection is display-only. Lost-response
+        // recovery must reload the selected candidate plus its immutable FLIP
+        // chain before it can skip directly to landing/Done.
+        let verified_review = (|| -> Result<_> {
+            let completion_store = super::completion_submit::store(dir)?;
+            let (submission, manifest, requirements, summary) =
+                load_submission_bytes(&completion_store, &task)?;
+            let resolver = ReviewResolver::new(&completion_store);
+            let resolved = if task.completion_contract == CompletionContract::Land {
+                resolver.repository(&cwd).resolve_submission(
+                    &submission.manifest_ref,
+                    &requirements,
+                    &summary,
+                    &candidate.dependency_outputs,
+                )?
+            } else {
+                resolver.resolve_submission(
+                    &submission.manifest_ref,
+                    &requirements,
+                    &summary,
+                    &candidate.dependency_outputs,
+                )?
+            };
+            load_review_evidence(&completion_store, &submission, &manifest, &resolved)
+                .map_err(Into::into)
+        })()
+        .ok();
+        let strict_passed = verified_review.as_ref().is_some_and(|evidence| {
+            evidence.flip.verdict == worksgood::simple_land::ReviewVerdict::Pass
+                && evidence
+                    .eval
+                    .as_ref()
+                    .is_some_and(|eval| eval.verdict == worksgood::simple_land::ReviewVerdict::Pass)
+        });
+        let semantic_rejection = verified_review.as_ref().is_some_and(|evidence| {
+            evidence.flip.verdict == worksgood::simple_land::ReviewVerdict::Reject
+                || evidence.eval.as_ref().is_some_and(|eval| {
+                    eval.verdict == worksgood::simple_land::ReviewVerdict::Reject
+                })
+        });
+        let incomplete_review = verified_review.as_ref().is_none_or(|evidence| {
+            evidence.flip.verdict == worksgood::simple_land::ReviewVerdict::IncompleteEvidence
+                || evidence.eval.as_ref().is_some_and(|eval| {
+                    eval.verdict == worksgood::simple_land::ReviewVerdict::IncompleteEvidence
+                })
         });
         let candidate_matches_source_tuple = candidate.requirements.content_digest
             == worksgood::completion_task::requirements_digest(&task)?
@@ -98,8 +126,15 @@ pub fn run(dir: &Path, id: &str, integration_ref: &str) -> Result<()> {
                             .as_ref()
                             .map(|attempt| attempt.id.as_str())
             });
+        if candidate_matches_head && candidate_matches_source_tuple && semantic_rejection {
+            bail!(
+                "current completion candidate was semantically rejected; publication and Done are refused. The same source attempt/worktree/session is retained: repair the candidate bytes, rerun the declared validation, then run `wg done {id}` again"
+            );
+        }
         if candidate_matches_head
             && candidate_matches_source_tuple
+            && !semantic_rejection
+            && !incomplete_review
             && (!config.agency.completion_review_strict || strict_passed)
         {
             if task.completion_contract == CompletionContract::Land
@@ -107,45 +142,40 @@ pub fn run(dir: &Path, id: &str, integration_ref: &str) -> Result<()> {
                     != Some(worksgood::graph::CompletionDisposition::Landed)
             {
                 super::completion_land::run_at(dir, id, integration_ref, Some(&cwd))?;
+                if load_graph(dir.join("graph.jsonl"))?
+                    .get_task(id)
+                    .is_some_and(|task| task.status == worksgood::graph::Status::Waiting)
+                {
+                    return Ok(());
+                }
             }
             return super::completion_done::run(dir, id, integration_ref);
         }
 
-        let strict_rejections = task
-            .completion_review_activity
-            .iter()
-            .filter(|activity| {
-                matches!(
-                    activity.verdict,
-                    worksgood::simple_land::ReviewVerdict::Reject
-                        | worksgood::simple_land::ReviewVerdict::Unavailable
-                        | worksgood::simple_land::ReviewVerdict::IncompleteEvidence
-                )
-            })
-            .count() as u32;
-        if strict_rejections >= config.agency.gate_max_attempts.max(1) {
-            super::wait::run(
+        // A repeated `wg done` for an exact rejected candidate must not rerun
+        // deterministic validation or another model call once this source
+        // attempt has consumed its semantic-candidate budget. Superseded
+        // source attempts do not count, and unavailable FLIP/Eval receipts do
+        // not block their candidate-scoped infrastructure retry.
+        if candidate_matches_head
+            && candidate_matches_source_tuple
+            && config.agency.completion_review_strict
+            && let Some(iterations) =
+                super::completion_submit::rejected_current_candidate_at_source_budget(
+                    dir,
+                    &task,
+                    candidate,
+                    config.agency.gate_max_attempts.max(1),
+                )?
+        {
+            super::completion_submit::park_for_review_budget(
                 dir,
                 id,
-                "human-input",
-                Some("Needs review: strict model-review attempt limit reached"),
+                iterations,
+                config.agency.gate_max_attempts.max(1),
             )?;
-            worksgood::parser::modify_graph(dir.join("graph.jsonl"), |graph| {
-                let Some(task) = graph.get_task_mut(id) else {
-                    return false;
-                };
-                task.assigned = None;
-                task.log.push(worksgood::graph::LogEntry {
-                    timestamp: chrono::Utc::now().to_rfc3339(),
-                    actor: Some("completion-review".to_string()),
-                    user: None,
-                    message: "Needs review: bounded strict model-review attempts exhausted; source worker released"
-                        .to_string(),
-                });
-                true
-            })?;
             bail!(
-                "Needs review: strict model-review attempt limit ({}) reached; worker released for operator accept/reject",
+                "Needs review: strict model-review attempt limit ({}) reached; no further validation or model call was made",
                 config.agency.gate_max_attempts.max(1)
             );
         }
@@ -246,7 +276,22 @@ pub fn run(dir: &Path, id: &str, integration_ref: &str) -> Result<()> {
         Some(&cwd),
     )?;
     let nonce = uuid::Uuid::now_v7();
-    let temp = std::env::temp_dir();
+    let configured_temp = std::env::temp_dir();
+    let project_root = dir
+        .parent()
+        .context("workgraph directory has no project root")?;
+    // Project-local build scratch may intentionally place TMPDIR under .wg.
+    // Completion submission correctly refuses control-plane-sourced manifests,
+    // so keep these small transient handoff files outside the repository rather
+    // than weakening that provenance boundary.
+    let temp = if configured_temp.starts_with(project_root) {
+        project_root
+            .parent()
+            .context("project-local TMPDIR has no safe parent")?
+            .to_path_buf()
+    } else {
+        configured_temp
+    };
     let summary_path = temp.join(format!("wg-completion-{nonce}.summary.txt"));
     let manifest_path = temp.join(format!("wg-completion-{nonce}.manifest.json"));
     fs::write(&summary_path, summary.as_bytes())?;
@@ -256,13 +301,27 @@ pub fn run(dir: &Path, id: &str, integration_ref: &str) -> Result<()> {
     };
 
     super::completion_submit::run(dir, id, &manifest_path, &summary_path)?;
+    if load_graph(dir.join("graph.jsonl"))?
+        .get_task(id)
+        .is_some_and(|task| {
+            task.status == worksgood::graph::Status::Waiting && task.completion_blocker.is_some()
+        })
+    {
+        return Ok(());
+    }
     if task.completion_contract == CompletionContract::Land {
         super::completion_land::run_at(dir, id, integration_ref, Some(&cwd))?;
+        if load_graph(dir.join("graph.jsonl"))?
+            .get_task(id)
+            .is_some_and(|task| task.status == worksgood::graph::Status::Waiting)
+        {
+            return Ok(());
+        }
     }
     super::completion_done::run(dir, id, integration_ref)
 }
 
-fn store_validation_evidence(
+pub(crate) fn store_validation_evidence(
     dir: &Path,
     captured: &DeterministicValidationEvidence,
     evidence_kind: &str,
@@ -280,7 +339,7 @@ fn store_validation_evidence(
     Ok(evidence_ref(artifact, evidence_kind))
 }
 
-fn record_validation_result(
+pub(crate) fn record_validation_result(
     dir: &Path,
     expected: &worksgood::graph::Task,
     captured: &DeterministicValidationEvidence,

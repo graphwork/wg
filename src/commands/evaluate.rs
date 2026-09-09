@@ -13,6 +13,9 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::Path;
+use worksgood::adaptive_agency::{
+    AdaptiveStore, OutcomeAssessmentInputV1, RouteSnapshot, UsageStateV1, UsageV1,
+};
 use worksgood::agency::{
     self, Evaluation, EvaluationTerminalSource, ScoredEvaluationEnvelope,
     load_all_scored_evaluations, record_evaluation_with_inference,
@@ -487,6 +490,148 @@ fn configured_evaluator(
     Ok((config, route))
 }
 
+fn project_adaptive_outcome(
+    dir: &Path,
+    envelope: &ScoredEvaluationEnvelope,
+    evidence: &VerifiedTerminalScoringEvidence,
+) -> Result<()> {
+    let Some(source) = envelope.source_terminal_observation.as_ref() else {
+        return Ok(());
+    };
+    super::adaptive_agency::project_terminal_episode(dir, &envelope.evaluation.task_id)?;
+    let adaptive = AdaptiveStore::open(dir)?;
+    let episode = adaptive
+        .reader()
+        .episodes()?
+        .into_iter()
+        .find(|episode| {
+            episode.task_id == envelope.evaluation.task_id
+                && episode.generation == source.generation
+                && episode.source_attempt_id.as_deref() == Some(source.attempt_id.as_str())
+        })
+        .context("adaptive terminal episode is missing after projection")?;
+    let evaluator_route = envelope
+        .evaluator_route
+        .as_deref()
+        .context("receipt-backed evaluation has no evaluator route")?;
+    let route = RouteSnapshot::exact(
+        evaluator_route,
+        envelope.evaluator_reasoning.clone(),
+        "outcome-scorer",
+        env!("CARGO_PKG_VERSION"),
+        0,
+    )?;
+    let usage = envelope.evaluator_usage.as_ref().map(|usage| UsageV1 {
+        input_tokens: usage.input_tokens,
+        output_tokens: usage.output_tokens,
+        cache_read_tokens: usage.cache_read_input_tokens,
+        cache_write_tokens: usage.cache_creation_input_tokens,
+        total_tokens: usage
+            .input_tokens
+            .saturating_add(usage.output_tokens)
+            .saturating_add(usage.cache_read_input_tokens)
+            .saturating_add(usage.cache_creation_input_tokens),
+        provider_cost: Some(usage.cost_usd),
+        currency: "USD".to_string(),
+        source: "provider-reported".to_string(),
+    });
+    let reader = adaptive.reader();
+    let assignment = match &episode.assignment_provenance {
+        worksgood::adaptive_agency::AssignmentProvenanceV1::BoundReceipt(id) => reader
+            .assignment_receipts()?
+            .into_iter()
+            .find(|receipt| receipt.receipt_id == *id),
+        _ => None,
+    };
+    let calibrated_reviewer_principals = reader
+        .review_attempts()?
+        .into_iter()
+        .filter(|attempt| {
+            attempt.binding.source.task_id == episode.task_id
+                && attempt.binding.source.generation == episode.generation
+                && episode.source_attempt_id.as_deref()
+                    == Some(attempt.binding.source.source_attempt_id.as_str())
+        })
+        .map(|attempt| format!("outcome-scorer:{}", attempt.route.exact_route))
+        .collect::<Vec<_>>();
+    let effective_config = worksgood::dispatch::effective_config_owned(
+        evidence.task.profile.as_deref(),
+        Config::load_merged(dir)?,
+    );
+    let evolver_principal = if effective_config.models.evolver.is_some() {
+        effective_config
+            .resolve_pi_route_for_role(DispatchRole::Evolver)
+            .ok()
+            .map(|route| format!("outcome-scorer:{}", route.route))
+    } else {
+        // A generic/default model fallback is not evidence that this route
+        // authored an evolver proposal. Only an explicit evolver route or
+        // configured evolver principal participates in the disjointness test.
+        effective_config.agency.evolver_agent.clone()
+    };
+    let assigner_principal = assignment.as_ref().map(|receipt| {
+        receipt
+            .selector
+            .exact_route
+            .as_ref()
+            .map(|route| format!("outcome-scorer:{route}"))
+            .unwrap_or_else(|| receipt.selector.principal.clone())
+    });
+    adaptive
+        .learning_projector()
+        .record_assessment(OutcomeAssessmentInputV1 {
+            episode_id: episode.episode_id,
+            scorer_policy_id: SCORED_EVALUATION_POLICY.to_string(),
+            scorer_principal: format!("outcome-scorer:{evaluator_route}"),
+            route,
+            evidence_digest: envelope.evidence_digest.clone().unwrap_or_default(),
+            score: envelope.evaluation.score,
+            dimensions: envelope.evaluation.dimensions.clone().into_iter().collect(),
+            notes_digest: format!(
+                "b3:{}",
+                blake3::hash(envelope.evaluation.notes.as_bytes()).to_hex()
+            ),
+            usage: usage.clone(),
+            usage_state: if usage.is_some() {
+                UsageStateV1::Reported
+            } else {
+                UsageStateV1::Unavailable("provider usage unavailable".to_string())
+            },
+            source_principal: evidence.observation.agency_attribution.agent_id.clone(),
+            assigner_principal,
+            evolver_principal,
+            calibrated_reviewer_principals,
+            source_route_cohort: evidence
+                .observation
+                .execution
+                .route
+                .clone()
+                .unwrap_or_else(|| "unknown-source-route".to_string()),
+            scorer_route_cohort: evaluator_route.to_string(),
+            fresh_context: true,
+            read_only_capabilities: true,
+            created_at: envelope.evaluation.timestamp.clone(),
+        })?;
+    Ok(())
+}
+
+fn scored_outcome_value(envelope: &ScoredEvaluationEnvelope) -> Result<Value> {
+    let mut value = serde_json::to_value(envelope)?;
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "operation_kind".to_string(),
+            Value::String("scored_outcome_evaluation".to_string()),
+        );
+        if envelope.evaluation.source != "llm:terminal-observation" {
+            object.insert(
+                "adjudication_scope".to_string(),
+                Value::String("outcome".to_string()),
+            );
+        }
+    }
+    Ok(value)
+}
+
 fn output_run_result(
     envelope: &ScoredEvaluationEnvelope,
     path: &Path,
@@ -497,15 +642,19 @@ fn output_run_result(
         println!(
             "{}",
             serde_json::to_string_pretty(&json!({
+                "operation_kind": "scored_outcome_evaluation",
                 "created": created,
                 "idempotent_replay": !created,
                 "path": path,
-                "evaluation": envelope,
+                "evaluation": scored_outcome_value(envelope)?,
             }))?
         );
     } else {
         println!(
-            "=== Scored Evaluation {} ===",
+            "Operation kind: scored_outcome_evaluation (post-terminal; no lifecycle authority)"
+        );
+        println!(
+            "=== Scored Outcome {} ===",
             if created {
                 "Recorded"
             } else {
@@ -591,6 +740,7 @@ pub fn run(dir: &Path, task_id: &str, dry_run: bool, json_output: bool) -> Resul
             println!(
                 "{}",
                 serde_json::to_string_pretty(&json!({
+                    "operation_kind": "scored_outcome_evaluation",
                     "eligible": true,
                     "mutated": false,
                     "task_id": task_id,
@@ -610,7 +760,10 @@ pub fn run(dir: &Path, task_id: &str, dry_run: bool, json_output: bool) -> Resul
                 }))?
             );
         } else {
-            println!("=== Dry Run: scored evaluation ===");
+            println!(
+                "Operation kind: scored_outcome_evaluation (post-terminal; no lifecycle authority)"
+            );
+            println!("=== Dry Run: scored outcome ===");
             println!("Eligible:              yes (receipt/publication re-verified)");
             println!("Task:                  {}", task_id);
             println!("Evaluation ID:         {}", id);
@@ -650,6 +803,8 @@ pub fn run(dir: &Path, task_id: &str, dry_run: bool, json_output: bool) -> Resul
         // performance projections, so every replay runs canonical repair.
         let recorded = record_scored_evaluation_exactly_once(&existing, &dir.join("agency"))
             .context("failed to reconcile immutable scored Agency evaluation")?;
+        project_adaptive_outcome(dir, &existing, &evidence)
+            .context("failed to reconcile delayed adaptive reward")?;
         return output_run_result(&existing, &recorded.path, recorded.created, json_output);
     }
 
@@ -715,7 +870,7 @@ pub fn run(dir: &Path, task_id: &str, dry_run: bool, json_output: bool) -> Resul
         evaluator_usage: call.token_usage,
         evidence_digest: Some(evidence_digest),
         source_terminal_observation: Some(EvaluationTerminalSource {
-            observation_id: evidence.observation.observation_id,
+            observation_id: evidence.observation.observation_id.clone(),
             observation_policy: source.policy.clone(),
             generation: source.generation,
             attempt_id: source.attempt_id.clone(),
@@ -725,6 +880,8 @@ pub fn run(dir: &Path, task_id: &str, dry_run: bool, json_output: bool) -> Resul
     };
     let recorded = record_scored_evaluation_exactly_once(&envelope, &dir.join("agency"))
         .context("failed to persist immutable scored Agency evaluation")?;
+    project_adaptive_outcome(dir, &envelope, &evidence)
+        .context("failed to project delayed adaptive reward/evolver input")?;
     output_run_result(&envelope, &recorded.path, recorded.created, json_output)
 }
 
@@ -816,6 +973,8 @@ pub fn run_record(
         println!(
             "{}",
             serde_json::to_string_pretty(&json!({
+                "operation_kind": "external_outcome_evaluation",
+                "adjudication_scope": "outcome",
                 "task_id": task_id,
                 "evaluation_id": evaluation.id,
                 "score": evaluation.score,
@@ -825,7 +984,9 @@ pub fn run_record(
             }))?
         );
     } else {
-        println!("Recorded external evaluation for task '{task_id}'");
+        println!("Operation kind: external_outcome_evaluation");
+        println!("Adjudication scope: outcome (cannot accept or transition a candidate)");
+        println!("Recorded external outcome score for task '{task_id}'");
         println!("  Score:  {:.3}", evaluation.score);
         println!("  Source: {}", evaluation.source);
         println!("  Saved:  {}", path.display());
@@ -875,8 +1036,16 @@ pub fn run_show(
     }
 
     if json_output {
+        let evaluations = evaluations
+            .iter()
+            .map(scored_outcome_value)
+            .collect::<Result<Vec<_>>>()?;
         let output = if let Some(task) = task_detail {
-            json!({"task_id": task, "evaluations": evaluations})
+            json!({
+                "operation_kind": "scored_outcome_evaluation_history",
+                "task_id": task,
+                "evaluations": evaluations,
+            })
         } else {
             serde_json::to_value(&evaluations)?
         };
@@ -893,10 +1062,15 @@ pub fn run_show(
     for envelope in &evaluations {
         let evaluation = &envelope.evaluation;
         println!(
-            "{}  score={:.3} source={} agent={} at={}",
+            "{}  operation=scored_outcome_evaluation score={:.3} source={}{} agent={} at={}",
             evaluation.task_id,
             evaluation.score,
             evaluation.source,
+            if evaluation.source == "llm:terminal-observation" {
+                " "
+            } else {
+                " adjudication_scope=outcome "
+            },
             if evaluation.agent_id.is_empty() {
                 "-"
             } else {

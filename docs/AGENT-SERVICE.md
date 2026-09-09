@@ -495,20 +495,20 @@ model = "claude:opus"    # default model (handler is implied from prefix)
 heartbeat_timeout = 5    # minutes before stale (default: 5)
 
 [agency]
-auto_evaluate = false    # source-bound completion review/observation
-auto_assign = false      # inert compatibility key; no synthetic assignment tasks
-auto_place = false       # placement policy used by explicit assignment (see AGENT-GUIDE.md §1b)
+auto_evaluate = false    # candidate-observation policy; not post-terminal scoring
+auto_assign = false      # bounded pre-claim selection; receipt on the real attempt
+auto_place = false       # separate dependency-placement policy (see AGENT-GUIDE.md §1b)
 auto_create = false      # auto-invoke creator agent for primitive store expansion
 auto_create_threshold = 20  # completed tasks before next creator invocation (default: 20)
 auto_triage = false      # triage dead agents with LLM before respawning
 triage_model = "haiku"   # model for triage (default: haiku)
 triage_timeout = 30      # seconds before triage call times out (default: 30)
 triage_max_log_bytes = 50000  # max bytes of agent output to send to triage (default: 50000)
-assigner_model = "haiku" # model for assigner agents (default via wg agency init)
-evaluator_model = "haiku" # model for evaluator agents (default via wg agency init)
+assigner_model = "haiku" # compatibility selector-route metadata
+evaluator_model = "haiku" # compatibility route; scored outcomes use [models.evaluator]
 evolver_model = "opus"   # model for evolver agents
-assigner_agent = ""      # content-hash of assigner agent identity
-evaluator_agent = ""     # content-hash of evaluator agent identity
+assigner_agent = ""      # historical selector principal metadata
+evaluator_agent = ""     # historical evaluator principal metadata
 evolver_agent = ""       # content-hash of evolver agent identity
 creator_agent = ""       # content-hash of creator agent identity
 creator_model = ""       # model for creator agents

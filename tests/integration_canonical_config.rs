@@ -79,7 +79,7 @@ fn defaults_no_user_config_are_graph_only_and_unselected() {
     assert!(!wg_dir.join("config.toml").exists());
 
     let out = wg_ok(&wg_dir, &home, &["config", "--merged"]);
-    assert!(out.contains("owner = \"Pi\""), "got:\n{out}");
+    assert!(out.contains("recommended = \"Pi\""), "got:\n{out}");
     assert!(
         out.contains("INVALID"),
         "unselected roles must be visible: {out}"

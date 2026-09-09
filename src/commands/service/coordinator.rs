@@ -2,6 +2,7 @@
 
 use anyhow::{Context, Result};
 use chrono::Utc;
+use std::io::Write;
 use std::path::Path;
 use worksgood::agency;
 use worksgood::agency::evolver::{self, EvolutionTrigger, EvolverState};
@@ -197,9 +198,34 @@ fn is_daemon_managed(task: &worksgood::graph::Task) -> bool {
 }
 
 fn is_retired_agency_task(task_id: &str) -> bool {
-    task_id.starts_with(".assign-")
-        || task_id.starts_with(".flip-")
-        || task_id.starts_with(".evaluate-")
+    worksgood::evaluation_cutover::is_retired_agency_task_id(task_id)
+}
+
+/// Emit at most one dispatcher notice for each retained row. The marker lives
+/// outside graph/history bytes so observing an old graph cannot rewrite the
+/// evidence an operator is about to back up.
+fn note_retired_agency_row_once(dir: &Path, task_id: &str) {
+    let notices = dir
+        .join(worksgood::evaluation_cutover::EVALUATION_CUTOVER_DIR)
+        .join("dispatcher-notices");
+    if std::fs::create_dir_all(&notices).is_err() {
+        return;
+    }
+    let name = blake3::hash(task_id.as_bytes()).to_hex().to_string();
+    let path = notices.join(format!("{name}.notice"));
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(path)
+    else {
+        return;
+    };
+    let message = format!(
+        "retired synthetic agency row {task_id} was excluded before priority ordering; run `wg migrate evaluation-cutover`\n"
+    );
+    let _ = file.write_all(message.as_bytes());
+    let _ = file.sync_all();
+    eprintln!("[dispatcher] {}", message.trim_end());
 }
 
 fn active_build_heavy_count(dir: &Path, graph: &worksgood::graph::WorkGraph) -> usize {
@@ -244,6 +270,14 @@ fn check_ready_or_return(
     alive_count: usize,
     dir: &Path,
 ) -> Option<TickResult> {
+    // This check precedes both the no-ready early return and every priority
+    // calculation, so an otherwise-empty legacy graph still gets exactly one
+    // actionable notice rather than an endless promote/list/ignore loop.
+    for task in graph.tasks().filter(|task| {
+        is_retired_agency_task(&task.id) && matches!(task.status, Status::Open | Status::Incomplete)
+    }) {
+        note_retired_agency_row_once(dir, &task.id);
+    }
     let cycle_analysis = graph.compute_cycle_analysis();
     let ready = ready_tasks_with_peers_cycle_aware(graph, dir, &cycle_analysis);
     // Only count tasks that are spawnable (exclude daemon-managed loop tasks)
@@ -333,6 +367,18 @@ fn evaluate_condition_with_message(
                 false
             }
         }
+        WaitCondition::LandingTurn {
+            integration_ref,
+            ticket_id,
+        } => worksgood::landing_turn::ticket_ready(dir, integration_ref, ticket_id).unwrap_or_else(
+            |error| {
+                eprintln!(
+                    "[dispatcher] landing-turn readiness failed for task '{}': {error:#}",
+                    task_id
+                );
+                false
+            },
+        ),
     }
 }
 
@@ -518,6 +564,15 @@ fn build_resume_delta(graph: &worksgood::graph::WorkGraph, task: &Task, dir: &Pa
 
         // Show status of referenced tasks
         for cond in conditions {
+            if let WaitCondition::LandingTurn {
+                integration_ref,
+                ticket_id,
+            } = cond
+            {
+                delta.push_str(&format!(
+                    "- Landing turn {ticket_id} is the FIFO head for {integration_ref}. Resume this exact session/worktree, request the turn to acquire its renewable lease, synchronize the current target here, resolve conflicts yourself, rerun target-dependent validation, and submit a renewed candidate if bytes changed. Use `wg landing-turn renew` with changed progress tokens during long work. Never edit another worker's worktree.\n"
+                ));
+            }
             if let WaitCondition::TaskStatus { task_id, status } = cond
                 && let Some(dep) = graph.get_task(task_id)
             {
@@ -1072,6 +1127,7 @@ fn build_separate_verify_tasks(
             completion_candidate: None,
             completion_disposition: None,
             completion_receipt: None,
+            completion_blocker: None,
             tags: vec!["verification".to_string(), "separate-verify".to_string()],
             skills: vec![],
             inputs: vec![],
@@ -1302,6 +1358,7 @@ fn build_auto_evolve_task(
         completion_candidate: None,
         completion_disposition: None,
         completion_receipt: None,
+        completion_blocker: None,
         tags: vec!["evolution".to_string(), "agency".to_string()],
         skills: vec![],
         inputs: vec![],
@@ -1535,6 +1592,7 @@ fn build_auto_create_task(
         completion_candidate: None,
         completion_disposition: None,
         completion_receipt: None,
+        completion_blocker: None,
         tags: vec!["creation".to_string(), "agency".to_string()],
         skills: vec![],
         inputs: vec![],
@@ -1670,6 +1728,9 @@ fn sort_tasks_by_priority_with_features<'a>(
 
     let mut task_priorities: Vec<_> = tasks
         .into_iter()
+        // Defensive boundary for callers that bypass the ordinary ready-set
+        // query: evidence-only rows never reach promotion or ordering.
+        .filter(|task| !is_retired_agency_task(&task.id))
         .map(|task| {
             let mut effective_priority = task.priority;
 
@@ -1748,11 +1809,12 @@ fn compute_priority_inheritance(
 ) -> Priority {
     let mut highest_inherited = task.priority;
 
-    for dependent_task in graph.tasks() {
-        if dependent_task.after.contains(&task.id) {
-            if dependent_task.priority > highest_inherited {
-                highest_inherited = dependent_task.priority;
-            }
+    for dependent_task in graph
+        .tasks()
+        .filter(|dependent| !is_retired_agency_task(&dependent.id))
+    {
+        if dependent_task.after.contains(&task.id) && dependent_task.priority > highest_inherited {
+            highest_inherited = dependent_task.priority;
         }
     }
 
@@ -2057,6 +2119,13 @@ fn spawn_agents_for_ready_tasks(
 ) -> SpawnSummary {
     let graph_file = graph_path(dir);
     warn_released_advisory_quality_passes(&graph_file, graph);
+    // Diagnose retained rows before readiness/ranking, then keep them wholly
+    // outside starvation promotion, priority inheritance, and dispatch order.
+    for task in graph.tasks().filter(|task| {
+        is_retired_agency_task(&task.id) && matches!(task.status, Status::Open | Status::Incomplete)
+    }) {
+        note_retired_agency_row_once(dir, &task.id);
+    }
     let cycle_analysis = graph.compute_cycle_analysis();
     let ready_tasks = ready_tasks_with_peers_cycle_aware(graph, dir, &cycle_analysis);
     let final_ready = sort_tasks_by_priority_with_features(graph, ready_tasks, config);
@@ -2083,11 +2152,9 @@ fn spawn_agents_for_ready_tasks(
         if task.assigned.is_some() || is_daemon_managed(task) {
             continue;
         }
+        // Readiness filters retired rows before priority ordering. Keep this
+        // silent defensive check for callers that construct a custom ready set.
         if is_retired_agency_task(&task.id) {
-            eprintln!(
-                "[dispatcher] Ignoring retired synthetic agency task '{}'; migrate its source task",
-                task.id
-            );
             continue;
         }
 
@@ -2106,10 +2173,19 @@ fn spawn_agents_for_ready_tasks(
         }
 
         let build_class = worksgood::disk_sentinel::classify_task(task);
-        let projected = worksgood::disk_sentinel::build_admission(
+        // An explicit task.exec is dispatched by the shell handler, so the
+        // cheap coordinator gate can use the same exact Cargo namespace as
+        // the locked spawn gate. Interactive tasks remain unknown/isolated.
+        let controlled_cargo_command = task
+            .exec
+            .as_deref()
+            .and_then(worksgood::target_cache::controlled_cargo_command);
+        let projected = worksgood::disk_sentinel::build_admission_for_source(
             dir,
             &config.coordinator.resource_management,
             build_class,
+            dir.parent().unwrap_or(dir),
+            controlled_cargo_command.as_deref(),
         );
         let projection_reason;
         let disk_reason = if !projected.allowed {
@@ -2488,6 +2564,41 @@ pub fn coordinator_tick(
     // be blocked by agent capacity limits or empty task queues. The early returns
     // below (max agents, no ready tasks) would skip chat processing otherwise.
     process_chat_inbox(dir);
+
+    // Phase 0.4: a clean attached checkout is authoritative evidence that a
+    // typed LandingPending finalization may be retried. This resumes only the
+    // exact preserved candidate; it never dispatches source work or review.
+    if let Ok(graph) = worksgood::parser::load_graph(graph_path.clone()) {
+        let pending = graph
+            .tasks()
+            .filter(|task| {
+                task.status == Status::Waiting
+                    && task.completion_blocker.as_ref().is_some_and(|blocker| {
+                        blocker.kind == worksgood::graph::CompletionBlockerKind::LandingPending
+                    })
+            })
+            .map(|task| task.id.clone())
+            .collect::<Vec<_>>();
+        for task_id in pending {
+            match crate::commands::completion_land::pending_checkout_is_clean(dir, &task_id) {
+                Ok(true) => {
+                    if let Err(error) =
+                        crate::commands::resume::resume_landing_finalization(dir, &task_id)
+                    {
+                        eprintln!(
+                            "[completion-finalizer] '{}' remains LandingPending: {error:#}",
+                            task_id
+                        );
+                    }
+                }
+                Ok(false) => {}
+                Err(error) => eprintln!(
+                    "[completion-finalizer] ignored stale LandingPending '{}': {error:#}",
+                    task_id
+                ),
+            }
+        }
+    }
 
     // Phase 0.5: dedicated bounded evaluation. This precedes ordinary worker
     // cleanup/admission and deliberately does not consume an AgentRegistry
@@ -4352,6 +4463,51 @@ mod tests {
         }
         assert!(!is_retired_agency_task("work"));
         assert!(!is_retired_agency_task(".verify-work"));
+    }
+
+    #[test]
+    fn retired_agency_diagnostic_is_once_per_row() {
+        let dir = tempdir().unwrap();
+        note_retired_agency_row_once(dir.path(), ".evaluate-work");
+        note_retired_agency_row_once(dir.path(), ".evaluate-work");
+        note_retired_agency_row_once(dir.path(), ".flip-work");
+        let notices = dir
+            .path()
+            .join(worksgood::evaluation_cutover::EVALUATION_CUTOVER_DIR)
+            .join("dispatcher-notices");
+        assert_eq!(std::fs::read_dir(notices).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn retired_rows_never_enter_priority_or_inheritance_accounting() {
+        let config = Config::default();
+        let mut graph = WorkGraph::new();
+        let mut source = task_with_tags("work", &[]);
+        source.priority = worksgood::graph::PRIORITY_LOW;
+        let mut retired = task_with_tags(".evaluate-work", &[]);
+        retired.priority = worksgood::graph::PRIORITY_CRITICAL;
+        retired.after = vec!["work".into()];
+        graph.add_node(Node::Task(source));
+        graph.add_node(Node::Task(retired));
+
+        let source = graph.get_task("work").unwrap();
+        assert_eq!(
+            compute_priority_inheritance(source, &graph),
+            worksgood::graph::PRIORITY_LOW,
+            "retired dependent must not boost its source"
+        );
+        let sorted = sort_tasks_by_priority_with_features(
+            &graph,
+            vec![source, graph.get_task(".evaluate-work").unwrap()],
+            &config,
+        );
+        assert_eq!(
+            sorted
+                .iter()
+                .map(|task| task.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["work"]
+        );
     }
 
     #[test]

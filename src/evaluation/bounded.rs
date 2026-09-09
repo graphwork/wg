@@ -1215,6 +1215,7 @@ impl BoundedEvaluationAdapter for PiBoundedAdapter {
             "json".to_string(),
             "--print".to_string(),
             "--no-tools".to_string(),
+            "--no-context-files".to_string(),
             "-ne".to_string(),
             "--no-session".to_string(),
             "--provider".to_string(),
@@ -1325,7 +1326,6 @@ fn parse_pi_response(
     let mut saw_usage = false;
     let mut reported_provider: Option<String> = None;
     let mut reported_model: Option<String> = None;
-    let mut native_errors = Vec::new();
     for (index, line) in text.lines().enumerate() {
         if line.trim().is_empty() {
             continue;
@@ -1339,15 +1339,6 @@ fn parse_pi_response(
                 None,
             )
         })?;
-        if value.get("type").and_then(|v| v.as_str()) == Some("error") {
-            native_errors.push(
-                value
-                    .get("message")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("Pi error")
-                    .to_string(),
-            );
-        }
         if value.get("type").and_then(|v| v.as_str()) != Some("turn_end") {
             continue;
         }
@@ -1377,25 +1368,26 @@ fn parse_pi_response(
             }
         }
     }
-    let reported_usage = saw_usage.then(|| {
-        let translation = crate::stream_event::translate_pi_stream(text, None, true);
-        EvaluationUsage {
-            input_tokens: translation.total.input_tokens,
-            output_tokens: translation.total.output_tokens,
-            cache_read_input_tokens: translation.total.cache_read_input_tokens.unwrap_or(0),
-            cache_creation_input_tokens: translation.total.cache_creation_input_tokens.unwrap_or(0),
-            cost_usd: translation.total.cost_usd.unwrap_or(0.0),
-        }
+    let translation = crate::stream_event::translate_pi_stream(text, None, true);
+    let reported_usage = saw_usage.then(|| EvaluationUsage {
+        input_tokens: translation.total.input_tokens,
+        output_tokens: translation.total.output_tokens,
+        cache_read_input_tokens: translation.total.cache_read_input_tokens.unwrap_or(0),
+        cache_creation_input_tokens: translation.total.cache_creation_input_tokens.unwrap_or(0),
+        cost_usd: translation.total.cost_usd.unwrap_or(0.0),
     });
     let with_usage = |mut error: AdapterError| {
         error.reported_usage = reported_usage.clone();
         error
     };
-    if !native_errors.is_empty() {
+    if let Some(error) = translation.terminal_error {
         return Err(with_usage(adapter_error(
             EvaluationFailureKind::ProcessFailure,
             "WG-EVAL-PI-REPORTED-ERROR",
-            native_errors.join("; "),
+            format!(
+                "Pi upstream terminal error (category={}): {}",
+                error.category, error.message
+            ),
             None,
             None,
         )));

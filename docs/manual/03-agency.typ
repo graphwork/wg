@@ -401,7 +401,7 @@ Two configuration options streamline the agency pipeline for projects that want 
 - `auto_create` (set via `wg config --auto-create`) tells the coordinator to automatically create agent identities for new tasks based on the available roles and motivations. Without it, agents must be explicitly created and assigned.
 - `auto_place` (set via `wg config --auto-place`) enables automatic placement of newly added tasks in the dependency graph. The coordinator uses heuristics to position the task near related work, respecting any placement hints (`--place-near`, `--place-before`) provided at creation time.
 
-Both options interact with the existing `auto_assign` pipeline after release: `wg add` stages a visible draft, and `wg publish <task-id> --only` deliberately starts placement, assignment, and dispatch. No user add dispatches by itself.
+These options are separate from receipt-backed identity selection. `wg add` stages a visible draft and `wg publish <task-id> --only` releases it. If `agency.auto_assign=true`, the bounded deterministic selector runs immediately before claim and its decision is bound to the real attempt receipt; it creates no `assign-*` task or dependency edge. Selector failure records an explicit `uncomposed` decision so dispatch stays live. `auto_place` remains the distinct placement subsystem.
 
 == Configuration: Creator Identity <creator-config>
 
@@ -420,12 +420,11 @@ script, the coordinator's tick loop---is detailed in #emph[Section 4]. How agent
 evaluated after completing work, and how evaluation data feeds back into evolution, is
 detailed in #emph[Section 5].
 
-One detail bridges the agency model and the evaluation system: every evaluation carries
-a `source` field that identifies where the score came from. Internal auto-evaluations
-have source `"llm"`. External signals use structured tags---`"outcome:sharpe"` for
-market data, `"ci:test-suite"` for CI results, `"vx:peer-id"` for peer assessments.
-The source field is a freeform string, not a closed enum, so any signal source can
-participate. This matters for the agency model because an agent's performance record
-aggregates evaluations from _all_ sources. The evolver sees the full picture: internal
-quality assessments alongside external outcome data. The interplay between diverse
-evaluation sources and the evolutionary process is detailed in #emph[Section 5].
+One detail bridges the agency model and the evaluation system: only a scored _outcome_
+carries a `source` field. `wg evaluate run` writes `"llm:terminal-observation"`; explicit
+external signals use tags such as `"outcome:sharpe"`, `"ci:test-suite"`, or
+`"vx:peer-id"`. Completion review and candidate-review history are separately bound
+evidence and are never silently converted into those scores. This matters because
+future receipt-backed assignment ranks one delayed reward from an independent terminal
+outcome, not a reviewer's own candidate verdict. The complete authority map and the
+migration from retired synthetic evaluation rows appear in Sections 4 and 5.

@@ -163,6 +163,7 @@ pub fn run_supervisor(
             pid: daemon_pid,
             socket_path: socket_path.to_string(),
             started_at: chrono::Utc::now().to_rfc3339(),
+            instance_nonce: std::env::var(super::SERVICE_INSTANCE_NONCE_ENV).ok(),
             pid_start_identity: worksgood::service_identity::pid_start_identity(daemon_pid),
             identity: identity.clone(),
             supervisor_pid: Some(std::process::id()),

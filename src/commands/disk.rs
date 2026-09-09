@@ -24,9 +24,16 @@ pub fn run(dir: &Path, command: DiskCommand, json: bool) -> Result<()> {
                 println!("  {}", snapshot.reason);
                 for mount in &snapshot.mounts {
                     println!(
-                        "  mount {} [{}]: {:.1}% free ({} bytes)",
-                        mount.path, mount.mount_id, mount.free_percent, mount.free_bytes
+                        "  mount {}: {:.1}% free ({} bytes)",
+                        mount.mount_id, mount.free_percent, mount.free_bytes
                     );
+                    if mount.probes.is_empty() {
+                        println!("    probe unknown: {}", mount.path);
+                    } else {
+                        for probe in &mount.probes {
+                            println!("    probe {}: {}", probe.source, probe.path);
+                        }
+                    }
                 }
                 println!(
                     "  projected headroom: {} bytes; active targets: {} (heavy: {})",
@@ -40,12 +47,14 @@ pub fn run(dir: &Path, command: DiskCommand, json: bool) -> Result<()> {
                 );
                 for target in &snapshot.targets {
                     println!(
-                        "  target {} owner={}/{} size={} growth={}/s stale={}",
+                        "  target {} owner={}/{} logical={} private={} growth={}/s key={} stale={}",
                         target.path,
                         target.task_id,
                         target.agent_id,
                         target.bytes,
+                        target.private_bytes,
                         target.growth_bytes_per_sec,
+                        target.cache_key.as_deref().unwrap_or("legacy/unkeyed"),
                         target.stale
                     );
                 }

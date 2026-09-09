@@ -31,10 +31,17 @@ pub fn run(dir: &Path, command: MergeResolutionCommands, json: bool) -> Result<(
             print_record(&record, json)
         }
         MergeResolutionCommands::Status { id } => {
-            let record = ResolutionStore::open(dir)?
-                .load_task(&id)?
-                .with_context(|| format!("no merge resolution record for '{id}'"))?;
-            print_record(&record, json)
+            // A task may have an older source merge-resolution record and a
+            // newer finalizer reconciliation. Prefer the active landing record
+            // so the operator sees the recovery action named by the blocker,
+            // not stale guidance from the source-resolution phase.
+            if crate::commands::completion_land::print_reconciliation_status(dir, &id, json)? {
+                Ok(())
+            } else if let Some(record) = ResolutionStore::open(dir)?.load_task(&id)? {
+                print_record(&record, json)
+            } else {
+                bail!("no merge resolution or landing reconciliation record for '{id}'")
+            }
         }
         MergeResolutionCommands::Inspect { id, materialize } => {
             let record = ResolutionStore::open(dir)?
@@ -144,12 +151,22 @@ pub fn run(dir: &Path, command: MergeResolutionCommands, json: bool) -> Result<(
                 content_cid(reason.as_deref().unwrap_or("operator-reject"))
             ),
         ),
-        MergeResolutionCommands::RefreshTarget { id } => action_hold(
-            dir,
-            &id,
-            "refresh-target",
-            "A fresh immutable target snapshot must create a new classification; stale bytes and verdicts are never rebased or reused.",
-        ),
+        MergeResolutionCommands::RefreshTarget { id } => {
+            // Completion/v3 owns a real finalizer reconciliation path: it keeps
+            // the selected candidate, snapshots the descendant target, reruns
+            // target-dependent validation, emits renewed evidence, then CASes.
+            // Historical resolution records retain their generation action.
+            if crate::commands::resume::resume_landing_finalization(dir, &id)? {
+                Ok(())
+            } else {
+                action_hold(
+                    dir,
+                    &id,
+                    "refresh-target",
+                    "A fresh immutable target snapshot must create a new classification; stale bytes and verdicts are never rebased or reused.",
+                )
+            }
+        }
         MergeResolutionCommands::RepairSource { id } => action_hold(
             dir,
             &id,

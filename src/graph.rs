@@ -113,6 +113,15 @@ pub enum WaitCondition {
     Message,
     /// Wait for a file to change (mtime check)
     FileChanged { path: String, mtime_at_wait: u64 },
+    /// Wait for this task's landing turn against an integration ref to reach
+    /// the head of the persistent FIFO landing-turn queue (see
+    /// [`crate::landing_turn`]). The source agent parks through `AttemptParked`
+    /// and is auto-resumed when its ticket reaches the head and the lease is
+    /// available.
+    LandingTurn {
+        integration_ref: String,
+        ticket_id: String,
+    },
 }
 
 /// Composite wait specification: AND (All) or OR (Any) of conditions.
@@ -348,6 +357,78 @@ pub enum CompletionDisposition {
     Delivered,
     Reported,
     Explored,
+}
+
+/// A non-semantic blocker encountered after an immutable completion candidate
+/// has been selected. These states release the source worker without
+/// classifying its work as failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CompletionBlockerKind {
+    NeedsReview,
+    LandingPending,
+}
+
+/// Auditable finalizer-only recovery phases for an immutable Land candidate.
+/// These states never reopen source execution or weaken the target CAS fence.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LandingReconciliationState {
+    #[default]
+    Waiting,
+    Reconciling,
+    ReadyToLand,
+    Landed,
+    Blocked,
+}
+
+/// Exact, restart-safe binding for a resumable completion blocker.
+///
+/// The full candidate projection is copied intentionally. Resumption must
+/// prove byte-for-byte that the candidate and all review receipts are still
+/// the ones that entered the wait.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompletionBlocker {
+    pub kind: CompletionBlockerKind,
+    pub reason: String,
+    pub safe_next: String,
+    pub task_id: String,
+    pub generation: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt_id: Option<String>,
+    pub fence: u64,
+    pub candidate: crate::completion_task::CompletionCandidateRefs,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub integration_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_ref_oid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_worktree: Option<String>,
+    /// Exact worker identity/session copied before finalizer parking clears
+    /// `task.assigned`. These fields reconstruct a lease binding; they are not
+    /// themselves authority without the persisted queue ticket/lease.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub landing_source_agent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub landing_source_session: Option<String>,
+    /// Once a landing turn has been requested, retries must find this exact
+    /// ticket. An expired/fenced ticket cannot be silently replaced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub landing_ticket_id: Option<String>,
+    /// Finalizer-owned recovery projection. The immutable selected candidate
+    /// above is never replaced; renewed evidence binds a derived integration
+    /// commit to the descendant target snapshot.
+    #[serde(default)]
+    pub reconciliation_state: LandingReconciliationState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reconciliation_receipt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reconciled_commit_oid: Option<String>,
+    /// Present only when exact live Pi guards were attested while parking.
+    /// Settled source attempts need no session continuity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_selector: Option<String>,
+    pub created_at: String,
 }
 
 impl CompletionDisposition {
@@ -738,6 +819,10 @@ pub struct Task {
     pub completion_disposition: Option<CompletionDisposition>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completion_receipt: Option<String>,
+    /// Durable, typed finalization wait. Cleared only after receipt-backed
+    /// completion or authoritative candidate replacement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion_blocker: Option<CompletionBlocker>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
     /// Required skills/capabilities for this task
@@ -1075,6 +1160,7 @@ impl Default for Task {
             completion_candidate: None,
             completion_disposition: None,
             completion_receipt: None,
+            completion_blocker: None,
             tags: vec![],
             skills: vec![],
             inputs: vec![],
@@ -2226,6 +2312,8 @@ struct TaskHelper {
     #[serde(default)]
     completion_receipt: Option<String>,
     #[serde(default)]
+    completion_blocker: Option<CompletionBlocker>,
+    #[serde(default)]
     tags: Vec<String>,
     #[serde(default)]
     skills: Vec<String>,
@@ -2446,6 +2534,7 @@ impl<'de> Deserialize<'de> for Task {
             completion_candidate: helper.completion_candidate,
             completion_disposition: helper.completion_disposition,
             completion_receipt: helper.completion_receipt,
+            completion_blocker: helper.completion_blocker,
             tags: helper.tags,
             skills: helper.skills,
             inputs: helper.inputs,

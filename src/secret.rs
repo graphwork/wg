@@ -90,11 +90,15 @@ impl SecretsConfig {
             Some(h) => h.join(".wg").join("config.toml"),
             None => return Self::default(),
         };
-        if !path.exists() {
-            return Self::default();
-        }
-        let content = match std::fs::read_to_string(&path) {
-            Ok(c) => c,
+        Self::load_from_path(&path)
+    }
+
+    /// Purpose-scoped parser kept separate from the project `Config` loader:
+    /// only `[secrets]` can be observed, even when the same legacy machine
+    /// file contains stale routing or project behavior.
+    fn load_from_path(path: &std::path::Path) -> Self {
+        let content = match std::fs::read_to_string(path) {
+            Ok(content) => content,
             Err(_) => return Self::default(),
         };
         #[derive(serde::Deserialize, Default)]
@@ -103,7 +107,7 @@ impl SecretsConfig {
             secrets: SecretsConfig,
         }
         toml::from_str::<Partial>(&content)
-            .map(|p| p.secrets)
+            .map(|partial| partial.secrets)
             .unwrap_or_default()
     }
 }
@@ -869,6 +873,30 @@ mod tests {
         unsafe { std::env::set_var("HOME", tmp.path()) };
         f();
         tmp
+    }
+
+    #[test]
+    fn global_secret_policy_is_purpose_scoped_and_ignores_routing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[agent]
+model = "pi:stale-global:must-not-become-project-authority"
+
+[dispatcher]
+max_agents = 99
+
+[secrets]
+allow_plaintext = true
+default_backend = "keystore"
+"#,
+        )
+        .unwrap();
+        let policy = SecretsConfig::load_from_path(&path);
+        assert!(policy.allow_plaintext);
+        assert_eq!(policy.default_backend, Backend::Keystore);
     }
 
     #[test]

@@ -263,9 +263,9 @@ pub enum Commands {
         #[arg(long = "verify-timeout", hide = true)]
         verify_timeout: Option<String>,
 
-        /// Exact deterministic command run by one-step `wg done`. WG captures
-        /// bounded stdout/stderr digests, exit status, timing, and the exact
-        /// repository/attempt binding as immutable completion evidence.
+        /// Optional operator/repository-authorized hard gate run by `wg done`.
+        /// Prefer `## Validation` for agent-selected checks; agents must not
+        /// invent or broaden this command. Failure blocks completion.
         #[arg(long = "validation-command", value_name = "COMMAND")]
         validation: Option<String>,
 
@@ -491,9 +491,9 @@ pub enum Commands {
         #[arg(long = "not-before")]
         not_before: Option<String>,
 
-        /// Set or clear the exact deterministic completion command. An empty
-        /// string clears configured command execution; `## Validation` remains
-        /// the human/model review contract.
+        /// Set or clear an operator/repository-authorized hard completion gate.
+        /// Prefer `## Validation` for agent-selected checks; an empty string
+        /// clears the command. Agents must not invent or broaden this setting.
         #[arg(long = "validation-command", value_name = "COMMAND")]
         verify: Option<String>,
 
@@ -608,6 +608,15 @@ pub enum Commands {
         integration_ref: String,
     },
 
+    /// Worker-owned landing-turn protocol: serialize landings against a shared
+    /// integration ref so the source agent that understands its change owns
+    /// conflict resolution, renewed validation, and resubmission. WG owns the
+    /// lease, queue, fencing, and final compare-and-fast-forward.
+    LandingTurn {
+        #[command(subcommand)]
+        command: crate::commands::landing_turn::LandingTurnCommand,
+    },
+
     /// Set the task's completion contract: land, report, or explore
     Contract { id: String, contract: String },
 
@@ -625,7 +634,7 @@ pub enum Commands {
         command: CandidateCommands,
     },
 
-    /// Classify and resolve immutable candidate integration conflicts
+    /// Inspect immutable completion landing and reconciliation evidence
     MergeResolution {
         #[command(subcommand)]
         command: MergeResolutionCommands,
@@ -677,9 +686,14 @@ pub enum Commands {
         #[arg(long)]
         route: Option<String>,
 
-        /// Emit the complete normalized FailureSignal as JSON.
+        /// Emit the complete normalized projection as JSON.
         #[arg(long)]
         json: bool,
+
+        /// Project authoritative terminal evidence instead of a failure class.
+        /// Used by the wrapper to fence provider telemetry and source failure.
+        #[arg(long)]
+        terminal: bool,
     },
 
     /// [Internal] Persist one normalized failed-attempt telemetry record.
@@ -926,7 +940,10 @@ pub enum Commands {
         id: String,
     },
 
-    /// Resume one Waiting task, or a paused draft/subgraph
+    /// Resume one Waiting task, including finalizer-owned landing recovery, or a paused draft/subgraph
+    #[command(
+        after_help = "Landing recovery:\n  wg show <TASK>\n  wg merge-resolution status <TASK>\n  wg resume <TASK> --only\n\nFor Waiting/LandingPending, preserve user changes and clean the attached checkout first. WG retains the reviewed candidate, renews target-bound validation after a descendant target advance, and completes without the source worker. Do not use retry/requeue/unclaim or rewrite Git history."
+    )]
     Resume {
         /// Task ID to resume. Waiting tasks always use named-task-only operator authority.
         #[arg(value_name = "TASK")]
@@ -1460,6 +1477,19 @@ pub enum Commands {
         json: bool,
     },
 
+    /// Inspect immutable candidate reviews. Virtual evidence only: never graph
+    /// tasks or lifecycle authority (completion controller remains authoritative).
+    Reviews {
+        #[command(subcommand)]
+        command: ReviewsCommands,
+    },
+
+    /// Inspect terminal learning episodes, outcome assessments, and delayed rewards.
+    Learning {
+        #[command(subcommand)]
+        command: LearningCommands,
+    },
+
     /// [DEPRECATED] Legacy provider-specific cost monitor; Pi reports supported costs.
     #[command(hide = true)]
     Openrouter {
@@ -1661,7 +1691,7 @@ pub enum Commands {
         command: TradeoffCommands,
     },
 
-    /// Assign an agent to a task
+    /// Set the next-attempt identity intent; --auto uses receipt-backed reward ranking
     Assign {
         /// Task ID to assign agent to
         task: String,
@@ -1673,7 +1703,7 @@ pub enum Commands {
         #[arg(long)]
         clear: bool,
 
-        /// Automatically select an agent using LLM
+        /// Deterministically rank eligible agents using receipt-backed delayed rewards
         #[arg(long)]
         auto: bool,
     },
@@ -1824,7 +1854,7 @@ pub enum Commands {
         reasoning: Option<String>,
     },
 
-    /// Score verified terminal tasks, record external scores, and view history
+    /// Score already-terminal outcomes for learning; never changes task lifecycle
     Evaluate {
         #[command(subcommand)]
         command: EvaluateCommands,
@@ -1864,11 +1894,11 @@ pub enum Commands {
         #[arg(long)]
         init: bool,
 
-        /// Target global config (~/.wg/config.toml) instead of local
+        /// Inspect legacy global config. Project-behavior writes are refused.
         #[arg(long, conflicts_with = "local")]
         global: bool,
 
-        /// Explicitly target local config (default for writes)
+        /// Explicitly target authoritative project worksgood.toml (default for writes)
         #[arg(long, conflicts_with = "global")]
         local: bool,
 
@@ -1964,19 +1994,20 @@ pub enum Commands {
         #[arg(long)]
         room: Option<String>,
 
-        /// Enable/disable automatic evaluation on task completion
+        /// Enable/disable automatic candidate observation (not post-terminal scoring)
         #[arg(long)]
         auto_evaluate: Option<bool>,
 
-        /// Enable/disable automatic identity assignment when spawning agents
+        /// Enable/disable bounded pre-claim identity selection. The decision is
+        /// recorded in the real attempt receipt; no assignment graph task is created.
         #[arg(long)]
         auto_assign: Option<bool>,
 
-        /// Set assigner agent (content-hash)
+        /// Set historical assigner identity metadata (content-hash)
         #[arg(long)]
         assigner_agent: Option<String>,
 
-        /// Set evaluator agent (content-hash)
+        /// Set historical evaluator identity metadata (content-hash)
         #[arg(long)]
         evaluator_agent: Option<String>,
 
@@ -2024,17 +2055,16 @@ pub enum Commands {
         #[arg(long, name = "viz-edge-color")]
         viz_edge_color: Option<String>,
 
-        /// Set the evaluation gate threshold (0.0–1.0). Evaluations below this
-        /// score can reject tasks with parsed deliverables, or all tasks when
-        /// --eval-gate-all is set. Tags are labels only.
+        /// Compatibility threshold for persisted candidate-evaluation policy
+        /// (0.0–1.0). It never governs post-terminal `wg evaluate run` scores.
         #[arg(long, name = "eval-gate-threshold")]
         eval_gate_threshold: Option<f64>,
 
-        /// Apply eval gate to ALL evaluated tasks, not just tasks with deliverables
+        /// Apply persisted candidate-evaluation policy to all applicable candidates
         #[arg(long, name = "eval-gate-all")]
         eval_gate_all: Option<bool>,
 
-        /// Enable or disable FLIP (roundtrip intent fidelity) evaluation
+        /// Enable/disable candidate FLIP observation policy; not outcome scoring
         #[arg(long, name = "flip-enabled")]
         flip_enabled: Option<bool>,
 
@@ -2167,7 +2197,7 @@ pub enum Commands {
         #[arg(long, name = "check-key", hide = true)]
         check_key: bool,
 
-        /// Install project config as global default (~/.wg/config.toml)
+        /// Deprecated compatibility flag; global project/routing installation is refused
         #[arg(long, name = "install-global")]
         install_global: bool,
 
@@ -2455,10 +2485,8 @@ pub enum Commands {
         /// [DEPRECATED/UNSUPPORTED] WG no longer selects providers; use Pi.
         #[arg(long, hide = true)]
         provider: Option<String>,
-        /// Where to write the config: `global` (~/.wg/config.toml),
-        /// `local` (./.wg/config.toml), or `both`. When omitted, the
-        /// interactive wizard prompts; non-interactive routes default to
-        /// `global`.
+        /// Deprecated scope compatibility: `local`/`project` mean the default
+        /// project worksgood.toml. `global` and `both` are refused before mutation.
         #[arg(long)]
         scope: Option<String>,
         /// [DEPRECATED/UNSUPPORTED] Configure provider credentials in Pi.
@@ -3064,7 +3092,8 @@ pub enum FinalizeCommands {
 
 #[derive(Subcommand)]
 pub enum MergeResolutionCommands {
-    /// Classify and, only when required, invoke one exact strong merger
+    /// Retired mutation retained only for compatibility diagnostics
+    #[command(hide = true)]
     Run {
         id: String,
         /// Credential-free strong-merger adapter executable
@@ -3083,21 +3112,20 @@ pub enum MergeResolutionCommands {
         #[arg(long)]
         ambiguous_intent: bool,
     },
-    Status {
-        id: String,
-    },
+    /// Show immutable landing-reconciliation state, receipt, fence, and next action
+    Status { id: String },
+    /// Inspect immutable reconciliation evidence; optionally materialize read-only content
     Inspect {
         id: String,
         #[arg(long)]
         materialize: Option<PathBuf>,
     },
-    Retry {
-        id: String,
-    },
-    /// Resume after a bound human decision as a new audited generation
-    Resume {
-        id: String,
-    },
+    #[command(hide = true)]
+    Retry { id: String },
+    /// Retired mutation retained only for compatibility diagnostics
+    #[command(hide = true)]
+    Resume { id: String },
+    #[command(hide = true)]
     ChangeRoute {
         id: String,
         #[arg(long)]
@@ -3105,6 +3133,7 @@ pub enum MergeResolutionCommands {
         #[arg(long)]
         reasoning: String,
     },
+    #[command(hide = true)]
     Decide {
         id: String,
         #[arg(long)]
@@ -3112,26 +3141,22 @@ pub enum MergeResolutionCommands {
         #[arg(long)]
         constraints: Option<String>,
     },
+    #[command(hide = true)]
     Reject {
         id: String,
         #[arg(long)]
         reason: Option<String>,
     },
-    RefreshTarget {
-        id: String,
-    },
-    RepairSource {
-        id: String,
-    },
-    EscalateHuman {
-        id: String,
-    },
-    Abort {
-        id: String,
-    },
-    Rollback {
-        receipt: String,
-    },
+    #[command(hide = true)]
+    RefreshTarget { id: String },
+    #[command(hide = true)]
+    RepairSource { id: String },
+    #[command(hide = true)]
+    EscalateHuman { id: String },
+    #[command(hide = true)]
+    Abort { id: String },
+    #[command(hide = true)]
+    Rollback { receipt: String },
 }
 
 #[derive(Subcommand)]
@@ -3998,6 +4023,31 @@ pub enum PilotCommands {
 }
 
 #[derive(Subcommand)]
+pub enum ReviewsCommands {
+    /// List immutable candidate-review evidence and stable virtual aliases.
+    List {
+        /// Optional source task filter.
+        task: Option<String>,
+        /// Candidate history: current or all.
+        #[arg(long, default_value = "all")]
+        candidate: String,
+        /// Reviewer kind: flip or eval.
+        #[arg(long)]
+        kind: Option<String>,
+    },
+    /// Show one review attempt by stable attempt ID, run ID, or virtual alias.
+    Show { target: String },
+}
+
+#[derive(Subcommand)]
+pub enum LearningCommands {
+    /// Show the exactly-once terminal generation episode for a task or episode ID.
+    Show { target: String },
+    /// Show loud projector/review recovery backlog without touching source state.
+    Backlog,
+}
+
+#[derive(Subcommand)]
 pub enum ReviewCommands {
     /// Screen one inbound item through the review pipeline (Pass 0→2) and record a
     /// verdict. The verdict — accept / quarantine / reject — is the strictest any
@@ -4688,7 +4738,7 @@ pub enum UserCommands {
 
 #[derive(Subcommand)]
 pub enum EvaluateCommands {
-    /// Score one receipt-backed Done task through the exact configured Pi evaluator
+    /// Attach one receipt-backed scored outcome to an already-Done task
     Run {
         /// Done task whose terminal observation and publication evidence will be scored
         task: String,
@@ -4697,7 +4747,7 @@ pub enum EvaluateCommands {
         dry_run: bool,
     },
 
-    /// Record an evaluation from an external source
+    /// Record an external outcome-scoped score; it cannot accept a candidate
     Record {
         /// Task ID
         #[arg(long)]
@@ -4722,7 +4772,7 @@ pub enum EvaluateCommands {
         command: EvaluationRolloutCommands,
     },
 
-    /// Show scored evaluation history, including route, usage, and terminal evidence
+    /// Show scored outcomes, including route, usage, and terminal evidence
     Show {
         /// Show both task-level and org-level scores side by side for this task
         #[arg(value_name = "TASK")]
@@ -4791,10 +4841,10 @@ pub enum ProfileCommands {
         #[arg(long)]
         premium: Option<String>,
     },
-    /// Activate a named profile globally (legacy/global scope; rewrites ~/.wg/config.toml)
+    /// [DEPRECATED] Alias for project-local `wg profile select`
     ///
-    /// This intentionally remains machine-global. For an isolated reusable
-    /// project association use `wg profile select <name>` instead.
+    /// Warns before applying and never rewrites ~/.wg/config.toml,
+    /// ~/.wg/active-profile, or Pi console settings.
     Use {
         /// Profile name to activate, or provider:model to activate that profile with an exact default route
         name: Option<String>,
@@ -4807,10 +4857,10 @@ pub enum ProfileCommands {
         #[arg(long)]
         clear: bool,
     },
-    /// Select a reusable named profile for only the current project
+    /// Select a reusable Pi profile for only the current project
     ///
-    /// Writes an explicit fingerprint-pinned association under the current
-    /// WG directory. It never changes ~/.wg/config.toml or active-profile.
+    /// Materializes exact routes/reasoning into authoritative worksgood.toml,
+    /// preserving project guardrails. Never changes global config or Pi settings.
     Select {
         /// Installed profile name (built-in starters are installed once on apply)
         name: Option<String>,
@@ -6499,6 +6549,18 @@ pub enum MigrateCommands {
         dry_run: bool,
     },
 
+    /// Retire legacy `.assign-*`, `.flip-*`, and `.evaluate-*` graph authority.
+    ///
+    /// Preserves exact graph bytes before mutation, retains every historical
+    /// row/log/verdict, and rewrites explicit dependencies through retired rows
+    /// to their authoritative source. Source lifecycles remain unchanged and
+    /// ambiguous soft states use the ordinary retry/recovery path. Safe to replay.
+    EvaluationCutover {
+        /// Report the plan without writing a backup or graph change.
+        #[arg(long)]
+        dry_run: bool,
+    },
+
     /// Restore receipt-verifiable review identity/activity for current candidates.
     ///
     /// This never invents superseded history: only the selected candidate's
@@ -6566,6 +6628,41 @@ pub enum MigrateCommands {
         #[arg(long)]
         no_copy: bool,
     },
+
+    /// Remove stale machine-global model-routing and active-profile state left
+    /// behind by the project-local-Pi cutover
+    /// (`docs/design-project-local-pi-config.md` §9.2). Preserves every
+    /// reusable profile definition, every identity/federation/secret datum,
+    /// and every other non-routing byte. Provider credentials stay where they
+    /// are (preserved inactive); WG does not adopt Pi provider authentication.
+    ///
+    /// Without `--cleanup-global-routing` the command is informational: it
+    /// reports what *would* be removed/preserved and writes nothing.
+    ///
+    /// Safe to run multiple times — the second run is a byte-for-byte no-op
+    /// that creates no backup and changes no mtime. Malformed global config
+    /// TOML refuses before any write.
+    ProjectLocalPi {
+        /// Print the plan (removed/preserved sets, backup paths, receipt) but
+        /// don't write anything. Default when invoked without `--yes`.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Skip the interactive confirmation prompt.
+        #[arg(long)]
+        yes: bool,
+
+        /// Actually perform the machine-global routing cleanup. Without this
+        /// flag the command only reports the plan.
+        #[arg(long)]
+        cleanup_global_routing: bool,
+
+        /// Restore a prior cleanup from its receipt id. Uses compare-and-swap:
+        /// a file is restored only when its current bytes still equal the
+        /// receipt's postimage, so a later user edit is never overwritten.
+        #[arg(long, conflicts_with_all = ["dry_run", "yes", "cleanup_global_routing"])]
+        rollback: Option<String>,
+    },
 }
 
 /// Subcommand variants for `wg config`.
@@ -6579,11 +6676,11 @@ pub enum ConfigSubcommand {
     /// This is the modern replacement for `wg config --init`, which
     /// continues to work for one release as a deprecated alias.
     Init {
-        /// Target the global config (~/.wg/config.toml).
+        /// Legacy compatibility only; global project-config initialization is refused.
         #[arg(long, conflicts_with = "local")]
         global: bool,
 
-        /// Target the local project config (.wg/config.toml).
+        /// Target the authoritative project config (worksgood.toml).
         ///
         /// Default when neither --global nor --local is given.
         #[arg(long, conflicts_with = "global")]
@@ -6606,17 +6703,17 @@ pub enum ConfigSubcommand {
 
     /// Set any config key by dotted TOML path, project-scoped by default.
     ///
-    /// Writes the value into the local `.wg/config.toml` (`--global` writes
-    /// `~/.wg/config.toml`). Known typed keys are validated; unknown paths are
-    /// written as raw TOML so every knob is reachable without hand-editing.
-    /// Reloads the running daemon and prints the resolved effective value +
-    /// its source.
+    /// Writes the value into project `worksgood.toml`. An explicit `--global`
+    /// may update only non-routing legacy machine state after an advance path/
+    /// scope warning; that layer is inactive for project behavior. Known typed
+    /// keys and the closed project schema are validated. Project writes reload
+    /// the daemon and print the resolved effective value + its source.
     ///
     /// Examples:
     ///   wg config set coordinator.max_agents 4
     ///   wg config set coordinator.registry_refresh_interval 0
     ///   wg config set worker_control.mode scoped   # opt into own-task-only local workers
-    ///   wg config set agency.auto_evaluate true --global
+    ///   wg config set agency.auto_assign true --global  # legacy machine layer; inactive for projects
     ///   wg config set tiers.fast "pi:openrouter:deepseek/deepseek-chat"
     Set {
         /// Dotted TOML key (e.g. `coordinator.max_agents`, `agency.auto_assign`).
@@ -6625,11 +6722,11 @@ pub enum ConfigSubcommand {
         /// Value as a string; parsed to bool/int/float/string by the setter.
         value: String,
 
-        /// Write to the global config (`~/.wg/config.toml`).
+        /// Explicitly write non-routing legacy machine state to `~/.wg/config.toml`.
         #[arg(long, conflicts_with = "local")]
         global: bool,
 
-        /// Write to the local project config (`.wg/config.toml`) — the default.
+        /// Write to project `worksgood.toml` — the default.
         #[arg(long, conflicts_with = "global")]
         local: bool,
 
@@ -7095,6 +7192,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::CompletionManifest { .. } => "completion-manifest",
         Commands::Submit { .. } => "submit",
         Commands::Land { .. } => "land",
+        Commands::LandingTurn { .. } => "landing-turn",
         Commands::Contract { .. } => "contract",
         Commands::Finalize { .. } => "finalize",
         Commands::Candidate { .. } => "candidate",
@@ -7238,6 +7336,8 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Which { .. } => "which",
         Commands::Executors { .. } => "executors",
         Commands::Spend { .. } => "spend",
+        Commands::Reviews { .. } => "reviews",
+        Commands::Learning { .. } => "learning",
         Commands::Openrouter { .. } => "openrouter",
         Commands::ApplyPlacement { .. } => "apply-placement",
         Commands::Session { .. } => "session",
@@ -7320,6 +7420,8 @@ pub fn supports_json(cmd: &Commands) -> bool {
             | Commands::Screencast { .. }
             | Commands::Cost { .. }
             | Commands::Spend { .. }
+            | Commands::Reviews { .. }
+            | Commands::Learning { .. }
             | Commands::Check
             | Commands::Doctor
             | Commands::Cleanup { .. }

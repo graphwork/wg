@@ -9,6 +9,7 @@ use worksgood::completion_review::{
 };
 use worksgood::completion_task::requirements_digest;
 use worksgood::graph::{CompletionContract, Node, Status, Task, WorkGraph};
+use worksgood::lifecycle::AttemptRef;
 use worksgood::parser::{load_graph, save_graph};
 use worksgood::simple_land::CompletionContract as ManifestContract;
 
@@ -40,21 +41,46 @@ impl ManifestReviewer for ScriptedReviewer {
 
     fn review(
         &mut self,
-        _kind: ReviewerKind,
-        _bundle: &worksgood::completion_manifest::ResolvedReviewBundle,
+        kind: ReviewerKind,
+        bundle: &worksgood::completion_manifest::ResolvedReviewBundle,
+        binding: Option<&worksgood::completion_review::CompletionReviewBinding>,
+        artifact_store: &worksgood::completion_manifest::CompletionArtifactStore,
     ) -> Result<SemanticReview, ReviewerUnavailable> {
         match self.script {
             Script::Pass => Ok(SemanticReview {
                 verdict: SemanticVerdict::Pass,
                 findings: Vec::new(),
+                flip_proof: (kind == ReviewerKind::Flip).then(|| {
+                    super::completion_test_support::test_flip_proof(
+                        artifact_store,
+                        bundle,
+                        binding.expect("FLIP canary binding"),
+                        &self.route,
+                        SemanticVerdict::Pass,
+                        &[],
+                    )
+                }),
             }),
-            Script::Reject => Ok(SemanticReview {
-                verdict: SemanticVerdict::Reject,
-                findings: vec![worksgood::completion_review::ReviewFinding::new(
+            Script::Reject => {
+                let findings = vec![worksgood::completion_review::ReviewFinding::new(
                     "canary.rejected",
                     "scripted semantic rejection",
-                )],
-            }),
+                )];
+                Ok(SemanticReview {
+                    verdict: SemanticVerdict::Reject,
+                    flip_proof: (kind == ReviewerKind::Flip).then(|| {
+                        super::completion_test_support::test_flip_proof(
+                            artifact_store,
+                            bundle,
+                            binding.expect("FLIP canary binding"),
+                            &self.route,
+                            SemanticVerdict::Reject,
+                            &findings,
+                        )
+                    }),
+                    findings,
+                })
+            }
             Script::Unavailable => Err(ReviewerUnavailable {
                 code: "canary.unavailable".to_string(),
                 message: "scripted reviewer outage".to_string(),
@@ -168,6 +194,10 @@ fn ten_concurrent_attempts_use_one_immutable_review_and_done_authority() {
     let candidate_dir = project.join("candidates");
     std::fs::create_dir_all(&wg_dir).unwrap();
     std::fs::create_dir_all(&candidate_dir).unwrap();
+    // Real projects establish one graph identity before concurrent review
+    // attempts. Pin it here so the canary exercises review concurrency rather
+    // than racing first-use graph bootstrap.
+    worksgood::worker_control::load_or_create_graph_identity(&wg_dir).unwrap();
 
     let store = completion_submit::store(&wg_dir).unwrap();
     let mut graph = WorkGraph::new();
@@ -176,17 +206,27 @@ fn ten_concurrent_attempts_use_one_immutable_review_and_done_authority() {
     for index in 0..10 {
         let id = format!("canary-{index}");
         let contract = contract_for(index);
-        let task = Task {
+        let actor_id = format!("agent-{index}");
+        let mut task = Task {
             id: id.clone(),
             title: format!("Canary attempt {index}"),
             description: Some(format!(
                 "Produce immutable output {index}.\n\n## Validation\nResolve and review exact bytes."
             )),
             status: Status::InProgress,
-            assigned: Some(format!("agent-{index}")),
+            assigned: Some(actor_id.clone()),
             completion_contract: contract,
             ..Task::default()
         };
+        task.lifecycle.fence = index as u64 + 1;
+        task.lifecycle.attempt_sequence = 1;
+        task.lifecycle.current_attempt = Some(AttemptRef {
+            id: format!("attempt-0-{}", index + 1),
+            generation: 0,
+            fence: task.lifecycle.fence,
+            actor_id,
+            disposition: None,
+        });
         let requirements = requirements_digest(&task).unwrap();
         let summary_bytes = format!("completed canary attempt {index}\n").into_bytes();
         let output = store
@@ -281,7 +321,17 @@ fn ten_concurrent_attempts_use_one_immutable_review_and_done_authority() {
                 &mut eval,
             )
             .unwrap();
-            assert_eq!(outcome.status, candidate.expected);
+            let findings = completion_submit::store(&wg_dir)
+                .unwrap()
+                .read_artifact(&outcome.flip.findings_object, 16 * 1024)
+                .unwrap();
+            assert_eq!(
+                outcome.status,
+                candidate.expected,
+                "unexpected review outcome for {}: {}\n{outcome:#?}",
+                candidate.id,
+                String::from_utf8_lossy(&findings)
+            );
             if outcome.status == worksgood::completion_review::ReviewValveStatus::Accepted {
                 completion_done::run(&wg_dir, &candidate.id, "refs/heads/main").unwrap();
             }
@@ -325,7 +375,10 @@ fn ten_concurrent_attempts_use_one_immutable_review_and_done_authority() {
         "legacy_finalization_created": false,
         "legacy_save_transaction_created": false
     });
-    let evidence_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("target/worker-owned-completion-canary.json");
+    let target_root = std::env::var_os("CARGO_TARGET_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target"));
+    std::fs::create_dir_all(&target_root).unwrap();
+    let evidence_path = target_root.join("worker-owned-completion-canary.json");
     std::fs::write(evidence_path, serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();
 }

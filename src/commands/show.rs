@@ -52,6 +52,8 @@ struct TaskDetails {
     completion_receipt: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     completion_candidate: Option<worksgood::completion_task::CompletionCandidateRefs>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    completion_blocker: Option<worksgood::graph::CompletionBlocker>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     completion_review_activity: Vec<worksgood::completion_review::VerifiedCompletionReviewActivity>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -212,6 +214,8 @@ struct TaskDetails {
     flip_gate: Option<worksgood::evaluation::FlipGateProjection>,
     #[serde(skip_serializing_if = "Option::is_none")]
     evaluation_health: Option<worksgood::eval_lifecycle::EvaluationHealth>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    legacy_evaluation_cutover: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     evaluation_gate: Option<worksgood::eval_lifecycle::EvaluationGateDiagnostics>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -613,6 +617,9 @@ fn gather_worktree_state(dir: &Path, task_id: &str) -> Option<WorktreeStateInfo>
 }
 
 pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
+    if super::adaptive_agency::show_virtual_if_present(dir, id, json)? {
+        return Ok(());
+    }
     let (graph, _path) = super::load_workgraph(dir)?;
 
     let task = graph.get_task_or_err(id)?;
@@ -844,6 +851,7 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         completion_disposition: task.completion_disposition,
         completion_receipt: task.completion_receipt.clone(),
         completion_candidate: task.completion_candidate.clone(),
+        completion_blocker: task.completion_blocker.clone(),
         completion_review_activity: verified_review.activities.clone(),
         // Historical finalization transactions are evidence only. `show` is a
         // read path and must not open (and thereby materialize) that retired
@@ -934,6 +942,7 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         ),
         flip_gate: worksgood::evaluation::flip_gate_projection(task),
         evaluation_health: worksgood::eval_lifecycle::evaluation_health(&graph, id),
+        legacy_evaluation_cutover: worksgood::evaluation_cutover::condition_for(&graph, id),
         evaluation_gate,
         evaluation_job_note,
         worktree_state: gather_worktree_state(dir, id),
@@ -995,13 +1004,46 @@ fn print_human_readable(details: &TaskDetails) {
             );
         }
     }
+    if let Some(blocker) = details.completion_blocker.as_ref() {
+        println!("Completion waiting/{:?}: {}", blocker.kind, blocker.reason);
+        println!(
+            "  binding: task={} generation={} attempt={} fence={} candidate={}",
+            blocker.task_id,
+            blocker.generation,
+            blocker.attempt_id.as_deref().unwrap_or("none"),
+            blocker.fence,
+            blocker.candidate.manifest.content_digest
+        );
+        println!(
+            "  landing reconciliation: {:?} commit={} receipt={}",
+            blocker.reconciliation_state,
+            blocker.reconciled_commit_oid.as_deref().unwrap_or("none"),
+            blocker.reconciliation_receipt.as_deref().unwrap_or("none")
+        );
+        println!(
+            "  session continuity: {}",
+            blocker
+                .session_selector
+                .as_deref()
+                .unwrap_or("not required/attested")
+        );
+        if blocker.kind == worksgood::graph::CompletionBlockerKind::LandingPending {
+            println!(
+                "  source worker: {}",
+                details.assigned.as_deref().unwrap_or("released")
+            );
+            println!(
+                "  recovery authority: finalizer (retained candidate; no source resubmission)"
+            );
+        }
+        println!("  next: {}", blocker.safe_next);
+    }
     if !details.completion_review_activity.is_empty() {
         println!("Completion review lane (immutable activity; not graph tasks):");
         for activity in &details.completion_review_activity {
             println!(
-                "  {:?}: {:?} candidate={:?} receipt={} route={} executor={} failure={} duration={}",
-                activity.reviewer_kind,
-                activity.verdict,
+                "  {} candidate={:?} receipt={} route={} executor={} failure={} duration={}",
+                activity.display_state(),
                 activity.candidate_state,
                 activity.activity_id,
                 activity.model_route.as_deref().unwrap_or("unavailable"),
@@ -1500,6 +1542,9 @@ fn print_human_readable(details: &TaskDetails) {
             health.state, health.pipeline_id, health.source_attempt
         );
         println!("  {}", health.diagnostic);
+    }
+    if let Some(condition) = details.legacy_evaluation_cutover.as_deref() {
+        println!("legacy_evaluation_cutover: {condition}");
     }
     if details.meta_eval_attempts > 0 {
         println!("meta_eval_attempts: {}", details.meta_eval_attempts);
@@ -2391,6 +2436,7 @@ mod tests {
             completion_disposition: None,
             completion_receipt: None,
             completion_candidate: None,
+            completion_blocker: None,
             completion_review_activity: Vec::new(),
             finish_phase: None,
             lifecycle: worksgood::lifecycle::LifecycleProjection::default(),
@@ -2497,6 +2543,7 @@ mod tests {
             evaluation_records: vec![],
             flip_gate: None,
             evaluation_health: None,
+            legacy_evaluation_cutover: None,
             evaluation_gate: None,
             evaluation_job_note: None,
             worktree_state: None,

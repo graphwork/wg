@@ -339,6 +339,7 @@ mod tests {
             completion_candidate: None,
             completion_disposition: None,
             completion_receipt: None,
+            completion_blocker: None,
             tags: vec![],
             skills: vec![],
             inputs: vec![],

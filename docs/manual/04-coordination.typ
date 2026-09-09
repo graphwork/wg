@@ -36,7 +36,7 @@ Each tick proceeds through a series of phases. A preliminary phase zero processe
 
 *Phase 2.8: Message-triggered resurrection.* Done tasks that have unread messages from whitelisted senders (the user, the coordinator, or dependent-task agents) are reopened so the next agent can address the message. Rate-limited to a maximum of three resurrections per task with a cooldown period.
 
-*Phase 3: Build auto-assign meta-tasks.* If `auto_assign` is enabled in the agency configuration, the coordinator scans for ready tasks that have no agent identity bound to them. For each, it creates an `assign-{task-id}` meta-task that the original task is after. This meta-task, when dispatched, will spawn an assigner agent that inspects the agency's roster and picks the best fit. The meta-task is tagged `"assignment"` to prevent recursive auto-assignment—the coordinator never creates an assignment task for an assignment task.
+*Phase 3: Reconcile retired evaluation rows.* The coordinator recognizes pre-receipt `.assign-*`, `.flip-*`, `.evaluate-*`, `PendingEval`, and `FailedPendingEval` only as load/migration compatibility. It creates, rearms, and dispatches none of them. A stale condition is diagnosed once and points to `wg migrate evaluation-cutover`; arbitrary outcome scores cannot clear it.
 
 *Phase 4: Reconcile terminal observations.* The coordinator performs bounded, create-once backfill for missing receipt-backed terminal observations. It does not create evaluator/FLIP graph tasks or call a scoring model. Scoring is an explicit post-terminal command (`wg evaluate run <done-task>`), outside task lifecycle authority.
 
@@ -64,9 +64,9 @@ Each tick proceeds through a series of phases. A preliminary phase zero processe
   │  2.6 cycle_failure_restart                            │
   │  2.7 wait_resume_evaluation                           │
   │  2.8 message_triggered_resurrection                   │
-  │  3.  build_auto_assign_tasks       (if enabled)       │
-  │  4.  build_auto_evaluate_tasks     (if enabled)       │
-  │  4.5 build_flip_verification_tasks (if enabled)       │
+  │  3.  reconcile retired evaluation compatibility      │
+  │  4.  project receipt-backed terminal observations     │
+  │  4.5 preserve historical verdict compatibility        │
   │  4.6 auto_evolve                   (if enabled)       │
   │  4.7 auto_create                   (if enabled)       │
   │  5.  save graph → find ready tasks                    │
@@ -174,19 +174,42 @@ Parallelism in wg arises naturally from the graph structure. A _fan-out_ (map) p
 
 These patterns are not built-in primitives. They emerge from dependency edges. A project plan that says "write five sections, then compile the manual" naturally produces a fan-out of five writer tasks followed by a fan-in to a compiler task. The coordinator handles this without any special configuration—`max_agents` determines how many of the five writers run concurrently.
 
-== Auto-Assign <auto-assign>
+== Receipt-Backed Assignment <auto-assign>
 
-When the agency system is active and `auto_assign` is enabled in configuration, the coordinator automates the binding of agent identities to tasks. Without auto-assign, a human must run `wg assign <task-id> <agent-hash>` for each task. With it, the coordinator handles matching.
+`wg assign <task-id> <agent-hash>` sets an explicit identity intent for the next
+attempt. `wg assign <task-id> --auto` deterministically ranks eligible compositions
+using compatible prior delayed rewards. With `agency.auto_assign=true`, the same
+bounded selector runs immediately before claim when no intent exists.
 
-The mechanism is indirect. The coordinator does not contain matching logic itself. Instead, it creates a blocking `assign-{task-id}` meta-task for each unassigned ready task. This meta-task is dispatched like any other—an assigner agent (itself an agency entity with its own role and motivation) is spawned to evaluate the available agents and pick the best fit. The assigner reads the agency roster via `wg agent list`, compares capabilities to task requirements, considers performance history, and calls `wg assign <task-id> <agent-hash>` followed by `wg done assign-{task-id}`.
+Claim/reservation is the commit boundary: it writes an immutable receipt binding the
+selected composition (or explicit `uncomposed` fallback) to the real generation,
+attempt ID, fence, and admission snapshot. The receipt is created before the attempt is
+reserved and its ID is included in lifecycle evidence. A crash can replay that exact
+binding; a changed admission snapshot cannot reuse it. Selector failure never creates a
+persistent blocker: it records why dispatch is uncomposed and work proceeds.
 
-The result is a two-phase dispatch: first the assigner runs, binding an identity to the task. The assignment task completes, unblocking the original task. On the next tick, the original task is ready again—now with an agent identity attached—and the coordinator dispatches it normally.
+There is no `.assign-*` task, assignment edge, evaluator worker slot, or recursive
+assignment. `wg match` remains a read-only preview. A score affects later assignment
+only after an independent terminal outcome creates one active delayed reward for the
+one terminal episode.
 
-Meta-tasks tagged `"assignment"`, `"evaluation"`, or `"evolution"` are excluded from auto-assignment. This prevents the coordinator from creating an assignment task for an assignment task, which would recurse infinitely.
+== One Review and Outcome Authority Map <agency-authority>
 
-== Explicit Receipt-Backed Evaluation <auto-evaluate>
+- *Completion review:* `wg submit` / `wg done` produce and consume exact candidate
+  receipts. Only the completion controller may apply them to lifecycle/publication.
+- *Candidate review:* `wg reviews list/show` exposes immutable virtual attempts. They
+  have no task status, edge, worker slot, retry, or lifecycle authority.
+- *Scored outcome:* `wg evaluate run/show` observes an already-terminal generation for
+  learning. It cannot complete, fail, reopen, retry, or publish the source.
+- *External outcome:* `wg evaluate record` is outcome-scoped and cannot accept a
+  candidate.
+- *Legacy cutover:* `wg migrate evaluation-cutover --dry-run`, then the apply command,
+  preserves exact graph/history bytes and marks obsolete synthetic rows inert. It
+  releases only supported stale blockers; ambiguous sources remain fail-closed.
 
-The current coordinator does not create evaluation meta-tasks. Normal completion projects one immutable, unscored terminal observation. An operator or workflow may then run `wg evaluate run <task-id>` on an ordinary reviewed `Done`. The command re-verifies the terminal receipt, generation/attempt/fence, immutable candidate and current publication; resolves the exact configured Pi evaluator route/reasoning; performs one bounded no-tools call; and create-once records an Agency score. #label("forward-ref-evolution")
+== Explicit Receipt-Backed Outcome Scoring <auto-evaluate>
+
+The current coordinator does not create evaluation meta-tasks. Normal completion projects one immutable, unscored terminal observation. `agency.auto_evaluate` names a compatibility candidate-observation policy; it does not invoke this scorer. An operator or workflow may run `wg evaluate run <task-id>` on an ordinary reviewed `Done`. The command re-verifies the terminal receipt, generation/attempt/fence, immutable candidate and current publication; resolves the exact configured Pi evaluator route/reasoning; performs one bounded no-tools call; and create-once records an Agency score. #label("forward-ref-evolution")
 
 Failed, waiting, operator-accepted, unlanded, stale, missing, and unverifiable evidence is refused. The evaluator cannot change task state or create graph nodes. `--dry-run` prints the exact route/reasoning/evidence without mutation. External evaluations remain available through `wg evaluate record --task <id> --source <tag> --score <0.0-1.0>`. #label("forward-ref-eval-source")
 
@@ -362,14 +385,12 @@ Here is what happens, end to end, when a human operator types `wg service start 
 
 The daemon forks into the background. It opens a Unix socket, reads `config.toml` for coordinator settings, and writes its PID to the state file. Its first tick runs immediately.
 
-The tick reaps zombies (there are none yet), checks the agent registry (empty), and counts zero alive agents out of a maximum of five. If `auto_assign` is enabled, it scans for ready tasks without agent identities and creates assignment meta-tasks. If `auto_evaluate` is enabled, it creates evaluation tasks for work tasks. It saves the graph if modified, then finds ready tasks.
+The tick reaps zombies (there are none yet), checks the agent registry (empty), counts zero alive agents out of a maximum of five, reconciles retired compatibility rows and receipt-backed terminal projections, then finds ready tasks. Neither `auto_assign` nor `auto_evaluate` creates graph tasks.
 
-Suppose three tasks are ready: two assignment meta-tasks and one task that was already assigned. The coordinator spawns three agents (five slots available, three tasks ready). Each spawn follows the dispatch cycle: resolve executor, resolve model, build context, render prompt, write wrapper script, claim task, fork process, register agent.
-
-The three agents run concurrently. The two assigners examine the agency roster and bind identities. They call `wg done assign-{task-id}`, which triggers `graph_changed` IPC. The daemon wakes for an immediate tick. Now the two originally-unassigned tasks are ready (their assignment predecessors are done). The coordinator spawns two more agents. All five slots are full.
+Suppose three tasks are ready and two have no explicit identity. For each unassigned task, bounded pre-claim selection records either a deterministic composition intent or an explicit uncomposed fallback. Claim then binds that decision to the real attempt receipt before reservation. No assignment task, edge, or worker slot is created, so all three source tasks can use the available worker slots immediately.
 
 Work proceeds. Agents call `wg log` to record progress, `wg artifact` to register output files, and `wg done` when finished. Each `wg done` triggers another tick. Completed tasks unblock their dependents. The coordinator spawns new agents as slots open. If an agent crashes, the next tick detects the dead PID, triages the output, and either marks the task done, injects recovery context and reopens it, or restarts it cleanly.
 
-The graph drains. Tasks move from open through in-progress to done. Evaluation tasks score completed work. Eventually the coordinator finds no ready tasks and all tasks terminal. It logs: "All tasks complete." The daemon continues running, waiting for new tasks. The operator adds more work with `wg add`, the graph_changed signal fires, and the cycle begins again.
+The graph drains. Tasks move from open through in-progress to receipt-reviewed done. Terminal episodes project without blocking dependents; scored outcomes remain explicit post-terminal learning operations. Eventually the coordinator finds no ready tasks and all tasks terminal. It logs: "All tasks complete." The daemon continues running, waiting for new tasks. The operator adds more work with `wg add`, the graph_changed signal fires, and the cycle begins again.
 
 This is coordination: a loop that converts a plan into action, one tick at a time.

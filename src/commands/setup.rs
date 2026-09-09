@@ -1,6 +1,7 @@
 //! Interactive configuration wizard for first-time WG setup.
 //!
-//! Creates/updates ~/.wg/config.toml via guided prompts using dialoguer.
+//! Creates/updates the current project's authoritative `worksgood.toml` via
+//! guided prompts using dialoguer. Machine-global WG/Pi state is untouched.
 
 use anyhow::{Context, Result, bail};
 use dialoguer::{Confirm, Input, Select};
@@ -82,8 +83,8 @@ pub struct SetupArgs {
     /// [Legacy] Provider name: "anthropic", "openrouter", "openai", "local", "custom".
     /// Maps onto the closest route when used.
     pub provider: Option<String>,
-    /// Scope for the config write: "global", "local", "both". When None,
-    /// interactive mode prompts; non-interactive defaults to global.
+    /// Deprecated scope compatibility. Omitted/project/local target the
+    /// authoritative project worksgood.toml; global/both are refused.
     pub scope: Option<String>,
     /// Path to API key file
     pub api_key_file: Option<String>,
@@ -1461,10 +1462,22 @@ fn run_route(args: &SetupArgs) -> Result<()> {
         url: args.url.clone(),
         model: args.model.clone(),
     };
-    // Resolve scope: explicit --scope wins; otherwise default to global
-    // (non-interactive run_route is reached only when --route or --yes
-    // is given, in which case "global" is the canonical target).
-    let scope = args.resolved_scope()?.unwrap_or(SetupScope::Global);
+    // Setup is project-local by default. Legacy local/project spellings remain
+    // accepted with a loud warning; global/both are rejected before any write,
+    // profile pointer, credential, cache, or plugin mutation.
+    let scope = args.resolved_scope()?.unwrap_or(SetupScope::Local);
+    match scope {
+        SetupScope::Local => {
+            if args.scope.is_some() {
+                eprintln!(
+                    "Warning: `wg setup --scope local|project` is deprecated; project scope is now the default and writes worksgood.toml."
+                );
+            }
+        }
+        SetupScope::Global | SetupScope::Both => bail!(
+            "error[WG-GLOBAL-CONFIG-WRITE-REFUSED]: setup cannot write legacy machine-global routing. Run `wg setup --route pi --model pi:<provider>:<model>` in the target project; global config and active-profile will not be changed."
+        ),
+    }
     if args.provider.is_some()
         || args.api_key_env.is_some()
         || args.api_key_file.is_some()
@@ -1479,11 +1492,12 @@ fn run_route(args: &SetupArgs) -> Result<()> {
     let new_config = config_for_route(route, params);
     new_config.validate_pi_model_plane()?;
 
-    let global_path = Config::global_config_path()?;
-    let local_path = std::env::current_dir()
-        .map(|p| p.join(".wg").join("config.toml"))
-        .unwrap_or_else(|_| PathBuf::from(".wg/config.toml"));
-    let write_paths = setup_write_paths(scope, route, &global_path, &local_path)?;
+    let graph_dir = setup_graph_dir();
+    let project_path = worksgood::project_config::path_for_graph(&graph_dir).ok_or_else(|| {
+        anyhow::anyhow!(
+            "error[WG-PROJECT-ROOT-REQUIRED]: setup needs an ordinary project .wg directory"
+        )
+    })?;
 
     if args.dry_run {
         println!(
@@ -1491,23 +1505,11 @@ fn run_route(args: &SetupArgs) -> Result<()> {
             route.as_name(),
             scope.as_name()
         );
-        for path in &write_paths {
-            let existing = load_config_at(&path).unwrap_or_default();
-            let diff = diff_summary(&existing, &new_config);
-            if !path.exists() {
-                println!("# (no current config at {} — would create)", path.display());
-            } else {
-                println!("# Current config: {}", path.display());
-            }
-            if diff.is_empty() {
-                println!("# No changes.");
-            } else {
-                println!("# Diff vs current:");
-                for line in &diff {
-                    println!("{}", line);
-                }
-            }
-        }
+        let report =
+            worksgood::project_config::materialize_for_graph(&graph_dir, &new_config, None, true)?;
+        println!("# Authoritative project config: {}", report.path.display());
+        println!("# Winning source after apply: project-file (manual)");
+        println!("# Changed: {}", report.changed);
         println!("---");
         println!("{}", format_delta_summary(&new_config));
         println!("---");
@@ -1515,34 +1517,22 @@ fn run_route(args: &SetupArgs) -> Result<()> {
             toml::to_string_pretty(&new_config).map_err(|e| anyhow::anyhow!("serialize: {}", e))?;
         println!("{}", toml_str);
         println!("---");
-        let plugin_status = inspect_setup_pi_plugin();
-        print_pi_setup_preflight(&preflight, None, Some(&plugin_status));
-        if matches!(scope, SetupScope::Global | SetupScope::Both) {
-            println!(
-                "Apply would activate profile 'pi' for global/both scope; --dry-run changed nothing."
-            );
-        } else {
-            println!(
-                "Apply would select the project-local Pi route without changing the global active-profile; --dry-run changed nothing."
-            );
-        }
+        print_pi_setup_preflight(
+            &preflight,
+            None,
+            Some("hermetic JIT at worker spawn; Console settings unchanged"),
+        );
+        println!(
+            "Apply would write only worksgood.toml; global config, active-profile, credentials, and Pi console settings changed: false."
+        );
         return Ok(());
     }
 
-    // Prepare the embedded plugin before committing route/profile state. A
-    // plugin failure is therefore a pre-activation failure, not a half-ready
-    // successful setup.
-    let plugin_status = ensure_setup_pi_plugin()?;
-    let (written, active_profile, _setup_snapshot) =
-        apply_setup_transaction(&new_config, &write_paths, scope, route)?;
-
-    let primary = written
-        .first()
-        .cloned()
-        .unwrap_or_else(|| global_path.clone());
+    let report =
+        worksgood::project_config::materialize_for_graph(&graph_dir, &new_config, None, false)?;
     println!(
         "Wrote {}: route={}, scope={}, executor={}, tiers={}/{}/{}",
-        primary.display(),
+        project_path.display(),
         route.as_name(),
         scope.as_name(),
         route.executor(),
@@ -1550,20 +1540,24 @@ fn run_route(args: &SetupArgs) -> Result<()> {
         new_config.tiers.standard.as_deref().unwrap_or("?"),
         new_config.tiers.premium.as_deref().unwrap_or("?"),
     );
-    if written.len() > 1 {
-        for extra in &written[1..] {
-            println!("Wrote {}", extra.display());
-        }
-    }
+    println!("  Winning source: project-file (manual)");
+    println!(
+        "  Projection fingerprint: {}",
+        report.projection_fingerprint
+    );
+    println!(
+        "  Global config, active-profile, credentials, and Pi console settings changed: false"
+    );
 
-    crate::commands::profile_cmd::trigger_daemon_reload_checked(
-        &setup_graph_dir(),
-        active_profile.then_some(route.as_name()),
-    )?;
+    crate::commands::profile_cmd::trigger_daemon_reload_checked(&graph_dir, None)?;
 
     println!();
     println!("{}", format_delta_summary(&new_config));
-    print_pi_setup_preflight(&preflight, Some(active_profile), Some(&plugin_status));
+    print_pi_setup_preflight(
+        &preflight,
+        Some(false),
+        Some("hermetic JIT at worker spawn; Console settings unchanged"),
+    );
     println!(
         "The live provider login and exact model were NOT VERIFIED: doing so would require a Pi-owned credential flow and a provider request."
     );
@@ -1927,13 +1921,13 @@ pub fn run() -> Result<()> {
         );
     }
 
-    let global_path = Config::global_config_path()?;
-    let local_path = std::env::current_dir()
-        .map(|p| p.join(".wg").join("config.toml"))
-        .unwrap_or_else(|_| PathBuf::from(".wg/config.toml"));
-
-    let existing_global = Config::load_global()?.unwrap_or_default();
-    let existing_local = load_config_at(&local_path).unwrap_or_default();
+    let graph_dir = setup_graph_dir();
+    let local_path = worksgood::project_config::path_for_graph(&graph_dir).ok_or_else(|| {
+        anyhow::anyhow!(
+            "error[WG-PROJECT-ROOT-REQUIRED]: setup needs an ordinary project .wg directory"
+        )
+    })?;
+    let existing_local = Config::load_merged(&graph_dir).unwrap_or_default();
 
     println!("Hey! Welcome to WG setup.");
     println!("WG configures orchestration; Pi owns the complete LLM model plane.");
@@ -1942,35 +1936,14 @@ pub fn run() -> Result<()> {
 
     // Detect graph/config files only. Provider auth/model discovery belongs to
     // Pi and is intentionally not presented by this wizard.
-    let detection = detect_environment();
+    let _detection = detect_environment();
 
-    let scope_labels = vec![
-        format!("Project only ({})", local_path.display()),
-        format!("Global only ({})", global_path.display()),
-    ];
-    let default_scope = if detection.local_config {
-        SetupScope::Local
-    } else {
-        SetupScope::Global
-    };
-    let scope_idx = Select::new()
-        .with_prompt("Where should this setup apply?")
-        .items(&scope_labels)
-        .default(if matches!(default_scope, SetupScope::Local) {
-            0
-        } else {
-            1
-        })
-        .interact()?;
-    let scope = if scope_idx == 0 {
-        SetupScope::Local
-    } else {
-        SetupScope::Global
-    };
-    let (existing, target_path, target_exists) = match scope {
-        SetupScope::Local => (&existing_local, &local_path, detection.local_config),
-        _ => (&existing_global, &global_path, detection.global_config),
-    };
+    println!("Scope: project only ({})", local_path.display());
+    println!("Machine-global config and active-profile are never changed by setup.");
+    let scope = SetupScope::Local;
+    let existing = &existing_local;
+    let target_path = &local_path;
+    let target_exists = local_path.exists();
 
     if target_exists {
         println!();
@@ -2043,7 +2016,7 @@ pub fn run() -> Result<()> {
     );
 
     let (endpoint, inherit_global_endpoints, mut model_registry_entries, model) =
-        configure_pi(scope, &existing_global, existing)?;
+        configure_pi(scope, &Config::default(), existing)?;
 
     // 3b. Validate API key if an endpoint is configured
     if let Some(ref ep) = endpoint {
@@ -2174,14 +2147,15 @@ pub fn run() -> Result<()> {
     println!();
     let skill_status = guide_skill_bundle_install(&choices.executor)?;
 
-    let write_paths = setup_write_paths(scope, route, &global_path, &local_path)?;
-    let (_, active_profile, _setup_snapshot) =
-        apply_setup_transaction(&config, &write_paths, scope, route)?;
+    let report =
+        worksgood::project_config::materialize_for_graph(&graph_dir, &config, None, false)?;
+    println!("  Authoritative config: {}", report.path.display());
+    println!("  Winning source: project-file (manual)");
+    println!(
+        "  Global config, active-profile, credentials, and Pi console settings changed: false"
+    );
 
-    crate::commands::profile_cmd::trigger_daemon_reload_checked(
-        &setup_graph_dir(),
-        active_profile.then_some(route.as_name()),
-    )?;
+    crate::commands::profile_cmd::trigger_daemon_reload_checked(&graph_dir, None)?;
     record_setup_history(&choices, "cli");
 
     // Configure ~/.claude/CLAUDE.md for Claude Code executor
@@ -2219,23 +2193,11 @@ pub fn run() -> Result<()> {
     println!("  Skill:          {}", skill_status);
     println!("  CLAUDE.md:      {}", claude_md_status);
     println!("  Notifications:  {}", notify_status);
-    if choices.provider == "openrouter" && !choices.inherit_global_endpoints {
-        let auth_env = choices
-            .endpoint
-            .as_ref()
-            .and_then(|ep| ep.api_key_env.as_deref())
-            .or(Some(OPENROUTER_ENV_VAR));
-        finalize_openrouter_onboarding(
-            auth_env,
-            choices
-                .endpoint
-                .as_ref()
-                .and_then(|ep| ep.api_key_file.as_deref()),
-            scope,
-        )?;
-    }
-    let plugin_status = inspect_setup_pi_plugin();
-    print_pi_setup_preflight(&preflight, Some(active_profile), Some(&plugin_status));
+    print_pi_setup_preflight(
+        &preflight,
+        Some(false),
+        Some("hermetic JIT at worker spawn; Console settings unchanged"),
+    );
     println!(
         "The live provider login and exact model were NOT VERIFIED: doing so would require a Pi-owned credential flow and a provider request."
     );

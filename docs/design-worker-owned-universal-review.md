@@ -4,6 +4,13 @@
 passed on 2026-08-05; see
 `docs/reports/worker-owned-completion-exit-canary-2026-08-05.md`.
 
+**Landing-reconciliation amendment:** review repair remains source-worker-owned while that
+worker is live, but an already-reviewed candidate may outlive it. `Waiting/LandingPending`
+is finalizer-owned and follows `wg show` → `wg merge-resolution status` →
+`wg resume <task> --only`; see `docs/ops/maze-free-recovery.md`. This amendment supersedes
+older stale-main/merge-collision prose below wherever it implied that a released worker
+must resubmit or rewrite Git history.
+
 **Implementation plan:** `docs/plans/simple-worker-owned-lean-convergence.md`
 
 **Supersedes for production authority:**
@@ -36,11 +43,13 @@ that the exact reviewed outputs are durably published under the task's declared 
 2. **Universal review.** Every Land, Report, and Explore task MUST pass FLIP and eval.
 3. **Exact output identity.** Both reviewers inspect the same immutable completion
    manifest and the same digest-verified outputs.
-4. **Worker-owned repair.** Review rejection, missing evidence, merge conflict, and stale
-   main return to the same worker context. WG MUST NOT spawn replacement source work
-   automatically.
-5. **Worker-owned landing.** A Land worker integrates current main, resolves conflicts,
-   validates, obtains review, and lands its own accepted commit.
+4. **Source-owned candidate repair.** Review rejection or missing evidence returns to the
+   same worker context while it is live. After review, a stale landing target retains the
+   candidate and releases the worker; the finalizer reconciles descendant-only movement.
+   WG MUST NOT spawn replacement source work automatically.
+5. **Receipt-owned landing.** A Land worker normally integrates current main, resolves
+   conflicts, validates, and obtains review. Publication may then complete through the
+   finalizer-owned retained-candidate path without that worker.
 6. **Done is derived.** `Done` is allowed only when both reviews pass and the reviewed
    outputs are published under the task contract.
 7. **Failure is visible.** Failure blocks dependents and names the retained work/output
@@ -220,18 +229,24 @@ work and commit
 3. resolves and rechecks both review receipts;
 4. acquires one short repository landing lock;
 5. reads current main;
-6. requires current main to equal `integrated_main_oid`;
-7. fast-forwards main/root checkout to the reviewed commit;
+6. requires current main to equal `integrated_main_oid`, or parks the immutable candidate
+   as `Waiting/LandingPending` when main moved by descendant advance;
+7. fast-forwards main/root checkout to the reviewed commit, or lets the finalizer create a
+   deterministic integration commit after renewed target-bound validation;
 8. releases the lock;
-9. records a compact landing receipt.
+9. records a compact landing or reconciliation receipt.
 
-If main moved, no success is recorded. The same worker merges the new main, validates,
-submits a new manifest, reruns both reviews, and retries. Review invalidation after a
-merge is intentional: the candidate tree changed.
+If main moved by descendant advance after review, no stale success is recorded and the
+source worker is not required to return. `wg resume <task> --only` rechecks the exact
+candidate/input/fence binding, integrates it, reruns configured plus baseline validation,
+and issues renewed target-binding evidence before landing. Divergence, conflict, input
+drift, validation failure, and fence drift stay fail-closed. Status names either a
+condition to correct and resume or an authorized `wg reset` new-generation fallback;
+operators never rebase/reset/cherry-pick the retained candidate.
 
-Git owns atomic ref updates. The lock only serializes compare/fast-forward and root
-checkout synchronization. Eight to ten workers may create bounded merge/review retries;
-they MUST NOT create replacement source workers or permanent waits.
+Git owns atomic ref updates. The lock only serializes compare/ref-update and root checkout
+synchronization. Concurrent workers may create bounded reconciliation turns, but they
+MUST NOT create replacement source workers or permanent waits.
 
 ## 8. Completion
 
@@ -267,7 +282,8 @@ repeating `wg done` is idempotent.
 - Review rejection: task remains owned for repair or becomes visibly `ReviewBlocked` if
   the worker exits.
 - Review unavailable: visibly `ReviewUnavailable`; no source replacement.
-- Main moved: visibly `NeedsRebase`; same worker handles it.
+- Main moved after review: visibly `Waiting/LandingPending`; the finalizer handles a
+  descendant advance under renewed evidence, without requiring the released worker.
 - Failed dependency: descendants remain visibly blocked.
 - Retry is explicit. It resumes retained source state when safe.
 - No automatic source retry, route fallback, prerequisite-repair task, or global service
@@ -344,7 +360,8 @@ was permitted to resume after the canary proved:
 - every Done Land output is in main;
 - every Done Report/Explore output is durably published;
 - review failure/unavailability blocks visibly without source respawn;
-- merge collisions return to the same worker;
+- post-review descendant target advances reconcile under renewed evidence without the
+  released worker; conflicts remain fail-closed with the candidate intact;
 - changed output invalidates review;
 - crash after publication/before Done recovers by derived checks;
 - no successful work is stranded only in a worktree;

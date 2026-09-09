@@ -41,6 +41,16 @@ fn message_selector(spec: &WaitSpec) -> Option<MessageWaitSelector> {
 }
 
 fn parse_condition(s: &str, graph: &worksgood::graph::WorkGraph) -> Result<WaitCondition> {
+    parse_condition_for(s, graph, None)
+}
+
+/// Like [`parse_condition`] but binds a `landing-turn` condition to the parked
+/// task `id` (so the coordinator can resume the exact task at the head).
+fn parse_condition_for(
+    s: &str,
+    graph: &worksgood::graph::WorkGraph,
+    parked_task_id: Option<&str>,
+) -> Result<WaitCondition> {
     let s = s.trim();
 
     if s == "human-input" {
@@ -113,8 +123,29 @@ fn parse_condition(s: &str, graph: &worksgood::graph::WorkGraph) -> Result<WaitC
         });
     }
 
+    if let Some(rest) = s.strip_prefix("landing-turn:") {
+        // Format: landing-turn:<integration-ref>#<exact-ticket-id>.
+        // Naming only a task/ref is insufficient because a stale generation
+        // could otherwise satisfy a newer wait.
+        let (integration_ref, ticket_id) = rest.split_once('#').ok_or_else(|| {
+            anyhow::anyhow!(
+                "Invalid landing-turn condition '{}'. Expected landing-turn:<ref>#<ticket>",
+                s
+            )
+        })?;
+        if integration_ref.trim().is_empty() || ticket_id.trim().is_empty() {
+            anyhow::bail!("landing-turn condition requires both ref and exact ticket id");
+        }
+        let _ = parked_task_id
+            .ok_or_else(|| anyhow::anyhow!("landing-turn condition requires the parked task id"))?;
+        return Ok(WaitCondition::LandingTurn {
+            integration_ref: integration_ref.to_string(),
+            ticket_id: ticket_id.to_string(),
+        });
+    }
+
     anyhow::bail!(
-        "Unknown condition '{}'. Supported: task:<id>=<status>, timer:<dur>, human-input, message, file:<path>",
+        "Unknown condition '{}'. Supported: task:<id>=<status>, timer:<dur>, human-input, message, file:<path>, landing-turn:<ref>#<ticket>",
         s
     );
 }
@@ -124,6 +155,14 @@ fn parse_condition(s: &str, graph: &worksgood::graph::WorkGraph) -> Result<WaitC
 /// Comma-separated = AND (All), pipe-separated = OR (Any).
 /// Cannot mix AND and OR in one expression.
 fn parse_wait_spec(s: &str, graph: &worksgood::graph::WorkGraph) -> Result<WaitSpec> {
+    parse_wait_spec_for(s, graph, None)
+}
+
+fn parse_wait_spec_for(
+    s: &str,
+    graph: &worksgood::graph::WorkGraph,
+    parked_task_id: Option<&str>,
+) -> Result<WaitSpec> {
     let has_comma = s.contains(',');
     let has_pipe = s.contains('|');
 
@@ -137,18 +176,18 @@ fn parse_wait_spec(s: &str, graph: &worksgood::graph::WorkGraph) -> Result<WaitS
     if has_pipe {
         let conditions: Vec<WaitCondition> = s
             .split('|')
-            .map(|part| parse_condition(part, graph))
+            .map(|part| parse_condition_for(part, graph, parked_task_id))
             .collect::<Result<Vec<_>>>()?;
         Ok(WaitSpec::Any(conditions))
     } else if has_comma {
         let conditions: Vec<WaitCondition> = s
             .split(',')
-            .map(|part| parse_condition(part, graph))
+            .map(|part| parse_condition_for(part, graph, parked_task_id))
             .collect::<Result<Vec<_>>>()?;
         Ok(WaitSpec::All(conditions))
     } else {
         // Single condition — wrap as All with one element
-        let condition = parse_condition(s, graph)?;
+        let condition = parse_condition_for(s, graph, parked_task_id)?;
         Ok(WaitSpec::All(vec![condition]))
     }
 }
@@ -161,7 +200,7 @@ fn parse_wait_spec(s: &str, graph: &worksgood::graph::WorkGraph) -> Result<WaitS
 /// ambient `PI_SESSION_ID` alone is not authority. Bind the two only when the
 /// durable watchdog source/session/process proofs match the lifecycle kernel's
 /// active continuation authorization exactly.
-fn attested_pi_session_id(dir: &Path, task: &Task) -> Result<Option<String>> {
+pub(crate) fn attested_pi_session_id(dir: &Path, task: &Task) -> Result<Option<String>> {
     let Some(authorization) = task.lifecycle.pi_continuation.as_ref() else {
         return Ok(None);
     };
@@ -274,7 +313,7 @@ pub fn run(dir: &Path, id: &str, until: &str, checkpoint: Option<&str>) -> Resul
         };
 
         // Parse and validate the condition
-        let wait_spec = match parse_wait_spec(until, graph) {
+        let wait_spec = match parse_wait_spec_for(until, graph, Some(id)) {
             Ok(ws) => ws,
             Err(e) => {
                 error = Some(e);
@@ -382,7 +421,10 @@ pub fn run(dir: &Path, id: &str, until: &str, checkpoint: Option<&str>) -> Resul
         }
         let _ = registry.save();
     }
-    if let Err(error) = worksgood::disk_sentinel::release_owned_cache_leases(dir, id, None) {
+    let lease_owner = worksgood::disk_sentinel::caller_agent_for_task(id);
+    if let Err(error) =
+        worksgood::disk_sentinel::release_owned_cache_leases(dir, id, lease_owner.as_deref())
+    {
         eprintln!("Warning: failed to release build-cache lease: {error:#}");
     }
 
