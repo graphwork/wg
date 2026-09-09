@@ -621,7 +621,7 @@ Validation is intentionally restrictive:
 
 ```text
 0 <= max_automatic_retries <= 3
-1 <= recovery_window_seconds <= 3_600
+1 <= recovery_window_seconds <= 900
 1 <= base_seconds <= delay_cap_seconds <= recovery_window_seconds
 ```
 
