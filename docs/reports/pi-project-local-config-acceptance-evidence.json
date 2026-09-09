@@ -1,0 +1,56 @@
+{
+  "task": "close-pi-config-acceptance",
+  "evidence_version": 1,
+  "base_revision": "70ef064ffbb4ad4a5260e0409c78cd5bdeb569b0",
+  "validated_source_revision": "d1bb3721ddfe86836326d4fb08e0b15c70a1d8cb",
+  "candidate_binary": {
+    "derivation": "$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)[\"target_directory\"])')/debug/wg",
+    "sha256": "a1c8579e3f1b458b4b13f2e5108631e4f051551dcd4830cf0dde7b2aa2e1e35f"
+  },
+  "validation_transcript": {
+    "content_digest": "b3:21bba0f1160355ff5070fba457b3bf1ff123406b3db2fddef79f6f703730e1e2",
+    "immutable_locator_kind": "completion_object",
+    "evidence_kind": "candidate-validation/project-local-pi/v1",
+    "media_type": "text/plain",
+    "size": 303768,
+    "sha256": "4ef7befd53890321b1adb7087fd8b035674d9c777b83f4ea5b4bf54dc05ba21a"
+  },
+  "checks": [
+    {
+      "command": "cargo build --locked --bin wg",
+      "result": "pass"
+    },
+    {
+      "command": "cargo test --locked --test integration_project_local_pi_cli --test integration_project_local_pi_config --test integration_project_local_pi_migrate",
+      "result": "pass: 6 + 7 + 9"
+    },
+    {
+      "command": "cargo test --locked --lib migrate_project_local_pi::tests",
+      "result": "pass: 10"
+    },
+    {
+      "command": "cargo test --locked --lib project_config::tests::profile_materialization_rejects_changed_definition_preimage",
+      "result": "pass: 1"
+    },
+    {
+      "command": "cargo test --locked --bin wg commands::profile_cmd::tests::test_project_profile",
+      "result": "pass: 4"
+    },
+    {
+      "command": "cargo fmt --check",
+      "result": "pass"
+    },
+    {
+      "command": "cargo clippy",
+      "result": "pass with repository-existing warnings"
+    },
+    {
+      "command": "PATH=$(dirname $CANDIDATE):$PATH WG_SMOKE_SCENARIO=project_local_pi_e2e bash tests/smoke/scenarios/project_local_pi_e2e.sh",
+      "result": "pass"
+    },
+    {
+      "command": "git diff --check main...HEAD",
+      "result": "pass"
+    }
+  ]
+}
