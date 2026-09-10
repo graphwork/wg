@@ -58,8 +58,9 @@ candidate-four-suites-ambient.log cbbfc45ee97f43f8248ff1addbf8699c8f00c244634a0d
 
 ## Exact source validation
 
-Commit `965e5be2413f5bab43d0aec2f000d5f1841964a0` is the final source commit.
-The broad gate now includes the real, credential-free
+Commit `965e5be2413f5bab43d0aec2f000d5f1841964a0` is the last commit that
+changes Rust or test source; subsequent candidate changes only preserve this
+Markdown evidence receipt. The broad gate now includes the real, credential-free
 `smoke_process_ownership_cleanup.sh` entry point under an explicit candidate
 binary; its recorded test name is
 `smoke_process_ownership_cleanup_real_entry_point`.
@@ -89,6 +90,10 @@ log sha256=4eef1f432f4b3c0a02e010264291da3efe57b5b0625d0e029d3fc93242019ca8
 The clippy output contains repository-existing warnings but no clippy error; the
 command exited zero. The complete log is registered as the WG task artifact
 `/tmp/wg-fix-smoke-validation-agent89/exact-965e5be2-fmt-unit-clippy-diff.log`.
+After adding this receipt, candidate `048303994e3480ef4e77bbd8f7703fc51f231b39`
+was rechecked with `cargo clippy --locked --all-targets`, `cargo fmt --check`, and
+`git diff --check`; all exited zero (complete log SHA-256
+`94adbf947b55d9a18e0e0698abe0cacbafccf9982f046c190943bbfa696f316c`).
 
 The ownership scenario and panic backstop were also executed directly with the
 candidate binary. They passed while proving that TERM-ignoring/double-fork
