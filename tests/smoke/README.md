@@ -81,8 +81,8 @@ The Rust harness and `_helpers.sh` enforce one ownership contract:
   names.** `/proc/*/environ` must contain the exact random run id immediately
   before a signal. An unrelated process named `pi` is therefore never a
   candidate. A dead PID+start supervisor is swept immediately; a live exact
-  supervisor is never swept, and the 10-minute cutoff covers legacy/incomplete
-  records without misclassifying concurrent runs.
+  supervisor is never swept, and incomplete/legacy records remain evidence
+  rather than becoming destructive-cleanup authority merely through age.
 
 The regression tests are `smoke_cleanup_survives_panic.sh` (trap-defeating
 SIGKILL backstop) and `smoke_process_ownership_cleanup.sh` (the historical Pi

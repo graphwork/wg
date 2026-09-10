@@ -282,35 +282,60 @@ fn test_smoke_current_operator_acceptance_refuses_worker_then_allows_human() {
 }
 
 #[test]
+fn smoke_helpers_refuse_direct_execution_without_subreaper_harness() {
+    let tmp = TempDir::new().unwrap();
+    let helper = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/smoke/scenarios/_helpers.sh");
+    let mut command = isolated_cli::command(Path::new("bash"), tmp.path());
+    let output = command
+        .args(["-c", ". \"$1\"", "_"])
+        .arg(&helper)
+        .env("WG_SMOKE_ROOT", tmp.path().join("smoke-root"))
+        .env_remove("WG_SMOKE_HARNESS_RUN_ID")
+        .env_remove("WG_SMOKE_SUBREAPER_TOKEN")
+        .output()
+        .expect("source helper directly");
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("direct/unsupported execution is refused")
+    );
+    assert!(
+        !tmp.path().join("smoke-root").exists(),
+        "direct refusal must happen before fixture initialization"
+    );
+}
+
+#[test]
 fn smoke_process_ownership_cleanup_real_entry_point() {
     let tmp = TempDir::new().unwrap();
     let script = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/smoke/scenarios/smoke_process_ownership_cleanup.sh");
-    let candidate = wg_binary();
-    let mut command = isolated_cli::command(Path::new("bash"), tmp.path());
-    isolated_cli::assert_worker_authority_is_absent(&command);
-    let output = command
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .env("WG_BIN", &candidate)
-        .env("WG_SMOKE_ROOT", tmp.path().join("smoke-root"))
-        .arg(&script)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .expect("run credential-free ownership scenario");
-    assert!(
-        output.status.success(),
-        "{} failed through {}: stdout={} stderr={}",
-        script.display(),
-        candidate.display(),
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+    let wrapper = tmp.path().join("ownership-wrapper.sh");
+    write_executable(
+        &wrapper,
+        &format!(
+            "#!/usr/bin/env bash\nexport WG_BIN='{}'\nexport WG_SMOKE_ROOT='{}'\nexec bash '{}'\n",
+            wg_binary().display(),
+            tmp.path().join("smoke-root").display(),
+            script.display()
+        ),
     );
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let scenario = worksgood::smoke::Scenario {
+        name: "smoke-process-ownership-cleanup-real-entry-point".to_string(),
+        script: wrapper.to_string_lossy().to_string(),
+        owners: vec!["fix-smoke-pi-process-leaks".to_string()],
+        description: "exercise process ownership through the real Rust harness".to_string(),
+        timeout_seconds: Some(180),
+    };
+    let report = run_scenarios(&[&scenario], tmp.path());
     assert!(
-        stdout.contains("no PPID-1/deleted-FD/marker leak; unrelated pi"),
-        "scenario omitted its positive cleanup proof: {stdout}"
+        matches!(
+            report.results.as_slice(),
+            [worksgood::smoke::ScenarioResult {
+                outcome: worksgood::smoke::ScenarioOutcome::Pass,
+                ..
+            }]
+        ),
+        "ownership scenario failed through the real harness: {report:?}"
     );
 }
 

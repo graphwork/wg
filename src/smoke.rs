@@ -44,6 +44,8 @@ const DEFAULT_TIMEOUT_SECS: u64 = 180;
 /// scenario. Cleanup matches this random value, never an executable name.
 pub const SMOKE_RUN_ID_ENV: &str = "WG_SMOKE_RUN_ID";
 const SMOKE_HARNESS_RUN_ID_ENV: &str = "WG_SMOKE_HARNESS_RUN_ID";
+const SMOKE_SUBREAPER_TOKEN_ENV: &str = "WG_SMOKE_SUBREAPER_TOKEN";
+const SMOKE_HARNESS_SEEN_FILE_ENV: &str = "WG_SMOKE_HARNESS_SEEN_FILE";
 const SMOKE_OWNER_FILE_ENV: &str = "WG_SMOKE_OWNER_FILE";
 const SMOKE_DIAGNOSTICS_ENV: &str = "WG_SMOKE_CLEANUP_DIAGNOSTICS";
 const OWNERS_DIR_NAME: &str = ".owners";
@@ -420,6 +422,15 @@ pub fn run_scenario(scenario: &Scenario, manifest_dir: &Path) -> ScenarioResult 
 
     let stdout_path = ownership.owner_dir.join("stdout.log");
     let stderr_path = ownership.owner_dir.join("stderr.log");
+    let harness_seen_file = ownership.owner_dir.join("harness-seen-processes");
+    if let Err(error) = File::create(&harness_seen_file) {
+        return ScenarioResult {
+            name: scenario.name.clone(),
+            outcome: ScenarioOutcome::Error {
+                message: format!("failed to create smoke process ledger: {error}"),
+            },
+        };
+    }
     let stdout = match File::create(&stdout_path) {
         Ok(file) => file,
         Err(error) => {
@@ -467,6 +478,10 @@ pub fn run_scenario(scenario: &Scenario, manifest_dir: &Path) -> ScenarioResult 
         // replace their local ownership token. This immutable harness token
         // lets the subreaper remember and reap those descendants exactly.
         .env(SMOKE_HARNESS_RUN_ID_ENV, &ownership.run_id)
+        // _helpers.sh refuses direct fixture launch unless this exact token
+        // proves it was entered through the fail-closed Rust subreaper path.
+        .env(SMOKE_SUBREAPER_TOKEN_ENV, &ownership.run_id)
+        .env(SMOKE_HARNESS_SEEN_FILE_ENV, &harness_seen_file)
         .env(SMOKE_OWNER_FILE_ENV, &ownership.owner_file)
         .env(SMOKE_DIAGNOSTICS_ENV, &ownership.diagnostics_file)
         .env("WG_SMOKE_HARNESS_OWNED", "1")
@@ -482,14 +497,6 @@ pub fn run_scenario(scenario: &Scenario, manifest_dir: &Path) -> ScenarioResult 
         unsafe {
             cmd.pre_exec(|| {
                 if libc::setsid() == -1 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                // Keep orphan adoption at the nearest scenario shell while it
-                // is alive. Bash reaps SIGCHLD children during nested helper
-                // checks; if the shell itself dies, the Rust parent remains
-                // the outer subreaper backstop.
-                #[cfg(target_os = "linux")]
-                if libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1) == -1 {
                     return Err(std::io::Error::last_os_error());
                 }
                 Ok(())
@@ -570,7 +577,12 @@ pub fn run_scenario(scenario: &Scenario, manifest_dir: &Path) -> ScenarioResult 
     let root_pid = child.id();
     let mut harness_descendants = BTreeMap::new();
     let status = loop {
-        remember_harness_descendants(&ownership.run_id, root_pid, &mut harness_descendants);
+        remember_harness_descendants(
+            &ownership.run_id,
+            root_pid,
+            &harness_seen_file,
+            &mut harness_descendants,
+        );
         reap_tracked_adopted_children(root_pid, &harness_descendants);
         match child.try_wait() {
             Ok(Some(status)) => break Ok(status),
@@ -578,6 +590,15 @@ pub fn run_scenario(scenario: &Scenario, manifest_dir: &Path) -> ScenarioResult 
             Err(error) => break Err(error),
         }
     };
+    // The shell may append its final pre-signal/registered identities while
+    // exiting, after the last polling iteration above. Consume that durable
+    // ledger once more before attempting exact adopted-child waits.
+    remember_harness_descendants(
+        &ownership.run_id,
+        root_pid,
+        &harness_seen_file,
+        &mut harness_descendants,
+    );
     reap_tracked_adopted_children(root_pid, &harness_descendants);
     {
         let (done, wake) = &*watchdog_state;
@@ -830,8 +851,44 @@ fn process_has_run_id(pid: u32, run_id: &str) -> bool {
 fn remember_harness_descendants(
     run_id: &str,
     root_pid: u32,
+    seen_file: &Path,
     remembered: &mut BTreeMap<(u32, u64), OwnedProcess>,
 ) {
+    // Shell cleanup records its exact pre-signal snapshot here. Read this
+    // first: unlike a full /proc scan it remains bounded and cannot miss a
+    // short marker-to-zombie transition under host load.
+    if let Ok(text) = std::fs::read_to_string(seen_file) {
+        for line in text.lines() {
+            let fields: Vec<&str> = line.splitn(7, '|').collect();
+            if fields.len() != 7 {
+                continue;
+            }
+            let (Ok(pid), Ok(ppid), Ok(process_group), Ok(session), Ok(start_ticks)) = (
+                fields[0].parse::<u32>(),
+                fields[1].parse::<u32>(),
+                fields[2].parse::<u32>(),
+                fields[3].parse::<u32>(),
+                fields[4].parse::<u64>(),
+            ) else {
+                continue;
+            };
+            if pid == root_pid {
+                continue;
+            }
+            remembered
+                .entry((pid, start_ticks))
+                .or_insert(OwnedProcess {
+                    pid,
+                    ppid,
+                    process_group,
+                    session,
+                    start_ticks,
+                    state: fields[5].chars().next().unwrap_or('?'),
+                    command: fields[6].chars().take(300).collect(),
+                });
+        }
+    }
+
     let Ok(entries) = std::fs::read_dir("/proc") else {
         return;
     };
@@ -852,6 +909,7 @@ fn remember_harness_descendants(
 fn remember_harness_descendants(
     _run_id: &str,
     _root_pid: u32,
+    _seen_file: &Path,
     _remembered: &mut BTreeMap<(u32, u64), OwnedProcess>,
 ) {
 }
@@ -1108,9 +1166,9 @@ impl GateReport {
 /// matching bash-side `wg_smoke_sweep`.
 ///
 /// Exact live supervisor identity always protects a concurrent smoke run in
-/// another worktree, regardless of age. The age cutoff applies only to legacy
-/// records without PID-start metadata; a dead exact supervisor is reaped
-/// immediately.
+/// another worktree. A dead exact PID/start identity is reaped immediately;
+/// incomplete legacy records are retained as evidence and never authorize
+/// signaling or deletion.
 pub fn run_scenarios(scenarios: &[&Scenario], manifest_dir: &Path) -> GateReport {
     sweep_smoke_leaks_older_than(LEAK_REAP_MIN_AGE);
     let mut results = Vec::with_capacity(scenarios.len());
@@ -1121,10 +1179,8 @@ pub fn run_scenarios(scenarios: &[&Scenario], manifest_dir: &Path) -> GateReport
     GateReport { results }
 }
 
-/// Daemons / scratch dirs younger than this are left alone by the gate
-/// sweep so a concurrent smoke run doesn't cannibalise itself. Per-scenario
-/// bash traps in `_helpers.sh` are the primary teardown; this sweep is
-/// defence in depth for genuinely leaked fixtures.
+// Retained as the public sweep policy argument for API compatibility. Exact
+// supervisor PID/start identity, not age, is the destructive-cleanup authority.
 const LEAK_REAP_MIN_AGE: Duration = Duration::from_secs(600);
 
 /// Resolve the smoke fixture root (`${WG_SMOKE_ROOT:-${TMPDIR:-/tmp}/wgsmoke}`).
@@ -1147,8 +1203,8 @@ pub fn smoke_root() -> PathBuf {
 /// unguessable `WG_SMOKE_RUN_ID` recorded before launch — never by `pi`, `wg`,
 /// a command-line substring, or a guessed PID alone.
 ///
-/// `min_age` affects only legacy records without exact supervisor metadata;
-/// concurrent live exact owners remain protected at every value.
+/// `min_age` is retained for API compatibility; incomplete records are never
+/// destructive-cleanup authority, regardless of age.
 pub fn sweep_smoke_leaks_older_than(min_age: Duration) {
     sweep_smoke_leaks_under(&smoke_root(), min_age)
 }
@@ -1162,9 +1218,9 @@ pub fn sweep_smoke_leaks() {
 /// Sweep against an explicit root (useful for tests, where pointing at a
 /// shared global root would race with parallel test threads).
 #[cfg(target_os = "linux")]
-pub fn sweep_smoke_leaks_under(root: &Path, min_age: Duration) {
-    // `waitpid(-1)` is process-global. Serialize sweeps with scenario runs so
-    // one test thread can never reap another thread's scenario root child.
+pub fn sweep_smoke_leaks_under(root: &Path, _min_age: Duration) {
+    // Subreaper state and child ownership are process-global. Serialize sweeps
+    // with scenario runs even though every wait is now exact-PID selected.
     let _process_guard = scenario_process_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1174,14 +1230,12 @@ pub fn sweep_smoke_leaks_under(root: &Path, min_age: Duration) {
             let owner_dir = entry.path();
             let owner_file = owner_dir.join("owner.env");
             let fields = read_owner_fields(&owner_file);
-            // A live exact supervisor is never stale, regardless of age. A
-            // dead PID+start identity is abandoned immediately; only legacy
-            // records without that identity fall back to the age cutoff.
+            // Only a complete, dead PID+start identity authorizes cleanup.
+            // A live exact supervisor and every incomplete/legacy record are
+            // retained regardless of age.
             match owner_record_supervisor_live(&fields) {
-                Some(true) => continue,
                 Some(false) => {}
-                None if !path_age_exceeds(&owner_dir, min_age) => continue,
-                None => {}
+                Some(true) | None => continue,
             }
             let Some(run_id) = fields.get("run_id") else {
                 // An incomplete record is diagnostic evidence, not authority
@@ -1255,25 +1309,6 @@ fn read_owner_fields(path: &Path) -> BTreeMap<String, String> {
             Some((key.to_string(), value.to_string()))
         })
         .collect()
-}
-
-#[cfg(target_os = "linux")]
-fn path_age_exceeds(path: &Path, min_age: Duration) -> bool {
-    if min_age.is_zero() {
-        return true;
-    }
-    let metadata = match std::fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(_) => return false,
-    };
-    let modified = match metadata.modified() {
-        Ok(modified) => modified,
-        Err(_) => return false,
-    };
-    match std::time::SystemTime::now().duration_since(modified) {
-        Ok(age) => age >= min_age,
-        Err(_) => false,
-    }
 }
 
 #[cfg(test)]
@@ -1671,6 +1706,38 @@ exit 9
         assert_eq!(decoy_before.process_group, decoy_after.process_group);
         let _ = decoy.kill();
         let _ = decoy.wait();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn incomplete_owner_record_never_authorizes_cleanup() {
+        let td = TempDir::new().unwrap();
+        let root = td.path().join("wgsmoke");
+        let owner_dir = root.join(OWNERS_DIR_NAME).join("incomplete");
+        fs::create_dir_all(&owner_dir).unwrap();
+        let run_id = format!("wg-smoke-v2:{}", uuid::Uuid::now_v7());
+        fs::write(
+            owner_dir.join("owner.env"),
+            format!("version=2\nrun_id={run_id}\nscenario=incomplete-owner-test\n"),
+        )
+        .unwrap();
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .env(SMOKE_RUN_ID_ENV, &run_id)
+            .spawn()
+            .unwrap();
+        let before = process_info(child.id()).unwrap();
+
+        sweep_smoke_leaks_under(&root, Duration::ZERO);
+
+        let after = process_info(child.id()).expect("incomplete record killed marked process");
+        assert_eq!(before.start_ticks, after.start_ticks);
+        assert!(
+            owner_dir.exists(),
+            "incomplete ownership evidence was deleted"
+        );
+        let _ = child.kill();
+        let _ = child.wait();
     }
 
     #[cfg(target_os = "linux")]

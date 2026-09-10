@@ -86,6 +86,16 @@ loud_fail() {
     exit 1
 }
 
+# Process-owning smoke helpers are supported only beneath the Rust harness,
+# which creates a Linux subreaper before spawn and passes this unguessable
+# equality proof. Ad-hoc/direct execution cannot prove orphan adoption and
+# therefore fails closed before creating any fixture.
+if [[ ! -d /proc \
+    || -z "${WG_SMOKE_HARNESS_RUN_ID:-}" \
+    || "${WG_SMOKE_SUBREAPER_TOKEN:-}" != "$WG_SMOKE_HARNESS_RUN_ID" ]]; then
+    loud_fail "exact smoke cleanup requires the Linux Rust subreaper harness; direct/unsupported execution is refused"
+fi
+
 # ── wg binary discovery ─────────────────────────────────────────────
 require_wg() {
     if ! command -v wg >/dev/null 2>&1; then
@@ -110,9 +120,9 @@ wg_smoke_root() {
 }
 
 # ── Exact scenario ownership identity ──────────────────────────────
-# Normal manifest runs receive these from src/smoke.rs before bash starts.
-# Ad-hoc direct runs still get a unique identity and durable owner record so
-# the same cleanup contract applies outside `wg done`.
+# Manifest runs receive these from src/smoke.rs before bash starts. The
+# fallback remains for nested helper shells beneath that verified harness;
+# unsupported or ad-hoc top-level execution was already refused above.
 if [[ -z "${WG_SMOKE_RUN_ID:-}" ]]; then
     if [[ -r /proc/sys/kernel/random/uuid ]]; then
         WG_SMOKE_RUN_ID="wg-smoke-v2:$(cat /proc/sys/kernel/random/uuid)"
@@ -284,6 +294,15 @@ register_owned_pid() {
     local pid="$1" role="${2:-process}" identity
     identity=$(_wg_smoke_proc_identity "$pid" 2>/dev/null || true)
     printf '%s|%s|%s\n' "$role" "$pid" "$identity" >>"$WG_SMOKE_PROCESSES_FILE"
+    if [[ -n "${WG_SMOKE_HARNESS_SEEN_FILE:-}" && -n "$identity" ]]; then
+        # identity is ppid pgid sid start state. Publish the immutable tuple
+        # immediately, before a short-lived child can become an environ-less
+        # zombie that only the Rust subreaper is able to collect.
+        # shellcheck disable=SC2086
+        set -- $identity
+        [[ $# -ge 5 ]] && printf '%s|%s|%s|%s|%s|%s|%s\n' \
+            "$pid" "$1" "$2" "$3" "$4" "$5" "$role" >>"$WG_SMOKE_HARNESS_SEEN_FILE"
+    fi
 }
 
 # Spawn a non-daemon fixture in its own recorded session. Usage:
@@ -383,17 +402,25 @@ $(tail -20 "$wrap_log" 2>/dev/null || echo '<no log>')"
 }
 
 # ── Exact ownership scan / termination ──────────────────────────────
-_wg_smoke_pid_has_run_id() {
-    local pid="$1" run_id="$2" entry fd
+_wg_smoke_pid_has_env_value() {
+    local pid="$1" key="$2" value="$3" entry fd
     { exec {fd}<"/proc/$pid/environ"; } 2>/dev/null || return 1
     while IFS= read -r -d '' entry <&"$fd"; do
-        if [[ "$entry" == "WG_SMOKE_RUN_ID=$run_id" ]]; then
+        if [[ "$entry" == "$key=$value" ]]; then
             exec {fd}<&-
             return 0
         fi
     done
     exec {fd}<&-
     return 1
+}
+
+_wg_smoke_pid_has_run_id() {
+    _wg_smoke_pid_has_env_value "$1" WG_SMOKE_RUN_ID "$2"
+}
+
+_wg_smoke_pid_has_harness_id() {
+    _wg_smoke_pid_has_env_value "$1" WG_SMOKE_HARNESS_RUN_ID "$2"
 }
 
 _wg_smoke_ancestor_set() {
@@ -410,16 +437,18 @@ _wg_smoke_ancestor_set() {
     printf '%s\n' "$out"
 }
 
-# Output: pid|ppid|pgid|sid|start_ticks|state|comm. The environment marker is
-# checked first and the immutable start identity is retained for revalidation.
+# Output: pid|ppid|pgid|sid|start_ticks|state|comm. Both the local ownership
+# marker and immutable harness marker are checked before the PID/start tuple is
+# retained for signaling and outer-subreaper revalidation.
 _wg_smoke_owned_snapshot() {
-    local run_id="$1" ancestors proc pid identity comm
+    local run_id="$1" harness_run_id="${2:-$WG_SMOKE_HARNESS_RUN_ID}" ancestors proc pid identity comm
     ancestors=$(_wg_smoke_ancestor_set)
     [[ -d /proc ]] || return 0
     for proc in /proc/[0-9]*; do
         pid="${proc#/proc/}"
         [[ "$ancestors" == *" $pid "* ]] && continue
         _wg_smoke_pid_has_run_id "$pid" "$run_id" || continue
+        _wg_smoke_pid_has_harness_id "$pid" "$harness_run_id" || continue
         identity=$(_wg_smoke_proc_identity "$pid" 2>/dev/null || true)
         [[ -n "$identity" ]] || continue
         comm=$(<"$proc/comm" 2>/dev/null || true)
@@ -473,6 +502,12 @@ _wg_smoke_registered_survivors() {
         # shellcheck disable=SC2086
         set -- $current
         [[ "$4" == "$recorded_start" ]] || continue
+        # A zombie adopted by the outer Rust subreaper cannot be collected by
+        # this shell. Its registered PID/start tuple is already in the shared
+        # ledger, so hand it off rather than treating it as a live survivor.
+        if [[ "${WG_SMOKE_HARNESS_OWNED:-0}" == 1 && "$5" == Z ]]; then
+            continue
+        fi
         printf '%s|%s|%s\n' "$role" "$pid" "$current"
     done <"$WG_SMOKE_PROCESSES_FILE"
 }
@@ -488,31 +523,49 @@ _wg_smoke_wait_registered_gone() {
     return 1
 }
 
+_wg_smoke_remember_snapshot() {
+    local snapshot="$1" local_seen="$2"
+    [[ -n "$snapshot" ]] || return 0
+    printf '%s\n' "$snapshot" >>"$local_seen"
+    # The outer Rust subreaper owns this immutable ledger. Nested helpers append
+    # exact pre-signal PID/start identities so the parent can reap a process
+    # even after zombie transition makes /proc/<pid>/environ unreadable.
+    if [[ -n "${WG_SMOKE_HARNESS_SEEN_FILE:-}" ]]; then
+        printf '%s\n' "$snapshot" >>"$WG_SMOKE_HARNESS_SEEN_FILE"
+    fi
+}
+
 # TERM, rescan to catch a respawning supervisor, KILL, rescan again, then reap
 # direct/adopted children. Failure leaves bounded PID/start/PGID/SID diagnostics
 # and returns non-zero so fixture directories are deliberately retained.
 _wg_smoke_terminate_run() {
-    local run_id="$1" scenario="$2" diag="$3"
+    local run_id="$1" scenario="$2" diag="$3" harness_run_id="${4:-$WG_SMOKE_HARNESS_RUN_ID}"
     local snapshot="" seen_file="$WG_SMOKE_REGISTRY_DIR/seen" i
     : >"$seen_file"
     for i in $(seq 1 40); do
-        snapshot=$(_wg_smoke_owned_snapshot "$run_id")
+        snapshot=$(_wg_smoke_owned_snapshot "$run_id" "$harness_run_id")
         [[ -z "$snapshot" ]] && break
-        printf '%s\n' "$snapshot" >>"$seen_file"
+        _wg_smoke_remember_snapshot "$snapshot" "$seen_file"
         _wg_smoke_signal_snapshot "$run_id" TERM "$snapshot"
         sleep 0.05
     done
     for i in $(seq 1 60); do
-        snapshot=$(_wg_smoke_owned_snapshot "$run_id")
+        snapshot=$(_wg_smoke_owned_snapshot "$run_id" "$harness_run_id")
         [[ -z "$snapshot" ]] && break
-        printf '%s\n' "$snapshot" >>"$seen_file"
+        _wg_smoke_remember_snapshot "$snapshot" "$seen_file"
         _wg_smoke_signal_snapshot "$run_id" KILL "$snapshot"
         sleep 0.05
     done
     _wg_smoke_wait_registered
     local registered_survivors=""
     registered_survivors=$(_wg_smoke_wait_registered_gone) || true
-    snapshot=$(_wg_smoke_owned_snapshot "$run_id")
+    snapshot=$(_wg_smoke_owned_snapshot "$run_id" "$harness_run_id")
+    if [[ "${WG_SMOKE_HARNESS_OWNED:-0}" == 1 && -n "$snapshot" ]]; then
+        # Marker-matched zombies have crossed the adoption boundary: only the
+        # Rust subreaper can waitpid them. Every pre-signal tuple was appended
+        # to its ledger above, so retain only genuinely live survivors here.
+        snapshot=$(printf '%s\n' "$snapshot" | awk -F'|' '$6 != "Z"')
+    fi
     [[ -z "$snapshot" && -z "$registered_survivors" ]] && return 0
     {
         printf 'scenario=%s\nrun_id=%s\nsupervisor_pid=%s\n' "$scenario" "$run_id" "$BASHPID"
@@ -524,28 +577,23 @@ _wg_smoke_terminate_run() {
     return 1
 }
 
-# An owner record is stale only when its exact supervisor PID+start identity
-# is gone (or, for a legacy/incomplete record, once the record is old). Never
-# reap another concurrently-running scenario merely because it shares the
-# global smoke root.
+# An owner record is stale only when its complete, exact supervisor PID/start
+# identity is gone. Incomplete/legacy records remain evidence regardless of
+# age; never infer authority from merely sharing the global smoke root.
 _wg_smoke_owner_is_abandoned() {
     local owner_file="$1" pid expected identity
     pid=$(grep '^supervisor_pid=' "$owner_file" 2>/dev/null | tail -1 | cut -d= -f2-)
     expected=$(grep '^supervisor_start_ticks=' "$owner_file" 2>/dev/null | tail -1 | cut -d= -f2-)
-    if [[ "$pid" =~ ^[0-9]+$ ]]; then
-        identity=$(_wg_smoke_proc_identity "$pid" 2>/dev/null || true)
-        if [[ -n "$identity" ]]; then
-            # shellcheck disable=SC2086
-            set -- $identity
-            if [[ -z "$expected" || "$4" == "$expected" ]]; then
-                return 1
-            fi
-        fi
-        return 0
+    # Incomplete/legacy records are retained evidence, never authority to
+    # signal by marker or delete scratch merely because time passed.
+    [[ "$pid" =~ ^[0-9]+$ && "$expected" =~ ^[0-9]+$ ]] || return 1
+    identity=$(_wg_smoke_proc_identity "$pid" 2>/dev/null || true)
+    if [[ -n "$identity" ]]; then
+        # shellcheck disable=SC2086
+        set -- $identity
+        [[ "$4" == "$expected" ]] && return 1
     fi
-    # An incomplete record can briefly exist between mkdir and atomic owner
-    # metadata creation. Only age, never its name, can make that record stale.
-    [[ -n "$(find "$owner_file" -mmin +10 -print -quit 2>/dev/null)" ]]
+    return 0
 }
 
 _wg_smoke_remove_owner_scratch() {
@@ -581,7 +629,7 @@ wg_smoke_sweep() {
             [[ -n "$run_id" ]] || continue
             _wg_smoke_owner_is_abandoned "$owner_file" || continue
             if _wg_smoke_terminate_run "$run_id" "${scenario:-unknown}" \
-                "$(dirname "$owner_file")/cleanup-diagnostics.log" \
+                "$(dirname "$owner_file")/cleanup-diagnostics.log" "$run_id" \
                 && _wg_smoke_remove_owner_scratch "$(dirname "$owner_file")" "$root"; then
                 rm -rf "$(dirname "$owner_file")"
             else
@@ -698,25 +746,27 @@ wg_smoke_cleanup() {
     local d
     # Under the Rust harness, defer fixture and registry deletion to the
     # subreaper. It reaps adopted double-fork descendants first, then consumes
-    # these scratch registries and removes the ownership directory. Direct
-    # runs have no Rust parent and therefore perform the same ordering here.
-    if [[ "$cleanup_failed" -eq 0 && "${WG_SMOKE_HARNESS_OWNED:-0}" != 1 ]]; then
-        if [[ -f "$WG_SMOKE_SCRATCHES_FILE" ]]; then
-            while read -r d; do
-                [[ -n "$d" ]] || continue
-                if [[ -d "$d" ]]; then
-                    rm -rf "$d" 2>/dev/null || true
-                fi
-            done <"$WG_SMOKE_SCRATCHES_FILE"
-        fi
-        if [[ -n "${WG_SMOKE_REGISTRY_DIR:-}" && -d "$WG_SMOKE_REGISTRY_DIR" ]]; then
-            rm -rf "$WG_SMOKE_REGISTRY_DIR" 2>/dev/null || true
-        fi
-        if [[ "$_WG_SMOKE_OWNER_CREATED" == 1 ]]; then
-            rm -rf "$(dirname "$WG_SMOKE_OWNER_FILE")" 2>/dev/null || true
+    # these scratch registries and removes the ownership directory.
+    if [[ "$cleanup_failed" -eq 0 ]]; then
+        if [[ "${WG_SMOKE_HARNESS_OWNED:-0}" != 1 ]]; then
+            if [[ -f "$WG_SMOKE_SCRATCHES_FILE" ]]; then
+                while read -r d; do
+                    [[ -n "$d" ]] || continue
+                    if [[ -d "$d" ]]; then
+                        rm -rf "$d" 2>/dev/null || true
+                    fi
+                done <"$WG_SMOKE_SCRATCHES_FILE"
+            fi
+            if [[ -n "${WG_SMOKE_REGISTRY_DIR:-}" && -d "$WG_SMOKE_REGISTRY_DIR" ]]; then
+                rm -rf "$WG_SMOKE_REGISTRY_DIR" 2>/dev/null || true
+            fi
+            if [[ "$_WG_SMOKE_OWNER_CREATED" == 1 ]]; then
+                rm -rf "$(dirname "$WG_SMOKE_OWNER_FILE")" 2>/dev/null || true
+            fi
         fi
     else
         echo "SMOKE CLEANUP FAILED: scenario=${WG_SMOKE_SCENARIO:-adhoc} diagnostics=$WG_SMOKE_CLEANUP_DIAGNOSTICS" >&2
+        tail -132 "$WG_SMOKE_CLEANUP_DIAGNOSTICS" >&2 2>/dev/null || true
         [[ "$rc" -ne 0 ]] || rc=1
     fi
     exit "$rc"

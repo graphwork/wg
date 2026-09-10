@@ -72,19 +72,26 @@ future commit:
 - Post-spawn root PID/start/group/session diagnostics are append-only. An
   interruption while enriching diagnostics cannot truncate the pre-spawn run-id
   authority used by exact-marker cleanup.
-- Shell cleanup waits a bounded interval for every registered PID/start identity
-  to disappear after signaling. An immutable harness-run marker survives nested
-  helpers that intentionally replace their local ownership token. The launched
-  scenario shell is also made the nearest subreaper, so it handles nested
-  orphan exits while it remains alive; the Rust harness remains the outer
-  backstop and reaps only remembered matching PID/start zombies adopted directly
-  by itself. This closes the brief
+- Shell cleanup waits a bounded interval for every registered live PID/start
+  identity after signaling and hands adopted zombies to the exact Rust wait.
+  An immutable harness-run marker survives nested
+  helpers that intentionally replace their local ownership token. Before every
+  signal pass, nested helpers append their exact PID/start snapshots to the
+  immutable harness ledger; the Rust wait loop reads that bounded ledger before
+  any `/proc` scan, so a marker-to-zombie transition cannot be missed under load.
+  The Rust harness remains the sole adoption boundary and reaps only
+  ledger/marker-matched zombies adopted directly by itself. This closes the brief
   markerless-zombie/fixture-deletion race without broad `waitpid` selection.
 - Platforms without Linux subreaper plus `/proc` exact-marker support fail closed
-  before scenario spawn. Their global sweep retains existing owner records and
-  appends a diagnostic instead of pretending an empty scan authorizes process or
-  fixture deletion. On Linux, `setsid()` failure is returned from `pre_exec`, so
-  the child cannot continue without its required new session.
+  before scenario spawn. `_helpers.sh` also requires the matching unguessable
+  harness/subreaper token before initializing fixtures, so ad-hoc direct and
+  unsupported execution cannot bypass that boundary. Unsupported-platform
+  sweeps retain owner records and append a diagnostic instead of pretending an
+  empty scan authorizes deletion. On Linux, `setsid()` failure is returned from
+  `pre_exec`, so the child cannot continue without its required process boundary.
+- Stale sweeps require a complete supervisor PID/start identity and prove that
+  exact identity dead before signaling by marker or deleting registered scratch.
+  Incomplete and legacy records are retained as evidence regardless of age.
 
 Focused regression `ownership_authority_is_durable_before_any_scenario_spawn`
 and the real-entry-point process ownership scenario pass. The final expanded
