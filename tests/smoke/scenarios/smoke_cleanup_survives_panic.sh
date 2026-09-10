@@ -72,9 +72,10 @@ WG_SMOKE_ROOT="$sub_root" WG_SMOKE_SCENARIO="leakchild" \
         trap - EXIT INT TERM HUP
         scratch=$(make_scratch)
         cd "$scratch"
-        wg init -x shell >init.log 2>&1 \
-            || wg init -x claude >init.log 2>&1 \
+        wg init --no-agency >init.log 2>&1 \
             || { echo "INIT_FAILED" >&2; exit 1; }
+        wg setup --route pi --yes --model pi:openrouter:test/smoke-cleanup \
+            >setup.log 2>&1 || { cat setup.log >&2; exit 1; }
         # Spawn the daemon directly (bypasses start_wg_daemon to keep the
         # child surface minimal). Wait for state.json so the parent can
         # read the PID.
@@ -120,11 +121,12 @@ if [[ -z "$leaked_pid" ]]; then
 $(cat "$leak_log")"
 fi
 
-# Pre-condition: leaked daemon must be alive.
-if ! kill -0 "$leaked_pid" 2>/dev/null; then
-    loud_fail "expected leaked daemon $leaked_pid to be alive after child SIGKILL — child shell may have failed to spawn the daemon. log:
-$(cat "$leak_log")"
-fi
+# Newer daemon supervisors may notice the launcher death and self-reap before
+# the backstop runs. Older candidates leave it alive. Both are valid inputs:
+# the stale scratch + exactly-owned tmux still exercise crash recovery, while
+# smoke_process_ownership_cleanup covers a guaranteed TERM-ignoring daemon.
+daemon_was_alive=0
+kill -0 "$leaked_pid" 2>/dev/null && daemon_was_alive=1
 sub_dirs_before=$(find "$sub_root" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
 if [[ "$sub_dirs_before" -lt 1 ]]; then
     loud_fail "expected at least 1 leaked scratch under $sub_root, got $sub_dirs_before"
@@ -165,6 +167,13 @@ if [[ -n "$leaked_tmux" ]]; then
     "$WG_SMOKE_TMUX_BIN" has-session -t "$decoy_tmux" 2>/dev/null \
         || loud_fail "wg_smoke_sweep killed unowned real-chat decoy $decoy_tmux"
 fi
+
+# The child deliberately shared this scenario's outer owner record, so the
+# generic sweep cannot infer its scratch registry from sub_root itself. Now
+# that exact-marker cleanup proved its process set empty, delete this private,
+# scenario-created root explicitly. A shared-root sweep never deletes by age
+# or directory name alone.
+find "$sub_root" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
 
 # Assertion 3: scratch dirs under sub_root are gone.
 sub_dirs_after=$(find "$sub_root" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)

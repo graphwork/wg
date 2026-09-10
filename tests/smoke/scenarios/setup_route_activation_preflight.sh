@@ -34,7 +34,7 @@ git -C "$scratch/project" config user.name Smoke
 printf 'setup activation fixture\n' >"$scratch/project/README.md"
 git -C "$scratch/project" add README.md
 git -C "$scratch/project" commit -qm init
-base_env=(env -i HOME="$scratch/home" WG_GLOBAL_DIR="$scratch/home/.wg" XDG_CACHE_HOME="$scratch/home/.cache" USER=test TERM=xterm PATH="$scratch/fake-bin:/usr/bin:/bin" PI_INVOCATION_LOG="$scratch/pi-invocations.log")
+base_env=(env -i HOME="$scratch/home" WG_GLOBAL_DIR="$scratch/home/.wg" XDG_CACHE_HOME="$scratch/home/.cache" USER=test TERM=xterm PATH="$scratch/fake-bin:/usr/bin:/bin" PI_INVOCATION_LOG="$scratch/pi-invocations.log" WG_SMOKE_RUN_ID="$WG_SMOKE_RUN_ID" WG_SMOKE_SCENARIO="$WG_SMOKE_SCENARIO")
 "${base_env[@]}" "$W" --dir "$scratch/project/.wg" init --no-agency >/dev/null
 cleanup_service() {
     "${base_env[@]}" "$W" --dir "$scratch/project/.wg" service stop --force >/dev/null 2>&1 || true
@@ -43,7 +43,7 @@ add_cleanup_hook cleanup_service
 
 # Real PTY terminal command from a clean HOME. Fake Pi proves executable discovery
 # is credential-free and that setup does not pretend to perform a provider call.
-cmd="cd '$scratch/project' && env -i HOME='$scratch/home' WG_GLOBAL_DIR='$scratch/home/.wg' XDG_CACHE_HOME='$scratch/home/.cache' USER=test TERM=xterm PATH='$scratch/fake-bin:/usr/bin:/bin' PI_INVOCATION_LOG='$scratch/pi-invocations.log' OPENROUTER_API_KEY='must-not-be-used' HTTP_PROXY='http://127.0.0.1:9' HTTPS_PROXY='http://127.0.0.1:9' ALL_PROXY='http://127.0.0.1:9' NO_PROXY='' strace -f -qq -e trace=connect -o '$scratch/network.trace' '$W' setup --route pi --yes --model '$route'"
+cmd="cd '$scratch/project' && env -i HOME='$scratch/home' WG_GLOBAL_DIR='$scratch/home/.wg' XDG_CACHE_HOME='$scratch/home/.cache' USER=test TERM=xterm PATH='$scratch/fake-bin:/usr/bin:/bin' PI_INVOCATION_LOG='$scratch/pi-invocations.log' WG_SMOKE_RUN_ID='$WG_SMOKE_RUN_ID' WG_SMOKE_SCENARIO='$WG_SMOKE_SCENARIO' OPENROUTER_API_KEY='must-not-be-used' HTTP_PROXY='http://127.0.0.1:9' HTTPS_PROXY='http://127.0.0.1:9' ALL_PROXY='http://127.0.0.1:9' NO_PROXY='' strace -f -qq -e trace=connect -o '$scratch/network.trace' '$W' setup --route pi --yes --model '$route'"
 script -qec "$cmd" "$scratch/setup.typescript" >/dev/null
 
 [[ "$(cat "$scratch/home/.wg/active-profile")" = pi ]] \
@@ -69,6 +69,7 @@ if grep -Eq 'sa_family=AF_INET6?|sin6?_family=AF_INET6?' "$scratch/network.trace
 fi
 
 models=$(env -i HOME="$scratch/home" WG_GLOBAL_DIR="$scratch/home/.wg" USER=test PATH="/usr/bin:/bin" \
+    WG_SMOKE_RUN_ID="$WG_SMOKE_RUN_ID" WG_SMOKE_SCENARIO="$WG_SMOKE_SCENARIO" \
     "$W" --dir "$scratch/project/.wg" config --models)
 default_line=$(grep -E '^  default ' <<<"$models")
 task_line=$(grep -E '^  task_agent ' <<<"$models")
@@ -104,7 +105,7 @@ cleanup_service
 # Unavailable handler case remains explicit and action-oriented. Configuration is
 # selected exactly (graph/config work can continue), but output never calls it ready.
 mkdir -p "$scratch/missing-home" "$scratch/missing-project"
-missing_cmd="cd '$scratch/missing-project' && env -i HOME='$scratch/missing-home' WG_GLOBAL_DIR='$scratch/missing-home/.wg' XDG_CACHE_HOME='$scratch/missing-home/.cache' USER=test TERM=xterm PATH='$scratch/empty-path' '$W' setup --route pi --yes --model '$route'"
+missing_cmd="cd '$scratch/missing-project' && env -i HOME='$scratch/missing-home' WG_GLOBAL_DIR='$scratch/missing-home/.wg' XDG_CACHE_HOME='$scratch/missing-home/.cache' USER=test TERM=xterm PATH='$scratch/empty-path' WG_SMOKE_RUN_ID='$WG_SMOKE_RUN_ID' WG_SMOKE_SCENARIO='$WG_SMOKE_SCENARIO' '$W' setup --route pi --yes --model '$route'"
 script -qec "$missing_cmd" "$scratch/missing.typescript" >/dev/null
 grep -q 'Pi handler: UNAVAILABLE on PATH' "$scratch/missing.typescript" \
     || loud_fail "unavailable Pi was not reported"

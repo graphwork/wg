@@ -38,7 +38,7 @@ PY
   done
   loud_fail "planner runtime status did not become ready: $(tail -40 "$G/service/daemon.log")"
 }
-trap cleanup EXIT
+add_cleanup_hook cleanup
 
 # Step 2 no longer creates or refreshes the retired convergence scheduler.
 # Seed a real pre-cutover schema fixture before PlannerStore's one-time import.
@@ -114,6 +114,5 @@ assert json.load(open(sys.argv[1]))['planner_runtime']==json.load(open(sys.argv[
 PY
 }
 run_wg --dir "$G" service stop >/dev/null
-trap - EXIT
 
 echo "PASS: production planner kernel imports legacy deadline/backoff/route state once and exposes byte-stable read-only status across restart"

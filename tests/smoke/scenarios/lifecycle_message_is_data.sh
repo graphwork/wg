@@ -25,7 +25,7 @@ cleanup() {
     wait "$live_pid" 2>/dev/null || true
   fi
 }
-trap cleanup EXIT
+add_cleanup_hook cleanup
 
 wg config --local --model pi:openrouter:openai/gpt-4o-mini --no-reload >/dev/null
 wg config --auto-assign false --auto-evaluate false --flip-enabled false --no-reload >/dev/null
@@ -230,5 +230,4 @@ log="$G/service/daemon.log"
 
 echo "PASS (3/3): daemon restart with historical unread messages produced zero reopen/readiness/liveness/ownership/attempt/spawn changes"
 cleanup
-trap - EXIT
 echo "PASS: message delivery is durable, attempt-bound, diagnostic, restart-inert data; one armed subscription resumes exactly once"

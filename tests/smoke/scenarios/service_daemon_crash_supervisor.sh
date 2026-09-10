@@ -10,7 +10,7 @@ cd "$scratch"
 wg init -m pi:openrouter:openai/gpt-4o-mini >init.log 2>&1 || loud_fail "init failed: $(tail -20 init.log)"
 wg_dir=$(graph_dir_in "$scratch") || loud_fail "missing graph"
 cleanup_daemon() { wg --dir "$wg_dir" service stop --force >/dev/null 2>&1 || true; }
-trap cleanup_daemon EXIT
+add_cleanup_hook cleanup_daemon
 wg --dir "$wg_dir" service start --max-agents 0 --no-chat-agent --interval 1 >start.log 2>&1 || loud_fail "start failed: $(cat start.log)"
 state="$wg_dir/service/state.json"
 log="$wg_dir/service/daemon.log"
@@ -36,7 +36,6 @@ kill -0 "$new_pid" 2>/dev/null || loud_fail "replacement daemon died from catcha
 grep -q "Survived stray signal.*SIGHUP" "$log" || loud_fail "SIGHUP was not named in daemon.log: $(tail -50 "$log")"
 grep -q "Coordinator tick #[0-9].*complete" "$log" || loud_fail "dispatch ticks did not resume after restart"
 wg --dir "$wg_dir" service stop >stop.log 2>&1 || loud_fail "clean stop failed: $(cat stop.log)"
-trap - EXIT
 for _ in $(seq 1 50); do kill -0 "$supervisor_pid" 2>/dev/null || break; sleep .1; done
 kill -0 "$supervisor_pid" 2>/dev/null && loud_fail "clean stop left supervisor alive"
 echo "PASS: SIGKILL crash was loud and auto-restarted ($old_pid -> $new_pid); SIGHUP was logged and survived; ticks resumed"

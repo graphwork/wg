@@ -8,9 +8,15 @@
 # (the sole LLM handler); a selected route stays on its own execution system
 # and never silently falls back to another handler.
 set -euo pipefail
+HERE="$(cd "$(dirname "$0")" && pwd)"
+. "$HERE/_helpers.sh"
 
-scratch=$(mktemp -d)
-trap 'env -u WG_TASK_ID -u WG_AGENT_ID -u WG_AGENT_ROLE HOME="$scratch/home" WG_GLOBAL_DIR="$scratch/global" wg --dir "$scratch/project/.wg" service stop --force >/dev/null 2>&1 || true; rm -rf "$scratch"' EXIT
+scratch=$(make_scratch)
+cleanup_service() {
+  env -u WG_TASK_ID -u WG_AGENT_ID -u WG_AGENT_ROLE HOME="$scratch/home" WG_GLOBAL_DIR="$scratch/global" \
+    wg --dir "$scratch/project/.wg" service stop --force >/dev/null 2>&1 || true
+}
+add_cleanup_hook cleanup_service
 mkdir -p "$scratch/home" "$scratch/global" "$scratch/project"
 
 run_wg() {

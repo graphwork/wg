@@ -6,13 +6,12 @@ command -v tmux >/dev/null 2>&1 || loud_skip "MISSING TMUX" "tmux is required"
 : "${WG_BIN:?smoke harness must provide candidate WG_BIN}"
 [[ -x $WG_BIN ]] || loud_fail "candidate WG_BIN is not executable: $WG_BIN"
 
-scratch=$(mktemp -d "${TMPDIR:-/tmp}/wg-worker-control-tui.XXXXXX")
+scratch=$(make_scratch)
 session="wg-worker-control-tui-$$"
 cleanup() {
   tmux kill-session -t "$session" >/dev/null 2>&1 || true
-  [[ ${WG_SMOKE_KEEP_TMP:-0} == 1 ]] || rm -rf "$scratch"
 }
-trap cleanup EXIT
+add_cleanup_hook cleanup
 project="$scratch/project"
 home="$scratch/home"
 mkdir -p "$project" "$home/.config"

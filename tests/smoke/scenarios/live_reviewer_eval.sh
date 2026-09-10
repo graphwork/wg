@@ -65,6 +65,7 @@ EOF
 
     local out="$scratch/$label.json"
     env -i HOME="$HOME_DIR" PATH="$PATH" XDG_CONFIG_HOME="$HOME_DIR/.config" \
+        WG_SMOKE_RUN_ID="$WG_SMOKE_RUN_ID" WG_SMOKE_SCENARIO="$WG_SMOKE_SCENARIO" \
         RUST_LOG=error WG_REVIEW_MODEL=1 OPENROUTER_API_KEY="$KEY" \
         wg --dir "$wgdir" --json review eval --require-model \
         --catch-threshold "$CATCH" --fp-ceiling "$FPCEIL" >"$out" 2>"$scratch/$label.stderr.txt"

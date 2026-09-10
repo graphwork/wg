@@ -45,7 +45,7 @@ with open(p,'w') as f:
 PY
 
 cleanup() { "$WG_BIN" --dir "$G" service stop --force --kill-agents >/dev/null 2>&1 || true; }
-trap cleanup EXIT
+add_cleanup_hook cleanup
 "$WG_BIN" --dir "$G" service start --max-agents 0 --no-chat-agent --force >/dev/null
 
 converged=false

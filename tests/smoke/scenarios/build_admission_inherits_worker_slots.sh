@@ -52,7 +52,6 @@ for n in 1 2 3; do
   wg publish "build-$n" --only >/dev/null
 done
 start_wg_daemon "$project" --no-chat-agent --interval 1
-trap 'stop_wg_daemon "$project" 2>/dev/null || true; rm -rf "$scratch"' EXIT
 for _ in $(seq 1 150); do
   [ -e started-1 ] && [ -e started-2 ] && [ -e started-3 ] && break
   sleep 0.1

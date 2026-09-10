@@ -728,9 +728,21 @@ owners = [
     "smoke-tests-leak",
     "smoke-gate-is",
     "fix-disk-cleanup-recurrence",
+    "fix-smoke-pi-process-leaks",
 ]
 description = "Pins smoke fixture lifecycle: helper-owned tmux sessions are stamped with strict metadata and cleaned on pass/fail/timeout/SIGTERM; a SIGKILL child leaves a real daemon, owned tmux and scratch for wg_smoke_sweep to reap, while a smoke-looking unowned user/chat tmux session survives. Never matches sessions by name."
 timeout_seconds = 60
+
+[[scenario]]
+name = "smoke_process_ownership_cleanup"
+script = "scenarios/smoke_process_ownership_cleanup.sh"
+owners = [
+    "fix-smoke-pi-process-leaks",
+    "smoke-gate-is",
+    "implement-wg-pi-compaction-kick",
+]
+description = "Replacement lifecycle guard for the removed pi_threshold_compaction_same_process_kick scenario: launches a TERM-ignoring fake Pi that double-forks into a new session, an observer, and a respawning supervised daemon; aborts through success/assertion/timeout/SIGINT/SIGTERM twice; proves exact-marker cleanup leaves no process/PPID-1/deleted-FD/temp-root residue while an unrelated executable named pi and a concurrently healthy owned scenario survive unchanged."
+timeout_seconds = 90
 
 [[scenario]]
 name = "reaper_retry_in_place_protected"

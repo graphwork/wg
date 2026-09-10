@@ -109,7 +109,8 @@ assert_journal_contains() {
     fi
 }
 
-clean_env=(env -i "HOME=$home" "PATH=$PATH" "TERM=${TERM:-xterm-256color}" "USER=wg-smoke")
+clean_env=(env -i "HOME=$home" "PATH=$PATH" "TERM=${TERM:-xterm-256color}" "USER=wg-smoke" \
+    "WG_SMOKE_RUN_ID=$WG_SMOKE_RUN_ID" "WG_SMOKE_SCENARIO=$WG_SMOKE_SCENARIO")
 base_nex=(nex --no-mcp --minimal-tools --max-turns 4)
 pipe_quit=(bash -c 'printf "/quit\n" | "$@"' bash)
 

@@ -56,7 +56,11 @@ mkdir -p "$wg_dir/service"
 sleep 600 &
 sleep_pid_a=$!
 disown $sleep_pid_a 2>/dev/null || true
-trap '[ -n "${sleep_pid_a:-}" ] && kill -9 "$sleep_pid_a" 2>/dev/null; [ -n "${sleep_pid_b:-}" ] && kill -9 "$sleep_pid_b" 2>/dev/null' EXIT
+cleanup_sleep_fixtures() {
+    [ -n "${sleep_pid_a:-}" ] && kill -9 "$sleep_pid_a" 2>/dev/null || true
+    [ -n "${sleep_pid_b:-}" ] && kill -9 "$sleep_pid_b" 2>/dev/null || true
+}
+add_cleanup_hook cleanup_sleep_fixtures
 
 # Confirm the sleep is actually alive before we proceed.
 kill -0 "$sleep_pid_a" 2>/dev/null \

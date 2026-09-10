@@ -21,16 +21,17 @@
 # The contract this file enforces:
 #
 #   * Every scratch dir lives under `wg_smoke_root` (a single shared parent).
-#   * Every spawned daemon is registered for teardown via `start_wg_daemon`,
-#     which reads the canonical PID from `service/state.json` rather than
-#     `$!`. No scenario should call `wg service start` directly.
-#   * One trap, installed by this file, tears every registered fixture down
-#     on EXIT/INT/TERM/HUP. Scenarios MUST NOT install their own EXIT trap;
-#     use `add_cleanup_hook <fn>` instead if extra teardown is needed.
-#   * `wg_smoke_sweep` is a defense-in-depth reaper invoked at session start
-#     (and exposed for callers) that finds and kills any `wg service daemon`
-#     under the smoke root, then rms the leftover dirs. Kills survive
-#     re-parenting because we scan `/proc/*/cmdline`, not the process tree.
+#   * The Rust harness assigns every scenario an unguessable
+#     `WG_SMOKE_RUN_ID` and a new session. Every daemon, wrapper, observer,
+#     provider and Pi child inherits that exact ownership identity.
+#   * Every spawned daemon is also registered via `start_wg_daemon`, which
+#     reads the canonical PID from `service/state.json` rather than `$!`.
+#   * One trap, installed by this file, tears the complete ownership set down
+#     on EXIT/ERR/INT/TERM/HUP, waits/reaps, and only then deletes fixtures.
+#     Scenarios MUST use `add_cleanup_hook`, never replace the central trap.
+#   * `wg_smoke_sweep` is a defense-in-depth reaper. It reads explicit owner
+#     records and scans `/proc/*/environ` for the exact run id. It never
+#     selects by command name, so unrelated user Pi sessions are invisible.
 
 set -u
 
@@ -48,6 +49,16 @@ unset WG_WORKTREE_PATH
 unset WG_WORKTREE_ACTIVE
 unset WG_BRANCH
 unset WG_TASK_ID
+unset WG_AGENT_ID
+unset WG_GRAPH_ID
+unset WG_WORKER_CAPABILITY
+unset WG_WORKER_IPC
+unset WG_WORKER_CONTROL_PROTOCOL
+unset WG_WORKER_CONTROL_MODE
+unset WG_WORKER_ATTEMPT_FENCE
+unset WG_WORKER_ATTEMPT_ID
+unset WG_WORKER_FILESYSTEM_ISOLATION
+unset WG_WORKER_GENERATION
 
 # ── Skip banner ─────────────────────────────────────────────────────
 loud_skip() {
@@ -98,6 +109,36 @@ wg_smoke_root() {
     echo "${WG_SMOKE_ROOT:-${TMPDIR:-/tmp}/wgsmoke}"
 }
 
+# ── Exact scenario ownership identity ──────────────────────────────
+# Normal manifest runs receive these from src/smoke.rs before bash starts.
+# Ad-hoc direct runs still get a unique identity and durable owner record so
+# the same cleanup contract applies outside `wg done`.
+if [[ -z "${WG_SMOKE_RUN_ID:-}" ]]; then
+    if [[ -r /proc/sys/kernel/random/uuid ]]; then
+        WG_SMOKE_RUN_ID="wg-smoke-v2:$(cat /proc/sys/kernel/random/uuid)"
+    else
+        WG_SMOKE_RUN_ID="wg-smoke-v2:$BASHPID-$(date +%s%N)-$RANDOM"
+    fi
+fi
+export WG_SMOKE_RUN_ID
+_WG_SMOKE_OWNER_CREATED=0
+if [[ -z "${WG_SMOKE_OWNER_FILE:-}" ]]; then
+    _wg_owner_dir="$(wg_smoke_root)/.owners/${WG_SMOKE_SCENARIO:-adhoc}-${WG_SMOKE_RUN_ID#wg-smoke-v2:}"
+    mkdir -p "$_wg_owner_dir"
+    WG_SMOKE_OWNER_FILE="$_wg_owner_dir/owner.env"
+    _WG_SMOKE_OWNER_CREATED=1
+fi
+WG_SMOKE_CLEANUP_DIAGNOSTICS="${WG_SMOKE_CLEANUP_DIAGNOSTICS:-$(dirname "$WG_SMOKE_OWNER_FILE")/cleanup-diagnostics.log}"
+export WG_SMOKE_OWNER_FILE WG_SMOKE_CLEANUP_DIAGNOSTICS
+if [[ ! -s "$WG_SMOKE_OWNER_FILE" ]]; then
+    cat >"$WG_SMOKE_OWNER_FILE" <<EOF
+version=2
+run_id=$WG_SMOKE_RUN_ID
+scenario=${WG_SMOKE_SCENARIO:-adhoc}
+supervisor_pid=$BASHPID
+EOF
+fi
+
 # ── scratch dir under the smoke root ────────────────────────────────
 make_scratch() {
     local root
@@ -124,15 +165,20 @@ make_scratch() {
 # `start_wg_daemon` in a subshell does not silently leak.
 WG_SMOKE_CLEANUP_HOOKS=()
 
-WG_SMOKE_REGISTRY_DIR="$(mktemp -d "${TMPDIR:-/tmp}/wgsmoke-registry.XXXXXX")"
+# Keep registry state inside the durable ownership directory. If the shell is
+# SIGKILLed before its trap, the Rust exact-owner backstop removes this state
+# only after descendants are gone; no side registry leaks into /tmp.
+WG_SMOKE_REGISTRY_DIR="$(mktemp -d "$(dirname "$WG_SMOKE_OWNER_FILE")/registry.XXXXXX")"
 export WG_SMOKE_REGISTRY_DIR
 WG_SMOKE_SCRATCHES_FILE="$WG_SMOKE_REGISTRY_DIR/scratches"
 WG_SMOKE_DAEMONS_FILE="$WG_SMOKE_REGISTRY_DIR/daemons"
 WG_SMOKE_TMUX_FILE="$WG_SMOKE_REGISTRY_DIR/tmux"
-export WG_SMOKE_SCRATCHES_FILE WG_SMOKE_DAEMONS_FILE WG_SMOKE_TMUX_FILE
+WG_SMOKE_PROCESSES_FILE="$WG_SMOKE_REGISTRY_DIR/processes"
+export WG_SMOKE_SCRATCHES_FILE WG_SMOKE_DAEMONS_FILE WG_SMOKE_TMUX_FILE WG_SMOKE_PROCESSES_FILE
 : >"$WG_SMOKE_SCRATCHES_FILE"
 : >"$WG_SMOKE_DAEMONS_FILE"
 : >"$WG_SMOKE_TMUX_FILE"
+: >"$WG_SMOKE_PROCESSES_FILE"
 
 # Wrap tmux only when the real binary was present before defining the function.
 # Every scenario that sources this helper then gets strict ownership metadata
@@ -206,11 +252,62 @@ register_scratch() {
     printf '%s\n' "$1" >>"$WG_SMOKE_SCRATCHES_FILE"
 }
 
+# Read the kernel start identity + process group/session. PID alone is never
+# durable ownership proof because it can be reused after a fast exit.
+_wg_smoke_proc_identity() {
+    local pid="$1" stat rest
+    [[ -r "/proc/$pid/stat" ]] || return 1
+    stat=$(<"/proc/$pid/stat") || return 1
+    rest="${stat##*) }"
+    local -a fields
+    read -r -a fields <<<"$rest"
+    [[ ${#fields[@]} -gt 19 ]] || return 1
+    printf '%s %s %s %s %s\n' \
+        "${fields[1]}" "${fields[2]}" "${fields[3]}" "${fields[19]}" "${fields[0]}"
+}
+
+if [[ "$_WG_SMOKE_OWNER_CREATED" == 1 ]]; then
+    _wg_helper_pid=$BASHPID
+    _wg_helper_identity=$(_wg_smoke_proc_identity "$_wg_helper_pid" 2>/dev/null || true)
+    # shellcheck disable=SC2086
+    set -- $_wg_helper_identity
+    if [[ $# -ge 4 ]]; then
+        printf 'supervisor_pid=%s\nsupervisor_start_ticks=%s\nsupervisor_process_group=%s\nsupervisor_session=%s\n' \
+            "$_wg_helper_pid" "$4" "$2" "$3" >>"$WG_SMOKE_OWNER_FILE"
+    fi
+fi
+
+# Register any owned process with bounded diagnostics: role, PID, PPID, PGID,
+# SID, immutable /proc start ticks and state. The exact run-id environment is
+# still the authority used immediately before a signal.
+register_owned_pid() {
+    local pid="$1" role="${2:-process}" identity
+    identity=$(_wg_smoke_proc_identity "$pid" 2>/dev/null || true)
+    printf '%s|%s|%s\n' "$role" "$pid" "$identity" >>"$WG_SMOKE_PROCESSES_FILE"
+}
+
+# Spawn a non-daemon fixture in its own recorded session. Usage:
+#   start_owned_process <role> <log-file> <command> [args...]
+# The PID is returned in WG_SMOKE_OWNED_PID and printed for subshell callers.
+start_owned_process() {
+    local role="$1" log="$2"; shift 2
+    mkdir -p "$(dirname "$log")"
+    if command -v setsid >/dev/null 2>&1; then
+        setsid "$@" >>"$log" 2>&1 &
+    else
+        "$@" >>"$log" 2>&1 &
+    fi
+    WG_SMOKE_OWNED_PID=$!
+    register_owned_pid "$WG_SMOKE_OWNED_PID" "$role"
+    printf '%s\n' "$WG_SMOKE_OWNED_PID"
+}
+
 # Register a daemon (real PID, WG dir) for teardown. Format:
 # `<pid> <dir>` on one line; dir is read with `read pid dir` so dirs with
 # spaces are not supported, but the smoke root never contains spaces.
 register_wg_daemon() {
     printf '%s %s\n' "$1" "$2" >>"$WG_SMOKE_DAEMONS_FILE"
+    register_owned_pid "$1" "wg-daemon"
 }
 
 # ── Find .wg or .wg under a scratch dir ──────────────────────
@@ -271,6 +368,7 @@ start_wg_daemon() {
     # WG_SMOKE_DAEMON_LAUNCH_CWD to prove --dir authority from another cwd.
     ( cd "$launch_cwd" && wg --dir "$wg_dir" service start "$@" >"$wrap_log" 2>&1 ) &
     local wrap_pid=$!
+    register_owned_pid "$wrap_pid" "wg-start-wrapper"
     local pid
     if ! pid=$(wait_for_daemon_pid "$wg_dir" 30); then
         wait "$wrap_pid" 2>/dev/null || true
@@ -284,47 +382,174 @@ $(tail -20 "$wrap_log" 2>/dev/null || echo '<no log>')"
     return 0
 }
 
-# ── Sweep: kill stray daemons + remove scratch dirs under the root ──
-# Scans `/proc/*/cmdline` for `wg service daemon` processes whose `--dir`
-# argv starts with the smoke root and signals them. Survives re-parenting
-# (init-owned orphans show up in /proc the same as direct children).
-# Then removes every subdir under the root. Idempotent.
-wg_smoke_sweep() {
-    local root
-    root="$(wg_smoke_root)"
-    local prefix="${root}/"
-    if [[ -d /proc ]]; then
-        local cmdline_path cmdline pid args
-        local -a victims=()
-        for cmdline_path in /proc/[0-9]*/cmdline; do
-            [[ -r "$cmdline_path" ]] || continue
-            cmdline=$(tr '\0' ' ' < "$cmdline_path" 2>/dev/null) || continue
-            # Must contain "service daemon" AND --dir under root.
-            case " $cmdline " in
-                *" service daemon "*) ;;
-                *) continue ;;
-            esac
-            case " $cmdline " in
-                *" --dir $prefix"*) ;;
-                *) continue ;;
-            esac
-            pid=${cmdline_path#/proc/}
-            pid=${pid%/cmdline}
-            victims+=("$pid")
-        done
-        local v
-        for v in "${victims[@]:-}"; do
-            [[ -n "$v" ]] || continue
-            kill -TERM "$v" 2>/dev/null || true
-        done
-        # Give SIGTERM 0.5s to land before SIGKILL.
-        if [[ ${#victims[@]} -gt 0 ]]; then
-            sleep 0.5
+# ── Exact ownership scan / termination ──────────────────────────────
+_wg_smoke_pid_has_run_id() {
+    local pid="$1" run_id="$2" entry fd
+    { exec {fd}<"/proc/$pid/environ"; } 2>/dev/null || return 1
+    while IFS= read -r -d '' entry <&"$fd"; do
+        if [[ "$entry" == "WG_SMOKE_RUN_ID=$run_id" ]]; then
+            exec {fd}<&-
+            return 0
         fi
-        for v in "${victims[@]:-}"; do
-            [[ -n "$v" ]] || continue
-            if kill -0 "$v" 2>/dev/null; then
-                kill -KILL "$v" 2>/dev/null || true
+    done
+    exec {fd}<&-
+    return 1
+}
+
+_wg_smoke_ancestor_set() {
+    local pid="$BASHPID" stat rest ppid out=" $BASHPID $$ "
+    while [[ "$pid" =~ ^[0-9]+$ && "$pid" -gt 1 && -r "/proc/$pid/stat" ]]; do
+        stat=$(<"/proc/$pid/stat") || break
+        rest="${stat##*) }"
+        local -a fields
+        read -r -a fields <<<"$rest"
+        ppid="${fields[1]:-0}"
+        out+="$ppid "
+        pid="$ppid"
+    done
+    printf '%s\n' "$out"
+}
+
+# Output: pid|ppid|pgid|sid|start_ticks|state|comm. The environment marker is
+# checked first and the immutable start identity is retained for revalidation.
+_wg_smoke_owned_snapshot() {
+    local run_id="$1" ancestors proc pid identity comm
+    ancestors=$(_wg_smoke_ancestor_set)
+    [[ -d /proc ]] || return 0
+    for proc in /proc/[0-9]*; do
+        pid="${proc#/proc/}"
+        [[ "$ancestors" == *" $pid "* ]] && continue
+        _wg_smoke_pid_has_run_id "$pid" "$run_id" || continue
+        identity=$(_wg_smoke_proc_identity "$pid" 2>/dev/null || true)
+        [[ -n "$identity" ]] || continue
+        comm=$(<"$proc/comm" 2>/dev/null || true)
+        # identity is ppid pgid sid start state
+        # shellcheck disable=SC2086
+        set -- $identity
+        printf '%s|%s|%s|%s|%s|%s|%s\n' "$pid" "$1" "$2" "$3" "$4" "$5" "${comm//$'\n'/}"
+    done
+}
+
+_wg_smoke_signal_snapshot() {
+    local run_id="$1" signal="$2" snapshot="$3"
+    local pid ppid pgid sid start state comm identity current_start
+    while IFS='|' read -r pid ppid pgid sid start state comm; do
+        [[ "$pid" =~ ^[0-9]+$ ]] || continue
+        _wg_smoke_pid_has_run_id "$pid" "$run_id" || continue
+        identity=$(_wg_smoke_proc_identity "$pid" 2>/dev/null || true)
+        [[ -n "$identity" ]] || continue
+        # shellcheck disable=SC2086
+        set -- $identity
+        current_start="$4"
+        [[ "$current_start" == "$start" ]] || continue
+        kill -"$signal" "$pid" 2>/dev/null || true
+    done <<<"$snapshot"
+}
+
+_wg_smoke_wait_registered() {
+    local role pid rest
+    [[ -f "$WG_SMOKE_PROCESSES_FILE" ]] || return 0
+    while IFS='|' read -r role pid rest; do
+        [[ "$pid" =~ ^[0-9]+$ ]] || continue
+        wait "$pid" 2>/dev/null || true
+    done <"$WG_SMOKE_PROCESSES_FILE"
+}
+
+# TERM, rescan to catch a respawning supervisor, KILL, rescan again, then reap
+# direct/adopted children. Failure leaves bounded PID/start/PGID/SID diagnostics
+# and returns non-zero so fixture directories are deliberately retained.
+_wg_smoke_terminate_run() {
+    local run_id="$1" scenario="$2" diag="$3"
+    local snapshot="" seen_file="$WG_SMOKE_REGISTRY_DIR/seen" i
+    : >"$seen_file"
+    for i in $(seq 1 40); do
+        snapshot=$(_wg_smoke_owned_snapshot "$run_id")
+        [[ -z "$snapshot" ]] && break
+        printf '%s\n' "$snapshot" >>"$seen_file"
+        _wg_smoke_signal_snapshot "$run_id" TERM "$snapshot"
+        sleep 0.05
+    done
+    for i in $(seq 1 60); do
+        snapshot=$(_wg_smoke_owned_snapshot "$run_id")
+        [[ -z "$snapshot" ]] && break
+        printf '%s\n' "$snapshot" >>"$seen_file"
+        _wg_smoke_signal_snapshot "$run_id" KILL "$snapshot"
+        sleep 0.05
+    done
+    _wg_smoke_wait_registered
+    snapshot=$(_wg_smoke_owned_snapshot "$run_id")
+    [[ -z "$snapshot" ]] && return 0
+    {
+        printf 'scenario=%s\nrun_id=%s\nsupervisor_pid=%s\n' "$scenario" "$run_id" "$BASHPID"
+        printf 'pid|ppid|process_group|session|start_ticks|state|command\n'
+        sort -u "$seen_file" 2>/dev/null | tail -128
+        printf 'survivors:\n%s\n' "$snapshot"
+    } >"$diag"
+    return 1
+}
+
+# An owner record is stale only when its exact supervisor PID+start identity
+# is gone (or, for a legacy/incomplete record, once the record is old). Never
+# reap another concurrently-running scenario merely because it shares the
+# global smoke root.
+_wg_smoke_owner_is_abandoned() {
+    local owner_file="$1" pid expected identity
+    pid=$(grep '^supervisor_pid=' "$owner_file" 2>/dev/null | tail -1 | cut -d= -f2-)
+    expected=$(grep '^supervisor_start_ticks=' "$owner_file" 2>/dev/null | tail -1 | cut -d= -f2-)
+    if [[ "$pid" =~ ^[0-9]+$ ]]; then
+        identity=$(_wg_smoke_proc_identity "$pid" 2>/dev/null || true)
+        if [[ -n "$identity" ]]; then
+            # shellcheck disable=SC2086
+            set -- $identity
+            if [[ -z "$expected" || "$4" == "$expected" ]]; then
+                return 1
+            fi
+        fi
+        return 0
+    fi
+    # An incomplete record can briefly exist between mkdir and atomic owner
+    # metadata creation. Only age, never its name, can make that record stale.
+    [[ -n "$(find "$owner_file" -mmin +10 -print -quit 2>/dev/null)" ]]
+}
+
+_wg_smoke_remove_owner_scratch() {
+    local owner_dir="$1" root="$2" scratches d canonical_root canonical
+    canonical_root=$(readlink -f "$root" 2>/dev/null || true)
+    [[ -n "$canonical_root" ]] || return 1
+    for scratches in "$owner_dir"/registry.*/scratches; do
+        [[ -f "$scratches" ]] || continue
+        while IFS= read -r d; do
+            [[ -n "$d" && -d "$d" && ! -L "$d" ]] || continue
+            canonical=$(readlink -f "$d" 2>/dev/null || true)
+            case "$canonical" in
+                "$canonical_root"|"$canonical_root/.owners"/*|"") continue ;;
+                "$canonical_root"/*) rm -rf -- "$canonical" || return 1 ;;
+            esac
+        done <"$scratches"
+    done
+}
+
+# ── Sweep: terminate explicit stale ownership records, then dirs ────
+wg_smoke_sweep() {
+    local root owner_file run_id scenario failed=0
+    root="$(wg_smoke_root)"
+    # The current run may own descendants whose inner crash removed or moved
+    # its record. Its exact inherited identity remains sufficient authority.
+    _wg_smoke_terminate_run "$WG_SMOKE_RUN_ID" "${WG_SMOKE_SCENARIO:-adhoc}" \
+        "$WG_SMOKE_CLEANUP_DIAGNOSTICS" || failed=1
+    if [[ -d "$root/.owners" ]]; then
+        for owner_file in "$root"/.owners/*/owner.env; do
+            [[ -f "$owner_file" ]] || continue
+            run_id=$(grep '^run_id=' "$owner_file" 2>/dev/null | head -1 | cut -d= -f2-)
+            scenario=$(grep '^scenario=' "$owner_file" 2>/dev/null | head -1 | cut -d= -f2-)
+            [[ -n "$run_id" ]] || continue
+            _wg_smoke_owner_is_abandoned "$owner_file" || continue
+            if _wg_smoke_terminate_run "$run_id" "${scenario:-unknown}" \
+                "$(dirname "$owner_file")/cleanup-diagnostics.log" \
+                && _wg_smoke_remove_owner_scratch "$(dirname "$owner_file")" "$root"; then
+                rm -rf "$(dirname "$owner_file")"
+            else
+                failed=1
             fi
         done
     fi
@@ -373,16 +598,18 @@ wg_smoke_sweep() {
             done <<<"$sessions"
         done
     fi
-    if [[ -d "$root" ]]; then
-        find "$root" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
-    fi
+    # Never delete an unregistered directory merely because it sits below the
+    # smoke root. Location, age, and a smoke-looking name are not ownership.
+    return "$failed"
 }
 
-# ── Single EXIT/INT/TERM/HUP trap installed by this file ─────────────
+# ── Single EXIT/ERR/INT/TERM/HUP trap installed by this file ─────────
 wg_smoke_cleanup() {
-    local rc=$?
-    # Disable our own trap so cleanup can't re-enter.
-    trap - EXIT INT TERM HUP
+    local rc="${1:-$?}" cleanup_failed=0
+    # Disable our own trap so cleanup can't re-enter. `set +e` ensures every
+    # teardown phase runs even after an assertion or interrupted syscall.
+    trap - EXIT ERR INT TERM HUP
+    set +e
     # User hooks first (e.g., tmux kill-session before .wg/ disappears).
     local fn
     for fn in "${WG_SMOKE_CLEANUP_HOOKS[@]:-}"; do
@@ -424,37 +651,46 @@ wg_smoke_cleanup() {
             fi
         done <"$WG_SMOKE_DAEMONS_FILE"
     fi
-    # Brief reap window then SIGKILL anything still up.
-    if [[ "$had_daemons" -eq 1 ]]; then
-        sleep 0.5
-        while read -r pid dir; do
-            [[ -n "$pid" ]] || continue
-            if kill -0 "$pid" 2>/dev/null; then
-                kill -KILL "$pid" 2>/dev/null || true
-            fi
-        done <"$WG_SMOKE_DAEMONS_FILE"
-    fi
-    # Finally remove scratch dirs (also from the persistent file).
+    # Exact ownership is the final authority. This catches worker wrappers,
+    # observers, fake providers, Pi descendants, daemon supervisors, and
+    # respawned/double-forked children — including those whose parent exited.
+    _wg_smoke_terminate_run "$WG_SMOKE_RUN_ID" "${WG_SMOKE_SCENARIO:-adhoc}" \
+        "$WG_SMOKE_CLEANUP_DIAGNOSTICS" || cleanup_failed=1
+
+    # Only delete fixtures after the complete ownership set is gone. On
+    # failure retain both scratch and bounded diagnostics for investigation.
     local d
-    if [[ -f "$WG_SMOKE_SCRATCHES_FILE" ]]; then
-        while read -r d; do
-            [[ -n "$d" ]] || continue
-            if [[ -d "$d" ]]; then
-                rm -rf "$d" 2>/dev/null || true
-            fi
-        done <"$WG_SMOKE_SCRATCHES_FILE"
-    fi
-    # Reap our own registry dir so we don't leak meta-state.
-    if [[ -n "${WG_SMOKE_REGISTRY_DIR:-}" && -d "$WG_SMOKE_REGISTRY_DIR" ]]; then
-        rm -rf "$WG_SMOKE_REGISTRY_DIR" 2>/dev/null || true
+    # Under the Rust harness, defer fixture and registry deletion to the
+    # subreaper. It reaps adopted double-fork descendants first, then consumes
+    # these scratch registries and removes the ownership directory. Direct
+    # runs have no Rust parent and therefore perform the same ordering here.
+    if [[ "$cleanup_failed" -eq 0 && "${WG_SMOKE_HARNESS_OWNED:-0}" != 1 ]]; then
+        if [[ -f "$WG_SMOKE_SCRATCHES_FILE" ]]; then
+            while read -r d; do
+                [[ -n "$d" ]] || continue
+                if [[ -d "$d" ]]; then
+                    rm -rf "$d" 2>/dev/null || true
+                fi
+            done <"$WG_SMOKE_SCRATCHES_FILE"
+        fi
+        if [[ -n "${WG_SMOKE_REGISTRY_DIR:-}" && -d "$WG_SMOKE_REGISTRY_DIR" ]]; then
+            rm -rf "$WG_SMOKE_REGISTRY_DIR" 2>/dev/null || true
+        fi
+        if [[ "$_WG_SMOKE_OWNER_CREATED" == 1 ]]; then
+            rm -rf "$(dirname "$WG_SMOKE_OWNER_FILE")" 2>/dev/null || true
+        fi
+    else
+        echo "SMOKE CLEANUP FAILED: scenario=${WG_SMOKE_SCENARIO:-adhoc} diagnostics=$WG_SMOKE_CLEANUP_DIAGNOSTICS" >&2
+        [[ "$rc" -ne 0 ]] || rc=1
     fi
     exit "$rc"
 }
 
-trap wg_smoke_cleanup EXIT
-trap wg_smoke_cleanup INT
-trap wg_smoke_cleanup TERM
-trap wg_smoke_cleanup HUP
+trap 'wg_smoke_cleanup $?' EXIT
+trap 'wg_smoke_cleanup 1' ERR
+trap 'wg_smoke_cleanup 130' INT
+trap 'wg_smoke_cleanup 143' TERM
+trap 'wg_smoke_cleanup 129' HUP
 
 # Resolve collision-free attempt runtime storage by authoritative task ID.
 # Falls back to the historical flat path for fixtures created by old binaries;

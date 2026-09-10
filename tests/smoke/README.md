@@ -45,39 +45,51 @@ scenario here. Do not delete entries; extend.
 
 ## Fixture lifecycle (cleanup contract — REQUIRED)
 
-Smoke scenarios spawn `wg service daemon` processes and create temp dirs.
-Two failure modes have leaked daemons + dirs in production (see
-`smoke-tests-leak`): per-scenario `trap` lines silently overwrote each
-other, and `daemon_pid=$!` after `wg service start &` captured the
-wrapper PID instead of the real daemon (which was re-parented to init
-when the wrapper exited and could no longer be killed).
+Smoke scenarios spawn daemons, worker wrappers, observers, fake providers,
+and real Pi processes. These can double-fork, start a new session, ignore TERM,
+or outlive a failed assertion. Historically, Pi workers from the removed
+`pi_threshold_compaction_same_process_kick` scenario survived with PPID 1 and
+open deleted log/cwd file descriptors.
 
-The contract `_helpers.sh` enforces:
+The Rust harness and `_helpers.sh` enforce one ownership contract:
 
 * **Always use `make_scratch`** — never `mktemp -d` directly. Scratch dirs
   live under a single shared root (`${WG_SMOKE_ROOT:-${TMPDIR:-/tmp}/wgsmoke}`)
-  so cleanup is one `rm -rf` of the parent, not a glob hunt across `/tmp`.
+  so cleanup consumes explicit per-run scratch registries, not a glob hunt
+  across `/tmp`. Registry files live inside the durable ownership directory.
+* **Every manifest invocation receives an exact ownership identity.** The
+  harness creates a random `WG_SMOKE_RUN_ID`, records the scenario root PID,
+  immutable `/proc` start ticks, process group, and session, and launches the
+  scenario in a new session. All ordinary descendants inherit the marker.
+  `env -i` calls must explicitly preserve `WG_SMOKE_RUN_ID` and
+  `WG_SMOKE_SCENARIO`.
 * **Always use `start_wg_daemon`** — never `wg service start &; daemon_pid=$!`.
-  The helper reads the canonical daemon PID from `service/state.json` and
-  registers it for teardown. The capture-`$!` pattern catches the
-  wrapper, which has already forked and exited by the time you try to
-  kill it.
-* **Never install your own `EXIT`/`INT`/`TERM` trap.** `_helpers.sh` owns
-  the EXIT trap and tears down every daemon + scratch on exit. If you
-  need extra cleanup (e.g. `tmux kill-session`), register a function via
-  `add_cleanup_hook <fn>`. Setting your own `trap` clobbers the helper's
-  trap and the daemon leaks.
-* **`wg_smoke_sweep`** is a sledgehammer that scans `/proc/*/cmdline`
-  for `wg service daemon` processes whose `--dir` is under the smoke
-  root and kills them, then rms the leftover dirs. The smoke gate calls
-  it before AND after every run (with a 10-minute age cutoff so a
-  concurrent smoke run isn't cannibalised). You can call it manually
-  to clean up after a crashed dev session.
+  The helper records both the start wrapper and the canonical daemon PID from
+  `service/state.json`. For other background fixtures use
+  `start_owned_process <role> <log> <command...>`; it creates and records a
+  separate session.
+* **Never install your own `EXIT`/`ERR`/`INT`/`TERM` trap.** `_helpers.sh` owns
+  those paths and tears down the entire exact ownership set. If you need extra
+  cleanup (for example a tmux session), register it with `add_cleanup_hook`.
+* **Cleanup is ordered and bounded.** Graceful service stop runs first, then
+  the exact marker set is rescanned through TERM and KILL (catching respawns),
+  direct/adopted children are reaped, and only then are scratch directories
+  deleted by the Rust subreaper. If anything survives, scratch and its owner
+  record are retained with bounded diagnostics
+  naming scenario, PID, start ticks, PPID, PGID, and SID.
+* **`wg_smoke_sweep` and the Rust pre/post sweep use owner records, not command
+  names.** `/proc/*/environ` must contain the exact random run id immediately
+  before a signal. An unrelated process named `pi` is therefore never a
+  candidate. A dead PID+start supervisor is swept immediately; a live exact
+  supervisor is never swept, and the 10-minute cutoff covers legacy/incomplete
+  records without misclassifying concurrent runs.
 
-The regression test for this contract is
-`smoke_cleanup_survives_panic.sh` — it spawns a real daemon in a child
-shell, SIGKILLs the child (so traps don't fire), and asserts
-`wg_smoke_sweep` reaps both the re-parented daemon and the scratch dir.
+The regression tests are `smoke_cleanup_survives_panic.sh` (trap-defeating
+SIGKILL backstop) and `smoke_process_ownership_cleanup.sh` (the historical Pi
+leak replacement: TERM-ignoring double-forked Pi, observer, respawning daemon,
+success/assertion/timeout/SIGINT/SIGTERM paths, repetition baseline, an
+unrelated concurrent `pi` survivor, and a concurrently healthy owned scenario
+that a stale-record sweep must not terminate).
 
 ## Live, not stubs
 

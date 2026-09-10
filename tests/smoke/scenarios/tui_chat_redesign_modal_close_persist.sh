@@ -58,9 +58,8 @@ cleanup() {
     if [[ -n "${daemon_pid:-}" ]]; then
         kill_tree "$daemon_pid"
     fi
-    rm -rf "$scratch"
 }
-trap cleanup EXIT
+add_cleanup_hook cleanup
 cd "$scratch"
 
 # Unset any inherited WG_DIR from a parent agent invocation. Otherwise

@@ -76,7 +76,7 @@ observer_hash=$(sha256sum "$observer" | awk '{print $1}')
 wip_hash=$(sha256sum "$wt/valuable-wip.txt" | awk '{print $1}')
 
 cleanup() { "$WG_BIN" --dir "$G" service stop --force --kill-agents >/dev/null 2>&1 || true; }
-trap cleanup EXIT
+add_cleanup_hook cleanup
 "$WG_BIN" --dir "$G" service start --max-agents 1 --no-chat-agent --force >/dev/null
 
 launched=false

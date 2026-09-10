@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck disable=SC1091
+source "$HERE/_helpers.sh"
+ROOT=$(cd "$HERE/../../.." && pwd)
 PI=$(command -v pi || true)
 if [[ -z "$PI" ]]; then
-  echo "SKIP: MISSING PI — install the pinned patched runtime with 'make install-patched-pi'" >&2
-  exit 77
+  loud_skip "MISSING PI" "install the pinned patched runtime with 'make install-patched-pi'"
 fi
 
-TMP=$(mktemp -d)
-trap 'rm -rf "$TMP"' EXIT
+TMP=$(make_scratch)
 
 # `wg doctor` may return 1/2 for unrelated optional host checks. Its structured
 # Pi check must nevertheless identify the actual PATH runtime as fixed.

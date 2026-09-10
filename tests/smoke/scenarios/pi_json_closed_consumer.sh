@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck disable=SC1091
+source "$HERE/_helpers.sh"
+ROOT=$(cd "$HERE/../../.." && pwd)
 GUARD="$ROOT/docs/pi-integration/upstream-patch/output-guard-epipe/output-guard.ts"
-TMP=$(mktemp -d)
-trap 'rm -rf "$TMP"' EXIT
+TMP=$(make_scratch)
 
 cat >"$TMP/producer.mjs" <<'JS'
 import { pathToFileURL } from "node:url";

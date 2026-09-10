@@ -47,9 +47,8 @@ cleanup() {
     if [[ -n "${daemon_pid:-}" ]]; then
         kill_tree "$daemon_pid" 2>/dev/null || true
     fi
-    rm -rf "$scratch"
 }
-trap cleanup EXIT
+add_cleanup_hook cleanup
 cd "$scratch"
 
 # Unset inherited agent-context env vars so wg operates in our scratch dir.

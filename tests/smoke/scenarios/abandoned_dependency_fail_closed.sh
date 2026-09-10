@@ -7,7 +7,7 @@ require_wg
 scratch=$(make_scratch)
 cd "$scratch"
 cleanup(){ wg service stop --force >/dev/null 2>&1 || true; }
-trap cleanup EXIT
+add_cleanup_hook cleanup
 
 wg init -x shell >/dev/null 2>&1 || loud_fail "init failed"
 wg config --local --auto-assign false --no-reload >/dev/null 2>&1 || loud_fail "config failed"

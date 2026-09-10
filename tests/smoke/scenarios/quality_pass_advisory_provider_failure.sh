@@ -5,16 +5,15 @@ source "$(dirname "$0")/_helpers.sh"
 : "${WG_BIN:?smoke harness must provide candidate WG_BIN}"
 [[ -x $WG_BIN ]] || loud_fail "candidate WG_BIN is not executable: $WG_BIN"
 
-scratch=$(mktemp -d "${TMPDIR:-/tmp}/wg-quality-advisory.XXXXXX")
+scratch=$(make_scratch)
 cleanup() {
   for p in "$scratch"/*/project; do
     [[ -d $p ]] || continue
     env -u WG_AGENT_ID -u WG_TASK_ID -u WG_WORKER_CAPABILITY -u WG_WORKER_IPC \
       WG_DIR="$p/.wg" "$WG_BIN" service stop --force --kill-agents >/dev/null 2>&1 || true
   done
-  [[ ${WG_SMOKE_KEEP_TMP:-0} == 1 ]] || rm -rf "$scratch"
 }
-trap cleanup EXIT
+add_cleanup_hook cleanup
 
 run_case() {
   local name=$1 required=$2
