@@ -519,6 +519,34 @@ impl LifecycleEvent {
         task.lifecycle.pi_continuation = self.projection.pi_continuation.clone();
         task.lifecycle.pi_terminal_reservation = self.projection.pi_terminal_reservation.clone();
         task.lifecycle.reopen_intent = self.projection.reopen_intent.clone();
+        if matches!(
+            self.event_kind.as_str(),
+            "reopen-requested" | "generation-created"
+        ) && self.actor_kind == ActorKind::Operator
+        {
+            // Accepting an explicit operator retry intent is a new decision,
+            // not additional automatic budget within the old episode. Clear
+            // atomically with the intent even though owner reap/generation
+            // creation may complete later under reconciler authority.
+            task.source_provider_recovery = None;
+        } else if self.event_kind == "attempt-running"
+            && let Some(record) = task.source_provider_recovery.as_mut()
+            && record.state
+                == crate::source_provider_recovery::SourceProviderRecoveryState::Authorized
+        {
+            record.state = crate::source_provider_recovery::SourceProviderRecoveryState::Running;
+        } else if matches!(
+            self.event_kind.as_str(),
+            "attempt-succeeded" | "durable-success-projected" | "graph-save-committed"
+        ) && let Some(record) = task.source_provider_recovery.as_mut()
+        {
+            record.recover();
+        } else if self.event_kind == "abandoned"
+            && let Some(record) = task.source_provider_recovery.as_mut()
+        {
+            record.cancel("task-abandoned");
+        }
+
         if self.event_kind == "attempt-reserved" {
             // Runtime accounting is attempt-scoped. A retry must not inherit
             // the previous attempt's route or usage and block the terminal

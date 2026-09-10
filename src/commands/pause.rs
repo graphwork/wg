@@ -34,6 +34,9 @@ pub fn run(dir: &Path, id: &str) -> Result<()> {
         }
 
         task.paused = true;
+        if let Some(record) = task.source_provider_recovery.as_mut() {
+            record.pause("task-paused");
+        }
         task.log.push(LogEntry {
             timestamp: Utc::now().to_rfc3339(),
             actor: None,

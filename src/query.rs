@@ -810,6 +810,17 @@ pub fn ready_tasks_with_peers_cycle_aware<'a>(
             if task.paused {
                 return false;
             }
+            if task.source_provider_recovery.as_ref().is_some_and(|record| {
+                matches!(
+                    record.state,
+                    crate::source_provider_recovery::SourceProviderRecoveryState::Backoff
+                        | crate::source_provider_recovery::SourceProviderRecoveryState::NeedsAttention
+                        | crate::source_provider_recovery::SourceProviderRecoveryState::Paused
+                        | crate::source_provider_recovery::SourceProviderRecoveryState::Cancelled
+                )
+            }) {
+                return false;
+            }
             if !is_time_ready(task) {
                 return false;
             }

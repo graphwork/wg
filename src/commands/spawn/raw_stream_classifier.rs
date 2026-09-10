@@ -7,7 +7,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
 use worksgood::dispatch::plan::ExecutorKind;
-use worksgood::graph::{FailureClass, FailureReason, FailureSignal};
+use worksgood::graph::{
+    ExecutionOutcome, FailureClass, FailureEvidenceKind, FailureReason, FailureSignal,
+};
 use worksgood::telemetry::{
     failure_signal_from_envelope, failure_signal_from_evidence, parse_openrouter_error_envelope,
     parse_retry_after_text,
@@ -403,7 +405,11 @@ fn classify_failure_signal_without_terminal(
             executor,
             route,
         )
-        .with_reason(FailureReason::HardTimeout, 0.8);
+        .with_reason(FailureReason::HardTimeout, 0.8)
+        .with_evidence(
+            FailureEvidenceKind::ProcessOutcome,
+            ExecutionOutcome::Ambiguous,
+        );
     }
 
     let raw = read_tail(raw_stream).unwrap_or_default();
@@ -416,18 +422,36 @@ fn classify_failure_signal_without_terminal(
 
     if looks_like_disk_exhaustion(&combined) {
         return failure_signal_from_evidence(None, None, None, None, &combined, executor, route)
-            .with_reason(FailureReason::Disk, 0.8);
+            .with_reason(FailureReason::Disk, 0.8)
+            .with_evidence(
+                FailureEvidenceKind::ProcessOutcome,
+                ExecutionOutcome::Ambiguous,
+            );
     }
 
     // Latest structured error wins. This covers raw OpenRouter envelopes and
-    // pi `error` / failed `response` events with string or object errors.
+    // pi `error` / failed `response` events with string or object errors. A
+    // provider response proves only that one model call failed; replaying the
+    // whole source attempt is safe only when the complete exact stream proves
+    // that no tool/effect turn preceded it.
+    let replay_safe = complete_stream_has_no_effect_markers(raw_stream, &raw);
     for line in combined.lines().rev() {
         let line = line.trim();
         if line.is_empty() {
             continue;
         }
-        if let Some(signal) = signal_from_json_line(line, executor, route.clone()) {
+        if let Some(mut signal) = signal_from_json_line(line, executor, route.clone()) {
             if signal.reason != FailureReason::Unknown || signal.http_status.is_some() {
+                if replay_safe
+                    && matches!(
+                        signal.evidence_kind,
+                        FailureEvidenceKind::HttpResponse
+                            | FailureEvidenceKind::ProviderEnvelope
+                            | FailureEvidenceKind::TransportError
+                    )
+                {
+                    signal.execution_outcome = ExecutionOutcome::DefinitiveFailure;
+                }
                 return signal;
             }
         }
@@ -442,7 +466,8 @@ fn classify_failure_signal_without_terminal(
             &combined,
             executor,
             route,
-        );
+        )
+        .with_evidence(FailureEvidenceKind::LegacyText, ExecutionOutcome::Ambiguous);
     }
 
     failure_signal_from_evidence(
@@ -454,16 +479,24 @@ fn classify_failure_signal_without_terminal(
         executor,
         route,
     )
+    .with_evidence(FailureEvidenceKind::LegacyText, ExecutionOutcome::Ambiguous)
 }
 
 trait FailureSignalExt {
     fn with_reason(self, reason: FailureReason, confidence: f32) -> Self;
+    fn with_evidence(self, kind: FailureEvidenceKind, outcome: ExecutionOutcome) -> Self;
 }
 
 impl FailureSignalExt for FailureSignal {
     fn with_reason(mut self, reason: FailureReason, confidence: f32) -> Self {
         self.reason = reason;
         self.confidence = confidence;
+        self
+    }
+
+    fn with_evidence(mut self, kind: FailureEvidenceKind, outcome: ExecutionOutcome) -> Self {
+        self.evidence_kind = kind;
+        self.execution_outcome = outcome;
         self
     }
 }
@@ -542,23 +575,84 @@ fn signal_from_json_line(
         .get("status")
         .or_else(|| value.get("code"))
         .and_then(json_u16)
-        .or_else(|| parsed.as_ref().and_then(|p| p.status))
-        .or_else(|| extract_status_from_message(&message));
+        .or_else(|| parsed.as_ref().and_then(|p| p.status));
     let error_type = value
         .get("error_type")
         .and_then(|v| v.as_str())
         .map(str::to_string)
         .or_else(|| parsed.as_ref().and_then(|p| p.error_type.clone()))
         .or_else(|| extract_error_type(&message));
-    Some(failure_signal_from_evidence(
+    let provider_code = parsed.as_ref().and_then(|p| p.provider_code.clone());
+    let direct_provider_failure = status.is_some()
+        || provider_code.is_some()
+        || error_type.as_deref().is_some_and(|kind| {
+            let kind = normalize_code(kind);
+            matches!(
+                kind.as_str(),
+                "ratelimiterror"
+                    | "provideroverloaded"
+                    | "providerunavailable"
+                    | "servererror"
+                    | "overloadederror"
+            )
+        });
+    let signal = failure_signal_from_evidence(
         status,
         error_type,
-        parsed.as_ref().and_then(|p| p.provider_code.clone()),
+        provider_code,
         parsed.as_ref().and_then(|p| p.retry_after_secs),
         &message,
         executor,
         route,
-    ))
+    );
+    Some(if direct_provider_failure {
+        signal.with_evidence(
+            FailureEvidenceKind::ProviderEnvelope,
+            ExecutionOutcome::Ambiguous,
+        )
+    } else {
+        signal
+    })
+}
+
+fn complete_stream_has_no_effect_markers(raw_stream: &Path, raw: &str) -> bool {
+    let Ok(metadata) = std::fs::metadata(raw_stream) else {
+        return false;
+    };
+    if metadata.len() > TAIL_BYTES {
+        return false;
+    }
+    raw.lines().all(|line| {
+        let line = line.trim();
+        line.is_empty()
+            || serde_json::from_str::<serde_json::Value>(line)
+                .is_ok_and(|value| !value_has_effect_marker(&value))
+    })
+}
+
+fn value_has_effect_marker(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Array(values) => values.iter().any(value_has_effect_marker),
+        serde_json::Value::Object(object) => {
+            let typed_effect = object
+                .get("type")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|kind| {
+                    let kind = normalize_code(kind);
+                    kind.contains("tool")
+                        || kind.contains("commandexecution")
+                        || kind.contains("filechange")
+                        || kind.contains("functioncall")
+                        || kind.starts_with("mcp")
+                });
+            let tool_calls = object
+                .get("tool_calls")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|calls| !calls.is_empty());
+            typed_effect || tool_calls || object.values().any(value_has_effect_marker)
+        }
+        _ => false,
+    }
 }
 
 fn json_u16(value: &serde_json::Value) -> Option<u16> {
@@ -1027,10 +1121,26 @@ mod tests {
             classify_terminal_from_raw_stream(stream.path(), None, 1, ExecutorKind::Pi, None);
         assert_eq!(terminal.state, TerminalStreamState::ProviderFailure);
         assert_eq!(terminal.failure_reason, Some(FailureReason::Timeout));
+        let signal =
+            classify_signal_from_raw_stream(stream.path(), None, 1, ExecutorKind::Pi, None);
+        assert_eq!(signal.reason, FailureReason::Timeout);
         assert_eq!(
-            classify_signal_from_raw_stream(stream.path(), None, 1, ExecutorKind::Pi, None,).reason,
-            FailureReason::Timeout
+            signal.execution_outcome,
+            ExecutionOutcome::DefinitiveFailure
         );
+    }
+
+    #[test]
+    fn prior_tool_effect_makes_direct_provider_failure_ambiguous() {
+        let stream = write_stream(concat!(
+            "{\"type\":\"tool_execution_end\",\"toolCallId\":\"t1\",\"result\":\"published\"}\n",
+            "{\"type\":\"error\",\"status\":503,\"error\":{\"type\":\"provider_unavailable\",\"message\":\"upstream unavailable\"}}\n",
+        ));
+        let signal =
+            classify_signal_from_raw_stream(stream.path(), None, 1, ExecutorKind::Pi, None);
+        assert_eq!(signal.reason, FailureReason::ProviderUnavailable);
+        assert_eq!(signal.evidence_kind, FailureEvidenceKind::ProviderEnvelope);
+        assert_eq!(signal.execution_outcome, ExecutionOutcome::Ambiguous);
     }
 
     #[test]

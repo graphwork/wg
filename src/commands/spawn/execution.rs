@@ -1029,12 +1029,63 @@ fn rollback_task_claim(
     Ok(())
 }
 
+fn source_provider_launch_refusal(
+    task: &worksgood::graph::Task,
+    binding: &worksgood::source_provider_recovery::FailureBinding,
+    now: chrono::DateTime<Utc>,
+) -> Option<&'static str> {
+    let record = task.source_provider_recovery.as_ref()?;
+    let governs_generation =
+        record.authorized_generation == Some(task.lifecycle.generation) || record.state.is_active();
+    if !governs_generation {
+        return None;
+    }
+    let attempt_matches = task
+        .lifecycle
+        .current_attempt
+        .as_ref()
+        .is_some_and(|attempt| {
+            attempt.id == binding.attempt_id
+                && attempt.generation == binding.generation
+                && attempt.fence == binding.attempt_fence
+                && attempt.actor_id == task.assigned.as_deref().unwrap_or_default()
+        });
+    let expected_authorization = worksgood::source_provider_recovery::authorization_id(
+        &record.episode_id,
+        &record.current_failure_id,
+        record.automatic_retries_used,
+    );
+    let exact_authorization = record.state
+        == worksgood::source_provider_recovery::SourceProviderRecoveryState::Authorized
+        && record.automatic_retries_used > 0
+        && record.authorization_id.as_deref() == Some(expected_authorization.as_str())
+        && record.authorized_generation == Some(task.lifecycle.generation)
+        && !task.paused
+        && task.completion_candidate.is_none()
+        && task.completion_blocker.is_none()
+        && now <= record.recovery_deadline_at
+        && attempt_matches
+        && binding.task_id == task.id
+        && binding.generation == task.lifecycle.generation
+        && binding.goal_requirements_digest
+            == worksgood::source_provider_recovery::goal_requirements_digest(task)
+        && record.goal_requirements_digest == binding.goal_requirements_digest
+        && record.completion_contract == task.completion_contract
+        && record.exact_route == binding.exact_route
+        && record.executor == binding.executor
+        && record.model == binding.model
+        && record.route_id == binding.route_id
+        && record.plan_id == binding.plan_id;
+    (!exact_authorization).then_some("source-provider recovery authorization changed, expired, or lost its exact task/route binding")
+}
+
 fn publish_launch_permit_for_claim(
     graph_path: &Path,
     task_id: &str,
     agent_id: &str,
     output_dir: &Path,
     token: &str,
+    source_binding: &worksgood::source_provider_recovery::FailureBinding,
 ) -> Result<()> {
     let mut outcome = None;
     modify_graph(graph_path, |graph| {
@@ -1046,6 +1097,17 @@ fn publish_launch_permit_for_claim(
                 "task '{}' claim ownership changed before launch (expected status=in-progress assigned={}); refusing to release handler gate",
                 task_id,
                 agent_id
+            )));
+            return false;
+        }
+        if let Some(reason) = graph
+            .get_task(task_id)
+            .and_then(|task| source_provider_launch_refusal(task, source_binding, Utc::now()))
+        {
+            outcome = Some(Err(anyhow::anyhow!(
+                "task '{}' refused at the final source-provider launch boundary: {}",
+                task_id,
+                reason
             )));
             return false;
         }
@@ -1063,6 +1125,14 @@ fn publish_launch_permit_for_claim(
             return false;
         }
 
+        let source_authorization_id = graph
+            .get_task(task_id)
+            .and_then(|task| task.source_provider_recovery.as_ref())
+            .filter(|record| record.authorized_generation == Some(source_binding.generation))
+            .and_then(|record| record.authorization_id.as_deref())
+            .unwrap_or("non-recovery")
+            .to_string();
+
         // Prepare the authenticated AttemptRunning transition while the graph
         // lock is held, before releasing the child. If either the transition or
         // gate release fails, returning false discards the in-memory transition
@@ -1079,8 +1149,13 @@ fn publish_launch_permit_for_claim(
             .unwrap_or_else(|| "legacy".to_string());
         let launch_receipt = format!(
             "b3:{}",
-            blake3::hash(format!("{task_id}\0{attempt_id}\0{agent_id}\0{token}").as_bytes())
-                .to_hex()
+            blake3::hash(
+                format!(
+                    "{task_id}\0{attempt_id}\0{agent_id}\0{token}\0{source_authorization_id}"
+                )
+                .as_bytes(),
+            )
+            .to_hex()
         );
         let request = TransitionRequest::new(
             TransitionKind::AttemptRunning {
@@ -2170,6 +2245,19 @@ pub(crate) fn spawn_agent_inner_authorized(
         spawn_fault("claim")?;
         let runtime_dir = worksgood::attempt_runtime::ensure_namespace(dir, &runtime_key)?;
         attempt_runtime_dir = Some(runtime_dir);
+        // Bind the exact selected route/plan to the now-reserved source tuple
+        // before the unpublished launch gate can release provider I/O.
+        let claimed_graph = load_graph(&graph_path)?;
+        let claimed_task = claimed_graph.get_task_or_err(task_id)?;
+        let source_binding =
+            worksgood::source_provider_recovery::persist_launch_binding(dir, claimed_task, &plan)
+                .context("persist exact source-provider launch binding")?;
+        cmd.env(
+            "WG_SOURCE_PROVIDER_OPERATION_ID",
+            &source_binding.operation_id,
+        );
+        cmd.env("WG_SOURCE_PROVIDER_ROUTE_ID", &source_binding.route_id);
+        cmd.env("WG_SOURCE_PROVIDER_PLAN_ID", &source_binding.plan_id);
 
         let control_mode =
             worksgood::worker_control::effective_control_mode(config.worker_control.mode, task);
@@ -2486,6 +2574,7 @@ pub(crate) fn spawn_agent_inner_authorized(
             &agent_id,
             &output_dir,
             &spawn_run_id,
+            &source_binding,
         )?;
         workspace.commit_after_launch();
         if let Some(guard) = target_publish_guard.as_mut() {
@@ -7379,6 +7468,87 @@ esac
         terminate_spawn(result.pid);
     }
 
+    fn launch_binding_for_claim(
+        graph_path: &Path,
+        task_id: &str,
+    ) -> worksgood::source_provider_recovery::FailureBinding {
+        let graph = load_graph(graph_path).unwrap();
+        let task = graph.get_task(task_id).unwrap();
+        let attempt = task.lifecycle.current_attempt.as_ref().unwrap();
+        worksgood::source_provider_recovery::FailureBinding {
+            task_id: task.id.clone(),
+            generation: attempt.generation,
+            attempt_id: attempt.id.clone(),
+            attempt_fence: attempt.fence,
+            graph_id: "test-graph".into(),
+            goal_requirements_digest: worksgood::source_provider_recovery::goal_requirements_digest(
+                task,
+            ),
+            exact_route: "shell:test".into(),
+            executor: "shell".into(),
+            model: "test".into(),
+            route_id: "test-route".into(),
+            plan_id: "test-plan".into(),
+            operation_id: worksgood::source_provider_recovery::operation_id(task, attempt),
+        }
+    }
+
+    fn authorized_recovery_for_claim(
+        task: &Task,
+        binding: &worksgood::source_provider_recovery::FailureBinding,
+        deadline: chrono::DateTime<Utc>,
+    ) -> worksgood::source_provider_recovery::SourceProviderRecoveryV1 {
+        let attempt = task.lifecycle.current_attempt.as_ref().unwrap();
+        let source = worksgood::source_provider_recovery::SourceAttemptRef::from_task(
+            task,
+            attempt,
+            task.lifecycle.revision,
+        );
+        worksgood::source_provider_recovery::SourceProviderRecoveryV1 {
+            schema: worksgood::source_provider_recovery::SOURCE_PROVIDER_RECOVERY_SCHEMA,
+            episode_id: "episode".into(),
+            state: worksgood::source_provider_recovery::SourceProviderRecoveryState::Authorized,
+            goal_requirements_digest: binding.goal_requirements_digest.clone(),
+            completion_contract: task.completion_contract,
+            origin: source.clone(),
+            last_failed: source,
+            current_failure_id: "failure".into(),
+            failure_evidence_digest: "evidence".into(),
+            operation_id: "failed-operation".into(),
+            evidence_kind: worksgood::graph::FailureEvidenceKind::ProviderEnvelope,
+            execution_outcome: worksgood::graph::ExecutionOutcome::DefinitiveFailure,
+            provider_request_id: None,
+            transport_code: None,
+            http_status: Some(503),
+            exact_route: binding.exact_route.clone(),
+            executor: binding.executor.clone(),
+            model: binding.model.clone(),
+            route_id: binding.route_id.clone(),
+            plan_id: binding.plan_id.clone(),
+            first_failure_at: Utc::now(),
+            latest_failure_at: Utc::now(),
+            recovery_deadline_at: deadline,
+            retry_after_not_before: None,
+            automatic_retries_used: 1,
+            automatic_retry_limit: 3,
+            next_retry_at: None,
+            policy_snapshot:
+                worksgood::source_provider_recovery::SourceProviderRetryPolicySnapshot {
+                    max_automatic_retries: 3,
+                    recovery_window_seconds: 900,
+                    base_seconds: 30,
+                    delay_cap_seconds: 300,
+                    jitter_divisor: worksgood::source_provider_recovery::JITTER_DIVISOR,
+                },
+            authorization_id: Some(worksgood::source_provider_recovery::authorization_id(
+                "episode", "failure", 1,
+            )),
+            authorized_generation: Some(task.lifecycle.generation),
+            reason_code: "automatic-retry-authorized".into(),
+            next_action: "launch".into(),
+        }
+    }
+
     #[test]
     #[serial_test::serial]
     fn launch_gate_release_records_authenticated_running_attempt() {
@@ -7389,12 +7559,14 @@ esac
         let output_dir = project.path().join(".wg/agents/launch-proof-check");
         fs::create_dir_all(&output_dir).unwrap();
 
+        let binding = launch_binding_for_claim(&graph_path, "launch-proof");
         publish_launch_permit_for_claim(
             &graph_path,
             "launch-proof",
             "agent-1",
             &output_dir,
             "permit-token",
+            &binding,
         )
         .unwrap();
 
@@ -7419,6 +7591,91 @@ esac
 
     #[test]
     #[serial_test::serial]
+    fn launch_gate_rejects_expired_source_provider_authorization() {
+        let _global = GlobalConfigGuard::isolated();
+        let project = init_spawn_project(&["expired-recovery"], false);
+        let graph_path = project.path().join(".wg/graph.jsonl");
+        claim_task_for_spawn(&graph_path, "expired-recovery", "agent-1").unwrap();
+        let binding = launch_binding_for_claim(&graph_path, "expired-recovery");
+        modify_graph(&graph_path, |graph| {
+            let task = graph.get_task_mut("expired-recovery").unwrap();
+            let record = authorized_recovery_for_claim(
+                task,
+                &binding,
+                Utc::now() - chrono::Duration::seconds(1),
+            );
+            task.source_provider_recovery = Some(record);
+            true
+        })
+        .unwrap();
+        let output_dir = project.path().join(".wg/agents/expired-recovery-check");
+        fs::create_dir_all(&output_dir).unwrap();
+        let error = publish_launch_permit_for_claim(
+            &graph_path,
+            "expired-recovery",
+            "agent-1",
+            &output_dir,
+            "token",
+            &binding,
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("final source-provider launch boundary"));
+        assert!(!output_dir.join(LAUNCH_GATE_FILE).exists());
+        let task = load_graph(&graph_path)
+            .unwrap()
+            .get_task("expired-recovery")
+            .unwrap()
+            .clone();
+        assert_eq!(task.status, Status::InProgress);
+        assert_eq!(
+            task.source_provider_recovery.unwrap().state,
+            worksgood::source_provider_recovery::SourceProviderRecoveryState::Authorized
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn launch_gate_rejects_mismatched_source_provider_authorization_id() {
+        let _global = GlobalConfigGuard::isolated();
+        let project = init_spawn_project(&["wrong-recovery-authorization"], false);
+        let graph_path = project.path().join(".wg/graph.jsonl");
+        claim_task_for_spawn(&graph_path, "wrong-recovery-authorization", "agent-1").unwrap();
+        let binding = launch_binding_for_claim(&graph_path, "wrong-recovery-authorization");
+        modify_graph(&graph_path, |graph| {
+            let task = graph.get_task_mut("wrong-recovery-authorization").unwrap();
+            let mut record = authorized_recovery_for_claim(
+                task,
+                &binding,
+                Utc::now() + chrono::Duration::minutes(5),
+            );
+            record.authorization_id = Some("b3:stale-or-arbitrary".into());
+            task.source_provider_recovery = Some(record);
+            true
+        })
+        .unwrap();
+        let output_dir = project
+            .path()
+            .join(".wg/agents/wrong-recovery-authorization-check");
+        fs::create_dir_all(&output_dir).unwrap();
+        let error = publish_launch_permit_for_claim(
+            &graph_path,
+            "wrong-recovery-authorization",
+            "agent-1",
+            &output_dir,
+            "token",
+            &binding,
+        )
+        .unwrap_err();
+        let error_text = format!("{error:#}");
+        assert!(
+            error_text.contains("authorization changed, expired, or lost"),
+            "{error_text}"
+        );
+        assert!(!output_dir.join(LAUNCH_GATE_FILE).exists());
+    }
+
+    #[test]
+    #[serial_test::serial]
     fn launch_gate_recheck_rejects_a_changed_graph_claim() {
         let _global = GlobalConfigGuard::isolated();
         let project = init_spawn_project(&["claim-race"], false);
@@ -7432,12 +7689,14 @@ esac
         .unwrap();
         let output_dir = project.path().join(".wg/agents/claim-race-check");
         fs::create_dir_all(&output_dir).unwrap();
+        let binding = launch_binding_for_claim(&graph_path, "claim-race");
         let error = publish_launch_permit_for_claim(
             &graph_path,
             "claim-race",
             "agent-1",
             &output_dir,
             "token",
+            &binding,
         )
         .unwrap_err();
         assert!(format!("{error:#}").contains("claim ownership changed before launch"));

@@ -4,8 +4,8 @@ use std::path::Path;
 use worksgood::agency::capture_task_output;
 use worksgood::dispatch::plan::ExecutorKind;
 use worksgood::graph::{
-    FailureClass, FailureReason, FailureSignal, LogEntry, Status, evaluate_cycle_on_failure,
-    parse_token_usage, parse_wg_tokens,
+    FailureClass, FailureEvidenceKind, FailureReason, FailureSignal, LogEntry, Status,
+    evaluate_cycle_on_failure, parse_token_usage, parse_wg_tokens,
 };
 use worksgood::lifecycle::{
     FenceExpectation, LifecycleActor, TransitionKind, TransitionRequest, apply_transition,
@@ -65,7 +65,9 @@ fn failure_signal_for_class(
 
 pub fn run(dir: &Path, id: &str, reason: Option<&str>, class: Option<FailureClass>) -> Result<()> {
     // Pre-check with a non-atomic read (gate only — not used for mutation).
-    {
+    // Retain the exact current attempt owner solely to locate that attempt's
+    // output. A task-only registry lookup can select a stale prior agent.
+    let source_actor = {
         let (graph, _path) = super::load_workgraph_mut(dir)?;
         let task = graph.get_task_or_err(id)?;
 
@@ -100,17 +102,24 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>, class: Option<FailureClas
         // this state is the primary path. External `wg fail` is also allowed
         // (no special-case needed — the generic "anything non-terminal can be
         // failed" branch below covers it).
-    }
+        task.lifecycle
+            .current_attempt
+            .as_ref()
+            .map(|attempt| attempt.actor_id.clone())
+            .or_else(|| task.assigned.clone())
+    };
 
     let path = super::graph_path(dir);
 
     // Resolve usage and provider evidence outside the graph lock (registry +
     // stream file I/O). The wrapper may record the same attempt afterward;
-    // telemetry append deduplicates by task/attempt/executor/bucket.
+    // telemetry append deduplicates only an exact bound observation.
     let registry = AgentRegistry::load(dir).ok();
-    let agent = registry
-        .as_ref()
-        .and_then(|registry| registry.get_agent_by_task(id));
+    let agent = registry.as_ref().and_then(|registry| {
+        source_actor
+            .as_deref()
+            .and_then(|actor| registry.get_agent(actor))
+    });
     let output_path = agent.map(|agent| {
         let path = std::path::Path::new(&agent.output_file);
         if path.is_absolute() {
@@ -127,7 +136,7 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>, class: Option<FailureClas
         .and_then(|agent| ExecutorKind::from_str(&agent.executor))
         .unwrap_or_default();
     let route = agent.and_then(|agent| agent.model.clone());
-    let failure_signal = if let Some(output_path) = output_path.as_deref() {
+    let mut failure_signal = if let Some(output_path) = output_path.as_deref() {
         let raw_stream = output_path
             .parent()
             .unwrap_or_else(|| Path::new("."))
@@ -152,6 +161,57 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>, class: Option<FailureClas
             route.clone(),
         ))
     };
+
+    let config = worksgood::config::Config::load_or_default(dir);
+    let recovery_policy = config.coordinator.source_provider_retry.clone();
+    // Enrollment is bound to the immutable launch selection written before
+    // provider I/O. Never reconstruct the failed route from mutable config.
+    let recovery_binding = super::load_workgraph_mut(dir).ok().and_then(|(graph, _)| {
+        graph.get_task(id).and_then(|task| {
+            worksgood::source_provider_recovery::load_launch_binding(dir, task).ok()
+        })
+    });
+
+    // Fold every direct observation bound to this exact physical operation.
+    // Historical task/attempt counters are insufficient because reset can
+    // reuse them; legacy telemetry without the full tuple never enrolls.
+    let mut recovery_signals = failure_signal
+        .iter()
+        .filter(|signal| {
+            matches!(
+                signal.evidence_kind,
+                FailureEvidenceKind::HttpResponse
+                    | FailureEvidenceKind::ProviderEnvelope
+                    | FailureEvidenceKind::TransportError
+            )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if let Some(binding) = recovery_binding.as_ref()
+        && let Ok(records) = worksgood::telemetry::read_records(dir)
+    {
+        recovery_signals.extend(records.into_iter().filter_map(|record| {
+            let exact = record.matches_source_binding(binding)
+                && matches!(
+                    record.signal.evidence_kind,
+                    FailureEvidenceKind::HttpResponse
+                        | FailureEvidenceKind::ProviderEnvelope
+                        | FailureEvidenceKind::TransportError
+                );
+            exact.then_some(record.signal)
+        }));
+    }
+    if failure_signal.as_ref().is_none_or(|signal| {
+        !matches!(
+            signal.evidence_kind,
+            FailureEvidenceKind::HttpResponse
+                | FailureEvidenceKind::ProviderEnvelope
+                | FailureEvidenceKind::TransportError
+        )
+    }) && let Some(direct) = recovery_signals.last()
+    {
+        failure_signal = Some(direct.clone());
+    }
 
     // Persist the non-success terminal transaction before projecting failure.
     super::finalize::record_terminal_abort(
@@ -222,6 +282,7 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>, class: Option<FailureClas
             LifecycleActor::operator(worksgood::current_user())
         };
         let generation = task.lifecycle.generation;
+        let failed_attempt = task.lifecycle.current_attempt.clone();
         let mut request = TransitionRequest::new(
             TransitionKind::AttemptFailed { class },
             actor,
@@ -239,6 +300,33 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>, class: Option<FailureClas
         task.failure_reason = reason_owned.clone();
         task.failure_class = class;
         task.failure_signal = failure_signal.clone();
+
+        let mut provider_recovery_owns_failure = false;
+        if task.completion_candidate.is_none()
+            && task.completion_blocker.is_none()
+            && !task.paused
+            && let (Some(attempt), Some(binding)) =
+                (failed_attempt.as_ref(), recovery_binding.as_ref())
+        {
+            let outcome = worksgood::source_provider_recovery::observe_failures(
+                task,
+                &recovery_policy,
+                &recovery_signals,
+                attempt,
+                task.lifecycle.revision,
+                binding,
+                Utc::now(),
+            );
+            provider_recovery_owns_failure = !matches!(
+                outcome,
+                worksgood::source_provider_recovery::ObservationOutcome::Ineligible
+            );
+            if !recovery_policy.enabled
+                && let Some(record) = task.source_provider_recovery.as_mut()
+            {
+                record.pause("policy-disabled");
+            }
+        }
 
         let log_message = match reason_owned.as_deref() {
             Some(r) => format!("Task marked as failed: {}", r),
@@ -269,8 +357,10 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>, class: Option<FailureClas
 
         // Evaluate cycle failure restart — if this task is part of a cycle with
         // restart_on_failure (default true), reset all cycle members to Open.
-        let cycle_analysis = graph.compute_cycle_analysis();
-        cycle_reactivated = evaluate_cycle_on_failure(graph, &id_owned, &cycle_analysis);
+        if !provider_recovery_owns_failure {
+            let cycle_analysis = graph.compute_cycle_analysis();
+            cycle_reactivated = evaluate_cycle_on_failure(graph, &id_owned, &cycle_analysis);
+        }
 
         true
     })

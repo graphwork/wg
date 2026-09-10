@@ -359,6 +359,7 @@ mod tests {
             failure_reason: None,
             failure_class: None,
             failure_signal: None,
+            source_provider_recovery: None,
             model: None,
             reasoning: None,
             provider: None,

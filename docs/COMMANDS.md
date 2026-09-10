@@ -343,6 +343,37 @@ wg retry deploy-prod --fresh --current-profile
 wg retry stuck-eval --current-profile --reason "operator selected the repaired profile"
 ```
 
+#### Opt-in bounded source-provider recovery
+
+The production dispatcher can automatically reopen only a narrow class of
+**direct, transient, safely replayable source-provider failures**. It is off by
+default and is configured in project TOML:
+
+```toml
+[dispatcher.source_provider_retry]
+enabled = true
+max_automatic_retries = 3       # hard maximum: 3
+recovery_window_seconds = 900   # hard maximum: 15 minutes
+base_seconds = 30
+delay_cap_seconds = 300
+```
+
+A retry keeps the exact task goal/requirements, completion contract,
+executor/model, route binding, plan binding, and retained work. The failed
+attempt/fence is recorded and revalidated before authorization; the retry then
+uses the normal lifecycle path to create a fresh generation/attempt/fence.
+Backoff is exponential with deterministic bounded jitter;
+structured `Retry-After` is a lower bound. A daemon restart or duplicate wake
+cannot reset the episode, window, budget, or jitter.
+
+WG refuses automation for text-only or ambiguous evidence, auth/config/credit
+failures, unsafe transport outcomes, changed routes/plans, completion/reviewer
+states, paused/cancelled tasks, and expired/exhausted episodes. `wg status` and
+`wg show TASK` report the state, budget, remaining window, next retry, redacted
+reason code, and one safe next action. `wg retry TASK --reason ...` remains the
+explicit operator escape hatch and starts a new decision rather than extending
+the old automatic episode. Enabling the setting never backfills old failures.
+
 ---
 
 ### `wg requeue`

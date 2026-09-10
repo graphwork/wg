@@ -653,6 +653,9 @@ fn select_candidate(
         candidate.review_binding = Some(binding.clone());
         selected_binding = Some(binding);
         task.completion_candidate = Some(candidate);
+        if let Some(recovery) = task.source_provider_recovery.as_mut() {
+            recovery.recover();
+        }
         if source_accounting.usage.is_some() {
             task.token_usage.clone_from(&source_accounting.usage);
         }

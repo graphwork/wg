@@ -302,6 +302,40 @@ impl std::fmt::Display for FailureReason {
     }
 }
 
+/// Provenance of provider-failure evidence. Only the structured/direct forms
+/// are eligible for automatic source recovery; legacy text is diagnostic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum FailureEvidenceKind {
+    HttpResponse,
+    ProviderEnvelope,
+    TransportError,
+    ProcessOutcome,
+    LegacyText,
+    #[default]
+    Unknown,
+}
+
+/// Whether replay can be proven safe at the source-provider boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum ExecutionOutcome {
+    DefinitiveFailure,
+    NotSent,
+    ReconciledNoCommit,
+    #[default]
+    Ambiguous,
+}
+
+impl ExecutionOutcome {
+    pub fn is_safe_to_replay(self) -> bool {
+        matches!(
+            self,
+            Self::DefinitiveFailure | Self::NotSent | Self::ReconciledNoCommit
+        )
+    }
+}
+
 /// Normalized evidence emitted once for each failed attempt.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct FailureSignal {
@@ -315,6 +349,14 @@ pub struct FailureSignal {
     pub provider_code: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry_after_secs: Option<f64>,
+    #[serde(default)]
+    pub evidence_kind: FailureEvidenceKind,
+    #[serde(default)]
+    pub execution_outcome: ExecutionOutcome,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_request_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport_code: Option<String>,
     pub executor: ExecutorKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub route: Option<String>,
@@ -886,6 +928,10 @@ pub struct Task {
     /// Latest normalized provider/local failure signal for this task attempt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure_signal: Option<FailureSignal>,
+    /// Embedded retry-admission projection for the narrow source-provider V1
+    /// policy. The ordinary task lifecycle remains authoritative.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_provider_recovery: Option<crate::source_provider_recovery::SourceProviderRecoveryV1>,
     /// Preferred model for this task (haiku, sonnet, opus)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
@@ -1180,6 +1226,7 @@ impl Default for Task {
             failure_reason: None,
             failure_class: None,
             failure_signal: None,
+            source_provider_recovery: None,
             model: None,
             reasoning: None,
             provider: None,
@@ -2352,6 +2399,8 @@ struct TaskHelper {
     #[serde(default)]
     failure_signal: Option<FailureSignal>,
     #[serde(default)]
+    source_provider_recovery: Option<crate::source_provider_recovery::SourceProviderRecoveryV1>,
+    #[serde(default)]
     model: Option<String>,
     #[serde(default)]
     reasoning: Option<ReasoningLevel>,
@@ -2559,6 +2608,7 @@ impl<'de> Deserialize<'de> for Task {
             failure_reason: helper.failure_reason,
             failure_class: helper.failure_class,
             failure_signal: helper.failure_signal,
+            source_provider_recovery: helper.source_provider_recovery,
             model: helper.model,
             reasoning: helper.reasoning,
             provider: helper.provider,

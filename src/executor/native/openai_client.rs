@@ -949,6 +949,7 @@ impl OpenAiClient {
                         backoff_ms = (backoff_ms * 2).min(30_000);
                         continue;
                     }
+                    record_native_transport_error(&e, &oai_request);
                     record_native_terminal_error(&e);
                     return Err(e).context("Streaming request failed after retries");
                 }
@@ -975,20 +976,29 @@ impl OpenAiClient {
         let status = resp.status();
         if !status.is_success() {
             let status_code = status.as_u16();
+            let retry_after_header = parse_retry_after_header(resp.headers());
             let body = resp.text().await.unwrap_or_default();
-            // Surface retryable errors so the caller can retry
+            let retry_after =
+                max_retry_after_seconds(retry_after_header, parse_retry_after_oai(&body));
+            // Surface retryable errors so the caller can retry. Retry-After is
+            // a lower bound, whether carried by the HTTP header or envelope.
             if is_retryable(status_code) {
-                let wait_hint = parse_retry_after_oai(&body).unwrap_or(0);
+                let wait_hint = retry_after
+                    .map(|seconds| (seconds * 1_000.0).ceil() as u64)
+                    .unwrap_or(0);
                 if wait_hint > 0 {
                     tokio::time::sleep(Duration::from_millis(wait_hint)).await;
                 }
             }
-            return Err(oai_api_error_with_hint(
-                status_code,
-                &body,
-                &self.auth_config_hint(),
-                self.provider_hint.as_deref(),
-                Some(&self.model),
+            return Err(attach_retry_after(
+                oai_api_error_with_hint(
+                    status_code,
+                    &body,
+                    &self.auth_config_hint(),
+                    self.provider_hint.as_deref(),
+                    Some(&self.model),
+                ),
+                retry_after,
             ));
         }
 
@@ -1156,19 +1166,27 @@ impl OpenAiClient {
         let status = resp.status();
         if !status.is_success() {
             let status_code = status.as_u16();
+            let retry_after_header = parse_retry_after_header(resp.headers());
             let body = resp.text().await.unwrap_or_default();
+            let retry_after =
+                max_retry_after_seconds(retry_after_header, parse_retry_after_oai(&body));
             if is_retryable(status_code) {
-                let wait_hint = parse_retry_after_oai(&body).unwrap_or(0);
+                let wait_hint = retry_after
+                    .map(|seconds| (seconds * 1_000.0).ceil() as u64)
+                    .unwrap_or(0);
                 if wait_hint > 0 {
                     tokio::time::sleep(Duration::from_millis(wait_hint)).await;
                 }
             }
-            return Err(oai_api_error_with_hint(
-                status_code,
-                &body,
-                &self.auth_config_hint(),
-                self.provider_hint.as_deref(),
-                Some(&self.model),
+            return Err(attach_retry_after(
+                oai_api_error_with_hint(
+                    status_code,
+                    &body,
+                    &self.auth_config_hint(),
+                    self.provider_hint.as_deref(),
+                    Some(&self.model),
+                ),
+                retry_after,
             ));
         }
 
@@ -1371,6 +1389,7 @@ impl OpenAiClient {
                         backoff_ms = (backoff_ms * 2).min(30_000);
                         continue;
                     }
+                    record_native_transport_error(&e, &oai_request);
                     record_native_terminal_error(&e);
                     return Err(e).context("Streaming request failed after retries");
                 }
@@ -1414,13 +1433,18 @@ impl OpenAiClient {
                     }
 
                     let status_code = status.as_u16();
+                    let retry_after_header = parse_retry_after_header(response.headers());
                     let body = response.text().await.unwrap_or_default();
+                    let retry_after =
+                        max_retry_after_seconds(retry_after_header, parse_retry_after_oai(&body));
+                    let retry_after_ms =
+                        retry_after.map(|seconds| (seconds * 1_000.0).ceil() as u64);
 
                     let allowed_retries = max_retries_for_status(status_code);
                     if is_retryable(status_code) && retry_count < allowed_retries {
                         retry_count += 1;
-                        let wait = parse_retry_after_oai(&body)
-                            .map(jittered_backoff)
+                        let wait = retry_after_ms
+                            .map(|lower_bound| lower_bound.max(jittered_backoff(backoff_ms)))
                             .unwrap_or_else(|| jittered_backoff(backoff_ms));
                         eprintln!(
                             "[openai-client] Retryable error {} (attempt {}/{}), waiting {}ms",
@@ -1431,12 +1455,15 @@ impl OpenAiClient {
                         continue;
                     }
 
-                    let error = oai_api_error_with_hint(
-                        status_code,
-                        &body,
-                        &self.auth_config_hint(),
-                        self.provider_hint.as_deref(),
-                        Some(&self.model),
+                    let error = attach_retry_after(
+                        oai_api_error_with_hint(
+                            status_code,
+                            &body,
+                            &self.auth_config_hint(),
+                            self.provider_hint.as_deref(),
+                            Some(&self.model),
+                        ),
+                        retry_after,
                     );
                     record_native_terminal_error(&error);
                     return Err(error);
@@ -1453,7 +1480,9 @@ impl OpenAiClient {
                         backoff_ms = (backoff_ms * 2).min(60_000);
                         continue;
                     }
-                    return Err(e).context("Network error after retries");
+                    let error = anyhow::Error::new(e);
+                    record_native_transport_error(&error, request);
+                    return Err(error).context("Network error after retries");
                 }
             }
         }
@@ -1722,6 +1751,40 @@ impl std::error::Error for ApiError {}
 
 /// Best-effort terminal recording for the in-process executor. The wrapper and
 /// `wg fail` also record; the telemetry store deduplicates the same attempt.
+fn request_proves_no_prior_effects(request: &OaiRequest) -> bool {
+    request.messages.iter().all(|message| {
+        message.role != "tool"
+            && message
+                .tool_calls
+                .as_ref()
+                .is_none_or(|calls| calls.is_empty())
+            && message.tool_call_id.is_none()
+    })
+}
+
+fn record_native_transport_error(error: &anyhow::Error, request: &OaiRequest) {
+    let Some(network_error) = error.downcast_ref::<reqwest::Error>() else {
+        return;
+    };
+    // A connect-class failure proves this request was not accepted. It proves
+    // replay of the whole source operation only when its request history also
+    // proves that no prior tool call/result occurred.
+    if !network_error.is_connect() || !request_proves_no_prior_effects(request) {
+        return;
+    }
+    append_native_terminal_signal(crate::graph::FailureSignal {
+        reason: crate::graph::FailureReason::ProviderUnavailable,
+        confidence: 1.0,
+        evidence_kind: crate::graph::FailureEvidenceKind::TransportError,
+        execution_outcome: crate::graph::ExecutionOutcome::NotSent,
+        transport_code: Some("connect-before-request-no-prior-effects".into()),
+        executor: crate::dispatch::plan::ExecutorKind::Native,
+        route: std::env::var("WG_MODEL").ok(),
+        detected_at_ms: chrono::Utc::now().timestamp_millis(),
+        ..crate::graph::FailureSignal::default()
+    });
+}
+
 fn record_native_terminal_error(error: &anyhow::Error) {
     let Some(api_error) = error.downcast_ref::<ApiError>() else {
         return;
@@ -1739,18 +1802,28 @@ fn record_native_terminal_error(error: &anyhow::Error) {
         Some(api_error.status),
         error_type,
         provider_code,
-        None,
+        error.downcast_ref::<RetryAfterHint>().map(|hint| hint.0),
         &api_error.to_string(),
         crate::dispatch::plan::ExecutorKind::Native,
         std::env::var("WG_MODEL").ok(),
     );
+    signal.detected_at_ms = chrono::Utc::now().timestamp_millis();
+    signal.evidence_kind = crate::graph::FailureEvidenceKind::HttpResponse;
+    // This adapter proves one HTTP request failed, not that the enclosing
+    // source attempt performed no earlier tool/publication effects. The source
+    // recovery gate therefore requires an independent no-effect proof and
+    // treats this standalone terminal record as ambiguous.
+    signal.execution_outcome = crate::graph::ExecutionOutcome::Ambiguous;
+    append_native_terminal_signal(signal);
+}
+
+fn append_native_terminal_signal(signal: crate::graph::FailureSignal) {
     let Ok(dir) = std::env::var("WG_DIR") else {
         return;
     };
     let Ok(task_id) = std::env::var("WG_TASK_ID") else {
         return;
     };
-    signal.detected_at_ms = chrono::Utc::now().timestamp_millis();
     let dir = std::path::Path::new(&dir);
     let attempt = crate::parser::load_graph(dir.join("graph.jsonl"))
         .ok()
@@ -1769,12 +1842,15 @@ fn oai_api_error(status: u16, body: &str) -> anyhow::Error {
         } else {
             (truncate(body, 500).to_string(), None)
         };
-    ApiError {
-        status,
-        message,
-        openrouter_provider_error,
-    }
-    .into()
+    attach_retry_after(
+        ApiError {
+            status,
+            message,
+            openrouter_provider_error,
+        }
+        .into(),
+        parse_retry_after_oai(body).map(|millis| millis as f64 / 1000.0),
+    )
 }
 
 fn oai_api_error_for_provider(
@@ -1794,12 +1870,15 @@ fn oai_api_error_for_provider(
         } else {
             (truncate(body, 500).to_string(), None)
         };
-    ApiError {
-        status,
-        message,
-        openrouter_provider_error,
-    }
-    .into()
+    attach_retry_after(
+        ApiError {
+            status,
+            message,
+            openrouter_provider_error,
+        }
+        .into(),
+        parse_retry_after_oai(body).map(|millis| millis as f64 / 1000.0),
+    )
 }
 
 fn parse_openrouter_provider_error(
@@ -1905,7 +1984,55 @@ fn oai_api_error_with_hint(
 fn parse_retry_after_oai(body: &str) -> Option<u64> {
     crate::telemetry::parse_openrouter_error_envelope(body)
         .and_then(|parsed| parsed.retry_after_secs)
-        .map(|seconds| (seconds * 1_000.0) as u64)
+        .filter(|seconds| seconds.is_finite() && *seconds >= 0.0)
+        .map(|seconds| (seconds * 1_000.0).ceil() as u64)
+}
+
+fn max_retry_after_seconds(header: Option<f64>, body_millis: Option<u64>) -> Option<f64> {
+    match (header, body_millis.map(|millis| millis as f64 / 1_000.0)) {
+        (Some(header), Some(body)) => Some(header.max(body)),
+        (header, body) => header.or(body),
+    }
+}
+
+fn parse_retry_after_header(headers: &HeaderMap) -> Option<f64> {
+    let value = headers.get("retry-after")?.to_str().ok()?.trim();
+    if let Ok(seconds) = value.parse::<f64>()
+        && seconds.is_finite()
+        && seconds >= 0.0
+    {
+        return Some(seconds);
+    }
+    let target = chrono::DateTime::parse_from_rfc2822(value)
+        .ok()?
+        .with_timezone(&chrono::Utc);
+    Some(
+        target
+            .signed_duration_since(chrono::Utc::now())
+            .num_milliseconds()
+            .max(0) as f64
+            / 1_000.0,
+    )
+}
+
+#[derive(Debug)]
+struct RetryAfterHint(f64);
+
+impl std::fmt::Display for RetryAfterHint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "provider retry-after lower bound: {}s", self.0)
+    }
+}
+
+impl std::error::Error for RetryAfterHint {}
+
+fn attach_retry_after(error: anyhow::Error, retry_after: Option<f64>) -> anyhow::Error {
+    match retry_after {
+        Some(retry_after) if retry_after.is_finite() && retry_after >= 0.0 => {
+            error.context(RetryAfterHint(retry_after))
+        }
+        _ => error,
+    }
 }
 
 /// Add jitter to a backoff duration to prevent thundering herd.
@@ -5467,6 +5594,40 @@ Done."#;
 
         // Invalid body
         assert_eq!(parse_retry_after_oai("not json"), None);
+
+        // Header and envelope are independent authoritative lower bounds.
+        assert_eq!(max_retry_after_seconds(Some(2.0), Some(5_000)), Some(5.0));
+        assert_eq!(max_retry_after_seconds(Some(7.0), Some(5_000)), Some(7.0));
+    }
+
+    #[test]
+    fn transport_not_sent_requires_request_history_without_tool_effects() {
+        let request = |messages| OaiRequest {
+            model: "test".into(),
+            messages,
+            max_tokens: Some(1),
+            tools: Vec::new(),
+            tool_choice: None,
+            stream: false,
+            stream_options: None,
+            cache_control: None,
+            reasoning: None,
+            include_reasoning: None,
+        };
+        let message = |role: &str, tool_call_id: Option<&str>| OaiMessage {
+            role: role.into(),
+            content: Some("content".into()),
+            tool_calls: None,
+            tool_call_id: tool_call_id.map(str::to_string),
+            reasoning_details: None,
+        };
+        assert!(request_proves_no_prior_effects(&request(vec![message(
+            "user", None
+        )])));
+        assert!(!request_proves_no_prior_effects(&request(vec![message(
+            "tool",
+            Some("call-1")
+        )])));
     }
 
     // ── Short model name resolution tests ──────────────────────────────

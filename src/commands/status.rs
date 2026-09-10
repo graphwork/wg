@@ -147,6 +147,18 @@ struct CompletionWaitingTask {
     candidate: String,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+struct SourceProviderRecoveryInfo {
+    task_id: String,
+    state: worksgood::source_provider_recovery::SourceProviderRecoveryState,
+    retries_used: u32,
+    retry_limit: u32,
+    window_remaining_seconds: u64,
+    next_retry_at: Option<String>,
+    reason: String,
+    next_action: String,
+}
+
 #[derive(Debug, Clone, Default, serde::Serialize)]
 struct AdaptiveStatusInfo {
     assignment_receipts: usize,
@@ -194,6 +206,8 @@ struct StatusOutput {
     /// Accepted immutable candidates waiting only on review/finalization.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     completion_waiting: Vec<CompletionWaitingTask>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    source_provider_recovery: Vec<SourceProviderRecoveryInfo>,
     /// One explicit authority map for completion review, candidate review,
     /// scored outcomes, external scores, and legacy migration.
     agency_authority: super::adaptive_agency::AgencyAuthorityMap,
@@ -310,7 +324,9 @@ fn gather_status(dir: &Path, show_all: bool) -> Result<StatusOutput> {
     let verify_failing = gather_verify_failing(dir, show_all);
 
     let waiting_for_owner_release = gather_reopen_holds(dir, show_all);
-    let completion_waiting = load_graph(graph_path(dir))
+    let status_graph = load_graph(graph_path(dir)).ok();
+    let completion_waiting = status_graph
+        .as_ref()
         .map(|graph| {
             graph
                 .tasks()
@@ -322,6 +338,35 @@ fn gather_status(dir: &Path, show_all: bool) -> Result<StatusOutput> {
                         reason: blocker.reason.clone(),
                         safe_next: blocker.safe_next.clone(),
                         candidate: blocker.candidate.manifest.content_digest.to_string(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let now = Utc::now();
+    let source_provider_recovery = status_graph
+        .as_ref()
+        .map(|graph| {
+            graph
+                .tasks()
+                .filter_map(|task| {
+                    let record = task.source_provider_recovery.as_ref()?;
+                    if matches!(
+                        record.state,
+                        worksgood::source_provider_recovery::SourceProviderRecoveryState::Recovered
+                            | worksgood::source_provider_recovery::SourceProviderRecoveryState::Cancelled
+                    ) {
+                        return None;
+                    }
+                    Some(SourceProviderRecoveryInfo {
+                        task_id: task.id.clone(),
+                        state: record.state,
+                        retries_used: record.automatic_retries_used,
+                        retry_limit: record.automatic_retry_limit,
+                        window_remaining_seconds: record.window_remaining_seconds(now),
+                        next_retry_at: record.next_retry_at.map(|at| at.to_rfc3339()),
+                        reason: record.reason_code.clone(),
+                        next_action: record.next_action.clone(),
                     })
                 })
                 .collect()
@@ -365,6 +410,7 @@ fn gather_status(dir: &Path, show_all: bool) -> Result<StatusOutput> {
         verify_failing,
         waiting_for_owner_release,
         completion_waiting,
+        source_provider_recovery,
         agency_authority: super::adaptive_agency::authority_map(),
         adaptive,
         disk,
@@ -1288,6 +1334,24 @@ fn print_status(status: &StatusOutput) {
                 held.source_attempt.as_deref().unwrap_or("none"),
                 held.source_fence
             );
+        }
+    }
+
+    if !status.source_provider_recovery.is_empty() {
+        println!();
+        println!("Source-provider recovery:");
+        for recovery in &status.source_provider_recovery {
+            println!(
+                "  {} — {:?}, retries {}/{}, window {}s, next {}, reason {}",
+                recovery.task_id,
+                recovery.state,
+                recovery.retries_used,
+                recovery.retry_limit,
+                recovery.window_remaining_seconds,
+                recovery.next_retry_at.as_deref().unwrap_or("none"),
+                recovery.reason
+            );
+            println!("    next: {}", recovery.next_action);
         }
     }
 

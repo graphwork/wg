@@ -111,6 +111,7 @@ pub mod service_identity;
 pub mod session_lock;
 pub mod simple_land;
 pub mod smoke;
+pub mod source_provider_recovery;
 pub mod stream_event;
 pub mod syntect_convert;
 pub mod target_cache;

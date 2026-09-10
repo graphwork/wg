@@ -112,6 +112,8 @@ struct TaskDetails {
     failure_class: Option<FailureClass>,
     #[serde(skip_serializing_if = "Option::is_none")]
     failure_signal: Option<FailureSignal>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_provider_recovery: Option<worksgood::source_provider_recovery::SourceProviderRecoveryV1>,
     /// Per-task spawn circuit breaker counter (0 = healthy).
     #[serde(default, skip_serializing_if = "is_zero")]
     spawn_failures: u32,
@@ -884,6 +886,7 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         failure_reason: task.failure_reason.clone(),
         failure_class: task.failure_class,
         failure_signal: task.failure_signal.clone(),
+        source_provider_recovery: task.source_provider_recovery.clone(),
         spawn_failures: task.spawn_failures,
         max_spawn_failures: worksgood::config::Config::load_or_default(dir)
             .coordinator
@@ -1618,6 +1621,33 @@ fn print_human_readable(details: &TaskDetails) {
             }
         };
         println!("  hint: {}", hint);
+    }
+    if let Some(recovery) = &details.source_provider_recovery {
+        let now = Utc::now();
+        let next = recovery
+            .next_retry_at
+            .map(|at| {
+                if at <= now {
+                    "due now".to_string()
+                } else {
+                    at.to_rfc3339()
+                }
+            })
+            .unwrap_or_else(|| "none".to_string());
+        println!(
+            "source_provider_recovery: {:?} — retry {}/{}; window {}s; next {}; reason {}",
+            recovery.state,
+            recovery.automatic_retries_used,
+            recovery.automatic_retry_limit,
+            recovery.window_remaining_seconds(now),
+            next,
+            recovery.reason_code
+        );
+        println!("  next action: {}", recovery.next_action);
+        println!(
+            "  exact route: {} (route {}, plan {})",
+            recovery.exact_route, recovery.route_id, recovery.plan_id
+        );
     }
     if let Some(signal) = &details.failure_signal {
         println!(
@@ -2472,6 +2502,7 @@ mod tests {
             failure_reason: None,
             failure_class: None,
             failure_signal: None,
+            source_provider_recovery: None,
             spawn_failures: 0,
             max_spawn_failures: 0,
             last_spawn_failure_at: None,

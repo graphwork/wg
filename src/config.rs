@@ -4495,6 +4495,69 @@ impl Default for ConvergenceConfig {
     }
 }
 
+/// Explicit bounded source-provider retry policy. This is disabled by default
+/// and intentionally capped to the V1 attended-recovery envelope.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceProviderRetryConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_source_provider_max_retries")]
+    pub max_automatic_retries: u32,
+    #[serde(default = "default_source_provider_recovery_window")]
+    pub recovery_window_seconds: u64,
+    #[serde(default = "default_source_provider_retry_base")]
+    pub base_seconds: u64,
+    #[serde(default = "default_source_provider_retry_cap")]
+    pub delay_cap_seconds: u64,
+}
+
+impl SourceProviderRetryConfig {
+    pub fn is_default(value: &Self) -> bool {
+        value == &Self::default()
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.max_automatic_retries > 3 {
+            return Err("max_automatic_retries must be between 0 and 3".into());
+        }
+        if !(1..=900).contains(&self.recovery_window_seconds) {
+            return Err("recovery_window_seconds must be between 1 and 900".into());
+        }
+        if self.base_seconds == 0
+            || self.base_seconds > self.delay_cap_seconds
+            || self.delay_cap_seconds > self.recovery_window_seconds
+        {
+            return Err("source-provider retry delays must satisfy 1 <= base_seconds <= delay_cap_seconds <= recovery_window_seconds".into());
+        }
+        Ok(())
+    }
+}
+
+impl Default for SourceProviderRetryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_automatic_retries: default_source_provider_max_retries(),
+            recovery_window_seconds: default_source_provider_recovery_window(),
+            base_seconds: default_source_provider_retry_base(),
+            delay_cap_seconds: default_source_provider_retry_cap(),
+        }
+    }
+}
+
+fn default_source_provider_max_retries() -> u32 {
+    3
+}
+fn default_source_provider_recovery_window() -> u64 {
+    900
+}
+fn default_source_provider_retry_base() -> u64 {
+    30
+}
+fn default_source_provider_retry_cap() -> u64 {
+    300
+}
+
 /// Coordinator-specific configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CoordinatorConfig {
@@ -4548,6 +4611,12 @@ pub struct CoordinatorConfig {
     /// events, deadlines, and safety ticks.
     #[serde(default)]
     pub convergence: ConvergenceConfig,
+
+    /// Narrow opt-in recovery for direct, safely replayable source-provider
+    /// failures. It uses the graph/lifecycle record and existing coordinator
+    /// tick; it never opens the retired PlannerStore.
+    #[serde(default, skip_serializing_if = "SourceProviderRetryConfig::is_default")]
+    pub source_provider_retry: SourceProviderRetryConfig,
 
     /// Executor to use for spawned agents.
     /// When `None` (not set in config), `effective_executor()` auto-detects
@@ -5246,6 +5315,7 @@ impl Default for CoordinatorConfig {
             graph_watch_enabled: default_graph_watch_enabled(),
             graph_watch_debounce_ms: default_graph_watch_debounce_ms(),
             convergence: ConvergenceConfig::default(),
+            source_provider_retry: SourceProviderRetryConfig::default(),
             executor: None,
             model: None,
             provider: None,
@@ -7022,6 +7092,13 @@ impl Config {
                 rule: "pi-watchdog-static-policy".into(),
                 message: error.to_string(),
                 fix: "Keep meaningful_silence_secs exactly 300, free/low provider hard thresholds >= 900, a separate bounded hard grace, and finite nonzero recovery budgets.".into(),
+            });
+        }
+        if let Err(error) = self.coordinator.source_provider_retry.validate() {
+            result.errors.push(ConfigDiagnostic {
+                rule: "source-provider-retry-bounds".into(),
+                message: error,
+                fix: "Keep retries <= 3, window <= 900 seconds, and 1 <= base delay <= delay cap <= window.".into(),
             });
         }
 

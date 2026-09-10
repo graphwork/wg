@@ -2531,6 +2531,7 @@ fn handle_add_task_with_reasoning(
         failure_reason: None,
         failure_class: None,
         failure_signal: None,
+        source_provider_recovery: None,
         model: model.map(String::from),
         reasoning,
         provider: None,

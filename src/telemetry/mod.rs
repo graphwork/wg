@@ -4,7 +4,7 @@
 //! provider classification cannot drift between execution paths.
 
 use crate::dispatch::plan::ExecutorKind;
-use crate::graph::{FailureReason, FailureSignal};
+use crate::graph::{ExecutionOutcome, FailureEvidenceKind, FailureReason, FailureSignal};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
@@ -267,6 +267,10 @@ pub fn failure_signal_from_evidence(
         error_type,
         provider_code,
         retry_after_secs: retry_after_secs.or_else(|| parse_retry_after_text(message)),
+        evidence_kind: FailureEvidenceKind::Unknown,
+        execution_outcome: ExecutionOutcome::Ambiguous,
+        provider_request_id: None,
+        transport_code: None,
         executor,
         route,
         detected_at_ms: Utc::now().timestamp_millis(),
@@ -288,7 +292,7 @@ pub fn failure_signal_from_envelope(
     .flatten()
     .collect::<Vec<_>>()
     .join(" ");
-    Some(failure_signal_from_evidence(
+    let mut signal = failure_signal_from_evidence(
         parsed.status.or(fallback_status),
         parsed.error_type,
         parsed.provider_code,
@@ -296,7 +300,22 @@ pub fn failure_signal_from_envelope(
         &message,
         executor,
         route,
-    ))
+    );
+    let typed_provider_failure = signal.http_status.is_some()
+        || signal.provider_code.is_some()
+        || signal
+            .error_type
+            .as_deref()
+            .and_then(typed_reason)
+            .is_some();
+    if typed_provider_failure {
+        signal.evidence_kind = FailureEvidenceKind::ProviderEnvelope;
+        // The envelope proves a model request failed, not that the enclosing
+        // source attempt had no prior effects. A complete attempt stream or a
+        // pre-write transport receipt must strengthen this before enrollment.
+        signal.execution_outcome = ExecutionOutcome::Ambiguous;
+    }
+    Some(signal)
 }
 
 pub fn route_bucket(route: Option<&str>) -> String {
@@ -312,6 +331,18 @@ pub struct TelemetryRecord {
     pub ts: DateTime<Utc>,
     pub task: String,
     pub attempt: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt_fence: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_id: Option<String>,
     pub bucket: String,
     #[serde(flatten)]
     pub signal: FailureSignal,
@@ -322,12 +353,35 @@ pub struct TelemetryRecord {
 }
 
 impl TelemetryRecord {
+    pub fn matches_source_binding(
+        &self,
+        binding: &crate::source_provider_recovery::FailureBinding,
+    ) -> bool {
+        self.task == binding.task_id
+            && self.generation == Some(binding.generation)
+            && self.attempt_id.as_deref() == Some(binding.attempt_id.as_str())
+            && self.attempt_fence == Some(binding.attempt_fence)
+            && self.operation_id.as_deref() == Some(binding.operation_id.as_str())
+            && self.route_id.as_deref() == Some(binding.route_id.as_str())
+            && self.plan_id.as_deref() == Some(binding.plan_id.as_str())
+    }
+
     pub fn new(task: impl Into<String>, attempt: u32, signal: FailureSignal) -> Self {
         let bucket = route_bucket(signal.route.as_deref());
         Self {
             ts: Utc::now(),
             task: task.into(),
             attempt,
+            generation: std::env::var("WG_WORKER_GENERATION")
+                .ok()
+                .and_then(|value| value.parse().ok()),
+            attempt_id: std::env::var("WG_WORKER_ATTEMPT_ID").ok(),
+            attempt_fence: std::env::var("WG_WORKER_ATTEMPT_FENCE")
+                .ok()
+                .and_then(|value| value.parse().ok()),
+            operation_id: std::env::var("WG_SOURCE_PROVIDER_OPERATION_ID").ok(),
+            route_id: std::env::var("WG_SOURCE_PROVIDER_ROUTE_ID").ok(),
+            plan_id: std::env::var("WG_SOURCE_PROVIDER_PLAN_ID").ok(),
             bucket,
             signal,
             credit_remaining_usd: None,
@@ -399,7 +453,8 @@ pub fn read_records(dir: &Path) -> Result<Vec<TelemetryRecord>> {
 }
 
 /// Atomically append and prune the rolling window under a sidecar lock.
-/// Duplicate recording sites converge on `(task, attempt, executor, bucket)`.
+/// Exact duplicate observations converge, while different direct evidence
+/// kinds/classifications for one attempt remain available to the recovery fold.
 pub fn append_record_at(dir: &Path, record: TelemetryRecord, now: DateTime<Utc>) -> Result<()> {
     let path = telemetry_path(dir);
     let lock_path = path.with_extension("lock");
@@ -410,10 +465,30 @@ pub fn append_record_at(dir: &Path, record: TelemetryRecord, now: DateTime<Utc>)
     if let Some(existing) = records.iter_mut().find(|existing| {
         existing.task == record.task
             && existing.attempt == record.attempt
+            && existing.generation == record.generation
+            && existing.attempt_id == record.attempt_id
+            && existing.attempt_fence == record.attempt_fence
+            && existing.operation_id == record.operation_id
+            && existing.route_id == record.route_id
+            && existing.plan_id == record.plan_id
             && existing.signal.executor == record.signal.executor
             && existing.bucket == record.bucket
+            && existing.signal.evidence_kind == record.signal.evidence_kind
+            && existing.signal.reason == record.signal.reason
+            && existing.signal.http_status == record.signal.http_status
+            && existing.signal.execution_outcome == record.signal.execution_outcome
+            && existing.signal.provider_request_id == record.signal.provider_request_id
+            && existing.signal.transport_code == record.signal.transport_code
     }) {
+        let retry_after = match (
+            existing.signal.retry_after_secs,
+            record.signal.retry_after_secs,
+        ) {
+            (Some(old), Some(new)) => Some(old.max(new)),
+            (old, new) => old.or(new),
+        };
         *existing = record;
+        existing.signal.retry_after_secs = retry_after;
     } else {
         records.push(record);
     }
@@ -633,6 +708,48 @@ mod tests {
         assert_eq!(records.len(), MAX_TELEMETRY_RECORDS);
         assert!(records.iter().all(|record| record.task != "old"));
         assert_eq!(records.first().unwrap().task, "t-10");
+    }
+
+    #[test]
+    fn exact_attempt_binding_and_duplicate_retry_after_are_preserved() {
+        let dir = tempfile::tempdir().unwrap();
+        let binding = crate::source_provider_recovery::FailureBinding {
+            task_id: "source".into(),
+            generation: 3,
+            attempt_id: "attempt-3-4".into(),
+            attempt_fence: 9,
+            graph_id: "graph".into(),
+            goal_requirements_digest: "goal".into(),
+            exact_route: "pi:test:model".into(),
+            executor: "pi".into(),
+            model: "test:model".into(),
+            route_id: "route".into(),
+            plan_id: "plan".into(),
+            operation_id: "operation".into(),
+        };
+        let mut first = TelemetryRecord::new("source", 1, signal(FailureReason::RateLimit, 1_000));
+        first.generation = Some(3);
+        first.attempt_id = Some("attempt-3-4".into());
+        first.attempt_fence = Some(9);
+        first.operation_id = Some("operation".into());
+        first.route_id = Some("route".into());
+        first.plan_id = Some("plan".into());
+        first.signal.evidence_kind = FailureEvidenceKind::HttpResponse;
+        first.signal.execution_outcome = ExecutionOutcome::DefinitiveFailure;
+        first.signal.retry_after_secs = Some(10.0);
+        assert!(first.matches_source_binding(&binding));
+
+        append_record(dir.path(), first.clone()).unwrap();
+        let mut duplicate = first;
+        duplicate.signal.retry_after_secs = Some(2.0);
+        append_record(dir.path(), duplicate).unwrap();
+        let records = read_records(dir.path()).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].signal.retry_after_secs, Some(10.0));
+
+        let mut stale = records[0].clone();
+        stale.generation = Some(0);
+        assert!(!stale.matches_source_binding(&binding));
     }
 
     #[test]

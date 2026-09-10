@@ -65,6 +65,7 @@ fn create_task_with_timeout(id: &str, verify_timeout: Option<String>) -> Task {
         failure_reason: None,
         failure_class: None,
         failure_signal: None,
+        source_provider_recovery: None,
         model: None,
         reasoning: None,
         provider: None,

@@ -3222,3 +3222,10 @@ script = "scenarios/worker_owned_landing_turns.sh"
 owners = ["worker-owned-landing-turns", "repair-landing-review-rejection"]
 description = "Candidate-binary landing-turn CLI proof plus the ref-scoped persistent FIFO state-machine gate: three exact source bindings queue and advance in order, restart reload preserves candidates, an expired/crashed owner is fenced, stale bindings cannot publish/release, changed candidate bytes invalidate receipts, and starvation-freedom leaves no queued landing pending."
 timeout_seconds = 180
+
+[[scenario]]
+name = "source_provider_bounded_recovery"
+script = "scenarios/source_provider_bounded_recovery.sh"
+owners = ["provider-backoff-planner"]
+description = "Credential-free candidate-binary proof through the production daemon and generated Pi execution wrapper: opt-in/no-backfill, direct structured 429/503 evidence, Retry-After lower bound, restart-stable episode and retained work, exact initial+3 budget exhaustion, out-of-window and post-effect ambiguity fail-closed cases, explicit operator-retry episode clearing, PTY show/status truth, and no planner/controller/scheduler side plane."
+timeout_seconds = 90

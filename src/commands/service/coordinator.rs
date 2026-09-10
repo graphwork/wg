@@ -1147,6 +1147,7 @@ fn build_separate_verify_tasks(
             failure_reason: None,
             failure_class: None,
             failure_signal: None,
+            source_provider_recovery: None,
             model: Some(verification_model.clone()),
             reasoning: verification_resolved.reasoning,
             provider: verification_resolved.provider.clone(),
@@ -1378,6 +1379,7 @@ fn build_auto_evolve_task(
         failure_reason: None,
         failure_class: None,
         failure_signal: None,
+        source_provider_recovery: None,
         model: Some(evolver_resolved.model),
         reasoning: evolver_resolved.reasoning,
         provider: evolver_resolved.provider,
@@ -1612,6 +1614,7 @@ fn build_auto_create_task(
         failure_reason: None,
         failure_class: None,
         failure_signal: None,
+        source_provider_recovery: None,
         model: Some(creator_resolved.model),
         reasoning: creator_resolved.reasoning,
         provider: creator_resolved.provider,
@@ -1914,6 +1917,12 @@ fn record_direct_dispatch_failure(
         task.assigned = None;
         task.failure_reason = Some(diagnostic.clone());
         task.failure_class = Some(worksgood::graph::FailureClass::ExecutorConfig);
+        if let Some(record) = task.source_provider_recovery.as_mut() {
+            record.needs_attention(
+                "local-launch-or-route-failure",
+                "repair the local checkout/configuration issue, then explicitly retry if replay is safe",
+            );
+        }
         task.completed_at = Some(now.clone());
         task.spawn_failures = task.spawn_failures.saturating_add(1);
         task.last_spawn_failure_at = Some(now.clone());
@@ -2108,6 +2117,302 @@ fn warn_released_advisory_quality_passes(graph_path: &Path, graph: &worksgood::g
     }
 }
 
+/// Admit due source-provider retries through the existing lifecycle CAS. The
+/// graph update contains both GenerationCreated and its authorization record,
+/// so daemon restart or a duplicate wake cannot spend budget twice.
+fn authorize_due_source_provider_retries(
+    dir: &Path,
+    config: &Config,
+    default_model: Option<&str>,
+    slots_available: usize,
+) {
+    let graph_file = graph_path(dir);
+    let now = Utc::now();
+    let agents_dir = dir.join("agency").join("cache/agents");
+    let policy_enabled = config.coordinator.source_provider_retry.enabled;
+    let mut profile_cache = worksgood::dispatch::ProfileCache::new();
+    let mut route_snapshots = std::collections::HashMap::new();
+
+    if let Ok(graph) = worksgood::parser::load_graph(&graph_file) {
+        for task in graph.tasks().filter(|task| {
+            task.source_provider_recovery
+                .as_ref()
+                .is_some_and(|record| record.state.is_active())
+        }) {
+            let effective =
+                worksgood::dispatch::effective_config_for_task(task, config, &mut profile_cache);
+            let effective: &Config = effective.as_ref();
+            let task_model = if task.profile.is_some() {
+                Some(
+                    effective
+                        .resolve_model_for_role(worksgood::config::DispatchRole::TaskAgent)
+                        .spawn_model_spec(),
+                )
+            } else {
+                default_model.map(String::from)
+            };
+            let agent_entity = task
+                .agent
+                .as_ref()
+                .and_then(|hash| agency::find_agent_by_prefix(&agents_dir, hash).ok());
+            let plan = worksgood::dispatch::plan_spawn(
+                task,
+                effective,
+                agent_entity
+                    .as_ref()
+                    .and_then(|agent| agent.explicit_executor()),
+                task_model.as_deref(),
+            );
+            route_snapshots.insert(
+                task.id.clone(),
+                plan.map(|plan| {
+                    let route_id = worksgood::service::HealthRouteKey::from_spawn_plan(&plan).id();
+                    (
+                        plan.executor.as_str().to_string(),
+                        plan.model.raw.clone(),
+                        worksgood::dispatch::spawn_route_binding_id(&route_id),
+                        worksgood::dispatch::spawn_plan_binding_id(&plan, &route_id),
+                    )
+                }),
+            );
+        }
+    }
+
+    let mut authorized = Vec::new();
+    let _ = modify_graph(&graph_file, |graph| {
+        let already_authorized = graph
+            .tasks()
+            .filter(|task| {
+                task.source_provider_recovery.as_ref().is_some_and(|record| {
+                    record.state
+                        == worksgood::source_provider_recovery::SourceProviderRecoveryState::Authorized
+                })
+            })
+            .count();
+        let mut grants_remaining = slots_available.saturating_sub(already_authorized);
+        let mut changed = false;
+        for task in graph.tasks_mut() {
+            let Some(mut snapshot) = task.source_provider_recovery.clone() else {
+                continue;
+            };
+            if policy_enabled
+                && snapshot.state
+                    == worksgood::source_provider_recovery::SourceProviderRecoveryState::Paused
+                && snapshot.reason_code == "policy-disabled"
+            {
+                let generation = task.lifecycle.generation;
+                let failed = task.status == Status::Failed;
+                task.source_provider_recovery
+                    .as_mut()
+                    .expect("snapshot came from record")
+                    .resume_policy(failed, generation);
+                snapshot = task
+                    .source_provider_recovery
+                    .clone()
+                    .expect("record retained after policy resume");
+                changed = true;
+            }
+            if !snapshot.state.is_active() {
+                continue;
+            }
+            if !policy_enabled {
+                if snapshot.state
+                    == worksgood::source_provider_recovery::SourceProviderRecoveryState::Running
+                {
+                    // Disabling stops future authorization; it cannot revoke
+                    // provider I/O that already started under a durable grant.
+                    continue;
+                }
+                if matches!(
+                    snapshot.state,
+                    worksgood::source_provider_recovery::SourceProviderRecoveryState::Backoff
+                        | worksgood::source_provider_recovery::SourceProviderRecoveryState::Authorized
+                ) {
+                    task.source_provider_recovery
+                        .as_mut()
+                        .expect("snapshot came from record")
+                        .pause("policy-disabled");
+                    changed = true;
+                }
+                continue;
+            }
+            if task.paused {
+                if matches!(
+                    snapshot.state,
+                    worksgood::source_provider_recovery::SourceProviderRecoveryState::Backoff
+                        | worksgood::source_provider_recovery::SourceProviderRecoveryState::Authorized
+                ) {
+                    task.source_provider_recovery
+                        .as_mut()
+                        .expect("snapshot came from record")
+                        .pause("task-paused");
+                    changed = true;
+                }
+                continue;
+            }
+            if snapshot.state
+                == worksgood::source_provider_recovery::SourceProviderRecoveryState::Running
+            {
+                // The window bounds when provider I/O may begin, not how long
+                // a safely started retry may take to finish.
+                continue;
+            }
+            if now > snapshot.recovery_deadline_at {
+                task.source_provider_recovery
+                    .as_mut()
+                    .expect("snapshot came from record")
+                    .needs_attention(
+                        "recovery-window-expired",
+                        "inspect retained work, then explicitly run `wg retry TASK --reason <WHY>` only if replay is safe",
+                    );
+                changed = true;
+                continue;
+            }
+            if snapshot.state
+                == worksgood::source_provider_recovery::SourceProviderRecoveryState::Authorized
+            {
+                // Authorization is durable and single-use. The spawn adapter
+                // will enforce the exact route/plan binding; do not issue a
+                // second generation on another tick.
+                continue;
+            }
+            if snapshot.state
+                != worksgood::source_provider_recovery::SourceProviderRecoveryState::Backoff
+            {
+                continue;
+            }
+            if task.status != Status::Failed
+                || task.completion_candidate.is_some()
+                || task.completion_blocker.is_some()
+                || !snapshot.last_failed.still_matches(task)
+            {
+                task.source_provider_recovery
+                    .as_mut()
+                    .expect("snapshot came from record")
+                    .needs_attention(
+                        "stale-or-owned-source-state",
+                        "reconcile the exact failed source attempt before any explicit retry",
+                    );
+                changed = true;
+                continue;
+            }
+            if worksgood::source_provider_recovery::goal_requirements_digest(task)
+                != snapshot.goal_requirements_digest
+                || task.completion_contract != snapshot.completion_contract
+            {
+                task.source_provider_recovery
+                    .as_mut()
+                    .expect("snapshot came from record")
+                    .needs_attention(
+                        "goal-or-contract-changed",
+                        "inspect the changed task and use an explicit operator retry if the new work should run",
+                    );
+                changed = true;
+                continue;
+            }
+            let exact_route_matches = route_snapshots
+                .get(&task.id)
+                .and_then(|result| result.as_ref().ok())
+                .is_some_and(|(executor, model, route_id, plan_id)| {
+                    executor == &snapshot.executor
+                        && model == &snapshot.model
+                        && route_id == &snapshot.route_id
+                        && plan_id == &snapshot.plan_id
+                });
+            if !exact_route_matches {
+                task.source_provider_recovery
+                    .as_mut()
+                    .expect("snapshot came from record")
+                    .needs_attention(
+                        "exact-route-changed-or-unavailable",
+                        "restore the recorded executor/model/route/plan or explicitly choose a new route",
+                    );
+                changed = true;
+                continue;
+            }
+            if snapshot.automatic_retries_used >= snapshot.automatic_retry_limit {
+                task.source_provider_recovery
+                    .as_mut()
+                    .expect("snapshot came from record")
+                    .needs_attention(
+                        "automatic-retries-exhausted",
+                        "inspect this task, then explicitly run `wg retry TASK --reason <WHY>` only if replay is safe",
+                    );
+                changed = true;
+                continue;
+            }
+            let Some(next_retry_at) = snapshot.next_retry_at else {
+                task.source_provider_recovery
+                    .as_mut()
+                    .expect("snapshot came from record")
+                    .needs_attention(
+                        "retry-deadline-missing",
+                        "inspect retained recovery evidence before any explicit retry",
+                    );
+                changed = true;
+                continue;
+            };
+            if now < next_retry_at || grants_remaining == 0 {
+                continue;
+            }
+            let retry_number = snapshot.automatic_retries_used.saturating_add(1);
+            let auth_id = worksgood::source_provider_recovery::authorization_id(
+                &snapshot.episode_id,
+                &snapshot.current_failure_id,
+                retry_number,
+            );
+            let request = TransitionRequest::new(
+                TransitionKind::GenerationCreated,
+                LifecycleActor {
+                    kind: ActorKind::Reconciler,
+                    id: "source-provider-recovery".into(),
+                },
+                "bounded_source_provider_retry",
+                auth_id.clone(),
+            )
+            .with_evidence(snapshot.failure_evidence_digest)
+            .expecting(FenceExpectation::current(task));
+            if apply_transition(task, request).is_err() {
+                task.source_provider_recovery
+                    .as_mut()
+                    .expect("snapshot came from record")
+                    .needs_attention(
+                        "retry-authorization-cas-rejected",
+                        "reconcile the current lifecycle owner before any explicit retry",
+                    );
+                changed = true;
+                continue;
+            }
+            // Reborrow after lifecycle projection; no policy/config value is
+            // recomputed here. These fields and the generation commit atomically.
+            let record = task
+                .source_provider_recovery
+                .as_mut()
+                .expect("record retained");
+            record.automatic_retries_used = retry_number;
+            record.authorization_id = Some(auth_id);
+            record.authorized_generation = Some(task.lifecycle.generation);
+            record.state =
+                worksgood::source_provider_recovery::SourceProviderRecoveryState::Authorized;
+            record.next_retry_at = None;
+            record.reason_code = "automatic-retry-authorized".into();
+            record.next_action = "the dispatcher will launch this exact recorded route".into();
+            task.assigned = None;
+            task.failure_reason = None;
+            task.failure_class = None;
+            task.failure_signal = None;
+            task.completed_at = None;
+            authorized.push(task.id.clone());
+            grants_remaining = grants_remaining.saturating_sub(1);
+            changed = true;
+        }
+        changed
+    });
+    for task_id in authorized {
+        eprintln!("[source-provider-recovery] authorized exact-route retry for '{task_id}'");
+    }
+}
+
 fn spawn_agents_for_ready_tasks(
     dir: &Path,
     graph: &worksgood::graph::WorkGraph,
@@ -2256,6 +2561,43 @@ fn spawn_agents_for_ready_tasks(
         let route_id = worksgood::service::HealthRouteKey::from_spawn_plan(&plan).id();
         let route_binding = worksgood::dispatch::spawn_route_binding_id(&route_id);
         let plan_binding = worksgood::dispatch::spawn_plan_binding_id(&plan, &route_id);
+
+        if let Some(recovery) = task.source_provider_recovery.as_ref()
+            && recovery.state
+                == worksgood::source_provider_recovery::SourceProviderRecoveryState::Authorized
+            && (recovery.authorized_generation != Some(task.lifecycle.generation)
+                || recovery.executor != executor
+                || recovery.model != plan.model.raw
+                || recovery.route_id != route_binding
+                || recovery.plan_id != plan_binding
+                || recovery.goal_requirements_digest
+                    != worksgood::source_provider_recovery::goal_requirements_digest(task)
+                || recovery.completion_contract != task.completion_contract)
+        {
+            let _ = modify_graph(&graph_file, |latest| {
+                let Some(current) = latest.get_task_mut(&task.id) else {
+                    return false;
+                };
+                let Some(record) = current.source_provider_recovery.as_mut() else {
+                    return false;
+                };
+                if record.state
+                    != worksgood::source_provider_recovery::SourceProviderRecoveryState::Authorized
+                {
+                    return false;
+                }
+                record.needs_attention(
+                    "pre-launch-binding-changed",
+                    "restore the recorded executor/model/route/plan or explicitly choose a new route",
+                );
+                true
+            });
+            eprintln!(
+                "[source-provider-recovery] refused '{}': exact pre-launch binding changed",
+                task.id
+            );
+            continue;
+        }
 
         eprintln!(
             "[dispatcher] {}: {}",
@@ -2673,6 +3015,11 @@ pub fn coordinator_tick(
     auto_checkpoint_agents(dir, &config);
 
     let slots_available = max_agents.saturating_sub(alive_count);
+
+    // Source-provider recovery is an ordinary bounded pre-dispatch phase. It
+    // can spend at most currently available capacity; readiness, admission,
+    // resource limits and the exact spawn adapter remain unchanged.
+    authorize_due_source_provider_retries(dir, &config, model, slots_available);
 
     // Verdict files are immutable evidence. Read them before taking the graph
     // writer lock, then link/consume them in the one atomic graph transaction.

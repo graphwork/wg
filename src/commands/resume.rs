@@ -697,6 +697,20 @@ fn validate_subgraph(graph: &WorkGraph, subgraph: &[String], is_publish: bool) -
 fn unpause_task(graph: &mut WorkGraph, task_id: &str, action: &str) {
     let task = graph.get_task_mut(task_id).unwrap();
     task.paused = false;
+    if let Some(record) = task.source_provider_recovery.as_mut()
+        && record.state == worksgood::source_provider_recovery::SourceProviderRecoveryState::Paused
+    {
+        record.state = if record.authorization_id.is_some()
+            && record.authorized_generation == Some(task.lifecycle.generation)
+        {
+            worksgood::source_provider_recovery::SourceProviderRecoveryState::Authorized
+        } else {
+            worksgood::source_provider_recovery::SourceProviderRecoveryState::Backoff
+        };
+        record.reason_code = "source-provider-retry-resumed".into();
+        record.next_action =
+            "wait for the bounded exact-route retry; the original window is not extended".into();
+    }
     task.log.push(LogEntry {
         timestamp: Utc::now().to_rfc3339(),
         actor: None,
