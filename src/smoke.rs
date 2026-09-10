@@ -20,7 +20,7 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::fs::File;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
@@ -75,6 +75,7 @@ struct ScenarioOwnership {
     owner_dir: PathBuf,
     owner_file: PathBuf,
     diagnostics_file: PathBuf,
+    _subreaper: Option<SubreaperGuard>,
     cleaned: bool,
 }
 
@@ -232,21 +233,32 @@ impl ScenarioOwnership {
         })?;
         let owner_file = owner_dir.join("owner.env");
         let diagnostics_file = owner_dir.join("cleanup-diagnostics.log");
-        Ok(Self {
+        let ownership = Self {
             run_id,
             scenario: scenario.to_string(),
             owner_dir,
             owner_file,
             diagnostics_file,
+            _subreaper: None,
             cleaned: false,
-        })
+        };
+        // Publish the exact run identity before returning an ownership handle.
+        // `run_scenario` cannot spawn anything until `create` succeeds, so even
+        // a SIGKILL immediately after spawn leaves an authoritative marker for
+        // the next global sweep.
+        ownership.record_supervisor()?;
+        Ok(ownership)
     }
 
-    fn record_root(&self, pid: u32) -> Result<()> {
-        let info = process_info(pid);
+    fn install_subreaper(&mut self) -> Result<()> {
+        self._subreaper = Some(SubreaperGuard::install()?);
+        Ok(())
+    }
+
+    fn record_supervisor(&self) -> Result<()> {
         let supervisor = process_info(std::process::id());
         let mut body = format!(
-            "version=2\nrun_id={}\nscenario={}\nsupervisor_pid={}\n",
+            "version=3\nrun_id={}\nscenario={}\nsupervisor_pid={}\n",
             self.run_id,
             self.scenario.replace('\n', " "),
             std::process::id()
@@ -257,17 +269,67 @@ impl ScenarioOwnership {
                 supervisor.start_ticks, supervisor.process_group, supervisor.session
             ));
         }
-        if let Some(info) = info {
-            body.push_str(&format!(
-                "root_pid={}\nroot_start_ticks={}\nroot_process_group={}\nroot_session={}\n",
-                info.pid, info.start_ticks, info.process_group, info.session
-            ));
-        } else {
-            body.push_str(&format!("root_pid={}\n", pid));
-        }
-        std::fs::write(&self.owner_file, body).with_context(|| {
+
+        // A complete temporary record is renamed into place. There is no
+        // launched child yet, so failure cannot strand a process; success
+        // guarantees later root metadata can only append to valid authority.
+        let pending = self.owner_dir.join("owner.env.pending");
+        let mut file = File::create(&pending).with_context(|| {
+            format!(
+                "failed to create smoke ownership record {}",
+                pending.display()
+            )
+        })?;
+        file.write_all(body.as_bytes()).with_context(|| {
             format!(
                 "failed to write smoke ownership record {}",
+                pending.display()
+            )
+        })?;
+        file.sync_all().with_context(|| {
+            format!(
+                "failed to sync smoke ownership record {}",
+                pending.display()
+            )
+        })?;
+        std::fs::rename(&pending, &self.owner_file).with_context(|| {
+            format!(
+                "failed to publish smoke ownership record {}",
+                self.owner_file.display()
+            )
+        })
+    }
+
+    fn record_root(&self, pid: u32) -> Result<()> {
+        let body = if let Some(info) = process_info(pid) {
+            format!(
+                "root_pid={}\nroot_start_ticks={}\nroot_process_group={}\nroot_session={}\n",
+                info.pid, info.start_ticks, info.process_group, info.session
+            )
+        } else {
+            format!("root_pid={}\n", pid)
+        };
+        // Append rather than rewrite: interruption can at worst leave partial
+        // root diagnostics, never destroy the pre-spawn run-id authority used
+        // by exact-marker cleanup.
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&self.owner_file)
+            .with_context(|| {
+                format!(
+                    "failed to open smoke ownership record {}",
+                    self.owner_file.display()
+                )
+            })?;
+        file.write_all(body.as_bytes()).with_context(|| {
+            format!(
+                "failed to append smoke root identity to {}",
+                self.owner_file.display()
+            )
+        })?;
+        file.sync_all().with_context(|| {
+            format!(
+                "failed to sync smoke root identity to {}",
                 self.owner_file.display()
             )
         })
@@ -342,6 +404,19 @@ pub fn run_scenario(scenario: &Scenario, manifest_dir: &Path) -> ScenarioResult 
             };
         }
     };
+    // Install the adoption boundary immediately after the durable pre-spawn
+    // owner record and before constructing or launching the scenario command.
+    // Fail closed on Linux: without subreaper ownership, an orphaned zombie
+    // cannot be waited by this harness even though its live process is marked.
+    if let Err(error) = ownership.install_subreaper() {
+        return ScenarioResult {
+            name: scenario.name.clone(),
+            outcome: ScenarioOutcome::Error {
+                message: format!("failed to install smoke child subreaper: {error}"),
+            },
+        };
+    }
+
     let stdout_path = ownership.owner_dir.join("stdout.log");
     let stderr_path = ownership.owner_dir.join("stderr.log");
     let stdout = match File::create(&stdout_path) {
@@ -409,9 +484,6 @@ pub fn run_scenario(scenario: &Scenario, manifest_dir: &Path) -> ScenarioResult 
         }
     }
 
-    // Install before fork/exec so even a scenario that double-forks in its
-    // first instruction cannot race past the adoption boundary.
-    let _subreaper = SubreaperGuard::install();
     let mut child = match cmd.spawn() {
         Ok(child) => child,
         Err(error) => {
@@ -634,20 +706,20 @@ struct SubreaperGuard {
 
 #[cfg(target_os = "linux")]
 impl SubreaperGuard {
-    fn install() -> Option<Self> {
+    fn install() -> Result<Self> {
         let mut previous = 0;
-        // SAFETY: prctl writes one integer supplied by this process. Failure is
-        // non-fatal; exact-marker cleanup still works, but init will reap an
-        // already-orphaned zombie instead of this supervisor.
+        // SAFETY: prctl writes one integer supplied by this process.
         unsafe {
             if libc::prctl(libc::PR_GET_CHILD_SUBREAPER, &mut previous) == -1 {
-                return None;
+                return Err(std::io::Error::last_os_error())
+                    .context("PR_GET_CHILD_SUBREAPER failed");
             }
             if libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1) == -1 {
-                return None;
+                return Err(std::io::Error::last_os_error())
+                    .context("PR_SET_CHILD_SUBREAPER failed");
             }
         }
-        Some(Self { previous })
+        Ok(Self { previous })
     }
 }
 
@@ -667,8 +739,8 @@ struct SubreaperGuard;
 
 #[cfg(not(target_os = "linux"))]
 impl SubreaperGuard {
-    fn install() -> Option<Self> {
-        None
+    fn install() -> Result<Self> {
+        Ok(Self)
     }
 }
 
@@ -1278,6 +1350,32 @@ script = "b.sh"
         if let Some(p) = prior {
             unsafe { std::env::set_var("WG_SMOKE_ROOT", p) };
         }
+    }
+
+    #[test]
+    fn ownership_authority_is_durable_before_any_scenario_spawn() {
+        let ownership = ScenarioOwnership::create("pre-spawn-owner").unwrap();
+        let fields = read_owner_fields(&ownership.owner_file);
+        assert_eq!(fields.get("version").map(String::as_str), Some("3"));
+        assert_eq!(
+            fields.get("run_id").map(String::as_str),
+            Some(ownership.run_id.as_str())
+        );
+        assert_eq!(
+            fields.get("scenario").map(String::as_str),
+            Some("pre-spawn-owner")
+        );
+        assert_eq!(
+            fields
+                .get("supervisor_pid")
+                .and_then(|pid| pid.parse().ok()),
+            Some(std::process::id())
+        );
+        assert!(
+            !fields.contains_key("root_pid"),
+            "a pre-spawn record must not fabricate a child identity"
+        );
+        drop(ownership);
     }
 
     #[test]

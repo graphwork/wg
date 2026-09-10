@@ -57,6 +57,27 @@ main-four-suites-ambient.log      9cebe89a7a2b0d7e2bf2f6685432eb6366b7c071068da6
 candidate-four-suites-ambient.log cbbfc45ee97f43f8248ff1addbf8699c8f00c244634a0d7b7941118df8c28f16
 ```
 
+## Current candidate repair invariants
+
+The current candidate closes the two launch-edge races without naming its own
+future commit:
+
+- `ScenarioOwnership::create` atomically publishes and syncs the exact run id,
+  scenario, and supervisor start identity before it returns, so no scenario
+  process can be spawned without durable sweep authority.
+- The ownership object installs and retains the Linux child-subreaper guard
+  immediately after that record and before command construction or spawn. A
+  subreaper-install failure is fail-closed, and the guard remains live through
+  `ScenarioOwnership::drop`, including panic unwinding.
+- Post-spawn root PID/start/group/session diagnostics are append-only. An
+  interruption while enriching diagnostics cannot truncate the pre-spawn run-id
+  authority used by exact-marker cleanup.
+
+Focused regression `ownership_authority_is_durable_before_any_scenario_spawn`
+and the real-entry-point process ownership scenario pass. The final expanded
+broad/lint result is intentionally supplied by the host-bound completion
+manifest for the settled candidate rather than asserted self-referentially here.
+
 ## Historical implementation validation
 
 Implementation revision `965e5be2413f5bab43d0aec2f000d5f1841964a0` was the
