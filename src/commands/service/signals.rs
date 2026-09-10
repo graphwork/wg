@@ -115,7 +115,34 @@ pub fn install_daemon_signal_handlers() -> i32 {
 
     let mut fds: [RawFd; 2] = [-1, -1];
     // pipe2 with CLOEXEC so agent children don't inherit the pipe.
+    // macOS has no pipe2(2); fall back to pipe(2) + fcntl flags there.
+    #[cfg(target_os = "linux")]
     let rc = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) };
+    #[cfg(not(target_os = "linux"))]
+    let rc = unsafe {
+        if libc::pipe(fds.as_mut_ptr()) != 0 {
+            -1
+        } else {
+            let mut ok = true;
+            for fd in fds {
+                let flags = libc::fcntl(fd, libc::F_GETFD);
+                if flags < 0
+                    || libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) < 0
+                {
+                    ok = false;
+                }
+                let fl = libc::fcntl(fd, libc::F_GETFL);
+                if fl < 0 || libc::fcntl(fd, libc::F_SETFL, fl | libc::O_NONBLOCK) < 0 {
+                    ok = false;
+                }
+            }
+            if ok {
+                0
+            } else {
+                -1
+            }
+        }
+    };
     if rc != 0 {
         return -1;
     }
