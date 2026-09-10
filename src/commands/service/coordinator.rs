@@ -2126,8 +2126,25 @@ fn authorize_due_source_provider_retries(
     default_model: Option<&str>,
     slots_available: usize,
 ) {
+    authorize_due_source_provider_retries_at(
+        dir,
+        config,
+        default_model,
+        slots_available,
+        Utc::now(),
+    );
+}
+
+/// Clock-injected coordinator seam used by deterministic boundary integration
+/// tests. Production has exactly one caller above and always supplies Utc::now.
+fn authorize_due_source_provider_retries_at(
+    dir: &Path,
+    config: &Config,
+    default_model: Option<&str>,
+    slots_available: usize,
+    now: chrono::DateTime<Utc>,
+) {
     let graph_file = graph_path(dir);
-    let now = Utc::now();
     let agents_dir = dir.join("agency").join("cache/agents");
     let policy_enabled = config.coordinator.source_provider_retry.enabled;
     let mut profile_cache = worksgood::dispatch::ProfileCache::new();
@@ -3469,6 +3486,164 @@ mod tests {
         task.assigned = Some("agent-1".to_string());
         graph.add_node(Node::Task(task));
         save_graph(&graph, &graph_path).unwrap();
+    }
+
+    #[test]
+    fn source_provider_due_authorization_is_clock_bounded_and_restart_idempotent() {
+        use chrono::{Duration, TimeZone};
+        use worksgood::dispatch::plan_spawn;
+        use worksgood::graph::{
+            ExecutionOutcome, FailureEvidenceKind, FailureReason, FailureSignal,
+        };
+        use worksgood::lifecycle::{AttemptDisposition, AttemptRef};
+        use worksgood::source_provider_recovery::{
+            ObservationOutcome, SourceProviderRecoveryState, build_launch_binding, observe_failure,
+        };
+
+        fn failed_task(id: &str) -> Task {
+            let mut task = Task {
+                id: id.into(),
+                title: id.into(),
+                status: Status::Failed,
+                model: Some("pi:test:clock".into()),
+                ..Task::default()
+            };
+            task.lifecycle.generation = 0;
+            task.lifecycle.revision = 2;
+            task.lifecycle.fence = 1;
+            task.lifecycle.current_attempt = Some(AttemptRef {
+                id: "attempt-0-1".into(),
+                generation: 0,
+                fence: 1,
+                actor_id: format!("agent-{id}"),
+                disposition: Some(AttemptDisposition::Failed),
+            });
+            task
+        }
+
+        let temp = tempdir().unwrap();
+        let dir = temp.path();
+        let mut config = Config::default();
+        config.coordinator.source_provider_retry.enabled = true;
+        config
+            .coordinator
+            .source_provider_retry
+            .max_automatic_retries = 3;
+        config
+            .coordinator
+            .source_provider_retry
+            .recovery_window_seconds = 900;
+        config.coordinator.source_provider_retry.base_seconds = 30;
+        config.coordinator.source_provider_retry.delay_cap_seconds = 300;
+
+        let enroll = |mut task: Task, observed: chrono::DateTime<Utc>| {
+            let attempt = task.lifecycle.current_attempt.clone().unwrap();
+            let plan = plan_spawn(&task, &config, None, None).unwrap();
+            let binding = build_launch_binding(dir, &task, &plan).unwrap();
+            let signal = FailureSignal {
+                reason: FailureReason::ProviderUnavailable,
+                confidence: 1.0,
+                http_status: Some(503),
+                evidence_kind: FailureEvidenceKind::ProviderEnvelope,
+                execution_outcome: ExecutionOutcome::DefinitiveFailure,
+                executor: worksgood::dispatch::ExecutorKind::Pi,
+                route: Some("test:clock".into()),
+                detected_at_ms: observed.timestamp_millis(),
+                ..FailureSignal::default()
+            };
+            assert_eq!(
+                observe_failure(
+                    &mut task,
+                    &config.coordinator.source_provider_retry,
+                    &signal,
+                    &attempt,
+                    2,
+                    &binding,
+                    observed,
+                ),
+                ObservationOutcome::Scheduled
+            );
+            task
+        };
+
+        let first_at = Utc.timestamp_opt(100, 0).unwrap();
+        let due = enroll(failed_task("due"), first_at);
+        let due_at = due
+            .source_provider_recovery
+            .as_ref()
+            .unwrap()
+            .next_retry_at
+            .unwrap();
+        let mut expired = enroll(failed_task("expired"), Utc.timestamp_opt(200, 0).unwrap());
+        let expired_record = expired.source_provider_recovery.as_mut().unwrap();
+        expired_record.recovery_deadline_at = Utc.timestamp_opt(220, 0).unwrap();
+        expired_record.next_retry_at = Some(Utc.timestamp_opt(210, 0).unwrap());
+
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(due));
+        graph.add_node(Node::Task(expired));
+        save_graph(&graph, dir.join("graph.jsonl")).unwrap();
+
+        authorize_due_source_provider_retries_at(
+            dir,
+            &config,
+            None,
+            1,
+            due_at - Duration::milliseconds(1),
+        );
+        let before_due = worksgood::parser::load_graph(dir.join("graph.jsonl")).unwrap();
+        assert_eq!(before_due.get_task("due").unwrap().status, Status::Failed);
+        assert_eq!(
+            before_due
+                .get_task("due")
+                .unwrap()
+                .source_provider_recovery
+                .as_ref()
+                .unwrap()
+                .automatic_retries_used,
+            0
+        );
+
+        authorize_due_source_provider_retries_at(dir, &config, None, 1, due_at);
+        // A second call models daemon restart/replayed wake at the same clock.
+        authorize_due_source_provider_retries_at(dir, &config, None, 1, due_at);
+        let authorized = worksgood::parser::load_graph(dir.join("graph.jsonl")).unwrap();
+        let due_task = authorized.get_task("due").unwrap();
+        let record = due_task.source_provider_recovery.as_ref().unwrap();
+        assert_eq!(due_task.status, Status::Open);
+        assert_eq!(due_task.lifecycle.generation, 1);
+        assert_eq!(record.state, SourceProviderRecoveryState::Authorized);
+        assert_eq!(record.automatic_retries_used, 1);
+        assert_eq!(
+            due_task
+                .lifecycle
+                .audit
+                .iter()
+                .filter(|event| event.event_kind == "generation-created")
+                .count(),
+            1
+        );
+
+        authorize_due_source_provider_retries_at(
+            dir,
+            &config,
+            None,
+            1,
+            Utc.timestamp_opt(221, 0).unwrap(),
+        );
+        let after_expiry = worksgood::parser::load_graph(dir.join("graph.jsonl")).unwrap();
+        let expired_record = after_expiry
+            .get_task("expired")
+            .unwrap()
+            .source_provider_recovery
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            expired_record.state,
+            SourceProviderRecoveryState::NeedsAttention
+        );
+        assert_eq!(expired_record.automatic_retries_used, 0);
+        assert_eq!(expired_record.reason_code, "recovery-window-expired");
     }
 
     fn write_stream_events(agent_dir: &Path, turn_count: u32, start_ms: i64) {

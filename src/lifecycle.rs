@@ -535,6 +535,19 @@ impl LifecycleEvent {
                 == crate::source_provider_recovery::SourceProviderRecoveryState::Authorized
         {
             record.state = crate::source_provider_recovery::SourceProviderRecoveryState::Running;
+        } else if self.event_kind == "reservation-cancelled"
+            && self.reason_code == "spawn_preparation_rolled_back"
+            && let Some(record) = task.source_provider_recovery.as_mut()
+            && record.state == crate::source_provider_recovery::SourceProviderRecoveryState::Running
+            && record.authorized_generation == Some(task.lifecycle.generation)
+        {
+            // AttemptRunning is persisted before the launch gate is exposed.
+            // If gate publication then fails, ReservationCancelled proves the
+            // provider never crossed that gate, so the same single-use
+            // authorization remains safe and may be reserved again.
+            record.state = crate::source_provider_recovery::SourceProviderRecoveryState::Authorized;
+            record.reason_code = "automatic-retry-authorized".into();
+            record.next_action = "the dispatcher will launch this exact recorded route".into();
         } else if matches!(
             self.event_kind.as_str(),
             "attempt-succeeded" | "durable-success-projected" | "graph-save-committed"

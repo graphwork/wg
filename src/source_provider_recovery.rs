@@ -67,6 +67,7 @@ impl SourceAttemptRef {
     pub fn still_matches(&self, task: &Task) -> bool {
         task.lifecycle.generation == self.generation
             && task.lifecycle.fence == self.attempt_fence
+            && task.lifecycle.pi_process_epoch == self.process_epoch
             && task
                 .lifecycle
                 .current_attempt
@@ -367,6 +368,14 @@ pub fn goal_requirements_digest(task: &Task) -> String {
         "reasoning": task.reasoning,
         "provider": task.provider,
         "endpoint": task.endpoint,
+        // These do not participate in SpawnPlan identity, but they change the
+        // prompt, tool/capability surface, or execution deadline. A retry must
+        // never silently inherit edits made while the original source is in
+        // backoff.
+        "context_scope": task.context_scope,
+        "exec_mode": task.exec_mode,
+        "exec": task.exec,
+        "timeout": task.timeout,
         "validation_commands": crate::completion_validation::configured_validation_commands(task),
     });
     format!(
@@ -1231,7 +1240,31 @@ mod tests {
     }
 
     #[test]
-    fn auth_credit_ambiguous_and_unsafe_transport_are_never_automatic() {
+    fn safe_pre_request_transport_outage_is_eligible() {
+        let mut task = task_with_attempt();
+        let attempt = task.lifecycle.current_attempt.clone().unwrap();
+        let signal = FailureSignal {
+            reason: FailureReason::ProviderUnavailable,
+            confidence: 1.0,
+            executor: ExecutorKind::Native,
+            detected_at_ms: 100_000,
+            evidence_kind: FailureEvidenceKind::TransportError,
+            execution_outcome: ExecutionOutcome::NotSent,
+            transport_code: Some("connect-before-request-no-prior-effects".into()),
+            ..FailureSignal::default()
+        };
+        let route = binding(&task);
+        assert_eq!(
+            observe_failure(&mut task, &policy(), &signal, &attempt, 1, &route, at(100)),
+            ObservationOutcome::Scheduled
+        );
+        let recovery = task.source_provider_recovery.unwrap();
+        assert_eq!(recovery.evidence_kind, FailureEvidenceKind::TransportError);
+        assert_eq!(recovery.execution_outcome, ExecutionOutcome::NotSent);
+    }
+
+    #[test]
+    fn auth_credit_hard_timeout_unknown_and_ambiguous_transport_are_never_automatic() {
         for (reason, status, kind, outcome) in [
             (
                 FailureReason::Auth,
@@ -1240,10 +1273,34 @@ mod tests {
                 ExecutionOutcome::DefinitiveFailure,
             ),
             (
+                FailureReason::Auth,
+                Some(403),
+                FailureEvidenceKind::HttpResponse,
+                ExecutionOutcome::DefinitiveFailure,
+            ),
+            (
                 FailureReason::CreditExhausted,
                 Some(402),
                 FailureEvidenceKind::ProviderEnvelope,
                 ExecutionOutcome::DefinitiveFailure,
+            ),
+            (
+                FailureReason::Hard,
+                Some(400),
+                FailureEvidenceKind::ProviderEnvelope,
+                ExecutionOutcome::DefinitiveFailure,
+            ),
+            (
+                FailureReason::HardTimeout,
+                None,
+                FailureEvidenceKind::ProcessOutcome,
+                ExecutionOutcome::Ambiguous,
+            ),
+            (
+                FailureReason::Unknown,
+                None,
+                FailureEvidenceKind::Unknown,
+                ExecutionOutcome::Ambiguous,
             ),
             (
                 FailureReason::Timeout,
@@ -1276,6 +1333,35 @@ mod tests {
                 ObservationOutcome::Ineligible
             );
             assert!(task.source_provider_recovery.is_none());
+        }
+    }
+
+    #[test]
+    fn stale_process_epoch_cannot_reuse_failure_authority() {
+        let mut task = task_with_attempt();
+        task.lifecycle.pi_process_epoch = 3;
+        let attempt = task.lifecycle.current_attempt.clone().unwrap();
+        let accepted = SourceAttemptRef::from_task(&task, &attempt, task.lifecycle.revision);
+        assert!(accepted.still_matches(&task));
+
+        task.lifecycle.pi_process_epoch = 4;
+        assert!(!accepted.still_matches(&task));
+    }
+
+    #[test]
+    fn execution_semantic_edits_change_the_exact_retry_digest() {
+        let task = task_with_attempt();
+        let original = goal_requirements_digest(&task);
+        let mutations: [fn(&mut Task); 4] = [
+            |task: &mut Task| task.context_scope = Some("clean".into()),
+            |task: &mut Task| task.exec_mode = Some("light".into()),
+            |task: &mut Task| task.exec = Some("printf changed".into()),
+            |task: &mut Task| task.timeout = Some("5m".into()),
+        ];
+        for mutate in mutations {
+            let mut changed = task.clone();
+            mutate(&mut changed);
+            assert_ne!(goal_requirements_digest(&changed), original);
         }
     }
 }

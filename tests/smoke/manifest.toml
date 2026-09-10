@@ -3226,6 +3226,6 @@ timeout_seconds = 180
 [[scenario]]
 name = "source_provider_bounded_recovery"
 script = "scenarios/source_provider_bounded_recovery.sh"
-owners = ["provider-backoff-planner"]
-description = "Credential-free candidate-binary proof through the production daemon and generated Pi execution wrapper: opt-in/no-backfill, direct structured 429/503 evidence, Retry-After lower bound, restart-stable episode and retained work, exact initial+3 budget exhaustion, out-of-window and post-effect ambiguity fail-closed cases, explicit operator-retry episode clearing, PTY show/status truth, and no planner/controller/scheduler side plane."
-timeout_seconds = 90
+owners = ["provider-backoff-planner", "provider-backoff-e2e"]
+description = "Credential-free candidate-binary proof through the production daemon and generated Pi execution wrapper: opt-in/no-backfill, direct structured 429/503 evidence, Retry-After lower bound, restart-stable episode and retained work, exact initial+3 budget exhaustion, out-of-window and post-effect ambiguity fail-closed cases, pause/cancel and auth/config/credit exclusions, semantic/reviewer isolation, route-drift and duplicate-evidence fences, at-most-one publication, explicit operator-retry episode clearing, PTY show/status truth, and no planner/controller/scheduler side plane."
+timeout_seconds = 150

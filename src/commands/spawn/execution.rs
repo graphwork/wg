@@ -1174,19 +1174,20 @@ fn publish_launch_permit_for_claim(
             outcome = Some(Err(anyhow::anyhow!(error)));
             return false;
         }
-        match release_launch_gate(output_dir, token) {
-            Ok(()) => {
-                outcome = Some(Ok(()));
-                true
-            }
-            Err(error) => {
-                outcome = Some(Err(error));
-                false
-            }
-        }
+        outcome = Some(Ok(()));
+        true
     })
-    .context("failed to lock/recheck task claim before launch")?;
-    outcome.ok_or_else(|| anyhow::anyhow!("task claim launch check produced no outcome"))?
+    .context("failed to durably record the authenticated running attempt")?;
+    outcome.ok_or_else(|| anyhow::anyhow!("task claim launch check produced no outcome"))??;
+
+    // The provider-visible gate is published only after modify_graph has
+    // fsynced the lifecycle event and atomically replaced graph.jsonl. A crash
+    // can therefore leave a gated process with durable Running evidence, but
+    // can never expose provider I/O while the graph still says merely
+    // Authorized/Reserved. If gate publication itself fails, the caller's
+    // ReservationCancelled rollback restores the still-unused authorization.
+    spawn_fault("attempt-running-persisted")?;
+    release_launch_gate(output_dir, token)
 }
 
 fn kill_spawned_child(child: &mut Child) {
@@ -7591,6 +7592,63 @@ esac
 
     #[test]
     #[serial_test::serial]
+    fn recovery_gate_never_opens_before_running_evidence_is_durable() {
+        let _global = GlobalConfigGuard::isolated();
+        let project = init_spawn_project(&["durable-before-gate"], false);
+        let graph_path = project.path().join(".wg/graph.jsonl");
+        let first = claim_task_for_spawn(&graph_path, "durable-before-gate", "agent-1").unwrap();
+        let binding = launch_binding_for_claim(&graph_path, "durable-before-gate");
+        modify_graph(&graph_path, |graph| {
+            let task = graph.get_task_mut("durable-before-gate").unwrap();
+            task.source_provider_recovery = Some(authorized_recovery_for_claim(
+                task,
+                &binding,
+                Utc::now() + chrono::Duration::minutes(5),
+            ));
+            true
+        })
+        .unwrap();
+        let output_dir = project.path().join(".wg/agents/durable-before-gate-check");
+        fs::create_dir_all(&output_dir).unwrap();
+
+        SPAWN_FAULT_BOUNDARY.with(|fault| *fault.borrow_mut() = Some("attempt-running-persisted"));
+        let error = publish_launch_permit_for_claim(
+            &graph_path,
+            "durable-before-gate",
+            "agent-1",
+            &output_dir,
+            "first-token",
+            &binding,
+        )
+        .unwrap_err();
+        SPAWN_FAULT_BOUNDARY.with(|fault| *fault.borrow_mut() = None);
+        assert!(format!("{error:#}").contains("attempt-running-persisted"));
+        assert!(!output_dir.join(LAUNCH_GATE_FILE).exists());
+        let after_durable = load_graph(&graph_path).unwrap();
+        let task = after_durable.get_task("durable-before-gate").unwrap();
+        assert!(task.lifecycle.audit.iter().any(|event| {
+            event.event_kind == "attempt-running" && event.reason_code == "launch_permitted"
+        }));
+        assert_eq!(
+            task.source_provider_recovery.as_ref().unwrap().state,
+            worksgood::source_provider_recovery::SourceProviderRecoveryState::Running
+        );
+
+        rollback_task_claim(&graph_path, "durable-before-gate", "agent-1", &first).unwrap();
+        let rolled_back = load_graph(&graph_path).unwrap();
+        let task = rolled_back.get_task("durable-before-gate").unwrap();
+        assert_eq!(task.status, Status::Open);
+        let recovery = task.source_provider_recovery.as_ref().unwrap();
+        assert_eq!(
+            recovery.state,
+            worksgood::source_provider_recovery::SourceProviderRecoveryState::Authorized
+        );
+        assert_eq!(recovery.automatic_retries_used, 1);
+        assert!(recovery.authorization_id.is_some());
+    }
+
+    #[test]
+    #[serial_test::serial]
     fn launch_gate_rejects_expired_source_provider_authorization() {
         let _global = GlobalConfigGuard::isolated();
         let project = init_spawn_project(&["expired-recovery"], false);
@@ -7796,6 +7854,7 @@ esac
             "ownership-registered",
             "metadata-written",
             "before-launch-permit",
+            "attempt-running-persisted",
         ] {
             let project = init_spawn_project(&["fault-task"], true);
             let dir = project.path().join(".wg");

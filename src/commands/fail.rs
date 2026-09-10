@@ -302,9 +302,23 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>, class: Option<FailureClas
         task.failure_signal = failure_signal.clone();
 
         let mut provider_recovery_owns_failure = false;
+        // A pause before any provider episode is manual fail-stop authority.
+        // A pause racing an already-launched recovery attempt is different:
+        // provider I/O may finish under its durable permit, and its terminal
+        // evidence must move the episode out of Running before we park it.
+        // Otherwise resume can never make progress because both resume and the
+        // coordinator intentionally ignore a stranded Running record.
+        let paused_running_recovery = task.paused
+            && task
+                .source_provider_recovery
+                .as_ref()
+                .is_some_and(|record| {
+                    record.state
+                        == worksgood::source_provider_recovery::SourceProviderRecoveryState::Running
+                });
         if task.completion_candidate.is_none()
             && task.completion_blocker.is_none()
-            && !task.paused
+            && (!task.paused || paused_running_recovery)
             && let (Some(attempt), Some(binding)) =
                 (failed_attempt.as_ref(), recovery_binding.as_ref())
         {
@@ -325,6 +339,15 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>, class: Option<FailureClas
                 && let Some(record) = task.source_provider_recovery.as_mut()
             {
                 record.pause("policy-disabled");
+            } else if task.paused
+                && provider_recovery_owns_failure
+                && let Some(record) = task.source_provider_recovery.as_mut()
+                && record.state
+                    == worksgood::source_provider_recovery::SourceProviderRecoveryState::Backoff
+            {
+                // Manual pause parks an otherwise eligible continuation, but
+                // must never mask a hard/ambiguous NeedsAttention verdict.
+                record.pause("task-paused");
             }
         }
 
