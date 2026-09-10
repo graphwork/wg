@@ -282,6 +282,39 @@ fn test_smoke_current_operator_acceptance_refuses_worker_then_allows_human() {
 }
 
 #[test]
+fn smoke_process_ownership_cleanup_real_entry_point() {
+    let tmp = TempDir::new().unwrap();
+    let script = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/smoke/scenarios/smoke_process_ownership_cleanup.sh");
+    let candidate = wg_binary();
+    let mut command = isolated_cli::command(Path::new("bash"), tmp.path());
+    isolated_cli::assert_worker_authority_is_absent(&command);
+    let output = command
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .env("WG_BIN", &candidate)
+        .env("WG_SMOKE_ROOT", tmp.path().join("smoke-root"))
+        .arg(&script)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("run credential-free ownership scenario");
+    assert!(
+        output.status.success(),
+        "{} failed through {}: stdout={} stderr={}",
+        script.display(),
+        candidate.display(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("no PPID-1/deleted-FD/marker leak; unrelated pi"),
+        "scenario omitted its positive cleanup proof: {stdout}"
+    );
+}
+
+#[test]
 fn test_missing_smoke_manifest_is_an_empty_nonblocking_gate() {
     let tmp = TempDir::new().unwrap();
     let report = run_manifest(&tmp.path().join("no-such-manifest.toml"), Some("nobody"));
