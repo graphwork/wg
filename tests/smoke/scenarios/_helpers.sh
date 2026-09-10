@@ -455,6 +455,39 @@ _wg_smoke_wait_registered() {
     done <"$WG_SMOKE_PROCESSES_FILE"
 }
 
+# Print registered identities that still name the same kernel process. This is
+# observation only: start ticks close PID reuse, and no signal is sent from the
+# registry alone (the exact environment marker remains signal authority).
+_wg_smoke_registered_survivors() {
+    local role pid recorded current
+    [[ -f "$WG_SMOKE_PROCESSES_FILE" ]] || return 0
+    while IFS='|' read -r role pid recorded; do
+        [[ "$pid" =~ ^[0-9]+$ ]] || continue
+        current=$(_wg_smoke_proc_identity "$pid" 2>/dev/null || true)
+        [[ -n "$current" ]] || continue
+        # identity is ppid pgid sid start state; state may legitimately change.
+        # shellcheck disable=SC2086
+        set -- $recorded
+        [[ $# -ge 4 ]] || continue
+        local recorded_start="$4"
+        # shellcheck disable=SC2086
+        set -- $current
+        [[ "$4" == "$recorded_start" ]] || continue
+        printf '%s|%s|%s\n' "$role" "$pid" "$current"
+    done <"$WG_SMOKE_PROCESSES_FILE"
+}
+
+_wg_smoke_wait_registered_gone() {
+    local survivors i
+    for i in $(seq 1 100); do
+        survivors=$(_wg_smoke_registered_survivors)
+        [[ -z "$survivors" ]] && return 0
+        sleep 0.02
+    done
+    printf '%s\n' "$survivors"
+    return 1
+}
+
 # TERM, rescan to catch a respawning supervisor, KILL, rescan again, then reap
 # direct/adopted children. Failure leaves bounded PID/start/PGID/SID diagnostics
 # and returns non-zero so fixture directories are deliberately retained.
@@ -477,13 +510,16 @@ _wg_smoke_terminate_run() {
         sleep 0.05
     done
     _wg_smoke_wait_registered
+    local registered_survivors=""
+    registered_survivors=$(_wg_smoke_wait_registered_gone) || true
     snapshot=$(_wg_smoke_owned_snapshot "$run_id")
-    [[ -z "$snapshot" ]] && return 0
+    [[ -z "$snapshot" && -z "$registered_survivors" ]] && return 0
     {
         printf 'scenario=%s\nrun_id=%s\nsupervisor_pid=%s\n' "$scenario" "$run_id" "$BASHPID"
         printf 'pid|ppid|process_group|session|start_ticks|state|command\n'
         sort -u "$seen_file" 2>/dev/null | tail -128
-        printf 'survivors:\n%s\n' "$snapshot"
+        printf 'marker_survivors:\n%s\n' "$snapshot"
+        printf 'registered_survivors:\n%s\n' "$registered_survivors"
     } >"$diag"
     return 1
 }

@@ -72,6 +72,10 @@ future commit:
 - Post-spawn root PID/start/group/session diagnostics are append-only. An
   interruption while enriching diagnostics cannot truncate the pre-spawn run-id
   authority used by exact-marker cleanup.
+- Shell cleanup now waits a bounded interval for every registered PID/start
+  identity to disappear after signaling. This covers the brief markerless-zombie
+  interval before init reaps a double-forked fixture and prevents fixture
+  deletion from racing process-table disappearance.
 
 Focused regression `ownership_authority_is_durable_before_any_scenario_spawn`
 and the real-entry-point process ownership scenario pass. The final expanded
