@@ -2360,34 +2360,193 @@ fn project_cleaned_success(
 }
 
 pub fn set_contract(dir: &Path, id: &str, value: &str) -> Result<()> {
-    let contract = match value {
-        "land" => worksgood::graph::CompletionContract::Land,
-        "report" => worksgood::graph::CompletionContract::Report,
-        "explore" => worksgood::graph::CompletionContract::Explore,
-        "deliver" => bail!(
-            "the deliver contract is historical-only; new work must use land, report, or explore"
-        ),
-        _ => bail!("completion contract must be land, report, or explore"),
-    };
+    set_completion_contract_policy(dir, id, Some(value), None, None, None)
+}
+
+pub fn set_completion_contract_policy(
+    dir: &Path,
+    id: &str,
+    contract: Option<&str>,
+    repair_boundary: Option<&str>,
+    deterministic_repair_budget: Option<u32>,
+    add_validation_command: Option<&str>,
+) -> Result<()> {
+    let contract = contract
+        .map(|value| match value {
+            "land" => Ok(worksgood::graph::CompletionContract::Land),
+            "report" => Ok(worksgood::graph::CompletionContract::Report),
+            "explore" => Ok(worksgood::graph::CompletionContract::Explore),
+            "deliver" => bail!(
+                "the deliver contract is historical-only; new work must use land, report, or explore"
+            ),
+            _ => bail!("completion contract must be land, report, or explore"),
+        })
+        .transpose()?;
+    let boundary = repair_boundary
+        .map(|value| match value {
+            "task-only" => Ok(worksgood::graph::CompletionRepairBoundary::TaskOnly),
+            "task-and-validation-fixtures" => {
+                Ok(worksgood::graph::CompletionRepairBoundary::TaskAndValidationFixtures)
+            }
+            "repository" => Ok(worksgood::graph::CompletionRepairBoundary::Repository),
+            _ => bail!(
+                "repair boundary must be task-only, task-and-validation-fixtures, or repository"
+            ),
+        })
+        .transpose()?;
+    if deterministic_repair_budget.is_some_and(|value| value == 0 || value > 100) {
+        bail!("deterministic repair budget must be between 1 and 100");
+    }
+    let command = add_validation_command.map(str::trim);
+    if command.is_some_and(str::is_empty) {
+        bail!("--add-validation-command requires a non-empty exact command");
+    }
+    if command.is_some_and(|value| value.len() > 16 * 1024) {
+        bail!("--add-validation-command exceeds the 16384-byte bound");
+    }
+    let policy_change =
+        boundary.is_some() || deterministic_repair_budget.is_some() || command.is_some();
+    if contract.is_none() && !policy_change {
+        let graph = load_graph(dir.join("graph.jsonl"))?;
+        let task = graph.get_task_or_err(id)?;
+        println!(
+            "{}",
+            worksgood::completion_validation::format_completion_preflight(task)
+        );
+        return Ok(());
+    }
+    if policy_change && std::env::var_os("WG_AGENT_ID").is_some() {
+        bail!(
+            "completion contract/scope correction is an operator decision; the worker may only propose it with `wg fail {id} --intent request-contract-correction --reason <PROPOSAL>`"
+        );
+    }
+
+    let operator = worksgood::current_user();
     let mut refusal = None;
+    let mut summary = None;
     worksgood::parser::modify_graph(dir.join("graph.jsonl"), |graph| {
         let Some(task) = graph.get_task_mut(id) else {
             refusal = Some(format!("task '{id}' not found"));
             return false;
         };
-        if task.status != worksgood::graph::Status::Open || task.assigned.is_some() {
+        if contract.is_some()
+            && (task.status != worksgood::graph::Status::Open || task.assigned.is_some())
+        {
             refusal = Some(format!(
-                "task '{id}' must be open and unassigned before changing its completion contract"
+                "task '{id}' must be open and unassigned before changing its publication contract"
             ));
             return false;
         }
-        task.completion_contract = contract;
+        if policy_change
+            && !(task.status == worksgood::graph::Status::Open && task.assigned.is_none())
+            && !(task.status == worksgood::graph::Status::InProgress
+                && task.completion_repair.as_ref().is_some_and(|repair| {
+                    repair.disposition
+                        == worksgood::graph::CompletionRepairDisposition::NeedsAttention
+                }))
+        {
+            refusal = Some(format!(
+                "task '{id}' repair policy may change only before assignment or during an explicit NeedsAttention repair hold; terminal and finalizer-waiting authority is immutable"
+            ));
+            return false;
+        }
+        let old_requirements = match worksgood::completion_task::requirements_digest(task) {
+            Ok(value) => value,
+            Err(error) => {
+                refusal = Some(error.to_string());
+                return false;
+            }
+        };
+        let old_policy = worksgood::completion_validation::effective_repair_policy(task);
+        if let Some(contract) = contract {
+            task.completion_contract = contract;
+        }
+        if policy_change {
+            let mut policy = old_policy.clone();
+            if let Some(boundary) = boundary {
+                policy.boundary = boundary;
+            }
+            if let Some(limit) = deterministic_repair_budget {
+                policy.deterministic_repair_budget = limit;
+            }
+            task.completion_repair_policy = Some(policy.clone());
+            if let Some(command) = command
+                && !worksgood::completion_validation::configured_validation_commands(task)
+                    .iter()
+                    .any(|current| current == command)
+            {
+                task.validation_commands.push(command.to_string());
+            }
+        }
+        let new_requirements = match worksgood::completion_task::requirements_digest(task) {
+            Ok(value) => value,
+            Err(error) => {
+                refusal = Some(error.to_string());
+                return false;
+            }
+        };
+        let binding_invalidated = old_requirements != new_requirements;
+        if binding_invalidated {
+            task.completion_candidate = None;
+            let new_policy = worksgood::completion_validation::effective_repair_policy(task);
+            if let Some(repair) = task.completion_repair.as_mut() {
+                // Preserve the immutable failure's original requirements and
+                // evidence binding. The explicit operator event changes the
+                // live requirements and reopens this same episode; it never
+                // rewrites what the old evidence claimed to validate.
+                repair.opportunity_limit = new_policy.deterministic_repair_budget.max(1);
+                repair.disposition = worksgood::graph::CompletionRepairDisposition::Repairing;
+                repair.reason_code = "operator-contract-update-approved".into();
+                repair.safe_next = format!(
+                    "same authorized source worker: rerun unchanged `wg done {id}` under boundary `{}`; all configured checks remain enforced",
+                    new_policy.boundary
+                );
+                repair.attention_event_id = None;
+                repair.updated_at = chrono::Utc::now().to_rfc3339();
+            }
+        }
+        task.log.push(worksgood::graph::LogEntry {
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            actor: Some(format!("operator:{operator}")),
+            user: Some(operator.clone()),
+            message: format!(
+                "Completion contract policy updated explicitly; old_requirements={} new_requirements={} stale_candidate_binding_invalidated={} boundary={} deterministic_repair_budget={} added_validation_command={}",
+                old_requirements,
+                new_requirements,
+                binding_invalidated,
+                worksgood::completion_validation::effective_repair_policy(task).boundary,
+                worksgood::completion_validation::effective_repair_policy(task)
+                    .deterministic_repair_budget,
+                command.unwrap_or("none")
+            ),
+        });
+        summary = Some((
+            old_requirements,
+            new_requirements,
+            binding_invalidated,
+            worksgood::completion_validation::completion_preflight(task),
+        ));
         true
     })?;
     if let Some(refusal) = refusal {
         bail!(refusal);
     }
-    println!("Completion contract for {id}: {contract}");
+    let (_, new_requirements, invalidated, plan) =
+        summary.context("completion contract policy update made no change")?;
+    super::notify_graph_changed(dir);
+    println!(
+        "Completion contract policy for {id}: requirements={} stale_binding_invalidated={invalidated}",
+        new_requirements
+    );
+    println!(
+        "{}",
+        worksgood::completion_validation::format_completion_preflight(
+            &load_graph(dir.join("graph.jsonl"))?
+                .get_task_or_err(id)?
+                .clone()
+        )
+    );
+    let _ = plan;
     Ok(())
 }
 

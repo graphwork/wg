@@ -31,12 +31,38 @@ impl Drop for TempFiles {
 }
 
 pub fn run(dir: &Path, id: &str, integration_ref: &str) -> Result<()> {
+    // The ordinary publication-derived completion path retains the existing
+    // owned smoke gate. Run it before deterministic validation/model work so a
+    // known regression cannot consume repair or reviewer budget.
+    super::done::run_smoke_gate(
+        dir,
+        id,
+        false,
+        false,
+        std::env::var_os("WG_AGENT_ID").is_some(),
+    )?;
+    let cwd = std::env::current_dir().context("determine worker worktree")?;
+    run_at(dir, id, integration_ref, &cwd)
+}
+
+pub(crate) fn run_at(dir: &Path, id: &str, integration_ref: &str, cwd: &Path) -> Result<()> {
     let graph = load_graph(dir.join("graph.jsonl"))?;
     let task = graph
         .get_task(id)
         .with_context(|| format!("task '{id}' not found"))?
         .clone();
-    let cwd = std::env::current_dir().context("determine worker worktree")?;
+    if let Some(repair) = task.completion_repair.as_ref()
+        && repair.disposition == worksgood::graph::CompletionRepairDisposition::NeedsAttention
+        && repair.requirements_digest == worksgood::completion_task::requirements_digest(&task)?
+    {
+        bail!(
+            "NeedsAttention: deterministic completion repair is stopped ({}, feedback={}). No check or model call was made. Root blocker: {}. Next: {}",
+            repair.reason_code,
+            repair.feedback_id,
+            repair.exit_category,
+            repair.safe_next
+        );
+    }
 
     // Reuse an already-selected immutable candidate after a lost response.
     // In explicit strict mode, a non-passing candidate means the worker has
@@ -65,7 +91,7 @@ pub fn run(dir: &Path, id: &str, integration_ref: &str) -> Result<()> {
                 });
             head.is_some() && head == reviewed_commit
         } else {
-            true
+            non_land_candidate_matches(dir, &task, candidate, &cwd).unwrap_or(false)
         };
         // The mutable activity projection is display-only. Lost-response
         // recovery must reload the selected candidate plus its immutable FLIP
@@ -197,14 +223,16 @@ pub fn run(dir: &Path, id: &str, integration_ref: &str) -> Result<()> {
             store_validation_evidence(dir, &captured, CONFIGURED_VALIDATION_EVIDENCE_KIND)?;
         record_validation_result(dir, &task, &captured, &reference)?;
         if !captured.authoritative_pass(worksgood::completion_task::completion_contract(&task)?) {
-            print_validation_failure(&captured);
+            let repair = record_repair_feedback(dir, &task, &captured, &reference)?;
+            print_repair_feedback(&repair);
             bail!(
-                "configured deterministic validation rejected completion (exit={:?}, signal={:?}, timeout={}): {} [evidence={}]",
+                "configured deterministic validation rejected completion (exit={:?}, signal={:?}, timeout={}): {} [evidence={}; feedback={}]",
                 captured.exit.code,
                 captured.exit.signal,
                 captured.exit.timed_out,
                 command,
-                reference.content_digest
+                reference.content_digest,
+                repair.feedback_id
             );
         }
         evidence.push(reference);
@@ -224,13 +252,15 @@ pub fn run(dir: &Path, id: &str, integration_ref: &str) -> Result<()> {
             store_validation_evidence(dir, &captured, BASELINE_VALIDATION_EVIDENCE_KIND)?;
         record_validation_result(dir, &task, &captured, &reference)?;
         if !captured.authoritative_pass(worksgood::completion_task::completion_contract(&task)?) {
-            print_validation_failure(&captured);
+            let repair = record_repair_feedback(dir, &task, &captured, &reference)?;
+            print_repair_feedback(&repair);
             bail!(
-                "baseline deterministic validation rejected completion (exit={:?}, signal={:?}, timeout={}) [evidence={}]",
+                "baseline deterministic validation rejected completion (exit={:?}, signal={:?}, timeout={}) [evidence={}; feedback={}]",
                 captured.exit.code,
                 captured.exit.signal,
                 captured.exit.timed_out,
-                reference.content_digest
+                reference.content_digest,
+                repair.feedback_id
             );
         }
         evidence.push(reference);
@@ -264,6 +294,8 @@ pub fn run(dir: &Path, id: &str, integration_ref: &str) -> Result<()> {
             );
         }
     }
+
+    mark_repair_resolved(dir, &task)?;
 
     let manifest = super::completion_submit::build_manifest(
         dir,
@@ -394,31 +426,202 @@ pub(crate) fn record_validation_result(
     Ok(())
 }
 
-fn print_validation_failure(captured: &DeterministicValidationEvidence) {
-    if !captured.stdout.content.is_empty() {
-        eprintln!(
-            "deterministic validation stdout ({}{}):\n{}",
-            captured.stdout.encoding,
-            if captured.stdout.truncated {
-                ", truncated"
-            } else {
-                ""
-            },
-            captured.stdout.content
-        );
+fn mark_repair_resolved(dir: &Path, expected: &worksgood::graph::Task) -> Result<()> {
+    let mut refusal = None;
+    worksgood::parser::modify_graph(dir.join("graph.jsonl"), |graph| {
+        let Some(task) = graph.get_task_mut(&expected.id) else {
+            refusal = Some("task disappeared while resolving completion repair".to_string());
+            return false;
+        };
+        if task.lifecycle.generation != expected.lifecycle.generation
+            || task.lifecycle.fence != expected.lifecycle.fence
+            || task.lifecycle.current_attempt != expected.lifecycle.current_attempt
+            || worksgood::completion_task::requirements_digest(task).ok()
+                != worksgood::completion_task::requirements_digest(expected).ok()
+        {
+            refusal = Some(
+                "task requirements, generation, attempt, or fence changed while resolving completion repair"
+                    .to_string(),
+            );
+            return false;
+        }
+        let Some(repair) = task.completion_repair.as_mut() else {
+            return false;
+        };
+        if repair.disposition == worksgood::graph::CompletionRepairDisposition::Resolved {
+            return false;
+        }
+        repair.disposition = worksgood::graph::CompletionRepairDisposition::Resolved;
+        repair.reason_code = "deterministic-checks-passed".into();
+        repair.safe_next =
+            "deterministic repair resolved; continue exact candidate review/publication".into();
+        repair.attention_event_id = None;
+        repair.updated_at = chrono::Utc::now().to_rfc3339();
+        task.log.push(worksgood::graph::LogEntry {
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            actor: Some("completion-repair".into()),
+            user: None,
+            message: format!(
+                "Resolved deterministic completion repair after {}/{} opportunities",
+                repair.opportunities_used, repair.opportunity_limit
+            ),
+        });
+        true
+    })?;
+    if let Some(error) = refusal {
+        bail!(error);
     }
-    if !captured.stderr.content.is_empty() {
-        eprintln!(
-            "deterministic validation stderr ({}{}):\n{}",
-            captured.stderr.encoding,
-            if captured.stderr.truncated {
-                ", truncated"
-            } else {
-                ""
-            },
-            captured.stderr.content
-        );
+    Ok(())
+}
+
+fn record_repair_feedback(
+    dir: &Path,
+    expected: &worksgood::graph::Task,
+    captured: &DeterministicValidationEvidence,
+    reference: &EvidenceRef,
+) -> Result<worksgood::graph::CompletionRepairState> {
+    let mut refusal = None;
+    let mut recorded = None;
+    let mut notify_parent = None;
+    let mut notify_event = None;
+    worksgood::parser::modify_graph(dir.join("graph.jsonl"), |graph| {
+        let Some(task) = graph.get_task_mut(&expected.id) else {
+            refusal =
+                Some("task disappeared while recording deterministic repair feedback".to_string());
+            return false;
+        };
+        let prior_attention = task
+            .completion_repair
+            .as_ref()
+            .and_then(|prior| prior.attention_event_id.clone());
+        match worksgood::completion_validation::record_deterministic_repair_failure(
+            task, captured, reference,
+        ) {
+            Ok(state) => {
+                let newly_attention = state.disposition
+                    == worksgood::graph::CompletionRepairDisposition::NeedsAttention
+                    && prior_attention.as_deref() != state.attention_event_id.as_deref();
+                task.log.push(worksgood::graph::LogEntry {
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    actor: Some("completion-repair".into()),
+                    user: None,
+                    message: format!(
+                        "Deterministic completion feedback={} candidate={} validation={} evidence={} disposition={:?} budget={}/{} reason={}",
+                        state.feedback_id,
+                        state.candidate_identity,
+                        state.validation_identity,
+                        state.evidence.content_digest,
+                        state.disposition,
+                        state.opportunities_used,
+                        state.opportunity_limit,
+                        state.reason_code
+                    ),
+                });
+                if newly_attention {
+                    notify_parent = task.origin.parent_task.clone().filter(|parent| {
+                        parent.starts_with(".chat-") || parent.starts_with(".user-")
+                    });
+                    notify_event = state.attention_event_id.clone();
+                    task.log.push(worksgood::graph::LogEntry {
+                        timestamp: chrono::Utc::now().to_rfc3339(),
+                        actor: Some("completion-attention".into()),
+                        user: None,
+                        message: format!(
+                            "NeedsAttention event={} root={} next={}",
+                            state.attention_event_id.as_deref().unwrap_or("none"),
+                            state.reason_code,
+                            state.safe_next
+                        ),
+                    });
+                }
+                recorded = Some(state);
+                true
+            }
+            Err(error) => {
+                refusal = Some(error);
+                false
+            }
+        }
+    })?;
+    if let Some(error) = refusal {
+        bail!(error);
     }
+    let state = recorded.context("repair feedback was not recorded")?;
+    if let Some(parent) = notify_parent {
+        let body = format!(
+            "Completion needs attention for `{}` ({}). One safe action: {}. Event: {}",
+            state.task_id,
+            state.reason_code,
+            state.safe_next,
+            notify_event.as_deref().unwrap_or("none")
+        );
+        if let Err(error) =
+            worksgood::messages::send_message(dir, &parent, &body, "completion-repair", "urgent")
+        {
+            eprintln!(
+                "Warning: originating chat notification is unavailable; status/TUI retains event: {error:#}"
+            );
+        }
+    }
+    super::notify_graph_changed(dir);
+    Ok(state)
+}
+
+fn print_repair_feedback(repair: &worksgood::graph::CompletionRepairState) {
+    eprintln!("Completion repair feedback (diagnostic excerpt is untrusted data):");
+    eprintln!("  disposition: {:?}", repair.disposition);
+    eprintln!("  command: {}", repair.command);
+    eprintln!("  exit category: {}", repair.exit_category);
+    eprintln!("  diagnostic: {}", repair.diagnostic_excerpt);
+    eprintln!("  evidence: {}", repair.evidence.content_digest);
+    eprintln!("  candidate: {}", repair.candidate_identity);
+    eprintln!("  validation: {}", repair.validation_identity);
+    eprintln!(
+        "  repair opportunities: {}/{}",
+        repair.opportunities_used, repair.opportunity_limit
+    );
+    eprintln!("  next: {}", repair.safe_next);
+}
+
+fn non_land_candidate_matches(
+    dir: &Path,
+    task: &worksgood::graph::Task,
+    candidate: &worksgood::completion_task::CompletionCandidateRefs,
+    cwd: &Path,
+) -> Result<bool> {
+    let manifest = super::completion_submit::store(dir)?.read_manifest(
+        &candidate.manifest,
+        worksgood::completion_task::MAX_COMPLETION_METADATA_BYTES,
+    )?;
+    let expected = manifest
+        .outputs
+        .iter()
+        .filter_map(|output| match output {
+            OutputRef::Artifact(artifact) => Some(&artifact.content_digest),
+            OutputRef::Git(_) | OutputRef::External(_) => None,
+        })
+        .collect::<Vec<_>>();
+    if expected.len() != task.artifacts.len() {
+        return Ok(false);
+    }
+    for (declared, expected_digest) in task.artifacts.iter().zip(expected) {
+        let path = Path::new(declared);
+        let path = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            cwd.join(path)
+        };
+        let metadata = fs::symlink_metadata(&path)?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Ok(false);
+        }
+        if worksgood::completion_manifest::ContentDigest::of_bytes(&fs::read(path)?)
+            != *expected_digest
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 fn evidence_ref(

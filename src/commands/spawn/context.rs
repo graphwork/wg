@@ -127,6 +127,9 @@ pub(crate) fn build_scope_context(
 ) -> worksgood::service::executor::ScopeContext {
     let mut ctx = worksgood::service::executor::ScopeContext::default();
 
+    ctx.completion_preflight_info =
+        worksgood::completion_validation::format_completion_preflight(task);
+
     let control_mode =
         worksgood::worker_control::effective_control_mode(config.worker_control.mode, task);
     ctx.worker_control_info = format!(

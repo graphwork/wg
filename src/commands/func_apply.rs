@@ -258,6 +258,8 @@ pub fn run(
                 completion_disposition: None,
                 completion_receipt: None,
                 completion_blocker: None,
+                completion_repair_policy: None,
+                completion_repair: None,
                 tags,
                 skills: rendered.skills.clone(),
                 inputs: vec![],

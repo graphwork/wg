@@ -1,6 +1,6 @@
 ---
 source: tests/prompt_snapshots.rs
-assertion_line: 324
+assertion_line: 325
 expression: output
 ---
 # Task Assignment
@@ -16,6 +16,10 @@ You are a Builder agent.
 - **ID:** test-task-123
 - **Title:** Implement widget factory
 - **Description:** Build a widget factory that produces widgets from specs.
+
+## Completion Preflight
+
+- Run configured validation exactly as listed.
 
 ## Worker Control
 

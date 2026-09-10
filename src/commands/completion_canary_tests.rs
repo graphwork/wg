@@ -1,4 +1,4 @@
-use super::{completion_done, completion_submit};
+use super::{completion_done, completion_finish, completion_submit};
 use std::sync::{Arc, Barrier};
 use tempfile::tempdir;
 use worksgood::completion_manifest::{
@@ -184,6 +184,91 @@ fn real_pi_reviews_one_isolated_report_without_fallback() {
     assert!(candidate.eval_receipt.is_some());
     assert!(!wg_dir.join("finalization").exists());
     assert!(!wg_dir.join("worker-control/transactions").exists());
+}
+
+#[test]
+fn failed_required_check_repairs_in_same_attempt_and_publishes_once() {
+    let temp = tempdir().unwrap();
+    let project = temp.path();
+    let wg_dir = project.join(".wg");
+    std::fs::create_dir_all(&wg_dir).unwrap();
+    let git = |args: &[&str]| {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(project)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {} failed", args.join(" "));
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&["config", "user.email", "test@example.invalid"]);
+    git(&["config", "user.name", "Test"]);
+    std::fs::write(project.join("base.txt"), "base\n").unwrap();
+    git(&["add", "base.txt"]);
+    git(&["commit", "-qm", "base"]);
+    std::fs::write(project.join("report.txt"), "completion repair report\n").unwrap();
+
+    let mut task = Task {
+        id: "same-worker-repair".into(),
+        title: "Repair one required check".into(),
+        description: Some("## Validation\nThe exact configured gate must pass.".into()),
+        status: Status::InProgress,
+        assigned: Some("repair-worker".into()),
+        completion_contract: CompletionContract::Report,
+        artifacts: vec![project.join("report.txt").display().to_string()],
+        validation_commands: vec!["test -f gate.ok".into()],
+        ..Task::default()
+    };
+    task.lifecycle.fence = 7;
+    task.lifecycle.attempt_sequence = 1;
+    task.lifecycle.current_attempt = Some(AttemptRef {
+        id: "attempt-0-1".into(),
+        generation: 0,
+        fence: 7,
+        actor_id: "repair-worker".into(),
+        disposition: None,
+    });
+    let source_tuple = task.lifecycle.current_attempt.clone();
+    let mut graph = WorkGraph::new();
+    graph.add_node(Node::Task(task));
+    save_graph(&graph, wg_dir.join("graph.jsonl")).unwrap();
+
+    let first =
+        completion_finish::run_at(&wg_dir, "same-worker-repair", "refs/heads/main", project)
+            .unwrap_err();
+    assert!(first.to_string().contains("evidence="));
+    let failed = load_graph(wg_dir.join("graph.jsonl")).unwrap();
+    let failed = failed.get_task("same-worker-repair").unwrap();
+    assert_eq!(failed.status, Status::InProgress);
+    assert_eq!(failed.assigned.as_deref(), Some("repair-worker"));
+    assert_eq!(failed.lifecycle.current_attempt, source_tuple);
+    let repair = failed.completion_repair.as_ref().unwrap();
+    assert_eq!(
+        repair.disposition,
+        worksgood::graph::CompletionRepairDisposition::Repairing
+    );
+    assert!(repair.evidence.content_digest.as_str().starts_with("b3:"));
+
+    std::fs::write(project.join("gate.ok"), "repaired\n").unwrap();
+    completion_finish::run_at(&wg_dir, "same-worker-repair", "refs/heads/main", project).unwrap();
+    // Lost-response replay verifies the exact selected candidate/publication;
+    // it must not append a second terminal receipt/log.
+    completion_finish::run_at(&wg_dir, "same-worker-repair", "refs/heads/main", project).unwrap();
+
+    let completed = load_graph(wg_dir.join("graph.jsonl")).unwrap();
+    let completed = completed.get_task("same-worker-repair").unwrap();
+    assert_eq!(completed.status, Status::Done);
+    assert!(completed.completion_repair.is_none());
+    assert_eq!(
+        completed
+            .log
+            .iter()
+            .filter(|entry| entry
+                .message
+                .starts_with("Done derived from exact reviewed manifest"))
+            .count(),
+        1
+    );
 }
 
 #[test]

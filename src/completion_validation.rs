@@ -13,7 +13,11 @@ use crate::completion_manifest::{
 };
 use crate::completion_review::CompletionReviewBinding;
 use crate::completion_task::requirements_digest;
-use crate::graph::{Task, parse_delay};
+use crate::graph::{
+    CompletionContract as GraphCompletionContract, CompletionRepairBoundary,
+    CompletionRepairDisposition, CompletionRepairPolicy, CompletionRepairState, Status, Task,
+    WorkGraph, parse_delay,
+};
 use crate::identity::canonical_json;
 use crate::simple_land::CompletionContract;
 use chrono::{DateTime, Utc};
@@ -80,6 +84,13 @@ pub struct ValidationRepositoryBinding {
     pub integrated_main_oid: String,
     pub before_status_digest: ContentDigest,
     pub after_status_digest: ContentDigest,
+    /// Digest of tracked working-tree changes plus exact untracked file bytes.
+    /// Optional only for read compatibility with validation/v1 evidence written
+    /// before deterministic repair feedback was introduced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before_candidate_content_digest: Option<ContentDigest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after_candidate_content_digest: Option<ContentDigest>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -131,7 +142,9 @@ impl DeterministicValidationEvidence {
         let repository_unchanged = self.repository.before_head_oid
             == self.repository.after_head_oid
             && self.repository.before_tree_oid == self.repository.after_tree_oid
-            && self.repository.before_status_digest == self.repository.after_status_digest;
+            && self.repository.before_status_digest == self.repository.after_status_digest
+            && self.repository.before_candidate_content_digest
+                == self.repository.after_candidate_content_digest;
         let clean_land = contract != CompletionContract::Land
             || self.repository.before_status_digest == ContentDigest::of_bytes(b"");
         self.exit.success
@@ -173,6 +186,7 @@ struct RepositoryState {
     tree_oid: String,
     integrated_main_oid: String,
     status_digest: ContentDigest,
+    candidate_content_digest: ContentDigest,
 }
 
 /// Commands configured as deterministic completion authority.  The historical
@@ -197,6 +211,439 @@ pub fn configured_validation_commands(task: &Task) -> Vec<String> {
 
 pub fn land_baseline_command() -> &'static str {
     "git diff --check refs/heads/main..HEAD"
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct CompletionValidationCheck {
+    pub purpose: String,
+    pub command: String,
+    pub provenance: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct CompletionPreflight {
+    pub checks: Vec<CompletionValidationCheck>,
+    pub evidence_capture: String,
+    pub prose_is_authority: bool,
+    pub repair_boundary: CompletionRepairBoundary,
+    pub deterministic_repair_budget: u32,
+    pub boundary_explanation: String,
+}
+
+pub fn effective_repair_policy(task: &Task) -> CompletionRepairPolicy {
+    task.completion_repair_policy.clone().unwrap_or_default()
+}
+
+/// Resolve the exact checks the ordinary completion controller will enforce.
+/// This intentionally does not parse commands from task prose.
+pub fn completion_preflight(task: &Task) -> CompletionPreflight {
+    let mut checks = Vec::new();
+    let mut seen = BTreeSet::new();
+    if let Some(command) = task
+        .verify
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
+        if seen.insert(command.to_string()) {
+            checks.push(CompletionValidationCheck {
+                purpose: "configured".into(),
+                command: command.to_string(),
+                provenance: "legacy task.verify (operator/repository-authorized)".into(),
+            });
+        }
+    }
+    for (index, command) in task.validation_commands.iter().enumerate() {
+        let command = command.trim();
+        if !command.is_empty() && seen.insert(command.to_string()) {
+            checks.push(CompletionValidationCheck {
+                purpose: "configured".into(),
+                command: command.to_string(),
+                provenance: format!(
+                    "task.validation_commands[{index}] (operator/repository-authorized)"
+                ),
+            });
+        }
+    }
+    if task.completion_contract == GraphCompletionContract::Land {
+        checks.push(CompletionValidationCheck {
+            purpose: "baseline".into(),
+            command: land_baseline_command().into(),
+            provenance: "completion contract: land (built-in, cannot be relaxed)".into(),
+        });
+    } else {
+        checks.push(CompletionValidationCheck {
+            purpose: "artifact-integrity".into(),
+            command: "<WG regular-file and immutable-artifact integrity check>".into(),
+            provenance: format!(
+                "completion contract: {} (built-in)",
+                task.completion_contract
+            ),
+        });
+    }
+    let policy = effective_repair_policy(task);
+    let boundary_explanation = match policy.boundary {
+        CompletionRepairBoundary::TaskOnly => {
+            "repair only files directly required by this task; any gate-exposed fixture or unrelated production change needs operator approval"
+        }
+        CompletionRepairBoundary::TaskAndValidationFixtures => {
+            "repair task implementation plus tests/fixtures directly exercised by the unchanged required checks; unrelated production behavior, gate reduction, or arbitrary repository cleanup needs operator approval"
+        }
+        CompletionRepairBoundary::Repository => {
+            "operator explicitly approved repository-wide repair needed by the unchanged checks; security fences and gate reduction remain forbidden"
+        }
+    };
+    CompletionPreflight {
+        checks,
+        evidence_capture: "wg done executes each command in the retained worktree and registers a host-bound immutable deterministic-validation/v1 evidence object before semantic review".into(),
+        prose_is_authority: false,
+        repair_boundary: policy.boundary,
+        deterministic_repair_budget: policy.deterministic_repair_budget.max(1),
+        boundary_explanation: boundary_explanation.into(),
+    }
+}
+
+pub fn format_completion_preflight(task: &Task) -> String {
+    let plan = completion_preflight(task);
+    let mut lines = vec![
+        "## Completion preflight (resolved before execution)".to_string(),
+        "".to_string(),
+        "Required deterministic checks, in enforced order:".to_string(),
+    ];
+    for (index, check) in plan.checks.iter().enumerate() {
+        lines.push(format!(
+            "{}. `{}` — provenance: {}",
+            index + 1,
+            check.command,
+            check.provenance
+        ));
+    }
+    lines.extend([
+        format!("Evidence: {}.", plan.evidence_capture),
+        "Commands merely mentioned in `## Validation` prose are criteria, not executable authority; propose a missing hard check with `wg fail TASK --intent request-contract-correction --reason <PROPOSAL>`. Only an operator-approved contract update adds it.".into(),
+        format!(
+            "Permitted repair boundary: `{}` — {}.",
+            plan.repair_boundary, plan.boundary_explanation
+        ),
+        format!(
+            "Deterministic repair budget: {} opportunities for this task episode. A failed known command returns evidence-backed feedback to this same attempt/session/worktree; change meaningful candidate bytes and rerun the unchanged `wg done`. Repeating unchanged bytes does not replenish the budget.",
+            plan.deterministic_repair_budget
+        ),
+        "For scope ambiguity use `wg fail TASK --intent request-help --reason <ONE SPECIFIC DECISION>`. Intentional abandonment remains `wg fail TASK --intent deliberate-stop --reason <WHY>`.".into(),
+    ]);
+    lines.join("\n")
+}
+
+const COMPLETION_REPAIR_STATE_VERSION: u32 = 1;
+const MAX_REPAIR_EXCERPT_CHARS: usize = 2_048;
+
+fn validation_identity(evidence: &DeterministicValidationEvidence) -> ContentDigest {
+    ContentDigest::of_bytes(&canonical_json(&serde_json::json!({
+        "purpose": evidence.purpose,
+        "configured_index": evidence.command.configured_index,
+        "command_digest": evidence.command.command_digest,
+        "requirements_digest": evidence.lifecycle.requirements_digest,
+    })))
+}
+
+fn repair_candidate_identity(evidence: &DeterministicValidationEvidence) -> ContentDigest {
+    ContentDigest::of_bytes(&canonical_json(&serde_json::json!({
+        "repository": evidence.repository.repository_identity,
+        "worktree": evidence.repository.worktree_identity,
+        "head": evidence.repository.before_head_oid,
+        "tree": evidence.repository.before_tree_oid,
+        "status": evidence.repository.before_status_digest,
+        "content": evidence.repository.before_candidate_content_digest,
+        "requirements": evidence.lifecycle.requirements_digest,
+    })))
+}
+
+fn validation_exit_category(evidence: &DeterministicValidationEvidence) -> &'static str {
+    if evidence.exit.timed_out {
+        "timeout"
+    } else if evidence.exit.signal.is_some() {
+        "signal"
+    } else if evidence.exit.code.is_some_and(|code| code != 0) {
+        "nonzero-exit"
+    } else if evidence.repository.before_head_oid != evidence.repository.after_head_oid
+        || evidence.repository.before_tree_oid != evidence.repository.after_tree_oid
+        || evidence.repository.before_status_digest != evidence.repository.after_status_digest
+        || evidence.repository.before_candidate_content_digest
+            != evidence.repository.after_candidate_content_digest
+    {
+        "candidate-mutated-during-check"
+    } else if !evidence.exit.success || evidence.exit.code != Some(0) {
+        "unknown-exit"
+    } else {
+        "contract-precondition"
+    }
+}
+
+fn diagnostic_excerpt(evidence: &DeterministicValidationEvidence) -> String {
+    let raw = if !evidence.stderr.content.trim().is_empty() {
+        &evidence.stderr.content
+    } else {
+        &evidence.stdout.content
+    };
+    let redacted = crate::chat_runtime::redact_text(raw.trim());
+    let mut excerpt: String = redacted.chars().take(MAX_REPAIR_EXCERPT_CHARS).collect();
+    if redacted.chars().count() > MAX_REPAIR_EXCERPT_CHARS {
+        excerpt.push_str(" …[bounded]");
+    }
+    if excerpt.is_empty() {
+        "<no diagnostic output; inspect immutable evidence>".into()
+    } else {
+        excerpt
+    }
+}
+
+/// Record one failed, host-captured check against the exact live source tuple.
+/// Unique candidate bytes consume the finite episode budget; unchanged replay
+/// escalates deterministically without running a model.
+pub fn record_deterministic_repair_failure(
+    task: &mut Task,
+    evidence: &DeterministicValidationEvidence,
+    evidence_ref: &crate::completion_manifest::EvidenceRef,
+) -> Result<CompletionRepairState, String> {
+    if task.id != evidence.lifecycle.task_id
+        || task.lifecycle.generation != evidence.lifecycle.generation
+        || task.lifecycle.fence != evidence.lifecycle.attempt_fence
+        || task
+            .lifecycle
+            .current_attempt
+            .as_ref()
+            .map(|attempt| attempt.id.as_str())
+            != evidence.lifecycle.attempt_id.as_deref()
+        || requirements_digest(task).ok().as_ref() != Some(&evidence.lifecycle.requirements_digest)
+    {
+        return Err("deterministic repair evidence does not bind the current source attempt/fence/requirements".into());
+    }
+    let policy = effective_repair_policy(task);
+    let limit = policy.deterministic_repair_budget.max(1);
+    let candidate_identity = repair_candidate_identity(evidence);
+    let validation_identity = validation_identity(evidence);
+    let mut failed_candidates = task
+        .completion_repair
+        .as_ref()
+        .map(|state| state.failed_candidates.clone())
+        .unwrap_or_default();
+    let repeated = failed_candidates.contains(&candidate_identity);
+    let exhausted = !repeated && failed_candidates.len() >= limit as usize;
+    if !repeated && failed_candidates.len() < limit as usize + 1 {
+        failed_candidates.push(candidate_identity.clone());
+    }
+    let opportunities_used = u32::try_from(failed_candidates.len())
+        .unwrap_or(u32::MAX)
+        .min(limit);
+    let disposition = if repeated || exhausted {
+        CompletionRepairDisposition::NeedsAttention
+    } else {
+        CompletionRepairDisposition::Repairing
+    };
+    let reason_code = if repeated {
+        "unchanged-candidate-repeated"
+    } else if exhausted {
+        "deterministic-repair-budget-exhausted"
+    } else {
+        "deterministic-check-failed"
+    };
+    let safe_next = match disposition {
+        CompletionRepairDisposition::Repairing => format!(
+            "repair within `{}` in this same worktree/session, change meaningful candidate bytes, then rerun the unchanged `wg done {}`",
+            policy.boundary, task.id
+        ),
+        CompletionRepairDisposition::NeedsAttention => {
+            let next_limit = limit.saturating_add(1).min(100);
+            if next_limit > limit {
+                format!(
+                    "operator: inspect evidence {} and either authorize one more changed candidate with `wg contract {} --deterministic-repair-budget {}` or deliberately stop with `wg fail {} --intent deliberate-stop --reason <WHY>`; do not relax the gate",
+                    evidence_ref.content_digest, task.id, next_limit, task.id
+                )
+            } else {
+                format!(
+                    "operator: inspect evidence {} and deliberately stop with `wg fail {} --intent deliberate-stop --reason <WHY>` or approve an exact added check/scope correction; the repair ceiling cannot increase further",
+                    evidence_ref.content_digest, task.id
+                )
+            }
+        }
+        CompletionRepairDisposition::Resolved => {
+            unreachable!("failure cannot create a resolved repair state")
+        }
+    };
+    let feedback_id = format!(
+        "b3:{}",
+        blake3::hash(&canonical_json(&serde_json::json!({
+            "task": task.id,
+            "attempt": evidence.lifecycle.attempt_id,
+            "fence": evidence.lifecycle.attempt_fence,
+            "validation": validation_identity,
+            "candidate": candidate_identity,
+            "reason": reason_code,
+        })))
+        .to_hex()
+    );
+    let previous_attention = task
+        .completion_repair
+        .as_ref()
+        .and_then(|state| state.attention_event_id.clone());
+    let attention_event_id = (disposition == CompletionRepairDisposition::NeedsAttention)
+        .then(|| previous_attention.unwrap_or_else(|| format!("attention:{feedback_id}")));
+    let state = CompletionRepairState {
+        version: COMPLETION_REPAIR_STATE_VERSION,
+        disposition,
+        task_id: task.id.clone(),
+        generation: evidence.lifecycle.generation,
+        attempt_id: evidence.lifecycle.attempt_id.clone(),
+        fence: evidence.lifecycle.attempt_fence,
+        requirements_digest: evidence.lifecycle.requirements_digest.clone(),
+        validation_identity,
+        candidate_identity,
+        evidence: evidence_ref.clone(),
+        command: evidence
+            .command
+            .argv
+            .last()
+            .cloned()
+            .unwrap_or_else(|| "<missing command>".into()),
+        exit_category: validation_exit_category(evidence).into(),
+        diagnostic_excerpt: diagnostic_excerpt(evidence),
+        opportunities_used,
+        opportunity_limit: limit,
+        failed_candidates,
+        reason_code: reason_code.into(),
+        safe_next,
+        feedback_id,
+        attention_event_id,
+        updated_at: Utc::now().to_rfc3339(),
+    };
+    task.completion_repair = Some(state.clone());
+    Ok(state)
+}
+
+pub fn request_repair_attention(
+    task: &mut Task,
+    reason_code: &str,
+    safe_next: String,
+) -> Result<bool, String> {
+    let state = task
+        .completion_repair
+        .as_mut()
+        .ok_or_else(|| "no evidence-backed deterministic repair is active".to_string())?;
+    if state.task_id != task.id
+        || state.generation != task.lifecycle.generation
+        || state.fence != task.lifecycle.fence
+        || state.attempt_id.as_deref()
+            != task
+                .lifecycle
+                .current_attempt
+                .as_ref()
+                .map(|attempt| attempt.id.as_str())
+    {
+        return Err("repair request is stale for the current source attempt/fence".into());
+    }
+    let event_id = format!("attention:{}:{reason_code}", state.feedback_id);
+    let changed = state.disposition != CompletionRepairDisposition::NeedsAttention
+        || state.reason_code != reason_code
+        || state.attention_event_id.as_deref() != Some(event_id.as_str());
+    state.disposition = CompletionRepairDisposition::NeedsAttention;
+    state.reason_code = reason_code.into();
+    state.safe_next = safe_next;
+    state.attention_event_id = Some(event_id);
+    state.updated_at = Utc::now().to_rfc3339();
+    Ok(changed)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct StalledChain {
+    pub root_task_id: String,
+    pub root_blocker: String,
+    pub active_repair: bool,
+    pub affected_downstream: Vec<String>,
+    pub safe_operator_action: String,
+    pub attention_event_id: String,
+}
+
+/// Deterministic, cycle-safe read projection. Only explicit completion repair
+/// attention is a root; active repair and ordinary bounded waits are not stalls.
+pub fn stalled_chains(graph: &WorkGraph) -> Vec<StalledChain> {
+    let mut reverse: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for task in graph.tasks() {
+        for predecessor in &task.after {
+            reverse
+                .entry(predecessor.clone())
+                .or_default()
+                .push(task.id.clone());
+        }
+    }
+    for children in reverse.values_mut() {
+        children.sort();
+        children.dedup();
+    }
+    let mut chains = Vec::new();
+    for root in graph.tasks() {
+        let Some(repair) = root.completion_repair.as_ref() else {
+            continue;
+        };
+        if repair.disposition != CompletionRepairDisposition::NeedsAttention
+            || root.status == Status::Done
+        {
+            continue;
+        }
+        // Nodes that are also transitive predecessors of the root are in its
+        // structural SCC. The cycle itself is supported graph structure, not
+        // downstream impact evidence, so traverse through it but do not list it.
+        let mut ancestors = BTreeSet::new();
+        let mut ancestor_queue = std::collections::VecDeque::from([root.id.clone()]);
+        while let Some(current) = ancestor_queue.pop_front() {
+            let Some(task) = graph.get_task(&current) else {
+                continue;
+            };
+            for predecessor in &task.after {
+                if ancestors.insert(predecessor.clone()) {
+                    ancestor_queue.push_back(predecessor.clone());
+                }
+            }
+        }
+        let mut visited = BTreeSet::from([root.id.clone()]);
+        let mut affected = BTreeSet::new();
+        let mut queue = std::collections::VecDeque::from([root.id.clone()]);
+        while let Some(current) = queue.pop_front() {
+            for child in reverse.get(&current).into_iter().flatten() {
+                if !visited.insert(child.clone()) {
+                    continue;
+                }
+                let Some(child_task) = graph.get_task(child) else {
+                    continue;
+                };
+                if ancestors.contains(child) {
+                    queue.push_back(child.clone());
+                    continue;
+                }
+                // Active work, a bounded wait, completion in progress, and
+                // terminal/satisfied work are not stalled by this root.
+                if matches!(
+                    child_task.status,
+                    Status::Open | Status::Blocked | Status::Incomplete
+                ) {
+                    affected.insert(child.clone());
+                    queue.push_back(child.clone());
+                }
+            }
+        }
+        chains.push(StalledChain {
+            root_task_id: root.id.clone(),
+            root_blocker: format!("{}: {}", repair.reason_code, repair.exit_category),
+            active_repair: false,
+            affected_downstream: affected.into_iter().collect(),
+            safe_operator_action: repair.safe_next.clone(),
+            attention_event_id: repair
+                .attention_event_id
+                .clone()
+                .unwrap_or_else(|| format!("attention:{}", repair.feedback_id)),
+        });
+    }
+    chains.sort_by(|a, b| a.root_task_id.cmp(&b.root_task_id));
+    chains
 }
 
 #[derive(Serialize)]
@@ -398,6 +845,8 @@ pub fn capture_validation(
             integrated_main_oid: before.integrated_main_oid,
             before_status_digest: before.status_digest,
             after_status_digest: after.status_digest,
+            before_candidate_content_digest: Some(before.candidate_content_digest),
+            after_candidate_content_digest: Some(after.candidate_content_digest),
         },
         started_at: started.to_rfc3339(),
         finished_at: finished.to_rfc3339(),
@@ -497,6 +946,7 @@ fn repository_state(cwd: &Path) -> Result<RepositoryState, String> {
     };
     let raw_status = git_bytes(&cwd, &["status", "--porcelain=v1", "--untracked-files=all"])?;
     let status = normalized_status(&raw_status);
+    let candidate_content_digest = repository_candidate_content_digest(&worktree)?;
     Ok(RepositoryState {
         repository_identity: ContentDigest::of_bytes(common.as_os_str().as_encoded_bytes()),
         worktree_identity: ContentDigest::of_bytes(worktree.as_os_str().as_encoded_bytes()),
@@ -506,6 +956,7 @@ fn repository_state(cwd: &Path) -> Result<RepositoryState, String> {
         tree_oid: git(&cwd, &["rev-parse", "HEAD^{tree}"])?,
         integrated_main_oid: git(&cwd, &["rev-parse", "refs/heads/main"])?,
         status_digest: ContentDigest::of_bytes(&status),
+        candidate_content_digest,
     })
 }
 
@@ -524,6 +975,87 @@ fn normalized_status(raw: &[u8]) -> Vec<u8> {
         normalized.push(b'\n');
     }
     normalized
+}
+
+fn repository_candidate_content_digest(worktree: &Path) -> Result<ContentDigest, String> {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"worksgood-candidate-content/v1\0");
+    let tracked = git_bytes(
+        worktree,
+        &[
+            "diff",
+            "--no-ext-diff",
+            "--binary",
+            "--full-index",
+            "HEAD",
+            "--",
+        ],
+    )?;
+    hasher.update(&(tracked.len() as u64).to_le_bytes());
+    hasher.update(&tracked);
+
+    let untracked = git_bytes(
+        worktree,
+        &["ls-files", "--others", "--exclude-standard", "-z"],
+    )?;
+    for raw_path in untracked
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+    {
+        let path = git_path_from_bytes(raw_path);
+        let normalized = path.to_string_lossy().replace('\\', "/");
+        if normalized == ".wg-cleanup-pending"
+            || normalized == ".wg"
+            || normalized.starts_with(".wg/")
+            || normalized.starts_with(".workgraph/")
+        {
+            continue;
+        }
+        hasher.update(&(raw_path.len() as u64).to_le_bytes());
+        hasher.update(raw_path);
+        let full_path = worktree.join(&path);
+        let metadata = fs::symlink_metadata(&full_path)
+            .map_err(|error| format!("inspect candidate {}: {error}", full_path.display()))?;
+        if metadata.file_type().is_symlink() {
+            hasher.update(b"symlink\0");
+            let target = fs::read_link(&full_path).map_err(|error| {
+                format!("read candidate symlink {}: {error}", full_path.display())
+            })?;
+            hasher.update(target.as_os_str().as_encoded_bytes());
+        } else if metadata.is_file() {
+            hasher.update(b"file\0");
+            hasher.update(&metadata.len().to_le_bytes());
+            let mut file = File::open(&full_path)
+                .map_err(|error| format!("read candidate {}: {error}", full_path.display()))?;
+            let mut buffer = [0_u8; 64 * 1024];
+            loop {
+                let read = file
+                    .read(&mut buffer)
+                    .map_err(|error| format!("read candidate {}: {error}", full_path.display()))?;
+                if read == 0 {
+                    break;
+                }
+                hasher.update(&buffer[..read]);
+            }
+        } else {
+            // Never block on FIFOs/devices. Their presence and path still bind
+            // the candidate, while deterministic validation remains fail closed.
+            hasher.update(b"special\0");
+        }
+    }
+    ContentDigest::parse(format!("b3:{}", hasher.finalize().to_hex()))
+}
+
+#[cfg(unix)]
+fn git_path_from_bytes(raw: &[u8]) -> PathBuf {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+    PathBuf::from(OsString::from_vec(raw.to_vec()))
+}
+
+#[cfg(not(unix))]
+fn git_path_from_bytes(raw: &[u8]) -> PathBuf {
+    PathBuf::from(String::from_utf8_lossy(raw).into_owned())
 }
 
 fn git(cwd: &Path, args: &[&str]) -> Result<String, String> {
@@ -978,6 +1510,7 @@ mod tests {
     };
     use crate::graph::{Status, Task};
     use crate::lifecycle::AttemptRef;
+    use tempfile::TempDir;
 
     fn git_run(dir: &Path, args: &[&str]) {
         let status = Command::new("git")
@@ -1214,6 +1747,168 @@ mod tests {
         task.validation_commands = vec!["cargo test changed".into()];
         let changed = requirements_digest(&task).unwrap();
         assert_ne!(first, changed);
+    }
+
+    #[test]
+    fn preflight_matches_enforced_commands_and_never_infers_prose() {
+        let (_temp, mut task) = fixture();
+        task.verify = Some("cargo fmt --check".into());
+        task.validation_commands = vec!["cargo fmt --check".into(), "cargo clippy".into()];
+        task.description =
+            Some("## Validation\n- [ ] cargo test --locked smoke --no-fail-fast".into());
+        let plan = completion_preflight(&task);
+        assert_eq!(
+            plan.checks
+                .iter()
+                .map(|check| check.command.as_str())
+                .collect::<Vec<_>>(),
+            vec!["cargo fmt --check", "cargo clippy", land_baseline_command()]
+        );
+        assert!(plan.checks[0].provenance.contains("task.verify"));
+        assert!(!plan.prose_is_authority);
+        assert!(
+            plan.checks
+                .iter()
+                .all(|check| !check.command.contains("smoke"))
+        );
+        assert!(format_completion_preflight(&task).contains("host-bound immutable"));
+    }
+
+    #[test]
+    fn deterministic_repair_is_candidate_bound_redacted_and_finite() {
+        let (temp, mut task) = fixture();
+        task.validation_commands = vec!["printf 'api_key=supersecret failure' >&2; exit 9".into()];
+        let evidence_temp = TempDir::new().unwrap();
+        let store = CompletionArtifactStore::open(evidence_temp.path().join("store")).unwrap();
+        let first = capture_validation(
+            &task,
+            &task.validation_commands[0],
+            0,
+            ValidationPurpose::Configured,
+            temp.path(),
+        )
+        .unwrap();
+        let first_ref = evidence_ref(&store, &temp.path().join(".wg"), &first);
+        let first_state =
+            record_deterministic_repair_failure(&mut task, &first, &first_ref).unwrap();
+        assert_eq!(
+            first_state.disposition,
+            CompletionRepairDisposition::Repairing
+        );
+        assert_eq!(first_state.opportunities_used, 1);
+        assert!(first_state.diagnostic_excerpt.contains("[REDACTED]"));
+        assert!(!first_state.diagnostic_excerpt.contains("supersecret"));
+
+        // Cosmetic output/timestamp differences against unchanged source bytes
+        // cannot replenish or advance the episode.
+        let repeated = capture_validation(
+            &task,
+            "printf 'different output' >&2; exit 8",
+            0,
+            ValidationPurpose::Configured,
+            temp.path(),
+        )
+        .unwrap();
+        let repeated_ref = evidence_ref(&store, &temp.path().join(".wg"), &repeated);
+        let repeated_state =
+            record_deterministic_repair_failure(&mut task, &repeated, &repeated_ref).unwrap();
+        assert_eq!(
+            repeated_state.disposition,
+            CompletionRepairDisposition::NeedsAttention
+        );
+        assert_eq!(repeated_state.reason_code, "unchanged-candidate-repeated");
+        assert_eq!(repeated_state.opportunities_used, 1);
+    }
+
+    #[test]
+    fn changed_candidates_cannot_extend_repair_episode_past_two() {
+        let (temp, mut task) = fixture();
+        task.validation_commands = vec!["exit 3".into()];
+        let evidence_temp = TempDir::new().unwrap();
+        let store = CompletionArtifactStore::open(evidence_temp.path().join("store")).unwrap();
+        for index in 0..3 {
+            if index > 0 {
+                fs::write(
+                    temp.path().join("candidate.txt"),
+                    format!("revision {index}\n"),
+                )
+                .unwrap();
+            }
+            let captured = capture_validation(
+                &task,
+                &task.validation_commands[0],
+                0,
+                ValidationPurpose::Configured,
+                temp.path(),
+            )
+            .unwrap();
+            let reference = evidence_ref(&store, &temp.path().join(".wg"), &captured);
+            let state =
+                record_deterministic_repair_failure(&mut task, &captured, &reference).unwrap();
+            if index < 2 {
+                assert_eq!(state.disposition, CompletionRepairDisposition::Repairing);
+            } else {
+                assert_eq!(
+                    state.disposition,
+                    CompletionRepairDisposition::NeedsAttention
+                );
+                assert_eq!(state.reason_code, "deterministic-repair-budget-exhausted");
+                assert_eq!(state.opportunities_used, 2);
+            }
+        }
+    }
+
+    #[test]
+    fn stalled_chain_projection_is_cycle_safe_and_deduplicated() {
+        let (temp, mut root) = fixture();
+        root.id = "root".into();
+        root.after = vec!["child".into()];
+        root.validation_commands = vec!["exit 1".into()];
+        let store = CompletionArtifactStore::open(temp.path().join("store")).unwrap();
+        let captured = capture_validation(
+            &root,
+            &root.validation_commands[0],
+            0,
+            ValidationPurpose::Configured,
+            temp.path(),
+        )
+        .unwrap();
+        let reference = evidence_ref(&store, &temp.path().join(".wg"), &captured);
+        record_deterministic_repair_failure(&mut root, &captured, &reference).unwrap();
+        request_repair_attention(
+            &mut root,
+            "scope-approval-required",
+            "operator decides once".into(),
+        )
+        .unwrap();
+        let mut child = Task {
+            id: "child".into(),
+            title: "child".into(),
+            status: Status::Open,
+            after: vec!["root".into()],
+            ..Task::default()
+        };
+        child.lifecycle.current_attempt = None;
+        let mut graph = WorkGraph::new();
+        graph.add_node(crate::graph::Node::Task(root));
+        graph.add_node(crate::graph::Node::Task(child));
+        let chains = stalled_chains(&graph);
+        assert_eq!(chains.len(), 1);
+        assert_eq!(chains[0].root_task_id, "root");
+        assert!(
+            chains[0].affected_downstream.is_empty(),
+            "the structural root↔child cycle is not itself downstream stall evidence"
+        );
+
+        let done = Task {
+            id: "done-child".into(),
+            title: "already satisfied".into(),
+            status: Status::Done,
+            after: vec!["root".into()],
+            ..Task::default()
+        };
+        graph.add_node(crate::graph::Node::Task(done));
+        assert!(stalled_chains(&graph)[0].affected_downstream.is_empty());
     }
 
     #[test]

@@ -410,6 +410,7 @@ pub fn operator_accept(dir: &Path, id: &str, reason: &str) -> Result<()> {
         });
         task.completion_receipt = Some(receipt_digest.clone());
         task.completion_blocker = None;
+        task.completion_repair = None;
         task.completed_at = Some(accepted_at.clone());
         task.last_interaction_at = Some(accepted_at.clone());
         task.assigned = None;
@@ -619,6 +620,7 @@ fn commit_done(
         task.completion_disposition = Some(disposition);
         task.completion_receipt = Some(receipt_digest.to_string());
         task.completion_blocker = None;
+        task.completion_repair = None;
         if accounting.usage.is_some() {
             task.token_usage.clone_from(&accounting.usage);
         }

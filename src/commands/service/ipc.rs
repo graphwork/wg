@@ -1195,15 +1195,34 @@ fn execute_worker_operation(
                 if converged || full_smoke {
                     anyhow::bail!("legacy Done handoff flags are not supported");
                 }
-                crate::commands::completion_done::run(dir, &binding.task_id, "refs/heads/main")?;
+                // Capability validation above authenticates the exact task,
+                // generation, attempt/fence, and retained worktree. Execute
+                // checks only there; the daemon CWD is never source authority.
+                crate::commands::done::run_smoke_gate(dir, &binding.task_id, false, false, true)?;
+                crate::commands::completion_finish::run_at(
+                    dir,
+                    &binding.task_id,
+                    "refs/heads/main",
+                    std::path::Path::new(&binding.worktree_path),
+                )?;
                 Ok(serde_json::json!({"handoff": "done", "derived": true}))
             }
-            WorkerOperation::FailHandoff { reason, class } => {
+            WorkerOperation::FailHandoff {
+                reason,
+                class,
+                intent,
+            } => {
                 let failure_class = class
                     .map(|value| serde_json::from_value(serde_json::Value::String(value)))
                     .transpose()
                     .context("worker_control.failure_class_invalid")?;
-                crate::commands::fail::run(dir, &binding.task_id, Some(&reason), failure_class)?;
+                crate::commands::fail::run_with_intent(
+                    dir,
+                    &binding.task_id,
+                    Some(&reason),
+                    failure_class,
+                    intent.as_deref(),
+                )?;
                 Ok(serde_json::json!({"handoff": "fail"}))
             }
             WorkerOperation::FinishHandoff { action } => {
@@ -2507,6 +2526,8 @@ fn handle_add_task_with_reasoning(
         completion_disposition: None,
         completion_receipt: None,
         completion_blocker: None,
+        completion_repair_policy: None,
+        completion_repair: None,
         tags: tags.to_vec(),
         skills: skills.to_vec(),
         inputs: vec![],
@@ -3683,7 +3704,7 @@ mod tests {
     }
 
     #[test]
-    fn done_handoff_requires_exact_review_and_creates_no_save_transaction() {
+    fn done_handoff_uses_exact_authorized_worktree_and_creates_no_save_transaction() {
         let project = TempDir::new().unwrap();
         let dir = project.path().join(".wg");
         write_owned_task(&dir, 1, 2);
@@ -3719,7 +3740,9 @@ mod tests {
             response
                 .error
                 .as_deref()
-                .is_some_and(|error| error.contains("missing completion candidate"))
+                .is_some_and(|error| error.contains("capture baseline git diff validation")),
+            "unexpected worker completion refusal: {:?}",
+            response.error
         );
         assert!(!dir.join("completion/v2/transactions").exists());
         let graph = load_graph(dir.join("graph.jsonl")).unwrap();

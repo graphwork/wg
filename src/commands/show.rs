@@ -46,6 +46,11 @@ struct TaskDetails {
     description: Option<String>,
     status: Status,
     completion_contract: CompletionContract,
+    completion_preflight: worksgood::completion_validation::CompletionPreflight,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    completion_repair: Option<worksgood::graph::CompletionRepairState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stalled_chain: Option<worksgood::completion_validation::StalledChain>,
     #[serde(skip_serializing_if = "Option::is_none")]
     completion_disposition: Option<CompletionDisposition>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -842,6 +847,12 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
             verified_review.invalid_count, task.id
         );
     }
+    let stalled_chain = worksgood::completion_validation::stalled_chains(&graph)
+        .into_iter()
+        .find(|chain| {
+            chain.root_task_id == task.id
+                || chain.affected_downstream.iter().any(|id| id == &task.id)
+        });
     let details = TaskDetails {
         id: task.id.clone(),
         title: task.title.clone(),
@@ -850,6 +861,9 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         description: task.description.clone(),
         status: task.status,
         completion_contract: task.completion_contract,
+        completion_preflight: worksgood::completion_validation::completion_preflight(task),
+        completion_repair: task.completion_repair.clone(),
+        stalled_chain,
         completion_disposition: task.completion_disposition,
         completion_receipt: task.completion_receipt.clone(),
         completion_candidate: task.completion_candidate.clone(),
@@ -981,6 +995,67 @@ fn print_human_readable(details: &TaskDetails) {
         println!("Status: {}", details.status);
     }
     println!("Completion contract: {}", details.completion_contract);
+    println!("Required deterministic completion checks (exact enforced order):");
+    for check in &details.completion_preflight.checks {
+        println!(
+            "  [{}] {} — {}",
+            check.purpose, check.command, check.provenance
+        );
+    }
+    println!(
+        "  evidence: {}",
+        details.completion_preflight.evidence_capture
+    );
+    println!(
+        "  repair boundary: {} — {} (budget={})",
+        details.completion_preflight.repair_boundary,
+        details.completion_preflight.boundary_explanation,
+        details.completion_preflight.deterministic_repair_budget
+    );
+    if let Some(repair) = details.completion_repair.as_ref() {
+        println!(
+            "Completion repair/{:?}: root={} exit={} feedback={}",
+            repair.disposition, repair.reason_code, repair.exit_category, repair.feedback_id
+        );
+        println!(
+            "  source binding: task={} generation={} attempt={} fence={} candidate={} validation={}",
+            repair.task_id,
+            repair.generation,
+            repair.attempt_id.as_deref().unwrap_or("none"),
+            repair.fence,
+            repair.candidate_identity,
+            repair.validation_identity
+        );
+        println!("  immutable evidence: {}", repair.evidence.content_digest);
+        println!(
+            "  diagnostic (untrusted, redacted): {}",
+            repair.diagnostic_excerpt
+        );
+        println!(
+            "  budget: {}/{}; actively repairing: {}",
+            repair.opportunities_used,
+            repair.opportunity_limit,
+            repair.disposition == worksgood::graph::CompletionRepairDisposition::Repairing
+                && details.assigned.is_some()
+                && details.status == Status::InProgress
+        );
+        println!("  next: {}", repair.safe_next);
+    }
+    if let Some(chain) = details.stalled_chain.as_ref() {
+        println!(
+            "ROOT BLOCKER: {} — {} (active repair={})",
+            chain.root_task_id, chain.root_blocker, chain.active_repair
+        );
+        println!(
+            "  affected downstream: {}",
+            if chain.affected_downstream.is_empty() {
+                "none".into()
+            } else {
+                chain.affected_downstream.join(", ")
+            }
+        );
+        println!("  one safe operator action: {}", chain.safe_operator_action);
+    }
     if let Some(candidate) = details.completion_candidate.as_ref() {
         println!("Completion manifest: {}", candidate.manifest.content_digest);
         println!(
@@ -2463,6 +2538,11 @@ mod tests {
             description: Some("Test description".to_string()),
             status: Status::InProgress,
             completion_contract: CompletionContract::Land,
+            completion_preflight: worksgood::completion_validation::completion_preflight(
+                &Task::default(),
+            ),
+            completion_repair: None,
+            stalled_chain: None,
             completion_disposition: None,
             completion_receipt: None,
             completion_candidate: None,

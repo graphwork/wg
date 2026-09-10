@@ -338,6 +338,8 @@ pub enum WorkerOperation {
     FailHandoff {
         reason: String,
         class: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        intent: Option<String>,
     },
     FinishHandoff {
         action: FinishHandoffAction,

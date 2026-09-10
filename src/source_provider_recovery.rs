@@ -377,6 +377,7 @@ pub fn goal_requirements_digest(task: &Task) -> String {
         "exec": task.exec,
         "timeout": task.timeout,
         "validation_commands": crate::completion_validation::configured_validation_commands(task),
+        "completion_repair_policy": task.completion_repair_policy,
     });
     format!(
         "b3:{}",

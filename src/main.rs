@@ -1419,9 +1419,20 @@ fn main() -> Result<()> {
             integration_ref,
         } => commands::completion_land::run(&workgraph_dir, &id, &integration_ref),
         Commands::LandingTurn { command } => commands::landing_turn::run(&workgraph_dir, command),
-        Commands::Contract { id, contract } => {
-            commands::finalize::set_contract(&workgraph_dir, &id, &contract)
-        }
+        Commands::Contract {
+            id,
+            contract,
+            repair_boundary,
+            deterministic_repair_budget,
+            add_validation_command,
+        } => commands::finalize::set_completion_contract_policy(
+            &workgraph_dir,
+            &id,
+            contract.as_deref(),
+            repair_boundary.as_deref(),
+            deterministic_repair_budget,
+            add_validation_command.as_deref(),
+        ),
         Commands::Finalize { command } => {
             if matches!(
                 &command,
@@ -1465,6 +1476,7 @@ fn main() -> Result<()> {
             id,
             reason,
             class,
+            intent,
             eval_reject,
         } => {
             if eval_reject {
@@ -1473,7 +1485,13 @@ fn main() -> Result<()> {
                 )
             } else {
                 let failure_class = class.as_deref().and_then(parse_failure_class);
-                commands::fail::run(&workgraph_dir, &id, reason.as_deref(), failure_class)
+                commands::fail::run_with_intent(
+                    &workgraph_dir,
+                    &id,
+                    reason.as_deref(),
+                    failure_class,
+                    intent.as_deref(),
+                )
             }
         }
         Commands::ClassifyFailure {

@@ -54,6 +54,10 @@ struct TaskRequirements<'a> {
     /// Omit the empty field so historical requirements bytes remain stable.
     #[serde(skip_serializing_if = "<[String]>::is_empty")]
     validation_commands: &'a [String],
+    /// Only explicit overrides serialize, preserving historical requirements
+    /// bytes for tasks using the documented default repair policy.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    completion_repair_policy: &'a Option<crate::graph::CompletionRepairPolicy>,
 }
 
 pub fn completion_contract(task: &Task) -> Result<CompletionContract, CompletionTaskError> {
@@ -81,6 +85,7 @@ pub fn task_requirements_bytes(task: &Task) -> Result<Vec<u8>, CompletionTaskErr
         inputs: &task.inputs,
         deliverables: &task.deliverables,
         validation_commands: &validation_commands,
+        completion_repair_policy: &task.completion_repair_policy,
     };
     let value = serde_json::to_value(requirements)
         .map_err(|error| CompletionTaskError::Serialize(error.to_string()))?;

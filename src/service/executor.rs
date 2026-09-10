@@ -949,6 +949,9 @@ If ANY dependency has status=Failed:
 /// Additional context for scope-based prompt assembly beyond TemplateVars.
 #[derive(Debug, Default, Clone)]
 pub struct ScopeContext {
+    /// Exact completion checks, provenance, evidence capture, and bounded
+    /// repair authority visible before the first LLM call.
+    pub completion_preflight_info: String,
     /// Effective graph-authority policy, visible before the first LLM call.
     pub worker_control_info: String,
     /// Downstream task IDs + titles (R1, task+ scope)
@@ -1024,6 +1027,12 @@ pub fn build_prompt(vars: &TemplateVars, scope: ContextScope, ctx: &ScopeContext
         "## Your Task\n- **ID:** {}\n- **Title:** {}\n- **Description:** {}",
         vars.task_id, vars.task_title, vars.task_description
     ));
+
+    // All scopes: exact completion authority is startup context, not a
+    // surprise after work has already been produced.
+    if !ctx.completion_preflight_info.is_empty() {
+        parts.push(ctx.completion_preflight_info.clone());
+    }
 
     // All scopes: authority is part of startup context, not a surprise after
     // an LLM has already attempted an impossible graph operation.
@@ -1957,6 +1966,8 @@ mod tests {
             completion_disposition: None,
             completion_receipt: None,
             completion_blocker: None,
+            completion_repair_policy: None,
+            completion_repair: None,
             tags: vec![],
             skills: vec![],
             inputs: vec![],

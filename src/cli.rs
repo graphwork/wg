@@ -617,8 +617,22 @@ pub enum Commands {
         command: crate::commands::landing_turn::LandingTurnCommand,
     },
 
-    /// Set the task's completion contract: land, report, or explore
-    Contract { id: String, contract: String },
+    /// Inspect/update the completion contract and bounded repair policy.
+    Contract {
+        id: String,
+        /// Optional completion publication contract: land, report, or explore.
+        contract: Option<String>,
+        /// Operator-approved repair boundary: task-only,
+        /// task-and-validation-fixtures, or repository.
+        #[arg(long, value_name = "BOUNDARY")]
+        repair_boundary: Option<String>,
+        /// Operator-approved total deterministic repair opportunities.
+        #[arg(long, value_name = "N")]
+        deterministic_repair_budget: Option<u32>,
+        /// Add one exact authoritative command while preserving existing gates.
+        #[arg(long, value_name = "COMMAND")]
+        add_validation_command: Option<String>,
+    },
 
     /// Historical task-owned finish transaction (non-authoritative)
     #[command(alias = "finish", hide = true)]
@@ -656,6 +670,13 @@ pub enum Commands {
         ///         agent-exit-nonzero, executor-config, wrapper-internal.
         #[arg(long, value_name = "CLASS")]
         class: Option<String>,
+
+        /// Source intent when deterministic completion repair evidence exists:
+        /// deliberate-stop, request-help, or request-contract-correction.
+        /// Without an intent, a repairable completion failure is preserved and
+        /// escalated rather than rewritten as terminal source failure.
+        #[arg(long, value_name = "INTENT")]
+        intent: Option<String>,
 
         /// Reject a done task via evaluation gate. Allows failing a task that
         /// is already Done because the evaluator determined the work is

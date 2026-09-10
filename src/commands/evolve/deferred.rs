@@ -110,6 +110,8 @@ pub(crate) fn defer_self_mutation(
         completion_disposition: None,
         completion_receipt: None,
         completion_blocker: None,
+        completion_repair_policy: None,
+        completion_repair: None,
         tags: vec!["evolution".to_string(), "agency".to_string()],
         skills: vec![],
         inputs: vec![],

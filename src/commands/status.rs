@@ -206,6 +206,9 @@ struct StatusOutput {
     /// Accepted immutable candidates waiting only on review/finalization.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     completion_waiting: Vec<CompletionWaitingTask>,
+    /// Cycle-safe, deduplicated root completion blockers and their full impact.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    stalled_chains: Vec<worksgood::completion_validation::StalledChain>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     source_provider_recovery: Vec<SourceProviderRecoveryInfo>,
     /// One explicit authority map for completion review, candidate review,
@@ -343,6 +346,10 @@ fn gather_status(dir: &Path, show_all: bool) -> Result<StatusOutput> {
                 .collect()
         })
         .unwrap_or_default();
+    let stalled_chains = status_graph
+        .as_ref()
+        .map(worksgood::completion_validation::stalled_chains)
+        .unwrap_or_default();
     let now = Utc::now();
     let source_provider_recovery = status_graph
         .as_ref()
@@ -410,6 +417,7 @@ fn gather_status(dir: &Path, show_all: bool) -> Result<StatusOutput> {
         verify_failing,
         waiting_for_owner_release,
         completion_waiting,
+        stalled_chains,
         source_provider_recovery,
         agency_authority: super::adaptive_agency::authority_map(),
         adaptive,
@@ -1367,6 +1375,25 @@ fn print_status(status: &StatusOutput) {
                 waiting.task_id, waiting.kind, waiting.reason, waiting.candidate
             );
             println!("    next: {}", waiting.safe_next);
+        }
+    }
+
+    if !status.stalled_chains.is_empty() {
+        println!("\nNeedsAttention — stalled dependency chains:");
+        for chain in &status.stalled_chains {
+            println!(
+                "  ROOT {} — {} (actively repairing: {})",
+                chain.root_task_id, chain.root_blocker, chain.active_repair
+            );
+            println!(
+                "    affected downstream: {}",
+                if chain.affected_downstream.is_empty() {
+                    "none".to_string()
+                } else {
+                    chain.affected_downstream.join(", ")
+                }
+            );
+            println!("    one safe action: {}", chain.safe_operator_action);
         }
     }
 

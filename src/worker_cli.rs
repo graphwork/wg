@@ -568,6 +568,7 @@ pub fn maybe_run(command: &Commands, json: bool) -> Result<Option<()>> {
             id,
             reason,
             class,
+            intent,
             eval_reject,
         } => {
             task_matches(id)?;
@@ -579,6 +580,7 @@ pub fn maybe_run(command: &Commands, json: bool) -> Result<Option<()>> {
                     .clone()
                     .unwrap_or_else(|| "Worker reported failure".to_string()),
                 class: class.clone(),
+                intent: intent.clone(),
             })
         }
         Commands::Finalize { .. } => {

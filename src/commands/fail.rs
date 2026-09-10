@@ -64,6 +64,35 @@ fn failure_signal_for_class(
 }
 
 pub fn run(dir: &Path, id: &str, reason: Option<&str>, class: Option<FailureClass>) -> Result<()> {
+    run_with_intent(dir, id, reason, class, None)
+}
+
+pub fn run_with_intent(
+    dir: &Path,
+    id: &str,
+    reason: Option<&str>,
+    class: Option<FailureClass>,
+    intent: Option<&str>,
+) -> Result<()> {
+    let intent = intent.map(str::trim);
+    if intent.is_some_and(|value| {
+        !matches!(
+            value,
+            "deliberate-stop" | "request-help" | "request-contract-correction"
+        )
+    }) {
+        anyhow::bail!(
+            "--intent must be deliberate-stop, request-help, or request-contract-correction"
+        );
+    }
+    let repairable_source_exit = matches!(class, None | Some(FailureClass::AgentExitNonzero));
+    if intent != Some("deliberate-stop")
+        && (intent.is_some() || repairable_source_exit)
+        && preserve_completion_repair(dir, id, reason, intent)?
+    {
+        return Ok(());
+    }
+
     // Pre-check with a non-atomic read (gate only — not used for mutation).
     // Retain the exact current attempt owner solely to locate that attempt's
     // output. A task-only registry lookup can select a stale prior agent.
@@ -512,6 +541,130 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>, class: Option<FailureClas
     }
 
     Ok(())
+}
+
+fn preserve_completion_repair(
+    dir: &Path,
+    id: &str,
+    reason: Option<&str>,
+    intent: Option<&str>,
+) -> Result<bool> {
+    let graph = worksgood::parser::load_graph(super::graph_path(dir))?;
+    let Some(task) = graph.get_task(id) else {
+        return Ok(false);
+    };
+    if task.completion_repair.is_none() {
+        if intent.is_some() {
+            anyhow::bail!(
+                "--intent {} requires an evidence-backed deterministic completion failure",
+                intent.unwrap_or_default()
+            );
+        }
+        return Ok(false);
+    }
+    if !matches!(task.status, Status::InProgress | Status::Waiting) {
+        return Ok(false);
+    }
+    let (reason_code, next) = match intent {
+        Some("request-help") => (
+            "scope-approval-required",
+            format!(
+                "operator: inspect evidence and approve exactly one boundary with `wg contract {id} --repair-boundary <task-only|task-and-validation-fixtures|repository>`; no gate is relaxed"
+            ),
+        ),
+        Some("request-contract-correction") => (
+            "contract-correction-required",
+            format!(
+                "operator: inspect the worker proposal, then add one approved exact check with `wg contract {id} --add-validation-command '<COMMAND>'`; existing checks are preserved and stale candidate binding is invalidated"
+            ),
+        ),
+        None => (
+            "source-exited-during-repair",
+            format!(
+                "operator: inspect retained work and evidence, then either continue the exact authorized session or make one explicit contract/scope decision with `wg contract {id}`"
+            ),
+        ),
+        Some("deliberate-stop") => return Ok(false),
+        Some(_) => unreachable!("intent validated"),
+    };
+    let proposal = reason
+        .map(worksgood::chat_runtime::redact_text)
+        .unwrap_or_else(|| "no proposal supplied".into());
+    let proposal: String = proposal.chars().take(2_048).collect();
+    let mut changed = false;
+    let mut parent = None;
+    let mut event_id = None;
+    let mut refusal = None;
+    modify_graph(super::graph_path(dir), |graph| {
+        let Some(task) = graph.get_task_mut(id) else {
+            refusal = Some("task disappeared while requesting completion help".to_string());
+            return false;
+        };
+        match worksgood::completion_validation::request_repair_attention(
+            task,
+            reason_code,
+            next.clone(),
+        ) {
+            Ok(was_changed) => changed = was_changed,
+            Err(error) => {
+                refusal = Some(error);
+                return false;
+            }
+        }
+        parent = task
+            .origin
+            .parent_task
+            .clone()
+            .filter(|parent| parent.starts_with(".chat-") || parent.starts_with(".user-"));
+        event_id = task
+            .completion_repair
+            .as_ref()
+            .and_then(|repair| repair.attention_event_id.clone());
+        if changed {
+            task.log.push(LogEntry {
+                timestamp: Utc::now().to_rfc3339(),
+                actor: task.assigned.clone(),
+                user: Some(worksgood::current_user()),
+                message: format!(
+                    "NeedsAttention event={} root={} proposal(untrusted, redacted)={} next={}",
+                    event_id.as_deref().unwrap_or("none"),
+                    reason_code,
+                    proposal,
+                    next
+                ),
+            });
+        }
+        changed
+    })?;
+    if let Some(error) = refusal {
+        anyhow::bail!(error);
+    }
+    if changed {
+        if let Some(parent) = parent {
+            let body = format!(
+                "Completion needs attention for `{id}` ({reason_code}). One safe action: {next}. Event: {}",
+                event_id.as_deref().unwrap_or("none")
+            );
+            if let Err(error) = worksgood::messages::send_message(
+                dir,
+                &parent,
+                &body,
+                "completion-repair",
+                "urgent",
+            ) {
+                eprintln!(
+                    "Warning: originating chat notification is unavailable; status/TUI retains event: {error:#}"
+                );
+            }
+        }
+        super::notify_graph_changed(dir);
+    }
+    println!(
+        "Task '{id}' retained as NeedsAttention; saved work and exact source authority were preserved."
+    );
+    println!("Root blocker: {reason_code}");
+    println!("Next: {next}");
+    Ok(true)
 }
 
 #[cfg(test)]

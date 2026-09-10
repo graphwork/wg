@@ -266,6 +266,8 @@ fn create_test_task() -> Task {
         completion_disposition: None,
         completion_receipt: None,
         completion_blocker: None,
+        completion_repair_policy: None,
+        completion_repair: None,
         tags: vec![],
         skills: vec![],
         inputs: vec![],

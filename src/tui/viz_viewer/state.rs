@@ -14331,10 +14331,71 @@ impl VizApp {
         // ── Worker-owned completion ──
         lines.push("── Completion ──".to_string());
         lines.push(format!("  Contract: {}", task.completion_contract));
+        let completion_preflight = worksgood::completion_validation::completion_preflight(&task);
+        lines.push("  Required deterministic checks:".to_string());
+        for check in &completion_preflight.checks {
+            lines.push(format!(
+                "    [{}] {} — {}",
+                check.purpose, check.command, check.provenance
+            ));
+        }
+        lines.push(format!(
+            "  Repair boundary: {} (budget={})",
+            completion_preflight.repair_boundary, completion_preflight.deterministic_repair_budget
+        ));
         lines.push(format!(
             "  Worker:   {}",
             task.assigned.as_deref().unwrap_or("unassigned")
         ));
+        if let Some(repair) = task.completion_repair.as_ref() {
+            lines.push(format!(
+                "  Repair/{:?}: ROOT {} ({})",
+                repair.disposition, repair.reason_code, repair.exit_category
+            ));
+            lines.push(format!(
+                "    evidence={} candidate={} validation={}",
+                repair.evidence.content_digest,
+                repair.candidate_identity,
+                repair.validation_identity
+            ));
+            lines.push(format!(
+                "    budget={}/{} active={}",
+                repair.opportunities_used,
+                repair.opportunity_limit,
+                repair.disposition == worksgood::graph::CompletionRepairDisposition::Repairing
+                    && task.assigned.is_some()
+                    && task.status == Status::InProgress
+            ));
+            lines.push(format!(
+                "    diagnostic (untrusted, redacted): {}",
+                repair.diagnostic_excerpt
+            ));
+            lines.push(format!("    next: {}", repair.safe_next));
+        }
+        if let Some(chain) = worksgood::completion_validation::stalled_chains(&graph)
+            .into_iter()
+            .find(|chain| {
+                chain.root_task_id == task.id
+                    || chain.affected_downstream.iter().any(|id| id == &task.id)
+            })
+        {
+            lines.push(format!(
+                "  ROOT BLOCKER: {} — {}",
+                chain.root_task_id, chain.root_blocker
+            ));
+            lines.push(format!(
+                "    affected downstream: {}",
+                if chain.affected_downstream.is_empty() {
+                    "none".into()
+                } else {
+                    chain.affected_downstream.join(", ")
+                }
+            ));
+            lines.push(format!(
+                "    one safe action: {}",
+                chain.safe_operator_action
+            ));
+        }
         let mut unsatisfied = Vec::new();
         if let Some(candidate) = task.completion_candidate.as_ref() {
             lines.push(format!("  Manifest: {}", candidate.manifest.content_digest));

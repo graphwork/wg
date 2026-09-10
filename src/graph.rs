@@ -401,6 +401,94 @@ pub enum CompletionDisposition {
     Explored,
 }
 
+/// Files a worker may change after a required deterministic completion check
+/// fails. The default deliberately covers task work plus tests/fixtures named
+/// by the unchanged gate, but not unrelated production behavior.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CompletionRepairBoundary {
+    TaskOnly,
+    #[default]
+    TaskAndValidationFixtures,
+    Repository,
+}
+
+impl std::fmt::Display for CompletionRepairBoundary {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::TaskOnly => "task-only",
+            Self::TaskAndValidationFixtures => "task-and-validation-fixtures",
+            Self::Repository => "repository",
+        })
+    }
+}
+
+/// Optional operator override to the completion repair defaults. Absence keeps
+/// historical task-requirements bytes stable while resolving to the documented
+/// two-opportunity/default-boundary policy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompletionRepairPolicy {
+    #[serde(default)]
+    pub boundary: CompletionRepairBoundary,
+    #[serde(default = "default_deterministic_repair_budget")]
+    pub deterministic_repair_budget: u32,
+}
+
+pub const DEFAULT_DETERMINISTIC_REPAIR_BUDGET: u32 = 2;
+
+fn default_deterministic_repair_budget() -> u32 {
+    DEFAULT_DETERMINISTIC_REPAIR_BUDGET
+}
+
+impl Default for CompletionRepairPolicy {
+    fn default() -> Self {
+        Self {
+            boundary: CompletionRepairBoundary::default(),
+            deterministic_repair_budget: DEFAULT_DETERMINISTIC_REPAIR_BUDGET,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CompletionRepairDisposition {
+    Repairing,
+    NeedsAttention,
+    Resolved,
+}
+
+/// Durable projection of immutable deterministic-validation failures. It is
+/// bound to source/candidate/check identity and carries no scheduling or
+/// completion authority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompletionRepairState {
+    pub version: u32,
+    pub disposition: CompletionRepairDisposition,
+    pub task_id: String,
+    pub generation: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt_id: Option<String>,
+    pub fence: u64,
+    pub requirements_digest: crate::completion_manifest::ContentDigest,
+    pub validation_identity: crate::completion_manifest::ContentDigest,
+    pub candidate_identity: crate::completion_manifest::ContentDigest,
+    pub evidence: crate::completion_manifest::EvidenceRef,
+    pub command: String,
+    pub exit_category: String,
+    /// Redacted, bounded, explicitly untrusted diagnostic text.
+    pub diagnostic_excerpt: String,
+    pub opportunities_used: u32,
+    pub opportunity_limit: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failed_candidates: Vec<crate::completion_manifest::ContentDigest>,
+    pub reason_code: String,
+    pub safe_next: String,
+    pub feedback_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attention_event_id: Option<String>,
+    pub updated_at: String,
+}
+
 /// A non-semantic blocker encountered after an immutable completion candidate
 /// has been selected. These states release the source worker without
 /// classifying its work as failed.
@@ -865,6 +953,13 @@ pub struct Task {
     /// completion or authoritative candidate replacement.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completion_blocker: Option<CompletionBlocker>,
+    /// Optional operator override for bounded deterministic completion repair.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion_repair_policy: Option<CompletionRepairPolicy>,
+    /// Latest repair/help projection. Immutable evidence objects named here
+    /// remain retained when the projection advances or the task completes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion_repair: Option<CompletionRepairState>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
     /// Required skills/capabilities for this task
@@ -1207,6 +1302,8 @@ impl Default for Task {
             completion_disposition: None,
             completion_receipt: None,
             completion_blocker: None,
+            completion_repair_policy: None,
+            completion_repair: None,
             tags: vec![],
             skills: vec![],
             inputs: vec![],
@@ -2361,6 +2458,10 @@ struct TaskHelper {
     #[serde(default)]
     completion_blocker: Option<CompletionBlocker>,
     #[serde(default)]
+    completion_repair_policy: Option<CompletionRepairPolicy>,
+    #[serde(default)]
+    completion_repair: Option<CompletionRepairState>,
+    #[serde(default)]
     tags: Vec<String>,
     #[serde(default)]
     skills: Vec<String>,
@@ -2584,6 +2685,8 @@ impl<'de> Deserialize<'de> for Task {
             completion_disposition: helper.completion_disposition,
             completion_receipt: helper.completion_receipt,
             completion_blocker: helper.completion_blocker,
+            completion_repair_policy: helper.completion_repair_policy,
+            completion_repair: helper.completion_repair,
             tags: helper.tags,
             skills: helper.skills,
             inputs: helper.inputs,

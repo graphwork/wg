@@ -1526,7 +1526,7 @@ fn check_agent_git_hygiene(dir: &Path, task_id: &str, tags: &[String]) {
 /// `--skip-smoke` skips the gate entirely; agents are refused the escape
 /// hatch unless `WG_SMOKE_AGENT_OVERRIDE=1` is also set in the environment.
 /// `--full-smoke` runs every scenario in the manifest, ignoring ownership.
-fn run_smoke_gate(
+pub(crate) fn run_smoke_gate(
     dir: &Path,
     id: &str,
     full_smoke: bool,

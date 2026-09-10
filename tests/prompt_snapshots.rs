@@ -93,6 +93,7 @@ fn test_template_vars() -> TemplateVars {
 
 fn test_scope_context() -> ScopeContext {
     ScopeContext {
+        completion_preflight_info: "## Completion Preflight\n\n- Run configured validation exactly as listed.".into(),
         worker_control_info: "## Worker Control\n\n- **Effective mode:** `trusted`\n- **Restrictions:** normal local graph coordination is allowed".into(),
         downstream_info: "\n## Downstream Consumers\n\nTasks that depend on your work:\n- **verify-widgets**: \"Verify widget factory output\"".into(),
         tags_skills_info: "\n## Tags & Skills\n- Tags: implementation, rust\n- Skills: rust, testing".into(),
