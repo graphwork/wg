@@ -72,8 +72,10 @@ future commit:
 - Post-spawn root PID/start/group/session diagnostics are append-only. An
   interruption while enriching diagnostics cannot truncate the pre-spawn run-id
   authority used by exact-marker cleanup.
-- Registration is published only while both exact run markers and a complete
-  immutable PID/start identity are readable. Shell and Rust cleanup union the
+- `start_owned_process` creates a session leader that stops before exec and is
+  resumed only after registration is durable; short-lived wrappers cannot race
+  ahead of registration. Registration is published only while both exact run
+  markers and a complete immutable PID/start identity are readable. Shell and Rust cleanup union the
   live marker scan with those registrations, revalidate start ticks immediately
   before signaling, and therefore retain exact cleanup authority if a daemon or
   wrapper later sanitizes its environment. Shell cleanup waits a bounded interval
@@ -105,7 +107,9 @@ Focused regressions `ownership_authority_is_durable_before_any_scenario_spawn`,
 `procfs_scan_failure_is_not_an_empty_ownership_set`, and
 `registered_identity_survives_environment_sanitization`, plus the
 real-entry-point process ownership scenario (including its environment-sanitized
-child), pass. The final expanded
+child), pass. The outer regression explicitly forwards the Rust harness identity
+and asserts that all five expected descendant roles actually launched before it
+accepts cleanup success. The final expanded
 broad/lint result is intentionally supplied by the host-bound completion
 manifest for the settled candidate rather than asserted self-referentially here.
 

@@ -67,8 +67,9 @@ The Rust harness and `_helpers.sh` enforce one ownership contract:
 * **Always use `start_wg_daemon`** — never `wg service start &; daemon_pid=$!`.
   The helper records both the start wrapper and the canonical daemon PID from
   `service/state.json`. For other background fixtures use
-  `start_owned_process <role> <log> <command...>`; it creates and records a
-  separate session.
+  `start_owned_process <role> <log> <command...>`; it creates a separate
+  session whose leader stops before exec, publishes the exact registration,
+  and resumes only after that durable authority exists.
 * **Never install your own `EXIT`/`ERR`/`INT`/`TERM` trap.** `_helpers.sh` owns
   those paths and tears down the entire exact ownership set. If you need extra
   cleanup (for example a tmux session), register it with `add_cleanup_hook`.

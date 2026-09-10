@@ -87,8 +87,9 @@ chmod +x "$case_root/observer"
 
 cat >"$case_root/sanitized" <<'SH'
 #!/usr/bin/env bash
-# Stop while start_owned_process publishes PID/start registration, then erase
+# Stop after start_owned_process publishes PID/start registration, then erase
 # both ownership markers. Cleanup must retain authority through registration.
+printf '%s\n' "$$" >"$OWNED_CWD/sanitized.ready"
 kill -STOP "$$"
 exec env -i OWNED_CWD="$OWNED_CWD" OWNED_PIDS="$OWNED_PIDS" bash -c '
     trap "" TERM INT
@@ -132,6 +133,11 @@ start_owned_process fake-pi "$owned/fake-pi-launch.log" "$case_dir/../fake-pi" >
 start_owned_process observer "$owned/observer.log" "$case_dir/../observer" >/dev/null
 start_owned_process sanitized "$owned/sanitized.log" "$case_dir/../sanitized" >"$case_dir/sanitized.pid"
 sanitized_pid=$(<"$case_dir/sanitized.pid")
+for _ in $(seq 1 100); do
+    [[ -f "$owned/sanitized.ready" ]] && break
+    sleep 0.01
+done
+[[ -f "$owned/sanitized.ready" ]]
 kill -CONT "$sanitized_pid"
 start_owned_process supervised-daemon "$owned/supervisor.log" "$case_dir/../supervisor" >/dev/null
 for _ in $(seq 1 100); do
@@ -184,7 +190,13 @@ run_id=$token
 scenario=smoke-process-ownership-$mode
 supervisor_pid=$BASHPID
 EOF
+        # Keep the outer Rust harness's immutable adoption proof explicit while
+        # replacing only the nested case's local run token. This is intentionally
+        # not an ad-hoc/direct helper entry.
         args=(env WG_SMOKE_RUN_ID="$token" WG_SMOKE_SCENARIO="smoke-process-ownership-$mode" \
+            WG_SMOKE_HARNESS_RUN_ID="$WG_SMOKE_HARNESS_RUN_ID" \
+            WG_SMOKE_SUBREAPER_TOKEN="$WG_SMOKE_SUBREAPER_TOKEN" \
+            WG_SMOKE_HARNESS_SEEN_FILE="$WG_SMOKE_HARNESS_SEEN_FILE" \
             WG_SMOKE_ROOT="$root" WG_SMOKE_OWNER_FILE="$owner_dir/owner.env" \
             WG_SMOKE_CLEANUP_DIAGNOSTICS="$owner_dir/cleanup-diagnostics.log" \
             WG_SMOKE_HARNESS_OWNED=0 bash "$case_root/inner-case" "$HERE/_helpers.sh" "$run_dir" "$mode")
@@ -201,8 +213,15 @@ EOF
             find "$root" -mindepth 1 -maxdepth 1 ! -name '.owners' -exec rm -rf {} +
             rm -rf "$owner_dir"
         else
-            "${args[@]}" >/dev/null 2>&1 || true
+            if ! "${args[@]}" >"$run_dir/inner.stdout" 2>"$run_dir/inner.stderr"; then
+                cat "$run_dir/inner.stderr" >&2
+            fi
         fi
+        [[ -f "$run_dir/pids" ]] \
+            || loud_fail "$mode nested ownership fixture never reached process launch"
+        launched_count=$(wc -l <"$run_dir/pids")
+        [[ "$launched_count" -ge 5 ]] \
+            || loud_fail "$mode nested ownership fixture launched only $launched_count of 5 required descendants"
         assert_run_gone "$token" "$run_dir/pids" "$mode"
         # This outer orchestrator created the nested owner record, so it owns
         # record deletion after the exact process-empty assertion.

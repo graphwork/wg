@@ -321,15 +321,36 @@ register_owned_pid() {
 #   start_owned_process <role> <log-file> <command> [args...]
 # The PID is returned in WG_SMOKE_OWNED_PID and printed for subshell callers.
 start_owned_process() {
-    local role="$1" log="$2"; shift 2
+    local role="$1" log="$2" identity="" ready=0 i; shift 2
     mkdir -p "$(dirname "$log")"
-    if command -v setsid >/dev/null 2>&1; then
-        setsid "$@" >>"$log" 2>&1 &
-    else
-        "$@" >>"$log" 2>&1 &
-    fi
+    command -v setsid >/dev/null 2>&1 \
+        || loud_fail "cannot launch $role without setsid ownership boundary"
+    # The new session leader stops before exec so PID/start registration is
+    # durably published while both exact environment markers are guaranteed
+    # readable. This closes the short-lived-wrapper race.
+    setsid bash -c 'kill -STOP "$$"; exec "$@"' _ "$@" >>"$log" 2>&1 &
     WG_SMOKE_OWNED_PID=$!
+    for i in $(seq 1 100); do
+        identity=$(_wg_smoke_proc_identity "$WG_SMOKE_OWNED_PID" 2>/dev/null || true)
+        if [[ -n "$identity" ]]; then
+            # identity is ppid pgid sid start state.
+            # shellcheck disable=SC2086
+            set -- $identity
+            if [[ "$5" == T ]]; then
+                ready=1
+                break
+            fi
+        fi
+        sleep 0.01
+    done
+    if [[ "$ready" != 1 ]]; then
+        kill -KILL "$WG_SMOKE_OWNED_PID" 2>/dev/null || true
+        wait "$WG_SMOKE_OWNED_PID" 2>/dev/null || true
+        loud_fail "cannot establish pre-exec registration boundary for $role pid $WG_SMOKE_OWNED_PID"
+    fi
     register_owned_pid "$WG_SMOKE_OWNED_PID" "$role"
+    kill -CONT "$WG_SMOKE_OWNED_PID" \
+        || loud_fail "cannot resume registered $role pid $WG_SMOKE_OWNED_PID"
     printf '%s\n' "$WG_SMOKE_OWNED_PID"
 }
 
