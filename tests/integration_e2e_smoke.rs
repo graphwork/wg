@@ -5,10 +5,12 @@
 
 #[path = "common/add_publish.rs"]
 mod add_publish;
+#[path = "common/isolated_cli.rs"]
+mod isolated_cli;
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use tempfile::TempDir;
 use worksgood::graph::Status;
 use worksgood::parser::load_graph;
@@ -33,7 +35,9 @@ fn wg_binary() -> PathBuf {
 }
 
 fn wg_cmd(wg_dir: &Path, args: &[&str]) -> std::process::Output {
-    Command::new(wg_binary())
+    let mut command = isolated_cli::command(&wg_binary(), wg_dir.parent().unwrap_or(wg_dir));
+    isolated_cli::assert_worker_authority_is_absent(&command);
+    command
         .arg("--dir")
         .arg(wg_dir)
         .args(args)
@@ -59,6 +63,19 @@ fn wg_ok(wg_dir: &Path, args: &[&str]) -> String {
         stderr
     );
     stdout
+}
+
+fn complete_fixture_task(wg_dir: &Path, task_id: &str) {
+    wg_ok(
+        wg_dir,
+        &[
+            "done",
+            task_id,
+            "--operator-accept",
+            "--reason",
+            "disposable integration fixture completion",
+        ],
+    );
 }
 
 fn disable_agency(wg_dir: &Path) {
@@ -224,8 +241,8 @@ fn smoke_test_full_lifecycle() {
         task.artifacts
     );
 
-    // ── 12. wg done test-task ───────────────────────────────────────────
-    wg_ok(&wg_dir, &["done", "test-task"]);
+    // ── 12. Complete through the supported reasoned recovery valve ──────
+    complete_fixture_task(&wg_dir, "test-task");
 
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     let task = graph.get_task("test-task").unwrap();
@@ -313,7 +330,7 @@ fn smoke_test_dependency_chain() {
 
     // Complete parent
     wg_ok(&wg_dir, &["claim", "parent"]);
-    wg_ok(&wg_dir, &["done", "parent"]);
+    complete_fixture_task(&wg_dir, "parent");
 
     // Child should now be ready
     let output = wg_ok(&wg_dir, &["ready"]);
@@ -325,7 +342,7 @@ fn smoke_test_dependency_chain() {
 
     // Complete the child
     wg_ok(&wg_dir, &["claim", "child"]);
-    wg_ok(&wg_dir, &["done", "child"]);
+    complete_fixture_task(&wg_dir, "child");
 
     // Check should pass
     let output = wg_cmd(&wg_dir, &["check"]);
@@ -375,7 +392,7 @@ fn smoke_test_fail_retry_lifecycle() {
 
     // Claim again and succeed
     wg_ok(&wg_dir, &["claim", "flaky"]);
-    wg_ok(&wg_dir, &["done", "flaky"]);
+    complete_fixture_task(&wg_dir, "flaky");
 
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     assert_eq!(graph.get_task("flaky").unwrap().status, Status::Done);

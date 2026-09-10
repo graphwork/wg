@@ -6,9 +6,12 @@
 //! running agent message delivery, edge cases, coordinator integration,
 //! and the full end-to-end smoke flow.
 
+#[path = "common/isolated_cli.rs"]
+mod isolated_cli;
+
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use tempfile::TempDir;
 use worksgood::graph::Status;
 use worksgood::messages;
@@ -34,7 +37,9 @@ fn wg_binary() -> PathBuf {
 }
 
 fn wg_cmd(wg_dir: &Path, args: &[&str]) -> std::process::Output {
-    Command::new(wg_binary())
+    let mut command = isolated_cli::command(&wg_binary(), wg_dir.parent().unwrap_or(wg_dir));
+    isolated_cli::assert_worker_authority_is_absent(&command);
+    command
         .arg("--dir")
         .arg(wg_dir)
         .args(args)
@@ -57,6 +62,19 @@ fn wg_ok(wg_dir: &Path, args: &[&str]) -> String {
         stderr
     );
     stdout
+}
+
+fn complete_fixture_task(wg_dir: &Path, task_id: &str) {
+    wg_ok(
+        wg_dir,
+        &[
+            "done",
+            task_id,
+            "--operator-accept",
+            "--reason",
+            "disposable messaging integration fixture completion",
+        ],
+    );
 }
 
 fn wg_fail(wg_dir: &Path, args: &[&str]) -> String {
@@ -720,7 +738,7 @@ fn edge_message_to_completed_task() {
     let (_tmp, wg_dir) = init_wg();
     wg_ok(&wg_dir, &["add", "Complete me", "--id", "done-task"]);
     wg_ok(&wg_dir, &["claim", "done-task"]);
-    wg_ok(&wg_dir, &["done", "done-task"]);
+    complete_fixture_task(&wg_dir, "done-task");
 
     // Verify task is done
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
@@ -1087,8 +1105,8 @@ fn smoke_test_messaging_lifecycle() {
     let read2 = messages::read_unread(&wg_dir, "e2e-msg", "e2e-agent").unwrap();
     assert!(read2.is_empty());
 
-    // Step 10: Complete the task
-    wg_ok(&wg_dir, &["done", "e2e-msg"]);
+    // Step 10: Complete through the supported reasoned recovery valve.
+    complete_fixture_task(&wg_dir, "e2e-msg");
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     assert_eq!(graph.get_task("e2e-msg").unwrap().status, Status::Done);
 

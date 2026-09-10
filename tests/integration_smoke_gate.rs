@@ -1,22 +1,23 @@
-//! Smoke gate integration tests
+//! Smoke harness and current completion-lifecycle integration tests.
 //!
-//! These exercise `wg done` end-to-end via the real `wg` binary, with a
-//! synthetic smoke manifest pointing at scripts that pass / fail / skip.
-//! They lock in the rule:
-//!
-//!   * a task cannot be marked done while it owns a failing smoke scenario
-//!   * a task IS marked done when every owned scenario passes (or skips loud)
-//!
-//! We deliberately avoid touching the real `tests/smoke/manifest.toml` so the
-//! tests pass in any environment.
+//! The smoke harness owns process execution and reports pass/fail/skip.  Task
+//! completion is publication-derived; the retired direct-`done` smoke/bypass
+//! flags are deliberately rejected.  These tests therefore exercise the real
+//! harness for positive and negative gate outcomes, and separately exercise
+//! the current reasoned operator-recovery completion valve through the real
+//! `wg` binary.
+
+#[path = "common/isolated_cli.rs"]
+mod isolated_cli;
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use tempfile::TempDir;
 use worksgood::graph::Status;
 use worksgood::parser::load_graph;
+use worksgood::smoke::{GateReport, Manifest, run_scenarios};
 
 fn wg_binary() -> PathBuf {
     let mut path = std::env::current_exe().expect("current exe path");
@@ -34,68 +35,63 @@ fn wg_binary() -> PathBuf {
 }
 
 fn wg_cmd_with_env(wg_dir: &Path, args: &[&str], env: &[(&str, &str)]) -> std::process::Output {
-    let mut cmd = Command::new(wg_binary());
+    let fixture_root = wg_dir.parent().unwrap_or(wg_dir);
+    let mut cmd = isolated_cli::command(&wg_binary(), fixture_root);
+    isolated_cli::assert_worker_authority_is_absent(&cmd);
     cmd.arg("--dir").arg(wg_dir).args(args);
-    // Make sure no ambient WG_AGENT_ID leaks in (parent test runner may have
-    // set it). Tests opt into agent context explicitly via env.
-    cmd.env_remove("WG_AGENT_ID");
-    cmd.env_remove("WG_SMOKE_AGENT_OVERRIDE");
-    cmd.env_remove("WG_SMOKE_MANIFEST");
-    // Also strip any inherited worktree context — when this suite runs from
-    // inside an agent's worktree, WG_WORKTREE_PATH/BRANCH/PROJECT_ROOT point
-    // at the *agent's* worktree, and `wg done`'s worktree-merge codepath
-    // would look at that worktree's git status (not the temp-dir fixture).
-    cmd.env_remove("WG_WORKTREE_PATH");
-    cmd.env_remove("WG_BRANCH");
-    cmd.env_remove("WG_PROJECT_ROOT");
-    cmd.env_remove("WG_WORKTREE_ACTIVE");
-    cmd.env_remove("WG_TASK_ID");
-    for (k, v) in env {
-        cmd.env(k, v);
+    for (key, value) in env {
+        cmd.env(key, value);
     }
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
-        .unwrap_or_else(|e| panic!("Failed to run wg {:?}: {}", args, e))
+        .unwrap_or_else(|error| panic!("Failed to run wg {args:?}: {error}"))
 }
 
 fn write_executable(path: &Path, body: &str) {
     fs::write(path, body).expect("write script");
-    let mut perm = fs::metadata(path).unwrap().permissions();
-    perm.set_mode(0o755);
-    fs::set_permissions(path, perm).expect("chmod script");
+    let mut permissions = fs::metadata(path).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(path, permissions).expect("chmod script");
 }
 
-fn make_pass_script(dir: &Path, name: &str) -> PathBuf {
-    let p = dir.join(name);
-    write_executable(&p, "#!/usr/bin/env bash\nexit 0\n");
-    p
+fn make_pass_script(dir: &Path, name: &str) {
+    write_executable(&dir.join(name), "#!/usr/bin/env bash\nexit 0\n");
 }
 
-fn make_fail_script(dir: &Path, name: &str, msg: &str) -> PathBuf {
-    let p = dir.join(name);
-    let body = format!(
-        "#!/usr/bin/env bash\necho '{}' 1>&2\nexit 7\n",
-        msg.replace('\'', "'\\''")
+fn make_fail_script(dir: &Path, name: &str, message: &str) {
+    write_executable(
+        &dir.join(name),
+        &format!(
+            "#!/usr/bin/env bash\necho '{}' >&2\nexit 7\n",
+            message.replace('\'', "'\\''")
+        ),
     );
-    write_executable(&p, &body);
-    p
 }
 
-fn make_skip_script(dir: &Path, name: &str, reason: &str) -> PathBuf {
-    let p = dir.join(name);
-    let body = format!(
-        "#!/usr/bin/env bash\necho '{}' 1>&2\nexit 77\n",
-        reason.replace('\'', "'\\''")
+fn make_skip_script(dir: &Path, name: &str, reason: &str) {
+    write_executable(
+        &dir.join(name),
+        &format!(
+            "#!/usr/bin/env bash\necho '{}' >&2\nexit 77\n",
+            reason.replace('\'', "'\\''")
+        ),
     );
-    write_executable(&p, &body);
-    p
+}
+
+fn run_manifest(path: &Path, owner: Option<&str>) -> GateReport {
+    let manifest = Manifest::load_from(path).expect("load synthetic manifest");
+    let scenarios: Vec<_> = match owner {
+        Some(task_id) => manifest.scenarios_for_task(task_id),
+        None => manifest.scenarios.iter().collect(),
+    };
+    run_scenarios(&scenarios, path.parent().unwrap())
 }
 
 fn init_with_task(tmp: &Path, task_id: &str) -> PathBuf {
     let wg_dir = tmp.join(".wg");
-    let init = wg_cmd_with_env(&wg_dir, &["init", "--executor", "shell"], &[]);
+    let init = wg_cmd_with_env(&wg_dir, &["init", "--route", "pi"], &[]);
     assert!(
         init.status.success(),
         "wg init failed: {}",
@@ -106,11 +102,11 @@ fn init_with_task(tmp: &Path, task_id: &str) -> PathBuf {
         "[agency]\nauto_assign = false\nauto_evaluate = false\nflip_enabled = false\n",
     )
     .unwrap();
-    let claim_id = wg_cmd_with_env(&wg_dir, &["add", "Task under test", "--id", task_id], &[]);
+    let add = wg_cmd_with_env(&wg_dir, &["add", "Task under test", "--id", task_id], &[]);
     assert!(
-        claim_id.status.success(),
+        add.status.success(),
         "wg add failed: {}",
-        String::from_utf8_lossy(&claim_id.stderr)
+        String::from_utf8_lossy(&add.stderr)
     );
     let publish = wg_cmd_with_env(&wg_dir, &["publish", task_id, "--only"], &[]);
     assert!(
@@ -128,316 +124,167 @@ fn init_with_task(tmp: &Path, task_id: &str) -> PathBuf {
 }
 
 #[test]
-fn test_done_blocks_when_smoke_scenario_fails() {
+fn test_smoke_harness_blocks_when_owned_scenario_fails() {
     let tmp = TempDir::new().unwrap();
-    let task_id = "fence-task";
-    let wg_dir = init_with_task(tmp.path(), task_id);
-
-    // Set up manifest with a scenario owned by our task that always FAILS.
-    let manifest_dir = tmp.path().join("smoke");
-    fs::create_dir_all(&manifest_dir).unwrap();
-    make_fail_script(
-        &manifest_dir,
-        "always_fails.sh",
-        "intentional smoke failure",
-    );
-    let manifest_path = manifest_dir.join("manifest.toml");
+    make_fail_script(tmp.path(), "always_fails.sh", "intentional smoke failure");
+    let manifest_path = tmp.path().join("manifest.toml");
     fs::write(
         &manifest_path,
-        format!(
-            r#"
+        r#"
 [[scenario]]
 name = "always_fails"
 script = "always_fails.sh"
-owners = ["{}"]
-description = "Test scenario that intentionally fails"
+owners = ["fence-task"]
 timeout_seconds = 10
 "#,
-            task_id
-        ),
     )
     .unwrap();
 
-    let out = wg_cmd_with_env(
-        &wg_dir,
-        &["done", task_id],
-        &[("WG_SMOKE_MANIFEST", manifest_path.to_str().unwrap())],
-    );
+    let report = run_manifest(&manifest_path, Some("fence-task"));
     assert!(
-        !out.status.success(),
-        "wg done should refuse when smoke scenario fails. stdout={} stderr={}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
+        report.blocks_done(),
+        "a failing scenario must block the gate"
     );
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("Smoke gate refused"),
-        "stderr should mention 'Smoke gate refused', got: {}",
-        stderr
-    );
-    assert!(
-        stderr.contains("always_fails"),
-        "stderr should name the broken scenario, got: {}",
-        stderr
-    );
-
-    // Task must remain in-progress, not done.
-    let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
-    let task = graph.get_task(task_id).unwrap();
-    assert_eq!(
-        task.status,
-        Status::InProgress,
-        "task should remain in-progress when smoke gate refuses"
-    );
+    assert_eq!(report.failures().len(), 1);
+    let rendered = report.render();
+    assert!(rendered.contains("always_fails"));
+    assert!(rendered.contains("intentional smoke failure"));
 }
 
 #[test]
-fn test_done_succeeds_when_all_owned_scenarios_pass() {
+fn test_smoke_harness_accepts_pass_and_loud_skip_for_owner_only() {
     let tmp = TempDir::new().unwrap();
-    let task_id = "happy-task";
-    let wg_dir = init_with_task(tmp.path(), task_id);
-
-    let manifest_dir = tmp.path().join("smoke");
-    fs::create_dir_all(&manifest_dir).unwrap();
-    make_pass_script(&manifest_dir, "ok.sh");
-    make_skip_script(&manifest_dir, "skipme.sh", "endpoint unreachable");
-    // A failing scenario owned by ANOTHER task — must NOT be run for happy-task.
-    make_fail_script(&manifest_dir, "other_fail.sh", "should not run");
-    let manifest_path = manifest_dir.join("manifest.toml");
+    make_pass_script(tmp.path(), "ok.sh");
+    make_skip_script(tmp.path(), "skipme.sh", "endpoint unreachable");
+    make_fail_script(tmp.path(), "other_fail.sh", "must not run");
+    let manifest_path = tmp.path().join("manifest.toml");
     fs::write(
         &manifest_path,
-        format!(
-            r#"
+        r#"
 [[scenario]]
 name = "happy_pass"
 script = "ok.sh"
-owners = ["{task_id}"]
+owners = ["happy-task"]
 
 [[scenario]]
 name = "happy_skip"
 script = "skipme.sh"
-owners = ["{task_id}"]
+owners = ["happy-task"]
 
 [[scenario]]
 name = "other_owner_fail"
 script = "other_fail.sh"
 owners = ["some-other-task"]
 "#,
-            task_id = task_id
-        ),
     )
     .unwrap();
 
-    let out = wg_cmd_with_env(
-        &wg_dir,
-        &["done", task_id],
-        &[("WG_SMOKE_MANIFEST", manifest_path.to_str().unwrap())],
-    );
-    assert!(
-        out.status.success(),
-        "wg done should succeed when owned scenarios pass/skip. stdout={} stderr={}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("happy_pass"),
-        "stderr should record running 'happy_pass', got: {}",
-        stderr
-    );
-    assert!(
-        !stderr.contains("other_owner_fail"),
-        "stderr must NOT mention non-owned scenario 'other_owner_fail', got: {}",
-        stderr
-    );
-
-    let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
-    let task = graph.get_task(task_id).unwrap();
-    assert_eq!(task.status, Status::Done, "task should be marked done");
+    let report = run_manifest(&manifest_path, Some("happy-task"));
+    assert!(!report.blocks_done(), "pass plus loud skip must not block");
+    assert_eq!(report.passes().len(), 1);
+    assert_eq!(report.skips().len(), 1);
+    assert!(!report.render().contains("other_owner_fail"));
 }
 
 #[test]
-fn test_full_smoke_runs_every_scenario_regardless_of_ownership() {
+fn test_full_smoke_harness_surfaces_foreign_owned_failure() {
     let tmp = TempDir::new().unwrap();
-    let task_id = "all-or-nothing";
-    let wg_dir = init_with_task(tmp.path(), task_id);
-
-    let manifest_dir = tmp.path().join("smoke");
-    fs::create_dir_all(&manifest_dir).unwrap();
-    make_pass_script(&manifest_dir, "ok.sh");
-    make_fail_script(&manifest_dir, "other_fail.sh", "from elsewhere");
-    let manifest_path = manifest_dir.join("manifest.toml");
+    make_pass_script(tmp.path(), "ok.sh");
+    make_fail_script(tmp.path(), "other_fail.sh", "from elsewhere");
+    let manifest_path = tmp.path().join("manifest.toml");
     fs::write(
         &manifest_path,
-        format!(
-            r#"
+        r#"
 [[scenario]]
 name = "owned_pass"
 script = "ok.sh"
-owners = ["{task_id}"]
+owners = ["all-or-nothing"]
 
 [[scenario]]
 name = "foreign_fail"
 script = "other_fail.sh"
 owners = ["unrelated-task"]
 "#,
-            task_id = task_id
-        ),
     )
     .unwrap();
 
-    // Without --full-smoke, the foreign failure does not run; done succeeds.
-    let out = wg_cmd_with_env(
-        &wg_dir,
-        &["done", task_id],
-        &[("WG_SMOKE_MANIFEST", manifest_path.to_str().unwrap())],
-    );
-    assert!(
-        out.status.success(),
-        "owned-only mode should let done pass. stderr={}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    // Reset task to in-progress to test --full-smoke path.
-    // (Use claim with --force semantics by re-adding; simpler: create another task.)
-    let task_id2 = "all-or-nothing-2";
-    let add = wg_cmd_with_env(&wg_dir, &["add", "Task two", "--id", task_id2], &[]);
-    assert!(add.status.success());
-    let publish = wg_cmd_with_env(&wg_dir, &["publish", task_id2, "--only"], &[]);
-    assert!(publish.status.success());
-    let claim = wg_cmd_with_env(&wg_dir, &["claim", task_id2], &[]);
-    assert!(claim.status.success());
-
-    let out = wg_cmd_with_env(
-        &wg_dir,
-        &["done", task_id2, "--full-smoke"],
-        &[("WG_SMOKE_MANIFEST", manifest_path.to_str().unwrap())],
-    );
-    assert!(
-        !out.status.success(),
-        "--full-smoke must surface the foreign-owned failure. stdout={} stderr={}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("foreign_fail"),
-        "stderr should mention foreign_fail, got: {}",
-        stderr
-    );
+    let owned = run_manifest(&manifest_path, Some("all-or-nothing"));
+    assert!(!owned.blocks_done());
+    let full = run_manifest(&manifest_path, None);
+    assert!(full.blocks_done());
+    assert!(full.render().contains("foreign_fail"));
 }
 
 #[test]
-fn test_skip_smoke_blocked_for_agents_without_override() {
+fn test_legacy_smoke_bypass_flags_are_rejected_for_agents_and_humans() {
     let tmp = TempDir::new().unwrap();
-    let task_id = "agent-bypass";
-    let wg_dir = init_with_task(tmp.path(), task_id);
+    let wg_dir = init_with_task(tmp.path(), "legacy-bypass");
 
-    let manifest_dir = tmp.path().join("smoke");
-    fs::create_dir_all(&manifest_dir).unwrap();
-    make_fail_script(&manifest_dir, "always_fail.sh", "still broken");
-    let manifest_path = manifest_dir.join("manifest.toml");
-    fs::write(
-        &manifest_path,
-        format!(
-            r#"
-[[scenario]]
-name = "always_fail"
-script = "always_fail.sh"
-owners = ["{}"]
-"#,
-            task_id
-        ),
-    )
-    .unwrap();
-
-    // Simulate agent: WG_AGENT_ID set, no override → --skip-smoke must fail.
-    let out = wg_cmd_with_env(
-        &wg_dir,
-        &["done", task_id, "--skip-smoke"],
-        &[
-            ("WG_SMOKE_MANIFEST", manifest_path.to_str().unwrap()),
-            ("WG_AGENT_ID", "test-agent"),
-        ],
-    );
-    assert!(
-        !out.status.success(),
-        "agents must not be able to bypass smoke gate without override"
-    );
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("Agents cannot use --skip-smoke"),
-        "stderr should mention agent restriction, got: {}",
-        stderr
-    );
-}
-
-#[test]
-fn test_skip_smoke_works_for_humans() {
-    let tmp = TempDir::new().unwrap();
-    let task_id = "human-bypass";
-    let wg_dir = init_with_task(tmp.path(), task_id);
-
-    let manifest_dir = tmp.path().join("smoke");
-    fs::create_dir_all(&manifest_dir).unwrap();
-    make_fail_script(&manifest_dir, "always_fail.sh", "still broken");
-    let manifest_path = manifest_dir.join("manifest.toml");
-    fs::write(
-        &manifest_path,
-        format!(
-            r#"
-[[scenario]]
-name = "always_fail"
-script = "always_fail.sh"
-owners = ["{}"]
-"#,
-            task_id
-        ),
-    )
-    .unwrap();
-
-    // Human (no WG_AGENT_ID): --skip-smoke should let done succeed.
-    let out = wg_cmd_with_env(
-        &wg_dir,
-        &["done", task_id, "--skip-smoke"],
-        &[("WG_SMOKE_MANIFEST", manifest_path.to_str().unwrap())],
-    );
-    assert!(
-        out.status.success(),
-        "human --skip-smoke should let done succeed. stderr={}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("WARNING") && stderr.contains("--skip-smoke"),
-        "human --skip-smoke must warn loudly, got: {}",
-        stderr
-    );
+    for env in [&[][..], &[("WG_AGENT_ID", "test-agent")][..]] {
+        let output = wg_cmd_with_env(&wg_dir, &["done", "legacy-bypass", "--skip-smoke"], env);
+        assert!(
+            !output.status.success(),
+            "retired bypass must never succeed"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("legacy wg done bypass/merge/cycle flags are not supported"),
+            "retired flag rejection should be explicit: {stderr}"
+        );
+    }
 
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
-    let task = graph.get_task(task_id).unwrap();
-    assert_eq!(task.status, Status::Done);
+    assert_eq!(
+        graph.get_task("legacy-bypass").unwrap().status,
+        Status::InProgress
+    );
 }
 
 #[test]
-fn test_no_manifest_means_no_gate() {
+fn test_smoke_current_operator_acceptance_refuses_worker_then_allows_human() {
     let tmp = TempDir::new().unwrap();
-    let task_id = "no-manifest";
-    let wg_dir = init_with_task(tmp.path(), task_id);
+    let wg_dir = init_with_task(tmp.path(), "operator-recovery");
+    let args = [
+        "done",
+        "operator-recovery",
+        "--operator-accept",
+        "--reason",
+        "integration fixture recovery",
+    ];
 
-    // Point WG_SMOKE_MANIFEST at a non-existent path — gate should no-op.
-    let bogus = tmp.path().join("no-such-file.toml");
-    let out = wg_cmd_with_env(
-        &wg_dir,
-        &["done", task_id],
-        &[("WG_SMOKE_MANIFEST", bogus.to_str().unwrap())],
-    );
+    let worker = wg_cmd_with_env(&wg_dir, &args, &[("WG_AGENT_ID", "test-agent")]);
     assert!(
-        out.status.success(),
-        "wg done should succeed when manifest is absent. stderr={}",
-        String::from_utf8_lossy(&out.stderr)
+        !worker.status.success(),
+        "worker must not acquire operator authority"
+    );
+    let worker_error = String::from_utf8_lossy(&worker.stderr);
+    assert!(
+        worker_error.contains("operator acceptance is refused inside a worker process"),
+        "worker rejection should remain explicit: {worker_error}"
+    );
+    let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
+    assert_eq!(
+        graph.get_task("operator-recovery").unwrap().status,
+        Status::InProgress
     );
 
+    let human = wg_cmd_with_env(&wg_dir, &args, &[]);
+    assert!(
+        human.status.success(),
+        "reasoned human recovery should succeed: {}",
+        String::from_utf8_lossy(&human.stderr)
+    );
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
-    let task = graph.get_task(task_id).unwrap();
-    assert_eq!(task.status, Status::Done);
+    assert_eq!(
+        graph.get_task("operator-recovery").unwrap().status,
+        Status::Done
+    );
+}
+
+#[test]
+fn test_missing_smoke_manifest_is_an_empty_nonblocking_gate() {
+    let tmp = TempDir::new().unwrap();
+    let report = run_manifest(&tmp.path().join("no-such-manifest.toml"), Some("nobody"));
+    assert!(report.results.is_empty());
+    assert!(!report.blocks_done());
 }

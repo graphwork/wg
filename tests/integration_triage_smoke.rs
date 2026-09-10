@@ -12,9 +12,11 @@
 
 #[path = "common/add_publish.rs"]
 mod add_publish;
+#[path = "common/isolated_cli.rs"]
+mod isolated_cli;
 
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use tempfile::TempDir;
 use worksgood::graph::Status;
 use worksgood::parser::load_graph;
@@ -39,7 +41,9 @@ fn wg_binary() -> std::path::PathBuf {
 }
 
 fn wg_cmd(wg_dir: &Path, args: &[&str]) -> std::process::Output {
-    Command::new(wg_binary())
+    let mut command = isolated_cli::command(&wg_binary(), wg_dir.parent().unwrap_or(wg_dir));
+    isolated_cli::assert_worker_authority_is_absent(&command);
+    command
         .arg("--dir")
         .arg(wg_dir)
         .args(args)
@@ -62,6 +66,34 @@ fn wg_ok(wg_dir: &Path, args: &[&str]) -> String {
         stderr
     );
     stdout
+}
+
+fn wg_fails(wg_dir: &Path, args: &[&str]) -> String {
+    let output = wg_cmd(wg_dir, args);
+    assert!(
+        !output.status.success(),
+        "wg {args:?} should fail, stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
+}
+
+fn complete_fixture_task(wg_dir: &Path, task_id: &str) {
+    wg_ok(
+        wg_dir,
+        &[
+            "done",
+            task_id,
+            "--operator-accept",
+            "--reason",
+            "disposable triage integration fixture completion",
+        ],
+    );
 }
 
 fn graph(wg_dir: &Path) -> worksgood::graph::WorkGraph {
@@ -195,7 +227,7 @@ fn smoke_triage_basic_chain_recovery() {
 
     // ── Step 8: Fix completes → task-a becomes ready ────────────────────
     wg_ok(&wg_dir, &["claim", "fix-a"]);
-    wg_ok(&wg_dir, &["done", "fix-a"]);
+    complete_fixture_task(&wg_dir, "fix-a");
     assert!(
         is_ready(&wg_dir, "task-a"),
         "task-a should be ready after fix-a completes"
@@ -203,7 +235,7 @@ fn smoke_triage_basic_chain_recovery() {
 
     // ── Step 9: task-a succeeds → task-b becomes ready ──────────────────
     wg_ok(&wg_dir, &["claim", "task-a"]);
-    wg_ok(&wg_dir, &["done", "task-a"]);
+    complete_fixture_task(&wg_dir, "task-a");
     assert_eq!(task_status(&wg_dir, "task-a"), Status::Done);
     assert!(
         is_ready(&wg_dir, "task-b"),
@@ -212,7 +244,7 @@ fn smoke_triage_basic_chain_recovery() {
 
     // ── Step 10: task-b runs normally → task-c runs ─────────────────────
     wg_ok(&wg_dir, &["claim", "task-b"]);
-    wg_ok(&wg_dir, &["done", "task-b"]);
+    complete_fixture_task(&wg_dir, "task-b");
     assert_eq!(task_status(&wg_dir, "task-b"), Status::Done);
     assert_eq!(task_triage_count(&wg_dir, "task-b"), 0);
 
@@ -221,7 +253,7 @@ fn smoke_triage_basic_chain_recovery() {
         "task-c should be ready after task-b completes"
     );
     wg_ok(&wg_dir, &["claim", "task-c"]);
-    wg_ok(&wg_dir, &["done", "task-c"]);
+    complete_fixture_task(&wg_dir, "task-c");
     assert_eq!(task_status(&wg_dir, "task-c"), Status::Done);
 
     // ── Final: no orphaned tasks ────────────────────────────────────────
@@ -238,16 +270,16 @@ fn smoke_triage_basic_chain_recovery() {
 }
 
 // ---------------------------------------------------------------------------
-// Scenario 2: Cascading — triage fix also fails → loop guard kicks in
+// Scenario 2: failed fixes stay closed; the independent triage loop is bounded
 // ---------------------------------------------------------------------------
 
-/// task-a fails → task-b triages → fix-a fails → task-b triages again →
-/// fix-a-v2 fails → task-b triages (3rd time) → 4th requeue hits budget → fails.
+/// A failed dependency and a failed repair both remain unclaimable.  Recovery
+/// retries the repair explicitly.  Separately, a runnable triage driver may be
+/// requeued three times, while the fourth round is rejected by the loop guard.
 #[test]
 fn smoke_triage_cascading_failure_loop_guard() {
     let (_tmp, wg_dir) = setup();
 
-    // Build: task-a → task-b
     wg_ok(
         &wg_dir,
         &[
@@ -270,16 +302,28 @@ fn smoke_triage_cascading_failure_loop_guard() {
             add_publish::PUBLISH_MARKER,
         ],
     );
+    wg_ok(
+        &wg_dir,
+        &[
+            "add",
+            "Independent triage driver",
+            "--id",
+            "triage-driver",
+            add_publish::PUBLISH_MARKER,
+        ],
+    );
 
-    // ── Round 1: task-a fails, task-b triages ───────────────────────────
     wg_ok(&wg_dir, &["claim", "task-a"]);
     wg_ok(
         &wg_dir,
         &["fail", "task-a", "--reason", "OOM on large input"],
     );
+    let blocked = wg_fails(&wg_dir, &["claim", "task-b"]);
+    assert!(
+        blocked.contains("not ready") || blocked.contains("depend"),
+        "failed dependency rejection should be explicit: {blocked}"
+    );
 
-    wg_ok(&wg_dir, &["claim", "task-b"]);
-    // Agent creates fix-v1
     wg_ok(
         &wg_dir,
         &[
@@ -292,13 +336,6 @@ fn smoke_triage_cascading_failure_loop_guard() {
     );
     wg_ok(&wg_dir, &["add-dep", "task-a", "fix-v1"]);
     wg_ok(&wg_dir, &["retry", "task-a"]);
-    wg_ok(
-        &wg_dir,
-        &["requeue", "task-b", "--reason", "Created fix-v1 for task-a"],
-    );
-    assert_eq!(task_triage_count(&wg_dir, "task-b"), 1);
-
-    // fix-v1 fails too
     wg_ok(&wg_dir, &["claim", "fix-v1"]);
     wg_ok(
         &wg_dir,
@@ -310,125 +347,59 @@ fn smoke_triage_cascading_failure_loop_guard() {
         ],
     );
 
-    // task-a is still blocked by fix-v1 (which is Failed=terminal),
-    // but task-a is Open — it becomes ready since all deps are terminal
-    // Actually task-a now has fix-v1 as dep (which is Failed) — terminal, so task-a is ready
-    // task-a runs again but fails again
+    let blocked = wg_fails(&wg_dir, &["claim", "task-a"]);
+    assert!(
+        blocked.contains("not ready") || blocked.contains("depend"),
+        "failed repair must continue to block its consumer: {blocked}"
+    );
+
+    wg_ok(&wg_dir, &["retry", "fix-v1"]);
+    wg_ok(&wg_dir, &["claim", "fix-v1"]);
+    complete_fixture_task(&wg_dir, "fix-v1");
+    assert!(is_ready(&wg_dir, "task-a"));
     wg_ok(&wg_dir, &["claim", "task-a"]);
-    wg_ok(
-        &wg_dir,
-        &[
-            "fail",
-            "task-a",
-            "--reason",
-            "OOM persists after fix-v1 failed",
-        ],
-    );
-
-    // ── Round 2: task-b triages again ───────────────────────────────────
+    complete_fixture_task(&wg_dir, "task-a");
+    assert!(is_ready(&wg_dir, "task-b"));
     wg_ok(&wg_dir, &["claim", "task-b"]);
-    wg_ok(
-        &wg_dir,
-        &[
-            "add",
-            "Fix: streaming approach",
-            "--id",
-            "fix-v2",
-            add_publish::PUBLISH_MARKER,
-        ],
-    );
-    wg_ok(&wg_dir, &["add-dep", "task-a", "fix-v2"]);
-    wg_ok(&wg_dir, &["retry", "task-a"]);
-    wg_ok(
-        &wg_dir,
-        &["requeue", "task-b", "--reason", "Created fix-v2 for task-a"],
-    );
-    assert_eq!(task_triage_count(&wg_dir, "task-b"), 2);
+    complete_fixture_task(&wg_dir, "task-b");
 
-    // fix-v2 fails
-    wg_ok(&wg_dir, &["claim", "fix-v2"]);
-    wg_ok(
-        &wg_dir,
-        &["fail", "fix-v2", "--reason", "streaming not supported"],
-    );
-
-    // task-a runs again and fails
-    wg_ok(&wg_dir, &["claim", "task-a"]);
-    wg_ok(&wg_dir, &["fail", "task-a", "--reason", "still OOM"]);
-
-    // ── Round 3: task-b triages one more time ───────────────────────────
-    wg_ok(&wg_dir, &["claim", "task-b"]);
-    wg_ok(
-        &wg_dir,
-        &[
-            "add",
-            "Fix: reduce input size",
-            "--id",
-            "fix-v3",
-            add_publish::PUBLISH_MARKER,
-        ],
-    );
-    wg_ok(&wg_dir, &["add-dep", "task-a", "fix-v3"]);
-    wg_ok(&wg_dir, &["retry", "task-a"]);
-    wg_ok(
-        &wg_dir,
-        &["requeue", "task-b", "--reason", "Created fix-v3 for task-a"],
-    );
-    assert_eq!(task_triage_count(&wg_dir, "task-b"), 3);
-
-    // fix-v3 fails
-    wg_ok(&wg_dir, &["claim", "fix-v3"]);
-    wg_ok(
-        &wg_dir,
-        &["fail", "fix-v3", "--reason", "input reduction not feasible"],
-    );
-
-    // task-a runs and fails again
-    wg_ok(&wg_dir, &["claim", "task-a"]);
-    wg_ok(
-        &wg_dir,
-        &["fail", "task-a", "--reason", "still OOM after all fixes"],
-    );
-
-    // ── Round 4: loop guard kicks in ────────────────────────────────────
-    wg_ok(&wg_dir, &["claim", "task-b"]);
-
-    let output = wg_cmd(
+    for round in 1..=3 {
+        wg_ok(&wg_dir, &["claim", "triage-driver"]);
+        wg_ok(
+            &wg_dir,
+            &[
+                "requeue",
+                "triage-driver",
+                "--reason",
+                &format!("triage round {round}"),
+            ],
+        );
+        assert_eq!(task_triage_count(&wg_dir, "triage-driver"), round);
+    }
+    wg_ok(&wg_dir, &["claim", "triage-driver"]);
+    let rejected = wg_fails(
         &wg_dir,
         &[
             "requeue",
-            "task-b",
+            "triage-driver",
             "--reason",
-            "attempted 4th triage round",
+            "attempted fourth triage round",
         ],
     );
     assert!(
-        !output.status.success(),
-        "4th requeue should fail (default budget is 3)"
+        rejected.contains("Triage budget exhausted"),
+        "fourth requeue should name the exhausted budget: {rejected}"
     );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("Triage budget exhausted"),
-        "Should report budget exhausted, got: {}",
-        stderr
-    );
-    assert_eq!(
-        task_triage_count(&wg_dir, "task-b"),
-        3,
-        "triage_count should stay at 3 after budget rejection"
-    );
-
-    // Verify the task can still be failed gracefully
+    assert_eq!(task_triage_count(&wg_dir, "triage-driver"), 3);
     wg_ok(
         &wg_dir,
         &[
             "fail",
-            "task-b",
+            "triage-driver",
             "--reason",
-            "Triage budget exhausted, dependency task-a unfixable",
+            "triage budget exhausted",
         ],
     );
-    assert_eq!(task_status(&wg_dir, "task-b"), Status::Failed);
 }
 
 // ---------------------------------------------------------------------------
@@ -526,9 +497,9 @@ fn smoke_triage_multiple_failed_deps() {
 
     // ── Complete fixes → deps re-run → task-m recovers ──────────────────
     wg_ok(&wg_dir, &["claim", "fix-x"]);
-    wg_ok(&wg_dir, &["done", "fix-x"]);
+    complete_fixture_task(&wg_dir, "fix-x");
     wg_ok(&wg_dir, &["claim", "fix-y"]);
-    wg_ok(&wg_dir, &["done", "fix-y"]);
+    complete_fixture_task(&wg_dir, "fix-y");
 
     // task-x and task-y should be ready now
     assert!(
@@ -542,9 +513,9 @@ fn smoke_triage_multiple_failed_deps() {
 
     // Complete the original deps
     wg_ok(&wg_dir, &["claim", "task-x"]);
-    wg_ok(&wg_dir, &["done", "task-x"]);
+    complete_fixture_task(&wg_dir, "task-x");
     wg_ok(&wg_dir, &["claim", "task-y"]);
-    wg_ok(&wg_dir, &["done", "task-y"]);
+    complete_fixture_task(&wg_dir, "task-y");
 
     // task-m should be ready now
     assert!(
@@ -554,7 +525,7 @@ fn smoke_triage_multiple_failed_deps() {
 
     // Complete the chain
     wg_ok(&wg_dir, &["claim", "task-m"]);
-    wg_ok(&wg_dir, &["done", "task-m"]);
+    complete_fixture_task(&wg_dir, "task-m");
     assert_eq!(task_status(&wg_dir, "task-m"), Status::Done);
 
     // ── Verify: no orphaned open tasks ──────────────────────────────────
@@ -573,8 +544,8 @@ fn smoke_triage_multiple_failed_deps() {
 // Scenario 4: Regression — fix works but re-run fails for new reason
 // ---------------------------------------------------------------------------
 
-/// task-a fails (reason 1) → task-b triages → fix succeeds → task-a re-runs
-/// but fails for a DIFFERENT reason → task-b triages again with new context.
+/// task-a fails (reason 1) → task-b is refused while blocked → fix succeeds →
+/// task-a re-runs but fails for a DIFFERENT reason → a second repair recovers it.
 #[test]
 fn smoke_triage_regression_new_failure() {
     let (_tmp, wg_dir) = setup();
@@ -610,8 +581,12 @@ fn smoke_triage_regression_new_failure() {
         &["fail", "task-a", "--reason", "missing config file"],
     );
 
-    // task-b enters triage
-    wg_ok(&wg_dir, &["claim", "task-b"]);
+    // A failed prerequisite is not a claimable shortcut into triage.
+    let blocked = wg_fails(&wg_dir, &["claim", "task-b"]);
+    assert!(
+        blocked.contains("not ready") || blocked.contains("depend"),
+        "task-b claim should fail closed: {blocked}"
+    );
     wg_ok(
         &wg_dir,
         &[
@@ -624,20 +599,11 @@ fn smoke_triage_regression_new_failure() {
     );
     wg_ok(&wg_dir, &["add-dep", "task-a", "fix-config"]);
     wg_ok(&wg_dir, &["retry", "task-a"]);
-    wg_ok(
-        &wg_dir,
-        &[
-            "requeue",
-            "task-b",
-            "--reason",
-            "Created fix-config for task-a",
-        ],
-    );
-    assert_eq!(task_triage_count(&wg_dir, "task-b"), 1);
+    assert_eq!(task_triage_count(&wg_dir, "task-b"), 0);
 
     // Fix succeeds
     wg_ok(&wg_dir, &["claim", "fix-config"]);
-    wg_ok(&wg_dir, &["done", "fix-config"]);
+    complete_fixture_task(&wg_dir, "fix-config");
 
     // ── task-a re-runs but fails for a NEW reason ───────────────────────
     wg_ok(&wg_dir, &["claim", "task-a"]);
@@ -678,15 +644,15 @@ fn smoke_triage_regression_new_failure() {
     );
     wg_ok(&wg_dir, &["add-dep", "task-a", "fix-schema"]);
     wg_ok(&wg_dir, &["retry", "task-a"]);
-    assert_eq!(task_triage_count(&wg_dir, "task-b"), 1);
+    assert_eq!(task_triage_count(&wg_dir, "task-b"), 0);
 
     // Fix succeeds
     wg_ok(&wg_dir, &["claim", "fix-schema"]);
-    wg_ok(&wg_dir, &["done", "fix-schema"]);
+    complete_fixture_task(&wg_dir, "fix-schema");
 
     // task-a succeeds this time
     wg_ok(&wg_dir, &["claim", "task-a"]);
-    wg_ok(&wg_dir, &["done", "task-a"]);
+    complete_fixture_task(&wg_dir, "task-a");
     assert_eq!(task_status(&wg_dir, "task-a"), Status::Done);
 
     // task-b finally runs normally
@@ -695,12 +661,12 @@ fn smoke_triage_regression_new_failure() {
         "task-b should be ready after task-a succeeds"
     );
     wg_ok(&wg_dir, &["claim", "task-b"]);
-    wg_ok(&wg_dir, &["done", "task-b"]);
+    complete_fixture_task(&wg_dir, "task-b");
     assert_eq!(task_status(&wg_dir, "task-b"), Status::Done);
     assert_eq!(
         task_triage_count(&wg_dir, "task-b"),
-        1,
-        "triage_count should reflect the triage round where task-b was claimed"
+        0,
+        "blocked claim refusals must not increment triage state"
     );
 
     // ── Verify: all tasks done ──────────────────────────────────────────
