@@ -74,9 +74,11 @@ future commit:
   authority used by exact-marker cleanup.
 - Shell cleanup waits a bounded interval for every registered PID/start identity
   to disappear after signaling. An immutable harness-run marker survives nested
-  helpers that intentionally replace their local ownership token; while the
-  scenario runs, the subreaper remembers those live PID/start identities and
-  reaps only matching zombies adopted directly by itself. This closes the brief
+  helpers that intentionally replace their local ownership token. The launched
+  scenario shell is also made the nearest subreaper, so it handles nested
+  orphan exits while it remains alive; the Rust harness remains the outer
+  backstop and reaps only remembered matching PID/start zombies adopted directly
+  by itself. This closes the brief
   markerless-zombie/fixture-deletion race without broad `waitpid` selection.
 - Platforms without Linux subreaper plus `/proc` exact-marker support fail closed
   before scenario spawn. Their global sweep retains existing owner records and

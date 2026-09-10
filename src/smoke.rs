@@ -484,6 +484,14 @@ pub fn run_scenario(scenario: &Scenario, manifest_dir: &Path) -> ScenarioResult 
                 if libc::setsid() == -1 {
                     return Err(std::io::Error::last_os_error());
                 }
+                // Keep orphan adoption at the nearest scenario shell while it
+                // is alive. Bash reaps SIGCHLD children during nested helper
+                // checks; if the shell itself dies, the Rust parent remains
+                // the outer subreaper backstop.
+                #[cfg(target_os = "linux")]
+                if libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
                 Ok(())
             });
         }
