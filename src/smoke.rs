@@ -1080,6 +1080,11 @@ pub fn sweep_smoke_leaks() {
 /// Sweep against an explicit root (useful for tests, where pointing at a
 /// shared global root would race with parallel test threads).
 pub fn sweep_smoke_leaks_under(root: &Path, min_age: Duration) {
+    // `waitpid(-1)` is process-global. Serialize sweeps with scenario runs so
+    // one test thread can never reap another thread's scenario root child.
+    let _process_guard = scenario_process_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let owners = root.join(OWNERS_DIR_NAME);
     if let Ok(entries) = std::fs::read_dir(&owners) {
         for entry in entries.flatten() {
@@ -1354,6 +1359,9 @@ script = "b.sh"
 
     #[test]
     fn ownership_authority_is_durable_before_any_scenario_spawn() {
+        let _process_guard = scenario_process_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let ownership = ScenarioOwnership::create("pre-spawn-owner").unwrap();
         let fields = read_owner_fields(&ownership.owner_file);
         assert_eq!(fields.get("version").map(String::as_str), Some("3"));
