@@ -43,6 +43,7 @@ const DEFAULT_TIMEOUT_SECS: u64 = 180;
 /// Exact environment identity inherited by every process launched by one
 /// scenario. Cleanup matches this random value, never an executable name.
 pub const SMOKE_RUN_ID_ENV: &str = "WG_SMOKE_RUN_ID";
+const SMOKE_HARNESS_RUN_ID_ENV: &str = "WG_SMOKE_HARNESS_RUN_ID";
 const SMOKE_OWNER_FILE_ENV: &str = "WG_SMOKE_OWNER_FILE";
 const SMOKE_DIAGNOSTICS_ENV: &str = "WG_SMOKE_CLEANUP_DIAGNOSTICS";
 const OWNERS_DIR_NAME: &str = ".owners";
@@ -343,7 +344,6 @@ impl ScenarioOwnership {
         // The shell deliberately leaves fixture registries in owner_dir for
         // this subreaper. Adopted grandchildren must be waited out before a
         // cwd/log directory they used can be deleted.
-        reap_adopted_children();
         if let Err(error) = remove_registered_scratch_dirs(&self.owner_dir) {
             let message = format!(
                 "smoke cleanup could not remove registered fixtures for '{}': {error}; ownership retained at {}",
@@ -463,6 +463,10 @@ pub fn run_scenario(scenario: &Scenario, manifest_dir: &Path) -> ScenarioResult 
     cmd.env("WG_SMOKE_SCENARIO", &scenario.name)
         .env("WG_SMOKE_TIMEOUT_SECS", timeout.as_secs().to_string())
         .env(SMOKE_RUN_ID_ENV, &ownership.run_id)
+        // Unlike WG_SMOKE_RUN_ID, nested cleanup regressions may deliberately
+        // replace their local ownership token. This immutable harness token
+        // lets the subreaper remember and reap those descendants exactly.
+        .env(SMOKE_HARNESS_RUN_ID_ENV, &ownership.run_id)
         .env(SMOKE_OWNER_FILE_ENV, &ownership.owner_file)
         .env(SMOKE_DIAGNOSTICS_ENV, &ownership.diagnostics_file)
         .env("WG_SMOKE_HARNESS_OWNED", "1")
@@ -549,7 +553,24 @@ pub fn run_scenario(scenario: &Scenario, manifest_dir: &Path) -> ScenarioResult 
         })
     };
 
-    let status = child.wait();
+    // Reap adopted descendants while the scenario is still running. This is
+    // needed when a scenario nests a direct helper regression: its shell may
+    // verify cleanup before the outer scenario exits. Remember live processes
+    // by the immutable harness marker and kernel start identity, then wait only
+    // zombies adopted directly by this subreaper; never use a broad waitpid
+    // that could steal an unrelated test thread's child.
+    let root_pid = child.id();
+    let mut harness_descendants = BTreeMap::new();
+    let status = loop {
+        remember_harness_descendants(&ownership.run_id, root_pid, &mut harness_descendants);
+        reap_tracked_adopted_children(root_pid, &harness_descendants);
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) => std::thread::sleep(Duration::from_millis(5)),
+            Err(error) => break Err(error),
+        }
+    };
+    reap_tracked_adopted_children(root_pid, &harness_descendants);
     {
         let (done, wake) = &*watchdog_state;
         *done.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = true;
@@ -561,7 +582,7 @@ pub fn run_scenario(scenario: &Scenario, manifest_dir: &Path) -> ScenarioResult 
     // not captured pipes, so an escaped process can never pin this read open.
     let stderr_bytes = read_bounded_file(&stderr_path, 256 * 1024);
     let cleanup_result = ownership.cleanup();
-    reap_adopted_children();
+    reap_tracked_adopted_children(root_pid, &harness_descendants);
 
     if let Err(cleanup_error) = cleanup_result {
         return ScenarioResult {
@@ -782,14 +803,79 @@ fn process_info(_pid: u32) -> Option<OwnedProcess> {
 }
 
 #[cfg(target_os = "linux")]
-fn process_has_run_id(pid: u32, run_id: &str) -> bool {
+fn process_has_env_value(pid: u32, name: &str, value: &str) -> bool {
     let Ok(environ) = std::fs::read(format!("/proc/{pid}/environ")) else {
         return false;
     };
-    let expected = format!("{SMOKE_RUN_ID_ENV}={run_id}");
+    let expected = format!("{name}={value}");
     environ
         .split(|byte| *byte == 0)
         .any(|entry| entry == expected.as_bytes())
+}
+
+#[cfg(target_os = "linux")]
+fn process_has_run_id(pid: u32, run_id: &str) -> bool {
+    process_has_env_value(pid, SMOKE_RUN_ID_ENV, run_id)
+}
+
+#[cfg(target_os = "linux")]
+fn remember_harness_descendants(
+    run_id: &str,
+    root_pid: u32,
+    remembered: &mut BTreeMap<(u32, u64), OwnedProcess>,
+) {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
+            continue;
+        };
+        if pid != root_pid
+            && process_has_env_value(pid, SMOKE_HARNESS_RUN_ID_ENV, run_id)
+            && let Some(info) = process_info(pid)
+        {
+            remembered.entry((pid, info.start_ticks)).or_insert(info);
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn remember_harness_descendants(
+    _run_id: &str,
+    _root_pid: u32,
+    _remembered: &mut BTreeMap<(u32, u64), OwnedProcess>,
+) {
+}
+
+#[cfg(target_os = "linux")]
+fn reap_tracked_adopted_children(root_pid: u32, remembered: &BTreeMap<(u32, u64), OwnedProcess>) {
+    let supervisor_pid = std::process::id();
+    for ((pid, start_ticks), _) in remembered {
+        if *pid == root_pid {
+            continue;
+        }
+        let Some(current) = process_info(*pid) else {
+            continue;
+        };
+        if current.start_ticks != *start_ticks
+            || current.ppid != supervisor_pid
+            || current.state != 'Z'
+        {
+            continue;
+        }
+        let mut status = 0;
+        // SAFETY: the immutable PID/start tuple and direct-parent check select
+        // only a remembered descendant adopted by this process. WNOHANG cannot
+        // block; a concurrent exit/reap simply returns 0/-1.
+        unsafe {
+            libc::waitpid(*pid as libc::pid_t, &mut status, libc::WNOHANG);
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn reap_tracked_adopted_children(_root_pid: u32, _remembered: &BTreeMap<(u32, u64), OwnedProcess>) {
 }
 
 #[cfg(target_os = "linux")]
@@ -838,21 +924,6 @@ fn signal_owned_process(process: &OwnedProcess, run_id: &str, signal: libc::c_in
 #[cfg(not(unix))]
 fn signal_owned_process(_process: &OwnedProcess, _run_id: &str, _signal: libc::c_int) {}
 
-#[cfg(target_os = "linux")]
-fn reap_adopted_children() {
-    loop {
-        let mut status = 0;
-        // SAFETY: WNOHANG never blocks and writes only to `status`.
-        let pid = unsafe { libc::waitpid(-1, &mut status, libc::WNOHANG) };
-        if pid <= 0 {
-            break;
-        }
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-fn reap_adopted_children() {}
-
 fn write_cleanup_diagnostics(
     path: &Path,
     scenario: &str,
@@ -898,7 +969,7 @@ fn terminate_owned_processes(
             signal_owned_process(process, run_id, libc::SIGTERM);
         }
         if reap_children {
-            reap_adopted_children();
+            reap_tracked_adopted_children(0, &seen);
         }
         if processes.is_empty() || Instant::now() >= term_deadline {
             break;
@@ -915,7 +986,7 @@ fn terminate_owned_processes(
             signal_owned_process(process, run_id, libc::SIGKILL);
         }
         if reap_children {
-            reap_adopted_children();
+            reap_tracked_adopted_children(0, &seen);
         }
         if processes.is_empty() || Instant::now() >= kill_deadline {
             break;
@@ -923,7 +994,7 @@ fn terminate_owned_processes(
         std::thread::sleep(Duration::from_millis(50));
     }
     if reap_children {
-        reap_adopted_children();
+        reap_tracked_adopted_children(0, &seen);
     }
     let survivors = scan_owned_processes(run_id);
     if survivors.is_empty() {

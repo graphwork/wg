@@ -72,10 +72,12 @@ future commit:
 - Post-spawn root PID/start/group/session diagnostics are append-only. An
   interruption while enriching diagnostics cannot truncate the pre-spawn run-id
   authority used by exact-marker cleanup.
-- Shell cleanup now waits a bounded interval for every registered PID/start
-  identity to disappear after signaling. This covers the brief markerless-zombie
-  interval before init reaps a double-forked fixture and prevents fixture
-  deletion from racing process-table disappearance.
+- Shell cleanup waits a bounded interval for every registered PID/start identity
+  to disappear after signaling. An immutable harness-run marker survives nested
+  helpers that intentionally replace their local ownership token; while the
+  scenario runs, the subreaper remembers those live PID/start identities and
+  reaps only matching zombies adopted directly by itself. This closes the brief
+  markerless-zombie/fixture-deletion race without broad `waitpid` selection.
 - Platforms without Linux subreaper plus `/proc` exact-marker support fail closed
   before scenario spawn. Their global sweep retains existing owner records and
   appends a diagnostic instead of pretending an empty scan authorizes process or
