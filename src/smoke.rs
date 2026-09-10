@@ -342,7 +342,13 @@ impl ScenarioOwnership {
         if self.cleaned {
             return Ok(());
         }
-        terminate_owned_processes(&self.run_id, &self.scenario, &self.diagnostics_file, true)?;
+        terminate_owned_processes(
+            &self.run_id,
+            &self.scenario,
+            &self.owner_dir,
+            &self.diagnostics_file,
+            true,
+        )?;
         // The shell deliberately leaves fixture registries in owner_dir for
         // this subreaper. Adopted grandchildren must be waited out before a
         // cwd/log directory they used can be deleted.
@@ -541,6 +547,7 @@ pub fn run_scenario(scenario: &Scenario, manifest_dir: &Path) -> ScenarioResult 
         let run_id = ownership.run_id.clone();
         let scenario_name = ownership.scenario.clone();
         let diagnostics = ownership.diagnostics_file.clone();
+        let owner_dir = ownership.owner_dir.clone();
         let root_pid = child.id();
         std::thread::spawn(move || {
             let (done_lock, wake) = &*state;
@@ -563,7 +570,13 @@ pub fn run_scenario(scenario: &Scenario, manifest_dir: &Path) -> ScenarioResult 
                 // Do not waitpid here: the main thread owns the root Child
                 // handle and must collect its status. Final cleanup reaps the
                 // now-adopted descendants after that wait completes.
-                let _ = terminate_owned_processes(&run_id, &scenario_name, &diagnostics, false);
+                let _ = terminate_owned_processes(
+                    &run_id,
+                    &scenario_name,
+                    &owner_dir,
+                    &diagnostics,
+                    false,
+                );
             }
         })
     };
@@ -969,6 +982,51 @@ fn scan_owned_processes(_run_id: &str) -> Vec<OwnedProcess> {
     Vec::new()
 }
 
+#[cfg(target_os = "linux")]
+fn scan_registered_processes(owner_dir: &Path) -> Vec<OwnedProcess> {
+    let Ok(entries) = std::fs::read_dir(owner_dir) else {
+        return Vec::new();
+    };
+    let mut processes = BTreeMap::new();
+    for entry in entries.flatten() {
+        if !entry.file_name().to_string_lossy().starts_with("registry.") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(entry.path().join("processes")) else {
+            continue;
+        };
+        for line in text.lines() {
+            let mut fields = line.splitn(3, '|');
+            let (_role, Some(pid), Some(identity)) = (fields.next(), fields.next(), fields.next())
+            else {
+                continue;
+            };
+            let Ok(pid) = pid.parse::<u32>() else {
+                continue;
+            };
+            let identity: Vec<&str> = identity.split_whitespace().collect();
+            if identity.len() < 5 {
+                continue;
+            }
+            let Ok(start_ticks) = identity[3].parse::<u64>() else {
+                continue;
+            };
+            let Some(current) = process_info(pid) else {
+                continue;
+            };
+            if current.start_ticks == start_ticks {
+                processes.insert((pid, start_ticks), current);
+            }
+        }
+    }
+    processes.into_values().collect()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn scan_registered_processes(_owner_dir: &Path) -> Vec<OwnedProcess> {
+    Vec::new()
+}
+
 #[cfg(unix)]
 fn signal_owned_process(process: &OwnedProcess, run_id: &str, signal: libc::c_int) {
     let Some(current) = process_info(process.pid) else {
@@ -989,6 +1047,41 @@ fn signal_owned_process(process: &OwnedProcess, run_id: &str, signal: libc::c_in
 
 #[cfg(not(unix))]
 fn signal_owned_process(_process: &OwnedProcess, _run_id: &str, _signal: libc::c_int) {}
+
+#[cfg(unix)]
+fn signal_registered_process(process: &OwnedProcess, signal: libc::c_int) {
+    let Some(current) = process_info(process.pid) else {
+        return;
+    };
+    // Registration was published only while both exact run markers were live.
+    // After a child sanitizes its environment, immutable PID/start identity is
+    // the durable authority; revalidate it immediately before signaling.
+    if current.start_ticks != process.start_ticks {
+        return;
+    }
+    // SAFETY: kill validates its arguments in the kernel; PID reuse is closed
+    // by the immediately preceding start-tick comparison.
+    unsafe {
+        libc::kill(process.pid as libc::pid_t, signal);
+    }
+}
+
+#[cfg(not(unix))]
+fn signal_registered_process(_process: &OwnedProcess, _signal: libc::c_int) {}
+
+fn authorized_owned_processes(
+    run_id: &str,
+    owner_dir: &Path,
+) -> BTreeMap<(u32, u64), (OwnedProcess, bool)> {
+    let mut authorized = BTreeMap::new();
+    for process in scan_owned_processes(run_id) {
+        authorized.insert((process.pid, process.start_ticks), (process, false));
+    }
+    for process in scan_registered_processes(owner_dir) {
+        authorized.insert((process.pid, process.start_ticks), (process, true));
+    }
+    authorized
+}
 
 fn write_cleanup_diagnostics(
     path: &Path,
@@ -1022,17 +1115,21 @@ fn write_cleanup_diagnostics(
 fn terminate_owned_processes(
     run_id: &str,
     scenario: &str,
+    owner_dir: &Path,
     diagnostics_file: &Path,
     reap_children: bool,
 ) -> std::result::Result<(), String> {
     let mut seen = BTreeMap::new();
     let term_deadline = Instant::now() + TERM_GRACE;
     loop {
-        let processes = scan_owned_processes(run_id);
-        for process in &processes {
-            seen.entry((process.pid, process.start_ticks))
-                .or_insert_with(|| process.clone());
-            signal_owned_process(process, run_id, libc::SIGTERM);
+        let processes = authorized_owned_processes(run_id, owner_dir);
+        for (key, (process, registered)) in &processes {
+            seen.entry(*key).or_insert_with(|| process.clone());
+            if *registered {
+                signal_registered_process(process, libc::SIGTERM);
+            } else {
+                signal_owned_process(process, run_id, libc::SIGTERM);
+            }
         }
         if reap_children {
             reap_tracked_adopted_children(0, &seen);
@@ -1045,11 +1142,14 @@ fn terminate_owned_processes(
 
     let kill_deadline = Instant::now() + KILL_GRACE;
     loop {
-        let processes = scan_owned_processes(run_id);
-        for process in &processes {
-            seen.entry((process.pid, process.start_ticks))
-                .or_insert_with(|| process.clone());
-            signal_owned_process(process, run_id, libc::SIGKILL);
+        let processes = authorized_owned_processes(run_id, owner_dir);
+        for (key, (process, registered)) in &processes {
+            seen.entry(*key).or_insert_with(|| process.clone());
+            if *registered {
+                signal_registered_process(process, libc::SIGKILL);
+            } else {
+                signal_owned_process(process, run_id, libc::SIGKILL);
+            }
         }
         if reap_children {
             reap_tracked_adopted_children(0, &seen);
@@ -1062,7 +1162,10 @@ fn terminate_owned_processes(
     if reap_children {
         reap_tracked_adopted_children(0, &seen);
     }
-    let survivors = scan_owned_processes(run_id);
+    let survivors: Vec<OwnedProcess> = authorized_owned_processes(run_id, owner_dir)
+        .into_values()
+        .map(|(process, _)| process)
+        .collect();
     if survivors.is_empty() {
         return Ok(());
     }
@@ -1247,7 +1350,7 @@ pub fn sweep_smoke_leaks_under(root: &Path, _min_age: Duration) {
                 .map(String::as_str)
                 .unwrap_or("unknown");
             let diagnostics = owner_dir.join("cleanup-diagnostics.log");
-            if terminate_owned_processes(run_id, scenario, &diagnostics, true).is_ok()
+            if terminate_owned_processes(run_id, scenario, &owner_dir, &diagnostics, true).is_ok()
                 && remove_registered_scratch_dirs(&owner_dir).is_ok()
             {
                 let _ = std::fs::remove_dir_all(&owner_dir);
@@ -1704,6 +1807,81 @@ exit 9
         let decoy_after = process_info(decoy.id()).expect("unrelated pi was killed");
         assert_eq!(decoy_before.start_ticks, decoy_after.start_ticks);
         assert_eq!(decoy_before.process_group, decoy_after.process_group);
+        let _ = decoy.kill();
+        let _ = decoy.wait();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn registered_identity_survives_environment_sanitization() {
+        let _guard = scenario_process_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let td = TempDir::new().unwrap();
+        let owner_dir = td.path().join("owner");
+        let registry = owner_dir.join("registry.test");
+        fs::create_dir_all(&registry).unwrap();
+        let run_id = format!("wg-smoke-v2:{}", uuid::Uuid::now_v7());
+        let mut child = Command::new("bash")
+            .args(["-c", "kill -STOP $$; exec env -i sleep 30"])
+            .env(SMOKE_RUN_ID_ENV, &run_id)
+            .env(SMOKE_HARNESS_RUN_ID_ENV, &run_id)
+            .spawn()
+            .unwrap();
+        let mut decoy = Command::new("sleep").arg("30").spawn().unwrap();
+        let decoy_identity = process_info(decoy.id()).unwrap();
+        let mut status = 0;
+        // SAFETY: exact child PID; WUNTRACED waits for its deliberate SIGSTOP.
+        assert_eq!(
+            unsafe { libc::waitpid(child.id() as libc::pid_t, &mut status, libc::WUNTRACED) },
+            child.id() as libc::pid_t
+        );
+        let registered = process_info(child.id()).unwrap();
+        fs::write(
+            registry.join("processes"),
+            format!(
+                "sanitized|{}|{} {} {} {} {}\nstale-decoy|{}|{} {} {} {} {}\n",
+                registered.pid,
+                registered.ppid,
+                registered.process_group,
+                registered.session,
+                registered.start_ticks,
+                registered.state,
+                decoy_identity.pid,
+                decoy_identity.ppid,
+                decoy_identity.process_group,
+                decoy_identity.session,
+                decoy_identity.start_ticks + 1,
+                decoy_identity.state
+            ),
+        )
+        .unwrap();
+        // SAFETY: resume the exact stopped child so it execs with an empty env.
+        unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGCONT) };
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while process_has_run_id(child.id(), &run_id) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            !process_has_run_id(child.id(), &run_id),
+            "fixture did not sanitize its environment"
+        );
+
+        terminate_owned_processes(
+            &run_id,
+            "registered-sanitized",
+            &owner_dir,
+            &owner_dir.join("diagnostics"),
+            true,
+        )
+        .unwrap();
+        assert!(process_info(child.id()).is_none());
+        assert_eq!(
+            process_info(decoy.id()).unwrap().start_ticks,
+            decoy_identity.start_ticks,
+            "stale registered identity killed unrelated process"
+        );
+        let _ = child.wait();
         let _ = decoy.kill();
         let _ = decoy.wait();
     }

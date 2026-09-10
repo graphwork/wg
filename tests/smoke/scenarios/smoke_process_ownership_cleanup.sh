@@ -85,6 +85,21 @@ while :; do sleep 1; done
 SH
 chmod +x "$case_root/observer"
 
+cat >"$case_root/sanitized" <<'SH'
+#!/usr/bin/env bash
+# Stop while start_owned_process publishes PID/start registration, then erase
+# both ownership markers. Cleanup must retain authority through registration.
+kill -STOP "$$"
+exec env -i OWNED_CWD="$OWNED_CWD" OWNED_PIDS="$OWNED_PIDS" bash -c '
+    trap "" TERM INT
+    cd "$OWNED_CWD"
+    exec 8>>"$OWNED_CWD/sanitized-held.log"
+    echo "$$" >>"$OWNED_PIDS"
+    while :; do sleep 1; done
+'
+SH
+chmod +x "$case_root/sanitized"
+
 cat >"$case_root/supervisor" <<'SH'
 #!/usr/bin/env bash
 # TERM-ignoring supervisor plus TERM-ignoring daemon child. If the child dies
@@ -115,12 +130,15 @@ pids="$case_dir/pids"
 export OWNED_CWD="$owned" OWNED_PIDS="$pids"
 start_owned_process fake-pi "$owned/fake-pi-launch.log" "$case_dir/../fake-pi" >/dev/null
 start_owned_process observer "$owned/observer.log" "$case_dir/../observer" >/dev/null
+start_owned_process sanitized "$owned/sanitized.log" "$case_dir/../sanitized" >"$case_dir/sanitized.pid"
+sanitized_pid=$(<"$case_dir/sanitized.pid")
+kill -CONT "$sanitized_pid"
 start_owned_process supervised-daemon "$owned/supervisor.log" "$case_dir/../supervisor" >/dev/null
 for _ in $(seq 1 100); do
-    [[ $(wc -l <"$pids") -ge 4 ]] && break
+    [[ $(wc -l <"$pids") -ge 5 ]] && break
     sleep 0.02
 done
-[[ $(wc -l <"$pids") -ge 4 ]]
+[[ $(wc -l <"$pids") -ge 5 ]]
 case "$mode" in
     success) exit 0 ;;
     assertion) false ;;
@@ -175,7 +193,7 @@ EOF
             # If SIGKILL cut the inner trap short, exercise the explicit stale
             # ownership backstop exactly as the next global harness pass does.
             _wg_smoke_terminate_run "$token" "smoke-process-ownership-$mode" \
-                "$owner_dir/cleanup-diagnostics.log" \
+                "$owner_dir/cleanup-diagnostics.log" "$WG_SMOKE_HARNESS_RUN_ID" "$owner_dir" \
                 || loud_fail "timeout backstop could not reap exact ownership set"
             # The timeout may SIGKILL the inner cleanup shell mid-trap. The
             # outer backstop has now proven the ownership set empty, so and

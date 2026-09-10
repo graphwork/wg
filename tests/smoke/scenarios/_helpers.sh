@@ -292,9 +292,17 @@ fi
 # still the authority used immediately before a signal.
 register_owned_pid() {
     local pid="$1" role="${2:-process}" identity
+    # Registration becomes durable cleanup authority if a descendant later
+    # sanitizes its environment. Publish it only while both exact run markers
+    # are readable and while a complete immutable PID/start tuple exists.
+    _wg_smoke_pid_has_run_id "$pid" "$WG_SMOKE_RUN_ID" \
+        || loud_fail "cannot register $role pid $pid without exact local run marker"
+    _wg_smoke_pid_has_harness_id "$pid" "$WG_SMOKE_HARNESS_RUN_ID" \
+        || loud_fail "cannot register $role pid $pid without exact harness run marker"
     identity=$(_wg_smoke_proc_identity "$pid" 2>/dev/null || true)
+    [[ -n "$identity" ]] || loud_fail "cannot register $role pid $pid without immutable process identity"
     printf '%s|%s|%s\n' "$role" "$pid" "$identity" >>"$WG_SMOKE_PROCESSES_FILE"
-    if [[ -n "${WG_SMOKE_HARNESS_SEEN_FILE:-}" && -n "$identity" ]]; then
+    if [[ -n "${WG_SMOKE_HARNESS_SEEN_FILE:-}" ]]; then
         # identity is ppid pgid sid start state. Publish the immutable tuple
         # immediately, before a short-lived child can become an environ-less
         # zombie that only the Rust subreaper is able to collect.
@@ -475,47 +483,72 @@ _wg_smoke_signal_snapshot() {
     done <<<"$snapshot"
 }
 
-_wg_smoke_wait_registered() {
-    local role pid rest
-    [[ -f "$WG_SMOKE_PROCESSES_FILE" ]] || return 0
-    while IFS='|' read -r role pid rest; do
-        [[ "$pid" =~ ^[0-9]+$ ]] || continue
-        wait "$pid" 2>/dev/null || true
-    done <"$WG_SMOKE_PROCESSES_FILE"
+_wg_smoke_signal_registered() {
+    local owner_dir="$1" signal="$2" processes role pid recorded current
+    for processes in "$owner_dir"/registry.*/processes; do
+        [[ -f "$processes" ]] || continue
+        while IFS='|' read -r role pid recorded; do
+            [[ "$pid" =~ ^[0-9]+$ ]] || continue
+            current=$(_wg_smoke_proc_identity "$pid" 2>/dev/null || true)
+            [[ -n "$current" ]] || continue
+            # identity is ppid pgid sid start state; only start is immutable.
+            # shellcheck disable=SC2086
+            set -- $recorded
+            [[ $# -ge 4 ]] || continue
+            local recorded_start="$4"
+            # shellcheck disable=SC2086
+            set -- $current
+            [[ "$4" == "$recorded_start" ]] || continue
+            kill -"$signal" "$pid" 2>/dev/null || true
+        done <"$processes"
+    done
 }
 
-# Print registered identities that still name the same kernel process. This is
-# observation only: start ticks close PID reuse, and no signal is sent from the
-# registry alone (the exact environment marker remains signal authority).
+_wg_smoke_wait_registered() {
+    local owner_dir="$1" processes role pid rest
+    for processes in "$owner_dir"/registry.*/processes; do
+        [[ -f "$processes" ]] || continue
+        while IFS='|' read -r role pid rest; do
+            [[ "$pid" =~ ^[0-9]+$ ]] || continue
+            wait "$pid" 2>/dev/null || true
+        done <"$processes"
+    done
+}
+
+# Print registered identities that still name the same kernel process. A
+# registration was published only while both exact markers were readable, so
+# its immutable PID/start tuple remains signal authority after env sanitization.
 _wg_smoke_registered_survivors() {
-    local role pid recorded current
-    [[ -f "$WG_SMOKE_PROCESSES_FILE" ]] || return 0
-    while IFS='|' read -r role pid recorded; do
-        [[ "$pid" =~ ^[0-9]+$ ]] || continue
-        current=$(_wg_smoke_proc_identity "$pid" 2>/dev/null || true)
-        [[ -n "$current" ]] || continue
-        # identity is ppid pgid sid start state; state may legitimately change.
-        # shellcheck disable=SC2086
-        set -- $recorded
-        [[ $# -ge 4 ]] || continue
-        local recorded_start="$4"
-        # shellcheck disable=SC2086
-        set -- $current
-        [[ "$4" == "$recorded_start" ]] || continue
-        # A zombie adopted by the outer Rust subreaper cannot be collected by
-        # this shell. Its registered PID/start tuple is already in the shared
-        # ledger, so hand it off rather than treating it as a live survivor.
-        if [[ "${WG_SMOKE_HARNESS_OWNED:-0}" == 1 && "$5" == Z ]]; then
-            continue
-        fi
-        printf '%s|%s|%s\n' "$role" "$pid" "$current"
-    done <"$WG_SMOKE_PROCESSES_FILE"
+    local owner_dir="$1" processes role pid recorded current
+    for processes in "$owner_dir"/registry.*/processes; do
+        [[ -f "$processes" ]] || continue
+        while IFS='|' read -r role pid recorded; do
+            [[ "$pid" =~ ^[0-9]+$ ]] || continue
+            current=$(_wg_smoke_proc_identity "$pid" 2>/dev/null || true)
+            [[ -n "$current" ]] || continue
+            # identity is ppid pgid sid start state; state may legitimately change.
+            # shellcheck disable=SC2086
+            set -- $recorded
+            [[ $# -ge 4 ]] || continue
+            local recorded_start="$4"
+            # shellcheck disable=SC2086
+            set -- $current
+            [[ "$4" == "$recorded_start" ]] || continue
+            # A zombie adopted by the outer Rust subreaper cannot be collected by
+            # this shell. Its registered PID/start tuple is already in the shared
+            # ledger, so hand it off rather than treating it as a live survivor.
+            if [[ "${WG_SMOKE_HARNESS_OWNED:-0}" == 1 && "$5" == Z ]]; then
+                continue
+            fi
+            printf '%s|%s|%s\n' "$role" "$pid" "$current"
+        done <"$processes"
+    done
 }
 
 _wg_smoke_wait_registered_gone() {
-    local survivors i
+    local owner_dir="$1" survivors i
     for i in $(seq 1 100); do
-        survivors=$(_wg_smoke_registered_survivors)
+        survivors=$(_wg_smoke_registered_survivors "$owner_dir")
         [[ -z "$survivors" ]] && return 0
         sleep 0.02
     done
@@ -540,25 +573,29 @@ _wg_smoke_remember_snapshot() {
 # and returns non-zero so fixture directories are deliberately retained.
 _wg_smoke_terminate_run() {
     local run_id="$1" scenario="$2" diag="$3" harness_run_id="${4:-$WG_SMOKE_HARNESS_RUN_ID}"
-    local snapshot="" seen_file="$WG_SMOKE_REGISTRY_DIR/seen" i
+    local target_owner_dir="${5:-$(dirname "$WG_SMOKE_OWNER_FILE")}" snapshot="" registered_survivors=""
+    local seen_file="$WG_SMOKE_REGISTRY_DIR/seen" i
     : >"$seen_file"
     for i in $(seq 1 40); do
         snapshot=$(_wg_smoke_owned_snapshot "$run_id" "$harness_run_id")
-        [[ -z "$snapshot" ]] && break
+        registered_survivors=$(_wg_smoke_registered_survivors "$target_owner_dir")
+        [[ -z "$snapshot" && -z "$registered_survivors" ]] && break
         _wg_smoke_remember_snapshot "$snapshot" "$seen_file"
         _wg_smoke_signal_snapshot "$run_id" TERM "$snapshot"
+        _wg_smoke_signal_registered "$target_owner_dir" TERM
         sleep 0.05
     done
     for i in $(seq 1 60); do
         snapshot=$(_wg_smoke_owned_snapshot "$run_id" "$harness_run_id")
-        [[ -z "$snapshot" ]] && break
+        registered_survivors=$(_wg_smoke_registered_survivors "$target_owner_dir")
+        [[ -z "$snapshot" && -z "$registered_survivors" ]] && break
         _wg_smoke_remember_snapshot "$snapshot" "$seen_file"
         _wg_smoke_signal_snapshot "$run_id" KILL "$snapshot"
+        _wg_smoke_signal_registered "$target_owner_dir" KILL
         sleep 0.05
     done
-    _wg_smoke_wait_registered
-    local registered_survivors=""
-    registered_survivors=$(_wg_smoke_wait_registered_gone) || true
+    _wg_smoke_wait_registered "$target_owner_dir"
+    registered_survivors=$(_wg_smoke_wait_registered_gone "$target_owner_dir") || true
     snapshot=$(_wg_smoke_owned_snapshot "$run_id" "$harness_run_id")
     if [[ "${WG_SMOKE_HARNESS_OWNED:-0}" == 1 && -n "$snapshot" ]]; then
         # Marker-matched zombies have crossed the adoption boundary: only the
@@ -630,6 +667,7 @@ wg_smoke_sweep() {
             _wg_smoke_owner_is_abandoned "$owner_file" || continue
             if _wg_smoke_terminate_run "$run_id" "${scenario:-unknown}" \
                 "$(dirname "$owner_file")/cleanup-diagnostics.log" "$run_id" \
+                "$(dirname "$owner_file")" \
                 && _wg_smoke_remove_owner_scratch "$(dirname "$owner_file")" "$root"; then
                 rm -rf "$(dirname "$owner_file")"
             else

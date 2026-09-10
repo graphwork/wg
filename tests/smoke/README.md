@@ -61,8 +61,9 @@ The Rust harness and `_helpers.sh` enforce one ownership contract:
   harness creates a random `WG_SMOKE_RUN_ID`, records the scenario root PID,
   immutable `/proc` start ticks, process group, and session, and launches the
   scenario in a new session. All ordinary descendants inherit the marker.
-  `env -i` calls must explicitly preserve `WG_SMOKE_RUN_ID` and
-  `WG_SMOKE_SCENARIO`.
+  `env -i` calls should preserve `WG_SMOKE_RUN_ID` and `WG_SMOKE_SCENARIO`;
+  a process that intentionally sanitizes its environment must first be
+  registered with a complete immutable PID/start identity.
 * **Always use `start_wg_daemon`** — never `wg service start &; daemon_pid=$!`.
   The helper records both the start wrapper and the canonical daemon PID from
   `service/state.json`. For other background fixtures use
@@ -78,18 +79,21 @@ The Rust harness and `_helpers.sh` enforce one ownership contract:
   record are retained with bounded diagnostics
   naming scenario, PID, start ticks, PPID, PGID, and SID.
 * **`wg_smoke_sweep` and the Rust pre/post sweep use owner records, not command
-  names.** `/proc/*/environ` must contain the exact random run id immediately
-  before a signal. An unrelated process named `pi` is therefore never a
-  candidate. A dead PID+start supervisor is swept immediately; a live exact
+  names.** A process is signal-eligible only when `/proc/*/environ` contains
+  both exact run markers immediately before signaling, or when the helper
+  registered its PID/start tuple while those markers were still readable and
+  cleanup revalidates that immutable tuple. An unrelated process named `pi` is
+  therefore never a candidate. A dead PID+start supervisor is swept immediately; a live exact
   supervisor is never swept, and incomplete/legacy records remain evidence
   rather than becoming destructive-cleanup authority merely through age.
 
 The regression tests are `smoke_cleanup_survives_panic.sh` (trap-defeating
 SIGKILL backstop) and `smoke_process_ownership_cleanup.sh` (the historical Pi
 leak replacement: TERM-ignoring double-forked Pi, observer, respawning daemon,
-success/assertion/timeout/SIGINT/SIGTERM paths, repetition baseline, an
-unrelated concurrent `pi` survivor, and a concurrently healthy owned scenario
-that a stale-record sweep must not terminate).
+success/assertion/timeout/SIGINT/SIGTERM paths, repetition baseline, a
+registered child that erases its environment, an unrelated concurrent `pi`
+survivor, and a concurrently healthy owned scenario that a stale-record sweep
+must not terminate).
 
 ## Live, not stubs
 

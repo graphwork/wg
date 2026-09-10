@@ -72,9 +72,13 @@ future commit:
 - Post-spawn root PID/start/group/session diagnostics are append-only. An
   interruption while enriching diagnostics cannot truncate the pre-spawn run-id
   authority used by exact-marker cleanup.
-- Shell cleanup waits a bounded interval for every registered live PID/start
-  identity after signaling and hands adopted zombies to the exact Rust wait.
-  An immutable harness-run marker survives nested
+- Registration is published only while both exact run markers and a complete
+  immutable PID/start identity are readable. Shell and Rust cleanup union the
+  live marker scan with those registrations, revalidate start ticks immediately
+  before signaling, and therefore retain exact cleanup authority if a daemon or
+  wrapper later sanitizes its environment. Shell cleanup waits a bounded interval
+  for every registered live identity and hands adopted zombies to the exact Rust
+  wait. An immutable harness-run marker survives nested
   helpers that intentionally replace their local ownership token. Before every
   signal pass, nested helpers append their exact PID/start snapshots to the
   immutable harness ledger; the Rust wait loop reads that bounded ledger before
@@ -93,8 +97,10 @@ future commit:
   exact identity dead before signaling by marker or deleting registered scratch.
   Incomplete and legacy records are retained as evidence regardless of age.
 
-Focused regression `ownership_authority_is_durable_before_any_scenario_spawn`
-and the real-entry-point process ownership scenario pass. The final expanded
+Focused regressions `ownership_authority_is_durable_before_any_scenario_spawn`
+and `registered_identity_survives_environment_sanitization`, plus the
+real-entry-point process ownership scenario (including its environment-sanitized
+child), pass. The final expanded
 broad/lint result is intentionally supplied by the host-bound completion
 manifest for the settled candidate rather than asserted self-referentially here.
 
