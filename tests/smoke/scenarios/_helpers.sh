@@ -86,14 +86,18 @@ loud_fail() {
     exit 1
 }
 
+_wg_smoke_procfs_ready() {
+    [[ -d /proc && -x /proc && -r /proc/self/stat && -r /proc/self/environ ]]
+}
+
 # Process-owning smoke helpers are supported only beneath the Rust harness,
 # which creates a Linux subreaper before spawn and passes this unguessable
 # equality proof. Ad-hoc/direct execution cannot prove orphan adoption and
 # therefore fails closed before creating any fixture.
-if [[ ! -d /proc \
-    || -z "${WG_SMOKE_HARNESS_RUN_ID:-}" \
+if ! _wg_smoke_procfs_ready \
+    || [[ -z "${WG_SMOKE_HARNESS_RUN_ID:-}" \
     || "${WG_SMOKE_SUBREAPER_TOKEN:-}" != "$WG_SMOKE_HARNESS_RUN_ID" ]]; then
-    loud_fail "exact smoke cleanup requires the Linux Rust subreaper harness; direct/unsupported execution is refused"
+    loud_fail "exact smoke cleanup requires the Linux Rust subreaper harness and readable /proc; direct/unsupported execution is refused"
 fi
 
 # ── wg binary discovery ─────────────────────────────────────────────
@@ -576,6 +580,11 @@ _wg_smoke_terminate_run() {
     local target_owner_dir="${5:-$(dirname "$WG_SMOKE_OWNER_FILE")}" snapshot="" registered_survivors=""
     local seen_file="$WG_SMOKE_REGISTRY_DIR/seen" i
     : >"$seen_file"
+    if ! _wg_smoke_procfs_ready; then
+        printf 'scenario=%s run_id=%s cleanup refused: readable Linux /proc unavailable; owner evidence retained\n' \
+            "$scenario" "$run_id" >>"$diag" 2>/dev/null || true
+        return 1
+    fi
     for i in $(seq 1 40); do
         snapshot=$(_wg_smoke_owned_snapshot "$run_id" "$harness_run_id")
         registered_survivors=$(_wg_smoke_registered_survivors "$target_owner_dir")

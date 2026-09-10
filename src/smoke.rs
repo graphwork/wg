@@ -771,6 +771,7 @@ struct SubreaperGuard {
 #[cfg(target_os = "linux")]
 impl SubreaperGuard {
     fn install() -> Result<Self> {
+        ensure_procfs_ownership_support()?;
         let mut previous = 0;
         // SAFETY: prctl writes one integer supplied by this process.
         unsafe {
@@ -808,6 +809,24 @@ impl SubreaperGuard {
             "smoke process ownership requires Linux PR_SET_CHILD_SUBREAPER and /proc exact-marker scanning; refusing to launch"
         )
     }
+}
+
+#[cfg(target_os = "linux")]
+fn ensure_procfs_ownership_support() -> Result<()> {
+    std::fs::read_dir("/proc")
+        .context("smoke process ownership requires readable Linux /proc; refusing to launch")?;
+    let pid = std::process::id();
+    process_info(pid).ok_or_else(|| {
+        anyhow::anyhow!(
+            "smoke process ownership cannot read a complete /proc/{pid}/stat identity; refusing to launch"
+        )
+    })?;
+    std::fs::read(format!("/proc/{pid}/environ")).with_context(|| {
+        format!(
+            "smoke process ownership cannot read /proc/{pid}/environ for exact-marker scans; refusing to launch"
+        )
+    })?;
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]
@@ -958,10 +977,21 @@ fn reap_tracked_adopted_children(_root_pid: u32, _remembered: &BTreeMap<(u32, u6
 }
 
 #[cfg(target_os = "linux")]
-fn scan_owned_processes(run_id: &str) -> Vec<OwnedProcess> {
-    let Ok(entries) = std::fs::read_dir("/proc") else {
-        return Vec::new();
-    };
+fn scan_owned_processes(run_id: &str) -> std::result::Result<Vec<OwnedProcess>, String> {
+    scan_owned_processes_under(run_id, Path::new("/proc"))
+}
+
+#[cfg(target_os = "linux")]
+fn scan_owned_processes_under(
+    run_id: &str,
+    proc_root: &Path,
+) -> std::result::Result<Vec<OwnedProcess>, String> {
+    let entries = std::fs::read_dir(proc_root).map_err(|error| {
+        format!(
+            "exact smoke cleanup cannot scan Linux procfs {} and refuses empty ownership: {error}",
+            proc_root.display()
+        )
+    })?;
     let mut processes = Vec::new();
     for entry in entries.flatten() {
         let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
@@ -974,12 +1004,12 @@ fn scan_owned_processes(run_id: &str) -> Vec<OwnedProcess> {
         }
     }
     processes.sort_by_key(|process| process.pid);
-    processes
+    Ok(processes)
 }
 
 #[cfg(not(target_os = "linux"))]
-fn scan_owned_processes(_run_id: &str) -> Vec<OwnedProcess> {
-    Vec::new()
+fn scan_owned_processes(_run_id: &str) -> std::result::Result<Vec<OwnedProcess>, String> {
+    Err("exact smoke cleanup requires readable Linux /proc; refusing empty ownership".to_string())
 }
 
 #[cfg(target_os = "linux")]
@@ -1072,15 +1102,31 @@ fn signal_registered_process(_process: &OwnedProcess, _signal: libc::c_int) {}
 fn authorized_owned_processes(
     run_id: &str,
     owner_dir: &Path,
-) -> BTreeMap<(u32, u64), (OwnedProcess, bool)> {
+) -> std::result::Result<BTreeMap<(u32, u64), (OwnedProcess, bool)>, String> {
     let mut authorized = BTreeMap::new();
-    for process in scan_owned_processes(run_id) {
+    for process in scan_owned_processes(run_id)? {
         authorized.insert((process.pid, process.start_ticks), (process, false));
     }
     for process in scan_registered_processes(owner_dir) {
         authorized.insert((process.pid, process.start_ticks), (process, true));
     }
-    authorized
+    Ok(authorized)
+}
+
+fn scan_cleanup_authority(
+    run_id: &str,
+    scenario: &str,
+    owner_dir: &Path,
+    diagnostics_file: &Path,
+) -> std::result::Result<BTreeMap<(u32, u64), (OwnedProcess, bool)>, String> {
+    authorized_owned_processes(run_id, owner_dir).map_err(|error| {
+        let message = format!(
+            "smoke cleanup refused for '{scenario}': {error}; owner evidence retained at {}",
+            owner_dir.display()
+        );
+        append_cleanup_diagnostic(diagnostics_file, &message);
+        message
+    })
 }
 
 fn write_cleanup_diagnostics(
@@ -1122,7 +1168,7 @@ fn terminate_owned_processes(
     let mut seen = BTreeMap::new();
     let term_deadline = Instant::now() + TERM_GRACE;
     loop {
-        let processes = authorized_owned_processes(run_id, owner_dir);
+        let processes = scan_cleanup_authority(run_id, scenario, owner_dir, diagnostics_file)?;
         for (key, (process, registered)) in &processes {
             seen.entry(*key).or_insert_with(|| process.clone());
             if *registered {
@@ -1142,7 +1188,7 @@ fn terminate_owned_processes(
 
     let kill_deadline = Instant::now() + KILL_GRACE;
     loop {
-        let processes = authorized_owned_processes(run_id, owner_dir);
+        let processes = scan_cleanup_authority(run_id, scenario, owner_dir, diagnostics_file)?;
         for (key, (process, registered)) in &processes {
             seen.entry(*key).or_insert_with(|| process.clone());
             if *registered {
@@ -1162,10 +1208,11 @@ fn terminate_owned_processes(
     if reap_children {
         reap_tracked_adopted_children(0, &seen);
     }
-    let survivors: Vec<OwnedProcess> = authorized_owned_processes(run_id, owner_dir)
-        .into_values()
-        .map(|(process, _)| process)
-        .collect();
+    let survivors: Vec<OwnedProcess> =
+        scan_cleanup_authority(run_id, scenario, owner_dir, diagnostics_file)?
+            .into_values()
+            .map(|(process, _)| process)
+            .collect();
     if survivors.is_empty() {
         return Ok(());
     }
@@ -1809,6 +1856,15 @@ exit 9
         assert_eq!(decoy_before.process_group, decoy_after.process_group);
         let _ = decoy.kill();
         let _ = decoy.wait();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn procfs_scan_failure_is_not_an_empty_ownership_set() {
+        let td = TempDir::new().unwrap();
+        let missing = td.path().join("not-mounted");
+        let error = scan_owned_processes_under("wg-smoke-v2:test", &missing).unwrap_err();
+        assert!(error.contains("refuses empty ownership"), "{error}");
     }
 
     #[cfg(target_os = "linux")]

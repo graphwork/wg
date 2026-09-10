@@ -72,8 +72,11 @@ The Rust harness and `_helpers.sh` enforce one ownership contract:
 * **Never install your own `EXIT`/`ERR`/`INT`/`TERM` trap.** `_helpers.sh` owns
   those paths and tears down the entire exact ownership set. If you need extra
   cleanup (for example a tmux session), register it with `add_cleanup_hook`.
-* **Cleanup is ordered and bounded.** Graceful service stop runs first, then
-  the exact marker set is rescanned through TERM and KILL (catching respawns),
+* **Cleanup is ordered and bounded.** Harness entry probes readable Linux
+  `/proc` stat/environ support before spawn, and a later `/proc` scan failure is
+  an error that retains owner evidence rather than an empty-success result.
+  Graceful service stop runs first, then the exact marker set is rescanned
+  through TERM and KILL (catching respawns),
   direct/adopted children are reaped, and only then are scratch directories
   deleted by the Rust subreaper. If anything survives, scratch and its owner
   record are retained with bounded diagnostics

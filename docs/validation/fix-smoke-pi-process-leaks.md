@@ -87,7 +87,11 @@ future commit:
   ledger/marker-matched zombies adopted directly by itself. This closes the brief
   markerless-zombie/fixture-deletion race without broad `waitpid` selection.
 - Platforms without Linux subreaper plus `/proc` exact-marker support fail closed
-  before scenario spawn. `_helpers.sh` also requires the matching unguessable
+  before scenario spawn: subreaper installation probes readable `/proc`, the
+  harness's own complete stat identity, and environ access. Runtime `/proc`
+  directory-scan failure returns an error rather than an empty ownership set,
+  so cleanup retains fixtures. `_helpers.sh` performs the same readable-`/proc`
+  check at entry and again before cleanup. It also requires the matching unguessable
   harness/subreaper token before initializing fixtures, so ad-hoc direct and
   unsupported execution cannot bypass that boundary. Unsupported-platform
   sweeps retain owner records and append a diagnostic instead of pretending an
@@ -97,8 +101,9 @@ future commit:
   exact identity dead before signaling by marker or deleting registered scratch.
   Incomplete and legacy records are retained as evidence regardless of age.
 
-Focused regressions `ownership_authority_is_durable_before_any_scenario_spawn`
-and `registered_identity_survives_environment_sanitization`, plus the
+Focused regressions `ownership_authority_is_durable_before_any_scenario_spawn`,
+`procfs_scan_failure_is_not_an_empty_ownership_set`, and
+`registered_identity_survives_environment_sanitization`, plus the
 real-entry-point process ownership scenario (including its environment-sanitized
 child), pass. The final expanded
 broad/lint result is intentionally supplied by the host-bound completion
