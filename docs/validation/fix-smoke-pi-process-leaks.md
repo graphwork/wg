@@ -76,6 +76,10 @@ future commit:
   identity to disappear after signaling. This covers the brief markerless-zombie
   interval before init reaps a double-forked fixture and prevents fixture
   deletion from racing process-table disappearance.
+- Platforms without Linux subreaper plus `/proc` exact-marker support fail closed
+  before scenario spawn. Their global sweep retains existing owner records and
+  appends a diagnostic instead of pretending an empty scan authorizes process or
+  fixture deletion.
 
 Focused regression `ownership_authority_is_durable_before_any_scenario_spawn`
 and the real-entry-point process ownership scenario pass. The final expanded

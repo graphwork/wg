@@ -406,8 +406,9 @@ pub fn run_scenario(scenario: &Scenario, manifest_dir: &Path) -> ScenarioResult 
     };
     // Install the adoption boundary immediately after the durable pre-spawn
     // owner record and before constructing or launching the scenario command.
-    // Fail closed on Linux: without subreaper ownership, an orphaned zombie
-    // cannot be waited by this harness even though its live process is marked.
+    // Fail closed whenever exact adoption/marker scanning is unavailable:
+    // without it an orphaned zombie cannot be waited by this harness even
+    // though its live process was initially marked.
     if let Err(error) = ownership.install_subreaper() {
         return ScenarioResult {
             name: scenario.name.clone(),
@@ -740,7 +741,9 @@ struct SubreaperGuard;
 #[cfg(not(target_os = "linux"))]
 impl SubreaperGuard {
     fn install() -> Result<Self> {
-        Ok(Self)
+        anyhow::bail!(
+            "smoke process ownership requires Linux PR_SET_CHILD_SUBREAPER and /proc exact-marker scanning; refusing to launch"
+        )
     }
 }
 
@@ -1079,6 +1082,7 @@ pub fn sweep_smoke_leaks() {
 
 /// Sweep against an explicit root (useful for tests, where pointing at a
 /// shared global root would race with parallel test threads).
+#[cfg(target_os = "linux")]
 pub fn sweep_smoke_leaks_under(root: &Path, min_age: Duration) {
     // `waitpid(-1)` is process-global. Serialize sweeps with scenario runs so
     // one test thread can never reap another thread's scenario root child.
@@ -1119,6 +1123,29 @@ pub fn sweep_smoke_leaks_under(root: &Path, min_age: Duration) {
     }
 }
 
+#[cfg(not(target_os = "linux"))]
+pub fn sweep_smoke_leaks_under(root: &Path, _min_age: Duration) {
+    let _process_guard = scenario_process_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let owners = root.join(OWNERS_DIR_NAME);
+    if let Ok(entries) = std::fs::read_dir(&owners) {
+        for entry in entries.flatten() {
+            let owner_dir = entry.path();
+            if !owner_dir.join("owner.env").is_file() {
+                continue;
+            }
+            append_cleanup_diagnostic(
+                &owner_dir.join("cleanup-diagnostics.log"),
+                "unsupported platform: exact smoke process ownership cannot be verified; processes and ownership evidence retained",
+            );
+        }
+    }
+    // Retention is deliberate. Without /proc marker verification and a child
+    // subreaper, neither signaling nor fixture deletion is authorized.
+}
+
+#[cfg(target_os = "linux")]
 fn owner_record_supervisor_live(fields: &BTreeMap<String, String>) -> Option<bool> {
     let Some(pid) = fields
         .get("supervisor_pid")
@@ -1151,6 +1178,7 @@ fn read_owner_fields(path: &Path) -> BTreeMap<String, String> {
         .collect()
 }
 
+#[cfg(target_os = "linux")]
 fn path_age_exceeds(path: &Path, min_age: Duration) -> bool {
     if min_age.is_zero() {
         return true;
@@ -1384,6 +1412,31 @@ script = "b.sh"
             "a pre-spawn record must not fabricate a child identity"
         );
         drop(ownership);
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn unsupported_platform_refuses_before_launching_scenario() {
+        let td = TempDir::new().unwrap();
+        let launched = td.path().join("launched");
+        write_script(
+            td.path(),
+            "must-not-run.sh",
+            &format!("#!/usr/bin/env bash\ntouch '{}'\n", launched.display()),
+        );
+        let scenario = Scenario {
+            name: "unsupported-platform".to_string(),
+            script: "must-not-run.sh".to_string(),
+            owners: vec!["test".to_string()],
+            description: String::new(),
+            timeout_seconds: Some(10),
+        };
+        let result = run_scenario(&scenario, td.path());
+        assert!(matches!(result.outcome, ScenarioOutcome::Error { .. }));
+        assert!(
+            !launched.exists(),
+            "scenario launched without safe ownership"
+        );
     }
 
     #[test]
