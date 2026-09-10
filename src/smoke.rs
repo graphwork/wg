@@ -478,7 +478,7 @@ pub fn run_scenario(scenario: &Scenario, manifest_dir: &Path) -> ScenarioResult 
         unsafe {
             cmd.pre_exec(|| {
                 if libc::setsid() == -1 {
-                    let _ = libc::setpgid(0, 0);
+                    return Err(std::io::Error::last_os_error());
                 }
                 Ok(())
             });

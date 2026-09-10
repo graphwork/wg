@@ -79,7 +79,8 @@ future commit:
 - Platforms without Linux subreaper plus `/proc` exact-marker support fail closed
   before scenario spawn. Their global sweep retains existing owner records and
   appends a diagnostic instead of pretending an empty scan authorizes process or
-  fixture deletion.
+  fixture deletion. On Linux, `setsid()` failure is returned from `pre_exec`, so
+  the child cannot continue without its required new session.
 
 Focused regression `ownership_authority_is_durable_before_any_scenario_spawn`
 and the real-entry-point process ownership scenario pass. The final expanded
