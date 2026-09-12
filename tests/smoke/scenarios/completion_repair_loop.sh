@@ -19,6 +19,7 @@ fi
 
 . "$HERE/_helpers.sh"
 command -v git >/dev/null 2>&1 || loud_skip "MISSING GIT" "git is required"
+command -v tmux >/dev/null 2>&1 || loud_skip "MISSING TMUX" "tmux is required for the real TUI flow"
 
 scratch=$(make_scratch)
 repo="$scratch/project"; home="$scratch/home"
@@ -184,6 +185,46 @@ grep -q 'ROOT repair-budget' "$scratch/status.txt" || loud_fail "human status om
 wgrun show repair-budget >"$scratch/show.txt"
 grep -q 'Completion repair/NeedsAttention' "$scratch/show.txt" || loud_fail "human show omitted repair state"
 grep -q 'affected downstream: repair-child, repair-grandchild' "$scratch/show.txt" || loud_fail "human show omitted stalled impact"
+
+# Drive the real TUI through a tmux PTY and the keyboard dispatcher. The graph
+# list order is presentation-owned, so inspect each visible task rather than
+# assuming a fixed row; one inspector must show the same root and safe action.
+session="wg-completion-repair-tui-$$"
+python3 - "$repo/.wg/graph.jsonl" <<'PY'
+import json,sys
+path=sys.argv[1]
+rows=[line for line in open(path) if json.loads(line).get('id')!='repair-unchanged']
+open(path,'w').writelines(rows)
+PY
+printf '%s\n' repair-budget >"$repo/.wg/.new_task_focus"
+cleanup_tui() { tmux kill-session -t "$session" >/dev/null 2>&1 || true; }
+add_cleanup_hook cleanup_tui
+tmux new-session -d -s "$session" -x 180 -y 42 \
+  "cd '$repo' && HOME='$home' XDG_CONFIG_HOME='$home/.config' WG_TUI_APPEARANCE=none '$WG_BIN' --dir '$repo/.wg' tui; rc=\$?; echo TUI_EXIT=\$rc; sleep 30"
+capture_tui() { tmux capture-pane -p -t "$session" 2>/dev/null || true; }
+for _ in $(seq 1 400); do
+  capture_tui | grep -Fq 'repair-budget' && break
+  sleep 0.025
+done
+capture_tui | grep -Fq 'repair-budget' \
+  || loud_fail "TUI did not render the stalled task list: $(capture_tui | tr '\n' '|')"
+found_blocker=0
+for row in $(seq 0 8); do
+  tmux send-keys -t "$session" Home
+  for _ in $(seq 1 "$row"); do tmux send-keys -t "$session" Down; done
+  tmux send-keys -t "$session" Enter End
+  sleep 0.1
+  if capture_tui | grep -Fq 'ROOT BLOCKER: repair-budget' \
+      && capture_tui | grep -Fq 'one safe action:'; then
+    found_blocker=1
+    capture_tui >"$scratch/tui-blocker.txt"
+    break
+  fi
+  tmux send-keys -t "$session" Escape
+  sleep 0.025
+done
+[[ "$found_blocker" == 1 ]] \
+  || loud_fail "real TUI inspector omitted root blocker/next action: $(capture_tui | tr '\n' '|')"
 
 [[ ! -e "$ROOT/.wg" ]] \
   || loud_fail "scenario created protected runtime state inside the source checkout: $ROOT/.wg"

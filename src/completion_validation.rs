@@ -622,10 +622,12 @@ pub fn stalled_chains(graph: &WorkGraph) -> Vec<StalledChain> {
                 }
                 // Active work, a bounded wait, completion in progress, and
                 // terminal/satisfied work are not stalled by this root.
-                if matches!(
-                    child_task.status,
-                    Status::Open | Status::Blocked | Status::Incomplete
-                ) {
+                if child_task.assigned.is_none()
+                    && matches!(
+                        child_task.status,
+                        Status::Open | Status::Blocked | Status::Incomplete
+                    )
+                {
                     affected.insert(child.clone());
                     queue.push_back(child.clone());
                 }
@@ -2013,6 +2015,20 @@ mod tests {
         };
         graph.add_node(crate::graph::Node::Task(done));
         assert!(stalled_chains(&graph)[0].affected_downstream.is_empty());
+
+        let active = Task {
+            id: "active-child".into(),
+            title: "actively owned downstream".into(),
+            status: Status::Open,
+            assigned: Some("worker-2".into()),
+            after: vec!["root".into()],
+            ..Task::default()
+        };
+        graph.add_node(crate::graph::Node::Task(active));
+        assert!(
+            stalled_chains(&graph)[0].affected_downstream.is_empty(),
+            "assigned active work is not a stalled-chain member"
+        );
     }
 
     #[test]
