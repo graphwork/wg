@@ -1198,12 +1198,12 @@ fn execute_worker_operation(
                 // Capability validation above authenticates the exact task,
                 // generation, attempt/fence, and retained worktree. Execute
                 // checks only there; the daemon CWD is never source authority.
-                crate::commands::done::run_smoke_gate(dir, &binding.task_id, false, false, true)?;
-                crate::commands::completion_finish::run_at(
+                crate::commands::completion_finish::run_at_with_smoke(
                     dir,
                     &binding.task_id,
                     "refs/heads/main",
                     std::path::Path::new(&binding.worktree_path),
+                    true,
                 )?;
                 Ok(serde_json::json!({"handoff": "done", "derived": true}))
             }

@@ -34,6 +34,7 @@ pub const DETERMINISTIC_VALIDATION_MEDIA_TYPE: &str =
     "application/vnd.worksgood.deterministic-validation+json";
 pub const CONFIGURED_VALIDATION_EVIDENCE_KIND: &str = "deterministic-validation/configured/v1";
 pub const BASELINE_VALIDATION_EVIDENCE_KIND: &str = "deterministic-validation/baseline/v1";
+pub const SMOKE_FAILURE_EVIDENCE_KIND: &str = "completion-smoke/failure/v1";
 const DETERMINISTIC_VALIDATION_PREFIX: &str = "deterministic-validation/";
 const MAX_CAPTURE_BYTES_PER_STREAM: usize = 32 * 1024;
 const MAX_COMMAND_BYTES: usize = 16 * 1024;
@@ -855,6 +856,109 @@ pub fn capture_validation(
         stdout,
         stderr,
     })
+}
+
+/// Capture an in-process deterministic completion check against the same
+/// lifecycle/repository binding used by shell validation. This is used for the
+/// existing owned smoke gate, whose Rust subreaper harness cannot safely be
+/// represented as (or re-run through) an arbitrary shell command.
+pub fn capture_validation_operation<F>(
+    task: &Task,
+    label: &str,
+    configured_index: u32,
+    purpose: ValidationPurpose,
+    cwd: &Path,
+    operation: F,
+) -> Result<DeterministicValidationEvidence, ValidationCaptureError>
+where
+    F: FnOnce() -> Result<(), String>,
+{
+    if label.is_empty() || label.len() > MAX_COMMAND_BYTES {
+        return Err(ValidationCaptureError::InvalidCommand);
+    }
+    let before = repository_state(cwd).map_err(ValidationCaptureError::Repository)?;
+    let requirements_digest = requirements_digest(task)
+        .map_err(|error| ValidationCaptureError::Lifecycle(error.to_string()))?;
+    let started = Utc::now();
+    let started_instant = Instant::now();
+    let result = operation();
+    let duration_ms = u64::try_from(started_instant.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let finished = Utc::now();
+    let after = repository_state(cwd).map_err(ValidationCaptureError::Repository)?;
+    let (exit, stderr) = match result {
+        Ok(()) => (
+            ValidationExitStatus {
+                success: true,
+                code: Some(0),
+                signal: None,
+                timed_out: false,
+            },
+            bounded_bytes(&[]),
+        ),
+        Err(error) => (
+            ValidationExitStatus {
+                success: false,
+                code: Some(1),
+                signal: None,
+                timed_out: false,
+            },
+            bounded_bytes(error.as_bytes()),
+        ),
+    };
+    Ok(DeterministicValidationEvidence {
+        evidence_version: DETERMINISTIC_VALIDATION_VERSION,
+        capture_origin: "wg_done_owned_smoke".to_string(),
+        purpose,
+        command: command_identity(label, configured_index),
+        lifecycle: ValidationLifecycleBinding {
+            task_id: task.id.clone(),
+            generation: task.lifecycle.generation,
+            attempt_id: task
+                .lifecycle
+                .current_attempt
+                .as_ref()
+                .map(|attempt| attempt.id.clone()),
+            attempt_fence: task.lifecycle.fence,
+            requirements_digest,
+        },
+        repository: ValidationRepositoryBinding {
+            repository_identity: before.repository_identity,
+            worktree_identity: before.worktree_identity,
+            cwd_identity: before.cwd_identity,
+            cwd_relative: before.cwd_relative,
+            before_head_oid: before.head_oid,
+            after_head_oid: after.head_oid,
+            before_tree_oid: before.tree_oid,
+            after_tree_oid: after.tree_oid,
+            integrated_main_oid: before.integrated_main_oid,
+            before_status_digest: before.status_digest,
+            after_status_digest: after.status_digest,
+            before_candidate_content_digest: Some(before.candidate_content_digest),
+            after_candidate_content_digest: Some(after.candidate_content_digest),
+        },
+        started_at: started.to_rfc3339(),
+        finished_at: finished.to_rfc3339(),
+        duration_ms,
+        exit,
+        stdout: bounded_bytes(&[]),
+        stderr,
+    })
+}
+
+fn bounded_bytes(bytes: &[u8]) -> BoundedValidationOutput {
+    let captured = &bytes[..bytes.len().min(MAX_CAPTURE_BYTES_PER_STREAM)];
+    let (encoding, content) = match String::from_utf8(captured.to_vec()) {
+        Ok(text) => ("utf-8".to_string(), text),
+        Err(_) => ("hex".to_string(), hex::encode(captured)),
+    };
+    BoundedValidationOutput {
+        digest: ContentDigest::of_bytes(bytes),
+        total_bytes: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+        captured_bytes: u64::try_from(captured.len()).unwrap_or(u64::MAX),
+        truncated: captured.len() < bytes.len(),
+        encoding,
+        content,
+    }
 }
 
 fn validation_timeout(task: &Task) -> Duration {

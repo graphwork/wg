@@ -272,6 +272,83 @@ fn failed_required_check_repairs_in_same_attempt_and_publishes_once() {
 }
 
 #[test]
+fn owned_smoke_failure_enters_same_worker_repair() {
+    let temp = tempdir().unwrap();
+    let project = temp.path();
+    let wg_dir = project.join(".wg");
+    let smoke_dir = wg_dir.join("tests/smoke");
+    std::fs::create_dir_all(&smoke_dir).unwrap();
+    let git = |args: &[&str]| {
+        assert!(
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(project)
+                .status()
+                .unwrap()
+                .success()
+        );
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&["config", "user.email", "test@example.invalid"]);
+    git(&["config", "user.name", "Test"]);
+    std::fs::write(project.join("base.txt"), "base\n").unwrap();
+    git(&["add", "base.txt"]);
+    git(&["commit", "-qm", "base"]);
+    std::fs::write(smoke_dir.join("fail.sh"), "#!/bin/sh\nexit 6\n").unwrap();
+    std::fs::write(
+        smoke_dir.join("manifest.toml"),
+        r#"[[scenario]]
+name = "owned-failure"
+script = "fail.sh"
+owners = ["smoke-repair"]
+timeout_seconds = 10
+"#,
+    )
+    .unwrap();
+
+    let mut task = Task {
+        id: "smoke-repair".into(),
+        title: "Repair owned smoke".into(),
+        status: Status::InProgress,
+        assigned: Some("repair-worker".into()),
+        completion_contract: CompletionContract::Report,
+        ..Task::default()
+    };
+    task.lifecycle.fence = 9;
+    task.lifecycle.current_attempt = Some(AttemptRef {
+        id: "attempt-0-1".into(),
+        generation: 0,
+        fence: 9,
+        actor_id: "repair-worker".into(),
+        disposition: None,
+    });
+    let source_tuple = task.lifecycle.current_attempt.clone();
+    let mut graph = WorkGraph::new();
+    graph.add_node(Node::Task(task));
+    save_graph(&graph, wg_dir.join("graph.jsonl")).unwrap();
+
+    let error = completion_finish::run_at_with_smoke(
+        &wg_dir,
+        "smoke-repair",
+        "refs/heads/main",
+        project,
+        true,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("evidence="));
+    let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
+    let task = graph.get_task("smoke-repair").unwrap();
+    assert_eq!(task.status, Status::InProgress);
+    assert_eq!(task.assigned.as_deref(), Some("repair-worker"));
+    assert_eq!(task.lifecycle.current_attempt, source_tuple);
+    let repair = task.completion_repair.as_ref().unwrap();
+    assert_eq!(repair.reason_code, "deterministic-check-failed");
+    assert_eq!(repair.exit_category, "nonzero-exit");
+    assert!(repair.command.contains("owned smoke gate"));
+    assert!(repair.evidence.content_digest.as_str().starts_with("b3:"));
+}
+
+#[test]
 fn ten_concurrent_attempts_use_one_immutable_review_and_done_authority() {
     let temp = tempdir().unwrap();
     let project = temp.path();

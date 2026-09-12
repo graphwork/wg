@@ -12,8 +12,9 @@ use worksgood::completion_manifest::{EvidenceRef, OutputRef, ReviewResolver};
 use worksgood::completion_task::{load_review_evidence, load_submission_bytes};
 use worksgood::completion_validation::{
     BASELINE_VALIDATION_EVIDENCE_KIND, CONFIGURED_VALIDATION_EVIDENCE_KIND,
-    DETERMINISTIC_VALIDATION_MEDIA_TYPE, DeterministicValidationEvidence, ValidationPurpose,
-    capture_validation, configured_validation_commands, land_baseline_command,
+    DETERMINISTIC_VALIDATION_MEDIA_TYPE, DeterministicValidationEvidence,
+    SMOKE_FAILURE_EVIDENCE_KIND, ValidationPurpose, capture_validation,
+    capture_validation_operation, configured_validation_commands, land_baseline_command,
 };
 use worksgood::graph::CompletionContract;
 use worksgood::parser::load_graph;
@@ -31,18 +32,59 @@ impl Drop for TempFiles {
 }
 
 pub fn run(dir: &Path, id: &str, integration_ref: &str) -> Result<()> {
-    // The ordinary publication-derived completion path retains the existing
-    // owned smoke gate. Run it before deterministic validation/model work so a
-    // known regression cannot consume repair or reviewer budget.
-    super::done::run_smoke_gate(
+    let cwd = std::env::current_dir().context("determine worker worktree")?;
+    run_at_with_smoke(
         dir,
         id,
-        false,
-        false,
+        integration_ref,
+        &cwd,
         std::env::var_os("WG_AGENT_ID").is_some(),
-    )?;
-    let cwd = std::env::current_dir().context("determine worker worktree")?;
-    run_at(dir, id, integration_ref, &cwd)
+    )
+}
+
+pub(crate) fn run_at_with_smoke(
+    dir: &Path,
+    id: &str,
+    integration_ref: &str,
+    cwd: &Path,
+    is_agent: bool,
+) -> Result<()> {
+    let task = load_graph(dir.join("graph.jsonl"))?
+        .get_task(id)
+        .with_context(|| format!("task '{id}' not found"))?
+        .clone();
+    let smoke_manifest_path = worksgood::smoke::Manifest::resolve_path(dir);
+    let smoke_manifest =
+        worksgood::smoke::Manifest::load_from(&smoke_manifest_path).with_context(|| {
+            format!(
+                "loading smoke manifest from {}",
+                smoke_manifest_path.display()
+            )
+        })?;
+    if smoke_manifest.scenarios_for_task(id).is_empty() {
+        return run_at(dir, id, integration_ref, cwd);
+    }
+    let captured = capture_validation_operation(
+        &task,
+        "<WG owned smoke gate>",
+        u32::MAX,
+        ValidationPurpose::Configured,
+        cwd,
+        || super::done::run_smoke_gate(dir, id, false, false, is_agent).map_err(|e| e.to_string()),
+    )
+    .context("capture owned smoke gate")?;
+    if !captured.exit.success {
+        let reference = store_validation_evidence(dir, &captured, SMOKE_FAILURE_EVIDENCE_KIND)?;
+        record_validation_result(dir, &task, &captured, &reference)?;
+        let repair = record_repair_feedback(dir, &task, &captured, &reference)?;
+        print_repair_feedback(&repair);
+        bail!(
+            "owned smoke gate rejected completion [evidence={}; feedback={}]",
+            reference.content_digest,
+            repair.feedback_id
+        );
+    }
+    run_at(dir, id, integration_ref, cwd)
 }
 
 pub(crate) fn run_at(dir: &Path, id: &str, integration_ref: &str, cwd: &Path) -> Result<()> {
