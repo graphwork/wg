@@ -326,7 +326,7 @@ Timing:
 
 ## Controlled completion-loop and process evidence
 
-The candidate binary passed `tests/smoke/scenarios/completion_repair_loop.sh` under the Rust smoke/subreaper harness (115 s). This credential-free scenario exercises the required queued cases through real CLI/TUI entry points:
+The candidate binary passed `tests/smoke/scenarios/completion_repair_loop.sh` under the Rust smoke/subreaper harness (115 s). That human-flow scenario remains owned by its prerequisite implementation task, `simplify-completion-repair-loop`; this report does not expand the checked-in ownership manifest merely to attach a second owner. This credential-free scenario exercises the required queued cases through real CLI/TUI entry points:
 
 - a required-check failure returns to the same worker/attempt/fence;
 - repeating the unchanged failure becomes `NeedsAttention` without rerunning validation;
@@ -379,6 +379,7 @@ At completion:
 7. **Retry usage is not episode-cumulative.** Final `wg spend` retained the successful retry and all review-lane costs but omitted the earlier `$1.35` source-attempt figure shown before retry.
 8. **Setup smoke coverage is stale.** One scenario still requires the removed global active-profile write; another selected-route service fixture is not aligned with current isolated supervisor flags.
 9. **`Ctrl-C` is not an obvious TUI exit.** It was consumed; interrupting required killing the PTY session. The TUI should show its exit key or make the behavior explicit.
+10. **Rehearsal evidence and completion evidence are disconnected.** The first completion review saw only the built-in `git diff --check` receipt, not the already executed real-model/PTTY and credential-free smoke evidence documented here. Adding this rehearsal as another smoke owner would be out of documentation scope and, because semantic review runs before that new ownership can land, would not supply pre-review evidence anyway. A report task needs a supported way to bind redacted, already-run human-flow evidence without inventing a future self-receipt.
 
 These are recorded as follow-up work rather than expanded into architecture changes during this rehearsal:
 
