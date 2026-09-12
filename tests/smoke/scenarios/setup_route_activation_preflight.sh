@@ -46,16 +46,18 @@ add_cleanup_hook cleanup_service
 cmd="cd '$scratch/project' && env -i HOME='$scratch/home' WG_GLOBAL_DIR='$scratch/home/.wg' XDG_CACHE_HOME='$scratch/home/.cache' USER=test TERM=xterm PATH='$scratch/fake-bin:/usr/bin:/bin' PI_INVOCATION_LOG='$scratch/pi-invocations.log' WG_SMOKE_RUN_ID='$WG_SMOKE_RUN_ID' WG_SMOKE_SCENARIO='$WG_SMOKE_SCENARIO' OPENROUTER_API_KEY='must-not-be-used' HTTP_PROXY='http://127.0.0.1:9' HTTPS_PROXY='http://127.0.0.1:9' ALL_PROXY='http://127.0.0.1:9' NO_PROXY='' strace -f -qq -e trace=connect -o '$scratch/network.trace' '$W' setup --route pi --yes --model '$route'"
 script -qec "$cmd" "$scratch/setup.typescript" >/dev/null
 
-[[ "$(cat "$scratch/home/.wg/active-profile")" = pi ]] \
-    || loud_fail "setup did not activate the selected pi profile"
-grep -qF "model = \"$route\"" "$scratch/home/.wg/config.toml" \
-    || loud_fail "setup did not preserve the exact configured route"
-grep -q 'Profile: ACTIVE (`pi`' "$scratch/setup.typescript" \
-    || loud_fail "terminal output did not report active profile"
+[[ ! -e "$scratch/home/.wg/active-profile" ]] \
+    || loud_fail "project-local setup unexpectedly rewrote legacy global active-profile state"
+[[ ! -e "$scratch/home/.wg/config.toml" ]] \
+    || loud_fail "project-local setup unexpectedly wrote legacy global routing"
+grep -qF "model = \"$route\"" "$scratch/project/worksgood.toml" \
+    || loud_fail "setup did not preserve the exact project-local route"
+grep -q 'Profile: project-local route is effective' "$scratch/setup.typescript" \
+    || loud_fail "terminal output did not report the effective project-local route"
 grep -q 'Pi handler: AVAILABLE' "$scratch/setup.typescript" \
     || loud_fail "terminal output did not report fake Pi availability"
-grep -q 'pi-worksgood: ready (compat' "$scratch/setup.typescript" \
-    || loud_fail "noninteractive setup did not ensure the compatible Pi plugin"
+grep -q 'pi-worksgood: hermetic JIT at worker spawn; Console settings unchanged' "$scratch/setup.typescript" \
+    || loud_fail "noninteractive setup did not report hermetic candidate-scoped Pi wiring"
 grep -q 'Pi auth/model: NOT VERIFIED' "$scratch/setup.typescript" \
     || loud_fail "terminal output silently implied auth/model readiness"
 grep -q 'run `pi`, use `/login`' "$scratch/setup.typescript" \
@@ -68,7 +70,7 @@ if grep -Eq 'sa_family=AF_INET6?|sin6?_family=AF_INET6?' "$scratch/network.trace
     loud_fail "setup made an IP network/provider request during bounded preflight: $(cat "$scratch/network.trace")"
 fi
 
-models=$(env -i HOME="$scratch/home" WG_GLOBAL_DIR="$scratch/home/.wg" USER=test PATH="/usr/bin:/bin" \
+models=$(cd "$scratch/project" && env -i HOME="$scratch/home" WG_GLOBAL_DIR="$scratch/home/.wg" USER=test PATH="/usr/bin:/bin" \
     WG_SMOKE_RUN_ID="$WG_SMOKE_RUN_ID" WG_SMOKE_SCENARIO="$WG_SMOKE_SCENARIO" \
     "$W" --dir "$scratch/project/.wg" config --models)
 default_line=$(grep -E '^  default ' <<<"$models")
@@ -78,8 +80,11 @@ grep -qF "$route" <<<"$task_line" || loud_fail "effective task-agent route drift
 
 # Exercise checked reload against a real running daemon (max-agents=0 keeps
 # this phase deterministic), then drive the first LLM-backed command manually.
-"${base_env[@]}" "$W" --dir "$scratch/project/.wg" service start --max-agents 0 \
-    --no-coordinator-agent --no-supervise >/dev/null
+(
+    cd "$scratch/project"
+    "${base_env[@]}" "$W" --dir "$scratch/project/.wg" service start --max-agents 0 \
+        --no-coordinator-agent --no-supervise >/dev/null
+)
 (
     cd "$scratch/project"
     "${base_env[@]}" "$W" setup --route pi --yes --model "$route"

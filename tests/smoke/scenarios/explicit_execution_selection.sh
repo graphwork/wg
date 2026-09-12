@@ -122,7 +122,7 @@ grep -q 'route: pi:openrouter:' "$scratch/lint.out"
 
 # 9. Real service lifecycle: the selected Pi handler reaches daemon startup
 #    without silently changing systems. No tasks dispatch because max-agents=0.
-run_wg service start --max-agents 0 --no-coordinator-agent \
+run_wg service start --max-agents 0 --no-coordinator-agent --no-supervise \
   >"$scratch/start-selected.out" 2>"$scratch/start-selected.err"
 run_wg service status >"$scratch/status.out" 2>"$scratch/status.err"
 grep -q 'executor=pi' "$scratch/status.out"

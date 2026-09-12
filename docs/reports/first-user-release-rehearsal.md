@@ -4,7 +4,7 @@ Date: 2026-09-12 (UTC)
 
 Task: `first-user-release-rehearsal`
 
-Result: **completed with onboarding defects and two explicitly failing stale smoke checks**
+Result: **completed with onboarding defects and two small checked-in smoke repairs**
 
 ## Scope and safety boundary
 
@@ -339,12 +339,12 @@ This is controlled-fixture evidence only; it does not prove Pi login or model be
 
 `smoke_process_ownership_cleanup.sh` initially refused direct execution, correctly requiring the Rust Linux subreaper harness. Rerun under that harness passed in 70 s. Final candidate teardown additionally reported both disposable services stopped, no owned TUI session, and no `/proc` command line tied to either graph.
 
-Two other relevant checked-in scenarios were run and **failed; they are not reported as passes**:
+Two other relevant checked-in scenarios initially failed and were repaired within the rehearsal's bounded onboarding-test scope:
 
-1. `setup_route_activation_preflight`: expects `~/.wg/active-profile`, which the current project-local design intentionally no longer writes.
-2. `explicit_execution_selection`: reaches its final selected-route `service start` and exits 1; the scenario omits `--no-supervise` unlike current isolated service fixtures. Its earlier graph-only, missing-route, setup, and lint assertions passed.
+1. `setup_route_activation_preflight` still expected `~/.wg/active-profile`, which the current project-local design intentionally no longer writes. It also invoked some `--dir` commands from the source CWD, reproducing the route-target mismatch. The scenario now asserts `worksgood.toml`, unchanged global state, hermetic JIT messaging, and runs config/service commands from the disposable project.
+2. `explicit_execution_selection` reached its final selected-route service fixture without the `--no-supervise` isolation used by current service smokes. The fixture now supplies it.
 
-Both failures reproduce against the source and candidate at the same commit; they are stale/incompatible scenario expectations, not evidence that the observed real useful-work flow failed.
+Both were rerun under the Rust subreaper harness with the supported short `WG_SMOKE_ROOT=/tmp/wgsmoke-a93` (the worker's inherited deep `TMPDIR` exceeded Linux `sockaddr_un.sun_path`). Final results: `setup_route_activation_preflight` **PASS** in 0.72 s and `explicit_execution_selection` **PASS** in 0.91 s. The initial failures remain reported here rather than retroactively called passes.
 
 ## Isolation and teardown
 
@@ -367,6 +367,7 @@ At completion:
 5. Commit generated first-run scaffolding so the integration checkout was clean.
 6. Run `wg resume ... --only` to finalize the preserved accepted candidate.
 7. Rerun the process test through the required subreaper harness after its direct-execution refusal.
+8. Repair and rerun two stale project-local setup/service smoke fixtures; use the harness's supported short smoke root to avoid the Linux Unix-socket path limit.
 
 ## Concrete onboarding defects
 
@@ -377,9 +378,10 @@ At completion:
 5. **TUI omits the useful landing action.** The waiting detail showed watchdog text and lifecycle state but not the CLI's exact `wg resume <task> --only` instruction.
 6. **Generated agent guidance over-scopes ordinary projects.** For a tiny greeting script, the worker created WG-style `tests/smoke/manifest.toml` and an owned smoke scenario. Guidance should distinguish work on WG itself from a user's application.
 7. **Retry usage is not episode-cumulative.** Final `wg spend` retained the successful retry and all review-lane costs but omitted the earlier `$1.35` source-attempt figure shown before retry.
-8. **Setup smoke coverage is stale.** One scenario still requires the removed global active-profile write; another selected-route service fixture is not aligned with current isolated supervisor flags.
-9. **`Ctrl-C` is not an obvious TUI exit.** It was consumed; interrupting required killing the PTY session. The TUI should show its exit key or make the behavior explicit.
-10. **Rehearsal evidence and completion evidence are disconnected.** The first completion review saw only the built-in `git diff --check` receipt, not the already executed real-model/PTTY and credential-free smoke evidence documented here. Adding this rehearsal as another smoke owner would be out of documentation scope and, because semantic review runs before that new ownership can land, would not supply pre-review evidence anyway. A report task needs a supported way to bind redacted, already-run human-flow evidence without inventing a future self-receipt.
+8. **Setup smoke coverage was stale (fixed here).** One scenario required the removed global active-profile write and ran `--dir` operations from the wrong CWD; another selected-route service fixture lacked current isolation flags. The focused scenario-only repairs now pass.
+9. **Deep worker temp roots can exceed the Unix-socket limit.** The smoke harness inherited this worker's long `TMPDIR`, making an otherwise-correct service fixture fail `sockaddr_un.sun_path`. The supported short `WG_SMOKE_ROOT` was required; harness defaults should stay socket-safe automatically.
+10. **`Ctrl-C` is not an obvious TUI exit.** It was consumed; interrupting required killing the PTY session. The TUI should show its exit key or make the behavior explicit.
+11. **Rehearsal evidence and completion evidence are disconnected.** The first completion review saw only the built-in `git diff --check` receipt, not the already executed real-model/PTTY and credential-free smoke evidence documented here. Adding this rehearsal as another smoke owner would be out of documentation scope and, because semantic review runs before that new ownership can land, would not supply pre-review evidence anyway. A report task needs a supported way to bind redacted, already-run human-flow evidence without inventing a future self-receipt.
 
 These are recorded as follow-up work rather than expanded into architecture changes during this rehearsal:
 
