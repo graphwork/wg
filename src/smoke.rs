@@ -1477,6 +1477,39 @@ mod tests {
         p
     }
 
+    /// Supported bridge for validation contracts that name one scenario file
+    /// directly. The script opts in with an absolute path; `run_scenario`
+    /// supplies the same subreaper, ownership identity, timeout, and cleanup
+    /// guarantees as the manifest gate instead of weakening `_helpers.sh`.
+    #[test]
+    #[ignore = "invoked only by an explicit scenario validation contract"]
+    fn run_explicit_scenario_under_process_harness() {
+        let script = std::env::var_os("WG_SMOKE_DIRECT_SCENARIO")
+            .map(PathBuf::from)
+            .expect("WG_SMOKE_DIRECT_SCENARIO must name the requested scenario");
+        assert!(script.is_absolute(), "scenario path must be absolute");
+        let source_root = script
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::parent)
+            .and_then(Path::parent)
+            .expect("scenario must live under the source checkout");
+        let scenario = Scenario {
+            name: "explicit-validation-scenario".to_string(),
+            script: script.to_string_lossy().into_owned(),
+            owners: vec!["explicit-validation".to_string()],
+            description: "explicit candidate scenario validation".to_string(),
+            timeout_seconds: Some(120),
+        };
+        let result = run_scenario(&scenario, script.parent().unwrap_or(source_root));
+        assert_eq!(result.outcome, ScenarioOutcome::Pass, "{result:?}");
+        assert!(
+            !source_root.join(".wg").exists(),
+            "scenario created protected runtime state inside {}",
+            source_root.display()
+        );
+    }
+
     #[test]
     fn pass_outcome_for_zero_exit_script() {
         let td = TempDir::new().unwrap();

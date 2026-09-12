@@ -2,13 +2,27 @@
 # Credential-free real-entry-point regression for bounded completion repair.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$HERE/../../.." && pwd)"
+
+# The checked-in validation contract invokes this file directly, while every
+# smoke scenario must execute below the Rust subreaper/ownership harness. Bounce
+# that direct entry through one ignored test which calls smoke::run_scenario;
+# the harness child receives the exact candidate binary environment unchanged.
+if [[ -z "${WG_SMOKE_HARNESS_RUN_ID:-}" \
+    || "${WG_SMOKE_SUBREAPER_TOKEN:-}" != "$WG_SMOKE_HARNESS_RUN_ID" ]]; then
+    export WG_SMOKE_DIRECT_SCENARIO="$HERE/completion_repair_loop.sh"
+    cd "$ROOT"
+    exec cargo test --locked --lib \
+        smoke::tests::run_explicit_scenario_under_process_harness \
+        -- --exact --ignored --nocapture
+fi
+
 . "$HERE/_helpers.sh"
 command -v git >/dev/null 2>&1 || loud_skip "MISSING GIT" "git is required"
 
 scratch=$(make_scratch)
 repo="$scratch/project"; home="$scratch/home"
 mkdir -p "$repo" "$home/.config"
-ROOT="$(cd "$HERE/../../.." && pwd)"
 WG_BIN="${WG_SMOKE_CANDIDATE_BIN:-$ROOT/target/debug/wg}"
 [[ -x "$WG_BIN" ]] || (cd "$ROOT" && CARGO_BUILD_JOBS=1 cargo build --quiet --bin wg)
 
@@ -171,4 +185,6 @@ wgrun show repair-budget >"$scratch/show.txt"
 grep -q 'Completion repair/NeedsAttention' "$scratch/show.txt" || loud_fail "human show omitted repair state"
 grep -q 'affected downstream: repair-child, repair-grandchild' "$scratch/show.txt" || loud_fail "human show omitted stalled impact"
 
+[[ ! -e "$ROOT/.wg" ]] \
+  || loud_fail "scenario created protected runtime state inside the source checkout: $ROOT/.wg"
 echo "completion repair loop canary passed"
