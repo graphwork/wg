@@ -3134,7 +3134,7 @@ timeout_seconds = 120
 [[scenario]]
 name = "completion_repair_loop"
 script = "scenarios/completion_repair_loop.sh"
-owners = ["simplify-completion-repair-loop"]
+owners = ["simplify-completion-repair-loop", "first-user-release-rehearsal"]
 description = "Credential-free candidate-binary real-entry-point regression for bounded deterministic completion repair: exact preflight provenance, redacted immutable evidence, same owner/attempt/fence retention, unchanged-candidate escalation without further validation, explicit request-help, exactly two changed-candidate opportunities, and root stalled-chain impact in show/status JSON and human output."
 timeout_seconds = 120
 
