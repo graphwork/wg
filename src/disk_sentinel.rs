@@ -805,6 +805,85 @@ fn projection_for_class(
     target.saturating_add(cfg.build_link_test_safety_bytes)
 }
 
+#[derive(Debug, Clone)]
+struct ActiveColdBaselineBuilder {
+    task_id: String,
+    agent_id: String,
+    key_digest: Option<String>,
+}
+
+/// Identify a live owner of a reusable Cargo layer whose exact baseline is
+/// still cold. Layer manifests pin the build identity actually prepared for
+/// the process; their current publication state, not the historical
+/// `baseline_path` seed field, owns the cold reservation. A controlled Cargo
+/// process whose ownership row is missing/inconclusive remains a cold builder
+/// fail-closed until its exact baseline appears or its safe process lifecycle
+/// declares it dead.
+fn active_cold_baseline_builder(
+    dir: &Path,
+    cfg: &ResourceManagementConfig,
+    agent: &crate::service::registry::AgentEntry,
+    task: Option<&Task>,
+    ownership: &OwnershipRegistry,
+) -> Option<ActiveColdBaselineBuilder> {
+    if !agent.is_live(cfg.disk_agent_heartbeat_seconds) {
+        return None;
+    }
+    // Resolve the live task's expected exact key independently of ownership.
+    // A READY row for another key is not evidence that this task's baseline is
+    // ready and must never release the single-builder fence.
+    let expected = task
+        .and_then(|task| task.exec.as_deref())
+        .and_then(crate::target_cache::controlled_cargo_command)
+        .and_then(|command| {
+            let source_root = agent
+                .worktree_path
+                .as_deref()
+                .map(Path::new)
+                .filter(|path| path.is_dir())
+                .unwrap_or_else(|| dir.parent().unwrap_or(dir));
+            crate::target_cache::exact_baseline(source_root, Some(&command))
+        });
+    let mut states = ownership
+        .caches
+        .iter()
+        .filter(|cache| {
+            cache.agent_id == agent.id
+                && cache.pid == agent.pid
+                && cache.kind == CacheKind::CargoTarget
+                && !pid_identity_stale(cache)
+        })
+        .filter_map(|cache| crate::target_cache::layer_baseline_state(Path::new(&cache.path)))
+        .collect::<Vec<_>>();
+    states.sort_by(|left, right| left.key_digest.cmp(&right.key_digest));
+    if let Some(cold) = states.iter().find(|state| !state.ready) {
+        return Some(ActiveColdBaselineBuilder {
+            task_id: agent.task_id.clone(),
+            agent_id: agent.id.clone(),
+            key_digest: Some(cold.key_digest.clone()),
+        });
+    }
+
+    // The registry is published just before cache ownership during spawn. A
+    // crash, an admission observation in that narrow window, or a wrong-key
+    // ownership row must not admit a second cold Cargo builder. Only an exact
+    // controlled Cargo task receives this fallback; generic/non-Rust work is
+    // not baseline authority.
+    let baseline = expected?;
+    if baseline.is_ready(&target_cache_root(dir, cfg)) {
+        return None;
+    }
+    Some(ActiveColdBaselineBuilder {
+        task_id: agent.task_id.clone(),
+        agent_id: agent.id.clone(),
+        key_digest: Some(baseline.digest()),
+    })
+}
+
+fn short_cache_key(digest: &str) -> &str {
+    digest.get(..12).unwrap_or(digest)
+}
+
 /// Real admission check used immediately before process creation. It combines
 /// persistent measured high-water, final-link safety, current target sizes and
 /// all live build reservations. Callers serialize spawn through the agent
@@ -835,11 +914,11 @@ pub fn build_admission_for_source(
     }
     let (level, reason, mounts) = current_admission(dir, cfg);
     let high_water = load_high_water(dir);
-    let cold_baseline = !crate::target_cache::has_ready_baseline(
-        &target_cache_root(dir, cfg),
-        source_root,
-        controlled_command,
-    );
+    let cache_root = target_cache_root(dir, cfg);
+    let exact_baseline = crate::target_cache::exact_baseline(source_root, controlled_command);
+    let cold_baseline = exact_baseline
+        .as_ref()
+        .is_some_and(|baseline| !baseline.is_ready(&cache_root));
     let candidate = projection_for_class(cfg, &high_water, class, cold_baseline);
     if level.blocks_builds() {
         return BuildAdmission {
@@ -854,25 +933,50 @@ pub fn build_admission_for_source(
     let registry = AgentRegistry::load(dir).unwrap_or_default();
     let graph = load_graph(dir.join("graph.jsonl")).ok();
     let ownership = load_ownership(dir).unwrap_or_default();
-    let live_cold_builders = registry
+    let mut live_cold_builders = registry
         .all()
-        .filter(|agent| agent.is_live(cfg.disk_agent_heartbeat_seconds))
-        .filter(|agent| {
-            graph
-                .as_ref()
-                .and_then(|graph| graph.get_task(&agent.task_id))
-                .map(classify_task)
-                .unwrap_or(BuildClass::BuildCapable)
-                .is_build_capable()
+        .filter_map(|agent| {
+            active_cold_baseline_builder(
+                dir,
+                cfg,
+                agent,
+                graph
+                    .as_ref()
+                    .and_then(|graph| graph.get_task(&agent.task_id)),
+                &ownership,
+            )
         })
-        .count();
-    if cold_baseline && class.is_build_capable() && live_cold_builders > 0 {
+        .collect::<Vec<_>>();
+    live_cold_builders.sort_by(|left, right| left.agent_id.cmp(&right.agent_id));
+    if cold_baseline
+        && class.is_build_capable()
+        && let Some(builder) = live_cold_builders.first()
+    {
+        let candidate_key = exact_baseline
+            .as_ref()
+            .map(|baseline| baseline.digest())
+            .unwrap_or_else(|| "unknown".to_string());
+        let builder_key = builder
+            .key_digest
+            .as_deref()
+            .map(short_cache_key)
+            .unwrap_or("ownership-pending");
         return BuildAdmission {
             allowed: false,
             candidate_bytes: candidate,
             concurrent_reserved_bytes: 0,
-            projected_free_bytes: mounts.iter().map(|mount| mount.free_bytes).min().unwrap_or(0),
-            reason: "exact Cargo baseline is cold; waiting for the single baseline builder to publish or exit".into(),
+            projected_free_bytes: mounts
+                .iter()
+                .map(|mount| mount.free_bytes)
+                .min()
+                .unwrap_or(0),
+            reason: format!(
+                "exact Cargo baseline {} is cold; active baseline builder task '{}' (agent {}, key {}) must publish a complete exact READY baseline or exit; next action: wait for publication or safe stale/dead-owner reconciliation on the next coordinator tick",
+                short_cache_key(&candidate_key),
+                builder.task_id,
+                builder.agent_id,
+                builder_key,
+            ),
         };
     }
     let mut concurrent_reserved = 0u64;
@@ -892,14 +996,16 @@ pub fn build_admission_for_source(
         if !active_class.is_build_capable() {
             continue;
         }
-        let active_targets = ownership
-            .caches
-            .iter()
-            .filter(|cache| cache.agent_id == agent.id && cache.kind == CacheKind::CargoTarget)
-            .collect::<Vec<_>>();
-        let active_cold = !active_targets.iter().any(|cache| {
-            crate::target_cache::layer_was_seeded_from_baseline(Path::new(&cache.path))
-        });
+        let active_cold = active_cold_baseline_builder(
+            dir,
+            cfg,
+            agent,
+            graph
+                .as_ref()
+                .and_then(|graph| graph.get_task(&agent.task_id)),
+            &ownership,
+        )
+        .is_some();
         let projection = projection_for_class(cfg, &high_water, active_class, active_cold);
         let materialized = ownership
             .caches
@@ -934,11 +1040,8 @@ pub fn build_admission_reclaiming_owned_for_source(
 ) -> BuildAdmission {
     let first = build_admission_for_source(dir, cfg, class, source_root, controlled_command);
     let cold_baseline = class.is_build_capable()
-        && !crate::target_cache::has_ready_baseline(
-            &target_cache_root(dir, cfg),
-            source_root,
-            controlled_command,
-        );
+        && crate::target_cache::exact_baseline(source_root, controlled_command)
+            .is_some_and(|baseline| !baseline.is_ready(&target_cache_root(dir, cfg)));
     if first.allowed && !cold_baseline {
         return first;
     }
@@ -1195,9 +1298,16 @@ pub fn refresh_snapshot(dir: &Path, cfg: &ResourceManagementConfig) -> Result<Di
             .iter()
             .filter(|cache| cache.agent_id == agent.id && cache.kind == CacheKind::CargoTarget)
             .collect::<Vec<_>>();
-        let cold_baseline = !active_targets.iter().any(|cache| {
-            crate::target_cache::layer_was_seeded_from_baseline(Path::new(&cache.path))
-        });
+        let cold_baseline = active_cold_baseline_builder(
+            dir,
+            cfg,
+            agent,
+            graph
+                .as_ref()
+                .and_then(|graph| graph.get_task(&agent.task_id)),
+            &ownership,
+        )
+        .is_some();
         let materialized = active_targets
             .iter()
             .map(|cache| private_cache_bytes(cache, cfg.disk_scan_max_entries))
@@ -2549,6 +2659,8 @@ mod tests {
             id: "cold-builder".into(),
             title: "ordinary source implementation".into(),
             status: Status::InProgress,
+            exec: Some("cargo check".into()),
+            exec_mode: Some("shell".into()),
             ..Default::default()
         }));
         save_graph(&graph, dir.join("graph.jsonl")).unwrap();
@@ -2589,7 +2701,223 @@ mod tests {
             Some("cargo check"),
         );
         assert!(!admission.allowed);
-        assert!(admission.reason.contains("single baseline builder"));
+        assert!(admission.reason.contains("active baseline builder"));
+        assert!(admission.reason.contains("cold-builder"));
+        assert!(admission.reason.contains("next action"));
+    }
+
+    #[test]
+    fn live_non_cargo_work_is_not_misidentified_as_a_baseline_builder() {
+        let root = TempDir::new().unwrap();
+        let dir = root.path().join(".wg");
+        fs::create_dir_all(&dir).unwrap();
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(Task {
+            id: "non-rust-worker".into(),
+            title: "long non-Rust operation".into(),
+            status: Status::InProgress,
+            exec: Some("sleep 30".into()),
+            exec_mode: Some("shell".into()),
+            ..Default::default()
+        }));
+        save_graph(&graph, dir.join("graph.jsonl")).unwrap();
+        let mut registry = AgentRegistry::new();
+        registry.agents.insert(
+            "agent-non-rust".into(),
+            crate::service::registry::AgentEntry {
+                id: "agent-non-rust".into(),
+                pid: std::process::id(),
+                task_id: "non-rust-worker".into(),
+                executor: "shell".into(),
+                started_at: Utc::now().to_rfc3339(),
+                last_heartbeat: Utc::now().to_rfc3339(),
+                status: AgentStatus::Working,
+                output_file: dir.join("non-rust.log").display().to_string(),
+                model: None,
+                completed_at: None,
+                worktree_path: None,
+            },
+        );
+        registry.save(&dir).unwrap();
+        let cfg = ResourceManagementConfig {
+            disk_warning_bytes: 0,
+            disk_pause_build_bytes: 0,
+            disk_hard_refuse_bytes: 0,
+            disk_warning_percent: 0.0,
+            disk_pause_build_percent: 0.0,
+            disk_hard_refuse_percent: 0.0,
+            estimated_build_bytes: 1,
+            estimated_build_heavy_bytes: 1,
+            estimated_cargo_baseline_bytes: 1,
+            build_link_test_safety_bytes: 0,
+            ..Default::default()
+        };
+
+        let admission = build_admission_for_source(
+            &dir,
+            &cfg,
+            BuildClass::BuildCapable,
+            root.path(),
+            Some("cargo check"),
+        );
+        assert!(admission.allowed, "{}", admission.reason);
+    }
+
+    #[test]
+    fn exact_publication_refreshes_a_live_cold_builders_reservation() {
+        let root = TempDir::new().unwrap();
+        let source = root.path().join("project");
+        let dir = source.join(".wg");
+        let cache_root = root.path().join("target-cache");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            source.join("Cargo.toml"),
+            "[package]\nname='baseline-refresh'\nversion='0.1.0'\n",
+        )
+        .unwrap();
+        fs::write(source.join("Cargo.lock"), "version = 3\n").unwrap();
+        fs::write(source.join(".gitignore"), ".wg/\n").unwrap();
+        assert!(
+            std::process::Command::new("git")
+                .args(["init", "-q", "-b", "main"])
+                .current_dir(&source)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            std::process::Command::new("git")
+                .args(["add", "Cargo.toml", "Cargo.lock", ".gitignore"])
+                .current_dir(&source)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            std::process::Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=WG Test",
+                    "-c",
+                    "user.email=wg@example.invalid",
+                    "commit",
+                    "-qm",
+                    "baseline",
+                ])
+                .current_dir(&source)
+                .status()
+                .unwrap()
+                .success()
+        );
+
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(Task {
+            id: "builder".into(),
+            title: "exact Cargo builder".into(),
+            status: Status::InProgress,
+            exec: Some("cargo check".into()),
+            exec_mode: Some("shell".into()),
+            ..Default::default()
+        }));
+        save_graph(&graph, dir.join("graph.jsonl")).unwrap();
+        let mut registry = AgentRegistry::new();
+        registry.agents.insert(
+            "agent-builder".into(),
+            crate::service::registry::AgentEntry {
+                id: "agent-builder".into(),
+                pid: std::process::id(),
+                task_id: "builder".into(),
+                executor: "shell".into(),
+                started_at: Utc::now().to_rfc3339(),
+                last_heartbeat: Utc::now().to_rfc3339(),
+                status: AgentStatus::Working,
+                output_file: dir.join("builder.log").display().to_string(),
+                model: None,
+                completed_at: None,
+                worktree_path: None,
+            },
+        );
+        registry.save(&dir).unwrap();
+        let cfg = ResourceManagementConfig {
+            cargo_target_root: Some(cache_root.display().to_string()),
+            disk_warning_bytes: 0,
+            disk_pause_build_bytes: 0,
+            disk_hard_refuse_bytes: 0,
+            disk_warning_percent: 0.0,
+            disk_pause_build_percent: 0.0,
+            disk_hard_refuse_percent: 0.0,
+            estimated_build_bytes: 1024 * 1024,
+            estimated_build_heavy_bytes: 1024 * 1024,
+            estimated_cargo_baseline_bytes: 64 * 1024 * 1024,
+            build_link_test_safety_bytes: 0,
+            ..Default::default()
+        };
+        let target =
+            prepare_target_for_agent(&dir, &cfg, &source, "agent-builder", Some("cargo check"))
+                .unwrap();
+        fs::write(target.join("artifact"), "complete").unwrap();
+        register_owned_cache(
+            &dir,
+            make_owned_cache(
+                &target,
+                CacheKind::CargoTarget,
+                "builder",
+                "agent-builder",
+                std::process::id(),
+                None,
+                300,
+            ),
+        )
+        .unwrap();
+
+        let before = build_admission_for_source(
+            &dir,
+            &cfg,
+            BuildClass::BuildCapable,
+            &source,
+            Some("cargo check"),
+        );
+        assert!(!before.allowed);
+        assert!(before.reason.contains("active baseline builder"));
+
+        assert!(crate::target_cache::promote_layer(&target).unwrap());
+        assert!(
+            crate::target_cache::layer_baseline_state(&target)
+                .unwrap()
+                .ready
+        );
+
+        // A READY ownership row for key A cannot satisfy or release the live
+        // task's expected key B. Keep the builder fence fail-closed until the
+        // mismatch is reconciled or that exact key is published.
+        let mut graph = load_graph(dir.join("graph.jsonl")).unwrap();
+        graph.get_task_mut("builder").unwrap().exec = Some("cargo test".into());
+        save_graph(&graph, dir.join("graph.jsonl")).unwrap();
+        let wrong_key = build_admission_for_source(
+            &dir,
+            &cfg,
+            BuildClass::BuildCapable,
+            &source,
+            Some("cargo test"),
+        );
+        assert!(!wrong_key.allowed);
+        assert!(wrong_key.reason.contains("active baseline builder"));
+
+        graph.get_task_mut("builder").unwrap().exec = Some("cargo check".into());
+        save_graph(&graph, dir.join("graph.jsonl")).unwrap();
+        let after = build_admission_for_source(
+            &dir,
+            &cfg,
+            BuildClass::BuildCapable,
+            &source,
+            Some("cargo check"),
+        );
+        assert!(after.allowed, "{}", after.reason);
+        assert_eq!(after.candidate_bytes, 1024 * 1024);
+        assert!(
+            after.concurrent_reserved_bytes < cfg.estimated_cargo_baseline_bytes,
+            "published builder retained a stale cold reserve: {after:?}"
+        );
     }
 
     #[test]
