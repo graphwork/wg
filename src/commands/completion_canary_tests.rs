@@ -517,6 +517,93 @@ fn ten_concurrent_attempts_use_one_immutable_review_and_done_authority() {
         assert_eq!(task.status, Status::InProgress);
         assert!(task.completion_receipt.is_none());
     }
+    let flip_candidate = graph
+        .get_task("canary-6")
+        .unwrap()
+        .completion_candidate
+        .clone()
+        .unwrap();
+    let eval_candidate = graph
+        .get_task("canary-7")
+        .unwrap()
+        .completion_candidate
+        .clone()
+        .unwrap();
+    drop(graph);
+
+    // Both semantic valves use the existing explicit completion-attention
+    // surface. Requesting help records no acceptance and calls no reviewer.
+    super::fail::run_with_intent(
+        &wg_dir,
+        "canary-6",
+        Some("operator should decide the exact repair boundary"),
+        None,
+        Some("request-help"),
+    )
+    .unwrap();
+    super::fail::run_with_intent(
+        &wg_dir,
+        "canary-7",
+        Some("operator should approve one missing exact check"),
+        None,
+        Some("request-contract-correction"),
+    )
+    .unwrap();
+    // Lost-response replay is idempotent.
+    super::fail::run_with_intent(
+        &wg_dir,
+        "canary-7",
+        Some("operator should approve one missing exact check"),
+        None,
+        Some("request-contract-correction"),
+    )
+    .unwrap();
+
+    let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
+    for (id, reviewer, request, candidate) in [
+        (
+            "canary-6",
+            ReviewerKind::Flip,
+            "scope-approval-required",
+            flip_candidate,
+        ),
+        (
+            "canary-7",
+            ReviewerKind::Eval,
+            "contract-correction-required",
+            eval_candidate,
+        ),
+    ] {
+        let task = graph.get_task(id).unwrap();
+        assert_eq!(task.status, Status::InProgress);
+        assert!(task.completion_receipt.is_none());
+        assert_eq!(task.completion_candidate.as_ref(), Some(&candidate));
+        let binding = candidate.review_binding.as_ref().unwrap();
+        let repair = task.completion_repair.as_ref().unwrap();
+        let semantic = repair.semantic_review.as_ref().unwrap();
+        assert_eq!(repair.task_id, id);
+        assert_eq!(repair.generation, binding.generation);
+        assert_eq!(repair.attempt_id, binding.attempt_id);
+        assert_eq!(repair.fence, binding.attempt_fence);
+        assert_eq!(repair.candidate_identity, candidate.manifest.content_digest);
+        assert_eq!(repair.reason_code, request);
+        assert_eq!(semantic.reviewer_kind, reviewer);
+        assert_eq!(semantic.candidate_sequence, binding.candidate_sequence);
+        assert_eq!(semantic.review_receipt, repair.evidence.content_digest);
+        assert_eq!(repair.exit_category, "semantic-rejection");
+        assert!(repair.attention_event_id.is_some());
+    }
+    assert_eq!(
+        graph
+            .get_task("canary-7")
+            .unwrap()
+            .log
+            .iter()
+            .filter(|entry| entry.message.contains("NeedsAttention event="))
+            .count(),
+        1,
+        "same request replay must retain one attention item"
+    );
     assert!(
         !wg_dir.join("finalization").exists(),
         "canary must not create FinalizationStore authority"

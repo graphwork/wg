@@ -340,6 +340,41 @@ fn smoke_process_ownership_cleanup_real_entry_point() {
 }
 
 #[test]
+fn semantic_rejection_help_real_candidate_cli_flow() {
+    let tmp = TempDir::new().unwrap();
+    let script = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/smoke/scenarios/completion_semantic_help.sh");
+    let wrapper = tmp.path().join("semantic-help-wrapper.sh");
+    write_executable(
+        &wrapper,
+        &format!(
+            "#!/usr/bin/env bash\nexport WG_BIN='{}'\nexport WG_SMOKE_ROOT='{}'\nexec bash '{}'\n",
+            wg_binary().display(),
+            tmp.path().join("smoke-root").display(),
+            script.display()
+        ),
+    );
+    let scenario = worksgood::smoke::Scenario {
+        name: "completion-semantic-help-real-candidate-cli".to_string(),
+        script: wrapper.to_string_lossy().to_string(),
+        owners: vec!["fix-completion-help-after-review".to_string()],
+        description: "controlled receipt-backed semantic rejection through the real candidate CLI; not live semantic proof".to_string(),
+        timeout_seconds: Some(180),
+    };
+    let report = run_scenarios(&[&scenario], tmp.path());
+    assert!(
+        matches!(
+            report.results.as_slice(),
+            [worksgood::smoke::ScenarioResult {
+                outcome: worksgood::smoke::ScenarioOutcome::Pass,
+                ..
+            }]
+        ),
+        "semantic help scenario failed through the real candidate CLI harness: {report:?}"
+    );
+}
+
+#[test]
 fn test_missing_smoke_manifest_is_an_empty_nonblocking_gate() {
     let tmp = TempDir::new().unwrap();
     let report = run_manifest(&tmp.path().join("no-such-manifest.toml"), Some("nobody"));

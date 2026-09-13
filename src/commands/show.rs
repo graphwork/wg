@@ -1014,8 +1014,15 @@ fn print_human_readable(details: &TaskDetails) {
     );
     if let Some(repair) = details.completion_repair.as_ref() {
         println!(
-            "Completion repair/{:?}: root={} exit={} feedback={}",
-            repair.disposition, repair.reason_code, repair.exit_category, repair.feedback_id
+            "Completion repair/{:?}: root={} request={} exit={} feedback={}",
+            repair.disposition,
+            repair
+                .blocker_reason_code
+                .as_deref()
+                .unwrap_or(&repair.reason_code),
+            repair.reason_code,
+            repair.exit_category,
+            repair.feedback_id
         );
         println!(
             "  source binding: task={} generation={} attempt={} fence={} candidate={} validation={}",
@@ -1027,6 +1034,12 @@ fn print_human_readable(details: &TaskDetails) {
             repair.validation_identity
         );
         println!("  immutable evidence: {}", repair.evidence.content_digest);
+        if let Some(review) = repair.semantic_review.as_ref() {
+            println!(
+                "  semantic rejection: reviewer={:?} receipt={} candidate-sequence={}",
+                review.reviewer_kind, review.review_receipt, review.candidate_sequence
+            );
+        }
         println!(
             "  diagnostic (untrusted, redacted): {}",
             repair.diagnostic_excerpt

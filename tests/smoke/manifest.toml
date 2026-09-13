@@ -3139,6 +3139,13 @@ description = "Credential-free candidate-binary real-entry-point regression for 
 timeout_seconds = 120
 
 [[scenario]]
+name = "completion_semantic_help"
+script = "scenarios/completion_semantic_help.sh"
+owners = ["fix-completion-help-after-review"]
+description = "Credential-free candidate-binary terminal regression for explicit help after a controlled receipt-backed semantic rejection (not live semantic proof): exact current source/candidate/review identity, redacted idempotent attention across source exit and daemon restart, no reviewer retry at request time, explicit operator contract correction invalidating stale binding, ordinary new validation/review, timeout-visible pending decision, and deliberate separation from acceptance."
+timeout_seconds = 180
+
+[[scenario]]
 name = "terminal_receipt_precedence"
 script = "scenarios/terminal_receipt_precedence.sh"
 owners = ["completion-classification-precedence"]

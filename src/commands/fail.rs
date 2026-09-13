@@ -553,19 +553,11 @@ fn preserve_completion_repair(
     let Some(task) = graph.get_task(id) else {
         return Ok(false);
     };
-    if task.completion_repair.is_none() {
-        if intent.is_some() {
-            anyhow::bail!(
-                "--intent {} requires an evidence-backed deterministic completion failure",
-                intent.unwrap_or_default()
-            );
-        }
-        return Ok(false);
-    }
     if !matches!(task.status, Status::InProgress | Status::Waiting) {
         return Ok(false);
     }
-    let (reason_code, next) = match intent {
+
+    let (reason_code, requested_next) = match intent {
         Some("request-help") => (
             "scope-approval-required",
             format!(
@@ -587,50 +579,155 @@ fn preserve_completion_repair(
         Some("deliberate-stop") => return Ok(false),
         Some(_) => unreachable!("intent validated"),
     };
+
+    // A wrapper/process exit after an explicit help request must not replace
+    // the pending operator decision. It is an observation, not newer authority.
+    let preserve_existing_decision = intent.is_none()
+        && task.completion_repair.as_ref().is_some_and(|repair| {
+            repair.disposition == worksgood::graph::CompletionRepairDisposition::NeedsAttention
+                && matches!(
+                    repair.reason_code.as_str(),
+                    "scope-approval-required" | "contract-correction-required"
+                )
+        });
+
+    // Semantic help is admitted only from a receipt-verified *current*
+    // rejection. Superseded, forged, cross-task, and stale-attempt projections
+    // never become an attention request.
+    let semantic_rejection = if task.completion_repair.is_none() && intent.is_some() {
+        let verified = worksgood::completion_review::verified_review_activities(dir, task);
+        verified.activities.into_iter().rev().find_map(|activity| {
+            if activity.candidate_state
+                != worksgood::completion_review::ReviewCandidateState::Current
+                || activity.verdict != worksgood::simple_land::ReviewVerdict::Reject
+                || activity.failure_class
+                    != Some(worksgood::completion_review::ReviewFailureClass::SemanticRejection)
+            {
+                return None;
+            }
+            let candidate = task.completion_candidate.as_ref()?;
+            let receipt = match activity.reviewer_kind {
+                worksgood::completion_review::ReviewerKind::Flip => candidate.flip_receipt.clone(),
+                worksgood::completion_review::ReviewerKind::Eval => candidate.eval_receipt.clone(),
+            }?;
+            Some((activity, receipt))
+        })
+    } else {
+        None
+    };
+    if task.completion_repair.is_none() && semantic_rejection.is_none() {
+        if intent.is_some() {
+            anyhow::bail!(
+                "--intent {} requires a current evidence-backed deterministic completion failure or current receipt-verified semantic completion rejection",
+                intent.unwrap_or_default()
+            );
+        }
+        return Ok(false);
+    }
+
     let proposal = reason
         .map(worksgood::chat_runtime::redact_text)
         .unwrap_or_else(|| "no proposal supplied".into());
     let proposal: String = proposal.chars().take(2_048).collect();
+    let saved_work = std::env::var_os("WG_WORKTREE_PATH")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| dir.parent().unwrap_or(dir).to_path_buf());
+    let saved_work = saved_work.display().to_string();
     let mut changed = false;
     let mut parent = None;
     let mut event_id = None;
+    let mut root_blocker = None;
+    let mut next = None;
     let mut refusal = None;
     modify_graph(super::graph_path(dir), |graph| {
         let Some(task) = graph.get_task_mut(id) else {
             refusal = Some("task disappeared while requesting completion help".to_string());
             return false;
         };
-        match worksgood::completion_validation::request_repair_attention(
-            task,
-            reason_code,
-            next.clone(),
-        ) {
-            Ok(was_changed) => changed = was_changed,
-            Err(error) => {
-                refusal = Some(error);
-                return false;
-            }
+        if !matches!(task.status, Status::InProgress | Status::Waiting) {
+            refusal = Some("completion help request is stale for the current task status".into());
+            return false;
         }
+
+        if preserve_existing_decision {
+            // Re-check the exact source tuple through the ordinary validator;
+            // supplying the existing values must be an idempotent no-op.
+            let Some(repair) = task.completion_repair.as_ref() else {
+                refusal = Some("completion attention disappeared during source exit".into());
+                return false;
+            };
+            let existing_reason = repair.reason_code.clone();
+            let existing_next = repair.safe_next.clone();
+            match worksgood::completion_validation::request_repair_attention(
+                task,
+                &existing_reason,
+                existing_next,
+            ) {
+                Ok(was_changed) => changed = was_changed,
+                Err(error) => {
+                    refusal = Some(error);
+                    return false;
+                }
+            }
+        } else if task.completion_repair.is_some() {
+            match worksgood::completion_validation::request_repair_attention(
+                task,
+                reason_code,
+                requested_next.clone(),
+            ) {
+                Ok(was_changed) => changed = was_changed,
+                Err(error) => {
+                    refusal = Some(error);
+                    return false;
+                }
+            }
+        } else if let Some((activity, receipt)) = semantic_rejection.as_ref() {
+            match worksgood::completion_validation::record_semantic_repair_attention(
+                task,
+                activity,
+                receipt,
+                reason_code,
+                requested_next.clone(),
+            ) {
+                Ok(_) => changed = true,
+                Err(error) => {
+                    refusal = Some(error);
+                    return false;
+                }
+            }
+        } else {
+            refusal = Some("no current completion blocker remains for this request".into());
+            return false;
+        }
+
         parent = task
             .origin
             .parent_task
             .clone()
             .filter(|parent| parent.starts_with(".chat-") || parent.starts_with(".user-"));
-        event_id = task
-            .completion_repair
-            .as_ref()
-            .and_then(|repair| repair.attention_event_id.clone());
+        if let Some(repair) = task.completion_repair.as_ref() {
+            event_id.clone_from(&repair.attention_event_id);
+            root_blocker = Some(
+                repair
+                    .blocker_reason_code
+                    .clone()
+                    .unwrap_or_else(|| repair.reason_code.clone()),
+            );
+            next = Some(repair.safe_next.clone());
+        }
         if changed {
             task.log.push(LogEntry {
                 timestamp: Utc::now().to_rfc3339(),
                 actor: task.assigned.clone(),
                 user: Some(worksgood::current_user()),
                 message: format!(
-                    "NeedsAttention event={} root={} proposal(untrusted, redacted)={} next={}",
+                    "NeedsAttention event={} root={} request={} proposal(untrusted, redacted)={} saved_work={} next={}",
                     event_id.as_deref().unwrap_or("none"),
+                    root_blocker.as_deref().unwrap_or("unknown"),
                     reason_code,
                     proposal,
-                    next
+                    saved_work,
+                    next.as_deref().unwrap_or("none")
                 ),
             });
         }
@@ -639,10 +736,12 @@ fn preserve_completion_repair(
     if let Some(error) = refusal {
         anyhow::bail!(error);
     }
+    let root_blocker = root_blocker.unwrap_or_else(|| reason_code.into());
+    let next = next.unwrap_or(requested_next);
     if changed {
         if let Some(parent) = parent {
             let body = format!(
-                "Completion needs attention for `{id}` ({reason_code}). One safe action: {next}. Event: {}",
+                "Completion needs attention for `{id}` ({root_blocker}). One safe action: {next}. Event: {}",
                 event_id.as_deref().unwrap_or("none")
             );
             if let Err(error) = worksgood::messages::send_message(
@@ -662,7 +761,8 @@ fn preserve_completion_repair(
     println!(
         "Task '{id}' retained as NeedsAttention; saved work and exact source authority were preserved."
     );
-    println!("Root blocker: {reason_code}");
+    println!("Root blocker: {root_blocker}");
+    println!("Saved work: {saved_work}");
     println!("Next: {next}");
     Ok(true)
 }
@@ -740,6 +840,7 @@ fn contain_late_failure_after_durable_success(
 mod tests {
     use super::*;
     use tempfile::tempdir;
+    use worksgood::completion_manifest::CompletionArtifactStore;
     use worksgood::finalization::{
         CandidateBinding, CandidateDescriptor, CleanupReceipt, EvaluationReceipt,
         EvaluationReceiptOutcome, FinalizationPhase, FinalizationTransaction, MergeReceipt,
@@ -762,6 +863,47 @@ mod tests {
         );
         apply_transition(&mut task, request).unwrap();
         task.assigned = Some(agent.into());
+        task
+    }
+
+    fn with_deterministic_repair(dir: &Path, id: &str, agent: &str) -> worksgood::graph::Task {
+        let mut task = running_task(id, agent);
+        let git = |args: &[&str]| {
+            assert!(
+                std::process::Command::new("git")
+                    .args(args)
+                    .current_dir(dir)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.email", "completion-repair@test.invalid"]);
+        git(&["config", "user.name", "Completion Repair"]);
+        std::fs::write(dir.join("base.txt"), "base\n").unwrap();
+        git(&["add", "base.txt"]);
+        git(&["commit", "-qm", "base"]);
+        let evidence = worksgood::completion_validation::capture_validation(
+            &task,
+            "printf 'controlled failure\\n' >&2; exit 1",
+            0,
+            worksgood::completion_validation::ValidationPurpose::Configured,
+            dir,
+        )
+        .unwrap();
+        let store = CompletionArtifactStore::open(dir.join("completion/v3")).unwrap();
+        let reference = store
+            .evidence_from_bytes(
+                &serde_json::to_vec(&evidence).unwrap(),
+                worksgood::completion_validation::CONFIGURED_VALIDATION_EVIDENCE_KIND,
+                "application/json",
+            )
+            .unwrap();
+        worksgood::completion_validation::record_deterministic_repair_failure(
+            &mut task, &evidence, &reference,
+        )
+        .unwrap();
         task
     }
 
@@ -1189,6 +1331,125 @@ mod tests {
         assert!(task.lifecycle.audit.iter().all(|event| {
             event.reason_code != "source_execution_failed" && event.event_kind != "attempt-failed"
         }));
+    }
+
+    #[test]
+    fn deterministic_help_is_exact_idempotent_and_survives_source_exit() {
+        let dir = tempdir().unwrap();
+        let task = with_deterministic_repair(dir.path(), "repair-help", "repair-worker");
+        let source = task.lifecycle.current_attempt.clone();
+        setup_workgraph(dir.path(), vec![task]);
+
+        run_with_intent(
+            dir.path(),
+            "repair-help",
+            Some("approve the exact fixture boundary; token=secret"),
+            None,
+            Some("request-help"),
+        )
+        .unwrap();
+        // Lost response and the wrapper's subsequent source-exit bookkeeping
+        // must preserve the one pending decision rather than replace it.
+        run_with_intent(
+            dir.path(),
+            "repair-help",
+            Some("approve the exact fixture boundary; token=secret"),
+            None,
+            Some("request-help"),
+        )
+        .unwrap();
+        run(
+            dir.path(),
+            "repair-help",
+            Some("worker exited after requesting help"),
+            Some(FailureClass::AgentExitNonzero),
+        )
+        .unwrap();
+
+        let graph = load_graph(graph_path(dir.path())).unwrap();
+        let task = graph.get_task("repair-help").unwrap();
+        assert_eq!(task.status, Status::InProgress);
+        assert_eq!(task.lifecycle.current_attempt, source);
+        let repair = task.completion_repair.as_ref().unwrap();
+        assert_eq!(repair.reason_code, "scope-approval-required");
+        assert_eq!(
+            repair.blocker_reason_code.as_deref(),
+            Some("deterministic-check-failed")
+        );
+        assert!(repair.semantic_review.is_none());
+        assert_eq!(
+            task.log
+                .iter()
+                .filter(|entry| entry.message.contains("NeedsAttention event="))
+                .count(),
+            1
+        );
+        assert!(!serde_json::to_string(task).unwrap().contains("secret"));
+    }
+
+    #[test]
+    fn stale_deterministic_help_binding_is_rejected_without_mutation() {
+        let dir = tempdir().unwrap();
+        let mut task = with_deterministic_repair(dir.path(), "stale-help", "old-worker");
+        task.lifecycle.current_attempt.as_mut().unwrap().id = "attempt-newer".into();
+        task.assigned = Some("new-worker".into());
+        let before = task.clone();
+        setup_workgraph(dir.path(), vec![task]);
+
+        let error = run_with_intent(
+            dir.path(),
+            "stale-help",
+            Some("stale proposal"),
+            None,
+            Some("request-contract-correction"),
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("stale for the current source attempt/fence/requirements/candidate")
+        );
+        let graph = load_graph(graph_path(dir.path())).unwrap();
+        assert_eq!(graph.get_task("stale-help").unwrap(), &before);
+    }
+
+    #[test]
+    fn deliberate_stop_needs_no_validation_failure_and_stays_terminal() {
+        let dir = tempdir().unwrap();
+        let task = running_task("deliberate-stop", "stopping-worker");
+        setup_workgraph(dir.path(), vec![task]);
+
+        run_with_intent(
+            dir.path(),
+            "deliberate-stop",
+            Some("authorized worker cannot proceed"),
+            None,
+            Some("deliberate-stop"),
+        )
+        .unwrap();
+        let graph = load_graph(graph_path(dir.path())).unwrap();
+        let task = graph.get_task("deliberate-stop").unwrap();
+        assert_eq!(task.status, Status::Failed);
+        assert_eq!(
+            task.failure_reason.as_deref(),
+            Some("authorized worker cannot proceed")
+        );
+        assert!(task.completion_repair.is_none());
+
+        // A duplicate stop is a terminal no-op, never a silent continuation.
+        run_with_intent(
+            dir.path(),
+            "deliberate-stop",
+            Some("duplicate"),
+            None,
+            Some("deliberate-stop"),
+        )
+        .unwrap();
+        let graph = load_graph(graph_path(dir.path())).unwrap();
+        assert_eq!(
+            graph.get_task("deliberate-stop").unwrap().status,
+            Status::Failed
+        );
     }
 
     #[test]

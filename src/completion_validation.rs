@@ -8,10 +8,13 @@
 //! fence, repository, and selected manifest before a model sees it.
 
 use crate::completion_manifest::{
-    CompletionManifest, ContentDigest, IncompleteEvidence, IncompleteEvidenceKind, OutputRef,
-    ResolvedReviewBundle,
+    ArtifactOutput, CompletionManifest, ContentDigest, EvidenceRef, IncompleteEvidence,
+    IncompleteEvidenceKind, OutputRef, ResolvedReviewBundle,
 };
-use crate::completion_review::CompletionReviewBinding;
+use crate::completion_review::{
+    CompletionReviewBinding, ReviewCandidateState, ReviewFailureClass, ReviewerKind,
+    VerifiedCompletionReviewActivity,
+};
 use crate::completion_task::requirements_digest;
 use crate::graph::{
     CompletionContract as GraphCompletionContract, CompletionRepairBoundary,
@@ -19,7 +22,7 @@ use crate::graph::{
     WorkGraph, parse_delay,
 };
 use crate::identity::canonical_json;
-use crate::simple_land::CompletionContract;
+use crate::simple_land::{CompletionContract, ReviewVerdict};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -516,10 +519,135 @@ pub fn record_deterministic_repair_failure(
         opportunities_used,
         opportunity_limit: limit,
         failed_candidates,
+        blocker_reason_code: Some(reason_code.into()),
+        semantic_review: None,
         reason_code: reason_code.into(),
         safe_next,
         feedback_id,
         attention_event_id,
+        updated_at: Utc::now().to_rfc3339(),
+    };
+    task.completion_repair = Some(state.clone());
+    Ok(state)
+}
+
+/// Create the same bounded attention projection from a verified *current*
+/// semantic rejection. The immutable receipt is evidence, not acceptance and
+/// not a deterministic-failure substitute.
+pub fn record_semantic_repair_attention(
+    task: &mut Task,
+    activity: &VerifiedCompletionReviewActivity,
+    receipt_ref: &ArtifactOutput,
+    reason_code: &str,
+    safe_next: String,
+) -> Result<CompletionRepairState, String> {
+    let binding = activity
+        .binding
+        .as_ref()
+        .ok_or_else(|| "semantic rejection has no source/candidate binding".to_string())?;
+    let attempt_id = task
+        .lifecycle
+        .current_attempt
+        .as_ref()
+        .map(|attempt| attempt.id.as_str());
+    let candidate = task
+        .completion_candidate
+        .as_ref()
+        .ok_or_else(|| "semantic rejection has no current completion candidate".to_string())?;
+    let selected_receipt = match activity.reviewer_kind {
+        ReviewerKind::Flip => candidate.flip_receipt.as_ref(),
+        ReviewerKind::Eval => candidate.eval_receipt.as_ref(),
+    };
+    if activity.candidate_state != ReviewCandidateState::Current
+        || activity.verdict != ReviewVerdict::Reject
+        || activity.failure_class != Some(ReviewFailureClass::SemanticRejection)
+        || binding.task_id != task.id
+        || binding.generation != task.lifecycle.generation
+        || binding.attempt_id.as_deref() != attempt_id
+        || binding.attempt_fence != task.lifecycle.fence
+        || candidate.review_binding.as_ref() != Some(binding)
+        || candidate.manifest.content_digest != activity.manifest_digest
+        || selected_receipt != Some(receipt_ref)
+        || receipt_ref.content_digest.as_str() != activity.activity_id
+        || requirements_digest(task).ok().as_ref() != Some(&activity.requirements_digest)
+    {
+        return Err(
+            "semantic repair request does not bind the current task/source attempt/candidate/review receipt"
+                .into(),
+        );
+    }
+
+    let reviewer = match activity.reviewer_kind {
+        ReviewerKind::Flip => "flip",
+        ReviewerKind::Eval => "eval",
+    };
+    let blocker_reason_code = format!("{reviewer}-semantic-rejection");
+    let finding_text = if activity.findings.is_empty() {
+        "<no structured findings; inspect immutable review receipt>".to_string()
+    } else {
+        activity
+            .findings
+            .iter()
+            .map(|finding| format!("{}: {}", finding.code, finding.message))
+            .collect::<Vec<_>>()
+            .join("; ")
+    };
+    let redacted = crate::chat_runtime::redact_text(&finding_text);
+    let mut diagnostic_excerpt: String = redacted.chars().take(MAX_REPAIR_EXCERPT_CHARS).collect();
+    if redacted.chars().count() > MAX_REPAIR_EXCERPT_CHARS {
+        diagnostic_excerpt.push_str(" …[bounded]");
+    }
+    let feedback_id = format!(
+        "b3:{}",
+        blake3::hash(&canonical_json(&serde_json::json!({
+            "task": task.id,
+            "generation": binding.generation,
+            "attempt": binding.attempt_id,
+            "fence": binding.attempt_fence,
+            "candidate_sequence": binding.candidate_sequence,
+            "manifest": activity.manifest_digest,
+            "review_receipt": receipt_ref.content_digest,
+            "blocker": blocker_reason_code,
+        })))
+        .to_hex()
+    );
+    let event_id = format!("attention:{feedback_id}:{reason_code}");
+    let policy = effective_repair_policy(task);
+    let evidence = EvidenceRef {
+        content_digest: receipt_ref.content_digest.clone(),
+        immutable_locator: receipt_ref.immutable_locator.clone(),
+        evidence_kind: format!("completion-semantic-review/{reviewer}/v1"),
+        media_type: receipt_ref.media_type.clone(),
+        size: receipt_ref.size,
+        review_projection: receipt_ref.review_projection.clone(),
+    };
+    let state = CompletionRepairState {
+        version: COMPLETION_REPAIR_STATE_VERSION,
+        disposition: CompletionRepairDisposition::NeedsAttention,
+        task_id: task.id.clone(),
+        generation: binding.generation,
+        attempt_id: binding.attempt_id.clone(),
+        fence: binding.attempt_fence,
+        requirements_digest: activity.requirements_digest.clone(),
+        validation_identity: receipt_ref.content_digest.clone(),
+        candidate_identity: activity.manifest_digest.clone(),
+        evidence,
+        command: format!("completion semantic {reviewer} review"),
+        exit_category: "semantic-rejection".into(),
+        diagnostic_excerpt,
+        opportunities_used: 0,
+        opportunity_limit: policy.deterministic_repair_budget.max(1),
+        failed_candidates: Vec::new(),
+        blocker_reason_code: Some(blocker_reason_code),
+        semantic_review: Some(crate::graph::CompletionSemanticRepairBinding {
+            reviewer_kind: activity.reviewer_kind,
+            review_receipt: receipt_ref.content_digest.clone(),
+            candidate_sequence: binding.candidate_sequence,
+        }),
+        reason_code: reason_code.into(),
+        safe_next,
+        feedback_id,
+        attention_event_id: Some(event_id),
         updated_at: Utc::now().to_rfc3339(),
     };
     task.completion_repair = Some(state.clone());
@@ -531,10 +659,31 @@ pub fn request_repair_attention(
     reason_code: &str,
     safe_next: String,
 ) -> Result<bool, String> {
+    let current_requirements = requirements_digest(task).ok();
     let state = task
         .completion_repair
         .as_mut()
         .ok_or_else(|| "no evidence-backed deterministic repair is active".to_string())?;
+    let semantic_current = state.semantic_review.as_ref().is_none_or(|semantic| {
+        task.completion_candidate.as_ref().is_some_and(|candidate| {
+            let selected = match semantic.reviewer_kind {
+                ReviewerKind::Flip => candidate.flip_receipt.as_ref(),
+                ReviewerKind::Eval => candidate.eval_receipt.as_ref(),
+            };
+            candidate.manifest.content_digest == state.candidate_identity
+                && candidate.review_binding.as_ref().is_some_and(|binding| {
+                    binding.task_id == state.task_id
+                        && binding.generation == state.generation
+                        && binding.attempt_id == state.attempt_id
+                        && binding.attempt_fence == state.fence
+                        && binding.candidate_sequence == semantic.candidate_sequence
+                })
+                && selected.is_some_and(|receipt| {
+                    receipt.content_digest == semantic.review_receipt
+                        && receipt.content_digest == state.evidence.content_digest
+                })
+        })
+    });
     if state.task_id != task.id
         || state.generation != task.lifecycle.generation
         || state.fence != task.lifecycle.fence
@@ -544,8 +693,13 @@ pub fn request_repair_attention(
                 .current_attempt
                 .as_ref()
                 .map(|attempt| attempt.id.as_str())
+        || current_requirements.as_ref() != Some(&state.requirements_digest)
+        || !semantic_current
     {
-        return Err("repair request is stale for the current source attempt/fence".into());
+        return Err(
+            "repair request is stale for the current source attempt/fence/requirements/candidate"
+                .into(),
+        );
     }
     let event_id = format!("attention:{}:{reason_code}", state.feedback_id);
     let changed = state.disposition != CompletionRepairDisposition::NeedsAttention
@@ -640,7 +794,14 @@ pub fn stalled_chains(graph: &WorkGraph) -> Vec<StalledChain> {
         }
         chains.push(StalledChain {
             root_task_id: root.id.clone(),
-            root_blocker: format!("{}: {}", repair.reason_code, repair.exit_category),
+            root_blocker: format!(
+                "{}: {}",
+                repair
+                    .blocker_reason_code
+                    .as_deref()
+                    .unwrap_or(&repair.reason_code),
+                repair.exit_category
+            ),
             active_repair: false,
             affected_downstream: affected.into_iter().collect(),
             safe_operator_action: repair.safe_next.clone(),
