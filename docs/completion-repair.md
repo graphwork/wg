@@ -1,5 +1,7 @@
 # Completion repair and help
 
+**Implementation boundary (communicated before this behavior was implemented):** semantic-rejection help only projects a verified current FLIP/Eval receipt onto the existing completion-repair attention state. It does not create scheduler hierarchy, fabricate deterministic evidence, accept a candidate, retry a provider, rerun source/reviewer work, widen scope, or lower a gate.
+
 `wg done TASK` has three normal outcomes:
 
 1. **Accepted** — WG runs the exact deterministic contract, captures host-bound immutable evidence for the current source attempt/candidate, obtains the configured semantic receipts, publishes under the existing lease/fence rules, and derives `Done` exactly once.
@@ -37,7 +39,7 @@ wg fail TASK --intent request-help --reason '<specific scope decision>'
 wg fail TASK --intent request-contract-correction --reason '<specific missing-check proposal>'
 ```
 
-These intents are also available after the current candidate's exact FLIP or Eval semantic rejection. Superseded/forged receipts and wrong task, attempt, fence, requirements, or candidate bindings are rejected. Replaying the same request, restarting the daemon, or observing the worker exit retains one attention event; a later timeout remains separate failure classification and cannot hide that event. `deliberate-stop` needs no failed test and remains terminal unless an operator explicitly starts a new attempt.
+These intents are also available after the current candidate's exact FLIP or Eval semantic rejection. Superseded/forged receipts and wrong task, attempt, fence, requirements, or candidate bindings are rejected. Replaying the same request, restarting the daemon, or observing the worker exit retains one attention event; a later timeout remains separate failure classification and cannot hide that event. The retained worktree is stored as a display-only locator in the attention projection so both `wg show` and `wg status` keep it visible across restart; it grants no filesystem or completion authority. `deliberate-stop` needs no failed test and remains terminal unless an operator explicitly starts a new attempt.
 
 The proposal is untrusted text and cannot itself change authority. An attended operator adds one approved check while preserving all existing checks:
 

@@ -508,6 +508,7 @@ pub fn record_deterministic_repair_failure(
         validation_identity,
         candidate_identity,
         evidence: evidence_ref.clone(),
+        saved_work: None,
         command: evidence
             .command
             .argv
@@ -632,6 +633,7 @@ pub fn record_semantic_repair_attention(
         validation_identity: receipt_ref.content_digest.clone(),
         candidate_identity: activity.manifest_digest.clone(),
         evidence,
+        saved_work: None,
         command: format!("completion semantic {reviewer} review"),
         exit_category: "semantic-rejection".into(),
         diagnostic_excerpt,
@@ -717,6 +719,8 @@ pub fn request_repair_attention(
 pub struct StalledChain {
     pub root_task_id: String,
     pub root_blocker: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub saved_work: Option<String>,
     pub active_repair: bool,
     pub affected_downstream: Vec<String>,
     pub safe_operator_action: String,
@@ -802,6 +806,7 @@ pub fn stalled_chains(graph: &WorkGraph) -> Vec<StalledChain> {
                     .unwrap_or(&repair.reason_code),
                 repair.exit_category
             ),
+            saved_work: repair.saved_work.clone(),
             active_repair: false,
             affected_downstream: affected.into_iter().collect(),
             safe_operator_action: repair.safe_next.clone(),

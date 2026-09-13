@@ -1034,6 +1034,9 @@ fn print_human_readable(details: &TaskDetails) {
             repair.validation_identity
         );
         println!("  immutable evidence: {}", repair.evidence.content_digest);
+        if let Some(saved_work) = repair.saved_work.as_deref() {
+            println!("  saved work: {saved_work}");
+        }
         if let Some(review) = repair.semantic_review.as_ref() {
             println!(
                 "  semantic rejection: reviewer={:?} receipt={} candidate-sequence={}",

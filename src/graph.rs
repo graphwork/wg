@@ -484,6 +484,10 @@ pub struct CompletionRepairState {
     pub validation_identity: crate::completion_manifest::ContentDigest,
     pub candidate_identity: crate::completion_manifest::ContentDigest,
     pub evidence: crate::completion_manifest::EvidenceRef,
+    /// Worker worktree retained for inspection/continuation. This is a display
+    /// locator only and grants no filesystem or completion authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub saved_work: Option<String>,
     pub command: String,
     pub exit_category: String,
     /// Redacted, bounded, explicitly untrusted diagnostic text.

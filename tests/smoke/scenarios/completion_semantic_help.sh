@@ -168,6 +168,7 @@ assert len(rows)==1 and rows[0]['candidate_state']=='current' and rows[0]['verdi
 b=c['review_binding']; s=r['semantic_review']
 assert r['disposition']=='needs-attention' and r['reason_code']=='contract-correction-required',r
 assert r['blocker_reason_code']=='flip-semantic-rejection' and r['exit_category']=='semantic-rejection',r
+assert r['saved_work']==repo,r
 assert (r['task_id'],r['generation'],r['attempt_id'],r['fence']) == (b['task_id'],b['generation'],b['attempt_id'],b['attempt_fence']),r
 assert r['candidate_identity']==c['manifest']['content_digest'],r
 assert s['reviewer_kind']=='flip' and s['candidate_sequence']==b['candidate_sequence'],s
@@ -177,6 +178,7 @@ assert any('saved_work='+repo in row['message'] for row in x['log']),x['log']
 assert 'must-not-leak' not in json.dumps(x),x
 chains=[row for row in status['stalled_chains'] if row['root_task_id']=='semantic-correction']
 assert len(chains)==1 and chains[0]['root_blocker']=='flip-semantic-rejection: semantic-rejection',chains
+assert chains[0]['saved_work']==repo,chains
 assert 'wg contract semantic-correction --add-validation-command' in chains[0]['safe_operator_action'],chains
 open(sys.argv[2]+'.event','w').write(r['attention_event_id'])
 open(sys.argv[2]+'.requirements','w').write(r['requirements_digest'])

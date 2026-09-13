@@ -1508,6 +1508,9 @@ fn print_status(status: &StatusOutput) {
                 "  ROOT {} — {} (actively repairing: {})",
                 chain.root_task_id, chain.root_blocker, chain.active_repair
             );
+            if let Some(saved_work) = chain.saved_work.as_deref() {
+                println!("    saved work: {saved_work}");
+            }
             println!(
                 "    affected downstream: {}",
                 if chain.affected_downstream.is_empty() {

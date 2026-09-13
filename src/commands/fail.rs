@@ -700,6 +700,12 @@ fn preserve_completion_repair(
             return false;
         }
 
+        if let Some(repair) = task.completion_repair.as_mut()
+            && repair.saved_work.is_none()
+        {
+            repair.saved_work = Some(saved_work.clone());
+            changed = true;
+        }
         parent = task
             .origin
             .parent_task
