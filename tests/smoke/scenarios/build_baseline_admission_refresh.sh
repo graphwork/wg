@@ -141,4 +141,29 @@ assert len(cargo)==1, rows
 assert cargo[0]['key']['baseline_reusable'] is True, cargo
 PY
 
-printf '%s\n' "PASS: generic non-Rust work runs beside exactly one cold exact Cargo builder, and status names its live owner and bounded next action without restarting the daemon"
+builder_pid="$(python3 - <<'PY'
+import json
+rows=json.load(open('.wg/service/registry.json')).get('agents',{}).values()
+print(next(a['pid'] for a in rows if a['task_id']=='b-cold-builder'))
+PY
+)"
+kill "$builder_pid" 2>/dev/null || true
+for _ in $(seq 1 100); do
+  agents="$(python3 - <<'PY'
+import json
+try:
+ d=json.load(open('.wg/service/registry.json'))
+ print(' '.join(sorted(a['task_id'] for a in d.get('agents',{}).values())))
+except Exception:
+ print('')
+PY
+)"
+  grep -q 'c-cold-follower' <<<"$agents" && break
+  sleep 0.1
+done
+grep -q 'c-cold-follower' <<<"${agents:-}" \
+  || loud_fail "dead exact builder ownership did not recover on a live daemon tick: ${agents:-}; $(tail -80 .wg/service/daemon.log)"
+[[ "$pid" == "$(python3 -c 'import json; print(json.load(open(".wg/service/state.json"))["pid"])')" ]] \
+  || loud_fail "daemon restarted during dead-builder recovery"
+
+printf '%s\n' "PASS: non-Rust work is Cargo-independent; exact-key cold admission is single-builder, actionable, and recovers from a dead owner without restarting the daemon"

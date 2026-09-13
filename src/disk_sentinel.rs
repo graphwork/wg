@@ -826,7 +826,12 @@ fn active_cold_baseline_builder(
     task: Option<&Task>,
     ownership: &OwnershipRegistry,
 ) -> Option<ActiveColdBaselineBuilder> {
-    if !agent.is_live(cfg.disk_agent_heartbeat_seconds) {
+    // A stale heartbeat or terminal registry status is not enough to transfer
+    // exact-key builder authority while the recorded process still exists.
+    // Release only after the current process lifecycle proves the PID dead;
+    // mismatched ownership identity below remains fail-closed via the expected
+    // key fallback.
+    if !crate::service::is_process_alive(agent.pid) {
         return None;
     }
     // Resolve the live task's expected exact key independently of ownership.
@@ -986,7 +991,7 @@ pub fn build_admission_for_source(
     let mut seen = HashSet::new();
     for agent in registry
         .all()
-        .filter(|agent| agent.is_live(cfg.disk_agent_heartbeat_seconds))
+        .filter(|agent| crate::service::is_process_alive(agent.pid))
     {
         if !seen.insert(agent.id.clone()) {
             continue;
@@ -1267,14 +1272,14 @@ pub fn refresh_snapshot(dir: &Path, cfg: &ResourceManagementConfig) -> Result<Di
         .filter(|c| {
             registry
                 .get_agent(&c.agent_id)
-                .is_some_and(|a| a.is_live(cfg.disk_agent_heartbeat_seconds))
+                .is_some_and(|a| crate::service::is_process_alive(a.pid))
         })
         .map(|c| &c.agent_id)
         .collect::<HashSet<_>>()
         .len();
     let active_build_heavy = registry
         .all()
-        .filter(|a| a.is_live(cfg.disk_agent_heartbeat_seconds))
+        .filter(|a| crate::service::is_process_alive(a.pid))
         .filter(|a| {
             graph
                 .as_ref()
@@ -1286,7 +1291,7 @@ pub fn refresh_snapshot(dir: &Path, cfg: &ResourceManagementConfig) -> Result<Di
     let mut reserved = 0u64;
     for agent in registry
         .all()
-        .filter(|agent| agent.is_live(cfg.disk_agent_heartbeat_seconds))
+        .filter(|agent| crate::service::is_process_alive(agent.pid))
     {
         let class = graph
             .as_ref()
@@ -2872,6 +2877,15 @@ mod tests {
             ),
         )
         .unwrap();
+        let mut ownership = load_ownership(&dir).unwrap();
+        ownership.caches[0].pid_start_epoch = Some(1);
+        save_ownership(&dir, &ownership).unwrap();
+        assert!(
+            !crate::target_cache::layer_baseline_state(&target)
+                .unwrap()
+                .ready,
+            "a private layer without complete READY publication is cold"
+        );
 
         let before = build_admission_for_source(
             &dir,
@@ -2882,6 +2896,75 @@ mod tests {
         );
         assert!(!before.allowed);
         assert!(before.reason.contains("active baseline builder"));
+        assert!(before.reason.contains("next action"));
+
+        // Failed/stale registry state remains fail-closed while the exact PID
+        // is alive, then releases immediately once that process is dead.
+        let mut failed_registry = AgentRegistry::load(&dir).unwrap();
+        let failed = failed_registry.agents.get_mut("agent-builder").unwrap();
+        failed.status = AgentStatus::Failed;
+        failed_registry.save(&dir).unwrap();
+        let failed_alive = build_admission_for_source(
+            &dir,
+            &cfg,
+            BuildClass::BuildCapable,
+            &source,
+            Some("cargo check"),
+        );
+        assert!(!failed_alive.allowed);
+        assert!(failed_alive.reason.contains("next action"));
+        let free = probe_mount(&source).unwrap().free_bytes;
+        let mut bounded = cfg.clone();
+        bounded.disk_warning_bytes = free.saturating_sub(96 * 1024 * 1024);
+        let unrelated_while_failed = build_admission_for_source(
+            &dir,
+            &bounded,
+            BuildClass::BuildCapable,
+            &source,
+            Some("cargo test"),
+        );
+        assert!(
+            !unrelated_while_failed.allowed,
+            "failed/stale but running cold builders must remain in disk reservations: {}",
+            unrelated_while_failed.reason
+        );
+        assert!(
+            unrelated_while_failed
+                .reason
+                .contains("projected build growth")
+        );
+        let failed_snapshot = refresh_snapshot(&dir, &cfg).unwrap();
+        assert_eq!(failed_snapshot.active_builds, 1);
+        let snapshot_free = failed_snapshot
+            .mounts
+            .iter()
+            .map(|mount| mount.free_bytes)
+            .min()
+            .unwrap();
+        let snapshot_reserved =
+            snapshot_free as i128 - failed_snapshot.projected_headroom_bytes as i128;
+        assert!(
+            snapshot_reserved > (63 * 1024 * 1024) as i128,
+            "snapshot dropped a failed/stale but running reservation: {failed_snapshot:?}"
+        );
+
+        let failed = failed_registry.agents.get_mut("agent-builder").unwrap();
+        failed.pid = u32::MAX - 1;
+        failed_registry.save(&dir).unwrap();
+        let failed_dead = build_admission_for_source(
+            &dir,
+            &cfg,
+            BuildClass::BuildCapable,
+            &source,
+            Some("cargo check"),
+        );
+        assert!(failed_dead.allowed, "{}", failed_dead.reason);
+
+        let failed = failed_registry.agents.get_mut("agent-builder").unwrap();
+        failed.pid = std::process::id();
+        failed.status = AgentStatus::Working;
+        failed.last_heartbeat = Utc::now().to_rfc3339();
+        failed_registry.save(&dir).unwrap();
 
         // A cold ownership row for key A likewise cannot release the live
         // task's expected key B fence.
@@ -2935,8 +3018,64 @@ mod tests {
         assert!(!wrong_key.allowed);
         assert!(wrong_key.reason.contains("active baseline builder"));
 
+        let changed_toolchain = "RUSTUP_TOOLCHAIN=wg-missing-toolchain cargo check";
+        graph.get_task_mut("builder").unwrap().exec = Some(changed_toolchain.into());
+        save_graph(&graph, dir.join("graph.jsonl")).unwrap();
+        let wrong_toolchain = build_admission_for_source(
+            &dir,
+            &cfg,
+            BuildClass::BuildCapable,
+            &source,
+            Some(changed_toolchain),
+        );
+        assert!(!wrong_toolchain.allowed);
+        assert!(wrong_toolchain.reason.contains("next action"));
+
         graph.get_task_mut("builder").unwrap().exec = Some("cargo check".into());
         save_graph(&graph, dir.join("graph.jsonl")).unwrap();
+        fs::write(source.join("changed-source"), "new exact source tree").unwrap();
+        assert!(
+            std::process::Command::new("git")
+                .args(["add", "changed-source"])
+                .current_dir(&source)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            std::process::Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=WG Test",
+                    "-c",
+                    "user.email=wg@example.invalid",
+                    "commit",
+                    "-qm",
+                    "changed source",
+                ])
+                .current_dir(&source)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let wrong_source = build_admission_for_source(
+            &dir,
+            &cfg,
+            BuildClass::BuildCapable,
+            &source,
+            Some("cargo check"),
+        );
+        assert!(!wrong_source.allowed);
+        assert!(wrong_source.reason.contains("next action"));
+        assert!(
+            std::process::Command::new("git")
+                .args(["reset", "--hard", "HEAD^"])
+                .current_dir(&source)
+                .status()
+                .unwrap()
+                .success()
+        );
+
         let after = build_admission_for_source(
             &dir,
             &cfg,
