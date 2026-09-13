@@ -127,6 +127,8 @@ pub struct SourceProviderRecoveryV1 {
     pub exact_route: String,
     pub executor: String,
     pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_revision: Option<String>,
     pub route_id: String,
     pub plan_id: String,
     pub first_failure_at: DateTime<Utc>,
@@ -244,6 +246,10 @@ pub struct FailureBinding {
     pub exact_route: String,
     pub executor: String,
     pub model: String,
+    /// Project authority revision used to construct the immutable plan. Older
+    /// bindings deserialize as `None`; every new attempt writes the revision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_revision: Option<String>,
     pub route_id: String,
     pub plan_id: String,
     pub operation_id: String,
@@ -295,6 +301,7 @@ pub fn build_launch_binding(dir: &Path, task: &Task, plan: &SpawnPlan) -> Result
         exact_route: format!("{}:{}", plan.executor.as_str(), plan.model.raw),
         executor: plan.executor.as_str().to_string(),
         model: plan.model.raw.clone(),
+        config_revision: plan.config_revision.clone(),
         route_id: crate::dispatch::spawn_route_binding_id(&route_id),
         plan_id: crate::dispatch::spawn_plan_binding_id(plan, &route_id),
         operation_id: operation_id(task, attempt),
@@ -698,6 +705,7 @@ pub fn observe_failure(
             || record.plan_id != binding.plan_id
             || record.executor != binding.executor
             || record.model != binding.model
+            || record.config_revision != binding.config_revision
         {
             record.needs_attention(
                 "ambiguous-or-stale-execution",
@@ -771,6 +779,7 @@ pub fn observe_failure(
         exact_route: binding.exact_route.clone(),
         executor: binding.executor.clone(),
         model: binding.model.clone(),
+        config_revision: binding.config_revision.clone(),
         route_id: binding.route_id.clone(),
         plan_id: binding.plan_id.clone(),
         first_failure_at: observed_at,
@@ -917,6 +926,7 @@ mod tests {
             exact_route: "pi:openrouter:test/model".into(),
             executor: "pi".into(),
             model: "openrouter:test/model".into(),
+            config_revision: Some("b3:test-revision".into()),
             route_id: "route".into(),
             plan_id: "plan".into(),
             operation_id: "operation-1".into(),

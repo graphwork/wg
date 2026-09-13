@@ -1504,6 +1504,7 @@ const PI_ROUTING_WEAK: &str = ".flip, .assign, eval, triage, off-the-rails, comp
 struct PiUpdate {
     strong: Option<String>,
     weak: Option<String>,
+    reset_weak: bool,
     strong_reasoning: Option<String>,
     weak_reasoning: Option<String>,
 }
@@ -1512,6 +1513,7 @@ impl PiUpdate {
     fn has_update(&self) -> bool {
         self.strong.is_some()
             || self.weak.is_some()
+            || self.reset_weak
             || self.strong_reasoning.is_some()
             || self.weak_reasoning.is_some()
     }
@@ -1580,6 +1582,7 @@ fn resolve_pi_update(
     Ok(PiUpdate {
         strong: pos_strong.or_else(|| strong_flag.map(str::to_string)),
         weak: pos_weak.or_else(|| weak_flag.map(str::to_string)),
+        reset_weak: false,
         strong_reasoning: strong_reasoning.map(str::to_string),
         weak_reasoning: weak_reasoning.map(str::to_string),
     })
@@ -1598,6 +1601,7 @@ pub fn pi(
     tiers: &[String],
     strong_flag: Option<&str>,
     weak_flag: Option<&str>,
+    reset_weak: bool,
     strong_reasoning: Option<&str>,
     weak_reasoning: Option<&str>,
     show: bool,
@@ -1606,25 +1610,35 @@ pub fn pi(
     no_reload: bool,
 ) -> Result<()> {
     let profile = profile.unwrap_or(PI_PROFILE_NAME);
-    let update = resolve_pi_update(
+    let mut update = resolve_pi_update(
         tiers,
         strong_flag,
         weak_flag,
         strong_reasoning,
         weak_reasoning,
     )?;
+    if reset_weak && update.weak.is_some() {
+        anyhow::bail!("--reset-weak conflicts with an explicit weak tier");
+    }
+    update.reset_weak = reset_weak;
 
     // The built-in pi profile falls back to its baked-in starter. Named custom
     // profiles must already exist, which protects against typo-created files.
+    // Once a project document exists it is the sole routing authority: this
+    // surface reads and edits that materialized projection directly and never
+    // rewrites the reusable machine-global profile definition.
     let prof = named_profile::load(profile)?;
-    let (cur_strong, cur_weak) = prof.config.pi_tiers();
-    let cur_strong_reasoning = prof
-        .config
-        .resolve_reasoning_detail(DispatchRole::TaskAgent);
-    let cur_weak_reasoning = prof
-        .config
-        .resolve_reasoning_detail(DispatchRole::Evaluator);
-    let is_active = named_profile::active().unwrap_or(None).as_deref() == Some(profile);
+    let project_document = worksgood::project_config::load_for_graph(dir)?;
+    let project_local = project_document.is_some();
+    let current_config = if project_local {
+        Config::load_merged(dir)?
+    } else {
+        prof.config.clone()
+    };
+    let (cur_strong, cur_weak) = current_config.pi_tiers();
+    let cur_strong_reasoning = current_config.resolve_reasoning_detail(DispatchRole::TaskAgent);
+    let cur_weak_reasoning = current_config.resolve_reasoning_detail(DispatchRole::Evaluator);
+    let is_active = project_local;
 
     // Explicit read-only intents win over any (likely contradictory) update.
     if show {
@@ -1667,7 +1681,11 @@ pub fn pi(
             }
         })
         .or_else(|| cur_strong.clone());
-    let new_weak = update.weak.clone().or_else(|| cur_weak.clone());
+    let new_weak = if update.reset_weak {
+        new_strong.clone()
+    } else {
+        update.weak.clone().or_else(|| cur_weak.clone())
+    };
     let new_strong_reasoning = updated_reasoning(
         &cur_strong_reasoning,
         update.strong_reasoning.as_deref(),
@@ -1692,7 +1710,7 @@ pub fn pi(
                 new_strong_reasoning: &new_strong_reasoning,
                 new_weak_reasoning: &new_weak_reasoning,
                 touched_strong: update.strong.is_some(),
-                touched_weak: update.weak.is_some(),
+                touched_weak: update.weak.is_some() || update.reset_weak,
                 touched_strong_reasoning: update.strong_reasoning.is_some(),
                 touched_weak_reasoning: update.weak_reasoning.is_some(),
                 is_active,
@@ -1706,29 +1724,59 @@ pub fn pi(
         return Ok(());
     }
 
-    let path = named_profile::patch_two_tier_profile(
-        profile,
-        update.strong.as_deref(),
-        update.weak.as_deref(),
-        update.strong_reasoning.as_deref(),
-        update.weak_reasoning.as_deref(),
-        profile == PI_PROFILE_NAME,
-    )?;
-
-    // When pi is the active profile, the profile file IS the runtime config —
-    // re-apply it as the global config so the next worker/turn picks up the new
-    // tiers, exactly like `wg profile edit` (design §6.3).
-    let reloaded_note = if is_active {
-        named_profile::apply_profile_as_global_config(profile)?;
-        if no_reload {
-            Some("staged (--no-reload): applies on next `wg service start`".to_string())
-        } else {
-            Some(daemon_reload_note_for(dir, profile))
+    let (path, reloaded_note) = if project_local {
+        let mut updated = current_config.clone();
+        if let Some(strong) = update.strong.as_deref() {
+            updated.tiers.standard = Some(if profile == PI_PROFILE_NAME {
+                worksgood::config::pi_strong_route(strong)
+            } else {
+                strong.to_string()
+            });
         }
+        if let Some(weak) = update.weak.as_deref() {
+            updated.tiers.fast = Some(if profile == PI_PROFILE_NAME {
+                worksgood::config::pi_strong_route(weak)
+            } else {
+                weak.to_string()
+            });
+        }
+        if update.reset_weak {
+            updated.tiers.fast = None;
+            updated.tiers.fast_reasoning = None;
+        }
+        if let Some(reasoning) = update.strong_reasoning.as_deref() {
+            updated.tiers.standard_reasoning = Some(reasoning.parse()?);
+        }
+        if let Some(reasoning) = update.weak_reasoning.as_deref() {
+            updated.tiers.fast_reasoning = Some(reasoning.parse()?);
+        }
+        if profile == PI_PROFILE_NAME {
+            updated.validate_pi_model_plane()?;
+        }
+        let path = worksgood::project_config::write_config_for_graph(dir, &updated)?;
+        let note = if no_reload {
+            "selected project projection updated; staged (--no-reload) for the next service start"
+                .to_string()
+        } else {
+            daemon_reload_note_for(dir, profile)
+        };
+        (path, Some(note))
     } else {
-        Some(format!(
-            "'{profile}' is not the active profile — takes effect on `wg profile use {profile}`"
-        ))
+        let mut path = named_profile::patch_two_tier_profile(
+            profile,
+            update.strong.as_deref(),
+            update.weak.as_deref(),
+            update.strong_reasoning.as_deref(),
+            update.weak_reasoning.as_deref(),
+            profile == PI_PROFILE_NAME,
+        )?;
+        if update.reset_weak {
+            path = named_profile::reset_weak_tier(profile)?;
+        }
+        let note = format!(
+            "definition updated; select it for this project with `wg profile select {profile}`"
+        );
+        (path, Some(note))
     };
 
     pi_set_echo(
@@ -1743,7 +1791,7 @@ pub fn pi(
             new_strong_reasoning: &new_strong_reasoning,
             new_weak_reasoning: &new_weak_reasoning,
             touched_strong: update.strong.is_some(),
-            touched_weak: update.weak.is_some(),
+            touched_weak: update.weak.is_some() || update.reset_weak,
             touched_strong_reasoning: update.strong_reasoning.is_some(),
             touched_weak_reasoning: update.weak_reasoning.is_some(),
             is_active,
@@ -1962,6 +2010,12 @@ fn reasoning_annotation(old: &ResolvedReasoning, new: &ResolvedReasoning, touche
 /// `wg profile pi --show` (and the no-arg default).
 fn pi_show(profile: &str, is_active: bool, config: &Config, json: bool) -> Result<()> {
     let (strong, weak) = config.pi_tiers();
+    let strong_route = config
+        .resolve_tier_route(worksgood::config::Tier::Standard)
+        .ok();
+    let weak_route = config
+        .resolve_tier_route(worksgood::config::Tier::Fast)
+        .ok();
     let strong_reasoning = config.resolve_reasoning_detail(DispatchRole::TaskAgent);
     let weak_reasoning = config.resolve_reasoning_detail(DispatchRole::Evaluator);
     if json {
@@ -1969,8 +2023,12 @@ fn pi_show(profile: &str, is_active: bool, config: &Config, json: bool) -> Resul
             "profile": profile,
             "active": is_active,
             "strong": strong,
+            "strong_provenance": strong_route.as_ref().map(|route| route.provenance.to_string()),
+            "strong_source": strong_route.as_ref().map(|route| route.source.as_str()),
             "strong_reasoning": strong_reasoning,
             "weak": weak,
+            "weak_provenance": weak_route.as_ref().map(|route| route.provenance.to_string()),
+            "weak_source": weak_route.as_ref().map(|route| route.source.as_str()),
             "weak_reasoning": weak_reasoning,
             "routing": { "strong": PI_ROUTING_STRONG, "weak": PI_ROUTING_WEAK },
         });
@@ -1979,12 +2037,26 @@ fn pi_show(profile: &str, is_active: bool, config: &Config, json: bool) -> Resul
     }
     let active_tag = if is_active { "   [active]" } else { "" };
     println!("Two-tier profile  (profile: {profile}){active_tag}");
-    println!("  strong = {}", strong.as_deref().unwrap_or("(unset)"));
+    println!(
+        "  strong = {} [{}]",
+        strong.as_deref().unwrap_or("(unset)"),
+        strong_route
+            .as_ref()
+            .map(|route| route.provenance.to_string())
+            .unwrap_or_else(|| "unset".to_string())
+    );
     println!(
         "           effort = {}",
         reasoning_display(&strong_reasoning, true)
     );
-    println!("  weak   = {}", weak.as_deref().unwrap_or("(unset)"));
+    println!(
+        "  weak   = {} [{}]",
+        weak.as_deref().unwrap_or("(unset)"),
+        weak_route
+            .as_ref()
+            .map(|route| route.provenance.to_string())
+            .unwrap_or_else(|| "unset".to_string())
+    );
     println!(
         "           effort = {}",
         reasoning_display(&weak_reasoning, true)
@@ -1992,10 +2064,12 @@ fn pi_show(profile: &str, is_active: bool, config: &Config, json: bool) -> Resul
     println!();
     pi_routing_block();
     println!();
-    println!("  source: ~/.wg/profiles/{profile}.toml   (strong ← agent.model; weak ← tiers.fast)");
+    println!(
+        "  source: ~/.wg/profiles/{profile}.toml   (strong ← models.default/tiers.standard; weak ← strong unless tiers.fast is explicit)"
+    );
     if !is_active {
         println!(
-            "  ('{profile}' is not the active profile — activate with `wg profile use {profile}`)"
+            "  ('{profile}' is not selected for this project — select with `wg profile select {profile}`)"
         );
     }
     Ok(())
@@ -2060,6 +2134,7 @@ fn pi_list(profile: &str, config: &Config, is_active: bool, json: bool) -> Resul
     };
     println!("  wg profile pi{target} --strong <spec>      # set strong model");
     println!("  wg profile pi{target} --weak   <spec>      # set weak model");
+    println!("  wg profile pi{target} --reset-weak        # weak inherits strong again");
     println!("  wg profile pi{target} --strong-reasoning <level>");
     println!("  wg profile pi{target} --weak-reasoning   <level>");
     Ok(())
@@ -2208,6 +2283,9 @@ fn pi_set_echo(profile: &str, e: &PiSetEcho, update: &PiUpdate, json: bool) {
             e.touched_weak_reasoning,
         )
     );
+    if update.reset_weak {
+        println!("           route selector: reset → inherit strong");
+    }
     println!();
     pi_routing_block();
     println!();
@@ -2245,6 +2323,9 @@ fn pi_apply_command(profile: &str, update: &PiUpdate) -> String {
     }
     if let Some(w) = &update.weak {
         cmd.push_str(&format!(" --weak {w}"));
+    }
+    if update.reset_weak {
+        cmd.push_str(" --reset-weak");
     }
     if let Some(level) = &update.strong_reasoning {
         cmd.push_str(&format!(" --strong-reasoning {level}"));

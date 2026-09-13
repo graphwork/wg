@@ -723,6 +723,7 @@ mod tests {
             exact_route: "pi:test:model".into(),
             executor: "pi".into(),
             model: "test:model".into(),
+            config_revision: Some("b3:test-revision".into()),
             route_id: "route".into(),
             plan_id: "plan".into(),
             operation_id: "operation".into(),

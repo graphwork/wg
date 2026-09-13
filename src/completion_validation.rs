@@ -36,7 +36,12 @@ pub const CONFIGURED_VALIDATION_EVIDENCE_KIND: &str = "deterministic-validation/
 pub const BASELINE_VALIDATION_EVIDENCE_KIND: &str = "deterministic-validation/baseline/v1";
 pub const SMOKE_FAILURE_EVIDENCE_KIND: &str = "completion-smoke/failure/v1";
 const DETERMINISTIC_VALIDATION_PREFIX: &str = "deterministic-validation/";
-const MAX_CAPTURE_BYTES_PER_STREAM: usize = 32 * 1024;
+// Validation output is immutable review evidence. Keep the bound finite, but
+// large enough for the configured repository gate (Cargo emits substantial
+// diagnostics even on success) so ordinary authoritative runs are not reduced
+// to an unverifiable prefix. Larger streams remain explicitly marked truncated
+// and therefore fail the complete-evidence review requirement closed.
+const MAX_CAPTURE_BYTES_PER_STREAM: usize = 512 * 1024;
 const MAX_COMMAND_BYTES: usize = 16 * 1024;
 const DEFAULT_TIMEOUT_SECS: u64 = 900;
 const MAX_TIMEOUT_SECS: u64 = 3600;
@@ -1680,10 +1685,13 @@ mod tests {
     #[test]
     fn capture_records_bounded_streams_exit_repository_and_timing() {
         let (temp, task) = fixture();
-        let command = "python3 -c \"import sys; print('x'*70000); print('err', file=sys.stderr)\"";
+        let command = format!(
+            "python3 -c \"import sys; print('x'*{}); print('err', file=sys.stderr)\"",
+            MAX_CAPTURE_BYTES_PER_STREAM + 1
+        );
         let evidence = capture_validation(
             &task,
-            command,
+            &command,
             0,
             ValidationPurpose::Configured,
             temp.path(),

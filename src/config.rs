@@ -383,6 +383,20 @@ pub struct Config {
     /// via [`Config::emit_load_diagnostics`] / [`ConfigLoadDiagnostics::emit`].
     #[serde(skip)]
     pub load_diagnostics: ConfigLoadDiagnostics,
+
+    /// Content revision of the one project authority used for this snapshot.
+    /// Runtime-only: attempts copy it into their route pin; it is never a
+    /// second configuration store.
+    #[serde(skip)]
+    pub authority_revision: Option<String>,
+
+    /// Human-readable path/source of the project authority for diagnostics.
+    #[serde(skip)]
+    pub authority_source: Option<String>,
+
+    /// Winning source for each explicit leaf in this exact snapshot.
+    #[serde(skip)]
+    pub value_sources: BTreeMap<String, ConfigSource>,
 }
 
 /// MCP server configuration. Populated from:
@@ -2385,14 +2399,40 @@ pub struct ResolvedPiRoute {
 /// Pi remains the recommended/default execution system. Native Claude and
 /// Codex are opt-in CLI adapters whose model spelling is opaque to WG; only
 /// the leading handler token is interpreted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RouteProvenance {
+    Explicit,
+    Inherited,
+}
+
+impl std::fmt::Display for RouteProvenance {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Explicit => "explicit",
+            Self::Inherited => "inherited",
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolvedTierRoute {
+    pub route: String,
+    pub provenance: RouteProvenance,
+    pub source: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResolvedExecutionRoute {
     pub route: String,
     pub handler: String,
     pub provider: Option<String>,
     pub model: String,
-    pub reasoning: ReasoningLevel,
+    pub reasoning: Option<ReasoningLevel>,
     pub source: String,
+    pub provenance: RouteProvenance,
+    pub config_source: String,
+    pub config_revision: String,
 }
 
 /// Parse the only supported Pi route shape.
@@ -3566,71 +3606,161 @@ impl Config {
         self.effective_registry().into_iter().find(|e| e.id == id)
     }
 
-    /// The explicitly configured raw model spec for the **weak** two-tier
-    /// label. Built-in tier catalog defaults are deliberately excluded: they
-    /// are suggestions, not authorization to execute Claude (or any system).
-    pub fn weak_tier_spec(&self) -> Option<String> {
-        let profile_tiers = self.resolve_profile_tiers();
-        self.tiers.fast.clone().or(profile_tiers.fast)
-    }
-
-    /// The explicitly configured raw model spec for the **strong** reviewer
-    /// tier. Built-in Anthropic fill values are not execution selection.
-    pub fn strong_tier_spec(&self) -> Option<String> {
-        let profile_tiers = self.resolve_profile_tiers();
-        self.tiers
-            .premium
-            .clone()
-            .or(profile_tiers.premium)
-            .or_else(|| self.tiers.standard.clone())
-            .or(profile_tiers.standard)
-    }
-
-    /// Raw configured tier route without a display/catalog fill.
-    pub fn configured_tier_spec(&self, tier: Tier) -> Option<String> {
+    fn explicit_tier_spec(&self, tier: Tier) -> Option<String> {
         let profile_tiers = self.resolve_profile_tiers();
         match tier {
             Tier::Fast => self.tiers.fast.clone().or(profile_tiers.fast),
             Tier::Standard => self.tiers.standard.clone().or(profile_tiers.standard),
             Tier::Premium => self.tiers.premium.clone().or(profile_tiers.premium),
         }
+        .filter(|route| !route.trim().is_empty())
     }
 
-    fn configured_route_for_role(&self, role: DispatchRole) -> anyhow::Result<(String, String)> {
+    /// Resolve the one project default while recognizing legacy duplicate
+    /// aliases. The canonical `models.default.model` wins when present; legacy
+    /// agent/dispatcher selectors are operator-owned values and must not become
+    /// conflicting defaults merely because a canonical default was added.
+    /// Without a canonical default, disagreeing legacy aliases remain
+    /// ambiguous and fail closed instead of silently choosing one.
+    pub fn project_default_route(&self) -> anyhow::Result<ResolvedTierRoute> {
+        if let Some(route) = self
+            .models
+            .get_role(DispatchRole::Default)
+            .and_then(|config| config.model.as_deref())
+            .filter(|route| !route.trim().is_empty())
+        {
+            return Ok(ResolvedTierRoute {
+                route: route.to_string(),
+                provenance: RouteProvenance::Explicit,
+                source: "models.default.model".to_string(),
+            });
+        }
+        let candidates = [
+            ("agent.model", Some(self.agent.model.as_str())),
+            ("dispatcher.model", self.coordinator.model.as_deref()),
+        ];
+        let mut selected: Option<(&str, &str)> = None;
+        let mut declared = Vec::new();
+        for (source, value) in candidates {
+            let Some(route) = value.filter(|route| !route.trim().is_empty()) else {
+                continue;
+            };
+            declared.push(format!("{source}={route:?}"));
+            if let Some((_, existing)) = selected {
+                if existing != route {
+                    anyhow::bail!(
+                        "error[WG-EXEC-ROUTE-AMBIGUOUS]: project default aliases disagree ({}); keep one project default with `wg config set agent.model <route>`",
+                        declared.join(", ")
+                    );
+                }
+            } else {
+                selected = Some((source, route));
+            }
+        }
+        let Some((source, route)) = selected else {
+            anyhow::bail!(
+                "error[WG-EXEC-ROUTE-MISSING]: role=default effective_route=<none> config_source={} config_revision={} corrective_action=`wg setup --route pi --yes --model pi:<provider>:<model>`",
+                self.authority_source
+                    .as_deref()
+                    .unwrap_or("project configuration"),
+                self.authority_revision.as_deref().unwrap_or("unversioned")
+            );
+        };
+        Ok(ResolvedTierRoute {
+            route: route.to_string(),
+            provenance: RouteProvenance::Explicit,
+            source: source.to_string(),
+        })
+    }
+
+    /// Resolve an effective tier. Unset standard inherits the project default;
+    /// unset premium inherits strong (standard); unset weak inherits strong.
+    /// No built-in/catalog model participates in execution authority.
+    pub fn resolve_tier_route(&self, tier: Tier) -> anyhow::Result<ResolvedTierRoute> {
+        if let Some(route) = self.explicit_tier_spec(tier) {
+            return Ok(ResolvedTierRoute {
+                route,
+                provenance: RouteProvenance::Explicit,
+                source: format!("tiers.{tier}"),
+            });
+        }
+        let inherited = match tier {
+            Tier::Standard => self.project_default_route()?,
+            Tier::Premium | Tier::Fast => self.resolve_tier_route(Tier::Standard)?,
+        };
+        Ok(ResolvedTierRoute {
+            route: inherited.route,
+            provenance: RouteProvenance::Inherited,
+            source: match tier {
+                Tier::Standard => format!("{} → tiers.standard", inherited.source),
+                Tier::Premium => format!("{} → tiers.premium", inherited.source),
+                Tier::Fast => format!("{} → tiers.fast", inherited.source),
+            },
+        })
+    }
+
+    /// Effective weak route. It equals strong unless `tiers.fast` is explicit.
+    pub fn weak_tier_spec(&self) -> Option<String> {
+        self.resolve_tier_route(Tier::Fast)
+            .ok()
+            .map(|detail| detail.route)
+    }
+
+    /// Effective strong route. It equals the project default unless
+    /// `tiers.standard` is explicit.
+    pub fn strong_tier_spec(&self) -> Option<String> {
+        self.resolve_tier_route(Tier::Standard)
+            .ok()
+            .map(|detail| detail.route)
+    }
+
+    /// Effective configured tier route without a display/catalog fill.
+    pub fn configured_tier_spec(&self, tier: Tier) -> Option<String> {
+        self.resolve_tier_route(tier)
+            .ok()
+            .map(|detail| detail.route)
+    }
+
+    fn configured_route_for_role(
+        &self,
+        role: DispatchRole,
+    ) -> anyhow::Result<(String, String, RouteProvenance)> {
+        if role == DispatchRole::Default {
+            let detail = self.project_default_route()?;
+            return Ok((detail.route, detail.source, detail.provenance));
+        }
         if let Some(route) = self
             .models
             .get_role(role)
             .and_then(|config| config.model.clone())
+            .filter(|route| !route.trim().is_empty())
         {
-            return Ok((route, format!("models.{role}.model")));
+            return Ok((
+                route,
+                format!("models.{role}.model"),
+                RouteProvenance::Explicit,
+            ));
         }
         if let Some(tier) = self.models.get_role(role).and_then(|config| config.tier) {
-            let route = self.configured_tier_spec(tier).ok_or_else(|| {
+            let detail = self.resolve_tier_route(tier).map_err(|error| {
                 anyhow::anyhow!(
-                    "error[WG-EXEC-ROUTE-MISSING]: role={role} selects tier={tier}, but that tier has no explicit route"
+                    "error[WG-EXEC-ROUTE-MISSING]: role={role} selects tier={tier}: {error:#}"
                 )
             })?;
-            return Ok((route, format!("tiers.{tier}")));
+            return Ok((
+                detail.route,
+                format!("models.{role}.tier → {}", detail.source),
+                RouteProvenance::Inherited,
+            ));
         }
-        if let Some(route) = self.configured_tier_spec(role.default_tier()) {
-            return Ok((route, format!("tiers.{}", role.default_tier())));
-        }
-        if let Some(route) = self
-            .models
-            .get_role(DispatchRole::Default)
-            .and_then(|config| config.model.clone())
-        {
-            return Ok((route, "models.default.model".to_string()));
-        }
-        if let Some(route) = self.coordinator.model.clone() {
-            return Ok((route, "dispatcher.model".to_string()));
-        }
-        if !self.agent.model.trim().is_empty() {
-            return Ok((self.agent.model.clone(), "agent.model".to_string()));
-        }
-        anyhow::bail!(
-            "error[WG-EXEC-ROUTE-MISSING]: role={role} has no explicit route; select the recommended Pi profile, a direct Claude/Codex profile, or configure models.{role}.model"
-        )
+        let detail = self.resolve_tier_route(role.default_tier()).map_err(|error| {
+            anyhow::anyhow!(
+                "error[WG-EXEC-ROUTE-MISSING]: role={role} effective_route=<none> config_source={} config_revision={}: {error:#}",
+                self.authority_source.as_deref().unwrap_or("project configuration"),
+                self.authority_revision.as_deref().unwrap_or("unversioned")
+            )
+        })?;
+        Ok((detail.route, detail.source, RouteProvenance::Inherited))
     }
 
     /// Resolve one worker role through explicit orchestration policy only.
@@ -3642,11 +3772,13 @@ impl Config {
         &self,
         role: DispatchRole,
     ) -> anyhow::Result<ResolvedExecutionRoute> {
-        let (route, source) = self.configured_route_for_role(role)?;
+        let (route, source, provenance) = self.configured_route_for_role(role)?;
         let (handler, parsed_model) =
             parse_supported_execution_route(&route).map_err(|error| {
                 anyhow::anyhow!(
-                    "error[WG-EXEC-ROUTE-REQUIRED]: role={role} source={source} route={route:?}: {error}"
+                    "error[WG-EXEC-ROUTE-UNSUPPORTED]: role={role} effective_route={route:?} config_source={} config_revision={} source={source}: {error}; corrective_action=`wg config set agent.model pi:<provider>:<model>`",
+                    self.authority_source.as_deref().unwrap_or("project configuration"),
+                    self.authority_revision.as_deref().unwrap_or("unversioned")
                 )
             })?;
         let (provider, model) = match handler.as_str() {
@@ -3660,12 +3792,13 @@ impl Config {
             "codex" => (Some("codex".to_string()), parsed_model),
             _ => unreachable!("supported execution parser returned unknown handler"),
         };
-        let reasoning = self.resolve_reasoning_for_role(role).ok_or_else(|| {
-            anyhow::anyhow!(
-                "error[WG-EXEC-REASONING-MISSING]: role={role} route={route:?} has no effective reasoning; set models.{role}.reasoning or tiers.{}_reasoning",
-                role.default_tier()
-            )
-        })?;
+        let reasoning = self.resolve_reasoning_for_role(role);
+        let config_source = self
+            .value_sources
+            .get(source.split(" → ").next().unwrap_or(&source))
+            .map(ToString::to_string)
+            .or_else(|| self.authority_source.clone())
+            .unwrap_or_else(|| "in-memory".to_string());
         Ok(ResolvedExecutionRoute {
             route,
             handler,
@@ -3673,6 +3806,12 @@ impl Config {
             model,
             reasoning,
             source,
+            provenance,
+            config_source,
+            config_revision: self
+                .authority_revision
+                .clone()
+                .unwrap_or_else(|| "unversioned".to_string()),
         })
     }
 
@@ -3688,11 +3827,18 @@ impl Config {
                 resolved.route
             )
         })?;
+        let reasoning = resolved.reasoning.ok_or_else(|| {
+            anyhow::anyhow!(
+                "error[WG-EXEC-REASONING-MISSING]: role={role} route={:?} has no effective reasoning; set models.{role}.reasoning or tiers.{}_reasoning",
+                resolved.route,
+                role.default_tier()
+            )
+        })?;
         Ok(ResolvedPiRoute {
             route: resolved.route,
             provider,
             model,
-            reasoning: resolved.reasoning,
+            reasoning,
             source: resolved.source,
         })
     }
@@ -3718,12 +3864,8 @@ impl Config {
 
     /// Resolve a tier to a ResolvedModel via the tier config and legacy registry.
     pub fn resolve_tier(&self, tier: Tier) -> Option<ResolvedModel> {
-        let tiers = self.effective_tiers();
-        let model_id = match tier {
-            Tier::Fast => tiers.fast.as_deref(),
-            Tier::Standard => tiers.standard.as_deref(),
-            Tier::Premium => tiers.premium.as_deref(),
-        }?;
+        let tier_route = self.resolve_tier_route(tier).ok()?;
+        let model_id = tier_route.route.as_str();
 
         // Parse provider:model prefix if present. Strip a leading `nex:` /
         // `native:` HANDLER token first (handler-first inner re-parse, design
@@ -5950,6 +6092,19 @@ impl EffectiveProjectAuthority {
             .and_then(toml::Value::as_str)
             .is_some()
     }
+
+    fn source_and_revision(&self, workgraph_dir: &Path) -> (String, String) {
+        match self {
+            Self::ProjectFile(document) => (
+                document.path.display().to_string(),
+                document.fingerprint.clone(),
+            ),
+            Self::LegacyProject { .. } => (
+                workgraph_dir.join("config.toml").display().to_string(),
+                crate::project_config::projection_fingerprint(&self.merged_value()),
+            ),
+        }
+    }
 }
 
 /// Select exactly one project configuration authority. Machine-global Config
@@ -6207,18 +6362,7 @@ impl Config {
     /// profile association are read as a one-release compatibility source.
     /// Machine-global WG config and the active-profile pointer are never merged.
     pub fn load_merged(workgraph_dir: &Path) -> anyhow::Result<Self> {
-        let mut diag = ConfigLoadDiagnostics::new();
-        let authority = load_effective_project_authority(workgraph_dir, &mut diag)?;
-        let agent_model_is_local = authority.agent_model_is_project_explicit();
-        let merged = authority.merged_value();
-        let mut config: Config = merged
-            .try_into()
-            .map_err(|e| anyhow::anyhow!("Failed to deserialize project config: {e}"))?;
-        config.agent_model_is_local = agent_model_is_local;
-        config.validate_model_format()?;
-        crate::evaluation::rollout::validate_managed_config(workgraph_dir, &config)?;
-        config.load_diagnostics = diag;
-        Ok(config)
+        Self::load_with_sources(workgraph_dir).map(|(config, _)| config)
     }
 
     /// Resolve an API key for a given provider, checking all configured sources.
@@ -6531,96 +6675,23 @@ impl Config {
         Ok(summary)
     }
 
-    /// Pin the user-visible default worker route to one exact model spec.
+    /// Select the one project default route in memory.
     ///
-    /// This updates every default/task-agent surface that can otherwise fall
-    /// through to a lower tier: agent/dispatcher model, `[models.default]`,
-    /// `[models.task_agent]`, and the standard/premium tier aliases. For known
-    /// CLI profiles (claude/codex), starter agency pins are moved to the
-    /// matching cheap model too; custom role overrides are preserved.
+    /// Tiers, roles, and legacy agent/dispatcher selectors are deliberately
+    /// untouched: absent strong/weak/role values inherit dynamically, while
+    /// every existing explicit split remains operator-owned. In particular,
+    /// selecting Codex does not synthesize Luna, selecting Claude does not
+    /// synthesize Haiku, and adding the canonical default never deletes a
+    /// historical selector.
     pub fn pin_default_route_model(&mut self, model: &str) {
-        self.agent.model = model.to_string();
-        self.coordinator.model = Some(model.to_string());
-        let role = RoleModelConfig {
+        let reasoning = self.models.default.as_ref().and_then(|role| role.reasoning);
+        self.models.default = Some(RoleModelConfig {
             provider: None,
             model: Some(model.to_string()),
             tier: None,
             endpoint: None,
-            reasoning: None,
-        };
-        self.models.default = Some(role.clone());
-        self.models.task_agent = Some(role);
-        self.tiers.standard = Some(model.to_string());
-        self.tiers.premium = Some(model.to_string());
-        self.pin_provider_companion_defaults(model);
-    }
-
-    fn pin_provider_companion_defaults(&mut self, model: &str) {
-        let spec = parse_model_spec(model);
-        let Some(provider) = spec.provider.as_deref() else {
-            return;
-        };
-        let (fast, agency) = match provider {
-            "claude" | "anthropic" => ("claude:haiku", "claude:haiku"),
-            "codex" => ("codex:gpt-5.6-luna", "codex:gpt-5.6-luna"),
-            _ => return,
-        };
-
-        if self.tier_model_is_absent_or_starter(self.tiers.fast.as_deref()) {
-            self.tiers.fast = Some(fast.to_string());
-        }
-        for role in [
-            DispatchRole::Evaluator,
-            DispatchRole::Assigner,
-            DispatchRole::FlipInference,
-            DispatchRole::FlipComparison,
-        ] {
-            self.set_role_model_if_absent_or_starter(role, agency);
-        }
-    }
-
-    fn tier_model_is_absent_or_starter(&self, model: Option<&str>) -> bool {
-        match model {
-            None => true,
-            Some(model) => Self::is_starter_agency_model(model),
-        }
-    }
-
-    fn set_role_model_if_absent_or_starter(&mut self, role: DispatchRole, model: &str) {
-        let slot = self.models.get_role_mut(role);
-        let replace = match slot.as_ref() {
-            None => true,
-            Some(cfg) => {
-                cfg.provider.is_none()
-                    && cfg.tier.is_none()
-                    && cfg.endpoint.is_none()
-                    && match cfg.model.as_deref() {
-                        None => true,
-                        Some(existing) => Self::is_starter_agency_model(existing),
-                    }
-            }
-        };
-        if replace {
-            *slot = Some(RoleModelConfig {
-                provider: None,
-                model: Some(model.to_string()),
-                tier: None,
-                endpoint: None,
-                reasoning: None,
-            });
-        }
-    }
-
-    fn is_starter_agency_model(model: &str) -> bool {
-        matches!(
-            model,
-            "haiku"
-                | "claude:haiku"
-                | "gpt-5.4-mini"
-                | "codex:gpt-5.4-mini"
-                | "gpt-5.6-luna"
-                | "codex:gpt-5.6-luna"
-        )
+            reasoning,
+        });
     }
 
     /// Dotted TOML keys written when setting the Pi profile's **strong** tier.
@@ -6630,29 +6701,14 @@ impl Config {
     /// truth shared by the in-memory writer ([`Config::set_pi_tiers`]) and the
     /// comment-preserving file patcher (`profile::named::patch_pi_tiers`), so the
     /// two cannot disagree about which keys `strong` drives.
-    pub const PI_STRONG_TOML_KEYS: &'static [&'static str] = &[
-        "agent.model",
-        "dispatcher.model",
-        "models.default.model",
-        "models.task_agent.model",
-        "tiers.standard",
-        "tiers.premium",
-    ];
+    pub const PI_STRONG_TOML_KEYS: &'static [&'static str] = &["tiers.standard"];
 
     /// Dotted TOML keys written when setting the Pi profile's **weak** tier.
     ///
-    /// See [`Config::PI_STRONG_TOML_KEYS`]. The four `[models.<role>]` agency
-    /// one-shot keys are written explicitly because those roles ignore the tier
-    /// cascade today (`resolve_agency_dispatch`); `tiers.fast` covers the
-    /// remaining fast-tier roles. See design §4.1.
-    pub const PI_WEAK_TOML_KEYS: &'static [&'static str] = &[
-        "tiers.fast",
-        "models.evaluator.model",
-        "models.assigner.model",
-        "models.flip_inference.model",
-        "models.flip_comparison.model",
-        "models.reviewer.model",
-    ];
+    /// See [`Config::PI_STRONG_TOML_KEYS`]. Agency roles resolve through the
+    /// canonical fast tier, so one sparse value controls weak routing without
+    /// overwriting any explicit role override.
+    pub const PI_WEAK_TOML_KEYS: &'static [&'static str] = &["tiers.fast"];
 
     /// Reasoning keys controlled by a two-tier strong-reasoning update.
     /// Kept separate from model keys so either dimension can be patched without
@@ -6676,36 +6732,12 @@ impl Config {
 
     /// Read the Pi profile's `(strong, weak)` tier models from this config.
     ///
-    /// `strong` is inferred from `agent.model` (falling back to
-    /// `[models.default].model`); `weak` from `tiers.fast` (falling back to
-    /// `[models.evaluator].model`). This is the read path behind
-    /// `wg profile pi --show`/`--list` and the `old → new` echo. A profile that
-    /// has never been touched by the two-tier setter still reports correct tiers
-    /// because the hand-written `pi.toml` starter already uses this layout
-    /// (design §8: migration is recognition, not rewrite).
+    /// `strong` is the effective standard tier (falling back to the project
+    /// default); `weak` is the effective fast tier (falling back to strong).
+    /// This is the read path behind `wg profile pi --show`/`--list` and the
+    /// `old → new` echo.
     pub fn pi_tiers(&self) -> (Option<String>, Option<String>) {
-        let strong = if !self.agent.model.trim().is_empty() {
-            Some(self.agent.model.clone())
-        } else {
-            self.models
-                .default
-                .as_ref()
-                .and_then(|m| m.model.clone())
-                .filter(|m| !m.trim().is_empty())
-        };
-        let weak = self
-            .tiers
-            .fast
-            .clone()
-            .filter(|m| !m.trim().is_empty())
-            .or_else(|| {
-                self.models
-                    .evaluator
-                    .as_ref()
-                    .and_then(|m| m.model.clone())
-                    .filter(|m| !m.trim().is_empty())
-            });
-        (strong, weak)
+        (self.strong_tier_spec(), self.weak_tier_spec())
     }
 
     /// Set the Pi profile's two tiers in-memory.
@@ -6721,43 +6753,13 @@ impl Config {
     /// persisted, comment-preserving write goes through
     /// `profile::named::patch_pi_tiers`, which targets the same TOML keys.
     pub fn set_pi_tiers(&mut self, strong: Option<&str>, weak: Option<&str>) {
-        if let Some(s) = strong {
-            let s = pi_strong_route(s);
-            self.agent.model = s.clone();
-            self.coordinator.model = Some(s.clone());
-            let role = RoleModelConfig {
-                provider: None,
-                model: Some(s.clone()),
-                tier: None,
-                endpoint: None,
-                reasoning: Some(ReasoningLevel::High),
-            };
-            self.models.default = Some(role.clone());
-            self.models.task_agent = Some(role);
-            self.tiers.standard = Some(s.clone());
+        if let Some(strong) = strong {
+            self.tiers.standard = Some(pi_strong_route(strong));
             self.tiers.standard_reasoning = Some(ReasoningLevel::High);
-            self.tiers.premium = Some(s);
-            self.tiers.premium_reasoning = Some(ReasoningLevel::Xhigh);
         }
-        if let Some(w) = weak {
-            let w = pi_strong_route(w);
-            self.tiers.fast = Some(w.clone());
+        if let Some(weak) = weak {
+            self.tiers.fast = Some(pi_strong_route(weak));
             self.tiers.fast_reasoning = Some(ReasoningLevel::Low);
-            for role in [
-                DispatchRole::Evaluator,
-                DispatchRole::Assigner,
-                DispatchRole::FlipInference,
-                DispatchRole::FlipComparison,
-                DispatchRole::Reviewer,
-            ] {
-                *self.models.get_role_mut(role) = Some(RoleModelConfig {
-                    provider: None,
-                    model: Some(w.clone()),
-                    tier: None,
-                    endpoint: None,
-                    reasoning: Some(ReasoningLevel::Low),
-                });
-            }
         }
     }
 
@@ -6822,6 +6824,7 @@ impl Config {
         let mut diag = ConfigLoadDiagnostics::new();
         let authority = load_effective_project_authority(workgraph_dir, &mut diag)?;
         let agent_model_is_local = authority.agent_model_is_project_explicit();
+        let (authority_source, authority_revision) = authority.source_and_revision(workgraph_dir);
         let merged = authority.merged_value();
         let mut sources = BTreeMap::new();
 
@@ -6860,6 +6863,8 @@ impl Config {
             .try_into()
             .map_err(|e| anyhow::anyhow!("Failed to deserialize project config: {e}"))?;
         config.agent_model_is_local = agent_model_is_local;
+        config.authority_source = Some(authority_source);
+        config.authority_revision = Some(authority_revision);
         config.validate_model_format()?;
         crate::evaluation::rollout::validate_managed_config(workgraph_dir, &config)?;
 
@@ -6877,6 +6882,7 @@ impl Config {
             sources.entry(key).or_insert(source);
         }
         config.load_diagnostics = diag;
+        config.value_sources = sources.clone();
         Ok((config, sources))
     }
 
@@ -11845,9 +11851,17 @@ fetch_max_chars = 16000
         // Both endpoint + model mentions in summary.
         assert!(summary.iter().any(|s| s.contains("http://lambda01:8089")));
         assert!(summary.iter().any(|s| s.contains("nex:qwen3-coder")));
-        // Model gets the nex: prefix (canonical, matches `wg nex`).
-        assert_eq!(config.coordinator.model.as_deref(), Some("nex:qwen3-coder"));
-        assert_eq!(config.agent.model, "nex:qwen3-coder");
+        // Model gets the nex: prefix and becomes the single project default.
+        assert_eq!(
+            config
+                .models
+                .default
+                .as_ref()
+                .and_then(|entry| entry.model.as_deref()),
+            Some("nex:qwen3-coder")
+        );
+        assert!(config.coordinator.model.is_none());
+        assert!(config.agent.model.is_empty());
         // Endpoint entry is default.
         let default_ep = config
             .llm_endpoints
@@ -11866,9 +11880,17 @@ fetch_max_chars = 16000
         config
             .apply_model_endpoint(Some("claude:opus"), None)
             .unwrap();
-        // No endpoint → model stored verbatim, no local: prefix added.
-        assert_eq!(config.coordinator.model.as_deref(), Some("claude:opus"));
-        assert_eq!(config.agent.model, "claude:opus");
+        // No endpoint → project default stored verbatim, no local: prefix added.
+        assert_eq!(
+            config
+                .models
+                .default
+                .as_ref()
+                .and_then(|entry| entry.model.as_deref()),
+            Some("claude:opus")
+        );
+        assert!(config.coordinator.model.is_none());
+        assert!(config.agent.model.is_empty());
     }
 
     #[test]
@@ -12213,50 +12235,45 @@ model = "codex:gpt-5.5"
     }
 
     #[test]
-    fn test_set_pi_tiers_writes_full_strong_keyset() {
+    fn pin_default_preserves_legacy_operator_selectors_and_canonical_wins() {
         let mut cfg = Config::default();
+        cfg.agent.model = "claude:sonnet".to_string();
+        cfg.coordinator.model = Some("codex:gpt-5.5".to_string());
+
+        cfg.pin_default_route_model("pi:test:project-default");
+
+        assert_eq!(cfg.agent.model, "claude:sonnet");
+        assert_eq!(cfg.coordinator.model.as_deref(), Some("codex:gpt-5.5"));
+        let resolved = cfg.project_default_route().unwrap();
+        assert_eq!(resolved.route, "pi:test:project-default");
+        assert_eq!(resolved.source, "models.default.model");
+    }
+
+    #[test]
+    fn test_set_pi_tiers_writes_only_explicit_strong_tier() {
+        let mut cfg = Config::default();
+        cfg.pin_default_route_model("claude:opus");
         cfg.set_pi_tiers(Some("openrouter:z-ai/glm-5.2"), None);
-        // Every strong key is set to the pi: route (NOT the raw openrouter:
-        // spec) so strong-tier work runs through the self-authenticating pi
-        // handler rather than the in-process nex OpenRouter client. Weak keys
-        // untouched.
-        assert_eq!(cfg.agent.model, "pi:openrouter:z-ai/glm-5.2");
-        assert_eq!(
-            cfg.coordinator.model.as_deref(),
-            Some("pi:openrouter:z-ai/glm-5.2")
-        );
+        // Strong is one explicit tier value; role routes and weak remain sparse.
         assert_eq!(
             cfg.tiers.standard.as_deref(),
             Some("pi:openrouter:z-ai/glm-5.2")
         );
-        assert_eq!(
-            cfg.tiers.premium.as_deref(),
-            Some("pi:openrouter:z-ai/glm-5.2")
-        );
-        assert_eq!(
-            cfg.models.default.as_ref().and_then(|m| m.model.as_deref()),
-            Some("pi:openrouter:z-ai/glm-5.2")
-        );
-        assert_eq!(
-            cfg.models
-                .task_agent
-                .as_ref()
-                .and_then(|m| m.model.as_deref()),
-            Some("pi:openrouter:z-ai/glm-5.2")
-        );
-        // The strong spec routes to the pi handler (single source of truth).
-        assert_eq!(
-            crate::dispatch::handler_for_model(&cfg.agent.model),
-            crate::dispatch::ExecutorKind::Pi
-        );
-        // Weak tier left alone by a strong-only update.
+        assert!(cfg.agent.model.is_empty());
+        assert!(cfg.coordinator.model.is_none());
+        assert!(cfg.models.task_agent.is_none());
+        assert!(cfg.tiers.premium.is_none());
         assert!(cfg.tiers.fast.is_none());
+        assert_eq!(
+            cfg.resolve_tier_route(Tier::Fast).unwrap().route,
+            "pi:openrouter:z-ai/glm-5.2"
+        );
     }
 
     #[test]
-    fn test_set_pi_tiers_weak_only_pins_agency_oneshots() {
+    fn test_set_pi_tiers_weak_only_pins_fast_tier() {
         let mut cfg = Config::default();
-        cfg.agent.model = "claude:opus".to_string();
+        cfg.pin_default_route_model("claude:opus");
         cfg.set_pi_tiers(None, Some("openrouter:deepseek/deepseek-chat"));
         assert_eq!(
             cfg.tiers.fast.as_deref(),
@@ -12268,14 +12285,15 @@ model = "codex:gpt-5.5"
             DispatchRole::FlipInference,
             DispatchRole::FlipComparison,
         ] {
-            assert_eq!(
-                cfg.models.get_role(role).and_then(|m| m.model.as_deref()),
-                Some("pi:openrouter:deepseek/deepseek-chat"),
-                "weak update must pin the {role:?} agency one-shot"
-            );
+            let resolved = cfg.resolve_execution_route_for_role(role).unwrap();
+            assert_eq!(resolved.route, "pi:openrouter:deepseek/deepseek-chat");
+            assert_eq!(resolved.provenance, RouteProvenance::Inherited);
+            assert!(cfg.models.get_role(role).is_none());
         }
-        // Strong (chat/worker) untouched by a weak-only update.
-        assert_eq!(cfg.agent.model, "claude:opus");
+        assert_eq!(
+            cfg.resolve_tier_route(Tier::Standard).unwrap().route,
+            "claude:opus"
+        );
     }
 
     #[test]
@@ -12340,12 +12358,9 @@ model = "codex:gpt-5.5"
 
     #[test]
     fn test_pi_key_constants_cover_design_keyset() {
-        // Guard the §4.1 key-set the file patcher and in-memory writer share.
-        assert!(Config::PI_STRONG_TOML_KEYS.contains(&"agent.model"));
-        assert!(Config::PI_STRONG_TOML_KEYS.contains(&"tiers.standard"));
-        assert!(Config::PI_STRONG_TOML_KEYS.contains(&"tiers.premium"));
-        assert!(Config::PI_WEAK_TOML_KEYS.contains(&"tiers.fast"));
-        assert!(Config::PI_WEAK_TOML_KEYS.contains(&"models.evaluator.model"));
+        // Sparse two-tier mutation owns exactly one key per tier.
+        assert_eq!(Config::PI_STRONG_TOML_KEYS, &["tiers.standard"]);
+        assert_eq!(Config::PI_WEAK_TOML_KEYS, &["tiers.fast"]);
         // Tiers must be disjoint — a key never belongs to both colors.
         for k in Config::PI_STRONG_TOML_KEYS {
             assert!(!Config::PI_WEAK_TOML_KEYS.contains(k), "{k} in both tiers");

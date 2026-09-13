@@ -909,6 +909,7 @@ mod tests {
                 executor: crate::dispatch::handler_for_model(model),
                 model: ResolvedModelSpec::from_raw(model),
                 reasoning: None,
+                config_revision: None,
                 endpoint,
                 env: HashMap::new(),
                 argv: vec![],

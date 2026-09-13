@@ -2047,6 +2047,63 @@ fn record_admission_deferral(graph_path: &Path, task_id: &str, reason: &str) -> 
     recorded
 }
 
+fn route_capability_blocker(config: &Config) -> Option<String> {
+    use worksgood::config::DispatchRole;
+    use worksgood::executor_discovery::PiCapabilityLane;
+
+    for (role, lane) in [
+        (DispatchRole::TaskAgent, PiCapabilityLane::Worker),
+        (DispatchRole::Evaluator, PiCapabilityLane::HermeticReview),
+        (DispatchRole::Assigner, PiCapabilityLane::HermeticReview),
+        (
+            DispatchRole::FlipInference,
+            PiCapabilityLane::HermeticReview,
+        ),
+        (
+            DispatchRole::FlipComparison,
+            PiCapabilityLane::HermeticReview,
+        ),
+        (DispatchRole::Reviewer, PiCapabilityLane::HermeticReview),
+    ] {
+        let route = match config.resolve_execution_route_for_role(role) {
+            Ok(route) => route,
+            Err(error) => return Some(format!("{error:#}")),
+        };
+        if route.handler != "pi" {
+            continue;
+        }
+        if route.reasoning.is_none() {
+            return Some(format!(
+                "error[WG-EXEC-REASONING-MISSING]: role={role} effective_route={:?} config_source={} config_revision={} source={}; Pi routes require effective reasoning before admission; corrective_action=`wg config set models.{role}.reasoning high` or set tiers.{}_reasoning",
+                route.route,
+                route.config_source,
+                route.config_revision,
+                route.source,
+                role.default_tier()
+            ));
+        }
+        let Some(provider) = route.provider.as_deref() else {
+            continue;
+        };
+        match worksgood::executor_discovery::pi_route_supported(provider, &route.model, lane) {
+            Ok(true) => {}
+            Ok(false) => {
+                return Some(format!(
+                    "error[WG-PI-PROVIDER-UNSUPPORTED]: role={role} lane={lane} effective_route={:?} config_source={} config_revision={} corrective_action=`wg config set models.{role}.model pi:<registered-provider>:<model>`; Pi's actual offline registry has no exact provider/model match",
+                    route.route, route.config_source, route.config_revision
+                ));
+            }
+            Err(error) => {
+                return Some(format!(
+                    "error[WG-PI-PROVIDER-UNSUPPORTED]: role={role} lane={lane} effective_route={:?} config_source={} config_revision={} corrective_action=`install/configure Pi or select a native Claude/Codex route`: {error:#}",
+                    route.route, route.config_source, route.config_revision
+                ));
+            }
+        }
+    }
+    None
+}
+
 fn note_admission_deferral(
     summary: &mut SpawnSummary,
     graph_path: &Path,
@@ -2441,7 +2498,7 @@ fn spawn_agents_for_ready_tasks(
     graph: &worksgood::graph::WorkGraph,
     _executor: &str,
     config: &Config,
-    default_model: Option<&str>,
+    _default_model: Option<&str>,
     slots_available: usize,
     effective_max_agents: usize,
 ) -> SpawnSummary {
@@ -2543,14 +2600,29 @@ fn spawn_agents_for_ready_tasks(
         let effective_config =
             worksgood::dispatch::effective_config_for_task(task, config, &mut profile_cache);
         let effective_config: &Config = effective_config.as_ref();
-        let task_model = if task.profile.is_some() {
-            Some(
-                effective_config
-                    .resolve_model_for_role(worksgood::config::DispatchRole::TaskAgent)
-                    .spawn_model_spec(),
-            )
-        } else {
-            default_model.map(String::from)
+        if let Some(blocker) = route_capability_blocker(effective_config) {
+            note_admission_deferral(
+                &mut summary,
+                &graph_file,
+                &task.id,
+                &format!("route admission blocked: {blocker}"),
+            );
+            continue;
+        }
+
+        let task_model = match effective_config
+            .resolve_execution_route_for_role(worksgood::config::DispatchRole::TaskAgent)
+        {
+            Ok(route) => Some(route.route),
+            Err(error) => {
+                note_admission_deferral(
+                    &mut summary,
+                    &graph_file,
+                    &task.id,
+                    &format!("route admission blocked: {error:#}"),
+                );
+                continue;
+            }
         };
         let agent_entity = task
             .agent
@@ -2567,16 +2639,26 @@ fn spawn_agents_for_ready_tasks(
         ) {
             Ok(plan) => plan,
             Err(error) => {
-                eprintln!(
-                    "[dispatcher] Route selection failed for '{}': {error:#}",
-                    task.id
-                );
-                record_direct_dispatch_failure(
-                    &graph_file,
-                    &task.id,
-                    &format!("route selection failed: {error:#}"),
-                    "route-selection",
-                );
+                let diagnostic = format!("{error:#}");
+                if diagnostic.contains("WG-EXEC-ROUTE-") || diagnostic.contains("WG-PI-ROUTE-") {
+                    note_admission_deferral(
+                        &mut summary,
+                        &graph_file,
+                        &task.id,
+                        &format!("route admission blocked: {diagnostic}"),
+                    );
+                } else {
+                    eprintln!(
+                        "[dispatcher] Route selection failed for '{}': {diagnostic}",
+                        task.id
+                    );
+                    record_direct_dispatch_failure(
+                        &graph_file,
+                        &task.id,
+                        &format!("route selection failed: {diagnostic}"),
+                        "route-selection",
+                    );
+                }
                 continue;
             }
         };
@@ -3251,18 +3333,16 @@ pub fn coordinator_tick(
     // Exclude daemon-managed loop tasks from ready count.
     let ready_count = final_ready.iter().filter(|t| !is_daemon_managed(t)).count();
     drop(final_ready);
-    // Resolve task agent model: CLI override > models.task_agent > models.default > agent.model
-    let effective_model = model.map(String::from).unwrap_or_else(|| {
-        config
-            .resolve_model_for_role(worksgood::config::DispatchRole::TaskAgent)
-            .spawn_model_spec()
-    });
+    // New attempts always resolve from this tick's current project snapshot.
+    // The daemon's startup model is an observation only; existing attempts
+    // already carry their immutable spawn pin.
+    let _ = model;
     let spawn_summary = spawn_agents_for_ready_tasks(
         dir,
         &graph,
         executor,
         &config,
-        Some(effective_model.as_str()),
+        None,
         slots_available,
         max_agents,
     );
@@ -5146,6 +5226,100 @@ mod tests {
                 .unwrap(),
             provider_health_before,
             "resource backpressure must not charge provider circuit health"
+        );
+    }
+
+    #[test]
+    fn missing_and_unsupported_routes_are_distinct_attempt_neutral_blockers() {
+        fn open_graph(dir: &Path, id: &str) -> std::path::PathBuf {
+            let graph_path = dir.join("graph.jsonl");
+            let mut graph = WorkGraph::new();
+            graph.add_node(Node::Task(Task {
+                id: id.into(),
+                title: "non-build route admission probe".into(),
+                status: Status::Open,
+                ..Default::default()
+            }));
+            save_graph(&graph, &graph_path).unwrap();
+            graph_path
+        }
+
+        fn assert_attempt_neutral(graph_path: &Path, id: &str, code: &str) {
+            let graph = load_graph(graph_path).unwrap();
+            let task = graph.get_task(id).unwrap();
+            assert_eq!(task.status, Status::Open);
+            assert!(task.assigned.is_none());
+            assert_eq!(task.dispatch_count, 0);
+            assert_eq!(task.spawn_failures, 0);
+            assert!(task.last_spawn_failure_at.is_none());
+            let event = task
+                .lifecycle
+                .audit
+                .iter()
+                .find(|event| event.event_kind == "admission-deferred")
+                .expect("durable admission deferral");
+            assert_eq!(event.reason_code, "resource_admission_deferred");
+            assert!(
+                event
+                    .idempotency_key
+                    .starts_with(&format!("admission:{id}:")),
+                "{code} must be recorded as an admission event without creating an attempt"
+            );
+        }
+
+        let missing_dir = tempdir().unwrap();
+        let missing_path = open_graph(missing_dir.path(), "missing-route");
+        let mut missing = Config::default();
+        missing.agent.model.clear();
+        missing.models = Default::default();
+        missing.tiers = Default::default();
+        let summary = spawn_agents_for_ready_tasks(
+            missing_dir.path(),
+            &load_graph(&missing_path).unwrap(),
+            "ignored",
+            &missing,
+            None,
+            1,
+            1,
+        );
+        assert_eq!(summary.admission_deferred_tasks, 1);
+        assert!(
+            summary.admission_deferred[0]
+                .reason
+                .contains("WG-EXEC-ROUTE-MISSING")
+        );
+        assert_attempt_neutral(&missing_path, "missing-route", "WG-EXEC-ROUTE-MISSING");
+
+        let unsupported_dir = tempdir().unwrap();
+        let unsupported_path = open_graph(unsupported_dir.path(), "unsupported-provider");
+        let mut unsupported = Config::default();
+        unsupported.models.default = Some(worksgood::config::RoleModelConfig {
+            provider: None,
+            model: Some("pi:provider-that-cannot-exist:model-that-cannot-exist".into()),
+            tier: None,
+            endpoint: None,
+            reasoning: Some(worksgood::config::ReasoningLevel::High),
+        });
+        unsupported.agent.model = "pi:provider-that-cannot-exist:model-that-cannot-exist".into();
+        let summary = spawn_agents_for_ready_tasks(
+            unsupported_dir.path(),
+            &load_graph(&unsupported_path).unwrap(),
+            "ignored",
+            &unsupported,
+            None,
+            1,
+            1,
+        );
+        assert_eq!(summary.admission_deferred_tasks, 1);
+        assert!(
+            summary.admission_deferred[0]
+                .reason
+                .contains("WG-PI-PROVIDER-UNSUPPORTED")
+        );
+        assert_attempt_neutral(
+            &unsupported_path,
+            "unsupported-provider",
+            "WG-PI-PROVIDER-UNSUPPORTED",
         );
     }
 

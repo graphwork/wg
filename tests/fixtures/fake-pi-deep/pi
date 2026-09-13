@@ -5,6 +5,12 @@ args=sys.argv[1:]
 def value(flag):
     try: return args[args.index(flag)+1]
     except (ValueError,IndexError): return ""
+if "--list-models" in args:
+    query=value("--list-models")
+    provider, model = query.split("/", 1)
+    print("provider model")
+    print(provider, model)
+    raise SystemExit(0)
 model=value("--model"); provider=value("--provider")
 for required in ("--mode", "--print", "--no-context-files", "-ne", "--no-session"):
     if required not in args:

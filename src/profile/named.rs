@@ -947,6 +947,33 @@ fn line_defines_key(trimmed: &str, key: &str) -> bool {
 /// deliberately small line patcher (not a full TOML round-trip) precisely so the
 /// hand-written `pi.toml` comment blocks survive a write — `toml::to_string`
 /// would discard them.
+pub fn remove_toml_value(content: &str, dotted: &str) -> String {
+    let (table, key) = match dotted.rsplit_once('.') {
+        Some((table, key)) => (table, key),
+        None => ("", dotted),
+    };
+    let mut in_target = table.is_empty();
+    let mut removed = false;
+    let mut out = Vec::new();
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("[[") {
+            in_target = false;
+        } else if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            in_target = trimmed[1..trimmed.len() - 1].trim() == table;
+        } else if !removed && in_target && line_defines_key(trimmed, key) {
+            removed = true;
+            continue;
+        }
+        out.push(line);
+    }
+    let mut result = out.join("\n");
+    if content.ends_with('\n') {
+        result.push('\n');
+    }
+    result
+}
+
 pub fn set_toml_string_value(content: &str, dotted: &str, value: &str) -> String {
     let (table, key) = match dotted.rsplit_once('.') {
         Some((t, k)) => (t, k),
@@ -1040,6 +1067,11 @@ pub fn patch_two_tier_profile(
         );
     };
 
+    // Never infer that an explicit route is generated from value equality.
+    // Even the complete historical starter shape may have been intentionally
+    // retained or recreated by an operator, so tier edits preserve every
+    // existing role/agent/dispatcher pin byte-for-byte.
+
     if let Some(s) = strong {
         let s = if normalize_pi_strong {
             crate::config::pi_strong_route(s)
@@ -1100,6 +1132,38 @@ pub fn patch_two_tier_profile(
 /// Backward-compatible Pi-only model patch used by the existing CLI/tests.
 pub fn patch_pi_tiers(name: &str, strong: Option<&str>, weak: Option<&str>) -> Result<PathBuf> {
     patch_two_tier_profile(name, strong, weak, None, None, true)
+}
+
+/// Reset the explicit weak selector so it dynamically inherits strong. Role
+/// overrides are deliberately not removed: an operator-pinned evaluator/FLIP
+/// route remains explicit and wins only for that role.
+pub fn reset_weak_tier(name: &str) -> Result<PathBuf> {
+    let path = profile_path(name)?;
+    let content = if path.exists() {
+        std::fs::read_to_string(&path)
+            .with_context(|| format!("Failed to read profile file {}", path.display()))?
+    } else if let Some(template) = starter_template(name) {
+        template.to_string()
+    } else {
+        load(name)?;
+        anyhow::bail!(
+            "Profile '{}' source file not found at {}",
+            name,
+            path.display()
+        );
+    };
+    // Reset only the requested tier selector. Explicit role routes remain
+    // explicit even when they equal the former weak tier.
+    let content = remove_toml_value(&content, "tiers.fast");
+    let check: Config = toml::from_str(&content).map_err(|error| {
+        anyhow::anyhow!(
+            "Reset profile '{}' failed to parse as Config: {error}",
+            name
+        )
+    })?;
+    check.validate_execution_model_plane()?;
+    save_raw(name, &content)?;
+    Ok(path)
 }
 
 /// Apply a per-role model override (`models.<role>.model`) to a named profile's

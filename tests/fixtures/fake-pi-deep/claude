@@ -1,0 +1,55 @@
+#!/usr/bin/env python3
+import json, os, pathlib, re, sys
+
+args = sys.argv[1:]
+prompt = sys.stdin.read()
+home = pathlib.Path(os.environ.get("HOME", "."))
+home.mkdir(parents=True, exist_ok=True)
+with (home / "fake-claude-deep-invocations.log").open("a") as log:
+    log.write(" ".join(args) + "\n")
+
+if "DEEP FLIP PHASE I" in prompt:
+    result = {
+        "schema_version": 1,
+        "likely_goal": "update the mode consistently across repository consumers",
+        "constraints": ["registry and API must agree"],
+        "failure_modes": ["cross-component omission"],
+    }
+else:
+    (home / "fake-claude-deep-comparison.prompt").write_text(prompt)
+    evidence = {
+        kind: evidence_id
+        for evidence_id, kind in re.findall(
+            r"---BEGIN UNTRUSTED EVIDENCE id=([^ ]+) kind=([^ ]+)", prompt
+        )
+    }
+    diff = evidence["artifacts-diff"]
+    intent = evidence["original-intent"]
+    result = {
+        "schema_version": 1,
+        "score": 0.28,
+        "outcome": "fail",
+        "summary_code": "CROSS_COMPONENT_OMISSION_FOUND",
+        "findings": [
+            {
+                "finding_code": "REGISTRY_NOT_UPDATED",
+                "category": "cross-component-omission",
+                "severity": "high",
+                "confidence": 0.99,
+                "evidence": [
+                    {"evidence_id": diff, "locator": "source_diff"},
+                    {"evidence_id": intent, "locator": "description"},
+                ],
+                "counterfactual_code": "REGISTRY_LOOKUP_REJECTS_NEW_MODE",
+            }
+        ],
+        "latent_intent_probe_code": "ALL_REGISTRY_CONSUMERS_MUST_AGREE",
+        "counterfactual_probe_codes": ["REGISTRY_LOOKUP_REJECTS_NEW_MODE"],
+    }
+
+print(json.dumps({
+    "type": "result",
+    "result": json.dumps(result, separators=(",", ":")),
+    "total_cost_usd": 0.004,
+    "usage": {"input_tokens": 31, "output_tokens": 17},
+}))

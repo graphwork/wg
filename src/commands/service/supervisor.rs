@@ -87,16 +87,6 @@ pub fn run_supervisor(
         .open(&log_path)
         .with_context(|| format!("supervisor: open log {:?}", log_path))?;
 
-    // Compute the authenticated service identity once (config/exe don't change
-    // across restarts). If it fails we still supervise — identity is for
-    // lifecycle clients, not for restart correctness.
-    let identity = {
-        let config = worksgood::config::Config::load_merged(&dir).ok();
-        config
-            .as_ref()
-            .and_then(|c| worksgood::service_identity::expected_identity(&dir, &exe, c).ok())
-    };
-
     logger.info(&format!(
         "Supervisor starting (PID {}, will manage `wg service daemon`); restart budget {} per {}s, healthy-run reset {}s",
         std::process::id(),
@@ -156,6 +146,13 @@ pub fn run_supervisor(
             }
         };
         let daemon_pid = child.id();
+        // A replacement daemon resolves the current project revision. Recompute
+        // identity too; the supervisor never freezes routing/config bytes.
+        let identity = worksgood::config::Config::load_merged(&dir)
+            .ok()
+            .and_then(|config| {
+                worksgood::service_identity::expected_identity(&dir, &exe, &config).ok()
+            });
 
         // Record state.json with the daemon pid (the unchanged contract) plus
         // our own pid so `wg service stop --force` can kill the whole tree.
@@ -292,17 +289,19 @@ fn build_daemon_args(
         args.push("--max-agents".to_string());
         args.push(n.to_string());
     }
-    if let Some(e) = executor {
-        args.push("--executor".to_string());
-        args.push(e.to_string());
+    if let Some(stale) = executor {
+        eprintln!(
+            "warning[WG-SUPERVISOR-STALE-ROUTE]: supervisor will not persist/replay --executor {stale:?}; each daemon replacement derives its handler from current project configuration"
+        );
     }
     if let Some(i) = interval {
         args.push("--interval".to_string());
         args.push(i.to_string());
     }
-    if let Some(m) = model {
-        args.push("--model".to_string());
-        args.push(m.to_string());
+    if let Some(stale) = model {
+        eprintln!(
+            "warning[WG-SUPERVISOR-STALE-ROUTE]: supervisor will not persist/replay --model {stale:?}; each daemon replacement reads current project configuration"
+        );
     }
     if no_chat_agent {
         args.push("--no-chat-agent".to_string());
@@ -429,7 +428,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn build_daemon_args_passes_through_overrides() {
+    fn build_daemon_args_passes_runtime_but_not_routing_overrides() {
         let args = build_daemon_args(
             "/tmp/wg",
             "/tmp/wg/service/daemon.sock",
@@ -445,11 +444,28 @@ mod tests {
         assert!(joined.contains("service daemon"));
         assert!(joined.contains("--socket /tmp/wg/service/daemon.sock"));
         assert!(joined.contains("--max-agents 4"));
-        assert!(joined.contains("--executor pi"));
+        assert!(!joined.contains("--executor"));
         assert!(joined.contains("--interval 7"));
-        assert!(joined.contains("--model pi:openrouter:x"));
+        assert!(!joined.contains("--model"));
         assert!(joined.contains("--no-chat-agent"));
         assert!(joined.contains("--no-pin"));
+    }
+
+    #[test]
+    fn stale_daemon_argv_cannot_override_current_project_route() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let mut config = worksgood::config::Config::default();
+        config.pin_default_route_model("pi:test:route-b");
+        let (executor, model) = super::super::resolve_service_coordinator_settings(
+            temp.path(),
+            &config,
+            Some("claude"),
+            Some("pi:test:route-a"),
+            true,
+        )
+        .unwrap();
+        assert_eq!(executor, "pi");
+        assert_eq!(model.as_deref(), Some("pi:test:route-b"));
     }
 
     #[test]

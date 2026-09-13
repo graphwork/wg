@@ -3236,6 +3236,13 @@ description = "End-to-end terminal regression for the project-local-by-default P
 timeout_seconds = 90
 
 [[scenario]]
+name = "unified_project_route_authority"
+script = "scenarios/unified_project_route_authority.sh"
+owners = ["unify-project-route-authority"]
+description = "Public-CLI regression for one project-local route authority: default-to-strong-to-weak inheritance and revision/provenance visibility, supervised daemon respawn after an out-of-band project route change without stale --model replay, and the Pi weak-tier reset-to-inherit operation rematerializing the selected project document."
+timeout_seconds = 90
+
+[[scenario]]
 name = "worker_owned_landing_turns"
 script = "scenarios/worker_owned_landing_turns.sh"
 owners = ["worker-owned-landing-turns", "repair-landing-review-rejection"]

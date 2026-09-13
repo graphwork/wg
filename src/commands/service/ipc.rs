@@ -2257,64 +2257,54 @@ fn handle_reconfigure(
     model: Option<String>,
     logger: &DaemonLogger,
 ) -> IpcResponse {
-    let has_overrides =
-        max_agents.is_some() || executor.is_some() || poll_interval.is_some() || model.is_some();
+    if executor.is_some() || model.is_some() {
+        return IpcResponse::error(
+            "error[WG-EXEC-ROUTE-AUTHORITY]: executor/model IPC overrides are not routing authority; update the project route with `wg service reload --model <handler>:<model>`",
+        );
+    }
+    let has_overrides = max_agents.is_some() || poll_interval.is_some();
+
+    // Every reload begins from one current project snapshot, even when a
+    // capacity/cadence runtime override is present. Otherwise `reload --model
+    // B --max-agents N` could write B to disk while leaving daemon memory on A.
+    let config = match Config::load_merged(dir) {
+        Ok(config) => config,
+        Err(e) => {
+            logger.error(&format!("Failed to reload project configuration: {}", e));
+            return IpcResponse::error(&format!("Failed to reload project configuration: {}", e));
+        }
+    };
+    daemon_cfg.max_agents = config.coordinator.max_agents;
+    // A controller-managed runtime max pin survives a flagless reload. A new
+    // explicit max below replaces it and is persisted as the next pin.
+    if max_agents.is_none()
+        && let Some(rt) = CoordinatorState::load(dir).and_then(|cs| cs.runtime_max_agents)
+    {
+        daemon_cfg.max_agents = rt;
+    }
+    let route = config
+        .resolve_execution_route_for_role(worksgood::config::DispatchRole::Default)
+        .ok();
+    daemon_cfg.executor = route
+        .as_ref()
+        .map(|route| route.handler.clone())
+        .unwrap_or_else(|| "pi".to_string());
+    daemon_cfg.model = route.map(|route| route.route);
+    daemon_cfg.poll_interval = Duration::from_secs(config.coordinator.poll_interval);
+    daemon_cfg.provider = config.coordinator.provider.clone();
+    daemon_cfg.settling_delay = Duration::from_millis(config.coordinator.settling_delay_ms);
+
+    if let Some(n) = max_agents {
+        daemon_cfg.max_agents = n;
+    }
+    if let Some(i) = poll_interval {
+        daemon_cfg.poll_interval = Duration::from_secs(i);
+    }
 
     // An explicit `--max-agents` reload flag is a human action and wins; it is
-    // also recorded as a runtime pin so a *subsequent* flagless reload preserves
-    // it instead of reverting to config.coordinator.max_agents
-    // (`docs/studies/adaptive-parallelism-budget-design.md` §8.2 point 6).
-    let record_pin = has_overrides && max_agents.is_some();
-
-    if has_overrides {
-        // Apply individual overrides
-        if let Some(n) = max_agents {
-            daemon_cfg.max_agents = n;
-        }
-        if let Some(e) = executor {
-            daemon_cfg.executor = e;
-        }
-        if let Some(i) = poll_interval {
-            daemon_cfg.poll_interval = Duration::from_secs(i);
-        }
-        if let Some(m) = model {
-            daemon_cfg.model = Some(m);
-        }
-    } else {
-        // No flags: re-read config.toml from disk
-        match Config::load_merged(dir) {
-            Ok(config) => {
-                daemon_cfg.max_agents = config.coordinator.max_agents;
-                // A controller-managed runtime override (or a prior
-                // session/launch-arg pin) wins over the static config value, so
-                // a flagless reload (e.g. a profile swap that rewrote
-                // `[coordinator].max_agents`) does not silently clobber the
-                // adaptive value (`docs/studies/adaptive-parallelism-budget-design.md`
-                // §8.2 point 3). An explicit `--max-agents` flag still wins —
-                // it takes the `has_overrides` branch above and is recorded as a pin.
-                if let Some(rt) = CoordinatorState::load(dir).and_then(|cs| cs.runtime_max_agents) {
-                    daemon_cfg.max_agents = rt;
-                }
-                // Handler-first: derive the effective handler from the model
-                // spec (with agent.model fallback) so a migrated clean config
-                // with `model = "pi:..."` reports `executor=pi` here and in
-                // the persisted coordinator state — not a stale legacy default.
-                daemon_cfg.executor = config.effective_dispatcher_executor();
-                daemon_cfg.poll_interval = Duration::from_secs(config.coordinator.poll_interval);
-                daemon_cfg.model = config.coordinator.model.clone().or_else(|| {
-                    let m = config.agent.model.clone();
-                    if m.trim().is_empty() { None } else { Some(m) }
-                });
-                daemon_cfg.provider = config.coordinator.provider;
-                daemon_cfg.settling_delay =
-                    Duration::from_millis(config.coordinator.settling_delay_ms);
-            }
-            Err(e) => {
-                logger.error(&format!("Failed to reload config.toml: {}", e));
-                return IpcResponse::error(&format!("Failed to reload config.toml: {}", e));
-            }
-        }
-    }
+    // also recorded as a runtime pin so a subsequent flagless reload preserves
+    // it instead of reverting to config.coordinator.max_agents.
+    let record_pin = max_agents.is_some();
 
     // Update persisted coordinator and authenticated service state so status
     // reflects the exact config that a lifecycle client just requested.
@@ -2328,9 +2318,7 @@ fn handle_reconfigure(
         }
         coord_state.save(dir);
     }
-    if !has_overrides
-        && let Ok(config) = Config::load_merged(dir)
-        && let Ok(Some(mut state)) = ServiceState::load(dir)
+    if let Ok(Some(mut state)) = ServiceState::load(dir)
         && let Some(identity) = state.identity.as_mut()
         && let Ok(fingerprint) = worksgood::service_identity::config_fingerprint(&config)
         && let Ok((profile, profile_fingerprint)) =
@@ -2351,13 +2339,13 @@ fn handle_reconfigure(
         if has_overrides {
             ""
         } else {
-            " (from config.toml)"
+            " (from project configuration)"
         },
     ));
 
     IpcResponse::success(serde_json::json!({
         "status": "reconfigured",
-        "source": if has_overrides { "flags" } else { "config.toml" },
+        "source": if has_overrides { "project+runtime-flags" } else { "project-configuration" },
         "config": {
             "max_agents": daemon_cfg.max_agents,
             "executor": daemon_cfg.executor,

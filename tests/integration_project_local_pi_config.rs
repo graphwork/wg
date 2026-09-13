@@ -174,12 +174,19 @@ model = "pi:project-provider:profile-model"
 [dispatcher]
 model = "pi:project-provider:profile-model"
 max_agents = 7
+
+[tiers]
+fast = "pi:project-provider:profile-model"
 "#,
     );
     for role in std::iter::once(DispatchRole::Default).chain(DispatchRole::ALL.iter().copied()) {
-        payload.push_str(&format!(
-            "\n[models.{role}]\nmodel = \"pi:project-provider:profile-model\"\nreasoning = \"high\"\n"
-        ));
+        if role == DispatchRole::Reviewer {
+            payload.push_str("\n[models.reviewer]\ntier = \"fast\"\nreasoning = \"high\"\n");
+        } else {
+            payload.push_str(&format!(
+                "\n[models.{role}]\nmodel = \"pi:project-provider:profile-model\"\nreasoning = \"high\"\n"
+            ));
+        }
     }
     let payload_value: toml::Value = payload.parse().unwrap();
     let projection = projection_fingerprint(&payload_value);
@@ -205,6 +212,19 @@ max_agents = 7
     assert_eq!(
         sources.get("models.task_agent.reasoning"),
         Some(&ConfigSource::ProjectProfileImport)
+    );
+    assert_eq!(
+        sources.get("models.reviewer.tier"),
+        Some(&ConfigSource::ProjectProfileImport)
+    );
+    let reviewer = config
+        .resolve_execution_route_for_role(DispatchRole::Reviewer)
+        .unwrap();
+    assert_eq!(reviewer.provenance.to_string(), "inherited");
+    assert_eq!(reviewer.source, "models.reviewer.tier → tiers.fast");
+    assert_eq!(
+        reviewer.config_source,
+        ConfigSource::ProjectProfileImport.to_string()
     );
     assert_eq!(
         sources.get("dispatcher.max_agents"),

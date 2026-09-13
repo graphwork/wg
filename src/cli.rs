@@ -5027,6 +5027,10 @@ pub enum ProfileCommands {
         #[arg(long)]
         weak: Option<String>,
 
+        /// Remove the explicit weak tier so it inherits strong dynamically.
+        #[arg(long, conflicts_with = "weak")]
+        reset_weak: bool,
+
         /// Set reasoning for strong-tier roles without changing their models.
         #[arg(long, value_name = "LEVEL")]
         strong_reasoning: Option<String>,

@@ -1267,6 +1267,31 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
     )
 }
 
+fn validate_worker_execution_selection(
+    executor: &worksgood::dispatch::ExecutorKind,
+    route: &str,
+    reasoning: Option<ReasoningLevel>,
+) -> Result<()> {
+    if *executor == worksgood::dispatch::ExecutorKind::Shell {
+        return Ok(());
+    }
+    if !matches!(
+        executor,
+        worksgood::dispatch::ExecutorKind::Pi
+            | worksgood::dispatch::ExecutorKind::Claude
+            | worksgood::dispatch::ExecutorKind::Codex
+    ) {
+        anyhow::bail!(
+            "spawn refused: resolved handler={} is not a supported Pi/Claude/Codex worker handler; no fallback was attempted",
+            executor.as_str()
+        );
+    }
+    if *executor == worksgood::dispatch::ExecutorKind::Pi && reasoning.is_none() {
+        anyhow::bail!("spawn refused: Pi route {route:?} has no explicit/inherited reasoning");
+    }
+    Ok(())
+}
+
 /// Recompute the canonical plan immediately before the first spawn mutation
 /// and require it to match the dispatcher's exact route/model binding.
 pub(crate) fn spawn_agent_inner_authorized(
@@ -1422,25 +1447,7 @@ pub(crate) fn spawn_agent_inner_authorized(
     let resolved_executor_name = plan.executor.as_str();
     let resolved_model_for_spawn = Some(plan.model.raw.clone());
     let resolved_reasoning = explicit_reasoning.or(task.reasoning).or(plan.reasoning);
-    if plan.executor != worksgood::dispatch::ExecutorKind::Shell {
-        if !matches!(
-            plan.executor,
-            worksgood::dispatch::ExecutorKind::Pi
-                | worksgood::dispatch::ExecutorKind::Claude
-                | worksgood::dispatch::ExecutorKind::Codex
-        ) {
-            anyhow::bail!(
-                "spawn refused: resolved handler={} is not a supported Pi/Claude/Codex worker handler; no fallback was attempted",
-                plan.executor.as_str()
-            );
-        }
-        if resolved_reasoning.is_none() {
-            anyhow::bail!(
-                "spawn refused: route {:?} has no explicit/inherited reasoning",
-                plan.model.raw
-            );
-        }
-    }
+    validate_worker_execution_selection(&plan.executor, &plan.model.raw, resolved_reasoning)?;
     // One opaque run identity ties the spawned route, completion outcome, and
     // dead-agent triage together. Unlike PID/timestamps, it cannot collide on
     // a fast restart or PID reuse.
@@ -2259,6 +2266,9 @@ pub(crate) fn spawn_agent_inner_authorized(
         );
         cmd.env("WG_SOURCE_PROVIDER_ROUTE_ID", &source_binding.route_id);
         cmd.env("WG_SOURCE_PROVIDER_PLAN_ID", &source_binding.plan_id);
+        if let Some(config_revision) = source_binding.config_revision.as_deref() {
+            cmd.env("WG_CONFIG_REVISION", config_revision);
+        }
 
         let control_mode =
             worksgood::worker_control::effective_control_mode(config.worker_control.mode, task);
@@ -4707,6 +4717,23 @@ mod tests {
     use worksgood::graph::{Node, Task, WorkGraph};
     use worksgood::parser::{load_graph, save_graph};
     use worksgood::service::registry::{AgentRegistry, AgentStatus};
+
+    #[test]
+    fn native_worker_handlers_allow_omitted_reasoning_but_pi_does_not() {
+        for (handler, route) in [
+            (worksgood::dispatch::ExecutorKind::Claude, "claude:sonnet"),
+            (worksgood::dispatch::ExecutorKind::Codex, "codex:gpt-5.5"),
+        ] {
+            validate_worker_execution_selection(&handler, route, None).unwrap();
+        }
+        let error = validate_worker_execution_selection(
+            &worksgood::dispatch::ExecutorKind::Pi,
+            "pi:openai-codex:gpt-5.6-sol",
+            None,
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("Pi route"));
+    }
 
     // --- executor_uses_auto_prompt tests ---
 
@@ -7490,6 +7517,7 @@ esac
             model: "test".into(),
             route_id: "test-route".into(),
             plan_id: "test-plan".into(),
+            config_revision: Some("b3:test-revision".into()),
             operation_id: worksgood::source_provider_recovery::operation_id(task, attempt),
         }
     }
@@ -7526,6 +7554,7 @@ esac
             model: binding.model.clone(),
             route_id: binding.route_id.clone(),
             plan_id: binding.plan_id.clone(),
+            config_revision: binding.config_revision.clone(),
             first_failure_at: Utc::now(),
             latest_failure_at: Utc::now(),
             recovery_deadline_at: deadline,

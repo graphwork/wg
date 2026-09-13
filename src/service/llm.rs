@@ -88,6 +88,46 @@ pub struct AgencyDispatch {
     pub model_id: String,
     /// Structured reasoning level resolved independently from the model.
     pub reasoning: Option<ReasoningLevel>,
+    /// Canonical role whose project route was resolved. Raw internal fixtures
+    /// that do not originate from project authority leave this unset.
+    pub role: Option<DispatchRole>,
+    /// Content revision of the project authority used for this exact call.
+    pub config_revision: String,
+    /// Pi registry/invocation context used at the call boundary.
+    pub capability_lane: crate::executor_discovery::PiCapabilityLane,
+}
+
+impl AgencyDispatch {
+    /// Rehydrate an exact persisted Eval/FLIP route without consulting ambient
+    /// routing. The handler remains the route's leading token.
+    pub fn from_pinned_route(
+        raw_spec: &str,
+        reasoning: Option<ReasoningLevel>,
+        role: DispatchRole,
+        config_revision: Option<&str>,
+    ) -> Self {
+        agency_dispatch_for_spec_with_binding(
+            raw_spec,
+            reasoning,
+            Some(role),
+            config_revision.unwrap_or("unversioned"),
+        )
+    }
+
+    /// Immutable identity of the route authorization used by one Eval/FLIP/
+    /// review call. A revision-only config change necessarily changes the pin.
+    pub fn binding_id(&self) -> String {
+        let material = format!(
+            "{}\n{}\n{:?}\n{:?}\n{}\n{}",
+            self.handler.as_str(),
+            self.raw_spec,
+            self.reasoning,
+            self.role,
+            self.config_revision,
+            self.capability_lane
+        );
+        format!("id:{}", blake3::hash(material.as_bytes()).to_hex())
+    }
 }
 
 /// Convert provider/model Claude IDs into the bare aliases accepted by the
@@ -132,6 +172,15 @@ fn normalize_claude_cli_model(model_id: &str) -> String {
 /// *inside* an explicitly Claude-routed call; it must never turn an OpenRouter,
 /// Pi, Codex, or nex route into a Claude CLI call.
 fn agency_dispatch_for_spec(raw_spec: &str, reasoning: Option<ReasoningLevel>) -> AgencyDispatch {
+    agency_dispatch_for_spec_with_binding(raw_spec, reasoning, None, "unversioned")
+}
+
+fn agency_dispatch_for_spec_with_binding(
+    raw_spec: &str,
+    reasoning: Option<ReasoningLevel>,
+    role: Option<DispatchRole>,
+    config_revision: &str,
+) -> AgencyDispatch {
     let spec = parse_model_spec(raw_spec);
     let handler = handler_for_model(raw_spec);
     let model_id = if handler == ExecutorKind::Claude {
@@ -145,6 +194,9 @@ fn agency_dispatch_for_spec(raw_spec: &str, reasoning: Option<ReasoningLevel>) -
         raw_spec: raw_spec.trim().to_string(),
         model_id,
         reasoning,
+        role,
+        config_revision: config_revision.to_string(),
+        capability_lane: crate::executor_discovery::PiCapabilityLane::HermeticReview,
     }
 }
 
@@ -248,32 +300,85 @@ fn agency_native_creds_available(config: &Config, raw_spec: &str) -> bool {
     }
 }
 
+fn execution_dispatch_for_role(config: &Config, role: DispatchRole) -> Result<AgencyDispatch> {
+    let resolved = config.resolve_execution_route_for_role(role)?;
+    if resolved.handler == "pi" && resolved.reasoning.is_none() {
+        // Preserve Pi's strict reasoning contract while allowing native
+        // Claude/Codex routes to omit a reasoning flag.
+        config.resolve_pi_route_for_role(role)?;
+        unreachable!("Pi route without reasoning must fail above");
+    }
+    Ok(agency_dispatch_for_spec_with_binding(
+        &resolved.route,
+        resolved.reasoning,
+        Some(role),
+        &resolved.config_revision,
+    ))
+}
+
+/// Validate a Pi one-shot against the same offline registry Pi will use for
+/// hermetic review, Eval, FLIP and agency calls. This lives immediately before
+/// the shared call boundary so explicit invocation routes and persisted-plan
+/// fallbacks cannot bypass the canonical role resolver's capability policy.
+pub(crate) fn validate_pi_oneshot_capability(dispatch: &AgencyDispatch) -> Result<()> {
+    if dispatch.handler != ExecutorKind::Pi {
+        return Ok(());
+    }
+    let (provider, model) = crate::config::parse_exact_pi_route(&dispatch.raw_spec)?;
+    let lane = dispatch.capability_lane;
+    match crate::executor_discovery::pi_route_supported(&provider, &model, lane) {
+        Ok(true) => Ok(()),
+        Ok(false) => anyhow::bail!(
+            "error[WG-PI-PROVIDER-UNSUPPORTED]: lane={lane} route={:?} provider={provider} model={model} is absent from Pi's offline registry; register it in Pi's invocation context or select a supported project-local route",
+            dispatch.raw_spec
+        ),
+        Err(error) => anyhow::bail!(
+            "error[WG-PI-PROVIDER-UNSUPPORTED]: lane={lane} route={:?} provider={provider} model={model} could not be validated in Pi's invocation context: {error:#}; repair Pi registration or select a supported project-local route",
+            dispatch.raw_spec
+        ),
+    }
+}
+
 /// Resolve the explicitly selected handler+model for an agency one-shot role.
-/// A role override wins; otherwise the explicitly configured/profile weak tier
-/// is used. Built-in tier defaults and project-wide worker routes do not
-/// authorize evaluator, reviewer, FLIP, or assignment execution.
+/// A role override wins; otherwise the effective weak tier is used (and weak
+/// inherits effective strong when no intentional split exists).
 pub fn resolve_agency_dispatch(config: &Config, role: DispatchRole) -> Result<AgencyDispatch> {
     debug_assert!(
         is_agency_oneshot_role(role),
         "resolve_agency_dispatch is only valid for agency one-shot roles"
     );
-    let resolved = config.resolve_execution_route_for_role(role)?;
-    Ok(agency_dispatch_for_spec(
-        &resolved.route,
-        Some(resolved.reasoning),
-    ))
+    execution_dispatch_for_role(config, role)
 }
 
-/// Whether the live Pi reviewer path is structurally available. WG does not
-/// preflight provider credentials or endpoints; Pi owns that validation when
-/// invoked. Credential-free CI can still force the deterministic reviewer.
+/// Whether the selected reviewer handler is structurally available without a
+/// billable model call. Pi is queried through its own executable context;
+/// Claude/Codex availability is the corresponding CLI's PATH presence.
+/// Credential-free CI can still force the deterministic reviewer.
 pub fn review_native_creds_available(config: &Config) -> bool {
-    config
-        .resolve_pi_route_for_role(DispatchRole::Reviewer)
-        .is_ok()
-        && crate::executor_discovery::pi_route_availability()
-            .pi_binary
-            .is_some()
+    let Ok(route) = config.resolve_execution_route_for_role(DispatchRole::Reviewer) else {
+        return false;
+    };
+    if route.handler == "pi" && route.reasoning.is_none() {
+        return false;
+    }
+    match route.handler.as_str() {
+        // A selected Pi route always takes the live path. The exact offline
+        // capability probe is intentionally performed here, but an unsupported
+        // result must flow through the call boundary and become a loud,
+        // fail-closed review outcome rather than silently selecting the
+        // deterministic reviewer.
+        "pi" => {
+            let Ok(dispatch) = execution_dispatch_for_role(config, DispatchRole::Reviewer) else {
+                return false;
+            };
+            let _ = validate_pi_oneshot_capability(&dispatch);
+            true
+        }
+        "claude" | "codex" => crate::executor_discovery::available()
+            .iter()
+            .any(|executor| executor.name == route.handler),
+        _ => false,
+    }
 }
 
 fn call_dispatch_route(
@@ -283,12 +388,13 @@ fn call_dispatch_route(
     prompt: &str,
     timeout_secs: u64,
 ) -> Result<LlmCallResult> {
-    if dispatch.reasoning.is_none() {
+    if dispatch.handler == ExecutorKind::Pi && dispatch.reasoning.is_none() {
         anyhow::bail!(
-            "error[WG-PI-REASONING-MISSING]: lightweight route {:?} has no effective reasoning",
+            "error[WG-EXEC-REASONING-MISSING]: Pi lightweight route {:?} has no effective reasoning",
             dispatch.raw_spec
         );
     }
+    validate_pi_oneshot_capability(dispatch)?;
     match dispatch.handler {
         ExecutorKind::Pi => call_pi_cli(
             config,
@@ -356,7 +462,12 @@ where
 
     let mut failures = Vec::new();
     for (index, route) in routes.iter().enumerate() {
-        let dispatch = agency_dispatch_for_spec(route, primary.reasoning);
+        let dispatch = agency_dispatch_for_spec_with_binding(
+            route,
+            primary.reasoning,
+            primary.role,
+            &primary.config_revision,
+        );
         let system = execution_system_key(route)?;
         match attempt(&dispatch) {
             Ok(result) => {
@@ -405,8 +516,7 @@ pub fn run_review_llm_call(
     timeout_secs: u64,
 ) -> Result<LlmCallResult> {
     let dispatch = if strong {
-        let resolved = config.resolve_pi_route_for_role(DispatchRole::Verification)?;
-        agency_dispatch_for_spec(&resolved.route, Some(resolved.reasoning))
+        execution_dispatch_for_role(config, DispatchRole::Verification)?
     } else {
         resolve_agency_dispatch(config, DispatchRole::Reviewer)?
     };
@@ -437,11 +547,16 @@ pub fn run_model_oneshot(
     prompt: &str,
     timeout_secs: u64,
 ) -> Result<LlmCallResult> {
-    crate::config::parse_exact_pi_route(model_spec)?;
-    let reasoning = config
-        .resolve_pi_route_for_role(DispatchRole::TaskAgent)?
-        .reasoning;
-    let dispatch = agency_dispatch_for_spec(model_spec, Some(reasoning));
+    crate::config::parse_supported_execution_route(model_spec)?;
+    let dispatch = agency_dispatch_for_spec_with_binding(
+        model_spec,
+        config.resolve_reasoning_for_role(DispatchRole::TaskAgent),
+        Some(DispatchRole::TaskAgent),
+        config
+            .authority_revision
+            .as_deref()
+            .unwrap_or("unversioned"),
+    );
     run_dispatch_with_same_system_fallback(config, DispatchRole::TaskAgent, dispatch, |route| {
         call_dispatch_route(config, route, None, prompt, timeout_secs)
     })
@@ -511,13 +626,6 @@ fn inject_claude_oauth_token(cmd: &mut process::Command) {
     }
 }
 
-fn configured_lightweight_route(
-    config: &Config,
-    role: DispatchRole,
-) -> Result<crate::config::ResolvedPiRoute> {
-    config.resolve_pi_route_for_role(role)
-}
-
 /// Run a lightweight (no tool-use) LLM call without crossing execution
 /// systems. Agency roles use their explicit role/weak route; other roles use
 /// their explicit role/tier/default selection. Only `[[execution.fallbacks]]`
@@ -531,8 +639,7 @@ pub fn run_lightweight_llm_call(
     let dispatch = if is_agency_oneshot_role(role) {
         resolve_agency_dispatch(config, role)?
     } else {
-        let route = configured_lightweight_route(config, role)?;
-        agency_dispatch_for_spec(&route.route, Some(route.reasoning))
+        execution_dispatch_for_role(config, role)?
     };
 
     run_dispatch_with_same_system_fallback(config, role, dispatch, |route| {
@@ -554,8 +661,13 @@ pub fn run_lightweight_llm_call_for_route(
     execution_system_key(route).with_context(|| {
         format!("invalid explicit lightweight route for role={role}: {route:?}")
     })?;
-    let reasoning = config.resolve_execution_route_for_role(role)?.reasoning;
-    let dispatch = agency_dispatch_for_spec(route, Some(reasoning));
+    let resolved = config.resolve_execution_route_for_role(role)?;
+    let dispatch = agency_dispatch_for_spec_with_binding(
+        route,
+        resolved.reasoning,
+        Some(role),
+        &resolved.config_revision,
+    );
     run_dispatch_with_same_system_fallback(config, role, dispatch, |candidate| {
         call_dispatch_route(config, candidate, None, prompt, timeout_secs)
     })
@@ -601,7 +713,12 @@ pub fn run_lightweight_llm_call_for_plan(
 
     let mut failures = Vec::new();
     for route in routes {
-        let dispatch = agency_dispatch_for_spec(&route, call.reasoning);
+        let dispatch = agency_dispatch_for_spec_with_binding(
+            &route,
+            call.reasoning,
+            Some(role),
+            call.config_revision.as_deref().unwrap_or("unversioned"),
+        );
         match call_dispatch_route(
             config,
             &dispatch,
@@ -2482,6 +2599,7 @@ printf '%s\n' '{"type":"turn_end","message":{"role":"assistant","provider":"open
                 route: route.into(),
                 endpoint: None,
                 reasoning: None,
+                config_revision: None,
                 system: execution_system_key(route).unwrap(),
                 source: crate::eval_lifecycle::DispatchSelectionSource::PersistedPlan,
                 fallbacks: vec![],

@@ -74,6 +74,10 @@ pub struct AgencyCallPlan {
     pub endpoint: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<ReasoningLevel>,
+    /// Project authority revision pinned when this Eval/FLIP call was planned.
+    /// Historical plans remain readable as unversioned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_revision: Option<String>,
     pub system: ExecutionSystemKey,
     pub source: DispatchSelectionSource,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -466,6 +470,8 @@ pub fn build_plan(
                 .get_role(role)
                 .and_then(|model| model.endpoint.clone()),
             reasoning: dispatch.reasoning,
+            config_revision: (dispatch.config_revision != "unversioned")
+                .then_some(dispatch.config_revision),
             system,
             source,
             fallbacks,
@@ -519,6 +525,7 @@ pub fn migrate_legacy_plan(source_task: &Task, satellite: &Task) -> Result<Agenc
             route: route.clone(),
             endpoint: satellite.endpoint.clone(),
             reasoning: satellite.reasoning,
+            config_revision: None,
             system: system.clone(),
             source,
             fallbacks: Vec::new(),
@@ -4249,6 +4256,7 @@ mod tests {
                     route: "codex:gpt-5".into(),
                     endpoint: None,
                     reasoning: None,
+                    config_revision: None,
                     system: non_pi_system.clone(),
                     source: DispatchSelectionSource::LegacyCodexSplit,
                     fallbacks: Vec::new(),
@@ -4358,6 +4366,7 @@ mod tests {
                 route: "codex:gpt-5".into(),
                 endpoint: None,
                 reasoning: None,
+                config_revision: None,
                 system: non_pi_system,
                 source: DispatchSelectionSource::LegacyCodexSplit,
                 fallbacks: Vec::new(),

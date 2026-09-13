@@ -3,7 +3,6 @@
 //! `wg-setup-5-smooth-2`.
 
 use std::fs;
-use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
@@ -40,11 +39,18 @@ fn run_wg_in_isolation_with_env(
 ) -> std::process::Output {
     let mut cmd = Command::new(wg_binary());
     cmd.args(args);
+    if let Some(index) = args.iter().position(|arg| *arg == "--dir")
+        && let Some(dir) = args.get(index + 1)
+        && let Some(root) = Path::new(dir).parent()
+    {
+        cmd.current_dir(root);
+    }
     cmd.env("HOME", fake_home);
     cmd.env_remove("ANTHROPIC_API_KEY");
     cmd.env_remove("OPENROUTER_API_KEY");
     cmd.env_remove("OPENAI_API_KEY");
     cmd.env_remove("WG_DIR");
+    cmd.env_remove("WG_PROJECT_ROOT");
     cmd.env_remove("WG_TASK_ID");
     cmd.env_remove("WG_AGENT_ID");
     cmd.env_remove("WG_WORKER_CAPABILITY");
@@ -59,142 +65,42 @@ fn run_wg_in_isolation_with_env(
         .unwrap_or_else(|e| panic!("Failed to run wg: {}", e))
 }
 
-#[derive(Clone)]
-struct Route {
-    method: &'static str,
-    path: &'static str,
-    status: u16,
-    body: &'static str,
-}
-
-fn request_complete(buf: &[u8]) -> bool {
-    let Some(header_end) = buf.windows(4).position(|window| window == b"\r\n\r\n") else {
-        return false;
-    };
-    let headers = String::from_utf8_lossy(&buf[..header_end]);
-    let content_length = headers
-        .lines()
-        .find_map(|line| {
-            line.strip_prefix("content-length:")
-                .or_else(|| line.strip_prefix("Content-Length:"))
-        })
-        .and_then(|value| value.trim().parse::<usize>().ok())
-        .unwrap_or(0);
-    buf.len() >= header_end + 4 + content_length
-}
-
-fn start_mock_server(
-    routes: Vec<Route>,
-) -> (
-    String,
-    std::sync::Arc<std::sync::Mutex<Vec<String>>>,
-    std::thread::JoinHandle<()>,
-) {
-    use std::net::TcpListener;
-    use std::time::{Duration, Instant};
-
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.set_nonblocking(true).unwrap();
-    let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let request_log = std::sync::Arc::clone(&requests);
-    let expected = routes.len();
-    let addr = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
-
-    let handle = std::thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let mut served = 0usize;
-        while served < expected && Instant::now() < deadline {
-            let (mut stream, _) = match listener.accept() {
-                Ok(stream) => stream,
-                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(Duration::from_millis(10));
-                    continue;
-                }
-                Err(_) => break,
-            };
-            served += 1;
-            stream
-                .set_read_timeout(Some(Duration::from_secs(2)))
-                .unwrap();
-
-            let mut buf = Vec::new();
-            let mut chunk = [0u8; 4096];
-            loop {
-                match stream.read(&mut chunk) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        buf.extend_from_slice(&chunk[..n]);
-                        if request_complete(&buf) {
-                            break;
-                        }
-                    }
-                    Err(err)
-                        if matches!(
-                            err.kind(),
-                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                        ) =>
-                    {
-                        break;
-                    }
-                    Err(_) => break,
-                }
-            }
-
-            let request = String::from_utf8_lossy(&buf).to_string();
-            request_log.lock().unwrap().push(request.clone());
-            let request_line = request.lines().next().unwrap_or_default();
-            let mut parts = request_line.split_whitespace();
-            let method = parts.next().unwrap_or_default();
-            let path = parts.next().unwrap_or_default();
-            let (status, body) = routes
-                .iter()
-                .find(|route| route.method == method && route.path == path)
-                .map(|route| (route.status, route.body))
-                .unwrap_or((404, r#"{"error":"not found"}"#));
-            let reason = if status >= 400 { "ERR" } else { "OK" };
-            let response = format!(
-                "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                status,
-                reason,
-                body.len(),
-                body
-            );
-            let _ = stream.write_all(response.as_bytes());
-            let _ = stream.flush();
-        }
-    });
-
-    (addr, requests, handle)
-}
-
-fn load_global_config(fake_home: &Path) -> Config {
-    // Mirrors Config::global_dir resolution: prefer modern `~/.wg`, fall
-    // back to legacy `~/.wg` if only that exists.
-    let modern = fake_home.join(".wg/config.toml");
-    let legacy = fake_home.join(".wg/config.toml");
-    let path = if modern.exists() {
-        modern
-    } else if legacy.exists() {
-        legacy
-    } else {
-        modern
-    };
-    let content = fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("Failed to read config at {:?}: {}", path, e));
-    toml::from_str(&content)
-        .unwrap_or_else(|e| panic!("Failed to parse config.toml:\n{}\nError: {}", content, e))
-}
-
 fn load_local_config(project_root: &Path) -> Config {
-    let path = project_root.join(".wg/config.toml");
+    let path = project_root.join("worksgood.toml");
     let content = fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("Failed to read local config at {:?}: {}", path, e));
-    toml::from_str(&content).unwrap_or_else(|e| {
-        panic!(
-            "Failed to parse local config.toml:\n{}\nError: {}",
-            content, e
-        )
-    })
+        .unwrap_or_else(|e| panic!("Failed to read project config at {:?}: {}", path, e));
+    toml::from_str(&content)
+        .unwrap_or_else(|e| panic!("Failed to parse worksgood.toml:\n{}\nError: {}", content, e))
+}
+
+fn assert_legacy_setup_route_rejected(route: &str, extra_args: &[&str]) {
+    let tmp = TempDir::new().unwrap();
+    let fake_home = tmp.path().join("home");
+    let project = tmp.path().join("project");
+    let graph = project.join(".wg");
+    fs::create_dir_all(&fake_home).unwrap();
+    fs::create_dir_all(&graph).unwrap();
+    worksgood::parser::save_graph(
+        &worksgood::graph::WorkGraph::new(),
+        &graph.join("graph.jsonl"),
+    )
+    .unwrap();
+
+    let mut args = vec!["--dir", graph.to_str().unwrap(), "setup", "--route", route];
+    args.extend_from_slice(extra_args);
+    args.push("--yes");
+    let output = run_wg_in_isolation(&fake_home, &args);
+    assert!(
+        !output.status.success(),
+        "legacy route unexpectedly succeeded"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("supported route is: pi"),
+        "unexpected diagnostic for {route}: {stderr}"
+    );
+    assert!(!project.join("worksgood.toml").exists());
+    assert!(!fake_home.join(".wg/config.toml").exists());
 }
 
 fn install_fake_pi(root: &Path) -> PathBuf {
@@ -323,11 +229,28 @@ fn test_setup_non_interactive_route_activates_profile_and_exact_model() {
     let fake_home = tmp.path().join("home");
     fs::create_dir_all(&fake_home).unwrap();
     let fake_bin = install_fake_pi(tmp.path());
+    let project = tmp.path().join("project");
+    let graph = project.join(".wg");
+    fs::create_dir_all(&graph).unwrap();
+    worksgood::parser::save_graph(
+        &worksgood::graph::WorkGraph::new(),
+        &graph.join("graph.jsonl"),
+    )
+    .unwrap();
     let model = "pi:openrouter:test/setup-model";
 
     let output = run_wg_in_isolation_with_env(
         &fake_home,
-        &["setup", "--route", "pi", "--model", model, "--yes"],
+        &[
+            "--dir",
+            graph.to_str().unwrap(),
+            "setup",
+            "--route",
+            "pi",
+            "--model",
+            model,
+            "--yes",
+        ],
         &[("PATH", fake_bin.to_str().unwrap())],
     );
     assert!(
@@ -337,13 +260,7 @@ fn test_setup_non_interactive_route_activates_profile_and_exact_model() {
         String::from_utf8_lossy(&output.stderr),
     );
 
-    let cfg = load_global_config(&fake_home);
-    assert_eq!(cfg.coordinator.executor, None);
-    assert_eq!(cfg.agent.executor, "pi");
-    assert!(cfg.tiers.fast.is_some(), "tiers.fast must be populated");
-    assert_eq!(cfg.tiers.standard.as_deref(), Some(model));
-    assert_eq!(cfg.tiers.premium.as_deref(), Some(model));
-    assert_eq!(cfg.agent.model, model);
+    let cfg = load_local_config(&project);
     assert_eq!(
         cfg.models
             .default
@@ -351,64 +268,18 @@ fn test_setup_non_interactive_route_activates_profile_and_exact_model() {
             .and_then(|role| role.model.as_deref()),
         Some(model)
     );
-    assert_eq!(
-        cfg.models
-            .task_agent
-            .as_ref()
-            .and_then(|role| role.model.as_deref()),
-        Some(model)
-    );
-    cfg.validate_pi_model_plane().unwrap();
-
-    assert_eq!(
-        fs::read_to_string(fake_home.join(".wg/active-profile")).unwrap(),
-        "pi\n"
-    );
-    let profile: Config =
-        toml::from_str(&fs::read_to_string(fake_home.join(".wg/profiles/pi.toml")).unwrap())
-            .unwrap();
-    assert_eq!(profile.agent.model, model);
-    assert_eq!(
-        profile
-            .models
-            .task_agent
-            .as_ref()
-            .and_then(|role| role.model.as_deref()),
-        Some(model)
-    );
-
-    let graph_dir = tmp.path().join("project/.wg");
-    fs::create_dir_all(&graph_dir).unwrap();
-    let reapply = run_wg_in_isolation_with_env(
-        &fake_home,
-        &[
-            "--dir",
-            graph_dir.to_str().unwrap(),
-            "profile",
-            "use",
-            "pi",
-            "--no-reload",
-        ],
-        &[("PATH", fake_bin.to_str().unwrap())],
-    );
-    assert!(
-        reapply.status.success(),
-        "profile reapply failed: {}",
-        String::from_utf8_lossy(&reapply.stderr)
-    );
-    let reapplied = load_global_config(&fake_home);
-    assert_eq!(reapplied.agent.model, model);
-    assert_eq!(
-        reapplied
-            .models
-            .task_agent
-            .as_ref()
-            .and_then(|role| role.model.as_deref()),
-        Some(model)
-    );
+    assert!(cfg.tiers.standard.is_none());
+    assert!(cfg.tiers.fast.is_none());
+    assert_eq!(cfg.strong_tier_spec().as_deref(), Some(model));
+    assert_eq!(cfg.weak_tier_spec().as_deref(), Some(model));
+    assert!(!fake_home.join(".wg/active-profile").exists());
+    assert!(!fake_home.join(".wg/config.toml").exists());
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Profile: ACTIVE (`pi`"), "{stdout}");
+    assert!(
+        stdout.contains("Profile: project-local route is effective"),
+        "{stdout}"
+    );
     assert!(stdout.contains("Pi handler: AVAILABLE"), "{stdout}");
     assert!(stdout.contains("Pi auth/model: NOT VERIFIED"), "{stdout}");
     assert!(stdout.contains("run `pi`, use `/login`"), "{stdout}");
@@ -423,9 +294,23 @@ fn test_setup_reports_unavailable_pi_without_claiming_auth_or_model_access() {
     fs::create_dir_all(&fake_home).unwrap();
     fs::create_dir_all(&empty_path).unwrap();
 
+    let graph = tmp.path().join("project/.wg");
+    fs::create_dir_all(&graph).unwrap();
+    worksgood::parser::save_graph(
+        &worksgood::graph::WorkGraph::new(),
+        &graph.join("graph.jsonl"),
+    )
+    .unwrap();
     let output = run_wg_in_isolation_with_env(
         &fake_home,
-        &["setup", "--route", "pi", "--yes"],
+        &[
+            "--dir",
+            graph.to_str().unwrap(),
+            "setup",
+            "--route",
+            "pi",
+            "--yes",
+        ],
         &[("PATH", empty_path.to_str().unwrap())],
     );
     assert!(
@@ -433,10 +318,8 @@ fn test_setup_reports_unavailable_pi_without_claiming_auth_or_model_access() {
         "bounded readiness limitation must not invent another route: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert_eq!(
-        fs::read_to_string(fake_home.join(".wg/active-profile")).unwrap(),
-        "pi\n"
-    );
+    assert!(!fake_home.join(".wg/active-profile").exists());
+    assert!(graph.parent().unwrap().join("worksgood.toml").exists());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains("Pi handler: UNAVAILABLE on PATH"),
@@ -451,192 +334,39 @@ fn test_setup_reports_unavailable_pi_without_claiming_auth_or_model_access() {
 }
 
 #[test]
-#[ignore = "retired non-Pi setup/endpoint surface"]
-fn test_setup_route_codex_writes_top_standard_and_task_agent() {
-    let tmp = TempDir::new().unwrap();
-    let fake_home = tmp.path().join("home");
-    fs::create_dir_all(&fake_home).unwrap();
-
-    let output = run_wg_in_isolation(&fake_home, &["setup", "--route", "codex-cli", "--yes"]);
-    assert!(
-        output.status.success(),
-        "wg setup --route codex-cli --yes failed.\nstdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-
-    let cfg = load_global_config(&fake_home);
-    assert_eq!(cfg.agent.model, "codex:gpt-5.5");
-    assert_eq!(cfg.coordinator.model.as_deref(), Some("codex:gpt-5.5"));
-    assert_eq!(cfg.tiers.standard.as_deref(), Some("codex:gpt-5.5"));
-    assert_eq!(
-        cfg.models
-            .task_agent
-            .as_ref()
-            .and_then(|m| m.model.as_deref()),
-        Some("codex:gpt-5.5")
-    );
-    assert_eq!(
-        cfg.resolve_model_for_role(DispatchRole::TaskAgent).model,
-        "gpt-5.5"
-    );
+fn test_setup_legacy_codex_route_is_rejected_without_writing() {
+    assert_legacy_setup_route_rejected("codex-cli", &[]);
 }
 
 #[test]
-#[ignore = "retired non-Pi setup/endpoint surface"]
-fn test_setup_route_openrouter_writes_endpoint_and_tiers() {
-    let tmp = TempDir::new().unwrap();
-    let fake_home = tmp.path().join("home");
-    fs::create_dir_all(&fake_home).unwrap();
-
-    let model_body = r#"{
-        "data": [
-            {
-                "id": "anthropic/claude-sonnet-4-6",
-                "name": "Claude Sonnet 4.6",
-                "description": "test",
-                "context_length": 200000,
-                "pricing": {"prompt":"0.000003","completion":"0.000015"},
-                "supported_parameters": ["tools"]
-            }
-        ]
-    }"#;
-    let (base_url, requests, handle) = start_mock_server(vec![Route {
-        method: "GET",
-        path: "/api/v1/models",
-        status: 200,
-        body: model_body,
-    }]);
-
-    let output = run_wg_in_isolation_with_env(
-        &fake_home,
+fn test_setup_legacy_openrouter_endpoint_route_is_rejected_without_writing() {
+    assert_legacy_setup_route_rejected(
+        "openrouter",
         &[
-            "setup",
-            "--route",
-            "openrouter",
             "--url",
-            &format!("{base_url}/api/v1"),
+            "http://127.0.0.1:9/api/v1",
             "--api-key-env",
             "OPENROUTER_API_KEY",
-            "--yes",
-        ],
-        &[("OPENROUTER_API_KEY", "sk-or-setup-login-test")],
-    );
-    assert!(
-        output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let cfg = load_global_config(&fake_home);
-    assert_eq!(cfg.coordinator.executor.as_deref(), Some("native"));
-    assert_eq!(cfg.llm_endpoints.endpoints.len(), 1);
-    let ep = &cfg.llm_endpoints.endpoints[0];
-    assert_eq!(ep.provider, "openrouter");
-    assert_eq!(ep.api_key_ref.as_deref(), Some("env:OPENROUTER_API_KEY"));
-    assert!(ep.api_key_env.is_none());
-    assert!(cfg.tiers.fast.is_some());
-    assert!(cfg.tiers.standard.is_some());
-    assert!(cfg.tiers.premium.is_some());
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("OpenRouter (WG)"));
-    assert!(stdout.contains("scope: WG-managed auth"));
-    assert!(stdout.contains("auth: ok"));
-    assert!(stdout.contains("OpenRouter (Pi)"));
-    assert!(stdout.contains("scope: Pi-managed auth for `pi:` routes only"));
-    assert!(stdout.contains("wg profile pi"));
-
-    let requests = requests.lock().unwrap();
-    assert!(
-        requests.iter().any(|request| {
-            request
-                .to_ascii_lowercase()
-                .contains("authorization: bearer sk-or-setup-login-test")
-        }),
-        "mock server never observed the configured Authorization header: {:?}",
-        *requests
-    );
-    handle.join().unwrap();
-}
-
-#[test]
-#[ignore = "retired non-Pi setup/endpoint surface"]
-fn test_setup_route_openrouter_without_key_prints_exact_login_step() {
-    let tmp = TempDir::new().unwrap();
-    let fake_home = tmp.path().join("home");
-    fs::create_dir_all(&fake_home).unwrap();
-
-    let output = run_wg_in_isolation(&fake_home, &["setup", "--route", "openrouter", "--yes"]);
-    assert!(
-        output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Next independent login step: wg login openrouter"));
-    assert!(stdout.contains("WG-managed auth"));
-    assert!(stdout.contains("Pi keeps its own provider login separately"));
-    assert!(stdout.contains("wg login openrouter --check"));
-    assert!(stdout.contains("wg model-scout --no-cache"));
-}
-
-#[test]
-#[ignore = "retired non-Pi setup/endpoint surface"]
-fn test_setup_route_local_uses_supplied_model() {
-    let tmp = TempDir::new().unwrap();
-    let fake_home = tmp.path().join("home");
-    fs::create_dir_all(&fake_home).unwrap();
-
-    let output = run_wg_in_isolation(
-        &fake_home,
-        &[
-            "setup",
-            "--route",
-            "local",
-            "--url",
-            "http://localhost:11434/v1",
-            "--model",
-            "qwen3:4b",
-            "--yes",
         ],
     );
-    assert!(
-        output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let cfg = load_global_config(&fake_home);
-    assert_eq!(cfg.coordinator.executor.as_deref(), Some("native"));
-    assert_eq!(cfg.tiers.fast.as_deref(), Some("nex:qwen3:4b"));
-    assert_eq!(cfg.tiers.standard.as_deref(), Some("nex:qwen3:4b"));
-    assert_eq!(cfg.tiers.premium.as_deref(), Some("nex:qwen3:4b"));
 }
 
 #[test]
-#[ignore = "retired non-Pi setup/endpoint surface"]
-fn test_setup_route_nex_custom_requires_url_and_model() {
-    let tmp = TempDir::new().unwrap();
-    let fake_home = tmp.path().join("home");
-    fs::create_dir_all(&fake_home).unwrap();
+fn test_setup_legacy_openrouter_route_without_key_is_rejected_without_writing() {
+    assert_legacy_setup_route_rejected("openrouter", &[]);
+}
 
-    // Missing --url
-    let output = run_wg_in_isolation(&fake_home, &["setup", "--route", "nex-custom", "--yes"]);
-    assert!(
-        !output.status.success(),
-        "should fail without --url: stdout {} stderr {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
+#[test]
+fn test_setup_legacy_local_route_is_rejected_without_writing() {
+    assert_legacy_setup_route_rejected(
+        "local",
+        &["--url", "http://localhost:11434/v1", "--model", "qwen3:4b"],
     );
+}
 
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("nex-custom") && stderr.contains("--url"),
-        "error should mention nex-custom and --url, got: {}",
-        stderr,
-    );
+#[test]
+fn test_setup_legacy_nex_custom_route_is_rejected_without_writing() {
+    assert_legacy_setup_route_rejected("nex-custom", &[]);
 }
 
 #[test]
@@ -725,79 +455,60 @@ fn test_init_dry_run_no_write() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "retired non-Pi setup/endpoint surface"]
-fn test_init_with_executor_only_populates_tiers() {
-    // The validation criteria say `wg init -x claude` should produce
-    // populated [tiers] — this is the bug the spec calls out.
+fn test_init_legacy_executor_is_rejected_without_initializing_graph() {
     let tmp = TempDir::new().unwrap();
     let project = tmp.path().join("project");
-    fs::create_dir_all(&project).unwrap();
-    let wg_dir = project.join(".wg");
+    let graph = project.join(".wg");
     let fake_home = tmp.path().join("home");
+    fs::create_dir_all(&project).unwrap();
     fs::create_dir_all(&fake_home).unwrap();
 
-    let output = Command::new(wg_binary())
-        .arg("--dir")
-        .arg(&wg_dir)
-        .args(["init", "-x", "claude", "--no-agency"])
-        .env("HOME", &fake_home)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .unwrap();
-
-    assert!(
-        output.status.success(),
-        "wg init -x claude failed.\nstdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
+    let output = run_wg_in_isolation(
+        &fake_home,
+        &[
+            "--dir",
+            graph.to_str().unwrap(),
+            "init",
+            "-x",
+            "claude",
+            "--no-agency",
+        ],
     );
-
-    let cfg_path = wg_dir.join("config.toml");
-    let cfg_str = fs::read_to_string(&cfg_path).expect("config.toml must be created");
-    let cfg: Config = toml::from_str(&cfg_str).expect("config must parse");
-
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        cfg.tiers.fast.is_some() && cfg.tiers.standard.is_some() && cfg.tiers.premium.is_some(),
-        "all three tiers must be populated after `wg init -x claude`. Got: fast={:?}, standard={:?}, premium={:?}",
-        cfg.tiers.fast,
-        cfg.tiers.standard,
-        cfg.tiers.premium,
+        stderr.contains("legacy executor") && stderr.contains("Pi is the sole LLM handler"),
+        "{stderr}"
     );
+    assert!(!graph.exists());
+    assert!(!project.join("worksgood.toml").exists());
 }
 
 #[test]
-#[ignore = "retired non-Pi setup/endpoint surface"]
-fn test_init_route_openrouter_prints_login_handoff() {
+fn test_init_legacy_openrouter_route_is_rejected_without_initializing_graph() {
     let tmp = TempDir::new().unwrap();
     let project = tmp.path().join("project");
-    fs::create_dir_all(&project).unwrap();
-    let wg_dir = project.join(".wg");
+    let graph = project.join(".wg");
     let fake_home = tmp.path().join("home");
+    fs::create_dir_all(&project).unwrap();
     fs::create_dir_all(&fake_home).unwrap();
 
-    let output = Command::new(wg_binary())
-        .arg("--dir")
-        .arg(&wg_dir)
-        .args(["init", "--route", "openrouter", "--no-agency"])
-        .env("HOME", &fake_home)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .unwrap();
-
-    assert!(
-        output.status.success(),
-        "wg init --route openrouter failed.\nstdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
+    let output = run_wg_in_isolation(
+        &fake_home,
+        &[
+            "--dir",
+            graph.to_str().unwrap(),
+            "init",
+            "--route",
+            "openrouter",
+            "--no-agency",
+        ],
     );
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Next independent login step: wg login openrouter"));
-    assert!(stdout.contains("Pi keeps its own provider login separately"));
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("supported route is: pi"), "{stderr}");
+    assert!(!graph.exists());
+    assert!(!project.join("worksgood.toml").exists());
 }
 
 // ---------------------------------------------------------------------------
@@ -805,35 +516,26 @@ fn test_init_route_openrouter_prints_login_handoff() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "retired non-Pi setup/endpoint surface"]
-fn test_config_reset_keep_keys_preserves_endpoints() {
+fn test_config_reset_legacy_route_is_rejected_without_mutating_project_authority() {
     let tmp = TempDir::new().unwrap();
     let fake_home = tmp.path().join("home");
-    let global_dir = fake_home.join(".wg");
-    fs::create_dir_all(&global_dir).unwrap();
+    let project = tmp.path().join("project");
+    let graph = project.join(".wg");
+    fs::create_dir_all(&fake_home).unwrap();
+    fs::create_dir_all(&graph).unwrap();
+    let path = project.join("worksgood.toml");
+    let pre = r#"schema_version = 1
 
-    // Pre-populate a global config with an openrouter endpoint
-    let pre = r#"
-[dispatcher]
-executor = "native"
-
-[agent]
-executor = "native"
-model = "openrouter:anthropic/claude-sonnet-4"
-
-[[llm_endpoints.endpoints]]
-name = "openrouter"
-provider = "openrouter"
-url = "https://openrouter.ai/api/v1"
-api_key_env = "OPENROUTER_API_KEY"
-is_default = true
+[models.default]
+model = "claude:opus"
 "#;
-    fs::write(global_dir.join("config.toml"), pre).unwrap();
+    fs::write(&path, pre).unwrap();
 
-    // Reset to claude-cli with --keep-keys --yes
     let output = run_wg_in_isolation(
         &fake_home,
         &[
+            "--dir",
+            graph.to_str().unwrap(),
             "config",
             "reset",
             "--route",
@@ -842,78 +544,57 @@ is_default = true
             "--yes",
         ],
     );
-    assert!(
-        output.status.success(),
-        "config reset failed.\nstderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let cfg = load_global_config(&fake_home);
-    assert_eq!(
-        cfg.coordinator.executor.as_deref(),
-        Some("claude"),
-        "executor must change to claude per route"
-    );
-    // Tiers must be populated by the new route
-    assert!(cfg.tiers.fast.is_some());
-    assert!(cfg.tiers.standard.is_some());
-    assert!(cfg.tiers.premium.is_some());
-    // Endpoints preserved by --keep-keys
-    assert_eq!(
-        cfg.llm_endpoints.endpoints.len(),
-        1,
-        "openrouter endpoint must be preserved"
-    );
-    let ep = &cfg.llm_endpoints.endpoints[0];
-    assert_eq!(ep.name, "openrouter");
-    assert_eq!(ep.api_key_env.as_deref(), Some("OPENROUTER_API_KEY"));
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("supported reset route is: pi"), "{stderr}");
+    assert_eq!(fs::read_to_string(path).unwrap(), pre);
 }
 
 #[test]
 fn test_config_reset_creates_backup() {
     let tmp = TempDir::new().unwrap();
     let fake_home = tmp.path().join("home");
-    let global_dir = fake_home.join(".wg");
-    fs::create_dir_all(&global_dir).unwrap();
+    let project = tmp.path().join("project");
+    let graph = project.join(".wg");
+    fs::create_dir_all(&graph).unwrap();
 
     let pre = r#"
-[dispatcher]
-executor = "claude"
+schema_version = 1
 
-[agent]
-executor = "claude"
+[models.default]
 model = "claude:opus"
+reasoning = "high"
 "#;
-    fs::write(global_dir.join("config.toml"), pre).unwrap();
+    fs::write(project.join("worksgood.toml"), pre).unwrap();
 
-    let output = run_wg_in_isolation(&fake_home, &["config", "reset", "--route", "pi", "--yes"]);
+    let output = run_wg_in_isolation(
+        &fake_home,
+        &[
+            "--dir",
+            graph.to_str().unwrap(),
+            "config",
+            "reset",
+            "--route",
+            "pi",
+            "--yes",
+        ],
+    );
     assert!(
         output.status.success(),
         "config reset failed.\nstderr: {}",
         String::from_utf8_lossy(&output.stderr),
     );
 
-    // A backup file should exist.
-    let backups: Vec<_> = fs::read_dir(&global_dir)
+    let backups: Vec<_> = fs::read_dir(&project)
         .unwrap()
         .filter_map(|e| e.ok())
         .filter(|e| {
             e.file_name()
                 .to_string_lossy()
-                .starts_with("config.toml.bak-")
+                .starts_with("worksgood.toml.bak-")
         })
         .collect();
-    assert_eq!(
-        backups.len(),
-        1,
-        "exactly one backup should be created. Found: {:?}",
-        fs::read_dir(&global_dir)
-            .unwrap()
-            .map(|e| e.unwrap().file_name())
-            .collect::<Vec<_>>()
-    );
-
-    // Backup content matches the pre-reset config
+    assert_eq!(backups.len(), 1);
     let backup_content = fs::read_to_string(backups[0].path()).unwrap();
     assert!(backup_content.contains("claude"));
     assert!(backup_content.contains("opus"));
@@ -923,160 +604,58 @@ model = "claude:opus"
 fn test_config_reset_dry_run_does_not_write() {
     let tmp = TempDir::new().unwrap();
     let fake_home = tmp.path().join("home");
-    let global_dir = fake_home.join(".wg");
-    fs::create_dir_all(&global_dir).unwrap();
+    let project = tmp.path().join("project");
+    let graph = project.join(".wg");
+    fs::create_dir_all(&graph).unwrap();
 
-    let pre = r#"
-[dispatcher]
-executor = "claude"
-
-[agent]
-executor = "claude"
-model = "claude:sonnet"
-"#;
-    fs::write(global_dir.join("config.toml"), pre).unwrap();
-    let original = fs::read_to_string(global_dir.join("config.toml")).unwrap();
+    let pre =
+        "schema_version = 1\n\n[models.default]\nmodel = \"claude:sonnet\"\nreasoning = \"high\"\n";
+    let path = project.join("worksgood.toml");
+    fs::write(&path, pre).unwrap();
 
     let output = run_wg_in_isolation(
         &fake_home,
-        &["config", "reset", "--route", "pi", "--dry-run"],
+        &[
+            "--dir",
+            graph.to_str().unwrap(),
+            "config",
+            "reset",
+            "--route",
+            "pi",
+            "--dry-run",
+        ],
     );
     assert!(output.status.success());
-
-    // Config unchanged
-    let after = fs::read_to_string(global_dir.join("config.toml")).unwrap();
-    assert_eq!(after, original, "dry-run must not modify the config");
-
-    // No backup file
-    let backups: Vec<_> = fs::read_dir(&global_dir)
-        .unwrap()
-        .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.file_name()
-                .to_string_lossy()
-                .starts_with("config.toml.bak-")
-        })
-        .collect();
-    assert!(backups.is_empty(), "dry-run must not create a backup");
-}
-
-#[test]
-#[ignore = "retired non-Pi setup/endpoint surface"]
-fn test_setup_route_openrouter_from_stdin_writes_secret_ref_not_embedded_key() {
-    let tmp = TempDir::new().unwrap();
-    let fake_home = tmp.path().join("home");
-    let project = tmp.path().join("project");
-    fs::create_dir_all(&fake_home).unwrap();
-    fs::create_dir_all(&project).unwrap();
-
-    let output = Command::new(wg_binary())
-        .current_dir(&project)
-        .env("HOME", &fake_home)
-        .args([
-            "setup",
-            "--route",
-            "openrouter",
-            "--scope",
-            "local",
-            "--from-stdin",
-            "--backend",
-            "keystore",
-            "--yes",
-        ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .and_then(|mut child| {
-            child
-                .stdin
-                .take()
-                .expect("stdin")
-                .write_all(b"sk-or-setup-test\n")?;
-            child.wait_with_output()
-        })
-        .unwrap();
+    assert_eq!(fs::read_to_string(&path).unwrap(), pre);
     assert!(
-        output.status.success(),
-        "wg setup openrouter from stdin failed.\nstdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
+        !fs::read_dir(&project)
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("worksgood.toml.bak-")
+            })
     );
-
-    let content = fs::read_to_string(project.join(".wg/config.toml")).unwrap();
-    assert!(content.contains(r#"api_key_ref = "keystore:openrouter""#));
-    assert!(!content.contains("sk-or-setup-test"));
-    assert!(!content.contains("api_key ="));
 }
 
 #[test]
-#[ignore = "retired non-Pi setup/endpoint surface"]
-fn test_setup_route_openrouter_local_reuses_existing_global_login() {
-    let tmp = TempDir::new().unwrap();
-    let fake_home = tmp.path().join("home");
-    let project = tmp.path().join("project");
-    fs::create_dir_all(fake_home.join(".wg")).unwrap();
-    fs::create_dir_all(&project).unwrap();
-
-    fs::write(
-        fake_home.join(".wg/config.toml"),
-        r#"
-[[llm_endpoints.endpoints]]
-name = "openrouter"
-provider = "openrouter"
-url = "https://openrouter.ai/api/v1"
-api_key_ref = "env:OPENROUTER_API_KEY"
-is_default = true
-"#,
-    )
-    .unwrap();
-
-    let output = Command::new(wg_binary())
-        .current_dir(&project)
-        .env("HOME", &fake_home)
-        .env("OPENROUTER_API_KEY", "sk-or-global-reuse")
-        .args([
-            "setup",
-            "--route",
-            "openrouter",
-            "--scope",
-            "local",
-            "--yes",
-        ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "wg setup local openrouter reuse failed.\nstdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
+fn test_setup_legacy_openrouter_stdin_secret_route_is_rejected_without_writing() {
+    assert_legacy_setup_route_rejected(
+        "openrouter",
+        &["--scope", "local", "--from-stdin", "--backend", "keystore"],
     );
-
-    let cfg = load_local_config(&project);
-    assert!(cfg.llm_endpoints.inherit_global);
-    assert!(cfg.llm_endpoints.endpoints.is_empty());
-    assert_eq!(cfg.agent.model, "openrouter:anthropic/claude-opus-4-7");
 }
 
 #[test]
-#[ignore = "retired non-Pi setup/endpoint surface"]
-fn test_setup_route_claude_cli_needs_no_api_key_prompt() {
-    let tmp = TempDir::new().unwrap();
-    let fake_home = tmp.path().join("home");
-    fs::create_dir_all(&fake_home).unwrap();
+fn test_setup_legacy_openrouter_cannot_reactivate_global_login() {
+    assert_legacy_setup_route_rejected("openrouter", &["--scope", "local"]);
+}
 
-    let output = run_wg_in_isolation(&fake_home, &["setup", "--route", "claude-cli", "--yes"]);
-    let combined = format!(
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(output.status.success(), "{}", combined);
-    assert!(!combined.contains("OpenRouter API key"));
-    assert!(!combined.contains("OPENROUTER_API_KEY"));
+#[test]
+fn test_setup_legacy_claude_route_is_rejected_without_prompting_for_credentials() {
+    assert_legacy_setup_route_rejected("claude-cli", &[]);
 }
 
 #[test]

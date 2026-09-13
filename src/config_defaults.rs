@@ -325,24 +325,23 @@ fn codex_cli_config(params: &RouteParams) -> Config {
 }
 
 fn pi_config(params: &RouteParams) -> Config {
-    let mut config: Config =
-        toml::from_str(crate::profile::named::STARTER_PI).expect("pi starter must parse");
-
-    // Legacy executor fields remain readable, but the exact `pi:` routes are
-    // the sole dispatch authority. Pi owns provider auth/endpoints/catalogs.
-    config.coordinator.executor = None;
+    let mut config = Config::default();
+    let route = params
+        .model
+        .as_deref()
+        .map(crate::config::pi_strong_route)
+        .unwrap_or_else(|| "pi:openrouter:z-ai/glm-5.2".to_string());
+    config.pin_default_route_model(&route);
+    if let Some(default) = config.models.default.as_mut() {
+        default.reasoning = Some(crate::config::ReasoningLevel::High);
+    }
     config.agent.executor = "pi".to_string();
+    config.coordinator.executor = None;
     config.llm_endpoints = EndpointsConfig::default();
     config.model_registry.clear();
-
-    if let Some(model) = params.model.as_deref() {
-        let strong = crate::config::pi_strong_route(model);
-        config.set_pi_tiers(Some(&strong), None);
-    }
-
     config
         .validate_pi_model_plane()
-        .expect("pi setup route must fully specify route + reasoning");
+        .expect("pi setup route must resolve every role by inheritance");
     config
 }
 

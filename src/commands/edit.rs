@@ -55,7 +55,7 @@ pub(crate) fn current_route_inheritance(dir: &Path) -> Result<RouteInheritancePr
                 profile_generation,
                 route: Some(route.route),
                 handler: Some(route.handler),
-                reasoning: Some(route.reasoning.to_string()),
+                reasoning: route.reasoning.map(|value| value.to_string()),
                 source: Some(route.source),
                 unavailable_reason: None,
             },

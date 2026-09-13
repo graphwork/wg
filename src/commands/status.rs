@@ -33,6 +33,13 @@ struct ServiceStatusInfo {
     socket: Option<String>,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+struct EffectiveRouteInfo {
+    route: String,
+    provenance: String,
+    source: String,
+}
+
 /// Coordinator configuration info
 #[derive(Debug, Clone, serde::Serialize)]
 struct CoordinatorInfo {
@@ -53,6 +60,20 @@ struct CoordinatorInfo {
     worker_reasoning: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     agency_reasoning: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    configured_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    configured_provenance: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    configured_source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    config_source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    config_revision: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    effective_strong: Option<EffectiveRouteInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    effective_weak: Option<EffectiveRouteInfo>,
     eval_gate_applicability: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     evaluator_threshold: Option<f64>,
@@ -72,6 +93,11 @@ struct ActiveAgentInfo {
     task_id: String,
     uptime: String,
     status: String,
+    executor: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    config_revision: Option<String>,
 }
 
 /// Agent summary
@@ -494,6 +520,21 @@ fn configured_gate_info(
 
 fn gather_coordinator_info(dir: &Path) -> CoordinatorInfo {
     let config = worksgood::config::Config::load_or_default(dir);
+    let configured_default = config
+        .resolve_execution_route_for_role(worksgood::config::DispatchRole::Default)
+        .ok();
+    let route_info = |tier| {
+        config
+            .resolve_tier_route(tier)
+            .ok()
+            .map(|route| EffectiveRouteInfo {
+                route: route.route,
+                provenance: route.provenance.to_string(),
+                source: route.source,
+            })
+    };
+    let effective_strong = route_info(worksgood::config::Tier::Standard);
+    let effective_weak = route_info(worksgood::config::Tier::Fast);
     let build_heavy_active = load_graph(graph_path(dir))
         .ok()
         .map(|graph| {
@@ -566,6 +607,21 @@ fn gather_coordinator_info(dir: &Path) -> CoordinatorInfo {
             reasoning,
             worker_reasoning,
             agency_reasoning,
+            configured_model: configured_default.as_ref().map(|route| route.route.clone()),
+            configured_provenance: configured_default
+                .as_ref()
+                .map(|route| route.provenance.to_string()),
+            configured_source: configured_default
+                .as_ref()
+                .map(|route| route.source.clone()),
+            config_source: configured_default
+                .as_ref()
+                .map(|route| route.config_source.clone()),
+            config_revision: configured_default
+                .as_ref()
+                .map(|route| route.config_revision.clone()),
+            effective_strong,
+            effective_weak,
             eval_gate_applicability,
             evaluator_threshold,
             flip_gate_policy,
@@ -588,9 +644,7 @@ fn gather_coordinator_info(dir: &Path) -> CoordinatorInfo {
     // executor (model-derived, with agent.model fallback) so a migrated clean
     // config with `model = "pi:..."` and no legacy executor key shows the
     // real handler instead of the deprecated default.
-    let default = config
-        .resolve_execution_route_for_role(worksgood::config::DispatchRole::Default)
-        .ok();
+    let default = configured_default;
     let worker = config
         .resolve_execution_route_for_role(worksgood::config::DispatchRole::TaskAgent)
         .ok();
@@ -616,9 +670,18 @@ fn gather_coordinator_info(dir: &Path) -> CoordinatorInfo {
             .map(|route| route.handler.clone())
             .unwrap_or_else(|| "(unselected)".to_string()),
         model: default.as_ref().map(|route| route.route.clone()),
-        reasoning: default.as_ref().map(|route| route.reasoning.to_string()),
-        worker_reasoning: worker.map(|route| route.reasoning.to_string()),
-        agency_reasoning: agency.map(|route| route.reasoning.to_string()),
+        reasoning: default
+            .as_ref()
+            .and_then(|route| route.reasoning.map(|value| value.to_string())),
+        worker_reasoning: worker.and_then(|route| route.reasoning.map(|value| value.to_string())),
+        agency_reasoning: agency.and_then(|route| route.reasoning.map(|value| value.to_string())),
+        configured_model: default.as_ref().map(|route| route.route.clone()),
+        configured_provenance: default.as_ref().map(|route| route.provenance.to_string()),
+        configured_source: default.as_ref().map(|route| route.source.clone()),
+        config_source: default.as_ref().map(|route| route.config_source.clone()),
+        config_revision: default.as_ref().map(|route| route.config_revision.clone()),
+        effective_strong,
+        effective_weak,
         eval_gate_applicability,
         evaluator_threshold,
         flip_gate_policy,
@@ -640,6 +703,7 @@ fn gather_coordinator_info(dir: &Path) -> CoordinatorInfo {
 fn gather_agent_summary(dir: &Path) -> AgentSummaryInfo {
     let registry = AgentRegistry::load_or_warn(dir);
     let agents = registry.list_agents();
+    let graph = worksgood::parser::load_graph(&graph_path(dir)).ok();
 
     let mut alive = 0;
     let mut dead = 0;
@@ -658,6 +722,15 @@ fn gather_agent_summary(dir: &Path) -> AgentSummaryInfo {
                     task_id: agent.task_id.clone(),
                     uptime: agent.uptime_human(),
                     status: format!("{:?}", agent.status).to_lowercase(),
+                    executor: agent.executor.clone(),
+                    model: agent.model.clone(),
+                    config_revision: graph
+                        .as_ref()
+                        .and_then(|graph| graph.get_task(&agent.task_id))
+                        .and_then(|task| {
+                            worksgood::source_provider_recovery::load_launch_binding(dir, task).ok()
+                        })
+                        .and_then(|binding| binding.config_revision),
                 });
             }
         } else {
@@ -1088,6 +1161,50 @@ fn print_status(status: &StatusOutput) {
             .unwrap_or("omit"),
         status.coordinator.poll_interval
     );
+    if let Some(configured) = status.coordinator.configured_model.as_deref() {
+        println!(
+            "Project routes: default={} [{}: {}], revision={}, source={}",
+            configured,
+            status
+                .coordinator
+                .configured_provenance
+                .as_deref()
+                .unwrap_or("unknown"),
+            status
+                .coordinator
+                .configured_source
+                .as_deref()
+                .unwrap_or("unknown"),
+            status
+                .coordinator
+                .config_revision
+                .as_deref()
+                .unwrap_or("unversioned"),
+            status
+                .coordinator
+                .config_source
+                .as_deref()
+                .unwrap_or("unknown")
+        );
+        if let Some(strong) = status.coordinator.effective_strong.as_ref() {
+            println!(
+                "  strong={} [{}: {}]",
+                strong.route, strong.provenance, strong.source
+            );
+        }
+        if let Some(weak) = status.coordinator.effective_weak.as_ref() {
+            println!(
+                "  weak={} [{}: {}]",
+                weak.route, weak.provenance, weak.source
+            );
+        }
+        if status.coordinator.model.as_deref() != Some(configured) {
+            println!(
+                "  running daemon pin={} (existing attempts retain their registry route pins; new attempts use the project revision)",
+                status.coordinator.model.as_deref().unwrap_or("unselected")
+            );
+        }
+    }
     println!(
         "Worker control: default={} ({})",
         status.coordinator.worker_control_mode, status.coordinator.worker_control_restrictions
@@ -1151,8 +1268,14 @@ fn print_status(status: &StatusOutput) {
                 agent.task_id.clone()
             };
             println!(
-                "  {:10}  {:24}  {:>5}  {}",
-                agent.id, task_display, agent.uptime, agent.status
+                "  {:10}  {:24}  {:>5}  {}  route-pin={}:{} revision={}",
+                agent.id,
+                task_display,
+                agent.uptime,
+                agent.status,
+                agent.executor,
+                agent.model.as_deref().unwrap_or("(unspecified)"),
+                agent.config_revision.as_deref().unwrap_or("unversioned")
             );
         }
         if status.agents.active.is_empty() && status.agents.alive > 0 {
