@@ -809,7 +809,7 @@ fn projection_for_class(
 struct ActiveColdBaselineBuilder {
     task_id: String,
     agent_id: String,
-    key_digest: Option<String>,
+    key_digest: String,
 }
 
 /// Identify a live owner of a reusable Cargo layer whose exact baseline is
@@ -844,6 +844,21 @@ fn active_cold_baseline_builder(
                 .unwrap_or_else(|| dir.parent().unwrap_or(dir));
             crate::target_cache::exact_baseline(source_root, Some(&command))
         });
+    // During the registry-before-ownership spawn window, or when task state
+    // and ownership disagree, retain the live task's expected cold-key fence.
+    // The mismatched row still contributes one cold active
+    // reservation below; it cannot transfer builder authority to another key.
+    if let Some(baseline) = expected
+        .as_ref()
+        .filter(|baseline| !baseline.is_ready(&target_cache_root(dir, cfg)))
+    {
+        return Some(ActiveColdBaselineBuilder {
+            task_id: agent.task_id.clone(),
+            agent_id: agent.id.clone(),
+            key_digest: baseline.digest(),
+        });
+    }
+
     let mut states = ownership
         .caches
         .iter()
@@ -860,24 +875,14 @@ fn active_cold_baseline_builder(
         return Some(ActiveColdBaselineBuilder {
             task_id: agent.task_id.clone(),
             agent_id: agent.id.clone(),
-            key_digest: Some(cold.key_digest.clone()),
+            key_digest: cold.key_digest.clone(),
         });
     }
 
-    // The registry is published just before cache ownership during spawn. A
-    // crash, an admission observation in that narrow window, or a wrong-key
-    // ownership row must not admit a second cold Cargo builder. Only an exact
-    // controlled Cargo task receives this fallback; generic/non-Rust work is
-    // not baseline authority.
-    let baseline = expected?;
-    if baseline.is_ready(&target_cache_root(dir, cfg)) {
-        return None;
-    }
-    Some(ActiveColdBaselineBuilder {
-        task_id: agent.task_id.clone(),
-        agent_id: agent.id.clone(),
-        key_digest: Some(baseline.digest()),
-    })
+    // An expected key that reached this point is already READY. A missing
+    // expected key belongs to generic/non-Rust work; neither case creates an
+    // additional Cargo fence beyond a real cold owned layer above.
+    None
 }
 
 fn short_cache_key(digest: &str) -> &str {
@@ -948,19 +953,17 @@ pub fn build_admission_for_source(
         })
         .collect::<Vec<_>>();
     live_cold_builders.sort_by(|left, right| left.agent_id.cmp(&right.agent_id));
+    let candidate_key = exact_baseline.as_ref().map(|baseline| baseline.digest());
     if cold_baseline
         && class.is_build_capable()
-        && let Some(builder) = live_cold_builders.first()
+        && let Some(builder) = candidate_key.as_ref().and_then(|candidate_key| {
+            live_cold_builders
+                .iter()
+                .find(|builder| builder.key_digest == *candidate_key)
+        })
     {
-        let candidate_key = exact_baseline
-            .as_ref()
-            .map(|baseline| baseline.digest())
-            .unwrap_or_else(|| "unknown".to_string());
-        let builder_key = builder
-            .key_digest
-            .as_deref()
-            .map(short_cache_key)
-            .unwrap_or("ownership-pending");
+        let candidate_key = candidate_key.expect("cold exact baseline has a key");
+        let builder_key = short_cache_key(&builder.key_digest);
         return BuildAdmission {
             allowed: false,
             candidate_bytes: candidate,
@@ -2880,6 +2883,36 @@ mod tests {
         assert!(!before.allowed);
         assert!(before.reason.contains("active baseline builder"));
 
+        // A cold ownership row for key A likewise cannot release the live
+        // task's expected key B fence.
+        let mut graph = load_graph(dir.join("graph.jsonl")).unwrap();
+        graph.get_task_mut("builder").unwrap().exec = Some("cargo test".into());
+        save_graph(&graph, dir.join("graph.jsonl")).unwrap();
+        let cold_wrong_key = build_admission_for_source(
+            &dir,
+            &cfg,
+            BuildClass::BuildCapable,
+            &source,
+            Some("cargo test"),
+        );
+        assert!(!cold_wrong_key.allowed);
+        assert!(cold_wrong_key.reason.contains("active baseline builder"));
+
+        graph.get_task_mut("builder").unwrap().exec = Some("cargo check".into());
+        save_graph(&graph, dir.join("graph.jsonl")).unwrap();
+        let unrelated_key = build_admission_for_source(
+            &dir,
+            &cfg,
+            BuildClass::BuildCapable,
+            &source,
+            Some("cargo test"),
+        );
+        assert!(
+            unrelated_key.allowed,
+            "a cold builder for another exact key may consume capacity but cannot own this key's fence: {}",
+            unrelated_key.reason
+        );
+
         assert!(crate::target_cache::promote_layer(&target).unwrap());
         assert!(
             crate::target_cache::layer_baseline_state(&target)
@@ -2890,7 +2923,6 @@ mod tests {
         // A READY ownership row for key A cannot satisfy or release the live
         // task's expected key B. Keep the builder fence fail-closed until the
         // mismatch is reconciled or that exact key is published.
-        let mut graph = load_graph(dir.join("graph.jsonl")).unwrap();
         graph.get_task_mut("builder").unwrap().exec = Some("cargo test".into());
         save_graph(&graph, dir.join("graph.jsonl")).unwrap();
         let wrong_key = build_admission_for_source(
