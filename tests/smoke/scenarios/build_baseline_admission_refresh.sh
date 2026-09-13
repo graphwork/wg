@@ -4,6 +4,9 @@
 # task waits with an actionable builder identity.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# Unix-domain service sockets have a small path limit; keep this disposable
+# daemon fixture short even when the harness itself lives in a deep worktree.
+export WG_SMOKE_ROOT="${WG_BASELINE_ADMISSION_SMOKE_ROOT:-/tmp/wgba-${BASHPID}}"
 . "$HERE/_helpers.sh"
 command -v cargo >/dev/null 2>&1 || loud_skip "MISSING CARGO" "exact baseline fixture requires cargo"
 command -v python3 >/dev/null 2>&1 || loud_skip "MISSING PYTHON3" "registry assertions require python3"
@@ -12,6 +15,10 @@ REPO_ROOT="$(git -C "$HERE" rev-parse --show-toplevel)"
 scratch="$(make_scratch)"
 if [[ -n "${WG_SMOKE_CANDIDATE_BIN:-}" ]]; then
   WG_BIN="$WG_SMOKE_CANDIDATE_BIN"
+elif [[ -x "${CARGO_TARGET_DIR:-$REPO_ROOT/target}/debug/wg" ]]; then
+  # The assigned integration target already built this exact candidate. Avoid
+  # recursively entering Cargo while its test process owns the target tree.
+  WG_BIN="${CARGO_TARGET_DIR:-$REPO_ROOT/target}/debug/wg"
 else
   CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 cargo build --quiet --locked --manifest-path "$REPO_ROOT/Cargo.toml" --bin wg
   WG_BIN="${CARGO_TARGET_DIR:-$REPO_ROOT/target}/debug/wg"

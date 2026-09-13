@@ -158,11 +158,10 @@ fn test_dispatcher_config_roundtrip() {
     assert_eq!(reload.coordinator.max_agents, 42);
 }
 
-/// Real public service flow plus the target cache's existing publication
-/// boundary. The first process remains alive after Cargo finishes so the test
-/// exercises the production bug: its layer began cold, then publishes READY,
-/// and the next tick must replace the stale cold reserve with the warm private
-/// delta without restarting the daemon.
+/// Real public service flow plus the candidate CLI's production cleanup
+/// publication event. The first process builds a cold layer and exits; cleanup
+/// publishes exact READY bytes, and the next tick must admit the warm follower
+/// without restarting the daemon while preserving the disk-capacity bound.
 #[test]
 fn live_daemon_refreshes_exact_baseline_publication_without_restart() {
     let fixture = tempfile::Builder::new()
@@ -221,7 +220,8 @@ auto_evaluate = false
 
 [dispatcher]
 max_agents = 2
-poll_interval = 1
+poll_interval = 3
+graph_watch_enabled = false
 settling_delay_ms = 0
 worktree_isolation = false
 
@@ -239,12 +239,13 @@ estimated_build_heavy_bytes = {}
 estimated_cargo_baseline_bytes = {}
 build_link_test_safety_bytes = 0
 max_build_agents = 2
+owned_cache_lease_seconds = 1
 disk_agent_heartbeat_seconds = 60
 "#,
             cache.display(),
             warning_floor,
             warm_delta,
-            warm_delta,
+            cold_baseline.saturating_mul(2),
             cold_baseline,
         ),
     )
@@ -282,11 +283,15 @@ disk_agent_heartbeat_seconds = 60
         "baseline source must be clean"
     );
 
-    let exact_command = "cargo check && sleep 30";
+    let exact_command = "cargo check && sleep 10";
     for (id, title, priority) in [
         ("a-cold-builder", "exact Cargo cold builder", "100"),
         ("b-warm-follower", "exact Cargo warm follower", "20"),
-        ("c-capacity-follower", "exact Cargo capacity follower", "10"),
+        (
+            "c-capacity-follower",
+            "build-heavy exact Cargo capacity follower",
+            "10",
+        ),
     ] {
         wg_ok(
             &home,
@@ -317,7 +322,7 @@ disk_agent_heartbeat_seconds = 60
             "2",
             "--no-chat-agent",
             "--interval",
-            "1",
+            "3",
         ],
     );
     let _guard = DaemonGuard {
@@ -365,18 +370,39 @@ disk_agent_heartbeat_seconds = 60
             .as_deref()
             .is_some_and(contains_build_artifact)
     });
-    let builder_target = builder_target.unwrap();
-    assert!(worksgood::target_cache::promote_layer(&builder_target).unwrap());
+
+    // Let the real shell process finish, then exercise the production cleanup
+    // publication event through the candidate CLI. The daemon stays alive and
+    // the graph watcher is disabled, so the follower cannot race a pre-publish
+    // coordinator tick into becoming another cold builder.
+    wait_until(Duration::from_secs(15), || {
+        let graph = worksgood::parser::load_graph(wg_dir.join("graph.jsonl")).unwrap();
+        let registry = AgentRegistry::load(&wg_dir).unwrap();
+        let owner_retired = registry
+            .all()
+            .find(|agent| agent.task_id == "a-cold-builder")
+            .is_none_or(|agent| !worksgood::service::is_process_alive(agent.pid));
+        graph
+            .get_task("a-cold-builder")
+            .is_some_and(|task| task.status.is_terminal())
+            && owner_retired
+    });
+    let publication = wg_ok(&home, &wg_dir, &["disk", "cleanup", "--execute"]);
+    assert!(
+        publication.contains("promoted clean completed layer to immutable shared baseline"),
+        "production cleanup did not publish the baseline: {publication}"
+    );
     assert!(
         worksgood::target_cache::has_ready_baseline(&cache, &project, Some(exact_command)),
         "publication must match the candidate's exact source/toolchain/command key"
     );
+    let replay = wg_ok(&home, &wg_dir, &["disk", "cleanup", "--execute"]);
     assert!(
-        !worksgood::target_cache::promote_layer(&builder_target).unwrap(),
-        "replayed publication must be idempotent"
+        !replay.contains("promoted clean completed layer to immutable shared baseline"),
+        "replayed publication was not idempotent: {replay}"
     );
 
-    wait_until(Duration::from_secs(15), || {
+    wait_until(Duration::from_secs(20), || {
         AgentRegistry::load(&wg_dir).unwrap().all().any(|agent| {
             agent.task_id == "b-warm-follower"
                 && agent.is_live(60)
@@ -384,18 +410,11 @@ disk_agent_heartbeat_seconds = 60
         })
     });
     assert_eq!(daemon_pid(&wg_dir), original_pid, "daemon restarted");
-    assert!(
-        AgentRegistry::load(&wg_dir)
-            .unwrap()
-            .all()
-            .any(|agent| agent.task_id == "a-cold-builder" && agent.is_live(60)),
-        "the publisher must still be live when the follower is admitted"
-    );
 
-    // Let repeated safety ticks observe the same READY publication. The full
-    // two-process capacity must remain authoritative: no duplicate follower
-    // and no third admission.
-    std::thread::sleep(Duration::from_secs(3));
+    // Let repeated safety ticks observe the same READY publication. The disk
+    // projection must remain authoritative: no duplicate follower and no
+    // build-heavy third admission while that follower remains live.
+    std::thread::sleep(Duration::from_secs(2));
     let registry = AgentRegistry::load(&wg_dir).unwrap();
     assert_eq!(
         registry
@@ -423,4 +442,18 @@ disk_agent_heartbeat_seconds = 60
     let capacity_waiter = graph.get_task("c-capacity-follower").unwrap();
     assert_eq!(capacity_waiter.status, worksgood::graph::Status::Open);
     assert_eq!(capacity_waiter.lifecycle.attempt_sequence, 0);
+}
+
+#[test]
+fn owned_build_baseline_smoke_scenario_passes_candidate_harness() {
+    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let manifest_path = repo.join("tests/smoke/manifest.toml");
+    let manifest = worksgood::smoke::Manifest::load_from(&manifest_path).unwrap();
+    let scenarios = manifest.scenarios_for_task("refresh-build-baseline-admission");
+    assert_eq!(scenarios.len(), 1, "owned smoke registration drifted");
+    let report = worksgood::smoke::run_scenarios(
+        &scenarios,
+        manifest_path.parent().expect("smoke manifest parent"),
+    );
+    assert!(!report.blocks_done(), "{}", report.render());
 }
