@@ -1,6 +1,6 @@
 # Completion repair and help
 
-**Implementation boundary (communicated before this behavior was implemented):** semantic-rejection help only projects a verified current FLIP/Eval receipt onto the existing completion-repair attention state. It does not create scheduler hierarchy, fabricate deterministic evidence, accept a candidate, retry a provider, rerun source/reviewer work, widen scope, or lower a gate.
+Semantic-rejection help only projects a verified current FLIP/Eval receipt onto the existing completion-repair attention state. It does not create scheduler hierarchy, fabricate deterministic evidence, accept a candidate, retry a provider, rerun source/reviewer work, widen scope, or lower a gate.
 
 `wg done TASK` has three normal outcomes:
 
